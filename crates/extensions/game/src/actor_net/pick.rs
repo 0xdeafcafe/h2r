@@ -6,16 +6,21 @@
 //! themselves go downstream as the show channel's `Pick` cue
 //! (`rules::show::Cue::Pick`); only the picks come back this way.
 //!
-//! The tunnel carries nothing upstream yet: its only client-to-host
-//! frame is the key request, which holds no payload
-//! (docs/game/ai-networking.md, "How it works"). [`send`] queues a pick
-//! for the transport and `actor_net_link::send_pick` drops it with a
-//! line until Live carries the frame.
+//! The Live tunnel carries it as the client-to-host `ActorPick` frame
+//! (`live_proto::tunnel::Kind::ActorPick`): the sending machine's id, then
+//! these three bytes. [`send`] queues a pick for the transport and
+//! `actor_net_link::send_pick` frames it; the host's
+//! `actor_net_link::take_picks` hands each back with the roster slots whose
+//! players have that machine id ([`seats_of`]), which [`receive`] checks
+//! the pick's player against. A client learns its own machine id from its
+//! local players ([`read_local_machine`]).
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use ::rules::ty::MAX_PLAYERS;
+use engine::GuestMemory;
+use engine::view::players;
 use ::rules::vm::{MAX_PICKS, MAX_PICK_ROWS};
 
 /// One player's pick: the roster slot it was made for, the picker's
@@ -111,6 +116,48 @@ pub fn send(pick: Pick) -> bool {
     true
 }
 
+/// This machine's id as its local players carry it (the player's machine
+/// field, which the game replicates), set by the client's asking and sent
+/// with each pick.
+static MACHINE: Mutex<Option<[u8; 6]>> = Mutex::new(None);
+
+/// Keeps `machine` as this machine's id for the picks it sends.
+pub fn set_local_machine(machine: Option<[u8; 6]>) {
+    *lock(&MACHINE) = machine;
+}
+
+/// The machine id kept by [`set_local_machine`].
+pub fn local_machine() -> Option<[u8; 6]> {
+    *lock(&MACHINE)
+}
+
+/// The machine id of this machine's first listed local player.
+pub fn read_local_machine(m: &dyn GuestMemory) -> Option<[u8; 6]> {
+    let array = players::array(m).ok()??;
+    let live = array.live(m, 16).ok()?;
+    live.into_iter()
+        .filter(|(_, p)| p.listed(m).unwrap_or(false))
+        .find(|(_, p)| p.local_user(m).is_ok_and(|u| u >= 0))
+        .and_then(|(_, p)| p.machine(m).ok())
+}
+
+/// The roster slots of the remote, listed players whose machine id is
+/// `machine`: the players a peer that named it may pick for.
+pub fn seats_of(m: &dyn GuestMemory, machine: [u8; 6]) -> Vec<u8> {
+    let Ok(Some(array)) = players::array(m) else {
+        return Vec::new();
+    };
+    let Ok(live) = array.live(m, 16) else {
+        return Vec::new();
+    };
+    live.into_iter()
+        .filter(|(_, p)| p.listed(m).unwrap_or(false))
+        .filter(|(_, p)| p.local_user(m).is_ok_and(|u| u < 0))
+        .filter(|(_, p)| p.machine(m).is_ok_and(|id| id == machine))
+        .map(|(handle, _)| handle.index() as u8)
+        .collect()
+}
+
 /// The queued picks' bytes, in order, taken by the transport.
 pub fn take_outbox() -> Vec<[u8; BYTES]> {
     lock(&OUTBOX).drain(..).collect()
@@ -196,5 +243,53 @@ mod tests {
             row: 1,
         };
         assert!(!receive(&pick.encode(), &[4, 5]));
+    }
+
+    const PLAYERS: u32 = 0x0070_0000;
+    const MINE: [u8; 6] = [2, 1, 2, 3, 4, 5];
+    const THEIRS: [u8; 6] = [2, 9, 9, 9, 9, 9];
+
+    /// A roster of four: slot 0 local on this machine, 1 and 2 remote on
+    /// `THEIRS`, 3 remote on another machine.
+    fn roster() -> engine::testing::FakeGuest {
+        use engine::view::{fake, players::Player};
+        let mut m = engine::testing::FakeGuest::new();
+        m.put_u32(engine::points::PLAYERS.base, PLAYERS);
+        let players = fake::datums::<Player>(&mut m, PLAYERS, 16);
+        for (local, machine) in [(0i16, MINE), (-1, THEIRS), (-1, THEIRS), (-1, [2, 7, 7, 7, 7, 7])] {
+            let (_, p) = fake::push(&mut m, &players);
+            p.set_local_user(&mut m, local).unwrap();
+            m.put(p.addr + engine::view::players::MACHINE, &machine);
+        }
+        m
+    }
+
+    #[test]
+    fn a_machine_id_finds_the_remote_players_it_has_and_a_client_reads_its_own() {
+        let m = roster();
+        assert_eq!(seats_of(&m, THEIRS), vec![1, 2]);
+        assert_eq!(seats_of(&m, [2, 7, 7, 7, 7, 7]), vec![3]);
+        // The host's own local player is nobody a peer may speak for.
+        assert_eq!(seats_of(&m, MINE), Vec::<u8>::new());
+        assert_eq!(seats_of(&m, [0; 6]), Vec::<u8>::new());
+        assert_eq!(read_local_machine(&m), Some(MINE));
+    }
+
+    /// The host's whole path from the tunnel's message to the VM's report:
+    /// a pick of a seated player is kept, a pick of another machine's
+    /// player is refused.
+    #[test]
+    fn a_pick_is_kept_for_the_players_of_the_machine_that_sent_it() {
+        let m = roster();
+        let seats = seats_of(&m, THEIRS);
+        let mine = Pick { player: 1, slot: 0, row: 2 };
+        let other = Pick { player: 3, slot: 0, row: 1 };
+        let _ = crate::rules::world::pick::take();
+        assert!(receive(&mine.encode(), &seats));
+        assert!(!receive(&other.encode(), &seats));
+        assert_eq!(
+            crate::rules::world::pick::take(),
+            vec![crate::rules::world::pick::Report { player: 1, slot: 0, row: 2 }]
+        );
     }
 }

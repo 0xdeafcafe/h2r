@@ -37,6 +37,7 @@ const KEEPALIVE: Duration = Duration::from_secs(5);
 const QUEUE: usize = 256;
 // A stalled consumer can recover on a subsequent key.
 const ACTOR_INBOX_DEPTH: usize = 32;
+const ACTOR_PICK_DEPTH: usize = 8;
 
 pub(crate) fn port_offset(base: SocketAddrV4, dest: SocketAddrV4) -> Option<u16> {
     if base.ip() != dest.ip() {
@@ -76,6 +77,9 @@ type Inject = Box<dyn Fn(&UdpSocket, u16, &[u8]) + Send + Sync>;
 pub(crate) struct ActorInbox {
     packets: VecDeque<Packet>,
     key_requested: bool,
+    /// Upstream pick payloads (machine id, then message) waiting for the
+    /// worker to send them as [`Kind::ActorPick`] frames.
+    picks: VecDeque<Vec<u8>>,
 }
 
 impl ActorInbox {
@@ -93,6 +97,20 @@ impl ActorInbox {
 
     pub(crate) fn drain(&mut self) -> Vec<Packet> {
         self.packets.drain(..).collect()
+    }
+
+    /// Queues an upstream pick payload; whether it fit.
+    pub(crate) fn queue_pick(&mut self, payload: Vec<u8>) -> bool {
+        if !tunnel::actor_pick_fits(&payload) || self.picks.len() >= ACTOR_PICK_DEPTH {
+            return false;
+        }
+        self.picks.push_back(payload);
+        true
+    }
+
+    /// The payloads to send, oldest first.
+    pub(crate) fn take_picks(&mut self) -> Vec<Vec<u8>> {
+        self.picks.drain(..).collect()
     }
 }
 
@@ -186,6 +204,33 @@ impl TunnelHandle {
             .unwrap()
             .as_mut()
             .map_or_else(Vec::new, ActorInbox::drain)
+    }
+
+    /// Whether this connection negotiated the actor channel, so it carries
+    /// upstream picks.
+    pub(crate) fn actor_negotiated(&self) -> bool {
+        !self.closed() && self.0.shared.actor.lock().unwrap().is_some()
+    }
+
+    /// Queues one upstream pick (the machine id, then the message) for the
+    /// worker; false without the channel, with a malformed payload or with
+    /// the queue full.
+    pub(crate) fn send_actor_pick(&self, payload: Vec<u8>) -> bool {
+        if self.closed() {
+            return false;
+        }
+        let queued = self
+            .0
+            .shared
+            .actor
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|inbox| inbox.queue_pick(payload));
+        if queued {
+            let _ = self.0.shared.wake.notify();
+        }
+        queued
     }
 
     pub(crate) fn request_actor_key(&self) -> bool {
@@ -613,6 +658,20 @@ fn run(
             .is_some_and(|inbox| std::mem::take(&mut inbox.key_requested));
         if key_requested {
             socket.send(client_control(Kind::ActorKeyRequest))?;
+        }
+        let picks = shared
+            .actor
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map_or_else(Vec::new, ActorInbox::take_picks);
+        for payload in picks {
+            socket.send(Message::binary(tunnel::encode(&Frame {
+                kind: Kind::ActorPick,
+                port: 0,
+                peer: 0,
+                payload,
+            })))?;
         }
         qos.poll(socket)?;
         keepalive.tick(socket, Instant::now())?;

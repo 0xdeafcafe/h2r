@@ -89,6 +89,24 @@ impl Hle {
             .map_or_else(Vec::new, |route| route.handle.drain_actor_packets())
     }
 
+    /// Whether the current tunnel carries upstream actor messages (picks):
+    /// it is up and negotiated the actor channel.
+    pub fn actor_tunnel_upstream(&self) -> bool {
+        lock(&self.network.state)
+            .tunnel
+            .as_ref()
+            .is_some_and(|route| route.handle.actor_negotiated())
+    }
+
+    /// Send one upstream pick (the machine id, then the message) to the
+    /// tunnel host; false without a negotiated channel or with a full queue.
+    pub fn send_actor_tunnel_pick(&self, payload: Vec<u8>) -> bool {
+        lock(&self.network.state)
+            .tunnel
+            .as_ref()
+            .is_some_and(|route| route.handle.send_actor_pick(payload))
+    }
+
     /// Ask the current tunnel host for a fresh actor key, if negotiated.
     pub fn request_actor_tunnel_key(&self) -> bool {
         lock(&self.network.state)

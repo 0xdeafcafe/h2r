@@ -14,6 +14,8 @@ struct Channel {
     id: u32,
     key: [u8; 32],
     last_tick: Option<u32>,
+    /// The counter of the last pick sent.
+    picks: u32,
 }
 
 /// What one datagram did.
@@ -77,6 +79,30 @@ impl<T: Datagrams> Client<T> {
         out.extend(crypto::public_key(&self.secret));
         out.extend(self.hellos.to_le_bytes());
         self.transport.send_to(&out, self.host)
+    }
+
+    /// Send one pick (the sending machine's id, then one to 16 message
+    /// bytes) behind the channel's tag. False before the channel is up,
+    /// after it closed and for a message of the wrong length; a datagram
+    /// the LAN loses is the picker's to ask again.
+    pub fn send_pick(&mut self, machine: [u8; wire::PICK_MACHINE], message: &[u8]) -> io::Result<bool> {
+        if self.closed || !(1..=wire::PICK_MESSAGE_MAX).contains(&message.len()) {
+            return Ok(false);
+        }
+        let Some(channel) = &mut self.channel else {
+            return Ok(false);
+        };
+        channel.picks = channel.picks.wrapping_add(1);
+        let mut out = Vec::with_capacity(wire::PICK_PREFIX + wire::PICK_MACHINE + message.len() + wire::TAG_LEN);
+        out.push(wire::PICK);
+        out.extend(channel.id.to_le_bytes());
+        out.extend(channel.picks.to_le_bytes());
+        out.extend(machine);
+        out.extend(message);
+        let tag = crypto::tag(&channel.key, &out);
+        out.extend(tag);
+        self.transport.send_to(&out, self.host)?;
+        Ok(true)
     }
 
     pub fn established(&self) -> bool {
@@ -179,6 +205,7 @@ impl<T: Datagrams> Client<T> {
             id,
             key,
             last_tick: None,
+            picks: 0,
         });
         Event::Established
     }

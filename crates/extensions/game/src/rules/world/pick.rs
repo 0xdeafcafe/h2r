@@ -290,8 +290,8 @@ pub fn client_reset() {
 }
 
 /// Whether picks travel upstream, as the transport says once a tick
-/// (`crate::actor_net_link::pick_upstream`). Nothing does until Live
-/// builds the frame, and the client asks nobody until then, so nobody is
+/// (`crate::actor_net_link::pick_upstream`): a tunnel that negotiated the
+/// actor channel does. The client asks nobody otherwise, so nobody is
 /// offered a pick that cannot travel.
 static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -363,6 +363,8 @@ pub fn client_plan(tick: u32, seats: &[(u8, u32)]) -> Option<Ask> {
 /// (`crate::actor_net::client`).
 pub async fn client_tick(cx: &Cx, tick: u32) {
     let seats = cx.read(|m| seats(m));
+    // The id the host finds this machine's players by (`actor_net::pick`).
+    crate::actor_net::pick::set_local_machine(cx.read(|m| crate::actor_net::pick::read_local_machine(m)));
     let ask = client_plan(tick, &seats);
     if !ready() {
         return;
@@ -439,6 +441,30 @@ mod tests {
         vm.begin_tick(4);
         vm.fire(&mut g, Input::RoundStart);
         assert!(plan(&vm, &seats, 4).is_some());
+    }
+
+    /// The whole host path of a client's pick: the tunnel's message lands
+    /// in the reports (`actor_net::pick::receive`), the runtime hands each
+    /// to the VM at the boundary, and the VM holds it where `picked(p, n)`
+    /// reads it. A pick for a player outside the sender's seats never gets
+    /// there.
+    #[test]
+    fn a_clients_pick_reaches_the_vm_where_picked_reads_it() {
+        use crate::actor_net::pick::{Pick, receive};
+        let mut vm = vm_with_offers();
+        let _ = take();
+        // Player 1 sits on the sending machine; player 0 does not.
+        assert!(receive(&Pick { player: 1, slot: 0, row: 1 }.encode(), &[1]));
+        assert!(!receive(&Pick { player: 0, slot: 0, row: 1 }.encode(), &[1]));
+        for pick in take() {
+            assert!(vm.choose(pick.player, pick.slot, pick.row));
+        }
+        assert_eq!(vm.choices(), [::rules::vm::Choice { player: 1, slot: 0, row: 1 }]);
+        // A row the picker does not hold is refused by the VM, not kept.
+        assert!(receive(&Pick { player: 1, slot: 0, row: 5 }.encode(), &[1]));
+        let held = take();
+        assert!(held.iter().all(|p| !vm.choose(p.player, p.slot, p.row)));
+        assert_eq!(vm.choices().len(), 1);
     }
 
     #[test]

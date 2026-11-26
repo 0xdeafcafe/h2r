@@ -5,15 +5,22 @@
 //!   host X25519 key (32), signature (64)
 //! - data (host to client): kind 3, peer id (4), one actor-channel packet,
 //!   tag (8)
+//! - pick (client to host): kind 4, peer id (4), counter (4), the sending
+//!   machine's id (6), one to 16 message bytes, tag (8)
 
 pub const VERSION: u8 = 1;
 pub const HELLO: u8 = 1;
 pub const ANSWER: u8 = 2;
 pub const DATA: u8 = 3;
+pub const PICK: u8 = 4;
 pub const TAG_LEN: usize = 8;
 pub const HELLO_LEN: usize = 2 + 32 + 8;
 pub const ANSWER_LEN: usize = 2 + 4 + 8 + 32 + 64;
 pub const DATA_PREFIX: usize = 1 + 4;
+/// A pick's header: kind, peer id and counter.
+pub const PICK_PREFIX: usize = 1 + 4 + 4;
+pub const PICK_MACHINE: usize = 6;
+pub const PICK_MESSAGE_MAX: usize = 16;
 /// The largest datagram: an actor-channel packet at its cap, framed.
 pub const MAX_DATAGRAM: usize = DATA_PREFIX + actor_net::wire::MAX_PACKET_BYTES + TAG_LEN;
 

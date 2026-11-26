@@ -813,7 +813,11 @@ four IPv4 bytes in its binary hello. For a peer without the offer, the
 host sends the four-byte hello and ordinary XNet traffic. Negotiated
 peers receive actor packets as kind 3 with port 0 and the recipient's
 ID. A client requests a fresh key with kind 4, port 0, peer 0 and an
-empty payload. System Link sessions use retail replication for actors.
+empty payload. It sends an upstream pick with kind 5, port 0, peer 0
+and a payload of its six-byte machine id and one to sixteen message
+bytes; the host keeps the machine id of a peer's first pick for that
+peer alone, and both relays forward the frame like any other
+([Pickers](../game/rules-world-api.md#pickers)). System Link sessions use retail replication for actors.
 
 The actor sender enqueues from the simulation tick and the client
 drains its bounded queue at the tick boundary. A full send queue drops

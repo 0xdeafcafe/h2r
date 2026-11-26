@@ -14,10 +14,15 @@ struct Peer {
     key: [u8; 32],
     last_tick: Option<u32>,
     needs_key: bool,
+    /// The counter of the last pick accepted from this peer.
+    last_pick: Option<u32>,
 }
 
-/// The host's end: answers hellos and sends packets to the peers that
-/// asked. It reads nothing else.
+/// One pick a peer sent: the peer, the machine id it names and the message.
+pub type Pick = (u32, [u8; wire::PICK_MACHINE], Vec<u8>);
+
+/// The host's end: answers hellos, sends packets to the peers that asked
+/// and reads their picks. It reads nothing else.
 pub struct Host<T: Datagrams> {
     transport: T,
     session: [u8; 16],
@@ -26,6 +31,7 @@ pub struct Host<T: Datagrams> {
     peers: BTreeMap<SocketAddr, Peer>,
     next_id: u32,
     drops: BTreeMap<Reason, u64>,
+    picks: Vec<Pick>,
 }
 
 impl<T: Datagrams> Host<T> {
@@ -45,6 +51,7 @@ impl<T: Datagrams> Host<T> {
             peers: BTreeMap::new(),
             next_id: 1,
             drops: BTreeMap::new(),
+            picks: Vec::new(),
         }
     }
 
@@ -67,6 +74,10 @@ impl<T: Datagrams> Host<T> {
                 break;
             };
             let bytes = &buf[..len.min(buf.len())];
+            if bytes.first() == Some(&wire::PICK) {
+                self.pick(from, bytes);
+                continue;
+            }
             if bytes.first() != Some(&wire::HELLO) {
                 self.drop_one(if bytes.is_empty() {
                     Reason::Malformed
@@ -86,6 +97,47 @@ impl<T: Datagrams> Host<T> {
             self.answer(from, client_public, nonce)?;
         }
         Ok(())
+    }
+
+    /// A pick from a peer that has a channel: the tag verifies under the
+    /// peer's key and its counter is newer than the last accepted, so a
+    /// recorded one cannot be replayed. The peer id and the address must
+    /// be the same peer's.
+    fn pick(&mut self, from: SocketAddr, bytes: &[u8]) {
+        let min = wire::PICK_PREFIX + wire::PICK_MACHINE + 1 + wire::TAG_LEN;
+        let max = wire::PICK_PREFIX + wire::PICK_MACHINE + wire::PICK_MESSAGE_MAX + wire::TAG_LEN;
+        if !(min..=max).contains(&bytes.len()) {
+            self.drop_one(Reason::Malformed);
+            return;
+        }
+        let Some(peer) = self.peers.get_mut(&from) else {
+            self.drop_one(Reason::NoChannel);
+            return;
+        };
+        let id = u32::from_le_bytes(bytes[1..5].try_into().unwrap());
+        if id != peer.id {
+            self.drop_one(Reason::NoChannel);
+            return;
+        }
+        let (body, tag) = bytes.split_at(bytes.len() - wire::TAG_LEN);
+        if !crypto::verify(&peer.key, body, tag) {
+            self.drop_one(Reason::BadTag);
+            return;
+        }
+        let counter = u32::from_le_bytes(body[5..9].try_into().unwrap());
+        if peer.last_pick.is_some_and(|last| !wire::newer_tick(counter, last)) {
+            self.drop_one(Reason::Stale);
+            return;
+        }
+        peer.last_pick = Some(counter);
+        let machine: [u8; wire::PICK_MACHINE] =
+            body[wire::PICK_PREFIX..wire::PICK_PREFIX + wire::PICK_MACHINE].try_into().unwrap();
+        self.picks.push((id, machine, body[wire::PICK_PREFIX + wire::PICK_MACHINE..].to_vec()));
+    }
+
+    /// The picks accepted since the last call, oldest first.
+    pub fn take_picks(&mut self) -> Vec<Pick> {
+        std::mem::take(&mut self.picks)
     }
 
     fn answer(
@@ -129,6 +181,7 @@ impl<T: Datagrams> Host<T> {
                 key,
                 last_tick: None,
                 needs_key: true,
+                last_pick: None,
             },
         );
         Ok(())

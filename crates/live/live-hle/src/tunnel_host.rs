@@ -12,8 +12,8 @@ use actor_net::{Packet, Record, WireError, budget::TICKS_PER_SECOND};
 use live_proto::{
     Xuid,
     tunnel::{
-        ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER, ACTOR_CHANNEL_VERSION, Frame, Kind, decode,
-        encode,
+        ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER, ACTOR_CHANNEL_VERSION, ACTOR_PICK_MACHINE, Frame,
+        Kind, actor_pick_fits, decode, encode,
     },
 };
 use polling::Poller;
@@ -117,7 +117,17 @@ struct Peer {
 struct ActorPeer {
     needs_key: bool,
     last_key: Option<u32>,
+    /// The machine id this peer's first pick named: the roster players
+    /// with it are the peer's, and no other peer may name it.
+    machine: Option<[u8; ACTOR_PICK_MACHINE]>,
 }
+
+/// An upstream pick message a peer sent: the peer, the machine id it
+/// speaks for and the message.
+pub type ActorPick = (u32, [u8; ACTOR_PICK_MACHINE], Vec<u8>);
+
+/// The most upstream picks held for the game thread between two ticks.
+const PICK_QUEUE: usize = 32;
 
 impl ActorPeer {
     fn key_requested(&self, tick: u32) -> bool {
@@ -154,6 +164,7 @@ impl Peer {
 struct Peers {
     active: BTreeMap<u32, Peer>,
     last_id: u32,
+    picks: Vec<ActorPick>,
 }
 
 impl Peers {
@@ -180,6 +191,7 @@ impl Peers {
                 actor: actor_channel.then_some(ActorPeer {
                     needs_key: true,
                     last_key: None,
+                    machine: None,
                 }),
             },
         );
@@ -216,6 +228,42 @@ impl Peers {
         if let Some(actor) = self.active.get_mut(&id).and_then(|peer| peer.actor.as_mut()) {
             actor.needs_key = true;
         }
+    }
+
+    /// Keeps an upstream pick of peer `id` for the game thread. Only a peer
+    /// with the actor channel may send one; its first names its machine,
+    /// which no other peer may claim and the peer may not change. A full
+    /// queue drops the pick, as a busy link would.
+    fn receive_pick(&mut self, id: u32, payload: &[u8]) -> bool {
+        if !actor_pick_fits(payload) {
+            return false;
+        }
+        let (machine, message) = payload.split_at(ACTOR_PICK_MACHINE);
+        let machine: [u8; ACTOR_PICK_MACHINE] = machine.try_into().expect("split at the machine id");
+        let taken = self
+            .active
+            .iter()
+            .any(|(&other, peer)| other != id && peer.actor.as_ref().is_some_and(|a| a.machine == Some(machine)));
+        let Some(actor) = self.active.get_mut(&id).and_then(|peer| peer.actor.as_mut()) else {
+            return false;
+        };
+        if taken || actor.machine.is_some_and(|bound| bound != machine) {
+            return false;
+        }
+        actor.machine = Some(machine);
+        if self.picks.len() >= PICK_QUEUE {
+            return false;
+        }
+        self.picks.push((id, machine, message.to_vec()));
+        true
+    }
+
+    /// The picks received since the last call, oldest first, for peers
+    /// still connected.
+    fn take_picks(&mut self) -> Vec<ActorPick> {
+        let mut picks = std::mem::take(&mut self.picks);
+        picks.retain(|(id, ..)| self.active.contains_key(id));
+        picks
     }
 
     fn send_actor(&mut self, id: u32, packet: &Packet) -> Result<bool, WireError> {
@@ -461,6 +509,10 @@ impl TunnelHost {
                             lock(&self.peers).request_actor_key(id);
                         }
                         Kind::ActorKeyRequest => {}
+                        Kind::ActorPick if ingress.take(Instant::now()) => {
+                            lock(&self.peers).receive_pick(id, &frame.payload);
+                        }
+                        Kind::ActorPick => {}
                         Kind::Bye => {
                             lock(&self.peers).remove(id);
                             write_frame(ws, &control(Kind::Bye, id, Vec::new()))?;
@@ -653,6 +705,7 @@ fn valid_client_frame(frame: &Frame) -> bool {
             Kind::Hello | Kind::Bye | Kind::ActorKeyRequest => {
                 frame.port == 0 && frame.payload.is_empty()
             }
+            Kind::ActorPick => frame.port == 0 && actor_pick_fits(&frame.payload),
             Kind::Actor => false,
         }
 }
@@ -731,6 +784,15 @@ impl crate::Hle {
     pub fn actor_tunnel_peers(&self, tick: u32) -> Vec<(u32, bool)> {
         self.actor_host_tunnel()
             .map_or_else(Vec::new, |tunnel| lock(&tunnel.peers).actor_peers(tick))
+    }
+
+    /// The upstream picks the actor-capable peers sent since the last
+    /// call: the peer, the machine id it speaks for and the message. A
+    /// peer's first pick binds its machine id; one for another peer's
+    /// machine, or a changed one, is dropped.
+    pub fn take_actor_tunnel_picks(&self) -> Vec<ActorPick> {
+        self.actor_host_tunnel()
+            .map_or_else(Vec::new, |tunnel| lock(&tunnel.peers).take_picks())
     }
 
     /// Queue an actor packet for one peer. A missing peer or a full queue
@@ -1006,6 +1068,12 @@ mod tests {
         assert!(valid_client_frame(&request));
         assert!(!valid_client_frame(&control(Kind::ActorKeyRequest, 0, vec![1])));
         assert!(!valid_client_frame(&control(Kind::Actor, 0, Vec::new())));
+        let pick = control(Kind::ActorPick, 0, vec![2, 0, 0, 0, 0, 9, 3, 0, 1]);
+        assert_eq!(encode(&pick), [1, 5, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 9, 3, 0, 1]);
+        assert!(valid_client_frame(&pick));
+        assert!(!valid_client_frame(&control(Kind::ActorPick, 0, vec![2, 0, 0, 0, 0, 9])));
+        assert!(!valid_client_frame(&control(Kind::ActorPick, 3, vec![2, 0, 0, 0, 0, 9, 3])));
+        assert!(!valid_client_frame(&control(Kind::ActorPick, 2, vec![2, 0, 0, 0, 0, 9, 3])));
 
         let client_hello = decode(&[1, 1, 0, 0, 0, 0, 0, 0]).unwrap();
         assert!(matches!(client_hello.kind, Kind::Hello));

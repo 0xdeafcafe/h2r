@@ -234,7 +234,7 @@ pub(crate) fn register_core_film(
     let live = i.live.clone();
     let inbox = i.live.clone();
     let capture = crate::actor_net::Capture::new(
-        move |_, tick, host| {
+        move |m, tick, host| {
             let result = link.post_tick(live.as_deref(), tick, |peer, budget, request_key| {
                 // P3 leaves controls off. Tunnel peer IDs are connection IDs.
                 match host.schedule(budget, None, request_key) {
@@ -251,7 +251,7 @@ pub(crate) fn register_core_film(
             // The picks a client's players made, back up the channel into
             // the host's VM (docs/game/rules-world-api.md, "Pickers").
             #[cfg(feature = "rules")]
-            for (bytes, seats) in crate::actor_net_link::take_picks(live.as_deref()) {
+            for (bytes, seats) in crate::actor_net_link::take_picks(live.as_deref(), m) {
                 crate::actor_net::pick::receive(&bytes, &seats);
             }
             // actors.net's view of each peer's budget.

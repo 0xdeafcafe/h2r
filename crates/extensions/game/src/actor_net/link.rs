@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Mutex};
 
+use engine::GuestMemory;
 use live_hle::{
     Hle,
     actor_net::{Budget, Packet, Stats, WireError},
@@ -67,25 +68,36 @@ pub fn request_key(hle: Option<&Hle>) -> bool {
 }
 
 /// The upstream pick messages the tunnel received since the last call,
-/// each with the roster slots the sending peer's players sit in, for
-/// `super::pick::receive`. The client-to-host actor frame is not built:
-/// the tunnel's only upstream frame is the key request, which holds no
-/// payload (docs/game/rules-world-api.md, "Pickers"), so this stays
-/// empty until Live carries the frame.
-pub fn take_picks(_hle: Option<&Hle>) -> Vec<(Vec<u8>, Vec<u8>)> {
-    Vec::new()
+/// each with the roster slots of the remote players whose machine id the
+/// sending peer named (`super::pick::seats_of`), for `super::pick::receive`.
+/// A peer that names a machine no player has gets no seats, and its picks
+/// are refused there.
+pub fn take_picks(hle: Option<&Hle>, m: &dyn GuestMemory) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let Some(hle) = hle else {
+        return Vec::new();
+    };
+    hle.take_actor_tunnel_picks()
+        .into_iter()
+        .map(|(_, machine, message)| (message, super::pick::seats_of(m, machine)))
+        .collect()
 }
 
-/// Sends one upstream pick message on the tunnel's client-to-host actor
-/// frame; whether it went out. The frame is not built yet (see
-/// [`take_picks`]), so nothing goes out and the pick is dropped.
-pub fn send_pick(_hle: Option<&Hle>, _pick: &[u8]) -> bool {
-    false
+/// Sends one upstream pick message on the tunnel's client-to-host
+/// `ActorPick` frame, behind this machine's id; whether it was queued.
+/// False without a negotiated channel, before the client has read its own
+/// machine id, or with the send queue full.
+pub fn send_pick(hle: Option<&Hle>, pick: &[u8]) -> bool {
+    let Some(machine) = super::pick::local_machine() else {
+        return false;
+    };
+    let mut payload = machine.to_vec();
+    payload.extend_from_slice(pick);
+    hle.is_some_and(|hle| hle.send_actor_tunnel_pick(payload))
 }
 
-/// Whether the tunnel carries the upstream pick frame (see
-/// [`take_picks`]). A client asks its local players only while it does,
-/// so nobody is offered a pick that cannot travel.
-pub fn pick_upstream(_hle: Option<&Hle>) -> bool {
-    false
+/// Whether the tunnel carries the upstream pick frame: it is up and
+/// negotiated the actor channel. A client asks its local players only
+/// while it does, so nobody is offered a pick that cannot travel.
+pub fn pick_upstream(hle: Option<&Hle>) -> bool {
+    hle.is_some_and(Hle::actor_tunnel_upstream)
 }
