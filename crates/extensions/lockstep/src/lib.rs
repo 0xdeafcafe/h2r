@@ -248,7 +248,8 @@ pub fn hash_sim_blocks(
 }
 
 /// The arena's simulation-only hash: [`hash_sim`] with the render-side
-/// pools zeroed ([`gameplay::mask_render`]). What a film's start hash and
+/// pools and the free slots of the data arrays zeroed
+/// ([`gameplay::mask_simulation`]). What a film's start hash and
 /// its campaign digests cover.
 pub fn hash_gameplay(guest: &Guest, region: SimRegion) -> Option<u64> {
     hash_gameplay_blocks(guest, region, usize::MAX, &mut Vec::new(), &mut Vec::new())
@@ -273,7 +274,7 @@ pub fn hash_gameplay_blocks(
     }
     bytes.resize(len as usize, 0);
     guest.read_bytes(base, bytes, 1).ok()?;
-    gameplay::mask_render(bytes);
+    gameplay::mask_simulation(bytes, base);
     blocks.clear();
     if block != usize::MAX {
         blocks.extend(bytes.chunks(block).map(|c| hash_bytes(c.len() as u64, c)));

@@ -74,6 +74,51 @@ pub fn mask_render(block: &mut [u8]) -> usize {
     zeroed
 }
 
+/// Zero the elements of every data array of `block` that are free (a zero
+/// salt word): `datum_delete` clears the salt and leaves the rest of the
+/// element as it was, so a free slot holds what an earlier game put there.
+/// `base` is the guest address of `block`, to turn the arrays' storage
+/// pointers into offsets. Returns the elements zeroed.
+pub fn mask_free(block: &mut [u8], base: u32) -> usize {
+    let word = |b: &[u8], at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    };
+    let mut zeroed = 0;
+    for pool in find_pools(block) {
+        if pool.name == HEAD {
+            continue;
+        }
+        let at = pool.offset as usize;
+        let (Some(max), Some(size), Some(data)) = (
+            word(block, at + layout::MAXIMUM_COUNT as usize),
+            word(block, at + layout::ELEMENT_SIZE as usize),
+            word(block, at + layout::DATA as usize),
+        ) else {
+            continue;
+        };
+        let (max, size) = (max as usize, size as usize);
+        let Some(start) = data.checked_sub(base).map(|d| d as usize) else { continue };
+        if max == 0 || size < 2 || max > 1 << 20 || start.saturating_add(max * size) > block.len() {
+            continue;
+        }
+        for slot in 0..max {
+            let element = start + slot * size;
+            if block[element] == 0 && block[element + 1] == 0 {
+                block[element..element + size].fill(0);
+                zeroed += 1;
+            }
+        }
+    }
+    zeroed
+}
+
+/// What a film's hash covers of the arena at `base`: [`mask_render`] and
+/// [`mask_free`].
+pub fn mask_simulation(block: &mut [u8], base: u32) {
+    mask_render(block);
+    mask_free(block, base);
+}
+
 /// The salt counter each data array of `block` is seeded to by
 /// `data_delete_all`: the first two bytes of its name, as a little-endian
 /// word, with bit 15 set. `(offset of the counter in the block, value)`.
@@ -161,6 +206,45 @@ mod tests {
         let seeds = salt_seeds(&fresh);
         assert_eq!(seeds.len(), 3);
         assert_eq!(seeds[0], (0x20 + layout::NEXT_SALT, 0x8000 | u16::from_le_bytes(*b"ob")));
+    }
+
+    #[test]
+    fn a_free_slot_holds_nothing_the_hash_sees() {
+        // One array of four 8-byte elements right after its header, based
+        // at 0x1000 in the guest.
+        let base = 0x1000u32;
+        let make = |stale: u8| {
+            let mut block = arena(&["objects"], &[0x8000], 0);
+            let at = 0x20;
+            let data = at + 0x4c;
+            block[at + layout::MAXIMUM_COUNT as usize..][..4].copy_from_slice(&4u32.to_le_bytes());
+            block[at + layout::ELEMENT_SIZE as usize..][..4].copy_from_slice(&8u32.to_le_bytes());
+            block[at + layout::DATA as usize..][..4].copy_from_slice(&(base + data as u32).to_le_bytes());
+            for slot in 0..4 {
+                let element = &mut block[data + slot * 8..data + slot * 8 + 8];
+                if slot % 2 == 0 {
+                    // live: salt, then its state
+                    element.copy_from_slice(&[0x01, 0x80, 9, 9, 9, 9, 9, 9]);
+                } else {
+                    // free: no salt, and whatever a game left
+                    element.copy_from_slice(&[0, 0, stale, stale, stale, stale, stale, stale]);
+                }
+            }
+            block
+        };
+        let (mut fresh, mut after) = (make(0), make(0x5a));
+        assert_ne!(fresh, after);
+        assert_eq!(mask_free(&mut fresh, base), 2);
+        assert_eq!(mask_free(&mut after, base), 2);
+        assert_eq!(fresh, after);
+        // A live element that differs is not masked.
+        let mut moved = make(0);
+        moved[0x20 + 0x4c + 3] = 1;
+        mask_free(&mut moved, base);
+        assert_ne!(moved, fresh);
+        // An array whose storage is outside the block is left alone.
+        let mut far = make(0x5a);
+        assert_eq!(mask_free(&mut far, 0x9000_0000), 0);
     }
 
     #[test]

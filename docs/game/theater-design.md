@@ -108,6 +108,8 @@ The start state is the engine's own game options and nothing from disk.
   with the arena's render-side data arrays (`particles`, `particle_*`,
   `effect`, `effect location`, `lights`, `decals`, `cached object render
   states`, `object looping sounds`, `cloth`, `liquid`; `lockstep::gameplay`)
+  the free slots of every data array (`datum_delete` clears an element's
+  salt and nothing else, so a free slot holds what an earlier game left)
   and two words the simulation does not read (`+0x28d8`, `+0x28f8` of the
   arena: the time globals' neighbours) zeroed first. The per-tick digest of
   a campaign, which is the whole arena's hash, has the same coverage. The
