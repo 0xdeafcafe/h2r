@@ -359,8 +359,9 @@ impl Work {
 /// shader, which its postprocess's `+0x5c` block names. The draw context's
 /// shader (`ctx + 8`) gives the postprocess (`shad +0x24`); the i16 at
 /// `+0x10` of that block's data is the index into its bitmap parameters
-/// (`+4`). An index of -1 takes the globals' rasterizer shader (`[0x00485a80]
-/// + 0xd0`) and its postprocess instead, without checking its index again.
+/// (`+4`). An index of -1 takes the globals' rasterizer shader
+/// (`[0x00485a80] + 0xd0`) and its postprocess instead, without checking its
+/// index again.
 /// The parameter's bitmap and image (the low half of `+4`) bind through
 /// `0x000143c0`, which takes the rasterizer default texture (`+0x64`, image
 /// 0) for a null bitmap or an image outside the bitmap, and writes the
