@@ -784,7 +784,7 @@ pub fn projectile(
             u32_at(b, *at)
         };
         let w = if PROJECTILE_GRAVITY.contains(path) {
-            (f32::from_bits(w) * tags::object::direct_drive::GRAVITY_RATIO).to_bits()
+            (f32::from_bits(w) * crate::rebuild::GRAVITY_RATIO).to_bits()
         } else {
             w
         };

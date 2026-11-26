@@ -14,78 +14,51 @@ page records what they check, not a pass count or a play result.
 | Object functions and attachments | **Built**. Scenery, bipeds, vehicles, projectiles, weapons, equipment and debris resolve the source creation effect, attachment and marker, and bind primary scales to the output names of the converted object functions. The object acceleration scale moves from H1 `+0x20` to H2 `+0x14`. The ball carries 2 in both formats. The schema includes the creation-effect reference and inherited function and attachment blocks even in groups where retail leaves them empty. |
 | Bipeds and models | **Built**. Camera tracks, HUD interfaces, weapon lists, integrated light, melee damage, dialogue, blood effect and material effects follow the original unit and collision references. Unit camera and acceleration parameters, landing and slope limits, jump and crouch rates, and flying motion are written from Halo 1. The crewman's angles on a30 distinguish cutoff and falloff. The monitor and sentinel on c20 and 04b distinguish flying physics. Standing and crouching use the source collision dimensions or a pair of spheres for sphere-only characters. The alternate three sphere sizes remain available to the engine. `0x001c2460` and `0x001d6dd6` select those shapes. |
 | Vitality and shields | **Built**. The model's damage record uses H1 collision body and shield vitality, body and shield global material, shield stun and recharge times, the reciprocal recharge rate, and shield damaged/depleted/recharging effects. The cyborg and elite's `coll +0x198` name their depletion effects; their H2 models use `+0xac` in the damage element. The ordinary shield uses the source modifier shader. The native overshield slots and damage section array are described below. |
-| Vehicles | **Built**. Speeds scale by 30 and accelerations by 900 when converting per-tick cache values. Seat flags, camera/pitch/yaw limits and tracks, vehicle sounds, material effects and antigravity effects come from H1. Powered mass points supply lift strength, offset, height and damping, wheel radii and marker positions. The friction points and their phantom spheres use the same point order. The Warthog's four tires and the Scorpion's treads show the two layouts. The loader at `0x00205550` constructs the Havok headers and pointers from the number of shapes at `+0x38` and the inline arrays at `+0x60` (stride `0x90`, eight spheres each). `0x002067dd` pairs each friction point with the same-numbered contact. |
+| Vehicles | **Built**. A Halo 1 ground vehicle or flier keeps its model, collision, seats, camera tracks, sounds and effects, and the marker, region and radius of each powered mass point. Its drive is the matching Halo 2 vehicle's: gears, engine, steering, ground and hover laws, and the tuning of its friction or hover points (`rebuild::DRIVE_COUNTERPARTS`, see "Native engine fields"). A prop a cutscene or a recorded animation moves, a scripted set piece, a dropship and a turret take no counterpart and keep Halo 1's speeds and turn limits. |
 | Lights, decals and particles | **Built**. Lights use H1's radius, cone, duration and colours and a unity brightness multiplier (`0x000c0dc9`). H1 decal layers 0, 1, 2 and 3 select H2 layers 2, 4, 5 and 1. The overlap limit and optional scale use their definition defaults; the placement branches are recorded in `docs/formats/effects.md`. Particle properties use functions with neutral multipliers and the emitter's H1 values. Shader constants use identity UV scale and zero offset; the second vertex vector is the homogeneous origin. The compiled stem supplies the bindings (`0x00017000` and `0x00017170`). The single-bitmap particle instances on Coagulation supply the comparison. |
 
 ## Native engine fields
 
-- **Built. Ground drive.** Halo 1 advances contact speed directly at
-  `0x39785` and `0x80c10`. The two Warthog groups receive the same speed
-  and opposite steering angles at `0x3925c`. The Scorpion gets forward
-  speed minus and plus turn speed at `0x39301` and `0x39325`.
-  The converted definitions select that velocity controller in the engine.
-  Its two direction records have speed ratios −1 and +1. The solver
-  receives the track assigned by the source powered group for every contact.
+- **Built. Drive counterparts.** Each Halo 1 vehicle takes its drive from a
+  Halo 2 vehicle (`rebuild::DRIVE_COUNTERPARTS`): the warthog and rocket
+  warthog from the warthog, the ghost from the ghost, the scorpion from the
+  scorpion and the banshee from the banshee. `rebuild::copy_drive` copies
+  the counterpart's control, speed and turn envelope, steering and slide
+  laws, size class, damping, engine, flight, seat-acceleration, drag and
+  thrust scales, ground and anti-gravity laws (`rebuild::DRIVE_SPANS`) and
+  gears. The vehicle type must match. `rebuild::copy_point_tuning` gives
+  each Halo 1 powered mass point the counterpart's point tuning, its own
+  when the counts match and else the one at the same fraction of the list;
+  the marker, region, region index and radius stay Halo 1's, and the mass
+  is shared equally when the counts differ. A counterpart with no points
+  of the kind (the banshee) takes none of Halo 1's. A vehicle with no
+  counterpart is a named conversion error unless it is a prop an animation
+  moves (`rebuild::DRIVE_EXEMPT`), a scripted set piece, a dropship or a
+  turret.
 - **Built. Gear format.** At H2 `0xf1540` throttle blends two inline
   torque profiles. Each profile gives torque at rest, peak torque, the
   fraction of redline at the peak, the falloff exponent, and torques at
   redline and twice redline (`0xf15d0`). The remaining five floats are
   the upshift delay and threshold, speed ratio, and downshift delay and
   threshold (`0xf152c`, `0xf18aa`). Engine inertia divides net torque
-  before integration at `0xf1c02`. Halo 1's velocity law supplies no unique
-  torque, inertia, redline, or shift schedule. A zero redline bypasses
+  before integration at `0xf1c02`. The counterpart's gears supply the
+  torque, inertia, redline and shift schedule. A zero redline bypasses
   native gear selection and torque integration at `0xf17b1` and `0xf1981`.
   The native steering curve has a reference angle and exponent at
   `+0x250/+0x254`. `0xeee7c` supplies one for either zero. An exponent
-  of one gives a linear angle. The ground controller applies H1's signed
-  steering limits and slew directly at the contacts.
-- **Built. Ghost and contacts.** The H1 hover drive uses one horizontal
-  speed cap and one acceleration magnitude at `0x38152..0x38232`. The
-  Ghost gets 6.75 world units/s and 4.5 units/s² on both axes and signs.
-  H1 `0x84376..0x84485` and H2 `0x20631d..0x20656e` give the lift
-  height, point radius, damping and two slope cosines. H1 fixed lift
-  height gives zero H2 banking-height modulation. The ground spring on
-  both engines uses gravity times penetration divided by depth, minus
-  damping times normal velocity (`0x83df4`, `0x2069b6`). Converting the
-  velocities and force units multiplies the damping coefficient by 30.
-  H1 gravity is 0.0035651792 units/tick² at `0x1fb648`, or 3.20866
-  units/s². H2 initializes gravity to 4.17126 at `0x1eb584`. The ratio
-  scales hover strength and inversely scales hover damping and ground
-  spring depth, preserving each force at the same height and velocity.
-  The converted vehicle's gravity step uses its source physics multiplier
-  even with empty seats (H1 `0x8399d`, H2 `0x1ced8d`).
-- **Built. Tire drag and materials.** H1 projects relative point velocity and
-  commanded wheel speed into the contact plane at `0x83e30..0x83f9f`.
-  `0x80f80` applies separate drag factors along and across the friction axis.
-  Point mass, ground friction, slope and wheel alignment scale the result.
-  The Warthog's rear tires use 0.45/0.65 and its front tires use 0.75/0.45.
-  H1 globals supply five surface modifiers. The first applies to masses up to
-  7,500 at `0x83d26`, so ice scales the Warthog's drag by 0.125 and leaves
-  the Scorpion's unchanged. The H2 wheel gains are zero. The engine adds
-  H1 force and moment after `0x206090` computes the contact frame and spring
-  and before `0x205757` consumes them. Converted rigid bodies carry the H1
-  center of mass and inertia tensor.
-- **Built. Controls and impulses.** H1 samples crouch in one tick at
-  `0x394be`. H2 reads a rate at `+0x25c` and multiplies by the tick
-  duration at `0xf045b`, giving 30/s at H1's 30 Hz. Driver and gunner
-  power rise and fall separately using the two times in each H1 powered-seat
-  record (`0x45880`, `0x4592e`). H1 clears attached vehicles' velocities
-  at `0x394a1`. Both extra rider impulse gains at H2 `0xe538c` are zero.
+  of one gives a linear angle.
+- **Built. Impulses.** Both extra rider impulse gains at H2 `0xe538c` come
+  from the counterpart (`seat_entrance_acceleration_scale`,
+  `seat_exit_acceleration_scale`).
 - **Built. Vehicle priority.** H2's AI ram decision compares two vehicle
   ranks at `0x1ab48a`. The H1 driving decisions at `0x16f954` and
   `0x16fbc1` read distances from the acting vehicle. The converter gives
   every vehicle equal rank. This is a translation of the priority comparison.
   The H2 AI still chooses when to ram.
-- **Built. Aircraft.** The source type, physics radius and powered-group
-  count select the motor. H1 `0x38ac0` drives dropship collective and
-  forward thrust, `0x37760` drives the positive-radius lifepod, and
-  `0x37ab0` banks the Banshee and uses the acceleration bound at
-  `0x35fb0`. A scripted dropship hover suspends the motor and preserves
-  the rotor setting (H1 `0x38b14`, H2 hold flag at `0xf0ffe`).
-  A source vehicle without physics skips the dispatch at
-  `0x398ea`. Converted aircraft supply the resulting forces and moments
-  before the H2 contact solve. H2 supplies the contact geometry and rigid-body
-  integration.
+- **Built. Aircraft.** The banshee flies on the Halo 2 banshee's flier
+  controller and tuning. A scripted flier (a lifepod, the fighter-bomber)
+  keeps Halo 1's speeds and turn limits as the Halo 2 flier's limits, and
+  H2 supplies the contact geometry and rigid-body integration.
 - The seat entry test needs positive distance and angle limits (`0xc9040`).
   `+0x258` and `+0x2e4` keep their definition defaults. Neither has an
   identified read in the ground or hover drive equations.
@@ -277,41 +250,6 @@ placement errors cannot install an incomplete map. The campaign lean
 ladder keeps model materials at every step. The audit accepts the native
 player emblem added by the converter only in an appended slot. Each original slot must name its
 converted H1 shader or a permutation-specific numeric shader in the same tree.
-
-### Retail vehicle scan
-
-**Built.** An offline scan of both Xbox discs found no inputs that trigger
-the vehicle-drive conversion errors on the ten campaign or thirteen
-multiplayer maps.
-It read every `vehi` entry, including vehicles with no placements. Counts
-are per map, so a vehicle present on two maps counts twice.
-
-| Source maps | Maps | Vehicle tags | Drive entries | Friction points | Hover points | Powered-seat records |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Campaign | 10 | 57 | 55 | 66 | 51 | 58 |
-| Multiplayer | 13 | 39 | 39 | 156 | 39 | 39 |
-
-The two redirected tags are a10’s Halo ring (scenery) and b30’s falling
-box (crate). c20 has no vehicle tags. Of the 94 vehicle entries, 90 have
-a positive-volume solid collision cell. The other four supply 18 or 19
-positive-radius mass points each. All 89 vehicle physics tags have inertia
-data. The five vehicles without a physics tag have collision hulls.
-
-All 222 friction points use the supported forward/up frame. Their axis is
-0 on 146 points and 1 on 76. Powered groups and normalized marker names
-are consistent on every vehicle. The maximum is eight friction contacts
-per vehicle (limit 16) and 136 bytes of wheel and surface data (limit 264).
-Every vehicle fits the two seat-power channels.
-
-Each source map has 32 material responses. The scan applied the source
-mass threshold and resolved the responses for all 41 ground-vehicle
-entries against each of the three destination globals tables. Each table
-contains 182 materials, with ice at index 101. No response was missing
-or conflicted with another response at the same destination index.
-
-The ignored `retail_vehicle_drive_laws_round_trip` regression reads the
-map directory, selects each map’s conversion base, and rebuilds the drive
-record separately from its attachments.
 
 ## Retail fallback inventory
 

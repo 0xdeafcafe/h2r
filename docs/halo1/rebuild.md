@@ -328,16 +328,13 @@ definition. There is no vehicle template path: `convert::TEMPLATES` has no
 - **Engine gears** (`+0x268`, stride `0x44`). The two torque
   curves are inline six-float records. The XBE interpolates them at
   `0xf15d0`, blends them at `0xf1540`, reads the speed ratio at
-  `0xf152c` and selects the next gear at `0xf18aa`. Converted H1 wheels
-  and tracks drive the contacts directly. [Current mappings and XBE evidence](role-audit.md).
-- **Contact and flight data.** The converter writes friction and hover
-  points in H1 mass-point order. H2 reads up to sixteen friction contacts
-  (`0x20678d`). Each inline phantom shape holds eight spheres. The loader
-  initializes the active shapes at `0x205550`. On converted vehicles the
-  unused tail stores the H1 wheel or aircraft controller at `+0x180` and
-  the powered-seat header at `+0x288`. Its count word at `+0x28c` holds
-  the channel count in the low byte and the source-gravity flag in bit 8.
-  Excess or conflicting source data reports a conversion error. [Drive equations and disc evidence](role-audit.md#native-engine-fields).
+  `0xf152c` and selects the next gear at `0xf18aa`. A converted vehicle
+  holds its Halo 2 counterpart's gears. [Current mappings and XBE evidence](role-audit.md).
+- **Contact points.** The converter writes friction and hover points in
+  H1 mass-point order, each with the tuning of the counterpart's point
+  ([Drive counterparts](role-audit.md#native-engine-fields)). H2 reads up
+  to sixteen friction contacts (`0x20678d`). Each inline phantom shape holds
+  eight spheres. The loader initializes the active shapes at `0x205550`.
 - **Seat flag bit 15** (`rebuild::SEAT_OPENS`). E: on entering a seat
   the engine tests bit 15 of the seat's flags (`0x000d12b0`, the test at
   `0x000d1302`; called from the seat change at `0x000ea979`, `0x000eab64`,
@@ -407,11 +404,13 @@ Proof (`crates/tools/h1objects/tests/vehicle_rebuild_disc.rs`, lib test
   has 4 friction points and gears, the ghost 3 hover points; each names
   a marker of the converted `mode` (instances on nodes in range) and a
   region of Halo 1's collision. `ghost_keeps_its_source_hover_points`
-  checks the ghost's against Halo 1's `phys`.
+  checks the ghost's markers and radii against Halo 1's `phys`, and
+  `blood_gulch_vehicles_take_their_counterparts_drive_on_both_bases`
+  that each vehicle's drive is its counterpart's.
 
 What only a game run shows: driving (the friction points on Halo 1's
-tire markers with the source velocity controller, the scorpion's eight tread points
-where Halo 2's has twelve), hovering (the ghost's and wraith's points),
+tire markers on the Halo 2 warthog's tuning, the scorpion's eight tread points
+each on the tuning at the same fraction of Halo 2's twelve), hovering (the ghost's and wraith's points),
 flying for the fliers and dropships, whether a vehicle stands on its
 Halo 1 collision hull, boarding (the seat labels as modes, the entry
 markers) and the riders' poses. First suspects if driving fails: the

@@ -65,7 +65,6 @@ pub mod game_menu;
 pub mod game_setup_help;
 pub mod h1_recordings;
 pub mod h1_conversation;
-pub mod h1_drive;
 pub mod h1_options;
 pub mod h1_options_row;
 pub mod h1_particle_physics;
