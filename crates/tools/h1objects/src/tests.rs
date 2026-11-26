@@ -3019,7 +3019,16 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
     );
     assert_eq!(got.at(&format!("{VEHI_SEATS}[0].seat_marker_name")), Some(&Val::text("driver")));
     assert_eq!(got.at(&format!("{VEHI_SEATS}[0].camera_marker_name")), Some(&Val::text("camera")));
-    for (i, p) in points.iter().enumerate() {
+    // A counterpart with no points of the kind (a flier) holds itself up
+    // with its controller, and Halo 1's points are left out.
+    if theirs == 0 {
+        assert!(
+            matches!(got.at(block), Some(Val::Block(b)) if b.is_empty())
+                || matches!(got.at(block), Some(Val::Unresolved { count: 0, .. })),
+            "{path}"
+        );
+    }
+    for (i, p) in points.iter().enumerate().filter(|_| theirs != 0) {
         assert_eq!(got.at(&format!("{block}[{i}].marker_name")), Some(&Val::text(&p.marker)), "{path}");
         assert_eq!(got.bytes(&format!("{block}[{i}].radius"), 4), Some(p.sphere[3].to_le_bytes().to_vec()), "{path}");
         if friction {
@@ -3073,6 +3082,14 @@ fn drive_counterparts_are_named_per_vehicle() {
         drive_counterpart("vehicles\\scorpion\\scorpion_mp"),
         Some(&["objects\\vehicles\\scorpion\\scorpion_mp", "objects\\vehicles\\scorpion\\scorpion"][..])
     );
+    assert_eq!(
+        drive_counterpart("vehicles\\banshee\\banshee"),
+        Some(&["objects\\vehicles\\banshee\\banshee"][..])
+    );
+    // Props a recorded or cutscene animation moves take none.
+    for path in ["vehicles\\banshee\\banshee_oldplayback", "vehicles\\scorpion\\scorpion_cinematic"] {
+        assert_eq!(drive_counterpart(path), None, "{path}");
+    }
     assert_eq!(drive_counterpart("vehicles\\pelican\\pelican"), None);
 }
 
@@ -3111,5 +3128,18 @@ fn scorpion_drive_is_the_counterparts_and_the_rest_halo_1s() {
         true,
         8,
         12,
+    );
+}
+
+/// The banshee: the H2 banshee is a flier with no hover points, so none of
+/// Halo 1's three are written and its controller flies it.
+#[test]
+fn banshee_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\banshee\\banshee",
+        5,
+        false,
+        3,
+        0,
     );
 }

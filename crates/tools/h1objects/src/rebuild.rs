@@ -1226,7 +1226,7 @@ pub(crate) fn vehicle_with_tuning(
             )?;
         }
     }
-    if matches!(v.vehicle_type, 3 | 5) && v.physics.is_none() {
+    if drive.is_none() && matches!(v.vehicle_type, 3 | 5) && v.physics.is_none() {
         // H1 0x398df..0x398ea skips the flight dispatch for a null phys.
         use tags::object::h1_flight::{DATA, MAGIC, PASSIVE};
         for (offset, value) in [(DATA, MAGIC), (DATA + 4, PASSIVE)] {
@@ -1555,11 +1555,24 @@ pub const DRIVE_COUNTERPARTS: &[(&[&str], &[&str])] = &[
             "objects\\vehicles\\scorpion\\scorpion",
         ],
     ),
+    (
+        &["banshee"],
+        &["objects\\vehicles\\banshee\\banshee"],
+    ),
 ];
+
+/// Words in a Halo 1 vehicle's path for a prop a recorded or cutscene
+/// animation moves (`scorpion_cinematic`, `banshee_oldplayback`: the
+/// campaign's `SWAPS` keep them Halo 1's too). It takes no counterpart,
+/// and its drive stays as Halo 1 wrote it.
+pub const DRIVE_EXEMPT: &[&str] = &["cinematic", "playback"];
 
 /// The Halo 2 tags `path`'s Halo 1 vehicle takes drive tuning from.
 pub fn drive_counterpart(path: &str) -> Option<&'static [&'static str]> {
     let path = path.to_ascii_lowercase().replace('_', " ");
+    if DRIVE_EXEMPT.iter().any(|w| path.contains(w)) {
+        return None;
+    }
     DRIVE_COUNTERPARTS
         .iter()
         .find(|(words, _)| words.iter().all(|w| path.contains(w)))
