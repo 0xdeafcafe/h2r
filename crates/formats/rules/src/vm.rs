@@ -2818,6 +2818,31 @@ mod tests {
         assert_eq!(vm.spawn_rule(0), None);
     }
 
+    /// The spawn rule is in the record: a checkpoint revert puts an earlier
+    /// record back and the team's rule is the one it held then, a rule
+    /// set since gone and a rule lifted since back.
+    #[test]
+    fn a_reverted_record_restores_the_spawn_rule() {
+        let src = "rules \"Lines\" 1\ntype slayer\nteams 2\nrequires player.spawn\n\
+                   label attack: spawns\nglobal var phase: int = 0\n\
+                   on round_start { spawn_areas(team 0, attack, 0) }\n\
+                   on tick { phase = phase + 1\n if phase == 2 { spawn_areas(team 0, attack, 1) } }\n";
+        let (ir, _) = crate::build(src).unwrap();
+        let mut vm = Vm::new(ir, 0, 0).unwrap();
+        let mut g = crate::fake::FakeGame::with_players(2);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        let checkpoint = vm.ext().encode();
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        vm.begin_tick(2);
+        vm.update(&mut g);
+        assert_eq!(vm.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 1 }));
+        let back = Vm::resume(vm.ir().clone(), 0, RulesExt::decode(&checkpoint).unwrap()).unwrap();
+        assert_eq!(back.spawn_rule(0), Some(SpawnRule::Areas { label: "attack", number: 0 }));
+        assert_eq!(back.spawn_rule(1), None);
+    }
+
     /// `set_body` sets the team's body in the state, `none` gives the
     /// players their own, and a tag that is no body stops the script.
     #[test]
