@@ -706,6 +706,14 @@ bindings use the same values, including the view's disabled-fog defaults.
   to the vector normalization cube the lights load
   (`native_lights_glue::light_textures`, the globals' rasterizer data),
   sampled as a cube without a bias, as the lights sample it.
+- **The shader's property bitmap** (engine texture 26, Code). The material
+  resolver binds the bitmap parameter the drawn shader's postprocess names,
+  or the globals' rasterizer shader's for -1
+  (`tags::material::PROPERTY_BITMAP_TEXTURE`, docs/formats/shader-instances.md),
+  so the stage compiles as an ordinary bitmap stage. When the parameter
+  falls back to the rasterizer default texture the pass is refused as any
+  default-texture stage is (`DefaultTexture`); when the index does not read
+  it stays `EngineTexture(26)`.
 - **The lightmap stage** (`object_program::OBJECT_LIGHTMAP`, Code). An
   object's draw binds no lightmap page. The draw (`0x0004d0b0`, draw 3)
   sets the current page `[0x00485a60]` to -1 for every record with a

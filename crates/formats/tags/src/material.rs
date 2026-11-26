@@ -7,6 +7,7 @@
 //! inputs the instance root supplies. Animated instance parameters are listed
 //! with their targets but not evaluated (the mapping-function evaluator
 //! `0x0013b390` is not reimplemented here). See `docs/formats/shader-instances.md`.
+use crate::bytes::u32_at;
 use crate::shader::*;
 use crate::{Error, Result};
 use map::{FourCC, TagId};
@@ -349,12 +350,34 @@ impl Work {
     }
 }
 
+/// Engine texture 26 (`0x00019a68`): a bitmap parameter of the drawn
+/// shader, which its postprocess's `+0x5c` block names. The draw context's
+/// shader (`ctx + 8`) gives the postprocess (`shad +0x24`); the i16 at
+/// `+0x10` of that block's data is the index into its bitmap parameters
+/// (`+4`). An index of -1 takes the globals' rasterizer shader (`[0x00485a80]
+/// + 0xd0`) and its postprocess instead, without checking its index again.
+/// The parameter's bitmap and image (the low half of `+4`) bind through
+/// `0x000143c0`, which takes the rasterizer default texture (`+0x64`, image
+/// 0) for a null bitmap or an image outside the bitmap, and writes the
+/// image's width and height as the stage's size. No LOD offset is applied.
+pub const PROPERTY_BITMAP_TEXTURE: u8 = 26;
+/// Byte offset of the bitmap index in the postprocess `+0x5c` block's data.
+const PROPERTY_BITMAP_INDEX: u32 = 0x10;
+/// `matg +0x108`: the rasterizer data block (`[0x00485a80]` is its first
+/// element); `+0xd0` the datum of its shader reference.
+const RASTERIZER_DATA: u32 = 0x108;
+const RASTERIZER_SHADER: u32 = 0xd0;
+const MATG: FourCC = FourCC(*b"matg");
+
 /// Tag lookup plus decoded caches over one map's metadata.
 pub struct ShaderLibrary {
     meta: Metadata,
     tags: HashMap<TagId, (FourCC, u32)>,
     templates: HashMap<TagId, ShaderTemplate>,
     passes: HashMap<TagId, ShaderPass>,
+    /// The rasterizer shader's parameter for engine texture 26, once read
+    /// (`None` inside when the globals do not name one that reads).
+    rasterizer_property: std::sync::OnceLock<Option<BitmapParameter>>,
 }
 
 /// Bitmap image facts the binding path reads (`bitm +0x44/+0x48`, image
@@ -373,6 +396,7 @@ impl ShaderLibrary {
             tags: tags.into_iter().map(|(i, g, a)| (i, (g, a))).collect(),
             templates: HashMap::new(),
             passes: HashMap::new(),
+            rasterizer_property: std::sync::OnceLock::new(),
         }
     }
     /// Loads the metadata region and tag table of a map.
@@ -442,6 +466,60 @@ impl ShaderLibrary {
                 flags: i[0xe],
             });
         Ok((n, image))
+    }
+
+    /// The bitmap parameter index a postprocess's `+0x5c` block names
+    /// ([`PROPERTY_BITMAP_TEXTURE`]); `None` when its data does not read.
+    fn property_index(&self, sp: &ShaderPostprocess) -> Option<i16> {
+        let at = sp.opaque_blocks[0].address.checked_add(PROPERTY_BITMAP_INDEX)?;
+        let b = self.meta.bytes(at, 2).ok()?;
+        Some(i16::from_le_bytes([b[0], b[1]]))
+    }
+
+    /// The globals' rasterizer shader's parameter for engine texture 26:
+    /// its own index, taken as is (`0x00019a90`..`0x00019aae`).
+    fn rasterizer_property(&self) -> Option<BitmapParameter> {
+        *self.rasterizer_property.get_or_init(|| {
+            let globals = self.tags.values().find(|(g, _)| *g == MATG)?.1;
+            let block = self.meta.bytes(globals.checked_add(RASTERIZER_DATA)?, 8).ok()?;
+            let (count, first) = (u32_at(block, 0), u32_at(block, 4));
+            if count == 0 {
+                return None;
+            }
+            let datum = u32_at(self.meta.bytes(first.checked_add(RASTERIZER_SHADER)?, 4).ok()?, 0);
+            let shader = self.shader(TagId(datum)).ok()?;
+            let sp = shader.compiled().ok()?;
+            let index = usize::try_from(self.property_index(sp)?).ok()?;
+            sp.bitmaps.get(index).copied()
+        })
+    }
+
+    /// What engine texture 26 binds for a shader whose postprocess is `sp`
+    /// ([`PROPERTY_BITMAP_TEXTURE`]): the parameter's image, or the
+    /// rasterizer default texture when `0x000143c0` falls back to it.
+    /// `None` when an index or tag does not read; the stage then stays
+    /// [`TextureSource::Engine`] for a consumer to refuse.
+    fn property_bitmap(&self, sp: &ShaderPostprocess) -> Option<StageTexture> {
+        let parameter = match self.property_index(sp)? {
+            -1 => self.rasterizer_property()?,
+            i => *sp.bitmaps.get(usize::try_from(i).ok()?)?,
+        };
+        let fallback = StageTexture { source: TextureSource::Default, size: None, stage_size: None };
+        if parameter.bitmap == TagId::NULL {
+            return Some(fallback);
+        }
+        // `mov cx, word [eax + 4]`; `0x000143f4` sign-extends it.
+        let image = parameter.image as u16 as i16;
+        let Ok(image) = usize::try_from(image) else { return Some(fallback) };
+        // An image past the bitmap's count reads as none.
+        let Some(found) = self.bitmap_image(parameter.bitmap, Some(image)).ok()?.1 else {
+            return Some(fallback);
+        };
+        Some(StageTexture {
+            source: TextureSource::Bitmap { bitmap: parameter.bitmap, image: image as u32, lod_offset: 0.0 },
+            size: None,
+            stage_size: Some((found.width, found.height)),
+        })
     }
 
     /// Resolves every (lod, layer) pass list of a shader instance.
@@ -695,10 +773,10 @@ impl ShaderLibrary {
                     11 => TextureSource::Lightmap,
                     n => TextureSource::Engine(n),
                 };
-                *stage = Some(StageTexture {
-                    source,
-                    size: None,
-                    stage_size: None,
+                let engine = StageTexture { source, size: None, stage_size: None };
+                *stage = Some(match t.source {
+                    PROPERTY_BITMAP_TEXTURE => self.property_bitmap(sp).unwrap_or(engine),
+                    _ => engine,
                 });
                 continue;
             }

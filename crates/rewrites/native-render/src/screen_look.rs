@@ -226,8 +226,9 @@ pub enum EngineTexture {
     Light,
     /// Chosen at run time from other state (16: a global bitmap
     /// `[0x004e6978]`; 18: `0x00025960`'s target or the rasterizer's
-    /// `+0x64`; 26: from the shader's template; 27: target `0x10` or
-    /// another by `[0x00485a76]`).
+    /// `+0x64`; 26: a bitmap parameter of the drawn shader, which
+    /// `tags::material` resolves to its bitmap (`PROPERTY_BITMAP_TEXTURE`);
+    /// 27: target `0x10` or another by `[0x00485a76]`).
     Dynamic,
     /// A null jump-table entry (7, 11) or past the table (0, above 27).
     Invalid,

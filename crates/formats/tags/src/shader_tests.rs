@@ -1156,3 +1156,107 @@ fn an_engine_vertex_constant_is_its_word() {
     let imp = Implementation::decode(&v).unwrap();
     assert_eq!(engine_vertex_constants(&spas, &imp), vec![s], "the vertex range only");
 }
+
+const SHAD2_ID: TagId = TagId(0xe005_0006);
+const MATG_ID: TagId = TagId(0xe006_0007);
+
+/// The fixture with stage 1 bound to engine texture 26 (in place of the
+/// lightmap) and the shader's `+0x5c` block naming bitmap parameter
+/// `index`.
+fn property_fixture(index: i16) -> Fixture {
+    let mut f = fixture();
+    let tex = target(&f, spas_pp(&f) + 0x08);
+    f.arena.b[tex + 5] = PROPERTY_BITMAP_TEXTURE;
+    let mut block = vec![0xffu8; 0x14];
+    block[0x10..0x12].copy_from_slice(&index.to_le_bytes());
+    let block = f.arena.put(&block);
+    let sp = shad_pp(&f);
+    blk(&mut f.arena.b, sp + 0x5c, 5, block);
+    f
+}
+
+fn stage1(f: &Fixture) -> StageTexture {
+    let m = library(f).material(SHAD_ID, None).unwrap();
+    m.layers[0].passes[0].implementations[0].textures[1].unwrap()
+}
+
+/// `0x00019a68`: the index names the shader's own parameter, bound through
+/// `0x000143c0` with no frame wrap and no LOD offset, and the stage takes
+/// the image's size.
+#[test]
+fn engine_texture_26_binds_the_bitmap_parameter_the_shader_names() {
+    let mut f = property_fixture(0);
+    // Image 3 of 2: `0x000143c0` takes the rasterizer default texture.
+    assert_eq!(stage1(&f), StageTexture { source: TextureSource::Default, size: None, stage_size: None });
+    let bm = target(&f, shad_pp(&f) + 0x04);
+    // Only the low half of +4 is the image (`mov cx, word [eax+4]`).
+    w32(&mut f.arena.b, bm + 4, 0x0007_0001);
+    assert_eq!(
+        stage1(&f),
+        StageTexture {
+            source: TextureSource::Bitmap { bitmap: BITM_ID, image: 1, lod_offset: 0.0 },
+            size: None,
+            stage_size: Some((64, 32)),
+        }
+    );
+    // A null bitmap is the default texture.
+    w32(&mut f.arena.b, bm, TagId::NULL.0);
+    assert_eq!(stage1(&f).source, TextureSource::Default);
+    // An index past the parameters, or a block that does not read, leaves
+    // the engine texture for a consumer to refuse.
+    let f = property_fixture(1);
+    assert_eq!(stage1(&f).source, TextureSource::Engine(PROPERTY_BITMAP_TEXTURE));
+    let mut f = property_fixture(0);
+    let sp = shad_pp(&f);
+    blk(&mut f.arena.b, sp + 0x5c, 5, BASE - 0x100);
+    assert_eq!(stage1(&f).source, TextureSource::Engine(PROPERTY_BITMAP_TEXTURE));
+}
+
+/// An index of -1 takes the globals' rasterizer shader (`matg +0x108`, its
+/// first element's `+0xd0`) and the parameter its own index names, which
+/// is not checked for -1 again.
+#[test]
+fn engine_texture_26_of_minus_one_takes_the_rasterizer_shaders_parameter() {
+    let mut f = property_fixture(-1);
+    // Without globals the engine texture stays.
+    assert_eq!(stage1(&f).source, TextureSource::Engine(PROPERTY_BITMAP_TEXTURE));
+    // The rasterizer shader: a copy of the fixture's whose postprocess
+    // names its parameter 0, image 1 of the fixture's bitmap.
+    let mut bm = vec![0u8; 0xc];
+    w32(&mut bm, 0, BITM_ID.0);
+    w32(&mut bm, 4, 1);
+    w32(&mut bm, 8, 0.5f32.to_bits());
+    let bm = f.arena.put(&bm);
+    let mut block = vec![0u8; 0x14];
+    block[0x10..0x12].copy_from_slice(&0i16.to_le_bytes());
+    let block = f.arena.put(&block);
+    let sp = shad_pp(&f);
+    let mut sp2 = f.arena.b[sp..sp + SHAD_POSTPROCESS].to_vec();
+    blk(&mut sp2, 0x04, 1, bm);
+    blk(&mut sp2, 0x5c, 5, block);
+    let sp2 = f.arena.put(&sp2);
+    let root = (f.tags[0].2 - BASE) as usize;
+    let mut shad2 = f.arena.b[root..root + SHAD_ROOT].to_vec();
+    blk(&mut shad2, 0x20, 1, sp2);
+    let shad2 = f.arena.put(&shad2);
+    let mut element = vec![0u8; 0xd4];
+    w32(&mut element, 0xd0, SHAD2_ID.0);
+    let element = f.arena.put(&element);
+    let mut matg = vec![0u8; 0x110];
+    blk(&mut matg, 0x108, 1, element);
+    let matg = f.arena.put(&matg);
+    f.tags.push((SHAD2_ID, SHAD, shad2));
+    f.tags.push((MATG_ID, FourCC(*b"matg"), matg));
+    assert_eq!(
+        stage1(&f),
+        StageTexture {
+            source: TextureSource::Bitmap { bitmap: BITM_ID, image: 1, lod_offset: 0.0 },
+            size: None,
+            stage_size: Some((64, 32)),
+        }
+    );
+    // The rasterizer shader's own -1 is not followed again.
+    let at = (block - BASE) as usize + 0x10;
+    f.arena.b[at..at + 2].copy_from_slice(&(-1i16).to_le_bytes());
+    assert_eq!(stage1(&f).source, TextureSource::Engine(PROPERTY_BITMAP_TEXTURE));
+}

@@ -129,7 +129,8 @@ Postprocess P (0x7c):
 | `44` | 4 | property refs: i16 property, i16 component | E `0x000175d0`, `0x00017635` |
 | `4c` | 2 | property ranges → `44` | E `0x0001759d` |
 | `54` | 4 | animation bindings: target, b1, b2, property-range index | E `0x00017568` |
-| `5c`, `64`, `6c` | | blocks with constant counts 5, 2 and 6, pointing at shared pool bytes | U, not dereferenced |
+| `5c` | | block with count 5 on the disc, its data shared between shaders; the i16 at data `+0x10` is the bitmap parameter (`04`) engine texture 26 binds, -1 for the globals' rasterizer shader's | E `0x00019a68` |
+| `64`, `6c` | | blocks with constant counts 2 and 6, their data shared between shaders | U, not dereferenced |
 | `74` | | 8 bytes | U |
 
 The `shad` LOD/layer/pass/implementation tree mirrors the template's. **D:**
@@ -417,8 +418,21 @@ that column's condition. [Shadow census](../graphics/notes/e3-lighting.md).
 ## Open items
 
 - **Engine texture sources** (`0x00019530`: 1, 3, 5, 8-10, 13-20, 24, 26 and
-  27 occur) are reported by id. Which render target or global texture each
-  id means is not mapped.
+  27 occur) are reported by id, except 26, which the resolver binds as the
+  bitmap it names (below). Which render target or global texture each other
+  id means is mapped in `native_render::screen_look::engine_texture`.
+- **Engine texture 26** (`0x00019a68`, `material::PROPERTY_BITMAP_TEXTURE`)
+  is a bitmap parameter of the drawn shader: the i16 at `+0x10` of the data
+  of its postprocess's `+0x5c` block indexes `P+04`. An index of -1 takes
+  the globals' rasterizer shader (`matg +0x108`, the first element's
+  `+0xd0` datum) and the index its own block names, unchecked. The
+  parameter's bitmap and image (the low half of `+4`) bind through
+  `0x000143c0`: a null bitmap or an image outside the bitmap binds the
+  rasterizer default texture (`TextureSource::Default`), with no frame wrap
+  and no LOD offset, and the stage takes the image's width and height. The
+  resolver leaves `TextureSource::Engine(26)` when the block, index or tags
+  do not read. **V:** on mainmenu, cyclotron and 05b_deltatowers most
+  shaders name -1 and the rest 0 or 1; the rasterizer shader names 0.
 - **Engine render-state and sampler-state bindings** (`+0x11e`, `+0x120`)
   are returned raw and decoded by `material::EngineState`
   (`engine_states`). A render binding is `[target, source, -, slot]`
