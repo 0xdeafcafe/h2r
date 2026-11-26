@@ -284,9 +284,10 @@ pub type Fetch = dyn Fn([u8; 8]) -> Result<Vec<u8>, String> + Send + Sync;
 pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
 
 /// The loaded game's labelled things, for the start gate's census and the
-/// script's label reads. In the game it is [`census::things`]: the loaded
-/// scenario's netgame flags and starting locations in guest memory.
-pub type CensusSource = dyn Fn(&dyn GuestMemory) -> Result<Vec<LabelledThing>, String> + Send + Sync;
+/// script's label reads. In the game it is [`census::things_for`]: the loaded
+/// scenario's netgame flags and starting locations in guest memory, with the
+/// built-in layout of the script (`census::layout_script`) on the loaded map.
+pub type CensusSource = dyn Fn(&dyn GuestMemory, Option<&str>) -> Result<Vec<LabelledThing>, String> + Send + Sync;
 
 /// The loaded map's tag paths, for the start gate's tag reads and the
 /// script's `tag_int` and `tag_fixed`. In the game it is
@@ -784,7 +785,7 @@ impl Runtime {
             local: Box::new(|_: [u8; 8]| None),
             fetch,
             context: Context::Custom,
-            census: Box::new(census::things),
+            census: Box::new(census::things_for),
             tags: Box::new(map_tags::current),
             film: false,
             forge: false,
@@ -837,7 +838,7 @@ impl Runtime {
     /// check has not passed. A script with neither has nothing to check.
     fn gate(&self, m: &dyn GuestMemory, ir: &Ir, teams: &[u8]) -> (Vec<LabelledThing>, Vec<String>) {
         let unchecked = self.film || (ir.labels.is_empty() && ir.tags.is_empty());
-        match (self.census)(m) {
+        match (self.census)(m, census::layout_script(ir)) {
             Ok(things) if unchecked => (things, Vec::new()),
             Ok(things) => {
                 let census = census::census(&things);

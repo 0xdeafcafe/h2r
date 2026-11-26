@@ -89,8 +89,9 @@ pub enum Verdict {
 /// Where the gate finds a census and a blob. In the game, [`InGame`].
 pub trait Sources: Send + Sync {
     /// The census of the lobby's map `map` with the saved Forge map
-    /// `forge_map`'s document applied.
-    fn census(&self, map: u32, forge_map: Option<&str>) -> Result<Census, String>;
+    /// `forge_map`'s document applied, else the built-in layout of `script`
+    /// (`census::layout_script`) on the map, if it has one.
+    fn census(&self, map: u32, forge_map: Option<&str>, script: Option<&str>) -> Result<Census, String>;
     /// The blob on this machine whose hash starts with `prefix`.
     fn blob(&self, prefix: [u8; 8]) -> Option<Vec<u8>>;
 }
@@ -181,7 +182,7 @@ pub fn check(key: &Key, sources: &dyn Sources) -> Verdict {
         return Verdict::Clear;
     }
     let siege = is_siege(prefix);
-    let census = match sources.census(key.map, key.forge_map.as_deref()) {
+    let census = match sources.census(key.map, key.forge_map.as_deref(), super::census::layout_script(&ir)) {
         Ok(c) => c,
         Err(e) if siege => return Verdict::Blocked(vec![format!("Siege cannot read this map's objectives: {e}")]),
         Err(e) => {
@@ -240,7 +241,8 @@ pub(crate) fn map_filter_using<'a>(
     }
     let teams = if record.team_play() { TEAMS } else { &[] };
     let siege = is_siege(prefix);
-    Some(move |id| sources.census(id, None).is_ok_and(|census|
+    let layout = super::census::layout_script(&ir);
+    Some(move |id| sources.census(id, None, layout).is_ok_and(|census|
         map_problems(&ir, &census, teams, siege).is_empty()
     ))
 }
@@ -408,7 +410,7 @@ pub struct InGame {
 }
 
 impl Sources for InGame {
-    fn census(&self, map: u32, forge_map: Option<&str>) -> Result<Census, String> {
+    fn census(&self, map: u32, forge_map: Option<&str>, script: Option<&str>) -> Result<Census, String> {
         let path = crate::map_select::selected_path(map)
             .ok_or_else(|| format!("map {map} is not in the catalogue"))?;
         let vfs = self.vfs.as_ref().ok_or("no map files are mounted")?;
@@ -423,9 +425,21 @@ impl Sources for InGame {
             .transpose()?;
         let file = crate::bots_nav_auto::VfsFile::open(Arc::clone(vfs), &path)
             .map_err(|e| format!("{path}: {e}"))?;
+        let map_id = map;
         let mut map = map::Map::from_reader(std::io::BufReader::new(file))
             .map_err(|e| format!("{path}: {e}"))?;
-        Census::of_file(&mut map, doc.as_ref()).map_err(|e| format!("{path}: {e}"))
+        // A Forge map's own document is the author's; without one, the
+        // script's built-in layout is what the match reads
+        // (`census::things_for`).
+        let rows = forge_doc::rows_of_file(&mut map).map_err(|e| format!("{path}: {e}"))?;
+        let layout = match doc {
+            Some(_) => None,
+            None => crate::map_select::short_name_of(map_id)
+                .and_then(|name| super::census::layout_doc(script, &name, &rows.counts)),
+        };
+        let mut census = Census::of_game(&rows, doc.as_ref().or(layout.as_ref())).map_err(|e| format!("{path}: {e}"))?;
+        census.sounds = rows.sounds.clone();
+        Ok(census)
     }
 
     fn blob(&self, prefix: [u8; 8]) -> Option<Vec<u8>> {

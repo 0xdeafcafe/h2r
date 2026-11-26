@@ -138,6 +138,33 @@ pub struct Builtin {
     pub source: &'static str,
 }
 
+/// A built-in map layout: the labels a script reads on one map, as a
+/// labels-only Forge document (`Tier::Variant`, label ops on base entries)
+/// the host applies to the map's census when the lobby picked no map
+/// variant of its own. See `docs/game/rules-engine.md`, "Map layouts".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    /// The script it serves, as [`layout`] names it (`siege`).
+    pub script: &'static str,
+    /// The map's short name (`zanzibar`).
+    pub map: &'static str,
+    /// The document's JSON.
+    pub json: &'static str,
+}
+
+/// Every built-in layout, files of `builtin/layouts/<script>/<map>.json`.
+pub const LAYOUTS: &[Layout] = &[Layout {
+    script: "siege",
+    map: "zanzibar",
+    json: include_str!("layouts/siege/zanzibar.json"),
+}];
+
+/// The built-in layout of `script` on `map` (short names), if there is
+/// one. A map without one keeps the labels its flags carry.
+pub fn layout(script: &str, map: &str) -> Option<&'static str> {
+    LAYOUTS.iter().find(|l| l.script == script && l.map == map).map(|l| l.json)
+}
+
 /// The type-area rows of the settings table a built-in takes as an option
 /// of its own, by the row's name and the option's. A retail record with no
 /// script plays its type's built-in with these options read from its type
@@ -356,6 +383,42 @@ mod tests {
             let ir = crate::lang::compile(b.source).unwrap();
             assert!(option_bits(&ir) <= crate::ir::OPTION_BITS, "{}", b.name);
         }
+    }
+
+    /// A layout is a labels-only variant: wire format 2, no recipe, source
+    /// or import, and only label ops on base entries whose text is a label
+    /// the file's script names (`<script>_...`).
+    #[test]
+    fn every_layout_is_a_labels_only_variant() {
+        assert!(!LAYOUTS.is_empty());
+        for l in LAYOUTS {
+            let what = format!("{}/{}", l.script, l.map);
+            let doc: serde_json::Value = serde_json::from_str(l.json).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(doc["format"], 2, "{what}");
+            assert_eq!(doc["base"]["map"], l.map, "{what}");
+            for empty in ["recipes", "sources", "imports"] {
+                assert_eq!(doc[empty].as_array().map(Vec::len), Some(0), "{what}: {empty}");
+            }
+            assert!(doc.get("waves").is_none() && doc.get("expect").is_none(), "{what}");
+            assert!(doc["title"].as_str().is_some_and(|t| (1..=16).contains(&t.chars().count())), "{what}");
+            let ops = doc["ops"].as_array().unwrap();
+            assert!(!ops.is_empty(), "{what}");
+            let mut ids = std::collections::BTreeSet::new();
+            let mut targets = std::collections::BTreeSet::new();
+            for op in ops {
+                assert!(ids.insert(op["id"].as_u64().unwrap()), "{what}: a repeated op id");
+                let label = &op["edit"]["forge"]["label"];
+                let base = &label["target"]["base"];
+                assert!(base["block"].is_string() && base["index"].is_u64(), "{what}: a label op on a base entry: {op}");
+                assert!(targets.insert((base["block"].to_string(), base["index"].as_u64())), "{what}: an entry labelled twice");
+                let text = label["label"]["text"].as_str().unwrap();
+                assert!(text.starts_with(&format!("{}_", l.script)), "{what}: {text}");
+                assert!(text.len() <= 32 && text.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{what}: {text}");
+            }
+            assert_eq!(layout(l.script, l.map), Some(l.json));
+        }
+        assert_eq!(layout("siege", "no_such_map"), None);
+        assert_eq!(layout("slayer", "zanzibar"), None);
     }
 
     #[test]
