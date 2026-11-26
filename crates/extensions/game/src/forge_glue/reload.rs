@@ -262,6 +262,7 @@ pub(super) mod tests {
                 imports: vec![],
                 ops: vec![],
                 expect: None,
+                waves: None,
             },
             kind: CopyKind::Rebuild,
         }

@@ -54,6 +54,7 @@ fn doc(source: &MapSource, ops: Vec<Op>) -> ForgeDoc {
         imports: vec![],
         ops,
         expect: None,
+        waves: None,
     }
 }
 

@@ -417,6 +417,7 @@ fn draft() -> forge_doc::ForgeDoc {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     }
 }
 
@@ -2047,10 +2048,18 @@ mod ground {
             json!({"monitors": []})
         }
         fn status(&self) -> Result<Json, String> {
-            Ok(json!({"session": "local"}))
+            Ok(json!({"session": "local", "variant": {"title": "Fixture"}}))
         }
         fn session(&self) -> Result<Arc<Session>, String> {
             Ok(self.session.lock().unwrap().clone())
+        }
+        fn set_waves(&self, set: Option<forge_doc::waves::Def>) -> Result<Json, String> {
+            let mut held = self.session.lock().unwrap();
+            let mut session = Session::clone(&held);
+            session.set_waves(set).map_err(|e| e.to_string())?;
+            let reply = crate::forge::waves::reply(&session);
+            *held = Arc::new(session);
+            Ok(reply)
         }
         fn document(&self) -> Result<ForgeDoc, String> {
             Ok(self.session.lock().unwrap().document().clone())
@@ -2333,5 +2342,107 @@ mod ground {
         let status = crate::forge::nav::status(&session, Default::default());
         assert_eq!(status["sectors"], 40);
         assert_eq!(status["problems"], 1);
+    }
+
+    /// An invented set of one round whose waves each send one Elite squad
+    /// to zone 0 and one to zone 1.
+    fn two_zone_set() -> Json {
+        let squad = |zone: u8| {
+            json!({
+                "class": "elite",
+                "count": {"per_player": 1, "min": 1, "max": 2},
+                "drop": {"prefer_zone": zone},
+                "weapon_tier": 0,
+            })
+        };
+        let waves: Vec<Json> = (0..5)
+            .map(|i| {
+                json!({"squads": [squad(0), squad(1)], "boss": i == 4, "gap_ticks": 300})
+            })
+            .collect();
+        json!({
+            "format": 2,
+            "name": "Two Zones",
+            "teams": 1,
+            "rounds": [{"waves": waves, "skulls_on": []}],
+            "lives": {"pool_start": 5, "per_round_bonus": 1, "shared": true},
+            "caps": {"live_actors_by_players": [[4, 32]]},
+            "scoring": {
+                "by_class": {"elite": 100},
+                "player_kill": 0,
+                "difficulty_multiplier": {"easy": 1000, "normal": 1000, "heroic": 1000, "legendary": 1000},
+                "skull_multipliers": {},
+                "assist": 500,
+            },
+        })
+    }
+
+    #[test]
+    fn waves_answers_the_set_its_id_and_the_drop_order() {
+        let h = Harness::new();
+        let mut game = game(1);
+        local::install(&h.agent, host(None, 2));
+        let methods = h.ok(&mut game, agent_proto::method::METHODS, Json::Null);
+        assert!(methods.as_array().unwrap().contains(&json!(method::WAVES)));
+
+        // No set of its own: Holdout, the default.
+        let read = h.ok(&mut game, method::WAVES, Json::Null);
+        let holdout = forge_doc::waves::default_set();
+        assert_eq!(read["name"], "Holdout");
+        assert_eq!(read["default"], true);
+        assert_eq!(read["id"], json!(holdout.id().unwrap()));
+        assert_eq!(read["set"], json!(holdout));
+        assert_eq!(read["problems"], json!([]));
+        let drops = read["drops"].as_array().unwrap();
+        assert_eq!(drops.len(), 2);
+        assert_eq!(drops[0]["zone"], 0);
+        assert_eq!(drops[0]["position"], json!([1., 2., 0.]));
+        assert_eq!(drops[1]["position"], json!([2., 2., 0.]));
+        assert_eq!(drops[0]["facing"], 0.5);
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["waves"], Json::Null);
+
+        // Set: the reply is the new set's, and the session holds it.
+        let set = two_zone_set();
+        let def: forge_doc::waves::Def = serde_json::from_value(set.clone()).unwrap();
+        let reply = h.ok(&mut game, method::WAVES, json!({"set": set}));
+        assert_eq!(reply["name"], "Two Zones");
+        assert_eq!(reply["default"], false);
+        assert_eq!(reply["id"], json!(def.id().unwrap()));
+        assert_eq!(
+            reply["set"]["rounds"][0]["waves"][0]["squads"][1]["drop"],
+            json!({"prefer_zone": 1})
+        );
+        let read = h.ok(&mut game, method::WAVES, json!({}));
+        assert_eq!(read["id"], reply["id"]);
+        let status = h.ok(&mut game, method::STATUS, Json::Null);
+        assert_eq!(status["variant"]["waves"], "Two Zones");
+        assert_eq!(status["variant"]["title"], "Fixture");
+
+        // A refused set is named and changes nothing.
+        let mut ogres = two_zone_set();
+        ogres["scoring"]["by_class"] = json!({"ogre": 100});
+        for squad in 0..2 {
+            for wave in 0..5 {
+                ogres["rounds"][0]["waves"][wave]["squads"][squad]["class"] = json!("ogre");
+            }
+        }
+        let refused = h.call(&mut game, method::WAVES, json!({"set": ogres}));
+        assert_eq!(refused["error"]["data"]["code"], "forge_waves");
+        assert!(
+            refused["error"]["message"].as_str().unwrap().contains("ogre"),
+            "{refused}"
+        );
+        let shapeless = h.call(&mut game, method::WAVES, json!({"set": {"name": "x"}}));
+        assert_eq!(shapeless["error"]["data"]["code"], "forge_waves");
+        let read = h.ok(&mut game, method::WAVES, Json::Null);
+        assert_eq!(read["id"], reply["id"]);
+
+        // `null` clears it; an unknown parameter is refused.
+        let cleared = h.ok(&mut game, method::WAVES, json!({"set": null}));
+        assert_eq!(cleared["default"], true);
+        assert_eq!(cleared["name"], "Holdout");
+        let bad = h.call(&mut game, method::WAVES, json!({"stop": true}));
+        assert!(!bad["error"].is_null(), "{bad}");
     }
 }

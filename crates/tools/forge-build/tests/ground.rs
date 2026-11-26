@@ -40,6 +40,7 @@ fn draft(input: &MapSource) -> ForgeDoc {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     }
 }
 
@@ -228,4 +229,61 @@ fn a_ground_label_off_a_flag_is_a_document_error() {
         materialise(&doc, &source).err().unwrap(),
         Error::Document(_)
     ));
+}
+
+/// The session numbers zones with `forge_doc::waves::zone_order` over its
+/// markers; the kit numbers them with `Labels::canonical`. Over invented
+/// drops, ties and signed zeros included, the two give one order.
+#[test]
+fn the_documents_zone_order_is_the_kits() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    // A few coordinates so positions tie and the facing decides.
+    let coords = [-2.5_f32, -0.0, 0.0, 1.0, 7.25];
+    for case in 0..200 {
+        let count = (next() % 13) as usize;
+        let drops: Vec<(usize, [f32; 3], f32)> = (0..count)
+            .map(|i| {
+                let mut pick = || coords[(next() % coords.len() as u64) as usize];
+                (i, [pick(), pick(), pick()], pick())
+            })
+            .collect();
+        let labels = Labels {
+            drops: drops
+                .iter()
+                .map(|&(_, position, facing)| Marker { position, facing })
+                .collect(),
+            ..Labels::default()
+        };
+        let kit: Vec<(Vec<u32>, u32)> = labels
+            .canonical()
+            .drops
+            .iter()
+            .map(|m| (m.position.map(f32::to_bits).to_vec(), m.facing.to_bits()))
+            .collect();
+        let ours: Vec<(Vec<u32>, u32)> = forge_doc::waves::zone_order(&drops)
+            .into_iter()
+            .map(|i| {
+                let (_, position, facing) = drops[i];
+                (position.map(f32::to_bits).to_vec(), facing.to_bits())
+            })
+            .collect();
+        assert_eq!(ours, kit, "case {case}");
+    }
+}
+
+/// The classes a document's wave set may name are the Elite, then the
+/// kit's retail table in its order.
+#[test]
+fn the_documents_classes_are_the_kits() {
+    let kit: Vec<&str> = std::iter::once("elite")
+        .chain(firefight_kit::retail::CLASSES.iter().map(|c| c.name))
+        .collect();
+    assert_eq!(forge_doc::waves::CLASSES.to_vec(), kit);
+    assert_eq!(forge_doc::waves::GROUND_CLASSES, ["elite"]);
 }

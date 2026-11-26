@@ -114,6 +114,9 @@ pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
         ));
     }
     limits.check()?;
+    if let Some(waves) = &doc.waves {
+        crate::waves::check(waves)?;
+    }
     text("title", &doc.title, MAX_TITLE, Text::Name)?;
     author(&doc.author)?;
     text(

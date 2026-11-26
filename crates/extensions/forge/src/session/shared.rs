@@ -150,6 +150,7 @@ impl Session {
         let (doc, _) =
             forge_doc::fold_from(&self.doc, self.head, &entries, &self.limits).map_err(reason)?;
         self.check_doc(&doc)?;
+        self.check_drops(&doc)?;
         let at = self.head.seq;
         let shared = self.shared.as_mut().expect("a shared session");
         shared.outbox.extend(ops.iter().map(|op| Outgoing {
@@ -265,10 +266,12 @@ impl Session {
                 .map_err(reason)?
                 .len();
         self.restore(world)?;
+        let zones = self.zones_before();
         // An undo may bring a thing back: the world makes it again.
         self.update_world(world, &doc, entry.op.edit == Edit::Undo)?;
         self.held = None;
         self.doc = doc;
+        self.follow_drops(zones);
         self.head = head;
         self.log_bytes = bytes;
         self.last_id = self.last_id.max(entry.op.id.0);

@@ -1,7 +1,7 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). Slice FA1 is built; FA2 to FA8 below are not.
-Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`; the notices that show a set's first problem come with the screens that show them (FA3, FA5). FA1 is built too. FA3 to FA8 below are not.
+Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/formats/forge-doc/src/waves.rs` (the wave set), `crates/extensions/forge/src/session/waves.rs` (the set in a session), `crates/extensions/agent/src/forge/waves.rs` (`forge.waves`), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 A player builds a Firefight map in a Forge session and plays it from the
@@ -25,9 +25,9 @@ What a player does, and what carries each step.
 | 1 | starts a Forge lobby on a multiplayer map | the FORGE lobby mode, the kit start ([forge-map-variants.md](forge-map-variants.md), "The lobby") | built |
 | 2 | places drop zones, two bases and cover from the object menu's **AI and objectives** group | `GroundLabel` markers: a netgame flag with a label op | built |
 | 3 | chooses **Build AI ground** | `firefight_kit::ground::build` over the play form, then the reload | built |
-| 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | design |
+| 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | the set built, `forge.waves` edits it; the screens design |
 | 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | design; the row builds the ground and does not start a match |
-| 6 | saves the map variant | the variant store; the save builds stale ground first | built; the wave set joins it in FA2 |
+| 6 | saves the map variant | the variant store; the save builds stale ground first and writes the wave set | built |
 | 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | built (FA1); Map Waves is FA4 |
 
 FA1 alone closes the loop with the built-in wave sets: steps 1 to 3, 6
@@ -60,10 +60,14 @@ the document ([game-types-without-carriers.md](game-types-without-carriers.md),
 (`ground::Labels::canonical`: by position, then facing), and the
 definition names zones 0 to 11 (`Drop::PreferZone`). A session holds 12
 drop markers at most and refuses the thirteenth with "A map has 12 drop
-zones at most." `forge_doc::ground::zone_order` (FA2) gives the same
-order from the document's markers, and
-`the_documents_zone_order_is_the_kits` in `forge-build` holds the two
-together.
+zones at most." (`Session::check_drops`, on every edit and every shared
+proposal). `forge_doc::waves::zone_order` gives the same order from the
+session's markers (`Session::drops`: the netgame flags it adds that carry
+`ff_drop`), and `the_documents_zone_order_is_the_kits` in `forge-build`
+holds the two sorts together. A placed drop the kit cannot honour (off
+the walkable area, no room for its firing positions) gets no zone, so the
+kit numbers the drops after it one lower than the session does; the
+build reports it as a ground problem.
 
 ### The wave set
 
@@ -73,27 +77,39 @@ with no Forge wrapper.
 
 ```rust
 // crates/formats/forge-doc/src/waves.rs
-pub const FORMAT_WAVES: u32 = content::forge::DOCUMENT_FORMAT_WAVES;   // the number after FORMAT_GROUPS
-pub fn limits() -> firefight::Limits;       // the classes a Forge map may name: elite, then firefight_kit's retail table
-pub fn check(def: &firefight::Def) -> Result<(), Refusal>;   // firefight::validate against limits(), 64 KiB
-pub fn remap(def: &firefight::Def, old: &[EntryId], new: &[EntryId]) -> firefight::Def;
-pub struct Problem { pub round: u8, pub wave: u8, pub squad: u8, pub what: ProblemKind }
+pub use firefight::{Def, Drop};
+pub const FORMAT_WAVES: u32 = content::forge::DOCUMENT_FORMAT_WAVES;   // 5, the number after FORMAT_GROUPS
+pub const MAX_WAVES_BYTES: usize = firefight::MAX_DOC_BYTES;           // 64 KiB
+pub const MAX_DROPS: usize = 12;
+pub const CLASSES: [&str; 6];               // elite, then firefight_kit::retail::CLASSES in keep order
+pub const GROUND_CLASSES: [&str; 1];        // what the stage-one ground builds: elite (FA6 reads the report's)
+pub fn limits() -> firefight::Limits;       // CLASSES
+pub fn check(def: &Def) -> Result<(), Refusal>;   // the size first, then firefight::validate against limits()
+pub fn default_set() -> Def;                // Holdout
+pub fn zone_order<T: Clone>(drops: &[(T, [f32; 3], f32)]) -> Vec<T>;   // by position, then facing
+pub fn remap<T: PartialEq>(def: &Def, old: &[T], new: &[T]) -> Def;
+pub struct Problem { pub round: u8, pub wave: u8, pub squad: u8, pub what: ProblemKind }   // one-based
 pub enum ProblemKind { ClassNotBuilt, ZoneNotPlaced }
-pub fn problems(def: &firefight::Def, classes: &[String], drops: usize) -> Vec<Problem>;
+pub fn problems(def: &Def, classes: &[String], drops: usize) -> Vec<Problem>;
+impl ForgeDoc { pub fn with_waves(&self, waves: Option<Def>) -> ForgeDoc; }   // and the format it needs
 
 // crates/extensions/forge/src/session/waves.rs
 impl Session {
-    pub fn waves(&self) -> Option<&firefight::Def>;
-    pub fn set_waves(&mut self, def: Option<firefight::Def>) -> Result<(), Refusal>;
-    pub fn waves_or_default(&self) -> firefight::Def;   // the session's set, else Holdout
-    pub fn wave_problems(&self) -> Vec<forge_doc::waves::Problem>;
+    pub fn waves(&self) -> Option<&Def>;
+    pub fn set_waves(&mut self, def: Option<Def>) -> Result<(), Refusal>;
+    pub fn reset_waves(&mut self);              // Reset waves: the set as loaded
+    pub fn waves_or_default(&self) -> Def;      // the session's set, else Holdout
+    pub fn waves_are_default(&self) -> bool;
+    pub fn wave_problems(&self) -> Vec<Problem>;
+    pub fn drops(&self) -> Vec<OpId>;           // the ff_drop markers in zone order
 }
 ```
 
 - **In the document.** `waves` is a member of the document beside
   `recipes`, in the canonical form and the identity. A document with it
   has format `FORMAT_WAVES` (`ForgeDoc::required_format`); one without keeps the format it has, so its
-  identity does not change. `validate` runs `waves::check`. The class
+  identity does not change. `validate` runs `waves::check`, which
+  measures the set against 64 KiB before the validator reads it. The class
   list it admits is fixed (`waves::limits`), so the document validates
   the same on a machine with no disc and on Live. `ForgeDoc::tier` allows
   `waves` in a map variant.
@@ -110,15 +126,19 @@ impl Session {
 - **Problems** are what the set asks for that the built ground lacks: a
   class the ground did not build (`ClassNotBuilt`: never built, or cut
   for headroom) and a preferred zone with no marker (`ZoneNotPlaced`).
-  The Waves page lists them, **Test waves** and a save show the first as
-  a notice, and neither is refused: the director takes any unseen zone
+  The classes the ground builds are `waves::GROUND_CLASSES` until FA6
+  puts the build's own in its report. The Waves page lists them, **Test
+  waves** and a save show the first as a notice, and neither is refused: the director takes any unseen zone
   when the preferred one is absent, and the lobby's start names a class
   the map lacks (`Refusal::UnknownClass`).
 - **Zones follow their markers.** When an op adds, moves or removes an
   `ff_drop`, the session reads the zone order before and after and calls
   `waves::remap`: a squad that prefers a zone keeps its marker under the
   new number, and one whose marker is gone returns to `Drop::Edge`. Undo
-  of the op remaps back.
+  of a move remaps back; undo of a removal brings the marker back but
+  leaves its squads at the edge. A squad that prefers a zone no marker
+  had is left as it is. A shared session remaps as each entry of the
+  host's stream lands.
 - **With no set** the session's waves are Holdout
   (`Session::waves_or_default`), and the saved variant has no `waves`.
 
@@ -288,7 +308,7 @@ FA1). FA7 follows FA5, FA8 follows FA4.
 | # | Slice | Size | Needs | Files | Tests (invented data) | Live check |
 |---|---|---|---|---|---|---|
 | **FA1** | **Firefight on a map variant with ground.** `KitMaps` and `supports_wave` take a held pick whose document has a ground recipe; Change Map's Firefight list adds the base maps that have such a variant; the Map Variant picker in a Firefight lobby marks variants without ground; the refusal sentence; `map_variant::Picked` gains `ground` | M | nothing | `crates/extensions/game/src/{lobby_start,lobby_mode,map_select,map_variant}.rs`, `crates/extensions/forge/src/files.rs`, `crates/extensions/game/src/forge_screens/variants.rs`, [firefight.md](firefight.md) "The lobby" | `a_variant_with_ground_is_a_kit_map_for_the_lobby`, `a_base_map_without_a_ground_pick_is_refused_by_name`, `change_map_lists_kit_packages_then_maps_with_ground_variants`, `the_picker_refuses_original_and_groundless_variants_in_firefight`, `a_map_specific_set_still_needs_its_own_base`, `clearing_the_pick_refuses_the_start_again`, `the_variant_list_reports_each_entrys_ground`; `Page` tables for Game Setup and the picker | on a session with ground built and saved: `ui.lobby.tabs`, then `ui.press` through Change Rules, Change Map and Map Variant; `ui.screen` shows the variant chosen and no status line; after Start `firefight.state` is running as `Host`, `firefight.kit`'s zones equal the saved variant's drops, and `world.ai` lists actors within the first wave's gap |
-| **FA2** | **The wave set in the document and the session.** `ForgeDoc::waves`, `FORMAT_WAVES`, `waves::{limits, check, remap, problems}`, `ground::zone_order`, the tier; `Session::{waves, set_waves, waves_or_default, wave_problems}`, the save and load forms, the 12-drop cap, the remap on a drop's add, move and removal; `forge.waves`; `waves` in `forge.status`' `variant` | M | nothing | `crates/formats/forge-doc/src/{waves.rs (new),document,validate,variant,wire,ground,lib}.rs`, `crates/formats/forge-doc/Cargo.toml` (`firefight`), `crates/formats/content/src/forge.rs` (the format number), `crates/extensions/forge/src/session/waves.rs` (new), `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/waves.rs` (new), `crates/extensions/agent-proto/`, `crates/tools/forge-build/tests/` (the order parity), [agent-api.md](../runtime/agent-api.md) | `a_document_with_waves_round_trips_at_the_waves_format`, `a_document_without_waves_keeps_its_identity`, `a_set_naming_an_unknown_class_is_refused`, `an_oversize_set_is_refused_before_parsing`, `a_variant_with_waves_is_a_map_variant`, `the_documents_zone_order_is_the_kits`, `a_moved_drop_keeps_its_squads`, `a_removed_drop_sends_its_squads_to_the_edge`, `undo_of_a_drop_move_remaps_back`, `a_thirteenth_drop_is_refused`, `a_refused_set_changes_nothing`, `a_save_writes_the_set_and_a_load_takes_it_out`, `problems_name_a_class_the_ground_lacks`, `waves_answers_the_set_its_id_and_the_drop_order`; the seeded document fuzz covers `waves` | `forge.waves {set}` with Attrition's JSON, `forge.waves` answers its id; save through `forge.input`, load, and `forge.doc` holds `waves`; move a drop with `forge.propose` and `forge.waves` shows the squad's zone renumbered |
+| **FA2** | **The wave set in the document and the session.** `ForgeDoc::waves`, `FORMAT_WAVES`, `waves::{limits, check, remap, problems, zone_order}`, the tier; `Session::{waves, set_waves, waves_or_default, wave_problems}`, the save and load forms, the 12-drop cap, the remap on a drop's add, move and removal; `forge.waves`; `waves` in `forge.status`' `variant` | M | nothing | `crates/formats/forge-doc/src/{waves.rs (new),document,validate,variant,wire,ground,lib}.rs`, `crates/formats/forge-doc/Cargo.toml` (`firefight`), `crates/formats/content/src/forge.rs` (the format number), `crates/extensions/forge/src/session/waves.rs` (new), `crates/extensions/forge/src/session.rs`, `crates/extensions/agent/src/forge/waves.rs` (new), `crates/extensions/agent-proto/`, `crates/tools/forge-build/tests/` (the order parity), [agent-api.md](../runtime/agent-api.md) | `a_document_with_waves_round_trips_at_the_waves_format`, `a_document_without_waves_keeps_its_identity`, `a_set_naming_an_unknown_class_is_refused`, `an_oversize_set_is_refused_before_parsing`, `a_variant_with_waves_is_a_map_variant`, `the_documents_zone_order_is_the_kits`, `a_moved_drop_keeps_its_squads`, `a_removed_drop_sends_its_squads_to_the_edge`, `undo_of_a_drop_move_remaps_back`, `a_thirteenth_drop_is_refused`, `a_refused_set_changes_nothing`, `a_save_writes_the_set_and_a_load_takes_it_out`, `problems_name_a_class_the_ground_lacks`, `waves_answers_the_set_its_id_and_the_drop_order`; the seeded document fuzz covers `waves` | `forge.waves {set}` with Attrition's JSON, `forge.waves` answers its id; save through `forge.input`, load, and `forge.waves` answers the same id (the saved file holds `waves`; `forge.doc` is the session's document, which does not); move a drop with `forge.propose` and `forge.waves` shows the squad's zone renumbered |
 | **FA3** | **Test waves runs the director.** `Runtime::{start_test, stop_test}`, `Host`'s test arm (`Lives`, `Respawn`, `Finish`), the stop on ground build, Rebuild map, load and leave; the **Stop waves** row; the HUD while testing ([forge-firefight-ui.md](forge-firefight-ui.md), "The Firefight HUD"): `forge.enemies.*` in the monitor, the Firefight HUD's pills by scope; `forge.waves.test`; `firefight.state`'s `test`. Takes Holdout until FA2's `Session::waves_or_default` is there | M | nothing; FA2 for the session's own set | `crates/extensions/game/src/firefight/{runtime,host,hud,feature}.rs`, `crates/extensions/game/src/forge_glue/{ground,editing}.rs`, `crates/extensions/game/src/forge_screens/sheet.rs`, `crates/extensions/game/src/forge_hud.rs`, `crates/rewrites/hud-kit-core/src/views/{forge,firefight}.rs`, `content/forge/huds/forge.hud.yaml`, `crates/extensions/agent/src/forge/test.rs` (new), `crates/extensions/agent-proto/src/firefight.rs` | `a_test_starts_only_on_loaded_ground`, `a_test_makes_a_matchs_squad_calls_in_order`, `finish_ends_the_test_and_not_the_game`, `lives_and_respawn_are_not_applied_in_a_test`, `stopping_erases_every_slot`, `a_ground_build_stops_the_test_first`, `a_lobby_match_stays_off_in_forge_mode`, `the_row_reads_stop_waves_while_a_test_runs`, `a_monitor_sees_the_banner_and_the_enemies_pill`, `a_test_shows_no_lives_pill`, `the_enemies_pill_takes_the_grenade_rows_third_place`; the kit's checks on `forge` and `firefight` in every state and mode | `forge.waves.test`; `firefight.state` has `test` and a phase past warmup; `world.ai` never over the cap; `hud.kit` lists `forge.enemies.count` drawn for the monitor's user and no `ff.lives.*`; `forge.waves.test {stop: true}`, then `world.ai` is empty; `hud.render` of the `forge` HUD's testing state for the report |
 | **FA4** | **Map Waves.** `builtin::MAP_WAVES` and its listed record; `record_options` and `Options::definition` resolve it from `map_variant::running`; `supports_wave` for it; the start refusal; the picker's "Has its own waves." line; the variant panel names the set | S | FA1, FA2 | `crates/formats/firefight/src/builtin.rs`, `crates/extensions/game/src/firefight/{runtime,options}.rs`, `crates/extensions/game/src/{community_variants,lobby_start,lobby_mode,map_variant}.rs`, [firefight.md](firefight.md) "Map-specific sets" | `map_waves_is_listed_after_the_built_ins`, `map_waves_resolves_to_the_running_variants_set`, `map_waves_without_a_set_is_refused_by_name`, `a_built_in_set_plays_on_a_variant_with_its_own_waves`, `the_session_names_the_set_the_match_plays`, `a_hopper_refuses_map_waves` | in the lobby pick Map Waves and the variant; after Start `firefight.state`'s set name and id equal `forge.waves`' from the session that saved it |
 | **FA5** | **The Waves screens.** WAVES, ROUND, WAVE and SQUAD pages and their pickers ([forge-firefight-ui.md](forge-firefight-ui.md), "The Waves screens"); **Waves...** on Forge options; **Enemy types...** (the recipe's classes, after FA6); each press one `Session::set_waves` | M | FA2 | `crates/extensions/game/src/forge_screens/{waves.rs (new),waves_tests.rs (new),sheet,pages}.rs`, `crates/extensions/game/src/forge_glue/editing.rs` | `Page` tables for the four pages; `each_row_is_one_set_waves`, `a_wave_over_the_enemy_limit_is_refused_with_its_sentence`, `the_class_picker_offers_the_built_classes_only`, `the_drop_picker_lists_any_drop_then_each_placed_drop`, `start_from_asks_before_replacing`, `reset_returns_to_the_loaded_set`, `the_wave_line_counts_enemies_at_one_and_four_players`; content checks | `ui.press` to Forge options, Waves, a round, a wave, a squad; change Per player; `ui.screen` shows the value and `forge.waves` the definition; Studio's `ui.render` of the four pages and `check.run` for the report |
@@ -308,11 +328,18 @@ FA1). FA7 follows FA5, FA8 follows FA4.
 - **Test** A document with markers and a recipe materialises to the
   kit's build of the same labels (GM3,
   [game-types-without-carriers.md](game-types-without-carriers.md), "Slices").
-- **S** That the kit builds placed drops past twelve as it builds twelve;
-  FA2 reads `firefight-kit/src/nav.rs`'s placed-drop path. The session's
-  cap holds either way.
-- **Design** The wave set in the document, Map Waves, the test arm, the
-  classes in the recipe.
+- **Code** The kit makes a zone of every placed drop it can honour, with
+  no cap of its own, and none of one it cannot
+  (`crates/tools/firefight-kit/src/nav.rs`, the placed-drop path); the
+  generated drops stop at twelve (`MAX_ZONES`). The session's cap keeps a
+  map at twelve.
+- **Test** The wave set in the document, its format and identity, the
+  zone remap and the drop cap (FA2's tests in
+  `crates/formats/forge-doc/src/tests/waves.rs`,
+  `crates/extensions/forge/src/waves_tests.rs`,
+  `crates/tools/forge-build/tests/ground.rs` and
+  `crates/extensions/agent/src/forge/tests.rs`).
+- **Design** Map Waves, the test arm, the classes in the recipe.
 
 ## Not verified
 

@@ -38,6 +38,7 @@ fn draft(input: &MapSource) -> ForgeDoc {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     }
 }
 

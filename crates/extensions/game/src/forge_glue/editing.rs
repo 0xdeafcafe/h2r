@@ -594,6 +594,20 @@ impl Editor {
         Ok(rx)
     }
 
+    /// `forge.waves {set}`: replace or clear the session's wave set
+    /// (docs/game/forge-firefight.md, "The wave set") and answer
+    /// `forge.waves`' reply. Refused while an edit or a file job waits, as
+    /// the session it lands would not carry the set.
+    pub fn set_waves(&mut self, set: Option<forge_doc::waves::Def>) -> Result<Value, String> {
+        if self.busy() {
+            return Err("A Forge edit is waiting for the game.".into());
+        }
+        let mut next = Session::clone(&self.session);
+        next.set_waves(set).map_err(|e| e.to_string())?;
+        self.session = Arc::new(next);
+        Ok(agent::forge::waves::reply(&self.session))
+    }
+
     /// What the game knows of the nav besides the session (`forge.nav`).
     fn nav_facts(&self) -> nav_api::Facts {
         nav_api::Facts {

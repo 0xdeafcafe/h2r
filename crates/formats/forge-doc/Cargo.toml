@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 content.workspace = true
+# The wave set a document holds (src/waves.rs).
+firefight = { path = "../firefight" }
 game-markers = { path = "../game-markers" }
 map.workspace = true
 rules.workspace = true

@@ -145,6 +145,7 @@ mod tests {
             imports: vec![],
             ops: vec![],
             expect: None,
+            waves: None,
         };
         let limits = Limits {
             base_counts: std::collections::BTreeMap::from([(forge::BlockKind::NetgameFlags, 3)]),

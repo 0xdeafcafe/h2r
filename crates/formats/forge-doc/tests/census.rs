@@ -38,6 +38,7 @@ fn doc(ops: Vec<Edit>) -> ForgeDoc {
             })
             .collect(),
         expect: None,
+        waves: None,
     };
     doc.format = doc.required_format();
     doc

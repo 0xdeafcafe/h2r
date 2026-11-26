@@ -148,6 +148,7 @@ mod tests {
             imports: vec![],
             ops: vec![],
             expect: None,
+            waves: None,
         };
         let limits = Limits {
             base_counts: BTreeMap::from([(BlockKind::NetgameFlags, 3)]),

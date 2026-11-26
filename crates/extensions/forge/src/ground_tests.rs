@@ -122,6 +122,7 @@ fn session() -> Session {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     };
     Session::new(base, limits(), palette, 16).unwrap()
 }

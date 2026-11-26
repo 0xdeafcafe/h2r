@@ -21,6 +21,7 @@ pub mod method {
     pub const GROUND: &str = "forge.ground";
     pub const GROUND_BUILD: &str = "forge.ground.build";
     pub const NAV: &str = "forge.nav";
+    pub const WAVES: &str = "forge.waves";
 }
 
 /// The kinds of thing `forge.things` names, as its `kind` filter and each
@@ -53,6 +54,9 @@ pub mod refusal {
     pub const NO_KIT: &str = "forge_no_kit";
     /// The target's value is not the one `was` names.
     pub const WAS: &str = "forge_was";
+    /// `forge.waves {set}` was refused: the validator's sentence, a seat
+    /// other than the host's, or a definition that does not read.
+    pub const WAVES: &str = "forge_waves";
     /// Any other refusal: the message says why.
     pub const REFUSED: &str = "forge_refused";
 
@@ -149,6 +153,25 @@ pub struct NavParams {
 /// How many game ticks `forge.nav {generate: true}` waits for its answer:
 /// a generation builds the play form and the bots' mesh over it.
 pub const NAV_WAIT_TICKS: u64 = 3600;
+
+/// `forge.waves`: the session's wave set; with `set`, replace it with a
+/// `firefight::Def` first, or clear it with `null` (docs/game/forge-firefight.md,
+/// "The wave set"). An absent `set` reads; a `null` one clears.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WavesParams {
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub set: Option<serde_json::Value>,
+}
+
+/// A field that is there, `null` included, is `Some`.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
+}
 
 /// One monitor input. Directions are normalized axes in camera space.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -276,6 +299,20 @@ mod tests {
         }
         assert!(from_value::<ThingsParams>(json!({"block": "weapons"})).is_err());
         assert!(from_value::<ThingsParams>(json!({"changed": "yes"})).is_err());
+    }
+
+    #[test]
+    fn waves_params_tell_a_read_from_a_clear() {
+        assert_eq!(from_value::<WavesParams>(json!({})).unwrap().set, None);
+        assert_eq!(
+            from_value::<WavesParams>(json!({"set": null})).unwrap().set,
+            Some(serde_json::Value::Null)
+        );
+        assert_eq!(
+            from_value::<WavesParams>(json!({"set": {"name": "x"}})).unwrap().set,
+            Some(json!({"name": "x"}))
+        );
+        assert!(from_value::<WavesParams>(json!({"test": true})).is_err());
     }
 
     #[test]

@@ -11,8 +11,8 @@
 //!
 //! The session keeps the recipe and the stamp of its last build beside the
 //! document, not in it: the log's chain starts at the document, and the
-//! recipe is the one thing a save adds. A save writes the document with the
-//! recipe; a load takes it back out.
+//! recipe and the wave set (`waves.rs`) are what a save adds. A save writes
+//! the document with the recipe; a load takes it back out.
 use std::path::Path;
 
 use forge_doc::{
@@ -116,7 +116,8 @@ pub struct PlacedMarker {
 }
 
 impl Session {
-    /// The document with the ground recipe: what a save writes.
+    /// The document with the ground recipe: what a build reads. A save
+    /// writes it with the wave set ([`Session::variant_form`]).
     pub fn ground_form(&self) -> ForgeDoc {
         self.doc.with_ground(self.ground.recipe)
     }

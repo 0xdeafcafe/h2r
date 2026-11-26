@@ -280,6 +280,7 @@ pub fn pick_kit(
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     };
     doc.format = doc.required_format();
     begin(picked, forge_doc::session_form(&doc), maps)
