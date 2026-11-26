@@ -6234,3 +6234,46 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 
 A failed check includes the relevant server, game or driver lines. The
 join check includes any phantom wait or failure reasons.
+
+### Lines condensed on the page
+
+Single lines whose names or values the page no longer carries.
+
+- (`0x1c83d8`, [ai-control.md](../../halo1/ai-control.md)) and the game state
+- (`Observations::moving`, `firing`); perception keeps only the bits of
+- the body is within 1.5 world units (about 4.5 m: `emote::NEAR`, the
+- (`crates/live/bots/src/arms.rs`), and a pure decision (`arms::plan`) turns
+| Role | Band (`arms::preferred_range`) | Shoots from, to | Rating |
+- patience and caution from the personality, `plan_with`).
+- surfaces with flag bit 3 (`0x08`) and a breakable index (the surface's
+- `+5` byte, `0xff` none), each piece of a pane its own surface. The game
+- bot plays it. A brain's `Tuning::bounce` (`Some`: a tuning file's
+- named site (`plan_site`: the crouch spot `plan_with` would pair with it,
+- proven first, no reach limit and no walk to beat; `why` is `asked`).
+- `+0xDD0` player-set change) is never sent: its encoder `0x87d00` is only
+- every peer's XNADDR (`0x5cb80` → `0x76aa0`, `0x5d237`) and its drop loop
+- never go through it ("Phantoms in the pregame lobby"). `0x5f970` is a
+- badge with `0x1634d0`. Retail's `0x68a90` takes the lowest score across
+- `{session_id, playlist?: playlist_id, count, skill?, teams}` and gets one
+- A made-up bot (`persistent: false`) still gets an `xuid` from the server,
+- /games/bots`, the roster, `bot: true` on a game's entries, the `0x000E`
+- (`0x193560`) reads, and the game never needs to know. The mark is in
+- bool, ranks_as: Option<u32> }`. `ranked` says whether finished games move
+- whose standing it shares (`None`: its own rank playlist). The server
+- ever sees accepted bot entries, and reads `rostered` for `persistent`
+- and `level`. Host-made xuids (`live_proto::bots::is_local_xuid`) are
+- `Bots::persistent`) for choosing persistent bots, which
+- `FIRST` × `SECOND`, a number past a few clashes), emblem, colours and
+- `8894d40b...` deleted, `83d9415d...` advertised a few seconds later).
+- `<root>/logs/<time>/bots.log` and the game's whole stderr
+- `<root>/logs/<time>/Tester.log`; both paths print at the start and the
+- end. `h2 bots verdict bots.log` prints a log's verdict again (and exits
+- `--playlist` implies `--clankermatch` (slayer by default); `--count` and
+- `--map` are refused, since the playlist sets both. Everything else
+- `--dry-run`, `--no-drive`, `progress.json`, `h2 bots verdict`) is as
+- above; the merged log's plan line is `bots-test: clankermatch plan: ...`,
+- which is how `h2 bots verdict` knows which verdict to print.
+| `--playlist` | Hopper | Row | Players | Phantoms |
+- Tests:** `cargo test -p cli bots_` (the verdict from log lines, the
+- driver's presses, the arguments; Clankermatch's under `bots_drive::clankermatch`,
+- `bots_verdict::clankermatch` and `bots_test_cmd`).

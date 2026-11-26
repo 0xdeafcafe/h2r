@@ -2334,3 +2334,62 @@ file and the corresponding XAPI input log offline. Set
 `cargo test -p boot --lib recorded_stick_turns -- --ignored` after the
 capture. The ordinary `cargo test -p boot --lib coop_look` tests use
 synthetic packets and require neither a disc nor a recording.
+
+### Lines condensed on the page
+
+Single lines whose names or values the page no longer carries.
+
+- reading of the owner's retail XBE with `h2 disasm` and a string and
+- friends list's Invite and Accept (`crates/live/live-hle/src/auto.rs`; switched
+- on by `H2_COOP_AUTO_INVITE=<gamertags>` on the host and
+- `H2_COOP_AUTO_ACCEPT=<host>` on a guest). Once per lobby and per
+- invitation. They print `coop-auto: invited Bravo to session <id>` and
+- `coop-auto: accepting Alpha's invitation to session <id>`.
+| `live: session <id> advertised for <ip>:<port>` / `deleted` | the host's lobby on the server |
+| `live: xnet: key for session <id> registered` / `unregistered` | XNetRegisterKey on either side |
+| `live: qos: listening for session <id> on <ip>:<port+2>: on, N bytes of data` | the host's QosListen, on each change |
+| `live: qos: <guest> asked about session <id>, which this console isn't listening for (listening: ...)` | the host, once per unknown session: the usual cause |
+| `live: join: find session <id>: <host> hosts it at <ip>:<port> ...` (or `no such session`, `the session is <state>`) | the guest's FindFromID |
+| `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe; a host behind the guest's own NAT shows its LAN address first, then the public one if the LAN address did not answer |
+| `live: join: <ip>:<port> for session <id>: address made` / `connecting to ...` | XNetXnAddrToInAddr and XNetConnect |
+| XNet ports | Base 31000 and 31010 (`--port`, 10 up per game) on `--ip` (this Mac's LAN address, else loopback). Each game binds base to base+6 (title channels +0, +1, +5, +6; QoS and the co-op ping +2; the co-op channel +4); `NetworkConfig::validate` wants bases 7 apart on one IP. `H2_XNET_LOOPBACK_PEERS` names the others for discovery. |
+| Data | `--data <root>/<gamertag>/data` each: profiles, settings, saves. |
+| Live account | `H2_LIVE_DIR` each: `accounts.json` and `play-accounts.json` (the one account handed to the game). Without it two games on one Mac write the same `play-accounts.json`, and the one that reads last may sign in as the other. |
+| The game image | One `--out` (default `$TMPDIR/h2boot`), read by both. Only the host may build it: the guests open after the host's `live: playing as`, which `h2 play` prints after its build. Set `H2_OPT` as you do for `h2 play`, or the image rebuilds. |
+| Agent socket | `H2_AGENT` each: `~/Library/Caches/h2recomp/coop-<gamertag>.sock`. A live socket at a path is an error, so one each is required. `h2 agent --socket <path> status` (or `watch phase map`) reads each game. |
+| Pipeline cache | `~/Library/Caches/h2recomp`'s pipeline store is made for several processes (`d3d::pipeline_store`). |
+| Input | Each window takes the keyboard while focused. Pads go to the host (`--pad guest`: to the first guest); the other games get `--no-gamepads`. |
+| Sound | The guests run `--no-audio`. |
+| Map pack, Halo 1 | Not installed into the games' data (`--no-mappack --no-halo1`) unless `--extras`. |
+- `h2 coop verdict <coop.log> [--auto]` prints it again
+- (`crates/apps/cli/src/coop_verdict.rs`). Each step is seen when every game it
+| 1 | signed in to Live | each | `live: playing as <tag>` |
+| 2 | the disc's campaign levels read | each | `coop-live: N campaign levels (` |
+| 3 | Co-op Campaign opens the game's own lobby | host | `coop-live: Live menu row ... in co-op mode` |
+| 5 | the lobby is in co-op mode | host | `... lobby: mode 2 (custom game) set as 0 (co-op campaign)` |
+| 6 | level and difficulty advertised | host | `coop-live: the lobby holds ... ; advertised` |
+| 7 | the host invited the guest | host | `coop-auto: invited` (only with `--auto`) |
+| 10 | ping | each | `coop-live: ping N ms` |
+| 11 | the co-op check passed for two consoles | host | `coop-live: lobby start state 7 ... answered` |
+| 12 | the session start counted the peers | host | `session start: campaign with` |
+| 15 | the guest follows | guests | `simulation mode sync-client` |
+- `h2 coop test --players 3 --auto --late --drive` runs the whole test
+- 2. **Screens.** With `H2_UI_WATCH=1` (which `--drive` sets), a game prints
+- `ui: screen 0x09 (window 5, slot 4)` whenever the screen that takes
+- socket (`h2 agent --socket <path> ui`). On the Xbox Live menu the line
+- 3. **The script** (`crates/apps/cli/src/coop_drive.rs`). There is one driver
+- per game. Each reads its game's `ui: screen` lines and every game's
+- `coop-drive: Alpha: press a on screen 0xba row 3 (Co-op Campaign)`.
+- [local]** read in `h2 disasm`, counted on the disc, or in this repo;
+- Stage 1a** (`coop.max_players`, `H2_COOP_MAX_PLAYERS`, 2 to 16, default
+- 2, the host's value counts; `coop_probe`, `coop_live`):
+- players, two players until `OPTIONS_NEW`, then puts both back (the
+- Stage 1b** (feature `coop-players`, `crates/extensions/game/src/coop_players.rs`,
+- on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`):
+- spot `index % count`; the spawn is then followed by `0x14e970` next to
+- New points: `PLAYER_UPDATE` `0x14d3a0`, `PLAYER_SPAWN` `0x14f2e0`,
+- `PLAYER_SPAWN_LOCATION` `0x14ef00`, `PLAYER_PLACE_NEAR` `0x14e970`,
+- `SCRIPT_TELEPORT` `0x29ffb0`; global `SCENARIO` `0x4e0350`.
+- progress" part: `Charlie joined in progress at tick T (player 3)`, or
+- step, mode 4 calls `0x00069a00` with the record's `+8`/`+0xc` and
+- `0x00069b50` with the player mask `+0x5cc` and the per-player entries

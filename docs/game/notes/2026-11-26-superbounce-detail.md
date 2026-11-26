@@ -2467,3 +2467,64 @@ there are, and the pulse, the fades and the growth run on the wall clock.
 - **Frame time.** `profile` while held on Zanzibar.
 
 No game was run for this section.
+
+### Lines condensed on the page
+
+Single lines whose names or values the page no longer carries.
+
+- (`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](../superbounce.md#medals),
+- tick's gravity, is over 5.4465 units/s (the wrapper shape's `+0x20`,
+- tick length × 0.15 (`0x004407b8`).
+- (`superbounce::map_polys`). A surface's polygon is its ring by the
+- line with a hit for a bounce spot, that line's aim (`ax ay`) outranks
+- `crease` in `--json` and `superbounce.spots`; `bounce.rs`, `crease`).
+- lower sphere rests on the floor (`r / nz − r` above it, plus 0.01). The
+- `variant_ext::Decision::superbounce`, with or without the `rules`
+- running rules script first: `on touchdown(p, down, up)` for a landing,
+- `on launch(p, spot, speed)` for a landing judged a bounce, `on
+- (`superbounce_chain::spot_id`), `chain` its count and `monster` whether
+| targets | the scan is ready and the map has a spot | the kinds of seam the [targets](../superbounce.md#targets) are on, how many of them, and the flashlight's glyph twice, the double tap that switches them: `Targets: Likely (4)  (W)(W)`; it flashes for two seconds after a switch |
+| speed | moving | an arrow for the way of travel against the aim and the horizontal speed in metres a second, `(arrow) 7.2 m/s`; while falling, the fall speed after it |
+| fall | airborne and falling toward a strip (the state's `landing`) | a bar, the touchdown speed the fall gives over the speed the strip needs, full when fast enough; beside it `On seam` when the landing with the stick held as it is ([the flight model](../superbounce.md#the-flight-model)) is caught and drifting the seam's way, `(arrow) Drift` when it is caught and is not, `Out of reach` (no arrow, the bar kept) when it is off the seam and the stick cannot bring it in (the prediction's `Course::Miss`), else an arrow for the way to push and how far the landing is from the seam's [landing point](../superbounce.md#the-landing-point), `(arrow) 0.40 m`; no percentage follows |
+| miss | after a landing by a strip that did not bounce: held three seconds, then until the next real fall toward a strip (falling at 1 unit/s or faster with a landing predicted), five seconds at most; a bounce takes it down at once. A hop, a jump or a step off a kerb in those three seconds leaves it, as does a landing with no line to give. Between lives its clock stops, so it stays through the respawn countdown | `Not primed`, `Missed seam by 0.31 m` (the origin's distance to the edge), `Too slow: 12.4 of 16.5 m/s` (the speed in and the strip's need), `No bounce: on seam at 17.2 m/s`, or `Fell through at 17.2 m/s`, which outranks the others: it replaces any line, and only a bounce replaces it. In the hold another miss replaces the line only with a higher speed in |
+- from `crates/extensions/game/src/superbounce_world.rs` (`frame`,
+- `targets`, `figures`, and the lock-on's `LockMarks`): a bold ring on the
+- subset of the scan (`superbounce_mode::marked`, applied where the map's
+- a strip is marked by its `verified` flag (`superbounce_mode::verified`:
+| learned | the sim's training closed on it: a `learned` line with a hit in the map's learned file ([bounce-search.md](../bounce-search.md)) |
+- `guide`; the state's `phase` also feeds the readout when the guide is
+- (`superbounce_guide::place`, placed each tick by the mode,
+- `superbounce_mode::takeoff_for`, into the state's `takeoff`).
+- (`content/modes/rules/superbounce.rules`), carried in the
+| `velocity` | bool, on | no speed row |
+| `alignment` | bool, on | no fall row: no bar, no steer line |
+| `miss_info` | bool, on | no miss row |
+| `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](../superbounce.md#medals)) |
+| `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](../hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
+| `pogo` | bool, on | no Pogo Stick: the secondary weapon is the variant's own ([pogo-stick.md](../pogo-stick.md)) |
+| `pogo_style` | `unsc`, `covenant` or `forerunner`; `unsc` | picks the stick's look; it has no off |
+- (`superbounce.fall_assist`, off by default, a row at the end of the
+- Controls list that a press turns on or off; `crates/extensions/game/src/setting_defs.rs`,
+- `crates/extensions/game/src/video_screen.rs`), holding X in the air
+- asks for X. The setting is read live (`follow_setting`); the
+- `superbounce-assist` feature in `H2_FEATURES` stays the kill switch, which
+- is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
+- and `superbounce.assist_test`
+- model (`crates/extensions/game/src/superbounce_flight.rs`): the approach
+- 1. the fall speed gains 4.171 / 30 units/s (`FALL_GRAVITY`, the sim's
+- fall model, `sim_bench::drops`);
+- (`AIR_TOP`) by at most 0.035 units/s (`AIR_ACCEL`, 1.05 units/s²);
+- a stick under 0.2 (`MIN_STICK`) is no stick, so a let-go stick
+- one catch) is built in `crates/live/superbounce`. The state is built:
+- `superbounce_mode::State` carries `charge`, `verb`,
+- `nav_target`, `landing`, `last_landing`, `off_spot`, `still_ticks` and
+- `standing_fits` (Code: `crates/extensions/game/src/superbounce_charge.rs`
+- `superbounce_capsule.rs` for the capsule test, `superbounce_assist.rs`'s
+- `predict` for the predicted landing), and `superbounce.state` returns
+- "Lock-on") is built in `superbounce_world.rs`.
+- reason and tick, while lost), `still_ticks`, `verb` (`LetGoOfCrouch`
+- while `under`, `WalkOutToStand` while `held`, `KeepMoving`, and
+- seam in its place (`superbounce_world::lock_shown`). The lock-on is
+- AI-generated placeholders (`art/announcer`); how they queue with the
+- `0x000c5115` and `0x000c52be` and the converted Halo 1 scope reads
+- `pulse`, `hold`), the button, the pulse's age and front, the growth, the
