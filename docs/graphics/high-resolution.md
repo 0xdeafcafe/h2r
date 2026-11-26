@@ -700,6 +700,9 @@ stays valid:
   words in guest pixels. Unchanged.
 - **Scissors.** `SetScissors` (`0x3f8760`) and the device's scissor region
   work in guest pixels. The view scales the result.
+  A fitted draw's clip edge on the canvas boundary (0 or 640/480) of a shrunk
+  axis maps to the display boundary (`UiFit::map_rect`), so a full-canvas clip
+  spans a wide window; interior edges are fitted.
 - **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)).
   One rule places every draw: `render_bridge::ui_layout` fits the canvas
   uniformly — `min(w/640, h/480)` display pixels per guest pixel
