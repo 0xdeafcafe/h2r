@@ -6592,8 +6592,11 @@ impl<B: Backend> Device<B> {
                 }
             }
             // A native producer has no guest draw to carry its pass into a
-            // retaining replay: the backend carries the packet instead.
-            let carried = native.is_some()
+            // retaining replay: the backend carries the packet instead. A
+            // sorted pool's guest draw is replaced by the pass as one is,
+            // so a replaying sink carries it the same way
+            // ([`crate::scene_sink::carries_native_stage`]).
+            let carried = (native.is_some() || plan.stage == timeline::native::Stage::Water)
                 && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
             let commands = self.backend.prepare_external(
                 binding.surfaces.clone(),
