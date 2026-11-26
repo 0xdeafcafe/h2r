@@ -1693,12 +1693,14 @@ mod tests {
             pinned: false,
         };
         let fit = canvas.fit(None).unwrap();
+        // The view's right edge is the canvas's, so it reaches the
+        // display's edge (docs/graphics/high-resolution.md, "Scissors").
         assert_eq!(
             fit.map_rect(rect),
             PixelRect {
                 x: 360,
                 y: 0,
-                width: 240,
+                width: 280,
                 height: 480
             }
         );

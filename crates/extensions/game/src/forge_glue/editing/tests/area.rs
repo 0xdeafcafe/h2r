@@ -510,27 +510,28 @@ fn a_flags_properties_offer_show_in_play_and_on_writes_one_show_op() {
         .iter()
         .find(|row| row.label == "Show in play")
         .expect("a flag has Show in play");
-    // A flag of the map is not shown in play.
-    assert_eq!(row.value.as_deref(), Some("Off"));
+    // The hill's flag is one the document added (the base has none), so
+    // it is shown in play until an op turns it off.
+    assert_eq!(row.value.as_deref(), Some("On"));
     let sheet::Act::Pick(pick) = &row.act else {
         panic!("Show in play is a picker")
     };
     assert_eq!(pick.values, ["On", "Off"]);
-    assert_eq!(pick.choices[0], Choice::Set(Prop::ShowInPlay, 0));
+    assert_eq!(pick.choices[1], Choice::Set(Prop::ShowInPlay, 1));
     let ops = e.session.document().ops.len();
-    e.choose(5, pick.choices[0].clone()).unwrap();
+    e.choose(5, pick.choices[1].clone()).unwrap();
     e.poll(5);
-    assert!(e.session.shown(id));
+    assert!(!e.session.shown(id));
     assert_eq!(e.session.document().ops.len(), ops + 1);
     let Some(Edit::Entry(EntryOp::Show { on, .. })) =
         e.session.document().ops.last().map(|op| op.edit.clone())
     else {
         panic!("the last op is a show")
     };
-    assert!(on);
-    // Its Properties now say On, and Off turns it back.
+    assert!(!on);
+    // Its Properties now say Off, and On turns it back.
     script.press(&mut e, "properties").ok();
-    e.choose(6, Choice::Set(Prop::ShowInPlay, 1)).unwrap();
+    e.choose(6, Choice::Set(Prop::ShowInPlay, 0)).unwrap();
     e.poll(6);
-    assert!(!e.session.shown(id));
+    assert!(e.session.shown(id));
 }
