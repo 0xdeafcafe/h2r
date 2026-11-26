@@ -22,6 +22,12 @@ const WEAPONS: &[&str] = &[
 const PROBE_SCRIPT: &str = "ff_probe_place";
 const PROBE_SQUAD: &str = "ff_probe_elites";
 const SQUAD_SLOTS: usize = 16;
+/// The kit's record of the classes it built: one squad per palette row,
+/// `ff_class_<name>`, whose character is that row. The guest reads the
+/// class table from them (`firefight::guest::read_kit`).
+pub(crate) const CLASS_PREFIX: &str = "ff_class_";
+/// A squad name is 32 characters with its terminator.
+const MAX_CLASS_NAME: usize = 31 - CLASS_PREFIX.len();
 const COVENANT_TEAM: u16 = 3;
 /// The orders the guest's `hunt` entry finds by name (`AI_SET_ORDERS`,
 /// 0x275cb0): `ff_hunt_NN` sends a squad at base NN.
@@ -41,7 +47,7 @@ pub(crate) fn prepare<R: Read + Seek>(
     drops: Vec<Zone>,
     bases: Vec<Zone>,
     elite: TagId,
-    classes: &[TagId],
+    classes: &[(&str, TagId)],
     probe: bool,
 ) -> Result<AiBlocks, String> {
     let location = map
@@ -80,7 +86,13 @@ pub(crate) fn prepare<R: Read + Seek>(
     let character = character::elite(unit, weapon).map_err(|e| format!("author Elite: {e}"))?;
     let mut fields = ScenarioBlocks { fields: Vec::new() };
     let weapon_index = weapon_slot(map, &root, weapon, &mut fields)?;
-    let squads = squads(&drops, weapon_index, probe)?;
+    let mut squads = squads(&drops, weapon_index, probe)?;
+    if !probe {
+        let names: Vec<&str> = std::iter::once("elite")
+            .chain(classes.iter().map(|(name, _)| *name))
+            .collect();
+        squads.extend(class_squads(&drops, weapon_index, &names)?);
+    }
     // The base zones follow the drop zones, so a squad's zone index is a
     // drop zone and base N's zone is `drops.len() + N`.
     let base_zones: Vec<usize> = (drops.len()..drops.len() + bases.len()).collect();
@@ -91,7 +103,9 @@ pub(crate) fn prepare<R: Read + Seek>(
         orders,
         zones,
         squads,
-        character_palette: std::iter::once(elite).chain(classes.iter().copied()).collect(),
+        character_palette: std::iter::once(elite)
+            .chain(classes.iter().map(|(_, tag)| *tag))
+            .collect(),
         ..Default::default()
     };
     // Preserve the map's scripting data (including point sets) and squad
@@ -244,6 +258,36 @@ fn squads(zones: &[Zone], weapon: i16, probe: bool) -> Result<Vec<Squad>, String
         });
     }
     Ok(squads)
+}
+
+/// The class record: squad `ff_class_<name>` for each palette row, in
+/// palette order, `names[row]`. They place no one (no count, no slot);
+/// each is shaped like a slot squad so the engine reads them as it does
+/// those.
+fn class_squads(zones: &[Zone], weapon: i16, names: &[&str]) -> Result<Vec<Squad>, String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(names.len());
+    for (row, name) in names.iter().enumerate() {
+        let valid = !name.is_empty()
+            && name.len() <= MAX_CLASS_NAME
+            && name.as_bytes()[0].is_ascii_lowercase()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if !valid {
+            return Err(format!(
+                "class name {name:?} must be a lowercase identifier of at most {MAX_CLASS_NAME} characters"
+            ));
+        }
+        if !seen.insert(*name) {
+            return Err(format!("class {name} is named twice"));
+        }
+        let mut squad = squads(zones, weapon, false)?.swap_remove(0);
+        squad.name = format!("{CLASS_PREFIX}{name}");
+        squad.character = i16::try_from(row).map_err(|_| "class palette index overflow")?;
+        out.push(squad);
+    }
+    Ok(out)
 }
 
 fn probe_startup<R: Read + Seek>(

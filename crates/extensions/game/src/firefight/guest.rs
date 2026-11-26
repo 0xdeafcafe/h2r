@@ -98,9 +98,11 @@ pub const HUNT_PREFIX: &str = "ff_hunt_";
 pub fn hunt_order_name(base: u8) -> String {
     format!("{HUNT_PREFIX}{base:02}")
 }
-/// The stage-one kit's classes by character palette index: it authors one
-/// palette row, the Elite (`firefight-kit`, `ai::prepare`).
-pub const KIT_CLASSES: &[(&str, u16)] = &[("elite", 0)];
+/// The kit's record of the classes it built: a squad `ff_class_<name>`
+/// per character palette row, whose character is that row
+/// (`firefight-kit`, `ai::class_squads`). The Elite is row 0 and each
+/// transplanted class follows in the order the kit kept them.
+const CLASS_PREFIX: &str = "ff_class_";
 
 /// One kit zone as the scenario holds it.
 #[derive(Clone, Debug, PartialEq)]
@@ -126,6 +128,10 @@ pub struct KitLayout {
     pub bases: Vec<KitZone>,
     /// Rows in the character palette.
     pub characters: u16,
+    /// The classes the kit built and each one's palette row, from its
+    /// `ff_class_` squads in scenario order. A row outside the palette
+    /// is not a class; a name recorded twice keeps its first row.
+    pub classes: Vec<(String, u16)>,
     /// The team of the first slot's squad.
     pub team: u8,
     /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
@@ -139,11 +145,7 @@ impl KitLayout {
         Kit {
             zones: self.zones.iter().map(|z| z.point).collect(),
             bases: self.bases.iter().map(|z| z.point).collect(),
-            classes: KIT_CLASSES
-                .iter()
-                .filter(|(_, slot)| *slot < self.characters)
-                .map(|(class, slot)| (class.to_string(), *slot))
-                .collect(),
+            classes: self.classes.iter().cloned().collect(),
             team: self.team,
         }
     }
@@ -186,10 +188,25 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     if scnr == 0 {
         return Ok(None);
     }
+    let characters = m
+        .u32(scnr + scenario::CHARACTER_PALETTE.0)?
+        .min(u16::MAX.into()) as u16;
     let mut squads = [None; SQUAD_SLOTS];
     let mut team = None;
+    let mut classes: Vec<(String, u16)> = Vec::new();
     for (index, at) in block(m, scnr, scenario::SQUADS)?.into_iter().enumerate() {
-        let Some(slot) = ordinal(&name(m, at)?, SLOT_PREFIX).filter(|&s| s < SQUAD_SLOTS) else {
+        let squad_name = name(m, at)?;
+        if let Some(class) = squad_name.strip_prefix(CLASS_PREFIX) {
+            let row = m.u16(at + scenario::SQUAD_CHARACTER)?;
+            if !class.is_empty()
+                && row < characters
+                && !classes.iter().any(|(known, _)| known == class)
+            {
+                classes.push((class.to_string(), row));
+            }
+            continue;
+        }
+        let Some(slot) = ordinal(&squad_name, SLOT_PREFIX).filter(|&s| s < SQUAD_SLOTS) else {
             continue;
         };
         squads[slot] = Some(index as u16);
@@ -238,9 +255,6 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         .take_while(|(i, (n, _))| i == n)
         .map(|(_, (_, zone))| zone)
         .collect();
-    let characters = m
-        .u32(scnr + scenario::CHARACTER_PALETTE.0)?
-        .min(u16::MAX.into()) as u16;
     let mut hunt_orders: Vec<Option<u16>> = Vec::new();
     for (index, at) in block(m, scnr, scenario::ORDERS)?.into_iter().enumerate() {
         let Some(base) = ordinal(&name(m, at)?, HUNT_PREFIX) else {
@@ -256,6 +270,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         zones,
         bases,
         characters,
+        classes,
         team,
         hunt_orders,
     }))
