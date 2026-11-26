@@ -650,6 +650,13 @@ Gaps, named:
 - That a model's node frames under the pose (`bodies::nodes`) put every
   biped model upright and facing along its yaw, and which models a
   census entry's tag rule reads.
+- The Appearance screen's name. The picture draws only when the active
+  screen is `monitor_model::APPEARANCE_SCREEN`, which is `None`, so it
+  draws nowhere yet and no other screen's model widget (the lobby's
+  players, the profile preview) gets it. To set it: open the page in a
+  running game, run `h2 agent ui.stack`, read the top screen's tag name,
+  put it in `APPEARANCE_SCREEN` and give `monitor_model::gpu::active_screen`
+  a reader of the same screen.
 - That the Appearance page's picture shows in the widget's right share
   at the page's own widths, and which model widgets offer a view.
 - That the models read in the background do so in the mounted game
