@@ -5526,24 +5526,20 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
 | `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` is a clip ID or two tick bounds | Returns `{film,url}` after publication. Visibility accepts `private`, `link` or `public`. A participant shares the existing host film by link. |
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
-| `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
-| `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
 | `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
-| `theater.seek` | `{"tick":900}` or `{"tick":30,"source":"boot"}` on a film watched in the game | a tick ahead of the one shown runs forward from it (`seek.source` is `forward`); a tick behind, or `"source":"boot"`, queues the film's options again, and the film plays from its game's first update to the target (`seek.source` is `boot`) |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` and `"source":"boot"` | a tick ahead of the one shown runs forward from it (`seek.source` is `forward`); a tick behind, or `"source":"boot"`, queues the film's options again in the same game, and the film plays from its game's first update to the target (`seek.source` is `boot`). The camera and timeline state carry across |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
 | `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
 | `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |
 | `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
-| `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.start_point.capture` | `{"path":"/tmp/a.sp","key":"text","ids":"0a0b"}`; `ids` is optional hex, at most 64 bytes | on the game agent, at a tick boundary: writes the arena and the extension records as a tagged start point and returns `{path, tick, arena_hash, arena_bytes, ext_bytes, stored_bytes}`. Refused with no arena or no tick |
 | `theater.start_point.load` | `{"path":"/tmp/a.sp","key":"text","film_hash":"<16 hex>"}`; `film_hash` is optional | on the game agent: checks the tag, digest, size and hash before touching the game, writes the arena and records back, then returns `{tick, arena_hash, loaded_hash, matches, error?}`. `matches` is `StartPoint::check_loaded`; a file that loads but hashes differently reports `matches:false` and the game keeps the loaded state. A refused file changes nothing |
 | `theater.status` | `{}` | `{default_recording, tape, in_game, games_cut, last_discard, notes, failure, watch_failure}` on any game or playback agent: whether the session records every game by default, the running tape's path, whether a game is on it, the films cut so far (paths, oldest first), why the last game or tape went without a film, the outside changes the recording carried on through, and the failure that stopped it. `watch_failure` is why the last film watched in this game stopped before the viewer left it (a start or digest divergence): the film is left like `theater.end`, the game goes on |
-| `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
-| `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
+| `theater.measurements` | `{}` | timings and page counts from the instrumented recorder or playback child |
+| `theater.verify` | `{"from":1,"to":900}`, both optional | plays the film from its game start in an isolated, unpaced player and returns `{ticks, digests_checked, first_divergence}` |
 | `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`. Both fields are optional | `{path, width, height, tick}` for a clean PNG |
 | `theater.clip.mark` | `{"in":300}`, `{"out":900}`, or `{"clear":true}` | `{in, out}` with null for each unset mark |
 | `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`. Optional `path`. Use 30 or 60 fps and `png` or `mp4` | `{job}` once the offline player starts |
@@ -5559,30 +5555,15 @@ Use them on a local game; a load writes the arena of a running match, so a
 co-op or Live session would desync. Without `film_hash`, load takes the
 hash the file declares, so only the tag and digest are checked.
 
-Prepare accepts a local library ID or `live:<game-id>` for a host film
-downloaded into the library. It replays the entire film from boot in an
-isolated process without a window or realtime pacing. Prepare progress is
-`{id,status,tick,length_ticks}`. The status is `idle` before a job starts,
-`starting` while it boots, `running` while it replays, `complete` after
-verified replay and sidecar finalization, or `failed` with an `error`
-message. The ticks count from boot. The film length becomes available
-after the worker resolves the library entry. The library agent keeps
-each job's final status for its lifetime and a new request can retry it.
-For a command-line Prepare with `--socket PATH`, use `theater.state {}`
-on that socket to read its transport tick directly.
-
-Verification counts checks within the inclusive tick bounds. The verifier starts
-at boot and reports the first divergence even when it prevents reaching the
-requested range. With `ring: true`, a linear reference pass saves the whole-RAM
-hash at each successful capture point in range. A second pass checks that hash
-before and after capturing, restores the ring entry, and checks the restored RAM.
-The active player's transport remains usable. A clean run returns
+Verification counts the ticks and the gameplay digests checked within the
+inclusive tick bounds. The verifier plays from the film's game start and
+reports the first divergence even when it prevents reaching the requested
+range. The active player's transport remains usable. A clean run returns
 `first_divergence: null`. A mismatch returns its tick and reason.
 
 Screenshots use scale 1 by default and save the latest published game picture.
 Scales 2 through 4 render the view at a larger internal raster. The independent
-observer can redraw from its current state. Guest-drawn views need a paused
-tick and a warm return point for the ring's redraw. When the redraw is
+observer can redraw from its current state. When the redraw is
 unavailable, the method reports why. The default output is a new PNG in the
 film library's `screenshots` directory.
 
@@ -5606,9 +5587,10 @@ These files stay on the user's machine.
 `theater.compat` is a read method on the library agent. It accepts a local
 film ID or `live:<game-id>` for a cached host film. States are `playable` and
 `unavailable`. Reasons are strings, and `contract` and `hooks` are null
-when the recording supplies no digest. The preflight checks the XBE,
-simulation ABI, guest image contract, and required external start files.
-The replay verifies installed hooks before entering the guest.
+when the recording supplies no digest. The preflight checks the XBE, the
+simulation ABI and that the film has a game start; any installed image of
+the XBE plays a film that passes. The replay verifies installed hooks
+before entering the guest.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport, camera and HUD
@@ -5645,9 +5627,8 @@ Tick zero is boot. `speed` is the requested multiplier. `speed_reached`
 is completed ticks per wall second divided by the film's tick rate and
 capped at the requested speed. It is null before a half-second sample
 or during a seek or step, and zero while held. A paused seek holds at
-its target until play. The HLE
-compares the recorded call index and game-thread hash samples during
-fast-forward ([theater.md](../game/theater.md)).
+its target until play. Fast-forward checks the film's gameplay digests
+([theater.md](../game/theater.md)).
 
 The desktop playback socket also exposes these host page methods. They
 work while the guest is paused.
@@ -5657,44 +5638,30 @@ work while the guest is paused.
 | `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
 | `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
 
-The `seek` object records `target`, `from_tick`, `source`, `warm`,
-`remaining_ticks` and `restore_ms`. `seeking` is true while a restart
-is pending or the child is catching up. A replacement target keeps the
-original departure tick. Direct socket clients reconnect after the
-restart and can then read progress or cancel. The seek object remains
-available at the target with zero ticks left. Linear playback starts
-with `seek: null`. The cold player reports `source: "keyframe"` for a
-compatible embedded keyframe, `"sidecar"` for a local cache frame, or
-`"boot"` for replay from startup, with `warm: false`.
-`restore_ms` times loading the snapshot into the machine and checking
-its restored state. It is null before restore and on the boot route.
-Warm restores report `warm: true` and use `source: "ring"` when they
-load a session entry. A blocked restore or a changed guest disk hands the
-target to a fresh child. A RAM or replay mismatch also disables warm
-restores for the rest of the viewing session.
-The keyframe inventory lists embedded and sidecar frames, the sidecar
-size, and all recorded D3D barrier ticks, including failed captures.
+The `seek` object records `target`, `from_tick`, `source` and
+`remaining_ticks`. `seeking` is true while the film's game is queued
+again or the player is running forward. A replacement target keeps the
+original departure tick. The seek object remains available at the target
+with zero ticks left. Linear playback starts with `seek: null`. `source`
+is `forward` for a run on from the tick shown and `boot` for one from
+the film's game start.
 
 `theater.measurements` is a read on the recorder's or playback child's
 own socket when the run uses the Theater measurement switch
 ([switches.md](switches.md#tools)). Its fields are:
 
 - `child_to_first_slice_ms` from the playback child entry to its first
-  guest scheduler slice, including disk setup and any cold restore.
+  guest scheduler slice.
 - `boot_to_match_start_ms` from configured boot to the first recorded
   match tick, and `match_start_tick`. These stay null when the run
-  does not pass through that tick, including a restore past it.
+  does not pass through that tick.
 - `fast_forward_ms` and `fast_forward_ticks` from the first scheduler
-  slice after boot or restore to the seek target. Both are null until
-  a forward replay reaches its target.
-- `captures` with `{tick, slices, elapsed_ms, published, reason}`. The
-  recorder times the capture point through writing the barrier and any
-  sidecar frame scheduled there. The reason field reports blockers and
-  capture errors. `page_windows` with
-  `{seconds, from_tick, to_tick, pages}` counts distinct physical guest
-  pages written in each 5 s and 30 s window of match ticks.
-  `captures_omitted` and `page_windows_omitted` count entries older
-  than the 256 retained in each list.
+  slice after boot to the seek target. Both are null until a forward
+  replay reaches its target.
+- `page_windows` with `{seconds, from_tick, to_tick, pages}` counts
+  distinct physical guest pages written in each 5 s and 30 s window of
+  match ticks. `page_windows_omitted` counts entries older than the 256
+  retained.
 
 ```sh
 h2 agent theater.state '{}' --socket "$film_run/play.sock"

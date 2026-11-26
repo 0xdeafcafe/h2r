@@ -338,7 +338,7 @@ impl hooks::Feature for CoopJip {
             // The conversation with the peer is on the film network tape.
             // Remaining Track fields affect log messages only. In-flight
             // guest calls are still rejected by the machine quiescence test.
-            if arm.film && crate::theater::in_keyframe() { None } else { arm.snapshot_live() }
+            if arm.film && crate::sim_bounces::in_fork() { None } else { arm.snapshot_live() }
         }));
 
         if stages.lift {

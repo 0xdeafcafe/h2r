@@ -169,7 +169,10 @@ pub fn run_sim(
     )
 }
 
-/// Boots a host film with local HLE responses and an isolated restored disk.
+/// Plays a film from its game start: no machine part is restored and no
+/// startup decision is read. The data directory is empty and the game's
+/// first map request is answered with the film's options. A film with no
+/// game start is refused ([`theater::NO_GAME_START`]).
 pub fn run_theater(
     xbe: &[u8],
     image: &Path,
@@ -178,32 +181,11 @@ pub fn run_theater(
     replay: theater::Replay,
     child_started: std::time::Instant,
 ) -> Result<RunReport> {
-    let mut reader = film::Reader::open(&replay.path)?;
-    let lan = LiveConfig {
-        enabled: !reader.header.xnet_addr.is_empty(),
-        ..LiveConfig::default()
-    };
-    let mut opts = opts.clone();
-    // A film with a game start plays from it: no machine part is restored
-    // and no startup decision is read. The data directory is empty and the
-    // game's first map request is answered with the film's options.
-    if let Some(start) = film::file::game_start_of(&replay.path)? {
-        anyhow::ensure!(host.level.is_none(), "a film plays the level its options name");
-        host.level = Some(level_boot::Request::recorded(&start.options)?);
-        let lan = LiveConfig::default();
-        return run_configured(xbe, image, &opts, host, (&lan, None), None, Some((replay, None, child_started)));
-    }
-    let startup = theater::Startup::read(&mut reader)?;
-    let legacy_lod = startup.as_ref().and_then(theater::Startup::legacy_lod_multiplier);
-    let sim = match startup {
-        Some(start) => start.restore(&mut opts, &mut host)?,
-        None => {
-            anyhow::ensure!(reader.header.meta.source == film::Source::Host,
-                "v1 local films lack the controller input stream");
-            None
-        }
-    };
-    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod, child_started)))
+    let start = film::file::game_start_of(&replay.path)?.context(theater::NO_GAME_START)?;
+    anyhow::ensure!(host.level.is_none(), "a film plays the level its options name");
+    host.level = Some(level_boot::Request::recorded(&start.options)?);
+    let lan = LiveConfig::default();
+    run_configured(xbe, image, opts, host, (&lan, None), None, Some((replay, child_started)))
 }
 
 /// A film played from its game start has the guest's storage writes go to a
@@ -244,16 +226,14 @@ fn run_configured(
     mut host: Host,
     (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
-    replay: Option<(theater::Replay, Option<f32>, std::time::Instant)>,
+    replay: Option<(theater::Replay, std::time::Instant)>,
 ) -> Result<RunReport> {
     register_image_entries();
     let boot_started = std::time::Instant::now();
-    let (replay, legacy_lod, child_started) = match replay {
-        Some((replay, lod, start)) => (Some(replay), lod, Some(start)),
-        None => (None, None, None),
+    let (replay, child_started) = match replay {
+        Some((replay, start)) => (Some(replay), Some(start)),
+        None => (None, None),
     };
-    #[cfg(not(feature = "gpu"))]
-    let _ = legacy_lod;
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
@@ -458,8 +438,6 @@ fn run_configured(
             Decision::Quiet => false,
         }
     };
-    let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
-        .map(|c| (c.films_dir.clone(), c.cap_bytes));
     let film = if replaying || film_path.is_some() {
         let stamp = running_stamp();
         let clock = k.clock();
@@ -815,9 +793,6 @@ fn run_configured(
         }
         (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
-    if let Some(session) = &film {
-        session.record_startup(opts, &host, level.as_ref(), sim_mode.as_ref());
-    }
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
     let perf_from = perf_from_var
         .as_deref()
@@ -992,11 +967,6 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let single = opts.d3d && host.gfx_view.is_some()
         && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
-    #[cfg(feature = "gpu")]
-    // A legacy film's recorded geometry multiplier. The guest walk is retail
-    // otherwise, whatever the local display choice (lod_distance), so no
-    // run forces retail for the network, film or lockstep of it.
-    let reference_lod = legacy_lod;
     #[cfg(feature = "gpu")]
     // The display can draw different geometry than the copy the guest
     // readbacks read: every non-single-copy drawing view.
@@ -1329,8 +1299,6 @@ fn run_configured(
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             #[cfg(feature = "gpu")]
-            reference_lod,
-            #[cfg(feature = "gpu")]
             d3d_display: single,
             #[cfg(feature = "gpu")]
             viewer_lod,
@@ -1608,6 +1576,14 @@ fn run_configured(
     if let (Some(theater), Some(a)) = (&host.theater_playback, &agent) {
         theater.add_playback_methods(&a.agent);
     }
+    // A film player queues the film's game again for a seek behind the
+    // tick shown (`theater::Session::requeue`).
+    if replaying
+        && let (Some(f), Some(a)) = (&film, &agent)
+        && let Some(calls) = a.sim.as_ref().and_then(|s| s.calls())
+    {
+        f.attach_calls(calls);
+    }
     if !replaying && let Some(a) = &agent {
         // A session that records its games can watch a film in itself:
         // it queues the film's game through the agent's guest calls and
@@ -1667,9 +1643,6 @@ fn run_configured(
         );
         if allow_attract && mode == bink_hle::Mode::Playback {
             attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
-        }
-        if let Some(session) = &film {
-            session.record_movies(opts, mode);
         }
         Some(hle)
     } else {
@@ -1935,25 +1908,12 @@ fn run_configured(
     let bounce_fork = sim_mode
         .as_ref()
         .is_some_and(|s| s.matched().config.bounces.is_some());
-    let shelf = if agent.is_some() || film.is_some() || bounce_fork {
+    let shelf = if agent.is_some() || bounce_fork {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
-        if let Some(session) = &film {
-            let (dir, cap) = viewer_cache.unwrap_or_else(|| {
-                let cap = match host.settings.as_deref() {
-                    Some(settings) => setting_defs::theater_cache_cap_bytes(Some(settings)),
-                    None => {
-                        let (settings, _) = setting_defs::load(&opts.data_root, &[]);
-                        setting_defs::theater_cache_cap_bytes(Some(&settings))
-                    }
-                };
-                (film_dir(), cap)
-            });
-            session.mount_sidecar(&dir, cap, &key, &opts.data_root)?;
-        }
-        // Film keyframes also need a build key without a standalone snapshot directory.
+        // The bounce search's forks need a build key without a standalone
+        // snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
-            (film.is_some() || bounce_fork)
-                .then(|| snapshot_glue::Shelf::new(&opts.data_root, key))
+            bounce_fork.then(|| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
         if let (Some(a), Some(shelf)) = (&agent, &shelf) {
             a.agent.set_snapshots(Box::new(shelf.clone()));
@@ -2003,24 +1963,14 @@ fn run_configured(
     if sampling::seconds_from_env().is_some() {
         sampling::set_game_thread();
     }
-    let mut film_slices = if let Some(f) = &film
-        && let Some(frame) = f.take_keyframe()
-    {
-        let shelf = shelf.as_ref().context("film keyframe requires a snapshot build key")?;
-        let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
-        let slices = f.restore_keyframe(frame, &mut machine, agent.as_ref())?;
-        plan.restore_presentation_pages(&loaded.runtime, &installed)?;
-        slices
-    } else {
-        0
-    };
+    let mut film_slices = 0;
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
     // Cut the game in play and discard the tape even when the loop below
     // exits by error or panic, skipping its teardown
     // (`theater::Session::seal_on_drop`).
     let film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
-    let first_slice = film_slices;
-    let mut next_slice = film_slices;
+    let first_slice = 0;
+    let mut next_slice = 0;
     while next_slice < opts.max_slices {
         let slice = next_slice;
         next_slice += 1;
@@ -2029,47 +1979,8 @@ fn run_configured(
             if measure_recording {
                 f.measure_recording_pages(&loaded.runtime)?;
             }
-            if let Some(shelf) = &shelf {
-                let lobby_boundary = || agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
-                let parts = (&mut m, &snap_host, &plan, &rebuilders);
-                let machine = move || {
-                    let (m, host, plan, rebuilders) = parts;
-                    host.machine(m, plan, rebuilders, shelf, d3d_diag::presents())
-                };
-                if replaying {
-                    match f.replay_capture_point(slice, lobby_boundary, machine) {
-                        Ok(Some((tick, barrier))) => {
-                            let mut machine = snap_host.machine(
-                                &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
-                            );
-                            f.capture_ring(tick, slice, audio_idle, barrier, &mut machine, agent.as_ref());
-                        }
-                        Ok(None) => {}
-                        Err(error) => f.barrier_failed(error)?,
-                    }
-                } else if f.capture_point_due() {
-                    f.try_capture_point(slice, lobby_boundary(), &mut machine());
-                }
-            }
             match f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
                 theater::SliceAction::Run => {}
-                theater::SliceAction::Seek(target) => {
-                    if let Some(shelf) = &shelf {
-                        let mut machine = snap_host.machine(
-                            &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
-                        );
-                        if let Some((restored, idle)) = f.try_warm_seek(target, &mut machine, agent.as_ref()) {
-                            plan.restore_presentation_pages(&loaded.runtime, &installed)?;
-                            next_slice = restored;
-                            film_slices = restored;
-                            audio_idle = idle;
-                            continue;
-                        }
-                    }
-                    // Teardown hands the exact target and viewer state to the parent.
-                    host_stop = true;
-                    break;
-                }
                 theater::SliceAction::Stop => {
                     host_stop = true;
                     break;

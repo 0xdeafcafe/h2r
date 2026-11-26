@@ -16,7 +16,6 @@ An `impl.` name is an implementation switch
 | Switch | What |
 |---|---|
 | Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_LIGHTING`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
-| `H2_THEATER_RING_MIB` | Overrides the viewer’s `theater.ring_mib` setting for this launch. The [Theater ring](../game/theater-design.md#the-session-ring) defaults to 256 MiB. `H2_THEATER_RING=0` turns the ring off; the CLI's `theater verify` and export set it explicitly. Set a persistent budget with `h2 settings set theater.ring_mib 128`. Zero disables ring capture. |
 | `H2_FPS`, `h2 play --fps` | Window presentation rate. Choose 30 (default), 60, 120 or uncapped. All four use real-time guest pacing in normal play. Above 30 the paced frame owner (`frame-scene.sink`, on by default) draws display frames between sealed scenes ([framescene.md](../graphics/framescene.md), section 7); without it every scene is shown once. |
 | `h2 play --unpaced` | Disables the shell's guest pacing for throughput measurements. A fast host can simulate more than 30 ticks per wall second. |
 | `H2_LIGHTING` | Retail (default) or E3 on the Video row. The startup values `relight-on` and `relight-off` lock the selected lamp state for a [single-BSP review](../graphics/relighting-review.md). The native world stage requires a valid installed bake. Both values request a separate retail readback target. |

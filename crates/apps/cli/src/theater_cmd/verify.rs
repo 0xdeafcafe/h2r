@@ -1,9 +1,9 @@
 //! Replay verification reuses the CLI child's launch configuration. Each
-//! request gets its own initially restored data directory and agent socket.
+//! request gets its own empty data directory and agent socket.
 use super::{Options, Temp};
 use agent_proto::theater::{VerificationReport, Verify};
 use anyhow::{Context, Result, ensure};
-use boot::theater::{Restart, VerificationMode};
+use boot::theater::{Launch, VerificationMode};
 use std::{fs::File, path::Path, process::Command, sync::Arc};
 
 const REQUEST: &str = "verify-request.json";
@@ -12,10 +12,9 @@ const REPORT: &str = "verify-report.json";
 pub(super) fn mode(opts: &Options, work: &Path) -> Result<VerificationMode> {
     let input = work.join(REQUEST);
     if input.try_exists()? {
-        let (request, baseline) = serde_json::from_reader(File::open(input)?)?;
+        let request = serde_json::from_reader(File::open(input)?)?;
         return Ok(VerificationMode::Worker {
             request,
-            baseline,
             report: work.join(REPORT),
         });
     }
@@ -25,35 +24,15 @@ pub(super) fn mode(opts: &Options, work: &Path) -> Result<VerificationMode> {
     })))
 }
 
+/// One verification player: the film from its game start, with no window,
+/// counting the requested range.
 fn run(opts: &Options, request: Verify) -> Result<VerificationReport> {
-    if !request.ring {
-        return pass(opts, request, None);
-    }
-    let session = Temp::new()?;
-    let baseline = session.0.join("capture-hashes");
-    let reference = pass(
-        opts,
-        Verify {
-            ring: false,
-            ..request
-        },
-        Some(&baseline),
-    )?;
-    if reference.first_divergence.is_some() {
-        return Ok(reference);
-    }
-    pass(opts, request, Some(&baseline))
-}
-
-fn pass(opts: &Options, request: Verify, baseline: Option<&Path>) -> Result<VerificationReport> {
     let work = Temp::new()?;
-    serde_json::to_writer(File::create(work.0.join(REQUEST))?, &(request, baseline))?;
+    serde_json::to_writer(File::create(work.0.join(REQUEST))?, &request)?;
     serde_json::to_writer(
         File::create(work.0.join("launch.json"))?,
-        &Restart {
+        &Launch {
             target: 0,
-            from_tick: None,
-            source: None,
             speed: 1.0,
             paused: false,
             presentation: Default::default(),
@@ -72,7 +51,6 @@ fn pass(opts: &Options, request: Verify, baseline: Option<&Path>) -> Result<Veri
         .arg(&socket)
         .env("H2_AGENT", &socket)
         .env("H2_THEATER_WORK", &work.0)
-        .env("H2_THEATER_RING", if request.ring { "1" } else { "0" })
         .env_remove("H2_THEATER_RANGE");
     if let Some(data) = &opts.data {
         cmd.arg("--data").arg(data);
@@ -80,8 +58,8 @@ fn pass(opts: &Options, request: Verify, baseline: Option<&Path>) -> Result<Veri
     if let Some(movies) = &opts.movies {
         cmd.arg("--movies").arg(movies);
     }
-    let mut reader = film::Reader::open(&opts.film)?;
-    boot::theater::configure_replay_child(&mut reader, &mut cmd)?;
+    let header = film::Reader::open(&opts.film)?.header;
+    boot::theater::configure_replay_child(&header, &mut cmd)?;
     let status = cmd
         .status()
         .context("starting Theater verification player")?;

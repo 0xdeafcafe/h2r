@@ -1132,7 +1132,7 @@ impl hooks::Feature for Probe {
             let (control, restored) = (arm.clone(), arm.clone());
             b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 move || {
-                    if crate::theater::in_keyframe() {
+                    if crate::sim_bounces::in_fork() {
                         return lock(&check).pending.is_some().then(|| "co-op session start has a masked peer count".into());
                     }
                     probe_live(&arm, &check)
@@ -1144,7 +1144,7 @@ impl hooks::Feature for Probe {
                         .expect("serialisable co-op probe")
                 },
                 move |bytes, _| {
-                    if !crate::theater::in_keyframe() { return Err("co-op hook state requires film replay".into()); }
+                    if !crate::sim_bounces::in_fork() { return Err("co-op hook state requires film replay".into()); }
                     type Saved = (bool, Option<Want>, u32, Option<Want>, Option<u32>, u32, bool);
                     let (on, want, max, setup, tick, attempts, done): Saved =
                         serde_json::from_slice(bytes).map_err(|e| e.to_string())?;

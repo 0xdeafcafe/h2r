@@ -1,6 +1,6 @@
 //! Host-only observations. Measurements never enter the film or its hashes.
 use super::{Mode, Session, State};
-use agent_proto::theater::{CaptureMeasurement, Measurements, PageWindow};
+use agent_proto::theater::{Measurements, PageWindow};
 use runtime::{
     Guest, Runtime, WatchError, WatchId,
     guest::{PAGE_SIZE, RAM_SIZE},
@@ -18,9 +18,7 @@ pub(super) struct Run {
     fast_forward_started: Option<(u64, Instant)>,
     fast_forward: Option<(u64, u64)>,
     watches: Vec<Window>,
-    captures: VecDeque<CaptureMeasurement>,
     pages: VecDeque<PageWindow>,
-    captures_omitted: u64,
     page_windows_omitted: u64,
 }
 
@@ -51,31 +49,9 @@ impl Run {
             match_start_tick: self.match_start.map(|(tick, _, _)| tick),
             fast_forward_ms: self.fast_forward.map(|(_, elapsed)| elapsed),
             fast_forward_ticks: self.fast_forward.map(|(ticks, _)| ticks),
-            captures: self.captures.iter().cloned().collect(),
             page_windows: self.pages.iter().cloned().collect(),
-            captures_omitted: self.captures_omitted,
             page_windows_omitted: self.page_windows_omitted,
         }
-    }
-
-    pub(super) fn capture(
-        &mut self,
-        tick: u64,
-        slices: u64,
-        start: Instant,
-        reason: Option<String>,
-    ) {
-        keep(
-            &mut self.captures,
-            &mut self.captures_omitted,
-            CaptureMeasurement {
-                tick,
-                slices,
-                elapsed_ms: ms(start),
-                published: reason.is_none(),
-                reason,
-            },
-        );
     }
 
     pub(super) fn reached_target(&mut self, tick: u64) {
@@ -138,17 +114,22 @@ impl State {
         if run.match_start.is_some() {
             return;
         }
-        let desc = match &self.mode {
-            Mode::Record(rec) => rec.meta.descriptor(),
+        // A film's game starts at its first update.
+        let (start, ticks_per_second) = match &self.mode {
+            Mode::Record(rec) => {
+                let desc = rec.meta.descriptor();
+                (desc.match_start_tick, desc.ticks_per_second)
+            }
             Mode::Replay(..) => {
-                let Some(engine) = &self.engine else { return };
-                &engine.track.descriptor
+                let Some(play) = &self.play else { return };
+                let game = &play.start().game;
+                (Some(game.first_update), game.descriptor.ticks_per_second)
             }
         };
-        if desc.match_start_tick == Some(tick) {
+        if start == Some(tick) {
             run.match_start = Some((
                 tick,
-                desc.ticks_per_second.unwrap_or(30).max(1) as u32,
+                ticks_per_second.unwrap_or(30).max(1) as u32,
                 ms(run.boot),
             ));
         }
@@ -165,9 +146,7 @@ impl Session {
             fast_forward_started: None,
             fast_forward: None,
             watches: Vec::new(),
-            captures: VecDeque::new(),
             pages: VecDeque::new(),
-            captures_omitted: 0,
             page_windows_omitted: 0,
         });
     }
@@ -226,9 +205,7 @@ mod tests {
             fast_forward_started: None,
             fast_forward: None,
             watches: Vec::new(),
-            captures: VecDeque::new(),
             pages: VecDeque::new(),
-            captures_omitted: 0,
             page_windows_omitted: 0,
         };
         run.sample_pages(&mut guest, 8).unwrap();

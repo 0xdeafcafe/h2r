@@ -4,9 +4,8 @@
 //! `h2 play` records each session into the film library when no `--film`
 //! or `H2_FILM_OUT` names a destination. The session's tape runs from boot
 //! to exit and is never listed; each game it plays is cut from it into a
-//! film of its own ([`cut`], "One film per game"). The tape's captures
-//! belong to games: outside one, no keyframe or snapshot is attempted
-//! (`record::Recording::in_game`). The recording keeps the
+//! film of its own ([`cut`], "One film per game"), which plays from its
+//! game's start (`film_play`). The recording keeps the
 //! session's player features on (Live session links, browser
 //! advertisements, Firefight's director, the rules start gate, editor
 //! reloads, Forge), and its header says so, so the replay installs the same
@@ -27,8 +26,8 @@ pub const FEATURE: &str = "film-autorecord";
 pub const KEEP: usize = 25;
 
 /// An unreadable automatic film untouched for this long belongs to a
-/// session that stopped without sealing it. A running recording writes
-/// a chunk every few seconds.
+/// session that stopped without sealing it, and the prune removes it. A
+/// running recording writes a chunk every few seconds.
 pub const ABANDONED_AFTER: Duration = Duration::from_secs(60 * 60);
 
 const PREFIX: &str = "auto-";
@@ -133,16 +132,14 @@ pub(super) fn now_ms() -> u64 {
 /// running tape `rec` (docs/game/film-format.md, "One film per game"). The
 /// cut is a copy of the tape so far, closed with its own `HEAD`, the game's
 /// description and scores, and an end mark here; it opens at the game's
-/// start, `start`. Before it is written the library keeps the `KEEP - 1`
-/// newest default films. The tape's keyframes from just before `start` on
-/// go into the cut's keyframe cache. Returns the cut's path.
+/// start. Before it is written the library keeps the `KEEP - 1` newest
+/// default films. Returns the cut's path.
 pub(super) fn cut(
     rec: &mut super::Recording,
     tape: &film::Header,
     slices: u64,
     tick: u64,
     calls: u64,
-    start: u64,
 ) -> anyhow::Result<PathBuf> {
     use anyhow::Context;
     rec.meta.finish_map()?;
@@ -152,7 +149,6 @@ pub(super) fn cut(
     let header = cut_header(tape, &summary, tick, rec.game_started_ms);
     let dir = rec.file.parent().unwrap_or(Path::new(".")).to_owned();
     let now = SystemTime::now();
-    recover(&dir, now);
     if let Err(error) = prune(&dir, KEEP, now) {
         eprintln!("theater: could not make room in the film library: {error:#}");
     }
@@ -206,13 +202,6 @@ pub(super) fn cut(
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&film_path);
         return Err(error);
-    }
-    if let Some(keys) = &rec.sidecar
-        && let Err(error) = keys
-            .fork(&header.meta.id, start)
-            .and_then(|writer| writer.finish(&path))
-    {
-        eprintln!("theater: this game's film has no keyframe cache: {error:#}");
     }
     Ok(path)
 }
@@ -270,84 +259,18 @@ fn saved(path: &Path) -> bool {
     path.with_extension("h2film.saved").is_file()
 }
 
-/// Delete one automatic film with its stats, film file, pin and keyframe cache.
-pub fn remove(dir: &Path, path: &Path) -> anyhow::Result<()> {
-    let id = film::LibraryEntry::read(path).ok().map(|e| e.meta.id);
-    remove_as(dir, path, id.as_deref())
-}
-
-/// [`remove`] for a film whose ID is known, sealed or not.
-pub fn remove_as(dir: &Path, path: &Path, id: Option<&str>) -> anyhow::Result<()> {
-    let delete = || -> anyhow::Result<()> {
-        for extra in ["h2stats", "h2f", "h2film.saved"] {
-            match fs::remove_file(path.with_extension(extra)) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                r => r?,
-            }
-        }
-        match fs::remove_file(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            r => Ok(r?),
-        }
-    };
-    match id {
-        Some(id) => film::sidecar::remove_film_with(dir, id, delete),
-        None => delete(),
-    }
-}
-
-/// Seal the playable part of every unsealed tape a stopped session left in
-/// `dir` (docs/game/film-format.md, "An exit without a teardown still
-/// seals"): a hard kill is the one end the boot loop's in-process seal
-/// cannot cover. A tape idle past the abandoned interval — a running
-/// recording writes a chunk every few seconds, so a live tape is never
-/// touched — is sealed in place by [`film::recover_tape`], ending at its
-/// last D3D capture mark. A tape with no playable game is deleted, as a
-/// session that played no game leaves no film; one that cannot be read at
-/// all is left for the prune. Returns the sealed films.
-pub fn recover(dir: &Path, now: SystemTime) -> Vec<PathBuf> {
-    let mut sealed = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return sealed,
-        Err(e) => {
-            eprintln!("theater: could not look for tapes to recover: {e}");
-            return sealed;
-        }
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if !entry.file_type().is_ok_and(|t| t.is_file())
-            || !is_auto(&path)
-            || saved(&path)
-            || film::LibraryEntry::read(&path).is_ok()
-        {
-            continue;
-        }
-        let idle = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age >= ABANDONED_AFTER);
-        if !idle {
-            continue;
-        }
-        match film::recover_tape(&path) {
-            Ok(true) => {
-                eprintln!("theater: recovered a film a stopped session left: {}", path.display());
-                sealed.push(path);
-            }
-            Ok(false) => {
-                if let Err(error) = remove(dir, &path) {
-                    eprintln!("theater: could not remove {}: {error:#}", path.display());
-                }
-            }
-            Err(error) => eprintln!("theater: could not recover {}: {error:#}", path.display()),
+/// Delete one automatic film with its stats, film file and pin.
+pub fn remove(path: &Path) -> anyhow::Result<()> {
+    for extra in ["h2stats", "h2f", "h2film.saved"] {
+        match fs::remove_file(path.with_extension(extra)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            r => r?,
         }
     }
-    sealed
+    match fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => Ok(r?),
+    }
 }
 
 /// Make room for one more automatic film: keep the `keep - 1` newest
@@ -379,7 +302,7 @@ pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<Pat
             .and_then(|m| now.duration_since(m).ok())
             .is_some_and(|age| age >= ABANDONED_AFTER);
         if idle {
-            remove(dir, &path)?;
+            remove(&path)?;
             removed.push(path);
         }
     }
@@ -387,7 +310,7 @@ pub fn prune(dir: &Path, keep: usize, now: SystemTime) -> anyhow::Result<Vec<Pat
     sealed.sort();
     let excess = sealed.len().saturating_sub(keep.saturating_sub(1));
     for path in sealed.into_iter().take(excess) {
-        remove(dir, &path)?;
+        remove(&path)?;
         removed.push(path);
     }
     Ok(removed)

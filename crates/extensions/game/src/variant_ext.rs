@@ -749,7 +749,7 @@ impl hooks::Feature for Transport {
         if self.hle.as_ref().is_some_and(|h| h.film_service_taped()) {
             b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 || {
-                    if crate::theater::in_keyframe() {
+                    if crate::sim_bounces::in_fork() {
                         None
                     } else {
                         transport_live()

@@ -19,7 +19,6 @@ pub struct InitialView {
     pub camera: Option<CameraMode>,
 }
 pub const PLAY: &str = "theater.play";
-pub const PREPARE: &str = "theater.prepare";
 pub const STATE: &str = "theater.state";
 pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
@@ -31,7 +30,6 @@ pub const CLIP_MARK: &str = "theater.clip.mark";
 pub const CLIP_EXPORT: &str = "theater.clip.export";
 pub const CLIP_STATUS: &str = "theater.clip.status";
 pub const HUD: &str = "theater.hud";
-pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
 pub const VERIFY: &str = "theater.verify";
@@ -44,10 +42,10 @@ pub const END: &str = "theater.end";
 /// The methods of a game that records and watches in one session. They are
 /// not in [`METHODS`], which a film player process answers.
 pub const WATCH_METHODS: [&str; 2] = [WATCH, END];
-pub const TRANSPORT_METHODS: [&str; 9] = [
-    PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, KEYFRAMES, STEP,
+pub const TRANSPORT_METHODS: [&str; 8] = [
+    PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, HUD, STEP,
 ];
-pub const METHODS: [&str; 16] = [
+pub const METHODS: [&str; 15] = [
     PLAY,
     STATE,
     PAUSE,
@@ -55,7 +53,6 @@ pub const METHODS: [&str; 16] = [
     SEEK,
     CAMERA,
     HUD,
-    KEYFRAMES,
     MEASUREMENTS,
     STEP,
     VERIFY,
@@ -210,19 +207,8 @@ pub struct Measurements {
     pub match_start_tick: Option<u64>,
     pub fast_forward_ms: Option<u64>,
     pub fast_forward_ticks: Option<u64>,
-    pub captures: Vec<CaptureMeasurement>,
     pub page_windows: Vec<PageWindow>,
-    pub captures_omitted: u64,
     pub page_windows_omitted: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CaptureMeasurement {
-    pub tick: u64,
-    pub slices: u64,
-    pub elapsed_ms: u64,
-    pub published: bool,
-    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,44 +281,6 @@ pub struct Play {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Prepare {
-    pub id: String,
-}
-
-/// Without an ID, state describes the playback transport.
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StateParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PrepareState {
-    pub id: String,
-    pub tick: u64,
-    pub length_ticks: u64,
-    #[serde(flatten)]
-    pub status: PrepareStatus,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum PrepareStatus {
-    Idle,
-    Starting,
-    Running,
-    Complete,
-    Failed { error: String },
-}
-
-impl PrepareStatus {
-    pub fn active(&self) -> bool {
-        matches!(self, Self::Starting | Self::Running)
-    }
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Speed {
     pub speed: f64,
 }
@@ -350,13 +298,13 @@ pub struct Seek {
     pub clip_marks: Option<[Option<u64>; 2]>,
 }
 
-/// A cold route callers can force. A missing route uses the best available
-/// keyframe, then boot.
+/// A route callers can force. A missing route runs forward from the tick
+/// shown when the target is ahead of it, and otherwise starts the film's
+/// game again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SeekRoute {
     Boot,
-    Keyframe,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,29 +345,24 @@ pub struct Camera {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov: Option<f32>,
 }
-/// The cheapest recorded state a seek restored or replays from.
+/// How a seek reaches its target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SeekSource {
     /// The film runs on from the tick shown, unrendered.
     Forward,
-    Ring,
-    Keyframe,
-    Sidecar,
+    /// The film's game is queued again and runs on from its start.
     Boot,
 }
 
-/// The jump the player is serving, kept after it completes so the restore
-/// cost stays visible until the next jump. `restore_ms` is null until the
-/// restore finishes, and stays null when no keyframe was restored.
+/// The jump the player is serving, kept after it completes until the next
+/// jump.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeekInfo {
     pub target: u64,
     pub from_tick: u64,
     pub source: SeekSource,
-    pub warm: bool,
     pub remaining_ticks: u64,
-    pub restore_ms: Option<u64>,
 }
 
 
@@ -488,27 +431,12 @@ pub struct State {
     pub seek: Option<SeekInfo>,
 }
 
-/// Keyframe ticks by storage location and the local cache budgets in bytes.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Keyframes {
-    /// Ticks of the film's own machine keyframes, in order.
-    pub film: Vec<u64>,
-    pub sidecar: Vec<u64>,
-    pub ring: Vec<u64>,
-    /// Ticks of the film's recorded D3D capture boundaries, in order.
-    pub capture_points: Vec<u64>,
-    pub ring_bytes: u64,
-    pub ring_cap: u64,
-    pub sidecar_bytes: u64,
-}
-
 /// Tick bounds are inclusive. A missing bound covers that end of the film.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Verify {
     pub from: Option<u64>,
     pub to: Option<u64>,
-    pub ring: bool,
 }
 
 impl Verify {
@@ -532,8 +460,6 @@ pub struct Divergence {
 pub struct VerificationReport {
     pub ticks: u64,
     pub digests_checked: u64,
-    pub arena_hashes_checked: u64,
-    pub ram_hashes_checked: u64,
     pub first_divergence: Option<Divergence>,
 }
 
@@ -598,14 +524,15 @@ mod tests {
         for wire in [
             json!({"tick":0}),
             json!({"tick":300,"source":"boot","clip_marks":[10,null]}),
-            json!({"tick":300,"source":"keyframe"}),
             json!({"cancel":true}),
             json!({"tick":42,"cancel":true}),
         ] {
             let seek: Seek = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(seek).unwrap(), wire);
         }
-        assert!(serde_json::from_value::<Seek>(json!({"tick":1,"source":"ring"})).is_err());
+        for gone in ["ring", "keyframe", "sidecar"] {
+            assert!(serde_json::from_value::<Seek>(json!({"tick":1,"source":gone})).is_err());
+        }
         let wire = json!({"ticks":1});
         let step: Step = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(step).unwrap(), wire);
@@ -623,42 +550,12 @@ mod tests {
 
         wire["speed_reached"] = json!(2.25);
         wire["seek"] = json!({
-            "target":30, "from_tick":120, "source":"keyframe", "warm":false,
-            "remaining_ticks":0, "restore_ms":85
+            "target":30, "from_tick":120, "source":"boot", "remaining_ticks":30
         });
         let current: State = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(current.speed_reached, Some(2.25));
-        assert_eq!(current.seek.unwrap().restore_ms, Some(85));
+        assert_eq!(current.seek.unwrap().source, SeekSource::Boot);
         assert_eq!(serde_json::to_value(current).unwrap(), wire);
-    }
-
-    #[test]
-    fn prepare_requests_and_state_round_trip() {
-        let params = json!({"id": "live:synthetic"});
-        assert_eq!(to_value(from_value::<Prepare>(params.clone()).unwrap()).unwrap(), params);
-        assert_eq!(to_value(from_value::<StateParams>(params.clone()).unwrap()).unwrap(), params);
-        assert_eq!(to_value(StateParams::default()).unwrap(), json!({}));
-        assert!(from_value::<Prepare>(json!({})).is_err());
-        assert!(from_value::<Prepare>(json!({"id": "a", "tick": 10})).is_err());
-
-        let states = [
-            (PrepareStatus::Idle, "idle"),
-            (PrepareStatus::Starting, "starting"),
-            (PrepareStatus::Running, "running"),
-            (PrepareStatus::Complete, "complete"),
-            (PrepareStatus::Failed { error: "synthetic divergence".into() }, "failed"),
-        ];
-        for (status, name) in states {
-            let state = PrepareState { id: "synthetic".into(), tick: 90, length_ticks: 900, status };
-            let wire = to_value(&state).unwrap();
-            assert_eq!(wire["status"], name);
-            if name == "failed" {
-                assert_eq!(wire["error"], "synthetic divergence");
-            } else {
-                assert!(wire.get("error").is_none());
-            }
-            assert_eq!(from_value::<PrepareState>(wire).unwrap(), state);
-        }
     }
 }
 
@@ -671,7 +568,7 @@ mod verify_tests {
     fn verification_request_and_report_round_trip() {
         for (wire, expected) in [
             (json!({}), [0, 60]),
-            (json!({"from": 30, "to": 30, "ring": true}), [30, 30]),
+            (json!({"from": 30, "to": 30}), [30, 30]),
             (json!({"from": 10}), [10, 60]),
         ] {
             let request: Verify = serde_json::from_value(wire).unwrap();
@@ -684,7 +581,7 @@ mod verify_tests {
         assert!(serde_json::from_value::<Verify>(json!({"ring": 1})).is_err());
         assert!(serde_json::from_value::<Verify>(json!({"target": 2})).is_err());
         let report = VerificationReport {
-            first_divergence: Some(Divergence { tick: 4, kind: "RAM differs".into() }),
+            first_divergence: Some(Divergence { tick: 4, kind: "gameplay digest differs".into() }),
             ..Default::default()
         };
         assert_eq!(serde_json::from_slice::<VerificationReport>(&serde_json::to_vec(&report).unwrap()).unwrap(), report);

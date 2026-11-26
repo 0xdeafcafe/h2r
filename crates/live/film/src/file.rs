@@ -620,15 +620,11 @@ impl<R: Read + Seek> FilmReader<R> {
     }
 }
 
-/// The container's sections that a film carries: the machine part's boot
-/// facts, startup decisions, initial disk, call tape, controller ports,
-/// bot roster, hash checks and marks. A film holds no keyframe, and its
-/// header goes in the seed.
+/// The container's sections that a film carries: the call tape,
+/// controller ports, bot roster, hash checks and marks. A film holds no
+/// keyframe, and its header goes in the seed.
 pub fn carried(tag: Tag) -> bool {
-    matches!(
-        &tag,
-        b"DATA" | b"BOOT" | b"MOVI" | b"TAPE" | b"TPAR" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK"
-    )
+    matches!(&tag, b"TAPE" | b"TPAR" | b"PDEV" | b"BOTR" | b"HASH" | b"MARK")
 }
 
 /// What a film file is read from.

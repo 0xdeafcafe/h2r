@@ -85,13 +85,13 @@ the tolerance.
 ### The fork
 
 A fork saves the whole machine in memory and puts it back. Guest RAM goes
-through the Theater ring's page pool over the write watch
-(`crates/extensions/game/src/theater/ring.rs`, `Ring::capture` and
+through the search's page pool over the write watch
+(`crates/extensions/game/src/sim_bounces/ring.rs`, `Ring::capture` and
 `Ring::restore_ram`): a capture copies the pages written since the last
 one, a restore copies back only the pages that differ. Every other part
 (the kernel and its threads, the CPU contexts, the devices, audio, the
-features) is saved and loaded by its snapshot section, the way a film's
-warm seek does (`BootMachine::save_ring_sections`,
+features) is saved and loaded by its snapshot section
+(`BootMachine::save_ring_sections`,
 `BootMachine::load_ring_sections` in
 `crates/extensions/game/src/snapshot_glue.rs`). A ring entry is one Havok
 variant's base state; its key is the variant's index.
@@ -133,11 +133,12 @@ Why this and not the others (**Design**):
   encoded and decoded each time. A trial wave is seven ticks; a 64 MB
   decode a wave would cost more than the ticks.
 
-The sections are saved in a keyframe's scope (`theater::keyframe_scope`),
-so parts that refuse an ordinary snapshot serialise as they do for a film
-keyframe. The fork asks each part for its blockers and skips the machine's
-part-less checks (`sim_bounces::blockers`): in a keyframe's scope those
-refuse a signed-in Live HLE with no film tape, which every sim has. A
+The sections are saved in a fork's scope (`sim_bounces::fork_scope`,
+read by `sim_bounces::in_fork`), so parts that refuse an ordinary
+snapshot serialise what only a whole-machine fork may carry. The fork
+asks each part for its blockers and skips the machine's part-less checks
+(`sim_bounces::blockers`): in a fork's scope those refuse a signed-in
+Live HLE with no film tape, which every sim has. A
 fork needs no tape. No service call is in flight between two ticks of a
 running match, and nothing outside the machine is rewound.
 
@@ -366,7 +367,7 @@ wrote and loads every section; its time is the open number.
 ## Not verified
 
 - That the machine is quiet enough to save at a tick boundary in a sim
-  host: the kernel's and the features' blockers, with the keyframe scope.
+  host: the kernel's and the features' blockers, with the fork's scope.
   A blocker is named in the base's `why`, and the run's `fork.busy`
   counts them. The features the first Ascension run named as not
   audited have policies (snapshots.md, "Feature policies"); a test shows
@@ -392,7 +393,7 @@ wrote and loads every section; its time is the open number.
 - [sim.md](sim.md): sim mode, and [Seam drops](sim.md#seam-drops), whose
   drop, targets and verdict the search uses.
 - [snapshots.md](snapshots.md): the sections and the quiescence rule.
-- `crates/extensions/game/src/theater/ring.rs`: the page pool the
+- `crates/extensions/game/src/sim_bounces/ring.rs`: the page pool the
   fork's RAM goes through.
 - [superbounce.md](../game/superbounce.md): the pair word, the touchdown
   tick and the verified file.

@@ -85,7 +85,8 @@ impl Starts {
 
 impl Session {
     /// A map activated (`GAME_ACTIVATE` returned success): a recording
-    /// copies the options block the game starts from.
+    /// copies the options block the game starts from, and a film player's
+    /// requeued game begins.
     pub(super) fn game_activated(&self, g: &Guest) {
         // A film's game, or the end of one, is the watch's boundary: the
         // recorder is parked while a film plays and sees none of it.
@@ -93,6 +94,15 @@ impl Session {
             return;
         }
         let mut s = self.lock();
+        // A film player's game queued again by a start-route seek
+        // (`Session::requeue`): the film starts over at its first update.
+        if let Some(play) = &mut s.play
+            && play.awaiting()
+            && copy_options(g).is_some()
+        {
+            play.activated();
+            return;
+        }
         if s.complete || s.failure.is_some() {
             return;
         }

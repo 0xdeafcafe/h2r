@@ -1,6 +1,6 @@
 //! The guest draws the Video row and its picker on the reference surface.
 //! Record each size the menu observes independently of the viewer's raster.
-use super::{Mode, Session, Startup};
+use super::Session;
 use crate::run_opts::NativeTarget as ReadTarget;
 use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
 use anyhow::{Result, ensure};
@@ -62,7 +62,7 @@ impl Session {
         native: ReadTarget,
         store: &Arc<Store>,
     ) -> Result<ReadTarget> {
-        let mut state = self.lock();
+        let state = self.lock();
         if let Some(play) = &state.play {
             // A film played from its game start has no tape of the menu:
             // the simulation settings it was recorded with are applied to
@@ -76,15 +76,7 @@ impl Session {
         if state.header.version < 2 || state.header.meta.source != film::Source::Local {
             return Ok(native);
         }
-        if let Mode::Replay(playback, _) = &mut state.mode
-            && !Startup::tapes_video_menu(&mut playback.reader)?
-        {
-            ensure!(
-                !film::tape::holds_op(&mut playback.reader, VIDEO_MENU_SIZE)?,
-                "Video size tape without Video menu startup"
-            );
-            return Ok(native);
-        }
+        drop(state);
         ensure!(
             self.video_menu.set(store.clone()).is_ok(),
             "duplicate film Video menu"
@@ -114,8 +106,8 @@ fn apply_settings(store: &Store, values: &std::collections::BTreeMap<String, i64
     }
 }
 
-// A seek can jump over a guest Resolution change. The setting and its
-// lock come from BOOT; carry its current saved choice across keyframes.
+// A bounce search fork can jump over a guest Resolution change: carry the
+// current saved choice across it.
 pub(super) fn snapshot(
     store: Option<&Arc<Store>>,
     live: impl Fn() -> Option<String> + Send + Sync + 'static,
@@ -152,32 +144,6 @@ fn restore_setting(store: &Store, bytes: &[u8]) -> Result<(), String> {
         return Err(error);
     }
     Ok(())
-}
-
-/// The picker's setter and frozen option list live in Rust. Defer a seek
-/// point across its opening and closing transitions; the next ordinary
-/// gameplay keyframe includes any completed change.
-pub(super) fn picker_in_stack(guest: &runtime::Guest) -> bool {
-    use crate::{layout_glue::Gm, ui_kit::picker, ui_watch};
-    if !picker::current().is_some_and(|p| p.title == picker::title(RESOLUTION.label)) {
-        return false;
-    }
-    (0..6).any(|window| {
-        (0..=ui_watch::SHARED).any(|slot| {
-            ui_watch::stack(guest, window, slot).is_some_and(|s| {
-                s.list.iter().any(|(address, _)| {
-                    let Some(vtable) = Gm::u32(guest, *address) else {
-                        return false;
-                    };
-                    matches!(
-                        crate::list_class::class_name(vtable),
-                        Some(crate::video_screen::SCREEN)
-                    ) || crate::ui_kit::dialog_tag::by_vtable(vtable)
-                        .is_some_and(|d| matches!(d.name, picker::NAME | picker::GAME_NAME))
-                })
-            })
-        })
-    })
 }
 
 #[cfg(test)]

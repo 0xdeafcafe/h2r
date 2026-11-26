@@ -6,7 +6,7 @@ use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
 use super::selector::{OptionRow, map_title};
-use super::{DETAIL, Entry, FILMS, Load, PrepareStatus, Tab, Theater, adapter::FilmSummary};
+use super::{DETAIL, Entry, FILMS, Load, Tab, Theater, adapter::FilmSummary};
 use crate::list_class::{
     ListClass, ListLayout, LiveText, Panel, PanelText, PictureSpec, Rows, TextBlock,
 };
@@ -81,7 +81,6 @@ const FILM_STATUS: TextBlock = TextBlock {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
     Watch,
-    Prepare,
     Save,
     Delete,
     Share,
@@ -92,7 +91,6 @@ impl Action {
     fn for_entry(entry: &Entry) -> impl Iterator<Item = Self> {
         [
             Self::Watch,
-            Self::Prepare,
             Self::Save,
             Self::Delete,
             Self::Share,
@@ -101,7 +99,6 @@ impl Action {
         .into_iter()
         .filter(move |action| match action {
             Self::Watch => entry.film.watch_unavailable().is_none(),
-            Self::Prepare => entry.can_prepare(),
             Self::Save => entry.clip.is_none(),
             Self::Share | Self::CopyLink => {
                 entry.film.source != super::adapter::Source::Archive
@@ -118,11 +115,8 @@ impl Action {
         Self::for_entry(entry).nth(row)
     }
 
-    fn blocked(self, state: &super::State, entry: &Entry) -> bool {
+    fn blocked(self, state: &super::State) -> bool {
         state.working
-            || (matches!(self, Self::Prepare | Self::Delete)
-                && entry.clip.is_none()
-                && state.prepare.as_ref().is_some_and(|p| p.status.active()))
     }
 }
 
@@ -157,7 +151,7 @@ impl Theater {
         else {
             return false;
         };
-        if action.blocked(&state, &entry) {
+        if action.blocked(&state) {
             return false;
         }
         if action != Action::Delete {
@@ -176,18 +170,6 @@ impl Theater {
                 state.changed();
                 drop(state);
                 if let Err(error) = self.session().play(&entry, view) {
-                    let mut state = self.state();
-                    state.status = error;
-                    state.changed();
-                }
-                return false;
-            }
-            Action::Prepare => {
-                state.changed();
-                drop(state);
-                if entry.film.archive_id().is_some() {
-                    self.archive_action(Action::Prepare, entry);
-                } else if let Err(error) = self.start_prepare(&entry.film.id) {
                     let mut state = self.state();
                     state.status = error;
                     state.changed();
@@ -354,7 +336,6 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
         .map(|action| {
             let label = match action {
                 Action::Watch => "Watch".into(),
-                Action::Prepare => prepare_label(state),
                 Action::Share => "Share".into(),
                 Action::CopyLink => "Copy Link".into(),
                 Action::Save if film.saved => "Unsave".into(),
@@ -362,31 +343,13 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
                 Action::Delete if state.confirm_delete => "Confirm delete".into(),
                 Action::Delete => "Delete".into(),
             };
-            if action.blocked(state, entry) {
+            if action.blocked(state) {
                 RowSpec::info(&label, "")
             } else {
                 RowSpec::action(&label)
             }
         })
         .collect()
-}
-
-fn prepare_label(state: &super::State) -> String {
-    if let Some(progress) = &state.prepare {
-        match &progress.status {
-            PrepareStatus::Idle => {}
-            PrepareStatus::Starting => return "Preparing...".into(),
-            PrepareStatus::Running => {
-                let percent = (100 * u128::from(progress.tick))
-                    .checked_div(u128::from(progress.length_ticks))
-                    .unwrap_or(0);
-                return format!("Preparing... {}%", percent.min(99));
-            }
-            PrepareStatus::Complete => return "Prepare again".into(),
-            PrepareStatus::Failed { .. } => return "Retry Prepare".into(),
-        }
-    }
-    "Prepare".into()
 }
 
 fn prompts(action: &str, roster_pages: bool) -> Vec<Prompt> {
@@ -624,7 +587,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         if s.rows.iter().all(|row| row.press == Press::Nothing) {
             legend.retain(|p| !p.glyphs.contains(&Glyph::A));
         }
-        // A blocked action (Prepare while it runs) takes no A, so its own
+        // A blocked action (any action while one runs) takes no A, so its own
         // legend leaves Select out.
         let mut blocked = legend.clone();
         blocked.retain(|p| !p.glyphs.contains(&Glyph::A));
@@ -703,19 +666,9 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
             Some(state.status.as_str())
         } else {
             state
-                .prepare
+                .selected
                 .as_ref()
-                .and_then(|p| match &p.status {
-                    PrepareStatus::Complete => Some("Prepared for this build."),
-                    PrepareStatus::Failed { error } => Some(error.as_str()),
-                    _ => None,
-                })
-                .or_else(|| {
-                    state
-                        .selected
-                        .as_ref()
-                        .and_then(|e| e.film.watch_unavailable())
-                })
+                .and_then(|e| e.film.watch_unavailable())
         };
         s.help = message.map(|message| {
             text_fit::paragraph(

@@ -17,9 +17,11 @@
 //!   film tick is one application of the update: a game tick that applies
 //!   it twice takes two. The film ends after its last tick.
 //!
-//! A player needs no manifest, call tape or keyframe, and opens no `DATA`
-//! item: the data directory is empty and private, and the guest's storage
-//! writes go to a scratch (`vfs::Vfs::guard_writes`).
+//! A film with no game start is refused ([`super::NO_GAME_START`]). The
+//! player restores nothing of the recording machine: the data directory
+//! is empty and private, and the guest's storage writes go to a scratch
+//! (`vfs::Vfs::guard_writes`). A seek behind the tick shown queues the
+//! film's options again and runs forward (`Session::requeue`).
 use super::{Session, State, metadata};
 use anyhow::{Context, Result, bail, ensure};
 use film::file::FilmActions;
@@ -56,7 +58,7 @@ pub(super) struct Play {
 impl Play {
     /// The film file beside the container, if it has a game start: the
     /// film plays from it. `None` for a container with no film file or a
-    /// film file from before game starts.
+    /// film file from before game starts, which does not play.
     pub(super) fn open(container: &Path) -> Result<Option<Self>> {
         let file = film::file::beside(container);
         if !file.try_exists()? {
@@ -231,6 +233,7 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
     let applied = std::mem::take(&mut play.applied);
     let tick = play.at + applied.max(1);
     state.tick = tick;
+    let mut digested = false;
     let checked = (|| -> Result<bool> {
         let row = play.actions.row(tick)?;
         ensure!(
@@ -244,6 +247,7 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
                 "expected gameplay digest {low:04x}, observed {:04x} ({hash:016x})",
                 hash as u16
             );
+            digested = true;
         }
         if let Some(whole) = row.closing {
             ensure!(
@@ -254,6 +258,9 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
         Ok(tick >= play.length)
     })();
     play.at = tick;
+    if digested && let Some(v) = &mut state.verify {
+        v.digest(tick);
+    }
     match checked {
         Ok(true) => state.complete = true,
         Ok(false) => {}
@@ -261,10 +268,28 @@ pub(super) fn tick_done(state: &mut State, hash: Option<u64>) {
     }
 }
 
+/// The film player process's environment (`h2 theater play` starts it):
+/// the film's feature switches, and none of the viewer's overrides of a
+/// setting the simulation reads. The film's settings are its game start's.
+pub fn configure_replay_child(header: &film::Header, child: &mut std::process::Command) -> Result<()> {
+    let switches = hooks::Switches::parse(&header.features).map_err(anyhow::Error::msg)?;
+    child.env("H2_FEATURES", switches.spec());
+    for def in crate::setting_defs::defs() {
+        // The viewer's display settings stay theirs.
+        if def.scope != settings::Scope::Host
+            && def.key != crate::setting_defs::LOD_DISTANCE.key
+            && let Some(name) = def.env
+        {
+            child.env_remove(name);
+        }
+    }
+    Ok(())
+}
+
 impl Session {
-    /// This boot plays a film from its game start, not from a machine
-    /// part: nothing is restored, no call is taped and the game's writes
-    /// to storage are guarded (`Vfs::guard_writes`).
+    /// This boot plays a film from its game start: nothing is restored, no
+    /// call is taped and the game's writes to storage are guarded
+    /// (`Vfs::guard_writes`).
     pub fn plays_from_start(&self) -> bool {
         self.from_start
     }

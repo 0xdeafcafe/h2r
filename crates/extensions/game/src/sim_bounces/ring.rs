@@ -1,5 +1,7 @@
-//! The player's private machine keyframes. Each physical page is copied on
-//! first capture and shared until the write watch reports a change.
+//! The bounce search's page pool: one captured machine per variant fork
+//! (docs/runtime/bounce-search.md, "The fork"). Each physical page is
+//! copied on first capture and shared until the write watch reports a
+//! change.
 use anyhow::{Context, Result, ensure};
 use runtime::guest::{GuestLayout, PAGE_SIZE, RAM_SIZE};
 use runtime::watch::CONTIGUOUS_BASE;
@@ -97,6 +99,7 @@ impl<T> Ring<T> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn cap(&self) -> usize {
         self.cap
     }
@@ -105,12 +108,14 @@ impl<T> Ring<T> {
         self.pool.bytes() + self.entries.iter().map(|e| e.entry_bytes).sum::<usize>()
     }
 
+    #[cfg(test)]
     pub(crate) fn ticks(&self) -> Vec<u64> {
         let mut ticks: Vec<_> = self.entries.iter().map(|entry| entry.tick).collect();
         ticks.sort_unstable();
         ticks
     }
 
+    #[cfg(test)]
     pub(crate) fn closest(&self, target: u64) -> Option<u64> {
         self.entries
             .iter()
@@ -127,6 +132,7 @@ impl<T> Ring<T> {
         self.entry(tick).map(|entry| &entry.data)
     }
 
+    #[cfg(test)]
     pub(crate) fn clear(&mut self, guest: &mut Guest) {
         if let Some(watch) = self.watch {
             guest.unsubscribe_writes(watch);

@@ -269,8 +269,6 @@ fn registry_with_film(
             #[cfg(feature = "gpu")]
             view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             #[cfg(feature = "gpu")]
-            reference_lod: protected.then_some(1.0),
-            #[cfg(feature = "gpu")]
             d3d_display: !protected,
             #[cfg(feature = "gpu")]
             viewer_lod: None,

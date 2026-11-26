@@ -159,49 +159,6 @@ fn full_round_trip_and_divergence() {
 }
 
 #[test]
-fn seek_flushes_partial_blocks_and_resumes_after_restored_tick() {
-    let mut track = TrackReader::new(Reader::new(Cursor::new(encoded())).unwrap()).unwrap();
-    for (target, nearest) in [
-        (0, None),
-        (5, None),
-        (6, Some(6)),
-        (7, Some(6)),
-        (191, Some(6)),
-        (192, Some(192)),
-        (300, Some(192)),
-        (1, None),
-    ] {
-        assert_eq!(track.seek(target).unwrap(), nearest.map(key));
-        assert_eq!(track.keyframe_offset().is_some(), nearest.is_some());
-        assert_eq!(
-            track.step().unwrap().unwrap(),
-            sample(nearest.unwrap_or(0) + 1)
-        );
-    }
-    assert!(track.seek(301).is_err());
-}
-
-#[test]
-fn ring_cursor_resumes_inside_a_tick_block_without_a_file_keyframe() {
-    for version in [2, 3] {
-        let bytes = encoded_as(version);
-        let reader = || TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
-        let mut linear = reader();
-        let mut expected = Vec::new();
-        while let Some(tick) = linear.step().unwrap() {
-            expected.push(tick);
-        }
-        let mut track = reader();
-        for tick in [0, 83, 6, 192, 300, 12, 299, 83] {
-            track.resume_after_tick(tick).unwrap();
-            assert_eq!(track.keyframe_offset(), None);
-            assert_eq!(track.step().unwrap().as_ref(), expected.get(tick as usize));
-        }
-        assert!(track.resume_after_tick(301).is_err());
-    }
-}
-
-#[test]
 fn menu_skips_corrupt_input_and_playback_reports_it() {
     let mut data = encoded();
     let r = Reader::new(Cursor::new(data.as_slice())).unwrap();
@@ -476,9 +433,10 @@ fn final_score_can_follow_a_keyframe_without_reopening_an_older_time_chunk() {
         .unwrap();
     assert!(scoreboard > hash);
     let mut replay = TrackReader::new(reader).unwrap();
-    assert_eq!(replay.seek(4).unwrap(), Some(key(2)));
-    assert_eq!(replay.step().unwrap(), Some(sample(3)));
-    assert_eq!(replay.seek(5).unwrap(), Some(key(5)));
+    for n in 1..=4 {
+        assert_eq!(replay.step().unwrap(), Some(sample(n)));
+    }
+    assert_eq!(replay.step().unwrap().map(|t| t.tick), Some(5));
     assert!(replay.step().unwrap().is_none());
 }
 
@@ -523,42 +481,6 @@ fn inactive_poses_only_need_periodic_scene_checkpoints() {
         }
     }
     assert_eq!(checkpoints, [1, 17]);
-}
-
-#[test]
-fn cold_seek_reads_the_standalone_ram_anchor_and_only_the_targets_disk() {
-    let mut header = header(3);
-    header.version = 3;
-    let mut writer = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
-    let mut track = TrackWriter::default();
-    for tick in 1..=3 {
-        track.push(&mut writer, sample(tick)).unwrap();
-        let mut frame = key(tick);
-        frame.snapshot = vec![tick as u8; 7];
-        if tick == 3 {
-            assert!(
-                track
-                    .keyframe_against(&mut writer, &frame, Some(2))
-                    .is_err()
-            );
-        }
-        track
-            .keyframe_against(&mut writer, &frame, (tick > 1).then_some(1))
-            .unwrap();
-    }
-    track
-        .finish(&mut writer, &MatchHeader::default(), &scores())
-        .unwrap();
-    let file = Reader::new(Cursor::new(writer.finish().unwrap().into_inner())).unwrap();
-    let mut reader = TrackReader::new(file).unwrap();
-    let frame = reader.seek(3).unwrap().unwrap();
-    assert_eq!(frame.ram_anchor, Some((1, vec![1; 7])));
-    assert_eq!(frame.snapshot, vec![3; 7]);
-    assert_eq!(frame.disk_delta, key(3).disk_delta);
-    assert_eq!(reader.disk_delta_at(3).unwrap(), key(3).disk_delta);
-    assert!(reader.disk_delta_at(0).unwrap().is_empty());
-    assert!(reader.seek(1).unwrap().unwrap().ram_anchor.is_none());
-    assert_eq!(reader.step().unwrap(), Some(sample(2)));
 }
 
 #[test]
@@ -790,7 +712,7 @@ fn private_join_and_migration_round_trip_across_a_keyframe() {
     }
     let mut player = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
     assert_eq!(player.summary, scores());
-    assert_eq!(player.seek(1).unwrap(), Some(key(1)));
+    assert_eq!(player.step().unwrap(), Some(sample(1)));
     assert_eq!(player.step().unwrap(), Some(last));
 }
 

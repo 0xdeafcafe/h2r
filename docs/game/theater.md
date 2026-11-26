@@ -198,9 +198,8 @@ In the original version 1 layout:
 
 `film::Library::list` shows the 25 newest films and any older saved
 films. Save and Unsave manage pins beside the film. Delete resolves a
-film by its header ID and removes its keyframe sidecars, its pin and the
-film file. The host UI uses `H2_FILM_DIR` or `<data>/films`. The cache
-limit is set by [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
+film by its header ID and removes its pin, the film file beside it and
+the container. The host UI uses `H2_FILM_DIR` or `<data>/films`.
 
 **Record once.** Use a provisioned human-player lease and a LAN host from
 the combined dedicated-host build. Export its normal supervisor inputs
@@ -248,15 +247,12 @@ H2_RESOLUTION=640x480 h2 theater play "$film_run/wide.h2film" --disc "$H2_DISC" 
 ```
 
 During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
-`theater.keyframes` lists the available restore points and
-`theater.state` reports the seek source and remaining ticks. With the ring
-enabled, the player can load a watched entry or a compatible file keyframe
-into the running machine. A blocked machine or a changed guest disk sends
-the jump to a fresh child. A failed warm hash check retries the same jump
-cold and disables warm restores until the viewer leaves the film.
-Fast-forward compares the recorded hashes and runs without host pacing. The
-coordinator should also seek backwards across a received packet while
-paused and resume. `h2 film stat FILE` lists embedded keyframes, recorded
+`theater.state` reports the seek route and remaining ticks. A seek ahead
+runs forward from the tick shown; a seek behind it queues the film's game
+again in the same process and runs forward from its start. Fast-forward
+checks the film's digests and runs without host pacing. The coordinator
+should also seek backwards across a received packet while paused and
+resume. `h2 film stat FILE` lists embedded keyframes, recorded
 D3D barriers and per-stream tape counts, operations and bytes in the
 JSON and binary encodings, and `h2 film stat --fields FILE...` the change
 rate and stored bytes of each action field. The
@@ -319,23 +315,13 @@ blank.
 queues the film's game as the next game, the game loads the film's map, and
 the film's updates play in it (`theater.watch`, [theater-design.md](theater-design.md#starting-a-film-in-the-running-game)).
 End Film returns to the film page. No second process starts. A film
-recorded before game starts does not open and says why. **Prepare** still
-uses an isolated instance of the recompiled game. The library checks the cached header for an account
-film and checks the exact recording after the first download. Playback
-needs a compatible installed game image and the
-same initial files where the film references them by digest. An archive
-with only telemetry still has a film page and scoreboard. A recording's
-scoreboard comes from the adjacent `.h2stats` file. The film page offers
-**Prepare** to build seek data in the background and shows its progress.
-
-**Prepare** on a playable engine film's page builds the local seek cache
-with a verified replay from boot. The replay runs without a window while
-the library stays open. The film page shows its progress and reports
-completion or the reason the pass stopped. For an account film, Prepare
-uses the downloaded recording or downloads it first. Use
-`h2 theater prepare FILM` to run the same pass on a file from the command
-line. That command returns when the pass finishes. The current combined
-film format keeps the stats in the recording.
+recorded before game starts does not open and says why. The library
+checks the cached header for an account film and checks the exact
+recording after the first download. Playback needs an installed game
+image of the film's XBE with the film's simulation contract; it reads
+nothing of the recorder's disk. An archive with only telemetry still has
+a film page and scoreboard. A recording's scoreboard comes from the
+adjacent `.h2stats` file.
 
 Rendered host playback opens in **Fly cam**. Local playback opens in the
 recorded retail view. **Orbit** circles the selected
@@ -371,7 +357,7 @@ The camera, its field of view and HUD visibility carry across a seek.
 
 The playback bar shows the current and total time, requested and achieved
 speed, camera and subject. Its timeline uses the adjacent stats file for
-kills and reads keyframe marks from the local sidecar and session ring.
+kills.
 When the stats file is missing, playback still works and the pause menu
 shows that no match stats are available. During a jump the rail highlights
 progress toward the target. Completed clip ranges appear in Clips and loop
@@ -387,10 +373,8 @@ them. Screenshots omit the host pages and are written under
 
 Skip taps that arrive within 250 ms of one another accumulate into one
 jump. Cancelling a jump returns to its departure tick and holds there.
-A playerless observer redraws the paused view from the held simulation
-state. A guest-drawn view uses an available session ring return point to
-show the next present, then restores the pause tick. With no return point,
-camera changes take effect when playback resumes.
+While paused the game runs no tick and keeps drawing frames, so a camera
+change shows at once.
 
 The library uses the retail settings list beneath a tab strip and preview.
 The film page uses the pregame lobby's action skin, text and row spacing.
@@ -405,10 +389,9 @@ participants. The menu and playback window use
 
 Offline samples are `theater.films`, `theater.film`, `theater.playback`
 and `theater.pause-menu` in `h2 ui preview`. The playback samples include
-jumping, divergence, preparing and unavailable states. The browser includes empty Recent,
+jumping, divergence and unavailable states. The browser includes empty Recent,
 Saved, Clips and filtered states. Film details include a summary without
-a recording, a paged roster with names only and Prepare progress and
-results. The main-menu selection
+a recording and a paged roster with names only. The main-menu selection
 dialog reports `kit.picker` through `ui.screen`.
 
 ### Web Theater
@@ -424,7 +407,7 @@ controls and clip share links.
 |---|---|
 | `theater-server` | films/clips routes and storage in live-server (both homes), the saved-film archive pin, tests |
 | `theater-web` | `/theater/*` pages, the Films tab, camera chips, the clip flow, tests |
-| `theater-film` | a `film` crate: `.h2film` writer/reader (chunks above), the host recorder taps (`NETR`, `RAND`, `HASH`) behind `H2_FILM_OUT` / `h2 host run --film`, upload at match end, `h2 theater play` exact playback, `h2 theater prepare` and the Theater agent methods |
+| `theater-film` | a `film` crate: `.h2film` writer/reader (chunks above), the host recorder taps (`NETR`, `RAND`, `HASH`) behind `H2_FILM_OUT` / `h2 host run --film`, upload at match end, `h2 theater play` exact playback and the Theater agent methods |
 | `theater-ui` | the in-game Theater row, Films screen, film page and playback overlay, against the `film` crate's `Library` API and the agent methods |
 
 ## 1. How Halo 3's Theater works, and whether Halo 2 fits

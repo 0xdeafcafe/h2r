@@ -1,11 +1,11 @@
-//! Local export jobs live in their own replay processes. Job status survives
-//! a restart of the watching player during a seek.
+//! Local export jobs live in their own replay processes. Job status
+//! outlives the watching player.
 mod output;
 
-use super::{Options, Temp, child_with_start, retry_seek};
+use super::{Options, Temp, child_with_start};
 use agent_proto::theater::{ClipExport, ClipFormat, ClipJob, ClipStatus};
 use anyhow::{Context, Result, ensure};
-use boot::theater::{ClipCapture, ClipSink, ClipSpan, FilmCamera, Media, Picture, Presentation, Restart};
+use boot::theater::{ClipCapture, ClipSink, ClipSpan, Launch, Media, Picture, Presentation};
 use output::Output;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -116,7 +116,6 @@ fn launch(
             .arg(&opts.out)
             .env("H2_THEATER_EXPORT_JOB", &work)
             .env("H2_AGENT", "off")
-            .env("H2_THEATER_RING", "0")
             .env_remove("H2_THEATER_WORK")
             .env_remove("H2_THEATER_RANGE")
             .stdin(Stdio::null())
@@ -205,23 +204,16 @@ pub(super) fn run(mut opts: Options, job: &Path) -> Result<()> {
             clip.format == ClipFormat::Mp4,
             sink,
         ));
-        let mut start = Restart {
+        let start = Launch {
             target: clip.from.saturating_sub(1),
-            from_tick: None,
-            source: None,
             speed: 1.0,
             paused: false,
             presentation: request.presentation,
         };
         opts.every = 1;
-        let mut retries = 0;
-        loop {
-            let temp = Temp::new()?;
-            child_with_start(opts.clone(), &temp.0, start.clone(), Some(capture.clone()))?;
-            if !retry_seek(&temp.0, &mut start, &mut retries)? {
-                break capture.finish();
-            }
-        }
+        let temp = Temp::new()?;
+        child_with_start(opts, &temp.0, start, Some(capture.clone()))?;
+        capture.finish()
     });
     let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("offline clip player panicked")));
     if let Err(error) = &result {
@@ -301,60 +293,27 @@ fn fit(picture: &Picture) -> Vec<u8> {
     rgba
 }
 
-pub(super) fn host(
-    capture: Arc<ClipCapture>,
-    camera: FilmCamera,
-    observer: bool,
-    host_bots: bool,
-    viewer_lod: settings::Setting<u32>,
-) -> Result<boot::Host> {
+/// The headless player's host: the film's view drawn offscreen, each
+/// presented picture handed to the clip.
+pub(super) fn host(capture: Arc<ClipCapture>, host_bots: bool) -> Result<boot::Host> {
     let mut frames = app::FrameSink::headless().context("creating the offline clip GPU")?;
-    let ctx = || boot::d3d_glue::share_context(frames.context());
     let raster: boot::run_opts::NativeSize = Arc::new(|| SIZE);
     let writer = capture.clone();
-    let (gfx, gfx_view, film_view) = if observer {
-        let view = boot::theater::HostView::new(
-            ctx(),
-            raster,
-            |size| size,
-            move |view, size| {
-                writer
-                    .present(|| {
-                        frames.submit_view(view, size, true)?;
-                        read_picture(&frames)
-                    })
-                    .map_err(|error| format!("{error:#}"))
-            },
-        );
-        (None, None, Some(view))
-    } else {
-        let reference = d3d::GfxBackend::new(ctx());
-        let view = d3d::GfxBackend::new(ctx()).on_present(move |_, store, id, _, gamma| {
-            let crop = camera.present_crop();
-            let _ = writer.present(|| {
-                frames.submit_guest_surface(store, id, gamma, crop, SIZE)?;
-                read_picture(&frames)
-            });
-        });
-        (
-            Some(reference),
-            Some(boot::run_opts::DisplayView {
-                backend: Some(view),
-                native_target: {
-                    let raster = raster.clone();
-                    Arc::new(move || settings::NativeTarget::windowed(raster()))
-                },
-                viewer_output: Some(raster),
-                viewer_lod: Some(viewer_lod),
-                display_size: Arc::new(|size| size),
-            }),
-            None,
-        )
-    };
+    let view = boot::theater::HostView::new(
+        boot::d3d_glue::share_context(frames.context()),
+        raster,
+        |size| size,
+        move |view, size| {
+            writer
+                .present(|| {
+                    frames.submit_view(view, size, true)?;
+                    read_picture(&frames)
+                })
+                .map_err(|error| format!("{error:#}"))
+        },
+    );
     Ok(boot::Host {
-        gfx,
-        gfx_view,
-        film_view,
+        film_view: Some(view),
         host_bots,
         host_light: true,
         film_capture: Some(capture),

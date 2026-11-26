@@ -10,58 +10,17 @@ pub struct GuestImage {
     pub contract_sha256: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImageMatch {
-    Native,
-    /// Re-execute from the start manifest. Native machine snapshots cannot
-    /// be assumed to have the same runtime layout or code coverage.
-    FromBoot,
-}
-
 impl GuestImage {
     pub fn capture(stamp: &str, target: &str, xbe_sha256: &str) -> Self {
         Self {
             version: 1,
             target: target.to_owned(),
-            contract_sha256: clang_contract(stamp, target, xbe_sha256).map(|(hash, _)| hash),
+            contract_sha256: clang_contract(stamp, target, xbe_sha256),
         }
-    }
-
-    pub fn compare(
-        &self,
-        original: &str,
-        candidate: &str,
-        target: &str,
-        xbe_sha256: &str,
-    ) -> Result<ImageMatch, &'static str> {
-        if original == candidate && !candidate.is_empty() && self.target == target {
-            return Ok(ImageMatch::Native);
-        }
-        if self.version != 1 {
-            return Err("unsupported portable guest image stamp version");
-        }
-        let (recorded, subset) = clang_contract(original, &self.target, xbe_sha256)
-            .ok_or("recording requires its original native image and target")?;
-        if Some(&recorded) != self.contract_sha256.as_ref() {
-            return Err("portable guest image stamp disagrees with the recorded native stamp");
-        }
-        let (local, local_subset) = clang_contract(candidate, target, xbe_sha256)
-            .ok_or("portable replay requires a supported Clang image on macOS or Linux")?;
-        if recorded != local {
-            return Err("guest image, generator, ABI, IR, FP or compiler options differ");
-        }
-        if local_subset.is_some() && local_subset != subset {
-            return Err("the local slim image has different guest code coverage; use a full image");
-        }
-        Ok(ImageMatch::FromBoot)
     }
 }
 
-fn clang_contract<'a>(
-    stamp: &'a str,
-    target: &str,
-    xbe_sha256: &str,
-) -> Option<(String, Option<&'a str>)> {
+fn clang_contract(stamp: &str, target: &str, xbe_sha256: &str) -> Option<String> {
     let suffix = match target {
         "arm64-apple-macos11" | "x86_64-apple-macos11" => "",
         "x86_64-unknown-linux-gnu" => " target x86_64-unknown-linux-gnu",
@@ -81,19 +40,12 @@ fn clang_contract<'a>(
     {
         return None;
     }
-    let coverage = match lines.next() {
-        None => None,
-        Some(line) => {
-            let id = line.strip_prefix("host coverage ")?;
-            if lines.next().is_some()
-                || id.len() != 16
-                || !id.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return None;
-            }
-            Some(id)
+    if let Some(line) = lines.next() {
+        let id = line.strip_prefix("host coverage ")?;
+        if lines.next().is_some() || id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
         }
-    };
+    }
     let mut flags: Vec<String> = serde_json::from_str(flags).ok()?;
     // ELF linkage/visibility flags are the only native flags this contract
     // erases. Preserve optimisation, tiers, PGO, x87/SSE, FP contraction,
@@ -106,7 +58,7 @@ fn clang_contract<'a>(
     }
     let wire =
         serde_json::to_vec(&("h2film guest image v1 clang", xbe_sha256, guest, flags)).ok()?;
-    Some((crate::xbe_digest(&wire), coverage))
+    Some(crate::xbe_digest(&wire))
 }
 
 #[cfg(test)]
@@ -114,7 +66,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_guest_full_image_can_play_slim_but_machine_snapshots_remain_native() {
+    fn the_same_guest_on_another_target_has_the_same_contract() {
         let xbe = "ab".repeat(32);
         let mac = "xbe A generator B passes P codegen C abi 1 flags [\"-fno-fast-math\", \"-ffp-contract=off\", \"-O2\"]\n";
         let linux = mac
@@ -125,50 +77,17 @@ mod tests {
             );
         let arm = "arm64-apple-macos11";
         let elf = "x86_64-unknown-linux-gnu";
-        let guest = GuestImage::capture(&linux, elf, &xbe);
-        assert_eq!(
-            guest.compare(&linux, &linux, elf, &xbe),
-            Ok(ImageMatch::Native)
-        );
-        assert_eq!(
-            guest.compare(&linux, mac, arm, &xbe),
-            Ok(ImageMatch::FromBoot)
-        );
-        assert!(
-            guest
-                .compare(&linux, &mac.replace("-O2", "-O3"), arm, &xbe)
-                .is_err()
-        );
-        assert!(
-            guest
-                .compare(&linux, &mac.replace("passes P", "passes X"), arm, &xbe)
-                .is_err()
-        );
-        assert!(
-            guest
-                .compare(
-                    &linux,
-                    &mac.replace("-fno-fast-math", "-ffast-math"),
-                    arm,
-                    &xbe
-                )
-                .is_err()
-        );
-        assert!(guest.compare(&linux, mac, arm, &"fe".repeat(32)).is_err());
-        assert!(
-            GuestImage::capture(mac, arm, &xbe)
-                .compare(mac, &linux, elf, &xbe)
-                .is_err()
-        );
-        assert!(
-            guest
-                .compare(
-                    &linux,
-                    &linux.replace("0123456789abcdef", "2222222222222222"),
-                    elf,
-                    &xbe
-                )
-                .is_err()
-        );
+        let contract = |stamp: &str, target: &str, xbe: &str| {
+            GuestImage::capture(stamp, target, xbe).contract_sha256
+        };
+        let recorded = contract(&linux, elf, &xbe);
+        assert!(recorded.is_some());
+        assert_eq!(contract(mac, arm, &xbe), recorded);
+        assert_ne!(contract(&mac.replace("-O2", "-O3"), arm, &xbe), recorded);
+        assert_ne!(contract(&mac.replace("passes P", "passes X"), arm, &xbe), recorded);
+        assert_ne!(contract(mac, arm, &"fe".repeat(32)), recorded);
+        assert_eq!(contract(&mac.replace("-fno-fast-math", "-ffast-math"), arm, &xbe), None);
+        assert_eq!(contract(mac, "aarch64-unknown-linux-gnu", &xbe), None);
+        assert_eq!(contract(&linux.replace("0123456789abcdef", "22"), elf, &xbe), None);
     }
 }

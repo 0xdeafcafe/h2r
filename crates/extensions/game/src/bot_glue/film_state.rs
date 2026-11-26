@@ -17,7 +17,7 @@ pub(super) fn install(b: &mut Builder, frame: &Arc<AtomicU64>, session: &Arc<Ses
     let (rec, play) = (session.clone(), session.clone());
     b.snapshot(hooks::SnapshotPolicy::section(
         move || {
-            if !crate::theater::in_keyframe() {
+            if !crate::sim_bounces::in_fork() {
                 return Vec::new();
             }
             let (cursor, next_roster) = rec.bot_snapshot_cursor();
@@ -30,7 +30,7 @@ pub(super) fn install(b: &mut Builder, frame: &Arc<AtomicU64>, session: &Arc<Ses
             .expect("fixed film bot state is serialisable")
         },
         move |bytes, _| {
-            if !crate::theater::in_keyframe() {
+            if !crate::sim_bounces::in_fork() {
                 return if bytes.is_empty() {
                     Ok(())
                 } else {

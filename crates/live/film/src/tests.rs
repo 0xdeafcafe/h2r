@@ -104,7 +104,6 @@ fn render_hook_profiles_round_trip_and_require_the_recorders_groups() {
 
 fn encoded() -> Vec<u8> {
     let mut w = Writer::new(Cursor::new(Vec::new()), &header(1)).unwrap();
-    w.chunk(DATA, &manifest::Manifest::default()).unwrap();
     let calls: Vec<Call> = [(0, "Recv"), (1, "Random")]
         .into_iter()
         .map(|(index, op)| Call {
@@ -148,7 +147,7 @@ fn round_trip_all_chunks_index_and_wrong_stamp() {
     assert!(r.finalized);
     assert_eq!(
         r.entries.iter().map(|e| e.tag).collect::<Vec<_>>(),
-        vec![HEAD, DATA, tape::TAPE, KEYF, HASH, MARK]
+        vec![HEAD, tape::TAPE, KEYF, HASH, MARK]
     );
     for e in &r.entries {
         assert_eq!(b[e.offset as usize..][..4], e.tag);
@@ -236,26 +235,6 @@ fn library_keeps_25_recent_plus_pins_by_header_id() {
     assert_eq!(reopened.list().unwrap()[0].meta.id, "25");
     assert!(!dir.0.join("other-26.h2film.saved").exists());
     assert!(reopened.delete("../../escape").is_err());
-}
-#[test]
-fn manifest_restores_guest_files_into_a_new_disk() {
-    let dir = Temp::new();
-    fs::create_dir_all(dir.0.join("disk/U")).unwrap();
-    fs::write(dir.0.join("disk/U/profile"), [4, 3, 2, 1]).unwrap();
-    fs::write(dir.0.join("accounts.json"), "outside the guest disk").unwrap();
-    let snap = manifest::Manifest::capture(&dir.0).unwrap();
-    let restored = dir.0.join("restored");
-    snap.restore(&restored).unwrap();
-    assert_eq!(
-        fs::read(restored.join("disk/U/profile")).unwrap(),
-        [4, 3, 2, 1]
-    );
-    assert!(!restored.join("accounts.json").exists());
-    assert!(snap.restore(&restored).is_err());
-    let bad: manifest::Manifest = serde_json::from_value(serde_json::json!({"entries":[{
-        "path":"disk/../../escape","sha256":"","data":null}]}))
-    .unwrap();
-    assert!(bad.restore(&dir.0.join("bad")).is_err());
 }
 #[test]
 fn upload_rejects_large_files_before_making_a_request() {
@@ -404,25 +383,6 @@ fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_p
 }
 
 #[test]
-fn referenced_start_files_require_matching_content() {
-    let dir = Temp::new();
-    let file = dir.0.join("disk/large");
-    fs::create_dir(dir.0.join("disk")).unwrap();
-    fs::write(&file, vec![42u8; 2 << 20]).unwrap();
-    let manifest = manifest::Manifest::capture(&dir.0).unwrap();
-    assert!(serde_json::to_vec(&manifest).unwrap().len() < 1024);
-    let dest = dir.0.join("play");
-    manifest.restore_with(&dest, Some(&dir.0)).unwrap();
-    assert_eq!(fs::read(dest.join("disk/large")).unwrap().len(), 2 << 20);
-    fs::write(file, [1]).unwrap();
-    assert!(
-        manifest
-            .restore_with(&dir.0.join("again"), Some(&dir.0))
-            .is_err()
-    );
-}
-
-#[test]
 fn v2_menu_reads_the_summary_without_decoding_gameplay() {
     let dir = Temp::new();
     let path = dir.0.join("local.h2film");
@@ -464,87 +424,6 @@ fn v2_requires_a_complete_index_and_footer() {
 }
 
 #[test]
-fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
-    let dir = Temp::new();
-    let path = dir.0.join("resume.h2film");
-    let mut h = header(0);
-    h.version = 2;
-    h.meta.length_ticks = 31;
-    let mut w = Writer::new(File::create(&path).unwrap(), &h).unwrap();
-    let call = |index| Call {
-        index,
-        op: "Random".into(),
-        thread: 1,
-        args: vec![4],
-        result: Ok(0),
-        outputs: vec![vec![index as u8; 4]],
-    };
-    let lobby = |boundary| Mark::Lobby {
-        boundary,
-        method: "host.lobby.state".into(),
-        params: serde_json::Value::Null,
-    };
-    w.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    tape_chunk(&mut w, &[call(0)]);
-    w.chunk(MARK, &lobby(9)).unwrap();
-    w.chunk(
-        HASH,
-        &Check {
-            tick: 30,
-            calls: 1,
-            sim: Some(6),
-        },
-    )
-    .unwrap();
-    // A failed capture can still have drained some guest push-buffer
-    // work. Its barrier is replayed even though it produced no snapshot.
-    w.chunk(MARK, &Mark::D3dBarrier { slices: 50, tick: 25, saved: false }).unwrap();
-    w.chunk(MARK, &Mark::D3dBarrier { slices: 60, tick: 30, saved: true }).unwrap();
-    w.chunk_bytes(KEYF, b"snapshot restored by the machine")
-        .unwrap();
-    w.chunk(MARK, &lobby(10)).unwrap();
-    w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
-    tape_chunk(&mut w, &[call(1)]);
-    let size = Call {
-        index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
-        result: Ok((3440 << 16) | 1440), outputs: vec![],
-    };
-    tape_chunk(&mut w, &[size.clone()]);
-    w.chunk(
-        MARK,
-        &Mark::End {
-            slices: 70,
-            tick: 31,
-            calls: 3,
-        },
-    )
-    .unwrap();
-    w.finish().unwrap();
-    let mut linear = Playback::load(Reader::open(&path).unwrap()).unwrap();
-    assert_eq!(linear.d3d_barrier(48, 24).unwrap(), None);
-    assert!(linear.d3d_barrier(50, 24).is_err());
-    assert_eq!(linear.d3d_barrier(50, 25).unwrap(), Some(false));
-    assert_eq!(linear.d3d_barrier(60, 30).unwrap(), Some(true));
-    let reader = Reader::open(path).unwrap();
-    let offset = reader
-        .entries
-        .iter()
-        .find(|entry| entry.tag == KEYF)
-        .unwrap()
-        .offset;
-    let mut tape = Playback::load(reader).unwrap();
-    assert!(tape.resume_keyframe(offset + 1, 30, 1, 9).is_err());
-    tape.resume_keyframe(offset, 30, 1, 9).unwrap();
-    assert_eq!(tape.d3d_barrier(60, 30).unwrap(), None);
-    assert_eq!(tape.d3d_barrier(64, 31).unwrap(), Some(true));
-    assert!(tape.checks.is_empty());
-    assert_eq!(tape.lobby.pop_front().unwrap().0, 10);
-    assert_eq!(tape.call(1, "Random", &[4], 1).unwrap(), call(1));
-    assert_eq!(tape.call(2, tape::VIDEO_MENU_SIZE, &[], 0).unwrap(), size);
-    assert!(tape.exhausted());
-}
-
-#[test]
 fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
     let dir = Temp::new();
     let path = dir.0.join("ring-cursor.h2film");
@@ -560,7 +439,6 @@ fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
         outputs: vec![vec![index as u8]],
     };
     let check = Check { tick: 30, calls: 2, sim: Some(7) };
-    writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
     tape_chunk(&mut writer, &[call(0), call(1)]);
     writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
     writer.chunk(MARK, &Mark::Lobby {
@@ -600,7 +478,6 @@ fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
         let mut header = header(0);
         header.version = 2;
         let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
-        writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
         if json {
             let calls: Vec<Call> = ops.iter().enumerate().map(|(i, op)| call(i as u64, op)).collect();
             writer.chunk(tape::TAPE, &calls).unwrap();
@@ -632,31 +509,6 @@ fn streams_interleave_in_one_batch_and_a_json_batch_is_refused() {
     let mut playback = Playback::load(Reader::open(&path).unwrap()).unwrap();
     let error = playback.call(0, ops[0], &[0], 1).unwrap_err().to_string();
     assert!(error.contains("JSON encoding"), "{error}");
-}
-
-#[test]
-fn keyframe_restores_guest_disk_changes_into_a_private_directory() {
-    let dir = Temp::new();
-    let disk = dir.0.join("disk");
-    fs::create_dir(&disk).unwrap();
-    fs::write(disk.join("profile"), b"start").unwrap();
-    fs::write(disk.join("retired"), b"old").unwrap();
-    fs::write(disk.join("unchanged"), b"keep").unwrap();
-    let start = manifest::Manifest::capture(&dir.0).unwrap();
-    assert!(start.keyframe_delta(&dir.0).unwrap().is_empty());
-
-    fs::write(disk.join("profile"), b"mid-match").unwrap();
-    fs::rename(disk.join("retired"), disk.join("renamed")).unwrap();
-    let delta = start.keyframe_delta(&dir.0).unwrap();
-    let private = dir.0.join("replay");
-    start.restore_keyframe(&private, None, &delta).unwrap();
-    assert_eq!(
-        fs::read(private.join("disk/profile")).unwrap(),
-        b"mid-match"
-    );
-    assert_eq!(fs::read(private.join("disk/unchanged")).unwrap(), b"keep");
-    assert_eq!(fs::read(private.join("disk/renamed")).unwrap(), b"old");
-    assert!(!private.join("disk/retired").exists());
 }
 
 
@@ -692,7 +544,6 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
     tape_header.meta.source = Source::Local;
     tape_header.player_features = true;
     let mut tape = Writer::new(Cursor::new(Vec::new()), &tape_header).unwrap();
-    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
     let mut track = TrackWriter::default();
     for n in 1..=40 {
         track.push(&mut tape, tick(n)).unwrap();
@@ -742,204 +593,6 @@ fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
     let reader = Reader::new(Cursor::new(bytes)).unwrap();
     assert_eq!(reader.header.meta.id, "7");
     assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 50);
-}
-
-/// An unsealed v3 tape, as a hard kill leaves it: the envelopes written so
-/// far and no indexes. Capture marks at ticks 50, 200 and 280; the track
-/// writer holds ticks 257..=300 unflushed, so the tape's last flushed tick
-/// is 256 and the last mark it can end at is 200.
-fn dead_tape(path: &std::path::Path) -> Vec<Entry> {
-    use blam::{Tick, TrackWriter};
-    let mut tape_header = header(7);
-    tape_header.version = 3;
-    tape_header.meta.source = Source::Local;
-    tape_header.player_features = true;
-    let mut tape = Writer::new(fs::File::create(path).unwrap(), &tape_header).unwrap();
-    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    let mut track = TrackWriter::default();
-    for n in 1..=300u64 {
-        track
-            .push(
-                &mut tape,
-                Tick {
-                    tick: n,
-                    inputs: vec![],
-                    events: vec![],
-                    closing_events: vec![],
-                    post_hash: None,
-                    forge: vec![],
-                    firefight: vec![],
-                },
-            )
-            .unwrap();
-        if n.is_multiple_of(30) {
-            tape.chunk(
-                HASH,
-                &Check {
-                    tick: n,
-                    sim: Some(n),
-                    calls: 0,
-                },
-            )
-            .unwrap();
-        }
-        if matches!(n, 50 | 200 | 280) {
-            // The recorder flushes its call batch, then writes the mark.
-            tape_chunk(&mut tape, &[Call {
-                index: match n {
-                    50 => 0,
-                    200 => 1,
-                    _ => 2,
-                },
-                op: "Recv".into(),
-                thread: 7,
-                args: vec![2],
-                result: Ok(1),
-                outputs: vec![],
-            }]);
-            tape.chunk(
-                MARK,
-                &Mark::D3dBarrier {
-                    slices: n * 2,
-                    tick: n,
-                    saved: true,
-                },
-            )
-            .unwrap();
-        }
-    }
-    let index = tape.index.clone();
-    drop(tape);
-    index
-}
-
-#[test]
-fn an_unsealed_tape_is_sealed_to_its_last_flushed_capture() {
-    let dir = Temp::new();
-    let path = dir.0.join("auto-tape.h2film");
-    let index = dead_tape(&path);
-    // The tape's own view of itself fails: no footer, no front.
-    assert!(Reader::open(&path).is_err());
-
-    assert!(recover_tape(&path).unwrap());
-    let reader = Reader::open(&path).unwrap();
-    assert_eq!(reader.header.meta.id, "7");
-    assert_eq!(reader.header.meta.length_ticks, 200);
-    assert!(reader.header.tape_id.is_none());
-    let front = reader.front.as_ref().unwrap();
-    assert_eq!((front.id.as_str(), front.started_ms), ("7", 7));
-    assert!(front.summary.players.is_empty(), "no descriptor survived");
-    // The end falls back past the mark whose chunk never flushed (280) to
-    // the last one the tape holds whole (200), inside the chunk 129..=256.
-    let playback = Playback::load(reader).unwrap();
-    assert_eq!(playback.end, Some((400, 200, 2)));
-    assert_eq!(playback.capture_points(), [50, 200]);
-    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
-    assert_eq!(chunks.first().unwrap().scene, 1);
-    let last = chunks.last().unwrap();
-    assert!((last.first..=last.last).contains(&200), "the end's chunk stays whole");
-    assert_eq!(last.last, 256);
-    // The staged copy is gone and the tape's bytes end where the film does.
-    assert!(staging_files(&path).is_empty());
-}
-
-#[test]
-fn a_tape_cut_mid_frame_seals_to_the_capture_before_the_torn_chunk() {
-    let dir = Temp::new();
-    let path = dir.0.join("auto-tape.h2film");
-    let index = dead_tape(&path);
-    // Cut inside the second time chunk's envelope, so the tape's last
-    // flushed tick falls to 128 and the mark at 200 cannot end a film.
-    let second = index
-        .iter()
-        .filter(|e| e.tag == range::TICK)
-        .nth(1)
-        .unwrap();
-    let len = fs::metadata(&path).unwrap().len();
-    let tape = fs::File::options().write(true).open(&path).unwrap();
-    tape.set_len(second.offset + 4).unwrap();
-    drop(tape);
-    assert!(len > second.offset + 4);
-
-    assert!(recover_tape(&path).unwrap());
-    let reader = Reader::open(&path).unwrap();
-    assert_eq!(reader.header.meta.length_ticks, 50);
-    let playback = Playback::load(reader).unwrap();
-    assert_eq!(playback.end, Some((100, 50, 1)));
-    assert_eq!(playback.capture_points(), [50]);
-    // The checkpoint at 60 sits before the kept chunk in the file; it is
-    // past the end and must not survive into the film.
-    let chunks = &playback.reader.ranges.as_ref().unwrap().chunks;
-    assert_eq!(chunks.last().unwrap().last, 128);
-}
-
-#[test]
-fn a_tape_with_a_truncated_tail_seals_where_the_whole_chunks_end() {
-    let dir = Temp::new();
-    let path = dir.0.join("auto-tape.h2film");
-    dead_tape(&path);
-    // The dead session's last write is torn: everything after the last
-    // capture mark loses its tail. The recovery ignores the partial bytes.
-    let len = fs::metadata(&path).unwrap().len();
-    let tape = fs::File::options().write(true).open(&path).unwrap();
-    tape.set_len(len - 3).unwrap();
-    drop(tape);
-
-    assert!(recover_tape(&path).unwrap());
-    let reader = Reader::open(&path).unwrap();
-    assert_eq!(reader.header.meta.length_ticks, 200);
-    let playback = Playback::load(reader).unwrap();
-    assert_eq!(playback.end, Some((400, 200, 2)));
-}
-
-#[test]
-fn a_tape_with_no_capture_to_end_at_is_not_a_film() {
-    let dir = Temp::new();
-    // Nothing but the boot header and the start manifest.
-    let bare = dir.0.join("auto-bare.h2film");
-    let mut tape_header = header(9);
-    tape_header.version = 3;
-    let mut tape = Writer::new(fs::File::create(&bare).unwrap(), &tape_header).unwrap();
-    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    drop(tape);
-    assert!(!recover_tape(&bare).unwrap());
-
-    // Ticks and checkpoints, but no game ever captured: a session that
-    // died in the menus leaves no film.
-    let menus = dir.0.join("auto-menus.h2film");
-    let mut tape = Writer::new(fs::File::create(&menus).unwrap(), &tape_header).unwrap();
-    tape.chunk(DATA, &manifest::Manifest::default()).unwrap();
-    let mut track = blam::TrackWriter::default();
-    for n in 1..=40u64 {
-        track
-            .push(
-                &mut tape,
-                blam::Tick {
-                    tick: n,
-                    inputs: vec![],
-                    events: vec![],
-                    closing_events: vec![],
-                    post_hash: None,
-                    forge: vec![],
-                    firefight: vec![],
-                },
-            )
-            .unwrap();
-    }
-    drop(tape);
-    assert!(!recover_tape(&menus).unwrap());
-    // A failed or empty recovery leaves the file as it was.
-    assert!(menus.is_file());
-    assert!(staging_files(&menus).is_empty());
-}
-
-/// The recovery staging files beside `path` (each test's own directory).
-fn staging_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
-    fs::read_dir(path.parent().unwrap())
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "recover"))
-        .collect()
 }
 
 /// Only a cut's final header may name another boot header: a v3 film whose

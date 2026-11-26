@@ -586,7 +586,7 @@ impl hooks::Feature for CoopPlayers {
             let (save, load) = (st.clone(), st.clone());
             b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
                 move || {
-                    if crate::theater::in_keyframe() {
+                    if crate::sim_bounces::in_fork() {
                         return lock(&st).spawning.map(|p| format!("co-op spawn {p:#x} in progress"));
                     }
                     players_live(&arm, &st)
@@ -597,7 +597,7 @@ impl hooks::Feature for CoopPlayers {
                 },
                 move |bytes, _| {
                     let [pending @ 0..=1, cinematic @ 0..=1] = bytes else { return Err("invalid co-op player checkpoint".into()); };
-                    if !crate::theater::in_keyframe() { return Err("co-op player state requires film replay".into()); }
+                    if !crate::sim_bounces::in_fork() { return Err("co-op player state requires film replay".into()); }
                     *lock(&load) = State { spawning: None, pending: *pending != 0, cinematic: *cinematic != 0 };
                     Ok(())
                 },

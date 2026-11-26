@@ -68,7 +68,7 @@ pub(super) fn policy(sim: &Arc<Inner>, playback: bool) -> hooks::SnapshotPolicy 
     let load = sim.clone();
     hooks::SnapshotPolicy::section_forbid_while(
         move || {
-            if !crate::theater::in_keyframe() || playback {
+            if !crate::sim_bounces::in_fork() || playback {
                 return None;
             }
             let state = check.lock();
@@ -83,7 +83,7 @@ pub(super) fn policy(sim: &Arc<Inner>, playback: bool) -> hooks::SnapshotPolicy 
                 .then(|| "sim lobby, seat binding or initial seed setup is in progress".into())
         },
         move || {
-            if !crate::theater::in_keyframe() {
+            if !crate::sim_bounces::in_fork() {
                 return vec![]; // A normal state.load starts a fresh metrics tally.
             }
             let owner = save
@@ -95,10 +95,10 @@ pub(super) fn policy(sim: &Arc<Inner>, playback: bool) -> hooks::SnapshotPolicy 
                 .expect("integer sim film state")
         },
         move |bytes, _| {
-            if !crate::theater::in_keyframe() && bytes.is_empty() {
+            if !crate::sim_bounces::in_fork() && bytes.is_empty() {
                 return Ok(());
             }
-            if !playback || !crate::theater::in_keyframe() {
+            if !playback || !crate::sim_bounces::in_fork() {
                 return Err("sim playback state requires a film player".into());
             }
             let state: Playing = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
