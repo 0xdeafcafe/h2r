@@ -117,8 +117,7 @@ The order of the result is the guest's append order, which the ranking
 reads. `the_light_gather_equals_the_guest_list` runs a fixture with
 lights inside and outside the view, one behind a portal, one not live,
 one listed from two clusters and the player-only tail, and compares the
-result with the list as `lights::candidates` reads it from the guest's
-memory. `the_gather_stops_at_the_guests_cap` covers the capacity. The
+result with the guest's list as the test reads it from the guest's memory. `the_gather_stops_at_the_guests_cap` covers the capacity. The
 light frame is a cut producer (`render_bridge::cut::CUTS`, row
 `dynamic_lights`); the gather feeds the per-light passes of the scene.
 

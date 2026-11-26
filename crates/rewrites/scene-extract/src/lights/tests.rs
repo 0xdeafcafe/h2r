@@ -127,7 +127,7 @@ fn extract(m: &FlatMemory) -> Arc<FrameScene> {
         let definition = if handle % 2 == 0 { CONE_TAG } else { SPHERE_TAG };
         builder.push_light(Light { handle, definition, guest_weight: Some(0.25), ..Default::default() }, &[]).unwrap();
     }
-    let candidates = candidates(m, FPU, &DRAWN, |_, _, _| Some(true)).unwrap();
+    let candidates = candidates(m, FPU, handles(m).as_deref(), &DRAWN, |_, _, _| Some(true)).unwrap();
     builder.add_light_candidates(candidates).unwrap();
     builder.seal(Stamp::default()).unwrap()
 }
@@ -137,7 +137,7 @@ fn twenty_candidates_keep_the_guests_five_and_both_constant_sets() {
     let m = guest();
     let before = m.bytes.clone();
     let s = extract(&m);
-    let subset = candidates(&m, FPU, &DRAWN, |address, _, _| {
+    let subset = candidates(&m, FPU, handles(&m).as_deref(), &DRAWN, |address, _, _| {
         Some(address != RECORDS && address != RECORDS + 7 * light::RECORD_SIZE as u32)
     }).unwrap();
     assert_eq!(subset.len(), 19);

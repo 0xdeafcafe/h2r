@@ -23,7 +23,7 @@ use std::ops::Range;
 
 use frame_scene::{
     FrameScene, GroupSite, LightBinding, LightEntry, LightGroup, LightPose, PROJECTION_ROWS, Row,
-    Topology,
+    Topology, ViewSlot,
 };
 
 /// A resident stream, as the native geometry names it.
@@ -185,6 +185,73 @@ pub fn plan_view<'a>(
             .iter()
             .map(move |g| (g, plan(scene, g, resident)))
     })
+}
+
+/// The layers one light's passes `0x00031170` draw, in the order they
+/// draw, in [`ViewSlot::LightAccumulation`] (slot 4). The additional
+/// casters' pair (layers 10 and 11 of [`GroupSite::AdditionalCasters`])
+/// runs between the light's 11 and 14.
+pub const PER_LIGHT_LAYERS: [u8; 5] = [10, 11, 14, 12, 13];
+
+/// The layers the first-person lights `0x000404b0` draw per light, in
+/// order, in [`ViewSlot::FirstPerson`] (slot 10).
+pub const FIRST_PERSON_LAYERS: [u8; 4] = [11, 14, 12, 13];
+
+/// The slot a group draws in and its place among its light's layers, or
+/// `None` for a group that is not a light pass's (an object shadow's).
+fn place(group: &LightGroup) -> Option<(ViewSlot, u8)> {
+    let slot = ViewSlot::LightAccumulation;
+    Some(match (group.site, group.layer) {
+        (GroupSite::Light, 10) => (slot, 0),
+        (GroupSite::Light, 11) => (slot, 1),
+        (GroupSite::AdditionalCasters, 10) => (slot, 2),
+        (GroupSite::AdditionalCasters, 11) => (slot, 3),
+        (GroupSite::Light, 14) => (slot, 4),
+        (GroupSite::Light, 12) => (slot, 5),
+        (GroupSite::Light, 13) => (slot, 6),
+        (GroupSite::FirstPerson, 11) => (ViewSlot::FirstPerson, 0),
+        (GroupSite::FirstPerson, 14) => (ViewSlot::FirstPerson, 1),
+        (GroupSite::FirstPerson, 12) => (ViewSlot::FirstPerson, 2),
+        (GroupSite::FirstPerson, 13) => (ViewSlot::FirstPerson, 3),
+        _ => return None,
+    })
+}
+
+/// One layer of one light, planned.
+#[derive(Debug)]
+pub struct LayerPass<'a> {
+    /// [`ViewSlot::LightAccumulation`] or [`ViewSlot::FirstPerson`].
+    pub slot: ViewSlot,
+    /// The light, an index into the scene's lights.
+    pub light: u32,
+    pub group: &'a LightGroup,
+    pub plan: Result<Plan, Refusal>,
+}
+
+/// Every light layer of `view`, in the order the game draws them: slot 4's
+/// per-light passes (each light's layers [`PER_LIGHT_LAYERS`], the
+/// additional casters between 11 and 14), then slot 10's first-person
+/// lights (each light's [`FIRST_PERSON_LAYERS`]). Lights keep the passes'
+/// order, duplicates stay. The order and the plans depend on the scene
+/// alone: a view drawn at any render scale plans the same layers, the
+/// device scaling their scissor and viewport at the draw.
+pub fn passes<'a>(
+    scene: &'a FrameScene,
+    view: &'a frame_scene::View,
+    resident: &'a dyn Resident,
+) -> Vec<LayerPass<'a>> {
+    let mut out: Vec<(ViewSlot, u32, u8, LayerPass<'a>)> = Vec::new();
+    for light in view.lights.clone() {
+        for group in scene.groups_of(light) {
+            let Some((slot, rank)) = place(group) else { continue };
+            let plan = plan(scene, group, resident);
+            out.push((slot, light, rank, LayerPass { slot, light, group, plan }));
+        }
+    }
+    // Slots first, so slot 4 holds every light before slot 10 starts; the
+    // sort is stable.
+    out.sort_by_key(|(slot, light, rank, _)| (*slot, *light, *rank));
+    out.into_iter().map(|(.., pass)| pass).collect()
 }
 
 #[cfg(test)]
@@ -531,5 +598,109 @@ mod tests {
                 Ok(0)
             ]
         );
+    }
+    /// A scene whose one light has `groups` (in the order given), its view
+    /// at `scale` times a 480x640 viewport.
+    fn scene_at(
+        scale: u32,
+        groups: &[(LightGroup, Vec<(LightEntry, Vec<frame_scene::Row>)>)],
+    ) -> std::sync::Arc<FrameScene> {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(
+            ViewKey { kind: ViewKind::Game, player: 0, view: 0 },
+            frame_scene::RenderCamera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 480 * scale, 640 * scale],
+                near: 0.1,
+                far: 100.0,
+            },
+        )
+        .unwrap();
+        b.push_light(
+            SceneLight { handle: 1, definition: 2, flags: 7, additional_casters: true, ..Default::default() },
+            &[],
+        )
+        .unwrap();
+        for (g, e) in groups {
+            b.push_light_group(g.clone(), e).unwrap();
+        }
+        b.seal(Stamp::default()).unwrap()
+    }
+
+    fn one(layer: u8, site: GroupSite) -> (LightGroup, Vec<(LightEntry, Vec<frame_scene::Row>)>) {
+        (group(layer, site), vec![(entry(0, LayerOwner::Cluster(2), W, 0, LIST), vec![])])
+    }
+
+    #[test]
+    fn per_light_layers_draw_10_11_14_12_13() {
+        // Gathered in no particular order.
+        let s = scene_at(
+            1,
+            &[
+                one(13, GroupSite::Light),
+                one(12, GroupSite::Light),
+                one(11, GroupSite::FirstPerson),
+                one(14, GroupSite::Light),
+                one(11, GroupSite::AdditionalCasters),
+                one(11, GroupSite::Light),
+                one(12, GroupSite::FirstPerson),
+                one(10, GroupSite::AdditionalCasters),
+                one(10, GroupSite::Light),
+                one(10, GroupSite::ObjectShadow),
+            ],
+        );
+        let got: Vec<_> = passes(&s, &s.views[0], &Held)
+            .iter()
+            .map(|p| (p.slot.number().unwrap(), p.group.site, p.group.layer))
+            .collect();
+        use GroupSite::{AdditionalCasters as A, FirstPerson as F, Light as L};
+        assert_eq!(
+            got,
+            [
+                (4, L, 10),
+                (4, A, 10),
+                (4, L, 11),
+                (4, A, 11),
+                (4, L, 14),
+                (4, L, 12),
+                (4, L, 13),
+                (10, F, 11),
+                (10, F, 12),
+            ],
+            "slot 4 per light 10, 11 (casters between 11 and 14), 14, 12, 13; slot 10 after; no object shadow"
+        );
+        let layers: Vec<u8> = got.iter().filter(|g| g.1 == L).map(|g| g.2).collect();
+        assert_eq!(layers, PER_LIGHT_LAYERS);
+    }
+
+    #[test]
+    fn a_scaled_view_draws_its_light_groups() {
+        let groups = [
+            one(10, GroupSite::Light),
+            one(11, GroupSite::Light),
+            one(14, GroupSite::Light),
+            one(12, GroupSite::Light),
+            one(13, GroupSite::Light),
+            one(11, GroupSite::FirstPerson),
+            one(13, GroupSite::FirstPerson),
+        ];
+        let shape = |scale| {
+            let s = scene_at(scale, &groups);
+            passes(&s, &s.views[0], &Held)
+                .iter()
+                .map(|p| (p.slot, p.group.layer, p.plan.as_ref().map(|plan| plan.draws.len())))
+                .collect::<Vec<_>>()
+        };
+        let one_x = shape(1);
+        assert_eq!(one_x.len(), 7);
+        assert!(one_x.iter().all(|(.., plan)| *plan == Ok(1)), "{one_x:?}");
+        for scale in [2, 3, 4] {
+            assert_eq!(shape(scale), one_x, "scale {scale}");
+        }
     }
 }

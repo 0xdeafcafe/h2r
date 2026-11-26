@@ -137,3 +137,12 @@ fn light_walk_follows_the_master_switch_with_context_only_chains() {
         }
     }
 }
+
+#[test]
+fn the_light_layers_draw_in_slots_4_and_10() {
+    assert_eq!(native_lights::LIGHT_SLOT.number(), Some(4));
+    assert_eq!(native_lights::FIRST_PERSON_SLOT.number(), Some(10));
+    assert_eq!(native_lights::SCENE_PASSES, [10, 11, 14, 12, 13]);
+    // The light frame is a cut producer: its guest body never runs.
+    assert!(render_bridge::cut::CUTS.iter().any(|c| c.name == "dynamic_lights" && c.entry == 0x0003_1c80));
+}

@@ -84,6 +84,14 @@ pub const FIRST_PERSON_LAYERS: [(u32, u32); 4] = [
     (13, 0x0004_079c),
 ];
 
+/// Where the light layers draw in the view's pass graph: every light's
+/// layers 10, 11, 14, 12 and 13 in slot 4 ([`SCENE_PASSES`]), the
+/// first-person lights' in slot 10. The scene's groups give both orders
+/// whatever the view's render scale ([`native_render::light_scene::passes`]).
+pub const LIGHT_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::LightAccumulation;
+pub const FIRST_PERSON_SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::FirstPerson;
+pub use native_render::light_scene::{PER_LIGHT_LAYERS as SCENE_PASSES, passes as scene_passes};
+
 /// Whether a layer draw returning to `ret` is the first-person lights'
 /// draw of `layer`.
 pub fn first_person_site(layer: u32, ret: u32) -> bool {

@@ -135,6 +135,16 @@ pub fn gather(world: &LightWorld, view: &GatherView, reached: &Reached, clip: &C
     list
 }
 
+/// The main view's list for the clusters its visibility reached, in order,
+/// under the clip of its mode: [`read_world`] and [`gather`] in one call.
+/// `None` when the light data or the list's allocation does not read.
+pub fn main_view(m: &dyn GuestMemory, flags: u32, start: u16, clusters: &[u16], clip: &Clip) -> Option<Vec<u32>> {
+    let view = GatherView { flags, start, capacity: capacity(m)? };
+    let world = read_world(m, clusters)?;
+    let reached = Reached { clusters: clusters.to_vec(), ..Reached::default() };
+    Some(gather(&world, &view, &reached, clip))
+}
+
 /// The list's capacity, from the allocation the guest keeps at
 /// `[0x00547f88 + 0x10]`.
 pub fn capacity(m: &dyn GuestMemory) -> Option<usize> {

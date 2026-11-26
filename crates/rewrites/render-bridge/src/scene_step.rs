@@ -119,6 +119,10 @@ struct Step {
     /// The main view's window volumes when the Rust visibility equalled the
     /// guest's, for the decorator placements ([`decorators`]).
     decorator_windows: Option<scene_extract::visibility::frusta::WindowFrusta>,
+    /// The open game view's visible clusters, in the order reached, and
+    /// the clip of its mode: the inputs of the Rust light gather
+    /// ([`scene_extract::lights::gather::main_view`]).
+    light_view: Option<(Vec<u16>, scene_extract::visibility::objects::Clip)>,
     /// The gather lens's objects for a game view whose window is wider
     /// than that lens, keyed by frame and view index
     /// ([`gather_lens_object`]).
@@ -383,6 +387,7 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     step.sequence = step.sequence.wrapping_add(1);
     step.builder.begin(id(m));
     step.decorator_windows = None;
+    step.light_view = None;
     step.light_open = false;
     step.shadow_open = false;
     SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
@@ -473,6 +478,7 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
             VIEWS.fetch_add(1, Ordering::Relaxed);
             step.based = false;
             step.decorator_windows = None;
+            step.light_view = None;
             step.light_open = false;
             step.shadow_open = false;
         }
@@ -499,6 +505,9 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                         // comparison's other side and the arm's fallback.
                         let guest = extract::cluster_gather(&m);
                         let (gather, mut extra, windows) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, guest, display_factor);
+                        step.light_view = gather
+                            .as_ref()
+                            .and_then(|g| light_clip(&m, g.mode, windows.as_ref()).map(|clip| (g.visible.clone(), clip)));
                         step.decorator_windows = windows;
                         if let Some(gather) = gather {
                             if let VisibilityLens::Guest { .. } = step.visibility_lens
@@ -752,7 +761,15 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) ->
         let eligible = |record, definition, flags| {
             crate::native_scene_lists::light_candidate_eligible(mem, record, definition, flags)
         };
-        if let Some(candidates) = scene_extract::lights::candidates(mem, fpu, &drawn, eligible) {
+        // The visible-light list from Rust (docs/graphics/native-lights.md,
+        // "The visible-light gather in Rust"); the guest's own list is not
+        // read. A view whose visibility or light data did not read lists
+        // only the lights the guest drew.
+        let gathered = step.light_view.as_ref().and_then(|(clusters, clip)| {
+            let view = scene_extract::visibility::guest::view(&Ro(mem)).ok()?;
+            scene_extract::lights::gather::main_view(mem, view.flags, view.start, clusters, clip)
+        });
+        if let Some(candidates) = scene_extract::lights::candidates(mem, fpu, gathered.as_deref(), &drawn, eligible) {
             if step.builder.add_light_candidates(candidates).is_err() {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             }
@@ -771,6 +788,27 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) ->
         LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     });
     added
+}
+
+/// The clip the light gather takes for the guest's visibility `mode`: the
+/// window frusta of the mode 0 flood (when the Rust visibility held), the
+/// view's sphere (mode 1), none (mode 2). `None` when the mode's inputs
+/// did not read.
+fn light_clip(
+    m: &Ro<'_>,
+    mode: u32,
+    windows: Option<&scene_extract::visibility::frusta::WindowFrusta>,
+) -> Option<scene_extract::visibility::objects::Clip> {
+    use scene_extract::visibility::objects::Clip;
+    match mode {
+        0 => windows.cloned().map(Clip::Frusta),
+        1 => {
+            let (centre, radius) = scene_extract::visibility::guest::view_sphere(m, engine::render_loop::occlusion::guest::MAIN_VIS).ok()?;
+            Some(Clip::Sphere { centre, radius })
+        }
+        2 => Some(Clip::All),
+        _ => None,
+    }
 }
 
 /// What the light passes' owner draws once a game view's light pass is

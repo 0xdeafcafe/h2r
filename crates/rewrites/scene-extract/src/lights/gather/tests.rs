@@ -207,3 +207,15 @@ fn the_view_flags_and_modes_change_the_list() {
     assert_eq!(gather(&world, &view(8), &r, &sphere), [0, 6].map(handle));
     assert_eq!(gather(&world, &view(8), &r, &Clip::All), [0, 1, 6, 2, 3].map(handle));
 }
+
+#[test]
+fn the_main_view_list_is_the_world_gathered_under_the_guests_capacity() {
+    let m = guest(-1);
+    let r = reached();
+    let v = view(capacity(&m).unwrap());
+    let world = read_world(&m, &r.clusters).unwrap();
+    assert_eq!(
+        main_view(&m, v.flags, v.start, &r.clusters, &clip(&r)),
+        Some(gather(&world, &v, &r, &clip(&r)))
+    );
+}
