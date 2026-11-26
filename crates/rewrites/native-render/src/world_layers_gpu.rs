@@ -486,10 +486,14 @@ impl IndexedPass {
         let Some(lens) = pool_lens_stage(draw) else {
             static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("native-water: sorted pool has no sampled projective 2D lens stage: {}", pool_lens_report(draw));
+                eprintln!("native-water: sorted pool has no stage sampling the frame: {}", pool_lens_report(draw));
             }
             return Err("no_lens");
         };
+        static LENS_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LENS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("native-water: sorted pool lens at t{lens}: {}", pool_lens_report(draw));
+        }
         let mut pass = Self::new(draw, cache, frame, None).ok_or("geometry")?;
         pass.sorted_pool = true;
         pass.lens = Some(lens);
@@ -915,32 +919,38 @@ pub fn pool_recording_counters() -> Vec<(String, u64)> {
 }
 
 /// The stage of `draw` that samples the frame behind a pool: the first
-/// sampled projective 2D stage (its ripple stages are bump environment maps
-/// and never qualify). The texture's own size does not matter: its
-/// coordinates are normalised by its header, the recording's copy is of the
-/// bound colour at the recording's size (the display copy's, or the
-/// reference copy's), and the guest's lens can be any resolve size.
+/// sampled 2D stage the device resolved as a frame sample
+/// (`StageExtras::samples_frame`: the bound colour, a snapshot of it or a
+/// frame-sized render level), whatever its texture mode. The texture mode
+/// does not identify it: Delta Towers' `tower_pool` samples its signed
+/// ripple bitmap projectively at t0 and reads the refraction target
+/// (engine texture 20) at t2 as a bump environment map offset by that
+/// ripple, so a copy of the scene bound at the first projective stage
+/// replaces the ripple and every bump offset follows the scene's colour.
+/// The texture's own size does not matter: its coordinates are normalised
+/// by its header, the recording's copy is of the bound colour at the
+/// recording's size (the display copy's, or the reference copy's), and the
+/// guest's lens can be any resolve size.
 pub fn pool_lens_stage(draw: &ResolvedDraw) -> Option<usize> {
-    use shaders::psh::{PixelShaderDef, bits::TEX_PROJECT2D};
-    let words = draw.shader.pixel_shader.as_ref()?;
-    let modes = PixelShaderDef::from_words(words).texture_modes;
     let sampled = draw.sampled_texture_stages();
     (0..4).find(|&n| {
-        (modes >> (5 * n)) & 0x1f == TEX_PROJECT2D
-            && sampled[n]
+        sampled[n]
+            && draw.extras[n].samples_frame
             && draw.texture_info[n].is_some_and(|info| info.kind == TextureKind::D2)
     })
 }
 
-/// What each stage of `draw` is, for the one line a refused lens logs:
-/// its texture mode, whether the program samples it, and the bound
-/// image's kind and size, against the guest target's size.
+/// What each stage of `draw` is, for the one line the first lens (or the
+/// first refused one) logs: its texture mode, whether the program samples
+/// it, whether it samples the frame, and the bound image's kind and size,
+/// against the guest target's size.
 fn pool_lens_report(draw: &ResolvedDraw) -> String {
     use shaders::psh::PixelShaderDef;
     let modes = draw.shader.pixel_shader.as_ref().map_or(0, |w| PixelShaderDef::from_words(w).texture_modes);
     let sampled = draw.sampled_texture_stages();
     let stages: Vec<String> = (0..4).map(|n| format!(
-        "t{n}: mode {:#x} sampled {} image {}", (modes >> (5 * n)) & 0x1f, sampled[n],
+        "t{n}: mode {:#x} sampled {} frame {} image {}", (modes >> (5 * n)) & 0x1f, sampled[n],
+        draw.extras[n].samples_frame,
         draw.texture_info[n].map_or("none".to_owned(), |i| format!("{:?} {}x{}", i.kind, i.width, i.height)),
     )).collect();
     format!("[{}] against the guest target {}x{}", stages.join("; "), draw.target.width, draw.target.height)
