@@ -154,7 +154,7 @@ fn existing_installer_lock_prevents_concurrent_publication() {
 
 #[test]
 #[cfg_attr(not(has_ffmpeg), ignore = "requires user's ffmpeg on PATH")]
-fn legacy_manifest_is_readable_but_not_trusted_for_resume() {
+fn a_manifest_without_hashes_is_not_playable_and_is_reconverted() {
     let temp = Temp::new();
     let bytes = media(&temp.0.join("source.nut"), "color=blue:size=32x24:rate=30");
     let options = InstallOptions::new(temp.0.join("data"));
@@ -163,9 +163,10 @@ fn legacy_manifest_is_readable_but_not_trusted_for_resume() {
     let mut legacy = Manifest::load(&options.data_dir).unwrap().unwrap();
     legacy.output_sha256.clear();
     fs::write(options.data_dir.join("movies.json"), legacy.to_json()).unwrap();
-    assert!(locate(&options.data_dir, "a").is_some());
+    assert!(locate(&options.data_dir, "a").is_none());
     let report = install(&mut iso, &options).unwrap();
     assert_eq!((report.converted.len(), report.reused.len()), (1, 0));
+    assert!(locate(&options.data_dir, "a").is_some());
     assert!(
         !Manifest::load(&options.data_dir)
             .unwrap()
