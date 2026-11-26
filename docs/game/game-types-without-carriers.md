@@ -301,7 +301,9 @@ document's census (`rules::gate::InGame::census`), so a Forge map with
 `siege_*` labels plays Siege with or without a built ground, and the reload
 below is for Forge's own test of Firefight waves. It is made in Forge or in Studio; both write the
 same things and build the same way. Waves, rounds and scoring are the
-game variant's (the script and its options), not the map's.
+game variant's (the script and its options), not the map's; a Forge map
+variant may also carry one wave set of its own, which the Map Waves
+entry plays (design, [forge-firefight.md](forge-firefight.md)).
 
 ### What the author places
 

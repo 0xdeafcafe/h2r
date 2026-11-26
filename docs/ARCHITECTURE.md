@@ -75,6 +75,7 @@ the workspace checks are in
 |---|---|---|---|---|
 | `asf` | formats | ASF demuxer for the retail sound permutations ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
 | `content` | formats | Map packages: the manifest, MapId, PPF/IPS/BPS patch readers and the resolver that turns a package into the bytes of maps\<name>.map (docs/game/maps.md) | [maps.md](game/maps.md) | foundation built |
+| `dev-texture` | formats | Forge block-out dev textures: code-drawn family grid tiles, a 5 by 7 font atlas and the face label layout | [forge-blockout.md](game/forge-blockout.md) | in progress |
 | `firefight` | formats | Portable Firefight definitions and admission rules |  |  |
 | `font` | formats | Halo 2 packed bitmap font parser and CPU text rasteriser | [fonts.md](formats/fonts.md) | done |
 | `forge-doc` | formats | Forge documents: portable map edits, bounded canonical JSON and the host edit log |  |  |

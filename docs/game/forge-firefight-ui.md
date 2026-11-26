@@ -1,6 +1,6 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3; the rest is design.
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3; the rest is design, the AI tool, the Waves screens and the HUD of a wave test among it (slices FA3, FA5 and FA7 of [forge-firefight.md](forge-firefight.md)).
 Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -192,7 +192,7 @@ back by `h1_options_row::rewrite_rows`):
 |---|---|
 | CUSTOM GAMES | retail's, with ours as they are, and Map Variant... (action 15) after Change Map... while the `forge` feature is on |
 | FORGE | Change Map..., Map Variant... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
-| Custom Games with Firefight selected | Change Map... lists compatible kits. Change Rules opens the game types and variants. |
+| Custom Games with Firefight selected | Change Map... lists compatible kits and, in the design, the maps that have a map variant with AI ground; Map Variant... lists those variants. Change Rules opens the game types and variants, Map Waves among the Firefight ones ([forge-firefight.md](forge-firefight.md), "Playing it"). |
 
 Every mode's list loses the Switch To rows: the GAME MODE picker changes the mode
 ([party-lobby.md](party-lobby.md#the-lobby-by-tab)). Clanker Options...
@@ -267,6 +267,7 @@ when the tool's state changes. One layout:
 | `forge.budget.meter` | Meter, `Art::StripMeter` | under the pill (`rects::below`) | used over limit; `Flash(Pulse::TimeWarning)` from 90% |
 | `forge.tool` | Text, `Font::Hud`, longest "VOLUMES" | top right, where a weapon's name line sits | the tool; capitals |
 | `forge.rebuild.pill`, `.pill.end`, `.count` | Icon and LCD Text | the grenade row's second place | pending Rebuild edits; hidden at 0 |
+| `forge.enemies.pill`, `.pill.end`, `.count` (FA3) | Icon and LCD Text | the grenade row's third place | enemies left while a wave test runs; hidden otherwise |
 | `forge.nav.target` | Navpoint | over the held, aimed or placed thing; in the Links tool, over the aimed end | while there is one; the number is the distance in metres |
 | `forge.nav.from` | Navpoint | over the link's first end | while a link is started |
 | `forge.nav.monitor.1`, `.2` | Navpoint | over the nearest two other monitors | while another seat's monitor is up |
@@ -341,6 +342,9 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Coordinates | a row of Properties | a list page on the same host; A opens the keyboard | P1 |
 | Placed objects | a row of Forge options | `kit.picker.game` over the objects placed, each flying the monitor to it | built |
 | Map limits | a row of Forge options | `forge.map-limits`, a read-only list page on the Controller Settings host | built (P4) |
+| Waves, Round, Wave, Squad | **Waves...** on Forge options; X in the AI tool with nothing aimed at | list pages on the Controller Settings host, value rows opening `kit.picker.game` ("The Waves screens") | FA5 |
+| Drop | X on a drop zone in the AI tool | a list page on the same host | FA7 |
+| Enemy types | a row of Forge options | `kit.picker.game` over the classes, each on or off | FA5, after FA6 |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
   description block. The groups come from a table
@@ -387,7 +391,10 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   capacity page, and **Placed objects** opens the object picker.
   **Build AI ground**, **Test waves** and **Generate nav** act and close
   the page ([forge-map-variants.md](forge-map-variants.md), "AI ground";
-  [forge-nav.md](forge-nav.md)). Players (F5), Map settings and Publish
+  [forge-nav.md](forge-nav.md)). In the design **Build AI ground** has the
+  ground's state as its value (Not built, Current, Out of date), **Test
+  waves** reads **Stop waves** while a test runs, and **Waves...** and
+  **Enemy types...** join the page ("The AI tool"). Players (F5), Map settings and Publish
   (F14) join the page in their slices. The object menu's last row is **AI and objectives**,
   the ground labels (`sheet::objects_with_ai`).
 - **Controls.** A row a control of the bindings table, its pad button
@@ -424,6 +431,134 @@ camera and tool take no input (`forge_screens::ui_up`, published to
   `forge_hud::Show` turns off; the session turns them on all (the
   Overlays setting of [forge-editing.md](forge-editing.md) sets them).
 
+### The AI tool
+
+Design (FA7; the palette group and the markers are built). The AI tool
+is the monitor's tool for a Firefight map: it aims at ground markers
+only, draws the built ground, and opens the waves. Everything it writes
+is a marker or the wave set ([forge-firefight.md](forge-firefight.md)).
+
+**The palette group.** The object menu's last group is **AI and
+objectives** in every tool (`sheet::objects_with_ai`); in the AI tool X
+with nothing aimed at opens the object menu on it. Its rows are the
+labels the session's game type reads, each with how many are placed as
+its value and one line of help:
+
+| Row | Places | Help |
+|---|---|---|
+| Drop zone | an `ff_drop` marker facing the way the monitor looks | "Where a wave arrives. Twelve at most." |
+| Base | an `ff_base` marker for the team the placed ones leave short, red then blue | "What the enemy pushes at, and where a team spawns." |
+| Cover | an `ff_cover` marker with a facing | "A place the enemy fires from." |
+
+The Siege labels follow them as they do today. A marker is held, placed,
+picked up, turned and deleted as an object is: A places and picks up, RT
+turns, hold Y deletes ([forge-editing.md](forge-editing.md),
+"Controls"). A thirteenth drop zone is refused with the notice "A map
+has 12 drop zones at most."
+
+**What the tool draws.** Each marker as its game type marker (a drop
+green, a cover yellow, a base its team's colour), a marker the last
+build could not honour in orange ([forge-map-variants.md](forge-map-variants.md),
+"AI ground"), and, in this tool only, the built ground's sectors in the
+Nav tool's sector style (`forge_glue/nav_world.rs`). Sectors are drawn
+only while the ground is current: a stale ground draws none, since they
+are no longer what a build gives.
+
+**The readout** (the bottom-left readout,
+[forge-map-variants-ui.md](forge-map-variants-ui.md)) names what is
+aimed at: "Drop zone 3" and "2 squads land here", "Red base", "Cover".
+A drop zone's number is its zone in the wave set, counted from 1. The
+prompt line is the Objects tool's with the marker's name: "Press (A) to
+pick up Drop zone 3", "Press (X) for Drop zone 3".
+
+**Placing a squad.** A squad is a row of a wave, and it is placed by
+giving it a drop zone. X on a drop zone opens the DROP page:
+
+| Row | Value | A |
+|---|---|---|
+| Squads that land here | the count | a picker of them ("Round 1 Wave 2: 4 Elites"); choosing one opens its SQUAD page |
+| Add squad here... | | a picker of the waves ("Round 1 Wave 1" to the last), then the new squad's SQUAD page with Drop set to this zone |
+| Coordinates... | | the Coordinates page, as for any thing |
+
+A squad whose Drop is **Any drop** belongs to no zone and is reached
+from its wave. Moving a drop zone keeps its squads; deleting it sends
+them to Any drop, and the notice says so ("2 squads now use any drop.").
+
+**The ground's state** is not a HUD element. It is the value of the
+**Build AI ground** row, and a notice the first time an edit makes a
+built ground stale: "AI ground is out of date." **Test waves** builds
+it.
+
+### The Waves screens
+
+Design (FA5). Four list pages on the in-game Controller Settings host,
+each within its sixteen lines, opened one above the other so B goes
+back. A row with a set of values opens `kit.picker.game`; the name
+opens the keyboard. A list that can outgrow the page (rounds, a wave's
+squads) is a picker, which scrolls. Every change is applied at once as
+one `Session::set_waves`; a change the validator refuses leaves the
+page as it was and sends the validator's sentence as a notice.
+
+**WAVES** (`forge.waves`), from **Waves...** on Forge options. The
+header is the set's name.
+
+| Row | Value | A |
+|---|---|---|
+| Name | the set's name | the keyboard |
+| Start from... | | a picker: Holdout, Attrition, Last Stand, Crossfire, the lobby map's own sets; it asks before it replaces a set that was edited |
+| Teams | One team, Two teams | picker |
+| Starting lives | 0 to 30 | picker |
+| Bonus lives a round | 0 to 10 | picker |
+| Shared lives | On, Off | picker |
+| Enemy limit | the live actors allowed with four players | a picker of the values the host table allows ([ai-networking.md](ai-networking.md#cpu-on-the-host)); the tiers for fewer players scale with it |
+| Rounds... | the count | a picker of the rounds ("Round 2: 5 waves, Catch"), then **Add round**; choosing a round opens ROUND |
+| Problems | the count; absent at 0 | a picker of them ("Round 2 Wave 3: no Grunts on this map"), each opening its squad |
+| Test waves | | starts the test and closes the pages |
+| Reset waves | | the set as the map was loaded, after a question |
+
+**ROUND n** (`forge.round`).
+
+| Row | Value | A |
+|---|---|---|
+| Skull | None, or the skull the round switches on | a picker of the nine Firefight skulls no other round uses |
+| Wave 1 to Wave 4, Boss wave | "3 squads, 6 to 14 enemies": the wave's count at one and at four players | WAVE |
+| Copy from... | | a picker of the other rounds |
+| Remove round | | a question; absent from the only round |
+
+**WAVE n** (`forge.wave`).
+
+| Row | Value | A |
+|---|---|---|
+| Starts after | 0 to 300 seconds | picker; the gap before the wave |
+| Squads... | the count | a picker of the squads ("4 Elites, Drop zone 3"), then **Add squad**; choosing one opens SQUAD |
+| Copy from... | | a picker of the other waves |
+| Clear wave | | a question; the wave keeps one squad |
+
+The page's help line is the wave's enemies against the limit at one,
+two and four players ("6, 10 and 14 of 16, 24 and 32 enemies").
+
+**SQUAD** (`forge.squad`).
+
+| Row | Value | A |
+|---|---|---|
+| Enemy | the class's name | a picker of the classes the built ground has; with no ground built, the Elite |
+| For each player | 1 to 8 | picker |
+| At least | 1 to 32 | picker |
+| At most | 1 to 32 | picker |
+| Drop | Any drop, or Drop zone n | a picker: Any drop, then each placed drop zone by number |
+| Duplicate | | the same squad again in this wave |
+| Remove squad | | absent from a wave's only squad |
+
+A squad has no weapons row: the ground authors one weapon a class, and
+the row arrives when the weapon tier is applied
+([firefight.md](firefight.md), "Guest boundary"). Scoring and the skull
+multipliers are the template's (**Start from...**) and have no page.
+
+**Enemy types** (after FA6) is a picker on Forge options over the
+retail class table, each row On or Off with its tag cost from the last
+build as its line ("Grunt: 212 KB", "Hunter: cut, no room"). A change
+marks the ground stale; the classes arrive at the next build.
+
 ## The Firefight HUD
 
 A HUD kit `Hud` named `firefight` (`hud_kit_core::huds::firefight`), fed
@@ -451,6 +586,27 @@ by `hud::view` from the mode blob as it is ([firefight.md](firefight.md),
   retail art by widget name, chosen from the disc census (**S**, not
   done).
 
+**While editing** (design, FA3). A wave test in a Forge session draws
+the Firefight HUD from the same mode blob, by what the local user is:
+
+| The user is | `ff.banner`, `ff.note` | `ff.enemies.*` | `ff.lives.*` | The monitor HUD |
+|---|---|---|---|---|
+| in the monitor | shown | hidden: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
+| in the biped | shown | shown, at the grenade row's next place | hidden: a test charges no lives | not drawn |
+
+- `hud::view_of` takes the scope with the roster slot (a match, a test
+  in the biped, a test in the monitor), so the client's view stays a
+  pure function of the blob, the slot and the scope.
+- The banner and the notes are the game's channels and need no place.
+  WAVE n, BOSS WAVE and ROUND COMPLETE read over the monitor as over a
+  player; the end of a test says "Waves cleared" or "Waves stopped" as a
+  `forge.notice`, not VICTORY or GAME OVER.
+- The tool line keeps the tool's name. Nothing else of the monitor's
+  HUD changes in a test, and with no test the monitor draws nothing of
+  Firefight.
+- The monitor's motion tracker shows the actors as it shows any enemy
+  (decision 3).
+
 ## Slices
 
 Sizes as [forge-design.md](forge-design.md), "Features": **S** under 800
@@ -473,6 +629,12 @@ their first user. The editing slices P1 to P6 are in
 | **U6** (built) | Forge markers as navpoints; the gizmo as three segments in the Axes setting's basis; remove the marker and gizmo painters | S | K3, K4, U3 (built) | table test: held, aimed, linking and two monitors give the expected points and segments; `h2 hud preview forge --state holding` |
 | **U7** (built) | Remove the compositor path: `ScreenSpec::hud` and the `hud` screen kind, the Forge painter in `play_cmd/forge.rs` (the window keeps only the input hand-over), `forge.hud`, `forge.palette`, `forge.menu`, the reticle page and their sheet entries. `Art::Solid` stays: Theater's playback page draws its bar with it; update [ui-builder.md](ui-builder.md) "Screen kinds" | S | U3 (built), U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
 
+The AI tool, the Waves screens and the HUD of a wave test are slices
+FA7, FA5 and FA3 of [forge-firefight.md](forge-firefight.md), "Slices",
+with their proofs: `Page` tables for each page, the kit's checks on the
+`forge` and `firefight` HUDs in every state and mode, and Studio's
+`ui.render` and `hud.render` of each for the report.
+
 The GAME MODE picker that replaces U2's Mode row is slices T1 to T7 of
 [party-lobby.md](party-lobby.md). U2 and U4 need neither kit change and can start at once. U1 lands with
 U2, so that Forge and Firefight are never without a way in. The kit slices are all built.
@@ -493,7 +655,8 @@ U2, so that Forge and Firefight are never without a way in. The kit slices are a
   Forge screens, which are game screens; the lobby's mode is `ui.lobby.tabs`
   ([party-lobby.md](party-lobby.md), "Interfaces"); `hud.kit` (the HUD
   kit's build plan) reads the HUDs; `forge.status` and `firefight.state`
-  are unchanged.
+  are unchanged. The design adds `forge.waves` and `forge.waves.test`
+  ([forge-firefight.md](forge-firefight.md), "Interfaces").
 
 ## Rules and limits
 
@@ -594,10 +757,18 @@ The owner's choices, which the sections above follow.
   against the level; they are ours, not the HUD's colour table.
 - Everything the HUD kit's page lists as not verified, which U3, U5 and
   U6 inherit.
+- That the grenade row has a third place clear of the motion tracker and
+  the retail panel in every screen mode and at wide aspects, for
+  `forge.enemies.*`.
+- That four list pages opened one above the other on the Controller
+  Settings host come back in order with B, and that a picker opens over
+  the fourth.
+- That the banner channel draws for a user whose HUD is in monitor mode.
 
 ## Related
 
 - [forge-map-variants-ui.md](forge-map-variants-ui.md): the readout, world marks, Properties rows by kind and the map variant screens.
+- [forge-firefight.md](forge-firefight.md): what the AI tool and the Waves screens write, the wave test, and their slices.
 - [party-lobby.md](party-lobby.md): the lobby's modes and the GAME MODE picker.
 - [ui-builder.md](ui-builder.md), [ui-screens.md](ui-screens.md): the UI kit.
 - [forge-editing.md](forge-editing.md): what the Forge screens do.

@@ -268,6 +268,7 @@ fn entry(file: &str, name: &str, sentence: Option<&str>) -> VariantEntry {
         detail: format!("By Builder. Adds 2 Crates ({name})."),
         id: Some(content::Sha256::of(file.as_bytes())),
         suggested_for: None,
+        ground: true,
     }
 }
 
@@ -495,7 +496,7 @@ fn firefight_without_a_kit_map_refuses_the_start_and_says_why() {
         assert_eq!(refusal(mode, Some(0), none), None, "{mode:?} needs no kit");
     }
     assert_eq!(Reason::NoKitMap.text(), "No installed map supports Firefight yet.");
-    assert_eq!(Reason::NotKitMap.text(), "This map does not support Firefight.");
+    assert_eq!(Reason::NotKitMap.text(), "Pick a map variant with AI ground, or a Firefight map.");
     // The panel: one reason line and what to do, in place of the options.
     assert_eq!(
         firefight_map_lines(none).unwrap(),
@@ -503,7 +504,7 @@ fn firefight_without_a_kit_map_refuses_the_start_and_says_why() {
     );
     assert_eq!(
         firefight_map_lines(elsewhere).unwrap()[0],
-        "This map does not support Firefight"
+        "This map has no AI ground"
     );
     assert_eq!(firefight_map_lines(here), None);
     for kit in [none, elsewhere] {
@@ -1229,4 +1230,32 @@ fn the_map_variant_list_names_a_lobby_map_it_does_not_know() {
     let dir = std::env::temp_dir();
     let why = map_variant_list(&dir, None).unwrap_err();
     assert!(why.contains("not known"), "{why}");
+}
+
+#[test]
+fn the_picker_refuses_original_and_groundless_variants_in_firefight() {
+    let mut basin = entry("Basin", "Basin", None);
+    let mut plain = entry("Castle", "Castle", None);
+    let mut broken = entry("Old", "Old", Some("Old was made for another version of court."));
+    basin.ground = true;
+    plain.ground = false;
+    broken.ground = true;
+    let listed = vec![plain, basin, broken];
+    let (choose, seen) = recorder();
+    let pick = map_variant_pick_for(Ok(listed.clone()), None, choose, true);
+    assert_eq!(pick.values, [ORIGINAL, "Castle", "Basin", "Old"]);
+    assert_eq!(pick.blocked, [true, true, false, true]);
+    assert_eq!(pick.line(0), NO_GROUND);
+    assert_eq!(pick.line(1), NO_GROUND);
+    assert!(pick.line(2).contains("Adds 2 Crates"));
+    assert!(pick.line(3).contains("another version"), "its own sentence stays");
+    assert_eq!(pick.current, 2, "opens on the first variant it can take");
+    // A held pick is where it opens, whatever else is listed.
+    let held = map_variant_pick_for(Ok(listed.clone()), Some("Castle"), recorder().0, true);
+    assert_eq!(held.current, 1);
+    // Outside Firefight nothing changes.
+    let other = map_variant_pick_for(Ok(listed), None, recorder().0, false);
+    assert_eq!(other.blocked, [false, false, false, true]);
+    assert_eq!(other.current, 0);
+    assert!(seen.lock().unwrap().is_empty());
 }

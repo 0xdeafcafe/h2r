@@ -114,6 +114,10 @@ pub struct Picked {
     /// The pick is a Forge session's new map with the kit ([`pick_kit`]),
     /// not a variant of the store.
     pub kit: bool,
+    /// The pick's document has an AI ground recipe, which makes the lobby's
+    /// map a Firefight map (`ForgeDoc::ground_recipe`; docs/game/forge-firefight.md,
+    /// "Playing it").
+    pub ground: bool,
 }
 
 type Cell = Arc<Mutex<Option<Picked>>>;
@@ -180,6 +184,17 @@ pub fn picked() -> Option<Picked> {
     with_pick(|p| p.clone())
 }
 
+/// Whether the lobby holds a pick on its map `lobby_map` whose document
+/// has AI ground: the lobby's map then plays Firefight as a kit map does
+/// (`crate::lobby_start::KitMaps`). A refused or building pick counts; the
+/// start's hold says why it cannot start.
+pub fn ground_on(lobby_map: Option<u32>) -> bool {
+    with_pick(|p| {
+        p.as_ref()
+            .is_some_and(|p| p.ground && !p.kit && p.lobby_map == lobby_map)
+    })
+}
+
 /// Pick the variant `file` of `map`, the lobby's map being `lobby_map`, and
 /// start its build. A variant that fails a check is held as picked and
 /// refused ([`Prep::Refused`]), so Start Game says why. The thread the build
@@ -203,6 +218,7 @@ pub fn pick(
         id: None,
         prep: Prep::Building,
         kit: false,
+        ground: false,
     };
     let doc = match variants::load(data, map, file, installed.as_ref()) {
         Ok(doc) => doc,
@@ -212,6 +228,7 @@ pub fn pick(
             return None;
         }
     };
+    picked.ground = matches!(doc.ground_recipe(), Ok(Some(_)));
     begin(picked, doc, maps)
 }
 
@@ -238,6 +255,7 @@ pub fn pick_kit(
         id: None,
         prep: Prep::Building,
         kit: true,
+        ground: false,
     };
     let Some(sha256) = installed else {
         picked.prep = Prep::Refused(Refusal::new(
@@ -326,6 +344,7 @@ pub fn pick_installed(
                 format!("{file} cannot be built in this game."),
             )),
             kit: false,
+            ground: false,
         });
         return None;
     };

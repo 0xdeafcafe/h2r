@@ -349,3 +349,26 @@ fn suggestable_lists_every_maps_usable_variants_and_leaves_the_rest_out() {
     assert_eq!((got[1].map.as_str(), got[1].file.as_str()), ("fixture", "Zeta"));
     assert!(got.iter().all(|s| s.source == Source::Saved));
 }
+
+#[test]
+fn the_variant_list_reports_each_entrys_ground() {
+    let dir = Dir::new();
+    let mut with = doc("With Ground");
+    with.recipes.push(
+        forge_doc::GroundRecipe {
+            kit_version: 3,
+            home: 0,
+            probe: false,
+        }
+        .to_recipe(),
+    );
+    with.format = with.required_format();
+    variants::save(&dir.0, &with, false).unwrap();
+    variants::save(&dir.0, &doc("Plain"), false).unwrap();
+    fs::write(dir.file("Broken"), b"not a document").unwrap();
+    let listed = list(&dir);
+    let ground = |name: &str| listed.iter().find(|l| l.name == name).unwrap().ground;
+    assert!(ground("With Ground"));
+    assert!(!ground("Plain"));
+    assert!(!ground("Broken"), "a file that does not parse has none");
+}

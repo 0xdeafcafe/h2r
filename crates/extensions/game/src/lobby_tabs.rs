@@ -330,7 +330,7 @@ impl Reason {
             Reason::NoForgeMap => "No original map is installed for Forge.",
             Reason::MapRefused => "The game did not take the map for this mode.",
             Reason::NoSettings => "No settings store holds Firefight's options.",
-            Reason::NotKitMap => "This map does not support Firefight.",
+            Reason::NotKitMap => "Pick a map variant with AI ground, or a Firefight map.",
             Reason::CoOpLiveOff => "Co-op over Xbox Live is turned off.",
         }
     }

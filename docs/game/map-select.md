@@ -34,7 +34,7 @@ menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 |---|---|
 | Multiplayer | the categories above |
 | Forge | the same installed categories as Custom Games |
-| Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`) |
+| Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`), then each original map with a saved map variant that has AI ground (`Catalogue::with_ground_maps`) |
 
 Selecting a Firefight variant opens its compatible kit maps directly.
 B or Back returns to Game Setup. A wave set with no compatible installed

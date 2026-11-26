@@ -40,6 +40,8 @@ Halo 3, Reach and Infinite, and
 [forge-map-variants.md](forge-map-variants.md) is the design for editing
 the map's own placements and for the map variant, the saved form a
 custom game and a playlist entry pick beside a game variant.
+[forge-firefight.md](forge-firefight.md) is the design for building a
+Firefight map in a session and playing it.
 
 Evidence labels are those of [docs-style.md](../meta/docs-style.md):
 **E**, **V**, **Code**, **Test**, **Run**, **S** (supposed, with what
@@ -74,7 +76,9 @@ grouped.
 | Structure collision, portals, AI pathfinding sectors | Rebuild | compiled data: collision BSP, MOPP, `sbsp` pathfinding ([pathfinding.md](../formats/pathfinding.md)) |
 | Bot nav mesh | Live | host-side Rust state, built off the game thread (`bots::autonav`) |
 | Emitters, triggers, logic, barrier switches | Live | Forge's own state (below); no retail home |
-| AI squads | Kit to place one; Rebuild to add a character type | squads are scenario blocks; characters are tags ([ai.md](../halo1/ai.md)) |
+| AI drop zones, bases and cover | Live to place the marker; Rebuild for the ground they are built into | a marker is a netgame flag with a label; sectors, zones and squad slots are compiled by `firefight_kit::ground::build` ([forge-firefight.md](forge-firefight.md)) |
+| A wave set | Live | session state beside the document; the director reads it when a test or a match starts |
+| An enemy class | Rebuild | a `char` tag and its closure, brought in by the ground recipe |
 
 ### The kit
 
@@ -88,23 +92,26 @@ tags added at build time so that most edits in a session are Live.
   a sentinel, the reserved rows carry it (for example palette index
   -1). F3 probes whether engine readers take the count from the root
   on each walk.
-- Spare device groups, squad groups and squad slots follow the same
-  active-count rule.
-- Generated tags of our own, built from nothing on the disc: barrier
-  boxes in a ladder of sizes, a block-out set (box, ramp, wedge,
-  cylinder), marker objects for emitters and volumes. Each is a `bloc` or
-  `scen` with a `coll` and `phmo` from the `collision-build` crate
-  ([modeling.md](../editor/modeling.md) slice 8) and, for block-out
-  pieces, a `mode` from the section encoder.
+- Spare device groups follow the same active-count rule. Squad slots
+  are not the kit's: the AI ground has sixteen, which the director
+  fills ([forge-firefight.md](forge-firefight.md)).
+- Generated tags of our own, built from nothing on the disc: the
+  block-out set ([forge-blockout.md](forge-blockout.md): the dev
+  textures, a starter set of pieces, spare slots a session rewrites to
+  a new size, and every definition the document's pieces use) and
+  marker objects for emitters and volumes. A piece is a `bloc` with a
+  `coll` from the `collision-build` crate
+  ([modeling.md](../editor/modeling.md) slice 8), a `phmo` with one
+  fixed body and a `mode`; a barrier is a piece with no `mode`.
 - The tags a document's recipes ask for (monitor bodies, AI characters,
-  imports).
+  imports). Enemy classes come with the AI ground, not the kit.
 
 The kit costs tag memory. Multiplayer maps have 0.1 to 1.5 MiB of
 headroom under the bound the writer keeps, and one map has none (**V**,
 scenario-editor.md section 6). The real headroom is not measured; slice
 F3 measures it. A kit that does not fit is cut in a fixed order (block-out
-set, spare entries, then recipes are refused by name), so two machines
-cut alike.
+set, in the order of forge-blockout.md, "Reaching the game"; spare
+entries; then recipes are refused by name), so two machines cut alike.
 
 A session document requests the kit with the `forge_kit` generate
 recipe. F2 reserves up to eight slots per block, in scenario root
@@ -125,6 +132,7 @@ ForgeDoc
   sources: [{map, sha256}]             other disc maps a recipe reads
   title, author, description           player text
   recipes: [Recipe]                    tags to bring in, by reference
+  waves: firefight::Def?               one Firefight wave set (design)
   imports: [ImportSlot]                the author's own assets, by hash
   ops: [Op]                            ordered; ids are stable
   expect: {map_id, geometry}           optional build result
@@ -139,7 +147,7 @@ An `Op` is one of the editor's own commands or a Forge one:
 | Tag field | set a field by tag key and path | `edit.batch`'s write, with a digest of the prior typed value in `was` |
 | Mesh | a `MeshOp` on a target | modeling.md, "Operations" |
 | Bitmap | a `BitmapOp` (strokes, fills, adjusts) | modeling.md, "Texture editing" |
-| Forge | emitter, volume, barrier, link, label, logic node, squad, nav setting, body | this page; labels in [rules-engine.md](rules-engine.md) "Forge labels" |
+| Forge | emitter, volume, barrier, link, label, logic node, nav setting, body | this page; labels in [rules-engine.md](rules-engine.md) "Forge labels" |
 
 Tags are named by group and path, resolved through the map's tag index
 when the document is applied. A Mesh op holds coordinates the author
@@ -165,7 +173,7 @@ A **recipe** brings tags into the map by reference:
 |---|---|---|
 | `transplant` | copies a tag and its closure from a source map on the user's disc into the map, through `tags::repo` (`MapSource`, `closure`) and `TagSet::add_tag` ([tag-repo.md](../formats/tag-repo.md)) | the tag key and the source map's hash |
 | `variant` | a copy of a tag the map holds with listed fields changed (a `bipd` with another `hlmt`) | the key and the field writes |
-| `generate` | a kit tag made by our code | the generator's name and parameters |
+| `generate` | a kit tag made by our code, or the AI ground (`ai_ground`) | the generator's name and parameters |
 | `import` | binds an import slot to tags converted on this machine | the slot id |
 
 ### Materialising
@@ -267,9 +275,10 @@ has a home for. Forge follows it.
 
 | State | Kind | Where |
 |---|---|---|
-| Objects, placements, tag fields, netgame flags, device groups, squads | guest truth | the arena and the tag data, written through engine entries and `hot-tags` |
+| Objects, placements, tag fields, netgame flags, device groups, squads and actors | guest truth | the arena and the tag data, written through engine entries and `hot-tags` |
 | Emitter timers, logic node state, barrier switches, volume occupancy, the object-to-op link, who holds what, budgets | **Extension** | `ForgeExt` in the `SimExt` blob: saved with checkpoints and snapshots, carried in films, folded into the sim hash |
-| The document and the log | session state, outside the sim | the Forge extension, on every machine |
+| The document and the log; the wave set and the ground recipe beside them | session state, outside the sim | the Forge extension, on every machine |
+| A wave test's director | **Extension** | the rules VM's `RulesExt`, as in a Firefight match ([firefight.md](firefight.md), "The director") |
 | Bot nav mesh, collision BVHs, the preview meshes and textures | **Derived** or **Static** | rebuilt on an epoch bump; a Rebuild is an epoch bump |
 | The monitor's camera, gizmos, ghosts, link lines, overlays | presentation | appended to the `FrameScene` after extraction ([framescene.md](../graphics/framescene.md) section 4); never read by the tick |
 
@@ -509,11 +518,11 @@ can settle.
 | Placed lights | medium | M | the kit's generators; tag field writes | dynamic light count; that a generated light lights the level |
 | Teleporters, buttons, triggers | high for teleporters and triggers; medium for device groups | M | the kit; `ForgeExt` | device groups |
 | Projectile emitters | high alone and synchronous; host-replicated by shared schedule in F15 | M | `SimExt`; a trace of projectile creation | replication |
-| Invisible barriers | high for new ones; low for retail ones before collision writes | M, then L | `collision-build` | scale, collision groups |
+| Invisible barriers | high for new ones; low for retail ones before collision writes | M, then L | `collision-build`; [forge-blockout.md](forge-blockout.md) | collision groups |
 | Nav mesh | high for bots; medium for AI sectors | M | `bots::autonav`, `pathfind` | AI on generated sectors in multiplayer |
 | Monitor bodies (Forge sessions only) | medium | L | transplant, tag headroom, player control of a flying biped | several |
-| Spawn AI | medium synchronous; host-replicated as puppets in F15 | L | transplant, `h1campaign`'s squad writers, the synchronous probe | several |
-| Geometry in game | block-out high; face push and pull medium (F13); full vertex editing on a pad medium, after it (F16) | L, then L | modeling slices 1 to 4, 7, 8, 11 | every write class |
+| Firefight maps: drops, bases, cover, waves, a test in the session | high: the ground, the director and the runtime are Firefight's | L, in eight slices | `firefight-kit`, `firefight::Def`, the host runtime ([forge-firefight.md](forge-firefight.md)) | Firefight's own (firefight.md, "What a run settles") |
+| Geometry in game | block-out high ([forge-blockout.md](forge-blockout.md): pieces sized on a grid, the natural set, the dev textures); face push and pull medium (F13); full vertex editing on a pad medium, after it (F16) | L, then L | modeling slices 1 to 4, 7, 8, 11 | a crate's fixed body; every write class |
 | Textures in game | medium | M | modeling slices 5, 6 | cache behaviour |
 | Character import | medium for a skin on a chassis; low for own animation | L | the `mode` writer, `assets::encode` | every imported kind |
 | Sharing on Live | high | M | the content store, `MapGate` | one deploy check |
@@ -605,6 +614,8 @@ every Forge test, lane and later tool drives a session through it.
 | `forge.rebuild` | act | the host's rebuild; `{map_id, seconds}` |
 | `forge.capacity` | read | tag headroom, object pool use, each block's count and limit, kit pools left |
 | `forge.nav {generate?}` | act | build state, counts, problems, overlay ([forge-nav.md](forge-nav.md)) |
+| `forge.ground`, `forge.ground.build` | read, act | the AI ground's state, markers, problems and receipt; build it ([forge-map-variants.md](forge-map-variants.md), "AI ground") |
+| `forge.waves`, `forge.waves.test` | read and act | the wave set; a wave test in the session (design, [forge-firefight.md](forge-firefight.md), "Interfaces") |
 | `forge.probe {what}` | act | one of the F3 measurements |
 
 **Editor API.** `mirror.edit` in a Forge session routes the editor's
@@ -625,8 +636,9 @@ when built; `NewSession.map_id` is unchanged.
 
 **Engine entries** Forge needs beyond those the agent API has, each
 proven by a differential test before use: the device group setter, the
-squad place entry, the unit swap for a body, the damage entry for a kill
-sink.
+unit swap for a body, the damage entry for a kill sink. Squads go
+through Firefight's entry (`actor_net::squads::SquadEntry`), which
+Forge shares and does not add to.
 
 ## Rules and limits
 
@@ -659,11 +671,12 @@ sink.
 
 | Risk | Effect | Answer |
 |---|---|---|
-| Tag headroom is small on multiplayer maps | monitor bodies and AI may not fit; one map has none | F3 measures it; the cut order; a body recipe names its cost up front |
+| Tag headroom is small on multiplayer maps | monitor bodies and AI may not fit; one map has none | F3 measures it; the cut order; a body recipe names its cost up front; the AI ground takes the kit's fit steps and cuts classes from the end ([firefight.md](firefight.md), "The kit") |
 | Host-made objects may not replicate, by group | more of F15 falls to Forge's mirrors | F3 measures; synchronous is built first and needs none of it |
-| The synchronous protocol may not hold a multiplayer map | F5 cannot ship; F15 moves ahead of it and AI waits for puppets | F3, before F5 is built |
+| The synchronous protocol may not hold a multiplayer map | F5 cannot ship; F15 moves ahead of it. Firefight maps are not held up: their actors are host actors in the distributed model | F3, before F5 is built |
 | `SimExt` has no user | no emitters, triggers or logic | the blob is built and tested on synthetic memory (`crates/rewrites/sim-ext`; sim-rewrite.md, "The `SimExt` blob"); F7 gives `FORGE` its first record and proves it on a running game |
 | The modeling crates are design | geometry and paint cannot start | block-out needs only `collision-build`; the rest follows modeling's own slices |
+| A crate with a fixed body may not stop a player | block-out pieces are walked through, as scenery is | BO4's first game run places one block; a piece becomes a machine if it fails ([forge-blockout.md](forge-blockout.md), "Not verified") |
 | A game that loads a map with added tags is unproven on retail bases | every recipe | map-builder.md, "Not verified"; F10's first run is one transplanted scenery tag |
 | Materialise time grows with a document | long holds on Rebuild | cache by op-prefix hash; measure in F2 |
 | A shared document is hostile input | crashes, resource exhaustion | the validator's caps; fuzzing in F1; the Forge step's budget |
@@ -684,11 +697,11 @@ and the game. Sizes as under Features.
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the HUD kit (U3) | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven; the lobby still refuses Start Game with a remote member (`lobby_mode::REMOTE_REFUSAL`) until that run is proved ([notes/forge-probes.md](notes/forge-probes.md), "The synchronous Forge link in a real game") |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, for the map's own flags and the flags a kit session adds (`link_tests`, `kit_tests`); the generator half is `bots::autonav::teleporter_flags` and `link_teleporters`, checked over a linked pair in `crates/tools/forge-build/tests/links.rs` |
-| **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
-| **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
+| **F7** | `ForgeExt`: volumes, the graph, emitters. Not needed for a Firefight map | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit; a graph's squad sink makes the director's `SquadOp` |
+| **F8** | Barriers and block-out: pieces from a definition in the document, the natural set, the dev textures, sizing on a grid, slots, the Structure and Natural groups. Its slices are BO1 to BO12 of [forge-blockout.md](forge-blockout.md) | L | F2, modeling slice 8; BO12's enable input needs F7 | each generated `coll` passes `collision_build::verify::check` and random segment tests against brute force; the same definition gives the same bytes twice; a barrier's enable input switches it over a fake game; the rest in that page's slice table |
 | **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**: the Nav tool draws the sectors and links in the game, and the bots take the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
-| **F10** | Transplant recipes and monitor bodies | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
-| **F11** | AI: squads, the AI tool, sectors at materialise | L | F7, F10, a synchronous session from F5 | squad blocks on a fixture read back through `h1campaign`'s decoder; a wave graph places squads on the table's ticks |
+| **F10** | Transplant recipes and monitor bodies. Enemy classes do not wait for it: they are the AI ground's (FA6) | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
+| **F11** | AI: Firefight maps. Markers and the ground build are **built**; the rest is slices FA1 to FA8 of [forge-firefight.md](forge-firefight.md): the lobby's pick of a map variant with ground, the wave set in the document, a wave test in the session, Map Waves, the Waves screens, enemy classes, the AI tool, other machines | L | F4; `firefight-kit`, the Firefight runtime | a variant with markers and a recipe materialises to the kit's build of the same labels (`crates/tools/forge-build/src/ground.rs`); each FA slice's named tests |
 | **F12** | `asset-import`: glTF props, then skins on a chassis, then FBX | L | modeling slices 2, 6, 8 | invented glTF files in, tags out that `tags` decodes to the same mesh within quantisation; a mapping that drops a chassis node is refused; a missing bundle materialises with aliases and equal tag indices |
 | **F13** | Shape and Paint in game: instance moves, face push and pull, strokes, previews | L | F4, modeling slices 1 to 3, 5 to 7, 11 | a face pull over a fake game is one Mesh op and one preview; replaying the document gives the editor's bytes for the same ops |
 | **F14** | Live: `ForgePublished`, the gate, Game Setup's **Players can edit** row and the published maps under **Change Map > Forge** ([map-select.md](map-select.md)), prefabs as a shared kind, both homes | M | F2 | the server refuses a non-document and an oversize one; a joiner without the base is refused before load; the parity suite passes in both homes |
@@ -705,7 +718,8 @@ and the game. Sizes as under Features.
 
 F2 and F3 can proceed independently of each other. F4 needs F2 and
 live-mirror M8. F8's generators, F12's glTF props and F14's server half
-can run beside F4. The two network modes are F5 then F15. Geometry is
+can run beside F4. F11 needs neither F7 nor F10, and its first slices
+(FA1, FA2, FA3, FA6) start at once. The two network modes are F5 then F15. Geometry is
 F13 then F16. F17 follows F12 and F14. P1 and P4 follow the screens of
 slice U4 and can run beside each other; P2 waits for F3's measurements;
 P5 is the only slice that changes the document's format before F7. The
@@ -715,7 +729,10 @@ that edit the map's own entries and build map variants (M1 to M10, D1
 to D5, V1 to V9, G1) are in
 [forge-map-variants.md](forge-map-variants.md), "Slices", and their UI
 (K5, H1 to H3, S1 to S6) in
-[forge-map-variants-ui.md](forge-map-variants-ui.md), "Slices".
+[forge-map-variants-ui.md](forge-map-variants-ui.md), "Slices". F8's
+slices (BO1 to BO12) are in [forge-blockout.md](forge-blockout.md),
+"Slices", and the markers' icons and play forms (MK10 to MK16) in
+[gametype-marker-forms.md](gametype-marker-forms.md), "Slices".
 
 **F1 in detail.** `crates/formats/forge-doc` defines `ForgeDoc`, `Op`,
 `OpId`, `Recipe`, `ImportSlot`, `Entry`, `Proposal` and `Refusal`.
@@ -967,6 +984,53 @@ engine's device group setter is unproven, so they count as pending
 Rebuild edits in the HUD title and `forge.status`. Deleting a linked
 machine or flag ends its links in the same undo step.
 
+**F7 in detail.** `ForgeExt` is the `FORGE` record of the `SimExt` blob
+([sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob"),
+which registers the kind and holds no record until this slice. It
+carries what Forge adds that retail has no home for: emitter timers,
+logic node state, barrier switches and volume occupancy ("Who owns
+state"). The Forge step writes it at the tick boundary, in op-id order.
+Nothing a Firefight map needs is in it: drop zones are scenario data
+the ground build compiles, the director's state is the rules VM's
+`RulesExt`, and a wave is the director's command. When the graph is
+built, its squad sink issues `actor_net::squads::SquadOp` through the
+entry Firefight uses, so a trigger can place a squad on a map that has
+the ground.
+
+**F10 in detail.** A `transplant` recipe copies a tag and its closure
+from a source map on the player's disc (`tags::schema::transplant`,
+`TagSet::add_tag`), names the source by hash, and is refused with its
+cost when the map has no room. Its first users are monitor bodies. The
+one transplant a Firefight map needs is narrower and does not use the
+recipe: the AI ground's class list
+([forge-firefight.md](forge-firefight.md), "Enemy classes") goes
+through `firefight_kit::Classes`, which has the cost report, the cut
+order and the sound gestalt merge, and whose donors are the kit's
+retail class table.
+
+**F11 in detail.** Forge adds no AI machinery of its own.
+[forge-firefight.md](forge-firefight.md) is the design and the slice
+table. In brief:
+
+- **Where squads arrive, and what they walk on.** The author places
+  `ff_drop`, `ff_base` and `ff_cover` markers; **Build AI ground**
+  hands them to `firefight_kit::ground::build`, which makes the
+  sectors, zones, firing positions, sixteen squad slots and hunt
+  orders a kit map has ([forge-map-variants.md](forge-map-variants.md),
+  "AI ground"). This is built.
+- **What arrives.** The document carries one wave set, a
+  `firefight::Def` as the built-in sets are written. The Waves screens
+  edit it; a squad is a row of a wave with a class, a count and a drop.
+- **Who runs it.** Firefight's director and host runtime, unchanged: in
+  the session as a test (**Test waves**), and from the lobby as a
+  Firefight game on the saved map variant, with the map's own set
+  (Map Waves) or a built-in one.
+- **Enemy classes** past the Elite come with the ground recipe, from
+  the player's campaign maps.
+- **Networking** is Firefight's: the distributed model with host actors
+  ([ai-networking.md](ai-networking.md)). No synchronous session is
+  needed.
+
 ## Decisions
 
 The owner's choices, which the sections above follow.
@@ -1048,6 +1112,8 @@ The owner's choices, which the sections above follow.
 ## Related
 
 - [forge-features.md](forge-features.md): each feature in detail.
+- [forge-firefight.md](forge-firefight.md): Firefight maps built in a
+  session: the wave set, the test, the lobby, slices FA1 to FA8.
 - [forge-editing.md](forge-editing.md): the monitor's controls, tools
   and properties.
 - [forge-firefight-ui.md](forge-firefight-ui.md): the screens and HUD.

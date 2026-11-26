@@ -116,7 +116,7 @@ the tool in use.
 | Links | teleporter flags and machines, then every port | built (F6); F7 |
 | Volumes | trigger volumes, boundaries, barriers | F7, F8 |
 | Emitters | emitters | F7 |
-| AI | squads | F11 |
+| AI | drop zones, bases and cover; X opens a drop zone's squads or the waves ([forge-firefight-ui.md](forge-firefight-ui.md), "The AI tool") | FA7 of [forge-firefight.md](forge-firefight.md); the markers are placed from the Objects tool until then |
 | Shape, Paint | faces, textures | F13 |
 | Nav | nothing: it draws the generated sectors and links, A runs **Generate nav** ([forge-nav.md](forge-nav.md), "The tool") | built (F9) |
 
@@ -157,6 +157,10 @@ persist and each has a picker.
 | Axes | World, Local | World |
 | Fine movement | On, Off | Off |
 
+- **Block-out grid** (1 to 64 units in powers of two, 16 by default)
+  takes the Movement snap's place while a block-out piece is held or
+  resized ([forge-blockout.md](forge-blockout.md), "Units and the
+  grid").
 - **Movement snap.** With World axes the held object's position is
   rounded to the grid on each world axis. With Local axes the move since
   pickup is rounded along the object's own axes as they were at pickup.
@@ -200,7 +204,8 @@ block's objects have a group (`Group::of_block`).
 | Teleporters | Sender, Receiver | netgame flags of the two teleporter types (kit session) | built (P2) |
 | Spawns | Starting point, by team | a player starting location (kit session) | built (P2) |
 | Goals | Hill, Territory and Siege site, those the session's game type reads | one centre flag and its default area | built (MK7, P2) |
-| Structure | the kit's block-out pieces and barriers | generated kit tags | F8 |
+| Structure | Block, Wall, Floor plate, Ramp, Wedge, Stairs, Cylinder, Arch and Barrier ([forge-blockout.md](forge-blockout.md), "In the monitor") | a crate placement with a definition | F8 (BO8) |
+| Natural | Boulder, Slab, Cliff, Terrain wedge and Spire, eight seeds each | the same | F8 (BO8) |
 | Lights | the kit's lights | a generated kit tag | P6 |
 | Prefabs | the player's saved prefabs whose every tag this map holds | the pieces as placements, their labels, and a group | built |
 | My imports | the player's converted models | import slots | F12 |

@@ -212,6 +212,10 @@ actors, gaps of 450 ticks, ten lives with three back a round, Catch,
 Angry and Ghost. Squads still drop at the edges, away from both bases;
 a map set carries the map's tuning, not its own drop zones.
 
+A map variant built in Forge can carry one set of its own in its
+document, played by the **Map Waves** entry (design,
+[forge-firefight.md](forge-firefight.md), "Playing it").
+
 Change Rules → Firefight lists the built-in sets and each map-specific
 variant. The record identifies its wave set by hash. Change Map filters by
 that record, so Basin offers the Beaver Creek kit. At start the director
@@ -617,9 +621,8 @@ only, from a census of the disc's tag names
 ([notes/2026-11-26-firefight-class-census.md](notes/2026-11-26-firefight-class-census.md));
 the tags are copied from the player's own maps. Outskirts
 (`03a_oldmombasa`) gives four of the five, so their shared tags come
-once. The host runtime maps only `elite` to a palette row
-(`guest::KIT_CLASSES`); the transplanted rows have no class name in the
-game yet.
+once. The host runtime reads each class's palette row from the kit's
+class record (`read_kit`, below).
 
 **Fitting a map short of headroom.** A build over the tag headroom
 takes the kit's own steps first (`firefight_kit::Fit`, in this order,
@@ -883,6 +886,16 @@ Clanker joins the team with fewer players, team 0 on a tie. The AI's
 team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
+
+A map variant whose document has the `ai_ground` recipe carries the kit
+once it is built, so the lobby counts the map it is held on as a kit map
+(`lobby_start::KitMaps::for_pick`, from `map_variant::ground_on`), as it
+counts a kit package (`lobby_start::is_kit_map`). A base map without such
+a pick is refused with "Pick a map variant with AI ground, or a Firefight
+map." Change Map lists the base maps that have such a variant after the
+kit packages, and the Map Variant picker lists Original and a variant
+without ground with "No AI ground." and does not choose them
+([forge-firefight.md](forge-firefight.md), "Playing it").
 
 ### The HUD
 
@@ -1183,7 +1196,8 @@ point: it needs the kit, the director and probe P2.
 ## Related
 
 - [ai-networking.md](ai-networking.md): the network model, budgets and probes.
-- [forge-design.md](forge-design.md): the host log's other user; a Forge wave graph and the director issue the same squad command.
+- [forge-design.md](forge-design.md): the host log's other user.
+- [forge-firefight.md](forge-firefight.md): Firefight maps built in Forge: placed drops, bases and cover, a wave set in the map variant, a wave test in the session.
 - [skulls.md](skulls.md), [game-options.md](game-options.md), [bots.md](bots.md), [maps.md](maps.md).
 - [halo1/ai.md](../halo1/ai.md): the AI blocks the kit writes.
 - [dedicated-host.md](../live/dedicated-host.md), [live-matchmaking.md](../live/live-matchmaking.md).
