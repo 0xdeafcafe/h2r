@@ -28,6 +28,18 @@ mod seeds;
 pub use seeds::TargetSeed;
 
 pub use census::{Census, TargetUse, Uses, census};
+/// The newest replay draw a following one can join.
+struct OpenRun {
+    /// The run's first draw, in the replay's ops.
+    head: usize,
+    /// The ops' length after the run's last draw.
+    end: usize,
+    /// The head's pass is the run's own copy.
+    owned: bool,
+    /// The pass the head held when the run was last extended.
+    pass: crate::backend::SharedReplacement,
+}
+
 pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, RetainedExternal, SinkTexture};
 use replay::{Origin, Recorder};
 
@@ -159,6 +171,9 @@ pub struct SceneSink<B: Backend> {
     /// The carried pass is committing: its recordings are retained, not
     /// refused as unrecorded.
     carrying: bool,
+    /// The last draw of the replay that a following adjacent draw of the
+    /// same state can join ([`Self::join_run`]).
+    run: Option<OpenRun>,
     present_error: Option<Box<dyn FnMut(u64) + Send>>,
     frame: Carried<KeptDraw>,
     last: Carried<KeptDraw>,
@@ -188,6 +203,7 @@ impl<B: Backend> SceneSink<B> {
             guest_reference: Box::new(|| false),
             carry: None,
             carrying: false,
+            run: None,
             present_error: None,
             frame: Carried::default(),
             last: Carried::default(),
@@ -290,8 +306,79 @@ impl<B: Backend> SceneSink<B> {
         if matches!(result.0, Ok(DrawOutcome::Drawn)) {
             let external = admission.and_then(|a| self.retain_admission(a, std::slice::from_ref(&draw), color, depth));
             self.replay_draw(color, depth, draw, textures, external);
+            self.join_run();
         }
         result
+    }
+
+    /// Joins the replay's newest draw to the run of adjacent draws before
+    /// it when their passes can be one ([`ExternalPass::run_with`]) on the
+    /// same attachments with nothing recorded between them: the run's
+    /// head then holds the one pass, which records every packet, and the
+    /// draws after it follow ([`RetainedExternal::follows`]). The pass the
+    /// guest's own queue holds is never altered; the run's pass is a copy
+    /// made at its first join.
+    fn join_run(&mut self) {
+        let Some(replay) = self.replay.as_mut() else {
+            self.run = None;
+            return;
+        };
+        let ops = &mut replay.frame.ops;
+        let end = ops.len();
+        let Some(last) = end.checked_sub(1) else {
+            self.run = None;
+            return;
+        };
+        let (before, tail) = ops.split_at_mut(last);
+        let ReplayOp::Draw { external: Some(next), .. } = &mut tail[0].1 else {
+            self.run = None;
+            return;
+        };
+        if next.at != 0 || next.packets.len() != 1 {
+            self.run = None;
+            return;
+        }
+        let fresh = OpenRun { head: last, end, owned: false, pass: Arc::clone(&next.pass) };
+        let Some(run) = self.run.take().filter(|r| r.end + 1 == end && r.head < last) else {
+            self.run = Some(fresh);
+            return;
+        };
+        let ReplayOp::Draw { external: Some(head), .. } = &mut before[run.head].1 else {
+            self.run = Some(fresh);
+            return;
+        };
+        let same = Arc::ptr_eq(&run.pass, &head.pass)
+            && head.plan.stage == next.plan.stage
+            && head.surfaces.color == next.surfaces.color
+            && head.surfaces.depth == next.surfaces.depth
+            && head.request.surface_size == next.request.surface_size;
+        let merged = same
+            .then(|| {
+                let (h, n) = (head.pass.lock().ok()?, next.pass.lock().ok()?);
+                h.run_with(&**n)
+            })
+            .flatten();
+        let Some(merged) = merged else {
+            self.run = Some(fresh);
+            return;
+        };
+        if run.owned {
+            if let Ok(mut pass) = head.pass.lock() {
+                *pass = merged;
+            }
+        } else {
+            head.pass = Arc::new(std::sync::Mutex::new(merged));
+        }
+        let mut packets = head.packets.to_vec();
+        packets.push(Arc::clone(&next.packets[0]));
+        let packets: Arc<[Arc<ResolvedDraw>]> = packets.into();
+        head.packets = Arc::clone(&packets);
+        head.plan.ranges = packets.len();
+        next.at = packets.len() - 1;
+        next.packets = packets;
+        next.pass = Arc::clone(&head.pass);
+        next.plan = head.plan.clone();
+        self.run = Some(OpenRun { head: run.head, end, owned: true, pass: Arc::clone(&head.pass) });
     }
 
     /// What a replay keeps of a typed admission offered for `draws` (the
