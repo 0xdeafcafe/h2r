@@ -54,7 +54,11 @@
 //!   block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with
 //!   its view's upload, and only where the device and the engine already
 //!   hold it (`native_objects_glue::structure_at_rest`; else
-//!   `object_shader_flag`).
+//!   `object_shader_flag`). A flagged shader's item before the frame's
+//!   structure target copy (`frame_scene::PartFlags::TARGET_UNCOPIED`)
+//!   draws unless a pass's program has flag bit 20, whose draw would make
+//!   the copy (`object_program_gpu::makes_target_copy`; else
+//!   `object_shader_flag_target`).
 //!   The skip clears the layer's bit on each such item
 //!   (`layer_pass::clear_layer_items`). The external pass draws before the
 //!   guest's layer draw, so an item after one the guest keeps is taken only
@@ -94,7 +98,7 @@ use engine::memory::GuestMemory;
 use frame_scene::{FrameScene, LayerItem, LayerOwner, LayerPass, PartFlags};
 use native_render::fog_gpu::{LayerSamples, sampled_constants};
 use native_render::layer_pass::{self, ItemSkip, ListItem};
-use native_render::object_program_gpu::{LitObjects, OBJECT_LAYERS, PlannedDraw};
+use native_render::object_program_gpu::{self, LitObjects, OBJECT_LAYERS, PlannedDraw};
 use native_render::object_streams::StreamFormats;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
@@ -491,6 +495,15 @@ fn plan_objects<B: d3d::backend::Backend>(
                 continue;
             }
         };
+        // A flagged shader's item before the frame's structure target
+        // copy: its draw makes the copy for a program with flag bit 20
+        // (`0x0003bea0`), which no native stage does. Such an item keeps
+        // its draw, ahead of `order_free`, so the items after it see one
+        // of unknown effect.
+        if object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw))) {
+            *outcomes.entry("object_shader_flag_target").or_default() += 1;
+            continue;
+        }
         // Engine texture 3, the texture accumulation target, as layer 3's
         // objects bind it (`native_objects_glue::sampled_texaccum`): not in
         // layer 1, which draws into it.

@@ -276,13 +276,23 @@ their addresses.
   It asks for residency of the stage bitmaps of the shader's templates
   (`0x0004d486`..`0x0004d55d`: `0x0012ccf0`, then `0x0012ce00` for one
   not resident), which sets no device state. With its program's flag bit
-  20 it calls `0x0003bea0`, which the first time a frame (`0x00509430`
-  clear; `0x0002c0f5` clears it) clears the shader cache and copies and
-  binds the structure's target. The part carries
-  `PartFlags::SHADER_FLAG` where the target copy sets nothing: in a
-  world layer or the first person's layer 3, whose items' programs are
-  chosen under the layer draw, the frame's copy made; layer 3's walk
-  refuses program bit 20 itself. A flagged layer-3 record with a
+  20 (the pass implementation's `+0x118`, `0x0004d561`..`0x0004d572`) it
+  calls `0x0003bea0`, which the first time a frame (`0x00509430` clear;
+  `0x0002c0f5` clears it) clears the shader cache (`0x00016b10`, which
+  first writes the cached program's restore states) and, when the
+  active structure has a parameter block, copies and binds the
+  structure's target (`0x000352e0`, `0x00014bc0`). The part carries
+  `PartFlags::SHADER_FLAG`. Layer 3's walk reads the entry's program and
+  refuses bit 20 itself. A world layer's or the first person's entry is
+  built under the layer draw, so extraction gives the part
+  `PartFlags::TARGET_UNCOPIED` while the frame's copy is not made, and
+  the host, which knows the programs of the passes it plans
+  (`ResolvedImplementation::copies_target`, the implementation's bit
+  20), keeps the item when one of them has the bit
+  (`object_program_gpu::makes_target_copy`); an item whose programs lack
+  it makes no call, so skipping its draw skips nothing else. A kept item
+  counts as one of unknown effect for the order of those after it
+  (`layer_pass::clear_layer_items`). A flagged layer-3 record with a
   structure lightmap index is refused, since the native draw would bind
   it and the guest's leaves the stage as the device holds it. Extraction
   reads no PRT stream for a flagged layer-5 item.
@@ -329,7 +339,8 @@ pattern is not what the epilogue leaves), `object_shader_flag` (the
 structure's parameter block's upload does not compute or the device
 and the engine do not hold it, or in layer 3 a structure lightmap
 index),
-`object_shader_flag_target` (the target copy not made yet) and
+`object_shader_flag_target` (the target copy not made yet and a pass's
+program with flag bit 20) and
 `object_argument` (another pass, level or part). In layer 3's walk these
 are `walk_unsupported` (extraction) or `State` (the stipple); in the
 first person's layer 3 they are its log reasons.

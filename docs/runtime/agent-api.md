@@ -2103,7 +2103,7 @@ h2 agent render.parity '{"arm": true}'
   instances the guest still draws (`remainder`), its parts by how they
   draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
   `subparts`, `aux_depth`, `fade`, `shader_flag`,
-  `structure_parameters`;
+  `structure_parameters`, `target_uncopied`;
   framescene.md, slice 3), its model decorator draws (one per
   placement), their instances and the draws the guest still draws
   (`decorators`, `decorator_instances`, `decorator_remainder`;

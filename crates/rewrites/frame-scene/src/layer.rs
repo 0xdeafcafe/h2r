@@ -95,12 +95,6 @@ pub enum LayerObjectRefusal {
     /// a flagged record with a structure lightmap index, which the draw
     /// does not bind for the shader.
     ShaderFlag,
-    /// The shader's flag bit 0 where the draw may call `0x0003bea0` (its
-    /// program's flag bit 20, which a world layer's item does not carry)
-    /// before the frame's structure target copy is made (`0x00509430`
-    /// clear): that call clears the shader cache and copies and binds a
-    /// target.
-    ShaderFlagTarget,
     /// The item's `+0x14` or `+0x15` byte is set, or its argument's low
     /// byte is not its key's part: the draw would set up another pass of
     /// the layer or another level of the shader (`+0x14` and `+0x15` go
@@ -126,7 +120,6 @@ impl LayerObjectRefusal {
     pub fn name(self) -> &'static str {
         match self {
             LayerObjectRefusal::ShaderFlag => "object_shader_flag",
-            LayerObjectRefusal::ShaderFlagTarget => "object_shader_flag_target",
             LayerObjectRefusal::Argument => "object_argument",
             LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
             LayerObjectRefusal::Subparts => "object_subparts",
