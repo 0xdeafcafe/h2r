@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -63,6 +64,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -86,6 +88,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -110,6 +113,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -134,6 +138,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -158,6 +163,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",
@@ -182,6 +188,7 @@ workspace_test(
     deps = [
         "//crates/formats/content:content",
         "//crates/formats/firefight:firefight",
+        "//crates/formats/forge-shapes:forge-shapes",
         "//crates/formats/game-markers:game-markers",
         "//crates/formats/map:map",
         "//crates/formats/rules:rules",

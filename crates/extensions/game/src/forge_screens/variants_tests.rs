@@ -12,6 +12,7 @@ fn listed(file: &str, source: Source, problem: Option<Problem>) -> Listed {
         problem,
         sentence: problem.map(|p| p.sentence(file, "fixture")),
         ground: false,
+        waves: false,
     }
 }
 

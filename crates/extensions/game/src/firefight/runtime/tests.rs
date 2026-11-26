@@ -1157,10 +1157,10 @@ fn the_session_names_the_set_the_match_plays() {
     assert_eq!(sent.id, own.id().unwrap().to_string());
     assert_eq!(sent.validate(), Ok(()));
     // A built-in entry on the same running pick names the built-in.
-    let holdout = ::firefight::builtin::variants()[0].clone();
+    let holdout = &::firefight::builtin::variants()[0];
     let chosen = record_options(&entry_naming(holdout.prefix), ENTRY, Options::default()).unwrap();
     let sent = session_firefight(&chosen, true).unwrap();
-    assert_eq!((sent.set, sent.id), (holdout.def.name, holdout.def.id().unwrap().to_string()));
+    assert_eq!((sent.set, sent.id), (holdout.def.name.clone(), holdout.def.id().unwrap().to_string()));
 }
 
 /// A game starts from the lobby's pick as it stands: it is the running
