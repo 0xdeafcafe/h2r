@@ -70,6 +70,10 @@ impl BaseMaps for NoDisc {
 struct Kit {
     asked: RefCell<Vec<(String, String, Vec<String>)>>,
     version: String,
+    /// What the ground generator was asked: the map's name, its base, how
+    /// many labels, and the map it was given.
+    grounded: RefCell<Vec<(String, String, usize, Vec<u8>)>>,
+    ground_version: String,
 }
 
 impl Fresh for Kit {
@@ -92,6 +96,22 @@ impl Fresh for Kit {
 
     fn version(&self) -> String {
         self.version.clone()
+    }
+
+    fn ground(&self, job: &GroundJob<'_>) -> Result<Vec<u8>, String> {
+        self.grounded.borrow_mut().push((
+            job.name.to_owned(),
+            job.base.to_owned(),
+            job.ground.labels.len(),
+            job.map.to_vec(),
+        ));
+        let mut bytes = job.map.to_vec();
+        bytes.extend_from_slice(b"ground");
+        Ok(bytes)
+    }
+
+    fn ground_version(&self) -> String {
+        self.ground_version.clone()
     }
 }
 
@@ -144,7 +164,7 @@ fn a_fresh_map_builds_to_a_derived_package_with_what_it_takes() {
     let p = map_package("stage", FRESH_TOML, "fresh");
     let built = build_maps(&[p], &Disc(base_map()), &kit);
     assert!(
-        built.failed.is_empty() && built.deferred.is_empty(),
+        built.failed.is_empty(),
         "{built:?}"
     );
     let [m] = built.maps.as_slice() else {
@@ -228,19 +248,76 @@ fn a_fresh_map_with_no_builder_and_a_missing_disc_fail_by_name() {
     assert!(built.failed[0].why.contains("the base map tiny"));
 }
 
-#[test]
-fn a_map_with_a_ground_is_deferred() {
+const GROUND_YAML: &str = "labels:\n  - {label: ff_drop, position: [1.0, 2.0, 0.5], facing: 1.5}\n";
+
+fn ground_package(yaml: &str) -> Loaded {
     let toml = format!("{ONTO_TOML}ground = \"ground.yaml\"\n");
-    let p = pkg(
+    pkg(
         "g",
         &[],
         &[("map", "map.toml", None, "all")],
-        &[("map.toml", toml.as_bytes()), ("ground.yaml", b"x")],
+        &[("map.toml", toml.as_bytes()), ("ground.yaml", yaml.as_bytes())],
+    )
+}
+
+#[test]
+fn a_map_with_a_ground_is_built_over_what_the_item_makes() {
+    let kit = Kit::default();
+    let p = ground_package(GROUND_YAML);
+    assert!(check_package(&p).is_empty(), "{:?}", check_package(&p));
+    let built = build_maps(&[p.clone()], &Disc(base_map()), &kit);
+    assert!(built.failed.is_empty(), "{built:?}");
+    let [m] = built.maps.as_slice() else {
+        panic!("one map: {built:?}")
+    };
+    assert_eq!(m.dir, "scratch");
+    // The generator was asked once, over the map as the item makes it, with
+    // the labels the file holds.
+    assert_eq!(
+        kit.grounded.borrow().as_slice(),
+        [("scratch".to_owned(), "tiny".to_owned(), 1, base_map())]
     );
-    let built = build_maps(&[p.clone()], &Disc(base_map()), &NoFresh);
-    assert!(built.maps.is_empty() && built.failed.is_empty());
-    assert_eq!(built.deferred.len(), 1);
-    assert!(check_package(&p).is_empty());
+    // What it returned is the map: a mark the generator makes is in the bytes.
+    assert!(m.files[0].1.ends_with(b"ground"), "the generator's bytes are the map");
+    assert_eq!(m.manifest.patches[0].sha256, Sha256::of(&m.files[0].1));
+    // The labels and the generator's version are in the key.
+    let again = build_maps(&[ground_package(GROUND_YAML)], &Disc(base_map()), &kit);
+    assert_eq!(again.maps[0].key, m.key);
+    let moved = GROUND_YAML.replace("1.0,", "9.0,");
+    let other = build_maps(&[ground_package(&moved)], &Disc(base_map()), &kit);
+    assert_ne!(other.maps[0].key, m.key);
+    let newer = Kit {
+        ground_version: "kit 2".into(),
+        ..Kit::default()
+    };
+    let later = build_maps(&[p], &Disc(base_map()), &newer);
+    assert_ne!(later.maps[0].key, m.key);
+}
+
+#[test]
+fn a_map_with_a_ground_and_no_generator_stops_naming_it() {
+    let built = build_maps(&[ground_package(GROUND_YAML)], &Disc(base_map()), &NoFresh);
+    assert!(built.maps.is_empty());
+    assert!(
+        built.failed[0].why.contains("no builder for AI ground"),
+        "{:?}",
+        built.failed
+    );
+}
+
+#[test]
+fn a_ground_file_that_does_not_read_fails_the_check() {
+    for (yaml, says) in [
+        ("labels:\n  - {label: ff_drop, position: [0, 0, 0], team: red}\n", "team"),
+        ("labels:\n  - {label: nonsense, position: [0, 0, 0]}\n", "nonsense"),
+    ] {
+        let p = ground_package(yaml);
+        let found = check_package(&p);
+        assert!(
+            found.iter().any(|f| f.to_string().contains(says)),
+            "{says}: {found:?}"
+        );
+    }
 }
 
 #[test]

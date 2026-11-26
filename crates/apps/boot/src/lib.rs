@@ -21,6 +21,9 @@ pub mod registration;
 pub mod forge_maps;
 #[cfg(feature = "test-maps")]
 pub mod ground_builder;
+// The AI ground a `map` item's ground file asks for (map_ground.rs).
+#[cfg(feature = "test-maps")]
+pub mod map_ground;
 #[cfg(feature = "test-maps")]
 pub mod nav_builder;
 #[cfg(feature = "test-maps")]

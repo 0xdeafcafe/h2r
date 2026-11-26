@@ -64,6 +64,7 @@ pub mod delta;
 mod edit;
 mod firefight_sets;
 mod game;
+mod ground;
 mod hash;
 mod hud;
 pub mod import;
@@ -127,6 +128,7 @@ pub use delta::{image, unimage};
 pub use edit::{BlockLine, Op, SetLine, TagEdit, edits_text, parse_edits};
 pub use firefight_sets::sets as wave_sets;
 pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, baked};
+pub use ground::{GroundFile, GroundLabel, LabelName, Side};
 pub use hash::tag_hash;
 pub use hud::huds;
 pub use modes::{hopper_fragments, script_registry};
@@ -136,7 +138,7 @@ pub use load::{
     lock_findings, read_lock, store_findings,
 };
 pub use maps::{
-    BUILT_FILE, BaseMaps, Deferred, Failed, Fresh, FreshJob, Held, HeldIn, MapPackage, MapSpec,
+    BUILT_FILE, BaseMaps, Failed, Fresh, FreshJob, GroundJob, Held, HeldIn, MapPackage, MapSpec,
     MapsBuilt, Mode, NoFresh, PatchBase, Prepared, Wrote, build_maps, build_maps_held, built_names,
     held_in, prepare, restrict, without_taken,
     write as write_map_package,

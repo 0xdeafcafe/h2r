@@ -230,3 +230,134 @@ fn a_failed_build_says_why_and_goes_to_problems() {
     assert_eq!(problems["problems"][0]["code"], "ground.build");
     assert_eq!(problems["problems"][0]["severity"], "error");
 }
+
+fn place(app: &mut App, kind: LabelKind, at: [f32; 3]) {
+    let (team, phase) = super::ground::next_team_phase(app.session.scenario().unwrap(), kind);
+    app.dispatch(Action::PlaceLabelAt {
+        kind,
+        at,
+        facing: 0.25,
+        team,
+        phase,
+    });
+}
+
+/// The ground file is the labels placed, drops first, in the build's own
+/// order, and reads back as what was written.
+#[test]
+fn the_labels_placed_are_a_ground_file_in_the_builds_order() {
+    use ::workspace::{GroundFile, LabelName, Side};
+    let t = Temp::new("file");
+    let mut app = opened(&t);
+    place(&mut app, LabelKind::Line, [5.0, 5.0, 0.0]);
+    place(&mut app, LabelKind::Base, [1.0, 1.0, 0.0]);
+    place(&mut app, LabelKind::Base, [9.0, 9.0, 0.0]);
+    place(&mut app, LabelKind::Drop, [3.0, 3.0, 0.0]);
+    place(&mut app, LabelKind::Site, [4.0, 4.0, 0.0]);
+    let labels = labels_of(app.session.scenario().unwrap()).unwrap();
+    let file = super::ground::ground_file_of(&labels);
+    let kinds: Vec<LabelName> = file.labels.iter().map(|l| l.label).collect();
+    assert_eq!(
+        kinds,
+        [
+            LabelName::FfDrop,
+            LabelName::FfBase,
+            LabelName::FfBase,
+            LabelName::SiegeSite,
+            LabelName::SiegeLine
+        ]
+    );
+    assert_eq!(file.home, Side::Red);
+    // Bases are red then blue, as the window places them.
+    assert_eq!(file.labels[1].team, Some(Side::Red));
+    assert_eq!(file.labels[2].team, Some(Side::Blue));
+    assert_eq!(file.labels[0].facing, Some(0.25));
+    assert_eq!(file.labels[4].phase, Some(0));
+    file.validate().unwrap();
+    let yaml = file.to_yaml().unwrap();
+    assert_eq!(GroundFile::parse(yaml.as_bytes()).unwrap(), file);
+    // The same labels in any order are the same file.
+    let mut shuffled = labels.clone();
+    shuffled.bases.reverse();
+    assert_eq!(super::ground::ground_file_of(&shuffled), file);
+}
+
+/// `ground.save` writes a `map` item and its ground file to the edit
+/// target, the new map takes the open map's edits, and a second save of the
+/// same labels changes nothing.
+#[test]
+fn saving_the_ground_writes_a_map_item_to_the_edit_target() {
+    use super::package_doc;
+    use ::workspace::{GroundFile, Loaded, MapSpec};
+    use content::package::{Kind, Maps};
+    let t = Temp::new("save");
+    let mut app = opened(&t);
+    let mut api = Api::new();
+    let map = app.session.map_name().unwrap().to_owned();
+    // No target: NO_TARGET, and nothing is written.
+    let none = api.call(&mut app, m::GROUND_SAVE, json!({})).unwrap_err();
+    assert_eq!(none.code, studio_proto::code::NO_TARGET);
+    let data = app.data_root();
+    package_doc::new(&data, "mine", "Mine").unwrap();
+    package_doc::edit_target(&data, Some("mine"), false).unwrap();
+    let edits = "- tag: 'weap:invented\\other'\n  set:\n  - path: speed\n    value: 1.0\n";
+    package_doc::put_edits(&data, "mine", &map, edits).unwrap();
+
+    place(&mut app, LabelKind::Drop, [3.0, 3.0, 0.0]);
+    place(&mut app, LabelKind::Base, [1.0, 1.0, 0.0]);
+    let saved = call(&mut api, &mut app, m::GROUND_SAVE, json!({"name": "court-ai"}));
+    assert_eq!(saved["package"], "mine");
+    assert_eq!(saved["name"], "court-ai");
+    assert_eq!(saved["labels"], 2);
+    assert_eq!(saved["changed"], true);
+    assert_eq!(saved["file"], "maps/court-ai/ground.yaml");
+
+    let dir = data.join("packages/mine");
+    let spec = MapSpec::parse(&std::fs::read(dir.join("maps/court-ai/map.toml")).unwrap()).unwrap();
+    assert_eq!(spec.name, "court-ai");
+    assert_eq!(spec.base, map);
+    assert_eq!(spec.ground.as_deref(), Some("maps/court-ai/ground.yaml"));
+    let file =
+        GroundFile::parse(&std::fs::read(dir.join("maps/court-ai/ground.yaml")).unwrap()).unwrap();
+    assert_eq!(file.labels.len(), 2);
+    assert_eq!(
+        file,
+        super::ground::ground_file_of(&labels_of(app.session.scenario().unwrap()).unwrap())
+    );
+
+    // The package reads, checks, and the map takes what the open map's
+    // edits change.
+    let loaded = Loaded::from_dir(&dir).unwrap();
+    let items = &loaded.package.manifest.items;
+    let at = saved["item"].as_u64().unwrap() as usize;
+    let found = ::workspace::check_package(&loaded);
+    assert!(found.iter().all(|f| f.item != Some(at)), "{found:?}");
+    assert_eq!(items[at].kind, Kind::Map);
+    let taken = items.iter().find(|i| i.kind == Kind::Edits).unwrap();
+    let Maps::Names(names) = &taken.maps else {
+        panic!("{:?}", taken.maps)
+    };
+    assert!(names.contains(&map) && names.iter().any(|n| n == "court-ai"), "{names:?}");
+
+    // Saved again with the same labels: nothing changes, and no second item.
+    let again = call(&mut api, &mut app, m::GROUND_SAVE, json!({"name": "court-ai"}));
+    assert_eq!(again["changed"], false);
+    assert_eq!(again["item"], saved["item"]);
+    let loaded = Loaded::from_dir(&dir).unwrap();
+    assert_eq!(
+        loaded.package.manifest.items.iter().filter(|i| i.kind == Kind::Map).count(),
+        1
+    );
+    // A moved label is a changed save of the same item.
+    place(&mut app, LabelKind::Site, [4.0, 4.0, 0.0]);
+    let moved = call(&mut api, &mut app, m::GROUND_SAVE, json!({"name": "court-ai"}));
+    assert_eq!((moved["changed"].as_bool(), moved["item"].clone()), (Some(true), saved["item"].clone()));
+
+    // The name must be a map's and not the open map's.
+    for name in ["bad name", map.as_str()] {
+        let e = api
+            .call(&mut app, m::GROUND_SAVE, json!({"name": name}))
+            .unwrap_err();
+        assert_eq!(e.code, studio_proto::code::REFUSED, "{name}");
+    }
+}
