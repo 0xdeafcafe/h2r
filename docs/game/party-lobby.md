@@ -240,7 +240,6 @@ texts (`lobby_status::custom_game_text`).
 
 ### The lobby by tab
 
-With Theater installed, Game Setup also offers **Theater** in the party lobby, including when the party returns from a game. It opens Recent for the selecting controller.
 
 | Mode | Pane | Game Setup's rows | Panel | Start Game |
 |---|---|---|---|---|
