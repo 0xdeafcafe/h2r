@@ -1,8 +1,11 @@
-//! Read-only comparison arm for the world broadphase batch update (0x2e0350).
+//! The world broadphase batch update's arm (0x2e0350): the prediction of
+//! every register and every byte the call writes, compared with the guest's
+//! answer and, once `parity` has proven the arm, applied in its place.
 //! Each batch owns its endpoint/node arrays. Only array growth, which calls
 //! the guest allocator, requires dropping the prediction.
 
-use runtime::{CpuAbi, Guest};
+use crate::sim_native::SegmentMemory;
+use runtime::{CpuAbi, Guest, guest::Access};
 use sim_havok::broadphase::{Crossing, Endpoint, Node, Sweep};
 use std::collections::BTreeMap;
 
@@ -146,6 +149,35 @@ impl Prediction {
             let mut observed = vec![0;bytes.len()];
             g.read_bytes(*start, &mut observed, 1).is_ok() && observed == *bytes
         })
+    }
+
+    /// Answer the call in the guest's place: every predicted span written,
+    /// every register the prediction holds (the whole `CpuAbi` but `eip`,
+    /// which the dispatcher owns). Refused, with nothing written, when a
+    /// span is not plain writable RAM inside one mapping (an access trap,
+    /// a read-only page, a span across mappings) or when two spans share
+    /// physical bytes, whose final value would then depend on the write
+    /// order the prediction does not model.
+    pub fn apply(&self, cpu: &mut CpuAbi, g: &mut Guest) -> bool {
+        let mut physical = Vec::with_capacity(self.spans.len());
+        for (at, bytes) in &self.spans {
+            let Some(start) = g.checked_offset(*at, bytes.len(), Access::Write, 1) else { return false };
+            let range = u64::from(start)..u64::from(start) + bytes.len() as u64;
+            if physical.iter().any(|r: &std::ops::Range<u64>| r.start < range.end && range.start < r.end) {
+                return false;
+            }
+            physical.push(range);
+        }
+        for (at, bytes) in &self.spans {
+            if g.write_bytes(*at, bytes, 1).is_err() {
+                // Checked writable above; unreachable short of a racing remap.
+                return false;
+            }
+        }
+        let eip = cpu.eip;
+        *cpu = self.cpu;
+        cpu.eip = eip;
+        true
     }
 
     fn span(&mut self,at:u32, bytes:Vec<u8>) -> Option<()> {
@@ -398,6 +430,68 @@ mod tests {
             let bytes = prediction.spans.iter().find(|(start, _)| *start == at).unwrap();
             assert_eq!(bytes.1, expected, "{at:#x}");
         }
+    }
+
+    /// Applied, the prediction leaves the bytes and registers the guest's
+    /// own answer leaves: the pair lists in crossing order, the popped
+    /// frame, and `eip` untouched.
+    #[test]
+    fn an_applied_prediction_leaves_the_guests_answer() {
+        let mut g = guest();
+        let entry = cpu(&mut g, 1, [14, 2, 2], [17, 5, 5]);
+        let prediction = capture(&entry, &g).unwrap();
+        // The guest's answer, as the comparison sees it at the return.
+        let mut by_guest = guest();
+        cpu(&mut by_guest, 1, [14, 2, 2], [17, 5, 5]);
+        for (at, bytes) in &prediction.spans {
+            by_guest.write_bytes(*at, bytes, 1).unwrap();
+        }
+        let mut applied = CpuAbi { eip: 0x2e_0350, ..entry };
+        assert!(prediction.apply(&mut applied, &mut g));
+        assert_eq!(applied.eip, 0x2e_0350, "the dispatcher owns the return");
+        assert_eq!((applied.esp, applied.eax, applied.edx), (STACK + 24, HANDLES + 4, REMOVED));
+        let mut expected = prediction.cpu;
+        expected.eip = applied.eip;
+        assert!(expected == applied);
+        assert!(prediction.matches(&applied, &g));
+        let expected: Vec<u8> = [8u32, 16, 8, 24].into_iter().flat_map(u32::to_le_bytes).collect();
+        for at in PAIRS {
+            let mut got = vec![0; expected.len()];
+            g.read_bytes(at, &mut got, 1).unwrap();
+            assert_eq!(got, expected, "{at:#x}");
+        }
+        for (start, len) in [(0x0020_0000, 0x1000), (0x0030_0000, 0x9_0000)] {
+            let (mut a, mut b) = (vec![0; len], vec![0; len]);
+            g.read_bytes(start, &mut a, 1).unwrap();
+            by_guest.read_bytes(start, &mut b, 1).unwrap();
+            assert!(a == b, "{start:#x}: the applied bytes differ from the guest's");
+        }
+    }
+
+    /// Two spans on the same physical bytes, or one on read-only memory:
+    /// the apply refuses and writes nothing.
+    #[test]
+    fn an_apply_refuses_aliased_or_unwritable_spans_untouched() {
+        let mut g = guest();
+        let entry = cpu(&mut g, 1, [14, 2, 2], [17, 5, 5]);
+        let mut prediction = capture(&entry, &g).unwrap();
+        let (at, bytes) = prediction.spans[0].clone();
+        prediction.spans.push((at, bytes.iter().map(|b| b ^ 0xff).collect()));
+        let before = g.u32(STACK + 8).unwrap();
+        let mut c = entry;
+        assert!(!prediction.apply(&mut c, &mut g));
+        assert!(c == entry);
+        assert_eq!(g.u32(STACK + 8).unwrap(), before);
+
+        let mut g = guest();
+        let entry = cpu(&mut g, 1, [14, 2, 2], [17, 5, 5]);
+        let mut prediction = capture(&entry, &g).unwrap();
+        g.map_zeroed(0x0050_0000, 0x1000, Permissions::READ).unwrap();
+        prediction.spans.push((0x0050_0000, vec![1; 4]));
+        let mut c = entry;
+        assert!(!prediction.apply(&mut c, &mut g));
+        assert!(c == entry);
+        assert_eq!(g.u32(STACK + 8).unwrap(), before);
     }
 
     #[test]

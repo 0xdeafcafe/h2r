@@ -34,8 +34,10 @@ campaign, cross-architecture and timing results are pending.
 Phase 5 has landed its kernels and arms
 ([sim-rewrite-havok.md](sim-rewrite-havok.md)): `impl.sim.native.physics`
 installs the world step, island collide and island integrate entries, the
-broadphase batch update, the two unconstrained-motion methods and the
-MOPP box query run as capture arms compared with the guest, and the Havok
+broadphase batch update answers its calls once its capture arm is proven
+(one call in 64 still compared with the guest), the two
+unconstrained-motion methods and the MOPP box query run as capture arms
+compared with the guest, and the Havok
 heap digest (`havok.digest`, the sim report's `havok.world` component)
 covers what the arena hash cannot. The per-function Havok and MOPP box
 switches are retired. The run ladder and the timing gate are open.
