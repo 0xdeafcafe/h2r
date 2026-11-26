@@ -141,6 +141,9 @@ pub struct ViewportView {
     /// The tag document's revision the sun and fog last read.
     sky_rev: Option<u64>,
     markers_rev: Option<u64>,
+    /// The eye, to half a unit, the marker plates last turned to
+    /// (docs/game/gametype-marker-forms.md, "The parts of a marker").
+    plate_eye: Option<[i32; 3]>,
     /// The session's native models last uploaded: a placement of a tag
     /// first placed after the map opened gives the session new ones.
     /// The geometry session revision the native world last redrew.
@@ -196,6 +199,7 @@ impl ViewportView {
             world_rev: None,
             sky_rev: None,
             markers_rev: None,
+            plate_eye: None,
             modeling_rev: None,
             painted: Default::default(),
             native_models: None,
@@ -320,12 +324,18 @@ impl ViewportView {
             self.layers = Some(app.layers.clone());
         }
         let playtest_rev = (app.playtest.rev, session.bot_nav().is_some());
+        // A marker's plate turns to the eye: placements upload again when
+        // it has moved half a unit, not on every frame of a drag.
+        let eye = session.camera().eye();
+        let plate_eye = eye.map(|c| (c * 2.0).round() as i32);
         if world_changed || models_changed || layers_changed
             || self.playtest_rev != Some(playtest_rev)
             || self.markers_rev != Some(session.markers_rev())
+            || self.plate_eye != Some(plate_eye)
             || self.linked != live.linked
         {
-            upload_placements(vp, gpu.device, app, &live.linked);
+            upload_placements(vp, gpu.device, app, &live.linked, eye);
+            self.plate_eye = Some(plate_eye);
             self.labels = mirror::gameplay_labels(app);
             self.markers_rev = Some(session.markers_rev());
             self.playtest_rev = Some(playtest_rev);
@@ -812,6 +822,7 @@ pub(crate) fn upload_placements(
     device: &wgpu::Device,
     app: &App,
     linked: &BTreeSet<(BlockKind, usize)>,
+    eye: geometry::Vec3,
 ) {
     let session = &app.session;
     let shown: Vec<_> = session.markers().iter().copied()
@@ -866,9 +877,10 @@ pub(crate) fn upload_placements(
         ),
     }
     let selected_volume = session.selected_volume();
-    let mut overlays = marker_view::overlays(
+    let mut overlays = marker_view::overlays_toward(
         &placed,
         &marker_view::game_markers::Palette::default(),
+        Some(eye),
         |p| {
             p.volume.is_some_and(|v| selected_volume == Some(v))
                 || p.members.iter().any(|m| selected.contains(m))

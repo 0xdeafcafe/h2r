@@ -449,13 +449,22 @@ make the same document.
   with **Place new with the mouse**.
 - A selected marker with an area has gizmo handles
   (`crates/apps/studio/src/viewport.rs`): a radius has one handle on
-  its rim, dragged in or out; a path has a handle a point (drag to
+  its rim, dragged in or out; a box has one on each corner (both half
+  lengths) and one on the middle of each side (one half length), on the
+  marker's own axes; a sphere has one on its equator and one on its
+  pole (the radius); a path has a handle a point (drag to
   move, Delete to remove) and one on the middle of each edge (drag to
   add a point there). The top and the bottom of the wall each have a
-  handle for the heights. A drag that `Area::validate` refuses snaps
-  back, with the sentence in the status line.
-- The inspector shows **Shape** (Radius or Path), **Radius**, **Below**,
-  **Above** and the points as a table of typed numbers.
+  handle for the heights, except a sphere's, which has none. A drag
+  that `Area::validate` refuses snaps back, with the sentence in the
+  status line (`crates/tools/scenario-edit/src/area_edit.rs`).
+- The inspector shows **Shape** (Radius, Box, Sphere or Path),
+  **Radius** or the box's **Half x** and **Half y**, **Below** and
+  **Above** (not for a sphere) and the points as a table of typed
+  numbers. Changing the shape keeps what the old one held: a radius, a
+  sphere and a path keep their farthest reach, a box the tightest box
+  in the marker's axes, a path of a box its corners turned to the
+  marker.
 - A retail hill's corners show **Convert to area**: it writes
   `Area::of_corners`' path on a new centre flag and removes the corner
   flags, in one undo step. A custom hill is one centre marker and an
@@ -472,7 +481,7 @@ of a window ([agent API rules](../../AGENTS.md)).
 
 | Method | API | Does |
 |---|---|---|
-| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
+| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, icon, use, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
 | `markers.render {kind?, team?, area?, view?, size?, out?}` (built) | Studio | draws markers with no map, on the grid at the scale of a 0.7 figure: one kind, or with none the contact sheet of `Kind::samples` in red, blue and neutral (a kind of one fixed colour once). Answers `{path, width, height, view, covered, kinds}`, each of `kinds` with its cell and its centre in pixels. `area` is `{radius, below?, above?}` or `{path, below?, above?}` in plain numbers and is refused with `Area::validate`'s sentence. Needs no disc |
 | `markers.area.set {id, area}` (built) | Studio | sets a flag's area (`{radius, below?, above?}` or `{path, below?, above?}`) or clears it (`null`), as one undo step; answers `{id, area}` as stored, or `Area::validate`'s sentence as `REFUSED`, the document untouched |
 | `markers.area.convert {id}` (built) | Studio | a retail hill's corners become one centre flag with an area, in one undo step; answers `{id, area, position}` of the kept flag |

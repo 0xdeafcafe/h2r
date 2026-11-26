@@ -11,7 +11,8 @@
 //! stands for.
 use std::collections::BTreeMap;
 
-use game_markers::{Area, Item, Kind, Mesh, Palette, Place, Solid, SpawnUse, Volume};
+use game_markers::form::icon_scale;
+use game_markers::{Area, Form, Item, Kind, Mesh, Palette, Part, Place, Solid, SpawnUse, Volume};
 
 use crate::BlockKind;
 use crate::geometry::{Gameplay, Marker, Vec3, cross, normalize, scale, sub};
@@ -57,10 +58,69 @@ impl Placed {
         mesh.placed(&self.place)
     }
 
+    /// The marker's `form` in the world with its plate turned about the
+    /// upright to face `eye` and scaled with the distance
+    /// ([`mesh_turned`]); `eye` `None` is the front-facing plate of
+    /// [`Placed::mesh`], and the edit form. White when `selected`.
+    pub fn mesh_toward(
+        &self,
+        palette: &Palette,
+        selected: bool,
+        form: Form,
+        eye: Option<Vec3>,
+    ) -> Mesh {
+        let Some(eye) = eye else {
+            return self.mesh(palette, selected);
+        };
+        let colour = if selected {
+            SELECTED
+        } else {
+            self.marker.colour(palette)
+        };
+        let number = self.number.and_then(|n| u32::try_from(n).ok());
+        mesh_turned(&self.marker.kind, colour, number, form, &self.place, eye)
+    }
+
     /// The box round the placed mesh.
     pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
         self.mesh(&Palette::default(), false).bounds()
     }
+}
+
+/// A kind's `form` at `place` in `colour`, with its plate (where the form
+/// has one) in the plane through the plate's centre that faces `eye`: the
+/// plate is turned about the upright, and scaled by
+/// [`game_markers::form::icon_scale`] of its distance from the eye so
+/// the icon keeps its size on screen (docs/game/gametype-marker-forms.md,
+/// "The parts of a marker"). A plate exactly under or over the eye keeps
+/// the marker's front.
+pub fn mesh_turned(
+    kind: &Kind,
+    colour: [f32; 3],
+    number: Option<u32>,
+    form: Form,
+    place: &Place,
+    eye: Vec3,
+) -> Mesh {
+    let mut mesh = kind.mesh_in(form, colour).placed(place);
+    if kind.parts(form).has(Part::Plate)
+        && let (Some(at), Some(plate)) = (kind.plate_at(), kind.plate(number, colour))
+    {
+        let at = place.point(at);
+        let to = sub(eye, at);
+        let yaw = if to[0] == 0.0 && to[1] == 0.0 {
+            0.0
+        } else {
+            to[1].atan2(to[0])
+        };
+        let distance = to.iter().map(|c| c * c).sum::<f32>().sqrt();
+        mesh.extend(
+            plate
+                .scaled(icon_scale(distance))
+                .placed(&Place::facing(at, yaw)),
+        );
+    }
+    mesh
 }
 
 /// The marker of a netgame flag's type: the types the game reads
@@ -353,9 +413,21 @@ pub fn overlays(
     palette: &Palette,
     selected: impl Fn(&Placed) -> bool,
 ) -> BTreeMap<LayerId, (Vec<Vertex>, Vec<Vertex>)> {
+    overlays_toward(placed, palette, None, selected)
+}
+
+/// [`overlays`] with every plate turned to `eye` ([`mesh_turned`]), in the
+/// edit form.
+pub fn overlays_toward(
+    placed: &[Placed],
+    palette: &Palette,
+    eye: Option<Vec3>,
+    selected: impl Fn(&Placed) -> bool,
+) -> BTreeMap<LayerId, (Vec<Vertex>, Vec<Vertex>)> {
     let mut out = BTreeMap::<LayerId, (Vec<Vertex>, Vec<Vertex>)>::new();
     for p in placed {
-        let (faces, lines) = vertices(&p.mesh(palette, selected(p)));
+        let mesh = p.mesh_toward(palette, selected(p), Form::Edit, eye);
+        let (faces, lines) = vertices(&mesh);
         let layer = out.entry(p.layer).or_default();
         layer.0.extend(faces);
         layer.1.extend(lines);
@@ -588,5 +660,97 @@ mod tests {
         let tint = palette.teams[1];
         assert!(spawn_lines.iter().all(|v| v.color == tint));
         assert_eq!(layers().count(), 6);
+    }
+
+    /// The extra lines `mesh_turned` adds past the form's own: the plate.
+    fn plate_points(kind: &Kind, form: Form, place: &Place, eye: Vec3) -> Vec<Vec3> {
+        let base = kind.mesh_in(form, [1.0; 3]).placed(place);
+        let turned = mesh_turned(kind, [1.0; 3], None, form, place, eye);
+        assert_eq!(&turned.lines[..base.lines.len()], &base.lines[..]);
+        turned.lines[base.lines.len()..]
+            .iter()
+            .flat_map(|l| [l.a, l.b])
+            .collect()
+    }
+
+    /// A plate stands in the upright plane that faces the eye, and its
+    /// size doubles from 8 to 16 world units away.
+    #[test]
+    fn a_plate_faces_the_eye_and_doubles_from_eight_to_sixteen_units() {
+        let kind = Kind::Spawn(SpawnUse::Respawn);
+        let place = Place::facing([1.0, 2.0, 0.0], 0.0);
+        let at = place.point(kind.plate_at().unwrap());
+        let across = |eye: Vec3, d: [f32; 2]| {
+            // How far the plate's points are from the plane through its
+            // centre that faces `eye`, and how wide it is along it.
+            let points = plate_points(&kind, Form::Edit, &place, eye);
+            assert!(!points.is_empty());
+            let off = points
+                .iter()
+                .map(|p| ((p[0] - at[0]) * d[0] + (p[1] - at[1]) * d[1]).abs())
+                .fold(0.0_f32, f32::max);
+            let wide = points
+                .iter()
+                .map(|p| ((p[0] - at[0]) * -d[1] + (p[1] - at[1]) * d[0]).abs())
+                .fold(0.0_f32, f32::max);
+            (off, wide)
+        };
+        // From the north, then from the east, at the plate's height.
+        for d in [[0.0, 1.0], [1.0, 0.0]] {
+            let eye = [at[0] + 8.0 * d[0], at[1] + 8.0 * d[1], at[2]];
+            let (off, wide) = across(eye, d);
+            // The icon stands a hair in front of its plate, no more.
+            assert!(off < 0.01, "{d:?}: {off}");
+            assert!(wide > game_markers::form::PLATE * 0.9, "{d:?}: {wide}");
+        }
+        let (_, at8) = across([at[0], at[1] + 8.0, at[2]], [0.0, 1.0]);
+        let (_, at16) = across([at[0], at[1] + 16.0, at[2]], [0.0, 1.0]);
+        assert!((at16 / at8 - 2.0).abs() < 0.01, "{at8} {at16}");
+        // Nearer than eight units it keeps its size in the world.
+        let (_, at4) = across([at[0], at[1] + 4.0, at[2]], [0.0, 1.0]);
+        assert!((at4 / at8 - 1.0).abs() < 0.01, "{at4} {at8}");
+    }
+
+    /// An eye straight over the plate gives it the marker's front, not a
+    /// broken turn.
+    #[test]
+    fn a_plate_under_the_eye_keeps_the_markers_front() {
+        let kind = Kind::Spawn(SpawnUse::Respawn);
+        let place = Place::facing([0.0; 3], 0.0);
+        let at = place.point(kind.plate_at().unwrap());
+        let points = plate_points(&kind, Form::Edit, &place, [at[0], at[1], at[2] + 20.0]);
+        assert!(points.iter().all(|p| p.iter().all(|c| c.is_finite())));
+    }
+
+    /// The play form has a plate where the table says: none for a spawn,
+    /// the capture plate alone for a flag return, the plate too for a
+    /// territory; the edit form has one for each.
+    #[test]
+    fn the_play_form_turns_a_plate_only_where_it_has_one() {
+        let place = Place::facing([0.0; 3], 0.0);
+        let eye = [10.0, 0.0, 5.0];
+        let spawn = Kind::Spawn(SpawnUse::Respawn);
+        assert!(mesh_turned(&spawn, [1.0; 3], None, Form::Play, &place, eye).is_empty());
+        let plate = Kind::FlagReturn(Area::plate());
+        assert!(plate_points(&plate, Form::Play, &place, eye).is_empty());
+        assert!(!mesh_turned(&plate, [1.0; 3], None, Form::Play, &place, eye).is_empty());
+        assert!(!plate_points(&plate, Form::Edit, &place, eye).is_empty());
+        let territory = Kind::Territory(Area::default());
+        assert!(!plate_points(&territory, Form::Play, &place, eye).is_empty());
+    }
+
+    /// A placed marker with no eye is the front-facing mesh, and with one
+    /// it has the same pieces turned.
+    #[test]
+    fn a_placed_marker_without_an_eye_is_its_front_facing_mesh() {
+        let scenario = open(fixture::fixture());
+        let all = of(&scenario, false);
+        let palette = Palette::default();
+        for p in &all {
+            assert_eq!(p.mesh_toward(&palette, false, Form::Edit, None), p.mesh(&palette, false));
+            let toward = p.mesh_toward(&palette, false, Form::Edit, Some([50.0, 50.0, 10.0]));
+            assert_eq!(toward.lines.len(), p.mesh(&palette, false).lines.len());
+            assert_eq!(toward.tris.len(), p.mesh(&palette, false).tris.len());
+        }
     }
 }

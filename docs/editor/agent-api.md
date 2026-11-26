@@ -2674,9 +2674,13 @@ hill), item spawners and trigger volumes, all from the shared
 `game_markers` set through `scenario_edit::marker_view`.
 
 - `markers.list {kind?, layer?}`: every marker of the open map, whatever
-  the layers show, as `{id, kind, layer, team, position, facing, label,
-  number, area, area_from, members, bounds, lines, triangles}`, with
-  `counts` by kind. `id` is the placement as `scenario.*` names it
+  the layers show, as `{id, kind, layer, team, icon, use, position, facing,
+  label, number, area, area_from, members, bounds, lines, triangles}`,
+  with `counts` by kind. `icon` names the drawing on the marker's plate
+  (`respawn`, `crown`, ...; `null` for a volume) and `use` is a spawn's
+  `respawn` or `start` (`null` for any other kind); `bounds`, `lines`
+  and `triangles` are of the edit form with its plate facing the
+  marker's front. `id` is the placement as `scenario.*` names it
   (`netgame_flags[3]`), or `volume[2]` for a trigger volume (one row a
   kind it draws as: trigger, kill, BSP switch); a hill of three or more
   corner flags is one row, `id` its first corner, `members` all of them,
@@ -2687,26 +2691,38 @@ hill), item spawners and trigger volumes, all from the shared
   `netgame_items`, `trigger_volumes`, `kill_volumes`, `bsp_switches`. A
   name that is neither is `INVALID_PARAMS`. A flag of a type the game
   does not read has no row. `NO_DOCUMENT` with no map open.
-- `markers.render {kind?, team?, area?, view?, size?, out?}`: the shapes
-  drawn offscreen through the viewport's renderer on a floor grid, to a
-  PNG under the cache directory's `studio/markers/`, never into a Git
-  checkout (`REFUSED`). It needs no map and no disc. With no `kind` it is
-  the contact sheet of every kind in red, blue and neutral (a kind of one
-  fixed colour once); `team` (0 to 7) draws one. `area` (`{radius,
-  below?, above?}` or `{path: [[x, y], ...], below?, above?}`, plain
-  numbers) replaces the area of a flag return, bomb goal, hill,
-  territory, siege site or siege goal, and a refused area gives
+- `markers.render {kind?, team?, form?, use?, area?, view?, size?, out?}`:
+  the shapes drawn offscreen through the viewport's renderer on a floor
+  grid, to a PNG under the cache directory's `studio/markers/`, never into
+  a Git checkout (`REFUSED`). It needs no map and no disc. With no `kind`
+  it is the contact sheet of every kind in red, blue and neutral (a kind
+  of one fixed colour once); `team` (0 to 7) draws one. `form` is `edit`
+  or `play` and draws that form alone; with none, the sheet has a block
+  of rows a form, edit then play, and a kind with no play form (a spawn,
+  an item spawner, a drop, a base, cover, a line) is an empty cell. The
+  play form of a flag return is its capture plate. `use` (`respawn` or
+  `start`) keeps one use of a spawn and is `INVALID_PARAMS` when no kind
+  drawn is a spawn. Every plate turns about the upright to face the
+  camera and grows past 8 world units of distance
+  (`marker_view::mesh_turned`). `area` (`{radius, below?, above?}`,
+  `{box: {half: [x, y]}, below?, above?}`, `{sphere: radius}` or
+  `{path: [[x, y], ...], below?, above?}`, plain numbers; a sphere takes
+  no `below` or `above`) replaces the area of a flag return, bomb goal,
+  hill, territory, siege site or siege goal, and a refused area gives
   `Area::validate`'s sentence. A spawn is on the sheet twice, a respawn
   point and a starting location (`SpawnUse`). `view` is `angled`
   (default), `top` or `front`, +x to the right; `size` defaults to
-  `[1280, 720]`. The answer is `{path, width, height, view, covered,
-  kinds}`: `covered` counts the pixels that are not the corner's
-  background, and each of `kinds` has its `cell`, its `center` in pixels
-  and its mesh's `lines`, `triangles` and `bounds`, so a picture is read
-  against the list. `NO_GPU` where there is no adapter.
+  `[1280, 720]`. The answer is `{path, width, height, view, forms,
+  covered, kinds}`: `covered` counts the pixels that are not the corner's
+  background, and each of `kinds` has its `form`, `icon`, `cell`, its
+  `center` in pixels and its mesh's `lines`, `triangles` and `bounds`
+  (`null` for an empty cell), so a picture is read against the list.
+  `NO_GPU` where there is no adapter.
 - `markers.area.set {id, area}`: sets the area of the netgame flag `id`
-  (`netgame_flags[3]`) from `{radius, below?, above?}` or `{path: [[x,
-  y], ...], below?, above?}` in plain numbers, or clears it with `null`
+  (`netgame_flags[3]`) from `{radius, below?, above?}`, `{box: {half: [x,
+  y]}, below?, above?}` (half lengths along the flag's own axes),
+  `{sphere: radius}` (no `below` or `above`) or `{path: [[x, y], ...],
+  below?, above?}` in plain numbers, or clears it with `null`
   (a missing `area` is `INVALID_PARAMS`). One undo step. Answers `{id,
   area}` as stored. `Area::validate`'s sentence is `REFUSED` and leaves
   the document as it was.
@@ -2718,9 +2734,15 @@ hill), item spawners and trigger volumes, all from the shared
 
 `view.layers` shows the markers' layers (`spawn_points`, `flags`,
 `netgame_items`, the volume layers) and `view.snapshot` draws them.
+Studio's viewport draws the same handles on the selected flag's area as
+the game's Edit area does (gametype-markers.md, "Studio"): a box has one
+on each corner and one on each side, on the flag's axes; a sphere one on
+its equator and one on its pole. A corner drag writes one area op with a
+box, merged into one undo step.
 `api/tests/markers_tests.rs` runs the list over the invented cache (each
-block's kind and team, a hill of corners, the volumes), the refusals, the
-sheet with every kind, and a snapshot whose spawn pixels all lie in the
+block's kind, team, icon and use, a hill of corners, the volumes), the
+refusals, the sheet with every kind in both forms, a box and a sphere
+through `markers.area.set`, and a snapshot whose spawn pixels all lie in the
 spawns' projected boxes.
 
 ## Models and customisation

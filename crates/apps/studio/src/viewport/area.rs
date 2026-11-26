@@ -1,8 +1,10 @@
 //! The handles on the selected netgame flag's area
 //! (docs/game/gametype-markers.md, "Studio"): a radius has one on its rim;
-//! a path has one a point (drag to move, Delete to remove) and one on the
-//! middle of each edge (drag to add a point there); the top and bottom of
-//! the wall have one each for the heights. A drag that `Area::validate`
+//! a box has one on each corner and one on the middle of each side, on
+//! the marker's own axes; a sphere has one on its equator and one on its
+//! pole; a path has one a point (drag to move, Delete to remove) and one
+//! on the middle of each edge (drag to add a point there); the top and
+//! bottom of the wall have one each for the heights, except a sphere's. A drag that `Area::validate`
 //! refuses leaves the document as it was, and its sentence goes to the
 //! status line. The geometry is `scenario_edit::area_edit`; this draws
 //! the handles, picks one and turns the mouse into a point of the world.
@@ -91,7 +93,8 @@ impl AreaHandles {
             return self.reset();
         };
         let camera = *app.session.camera();
-        let handles = area_edit::handles(centre, &area);
+        let yaw = app.session.flag_yaw(index);
+        let handles = area_edit::handles(centre, yaw, &area);
         let px = |p: Vec3| {
             camera
                 .project(p, aspect)
@@ -143,7 +146,7 @@ impl AreaHandles {
                 on_wall(&ray, centre)
             };
             if let Some(to) = to {
-                match area_edit::drag(&area, h, centre, to) {
+                match area_edit::drag(&area, h, centre, yaw, to) {
                     Ok(next) => {
                         self.said = None;
                         // An edge handle made a point: the drag goes on
@@ -178,7 +181,7 @@ impl AreaHandles {
             let Some(p) = px(at) else { continue };
             let colour = if live == Some(h) {
                 [1.0, 1.0, 1.0, 1.0]
-            } else if matches!(h, Handle::Edge(_)) {
+            } else if matches!(h, Handle::Edge(_) | Handle::Side(_)) {
                 [0.55, 0.85, 1.0, 0.9]
             } else {
                 [1.0, 0.85, 0.2, 1.0]
