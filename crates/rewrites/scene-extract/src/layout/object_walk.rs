@@ -167,6 +167,15 @@ pub enum Refusal {
     /// cannot be read: a negative first one, or a mask that does not
     /// read.
     Subparts,
+    /// A flagged shader (flag bit 0) on a record with a structure
+    /// lightmap index, which the draw leaves unbound.
+    ShaderFlag,
+    /// The item's `+0x14` or `+0x15` is set, or its argument's low byte
+    /// is not the key's part: another pass, level or part.
+    Argument,
+    /// The entry's program has flag bit 20: its draw calls `0x0003bea0`,
+    /// which the native pass does not.
+    Program,
     Other,
 }
 
@@ -175,6 +184,12 @@ pub enum Refusal {
 pub struct Causes {
     pub aux_state: usize,
     pub subparts: usize,
+    pub shader_flag: usize,
+    pub argument: usize,
+    pub program: usize,
+    /// Every other refusal: the item's layout, a check against the
+    /// guest's choice, or memory that does not read.
+    pub layout: usize,
 }
 
 impl Causes {
@@ -182,7 +197,10 @@ impl Causes {
         match why {
             Refusal::AuxState => self.aux_state += 1,
             Refusal::Subparts => self.subparts += 1,
-            Refusal::Other => {}
+            Refusal::ShaderFlag => self.shader_flag += 1,
+            Refusal::Argument => self.argument += 1,
+            Refusal::Program => self.program += 1,
+            Refusal::Other => self.layout += 1,
         }
     }
 }
@@ -382,7 +400,9 @@ fn read_part(
     packed: u32,
     aux_reads: &mut Option<bool>,
 ) -> Result<Part, Refusal> {
-    let (part, flags, conditional, extra) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
+    let mut why = Refusal::Other;
+    let laid = read_part_layout(mem, slot, item, record, program, packed, &mut why);
+    let (part, flags, conditional, extra) = laid.ok_or(why)?;
     let flags = record_flags(flags, part.triangle_list, conditional.is_some()) | extra;
     if flags.contains(PartFlags::AUX_DEPTH)
         && !*aux_reads.get_or_insert_with(|| crate::layout::aux_depth::read(mem).is_some())
@@ -486,7 +506,9 @@ pub fn layer_part(
     let named = |why: Refusal| match why {
         Refusal::AuxState => R::AuxState,
         Refusal::Subparts => R::Subparts,
-        Refusal::Other => R::Unread,
+        Refusal::ShaderFlag => R::ShaderFlag,
+        Refusal::Argument => R::Argument,
+        Refusal::Program | Refusal::Other => R::Unread,
     };
     let mut out = record_flags(flags, triangle_list, conditional.is_some());
     if fade {
@@ -548,6 +570,7 @@ fn read_part_layout(
     record: u32,
     program: u32,
     packed: u32,
+    why: &mut Refusal,
 ) -> Option<(Part, u32, Option<Conditional>, PartFlags)> {
     let key = objects::item_key(mem, item)?;
     let record_key = word(mem, record, 0xc)?;
@@ -578,12 +601,17 @@ fn read_part_layout(
     let part = parts.checked_add(PART_SIZE * u32::from(key.part))?;
     let index_count = half(mem, part, PART_INDEX_COUNT)?;
     let lightmapped = ((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP;
+    if packed as u8 != key.part || half(mem, item, 0x14)? != 0 {
+        *why = Refusal::Argument;
+        return None;
+    }
+    if word(mem, program, PROGRAM_FLAGS)? & (1 << 20) != 0 {
+        *why = Refusal::Program;
+        return None;
+    }
     if record_key & 0xe000_0000 != MODEL_RECORD
         || (lightmapped && !matches!(key.implementation, 2 | 3))
-        || packed as u8 != key.part
-        || half(mem, item, 0x14)? != 0
         || word(mem, tag_table, 16 * (key.shader & 0xffff))? != u32::from_be_bytes(*b"shad")
-        || word(mem, program, PROGRAM_FLAGS)? & (1 << 20) != 0
         || usize::from(half(mem, slot, ENTRY_IMPLEMENTATION)? as u8) != key.implementation
         || index_count == 0
     {
@@ -599,6 +627,7 @@ fn read_part_layout(
     }
     if half(mem, shader, SHADER_FLAGS)? & 1 != 0 {
         if lightmapped {
+            *why = Refusal::ShaderFlag;
             return None;
         }
         extra |= PartFlags::SHADER_FLAG;
@@ -967,6 +996,42 @@ mod tests {
         assert_eq!(at(&mem, 7), Ok((PartFlags::STRIP, None)));
         mem.w(record + objects::RECORD_MODEL, 0);
         assert_eq!(at(&mem, 7), Err(R::Unread), "a model that does not read");
+    }
+
+    /// Each refusal of a walked part has its own count, so what keeps the
+    /// guest's layer-3 draws is read from `walk_part_*` and not guessed.
+    #[test]
+    fn every_refused_part_is_counted_by_its_cause() {
+        let (mut mem, handle) = sorted_part();
+        let at = 0x1000 + HANDLER_COUNTER + 4;
+        let (item, shader, program) = (0x3000, 0xa000, 0x4000);
+        let refused = |mem: &Mem| {
+            let sorted = read(mem, 0x2000, 0x1000, at).unwrap();
+            assert_eq!(sorted.entries, [Entry::Object { handle, part: None }]);
+            sorted.causes
+        };
+        mem.w(item + 0xc, 1 << 8 | 3);
+        assert_eq!(refused(&mem), Causes { argument: 1, ..Causes::default() }, "another part");
+        mem.w(item + 0xc, 1 << 8 | 2);
+        mem.w(item + 0x14, 1 << 8);
+        assert_eq!(refused(&mem), Causes { argument: 1, ..Causes::default() }, "another level");
+        mem.w(item + 0x14, 0);
+        mem.w(program + PROGRAM_FLAGS, 1 << 20);
+        assert_eq!(refused(&mem), Causes { program: 1, ..Causes::default() }, "flag bit 20");
+        mem.w(program + PROGRAM_FLAGS, 0);
+        mem.w(0x004e_0348, 0xd000);
+        mem.w(0xd000 + 0x214, 0);
+        mem.w(shader + 0x14, 1 << 16);
+        assert_eq!(
+            refused(&mem),
+            Causes { shader_flag: 1, ..Causes::default() },
+            "a lightmap the flagged draw leaves unbound"
+        );
+        mem.w(shader + 0x14, 0);
+        mem.w(at + ENTRY_CLASSIFICATION, 0);
+        assert_eq!(refused(&mem), Causes { layout: 1, ..Causes::default() }, "a class the guest did not pick");
+        mem.w(at + ENTRY_CLASSIFICATION, 4);
+        assert_eq!(read(&mem, 0x2000, 0x1000, at).unwrap().causes, Causes::default());
     }
 
     #[test]
