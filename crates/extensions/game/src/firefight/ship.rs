@@ -42,6 +42,68 @@ pub struct ShipPut {
     pub forward: [f32; 3],
 }
 
+/// The ticks a ship's flight in or out takes: 8 s at 30 ticks a second.
+/// `firefight.rules` times its unload and its leaving by the same
+/// (`fly_time`).
+pub const FLY_TICKS: u32 = 240;
+
+/// Seats the host counts on a ship. The kit does not read the vehicle tag's
+/// seat blocks, so this is the Phantom's nine passenger seats less one:
+/// an engine load that seats fewer leaves the surplus on foot
+/// ([`place_squad_in`]).
+pub const SEATS: u8 = 8;
+
+/// A kit's ship in the world: its datum and how many seats it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ship {
+    pub object: u32,
+    pub capacity: u8,
+}
+
+/// A zone's flight path, the kit's point set `ff_path_NN`: the ship flies
+/// in from the run-in to the hover point, and out from it to the run-out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShipPath {
+    pub run_in: [f32; 3],
+    pub hover: [f32; 3],
+    pub run_out: [f32; 3],
+}
+
+impl ShipPath {
+    /// The points of the flight in.
+    pub fn fly_in(&self) -> Vec<[f32; 3]> {
+        vec![self.run_in, self.hover]
+    }
+
+    /// The points of the flight out.
+    pub fn fly_out(&self) -> Vec<[f32; 3]> {
+        vec![self.hover, self.run_out]
+    }
+}
+
+/// The live vehicle placed at `placement` in the scenario's vehicle
+/// placements, if there is exactly one.
+pub fn placed_ship(m: &dyn GuestMemory, placement: i16) -> Option<u32> {
+    use guest_layout::object::{Object, ObjectHeader, header::DELETE};
+    let array = objects::array(m).ok()??;
+    let mut found = None;
+    for row in array.live_iter(m, i32::from(u16::MAX) + 1).ok()? {
+        let (handle, header) = row.ok()?;
+        let h = ObjectHeader::at(header.addr);
+        if h.kind(m).ok()? != objects::VEHICLE || h.flags(m).ok()? & DELETE != 0 {
+            continue;
+        }
+        let body = h.body(m).ok()?;
+        if body != 0 && Object::at(body).placement_index(m).ok()? == placement {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(handle.raw());
+        }
+    }
+    found
+}
+
 /// A squad to place into a ship: the placement, the ship's datum and how
 /// many seats the ship has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +324,35 @@ async fn load(cx: &Cx, ship: u32, squad: u16) -> anyhow::Result<u16> {
     )
     .await?;
     Ok(r.eax as u16)
+}
+
+/// The ship's hover hold, as the rules runtime's `hover` makes it
+/// (`VEHICLE_HOVER`, `0xf0fd0`): refused for a ship no longer in the world.
+pub async fn hover(cx: &Cx, ship: u32, on: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cx.read(|m| ship_position(m, ship).is_some()),
+        "ship {ship:#010x} is not a live vehicle"
+    );
+    call(
+        cx,
+        GuestCall::new(points::VEHICLE_HOVER.base).eax(ship).ecx(u32::from(on)),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Everyone aboard leaves, every seat (`VEHICLE_UNLOAD`, `0x11b2b0`).
+pub async fn unload(cx: &Cx, ship: u32) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cx.read(|m| ship_position(m, ship).is_some()),
+        "ship {ship:#010x} is not a live vehicle"
+    );
+    call(
+        cx,
+        GuestCall::new(points::VEHICLE_UNLOAD.base).edx(ship).ecx(u32::MAX),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Places the whole placement: up to the free seats into the ship, the rest

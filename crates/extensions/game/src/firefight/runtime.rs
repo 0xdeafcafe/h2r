@@ -139,6 +139,10 @@ pub enum Call {
     Ship(super::ship::ShipPut),
     /// A squad placed into a ship, the rest on foot (`super::ship::drop_squad`).
     Drop(super::ship::Boarding),
+    /// The ship's hover hold (`VEHICLE_HOVER`).
+    Hover { ship: u32, on: bool },
+    /// Everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
+    Unload { ship: u32 },
 }
 
 /// What the async body before a tick does.
@@ -489,6 +493,23 @@ impl Game for GuestGame<'_> {
     }
     fn drop_squad(&mut self, boarding: super::ship::Boarding) -> anyhow::Result<()> {
         self.defer(Call::Drop(boarding))
+    }
+    fn ship(&self) -> Option<super::ship::Ship> {
+        let placement = self.kit?.ship?;
+        let object = super::ship::placed_ship(&*self.m, placement)?;
+        Some(super::ship::Ship {
+            object,
+            capacity: super::ship::SEATS,
+        })
+    }
+    fn paths(&self) -> Vec<Option<super::ship::ShipPath>> {
+        self.kit.map_or_else(Vec::new, |kit| kit.paths.clone())
+    }
+    fn hover(&mut self, ship: u32, on: bool) -> anyhow::Result<()> {
+        self.defer(Call::Hover { ship, on })
+    }
+    fn unload(&mut self, ship: u32) -> anyhow::Result<()> {
+        self.defer(Call::Unload { ship })
     }
 }
 
@@ -1190,16 +1211,21 @@ impl Runtime {
                 }
             }
             let stepped = game.flights.step(tick);
-            calls.extend(stepped.steps.into_iter().map(|s| {
-                (
-                    0,
-                    Call::Ship(super::ship::ShipPut {
-                        object: s.object,
-                        at: s.at,
-                        forward: s.forward,
-                    }),
-                )
-            }));
+            // Before the entries' calls: a squad placed into a ship that
+            // starts its flight this tick finds the ship at the run-in.
+            calls.splice(
+                0..0,
+                stepped.steps.into_iter().map(|s| {
+                    (
+                        0,
+                        Call::Ship(super::ship::ShipPut {
+                            object: s.object,
+                            at: s.at,
+                            forward: s.forward,
+                        }),
+                    )
+                }),
+            );
             game.arrived.extend(stepped.arrived);
         }
         #[cfg(not(feature = "rules"))]
@@ -1393,7 +1419,7 @@ impl Runtime {
         let op = p.command.map(command).transpose()?;
         let kit = game.host.kit();
         match &op {
-            Some(Command::PlaceSquad { class, zone, .. }) => {
+            Some(Command::PlaceSquad { class, zone, .. } | Command::DropSquad { class, zone, .. }) => {
                 if !kit.classes.contains_key(class) {
                     return Err(Refused::Invalid(format!("the kit has no class {class}")));
                 }
@@ -1614,6 +1640,8 @@ pub async fn make_calls(
             Call::End => guest::end_game(cx).await,
             Call::Ship(p) => super::ship::put_ship(cx, p).await,
             Call::Drop(b) => super::ship::drop_squad(cx, &work.kit, b).await.map(drop),
+            Call::Hover { ship, on } => super::ship::hover(cx, ship, on).await,
+            Call::Unload { ship } => super::ship::unload(cx, ship).await,
         };
         if let Err(e) = result {
             refused.push((*seq, e.to_string()));

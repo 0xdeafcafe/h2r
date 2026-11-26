@@ -376,7 +376,7 @@ refuses scripts using them at start. [Retail traces for R6 and R7](notes/2026-11
 | `fly` in the rules runtime | the mover's `Flights` state lives in Firefight's match; a plain script's host has none, and the pose after physics steps with riders and contacts is R7 |
 | `place_squad_in` in the rules runtime | the squad entry is Firefight's; the plain rules host has no squad placement |
 | `seat`, `eject`, `vehicle_riders`, `vehicle_driver` | host seat selection, player actions and synchronous seat reads |
-| the kit's ship and paths | R8: the kit's stage 2 (`crates/tools/firefight-kit`, FF12) is not built, so no map carries a ship or a labelled path |
+| the kit's ship and paths in the plain rules host | the kit's ship is `ff_ship` and its paths are the point sets `ff_path_NN`, which the Firefight guest reads (`firefight::guest::read_kit`); a plain script has no label for them. R8 settles headroom per map |
 
 Four choices of the fake are the API's contract, and a host that gives
 different answers is wrong until a run says the engine does:
@@ -402,6 +402,15 @@ different answers is wrong until a run says the engine does:
   The fake reports each flight's end once (`take_arrived`); `on arrive`
   is W3's event, and until it lands a script times the end itself
   (`now()` against the tick it started on, as `tests/vehicles.rs` does).
+
+**Firefight's director flies the ship.** The director script
+(`content/modes/rules/firefight.rules`) does not use the entries above: it
+holds the ship's state (parked, inbound, unloading, outbound) and calls
+the `firefight.director` entries `ff_drop_squad`, `ff_ship_hover`,
+`ff_ship_unload` and `ff_ship_leave`, which the host makes with `Game::fly`,
+`Game::drop_squad`, `Game::hover` and `Game::unload`
+([firefight.md](firefight.md), "The drop ship"). Two reads tell it what
+the kit has: `ship_ready()` and `zone_path(zone)`.
 
 **A drop ship is a vehicle on a keyed path.** The kit places it, parked,
 with a label (`label ship: object`), and labels the run-in as a `path`.

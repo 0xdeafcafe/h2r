@@ -322,6 +322,26 @@ fn a_load_the_engine_refuses_leaves_no_surplus_actor() {
 }
 
 #[test]
+fn riders_over_the_seats_spawn_on_foot() {
+    // A squad of eight for a ship of four seats with a rider aboard: three
+    // are seated, the other five stand at the zone, and none is lost.
+    let w = world(1, 8);
+    let ship = w.ship;
+    let (result, calls, _) = run(w, boarding(8, 4, ship), 3, true);
+    assert_eq!(result.unwrap(), 3);
+    let place = |n| GuestCall::new(points::AI_SQUAD_PLACE.base).eax(n).args([1, u32::MAX, 0, 1]);
+    let placed: Vec<u32> = calls
+        .iter()
+        .filter(|c| c.target == points::AI_SQUAD_PLACE.base)
+        .map(|c| c.eax.unwrap())
+        .collect();
+    assert_eq!(placed, [3, 5]);
+    assert_eq!(calls.first(), Some(&place(3)));
+    assert_eq!(calls[calls.len() - 2], place(5));
+    assert!(deletes(&calls).is_empty());
+}
+
+#[test]
 fn the_rest_of_the_squad_spawns_on_foot() {
     let w = world(0, 6);
     let ship = w.ship;
@@ -399,4 +419,36 @@ fn the_game_keeps_a_launch_and_defers_a_drop() {
     g.drop_squad(boarding(3, 4, launch.ship)).unwrap();
     assert_eq!(g.launches, [launch.clone()]);
     assert_eq!(g.calls, [(4, Call::Drop(boarding(3, 4, launch.ship)))]);
+}
+
+#[test]
+fn the_hold_and_the_unload_are_the_engines_vehicle_entries() {
+    let w = world(0, 0);
+    let ship = w.ship;
+    let (result, calls, _) = drive(
+        w.m,
+        move |cx| {
+            Box::pin(async move {
+                hover(&cx, ship, true).await?;
+                unload(&cx, ship).await
+            })
+        },
+        returns(0),
+    );
+    result.unwrap();
+    assert_eq!(
+        calls,
+        [
+            GuestCall::new(points::VEHICLE_HOVER.base).eax(ship).ecx(1),
+            GuestCall::new(points::VEHICLE_UNLOAD.base).edx(ship).ecx(u32::MAX),
+        ]
+    );
+    // A ship that is gone is refused, and nothing is called.
+    let (result, calls, _) = drive(
+        FakeGuest::new(),
+        move |cx| Box::pin(async move { unload(&cx, ship).await }),
+        returns(0),
+    );
+    assert!(result.unwrap_err().to_string().contains("not a live vehicle"));
+    assert!(calls.is_empty());
 }

@@ -125,6 +125,7 @@ fn play(def: Def, skulls: BTreeSet<Skull>) -> Vec<(u32, Command)> {
             }],
             kills,
             player_kills: Vec::new(),
+            ship: Default::default(),
         };
         let out = director.step(tick, &seen);
         all.extend(out.iter().cloned().map(|c| (tick, c)));

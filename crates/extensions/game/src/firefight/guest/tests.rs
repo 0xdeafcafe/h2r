@@ -491,3 +491,73 @@ fn line_of_sight_passes_both_points_and_reads_al() {
         assert_eq!(m.vec3(SCRATCH + 12).unwrap(), [4.0, 5.0, 6.0]);
     }
 }
+
+const NAMES: u32 = 0x2_7000;
+const SCRIPTING: u32 = 0x2_8000;
+const SETS: u32 = 0x2_8100;
+const POINTS: u32 = 0x2_8300;
+
+/// [`scenario`] with the ship's object name (a vehicle at placement 5, and a
+/// scenery of the same name's neighbour), and scripting data whose point
+/// sets are `ff_path_00` and the stray `ff_path_07`, each with `points`
+/// named in order at the positions `x, 1, 2`.
+fn with_ship(points: &[&str]) -> FakeGuest {
+    let mut m = scenario();
+    pair(&mut m, SCNR + 0x48, 2, NAMES);
+    m.map(NAMES, 2 * 0x24);
+    named(&mut m, NAMES, "ff_crate");
+    m.put_u16(NAMES + 0x20, 6).put_u16(NAMES + 0x22, 1);
+    named(&mut m, NAMES + 0x24, "ff_ship");
+    m.put_u16(NAMES + 0x24 + 0x20, 1).put_u16(NAMES + 0x24 + 0x22, 5);
+
+    pair(&mut m, SCNR + 0x1d8, 1, SCRIPTING);
+    m.map(SCRIPTING, 0x80);
+    pair(&mut m, SCRIPTING, 2, SETS);
+    m.map(SETS, 2 * 0x30);
+    m.map(POINTS, 6 * 0x3c);
+    for (set, name) in [(0u32, "ff_path_00"), (1, "ff_path_07")] {
+        let at = SETS + 0x30 * set;
+        named(&mut m, at, name);
+        pair(&mut m, at + 0x20, points.len() as u32, POINTS + 3 * 0x3c * set);
+        for (i, point) in points.iter().enumerate() {
+            let p = POINTS + 3 * 0x3c * set + 0x3c * i as u32;
+            named(&mut m, p, point);
+            for (k, v) in [100.0 * (set + 1) as f32 + i as f32, 1.0, 2.0].into_iter().enumerate() {
+                m.put_f32(p + 0x20 + 4 * k as u32, v);
+            }
+        }
+    }
+    m
+}
+
+#[test]
+fn the_game_reads_the_ship_and_its_paths() {
+    // The base kit carries neither.
+    let kit = layout();
+    assert_eq!((kit.ship, kit.paths.clone()), (None, vec![None]));
+
+    let kit = read_kit(&with_ship(&["run_in", "hover", "run_out"])).unwrap().unwrap();
+    // The vehicle placement `ff_ship` names; the crate of another type is
+    // not it.
+    assert_eq!(kit.ship, Some(5));
+    // One path a drop zone, by its number: `ff_path_00` is `ff_drop_00`'s;
+    // `ff_path_07` has no zone.
+    assert_eq!(
+        kit.paths,
+        [Some(ShipPath {
+            run_in: [100.0, 1.0, 2.0],
+            hover: [101.0, 1.0, 2.0],
+            run_out: [102.0, 1.0, 2.0],
+        })]
+    );
+    // The reads change nothing else of the kit.
+    assert_eq!(kit.kit(), layout().kit());
+
+    // A set missing a point is no path; a ship name on another type is no
+    // ship.
+    let kit = read_kit(&with_ship(&["run_in", "run_out", "hold"])).unwrap().unwrap();
+    assert_eq!(kit.paths, [None]);
+    let mut m = with_ship(&["run_in", "hover", "run_out"]);
+    m.put_u16(NAMES + 0x24 + 0x20, 2);
+    assert_eq!(read_kit(&m).unwrap().unwrap().ship, None);
+}

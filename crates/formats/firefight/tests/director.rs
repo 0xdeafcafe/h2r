@@ -3,7 +3,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::*;
-use firefight::director::Kill;
+use firefight::director::{Kill, ShipSeen};
 use firefight::{Command, Observed, Outcome, ScoreReason, ScriptDirector, Skull};
 
 fn place(slot: u8) -> Command {
@@ -24,11 +24,13 @@ fn score(points: u32) -> Command {
     }
 }
 
-#[test]
-fn a_scripted_match_issues_the_golden_command_list() {
+/// The golden match: one player who dies on tick 4, a squad of one killed
+/// three ticks after it appears, and the drop ship as the kit reports it.
+fn golden_match(ship: ShipSeen) -> Run {
     let mut director = ScriptDirector::new(small_def(1, true), settings(7)).unwrap();
     let mut world = World::new(1, two_zones());
-    let run = run(
+    world.ship = ship;
+    run(
         &mut director,
         &mut world,
         100,
@@ -39,10 +41,12 @@ fn a_scripted_match_issues_the_golden_command_list() {
             kill_at_age_three(tick, world);
         },
         |_, _, _, _, _| {},
-    );
+    )
+}
 
+fn golden() -> Vec<(u32, Command)> {
     // 100 * 1.5 (Legendary) * 1.1 (Famine) = 165.
-    let golden = vec![
+    vec![
         (
             0,
             Command::Lives {
@@ -87,9 +91,29 @@ fn a_scripted_match_issues_the_golden_command_list() {
                 outcome: Outcome::Won,
             },
         ),
-    ];
-    assert_eq!(run.commands, golden);
+    ]
+}
+
+#[test]
+fn a_scripted_match_issues_the_golden_command_list() {
+    let run = golden_match(ShipSeen::default());
+    assert_eq!(run.commands, golden());
     assert_eq!(run.outcome, Some(Outcome::Won));
+}
+
+/// A map whose kit has no ship, or a ship and no path to a zone, keeps
+/// every squad on foot: the log is the golden's.
+#[test]
+fn a_map_without_a_ship_places_squads_as_today() {
+    for ship in [
+        ShipSeen { ready: false, paths: vec![true, true] },
+        ShipSeen { ready: true, paths: vec![false, false] },
+        ShipSeen { ready: true, paths: Vec::new() },
+    ] {
+        let run = golden_match(ship.clone());
+        assert_eq!(run.commands, golden(), "{ship:?}");
+        assert_eq!(run.outcome, Some(Outcome::Won));
+    }
 }
 
 #[test]

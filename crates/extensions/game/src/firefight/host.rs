@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{
-    Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
+    Kill, PlayerSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
     Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
@@ -29,7 +29,7 @@ use ::firefight::{
 };
 use host_log::{Entry, Log, LogHead, Sha256};
 
-use super::ship::{Boarding, Launch};
+use super::ship::{Boarding, FLY_TICKS, Launch, Ship, ShipPath};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 
 /// Teams a game can hold.
@@ -150,6 +150,23 @@ pub trait Game: SquadEntry {
     /// ship and the rest on foot (`ship::drop_squad`).
     fn drop_squad(&mut self, _boarding: Boarding) -> anyhow::Result<()> {
         anyhow::bail!("this game has no ships to place a squad in")
+    }
+    /// The kit's ship, when it is a live vehicle in the world.
+    fn ship(&self) -> Option<Ship> {
+        None
+    }
+    /// Each kit zone's flight path, in kit order; none for a zone the ship
+    /// cannot fly to.
+    fn paths(&self) -> Vec<Option<ShipPath>> {
+        Vec::new()
+    }
+    /// `hover`: the ship's hover hold (`VEHICLE_HOVER`).
+    fn hover(&mut self, _ship: u32, _on: bool) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to hold")
+    }
+    /// `unload`: everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
+    fn unload(&mut self, _ship: u32) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to unload")
     }
 }
 
@@ -599,6 +616,39 @@ impl Host {
         Ok(())
     }
 
+    /// The placement of a squad of `class` at kit zone `zone`.
+    fn placement(
+        &self,
+        slot: u8,
+        class: &str,
+        count: u16,
+        zone: u8,
+        weapon_tier: u8,
+    ) -> anyhow::Result<Placement> {
+        let character = *self
+            .kit
+            .classes
+            .get(class)
+            .ok_or_else(|| anyhow::anyhow!("the kit has no class {class}"))?;
+        anyhow::ensure!(
+            usize::from(zone) < self.kit.zones.len(),
+            "the kit has no zone {zone}"
+        );
+        Ok(Placement {
+            slot,
+            character,
+            count,
+            zone,
+            team: self.team,
+            weapon_tier,
+        })
+    }
+
+    fn ship_of(game: &impl Game) -> anyhow::Result<Ship> {
+        game.ship()
+            .ok_or_else(|| anyhow::anyhow!("the kit's ship is not in the world"))
+    }
+
     fn apply(&mut self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
         if self.test {
             match op {
@@ -624,26 +674,55 @@ impl Host {
                 zone,
                 weapon_tier,
             } => {
-                let character = *self
-                    .kit
-                    .classes
-                    .get(class)
-                    .ok_or_else(|| anyhow::anyhow!("the kit has no class {class}"))?;
-                anyhow::ensure!(
-                    usize::from(*zone) < self.kit.zones.len(),
-                    "the kit has no zone {zone}"
-                );
-                squad(
-                    game,
-                    SquadOp::Place(Placement {
-                        slot: *slot,
-                        character,
-                        count: *count,
-                        zone: *zone,
-                        team: self.team,
-                        weapon_tier: *weapon_tier,
-                    }),
-                )
+                let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                squad(game, SquadOp::Place(placement))
+            }
+            // By ship when the kit has one and a path to the zone, else on
+            // foot as `PlaceSquad` does.
+            Command::DropSquad {
+                slot,
+                class,
+                count,
+                zone,
+                weapon_tier,
+            } => {
+                let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                let path = game.paths().get(usize::from(*zone)).copied().flatten();
+                let Some((ship, path)) = game.ship().zip(path) else {
+                    return squad(game, SquadOp::Place(placement));
+                };
+                game.fly(Launch {
+                    ship: ship.object,
+                    path: path.fly_in(),
+                    ticks: FLY_TICKS,
+                })?;
+                game.drop_squad(Boarding {
+                    placement,
+                    ship: ship.object,
+                    capacity: ship.capacity,
+                })
+            }
+            Command::ShipHover { on } => {
+                let ship = Self::ship_of(&*game)?;
+                game.hover(ship.object, *on)
+            }
+            Command::ShipUnload => {
+                let ship = Self::ship_of(&*game)?;
+                game.unload(ship.object)
+            }
+            Command::ShipLeave { zone } => {
+                let ship = Self::ship_of(&*game)?;
+                let path = game
+                    .paths()
+                    .get(usize::from(*zone))
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| anyhow::anyhow!("the kit has no ship path for zone {zone}"))?;
+                game.fly(Launch {
+                    ship: ship.object,
+                    path: path.fly_out(),
+                    ticks: FLY_TICKS,
+                })
             }
             Command::Target { slot, team } => {
                 anyhow::ensure!(
@@ -888,6 +967,15 @@ fn observe(
         zones,
         kills,
         player_kills: game.player_kills(),
+        ship: ShipSeen {
+            ready: game.ship().is_some(),
+            paths: {
+                let paths = game.paths();
+                (0..kit.zones.len())
+                    .map(|zone| paths.get(zone).is_some_and(Option::is_some))
+                    .collect()
+            },
+        },
     }
 }
 

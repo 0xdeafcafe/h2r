@@ -353,6 +353,12 @@ pub mod id {
     pub const OFFER_PICK: u16 = 124;
     pub const PICK_ROW: u16 = 125;
     pub const PICKED: u16 = 126;
+    pub const ZONE_PATH: u16 = 127;
+    pub const SHIP_READY: u16 = 128;
+    pub const FF_DROP_SQUAD: u16 = 129;
+    pub const FF_SHIP_HOVER: u16 = 130;
+    pub const FF_SHIP_UNLOAD: u16 = 131;
+    pub const FF_SHIP_LEAVE: u16 = 132;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -667,6 +673,19 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
     act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
     vm(id::PICKED, "picked", &[Player, Int], Int),
+    // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
+    // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
+    // and whether the kit's ship is in the world; `ff_drop_squad` is
+    // `firefight::Command::DropSquad` (a squad flown in), and the ship's
+    // hover hold, unloading and flight out are the commands of the same
+    // names. The host makes the flights and the loads
+    // (`game::firefight::ship`).
+    read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
+    read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
+    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

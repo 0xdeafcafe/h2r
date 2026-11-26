@@ -110,6 +110,7 @@ fn seen(players: &[u8], alive: [u16; SQUAD_SLOTS], kills: Vec<Kill>) -> Observed
         ],
         kills,
         player_kills: Vec::new(),
+        ship: Default::default(),
     }
 }
 

@@ -239,8 +239,11 @@ pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
                       actors_alive_by_squad: [u16; 16],
                       zones: Vec<ZoneSeen { seen, distance, team_distance: [u32; 2] }>,
                       kills: Vec<Kill { class, killer, assist }>,
-                      player_kills: Vec<PlayerKill { killer, victim }> }
-pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target { slot, team },
+                      player_kills: Vec<PlayerKill { killer, victim }>,
+                      ship: ShipSeen { ready, paths: Vec<bool> } }
+pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier },
+                   DropSquad { slot, class, count, zone, weapon_tier },
+                   ShipHover { on }, ShipUnload, ShipLeave { zone }, Target { slot, team },
                    Hunt { slot }, EraseSquad { slot }, Round { index }, Wave { index },
                    Skull { id, on }, Lives { player, pool }, TeamLives { team, pool },
                    Score { player, points, reason }, Respawn { player }, Finish { outcome } }
@@ -695,10 +698,49 @@ default, `firefight_kit::Config::dropship`):
   column; `Costs::ship` is the bytes (the copied tags, the placement, the
   palette row, the name and the point sets). A probe kit has no ship.
 
-The ship's flight, hover and unload are the rules engine's (rules-world-api.md,
-"Vehicles and drop ships"); the kit only places it parked and gives it the
-points to fly. The placement carries no hover flag: the script calls
-`hover` once the ship is flown.
+The kit only places the ship parked and gives it the points to fly. The
+placement carries no hover flag: the director turns the hold on
+(`ShipHover`), and the host flies and loads the ship ("The drop ship",
+below).
+
+**The drop ship.** The guest reads the kit's ship and paths with the rest
+of the kit (`guest::read_kit`): `KitLayout::ship` is the vehicle placement
+the object name `ff_ship` points at, and `KitLayout::paths` holds, for
+each drop zone in kit order, its `ff_path_NN` point set's `run_in`,
+`hover` and `run_out` (`ship::ShipPath`), or none when the zone has no
+set or the set misses a point. A game reports the ship as live when
+exactly one vehicle of that placement is in the world
+(`ship::placed_ship`); its seats are `ship::SEATS`, since the kit does
+not read the vehicle tag's seat blocks.
+
+The director (`content/modes/rules/firefight.rules`) holds the ship's state
+in three globals, `ship_state` (parked, inbound, unloading, outbound),
+`ship_tick` and `ship_zone`. Each tick the host tells it whether the ship
+is in the world (`Observed::ship.ready`, read `ship_ready()`) and which zones
+have a path (`zone_path(zone)`).
+
+- A squad whose chosen zone has a path, with the ship parked and in the
+  world, is placed by `ff_ship_hover(true)` and `ff_drop_squad(...)`
+  (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
+  Every other squad, including each squad of a wave while the ship is
+  out, is placed on foot by `place_squad_at` as before, so a wave
+  never waits on the ship, and a map with no ship or no path has the
+  commands it had.
+- `DropSquad` makes the host fly the ship from the path's run-in to its
+  hover point in `ship::FLY_TICKS` (240, 8 s) and place the squad into
+  it (`Game::fly`, `Game::drop_squad`, `ship::drop_squad`): up to the
+  ship's free seats ride, the rest of the squad spawns on foot at the
+  zone. A `DropSquad` for a zone the host finds no ship or path for
+  places on foot, as `PlaceSquad`.
+- 240 ticks after the drop the script calls `ff_ship_unload()`
+  (`ShipUnload`: `VEHICLE_UNLOAD`, every seat); 60 ticks later
+  `ff_ship_leave(zone)` (`ShipLeave`: a flight from the hover point to the
+  run-out in `FLY_TICKS`); 240 ticks after that `ff_ship_hover(false)` and the
+  ship is parked again. The ship's puts come before the tick's other
+  calls so a squad placed into a ship that begins its flight finds it
+  at the run-in.
+- `squad_alive` and the slot timeout read as before: riders are actors the
+  moment they are placed.
 
 The build is `firefight_kit::ground::build`, which takes the labels
 placed on the map and the recipe, and gives each label's place to the
@@ -1111,6 +1153,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
 | Fly a ship along its path | `OBJECT_SET_TRANSFORM` (`0xb7430`), the pose of `rules::vehicles::Flight` | `fly` (`Game::fly`), `Flights` (`rules/world/vehicles/flight.rs`), `put_ship` | built; rules-world R7 and R3 | The host flies the ship along a keyed path with no AI pilot. `Game::fly` hands the match the ship, the path's points and the ticks; the match begins a flight on the tick it applies the entry and every tick after puts the ship at the flight's pose, facing the path's tangent, as a put at the boundary (`put_ship`: the object's own `up` made perpendicular to the tangent, `notify` set). The pose is 16.16 integer math, so every machine and a film put the ship in the same place. A flight that has run its ticks puts the ship on the last point once and is reported as an arrival (`Match::take_arrived`). At most 4 ships fly at once; a second flight of a ship replaces its first with no arrival. The next physics step can move the body again, with riders aboard and with contacts, which only a run settles ([R7](notes/2026-11-24-vehicle-actions.md)). Whether a client sees the ship move is rules-world R3 |
 | Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The two register and stack layouts of the load and the list cast are read from the call at `0x2a411c` and the HS cast table and are confirmed by the run |
+| Hold the ship, unload it | `VEHICLE_HOVER` (`0xf0fd0`), `VEHICLE_UNLOAD` (`0x11b2b0`, mapping -1) | `ship::hover`, `ship::unload` (`Game::hover`, `Game::unload`) | named; rules-world R7 | The director's `ShipHover` and `ShipUnload`, made at the boundary as the rules runtime makes `hover` and `unload`; each is refused for a ship no longer in the world |
 | Land the rest on foot | `AI_SQUAD_PLACE` | `drop_squad` | built | `drop_squad` places the remainder of the squad (`count` less those aboard) as `place_squad` does, in the same slot squad, so a wave never waits on the ship: a ship with no free seat, not in the world or whose load the engine refuses leaves the whole squad on foot, and the reason is printed |
 | Credit a player's score | `SCORE_ADD` (`0x15b7c0`) | `credit_score` | traced | Slayer's kill callback is its engine's vtable slot `+0x78` (engine 2 at `0x55e4d8`), which `0x15ce70` calls last (`0x15d6a4`); it calls `0x15b7c0` with the score change in EAX and the killer's player datum on the stack (`0x2bc05d`). The routine adds the change's low 16 bits, signed, to row `+0x00` at `+0x308 + 0x1c * slot` of the game engine globals, clamps to ±30,000 (`0x15b849`), marks the statborg entity's player bit for replication (`0x15b88a`), updates the team score in a team game, checks the score limit when it is nonzero, and returns true. It refuses, returning false, without a game engine, while engine `+0x6c` is not 1, and on a machine where engine `+0xc04` is not 1 (unless game globals `+0x0c` is 4). `credit_score` passes the salted player datum and treats false as an error |
 | Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
