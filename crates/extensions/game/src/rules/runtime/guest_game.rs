@@ -358,6 +358,9 @@ impl Game for GuestGame<'_> {
             // The VM keeps the offers; the boundary asks the players
             // (`crate::rules::world::pick::plan`).
             id::OFFER_PICK | id::PICK_ROW => None,
+            // The VM keeps the objective HUD's state; the HUD is drawn from it
+            // (`crate::objective_hud`).
+            id::OBJECTIVE | id::OBJECTIVE_MARK | id::METER | id::COUNTDOWN => None,
             id::TELEPORT => crate::rules::world::objects::plan(call).map(Call::Put),
             id::SET_LOADOUT => {
                 let tag = |n: usize| match call.args.get(n) {

@@ -9,6 +9,7 @@ pub mod forge_all;
 pub mod forge_readout;
 pub mod objective;
 pub mod pill_block;
+pub mod script_objective;
 pub mod superbounce;
 pub mod superbounce_all;
 pub mod superbounce_guide;
@@ -29,6 +30,7 @@ pub fn all() -> Vec<Box<dyn Describe>> {
         Box::new(objective::Oddball),
         Box::new(objective::Koth),
         Box::new(objective::Territories),
+        Box::new(script_objective::ScriptObjective),
     ]
 }
 

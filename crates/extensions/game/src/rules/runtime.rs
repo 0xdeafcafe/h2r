@@ -223,6 +223,13 @@ pub const ACTIONS: &[u16] = &[
     id::MARK_PLAYER,
     id::MARK_TEAM,
     id::UNMARK,
+    // Kept in the VM's state (`RulesExt::objectives`); the objective HUD is
+    // fed from it every tick (`crate::objective_hud`), so no call is made at
+    // the boundary.
+    id::OBJECTIVE,
+    id::OBJECTIVE_MARK,
+    id::METER,
+    id::COUNTDOWN,
     // Put at the boundary (`super::world::objects`); the VM keeps a mover
     // and tells the game each tick's step.
     id::TELEPORT,
@@ -717,6 +724,8 @@ pub struct Runtime {
     /// The last tick fed the objective HUDs: the next tick with no script
     /// feeding them hides them.
     hud_on: bool,
+    /// The same for the scripted objective HUD (`crate::objective_hud`).
+    objective_on: bool,
     /// The walls cue last sent on the actor channel, and the tick it was
     /// sent: the list is sent when it changes and again every
     /// `::rules::show::WALLS_REPEAT` ticks while it is not empty, so a
@@ -790,6 +799,7 @@ impl Runtime {
             forge: false,
             walled: false,
             hud_on: false,
+            objective_on: false,
             wall_cue: None,
             pick_cue: None,
             show_cue: ShowCue::default(),
@@ -1511,7 +1521,7 @@ impl Runtime {
     /// [`data::MAX_DAMAGE`], in the order the game applied it) is told
     /// before the roster's changes, so before `on tick`.
     pub fn post_tick(&mut self, m: &dyn GuestMemory, events: &[SimEvent]) {
-        if self.hud_on && !matches!(self.status, Status::Running(_)) {
+        if (self.hud_on || self.objective_on) && !matches!(self.status, Status::Running(_)) {
             self.publish_hud(None);
         }
         let Some(tick) = bots::guest::game_tick(m) else {

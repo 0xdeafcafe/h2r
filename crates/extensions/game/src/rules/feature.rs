@@ -540,6 +540,9 @@ pub fn install(
     // The objective HUDs a script feeds (`super::world::hud`), hidden
     // until it does.
     super::world::hud::register();
+    // The scripted objective HUD (`crate::objective_hud`), hidden until a
+    // script requires `hud.objective`.
+    crate::objective_hud::register();
     let _ = SHARED.set(shared);
     Ok(true)
 }

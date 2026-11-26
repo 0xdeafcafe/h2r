@@ -515,6 +515,10 @@ pub const BUILTIN: [(&str, &str); 12] = [
         include_str!("../../../../content/modes/huds/firefight.hud.yaml"),
     ),
     (
+        "script-objective",
+        include_str!("../../../../content/modes/huds/script-objective.hud.yaml"),
+    ),
+    (
         "base",
         include_str!("../../../../content/modes/huds/base.hud.yaml"),
     ),

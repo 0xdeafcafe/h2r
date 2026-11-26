@@ -102,6 +102,7 @@ types. A test asserts each front-end signature erases to its entry's
 | `teleport(o, at)`, `move_to(o, at, t)`, `object_pos`, `object_vel` | `object, vec`; `object, vec, time`; `object, int -> fixed` (a `vec` is three `fixed` registers in the IR, `Type::width`; `at` may also be an object, and `teleport(o, at, offset)` an object and a `vec`) |
 | `set_open(o, open)` | `object, bool` |
 | `offer_pick(n, title)`, `pick_row(n, label)`, `picked(p, n)` | `int, text`; `int, text`; `player, int -> int` |
+| `objective(to, text)`, `objective_mark(to, zone, kind)`, `meter(to, value, of)`, `countdown(to, ticks)` | `team, text`; `team, zone, int` (kind 1 attack, 2 defend, 0 lifts the mark); `team, int, int` (an `of` of 0 or less lifts it; use `ticks(t)` for a time); `team, time` (0 or less lifts it) |
 | `vec(x, y, z)`, `length(v)`, `distance(a, b)`, `v.x`, `o.position`, `o.velocity`, `o.speed` | `fixed, fixed, fixed -> vec`; `vec -> fixed`; `vec, vec -> fixed`; `vec -> fixed`; `-> vec`; `-> vec`; `-> fixed` |
 | `on arrive(o)` | `object` |
 | `on touchdown(p, down, up)` | `player, fixed, fixed` |

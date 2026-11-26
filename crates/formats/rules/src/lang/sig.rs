@@ -44,6 +44,8 @@ pub fn of(e: &Entry) -> Option<Sig> {
         id::SET_LOADOUT => given(&[P, W_, W_], None),
         id::GIVE => given(&[P, W], None),
         id::SPAWN_AREAS => given(&[T, Type::Set(SetKind::Spawns), Type::Int], None),
+        id::OBJECTIVE_MARK => given(&[T, Z, Type::Int], None),
+        id::COUNTDOWN => given(&[T, Type::Time], None),
         id::SPAWN_NEAR => given(&[T, Type::H(Handle::Zone, true), Type::Int], None),
         // A `vec` is three registers in the IR (`Type::width`). The `at` of
         // `teleport` and `move_to` may also be an object, which the checker

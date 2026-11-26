@@ -13,7 +13,10 @@
 // defenders at a site still to take, then at their flag stand. The
 // attackers spawn as Spartans and the defenders as Elites (`set_body`).
 // The winners score a point each, so the post-game's scores name them.
-// The HUD is the King of the Hill kit's: a mark over the site the attackers
+// Each side's objective line, the phase clock, the capture gauge and the mark
+// over the front are the scripted objective HUD's (`hud.objective`:
+// `objective`, `countdown`, `meter`, `objective_mark`).
+// The rest of the HUD is the King of the Hill kit's: a mark over the site the attackers
 // are on (else the first still to take, then the final stand), its state
 // (open, held by a side, contested), the seconds the phase has left
 // (`koth.phase`), and a banner for a site taken, the final assault, an
@@ -34,7 +37,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, objects.move
+requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -137,12 +140,28 @@ global var front: zone? = none
 global var focus: zone? = none
 global var banner_left: int = 0
 global var seen: int = -1
+// The zone the objective HUD marks for both sides.
+global var marked: zone? = none
+
+// Each side's line for the phase on, and the phase's clock.
+fn brief() {
+    if phase < needed {
+        objective(team 0, "Take a site")
+        objective(team 1, "Hold the sites")
+    } else {
+        objective(team 0, "Take the flag stand")
+        objective(team 1, "Defend the flag stand")
+    }
+    countdown(team 0, phase_time)
+    countdown(team 1, phase_time)
+}
 
 fn begin(n: int) {
     phase = n
     clock = phase_time
     seen = -1
     overtime = false
+    brief()
 }
 
 // The map opens with the phases: a barrier stands open from the phase it
@@ -196,10 +215,26 @@ fn show_front() {
     } else {
         focus = last_stand
     }
+    if let o = marked {
+        objective_mark(team 0, o, 0)
+        objective_mark(team 1, o, 0)
+        marked = none
+    }
     if let z = focus {
         mark(front_mark, z)
+        marked = z
+        objective_mark(team 0, z, 1)
+        objective_mark(team 1, z, 2)
         let here = count(players p where p.alive and p.team == team 0 and inside(p, z))
         pushers = here
+        // The capture gauge shows while an attacker is on the front.
+        if here > 0 {
+            meter(team 0, ticks(ticks_held(z, team 0)), ticks(capture_time))
+            meter(team 1, ticks(ticks_held(z, team 0)), ticks(capture_time))
+        } else {
+            meter(team 0, 0, 0)
+            meter(team 1, 0, 0)
+        }
         let rival = count(players q where q.alive and q.team == team 1 and inside(q, z))
         if here > 0 and rival > 0 {
             hud_style(front_row, 2)
@@ -215,6 +250,8 @@ fn show_front() {
         hud_show(front_row, true)
     } else {
         pushers = 0
+        meter(team 0, 0, 0)
+        meter(team 1, 0, 0)
         unmark(front_mark)
         hud_show(front_row, false)
     }
@@ -224,6 +261,10 @@ fn show_front() {
 fn win(side: team) {
     over = true
     clock = 0t
+    countdown(team 0, 0t)
+    countdown(team 1, 0t)
+    meter(team 0, 0, 0)
+    meter(team 1, 0, 0)
     hud_show(phase_row, false)
     for each players p where p.team == side { score(p, 1) }
     end_round(side)
@@ -261,6 +302,7 @@ fn release(side: team) {
 on round_start {
     over = false
     focus = none
+    marked = none
     offer_pick(0, "LOADOUT")
     pick_row(0, "STANDARD")
     pick_row(0, "CLOSE QUARTERS")
@@ -366,6 +408,8 @@ on timer(clock) {
         if not overtime and pushers > 0 {
             overtime = true
             clock = overtime_time
+            countdown(team 0, overtime_time)
+            countdown(team 1, overtime_time)
             seen = -1
             message(all, "Overtime: the attackers are still on the objective")
             hud_text(banner_row, "OVERTIME")
