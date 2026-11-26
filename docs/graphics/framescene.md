@@ -541,7 +541,20 @@ A stage's guest entry is replaced only when all four hold:
 
 After a replacement, content the stage cannot draw is a named error: a
 counter (`scene_dropped_<stage>`), one log line per cause, and a row in
-`render.scene`. It is not sent to D3D. From slice 6 the fallback for a
+`render.scene`. It is not sent to D3D.
+
+A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its
+`residual_census::REGISTRY` row name and entry, and its hook returns the
+entry's ABI result to the caller without running the guest body. No
+switch brings the body back; it survives only as a test oracle. The hook
+first runs `frame_step::before` for the producer, which makes the 5.2
+writes the body made, in `frame_step::ROWS` order (guest order: the
+seed, the effects word, the stamps and residency requests inside the
+views, then `render_views`' frame counter and one-shot byte, then the
+present counter). The frame owner runs the `Step::Frame` rows once per
+frame. The rows for the seed, effects word, stamps and residency are
+empty until the slice that cuts their writer fills them, and each row
+names its test in `crates/rewrites/render-bridge/tests/cut.rs`. From slice 6 the fallback for a
 stage that is not ready is to stay carried, which costs guest time but
 draws correctly.
 

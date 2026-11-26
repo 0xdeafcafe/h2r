@@ -264,6 +264,7 @@ impl Feature for NativeParticles {
                 .context_only()
                 .optional();
         }
+        crate::cut::build(b);
         crate::native_effects::build(b);
         crate::native_flares::build(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);
