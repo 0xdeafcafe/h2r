@@ -1270,12 +1270,14 @@ the set (and whether the definition is endless), the bonus round's ticks
 left, the wave's total actors (the enemies meter's full length; in a bonus
 round its length in ticks), the one-team score, the team count, and the
 lives (the shared pool, each player's own up to eight players, or each
-team's pool). With two teams the blob carries both scores and a mask of
-team 1's slots, so each viewer sees its own team's pool. Version 3
-encodes to 26 bytes with one shared pool, 49 with eight players' own
-lives, 34 with two team pools and 55 with two teams and eight players'
-own lives, inside the actor channel's 63-byte mode state
-(`blob_v3_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
+team's pool). Each player's own lives are a mask of their roster slots
+and a count each, in slot order. With two teams the blob carries both scores and a mask of
+team 1's slots, so each viewer sees its own team's pool. Version 4
+encodes to 26 bytes with one shared pool, 42 with eight players' own
+lives, 34 with two team pools and 48 with two teams and eight players'
+own lives, inside the 51 bytes left of the actor channel's 63-byte mode
+state by the script role's 12-byte header
+(`blob_v4_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
 0 until the host runs a bonus round. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
 and "DRAW".
 
