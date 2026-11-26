@@ -113,6 +113,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ("objects", sheet::tools(Tool::Objects)),
             ("links", sheet::tools(Tool::Links)),
             ("nav", sheet::tools(Tool::Nav)),
+            ("ai", sheet::tools(Tool::Ai)),
         ],
         Kind::Settings => vec![
             ("open", sheet::settings(2, 0, false)),
@@ -174,7 +175,8 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             let f = waves::sample_facts();
             let open = waves::wave_sheet(&f, 0, 0).expect("wave 1");
             let boss = waves::wave_sheet(&f, 0, 4).expect("the boss wave");
-            vec![("open", open), ("boss", boss)]
+            let drop = waves::drop_sheet(&f, 1).expect("drop zone 1");
+            vec![("open", open), ("boss", boss), ("drop", drop)]
         }
         Kind::Squads => {
             let open = waves::squads_sheet(&waves::sample_facts(), 0, 0).expect("wave 1");

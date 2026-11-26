@@ -173,6 +173,13 @@ pub(super) struct Editor {
     /// The log head the staged nav mesh was generated at: the bots take
     /// the mesh only while the document is still this one.
     nav_staged: Option<LogHead>,
+    /// The built ground's sectors as overlay lines, drawn in the AI tool
+    /// while the ground is current ([`Editor::nav_lines`]).
+    sector_lines: Vec<forge::NavLine>,
+    /// The log head `sector_current` was read at.
+    sector_head: Option<LogHead>,
+    /// The ground the sectors came from still covers the document.
+    sector_current: bool,
     /// The agent that asked for the running generation.
     nav_answer: Option<NavAnswer>,
     /// The running cache's name, which a play copy's file is named for.
@@ -249,6 +256,9 @@ impl Editor {
             ground_answer: None,
             nav_generating: false,
             nav_staged: None,
+            sector_lines: Vec::new(),
+            sector_head: None,
+            sector_current: false,
             nav_answer: None,
             map_name,
             copy: None,
@@ -471,14 +481,20 @@ impl Editor {
             .map(|thing| {
                 let held = self.tool.held_thing.is_some();
                 let frame = self.tool.ghost.filter(|_| held).unwrap_or(thing.frame);
-                readout::aimed(
+                let mut aimed = readout::aimed(
                     &thing,
                     thing_name(&thing),
                     frame.position,
                     frame.rotation[0].to_degrees(),
                     self.tool.thing_extent(&self.session, &thing).radius,
                     game,
-                )
+                );
+                if let Some((name, note)) = self.marker_words(thing.id) {
+                    aimed.target.name = name;
+                    aimed.target.thing =
+                        hud_kit_core::views::forge_readout::Thing::Marker { note };
+                }
+                aimed
             });
         // An added thing is what a hold spends the budget on; moving an own
         // entry costs nothing.
@@ -544,11 +560,12 @@ impl Editor {
             "camera":self.tool.camera.map(|c| json!({"position":c.position,"yaw":c.yaw,"pitch":c.pitch})),
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
             "aimed_thing":self.tool.aimed_thing, "held_thing":self.tool.held_thing,
+            "aimed_drop":self.aimed_drop().map(|(zone, squads)| json!({"zone":zone,"squads":squads})),
             "show":self.tool.show.name(), "game":self.tool.game,
             "area_edit":self.area.as_ref().map(area::Draft::status),
             "variant":local_api::variant_status(self.session.document(), self.filename.as_deref(), self.dirty()),
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
-            "tool":if self.tool.nav { "nav" } else if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
+            "tool":if self.tool.nav { "nav" } else if self.tool.ai { "ai" } else if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
             "rotation_snap":ANGLE_STEPS[self.rotation_step], "movement_snap":sheet::MOVE_STEPS[self.movement_step],
             "axes":self.tool.axes.name(),
             "overlays":Value::Object(Overlay::ALL.iter()
@@ -904,10 +921,35 @@ impl Editor {
         }
     }
 
-    /// The lines of the last **Generate nav** the window draws: the
-    /// sectors and links, while the Nav tool is selected with the Nav
-    /// overlay on ([`super::nav_world`]). None otherwise.
+    /// Whether the built ground's sectors still cover the document, read
+    /// when the log head moves (the stale rule hashes the document).
+    fn refresh_sectors(&mut self) {
+        if self.session.ground_report().is_none() {
+            self.sector_lines.clear();
+            self.sector_head = None;
+            self.sector_current = false;
+            return;
+        }
+        let head = self.session.head();
+        if self.sector_head != Some(head) {
+            self.sector_head = Some(head);
+            self.sector_current = self.session.ground_state() == forge::GroundState::Current;
+        }
+    }
+
+    /// The lines the window draws: in the AI tool, the built ground's
+    /// sectors while it is current; in the Nav tool with the Nav overlay
+    /// on, the sectors and links of the last **Generate nav**
+    /// ([`super::nav_world`]). None otherwise.
     pub fn nav_lines(&self) -> Option<&[forge::NavLine]> {
+        if self.tool.monitor
+            && self.tool.ai
+            && self.overlay(Overlay::Markers)
+            && self.sector_current
+            && !self.sector_lines.is_empty()
+        {
+            return Some(&self.sector_lines);
+        }
         if !(self.tool.monitor && self.tool.nav && self.overlay(Overlay::Nav)) {
             return None;
         }
@@ -991,11 +1033,52 @@ impl Editor {
         }
         let id = self.tool.held_thing.or(self.tool.aimed_thing)?;
         let thing = self.session.thing(id)?;
-        Some((
-            thing_name(&thing),
-            thing.block,
-            self.tool.ghost.unwrap_or(thing.frame),
-        ))
+        let name = self
+            .marker_words(id)
+            .map_or_else(|| thing_name(&thing), |(name, _)| name);
+        Some((name, thing.block, self.tool.ghost.unwrap_or(thing.frame)))
+    }
+
+    /// What the AI tool calls the ground marker `id`, and the readout's
+    /// fact for it: "Drop zone 3" with "2 squads land here", "Red base",
+    /// "Cover". None outside the AI tool and for a thing that is not a
+    /// marker. A drop zone's number is its zone in the wave set, from 0 as
+    /// the Drop picker numbers it.
+    fn marker_words(&self, id: Endpoint) -> Option<(String, String)> {
+        if !self.tool.ai {
+            return None;
+        }
+        let Endpoint::Added(op) = id.identity() else {
+            return None;
+        };
+        let marker = self.session.markers().ok()?.into_iter().find(|m| m.id == op)?;
+        Some(match marker.label {
+            forge::GroundLabel::Drop => {
+                let zone = self.session.drop_zone(op)?;
+                (
+                    format!("Drop zone {zone}"),
+                    screens::waves::lands_here(self.session.zone_squads(zone)),
+                )
+            }
+            forge::GroundLabel::Base => {
+                let team = ["Red", "Blue"].get(usize::from(marker.team)).copied();
+                (format!("{} base", team.unwrap_or("Red")), String::new())
+            }
+            forge::GroundLabel::Cover => ("Cover".into(), String::new()),
+            other => (other.title().to_string(), String::new()),
+        })
+    }
+
+    /// The zone and squad count of the drop zone the AI tool aims at.
+    fn aimed_drop(&self) -> Option<(usize, usize)> {
+        if !self.tool.ai {
+            return None;
+        }
+        let Endpoint::Added(op) = self.tool.aimed_thing?.identity() else {
+            return None;
+        };
+        let zone = self.session.drop_zone(op)?;
+        Some((zone, self.session.zone_squads(zone)))
     }
 
     /// What the Properties page says of selecting and grouping `id`.
@@ -1230,6 +1313,7 @@ impl Editor {
                 aimed.map(|t| self.linkable(t)).unwrap_or_default(),
             )
         } else {
+            let ai = self.tool.ai;
             let hand = if self.tool.placing.is_some() {
                 Hand::Placing
             } else if self.tool.held_thing.is_some() {
@@ -1240,7 +1324,7 @@ impl Editor {
                 Hand::Idle
             };
             (
-                KitTool::Objects,
+                if ai { KitTool::Ai } else { KitTool::Objects },
                 hand,
                 self.target().map_or_else(String::new, |(name, _, _)| name),
             )
@@ -1495,6 +1579,7 @@ impl Editor {
     ) {
         self.now = tick;
         self.retire_nav();
+        self.refresh_sectors();
         self.bsp = bsp;
         self.ui_up = ui_up;
         if self.tool.game != game {
@@ -1620,6 +1705,8 @@ impl Editor {
             local_axes: self.local_axes,
             tool: Some(if self.tool.nav {
                 ToolKind::Nav
+            } else if self.tool.ai {
+                ToolKind::Ai
             } else if self.tool.links {
                 ToolKind::Links
             } else {
@@ -1730,6 +1817,13 @@ impl Editor {
                 let (session, built, play) = *done;
                 self.session = Arc::new(session);
                 self.ground_building = false;
+                self.sector_lines = self
+                    .session
+                    .ground_report()
+                    .map(|r| super::nav_world::sector_lines(&r.sectors))
+                    .unwrap_or_default();
+                self.sector_head = None;
+                self.refresh_sectors();
                 self.copy = play;
                 let mut text = super::ground::notice(self.session.ground_report(), built);
                 // Test waves waits for the reload onto the ground; with none
@@ -1799,7 +1893,14 @@ impl Editor {
                     menu = Some(sheet::with_kit(menu, &self.kit_menu()));
                 }
                 let menu = sheet::with_prefabs(menu, &self.prefab_items());
-                screens::open(menu.ok_or("This map has nothing to place.")?)?;
+                let mut menu = menu.ok_or("This map has nothing to place.")?;
+                // The AI tool opens the menu on its group.
+                if self.tool.ai
+                    && let Some(at) = menu.rows.iter().position(|r| r.label == sheet::AI_PAGE)
+                {
+                    menu.focus = at;
+                }
+                screens::open(menu)?;
             }
             Properties if self.tool.links => {
                 let thing = self
@@ -1813,6 +1914,15 @@ impl Editor {
                     .ok_or("Not linked. Press A to start a link.")?;
                 screens::open(self.link_sheet(&active))?;
                 self.link_dialog = Some(active.id);
+            }
+            Properties if self.tool.held_thing.is_none() && self.aimed_drop().is_some() => {
+                let (zone, _) = self.aimed_drop().ok_or("Aim at a drop zone.")?;
+                let zone = u8::try_from(zone).map_err(|_| "Aim at a drop zone.")?;
+                let id = self.tool.aimed_thing.ok_or("Aim at a drop zone.")?;
+                let (name, _, frame) = self.target().ok_or("Aim at a drop zone.")?;
+                self.coordinates = Some((CoordinateTarget::Existing(id), frame));
+                screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
+                screens::waves::show(screens::waves::Page::Drop(zone))?;
             }
             Properties => {
                 let (name, block, frame) = self.target().ok_or("Aim at a thing of the map.")?;
@@ -2232,6 +2342,7 @@ impl Editor {
             Choice::Tool(t) => {
                 self.tool.set_links(t == ToolKind::Links);
                 self.tool.set_nav(t == ToolKind::Nav);
+                self.tool.set_ai(t == ToolKind::Ai);
             }
             Choice::Set(Prop::RotationSnap, i) => {
                 let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;

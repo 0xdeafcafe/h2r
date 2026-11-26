@@ -919,6 +919,7 @@ mod ground {
                     reason: "off the walkable area".into(),
                 }],
                 receipt: None,
+                sectors: vec![vec![[0., 0., 0.], [2., 0., 0.], [0., 2., 0.]]],
                 ..GroundReport::default()
             })
         }
@@ -964,6 +965,113 @@ mod ground {
                 rotation: [0.; 3],
             },
         }
+    }
+
+    fn marker_at(label: forge::GroundLabel, x: f32) -> Command {
+        Command::Marker {
+            label,
+            frame: Frame {
+                position: [x, 1., 0.],
+                rotation: [0.; 3],
+            },
+        }
+    }
+
+    /// The AI tool over two drops and a cover, one drop aimed at.
+    fn ai_editor() -> (Editor, Endpoint) {
+        let mut e = ground_editor();
+        e.command(1, drop_at(1.)).unwrap();
+        e.poll(1);
+        e.command(2, drop_at(-1.)).unwrap();
+        e.poll(2);
+        e.command(3, marker_at(forge::GroundLabel::Cover, 4.)).unwrap();
+        e.poll(3);
+        e.tool.camera = Some(forge::camera::Camera {
+            position: [0.; 3],
+            yaw: 0.,
+            pitch: 0.,
+        });
+        e.tool.set_ai(true);
+        let second = Endpoint::Added(e.session.drops()[1]);
+        e.tool.aimed_thing = Some(second);
+        (e, second)
+    }
+
+    #[test]
+    fn the_readout_names_the_zone_and_its_squads() {
+        use hud_kit_core::views::forge_readout::Thing as Fact;
+        let (mut e, second) = ai_editor();
+        let target = |e: &Editor| e.readout_scene(None).target.expect("a drop is aimed at").target;
+        let t = target(&e);
+        assert_eq!(t.name, "Drop zone 1");
+        assert_eq!(t.thing, Fact::Marker { note: "No squads land here".into() });
+        assert_eq!(e.status()["aimed_drop"], json!({"zone": 1, "squads": 0}));
+        assert_eq!(e.monitor_hud(0.).view.target, "Drop zone 1");
+        assert_eq!(e.monitor_hud(0.).view.tool, hud_kit_core::views::forge::Tool::Ai);
+        // A squad of the set that prefers the zone is counted.
+        let at = crate::forge_screens::waves::At { round: 0, wave: 0, squad: 0 };
+        let edit = crate::forge_screens::waves::Edit::Drop(at, ::firefight::Drop::PreferZone(1));
+        e.choose(4, Choice::Waves(edit)).unwrap();
+        assert_eq!(target(&e).thing, Fact::Marker { note: "1 squad lands here".into() });
+        assert_eq!(e.status()["aimed_drop"], json!({"zone": 1, "squads": 1}));
+        // A cover has no zone; the Objects tool names nothing of it.
+        let cover = e
+            .session
+            .markers()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.label == forge::GroundLabel::Cover)
+            .unwrap();
+        e.tool.aimed_thing = Some(Endpoint::Added(cover.id));
+        assert_eq!(target(&e).name, "Cover");
+        assert_eq!(e.status()["aimed_drop"], Value::Null);
+        e.tool.set_ai(false);
+        e.tool.aimed_thing = Some(second);
+        assert_ne!(target(&e).name, "Drop zone 1");
+    }
+
+    #[test]
+    fn add_squad_here_presets_the_drop() {
+        let (mut e, _) = ai_editor();
+        let edit = crate::forge_screens::waves::Edit::AddSquadAt { round: 0, wave: 1, zone: 1 };
+        e.choose(4, Choice::Waves(edit)).unwrap();
+        let set = e.session.waves().expect("the session's own set");
+        assert_eq!(
+            set.rounds[0].waves[1].squads.last().unwrap().drop,
+            ::firefight::Drop::PreferZone(1)
+        );
+        assert_eq!(e.session.zone_squads(1), 1);
+        assert_eq!(e.status()["aimed_drop"], json!({"zone": 1, "squads": 1}));
+    }
+
+    #[test]
+    fn the_overlay_draws_the_built_sectors_and_each_problem() {
+        let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        crate::forge_glue::reload::set_reloads(false);
+        installed::install(Box::new(Kit { refuse: false }));
+        let (mut e, _) = ai_editor();
+        e.tool.monitor = true;
+        assert!(e.nav_lines().is_none(), "nothing is built yet");
+        e.command(5, Command::BuildGround).unwrap();
+        finish(&mut e, 6);
+        // The sectors draw in the AI tool only, while the ground is current.
+        assert_eq!(e.nav_lines().map(<[_]>::len), Some(3), "one triangle, a line a side");
+        e.tool.set_ai(false);
+        assert!(e.nav_lines().is_none());
+        e.tool.set_ai(true);
+        // The problem is a marker in the problem tone.
+        let entries = e.marker_entries();
+        let problems = entries
+            .iter()
+            .filter(|m| m.tone == crate::forge_glue::markers_world::Tone::Problem)
+            .count();
+        assert_eq!(problems, 1);
+        // An edit the build covers makes them stale: no sectors.
+        e.command(7, drop_at(3.)).unwrap();
+        e.poll(8);
+        e.refresh_sectors();
+        assert!(e.nav_lines().is_none(), "a stale ground draws no sectors");
+        assert_eq!(e.session.ground_state(), GroundState::Stale);
     }
 
     #[test]

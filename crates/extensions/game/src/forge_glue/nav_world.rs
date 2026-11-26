@@ -50,6 +50,26 @@ pub struct Group {
     pub colour: [f32; 3],
 }
 
+/// How far over the ground the AI tool lifts a sector's sides, so they do
+/// not sink into it.
+pub const SECTOR_LIFT: f32 = 0.05;
+
+/// The sides of the built ground's sectors, each polygon in ring order, as
+/// `sector` lines for the AI tool.
+pub fn sector_lines(sectors: &[Vec<[f32; 3]>]) -> Vec<NavLine> {
+    let lift = |p: [f32; 3]| [p[0], p[1], p[2] + SECTOR_LIFT];
+    sectors
+        .iter()
+        .flat_map(|ring| {
+            (0..ring.len()).map(move |i| NavLine {
+                kind: "sector".into(),
+                a: lift(ring[i]),
+                b: lift(ring[(i + 1) % ring.len()]),
+            })
+        })
+        .collect()
+}
+
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt()
 }
@@ -225,6 +245,16 @@ mod tests {
         assert_eq!(colour("teleporter"), TELEPORTER);
         assert_eq!(colour("out_of_map"), OUT_OF_MAP);
         assert_eq!(colour("elevator"), LIFT);
+    }
+
+    #[test]
+    fn a_sector_is_one_line_a_side_in_the_sector_colour() {
+        let lines = sector_lines(&[vec![[0., 0., 0.], [2., 0., 0.], [0., 2., 0.]], vec![]]);
+        assert_eq!(lines.len(), 3, "an empty ring has no sides");
+        assert!(lines.iter().all(|l| l.kind == "sector"));
+        assert_eq!(lines[2].a, [0., 2., SECTOR_LIFT]);
+        assert_eq!(lines[2].b, [0., 0., SECTOR_LIFT], "the ring closes");
+        assert_eq!(groups(&lines, None)[0].colour, SECTOR);
     }
 
     #[test]

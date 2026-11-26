@@ -101,6 +101,14 @@ fn page_tables() {
             effects: vec![Open(picker), Focus(1), Open(Kind::Squads.screen())],
             after: "WAVE 1 | focus 1 Squads... = 2",
         },
+        // DROP ZONE: Add squad here... opens the picker of waves.
+        Case {
+            kind: Kind::Wave,
+            from: "drop",
+            inputs: &[Down, A],
+            effects: vec![Focus(1), Open(picker)],
+            after: "DROP ZONE 1 | focus 1 Add squad here...",
+        },
         Case {
             kind: Kind::Squads,
             from: "open",
@@ -479,4 +487,53 @@ fn forge_options_open_the_waves() {
     assert!(!options.rows.iter().any(|r| r.label == "Waves..."));
     assert!(open(Page::Waves).is_err(), "no waves to edit");
     publish(ScreenFacts::default());
+}
+
+#[test]
+fn drop_zone_lists_its_squads_and_add_squad_here_presets_the_drop() {
+    let f = sample_facts();
+    // The sample's Grunt squad prefers zone 3, which is not placed; two
+    // drops are, and none of them has a squad.
+    assert!(drop_sheet(&f, 2).is_none(), "an unplaced zone has no page");
+    let page = drop_sheet(&f, 1).expect("zone 1 is placed");
+    assert_eq!(page.title, "DROP ZONE 1");
+    assert_eq!(page.rows[0].value.as_deref(), Some("None"));
+    assert_eq!(page.rows[1].label, "Add squad here...");
+    assert_eq!(page.rows[2].label, "Coordinates...");
+    let Act::Pick(p) = &page.rows[1].act else {
+        panic!("Add squad here... opens a picker")
+    };
+    assert_eq!(p.values.len(), 10, "two rounds of five waves");
+    assert_eq!(p.values[0], "Round 1 Wave 1");
+    assert_eq!(p.values[9], "Round 2 Wave 5");
+    assert_eq!(
+        p.choices[1],
+        Choice::Waves(Edit::AddSquadAt {
+            round: 0,
+            wave: 1,
+            zone: 1
+        })
+    );
+    // Choosing the second wave adds a squad that prefers the zone.
+    let Choice::Waves(edit) = &p.choices[1] else {
+        panic!("a waves edit")
+    };
+    let next = apply(&f.set, edit, &f.presets).unwrap();
+    let squads = &next.rounds[0].waves[1].squads;
+    assert_eq!(squads.len(), f.set.rounds[0].waves[1].squads.len() + 1);
+    assert_eq!(squads.last().unwrap().drop, Drop::PreferZone(1));
+    // The page now lists it, and the Squads list opens its SQUAD page.
+    let with = Facts { set: next, ..f };
+    let page = drop_sheet(&with, 1).unwrap();
+    assert_eq!(page.rows[0].value.as_deref(), Some("1"));
+    assert_eq!(page.rows[0].act, Act::Waves(Page::DropSquads(1)));
+    let list = drop_squads_sheet(&with, 1).unwrap();
+    assert_eq!(list.rows[0].label, "Round 1 Wave 2: Elites");
+    assert_eq!(
+        list.rows[0].act,
+        Act::Waves(Page::Squad(squad_at(0, 1, 1)))
+    );
+    assert_eq!(lands_here(0), "No squads land here");
+    assert_eq!(lands_here(1), "1 squad lands here");
+    assert_eq!(lands_here(2), "2 squads land here");
 }

@@ -116,7 +116,7 @@ the tool in use.
 | Links | teleporter flags and machines, then every port | built (F6); F7 |
 | Volumes | trigger volumes, boundaries, barriers | F7, F8 |
 | Emitters | emitters | F7 |
-| AI | drop zones, bases and cover; X opens a drop zone's squads or the waves ([forge-firefight-ui.md](forge-firefight-ui.md), "The AI tool") | FA7 of [forge-firefight.md](forge-firefight.md); the markers are placed from the Objects tool until then |
+| AI | drop zones, bases and cover; X opens a drop zone's squads or the waves ([forge-firefight-ui.md](forge-firefight-ui.md), "The AI tool") | built (FA7 of [forge-firefight.md](forge-firefight.md)); the markers are also placed from the Objects tool |
 | Shape, Paint | faces, textures | F13 |
 | Nav | nothing: it draws the generated sectors and links, A runs **Generate nav** ([forge-nav.md](forge-nav.md), "The tool") | built (F9) |
 
