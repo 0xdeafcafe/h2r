@@ -41,21 +41,29 @@ pub struct ForgeDoc {
     pub imports: Vec<ImportSlot>,
     #[serde(deserialize_with = "wire::bounded::<_, _, MAX_OPS>")]
     pub ops: Vec<Op>,
+    /// The map's own wave set (docs/game/forge-firefight.md, "The wave
+    /// set"): a document with one is format [`crate::FORMAT_WAVES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waves: Option<crate::waves::Def>,
     /// A draft can be saved before it has a materialised result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expect: Option<Expected>,
 }
 
 impl ForgeDoc {
-    /// The wire version this document's ops need, the highest any op
-    /// needs: [`FORMAT_GROUPS`] for a group op, [`FORMAT_ENTRIES`] for an entry op or an endpoint with a
-    /// print, [`FORMAT_LABELS`] for an op that sets or clears a label,
-    /// otherwise [`FORMAT`]. Validation refuses any other `format`, so a
-    /// document has one spelling, and a document without the newer ops
-    /// keeps its number and its identity.
+    /// The wire version this document needs: [`crate::FORMAT_WAVES`] with
+    /// a wave set, otherwise the highest any op needs: [`FORMAT_GROUPS`]
+    /// for a group op, [`FORMAT_ENTRIES`] for an entry op or an endpoint
+    /// with a print, [`FORMAT_LABELS`] for an op that sets or clears a
+    /// label, otherwise [`FORMAT`]. Validation refuses any other `format`,
+    /// so a document has one spelling, and a document without the newer
+    /// ops or a wave set keeps its number and its identity.
     pub fn required_format(&self) -> u32 {
         fn printed(ends: &[Endpoint]) -> bool {
             ends.iter().any(|end| end.print().is_some())
+        }
+        if self.waves.is_some() {
+            return crate::FORMAT_WAVES;
         }
         self.ops
             .iter()

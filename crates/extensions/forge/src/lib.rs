@@ -26,7 +26,8 @@ pub use links::{AddedTeleporter, Linkable, Teleporter};
 pub use session::{
     CopyKind, Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState,
     GroupInfo, NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,
-    Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, flag_label, live_form,
+    Reopened, SHARED_PROPOSE, SHARED_REDO, Session, SessionAdmit, WAVES_HOST_ONLY, flag_label,
+    live_form,
 };
 pub use things::{BaseRow, BaseRows, LEFT_OUT_SENTENCE, Thing, ThingKind};
 
@@ -156,3 +157,6 @@ mod props_tests;
 
 #[cfg(test)]
 mod kit_tests;
+
+#[cfg(test)]
+mod waves_tests;

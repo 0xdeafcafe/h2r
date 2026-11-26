@@ -42,6 +42,7 @@ fn session() -> Session {
         imports: vec![],
         ops: vec![],
         expect: None,
+        waves: None,
     };
     let limits = Limits {
         base_counts: BTreeMap::from([(BlockKind::Machines, 2), (BlockKind::NetgameFlags, 5)]),

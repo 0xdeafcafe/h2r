@@ -5877,6 +5877,7 @@ fn map_variant_doc(title: &str) -> forge_doc::ForgeDoc {
             }),
         }],
         expect: None,
+        waves: None,
     };
     doc.format = doc.required_format();
     doc

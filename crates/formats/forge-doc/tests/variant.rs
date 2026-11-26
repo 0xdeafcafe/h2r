@@ -33,6 +33,7 @@ fn draft(edits: Vec<Edit>) -> ForgeDoc {
             })
             .collect(),
         expect: None,
+        waves: None,
     };
     doc.format = doc.required_format();
     doc

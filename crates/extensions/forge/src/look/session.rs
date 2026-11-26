@@ -618,6 +618,7 @@ mod tests {
             imports: vec![],
             ops: vec![],
             expect: None,
+            waves: None,
         }
     }
 

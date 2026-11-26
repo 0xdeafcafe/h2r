@@ -47,6 +47,7 @@ fn opened() -> Opened {
         title: "Test room".into(),
         author: "Builder".into(),
         description: String::new(),
+        waves: None,
     };
     Opened {
         session: Session::new(base, limits, vec![item], 8).unwrap(),
@@ -710,6 +711,7 @@ fn property_session() -> Session {
         title: "Test room".into(),
         author: "Builder".into(),
         description: String::new(),
+        waves: None,
     };
     Session::new(base, limits, vec![], 8)
         .unwrap()

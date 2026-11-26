@@ -56,6 +56,7 @@ fn doc(title: &str) -> ForgeDoc {
             }),
         }],
         expect: None,
+        waves: None,
     };
     doc.format = doc.required_format();
     doc

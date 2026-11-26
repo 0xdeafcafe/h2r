@@ -22,6 +22,7 @@ mod prefabs;
 mod nav;
 mod reload;
 mod shared;
+mod waves;
 
 pub use area::{Goal, flag_label};
 
@@ -34,6 +35,7 @@ pub(crate) use groups::carried;
 pub use nav::{NavBuilder, NavLine, NavProblem, NavReport, NavState};
 pub use reload::{CopyKind, Reopened, live_form};
 pub use shared::{Outgoing, SHARED_PROPOSE, SHARED_REDO, SessionAdmit};
+pub use waves::WAVES_HOST_ONLY;
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -73,6 +75,8 @@ pub struct Session {
     ground: ground::Track,
     /// The last **Generate nav**, beside the document.
     nav: nav::Track,
+    /// The wave set, beside the document.
+    waves: waves::Track,
     /// The kit of the map the session runs on, when it has one.
     kit: Option<entries::Kit>,
     /// What the running map holds of the document: the form it was built
@@ -126,6 +130,7 @@ impl Session {
             shared: None,
             ground: ground::Track::default(),
             nav: nav::Track::default(),
+            waves: waves::Track::default(),
             kit: None,
             baked,
         })
@@ -901,11 +906,14 @@ impl Session {
         }
         let (doc, head) =
             forge_doc::fold_from(&self.doc, self.head, &entries, &self.limits).map_err(reason)?;
+        self.check_drops(&doc)?;
+        let zones = self.zones_before();
         self.update_world(world, &doc, respawn)?;
         self.log.extend(entries);
         self.doc = doc;
         self.head = head;
         self.log_bytes = bytes;
+        self.follow_drops(zones);
         Ok(())
     }
 
@@ -1128,9 +1136,9 @@ impl Session {
     }
 
     /// The document a save writes under `title`: the play form with the
-    /// ground recipe and without the session's kit.
+    /// ground recipe and the wave set, and without the session's kit.
     pub fn variant_form(&self, title: &str) -> ForgeDoc {
-        let mut doc = self.ground_form();
+        let mut doc = self.ground_form().with_waves(self.waves.set.clone());
         doc.title = title.to_owned();
         doc.expect = None;
         forge_doc::play_form(&doc)
@@ -1166,6 +1174,7 @@ impl Session {
         };
         forge_doc::validate(&loaded, &self.limits).map_err(reason)?;
         let (doc, ground) = Self::take_ground(loaded.clone())?;
+        let (doc, set) = Self::take_waves(doc);
         if doc.base != self.doc.base
             || doc.builder != self.doc.builder
             || doc.recipes != self.doc.recipes
@@ -1193,6 +1202,7 @@ impl Session {
         self.doc = doc;
         self.head = head;
         self.restart_ground(ground);
+        self.restart_waves(set);
         self.restart_nav();
         self.log.clear();
         self.log_bytes = 0;
