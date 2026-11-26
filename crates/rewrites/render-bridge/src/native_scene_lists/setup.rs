@@ -210,27 +210,6 @@ pub(super) fn residency_request(m: &dyn GuestMemory, resource: u32, request: boo
     }
 }
 
-/// The cut's answer for a call the setup cannot build: the "not drawn"
-/// exit ([`outside_gather_lens`]'s), so the object has no render records
-/// and nothing of it draws, in any layer. Its flag bit 0 is set, AL is 0,
-/// ECX and EDX hold the flag's address and the column. `Err` when the
-/// call's list does not read either (nothing to mark).
-pub(super) fn not_drawn(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
-    let list = List::read(m, ptr(m, at(cpu.esi, 0x14)?)?)?;
-    let index = u32::from(stack(m, cpu, 4)? as u16);
-    if index as usize >= list.count {
-        return Err(Refusal::Layout);
-    }
-    let column = list.column(m, 8)?;
-    let mut staged = Staged::new(m);
-    let address = mark_no_draw(&mut staged, column, index)?;
-    let mut out = staged.finish();
-    out.ecx = Some(address);
-    out.edx = Some(column);
-    out.al = Some(0);
-    Ok(out)
-}
-
 fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)> {
     let [px, py, pz] = m.vec3(at(body, 0x30)?)?;
     let radius = m.f32(at(body, 0x3c)?)?;
@@ -1136,6 +1115,50 @@ mod setup_tests {
             mem.u32(RENDER_RECORDS + RENDER_RECORD_SIZE).unwrap() & 0xc06,
             4
         );
+    }
+
+    /// A call the setup cannot build is the guest's, never the "not drawn"
+    /// exit: the first person's arms whose light sample is due (the guest
+    /// samples it, and the weapon copies it), and a model in a menu's view
+    /// (Choose Profile's Spartan). Taking the exit for them lost the arms,
+    /// left the weapon black on a light never sampled, and lost the
+    /// Spartan.
+    #[test]
+    fn a_setup_the_build_refuses_runs_the_guest_body_and_is_not_dropped() {
+        let (mut mem, mut cpu) = fixture();
+        let first = sections::FIRST_PERSON_MODELS;
+        let pose = mem.bytes(ROOT + 0x200, 0x34).unwrap();
+        mem.put_u32(sections::FIRST_PERSON_OWNER, ROOT_HANDLE)
+            .put_u16(sections::FIRST_PERSON_COUNT, 1)
+            .put_u32(first, 0x4141_0003)
+            .put_u32(first + 4, ROOT_HANDLE)
+            .put_u32(first + 8, 1)
+            .put(first + 0xc, &pose)
+            .put_u32(0x004b_9ed8, NONE)
+            .put_u16(0x17510 + 4, 1)
+            // The arms' owner is the root and takes its own sample, which
+            // it has never taken (not the default lighting, no BSP light).
+            .put_u32(ROOT + 4, 1 << 19)
+            .put_u16(ROOT + 0xd0, u16::MAX)
+            .put_u32(CACHE_ENTRIES + 8, NONE);
+        // The sample period's pixel thresholds.
+        mem.map(0x0044_5000, 0x1000).map(0x0045_e000, 0x1000);
+        let flags = mem.u16(FLAGS).unwrap();
+        let built = setup(&mem, &cpu, LodDetail::Highest).map(|o| o.al);
+        assert!(matches!(built, Err(Refusal::Lighting)), "{built:?}");
+        let (_, call) = super::super::setup_call(&mem, &cpu, LodDetail::Highest);
+        assert!(matches!(call, Err(Refusal::Lighting)), "the guest samples the light and builds the records");
+
+        // A menu's model view is not one the build takes.
+        let ui_view = 0x0004_2000;
+        mem.map(ui_view, 0x3000)
+            .put_u32(ui_view + 0x14, LIST)
+            .put_u32(ui_view + VIEW_KIND, 3)
+            .put_u32(sections::FIRST_PERSON_OWNER, NONE);
+        cpu.esi = ui_view;
+        let (_, call) = super::super::setup_call(&mem, &cpu, LodDetail::Retail);
+        assert!(matches!(call, Err(Refusal::Unsupported)), "the guest builds the menu's model");
+        assert_eq!(mem.u16(FLAGS).unwrap(), flags, "no row is marked not drawn");
     }
 
     #[test]

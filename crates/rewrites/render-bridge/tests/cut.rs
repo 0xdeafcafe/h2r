@@ -238,7 +238,10 @@ fn object_setup_makes_the_guests_residency_requests() {
     mem.put_u32(resource + 0x20, u32::MAX);
     assert_eq!(residency_request(&mem, resource, true), ResidencyRequest::NeedsGuestService);
 
-    // The object setup is cut by its own producer, and the table says so.
-    assert!(CUTS.iter().any(|c| c.name == "object_setup" && c.entry == 0x0013_3790 && c.pop == 20));
+    // The object setup is not cut: a call its build refuses (a light
+    // sample due, a menu's model view, a locked pose) runs the guest body.
+    assert!(CUTS.iter().all(|c| c.name != "object_setup"));
+    let row = residual_census::row("object_setup").expect("a registry row");
+    assert_eq!(REGISTRY[row].status, Status::Partial);
     assert!(cut::OWN_PRODUCER.iter().all(|n| CUTS.iter().any(|c| c.name == *n)));
 }
