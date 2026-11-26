@@ -13,6 +13,7 @@ evidence. No disassembly listings or game data.
 | [memory_pool.md](memory_pool.md) | `0x18e1f0–0x18e700` | contract notes only |
 | [sim-rewrite.md](sim-rewrite.md) | animation, collision, objects, Havok, campaign subsystems | plan: Rust subsystem rewrites with guest-layout state |
 | [sim-rewrite-havok.md](sim-rewrite-havok.md) | the Havok step `0x311100` and everything under it | design: phase 4 of the plan, bit-exact structural port |
+| [havok-step.md](havok-step.md) | the Havok step's entries, outside callers, persistent writes, class censuses, float mix, save and revert, `havok.digest` | contracts; the digest built |
 | [sim-rewrite-collision.md](sim-rewrite-collision.md) | BSP and MOPP queries, collision query, cluster flood, object visit | design: phase 2 collision world, entries, data layouts, slices |
 | [collision-queries.md](collision-queries.md) | BSP point to leaf `0x14a280`, location `0x11bed0`, vector test `0x1de630`, `0x1de6d0` | Rust (`sim-collision`) + adapters behind `impl.sim.native.collision`, default off |
 | [sim-rewrite-objects.md](sim-rewrite-objects.md) | object walks `0xb6f10`, `0xb7060`, `0xb7150`, per-object update `0xbc470`, `0xbc820`, type update trees, lights `0xc1400` | design: phase 3 of the sim rewrite |

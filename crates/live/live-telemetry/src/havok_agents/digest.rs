@@ -1,4 +1,5 @@
-//! Ordered verification walk over the live Havok heap (sim-rewrite-havok.md §9.2).
+//! Ordered verification walk over the live Havok heap (sim-rewrite-havok.md §9.2;
+//! what it covers and leaves out: docs/engine/havok-step.md, "The digest").
 //! Hash little-endian guest bytes, including pointers, without converting floats.
 //! Scratch buffers, unused array capacity and freed payloads are outside the walk.
 
@@ -16,6 +17,12 @@ const FREE: u32 = 0xf0388;
 const CLASSES: u32 = 17;
 const CLASS_SIZE: u32 = 0x68;
 const MAX_WORK_BYTES: u32 = 16 << 20;
+// The phantom add 0x30e4b0 appends to the world's phantom array and gives
+// the phantom the id at +0x20 from the counter at world +0x130
+// (docs/engine/havok-step.md, "Censuses").
+const WORLD_PHANTOMS: u32 = 0x120;
+const WORLD_OBJECT_COUNTER: u32 = 0x130;
+const PHANTOM_HEADER: u32 = 0x24;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Digest {
@@ -185,6 +192,11 @@ pub fn read(m: &dyn GuestMemory) -> Result<Digest, MemFault> {
     if fixed != 0 {
         walk.island(fixed)?;
     }
+    let (ptr, n) = walk.list(world + WORLD_PHANTOMS, 4096, 4)?;
+    for i in 0..n {
+        walk.range(m.u32(ptr + 4 * i)?, PHANTOM_HEADER)?;
+    }
+    walk.range(world + WORLD_OBJECT_COUNTER, 4)?;
     walk.range(POOL, 4)?;
     let pool = m.u32(POOL)?;
     if pool != 0 {
@@ -301,6 +313,28 @@ mod tests {
         let e = read(&nudged).unwrap();
         assert_ne!(e.hash, d.hash);
         assert_eq!((e.bodies, e.constraints), (3, 2));
+    }
+
+    #[test]
+    fn phantoms_and_the_world_object_counter_are_in_the_walk() {
+        const PHANTOM: u32 = 0x13_8000;
+        const PHANTOM_LIST: u32 = 0x13_9000;
+        let d = read(&world()).unwrap();
+        let mut g = world();
+        array(&mut g, WORLD + WORLD_PHANTOMS, PHANTOM_LIST, 1);
+        g.set_u32(PHANTOM_LIST, PHANTOM).unwrap();
+        let with = read(&g).unwrap();
+        assert_ne!(with.hash, d.hash);
+        // Phantoms are not bodies, constraints or pairs.
+        assert_eq!(
+            (with.bodies, with.constraints, with.pairs),
+            (d.bodies, d.constraints, d.pairs)
+        );
+        g.set_u32(PHANTOM + 0x20, 7).unwrap();
+        assert_ne!(read(&g).unwrap().hash, with.hash);
+        let mut counted = world();
+        counted.set_u32(WORLD + WORLD_OBJECT_COUNTER, 1).unwrap();
+        assert_ne!(read(&counted).unwrap().hash, d.hash);
     }
 
     #[test]

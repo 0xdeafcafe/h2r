@@ -360,7 +360,7 @@ crates/rewrites/engine/src/sim_physics/   the adapters and the oracle ports
   parity.rs                     the arms' counters and the broadphase take-over gate
   (planned)                     boundary.rs, callbacks.rs, spec.rs
 crates/rewrites/engine/tests/sim_havok_differential.rs (planned)
-docs/engine/havok-step.md       the contract page (engine README format; planned)
+docs/engine/havok-step.md       the contract page (engine README format)
 ```
 
 Edited: `crates/hooking/guest-layout/src/points.rs`, `crates/rewrites/sim-bridge/src/sim_native.rs`,
@@ -829,8 +829,8 @@ checks beyond a clean §9.3.
 
 | # | Slice | Contents | Samples in scope | Exit |
 |---|---|---|---:|---|
-| 0 | Contract and digest | `havok-step.md`: the step tree of §2 with every persistent write; the censuses (motion, constraint, agent, shape, action, listener and phantom vtables; float instruction mix under `0x00311100` by `h2 fpstats --root`, `rcpps`/`rsqrtps` in particular; callers of each planned entry from outside the step); the revert question of §3.1. `digest.rs`, `layout.rs`, `view.rs`, `havok.digest`, the sim report component | 0 | A/A runs give equal `havok` components; the digest differs when one body is nudged |
-| 1 | Foundations | `fp.rs` with both implementations and its unit tests against `simd` and `x87`; `mem.rs`, `array.rs`, the four allocator entries; `fixture.rs` | 88 | allocator entries differential-clean; run parity |
+| 0 | Contract and digest | `havok-step.md`: the step tree of §2 with every persistent write; the censuses (motion, constraint, agent, shape, action, listener and phantom vtables; float instruction mix under `0x00311100` by `h2 fpstats --root`, `rcpps`/`rsqrtps` in particular; callers of each planned entry from outside the step); the revert question of §3.1. The digest (`live-telemetry`'s `havok_agents::digest`), `havok.digest`, the sim report component | 0 | A/A runs give equal `havok` components; the digest differs when one body is nudged |
+| 1 | Foundations | `fp.rs` with both implementations and its unit tests against `simd` and `x87`; `layout.rs`, `view.rs`, `mem.rs`, `array.rs`, the four allocator entries; `fixture.rs` | 88 | allocator entries differential-clean; run parity |
 | 2 | Island solve | `motion.rs` (accumulator build, integrate from accumulator), `jacobian.rs` for the contact constraint and each class the census found in multiplayer, `solver.rs`, entry `0x0031c100` | 852 + part of 1,277 | run parity; island fallback counter zero on the three benchmark runs; ≥ 0.15 ms |
 | 3 | Integrate phase | `0x00316a20`, `0x00316b30`, `0x0030fef0`; the no-constraint path (`vt[+0x08]`, `vt[+0x04]`); action census and awaited calls; runs and lanes across islands; worker solves | rest of 1,277 | as 2; lanes on and off equal; ≥ 0.25 ms cumulative |
 | 4 | Structure geometry | `structure.rs`: polygons per surface with the builder's exact output, MOPP through phase 2's decode; the container's child-shape virtuals | 861 + 535 | disc sweep (`#[ignore]`): every surface of every map equals the lifted builder; ≥ 0.45 ms cumulative |
@@ -855,22 +855,23 @@ cargo test -p agent havok
 
 ## 12. Risks and what is not resolved
 
-- **Revert and Havok (Open).** The heap is outside the arena (§3.1), and
-  the only world teardown found is the memory-pressure path. What the
-  revert and restore paths do to bodies, and whether the component array
-  (`0x001cec30`, from the allocator object at `[0x00468758]`) is in the
-  arena, were not traced. Slice 0 must settle it. If retail leaves stale
-  Havok state after a revert, that is retail behaviour and stays as it is.
-- **Coverage of classes (Open).** Which constraint classes besides the
-  contact constraint, which actions and which listeners exist in
-  multiplayer and campaign is a census, not yet done. The profile shows
-  only the contact builder (`0x0031f620`) hot. Vehicles and ragdolls will
-  add classes; until each is ported its islands fall back, exactly.
+- **Revert and Havok.** Settled in [havok-step.md](havok-step.md), "Save,
+  revert and rebuild": a save and a revert take every object's physics
+  out of the world and step it once, and rebuild the bodies from the
+  arena afterwards; the heap and the component array (its own virtual
+  allocation) are never copied. The meaning of the flag bits is **S**.
+- **Coverage of classes.** The static census is in
+  [havok-step.md](havok-step.md), "Censuses": six motion classes (types 2
+  to 7), the contact constraint and six joint classes built by Halo, 39
+  agents, no actions. Which of them a match builds is a run question;
+  until a class is ported its islands fall back, exactly.
 - **Speculation hit rate (Open).** Whether Halo's contact callback changes
   body state during collide decides how often a speculated pair is
   recomputed. It cannot affect results.
-- **`rcpps` and `rsqrtps` (Open).** If the step uses them, `Fast` cannot,
-  and those operations cost a table model call each. Slice 0's census.
+- **`rsqrtss`.** The step has no `rcpps`, `rsqrtps` or `rcpss`, and 24
+  `rsqrtss` sites, the contact Jacobian builder among them
+  ([havok-step.md](havok-step.md), "Floats"). Each calls `simd::rsqrtss`,
+  the recompiled build's definition; `Fast` has no host shortcut there.
 - **The polygon builder's output (S).** That a structure child's polygon
   depends only on the surface, and that nothing retains a pointer to the
   temporary shape, is assumed from havok-runtime.md. Slice 4, step 0.
@@ -907,4 +908,4 @@ cargo test -p agent havok
 7. Free: layout, scratch, static decode, and any units that share no written data, including pairs, islands in a callback-free run (four per lane block by signature) and wavefront levels in an island.
 8. Work may leave its retail position only under speculate, validate inputs, commit in order; a callback that moves a body costs a recompute, never a wrong bit.
 9. The family is 9,085 of 84,358 samples (10.77%, about 2.0 ms of the tick with runtime tax); narrowphase against the level is half of it and the solver 1%; expect 1.2 to 1.5 ms back.
-10. Ten slices from contract and digest to the whole step; unresolved: how revert resyncs Havok, the class censuses, and whether the step uses `rcpps`/`rsqrtps`.
+10. Ten slices from contract and digest to the whole step; the contract page [havok-step.md](havok-step.md) holds the censuses, the float mix (`rsqrtss`, no packed estimates) and how a revert rebuilds the bodies.
