@@ -768,8 +768,12 @@ impl Blockout {
         let (mut row, mut col, mut last) = (0usize, 0usize, items[0].family);
         for (i, (item, piece)) in items.iter().zip(&pieces).enumerate() {
             if item.family != last {
-                // A family starts its own row.
-                (row, col, last) = (row + 1, 0, item.family);
+                // A family starts its own row, unless the last one just
+                // filled its row.
+                if col != 0 {
+                    (row, col) = (row + 1, 0);
+                }
+                last = item.family;
             }
             let (floor, radius) = reach(i);
             let cam = camera(view, piece.target(), radius)?;
