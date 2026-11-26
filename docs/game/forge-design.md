@@ -681,8 +681,8 @@ and the game. Sizes as under Features.
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the HUD kit (U3) | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
-| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven |
-| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**; the generator half is `bots::autonav::teleporter_flags` and `link_teleporters`, checked over a linked pair in `crates/tools/forge-build/tests/links.rs` |
+| **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven; the lobby still refuses Start Game with a remote member (`lobby_mode::REMOTE_REFUSAL`) until that run is proved ([notes/forge-probes.md](notes/forge-probes.md), "The synchronous Forge link in a real game") |
+| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, for the map's own flags and the flags a kit session adds (`link_tests`, `kit_tests`); the generator half is `bots::autonav::teleporter_flags` and `link_teleporters`, checked over a linked pair in `crates/tools/forge-build/tests/links.rs` |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
 | **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**: the Nav tool draws the sectors and links in the game, and the bots take the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
@@ -929,7 +929,8 @@ links to final indices from the base counts.
 
 `forge-build` writes links after every placement edit. A teleporter
 link sets both flags' identifier (`+0x14`) to the channel and is refused
-by name when the sender is not type 7 or the receiver not type 8. Each
+by name when the sender is not type 7 or the receiver not type 8; an end may
+be a flag the document adds as well as one of the map's. Each
 group of linked machines becomes a new device group after the map's own
 (`scnr+0xa0`, stride `0x28`), and each member's position group (`+0x36`)
 names it. An unlinked entry keeps the bytes it would have had without the
@@ -939,20 +940,26 @@ pairs teleporters from those same bytes: type at `+0x10`, identifier at
 reader, public, and `link_teleporters` the linker; the fixture test reads
 a linked pair through them.
 
-In a local session the Links tool aims at the map's teleporter flags
-and at placed machines. A starts a link on the first and makes it on
+In a local session the Links tool aims at the map's teleporter flags,
+at the teleporter flags the session added and at placed machines. A
+starts a link on the first and makes it on
 the second; the delete action removes the aimed thing's latest link, and
 the Properties action opens the Link question with **Remove link**
 (the buttons: [forge-editing.md](forge-editing.md), "Controls"). A teleporter pair takes the
 channel either flag already has through a link, the sender's first, else
-the sender's own. The session writes each changed identifier into the
-loaded scenario through `ForgeStep::Channel`, after the batch's objects,
-and undo writes the previous one. Device links have no live write: the
+the sender's own, else the lowest no teleporter uses. The session writes
+each changed identifier of the map's own flags into the loaded scenario
+through `ForgeStep::Channel`, after the batch's objects, and undo writes
+the previous one. An added flag is a row of the kit: `scene::project` gives
+the marker the link's channel as its identifier, so the kit's `base_field`
+writes the row, an unlink or undo gives the add's own channel back, and a
+link that names an added flag of another type than its role is refused
+(`Session::check_added_roles`). A session with no kit cannot add flags;
+a document's added flags take their channel at the Rebuild, where
+`forge-build` writes the same identifier. Device links have no live write: the
 engine's device group setter is unproven, so they count as pending
 Rebuild edits in the HUD title and `forge.status`. Deleting a linked
-machine ends its links in the same undo step. The local session has no
-kit, so it cannot add teleporter flags; placing them is a Rebuild edit
-through the document's placement ops.
+machine or flag ends its links in the same undo step.
 
 ## Decisions
 

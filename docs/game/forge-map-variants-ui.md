@@ -107,7 +107,7 @@ nudge and nothing else.
 | Goal | Team | a picker of teams | `team` | M6 |
 | Goal | Order | a picker of numbers | the hill corner or the `identifier` | M6 |
 | Teleporter | Role | a picker: Sender, Receiver | the flag's `type` | M6 |
-| Teleporter | Channel | a picker of channels | a link ([forge-design.md](forge-design.md), "F6 in detail") | built for the map's own flags |
+| Teleporter | Channel | a picker of channels | a link ([forge-design.md](forge-design.md), "F6 in detail") | built, for the map's own flags and the session's |
 
 - **The header** is the thing's name: the tag's base name for an
   object and a spawner (`forge_map`'s palette names), and the role

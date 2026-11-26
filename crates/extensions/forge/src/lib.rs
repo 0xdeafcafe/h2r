@@ -22,7 +22,7 @@ pub use budget::{Binds, Budget, noun};
 pub use files::load_prefabs;
 pub use forge_doc::{BlockKind, Endpoint, OpId, TagKey, Value};
 pub use forge_doc::{GroundLabel, GroundRecipe, Label, MIN_GROUP_MEMBERS, Prefab};
-pub use links::{Linkable, Teleporter};
+pub use links::{AddedTeleporter, Linkable, Teleporter};
 pub use session::{
     CopyKind, Goal, GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState,
     GroupInfo, NavBuilder, NavLine, NavProblem, NavReport, NavState, Outgoing, PlacedMarker,

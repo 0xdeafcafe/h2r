@@ -224,6 +224,28 @@ pub(crate) fn project(
             }
         }
     }
+    // A link's channel is the identifier of the flags it joins, as the
+    // materialiser writes it. A link that does not resolve is the
+    // session's to report (`Session::channel_changes`).
+    if let Ok(links) = doc.links(&limits.base_counts) {
+        for active in &links.active {
+            if let forge_doc::Link::Teleporter {
+                sender,
+                receiver,
+                channel,
+            } = active.link
+            {
+                for end in [sender, receiver] {
+                    if let forge_doc::Endpoint::Added(id) = end
+                        && let Some(marker) = scene.markers.iter_mut().find(|m| m.id == id)
+                        && let Ok(channel) = i16::try_from(channel)
+                    {
+                        marker.identifier = channel;
+                    }
+                }
+            }
+        }
+    }
     let count = scene.objects.len();
     if count > budget {
         return Err(format!("Object budget exceeded ({count} / {budget})."));

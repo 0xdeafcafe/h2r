@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use forge_doc::{
     ActiveLink, Area, Before, BlockKind, Edit, Endpoint, Entry, EntryOp, F32, FieldWrite, Forge,
-    ForgeDoc, Limits, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
+    ForgeDoc, Limits, Link, Links, LogHead, MarkerArea, Op, Placement, Proposal, Sha256, Value,
 };
 
 use crate::things::{self, Kept, Own, OwnMap};
 use crate::{
-    BaseRows, Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, Thing, ThingKind,
+    AddedTeleporter, BaseRows, Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, Thing, ThingKind,
     World, files, links, props, scene,
 };
 
@@ -239,6 +239,42 @@ impl Session {
             .collect()
     }
 
+    /// The teleporter flags this session added (kit rows), with the channel
+    /// the document gives each. A flag of another type is not listed.
+    pub fn added_teleporters(&self) -> Vec<AddedTeleporter> {
+        scene::project(&self.doc, &self.limits, &self.palette, self.budget)
+            .map(|scene| {
+                scene
+                    .markers
+                    .iter()
+                    .filter_map(|m| {
+                        Some(AddedTeleporter {
+                            id: m.id,
+                            position: m.frame.position,
+                            sender: flag_sender(m.kind)?,
+                            channel: m.identifier,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every teleporter flag the Links tool can join, with its channel now.
+    fn link_flags(&self) -> Vec<links::Flag> {
+        let own = self.teleporters().into_iter().map(|t| links::Flag {
+            thing: Linkable::Teleporter(t.index),
+            sender: t.sender,
+            channel: t.channel,
+        });
+        let added = self.added_teleporters().into_iter().map(|t| links::Flag {
+            thing: Linkable::Flag(t.id),
+            sender: t.sender,
+            channel: t.channel,
+        });
+        own.chain(added).collect()
+    }
+
     fn removed(&self, block: BlockKind, index: u32) -> bool {
         self.own.get(&(block, index)).is_some_and(|o| o.removed)
     }
@@ -280,7 +316,8 @@ impl Session {
         b: Linkable,
     ) -> Result<OpId, String> {
         let current = self.resolved(&self.doc)?;
-        let link = links::link(a, b, &self.teleporters, &self.objects, &current)?;
+        let flags = self.link_flags();
+        let link = links::link(a, b, &flags, &self.objects, &current)?;
         let ops = self.ops(vec![Edit::Forge(Forge::Link(link))])?;
         let id = ops[0].id;
         self.edit(world, tick, ops, None)?;
@@ -1020,6 +1057,7 @@ impl Session {
     fn channel_changes(&self, doc: &ForgeDoc) -> Result<Vec<(u32, i16, i16)>, String> {
         let next = self.resolved(doc)?;
         links::check_roles(&self.teleporters, &next)?;
+        self.check_added_roles(doc, &next)?;
         let old = links::effective(&self.teleporters, &self.resolved(&self.doc)?);
         let new = links::effective(&self.teleporters, &next);
         Ok(new
@@ -1029,6 +1067,39 @@ impl Session {
                 (was != channel).then_some((flag, channel, was))
             })
             .collect())
+    }
+
+    /// Refuse a link that names a flag this session added of the wrong
+    /// type: a sender is type 7, a receiver type 8.
+    fn check_added_roles(&self, doc: &ForgeDoc, links: &Links) -> Result<(), String> {
+        let ends = |link: &Link| match *link {
+            Link::Teleporter {
+                sender, receiver, ..
+            } => [(sender, true), (receiver, false)].map(Some),
+            Link::Device { .. } => [None, None],
+        };
+        let wants = links
+            .active
+            .iter()
+            .flat_map(|a| ends(&a.link))
+            .flatten()
+            .filter_map(|(end, sender)| match end {
+                Endpoint::Added(id) => Some((id, sender)),
+                Endpoint::Base { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if wants.is_empty() {
+            return Ok(());
+        }
+        let scene = scene::project(doc, &self.limits, &self.palette, self.budget)?;
+        for (id, sender) in wants {
+            let kind = scene.markers.iter().find(|m| m.id == id).map(|m| m.kind);
+            if kind.and_then(flag_sender) != Some(sender) {
+                let role = if sender { "sender" } else { "receiver" };
+                return Err(format!("A flag the session added is not a teleporter {role}."));
+            }
+        }
+        Ok(())
     }
 
     fn restore(&mut self, world: &mut impl World) -> Result<(), String> {
@@ -1130,6 +1201,16 @@ impl Session {
 }
 
 const NO_THING: &str = "Aim at a thing of the map.";
+
+/// Whether a netgame flag type is a teleporter sender (true) or receiver
+/// (false); none for any other type.
+fn flag_sender(kind: u16) -> Option<bool> {
+    match kind {
+        forge_doc::TELEPORTER_SENDER => Some(true),
+        forge_doc::TELEPORTER_RECEIVER => Some(false),
+        _ => None,
+    }
+}
 
 fn added_flag(marker: &scene::Marker) -> Thing {
     let float = |value| F32::new(value).expect("validated flag transform");

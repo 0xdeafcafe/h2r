@@ -505,6 +505,9 @@ impl Editor {
             "teleporters":self.session.teleporters().iter().map(|t| json!({
                 "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
             })).collect::<Vec<_>>(),
+            "added_teleporters":self.session.added_teleporters().iter().map(|t| json!({
+                "id":t.id, "sender":t.sender, "channel":t.channel, "position":t.position,
+            })).collect::<Vec<_>>(),
             "links":self.links_json(), "groups":self.groups_json(), "selection":self.tool.selection(),
             "labels":self.labels_json(), "prefabs":self.prefabs_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
@@ -850,6 +853,12 @@ impl Editor {
             .map(|t| Linkable::Teleporter(t.index))
             .chain(
                 self.session
+                    .added_teleporters()
+                    .iter()
+                    .map(|t| Linkable::Flag(t.id)),
+            )
+            .chain(
+                self.session
                     .objects()
                     .iter()
                     .map(|o| Linkable::Object(o.id)),
@@ -889,12 +898,33 @@ impl Editor {
                         format!("Teleporter {role} {index}, channel {}", t.channel)
                     },
                 ),
+            Linkable::Flag(id) => self
+                .session
+                .added_teleporters()
+                .iter()
+                .find(|t| t.id == id)
+                .map_or_else(
+                    || "Teleporter".to_string(),
+                    |t| {
+                        let role = if t.sender { "sender" } else { "receiver" };
+                        format!("Added teleporter {role}, channel {}", t.channel)
+                    },
+                ),
             Linkable::Object(id) => self
                 .session
                 .objects()
                 .iter()
                 .find(|o| o.id == id)
                 .map_or_else(|| "Machine".into(), |o| label(&o.item)),
+        }
+    }
+
+    /// The link end an add op names: an added teleporter flag or a machine.
+    fn added_linkable(&self, id: OpId) -> Linkable {
+        if self.session.added_teleporters().iter().any(|t| t.id == id) {
+            Linkable::Flag(id)
+        } else {
+            Linkable::Object(id)
         }
     }
 
@@ -906,7 +936,7 @@ impl Editor {
                 ..
             } => self.linkable(Linkable::Teleporter(index)),
             Endpoint::Base { index, .. } => format!("Machine {index}"),
-            Endpoint::Added(id) => self.linkable(Linkable::Object(id)),
+            Endpoint::Added(id) => self.linkable(self.added_linkable(id)),
         }
     }
 
@@ -996,6 +1026,12 @@ impl Editor {
                 .teleporters()
                 .iter()
                 .find(|t| t.index == index)
+                .map(|t| t.position),
+            Linkable::Flag(id) => self
+                .session
+                .added_teleporters()
+                .iter()
+                .find(|t| t.id == id)
                 .map(|t| t.position),
             Linkable::Object(id) => self
                 .session
@@ -1581,6 +1617,9 @@ impl Editor {
                         ..
                     },
             } => Linkable::Teleporter(index),
+            Command::Remove {
+                id: Endpoint::Added(id),
+            } => self.added_linkable(id),
             _ => return false,
         };
         !self.session.links_of(thing).is_empty()
@@ -2423,6 +2462,7 @@ fn qualified(path: &str) -> String {
 fn linkable_json(thing: Linkable) -> Value {
     match thing {
         Linkable::Teleporter(flag) => json!({"teleporter":flag}),
+        Linkable::Flag(id) => json!({"flag":id}),
         Linkable::Object(id) => json!({"object":id}),
     }
 }
