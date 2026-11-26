@@ -190,6 +190,10 @@ fn the_hash_detail_names_what_differs() {
         "2 arena page(s) differ, at offsets 0x1000 0x3000; extension records differ (film None, now Some(9))"
     );
     assert_eq!(a.differences(&a), "arena pages and extension records are the same");
+    assert_eq!(a.differing_pages(&b), vec![0x1000, 0x3000]);
+    assert!(a.differing_pages(&a).is_empty());
+    let short = HashDetail { ext: None, pages: vec![1, 7] };
+    assert_eq!(a.differing_pages(&short), vec![0x1000], "only the pages both have");
     assert!(HashDetail::from_bytes(&[0; 8]).is_err());
     assert!(HashDetail::from_bytes(&[0; 10]).is_err());
     assert!(HashDetail::from_bytes(&[2; 9]).is_err());

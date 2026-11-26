@@ -276,16 +276,21 @@ export only.
 1. `theater.watch` and the Theater menu's Watch plan the film
    (`Session::plan_watch`): the film has a game start, its stamp is this
    build's XBE and simulation contract ("Film compatibility", checked by
-   the caller), it was recorded with the feature switches this session
-   runs, and the options block names a scenario. One film is watched at a
-   time.
+   the caller), its simulation hook digest is this session's
+   (`film_play::Play::check_build`; a film of other hooks is refused as
+   "recorded by another build"), it was recorded with the feature switches
+   this session runs, and the options block names a scenario. One film is
+   watched at a time.
 2. The film's options are queued as the next game through the agent's
    guest calls (`agent::sim::calls::Call::QueueGame`, the path `game.load`
    takes), the recorded block with its session kind byte set to local (a
    campaign's, 0, stays 0). Once the calls have queued them the film is
    armed (`Session::arm_watch`): its simulation-scope settings are applied
    by value (`settings::Store::run_as`) and the viewer's running values are
-   kept.
+   kept, and the viewer leaves any lobby (`lobby_start::clear`): the film's
+   game starts from its options alone, and a lobby's Forge mode would move
+   a plain Slayer record onto the script index at the activation
+   (`rules::record::move_onto_script_index`).
 3. The game tears down, loads the map and activates it as it does for any
    game. At the activation the session moves from recording to playing at
    the game boundary (`Session::game_activated`): the recorder's state is
@@ -293,15 +298,19 @@ export only.
    left as it is when its player quits to the menu; no film is made of it.
    An activation of another game while the film is armed drops the film and
    puts the settings back.
-4. At the first update the player writes the two random words and compares
-   the arena hash with the film's start hash. Each update after is fed from
+4. At the first update the player writes the two random words, checks the
+   loaded map, variant, difficulty and skulls against the film's
+   (`metadata::verify_start`, over the maps the session plays from), and
+   compares the arena hash with the film's start hash. Each update after is fed from
    the film until the last record. The player then holds the last tick
    (`Session::holds_in_game`, answered as zero ticks at `GAME_UPDATE_TICKS`)
    with the bar showing the end.
 5. **End Film**, `theater.end`, or B at the end queues the main menu's
    options (`game.menu`'s calls). The film's game is gone when the main
    menu activates: the recorder's state returns, the viewer's settings are
-   put back and the film page opens (`Theater::reopen_film`). The next
+   put back and the film page opens (`Theater::reopen_film`) once the main
+   menu is the active game and one screen has been on top of it for 20
+   menu updates in a row (`theater_ui::link`). The next
    game is recorded from the tick the recording stopped at; none of the
    film's ticks are in any film file. A session that ends while a film
    plays drops the film and seals the recorder's own games.
@@ -312,7 +321,11 @@ export only.
    `theater.status`'s `watch_failure`. The start hash is made of the arena
    and the extension records' digest; the film's `HDET` section holds both
    by page, so the reason names the arena pages or the extension state
-   that differ. `H2_THEATER_ARENA_DUMP` writes the arena at both starts for a
+   that differ, and the data arrays of the arena that own those pages
+   (`lockstep::pools::page_owners`, from the arena's array headers). A
+   film of another build (its stamp's `build` is not this session's) says
+   so before the hash: the start state is the build's as well as the
+   options'. `H2_THEATER_ARENA_DUMP` writes the arena at both starts for a
    byte comparison.
 
 No process is started and nothing is booted to watch a film or to seek in

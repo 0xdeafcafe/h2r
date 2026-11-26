@@ -58,21 +58,49 @@ pub(super) struct Ready {
     local: bool,
     /// Menu updates a local page has waited for the menu to settle.
     waited: u32,
+    /// What a local page has seen of the menu at its last update.
+    menu: Menu,
+}
+
+/// The menu a local page waits on, as its last update saw it: the screen on
+/// top, and for how many updates in a row the main menu has been the game
+/// with that screen on top.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Menu {
+    top: Option<(u32, u32)>,
+    settled: u32,
+}
+
+impl Menu {
+    /// This update's look: `main_menu` says the main menu is the active
+    /// game, `top` is the screen on top (its id and address). The count
+    /// starts again whenever the screen on top changes, and is zero while
+    /// the main menu is not the game or no screen is up.
+    fn after(self, main_menu: bool, top: Option<(u32, u32)>) -> Menu {
+        let settled = match top {
+            Some(_) if main_menu && top == self.top => self.settled + 1,
+            Some(_) if main_menu => 1,
+            _ => 0,
+        };
+        Menu { top, settled }
+    }
 }
 
 /// A film page reopened after a film watched in the running game waits for
-/// the main menu: its screen is on top, and has been for this many updates.
-/// The page is opened over a menu that is still building its own screens
-/// otherwise, and the check that the page is on top fails. It gives up
-/// waiting after [`MENU_WAIT_UPDATES`].
+/// the main menu: the main menu is the active game and the same screen has
+/// been on top for this many updates in a row ([`Menu`]). The page is
+/// opened over a menu that is still building its own screens otherwise
+/// (after a film stopped at its start, the menu's load runs long past any
+/// fixed count of updates), and the check that the page is on top fails. It
+/// gives up waiting after [`MENU_WAIT_UPDATES`].
 const MENU_SETTLE_UPDATES: u32 = 20;
 const MENU_WAIT_UPDATES: u32 = 900;
 
-/// Whether a local page keeps waiting at this update: the menu has no
-/// screen on top yet, or has not had it for [`MENU_SETTLE_UPDATES`]; and the
+/// Whether a local page keeps waiting at this update: the menu has not had
+/// one screen on top for [`MENU_SETTLE_UPDATES`] updates in a row, and the
 /// wait has not run out.
-fn menu_not_settled(waited: u32, screen_on_top: bool) -> bool {
-    waited < MENU_WAIT_UPDATES && (!screen_on_top || waited < MENU_SETTLE_UPDATES)
+fn menu_not_settled(waited: u32, menu: Menu) -> bool {
+    waited < MENU_WAIT_UPDATES && menu.settled < MENU_SETTLE_UPDATES
 }
 
 pub(super) fn share_url(
@@ -276,6 +304,7 @@ impl Theater {
                                 reply,
                                 local: false,
                                 waited: 0,
+                                menu: Menu::default(),
                             });
                         } else if let Some(reply) = reply {
                             let _ = reply.send(Err("Theater selection changed".into()));
@@ -338,6 +367,7 @@ impl Theater {
             reply: None,
             local: true,
             waited: 0,
+            menu: Menu::default(),
         });
     }
 
@@ -491,8 +521,15 @@ impl Feature for Driver {
                                 l.signed_in.as_ref()?.signed_in_account(ready.controller)
                             });
                         if ready.local {
-                            let up = cx.read(|m| ui_watch::read(&ReadGm(m)).top.is_some());
-                            if menu_not_settled(ready.waited, up) {
+                            let last = ready.menu;
+                            let menu = cx.read(|m| {
+                                let m = ReadGm(m);
+                                let main_menu = crate::level_boot::active_mode(&m)
+                                    == Some(crate::level_boot::MODE_MAINMENU);
+                                let top = ui_watch::read(&m).top.map(|t| (t.id, t.screen));
+                                last.after(main_menu, top)
+                            });
+                            if menu_not_settled(ready.waited, menu) {
                                 // The update goes on first, with the page
                                 // not yet pending: the call below passes
                                 // through this very hook, which would take
@@ -505,7 +542,11 @@ impl Feature for Driver {
                                     let mut slot =
                                         theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
                                     if slot.is_none() {
-                                        *slot = Some(Ready { waited: ready.waited + 1, ..ready });
+                                        *slot = Some(Ready {
+                                            waited: ready.waited + 1,
+                                            menu,
+                                            ..ready
+                                        });
                                     }
                                 }
                                 return Ok(Ret::new(out.eax, 4));
@@ -561,11 +602,26 @@ mod tests {
 
     #[test]
     fn a_local_page_waits_for_a_settled_menu_and_not_for_ever() {
-        assert!(menu_not_settled(0, false) && menu_not_settled(0, true));
-        assert!(menu_not_settled(MENU_SETTLE_UPDATES - 1, true));
-        assert!(!menu_not_settled(MENU_SETTLE_UPDATES, true), "settled: open the page");
-        assert!(menu_not_settled(MENU_SETTLE_UPDATES, false), "no screen yet: wait on");
-        assert!(!menu_not_settled(MENU_WAIT_UPDATES, false), "give up and try");
+        let (loading, main) = (Some((7, 0x100)), Some((1, 0x200)));
+        // Updates of the main menu with one screen on top, from the first.
+        let steady = |n: u32, top| (0..n).fold(Menu::default(), |m, _| m.after(true, top));
+        assert!(menu_not_settled(0, Menu::default()));
+        assert!(menu_not_settled(0, steady(MENU_SETTLE_UPDATES - 1, main)));
+        assert!(!menu_not_settled(0, steady(MENU_SETTLE_UPDATES, main)), "settled: open the page");
+        // A film stopped at its start: the film's game holds its screen
+        // for longer than the settle count while the menu loads. Its
+        // updates count for nothing, and the menu's screen settles anew.
+        let film = (0..2 * MENU_SETTLE_UPDATES).fold(Menu::default(), |m, _| m.after(false, loading));
+        assert_eq!(film.settled, 0, "not the main menu");
+        assert!(menu_not_settled(2 * MENU_SETTLE_UPDATES, film));
+        let first = film.after(true, main);
+        assert_eq!(first.settled, 1);
+        assert!(menu_not_settled(2 * MENU_SETTLE_UPDATES + 1, first), "the menu's screen just came up");
+        // A screen pushed over the menu's own starts the count again.
+        let pushed = steady(MENU_SETTLE_UPDATES - 1, main).after(true, loading);
+        assert_eq!(pushed.settled, 1);
+        assert_eq!(pushed.after(true, None).settled, 0, "no screen up");
+        assert!(!menu_not_settled(MENU_WAIT_UPDATES, Menu::default()), "give up and try");
     }
 
     #[test]

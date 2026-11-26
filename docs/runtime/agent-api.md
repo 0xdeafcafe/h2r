@@ -5508,9 +5508,12 @@ film's game has activated. Only one film is watched at a time. The
 session's recording is parked while the film plays and resumes at the next
 game, so a film being watched is not recorded. The film's simulation-scope
 settings are applied when it is queued and the viewer's put back when it
-ends. The film holds its last tick when it ends; `theater.end` queues the
-main menu and the game returns to it. A co-op or networked session refuses
-`theater.watch`, as it refuses `game.load`.
+ends; the viewer leaves any lobby, so a lobby's mode (Forge) does not
+reach the film's game. A film recorded with other simulation hooks than
+the game runs is refused before anything is queued ("This film was
+recorded by another build."). The film holds its last tick when it ends;
+`theater.end` queues the main menu and the game returns to it. A co-op or
+networked session refuses `theater.watch`, as it refuses `game.load`.
 
 In any other CLI-hosted game, `theater.play` with a library ID starts an
 isolated playback process; subsequent transport requests through that
@@ -5538,7 +5541,7 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
 | `theater.start_point.capture` | `{"path":"/tmp/a.sp","key":"text","ids":"0a0b"}`; `ids` is optional hex, at most 64 bytes | on the game agent, at a tick boundary: writes the arena and the extension records as a tagged start point and returns `{path, tick, arena_hash, arena_bytes, ext_bytes, stored_bytes}`. Refused with no arena or no tick |
 | `theater.start_point.load` | `{"path":"/tmp/a.sp","key":"text","film_hash":"<16 hex>"}`; `film_hash` is optional | on the game agent: checks the tag, digest, size and hash before touching the game, writes the arena and records back, then returns `{tick, arena_hash, loaded_hash, matches, error?}`. `matches` is `StartPoint::check_loaded`; a file that loads but hashes differently reports `matches:false` and the game keeps the loaded state. A refused file changes nothing |
-| `theater.status` | `{}` | `{default_recording, recording, in_game, films, last_discard, notes, failure, watch_failure}` on any game or playback agent: whether the session records every game by default, the film file being written (`null` outside a game), whether a game is in play, the films sealed so far (film file paths, oldest first), why the last game went without a film, the outside changes the recording carried on through, and the failure that stopped it. `watch_failure` is why the last film watched in this game stopped before the viewer left it (a start or digest divergence): the film is left like `theater.end`, the game goes on |
+| `theater.status` | `{}` | `{default_recording, recording, in_game, films, last_discard, notes, failure, watch_failure}` on any game or playback agent: whether the session records every game by default, the film file being written (`null` outside a game), whether a game is in play, the films sealed so far (film file paths, oldest first), why the last game went without a film, the outside changes the recording carried on through, and the failure that stopped it. `watch_failure` is why the last film watched in this game stopped before the viewer left it (a start or digest divergence): the film is left like `theater.end`, the game goes on. A start that does not reproduce names the arena pages that differ and the data arrays that own them (`… 104 arena page(s) differ, at offsets 0x0 0x1000 …; in object ×40, players ×3`), and says first when the film was recorded by another build |
 | `theater.measurements` | `{}` | timings and page counts from the instrumented recorder or playback child |
 | `theater.verify` | `{"from":1,"to":900}`, both optional | plays the film from its game start in an isolated, unpaced player and returns `{ticks, digests_checked, first_divergence}` |
 | `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`. Both fields are optional | `{path, width, height, tick}` for a clean PNG |

@@ -119,16 +119,25 @@ impl HashDetail {
         })
     }
 
-    /// What differs from `now`: the extension digest, and the byte offsets
-    /// of the first few arena pages.
-    pub fn differences(&self, now: &HashDetail) -> String {
-        let pages: Vec<String> = self
-            .pages
+    /// The byte offsets of the arena pages that differ from `now`, in
+    /// order. Pages past the shorter of the two are not compared.
+    pub fn differing_pages(&self, now: &HashDetail) -> Vec<usize> {
+        self.pages
             .iter()
             .zip(&now.pages)
             .enumerate()
             .filter(|(_, (a, b))| a != b)
-            .map(|(i, _)| format!("{:#x}", i * DETAIL_PAGE))
+            .map(|(i, _)| i * DETAIL_PAGE)
+            .collect()
+    }
+
+    /// What differs from `now`: the extension digest, and the byte offsets
+    /// of the first few arena pages.
+    pub fn differences(&self, now: &HashDetail) -> String {
+        let pages: Vec<String> = self
+            .differing_pages(now)
+            .into_iter()
+            .map(|at| format!("{at:#x}"))
             .collect();
         let mut out = Vec::new();
         if self.pages.len() != now.pages.len() {

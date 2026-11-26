@@ -93,6 +93,12 @@ impl Capture {
         &self.descriptor
     }
 
+    /// The mounted maps the session was given (`Session::set_match_sources`):
+    /// a film watched in this session checks its map against them.
+    pub(super) fn vfs(&self) -> Option<Arc<Mutex<vfs::Vfs>>> {
+        self.vfs.clone()
+    }
+
     /// Forget the game just sealed (or left before its end) and describe
     /// the next one from its start. The match sources stay.
     pub(super) fn next_game(&mut self) {
