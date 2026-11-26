@@ -952,6 +952,15 @@ whose store marker is gone. Everything is converted again when:
 A map that failed is not tried again until one of those: a failure from
 a converter bug stays a failure until the converter changes.
 
+A failed job leaves no playable map. If an older converter had written
+that level, `run_jobs` (`h1_import::withdraw`) renames its store marker
+(`<stem>.converted`) to the `<stem>.converting` ownership record, so the
+level is no longer listed or booted and the next conversion still owns the
+stem, and the line says so: `halo1: [5/36] campaign b40: the map an older
+converter wrote is removed, so it is not offered`. A multiplayer map's other
+sandbox stays; a map with neither sandbox left is not in the multiplayer
+list. The stamp keeps the failure's reason.
+
 **Tests.** `cli` `h1_import::tests`: the job list (campaign in play
 order, then the multiplayer maps the disc has, both sandboxes, then each
 level's Halo 2-assets variant); each job's store marker; the stamp

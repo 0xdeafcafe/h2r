@@ -399,10 +399,13 @@ fn memory_bytes() -> Option<u64> {
 
 /// Runs `todo` on `workers` threads, taking jobs in order; a line each
 /// through `say` as each finishes; a failure (or a panic) in one is
-/// recorded and the rest go on. The stamp is saved after each. Returns
-/// each converted job's time too.
+/// recorded and the rest go on. The stamp is saved after each. A failed job
+/// leaves no playable map: the one an older converter wrote under `data` is
+/// withdrawn ([`withdraw`]) and the line says so. Returns each converted
+/// job's time too.
 pub fn run_jobs(
     todo: &[Job],
+    data: &Path,
     workers: usize,
     stamp: &mut Stamp,
     conv: &dyn Converter,
@@ -455,6 +458,17 @@ pub fn run_jobs(
                 Err(e) => {
                     sum.failed += 1;
                     say(format!("{n} {}: failed: {e:#}", job.label()));
+                    match withdraw(job, data) {
+                        Ok(true) => say(format!(
+                            "{n} {}: the map an older converter wrote is removed, so it is not offered",
+                            job.label()
+                        )),
+                        Ok(false) => {}
+                        Err(w) => say(format!(
+                            "{n} {}: could not remove the map an older converter wrote: {w:#}",
+                            job.label()
+                        )),
+                    }
                 }
             }
             stamp
@@ -466,6 +480,24 @@ pub fn run_jobs(
         }
     });
     (sum, times)
+}
+
+/// Takes a failed job's earlier map out of play: its store marker becomes
+/// the `.converting` ownership record `store_converted` writes first, so
+/// the level is no longer listed or booted (the game finds converted levels
+/// by their marker) and the next conversion still owns the stem. For a
+/// multiplayer map the other sandbox stays; a map with neither is not in
+/// the multiplayer list (`new_maps::stored_halo1` skips a variant with no
+/// verified level). Whether a marker was there.
+fn withdraw(job: &Job, data: &Path) -> Result<bool> {
+    let marker = job.output(data);
+    if !marker.is_file() {
+        return Ok(false);
+    }
+    let pending = marker.with_extension("converting");
+    std::fs::rename(&marker, &pending)
+        .with_context(|| format!("{} to {}", marker.display(), pending.display()))?;
+    Ok(true)
 }
 
 /// The timing report's file, in `<data>/campaigns/halo1/`.
@@ -996,6 +1028,7 @@ pub fn import(r: &Request, say: &mut dyn FnMut(String)) -> Result<Summary> {
     conv.expect(&order);
     let (mut sum, times) = run_jobs(
         &order,
+        r.data,
         workers,
         &mut stamp,
         &conv,
