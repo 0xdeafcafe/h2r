@@ -266,10 +266,13 @@ the cached pipelines with their own uniforms and sampled textures.
   reservation and the guest draws the water.
   The layer-6 counters (`scene_water_views`, `scene_water_drawn`,
   `scene_water_parts` and `native_water_walk_*`) count only layer 6 and its
-  composite, which Old Mombasa and Zanzibar use. They stay zero on a map
-  whose water is a sorted pool, such as the Delta Towers bay: the pool is
-  drawn by the sorted pool pass (above), counted under
-  `layer_plan_15_pool_*`, and counts under no layer-6 water stage.
+  composite, which Old Mombasa and Zanzibar use. They stay zero on Delta
+  Towers, which has no layer-6 edge materials: its `tower_pool` surfaces
+  are drawn by the sorted pool pass (above), counted under
+  `layer_plan_15_pool_*`, and its bay's open water is the BSP water
+  definition's ocean grid (`water_ocean`), which the teardown draws on
+  the D3D path. That grid is attached to the camera; its width in a wide
+  window is in [high-resolution.md](high-resolution.md#widescreen-projection).
   Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses
   its own model rows at the rigid program's dynamic uniform offset.
   Each pass must compile the rigid classification and the part must supply

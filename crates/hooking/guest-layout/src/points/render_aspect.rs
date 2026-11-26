@@ -10,6 +10,14 @@ pub const DOC: &str = "docs/graphics/high-resolution.md";
 // the continuation, so a site on 0x0002fd9e would never run.
 pub const VIEW_PROJECTION_TERMS: Point =
     Point::new("VIEW_PROJECTION_TERMS", 0x0002_fda3, Sig::Site, DOC);
+// The ocean's grid setup (0x0003ca90, called at 0x0003c401 by the water
+// teardown 0x0003c3c0 for a BSP with water definitions) sizes the
+// camera-attached ocean grid from the raster rectangle's aspect, stored at
+// [esp+0x10] (times 1.5 at 0x0003cbea for an anamorphic lens). Both paths
+// meet here (`movss xmm0, [0x00485640]`, the target of the widescreen
+// test's jumps at 0x0003cbdf and 0x0003cbe8 and the multiply's fall
+// through), before 0x0003cc31 reads the aspect.
+pub const OCEAN_GRID_ASPECT: Point = Point::new("OCEAN_GRID_ASPECT", 0x0003_cbf8, Sig::Site, DOC);
 pub const ANCHOR: Point = Point::new("HUD_LAYOUT_ANCHOR", 0x0013_96c7, Sig::Site, DOC);
 pub const ANCHOR_READY: Point = Point::new("HUD_LAYOUT_ANCHOR_READY", 0x0013_9929, Sig::Site, DOC);
 // Fade over the whole per-player UI viewport inside the menu callback.
@@ -86,6 +94,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         ui_render::HUD_HIDDEN_RETURN.base,
         ui_render::LAYERS_RETURN.base,
         VIEW_PROJECTION_TERMS.base,
+        OCEAN_GRID_ASPECT.base,
         ANCHOR.base,
         ANCHOR_READY.base,
         MENU_FILL.base,

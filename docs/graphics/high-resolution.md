@@ -203,6 +203,26 @@ cluster's window frusta, at the sides, top and bottom alike (test
 `crates/rewrites/scene-extract/src/visibility/frusta.rs`).
 The observer supplies the vertical field of view.
 
+The ocean of a BSP with water definitions (Delta Towers' bay,
+`water_ocean`) is a grid attached to the camera, not world geometry.
+Its setup (`0x0003ca90`, called by the water teardown `0x0003c3c0`)
+scales the grid's sideways vector by `tan(min(fov / 2, 0.7807)) * aspect`
+with 13 % to spare, where `fov` is the horizontal field of view at
+`0x00485640` and `aspect` is the raster rectangle's (640x480, times 1.5
+for an anamorphic lens), and builds the grid's model rows (`c[50..52]`)
+and its visibility quad from it. The aspect is not the projection's, so
+a fitted view wider than about 2:1 would show past the grid: a hard
+edge on either side of the bay, with the scene under the water beyond
+it. At `OCEAN_GRID_ASPECT` (`0x0003cbf8`, where the setup's two paths
+meet after storing the aspect), a view the fit applied to divides the
+stored aspect by the projection's factor (`widen_ocean_grid` in
+`crates/extensions/game/src/render_aspect.rs`), so the grid spans the
+window with retail's margin at 4:3. A view the fit left retail keeps
+the retail grid. `render.scene` counts the setup's calls as
+`scene_guest_lens_ocean_widened` and `scene_guest_lens_ocean_retail`
+(tests `the_ocean_grid_reaches_the_sides_of_every_window`,
+`the_ocean_grid_keeps_retail_where_the_lens_is_not_wider`).
+
 Exact mode keeps the guest gather and visibility readbacks at the retail
 lens. The scene step walks the open portals with the stored gather frustum and
 a display copy whose tangent bounds widen around the same lens centre. It excludes geometry

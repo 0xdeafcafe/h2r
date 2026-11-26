@@ -208,6 +208,9 @@ static GUEST_LENS_GATHER_DECLINED: AtomicU64 = AtomicU64::new(0);
 /// ([`GuestFit`]), and the last caller it did not recognise.
 static GUEST_FIT: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static GUEST_FIT_LAST_CALLER: AtomicU64 = AtomicU64::new(0);
+/// Calls of the ocean's grid setup (`OCEAN_GRID_ASPECT`): the grid
+/// widened to a fitted view's lens, and left retail.
+static OCEAN_GRID: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static VISIBILITY_DECLINED: [AtomicU64; scene_extract::visibility::Decline::ALL.len()] =
     [const { AtomicU64::new(0) }; scene_extract::visibility::Decline::ALL.len()];
 /// `render.scene`'s counter of each decline, in `Decline::ALL`'s order.
@@ -338,6 +341,12 @@ pub fn count_guest_fit(fit: GuestFit) {
         GuestFit::Unchanged => 3,
     };
     GUEST_FIT[slot].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Counts one call of the ocean's grid setup
+/// (`scene_guest_lens_ocean_widened` and `_retail` in `render.scene`).
+pub fn count_ocean_grid(widened: bool) {
+    OCEAN_GRID[usize::from(!widened)].fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn set_visibility_lens(lens: VisibilityLens) {
@@ -1850,6 +1859,8 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_guest_lens_fit_other_caller", GUEST_FIT[2].load(Ordering::Relaxed)),
         ("scene_guest_lens_fit_unchanged", GUEST_FIT[3].load(Ordering::Relaxed)),
         ("scene_guest_lens_fit_last_caller", GUEST_FIT_LAST_CALLER.load(Ordering::Relaxed)),
+        ("scene_guest_lens_ocean_widened", OCEAN_GRID[0].load(Ordering::Relaxed)),
+        ("scene_guest_lens_ocean_retail", OCEAN_GRID[1].load(Ordering::Relaxed)),
     ]
     .into_iter()
     .chain(
