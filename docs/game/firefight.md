@@ -548,7 +548,7 @@ that id, and each machine loads its own build.
 | Sectors in each `sbsp` | `pathfind::generate`, then `pathfind::trim` to the sectors the AI can use ("Sectors the AI can use", below) | the generator the bots' mesh starts from, which has run on every retail multiplayer map (**Code**, `crates/live/bots/src/cache.rs`); the engine has not yet loaded its output (**S**) |
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
-| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time) | the same writers |
+| Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
@@ -567,7 +567,7 @@ The first command installs `<data>/maps/firefight-coagulation`. `--home
 red|blue` (`firefight_kit::Config { home }`, red by default) says which
 map team's base is the home base. `--probe` builds the `firefight-probe`
 recipe, which puts two Elites in one squad and adds a startup script
-that calls `ai_place` for it. The regular kit keeps its sixteen squads
+that calls `ai_place` for it. The regular kit keeps its sixteen slot squads
 empty. The [test-map API](test-maps.md) can also create and list the
 probe on a running host. There is no separate list of Firefight maps:
 the lobby offers every installed kit package, so building a map's kit
@@ -583,6 +583,21 @@ bring their entries into the base's `ugh!` gestalt, and a class with
 sounds is refused when the base or the donor has no gestalt. The
 package id follows the base, the kit version and the list in order, so
 two machines with the same donors and list build the same id.
+
+**The class record.** The kit writes, after the sixteen slots, one empty
+squad per palette row, named `ff_class_<name>` with the row as its
+character (`firefight_kit::ai::class_squads`): `ff_class_elite` for row 0,
+then each kept class in list order. A class the build cut has no row and
+no record. A name is a lowercase identifier of at most 22 characters, and
+one named twice is refused when the kit is built. The game reads the class
+table from these squads (`read_kit`, `KitLayout::classes`), so the director
+places each class on the row the kit built it on, whatever the list was. A
+squad naming a row outside the palette, a repeat of a name and an empty
+name record nothing, and a map with no record has no classes: the Elite is
+not assumed. Definitions are admitted against the record. A definition
+whose scoring table, which every wave squad's class must have an entry in,
+names a class the map lacks is refused with that class's name
+(`Refusal::UnknownClass`), so a wave never falls back to the Elite.
 
 `h2 firefight kit` builds the list from the player's own disc
 (`crates/apps/h2-tools/src/firefight_cmd.rs`). Each class is `--class
@@ -1047,7 +1062,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Lives and respawn | `PLAYER_OUT_OF_LIVES` (`0x15db30`), `PLAYER_RESPAWN_READY` (`0x15dd40`), `PLAYER_ENTITY_DIRTY` (`0xa7840`), `PLAYER_SPAWN` (`0x14f2e0`) | `engine_holds_respawns`, `respawn`; `Lives` writes nothing | traced; run R3 | No routine sets lives: the engine writes player `+0x1ac` itself. Round start sets it to the variant's lives setting (game globals `+0x1b8`, 0 meaning unlimited, `0x157d03`), and a death takes one on the authority (`0x15d01e`, gated by `GAME_ENGINE_AUTHORITATIVE`), then marks the player entity's bit `0x20` for clients (`0x15d03d`; a client applies it at `0x24e257`). The players update spawns a waiting player through `PLAYER_SPAWN` only when `PLAYER_RESPAWN_READY` says so (`0x14d430`), which refuses a player `PLAYER_OUT_OF_LIVES` reports: a positive lives setting, no unit and no lives left. So the hold is the variant's lives setting at 1, and `respawn` gives one life and marks bit `0x20`; the engine respawns the player when its respawn delay runs out and takes the life at the next death. The pool stays in the mode blob, so `Lives` changes nothing in the game. A team whose players are all out of lives leaves the playing-teams mask (`0x1925c6`); whether that ends the Slayer round before the director's `Finish` is part of R3 |
 | End the game | `GAME_END` (`0x1389c0`, no arguments, `ret`) | `end_game` | traced; run R4 | The routine latches game globals `+0x1128` once, sets the end delay at `+0x112c` from the tick rate and clears `+0x1129`; it checks nothing else. The engine's own round-over path ends a game in three steps (`0x15b5f9` to `0x15b624`): engine state `+0xc04` to 2, `GAME_END` unless latched, then the engine's changed flag (`+0`, bit `0x20`), skipping the first two while game globals `+0x0c` is 4. A client ends when the engine globals entity carries bit 4 (`0x24e52a`). `end_game` takes the same three steps and refuses in mode 4; whether a client ends with it is R4 |
 | Line of sight from a player to a point | `AI_LINE_OF_SIGHT` (`0x29dd50`) | `line_of_sight`, from the unit's origin | traced; the eye point is open | The routine takes the two points in ESI and EDI and two objects to ignore in EDX and ECX, and runs the collision query `0x1697c0` with flags `0x1808c2d`: structure, instanced geometry and objects, the set the actor code passes at `0x1c1ab1`, `0x1f970e` and `0x292747` ([sim-rewrite-collision.md](../engine/sim-rewrite-collision.md) 5.4 for the bits). It is true when nothing is hit, or the hit is within about a third of a world unit of the target (`0x29de01`). The engine's own sight cone, `0xcc2b0` behind `objects_can_see_flag` (113), tests only the angle from a marker of the viewer it looks up through `0xb8d30` (**S**: the head). `sees` should start from the same marker; that lookup is not traced, so the sight pass starts from the unit's origin and ignores the unit itself |
-| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; the palette's row count bounds the classes. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. Stage one maps its one class, `elite`, to palette row 0. The `firefight_kit_v1` string ID is not checked: the game has no reader for the loaded map's string IDs |
+| The kit on the loaded map | scenario blocks at `+0x160` squads, `+0x168` zones, `+0x178` character palette, `+0x240` orders | `read_kit`, `KitLayout::kit` | built | Squads named `ff_slot_00` to `ff_slot_15` give the slots and the team (`+0x24`); zones named `ff_drop_NN` give each zone's point, its first area's mean (`+0x24` of area 0), and its firing positions; squads named `ff_class_<name>` give each class's palette row (`+0x36`), kept only while the row is in the palette's row count. The offsets are the kit builder's (`h1campaign::ai::h2::layout`), and the engine reads them at the addresses cited above. The class names are the kit's, not a table in the game. The `firefight_kit_v1` string ID is not checked: the game has no reader for the loaded map's string IDs |
 
 #### What a run settles
 

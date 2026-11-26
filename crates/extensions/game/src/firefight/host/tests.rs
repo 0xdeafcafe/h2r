@@ -227,6 +227,83 @@ fn place_calls_the_squad_entry_with_class_and_count() {
     );
 }
 
+/// [`kit`] with more classes, each on its own palette row.
+fn mixed_kit() -> Kit {
+    Kit {
+        classes: [
+            ("elite".to_string(), ELITE),
+            ("grunt".to_string(), ELITE + 1),
+            ("brute".to_string(), ELITE + 2),
+        ]
+        .into(),
+        ..kit()
+    }
+}
+
+fn place_class(slot: u8, class: &str) -> Command {
+    Command::PlaceSquad {
+        slot,
+        class: class.into(),
+        count: 2,
+        zone: 0,
+        weapon_tier: 0,
+    }
+}
+
+#[test]
+fn each_class_the_kit_has_places_on_its_own_palette_row() {
+    let mut game = FakeGame::new();
+    game.kit = Some(mixed_kit());
+    let mut host = start(Role::Replica, &game);
+    feed(
+        &mut host,
+        [
+            (1, place_class(0, "brute")),
+            (1, place_class(1, "elite")),
+            (1, place_class(2, "grunt")),
+        ],
+    );
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    let rows: Vec<_> = game
+        .calls
+        .iter()
+        .map(|call| match call {
+            Call::Squad(SquadOp::Place(p)) => (p.slot, p.character),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(rows, [(0, ELITE + 2), (1, ELITE), (2, ELITE + 1)]);
+}
+
+#[test]
+fn a_wave_naming_a_class_the_map_lacks_is_refused_by_name() {
+    // Holdout's first wave, with its first squad a Grunt.
+    let mut def = holdout();
+    let elite_points = def.scoring.by_class["elite"];
+    def.scoring.by_class.insert("grunt".into(), elite_points);
+    def.rounds[0].waves[0].squads[0].class = "grunt".into();
+
+    let mut game = FakeGame::new();
+    assert_eq!(
+        Host::start(Role::Host, def.clone(), settings(), &game).err(),
+        Some(Refusal::Def(::firefight::Refusal::UnknownClass(
+            "grunt".into()
+        )))
+    );
+    // The same definition on a map whose kit built a Grunt starts, and
+    // a class the kit lacks stays refused when a wave names it.
+    game.kit = Some(mixed_kit());
+    assert!(Host::start(Role::Host, def.clone(), settings(), &game).is_ok());
+    def.scoring.by_class.insert("hunter".into(), elite_points);
+    def.rounds[0].waves[0].squads[0].class = "hunter".into();
+    assert_eq!(
+        Host::start(Role::Host, def, settings(), &game).err(),
+        Some(Refusal::Def(::firefight::Refusal::UnknownClass(
+            "hunter".into()
+        )))
+    );
+}
+
 #[test]
 fn a_placement_the_kit_cannot_make_is_an_error_and_no_call() {
     let mut game = FakeGame::new();

@@ -79,8 +79,15 @@ pub(crate) fn install(b: &mut Builder) {
         install_table(b, bodies, OBJECTS, |_| &[]);
         install_events(b);
         install_curve_arm(b);
+        // The arm's proof is the map's: a new map earns it again.
+        b.raw().observe_before(&points::CACHE_TAGS_LOAD, CURVE_ARM_RESET, |_| {
+            engine::sim_objects::functions::parity::reset()
+        });
     }
 }
+
+/// The map-load observer that clears the curve arm's proof.
+const CURVE_ARM_RESET: &str = "objects: reset the curve arm";
 
 /// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
 /// idiomatic kernel predicts every call, and
@@ -362,6 +369,9 @@ mod tests {
         assert!(implement.optional);
         assert!(chain.observe_before.is_empty() && chain.observe_after.is_empty());
         assert!(implement.continuation_sites().0.is_empty());
+        // The map load clears the arm's proof.
+        let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
+        assert!(load.observe_before.iter().any(|h| h.label == CURVE_ARM_RESET));
         // Off: nothing installs.
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();

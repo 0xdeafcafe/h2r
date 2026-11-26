@@ -64,7 +64,9 @@ fn two_builds_of_one_map_are_byte_equal() {
     );
     let ai = ScenarioAi::read_map(&mut map).unwrap();
     assert_eq!(ai.squads.len(), first.squads);
-    assert_eq!(ai.squads.len(), 16);
+    // Sixteen slots and the Elite's class record.
+    assert_eq!(ai.squads.len(), 17);
+    assert_eq!(ai.squads[16].name, "ff_class_elite");
     // The drop zones, then one zone per base.
     assert_eq!(ai.zones.len(), first.zones + 2);
     assert!((6..=12).contains(&first.zones));
@@ -231,7 +233,7 @@ fn a_live_index_tail_moves_only_the_group_table() {
     assert_eq!(map.groups().len(), 5);
     let ai = ScenarioAi::read_map(&mut map).unwrap();
     assert_eq!(ai.character_palette, [map.tag(ai::ELITE_PATH).unwrap().id]);
-    assert_eq!(ai.squads.len(), 16);
+    assert_eq!(ai.squads.len(), 17);
 }
 
 /// One build of the court with the `fit` steps and room to spare.

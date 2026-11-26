@@ -418,12 +418,18 @@ fn assemble(
         Some(c) => transplant::add(&mut set, c, keep)?,
         None => transplant::Added::default(),
     };
+    let named: Vec<(&str, TagId)> = added
+        .costs
+        .iter()
+        .map(|c| c.name.as_str())
+        .zip(added.ids.iter().copied())
+        .collect();
     let ai = ai::prepare(
         &mut map,
         nav.zones,
         nav.base_zones,
         elite,
-        &added.ids,
+        &named,
         mode == Mode::Probe,
     )
     .map_err(anyhow::Error::msg)?;

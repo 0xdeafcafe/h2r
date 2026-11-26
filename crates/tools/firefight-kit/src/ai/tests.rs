@@ -56,6 +56,12 @@ fn base(n: usize) -> Zone {
 /// Both modes start with a ported multiplayer fixture. Its unrelated script
 /// and the previously placed weapon keep their original indices.
 fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
+    kit_map_with(probe, &[])
+}
+
+/// [`kit_map`] with these classes after the Elite: each a `char` tag
+/// named after it.
+fn kit_map_with(probe: bool, classes: &[&str]) -> Map<Cursor<Vec<u8>>> {
     let mut set = TagSet::new(map::CacheType::Multiplayer, "arena", "invented\\arena");
     for group in [b"scnr", b"char", b"bipd", b"weap"] {
         set.add_group(FourCC(*group), None, None);
@@ -96,7 +102,26 @@ fn kit_map(probe: bool) -> Map<Cursor<Vec<u8>>> {
     let elite = set
         .add_tag(FourCC(*b"char"), ELITE_PATH, TagPayload::Empty)
         .unwrap();
-    let kit = prepare(&mut map, vec![zone()], vec![base(0), base(1)], elite, &[], probe).unwrap();
+    let tags: Vec<(&str, TagId)> = classes
+        .iter()
+        .map(|name| {
+            let path = format!(r"invented\{name}");
+            (
+                *name,
+                set.add_tag(FourCC(*b"char"), &path, TagPayload::Built(Block::zeroed(4)))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let kit = prepare(
+        &mut map,
+        vec![zone()],
+        vec![base(0), base(1)],
+        elite,
+        &tags,
+        probe,
+    )
+    .unwrap();
     let TagPayload::Built(root) = &mut set.tag_mut(scnr).unwrap().payload else {
         unreachable!()
     };
@@ -120,8 +145,13 @@ fn squad_blocks_read_back_through_h1campaign() {
     assert_eq!(ai.zones, [zone(), base(0), base(1)]);
     let elite = map.tag(ELITE_PATH).unwrap().id;
     assert_eq!(ai.character_palette, [elite]);
-    assert_eq!(ai.squads.len(), 16);
-    for (index, squad) in ai.squads.iter().enumerate() {
+    // Sixteen slots, then the class record: the Elite's row.
+    assert_eq!(ai.squads.len(), 17);
+    assert_eq!(
+        (ai.squads[16].name.as_str(), ai.squads[16].character),
+        ("ff_class_elite", 0)
+    );
+    for (index, squad) in ai.squads[..16].iter().enumerate() {
         assert_eq!(squad.name, format!("ff_slot_{index:02}"));
         assert_eq!((squad.normal_count, squad.insane_count), (0, 0));
         assert_eq!(squad.team, COVENANT_TEAM);
@@ -152,6 +182,39 @@ fn squad_blocks_read_back_through_h1campaign() {
     assert_eq!(sets[0][4..8], weapon.0.to_le_bytes());
     assert_eq!(view.block(sets[0], 8, 0x40).unwrap().len(), 1);
     assert_eq!(hs::Scenario::read(&mut map).unwrap().scripts().len(), 1);
+}
+
+#[test]
+fn each_palette_row_has_a_class_squad_naming_it() {
+    let mut map = kit_map_with(false, &["grunt", "hunter"]);
+    let ai = ScenarioAi::read_map(&mut map).unwrap();
+    assert_eq!(ai.character_palette.len(), 3);
+    let record: Vec<(&str, i16)> = ai
+        .squads
+        .iter()
+        .filter_map(|s| Some((s.name.strip_prefix(CLASS_PREFIX)?, s.character)))
+        .collect();
+    assert_eq!(record, [("elite", 0), ("grunt", 1), ("hunter", 2)]);
+    // Each row's tag is the class's own `char`.
+    assert_eq!(ai.character_palette[1], map.tag(r"invented\grunt").unwrap().id);
+    assert_eq!(ai.character_palette[2], map.tag(r"invented\hunter").unwrap().id);
+    // The record places no one.
+    assert!(
+        ai.squads
+            .iter()
+            .all(|s| s.normal_count == 0 && s.insane_count == 0)
+    );
+}
+
+#[test]
+fn a_class_name_the_record_cannot_hold_is_refused_by_name() {
+    let zones = [zone()];
+    for bad in ["Grunt", "", "has space", "a_name_that_is_far_too_long_to_fit"] {
+        let error = class_squads(&zones, 1, &["elite", bad]).unwrap_err();
+        assert!(error.contains(&format!("{bad:?}")), "{error}");
+    }
+    let error = class_squads(&zones, 1, &["elite", "grunt", "grunt"]).unwrap_err();
+    assert!(error.contains("grunt is named twice"), "{error}");
 }
 
 #[test]

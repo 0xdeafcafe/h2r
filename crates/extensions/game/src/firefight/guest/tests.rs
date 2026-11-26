@@ -64,19 +64,32 @@ fn pair(m: &mut FakeGuest, at: u32, count: u32, address: u32) {
 
 /// A scenario with one base squad and two kit slots; a zone of the base
 /// map, one drop zone of three firing positions and the two base zones
-/// (base 1's first); one palette row; and an order of the base map before
-/// the two hunt orders (base 1's first).
+/// (base 1's first); three palette rows, named by the kit's class squads
+/// (the Elite, a Grunt and a Hunter, and a squad naming a row the palette
+/// lacks); and an order of the base map before the two hunt orders (base
+/// 1's first).
 fn scenario() -> FakeGuest {
     let mut m = FakeGuest::new();
     m.map(SCNR, 0x300);
     m.put_u32(points::SCENARIO.base, SCNR);
-    pair(&mut m, SCNR + 0x160, 3, SQUADS);
-    m.map(SQUADS, 3 * 0x74);
-    for (i, name) in ["marines", "ff_slot_00", "ff_slot_01"]
-        .into_iter()
-        .enumerate()
+    pair(&mut m, SCNR + 0x160, 7, SQUADS);
+    m.map(SQUADS, 7 * 0x74);
+    for (i, name) in [
+        "marines",
+        "ff_slot_00",
+        "ff_slot_01",
+        "ff_class_elite",
+        "ff_class_grunt",
+        "ff_class_hunter",
+        "ff_class_ghost",
+    ]
+    .into_iter()
+    .enumerate()
     {
         named(&mut m, SQUADS + 0x74 * i as u32, name);
+    }
+    for (squad, row) in [(3u32, 0u16), (4, 1), (5, 2), (6, 9)] {
+        m.put_u16(SQUADS + 0x74 * squad + 0x36, row);
     }
     let slot0 = SQUADS + 0x74;
     m.put_u16(slot0 + 0x24, 3)
@@ -113,7 +126,7 @@ fn scenario() -> FakeGuest {
         m.put_f32(area + 0x24, x);
     }
 
-    pair(&mut m, SCNR + 0x178, 1, 0x2_6000);
+    pair(&mut m, SCNR + 0x178, 3, 0x2_6000);
     pair(&mut m, SCNR + 0x240, 3, ORDERS);
     m.map(ORDERS, 3 * 0x7c);
     named(&mut m, ORDERS, "ff_other");
@@ -186,16 +199,46 @@ fn the_kit_is_read_from_the_scenario_ai_blocks() {
             ],
         }]
     );
-    assert_eq!((kit.characters, kit.team), (1, 3));
+    assert_eq!((kit.characters, kit.team), (3, 3));
     assert_eq!(
         kit.kit(),
         Kit {
             zones: vec![[1.0, 2.0, 3.0]],
             bases: vec![[-90.0, 0.0, 0.0], [90.0, 0.0, 0.0]],
-            classes: [("elite".to_string(), 0)].into(),
+            classes: [
+                ("elite".to_string(), 0),
+                ("grunt".to_string(), 1),
+                ("hunter".to_string(), 2),
+            ]
+            .into(),
             team: 3,
         }
     );
+}
+
+#[test]
+fn each_class_the_kit_recorded_has_its_palette_row_and_no_other_does() {
+    // The record is the squads' names and characters, not a table here:
+    // another build of the kit with other classes maps other rows.
+    let mut m = scenario();
+    named(&mut m, SQUADS + 3 * 0x74, "ff_class_brute");
+    named(&mut m, SQUADS + 4 * 0x74, "ff_class_brute");
+    m.put_u16(SQUADS + 4 * 0x74 + 0x36, 2);
+    named(&mut m, SQUADS + 5 * 0x74, "ff_class_");
+    let kit = read_kit(&m).unwrap().unwrap();
+    // The first brute keeps its row; the repeat, the empty name and the
+    // squad naming a row past the palette (`ghost`) record nothing.
+    assert_eq!(kit.classes, [("brute".to_string(), 0)]);
+    assert_eq!(kit.kit().classes, [("brute".to_string(), 0)].into());
+
+    // A kit that recorded no classes provides none: the Elite is not
+    // assumed.
+    let mut m = scenario();
+    for squad in 3..7u32 {
+        named(&mut m, SQUADS + 0x74 * squad, "ff_extra");
+    }
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert!(kit.kit().classes.is_empty());
 }
 
 #[test]
@@ -274,7 +317,7 @@ fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
 
 #[test]
 fn a_placement_the_kit_cannot_hold_writes_and_calls_nothing() {
-    for p in [placement(2, 0, 0), placement(0, 0, 1), placement(0, 1, 0)] {
+    for p in [placement(2, 0, 0), placement(0, 0, 1), placement(0, 3, 0)] {
         let kit = layout();
         let (result, calls, m) = drive(
             scenario(),
