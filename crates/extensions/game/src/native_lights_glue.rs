@@ -428,7 +428,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// entries before the models load), a shader gel (its target-13 slot
     /// is pinned through a draw's plan) or a state the device cannot give
     /// refuses, issuing nothing.
-    fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>) -> Result<(), Keep> {
+    ///
+    /// `from_scene`: the light's layers are drawn once its pass is over,
+    /// from the scene alone ([`Host::draw_scene`], the cut light frame).
+    /// No guest passes ran for it, so its flags, frame and lists are the
+    /// scene's and guest memory is not compared with them.
+    fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>, from_scene: bool) -> Result<(), Keep> {
         if a.shader_gel.is_some() {
             return Err(Keep::Unsupported("a shader gel draws through its handler"));
         }
@@ -455,19 +460,27 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let prepared =
             self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false, None)?;
         use native_render::light_passes;
-        let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
-            .map_or(0, |i| light_passes::steps(&i).drawn());
-        if drawn & 1 << a.layer == 0 || prepared.draws.iter().any(|p| p.layer != layer) {
+        if prepared.draws.iter().any(|p| p.layer != layer) {
             return Err(Keep::Unsupported(
                 "active light layers changed during setup",
             ));
         }
-        if mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags)
-            || c.frame.iter().enumerate().any(|(i, word)| {
-                mem.u32(engine::light_constants::global::FRAME + 4 * i as u32)
-                    .ok()
-                    != Some(*word)
-            })
+        let drawn = || {
+            light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
+                .map_or(0, |i| light_passes::steps(&i).drawn())
+        };
+        if !from_scene && drawn() & 1 << a.layer == 0 {
+            return Err(Keep::Unsupported(
+                "active light layers changed during setup",
+            ));
+        }
+        if !from_scene
+            && (mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags)
+                || c.frame.iter().enumerate().any(|(i, word)| {
+                    mem.u32(engine::light_constants::global::FRAME + 4 * i as u32)
+                        .ok()
+                        != Some(*word)
+                }))
         {
             return Err(Keep::Unsupported(
                 "light globals differ from the prepared frame or flags",
@@ -924,7 +937,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_alone(&self, mem: &mut dyn GuestMemory, alone: Alone<'_>) -> bool {
-        let result = self.alone(mem, alone);
+        let result = self.alone(mem, alone, false);
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         for msg in t.count(result) {
@@ -952,6 +965,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                         view_target: draw.view_target,
                         group: &pass.group,
                     },
+                    true,
                 ),
                 Some(_) => Err(Keep::Unsupported("a shadow or stencil layer of a scene light")),
             };
