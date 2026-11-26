@@ -13,7 +13,7 @@ pub mod method {
 
     /// Per-pair cached collision state ([`super::AgentsParams`] → [`super::Agents`]).
     pub const AGENTS: &str = "havok.agents";
-    /// The ordered heap walk (`{}` → [`super::Digest`]): the whole Havok
+    /// The ordered heap walk ([`super::DigestParams`] → [`super::Digest`]): the whole Havok
     /// world's persistent state as one hash, for parity checks.
     pub const DIGEST: &str = "havok.digest";
     /// Overwrite one collision pair's word ([`super::PairSetParams`] →
@@ -195,8 +195,13 @@ pub struct Agents {
     pub agents: Vec<CollisionAgent>,
 }
 
+/// `havok.digest` takes no parameters; any field is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DigestParams {}
+
 /// `havok.digest`: the canonical walk over the live Havok heap
-/// (docs/engine/sim-rewrite-havok.md §9.2). The arena hash does not cover
+/// (docs/engine/havok-step.md, "The digest"). The arena hash does not cover
 /// the Havok heap, so this digest is what proves a physics rewrite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Digest {
@@ -265,4 +270,28 @@ pub struct ChildCache {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surface: Option<u16>,
     pub cache: AgentCache,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn digest_wire_round_trips_and_params_take_no_fields() {
+        let wire = json!({
+            "digest": "00000000deadbeef",
+            "bodies": 3,
+            "constraints": 2,
+            "pairs": 1,
+            "heap_used": 4096,
+        });
+        let d: Digest = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(d.digest, "00000000deadbeef");
+        assert_eq!((d.bodies, d.constraints, d.pairs, d.heap_used), (3, 2, 1, 4096));
+        assert_eq!(serde_json::to_value(&d).unwrap(), wire);
+        let p: DigestParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(serde_json::to_value(p).unwrap(), json!({}));
+        assert!(serde_json::from_value::<DigestParams>(json!({"strict": true})).is_err());
+    }
 }

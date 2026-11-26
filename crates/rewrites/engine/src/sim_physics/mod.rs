@@ -5,6 +5,7 @@
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
+mod alloc;
 mod colors;
 mod havok;
 mod solver_rows;
@@ -29,7 +30,7 @@ mod world;
 
 pub type Result<T> = std::result::Result<T, GuestFault>;
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld, World }
+enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld, World, Memory }
 
 pub struct Port {
     pub point: &'static Point,
@@ -87,6 +88,12 @@ pub const PHYSICS_PORTS: &[Port] = {
         port(&HAVOK_WORLD_STEP, "sim.native.physics", Controls::World, world::WORLD_SITES, world::step),
         port(&HAVOK_ISLAND_COLLIDE, "sim.native.physics", Controls::World, world::ISLAND_SITES, world::collide_island),
         port(&HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island),
+        // The memory system's virtuals: Halo's builders call them too
+        // (docs/engine/havok-step.md, "Allocator"). No guest call inside.
+        port(&HAVOK_ALLOC, "sim.native.physics", Controls::Memory, &[], alloc::run),
+        port(&HAVOK_FREE, "sim.native.physics", Controls::Memory, &[], alloc::run),
+        port(&HAVOK_LIFO_ALLOC, "sim.native.physics", Controls::Memory, &[], alloc::run),
+        port(&HAVOK_LIFO_FREE, "sim.native.physics", Controls::Memory, &[], alloc::run),
     ]
 };
 
@@ -202,6 +209,7 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
     let x87_masked = cpu.x87.control & 0x3f == 0x3f && cpu.x87.status & 0x80 == 0;
     match port.controls {
         Integer => true,
+        Memory => alloc::supported(port.point.base, cpu, guest),
         Sse => cpu.mxcsr & 0x1f80 == 0x1f80,
         Weld => x87_masked && weld::supported(guest),
         World => {

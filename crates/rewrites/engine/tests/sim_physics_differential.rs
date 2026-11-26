@@ -1109,3 +1109,197 @@ fn first_person_filter_body() {
     });
     all_sites(point, 40, &seen);
 }
+
+
+// ---- the memory system's four entries (docs/engine/havok-step.md, "Allocator") ----
+//
+// The heap is built the way `0x00146a20` builds it: a directory pool, the
+// class pool made by the lifted constructor `0x0022c3e0`, a borrowed
+// directory pool, and the dispatcher object the image already holds.
+// Sequences of the four entries run on the lifted original and on the port
+// from the same bytes; after every entry all memory (but the dead stack),
+// `eax` and the callee-saved registers must match. ecx, edx and the
+// arithmetic flags are scratch in retail and are not compared.
+
+const HEAP_DIR: u32 = 0x0020_0000;
+const HEAP_CLASSES: u32 = 0x0021_5040;
+const HEAP_BORROWED: u32 = 0x0040_0000;
+const HEAP_OWNER: u32 = 0x0050_0000;
+const ALLOCATOR_LEAVES: &[u32] = &[
+    0x22c300, 0x22c320, 0x22c0d0, 0x22c280, 0x22c330, 0x22c830, 0x22ca00, 0x1472c0, 0x147320, 0x2d6fc0,
+];
+
+fn directory_pool(m: &mut FlatMemory, at: u32) {
+    for (off, v) in [(0, 0x4576a4), (4, 1), (8, 0), (0xc, 0), (0x10, 0), (0x14, u32::MAX),
+                     (0x18, at + 0x30), (0x1c, 0x15000), (0x20, 0)] {
+        word(m, at + off, v);
+    }
+}
+
+fn heap(code: &mut lifted::Original, m: &mut FlatMemory, mode: u32) {
+    directory_pool(m, HEAP_DIR);
+    directory_pool(m, HEAP_BORROWED);
+    let mut cpu = Cpu {
+        gpr: [0, 0, 0, 0, STACK, 0, HEAP_CLASSES, 0],
+        eip: 0x22c3e0,
+        eflags: 0xa93,
+        ..Default::default()
+    };
+    word(m, STACK, EXIT);
+    let end = segment(code, &[0x2d6fc0], &mut cpu, m);
+    assert_eq!(end, TransferAbi::ret(EXIT));
+    for (a, v) in [(0x47_9890, mode), (0x47_9894, HEAP_DIR), (0x47_9898, HEAP_CLASSES),
+                   (0x47_989c, HEAP_BORROWED), (0x48_0118, 0x47_98b0)] {
+        word(m, a, v);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Entry { Alloc, Free, LifoAlloc, LifoFree }
+
+impl Entry {
+    fn point(self) -> &'static points::Point {
+        match self {
+            Entry::Alloc => &points::HAVOK_ALLOC,
+            Entry::Free => &points::HAVOK_FREE,
+            Entry::LifoAlloc => &points::HAVOK_LIFO_ALLOC,
+            Entry::LifoFree => &points::HAVOK_LIFO_FREE,
+        }
+    }
+}
+
+/// One sequence of `entries` calls drawn from `kinds`. Returns how many the
+/// port took and how many it declined (the guest overflow route).
+fn allocator_sequence(
+    image: &lifted::image::Image, ram: &FlatMemory, seed: u64, kinds: &[Entry], entries: u32,
+) -> (u32, u32) {
+    let mut code = original(image, &points::HAVOK_ALLOC, ALLOCATOR_LEAVES);
+    for e in [Entry::Free, Entry::LifoAlloc, Entry::LifoFree] {
+        code.prime(e.point().base);
+    }
+    code.prime(0x22c3e0);
+    let mut rng = lifted::image::Rng(0xa110_c000 + seed);
+    let mut mem = ram.clone();
+    heap(&mut code, &mut mem, 1 + (seed & 1) as u32);
+    let mut native = Guest::new();
+    native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+    native.write_bytes(0, &mem.bytes, 1).unwrap();
+    let start = native.mappings()[0].physical_start as usize;
+    let owners = [HEAP_OWNER, HEAP_DIR, HEAP_CLASSES];
+    let mut live: Vec<(u32, u32)> = Vec::new();
+    let mut stacks: [Vec<u32>; 3] = Default::default();
+    let (mut took, mut declined) = (0, 0);
+    for n in 0..entries {
+        let mut kind = kinds[rng.u32() as usize % kinds.len()];
+        if kind == Entry::Free && live.is_empty() && rng.u32() % 4 != 0 { kind = Entry::Alloc; }
+        let owner_index = rng.u32() as usize % 3;
+        if kind == Entry::LifoFree && stacks.iter().all(Vec::is_empty) { kind = Entry::LifoAlloc; }
+        let owner_index = if kind == Entry::LifoFree {
+            (0..3).map(|i| (owner_index + i) % 3).find(|i| !stacks[*i].is_empty()).unwrap()
+        } else { owner_index };
+        let (this, args): (u32, [u32; 3]) = match kind {
+            Entry::Alloc => {
+                let pool = [HEAP_DIR, HEAP_BORROWED][rng.u32() as usize % 2];
+                let size = if rng.u32() % 16 == 0 { 0x2000 + rng.u32() % 0x2000 } else { 1 + rng.u32() % 400 };
+                (pool, [size, 0x12, 0])
+            }
+            Entry::Free => {
+                let bogus = rng.u32() % 6 == 0 || live.is_empty();
+                let (pool, ptr) = if bogus { (HEAP_DIR, HEAP_DIR + 0x31) }
+                    else { live.remove(rng.u32() as usize % live.len()) };
+                (pool, [ptr, 0, 0x12])
+            }
+            Entry::LifoAlloc => {
+                let request = [0x10, 0x200, 0xff0, 0x1000, 0x1400, 0x2400][rng.u32() as usize % 6];
+                (owners[owner_index], [request, 0, 0])
+            }
+            Entry::LifoFree => {
+                let request = stacks[owner_index].pop().unwrap();
+                (owners[owner_index], [0xdead_0000 | n, request, 0])
+            }
+        };
+        let mut cpu = Cpu {
+            gpr: [0x1234_5678, this, 0xfe3420, 0x7b1c, STACK, 0xaabbcc, 0x5151, 0xe37],
+            eip: kind.point().base,
+            eflags: 0xa93,
+            ..Default::default()
+        };
+        word(&mut mem, STACK, EXIT);
+        native.set_u32(STACK, EXIT).unwrap();
+        for (i, a) in args.into_iter().enumerate() {
+            word(&mut mem, STACK + 4 + 4 * i as u32, a);
+            native.set_u32(STACK + 4 + 4 * i as u32, a).unwrap();
+        }
+        let port = engine::sim_physics::PHYSICS_PORTS.iter().find(|p| p.point.base == kind.point().base).unwrap();
+        let mut regs = abi_cpu(&cpu);
+        let why = format!("seed {seed} entry {n} {:#x} this {this:#x} args {args:x?}", kind.point().base);
+        if !engine::sim_physics::supported(port, &regs, &native) {
+            // The overflow route or an exhausted pool: the guest runs.
+            declined += 1;
+            break;
+        }
+        let actual = port.invoke(&mut regs, &mut native, kind.point().base).unwrap();
+        let expected = segment(&mut code, ALLOCATOR_LEAVES, &mut cpu, &mut mem);
+        assert_eq!(actual, expected, "{why}");
+        let after = abi_cpu(&cpu);
+        for (name, a, e) in [("ebx", regs.ebx, after.ebx), ("ebp", regs.ebp, after.ebp), ("esi", regs.esi, after.esi),
+                             ("edi", regs.edi, after.edi), ("esp", regs.esp, after.esp)] {
+            assert_eq!(a, e, "{name}: {why}");
+        }
+        if matches!(kind, Entry::Alloc | Entry::LifoAlloc) {
+            assert_eq!(regs.eax, after.eax, "eax: {why}");
+        }
+        // The dead stack below esp is not modelled.
+        for window in [STACK - 0x200..STACK] {
+            for a in window {
+                mem.bytes[a as usize] = 0;
+                native.set_u8(a, 0).unwrap();
+            }
+        }
+        let ram_now = &native.physical_ram()[start..start + RAM];
+        if mem.bytes != ram_now {
+            let first = mem.bytes.iter().zip(ram_now).position(|(a, b)| a != b).unwrap();
+            panic!("first different byte at {first:#x}: {why}");
+        }
+        match kind {
+            Entry::Alloc if after.eax != 0 => live.push((this, after.eax)),
+            Entry::LifoAlloc => {
+                // A null payload never happens: the port declines it.
+                stacks[owner_index].push(args[0]);
+            }
+            _ => {}
+        }
+        took += 1;
+    }
+    (took, declined)
+}
+
+fn allocator_sequences(kinds: &[Entry], sequences: u64, entries: u32) {
+    let Some((image, ram)) = image() else { return };
+    let (mut took, mut declined) = (0, 0);
+    for seed in 0..sequences {
+        let (t, d) = allocator_sequence(image, ram, seed, kinds, entries);
+        took += t;
+        declined += d;
+    }
+    assert!(took > 0, "the port never answered");
+    assert!(declined <= took / 4, "too many guest fallbacks: {declined} of {took}");
+}
+
+#[test]
+fn havok_alloc_entry() { allocator_sequences(&[Entry::Alloc, Entry::Free], 40, 24); }
+
+#[test]
+fn havok_free_entry() { allocator_sequences(&[Entry::Alloc, Entry::Alloc, Entry::Free], 40, 24); }
+
+#[test]
+fn havok_lifo_alloc_entry() { allocator_sequences(&[Entry::LifoAlloc], 40, 8); }
+
+#[test]
+fn havok_lifo_free_entry() { allocator_sequences(&[Entry::LifoAlloc, Entry::LifoFree], 40, 16); }
+
+/// All four entries, a thousand seeded sequences, directory and class modes.
+#[test]
+fn havok_allocator_sequences() {
+    allocator_sequences(&[Entry::Alloc, Entry::Free, Entry::LifoAlloc, Entry::LifoFree], 1000, 14);
+}

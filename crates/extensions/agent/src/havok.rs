@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use agent_proto::havok::{
-    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, Point, Shape, Side,
-    method,
+    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, DigestParams, Point,
+    Shape, Side, method,
 };
 use agent_proto::{Kind, Object, ObjectId, RpcError, code};
 use live_telemetry::havok::{self as hk, IslandState};
@@ -124,16 +124,20 @@ fn contacts_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
     )
 }
 
-fn digest_method(_v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
+fn digest_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
+    let DigestParams {} = params(v)?;
     let raw = read(ctx, hk_digest::read)?;
-    let answer = Digest {
+    Ok(serde_json::to_value(answer_digest(&raw)).expect("digest serialises"))
+}
+
+pub(crate) fn answer_digest(raw: &hk_digest::Digest) -> Digest {
+    Digest {
         digest: format!("{:016x}", raw.hash),
         bodies: raw.bodies,
         constraints: raw.constraints,
         pairs: raw.pairs,
         heap_used: raw.heap_used,
-    };
-    Ok(serde_json::to_value(answer).expect("digest serialises"))
+    }
 }
 
 fn wire_body(b: &hk::Body, ids: &HashMap<u32, String>) -> Body {
@@ -519,6 +523,23 @@ mod tests {
         assert_eq!(c.points[0].normal, [0.0, 0.0, 1.0]);
         assert_eq!(c.points[0].distance, -0.1);
         assert_eq!(c.points[0].impulse, 4.0);
+    }
+
+    #[test]
+    fn the_digest_answer_is_sixteen_hex_digits_and_the_walk_counts() {
+        let raw = hk_digest::Digest {
+            hash: 0xbeef,
+            bodies: 3,
+            constraints: 2,
+            pairs: 1,
+            heap_used: 0x40,
+        };
+        let d = answer_digest(&raw);
+        assert_eq!(d.digest, "000000000000beef");
+        assert_eq!((d.bodies, d.constraints, d.pairs, d.heap_used), (3, 2, 1, 0x40));
+        assert_eq!(params::<DigestParams>(Value::Null).unwrap(), DigestParams {});
+        let e = params::<DigestParams>(json!({"near": "player.0"})).unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
     }
 
     #[test]

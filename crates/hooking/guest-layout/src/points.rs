@@ -561,6 +561,13 @@ points! { ALL;
     HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
     HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
     HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The memory system's virtuals (vtable `0x004576a4`, docs/engine/havok-step.md,
+    /// "Allocator"): the directory pool's allocate and free, and the LIFO
+    /// push and pop on any pool's descriptor.
+    HAVOK_ALLOC @ 0x0022_c300: [fn(pool: ecx, size: stack 0, tag: stack 1) -> eax ret 8], Hot; "docs/engine/havok-step.md";
+    HAVOK_FREE @ 0x0022_c320: [fn(pool: ecx, block: stack 0, size: stack 1, tag: stack 2) ret 12], Hot; "docs/engine/havok-step.md";
+    HAVOK_LIFO_ALLOC @ 0x002d_7020: [fn(pool: ecx, request: stack 0) -> eax ret 4], Hot; "docs/engine/havok-step.md";
+    HAVOK_LIFO_FREE @ 0x002d_7090: [fn(pool: ecx, block: stack 0, request: stack 1) ret 8], Hot; "docs/engine/havok-step.md";
     /// The world broadphase's batch update, the sweep's virtual at slot
     /// `+0x14` of the broadphase behind `W+0xc4`.
     HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
