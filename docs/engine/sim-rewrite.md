@@ -767,8 +767,15 @@ it, and a `before` that returns skips the body. `existing_tick_hooks_still_fire`
 (`sim-bridge/src/tick.rs`) pins the order in the plan text.
 
 **The ledger.** `sim_bridge::tick::LEDGER` counts each guest call per phase
-(`engine::sim_tick::Ledger`). `sim.ledger`
-([the agent API](../runtime/agent-api.md)) reads it. The ratchet is
+(`engine::sim_tick::Ledger`) and times it: nanoseconds per phase as a
+running total and for the last tick, the tick body's, and the loop's (tick
+entry to the next entry, which holds the sound that runs outside the 29
+phases). The clock is `Instant`, read once after each phase and three times
+per tick; the phases' times are consecutive spans, so they sum to at most
+the tick's. `sim.ledger` ([the agent API](../runtime/agent-api.md)) reads
+it, `profile.counters` carries it as `sim_tick_phase_<n>_ns`, and the sim
+report's `tick_phases` block holds the per-match means. Wave benches read
+the phases there. The ratchet is
 `crates/rewrites/sim-bridge/tick-ledger.toml`: the number of guest phases per
 map kind, which only falls. `ledger_ratchet_does_not_grow` fails when the
 phase table owns more guest phases than the file allows, and a slice that

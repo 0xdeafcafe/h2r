@@ -10,7 +10,7 @@
 //! same point around the body. A `before` that returns skips the body as it
 //! skipped the original.
 //!
-//! [`LEDGER`] counts each guest phase the body calls. `sim.ledger` reads it
+//! [`LEDGER`] counts and times each guest phase the body calls. `sim.ledger` reads it
 //! and `tick-ledger.toml` is its ratchet.
 
 use std::sync::Mutex;
@@ -106,6 +106,13 @@ mod tests {
             assert_eq!(l.calls(i), u32::from(p.owner == Owner::Guest), "{}", p.name);
         }
         assert_eq!((l.ticks(), l.tick()), (1, 6));
+        // The phases' times are spans inside the tick: they sum to at most
+        // the tick's, in the total and in the last tick.
+        let sum: u64 = (0..PHASES.len()).map(|i| l.phase_ns(i)).sum();
+        let last: u64 = (0..PHASES.len()).map(|i| l.phase_last_ns(i)).sum();
+        assert!(sum <= l.tick_ns() && last <= l.tick_last_ns(), "{sum} {last} {}", l.tick_ns());
+        assert_eq!((sum, l.tick_ns()), (last, l.tick_last_ns()), "one tick: total is last");
+        assert_eq!(l.loops(), 0, "one entry has no span yet");
         assert_eq!(run.guest.u32(TIME + 8), Ok(6), "the tick count moved by one");
         // The record sits below the entry stack and the body's calls below it.
         let build = &run.calls[1];

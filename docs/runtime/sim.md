@@ -557,6 +557,12 @@ so a wrong pointer is left out, never counted. An array never read is
 absent. The reads are three pointers, five headers and 64 bytes a tick.
 A report has no `guest_census` before its first counted tick.
 
+The `tick_phases` block (`sim_bench::metrics::TickPhases`) is the tick
+driver's mean ms per tick over the match: `tick_ms_per_tick`,
+`loop_ms_per_tick` (tick entry to the next entry, sound included) and
+`phases`, the 29 phases in retail order as `{name, ms_per_tick}`
+(docs/engine/sim-rewrite.md, "The tick driver").
+
 With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
 for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
 RETURNs, STOPs and FAULTs that native generated handlers hand back to the

@@ -27,8 +27,15 @@ pub fn reply(ledger: &Ledger) -> LedgerReply {
                 }
                 .to_owned(),
                 calls: ledger.calls(i),
+                ns: ledger.phase_ns(i),
+                last_ns: ledger.phase_last_ns(i),
             })
             .collect(),
+        tick_ns: ledger.tick_ns(),
+        tick_last_ns: ledger.tick_last_ns(),
+        loop_ns: ledger.loop_ns(),
+        loop_last_ns: ledger.loop_last_ns(),
+        loops: ledger.loops(),
         guest_total: sim_tick::guest_phases() as u32,
     }
 }
@@ -50,11 +57,17 @@ mod tests {
         let mut l = Ledger::new();
         l.record(0);
         l.record(0);
-        l.finish_tick(7);
+        let mut ns = [0u64; 29];
+        ns[0] = 500;
+        ns[1] = 250;
+        l.finish_tick(7, &ns, 1_000);
         let r = reply(&l);
         assert_eq!((r.tick, r.ticks, r.phases.len()), (7, 1, 29));
         assert_eq!(r.phases[0].entry, "0x0014d3a0");
         assert_eq!((r.phases[0].owner.as_str(), r.phases[0].calls), ("guest", 2));
+        assert_eq!((r.phases[0].ns, r.phases[0].last_ns, r.phases[1].ns), (500, 500, 250));
+        assert_eq!((r.tick_ns, r.tick_last_ns, r.loops), (1_000, 1_000, 0));
+        assert!(r.phases.iter().map(|p| p.ns).sum::<u64>() <= r.tick_ns);
         assert_eq!(r.guest_total, sim_tick::guest_phases() as u32);
     }
 }

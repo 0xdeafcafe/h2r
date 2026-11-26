@@ -10,6 +10,7 @@
 //! `tests/sim_tick_differential.rs`.
 
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::entry::{Cx, EntryError, EntryResult, GuestCall, Ret};
 
@@ -104,12 +105,34 @@ pub const fn guest_phases() -> usize {
     n
 }
 
-/// Guest calls made per phase, and the ticks they were made in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Guest calls and time per phase, and the ticks they were made in.
+///
+/// Time is nanoseconds on the monotonic clock ([`Instant`]), kept as a
+/// running total and as the last tick's. The driver reads the clock once
+/// after each phase (the phase's time runs from the previous read), once
+/// when the phases start and once at each tick's entry and exit, and
+/// nothing else touches it: a ledger no one reads costs those reads.
+/// Phase times are consecutive spans inside the tick, so the last tick's
+/// phase times sum to at most [`Ledger::tick_last_ns`]. A tick that skips
+/// its phases (the run flag clear) leaves the last tick's phase times 0.
+///
+/// The loop time is the span from one tick's entry to the next's: the
+/// tick plus everything the game thread does between ticks, sound
+/// included, which runs outside the 29 phases. A pause, a menu or a
+/// stalled thread lengthens it, so read it over a window of play.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ledger {
     calls: [u32; PHASES.len()],
     ticks: u64,
     tick: u32,
+    phase_ns: [u64; PHASES.len()],
+    phase_last_ns: [u64; PHASES.len()],
+    tick_ns: u64,
+    tick_last_ns: u64,
+    loop_ns: u64,
+    loop_last_ns: u64,
+    loops: u64,
+    last_entry: Option<Instant>,
 }
 
 impl Default for Ledger {
@@ -120,17 +143,47 @@ impl Default for Ledger {
 
 impl Ledger {
     pub const fn new() -> Self {
-        Ledger { calls: [0; PHASES.len()], ticks: 0, tick: 0 }
+        Ledger {
+            calls: [0; PHASES.len()],
+            ticks: 0,
+            tick: 0,
+            phase_ns: [0; PHASES.len()],
+            phase_last_ns: [0; PHASES.len()],
+            tick_ns: 0,
+            tick_last_ns: 0,
+            loop_ns: 0,
+            loop_last_ns: 0,
+            loops: 0,
+            last_entry: None,
+        }
     }
     /// A guest call to phase `phase` (an index into [`PHASES`]).
     pub fn record(&mut self, phase: usize) {
         self.calls[phase] = self.calls[phase].saturating_add(1);
     }
+    /// A tick is entered at `now`: the span since the last entry is a loop.
+    pub fn begin_tick(&mut self, now: Instant) {
+        if let Some(prev) = self.last_entry {
+            let ns = ns_between(prev, now);
+            self.loop_last_ns = ns;
+            self.loop_ns = self.loop_ns.saturating_add(ns);
+            self.loops += 1;
+        }
+        self.last_entry = Some(now);
+    }
     /// A tick ended; `tick` is the game time's count after it (unchanged
-    /// when the record's run flag was clear at the close).
-    pub fn finish_tick(&mut self, tick: u32) {
+    /// when the record's run flag was clear at the close). `phase_ns` is
+    /// each phase's time this tick (0 for a phase not run) and `tick_ns`
+    /// the tick's, entry to exit.
+    pub fn finish_tick(&mut self, tick: u32, phase_ns: &[u64; PHASES.len()], tick_ns: u64) {
         self.ticks += 1;
         self.tick = tick;
+        self.phase_last_ns = *phase_ns;
+        self.tick_last_ns = tick_ns;
+        self.tick_ns = self.tick_ns.saturating_add(tick_ns);
+        for (total, ns) in self.phase_ns.iter_mut().zip(phase_ns) {
+            *total = total.saturating_add(*ns);
+        }
     }
     /// Guest calls to phase `phase` since the start.
     pub fn calls(&self, phase: usize) -> u32 {
@@ -148,6 +201,39 @@ impl Ledger {
     pub fn total_calls(&self) -> u64 {
         self.calls.iter().map(|&c| u64::from(c)).sum()
     }
+    /// Nanoseconds in phase `phase` over every tick.
+    pub fn phase_ns(&self, phase: usize) -> u64 {
+        self.phase_ns[phase]
+    }
+    /// Nanoseconds in phase `phase` in the last tick.
+    pub fn phase_last_ns(&self, phase: usize) -> u64 {
+        self.phase_last_ns[phase]
+    }
+    /// Nanoseconds in the tick body over every tick.
+    pub fn tick_ns(&self) -> u64 {
+        self.tick_ns
+    }
+    /// Nanoseconds in the last tick body.
+    pub fn tick_last_ns(&self) -> u64 {
+        self.tick_last_ns
+    }
+    /// Nanoseconds from tick entry to the next tick's entry, summed over
+    /// [`Ledger::loops`] spans.
+    pub fn loop_ns(&self) -> u64 {
+        self.loop_ns
+    }
+    /// The last such span.
+    pub fn loop_last_ns(&self) -> u64 {
+        self.loop_last_ns
+    }
+    /// Entry-to-entry spans measured (one fewer than the ticks entered).
+    pub fn loops(&self) -> u64 {
+        self.loops
+    }
+}
+
+fn ns_between(from: Instant, to: Instant) -> u64 {
+    u64::try_from(to.saturating_duration_since(from).as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// The CRT routine that sets the x87 control word.
@@ -183,6 +269,8 @@ pub const TIME_LENGTH: u32 = 4;
 /// The record is on the guest stack below the entry `ESP`, and every call
 /// reserves it.
 pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
+    let entered = Instant::now();
+    ledger.lock().unwrap_or_else(|e| e.into_inner()).begin_tick(entered);
     let record = cx.entry().esp.wrapping_sub(RECORD_SIZE);
     let call = |target: u32| GuestCall::new(target).reserve(RECORD_SIZE);
     cx.call(call(CONTROL_WORD_FN).args([CONTROL_WORD_NEW, CONTROL_WORD_MASK])).await?;
@@ -190,7 +278,11 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
     cx.call(call(RECORD_BEFORE).args([record])).await?;
     let flag_at = record.wrapping_add(RUN_FLAG);
     let runs = cx.read(|m| m.u8(flag_at))? != 0;
+    let mut phase_ns = [0u64; PHASES.len()];
     if runs {
+        // Each phase's time runs from the previous clock read to the one
+        // after its call.
+        let mut mark = Instant::now();
         for (i, phase) in PHASES.iter().enumerate() {
             match phase.owner {
                 Owner::Guest => {
@@ -201,6 +293,9 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
                         Form::EbxRecord => c.ebx(record),
                     };
                     cx.call(c).await?;
+                    let now = Instant::now();
+                    phase_ns[i] = ns_between(mark, now);
+                    mark = now;
                 }
                 Owner::Rust => {
                     return Err(EntryError::IsolatedCall(format!(
@@ -238,7 +333,8 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
         m.set_u32(at, next)?;
         Ok::<_, crate::memory::MemFault>(next)
     })?;
-    ledger.lock().unwrap_or_else(|e| e.into_inner()).finish_tick(tick);
+    let tick_ns = ns_between(entered, Instant::now());
+    ledger.lock().unwrap_or_else(|e| e.into_inner()).finish_tick(tick, &phase_ns, tick_ns);
     Ok(Ret::new(0, 0))
 }
 
@@ -260,7 +356,34 @@ mod tests {
         let mut l = Ledger::new();
         l.record(3);
         l.record(3);
-        l.finish_tick(9);
+        l.finish_tick(9, &[0; PHASES.len()], 0);
         assert_eq!((l.calls(3), l.calls(4), l.ticks(), l.tick(), l.total_calls()), (2, 0, 1, 9, 2));
+    }
+
+    #[test]
+    fn the_ledger_totals_phase_time_and_keeps_the_last_tick() {
+        let mut l = Ledger::new();
+        let mut a = [0u64; PHASES.len()];
+        a[2] = 30;
+        a[5] = 20;
+        let mut b = [0u64; PHASES.len()];
+        b[2] = 10;
+        l.finish_tick(1, &a, 60);
+        l.finish_tick(2, &b, 15);
+        assert_eq!((l.phase_ns(2), l.phase_ns(5), l.phase_last_ns(2), l.phase_last_ns(5)), (40, 20, 10, 0));
+        assert_eq!((l.tick_ns(), l.tick_last_ns()), (75, 15));
+        let sum: u64 = (0..PHASES.len()).map(|i| l.phase_ns(i)).sum();
+        assert!(sum <= l.tick_ns());
+    }
+
+    #[test]
+    fn the_loop_is_entry_to_entry() {
+        let mut l = Ledger::new();
+        let t = Instant::now();
+        l.begin_tick(t);
+        assert_eq!((l.loops(), l.loop_ns()), (0, 0), "the first entry starts the span");
+        l.begin_tick(t + std::time::Duration::from_millis(16));
+        l.begin_tick(t + std::time::Duration::from_millis(48));
+        assert_eq!((l.loops(), l.loop_last_ns(), l.loop_ns()), (2, 32_000_000, 48_000_000));
     }
 }
