@@ -1,18 +1,18 @@
 # Agent API: driving the running game without pixels
 
 Status: Built. Every method below is registered by the code; the ones no run has exercised are named under "Not verified".
-Code: `crates/extensions/agent-proto` (wire types, blocking client), `crates/extensions/agent` (server, tick-boundary executor, most methods), `crates/extensions/game/src/agent_glue.rs` (the methods the host answers), `crates/apps/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/extensions/agent/src/exec/tests.rs`, `crates/extensions/agent/src/sim/tests.rs`, `crates/extensions/agent/src/trace/tests.rs`, `crates/apps/boot/tests/feature_plan.rs`.
+Code: `crates/extensions/agent-proto` (wire types, blocking client), `crates/extensions/agent` (server, tick-boundary executor, most methods), `crates/extensions/game/src/agent_glue.rs` (host-answered methods), `crates/apps/cli/src/agent_cmd.rs` (`h2 agent`). Tests: `crates/extensions/agent/src/exec/tests.rs`, `crates/extensions/agent/src/sim/tests.rs`, `crates/extensions/agent/src/trace/tests.rs`, `crates/apps/boot/tests/feature_plan.rs`.
 Switch: `agent` feature (`H2_FEATURES=-agent` removes the tick hooks), `H2_AGENT` (the socket), listed in [switches.md](switches.md).
 
 An agent, a script or a test reads and drives a running Halo 2 through one
-JSON-RPC interface: what is in the level, where frame time goes, what the
-menus show, how to put the game in a state and act in it. It replaces
-screenshots, pasted logs and environment variables read at launch. The
-command-line client is `h2 agent`. The editor connects to the same endpoint.
+JSON-RPC interface: level contents, frame cost, menus, and putting the game
+in a state and acting in it. It replaces screenshots, pasted logs and
+launch-time environment variables. The client is `h2 agent`; the editor
+uses the same endpoint.
 
-Reads of game state run on the game's thread at a boundary. The `at`
-stamp identifies that moment. Independent host reads such as `host.memory`
-use their own sample clock and carry the game stamp at reply time.
+Reads of game state run on the game's thread at a boundary, and the `at`
+stamp names that moment. Host reads such as `host.memory` use their own
+sample clock and carry the game stamp at reply time.
 
 ## Method index
 
@@ -155,69 +155,53 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 
 - **The game that serves.** `h2 serve` is `h2 run` with the agent socket
   on, no window, optional GPU rendering and optional real-time pacing
-  (`H2_BOOT_REALTIME=1`); it is the shared instance agents use. `h2 play`
-  with `H2_AGENT` set serves the same API with a window, which is what
-  `h2 lab run --serve` and `h2 lab bench` launch. Frame cost measured on
-  `h2 serve` without a GPU view backend is not what a player sees. Agents
-  attach to a running game and never build one. `h2 serve --system-link
+  (`H2_BOOT_REALTIME=1`). `h2 play` with `H2_AGENT` set serves the same
+  API with a window (`h2 lab run --serve`, `h2 lab bench`). Agents attach
+  to a running game and never build one. `h2 serve --system-link
   --host-light` always paces to real time ([dedicated-host.md](../live/dedicated-host.md)).
-- **The socket.** `--socket PATH` selects the endpoint, followed by
-  `$H2_AGENT`, then `agent.sock` in the user's cache directory
-  (`agent_proto::default_socket`; the directory per host is in
-  [storage.md](storage.md#host-directories)).
-  Local clients use an AF_UNIX stream on Unix and on Windows 10 version 1803
-  or later. Unix sockets have mode 0600. Windows socket files inherit the
-  directory's ACL, so custom socket paths belong in the user's private directory.
-  A live listener retains its path. A stale socket file can be replaced at
-  startup. On Unix, `h2 serve` removes its socket on Ctrl-C or SIGTERM.
-  `tcp://HOST:PORT` selects unauthenticated TCP, including the Xbox app's
-  `h2 agent --xbox HOST` endpoint on port 4720 ([xbox.md](xbox.md)).
+- **The socket.** `--socket PATH`, then `$H2_AGENT`, then `agent.sock` in
+  the user's cache directory (`agent_proto::default_socket`; see
+  [storage.md](storage.md#host-directories)). Local clients use an AF_UNIX
+  stream (mode 0600); `tcp://HOST:PORT` is unauthenticated TCP, including
+  `h2 agent --xbox HOST` on port 4720 ([xbox.md](xbox.md)). A stale socket
+  file is replaced at startup.
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
-  <call>` against that run's socket; `h2 lab bench` does a wait, capture,
-  `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
-- **The CLI.** `h2 agent <method> [JSON]` calls any method; short forms
-  exist for common ones (`h2 agent --help` lists them). `h2 agent -` reads
-  a script on stdin, one call per line, on one connection. `h2 agent run
-  <script>` is the same with `expect` lines and one JSON verdict
-  ([Scripted scenarios](#scripted-scenarios-with-a-verdict)). A call
-  `h2 agent poke ...` takes a claim for its connection. A result prints as
-  JSON; an error prints to stderr and exits 1.
-- **Settings of a headless run.** A headless run has no settings store
-  unless given one, so menus built on settings stay retail and the log
-  says so. `--settings DIR` on `serve` and `run` builds the store as
-  `h2 play` does (`boot::setting_defs::load`, `crates/apps/cli/src/boot_cmd.rs`):
-  `DIR/settings.toml`, then the `H2_*` variables, then the defaults. A
-  setting changed in a menu is written back to that file, so pass a copy.
-- **Cost.** The agent is one more observer on `GAME_TICK`, which costs
-  dispatch transfers as `lockstep`'s does: compare runs that all have it,
-  or all lack it. With `H2_FEATURES=-agent` requests are answered only
-  between slices, and pause and step are refused.
+  <call>` against that run's socket; `h2 lab bench` waits, captures and
+  reads `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
+- **The CLI.** `h2 agent <method> [JSON]` calls any method; `h2 agent
+  --help` lists the short forms. `h2 agent -` reads a script on stdin, one
+  call per line, on one connection. `h2 agent run <script>` adds `expect`
+  lines and one JSON verdict ([Scripted scenarios](#scripted-scenarios-with-a-verdict)).
+  `h2 agent poke ...` takes a claim. A result prints as JSON; an error goes
+  to stderr and exits 1.
+- **Settings of a headless run.** With no settings store, menus stay
+  retail. `--settings DIR` on `serve` and `run` builds the store as
+  `h2 play` does (`boot::setting_defs::load`, `crates/apps/cli/src/boot_cmd.rs`);
+  menu changes are written back to `DIR/settings.toml`, so pass a copy.
+- **Cost.** The agent is one more `GAME_TICK` observer, which costs
+  dispatch transfers as `lockstep`'s does: compare runs that all have it or
+  all lack it. With `H2_FEATURES=-agent` requests are answered only between
+  slices, and pause and step are refused.
+
+Details: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Connecting".
 
 ### Finding a game
 
-`h2 play` with `H2_AGENT` unset opens its own socket,
-`agents/<pid>.sock` under the cache directory (`agent_proto::discover`,
-selected by `Host::discoverable_agent`). On Unix its directory has mode 0700,
-so only the user can connect. On Windows it inherits the profile directory's
-ACL. A windowed macOS game with an enabled agent also listens at this
-per-process socket when it has a custom endpoint, so the [lab](lab.md) can
-find it. Both sockets serve the same agent. A game started any other way
-(`h2 serve`, `h2 run`, the Xbox app) opens a socket only where `H2_AGENT` or
-`--socket` says. `H2_AGENT=off` keeps `h2 play` from opening one
-([switches.md](switches.md)). A client lists the directory
-and asks each socket `session.status` (`discover::scan`); a file nothing
-answers on, left by a game that was killed, is removed. `h2 agent games`
-prints each game's socket, pid, map and phase, and `h2 agent <call>` with
-no socket named, no `$H2_AGENT` and nothing at the default socket uses
-the one game in the directory. The editor pairs with these games
+`h2 play` with `H2_AGENT` unset opens `agents/<pid>.sock` under the cache
+directory (`agent_proto::discover`, `Host::discoverable_agent`), so the
+[lab](lab.md) can find it; `H2_AGENT=off` suppresses it ([switches.md](switches.md)).
+`h2 serve`, `h2 run` and the Xbox app open a socket only where `H2_AGENT` or
+`--socket` says. `h2 agent games` lists each game's socket, pid, map and
+phase (`discover::scan` removes dead sockets); a call with no socket named
+uses the one game in the directory. The editor pairs with these games
 ([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 
 ## Wire
 
 JSON-RPC 2.0, one JSON object per line each way (`crates/extensions/agent-proto/src/lib.rs`).
-A request with an `id` gets one response with that `id`. Valid JSON that is
-not a request gets `-32600`; params fields a method does not know are
-refused; batches are not supported. Method names are `domain.verb`.
+A request with an `id` gets one response. Valid JSON that is not a request
+gets `-32600`; unknown params fields are refused; batches are not
+supported. Method names are `domain.verb`.
 
 **The stamp.** Every result carries `at` (`agent_proto::At`):
 
@@ -227,31 +211,25 @@ refused; batches are not supported. Method names are `domain.verb`.
         "phase": "gameplay", "paused": false, "boundary": "tick"}}
 ```
 
-`tick` is the game's own count (absent when no game state is readable),
-`ticks` the agent's count since the game started (never resets),
-`map_ticks` ticks since the map loaded, `present` frames presented.
-After adoption, `activation` identifies the full game start the editor
-observes. A reload receipt reserves its own value. Only the successful
-start for that transition publishes it. A checkpoint revert, a restore
-or another start cannot satisfy the wait. `map_ticks` counts from the
-start and its first tick reports one. A machine snapshot saves and
-restores that count. Before adoption, `activation` is zero and
-`map_ticks` counts from the map name change.
+| Field | Meaning |
+|---|---|
+| `tick` | the game's own count; absent when no game state is readable |
+| `ticks` | the agent's count since the game started; never resets |
+| `map_ticks` | ticks since the map loaded (first tick reports 1) |
+| `activation` | identifies the full game start the editor observes; zero before adoption |
+| `present` | frames presented |
+
+Activation rules: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Wire".
 
 - **Phase.** `loading` (no tick for 500 ms: `agent::TICK_STALE`), `menu`
-  (mode `main_menu`, always: its background runs `cinematic_start` too),
-  `gameplay` (campaign or multiplayer), `cinematic` (between HaloScript's
-  `cinematic_start` and `cinematic_stop`, observed by the agent feature;
-  cleared when the map changes). A level's first tick comes before its
-  scripts start the opening cutscene, so ask for
-  `{"phase":"gameplay","map_ticks":30}` to mean "playing". A fade leaves the phase unchanged.
-  `ui.audit` reports menu transition state. During a load the mode reads as none.
+  (mode `main_menu`), `gameplay` (campaign or multiplayer), `cinematic`
+  (between `cinematic_start` and `cinematic_stop`). A level's first tick
+  precedes its opening cutscene, so ask for
+  `{"phase":"gameplay","map_ticks":30}` to mean "playing".
 - **Boundary.** `tick`: read right after a tick returned, one consistent
-  simulation state. `slice`: read between scheduler slices with no tick for
-  500 ms, where guest memory may be mid-update. While the game ticks,
-  answers between slices keep the last tick's state and say `tick`. The
-  agent feature observes `GAME_TICK` last, after telemetry and lockstep
-  (`crates/apps/boot/tests/feature_plan.rs`).
+  state. `slice`: read between scheduler slices with no tick for 500 ms,
+  where guest memory may be mid-update. The agent observes `GAME_TICK`
+  last (`crates/apps/boot/tests/feature_plan.rs`).
 
 **Errors** (`agent_proto::code`):
 
@@ -266,24 +244,22 @@ restores that count. Before adoption, `activation` is zero and
 | 7 | `BUSY` | `state.save` or `state.load` never found a quiescent boundary; `data.blockers` says what stayed live |
 | 11 | `REFUSED` (`agent_proto::sim::REFUSED`) | the running session, placement or map cannot support the requested edit |
 
-**Connections.** A client that half-closes (`nc -N`) still gets answers to
-what it sent. Closing releases control. Each connection queues at most
-4096 lines for its client (`OUT_QUEUE` in `crates/extensions/agent/src/server.rs`); a
-client that lets it fill is dropped and its control released, so the game
-thread never waits on a client.
+
+**Connections.** A client that half-closes (`nc -N`) still gets its
+answers. Closing releases control. Each connection queues at most 4096
+lines (`OUT_QUEUE` in `crates/extensions/agent/src/server.rs`); a client that
+lets it fill is dropped and its control released.
 
 **Host methods.** A host adds methods with `Agent::add_method(name,
 Access::Read | Act | Claimed, f)` (answered between slices too, where the
-method does not read guest memory) or `Agent::add_game_method` (answered
-on the game's thread with guest memory at hand, at a tick boundary while
-the game ticks).
+method does not read guest memory) or `Agent::add_game_method` (answered on
+the game's thread with guest memory at hand).
 
 ## Live mirror
 
-The editor opens a second connection to the same Unix or TCP endpoint.
-It calls `live.subscribe` there and reads the JSON reply line before
-switching to length-prefixed binary frames. Keep the original JSON
-connection for control calls. The stream reads the game at tick boundaries.
+The editor opens a second connection, calls `live.subscribe`, reads the JSON
+reply line, then reads length-prefixed binary frames (layout and blocking
+decoder in `agent_proto::live`). Control calls stay on the first connection.
 
 | Method | Params | Result |
 |---|---|---|
@@ -294,46 +270,14 @@ connection for control calls. The stream reads the game at tick boundaries.
 `every` samples one tick in 1–30 (default 1). `key_every` requests a
 full frame at least every specified number of game ticks (default 150).
 An empty accepted layer set yields header-only frames. The first frame and frames after a cut or a dropped sample are keys.
-Deltas identify records by salted object handle, player index or view key and carry
-field masks and removals. A player joining or changing name requires a
-key. The length on each layer lets readers skip unknown layers. The
-binary layout and blocking decoder are in `agent_proto::live`. A frame
-starts with a little-endian u32 payload length, capped at 8 MiB. The
-payload starts with a kind byte, three u64s (sequence, game tick, map
-epoch) and a flags byte (paused, cut). Each section has a u8 layer id
-and a u32 byte length.
 
-Objects carry their definition, type, header flags, parent, transform,
-velocity, vitality and scenario placement index. A child's transform is
-relative to its parent, as in `sim.objects`. Players carry their name,
-team, unit, held weapon, aim and local user.
-
-`camera` (layer id 7) carries each view of the last sealed frame scene
-(`frame_scene::View`; [framescene.md](../graphics/framescene.md)
-section 4). A view's key is `kind << 16 | player << 8 | view`, the kind
-indexing `game`, `cinematic`, `alternate`, `first_person`, which
-`agent_proto::live::View::name` writes as `render.scene` does
-(`game:0:0`). Each view has the scene's game tick, position, forward, up,
-vertical field of view in radians, near, far, the viewport (top, left,
-bottom, right in guest pixels), the cut flag and the salted handles of
-the objects it drew, in draw order. The stream worker reads the scene,
-not the game thread, so a camera can be a rendered frame behind the tick
-it travels with. The game's scene glue registers the source
-(`Agent::set_camera_source`, `scene_glue::install_cameras`). Without one,
-or when boot reports that this run seals no scene (native rendering or
-the frame scene off; `Agent::set_camera_unavailable`), `refused.camera`
-gives the reason. Before the first sealed scene the layer is empty. The game thread fills reusable
-buffers. A worker diffs and encodes them and each socket has a bounded
-writer queue. `skipped` counts missed captures and `dropped` counts
-frames lost on the way to the writer. Capture percentiles are in
-microseconds over the last 150 successful captures, against a 150 µs budget. They are null before the first capture.
-
-A game in a remote Live match refuses a subscription and closes an
-existing one on entry. The embedded service used by `--live-local`
-supports the mirror. For exact-tick comparison and a replay with and
-without a subscriber, use `scripts/check-live-mirror.py` with a gameplay
-snapshot and its matching input log. It prints the hash comparison,
-object count, byte rate and capture timings.
+A frame starts with a little-endian u32 payload length (cap 8 MiB). Layers
+are `objects`, `players` and `camera` (id 7, the views of the last sealed
+frame scene, `frame_scene::View`, source set by `Agent::set_camera_source`).
+A game in a remote Live match refuses a subscription; the embedded service
+of `--live-local` supports it. `scripts/check-live-mirror.py` compares
+hashes with and without a subscriber. Frame format, camera layer and capture
+budget: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Live mirror".
 
 ## `session`: what is running and its clock
 
@@ -349,84 +293,61 @@ object count, byte rate and capture timings.
 | `session.takeover_status` | `{id}` | `{decision}` for the request |
 | `features.list` | none | `{at, plan, features}`: the feature plan text the game printed at start, and each feature as `{id, on, reason?}` (`reason` when the plan turned it off), read from the plan's `feature <id>: on` and `feature <id>: off (<reason>)` lines (`agent_proto::FeatureState`) |
 
+
 `until` takes `tick`, `ticks` (more ticks than when the wait began),
-`activation` (exact match), `map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
-at least one is required. `wait` settles at tick boundaries (and between
-slices for wall-clock timeouts and while loading); a condition already true
-answers at once. `timeout_ms` defaults to 30 s, at most 600 s; the failure
-is `TIMEOUT` with the stamp.
+`activation` (exact), `map_ticks`, `present`, `phase`, `map` and `paused`;
+all given must hold, at least one is required. A condition already true
+answers at once. `timeout_ms` defaults to 30 s, at most 600 s; the failure is
+`TIMEOUT` with the stamp.
 
 ```sh
 h2 agent wait '{"phase":"gameplay","map_ticks":30}' 5000
 h2 agent watch phase map          # events until interrupted
 ```
 
-`session.wait` replaces every "sleep and screenshot" loop. Switches do not
-change through `features.list`; live changes go through [`render.toggle`](#edit-and-hot-render-live-tag-and-shader-changes)
+`session.wait` replaces every "sleep and screenshot" loop. Live changes go
+through [`render.toggle`](#edit-and-hot-render-live-tag-and-shader-changes)
 and [`cheat.set`](#menu-methods-settings-perf-overlay-cheats).
 
 ### Lab consent
 
-The lab uses `session.takeover_info` to distinguish a windowed game
-from a headless agent. Windowed player runs register
-`session.request_takeover` and `session.takeover_status`. Windowed
-replays and lockstep runs report the window without offering a prompt.
-The request
-uses the usual agent action access, so an unrelated connection holding
-control can block it. `name` is the job's name. `operation` is
-`"build"`, `"run"` or `"sim"`, and `builds_image` says the job builds the
-image first. `source` is `{"kind": "branch", "name", "commit"}`,
-`{"kind": "rev", "rev", "commit"}` or `{"kind": "current", "commit"}`
-(the installed image; `commit` may be null). `level` is the run's level
-or null, and `own_data` says the run plays on the player's own data.
-`estimate_seconds` is an estimate, with zero for an unknown duration.
-`timeout_seconds` is wall-clock time from acceptance, from 1 to 3600.
-The request is refused with `INVALID_PARAMS` without a requester, a name
-or a source. The game shortens the requester, name, level and source for
-display. A second request returns `BUSY`
-while a prompt is queued or open.
+The lab uses `session.takeover_info` to tell a windowed game from a headless
+one. Windowed player runs register `session.request_takeover` and
+`session.takeover_status`. The request needs act access, so another
+controller can block it.
 
-`alongside` (a boolean, true when left out) says whether the dialog offers
-**Start alongside**. The lab sends `false` for a job whose numbers need a
-quiet machine (a benchmark).
+| Param | Meaning |
+|---|---|
+| `name`, `requester` | the job and who asked; required, with `source` |
+| `operation` | `"build"`, `"run"` or `"sim"` |
+| `builds_image` | the job builds the image first |
+| `source` | `{"kind": "branch", "name", "commit"}`, `{"kind": "rev", "rev", "commit"}` or `{"kind": "current", "commit"}` |
+| `level`, `own_data` | the run's level or null; plays on the player's own data |
+| `estimate_seconds`, `timeout_seconds` | estimate (0 unknown); wall-clock limit from acceptance, 1 to 3600 |
+| `alongside` | default true; false hides **Start alongside** (benchmarks) |
+| `ask` | `"start"` (default) or `"running"` |
 
-The status result is `pending`, `allowed`, `alongside`, `declined`,
-`timed_out` or `unavailable` (the dialog failed to open). **Not now** and
-Back both decline. **Close and start** answers `allowed`: consent for that
-request, after which the lab closes the game with
-[`host.quit`](#close-the-window) and waits for it to exit. **Start
-alongside** answers `alongside`: consent to start the job at once with the
-game left open, so the lab doesn't call `host.quit`. The dialog's rows are
-**Not now**, **Start alongside** and **Close and start** (screen
-`lab.takeover.alongside`, class `lab-takeover-alongside-dialog`), or only
-**Not now** and **Close and start** (`lab.takeover`) when `alongside` is
-false; a game never answers `alongside` to a request that withheld it. A request expires even if the UI is still loading. The game
-dismisses the expired dialog at the next UI update. The status method is
-read-only and answers `GONE` for an unknown or superseded id.
-
-`ask` is `"start"` when left out: the consent prompt above. With
-`"ask": "running"` the request asks about a job already running ([When the
-player opens a game](lab.md#when-the-player-opens-a-game)), in its own
-dialog (`lab.running`, class `lab-running-dialog`). Its rows are **Finish
-this one**, **Keep running** and **Stop and pause**, answering
-`finish_this`, `keep_running` and `stop_and_pause`; Back also answers
-`finish_this`, and an unanswered question `timed_out`.
+A missing requester, name or source is `INVALID_PARAMS`; a second request
+while a prompt is queued or open is `BUSY`. The status result is `pending`,
+`allowed` (**Close and start**; the lab then calls
+[`host.quit`](#close-the-window)), `alongside`, `declined` (**Not now**
+or Back), `timed_out` or `unavailable`. An unknown or superseded id is
+`GONE`. With `"ask": "running"` the dialog (`lab.running`) asks about a job
+already running ([lab.md](lab.md#when-the-player-opens-a-game)) and answers
+`finish_this`, `keep_running` or `stop_and_pause`. Dialog classes and
+rows: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Lab consent".
 
 ### Control
 
-`session.pause`, `session.resume` and `session.step` need `session.claim`
-(one connection holds it). A pause blocks the game thread inside the tick
-observer, still answering requests. It resumes by itself after `max_ms`
-(default 60 s, at most 600 s; a second pause re-arms it), when the
-controller releases or disconnects, or when the game exits. A pause asked
-for while loading takes hold at the next tick; its limit runs meanwhile.
-`step {ticks}` (1 to 1800) runs that many ticks and answers once paused
-again; a resume, a new pause or a release first answers it with
-`INTERRUPTED`. With the tick observer off, pause and step answer
-`UNAVAILABLE`. In `h2 play` a pause also stops the window's event loop, so
-it is meant for `h2 serve`; a windowed game pauses with
-[`host.pause`](#window-pause-and-frame-step). Input calls need no claim while nobody holds
-control.
+`session.pause`, `session.resume` and `session.step` need `session.claim`.
+A pause blocks the game thread inside the tick observer, still answering
+requests, and ends after `max_ms` (default 60 s, at most 600 s), on release
+or disconnect, or when the game exits. `step {ticks}` (1 to 1800) answers
+once paused again; a resume, new pause or release answers it with
+`INTERRUPTED`. With the tick observer off, both answer `UNAVAILABLE`. In
+`h2 play` a pause also stops the window's event loop, so use
+[`host.pause`](#window-pause-and-frame-step) there. Input calls need no
+claim while nobody holds control.
 
 ```sh
 printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
@@ -434,55 +355,33 @@ printf 'claim\npause\nstep 1\nobject player.0\nrelease\n' | h2 agent -
 
 ### Window pause and frame step
 
-`host.pause {on}` is the window's own pause, the one Cmd+P toggles, asked
-for over the API; `host.pause {}` reads the state, changing nothing.
-`host.step {ticks?}` runs game ticks under the pause. They are
-meant for `h2 play` and other windowed games, where `session.pause` also
-stops the window's event loop. The window stays live: it keeps drawing
-its last frame, the debug menu and overlays keep working, and the audio
-pauses as for Cmd+P.
+`host.pause` is the window's own pause (Cmd+P) over the API; `host.step`
+runs game ticks under it. They are for `h2 play` and other windowed games;
+the window keeps drawing and audio pauses as for Cmd+P.
 
 | Method | Params | Result |
 |---|---|---|
 | `host.pause` | `{on: bool}`, or `{}` to read | `{paused, held, tick}` once the window has applied it |
 | `host.step` | `{ticks?}`: 1 to 1800, default 1 | `{paused, held, tick, stepped}` once the ticks ran and the game is held again |
 
-`paused` is the window's pause (Cmd+P's, whoever set it); `held` says
-the game thread has stopped at its pause wait; `tick` is the game's tick
-at the last game tick. A pause waits up to 2 s for the window and up to
-2 s more for the hold, so `held` can be false during a long load. Cmd+P
-and `host.pause` change the same pause, so either undoes the other.
-`stepped` counts the game ticks the step ran. A frame that runs several
-ticks before the game stops again (catch-up after a slow frame) gives a
-`stepped` above `ticks`.
+`held` says the game thread stopped at its pause wait; `stepped` can exceed
+`ticks` after a catch-up frame. Refusals:
 
-Refusals: no window (a headless game) is `UNAVAILABLE`, naming
-`session.pause`; `host.step` while not paused is `INVALID_REQUEST`, with
-a step already running `BUSY`, and `ticks` out of range `INVALID_PARAMS`.
-A resume (Cmd+P or `host.pause {"on": false}`) or a closed window during
-a step answers it with `INTERRUPTED`. Ticks that do not run within 0.2 s
-each plus 5 s (at most 2 minutes) answer `TIMEOUT` with `data.stepped`;
-the step then ends. Focus pause (`pause_on_focus_loss`) is not the
-window's pause: a game paused only by losing focus refuses a step.
+| Case | Error |
+|---|---|
+| no window (headless) | `UNAVAILABLE`, naming `session.pause` |
+| `host.step` while not paused | `INVALID_REQUEST` |
+| a step already running | `BUSY` |
+| `ticks` out of range | `INVALID_PARAMS` |
+| resume or window close during a step | `INTERRUPTED` |
+| ticks not run within 0.2 s each plus 5 s (at most 2 min) | `TIMEOUT` with `data.stepped` |
 
 Both are answered on the connection's own thread
-(`Agent::add_connection_read`), since a held game thread answers
-nothing, so they skip the controller check that **act** methods have.
-The in-process debug menu sends from the window's own thread, which
-cannot wait for itself: there `host.pause` answers at once with the pause
-asked for and `held` false, and `host.step` answers at once without
-`stepped` while the step runs on (a second step is `BUSY` until it ends). The
-window shell (`crates/apps/app/src/shell.rs`) applies each request as
-Cmd+P does. The game thread's pause wait (`crates/apps/app/src/lifecycle.rs`)
-lets the game run while a step has ticks left and reports when it is held.
-An agent ticker counts the game ticks (`crates/extensions/agent/src/sim/pause.rs`).
-They meet in `agent_proto::host_pause`. The game stops at the next
-slice boundary after the step's last tick.
-
-Every other method is answered on the game thread, so while the game is
-held it waits. A request sent while held is answered at the next tick a
-step runs; `session.pause` and `session.step` are the way to read the
-world between ticks without running any.
+(`Agent::add_connection_read`), so they skip the controller check. Code:
+`crates/apps/app/src/shell.rs`, `crates/apps/app/src/lifecycle.rs`,
+`crates/extensions/agent/src/sim/pause.rs`, `agent_proto::host_pause`. Every
+other method waits while the game is held. Pause handshake and in-process
+debug menu behaviour: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Window pause and frame step".
 
 ```sh
 h2 agent host.pause '{"on":true}'
@@ -492,21 +391,13 @@ h2 agent host.pause '{"on":false}'
 
 ### Window screenshots
 
-`host.screenshot {path?}` writes the window's newest published frame — the
-one it is showing, without the debug menu or the overlays — as a PNG, and
-answers `{path, width, height}` with what it wrote. With no `path` it
-names a new file in the window's screenshots directory (`h2 play`'s is
-`screenshots/` under the data root).
-
-Like `host.pause` it is answered on the connection's own thread, with the
-window shell's capture (`crates/apps/app/src/shell.rs`, over
-`agent_proto::host_shot`): the frame source's newest frame read back and
-encoded on the asking thread, so the debug menu's own call works while
-the game is paused, and a call from `h2 agent` never waits on the window's
-event loop. A headless game has no window: `UNAVAILABLE`, naming
-`render.capture` for a frame there. A window still starting, one with no
-frame yet, a write that fails, and a default-path shot where the window
-has no screenshots directory are `UNAVAILABLE` with the reason.
+`host.screenshot {path?}` writes the window's newest published frame (no
+debug menu or overlays) as a PNG and answers `{path, width, height}`. With no
+`path` it names a file in the window's screenshots directory. It is
+answered on the connection's own thread (`crates/apps/app/src/shell.rs`,
+`agent_proto::host_shot`), so it works while paused. A headless game, a
+window with no frame yet, a failed write or a missing screenshots directory
+is `UNAVAILABLE` with the reason (headless names `render.capture`).
 
 ```sh
 h2 agent host.screenshot '{}'
@@ -515,20 +406,14 @@ h2 agent host.screenshot '{"path":"/tmp/ledge.png"}'
 
 ### Close the window
 
-`host.quit {}` closes the game window as its close button and Cmd+Q do:
-the window shell stops the guest and leaves its event loop, and the
-process exits once the guest has stopped. It answers `{closing: true}` at
-once, before the window has closed; the caller watches the process to
-see it go. It takes no params (`{}` or none), and a repeat is harmless.
-The lab calls it when the player answers **Close and start** to a
-[consent request](#lab-consent) ([Player consent before a
-job](lab.md#player-consent-before-a-job)).
-
-The game has no save step of its own to run first: a campaign keeps what
-its last checkpoint saved, as with the close button. Like `host.pause` it
-is answered on the connection's own thread, through the window shell's
-hub (`crates/apps/app/src/shell.rs`, over `agent_proto::host_quit`), so a
-paused game takes it too. A headless game has no window: `UNAVAILABLE`.
+`host.quit {}` closes the window as the close button and Cmd+Q do, and
+answers `{closing: true}` at once; the caller watches the process exit. A
+repeat is harmless. The lab calls it on **Close and start** ([consent
+request](#lab-consent), [lab.md](lab.md#player-consent-before-a-job)). A
+campaign keeps what its last checkpoint saved. It is answered on the
+connection's own thread (`crates/apps/app/src/shell.rs`,
+`agent_proto::host_quit`), so a paused game takes it. A headless game is
+`UNAVAILABLE`.
 
 ```sh
 h2 agent host.quit '{}'
@@ -536,33 +421,20 @@ h2 agent host.quit '{}'
 
 ### Resize the window
 
-`host.window.resize {width, height}` sets the game window's inner size,
-in physical pixels (the size the game renders at), and
-`host.window.resize {fullscreen}` takes the window in or out of
-borderless fullscreen on its display, as Cmd+F does. An aspect or
-field-of-view check drives a live window through the shapes it covers
-with it. A size leaves fullscreen first; `{width, height, fullscreen:
-false}` says the same thing, and a size with `fullscreen: true` is
-refused, since a fullscreen window takes its display's size.
+`host.window.resize` sets the window's inner size in physical pixels, or
+toggles borderless fullscreen as Cmd+F does, for aspect and field-of-view
+checks.
 
 | Method | Params | Result |
 |---|---|---|
 | `host.window.resize` | `{width, height}` (each 64 to 16384), `{fullscreen: bool}`, or both with `fullscreen: false` | `{width, height, fullscreen, scale}` once the window has that shape |
 
-`scale` is physical pixels per point (2 on a Retina display). The call
-waits up to 5 s for the window to take the shape: a fullscreen change
-animates on macOS, and a size asked for while leaving fullscreen is asked
-again once the window is out. A shape the window does not take in time
-(larger than the display, or a fullscreen size other than the one asked)
-answers `TIMEOUT`, with the window's state as `data`.
-
-Like `host.pause` it is answered on the connection's own thread, through
-the window shell's hub (`crates/apps/app/src/shell.rs`, over
-`agent_proto::host_window`): the shell applies the request on its event
-loop and reports the window's shape after it and on every resize. A
-headless game has no window: `UNAVAILABLE` (its render size comes from
-its command line). Missing or partial params (a width with no height),
-a side out of range and unknown fields are `INVALID_PARAMS`.
+A size leaves fullscreen first; a size with `fullscreen: true` is refused.
+`scale` is physical pixels per point. The call waits up to 5 s; a shape not
+taken in time answers `TIMEOUT` with the window's state as `data`. A
+headless game is `UNAVAILABLE`. Missing or partial params, an out-of-range
+side or unknown fields are `INVALID_PARAMS`. It runs on the connection's own
+thread (`crates/apps/app/src/shell.rs`, `agent_proto::host_window`).
 
 ```sh
 h2 agent host.window.resize '{"width":2560,"height":1080}'
@@ -573,9 +445,9 @@ h2 agent host.window.resize '{"fullscreen":false}'
 ## `world`: what is in the level
 
 Objects come from `live-telemetry::memory` and `live_telemetry::things`,
-read at the tick boundary. Ids are `player.<index>` or `<kind>.<datum>`
-with the datum handle as 8 hex digits, salt included, so a slot reused by
-another object answers `GONE` and never another object's data.
+read at the tick boundary. Ids are `player.<index>` or `<kind>.<datum>` (the
+datum handle as 8 hex digits, salt included), so a reused slot answers
+`GONE`.
 
 | Method | Params | Result |
 |---|---|---|
@@ -583,67 +455,37 @@ another object answers `GONE` and never another object's data.
 | `world.query` | `{kind?, near?, tag?, fields?, limit?, offset?}` | `{at, total, offset, objects, more}` |
 | `world.object` | `{id}` | `{at, object}`: every field the reader has for one object |
 
+
 - **Kinds** (`agent_proto::Kind`): `player`, `actor` (AI biped), `vehicle`,
   `machine`, `body` (a dead biped), `scenery`, `weapon` and `equipment`
-  (lying in the world; held ones are their unit's `weapon`), `control` (a
-  device's switch or panel), `crate`, `creature`. The last six come from a
-  second pass over the object header table by the header's type byte
-  (`Kind::of_object_type`). Projectiles, effects, particles, garbage,
-  light fixtures and sound scenery are not listed.
-- **Query.** `near` is `{point | player, radius}` and sorts nearest first,
-  adding `distance`. `fields` trims each object (`id` and `kind` stay).
-  `tag` keeps one definition tag: a datum (8 hex digits, `0x` optional) or
-  text its name contains (any case, `/` for `\`). Pages default to 50, at
-  most 500.
-- **Tag names.** An object with a `tag` also has `tag_name`, the
-  definition's path from the loaded map file's names (as `edit.tags`
-  reads them); it is absent when the names cannot be read. A name filter
-  then matches nothing. The map file is found as `boot::map_override::map_file`
-  finds it: by file name first, then by the cache header's name (`+0x198`)
-  among the maps folder's files, so a converted map served under a disc
-  map's file name is the one read. With two files of the same header name
-  the first in folder order wins. A map installed as content on the data
-  partition is not searched.
+  (lying in the world), `control`, `crate`, `creature`. The last six come
+  from the object header table's type byte (`Kind::of_object_type`).
+  Projectiles, effects, particles, garbage, light fixtures and sound
+  scenery are not listed.
+- **Query.** `near` is `{point | player, radius}`, sorts nearest first and
+  adds `distance`. `fields` trims each object (`id` and `kind` stay). `tag`
+  keeps one definition: a datum (8 hex digits) or a name substring (any
+  case, `/` for `\`). Pages default to 50, at most 500.
+- **Tag names.** An object with a `tag` also has `tag_name`, the path from the
+  loaded map file's names (as `edit.tags` reads them), found by
+  `boot::map_override::map_file`; absent when unreadable.
 - **Fields.** `pos`, `velocity`, `team`, `tag`, `tag_name`, `vehicle`,
-  `weapon`, `name` and `local_user` and `unit` (players), `mounted_on` (a
-  turret is a vehicle with `mounted_on` set; its `pos` and `forward` are
-  relative to that vehicle), `occupied`, `placement` (the scenario
-  placement that made it), `position` (a machine's device position, 0 to
-  1) and `physics`.
-- **Facing.** `forward` is where an object faces. For a unit it is the
-  aiming vector (unit `+0x168`, the vector the held weapon's targeting ray
-  follows, `0x000cf3d0`), which turns with the camera; a biped's body turns
-  only as it moves, so its own forward (`+0x70`) is `body_forward`. `yaw`
-  (degrees about +z from +x, 0 to 360) and `pitch` (degrees up) are
-  `forward` as angles. A unit whose aim is not finite or not unit length
-  falls back to the body's forward.
-- **`physics`** (units): `crouch`, `crouch_request` (unit flags bit 23,
-  which stays set after release until there is room to stand), `mode`,
-  `airborne` (biped `+0x348` bit 0, likely) and `airborne_ticks`
-  (`+0x399`), `hitbox_offset_ticks` and `hitbox_offset` (the offset a melee
-  lunge leaves, `+0x3aa`; [superbounce.md](../game/superbounce.md)),
-  `unit_flags`, `biped_flags`, `havok_pos` and `havok_velocity` (the first
-  Havok body; [`havok`](#havok-the-physics-world) has every body and
-  contact), and for bipeds `support`: what the biped physics update
-  (`0x000dd990`) keeps of the ground (layout in `live-telemetry`'s
-  `layout.rs`, `BIPED_SUPPORT_*` and `CHARACTER_CONTACT_*`). `support.flags`
-  is biped `+0x349` (`copied`: its bit 4, set when this tick's update copied
-  a support contact, `0x000ddeda`); `words` are `+0x354..+0x364` (all
-  `ffffffff` for nothing); `point`, `normal`, `contact_point` are `+0x368`,
-  `+0x374`, `+0x380`; `ground_state` is `+0x3ec`, the vector the ground
-  test `0x001f19c0` measures first; `contacts` are the character contacts
-  that test walks (physics component `+0x88`, count `+0x8c`, `0x48` each, at
-  most 32): `key`, `other`, `point`, `normal`, `value` (the first pass
-  wants at least 1e-4), `flags`. The airborne bit is decided from these,
-  unlike `havok.contacts`, which lists the solver's contact constraints.
-  Bipeds also get `standing_fits`: whether a standing capsule fits at the
-  origin, the test that decides whether letting go of crouch clears
-  `crouch_request`. It is the superbounce mode's capsule test against the
-  loaded map's collision (`crates/extensions/game/src/superbounce_capsule.rs`),
-  so it is there only while that mode is on and its scan is ready
-  ([superbounce.md](../game/superbounce.md#charge)).
-  Poll `object player.0` on one `h2 agent -` connection and keep one reply
-  per stamped tick for a movement trace, or use [a trace](#tick-traces-and-the-flight-recorder).
+  `weapon`, `name`, `local_user` and `unit` (players), `mounted_on` (a turret
+  is a vehicle with it set; its `pos` and `forward` are relative),
+  `occupied`, `placement`, `position` (a machine's device position, 0 to 1)
+  and `physics`.
+- **Facing.** `forward` is a unit's aiming vector (unit `+0x168`, which
+  turns with the camera); `body_forward` is a biped's own forward (`+0x70`).
+  `yaw` (degrees about +z from +x) and `pitch` are `forward` as angles.
+- **`physics`** (units): crouch, airborne and hitbox-offset state, unit and
+  biped flags, `havok_pos`, `havok_velocity`, `support` (the ground the
+  biped update keeps, layout in `live-telemetry`'s `layout.rs`) and, for
+  bipeds, `standing_fits` (the superbounce capsule test,
+  `crates/extensions/game/src/superbounce_capsule.rs`; present while that
+  mode is on). Offsets, flag bits and support fields: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+  "`world`: what is in the level". For a movement trace, poll
+  `object player.0` on one `h2 agent -` connection or use [a
+  trace](#tick-traces-and-the-flight-recorder).
 
 ```sh
 h2 agent count team
@@ -654,24 +496,19 @@ h2 agent object player.0
 ## `world.breakable`: broken glass
 
 `world.breakable` reads one structure BSP's breakable-surface state at the
-tick boundary: which pieces of breakable glass are broken. The bots'
-break step reads the same state (`bots::guest::breakable`;
-[bots.md](../game/bots.md#breaking-the-glass)).
+tick boundary. The bots' break step reads the same state
+(`bots::guest::breakable`; [bots.md](../game/bots.md#breaking-the-glass)).
 
 | Params | Result |
 |---|---|
 | `{bsp?}` (default 0) | `{bsp, enabled, broken, mask}` |
 
-- `enabled` is the byte `breakable_surfaces_enable` writes, the first byte
-  of the state at `[0x4ed280]`.
-- `mask` is the BSP's 32 bytes from `[0x4ed280] + 1 + 32 * bsp`, lowest
-  breakable index first, in hexadecimal. A set bit is a whole surface.
-  The game fills the mask with ones at map reset and clears a bit when its
-  surface breaks ([collision.md](../formats/collision.md#what-the-engine-does-with-a-bsp)).
-- `broken` lists the indices whose bits are clear, ascending. A surface's
-  index is its collision surface's `+5` byte, used when flag bit 3 is set.
-- `UNAVAILABLE` while the state's pointer is null (no map) or the read
-  faults. A stray parameter is `INVALID_PARAMS`.
+- `enabled` is the first byte of the state at `[0x4ed280]`.
+- `mask` is the BSP's 32 bytes from `[0x4ed280] + 1 + 32 * bsp`, in hex; a
+  set bit is a whole surface ([collision.md](../formats/collision.md#what-the-engine-does-with-a-bsp)).
+- `broken` lists the indices whose bits are clear, ascending.
+- `UNAVAILABLE` while the state's pointer is null or the read faults; a
+  stray parameter is `INVALID_PARAMS`.
 
 ```sh
 h2 agent world.breakable '{}'
@@ -679,40 +516,21 @@ h2 agent world.breakable '{}'
 
 ## `world.ai`
 
-`h2 agent world.ai` returns `{at, globals, actors}` at one game boundary and takes
-no parameters (`crates/extensions/agent/src/ai.rs`). `globals` is `{on, initialised}`,
-the two bytes of the AI globals (`[0x4f55d0]`, `+0` and `+1`) that
-`ai_update` (`0x1c83c0`) needs set before it runs any actor, or null
-before the globals exist. Each allocated actor has its
-salted AI `datum`, its `unit` ID (for `world.object`), character tag
-datum, team, scenario squad index, current behavior ID, its retail name
-when available (`behavior_name`), and combat status. A missing unit,
-squad or behavior is JSON null. The actor datum and unit ID have separate
-lifetimes: compare the same unit across ticks to measure movement, weapon
-and vehicle changes.
-
-`sector` is the actor's cached sector index in the active BSP when in
-range, otherwise null; `location_cached` distinguishes a pending refresh
-from a completed lookup. The observer only reads this cache. Retail
-`0x0026c180` refreshes it, and `0x00297e15` passes its sector to the mesh
-walk at `0x0026c590`, which bounds it against the mesh's sector count. The
-behavior ID comes from the top of the four-frame stack used at
-`0x001a813d`; its label from the loaded executable's parallel name table
-at `0x0046f0c8`. Combat status is the signed value the `ai_combat_status`
-builtin reads per actor (`0x00276070`). `focus_object` follows the
-actor's selected perception record to the object datum used at
-`0x001b368a`; the fight behavior reads the same record at `0x001af0c2`.
-Compare it with the player's `unit` in `world.query` to see attention on
-the player. A remembered object can stay selected after contact is lost.
+`h2 agent world.ai` takes no params and returns `{at, globals, actors}` at one
+boundary (`crates/extensions/agent/src/ai.rs`). `globals` is `{on,
+initialised}`, the two bytes at `[0x4f55d0]` that `ai_update` (`0x1c83c0`)
+needs set, or null. Each actor has its salted AI `datum`, `unit` ID (for
+`world.object`), character tag datum, team, squad index, behaviour ID and
+`behavior_name`, combat status, `sector`, `location_cached` and
+`focus_object`; a missing unit, squad or behaviour is null. Sources and
+addresses: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`world.ai`".
 
 ## `net.replication`
 
-`h2 agent net.replication` takes no parameters and returns, at one game
-boundary, what the distributed simulation is replicating
-(`crates/extensions/agent/src/net.rs`). It is the measuring method for the
-probes of [ai-networking.md](../game/ai-networking.md); the types and
-fields it names are in that page's
-[notes](../game/notes/ai-networking.md).
+`h2 agent net.replication` takes no params and returns what the distributed
+simulation replicates, at one boundary (`crates/extensions/agent/src/net.rs`).
+It measures the probes of [ai-networking.md](../game/ai-networking.md); the
+types are in that page's [notes](../game/notes/ai-networking.md).
 
 | Field | Meaning |
 |---|---|
@@ -721,73 +539,48 @@ fields it names are in that page's
 | `objects` | per object tag group (`bipd`, `vehi`, `proj`, ...; `other` for a type outside the table): `{objects, with_entity}`, the live objects and how many have a replication entity (object body `+0xd4` is not -1) |
 | `entities` | the sum of `with_entity` |
 | `creature_type` | the registered creature probe slot, 17, or null when the definition is absent |
-| `creatures` | live bindings `[{entity, type, object, updates}]`. `entity` includes the generation, and `object` is the local salted handle in the format used by `sim.objects`. `updates` counts movement operations the host writes to peer replication batches or the client applies over this binding's lifetime |
-| `events` | `{total, by_type: [{type, name, count}]}`: replication events queued since the process started, by the engine's event type; types never seen are left out, and a type outside the table is counted under `other` with a null `type` |
+| `creatures` | live bindings `[{entity, type, object, updates}]`; `object` is the local salted handle as in `sim.objects`; `updates` counts movement operations over the binding's lifetime |
+| `events` | `{total, by_type: [{type, name, count}]}`: replication events queued since the process started, by event type; an unknown type is counted under `other` with a null `type` |
 | `traffic` | `{sent, sent_bytes, received, received_bytes, largest}`: the title's datagrams since the process started (`live_hle::traffic`) |
 
-Event and traffic counts accumulate over the process lifetime. Divide
-the difference between two calls by the ticks between their `at` stamps
-to get a rate:
-
-```sh
-h2 agent net.replication > before.json
-h2 agent wait '{"map_ticks":900}' 60000
-h2 agent net.replication > after.json
-```
-
-The event counts come from the `agent-net` feature, an observer on the
-engine's event entry (`SIM_EVENT_GENERATE`, `0xb5a70`);
-`H2_FEATURES=-agent-net` leaves them at zero and the rest of the answer
-unchanged. The engine calls that entry only in a distributed game. On a
-host and a client of one game, `objects` answers whether an object the
-host made reached the client: the host's `with_entity` rises and so does
-the client's `objects` for that group.
+Counts accumulate over the process lifetime; divide the difference of two
+calls by the ticks between their `at` stamps for a rate. Event counts come
+from the `agent-net` feature (`SIM_EVENT_GENERATE`, `0xb5a70`);
+`H2_FEATURES=-agent-net` leaves them at zero. Example: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"`net.replication`".
 
 ## `actors.net`
 
-`h2 agent actors.net` takes no parameters and returns the actor channel
-of [ai-networking.md](../game/ai-networking.md) as this machine ran it
-on the last tick (`crates/extensions/agent/src/actors.rs`). The game
-publishes the report once a tick (`game::actor_net::report`): a
-distributed host after it schedules its peers, a distributed client
-after it takes the tick's packets.
+`h2 agent actors.net` takes no params and returns the actor channel of
+[ai-networking.md](../game/ai-networking.md) as this machine ran it on the
+last tick (`crates/extensions/agent/src/actors.rs`, published by
+`game::actor_net::report`).
 
 | Field | Meaning |
 |---|---|
 | `role` | `host` on a distributed server, `client` on a distributed client, `off` elsewhere or with `-actor-net` |
 | `tick` | the simulation tick of the report; null when `role` is `off` |
-| `peers` | on the host, each Live tunnel peer with the channel, in id order: `{peer, bytes_per_second, packets, bytes, keys, digests, records, dropped}`. `bytes_per_second` is the bytes charged in the last 30 host ticks, headers included; the rest count since the peer connected. `records` includes repeated copies of lines and cues; `dropped` counts offered records the budget left out. Empty on a client and on a System Link host |
+| `peers` | on the host, each Live tunnel peer: `{peer, bytes_per_second, packets, bytes, keys, digests, records, dropped}`; `bytes_per_second` covers the last 30 host ticks, the rest count since connect; empty on a client and on a System Link host |
 | `client` | on a client, `{actors, puppets, waiting, lines_waiting, mode_state_bytes, digest_misses, key_requested, diverged, host_log_head}`; null elsewhere |
 
-On a client, `actors` counts the actors in the replica and `puppets`
-lists those whose body has arrived through retail replication as
-`{entity, character, squad, team, posture, unit}`, with `unit` the local
-salted handle. `waiting` is the actors whose body has not arrived and
-`lines_waiting` the dialogue lines waiting for their speaker.
-`digest_misses` is the current run of disagreeing digests,
-`key_requested` a key wanted and not yet asked for, and `diverged` the
-channel closed for the match (`actor_channel_diverged`).
-`host_log_head` is the last digest's host log head in 64 hex digits,
-null before the first digest.
-
-To check that both ends of a Live Firefight agree, read the host's
-`firefight.state` `log.hash` and the client's `client.host_log_head`
-within 30 ticks of each other:
-
-```sh
-h2 agent --socket "$HOST" actors.net
-h2 agent --socket "$CLIENT" actors.net
-```
+On a client, `puppets` lists actors whose body arrived through retail
+replication as `{entity, character, squad, team, posture, unit}`;
+`diverged` is the channel closed for the match (`actor_channel_diverged`);
+`host_log_head` is the last digest's host log head (64 hex digits, null
+before the first). To check both ends of a Live Firefight agree, compare
+the host's `firefight.state` `log.hash` with the client's
+`client.host_log_head` within 30 ticks. Field details and example: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`actors.net`".
 
 ## `world.raw`: an object's bytes, before and after
 
 A game method, read only, no claim (`agent::raw::install`; reader
-`crates/live/live-telemetry/src/raw.rs`). It exists to look for state a forced
-crouch leaves behind ([superbounce.md](../game/superbounce.md)).
+`crates/live/live-telemetry/src/raw.rs`). It looks for state a forced crouch
+leaves behind ([superbounce.md](../game/superbounce.md)).
 
 `world.raw {id, parts?, len?}` returns `id`, `datum` and `parts`, each
-`{part, base, hex}` or `{part, missing}` (why: an unset pointer, a fault).
-Each part is found through the one before it ([havok-runtime.md](../engine/havok-runtime.md)):
+`{part, base, hex}` or `{part, missing}` (an unset pointer, a fault). Each part
+is found through the one before it ([havok-runtime.md](../engine/havok-runtime.md)):
 
 | Part | Where | Bytes |
 |---|---|---|
@@ -798,14 +591,12 @@ Each part is found through the one before it ([havok-runtime.md](../engine/havok
 | `shape` | entity `+0x0c` | `0x80` |
 
 `h2 agent raw-diff a.json b.json` needs no game: per part it prints the
-32-bit words that differ, with their offset from the part's base, and
-both as floats where they read as ones. A part on one side only, or whose
-base moved, is listed, not compared. It reads what `h2 agent raw` prints,
-or a `-` script's last line (`crates/apps/cli/src/agent_raw.rs`).
+differing 32-bit words with their offsets (and as floats). A part on one side
+only, or whose base moved, is listed, not compared
+(`crates/apps/cli/src/agent_raw.rs`).
 
 ```sh
 h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
-# ... force a crouch, walk out, stand ...
 h2 agent raw player.0 > after.json
 h2 agent raw-diff before.json after.json
 h2 agent raw player.0 entity,shape              # some parts
@@ -814,21 +605,22 @@ h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
 
 ## `world.poke`: replace bytes in one object part
 
-`world.poke {id, part?, offset, hex}` (access: claim) writes 1 to 64 bytes
-at a tick boundary. `id` and `part` use `world.raw`'s names; `part`
-defaults to `object`. `offset` is a nonnegative byte offset from the
-part's base; `hex` is two hex digits per byte. The whole range must fit
-in the part `world.raw` reads with its default lengths.
+`world.poke {id, part?, offset, hex}` (access: claim) writes 1 to 64 bytes at a
+tick boundary.
 
-The connection must hold `session.claim`. `sim.session` reports whether
-the session allows host writes; a session refusal is `INVALID_REQUEST`
-with `data.session`, and a request served between slices is `UNAVAILABLE`
-when the session allows writes. The result has `id`, `datum`, `part`,
-`base` (the part's first address), `offset`, `at`, and `before` and
-`after` (the bytes at the offset, lowercase hex).
+| Param | Meaning |
+|---|---|
+| `id`, `part` | as `world.raw`; `part` defaults to `object` |
+| `offset` | nonnegative byte offset from the part's base |
+| `hex` | two hex digits per byte; the range must fit the part `world.raw` reads by default |
+
+The connection must hold `session.claim`. A session that refuses host writes
+gives `INVALID_REQUEST` with `data.session` (`sim.session` reports it); a
+request served between slices is `UNAVAILABLE`. The result has `id`, `datum`,
+`part`, `base`, `offset`, `at`, `before` and `after` (lowercase hex).
 
 ```sh
-h2 agent poke <id> <part> <offset> <hex>    # takes a claim for its connection; offset decimal or 0x
+h2 agent poke <id> <part> <offset> <hex>    # takes a claim; offset decimal or 0x
 ```
 
 ## `havok`: the physics world
@@ -838,10 +630,10 @@ boundary. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
 
 | Method | Params | Result |
 |---|---|---|
-| `havok.bodies` | `{near?, radius?, limit?}` | rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b`, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` defaults to 64 |
+| `havok.bodies` | `{near?, radius?, limit?}` | rigid bodies: `entity` (the key contacts use), `state` (`active`, `inactive`, `fixed`), `object`, `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, `shape` (`addr`, `vtable`, `kind`: `capsule` `a` `b` `radius` `height`; `sphere` `radius`; `transform` `translation` `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5), nearest first, with `distance`; `limit` defaults to 64 |
 | `havok.agents` | `{object}` | collision pairs and cached state ([below](#havokagents)) |
-| `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
-| `havok.digest` | `{}` | the ordered heap walk (sim-rewrite-havok.md §9.2): `digest` (16 hex digits, FNV-1a over every live byte and address), `bodies`, `constraints`, `pairs`, and `heap_used` (bytes in occupied pool slots). The arena hash does not cover the Havok heap, so this digest is what proves a physics rewrite; the sim report carries the same walk as its `havok.world` component |
+| `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`), `distance` (negative is penetration), `impulse` (the solver's last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
+| `havok.digest` | `{}` | the ordered heap walk (sim-rewrite-havok.md §9.2): `digest` (16 hex digits, FNV-1a over every live byte and address), `bodies`, `constraints`, `pairs`, `heap_used`. The arena hash does not cover the Havok heap, so this proves a physics rewrite; the sim report carries it as `havok.world` |
 
 ```sh
 h2 agent havok.agents '{"object":"player.0"}'
@@ -849,69 +641,47 @@ h2 agent havok.contacts '{"object":"player.0"}'
 h2 agent havok.bodies '{"near":"player.0","radius":3}'
 ```
 
-For a superbounce, poll `havok.contacts {object: player.0}` once a tick on
-one `h2 agent -` connection next to `object player.0`: the contact with
-`b.fixed` is the level, and `impulse` over the body's `mass` is the
-velocity it gave. A type-`0x17` wrapper reports `kind: "other"` in
-`havok.bodies`; its current pill is the pointer at `shape+0x30`
-([Shapes](../engine/havok-runtime.md#shapes)). A direct biped capsule's
-`shape.height` tells standing from crouching.
+Superbounce polling recipe: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`havok`: the physics world".
 
 ### `havok.agents`
 
-`object` is required. The reply has `object`, a stamp (`at`) and `agents`.
-Each entry is a pair with an allocated agent on any rigid body of that
-object. A live object with no such pair returns an empty list. A
-malformed selector is `INVALID_PARAMS`; an absent object or a player
-between lives is `GONE`.
+`object` is required. The reply has `object`, `at` and `agents`: each pair with
+an allocated agent on any rigid body of that object (empty for a live object
+with none). A malformed selector is `INVALID_PARAMS`; an absent object or a
+player between lives is `GONE`.
 
-- `entry`, `island` and `collidables: [a,b]` are guest addresses in native
-  pair order. `object_side` is `a` or `b`, and `entity` is the requested
-  object's participating rigid body. `other` identifies the partner
-  entity, with its `datum`, object ID and fixed-island flag where
-  available; it is omitted for a partner without an entity. `pair_word`
-  keeps the last four bytes of the pair record.
-- `cache` has `base`, `vtable`, `manager`, `kind` and `hex`. Addresses,
-  keys and raw words are eight lowercase hex digits. `hex` is two digits
-  per guest byte from `base`, including the allocation header and padding.
-- A `bv_tree` or `welded_bv_tree` also has `tree`: `min` and `max` (the
-  cached query box in the tree's frame) and, per immediate child, `entry`,
-  `key`, raw `word_04` and its own `cache`. A type-1 structure MOPP key
-  also has `surface`, the numeric collision BSP surface index. A filtered
-  child is `kind: "empty"` with its shared header.
-- A `convex` or `swept_convex` cache has a `convex` block: `vertices_a`
-  and `vertices_b` (active support vertex IDs in that agent's dispatch
-  order; for convex against tree, A is the convex body and B the selected
-  tree shape), `contact_ids` (the child manifold's IDs in the shared
-  manager), `separating_axis` and `separating_distance` (the bound used to
-  skip a closest-feature search while positive; non-finite values are
-  null). `swept_sides` on the swept agent records A in bit 0 and B in
-  bit 1.
-- Unrecognised agents are `kind: "other"` with their inline bytes. The
-  bounds are 32,768 scanned pairs, 512 children per tree, 4 KiB per
-  allocation and 256 KiB of raw cache bytes per request; a failed read or
-  an exceeded bound is `UNAVAILABLE`.
+| Field | Meaning |
+|---|---|
+| `entry`, `island`, `collidables: [a,b]` | guest addresses, native pair order |
+| `object_side`, `entity` | `a` or `b`; the object's participating rigid body |
+| `other` | the partner entity with `datum`, object ID, fixed-island flag; omitted without an entity |
+| `pair_word` | the last four bytes of the pair record |
+| `cache` | `base`, `vtable`, `manager`, `kind`, `hex` (eight lowercase hex digits for addresses; `hex` is the raw bytes from `base`) |
+| `tree` | `bv_tree` and `welded_bv_tree`: `min`, `max`, and per child `entry`, `key`, `word_04`, `cache`; a type-1 MOPP key adds `surface`; a filtered child is `kind: "empty"` |
+| `convex` | `convex` and `swept_convex`: `vertices_a`, `vertices_b`, `contact_ids`, `separating_axis`, `separating_distance`; `swept_sides` (bit 0 A, bit 1 B) |
+| other | `kind: "other"` with inline bytes |
 
-To compare ticks around a crouch, match a child by its partner and
-complete `key`, and record both agent bases to see replacements.
-Allocators can reuse an address between samples, and the raw dump
-contains pointers, unused slots and padding. A cached surface with an
-empty manifold is still a candidate in the query box.
+Bounds: 32,768 scanned pairs, 512 children per tree, 4 KiB per allocation, 256
+KiB of raw cache per request; a failed read or an exceeded bound is
+`UNAVAILABLE`. Reading notes: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`havok.agents`".
 
 ### `havok.pair.set`
 
-`havok.pair.set {object, entry, word}` (access: claim) overwrites one
-pair's word (pair `+0x0c`, [havok-runtime.md](../engine/havok-runtime.md))
-at a tick boundary. `entry` is the pair's `entry` from `havok.agents` for
-the same object; without it, the write goes to the object's one pair
-against a fixed body (the level). `word` is eight hex digits, as
-`pair_word` prints them. It writes only a pair `havok.agents` would list
-for that object at that tick; another `entry`, or no single level pair,
-is `GONE`, and so is an absent object or a player between lives. The reply has `object`, `entry`, `before` and
-`after`. It needs the same claim and host-write session as `world.poke`
-(`agent::havok::install_writes`; writer `set_pair_word` in
-`crates/live/live-telemetry/src/havok_agents.rs`). It exists to test
-whether the word a forced crouch leaves behind is what makes a superbounce
+`havok.pair.set {object, entry, word}` (access: claim) overwrites one pair's
+word (pair `+0x0c`) at a tick boundary.
+
+| Param | Meaning |
+|---|---|
+| `object` | the object |
+| `entry` | the pair's `entry` from `havok.agents`; without it, the object's one level pair |
+| `word` | eight hex digits, as `pair_word` |
+
+Another `entry`, no single level pair, an absent object or a player between
+lives is `GONE`. The reply has `object`, `entry`, `before`, `after`. It needs
+the claim and host-write session of `world.poke`
+(`agent::havok::install_writes`; `set_pair_word` in
+`crates/live/live-telemetry/src/havok_agents.rs`). It tests whether the word a
+forced crouch leaves is what makes a superbounce
 ([superbounce.md](../game/superbounce.md)).
 
 ```sh
@@ -920,118 +690,102 @@ printf '%s\n' claim 'havok.pair.set {"object":"player.0","word":"fffffffd"}' | h
 
 ## `superbounce`: the superbounce game type
 
-`superbounce.state` (access: read; it takes no parameters and refuses any
-with `INVALID_PARAMS`) answers from the state the
-`superbounce` feature publishes each tick
-(`crates/extensions/game/src/superbounce_mode.rs`; wire types in
+`superbounce.state` (access: read; any param is `INVALID_PARAMS`) answers from
+the state the `superbounce` feature publishes each tick
+(`crates/extensions/game/src/superbounce_mode.rs`; wire types
 `crates/extensions/agent-proto/src/superbounce.rs`; registered in
-`crates/extensions/game/src/agent_glue.rs`). The mode is described in
+`crates/extensions/game/src/agent_glue.rs`). The mode:
 [superbounce.md](../game/superbounce.md#the-superbounce-game-type).
 
 | Field | Meaning |
 |---|---|
-| `active` | the mode is on: the game's script requires `hud.superbounce` (Superbounce, Bounce Practice) and `superbounce.set` has not forced it off. Everything below is empty or `idle` while it is off |
+| `active` | the mode is on (script requires `hud.superbounce`, `superbounce.set` has not forced it off); all else is empty or `idle` while off |
 | `primed` | the local player's level pair word is -3 |
-| `word`, `word_signed` | the pair word as eight hex digits and as a signed number; absent without a level pair (between lives) |
-| `position` | the local player's position, world units |
-| `nearest` | the bounce spot nearest the player: `distance` to its edge, `launch` (units/s), `fall` (units) and its `edge` |
-| `scan` | `status` (`idle`, `scanning`, `ready`, `failed`), `map`, `error`, and the `bounce` and `crouch` spot counts |
-| `airborne` | the local player's biped is off the ground (biped flags bit 0, as `world.object`'s `physics.airborne`); absent without a player |
-| `vz` | the local player's vertical velocity, world units a second, up positive |
-| `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
-| `velocity` | the local player's velocity, world units a second; absent without a player |
-| `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce`, `approach_guide`, `charge_segments` ([superbounce.md](../game/superbounce.md#the-huds-options)) |
-| `targets` | the seam targets ([superbounce.md](../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: `second`'s in the flight after a bounce, none otherwise; the set's other seams are lines on the map) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../game/superbounce.md#the-second-bounce)) |
-| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
-| `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
-| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
-| `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
-| `takeoff` | while primed on the ground, where to leave from for the chosen strip, on its floor ([The takeoff](../game/superbounce.md#the-takeoff)); absent when none is found. The world's bar is drawn there |
-| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../game/superbounce.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
-| `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
-| `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes, or a primed fall through a strip's floor, filed on the tick it crosses: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), the touchdown's game `tick` (for `through`, the touchdown's it followed, else the crossing's) and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
-| `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../game/superbounce.md#landings)) |
-| `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
-| `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
+| `word`, `word_signed` | the pair word, hex and signed; absent without a level pair |
+| `position` | local player position, world units |
+| `nearest` | nearest bounce spot: `distance` to its edge, `launch`, `fall`, `edge` |
+| `scan` | `status` (`idle`, `scanning`, `ready`, `failed`), `map`, `error`, `bounce` and `crouch` counts |
+| `airborne` | biped off the ground (flags bit 0); absent without a player |
+| `vz` | vertical velocity, units/s, up positive |
+| `yaw` | aim yaw, radians from +X toward +Y |
+| `velocity` | velocity, units/s; absent without a player |
+| `options` | the script's options: `targets` (`common`, `likely`, `all`) and bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce`, `approach_guide`, `charge_segments` ([options](../game/superbounce.md#the-huds-options)) |
+| `targets` | seam targets ([superbounce.md](../game/superbounce.md#targets)): `mode`, `count`, `tag`, `marked`, `second` (seams reachable after a bounce, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost`, `caught`; [second bounce](../game/superbounce.md#the-second-bounce)) |
+| `charge` | `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill`, `still_ticks`; absent while hidden ([charge](../game/superbounce.md#charge)) |
+| `verb` | prompt verb: `let_go_of_crouch`, `walk_out_to_stand`, `keep_moving`, `charge_again` |
+| `lost_reason` | `stood_still`, `crouched` or `unknown`, while `lost` or `charge_again`; absent otherwise |
+| `nav_target` | `at`, `kind` (`crouch`, `strip`), `distance`, `fall` ([floor marks](../game/superbounce.md#floor-marks)) |
+| `takeoff` | while primed on the ground, where to leave from ([The takeoff](../game/superbounce.md#the-takeoff)); absent when none |
+| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam being gone for; absent while not shown or not primed. Fields: `seam`, `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump`, `impact`, `row`, `ticks`, `speed`, `caught`, `deep`, `depth`, `past`, `across`, `chance`, `chance_capped`, `jump_in`, `cue`, `takeoff`, `strength`; each is absent in the cases the note lists |
+| `landing` | airborne toward a strip: `at`, `verdict` (`on_slot`, `fixable`, `miss`), `speed`, `need`, `miss`, `locked` ([lock-on](../game/superbounce.md#lock-on)) |
+| `last_landing` | the last landing filed: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), `tick`, `at` ([landings](../game/superbounce.md#landings)) |
+| `off_spot` | the last 16 bounces no marked strip explains, oldest first: `tick`, `at`, `edge`, `speed_in`, `launch`; absent when none |
+| `standing_fits` | the standing capsule fits at the origin; absent before the scan is ready |
+| `medals` | every player's medals ([medals](../game/superbounce.md#medals)): `players` (`player`, `chain`, `live`, `counts`) and `recent`, the last 8 awards (`player`, `tick`, `chain`, `medals`, `strips`). Ids: `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced`, `monster-bounce` |
+
+Full `targets`, `guide` and `medals` rows: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`superbounce`: the superbounce game type".
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
 ```
 
-`superbounce.set {"on": false|null}` (access: act) forces the mode off in
-any game (`false`), or follows the game again (`null` or `{}`: its
-script). It cannot turn the mode on: `true` is refused with
-`invalid_params`, because only a game whose script requires
-`hud.superbounce` runs the mode. The answer is `{"mode": "off"|"game"}`.
-The tick's on/off check runs every 30 ticks, so `superbounce.state` shows
-the change within a second.
+`superbounce.set {"on": false|null}` (access: act) forces the mode off in any
+game (`false`) or follows the game's script again (`null` or `{}`). `true` is
+refused with `invalid_params`. The answer is `{"mode": "off"|"game"}`; the
+on/off check runs every 30 ticks.
 
 ```sh
 h2 agent superbounce.set '{"on":false}'
 ```
 
-`superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access: act)
-files a bounce at chain count `N` (1 and up), or a Bounced, for the first
-local player with a unit, by the chain's rule
-(`superbounce_chain::bounce_medals_with`); `"monster": true` with `chain`
-files it as a Monster Bounce. The chain is left at `N` and live,
-as after a real bounce; a Bounced ends it. The award reaches the HUD (its
-medal line and notification) and `superbounce.state`'s `medals` as a real
-one does. The answer is `{"player", "chain", "medals", "line"}`: the slot,
-the count, the ids filed and the HUD's line (the highest medal's glyph and
-words). It refuses with the mode off, with no local player, with `chain`
-0, with both or neither of `chain` and `bounced`, or with `monster` and
-`bounced`.
+`superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access: act) files
+a bounce at chain `N` (1 and up), or a Bounced, for the first local player with
+a unit, by `superbounce_chain::bounce_medals_with`; `"monster": true` with
+`chain` files a Monster Bounce. The award reaches the HUD and
+`superbounce.state`'s `medals`. The answer is `{"player", "chain", "medals",
+"line"}`. It refuses with the mode off, no local player, `chain` 0, both or
+neither of `chain` and `bounced`, or `monster` with `bounced`.
 
 ```sh
 h2 agent superbounce.medal_test '{"chain":6}'
-# {"player":0,"chain":6,"medals":["superbounce","bouncetacular"],"line":"\ue2a5 Bouncetacular!"}
-h2 agent superbounce.medal_test '{"chain":2,"monster":true}'
-# {"player":0,"chain":2,"medals":["superbounce","double-bounce","monster-bounce"],"line":"\ue2a8 Monster bounce!"}
 h2 agent superbounce.medal_test '{"bounced":true}'
 ```
 
-`superbounce.assist` (access: read; no parameters) says what the hold-X fall
-assist did at its last pad read
+`superbounce.assist` (access: read; no params) says what the hold-X fall assist
+did at its last pad read
 ([superbounce.md](../game/superbounce.md#hold-x-the-fall-assist);
 `crates/extensions/game/src/superbounce_assist.rs`).
 
 | Field | Meaning |
 |---|---|
-| `active` | the superbounce mode is on; the assist works only then |
-| `enabled` | the player's `superbounce.fall_assist` setting is on; the assist is opt in and never steers while it is off |
+| `active` | the mode is on |
+| `enabled` | the player's `superbounce.fall_assist` setting is on (opt in) |
 | `test_hold` | `superbounce.assist_test` is holding the button |
-| `engaged` | the assist steered the player at its last read |
-| `reason` | why. Engaged, how the strip was chosen: `kept` (the strip the read before steered onto, still in reach), `marked` (the strip the HUD marks) or `nearest` (the strip the predicted landing misses by least, one the fall is fast enough for first). Held and not engaged: `not_falling`, `no_strip` (none within 6 units), `refused` (every strip near was) or `no_body`. Else `not_held`, `off` (the setting) or `inactive` (the mode) |
-| `target` | the chosen strip's stand point, world units |
-| `point` | the point of that strip being landed on: the stand point moved along the strip to where the fall comes down |
-| `aim` | the point being aimed at, a little before `point` along the drift (X, Y) |
+| `engaged` | the assist steered at its last read |
+| `reason` | engaged: `kept`, `marked`, `nearest`. Held, not engaged: `not_falling`, `no_strip` (none within 6 units), `refused`, `no_body`. Else `not_held`, `off`, `inactive` |
+| `target` | the chosen strip's stand point |
+| `point` | the point of the strip being landed on |
+| `aim` | the point aimed at (X, Y) |
 | `landing` | where the player lands if the stick is let go (X, Y) |
-| `fall_time` | seconds until touchdown at the strip's height |
-| `stick` | the left stick sent to the guest, `[x (right), y (forward)]`, -1 to 1 |
-| `from`, `velocity` | the player's origin and velocity at the read; absent while the button is up |
-| `candidates` | the strips judged at the read, while the button is held: the chosen one, the others in reach, then the refused, nearest first, at most 12 |
-| `chose` | the read the assist last engaged on, the choice at the press: `target`, `point`, `reason`, `from`, `velocity` and `candidates`. Kept after the button is let go, until the next engagement |
+| `fall_time` | seconds to touchdown at the strip's height |
+| `stick` | stick sent to the guest, `[x, y]`, -1 to 1 |
+| `from`, `velocity` | origin and velocity at the read; absent while the button is up |
+| `candidates` | strips judged while held, at most 12: chosen, others in reach, then refused, nearest first |
+| `chose` | the last engagement's choice: `target`, `point`, `reason`, `from`, `velocity`, `candidates`; kept until the next |
 
 `target` to `stick` are absent while not engaged. A candidate:
 
 | Field | Meaning |
 |---|---|
-| `stand` | the strip's stand point, world units |
-| `verdict` | `chosen`; `passed` (in reach, another was chosen); or why it was refused: `above` (not below the player), `long` (a fall over 3 s), `far` (over 3 units sideways), `out_of_reach` (the stick cannot bring the landing onto it in the time left), `covered` (a floor is between the player and it) or `walled` (something solid is between) |
-| `distance` | from the player to the strip's edge, sideways, world units |
-| `speed`, `need` | the touchdown speed the fall to it gives, and the speed it needs, units/s |
-| `point`, `fall_time`, `miss` | in reach only: the point of the strip to land on, the seconds to it, and how far the coasting landing misses the aim |
+| `stand` | the strip's stand point |
+| `verdict` | `chosen`; `passed`; or refused: `above`, `long` (fall over 3 s), `far` (over 3 units sideways), `out_of_reach`, `covered`, `walled` |
+| `distance` | sideways, to the strip's edge |
+| `speed`, `need` | touchdown speed the fall gives, and the speed needed, units/s |
+| `point`, `fall_time`, `miss` | in reach only: the landing point, seconds, and the miss of the coasting landing |
 
-A wrong pull shows in `chose`: the strip it took, why, and what it made
-of the strip the player meant.
-
-`superbounce.assist_test {"hold": true|false}` (access: act) holds the
-assist's button as if it were pressed, so an agent can try the assist
-without a pad: with the mode and the setting on, a player in the air above
-a strip in reach is steered while it is `true`. The answer is
-`{"hold": bool}`. It holds until set `false`. The setting is turned on and
-off with `settings.set`, live.
+`superbounce.assist_test {"hold": true|false}` (access: act) holds the assist's
+button until set `false`; the answer is `{"hold": bool}`. Turn the setting on
+with `settings.set`.
 
 ```sh
 h2 agent settings.set '{"key":"superbounce.fall_assist","value":true}'
@@ -1039,114 +793,99 @@ h2 agent superbounce.assist_test '{"hold":true}'
 h2 agent superbounce.assist
 ```
 
-`superbounce.verify {kind, ...}` (access: act) starts a batch of trials of
-the loaded map's spots in the game, run tick by tick on one seat by an
-agent ticker (`Agent::add_ticker`), and answers at once with the plan
+`superbounce.verify {kind, ...}` (access: act) starts a batch of trials of the
+loaded map's spots, run tick by tick on one seat by an agent ticker
+(`Agent::add_ticker`), and answers at once with the plan
 ([superbounce.md](../game/superbounce.md#verifying-spots);
 `crates/extensions/game/src/superbounce_verify.rs`; wire types
-`agent_proto::superbounce::Verify*`). One batch runs at a time. It needs
-the mode on and its scan ready, except over explicit `points`; the
-`player.<n>` seat needs the `superbounce-assist` feature's pad tap, and
-every kind but `route` needs the `agent-calls` feature's teleport
-(`UNAVAILABLE` otherwise). Every param but `kind` is optional:
+`agent_proto::superbounce::Verify*`). One batch runs at a time. It needs the
+mode on and its scan ready, except over explicit `points`; the `player.<n>`
+seat needs the `superbounce-assist` feature's pad tap, and every kind but
+`route` needs the `agent-calls` teleport (`UNAVAILABLE` otherwise). Every param
+but `kind` is optional:
 
 | Param | Meaning |
 |---|---|
-| `kind` | `crouch` (crouch outside the lip, walk in, let go under it, walk out: does the word turn −3?), `drop` (a fall onto a strip with the word set: does it launch?) or `route` (a bot's whole `bots.bounce_to` route) |
-| `spots` | the scan's spots of that kind by index, best score first (the order `dry_run` lists); default the first `max_spots` (12) that have not failed |
-| `points` | explicit spots instead: `{stand, out?, edge?, drift?, need?}` (a drop's hit is the one catch either side of `edge`, [superbounce.md, "The target: the collision edge"](../game/superbounce.md#the-target-the-collision-edge)); never saved |
-| `seat` | `player.<n>` (default `player.0`, driven through the first controller's pad) or a brain-driven bot by gamertag, handle or `player.<n>` (driven by holding its pad); `route` needs a bot |
-| `turns`, `distances`, `offsets` | crouch: approach turns in degrees from straight in (default `[0,25,-25]`), starts outside the lip along it (default `[0.3,0.6]`), and X/Y offsets (default `[[0,0]]`) |
-| `across`, `along`, `heights` | drop: offsets across the spot's target line toward the drift (default `[-0.1,-0.05,0,0.05,0.1]`), along it (`[0]`), and heights over the strip (`[1.5,2.5,3.5]`) |
-| `prime` | drop: `set` (−3, default), `none` (0, the control) or `keep` |
-| `drift_stick` | drop: the stick along the drift while falling, 0 to 1 (default 0) |
-| `settle_ticks`, `hold_ticks`, `out_ticks`, `fall_ticks`, `route_ticks` | 20, 15, 30, 120, 3600 |
-| `to`, `mode`, `repeat` | route: the target (default 6 up from each strip's stand), `help` or `fun` (default), and the routes a spot (3) |
-| `trace` | keep the per-tick trace of this trial index (`phase`, `pos`, `vz`, `airborne`, `request`, `crouch_button`, `crouch`, `standing_fits`, `word`) |
+| `kind` | `crouch`, `drop` (a fall onto a strip with the word set) or `route` (a bot's `bots.bounce_to` route) |
+| `spots` | scan spots of that kind by index, best score first; default the first `max_spots` (12) that have not failed |
+| `points` | explicit spots `{stand, out?, edge?, drift?, need?}` ([the target](../game/superbounce.md#the-target-the-collision-edge)); never saved |
+| `seat` | `player.<n>` (default `player.0`) or a brain-driven bot by gamertag, handle or `player.<n>`; `route` needs a bot |
+| `turns`, `distances`, `offsets` | crouch: approach turns in degrees (default `[0,25,-25]`), start distances outside the lip (`[0.3,0.6]`), X/Y offsets (`[[0,0]]`) |
+| `across`, `along`, `heights` | drop: offsets across the target line (`[-0.1,-0.05,0,0.05,0.1]`), along it (`[0]`), heights over the strip (`[1.5,2.5,3.5]`) |
+| `prime` | drop: `set` (-3, default), `none` (0, the control) or `keep` |
+| `drift_stick` | drop: stick along the drift, 0 to 1 (default 0) |
+| `settle_ticks`, `hold_ticks`, `out_ticks`, `fall_ticks`, `route_ticks` | defaults 20, 15, 30, 120, 3600 |
+| `to`, `mode`, `repeat` | route: target (default 6 up from each stand), `help` or `fun` (default), routes a spot (3) |
+| `trace` | keep the per-tick trace of this trial index |
 | `save` | write the map's verified file at the end (default true; never for `points` or `route`) |
 | `dry_run` | plan and list, run nothing |
 
 The answer is `{job, kind, seat, map, spots, trials, estimated_ticks,
-dry_run}`: each spot's `index`, `kind`, `stand`, `status` and `score`, and
-each trial's `spot`, `start`, `yaw`, `distance`, `offset` and `height`.
+dry_run}`; spots carry `index`, `kind`, `stand`, `status`, `score`, trials
+`spot`, `start`, `yaw`, `distance`, `offset`, `height`.
 
-`superbounce.verify_status {wait_ticks?, brief?}` (access: read) reports
-on the newest batch: `state` (`none`, `running`, `done`, `failed`,
-`cancelled`), `job`, `kind`, `seat`, `map`, `done` and `total` trials,
-`current` (the trial and its phase), `spots`, `results` (each spot's
-`trials`, `ok`, `status` `proven`, `failed` or `untried`, its `best`
-trial and `why` the others failed, by count), `trials` (left out with
-`brief`), `trace`, `lines` (one a spot), `saved` (the verified file
-written) and `error`. With `wait_ticks` (at most 290) it answers when the
-batch ends or that many ticks pass. A crouch trial carries
-`crouched_first`, `under`, `forced`, `primed_tick`, `primed_at` and
-`closest`; a drop `contact_tick`, `speed_in`, `vz_out`, `landed_at`,
-`word_before` and `landing`; a route `route`, `steps` and its
-touchdown. `superbounce.verify_cancel` (access: act; no params) stops the
-batch, lets go of the seat and answers with the report; a cancelled batch
-writes nothing.
+`superbounce.verify_status {wait_ticks?, brief?}` (access: read) reports on the
+newest batch: `state` (`none`, `running`, `done`, `failed`, `cancelled`), `job`,
+`kind`, `seat`, `map`, `done`, `total`, `current`, `spots`, `results` (per spot
+`status` `proven`, `failed` or `untried`), `trials` (not with `brief`),
+`trace`, `lines`, `saved`, `error`. `wait_ticks` (at most 290) waits for the
+end. Per-kind trial fields: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`superbounce`: the superbounce game type".
+`superbounce.verify_cancel` (access: act; no params) stops the batch, releases
+the seat and answers with the report; nothing is written.
 
 ```sh
 h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
 h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
 h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'
-h2 agent superbounce.verify '{"kind":"drop","prime":"none","spots":[0]}'
 ```
 
-`superbounce.view` (access: read; no parameters) says what the bounce
-view shows ([superbounce.md](../game/superbounce.md#the-bounce-view);
-`crates/extensions/game/src/superbounce_view.rs`; wire types in
-`crates/extensions/agent-proto/src/superbounce_view.rs`), as of the last
-tick, timed now:
+`superbounce.view` (access: read; no params) says what the bounce view shows,
+as of the last tick ([superbounce.md](../game/superbounce.md#the-bounce-view);
+`crates/extensions/game/src/superbounce_view.rs`; wire types
+`crates/extensions/agent-proto/src/superbounce_view.rs`):
 
 | Field | Meaning |
 |---|---|
-| `active` | the superbounce mode is on; everything below is empty while off |
-| `mode` | `none`, `pulse` (a tap's pulse still shows) or `hold` |
+| `active` | the mode is on; all else empty while off |
+| `mode` | `none`, `pulse` or `hold` |
 | `button` | the flashlight action at the last tick |
 | `test_hold` | `superbounce.view_test` is holding |
-| `pulse_age`, `pulse_front` | seconds since the pulse left, and its ring's distance from the player in world units; absent without a pulse |
+| `pulse_age`, `pulse_front` | seconds since the pulse left, ring distance in world units; absent without a pulse |
 | `grow` | the tracker's growth into the map, 0 to 1 |
-| `spots`, `marks`, `hidden`, `tested` | the spots the view knows, those marked in the world now, of those the ones behind a wall, and those with a line-of-sight answer |
-| `tracker` | `enabled` (the variant shows the tracker), `range` (world units) and `blips`, the next spot and then the one after it, at most two: each `kind` (`bounce` or `crouch`), `proven`, `x` and `y` (right and ahead over the range; on the unit circle when out of range), `level` (`same`, `above`, `below`), `rim` (out of range) and `nav` (the next spot) |
-| `map` | while held or shrinking: `floors`, `edges` and `pairs` drawn, and its `blips` over the map's 50 m |
+| `spots`, `marks`, `hidden`, `tested` | spots known, marked now, behind a wall, with a line-of-sight answer |
+| `tracker` | `enabled`, `range`, and up to two `blips` (`kind`, `proven`, `x`, `y`, `level`, `rim`, `nav`) |
+| `map` | while held or shrinking: `floors`, `edges`, `pairs`, `blips` over 50 m |
 
-`superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act)
-drives the view with no pad: `pulse` fires a pulse at the next tick,
-`hold` holds until `none`, `none` lets go and stops the pulse. The answer
-is `{mode, test_hold}`. Refused while the mode is off.
+`superbounce.view_test {"mode": "pulse"|"hold"|"none"}` (access: act) drives
+the view with no pad; the answer is `{mode, test_hold}`. Refused while the mode
+is off.
 
 ```sh
 h2 agent superbounce.view_test '{"mode":"hold"}'
 h2 agent superbounce.view
-h2 agent superbounce.view_test '{"mode":"none"}'
 ```
 
-`superbounce.ghosts` (access: read; no parameters) lists the loaded
-map's ghost runs: recorded runs that bounced off a spot, the best of
-each spot, kept in `<map>.ghosts` in the bots directory
-([superbounce.md](../game/superbounce.md#ghost-runs)). Wire types in
-`crates/extensions/agent-proto/src/superbounce.rs`; the game side is
-`crates/extensions/game/src/superbounce_ghost.rs`.
+`superbounce.ghosts` (access: read; no params) lists the loaded map's ghost
+runs, kept in `<map>.ghosts` in the bots directory
+([superbounce.md](../game/superbounce.md#ghost-runs);
+`crates/extensions/agent-proto/src/superbounce.rs`; game side
+`crates/extensions/game/src/superbounce_ghost.rs`).
 
 | Field | Meaning |
 |---|---|
 | `active` | the mode is on |
-| `map` | the map the runs are for, once the mode has ticked on one |
-| `file` | the ghosts file's path, once there is a bots directory |
-| `error` | why the file could not be read (another version, a bad line); it is not written over then |
-| `ghosts` | each run: `index` (what `superbounce.ghost_show` takes), `at` (the spot's stand point), `landing` (the touchdown origin), `source` (`bot`, `verify` or `player`), `ticks` (30 a second), `launch` (units/s up out of the bounce), `crouch_primed` (it primed itself with a crouch), `presses` (`frame` and `button`, `crouch` or `jump`) |
+| `map`, `file` | the map, and the ghosts file's path |
+| `error` | why the file could not be read; it is not written over then |
+| `ghosts` | each run: `index`, `at`, `landing`, `source` (`bot`, `verify`, `player`), `ticks`, `launch`, `crouch_primed`, `presses` (`frame`, `button`) |
 | `looked_at` | the run whose spot the first local player looks at |
-| `prompt` | the prompt line's ghost verb, as the HUD writes it (X's glyph, U+E102; B's, U+E101, on the Bumper Jumper layout) |
-| `playing` | the playback: `index`, `seconds` since it started by the clock, the run's `tick` then (with the fraction to the next), the figure's `at`, and `done` once it holds on its last frame; absent when none plays |
-| `recorded` | runs kept (a new best for their spot) since the game started |
+| `prompt` | the prompt line's ghost verb |
+| `playing` | `index`, `seconds`, `tick`, `at`, `done`; absent when none plays |
+| `recorded` | runs kept since the game started |
 
-`superbounce.ghost_show {spot?, stop?}` (access: act) plays run `spot`
-once from its start, or the run looked at without `spot`; `{"stop":
-true}` stops the playback. It answers `playing`, the `index` and the
-run's length in `ticks`. Refused while the mode is off, with no map, for
-an index the map has no run at, or (to play one) without the
-`superbounce-ghost` feature, which is off by default.
+`superbounce.ghost_show {spot?, stop?}` (access: act) plays run `spot` once, or
+the run looked at; `{"stop": true}` stops it. It answers `playing`, `index`,
+`ticks`. Refused while the mode is off, with no map, for an index with no run,
+or (to play) without the `superbounce-ghost` feature (off by default).
 
 ```sh
 h2 agent superbounce.ghosts
@@ -1155,42 +894,30 @@ h2 agent superbounce.ghost_show '{"stop":true}'
 ```
 
 `superbounce.reload {map?}` (access: act) re-reads a map's `<map>.spots`,
-`.learned`, `.verified` and `.ghosts` from the bots directory, for the
-loaded map without `map`, and republishes them the way a map load does,
-with no restart: the bots' spot table and its generation (the brains read
-their spots again), and the mode's own copy of the loaded map's spots,
-which its marks, HUD, assist and tracker read. The `.spots` file is taken
-when it is the current scanner's (its map fingerprint is not checked); a
-missing, damaged or other-version one leaves the scan as it was, and
-`spots_file` says so. The mode keeps its own scan of the loaded BSP, so a
-changed `.spots` reaches the bots and a changed `.verified` or `.learned`
-reaches everything. The call runs on the game thread at a tick boundary.
-The answer is `map`, `dir`, `spots_file` (`read`, `absent` or
-`unread: <why>`), `before` and `after` (the scan as the bots keep it with
-the files applied: `total`, `crouch`, `slot`, `crease`, `vee`, `busy`,
-`likely`, `proven`, `failed` and `marked`), `verified_entries`,
-`learned_entries`, `ghosts_before`, `ghosts_after` and `mode_updated`.
-Refused with no map and no `map`, or with no bots directory. Game side:
-`crates/extensions/game/src/superbounce_reload.rs`,
-`bots::spots::reload_in`.
+`.learned`, `.verified` and `.ghosts` from the bots directory (the loaded map
+without `map`) and republishes them as a map load does, with no restart, at a
+tick boundary (`crates/extensions/game/src/superbounce_reload.rs`,
+`bots::spots::reload_in`). The answer has `map`, `dir`, `spots_file` (`read`,
+`absent` or `unread: <why>`), `before` and `after` (scan counts), `verified_entries`,
+`learned_entries`, `ghosts_before`, `ghosts_after`, `mode_updated`. Refused
+with no map and no `map`, or no bots directory. Behaviour detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`superbounce`: the superbounce game type".
 
-`superbounce.tune {bounce_speed?, catch?, launch_gain?}` (access: act)
-sets live overrides of the model's constants: the touchdown speed every
-seam needs (`superbounce::speed::BOUNCE_SPEED`, above 0), the catch
-(`superbounce::CATCH`, world units, 0 up to but not including 1) and the
-launch gained per unit/s over the threshold (`speed::EXCESS_GAIN`, 0 or
-more). A key left out stays as it is and `null` clears its override. Every
-key is checked before any is applied, and an unknown key is refused. The
-model reads each constant through one accessor
-(`superbounce::speed::bounce_speed`, `excess_gain` and
-`superbounce::catch`, over `superbounce::tune`), so an override reaches
-the scan's `need`, the launch, the landing verdict, the assist and the
-bots at once. Overrides live in memory only and are gone with the
-process. The answer is `bounce_speed`, `catch` and `launch_gain`, each
-`{value, source}` with `source` `default` or `override`.
+`superbounce.tune {bounce_speed?, catch?, launch_gain?}` (access: act) sets
+live overrides of the model's constants, in memory only:
+
+| Key | Constant | Range |
+|---|---|---|
+| `bounce_speed` | `superbounce::speed::BOUNCE_SPEED` | above 0 |
+| `catch` | `superbounce::CATCH` | 0 up to but not including 1 |
+| `launch_gain` | `speed::EXCESS_GAIN` | 0 or more |
+
+A key left out stays; `null` clears its override; every key is checked before
+any applies, and an unknown key is refused. The answer is `bounce_speed`,
+`catch`, `launch_gain`, each `{value, source}` with `source` `default` or
+`override`.
 
 ```sh
-h2 agent superbounce.reload
 h2 agent superbounce.reload '{"map":"zanzibar"}'
 h2 agent superbounce.tune '{"bounce_speed":5.0,"catch":0.15}'
 h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}'
@@ -1198,28 +925,25 @@ h2 agent superbounce.tune '{"bounce_speed":null,"catch":null,"launch_gain":null}
 
 ## `pogo`: Superbounce's Pogo Stick
 
-`pogo.state` (access: read; no parameters) says what the Pogo Stick is
-doing ([pogo-stick.md](../game/pogo-stick.md);
-`crates/extensions/game/src/pogo_agent.rs`; wire types in
-`crates/extensions/agent-proto/src/pogo.rs`), as of the last tick:
+`pogo.state` (access: read; no params) says what the Pogo Stick is doing, as of
+the last tick ([pogo-stick.md](../game/pogo-stick.md);
+`crates/extensions/game/src/pogo_agent.rs`; wire types
+`crates/extensions/agent-proto/src/pogo.rs`):
 
 | Field | Meaning |
 |---|---|
 | `active` | the superbounce mode is on; `riders` is empty while off |
-| `option`, `style` | the script's `pogo` and `pogo_style` options as the variant set them: whether a spawn is given a stick, and which look (`unsc`, `covenant`, `forerunner`) |
+| `option`, `style` | the script's `pogo` and `pogo_style` options (`unsc`, `covenant`, `forerunner`) |
 | `map` | the loaded map's name; absent without one |
-| `weapons` | the three sticks' weapon tags in the loaded map, in the order `unsc`, `covenant`, `forerunner`; empty when the map does not carry the kit (the `pogo` feature off, or the map refused), and then no stick is given |
-| `riders` | every player holding a stick, the local players first: `player` (the slot), `local`, `unit` and `weapon` (object handles for `world.object`), `style`, `phase` (`carried`, `mount`, `ride`, `compress`, `spring`, `dismount`), `mounted` (0 in the hands to 1 on the stick), `compress` (0 the piston out to 1 in), `flare` (1 on a bounce's tick, fading), `tuck`, `trick` (absent without one: `id`, `name`, `progress` 0 to 1, half at the apex) and `posed` (the riding pose is drawn over the game's own) |
-| `camera` | the chase camera: `on` (a local player holds a stick), `drawn` (the last frame was drawn from it; false headless, in split screen and under Forge's or Theater's camera), `room` (the share of the boom the level leaves room for), `share` (the boom's share now, eased) and `fallback_frames` (frames placed from the body's eye and aim because the game's own view did not read as a camera, since the game started) |
+| `weapons` | the three sticks' weapon tags, in the order `unsc`, `covenant`, `forerunner`; empty when the map lacks the kit |
+| `riders` | players holding a stick, local first: `player`, `local`, `unit`, `weapon`, `style`, `phase` (`carried`, `mount`, `ride`, `compress`, `spring`, `dismount`), `mounted`, `compress`, `flare`, `tuck`, `trick` (`id`, `name`, `progress`), `posed` |
+| `camera` | the chase camera: `on`, `drawn`, `room`, `share`, `fallback_frames` |
 | `tricks` | the ids `pogo.test` takes |
 
-`pogo.test {"trick": "<id>"}` (access: act) shows a trick from its start
-on the first local player's stick, whatever that player is doing: on the
-ground the player is shown on the stick for the trick's length. It is
-presentation only: no bounce is filed, and nothing is sent or recorded.
-The answer is `{player, trick, name}`. Refused while the superbounce mode
-is off, for an id that is no trick, and when no local player holds a
-stick.
+`pogo.test {"trick": "<id>"}` (access: act) shows a trick from its start on the
+first local player's stick. It is presentation only: no bounce is filed. The
+answer is `{player, trick, name}`. Refused with the mode off, an unknown id, or
+no local player holding a stick.
 
 ```sh
 h2 agent pogo.state
@@ -1230,11 +954,11 @@ h2 agent pogo.test '{"trick":"backflip"}'
 
 | Method | Params | Result |
 |---|---|---|
-| `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), the numbers `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
+| `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), as `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
 | `profile.memory` | none | the flat RAM window's counters (below) |
-| `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
+| `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
 
 ```sh
@@ -1247,121 +971,58 @@ h2 agent faults
 ```
 
 - **`profile.capture`** keeps every frame-stats row over the window and
-  answers `frames`, `fps`, `frame_ms` and `busy_ms` (frame less pacing) as
-  mean, p50, p95, p99, max and total; the same for each phase (`cpu`,
-  `decode`, `encode`, `submit`, `gpu-wait`, `pace`, `render-wait`, `d3d`,
-  and `render` when the render-timing feature measures it); mean, max and
-  total of each counter (`draws`, `passes`, `uploads`, ...); `over_budget`,
-  the frames longer than `budget_ms` (default 33.3); and `spikes`, the
-  worst of them (20 by default, at most 500), each with its present
-  number, game tick and map, its own phases and counters, its three
-  biggest phases (pacing left out) and `causes`. Every frame is also
-  written as a CSV row (present, end, tick, map, total and busy us, each
-  phase in us, each counter) under the cache directory's `captures/`, and
-  the reply gives its path. A frame belongs to the last tick that had ended
-  when it did. By ticks the window is 1 to 36000 (it gives up after 600 s
-  with `complete: false`); by `ms`, 1 to 600000. One capture at a time; it
-  is read-only. With frame stats off it answers `UNAVAILABLE`
+  answers `frames`, `fps`, `frame_ms`, `busy_ms` (frame less pacing) as mean,
+  p50, p95, p99, max, total; the same per phase (`cpu`, `decode`, `encode`,
+  `submit`, `gpu-wait`, `pace`, `render-wait`, `d3d`, `render`); mean, max,
+  total per counter; `over_budget` (frames over `budget_ms`, default 33.3);
+  and `spikes` (default 20, at most 500) each with its present number, tick,
+  map, phases, counters, three biggest phases and `causes`. Every frame is
+  also a CSV row under the cache directory's `captures/`; the reply gives the
+  path. By ticks the window is 1 to 36000 (gives up after 600 s with
+  `complete: false`); by `ms`, 1 to 600000. One capture at a time, read only.
+  With frame stats off it answers `UNAVAILABLE`
   (`crates/extensions/agent/src/capture.rs`).
-- **Causes.** The reply's `causes` counts every frame over budget, listed
-  or not, by cause (`crates/extensions/agent/src/capture.rs`, `causes`):
-  `shader_compile` and `pipeline_compile` (any on the critical path),
-  `texture_uploads` and `gpu_readback` (more than twice the window's
-  median, and at least one), `file_io` (the guest's file calls took at
-  least 2 ms of host time in the frame, or at least a tenth of its busy
-  time: the `file_io_us` counter; bytes read alone never count), `gpu`,
-  `render_thread` and `pushbuf_decode` (that phase is at least 40% of the
-  frame's busy time), else `guest_cpu` when the guest's own time is the
-  biggest phase. These are what the counters show, not a proof.
-- **Native renderer counters.** `profile.counters` and `profile.capture`
-  use the field names of `H2_FRAME_STATS_CSV`. Each response and capture
-  CSV includes native columns with activity in its window; the streaming
-  CSV writes a fixed header at startup. Each `native_<stage>_` prefix has
-  examined and suppressed guest items, refusals by reason, prepare and
-  encode nanoseconds, GPU buffers and bind groups created, upload bytes and
-  pipeline misses; per-view columns count reference and display ranges
-  attempted and committed and invariant failures. For example
-  `native_world_v1_display_recorded` can be positive while
-  `native_world_v1_display_ranges` is zero when the display copy fails
-  validation. Frame captures also include `native_lights_worker_round_trips`
-  and `native_lights_reference_passes` / `native_lights_display_passes`.
-  Definitions: [native-renderer.md](../graphics/native-renderer.md#frame-counters).
-- During map preparation, `setup_<stage>_worker_ns` sums elapsed time on workers
-  between presents for world, lights, fog, water, decorators, objects, layers,
-  pipelines, nav and visibility. Concurrent jobs can contribute more than one
-  frame's duration. `setup_over_33ms_frames` counts presents more than 33⅓ ms
-  apart while measured work overlaps that interval. Use the capture's phase
-  breakdown to distinguish a blocked frame from work running alongside it.
-  `setup_dispatch_ns` times foreground handoffs for BSP activation and
-  publication, object and light models, first-person models, resident decorator
-  geometry snapshots and bot map changes.
-  `setup_dispatch_stalled_frames` counts over-budget presents whose handoffs
-  alone took more than 33⅓ ms.
-  `d3d_entries` counts guest D3D entry calls that ran, `d3d_residual_draws`
-  the guest draws `d3d` handed to its backend (what no native replacement
-  claimed) and `d3d_push_words` the push-buffer words it decoded. They are
-  always on: an integer add into the calling thread's frame, or one relaxed
-  load when frame stats are off
-  ([retire-d3d.md](../graphics/retire-d3d.md), slice R0;
+- **Causes.** `causes` counts every over-budget frame by cause (`causes` in
+  `capture.rs`): `shader_compile`, `pipeline_compile`, `texture_uploads`,
+  `gpu_readback`, `file_io`, `gpu`, `render_thread`, `pushbuf_decode`, else
+  `guest_cpu`. Thresholds: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`profile`: where a frame goes".
+- **Native renderer counters.** `profile.counters` and `profile.capture` use
+  the field names of `H2_FRAME_STATS_CSV`, with native columns per
+  `native_<stage>_` prefix. Definitions:
+  [native-renderer.md](../graphics/native-renderer.md#frame-counters). The
+  `setup_*`, `d3d_*` and `map_slot_*` counters are in the note; the `d3d`
+  ones are always on ([retire-d3d.md](../graphics/retire-d3d.md);
   [`render.residual`](#renderresidual-residual-d3d-work) breaks them down).
-  For inactive map slots, `map_slot_vfs_wait_ns` times the render-frame hook
-  acquiring the shared VFS and `map_slot_check_ns` times its checks for
-  changed source files after acquisition. A slot check runs at most twice a
-  second and requires an inactive candidate.
-  `load.timeline` also sums these counters for the stall and settling periods.
-- **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500)
-  returns the fallback interpreter's totals and its entry addresses ranked
-  by instructions interpreted, each with hits, x87 instructions and the
-  function it is in (the nearest analysed start at or below it). Kept per
-  address in `boot::fallback::Stats::by_site`, at most 4096 addresses
-  (`sites_full` says when later ones count in the totals only). Slim host
-  modules also report `cold_entries` (interpreter invocations for omitted
-  owners) and `cold_sites` (distinct owner/selector pairs); the boot log
-  names each pair on first use.
-- **Flat RAM window.** `profile.memory` answers the counters of every
-  runtime's flat RAM window in the process, summed
-  (`runtime::window::process_stats`, answered by boot's agent glue;
+- **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500) returns
+  the interpreter's totals and entry addresses ranked by instructions, each
+  with hits, x87 instructions and the enclosing function. Kept in
+  `boot::fallback::Stats::by_site`, at most 4096 addresses (`sites_full`).
+  Slim host modules add `cold_entries` and `cold_sites`.
+- **Flat RAM window.** `profile.memory` sums the counters of every runtime's
+  flat RAM window (`runtime::window::process_stats`;
   [contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md),
-  section 4.1). They are always on. `windows` is how many there are and
-  `aliased` how many hold RAM (guest RAM is aliasable once a flat-RAM
-  module is registered, or from the start with `H2_FLAT_RAM=1` at run
-  time). `fixups` counts faulting accesses sent to their slow path; the
-  null window a context uses with fast memory off is not counted. `pages_outside` counts mapped guest pages the window does not
-  hold: non-congruent with their backing, sharing a host page with one,
-  byte-granular or armed by the access trap. Each costs a fault and the
-  helper per access once flat accesses are emitted. `congruence_skipped`
-  is the physical RAM, in bytes, the congruent allocator jumped over to
-  give a fresh allocation the residue of its address. A slow page shows as
-  `fixups` rising or `pages_outside` above zero.
-- **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the
-  fault census (`runtime::fault_census`,
+  section 4.1): `windows`, `aliased`, `fixups`, `pages_outside`,
+  `congruence_skipped`. A slow page shows as `fixups` rising or
+  `pages_outside` above zero.
+- **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the fault
+  census (`runtime::fault_census`,
   [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)):
-  `generated` (memory faults raised by an accessor generated code called)
-  and `runtime` (raised by the runtime or a Rust handler); `ended` (faults
-  a run returned to its caller with); `continued` (times guest execution
-  went on, on the same context, from the state a fault left) and
-  `continued_generated` (of those, generated faults);
-  `precise_exits_needed`, true when `continued_generated` is not 0; and
-  the `top` fault PCs by count, each with `source`, `count`, `continued`
-  and the first fault's `addr`, `len`, `access` and `reason`. Kept per PC,
-  at most 4096 (`sites_full`). It counts from the process's start. It also
-  names the image's choices: `clock` (`accesses` or `blocks`),
-  `imprecise_faults` (module feature 128), and `continued_imprecise`, the
-  continuations from a fault whose EFLAGS were inexact (should be 0).
+  `generated`, `runtime`, `ended`, `continued`, `continued_generated`,
+  `precise_exits_needed`, and the `top` PCs (`source`, `count`, `continued`,
+  `addr`, `len`, `access`, `reason`), at most 4096 (`sites_full`). It also
+  names `clock`, `imprecise_faults` and `continued_imprecise` (should be 0).
 - **Sampling.** `sample: true` also runs the in-process sampler
-  (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
-  what `profile.sample.stop` answers: the module-relative dump
-  (`profile.h2prof` under `H2_SAMPLE_DIR`, which `h2 profile remote`
-  resolves) and its sample count. Only an h2 built with `--features perf`
-  on a host with a sampler has it; otherwise, or while a
-  `profile.sample.start` run holds it, the capture still runs and
-  `sampling.unavailable` says why ([xbox.md](xbox.md), "Profiling on the
-  console").
+  (`profile.sample.*`, `boot::sampling`); `sampling` is what
+  `profile.sample.stop` answers (`profile.h2prof` under `H2_SAMPLE_DIR`).
+  Only an h2 built with `--features perf` on a host with a sampler has it;
+  otherwise `sampling.unavailable` says why ([xbox.md](xbox.md), "Profiling on
+  the console").
 
 ## `render`: the frame and the pipeline
 
 `render.frame` and `render.stats` are host methods (types in
-`crates/extensions/agent-proto/src/render.rs`, logic in `crates/extensions/agent/src/render.rs`).
+`crates/extensions/agent-proto/src/render.rs`, logic in
+`crates/extensions/agent/src/render.rs`).
 
 ```sh
 h2 agent frame                     # the next whole frame: passes, totals
@@ -1378,57 +1039,37 @@ arms the recorder; the next present starts the frame and the one after
 ends it, then it disarms. `render.frame {}` reads the state and the last
 frame (`frame.seq` is the arming's number). `h2 agent frame` does both and
 waits up to 10 s; a paused or loading game presents nothing. Unarmed, the
-draw diagnostics use one relaxed load per draw or clear in the D3D
-wrapper. On a device with a native frame owner, the recorder waits for
-the worker's presentation decision. An original presentation supplies
-the D3D report. A native presentation supplies the executed graph's
-attachment runs, slots, typed stages, snapshots and `display_frame`
-counters. The worker keeps a requested original pass read at its position
-among the guest commands. If the native graph takes the frame, its own
-pass observer supplies the snapshot. Arming a snapshot preserves the
-worker's choice of renderer.
+draw diagnostics cost one relaxed load per draw or clear. With a native
+frame owner the recorder follows the worker's presentation choice; arming a
+snapshot does not change it. Detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`render.frame`".
 
 - **The frame.** `totals` (passes, draws by outcome, vertices, clears,
-  copies, reads, distinct targets); `passes`: runs of work on one colour
-  surface and depth (a return to an earlier target is a new pass), each
-  with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
-  primitives, D3D entries, texture formats, and counts of pixel-program,
-  blended and depth-writing draws; `ops`: copies and readbacks with the
-  draw count before them. Surfaces are the backend's handles as text.
+  copies, reads, distinct targets); `passes` (runs of work on one colour
+  surface and depth, each with target, clears, draws, vertices, outcomes,
+  primitives, D3D entries, texture formats, pixel-program, blended and
+  depth-writing draw counts); `ops` (copies and readbacks, with the draw
+  count before them).
 - **A draw** (with `draws`; at most `max_draws`, 2000 by default;
   `truncated` says when there were more). Its pass, D3D entry, primitive,
-  vertex and index counts, outcome, texture formats, whether it has a
-  pixel program, blends or writes depth; `vs`, the vertex side: `fvf 0x...`
-  or `prog @start n=slots #hash` for a vertex program (the low 32 bits of
-  the words' FNV-1a hash, the same in every frame, so one program's draws
-  can be picked out); and `depth`: `mode` (`D3DRS_ZENABLE`: `off`, `z`,
-  `w`), `w` (W-buffered as drawn: `SET_CONTROL0`'s z-perspective bit once
-  pushed, else `mode`), `func` and `write` (`D3DRS_ZFUNC`,
-  `D3DRS_ZWRITEENABLE`), `viewport` (`[MinZ, MaxZ]`), `scale`
-  (`SET_VIEWPORT_SCALE` z and `SET_VIEWPORT_OFFSET` z), `clip`
-  (`[SET_CLIP_MIN, SET_CLIP_MAX]`), `full` (the depth target's full scale;
-  0 with no depth target) and `clamp` (`D3DRS_DEPTHCLIPCONTROL` clamps
-  rather than culls; shown only when on). A W-buffered draw of a vertex
-  program stores its w clipped (or clamped) to `clip`, over `full`; a
-  z-buffered one its z over `full`.
+  vertex and index counts, outcome, texture formats, pixel program, blend
+  and depth-write flags; `vs`: `fvf 0x...` or `prog @start n=slots #hash`
+  (low 32 bits of the words' FNV-1a hash, stable across frames); and
+  `depth`: `mode`, `w`, `func`, `write`, `viewport`, `scale`, `clip`,
+  `full`, `clamp` (field meanings in the note).
 - **Constants.** `constants` (with `draws`; at most 32 registers, D3D
-  numbering -96..=95, hardware register = number + 96) records those
-  vertex shader constants on each listed draw:
+  numbering -96..=95, hardware register = number + 96) records vertex
+  shader constants on each listed draw:
   `"constants": {"-38": [x, y, z, w], ...}`. The CLI takes ranges
   (`constants -38..-35,58`), implies `draws`, and `max N` sets `max_draws`.
 - **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends,
   its colour target is read back as BGRA and written as a PNG under the
-  cache directory's `frames/`. Original passes use
-  `frame-<pid>-<seq>-pass-<n>.png`. A retry after a failed Swap or
-  renderer replacement adds `-retry-<attempt>` after the sequence. Native passes use a `display-` or
-  `private-` prefix. Read the path or error in `snaps`. An original pass
-  with no known colour size reports that it cannot be read. A completed
-  report retains its files. Replacing a pending capture releases its
-  provisional snapshots. A snapshot incurs a GPU round trip.
+  cache directory's `frames/`. The path or error is in `snaps`. A snapshot
+  incurs a GPU round trip.
 
-A private capture has its own recorder. When the private scene renderer
-is installed, arm the recorder before requesting a lighting capture,
-then read its result:
+A private capture has its own recorder. When the private scene renderer is
+installed, arm it before requesting a lighting capture, then read the
+result:
 
 ```sh
 h2 agent render.frame '{"source":"private","arm":true,"draws":true,"snap":[0]}'
@@ -1436,65 +1077,25 @@ h2 agent render.capture '{"lighting":"retail"}'
 h2 agent render.frame '{"source":"private"}'
 ```
 
-The next completed private draw supplies the report. Each row covers
-draws and clears on the same attachments, with their view/slot pairs
-in `slots` and typed stage names in `stages`. A copy ends a row even
-when the following draw uses the same attachments. The `draws` list and
-vertex totals describe carried guest draws, and `snaps` reads the chosen
-passes before the following graph operations. `private_frame` identifies
-the source scene, present and lighting mode. Its `passes` counts logical
-attachment runs. The backend's `render_passes`, `backend_draws` and
-`submits` include work caused by requested snapshots. The private
-recorder measures wall time from graph entry to final readback.
-Omitting `source` or specifying `"display"` reads or arms the display
-recorder independently. A request for `"private"` returns `UNAVAILABLE`
-when the host has no private scene renderer.
+The next completed private draw supplies the report. Omitting `source` or
+giving `"display"` uses the display recorder. `"private"` returns
+`UNAVAILABLE` when the host has no private scene renderer.
 
 ### `render.frame_layout`
 
-`render.frame_layout {"arm":true,"max_draws":2000,"snap":[0,3]}`
-arms the same one-frame recorder as `render.frame` and includes draw rows
-automatically. `max_draws`, `constants` and `snap` are optional and have the
-same limits as `render.frame`. Call `render.frame_layout {}` for the recorder
-state and the last frame. Both methods share the sequence and the result.
+`render.frame_layout {"arm":true,"max_draws":2000,"snap":[0,3]}` arms the
+same one-frame recorder as `render.frame` and includes draw rows
+automatically. `max_draws`, `constants` and `snap` are optional with the same
+limits. `render.frame_layout {}` reads the state and the last frame; both
+methods share the sequence and the result.
 
-`frame.draws[].layout` gives the guest target size and the selected host
-colour and depth allocation sizes. The viewport and `clip` use guest
-pixels. `display_clip` applies the draw's aspect and scissor transform
-and rounds the result to the host allocation's pixel grid. The row gives
-the draw's UI transform, vertex-position classification and horizontal
-projection correction when present. `window_xy` is the min and max vertex
-position before the display fit and subpixel adjustment for supported
-small, unindexed draws: the reading the device's UI fit uses to tell a
-full-frame pass from a widget (`crates/platform/d3d/src/screen_rect.rs`).
-
-Each `sampled` entry gives the stage, texture header and texture ID,
-source surface when known, guest and host sizes, and U and V address
-modes. The sampled surface names match the handles in `frame.passes` and
-`frame.ops`. For small draws with supported vertex inputs, `uv` gives
-the min and max normalized coordinates at the vertices for direct 2D
-projective lookups. It includes division by the projective coordinate and
-the guest texel-size conversion for linear textures. Dependent lookups,
-such as fog distortion, expose their bindings and address modes. Their
-coordinates also depend on earlier fragment samples.
-
-Pass snapshots read the selected host colour allocation at its actual
-size. The capture records D3D draws and accepted native reservations
-that expose a resolved draw packet, including the native menu fans.
-Higher-level native stages can appear only in the images. Attachment
-sizes describe backing allocations. A draw can use a temporary
-attachment, such as the guest-size pair used for mixed-grid draws.
-Capturing can synchronize the render worker and flush the GPU for the
-requested snapshots.
-
-For backdrop or modal-blur issues, arm a layout frame on each affected
-screen, then look up the passes that write the sampled targets. Use
-`snap` on those pass indices in a second capture to find the first image
-with the artifact. Compare a wide main-menu frame and a 4:3 Choose Profile
-frame. The source and destination sizes, vertex positions, normalized UVs
-and address modes show where a copy magnifies a smaller raster or samples
-beyond the image. The snapshot before that copy shows whether the edge
-artifact arrives in its input.
+`frame.draws[].layout` gives the guest target size and the host colour and
+depth allocation sizes, the viewport and `clip` in guest pixels,
+`display_clip`, the UI transform and `window_xy`. Each `sampled` entry gives
+stage, texture, source surface, sizes, address modes and `uv`. Snapshots read
+the host colour allocation at its actual size. Fields, the backdrop and
+modal-blur workflow: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"`render.frame_layout`".
 
 The host records the layout in `crates/extensions/game/src/d3d_diag.rs` and
 `crates/extensions/game/src/d3d_diag/layout.rs`. The display allocations and
@@ -1503,86 +1104,54 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 
 ### `render.stats`
 
-No params. `display_rate` is the frame owner's display-rate loop, the
-display frames drawn between sealed scenes at 60 and 120 fps
-([framescene.md](../graphics/framescene.md), section 7). `counters.line` is the frame-stats window's
-summary. `counters` also reports the per-frame means for `shadow_walk_layers`,
-each `native_scene_lists_*` stage and the overlay stage's
-`native_ui_overlay_*` counters. The `_native` and `_fallback` fields and
-every overlay counter include zeroes. Another refusal reason appears when
-its window count is positive. The overlay's counters are its items by kind
-(`items`, `quads`, `text_runs`, `fills`, `glyphs`, `blurs`, `model_views`),
-the draws recorded (`batches`) and the items dropped, by reason
-(`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
-`refused_model_view`, `refused_blur`;
-[retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)).
-The HUD counters measure reservations of bitmap quads (`hud_tag_quads`)
-and glyph quads (`hud_text_quads`), with `hud_tag_fallback` and
-`hud_text_fallback` for declined submissions. `hud_tag_recorded` counts
-display-copy recordings for both kinds and `hud_tag_record_failed` counts
-failed attempts per target copy, for every draw the overlay captures.
-See [the HUD on the overlay](../graphics/native-post-hud.md#the-hud-on-the-overlay).
-Menu shader bitmaps' quads count as `menu_shader_quads`, with
-`menu_shader_fallback` for those the UI fan path kept. The fade's, the
-bars' and the loading screen's draws count as `fade_quads`, `bar_quads`
-and `loading_quads`, with `screen_fallback` for those the UI fan path kept
-([the fade, the bars and the loading screen](../graphics/native-post-hud.md#the-fade-the-bars-and-the-loading-screen)).
-The menus' (`menu_*`) are the widget draws claimed at their sorted list
-(`menu_claimed`), those left out (`menu_skipped`), the passes placed for
-runs with items (`menu_passes`), lists whose left-out draws did not match
-(`menu_mismatch`), lists the game draws whole (`menu_refused_frame`,
-`_mismatched`), drawn bitmap widgets the game keeps (a meter,
-`menu_refused_bitmap_meter`; a scrolling bitmap, `_bitmap_scroll`; any
-other state the overlay does not draw as the game does, `_bitmap_state`),
-other drawn widgets the game keeps by the draw not read
-(`menu_refused_text`, `_model`, `_draw`, `_unreadable`,
-`_unlisted`), and lists or runs whose pass was not placed
-(`menu_refused_pass`;
-[native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)).
-A list's scroll arrows and a button's image and label belong to the
-widget's claim. A failed glyph-page fill or bitmap decode leaves the
-whole run on the game renderer and counts under `menu_refused_pass`.
-An active model widget can contribute a camera and object handles to the
-scene overlay while its geometry draws in the nested model view.
-The blur under a dialog counts as `modal_blurs` where the overlay's blur
-replaced its quads, `modal_blur_replayed` where the game's quads were
-given back, `modal_blur_refused_pass` where the host did not arm it, and
-`modal_blur_refused_arguments`, `_steps`, `_combiner` and `_targets` for
-calls not read
-([the blur under a dialog](../graphics/native-post-hud.md#the-blur-under-a-dialog)).
-The object-shadow list, row gather and caster each count calls to their own
-entry ([native-light-gather.md](../graphics/native-light-gather.md), L7).
-`counters` is `null` where the frame-stats window is not running.
+No params. `display_rate` is the frame owner's display-rate loop
+([framescene.md](../graphics/framescene.md), section 7). `counters.line` is
+the frame-stats window's summary; `counters` is `null` where that window is
+not running. `counters` also reports per-frame means for
+`shadow_walk_layers`, each `native_scene_lists_*` stage and the overlay's
+`native_ui_overlay_*` counters.
+
+| Counter group | Names |
+|---|---|
+| Overlay items | `items`, `quads`, `text_runs`, `fills`, `glyphs`, `blurs`, `model_views`, `batches` |
+| Overlay refusals | `refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`, `refused_model_view`, `refused_blur` ([retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)) |
+| HUD | `hud_tag_quads`, `hud_text_quads`, `hud_tag_fallback`, `hud_text_fallback`, `hud_tag_recorded`, `hud_tag_record_failed` ([the HUD on the overlay](../graphics/native-post-hud.md#the-hud-on-the-overlay)) |
+| Menu shaders, screens | `menu_shader_quads`, `menu_shader_fallback`, `fade_quads`, `bar_quads`, `loading_quads`, `screen_fallback` ([the fade, the bars and the loading screen](../graphics/native-post-hud.md#the-fade-the-bars-and-the-loading-screen)) |
+| Menus | `menu_claimed`, `menu_skipped`, `menu_passes`, `menu_mismatch`, `menu_refused_*` ([native-post-hud.md](../graphics/native-post-hud.md#the-menus-on-the-overlay)) |
+| Modal blur | `modal_blurs`, `modal_blur_replayed`, `modal_blur_refused_*` ([the blur under a dialog](../graphics/native-post-hud.md#the-blur-under-a-dialog)) |
+| Object shadows | the list, row gather and caster each count calls to their own entry ([native-light-gather.md](../graphics/native-light-gather.md), L7) |
+
+The `_native` and `_fallback` fields and every overlay counter include
+zeroes; another refusal reason appears when its window count is positive.
+What each counter counts: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`render.stats`".
 
 `ui` is the layout the menus and the HUD are drawn with
 ([high-resolution.md](../graphics/high-resolution.md#the-games-640x480-assumptions)),
-as the game's UI scopes last set it; absent before the first one drew. Its
-fields:
+as the game's UI scopes last set it; absent before the first one drew.
 
 | Field | Meaning |
 |---|---|
 | `output` | `[width, height]`, the window the UI is drawn at; the guest's 640x480 canvas before the first menu scope |
 | `scale` | the menu fit's `[sx, sy]`, guest window units: guest `p` draws at `p * scale + offset` |
 | `offset` | the fit's translation, guest window units |
-| `anchor` | how the HUD's corner groups anchor: `pinned` to the window's edges at their physical scale, or `centered` on the safe area's edges |
+| `anchor` | HUD corner groups: `pinned` to the window's edges at their physical scale, or `centered` on the safe area's edges |
 | `atlas_scale` | the whole multiple of a glyph's own size the text atlas rasterises at (0 before the first text run) |
 | `atlas_page` | the side of a glyph page in texels |
 
 The fit is `render_bridge::ui_layout`'s one rule: the safe area is the
-largest centred 4:3 box (`min(w/640, h/480)` display pixels per guest
-pixel), and a live resize moves it on the next frame. A check resizes the
-window (`host.window.resize`), reads `render.stats`'s `ui`, and expects
-`scale` to hold the new window's uniform fit while `anchor` and
-`atlas_scale` stay.
+largest centred 4:3 box, and a live resize moves it on the next frame. A
+check resizes the window (`host.window.resize`), reads `ui`, and expects
+`scale` to follow the new window while `anchor` and `atlas_scale` stay.
 
 ```sh
 h2 agent render.stats | jq .ui
 ```
 
-`display_rate` is present while a paced frame owner runs it: a window
-or GPU serve with the render thread on, `frame-scene.sink` not off, and no
-locked mailbox (`H2_BOOT_STOP_AT_PRESENT`, an unpaced display or a
-headless run lock it). Its fields, counted since the loop was installed:
+`display_rate` is present while a paced frame owner runs it: a window or GPU
+serve with the render thread on, `frame-scene.sink` not off, and no locked
+mailbox (`H2_BOOT_STOP_AT_PRESENT`, an unpaced display or a headless run
+lock it). Counts run since the loop was installed.
 
 | Field | Meaning |
 |---|---|
@@ -1600,10 +1169,10 @@ headless run lock it). Its fields, counted since the loop was installed:
 | `moved_stages` | typed stages drawn on a blended camera |
 | `held_stages` | typed stages in a game view drawn at their tick's camera |
 | `marks_moved` | views on display frames whose world marks were moved onto the camera the frame drew them with |
-| `marks_held` | views on display frames whose world marks kept their image's camera (no drawn view at their viewport) |
+| `marks_held` | views on display frames whose world marks kept their image's camera |
 
-At `--fps 60` and above with the frame owner on, `blended` rises with
-play; at 30 it stays 0 and `swaps` still counts. The loop is in
+At `--fps 60` and above with the frame owner on, `blended` rises with play;
+at 30 it stays 0 and `swaps` still counts. The loop is in
 `crates/rewrites/frame-scene/src/display.rs` and
 `crates/rewrites/native-render/src/frame_graph/display_rate.rs`.
 
@@ -1611,145 +1180,94 @@ play; at 30 it stays 0 and `swaps` still counts. The loop is in
 h2 agent render.stats | jq .display_rate.blended
 ```
 
-`display_frame` gives the identity, lighting and backend counter deltas
-when the worker's latest presentation used the native graph. An
-original presentation clears it. The frame recorder can stay unarmed
-for these counters. `render.scene` includes them when the map epoch,
-frame and tick match its sealed scene.
+`display_frame` gives the identity, lighting and backend counter deltas when
+the worker's latest presentation used the native graph; an original
+presentation clears it. `render.scene` includes it when the map epoch, frame
+and tick match its sealed scene. `private_frame` reports the counts and
+identity of the most recent completed private target draw; it is absent
+before the first capture and after a renderer reset, and `render.scene`
+includes it when map epoch, frame, tick and summary hash match.
 
-`private_frame` reports the counts and identity of the most recent
-completed private target draw. It is absent before the first capture and
-after a renderer reset. `render.scene` includes the same field when its
-sealed scene matches the private capture's map epoch, frame, tick and
-summary hash.
-
-A completed native E3 draw includes an `e3` object in its
-`display_frame` or `private_frame`. The armed `render.frame` record
-includes it for the corresponding draw. Its `passes` array contains
-`e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
-`name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
-stage). Snapshot indices refer to the attachment runs in the frame
-record. The per-frame counters are `lights_lit`, `lights_shadowed`,
-`lights_over_cap`, `lights_beyond_guest`, `sun_tiles`, `sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`,
-`tiles_refused`, `cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
+A completed native E3 draw includes an `e3` object in its `display_frame` or
+`private_frame`, and the armed `render.frame` record includes it for the
+draw. Its `passes` array has `e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks`
+and `e3.lights`, each with `name`, `draws` and `gpu_ns` (null for an empty
+or unmeasured stage). The per-frame counters are `lights_lit`,
+`lights_shadowed`, `lights_over_cap`, `lights_beyond_guest`, `sun_tiles`,
+`sun_tiles_redrawn`, `sun_tiles_offscreen`, `atlas_halved`, `tiles_refused`,
+`cones_shadowed`, `cones_flagged_off`, `flashlight_shadowed`,
 `shadows_over_cap`, `cones_refused`, `cones_drawn` and `cones_kept`. They
-count the E3 renderer's selections and atlas work.
-The graph draws the guest's shadow maps as tiles
-([e3-lighting.md](../graphics/e3-lighting.md), "Shadows from local
-lights"): `e3.tiles` counts the caster draws into them, `e3.marks` the
-receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
-per shadowed light of the guest's) and `tiles_refused` the shadow maps
-left at the guest's size. The display on the guest's live attachments
-draws no tiles. `lights_lit` and `lights_over_cap` are the renderer's
-own choice of lights from the scene's candidates (e3-lighting.md,
-"Lights: which, and how many"): the lights it chose, and the candidates
-its cap of 16 left out. `lights_beyond_guest` counts the chosen game
-lights the guest did not draw, and `e3.lights` the ranges of the stages
-that draw them (layers 12 and 13 over the structure each light meets),
-which only an E3 draw records. The five cone counters are the renderer's
-choice of shadowed lights from those it lit (e3-lighting.md, "Built: the
-shadowed cones"): the cones it shadows itself, the shadowed lights whose
-content flag was off, the views whose flashlight holds a slot, the lit
-cones its four slots left out, and the lit lights whose frustum makes no
-projection. A chosen light the renderer shadows reads its cone's term:
-`cones_drawn` counts the cone tiles drawn for those lights (their caster
-draws join `e3.tiles`, their receivers `e3.marks`) and `cones_kept` the
-lights left undrawn because their cone could not be. `sun_tiles_offscreen` counts offscreen casters for which the graph
-submits a receiver draw, summed across views. A cached tile can have
-receiver draws with no redraw. The
-guest's light selections are in `render.scene.views`.
-Retail graph draws omit `e3`.
+count the E3 renderer's selections and atlas work
+([e3-lighting.md](../graphics/e3-lighting.md)); the guest's light selections
+are in `render.scene.views`. Retail graph draws omit `e3`. Counter meanings:
+see the [detail note](notes/2026-11-26-agent-api-detail.md), "`render.stats`".
 
-`H2_BOOT_GFX_BETWEEN=N` writes the first N display frames between
-scenes as PNGs, with the guest frame before and after each
-([switches.md](switches.md)).
+`H2_BOOT_GFX_BETWEEN=N` writes the first N display frames between scenes as
+PNGs, with the guest frame before and after each ([switches.md](switches.md)).
 
 ### `render.capture_clip`
 
-`render.capture_clip {"tick":9000,"ticks":180,"fps":120}` arms a clip on
-the game thread. `tick` is 1 to 240 ticks ahead, `ticks` is 1 to 300, and
-`fps` is 30, 60 or 120. The reply contains `id`, `path`, `frames` and
-`written`. The GPU hooks write `frame-00000.png` onward under `path`, a
-clip folder under the headless graphics output directory.
+`render.capture_clip {"tick":9000,"ticks":180,"fps":120}` arms a clip on the
+game thread. `tick` is 1 to 240 ticks ahead, `ticks` is 1 to 300, and `fps`
+is 30, 60 or 120. The reply has `id`, `path`, `frames` and `written`. The GPU
+hooks write `frame-00000.png` onward under `path`, a clip folder under the
+headless graphics output directory.
 
-`render.capture_clip.status {"id":1}` returns the same fields for the
-latest clip. When `written` equals `frames`, all PNG files are closed.
-A lost guest tick or missing display slot fails the request.
+`render.capture_clip.status {"id":1}` returns the same fields for the latest
+clip; when `written` equals `frames`, all PNG files are closed. A lost guest
+tick or missing display slot fails the request.
 
 Clip capture needs headless GPU rendering. The [graphics size switch](switches.md)
-sets the clip's output dimensions. The writer takes one frame per tick,
-so `fps` above 30 is refused: display frames between scenes are not
-written to clip slots. PNG readback and encoding may slow capture.
+sets the output dimensions. The writer takes one frame per tick, so `fps`
+above 30 is refused.
 
-The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
-writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
+The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU writer
+is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
 
 ### Picture feed: `render.picture`
 
 A client shows the game's presented frames live: Studio's Game panel
-([game-view.md](../editor/game-view.md)) and `h2 agent picture`. Frames
-come from the same handoff `host.screenshot` reads (the window's newest
-published frame), not a sealed scene; for a still at a tick use
-`render.capture`.
+([game-view.md](../editor/game-view.md)) and `h2 agent picture`. Frames come
+from the handoff `host.screenshot` reads (the window's newest published
+frame), not a sealed scene; for a still at a tick use `render.capture`.
 
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `render.picture.open` | read | `{width?, fps?, transport?}` | `{id, transport, path?, size, format, fps, at}`; then a `picture` event per frame (ring) or binary frames (stream) |
 | `render.picture.close` | read | `{id}` | `{closed}`: whether the picture was open |
 
-`transport` is `ring` (the default) or `stream`. `width` is the widest
-frame wanted, 16 to 2560; a frame keeps its aspect, fits a `width` x
-`width` box and is never scaled up. `fps` is 1 to 60. A ring defaults to
-1280 wide at 60, a stream to 640 wide at 15. `size` is the largest frame,
-`[width, width]`; each frame's own size is in its slot and its event. A
-game with no frame source (no window: `h2 serve`, the Xbox app) answers
-`UNAVAILABLE`.
+`transport` is `ring` (the default) or `stream`. `width` is the widest frame
+wanted, 16 to 2560; a frame keeps its aspect and is never scaled up. `fps` is
+1 to 60. A ring defaults to 1280 wide at 60, a stream to 640 wide at 15.
+`size` is the largest frame, `[width, width]`. A game with no frame source
+(no window: `h2 serve`, the Xbox app) answers `UNAVAILABLE`.
 
-**Ring.** For a client on the same machine. `path` is a file under the
-cache directory's `pictures/`, mode 0600, named for the process and the
-picture. It holds a 256-byte header (the newest frame number, the
-reader's acknowledgement, a closed flag, each slot's sequence number,
-frame number, tick, present, time and size) and three RGBA8 slots
-(`agent_proto::picture::Ring` has the layout, the writer and the reader).
-Frame `n` goes into slot `n % 3`, written while its sequence number is
-odd. A reader copies the newest slot and keeps the copy only if the
-sequence was even and unchanged across it (`Ring::read_newest`), then
-writes the frame number back as its acknowledgement. The opening
-connection gets, after the reply, one event per frame:
+**Ring.** For a client on the same machine. `path` is a 0600 file under the
+cache directory's `pictures/` with a 256-byte header and three RGBA8 slots
+(`agent_proto::picture::Ring`; reader `Ring::read_newest`). The opening
+connection gets one event per frame, sent only to it and dropped when its
+queue is full (the frame is in the ring either way). Slot protocol and event
+example: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"Picture feed: `render.picture`".
 
-```json
-{"jsonrpc":"2.0","method":"event","params":{"kind":"picture","id":1,"frame":42,
- "tick":48211,"present":96400,"time_ms":700.4,"width":1280,"height":720}}
-```
-
-Events go only to that connection, whatever it subscribed to, and are
-dropped (not queued) when its queue is full. The frame is in the ring
-either way.
-
-**Stream.** For a game reached over `tcp://`, which cannot share memory.
-Open it on a connection of its own: after the reply line the connection
-switches to length-prefixed binary frames, as `live.subscribe`'s does,
-and takes no more requests; close it from another connection or by
-disconnecting. A connection that holds control, has subscribed to
-events or has requests in flight is refused with `BUSY`, and an
-in-process connection with `UNAVAILABLE`. Each frame is a little-endian
-u32 payload length (at most 16 MiB), then a u32 header length, the
+**Stream.** For a game reached over `tcp://`. Open it on a connection of its
+own: after the reply the connection switches to length-prefixed binary
+frames, as `live.subscribe`'s does, and takes no more requests. A connection
+that holds control, has subscribed or has requests in flight is refused with
+`BUSY`; an in-process connection gets `UNAVAILABLE`. Each frame is a
+little-endian u32 payload length (at most 16 MiB), a u32 header length, the
 `picture` event's fields as JSON, and a JPEG (quality 75, no alpha)
-(`agent_proto::picture::read_stream_frame`). At most three frames wait
-for the socket; a frame that finds the queue full is not read back.
+(`agent_proto::picture::read_stream_frame`). At most three frames wait for
+the socket.
 
-**Cost and the idle skip.** A worker thread (`agent-picture`), running
-while any picture is open, reads the newest presented frame back once per
-due frame of the fastest picture, scales it on the CPU by averaging, and
-writes it to every picture that is due. A ring whose newest frame stays
-unacknowledged for a second (`IDLE_AFTER`) and a stream whose queue is
-full are skipped; with nothing due, nothing is read back. The readback
-runs on the worker, not the game thread, on the GPU queue the game
-presents on. Its cost at 60 Hz is not measured.
+**Cost and the idle skip.** The `agent-picture` worker thread reads the newest
+presented frame back once per due frame of the fastest picture and scales it
+on the CPU. A ring unacknowledged for a second (`IDLE_AFTER`) and a stream
+with a full queue are skipped; with nothing due, nothing is read back.
 
-**Lifetime.** `render.picture.close`, the opening connection closing or
-being dropped, and the game exiting each close the picture: a ring's
-closed flag is set and its file removed, a stream's connection ends.
+**Lifetime.** `render.picture.close`, the opening connection closing, and the
+game exiting each close the picture: a ring's file is removed, a stream's
+connection ends.
 
 ```sh
 h2 agent picture                           # a window showing the game, from a ring
@@ -1760,40 +1278,35 @@ h2 agent picture --frames 60               # no window: sizes, rate and ticks of
 
 The methods are answered on the executor (`crates/extensions/agent/src/exec/picture.rs`);
 the pictures, the worker, the scaling and the JPEG are in
-`crates/extensions/agent/src/render/picture.rs`; the wire types, the ring
-and the stream codec in `crates/extensions/agent-proto/src/picture.rs`.
-The window shell and a headless app host attach the frame source at
-`agent_proto::picture::hub` (`crates/apps/app/src/picture.rs`). The client
-is `crates/apps/cli/src/agent_picture.rs`.
+`crates/extensions/agent/src/render/picture.rs`; the wire types, the ring and
+the stream codec in `crates/extensions/agent-proto/src/picture.rs`. The frame
+source attaches at `agent_proto::picture::hub` (`crates/apps/app/src/picture.rs`).
+The client is `crates/apps/cli/src/agent_picture.rs`.
 
 ### `render.marks`
 
 `render.marks` (no params) reads where the window drew the world marks
 ([Drawing world-space lines over the frame](#drawing-world-space-lines-over-the-frame))
-on its last 32 presents. The first call arms the window's probe and
-returns `armed: false` with no presents. Unarmed, the window pays one
-atomic load a present. Each later call returns `armed: true` and
+on its last 32 presents. The first call arms the window's probe and returns
+`armed: false` with no presents; later calls return `armed: true` and
 `presents`, oldest first. Each present has:
 
 - `seq`, counting the window's draws since the probe was armed;
 - `age_ms`, how long ago the window drew it;
-- `frame`: `guest` (a genuine image), `synthetic` (an in-between frame
-  at 60 or 120 fps), `no_world_view`, `raw` or `loading`;
-- `fraction`: a synthetic frame's blend fraction, 0 the frame before and
-  1 the newest; null otherwise or without marks;
-- `shifted`: the synthetic frame drew some view with another camera than
-  its marks' image, and the marks were moved onto it
+- `frame`: `guest` (a genuine image), `synthetic` (an in-between frame at 60
+  or 120 fps), `no_world_view`, `raw` or `loading`;
+- `fraction`: a synthetic frame's blend fraction, 0 the frame before and 1
+  the newest; null otherwise or without marks;
+- `shifted`: the synthetic frame drew some view with another camera than its
+  marks' image, and the marks were moved onto it
   ([high-framerate.md](../game/high-framerate.md), "World marks on made frames");
-- `anchors`: the first 16 mark groups' anchors in window pixels through
-  the first view's camera, null where off screen or behind it; empty
-  without marks.
+- `anchors`: the first 16 mark groups' anchors in window pixels through the
+  first view's camera, null where off screen or behind it.
 
-A headless host has no window and returns no presents. To check that
-marks stay on the world at 60 fps, turn at a steady rate with a mark in
-view and read twice: an anchor's `x` steps by a similar amount on every
-present, genuine and synthetic alike
-(`crates/platform/gfx/src/world_lines/probe.rs`,
-`crates/apps/app/src/shell.rs`, `crates/extensions/game/src/world_lines.rs`).
+A headless host has no window and returns no presents. Code:
+`crates/platform/gfx/src/world_lines/probe.rs`, `crates/apps/app/src/shell.rs`,
+`crates/extensions/game/src/world_lines.rs`. The marks check: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`render.marks`".
 
 ```sh
 h2 agent render.marks
@@ -1802,12 +1315,12 @@ h2 agent render.marks | jq '.presents[] | [.frame, .fraction, .shifted, .anchors
 
 ### `render.markers`
 
-`render.markers` reads the Forge game type markers the window's last
-capture drew ([gametype-markers.md](../game/gametype-markers.md), "The
-game"). Params are `{}` or `{"kind": "spawn"}`, a kind name of
-`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...) or `wall`;
-a name that is not one is refused with `invalid params` and the list of
-names, and so is any other field. The answer is
+`render.markers` reads the Forge game type markers the window's last capture
+drew ([gametype-markers.md](../game/gametype-markers.md), "The game").
+Params are `{}` or `{"kind": "spawn"}`, a kind name of
+`game_markers::Kind::name` (`spawn`, `flag_stand`, `hill`, `ff_drop`, ...) or
+`wall`; a bad name or any other field is refused with `invalid params`. The
+answer is
 
 ```json
 {"shown": 2, "hidden_by_budget": 0,
@@ -1815,23 +1328,19 @@ names, and so is any other field. The answer is
               "anchor": [1.0, 2.0, 0.85], "lines": 38, "faded": false}]}
 ```
 
-- The walls a running rules script shows in play (`show_area`) are rows
-  too: `kind` is `wall`, `thing` is `zone:<hex of the zone object>` and
-  `team` the colour of its wall; they count in `shown`, are not held to
-  the 256 and draw with no Forge session.
-- `shown` counts the markers the capture drew and `hidden_by_budget` the
-  ones in range that the 256 a view left out, the nearest first. A marker
-  past its distance fade is in neither. The counts cover every kind; `kind`
-  filters only `markers`, which lists the nearest first.
-- `thing` names what the marker stands for: `<block>:<index>` for an entry
-  of the map, `added:<op>` for one the document added, `problem:<label>`
-  for a ground label the last build could not honour.
-- `team` is 0 to 7, or null. `anchor` is where the label sits, in world
-  units; `render.marks` gives window pixels for the groups the window
-  visited. `lines` is the marker's line count. `faded` is a marker of
-  another game type, drawn at a quarter.
-- With no Forge session (or the monitor off), no wall shown and no present
-  since, `shown` is 0 and `markers` is empty. A headless host has no window and draws none.
+| Field | Meaning |
+|---|---|
+| `shown`, `hidden_by_budget` | markers drawn, and in range ones the 256 a view left out (nearest first); counts cover every kind, `kind` filters only `markers` |
+| `thing` | `<block>:<index>`, `added:<op>`, `problem:<label>`, or for walls `zone:<hex>` |
+| `team` | 0 to 7, or null |
+| `anchor` | where the label sits, in world units |
+| `lines` | the marker's line count |
+| `faded` | a marker of another game type, drawn at a quarter |
+
+Walls a running rules script shows (`show_area`) are rows of `kind` `wall`;
+they count in `shown` and are not held to the 256. With no Forge session, no
+wall and no present since, `shown` is 0 and `markers` is empty; a headless
+host draws none.
 
 The method is the host's (`crates/extensions/game/src/forge_glue/markers_world.rs`,
 `add_method`; the name is `agent_proto::method::RENDER_MARKERS`).
@@ -1844,40 +1353,20 @@ h2 agent render.markers '{"kind":"hill"}'
 ### `render.particles.refusals`
 
 `render.particles.refusals` says why the native particle path left draws to
-D3D. Every geometry refusal has a named check, which the present's refusal
-log also carries (`Particle/Geometry/primitive=428`). The answer keeps, per
-check, a count and the shape of the first draw that failed it. It takes no
-params; any field is refused with `invalid params`.
+D3D. It keeps, per named geometry check, a count and the shape of the first
+draw that failed it. It takes no params; any field is refused with
+`invalid params`. The answer has `refused` and `samples` keyed by check, each
+with `label`, `producer`, `count` and `shape` (example: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`render.particles.refusals`").
 
-```json
-{"refused": 428,
- "samples": {"primitive": {
-   "label": "Geometry/primitive", "producer": "Particle", "count": 428,
-   "shape": {"entry": "D3DDevice_DrawVertices", "primitive": "TriangleList",
-             "vertex_count": 6, "indexed": false, "pretransformed": false,
-             "layouts": 1, "streams": 1, "layout_strides": [8],
-             "stream_strides": [8], "stream_bytes": [48],
-             "attribute_count": 1,
-             "attributes": [{"stream": 0, "register": 0, "data_type": "Short4", "offset": 0}],
-             "provided_inputs": 1}}}}
-```
-
-- The checks, in the order they run: `indexed`, `pretransformed`,
-  `layouts` (not one stream layout), `streams` (not one stream),
-  `stride` (stream index, layout against stream, or the producer's
-  stride), `attributes` (not exactly one for a particle),
-  `attribute_slot` (offset or register), `primitive`, `vertex_count`,
-  `data_len`, `data_type`, `inputs` (the shader's provided registers),
-  `corner_vertices`, `corner_compare`, `corner_differs` (the stream
-  differs from the published corner values), `unpublished`,
-  `data_differs` (a dynamic call's bytes), `indices`, and the ribbon
-  bytes' `raw_bytes`, `raw_attributes` and `raw_vertex_count`.
-- `count` totals the run, not one present; the per-window counters are in
-  the log. `producer` is the producer of the first draw (`Particle`,
-  `Dynamic`, `Immediate`).
-- A draw the captured-particle fallback takes is not a refusal and is not
-  counted. Refusals of other kinds (target, state, shader) are only in the
-  log.
+- The checks, in the order they run: `indexed`, `pretransformed`, `layouts`,
+  `streams`, `stride`, `attributes`, `attribute_slot`, `primitive`,
+  `vertex_count`, `data_len`, `data_type`, `inputs`, `corner_vertices`,
+  `corner_compare`, `corner_differs`, `unpublished`, `data_differs`,
+  `indices`, `raw_bytes`, `raw_attributes` and `raw_vertex_count`.
+- `count` totals the run, not one present. `producer` is `Particle`,
+  `Dynamic` or `Immediate`. Captured-particle fallback draws and refusals of
+  other kinds (target, state, shader) are not counted.
 
 The method is the host's (`crates/extensions/game/src/native_particles_admission.rs`,
 `add_refusals_method`; the name is `agent_proto::method::RENDER_PARTICLES_REFUSALS`).
@@ -1888,14 +1377,12 @@ h2 agent render.particles.refusals
 
 ### `render.coop_look`
 
-A read-only host method registered with the Live co-op prediction
-feature (`crates/extensions/game/src/coop_look.rs`). With no parameters it returns
+A read-only host method registered with the Live co-op prediction feature
+(`crates/extensions/game/src/coop_look.rs`). With no parameters it returns
 the most recent 256 rendered local views, oldest first; `{"after":123}`
-returns samples newer than that cursor. `latest` is the most recent
-sample number, initially zero; a gap in sample numbers means the reader
-fell behind. One frame can contain several local users. The render hook
-posts each draw and the game thread logs it at its next co-op hook, so a
-sample shows up a tick after its frame.
+returns samples newer than that cursor. `latest` is the most recent sample
+number (initially zero); a gap means the reader fell behind. A sample shows
+up a tick after its frame.
 
 ```sh
 h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
@@ -1904,8 +1391,7 @@ h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
 Each entry in `frames` has a monotonic `sample`, the guest render `frame`,
 the local `user` (0 to 3), and a `status` such as `active`, `waiting`
 (awaiting a baseline), `host`, `setting off`, `cinematic`, `dead`,
-`director`, `vehicle`, or `no local control`. These are guest draws;
-additional display-rate replays reuse the guest frame.
+`director`, `vehicle`, or `no local control`.
 
 | Field | Meaning |
 |---|---|
@@ -1923,11 +1409,11 @@ The checks the native renderer's slices gate on
 ([framescene.md](../graphics/framescene.md), sections 9 and 12). Host
 methods; types in `crates/extensions/agent-proto/src/render.rs` and
 `crates/extensions/agent-proto/src/sim/hashes.rs`, logic in
-`crates/extensions/agent/src/compare.rs`, `crates/extensions/agent/src/render.rs` and
-`crates/extensions/agent/src/sim/hashes.rs`, host glue in boot's `agent_glue`,
-`agent_frames`, `d3d_diag`, `d3d_glue` and `scene_glue`. Tested in
-`crates/extensions/agent` over synthetic images, the frame recorder's rig and the
-sim report's tally.
+`crates/extensions/agent/src/compare.rs`, `crates/extensions/agent/src/render.rs`
+and `crates/extensions/agent/src/sim/hashes.rs`, host glue in boot's
+`agent_glue`, `agent_frames`, `d3d_diag`, `d3d_glue` and `scene_glue`. Tested
+in `crates/extensions/agent` over synthetic images, the frame recorder's rig
+and the sim report's tally.
 
 ```sh
 h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no game
@@ -1958,516 +1444,158 @@ h2 agent render.parity '{"arm": true}'
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
-- **`render.compare`.** Reads both files (any PNG colour type, decoded to
-  8-bit RGBA) and compares the colour channels; alpha is not compared
-  (frames are written opaque). `differing` counts pixels with any channel
-  off by more than 2; `max_channel` is the largest difference of one
-  channel; `mean` the mean absolute difference over every channel of
-  every pixel; `first` the first differing pixel in row order, `null`
-  when none. `within_bar` is the parity bar: `max_channel <= 8` and
-  `differing` at most 0.01% of the pixels (one in 10,000). With `diff`,
-  the difference image goes there (directories made): differing pixels
-  in red, brighter the further off; pixels off by 1 or 2 in dark blue;
-  the rest the first image at a quarter brightness. Errors are
-  `INVALID_PARAMS` with `data.error` naming the kind: `size_mismatch`
-  (with `data.a` and `data.b`, each `[w, h]`), `read` or `write` (with
-  `data.path`). The decode runs on the game thread; `h2 agent frame
-  compare A B [--diff D]` runs the same function in the CLI with no
-  socket and exits 1 outside the bar.
-- **`render.spawn_view`.** Selects a player starting location from the
-  loaded scenario by its zero-based index. The eye is 0.64 world units
-  above the start, looking along its facing. `yaw_offset` turns it in
-  radians. The reply includes the number of starts and the eye position
-  and heading used for the picture. The method answers when the world
-  renderer accepts the private view. A following `render.capture {}`
-  takes the next tick's frame. The camera stays selected until reset or
-  the next game activation. A new selection interrupts a pending request.
-  An invalid index gives `INVALID_PARAMS`, a missing or unreadable start
-  gives `UNAVAILABLE`, and a session that draws no world frames times out.
-  `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
-  playerless world view in `spectator_view.rs`.
-- **`render.view`.** Places the same private camera at an explicit eye
-  in world units. `yaw` is the heading about +z in radians, from +x
-  towards +y; `pitch` is up from level, within ±1.55. `fov` is the
-  horizontal lens in degrees, 1 to 150; without it the view keeps the
-  drawn view's own lens and the reply gives `fov: null`. The reply
-  echoes the pose drawn, with `yaw` wrapped into 0 to 2π. It answers
-  when the world renderer accepts the view, and a following
-  `render.capture {}` takes the next tick's frame from that eye. The
-  camera is drawn only while the scenario it was placed in is loaded.
-  `render.view` and `render.spawn_view` select one camera: either
-  replaces the other, and a pending request answers `INTERRUPTED` when
-  it is replaced, reset (by either method) or released by the next game
-  activation. Missing, non-finite or out-of-range params, or `reset`
-  with a pose, give `INVALID_PARAMS`; no loaded scenario gives
-  `UNAVAILABLE`. Types: `ViewParams` and its `check` in
+- **`render.compare`.** Compares the colour channels of two PNGs (decoded to
+  8-bit RGBA; alpha is ignored). `differing` counts pixels with any channel
+  off by more than 2; `max_channel` is the largest one-channel difference;
+  `mean` the mean absolute difference; `first` the first differing pixel in
+  row order, `null` when none. `within_bar` is the parity bar:
+  `max_channel <= 8` and `differing` at most 0.01% of the pixels. `diff`
+  writes a difference image (directories made). Errors are `INVALID_PARAMS`
+  with `data.error`: `size_mismatch` (`data.a`, `data.b`, each `[w, h]`),
+  `read` or `write` (`data.path`). `h2 agent frame compare A B [--diff D]`
+  runs the same function with no socket and exits 1 outside the bar.
+- **`render.spawn_view`.** Selects a player start of the loaded scenario by
+  zero-based index; the eye is 0.64 world units above it, looking along its
+  facing, turned by `yaw_offset` radians. The reply gives the start count and
+  the pose used. It answers when the world renderer accepts the private view;
+  a following `render.capture {}` takes the next tick's frame. The camera
+  stays until reset or the next game activation, and a new selection
+  interrupts a pending request. An invalid index gives `INVALID_PARAMS`, a
+  missing or unreadable start `UNAVAILABLE`, and a session that draws no
+  world frames times out. `crates/extensions/game/src/agent_spawn_view.rs`
+  shares Theater's playerless view in `spectator_view.rs`.
+- **`render.view`.** Places the same private camera at an explicit eye in
+  world units. `yaw` is the heading about +z in radians, from +x towards +y;
+  `pitch` is up from level, within +-1.55; `fov` is the horizontal lens in
+  degrees, 1 to 150 (without it the drawn view's lens is kept and the reply
+  has `fov: null`). The reply echoes the pose with `yaw` wrapped into 0 to
+  2pi. `render.view` and `render.spawn_view` select one camera: either
+  replaces the other, and a pending request answers `INTERRUPTED` when it is
+  replaced, reset or released by the next game activation. The camera is
+  drawn only while its scenario is loaded. Missing, non-finite or
+  out-of-range params, or `reset` with a pose, give `INVALID_PARAMS`; no
+  loaded scenario gives `UNAVAILABLE`. Types: `ViewParams` and its `check` in
   `crates/extensions/agent-proto/src/render.rs`.
 - **`render.view.current`.** Reads the pose of the view the game draws for
-  local player `seat` (0 to 3, default 0), at the tick boundary, in
-  `render.view`'s conventions: `eye` in world units, `yaw` the heading
-  about +z from +x towards +y wrapped into 0 to 2π, `pitch` up positive
-  (within ±1.55), `fov` the horizontal lens in degrees. The reply also
-  carries the usual `at` stamp. A user who sees a rendering fault in their
-  own game gives the coordinator this pose, and `render.view` with its
-  `eye`, `yaw`, `pitch` and `fov` (not `at` or `private`) draws the same
-  view in a test boot. The pose comes from the seat's view record in the
-  game's view table (`spectator_view::drawn_view`: the render camera's
-  position, forward and vertical lens, the lens converted to horizontal);
-  yaw and pitch derive from the forward vector (`CurrentView::looking`).
-  While a `render.view` or `render.spawn_view` camera is selected and its
-  scenario is loaded, the reply is that camera's pose with `private: true`
-  (its lens is the one given, else the game view's); `private` is absent
-  otherwise. No view record for the seat (no world loaded, a cinematic,
-  a seat without a screen) gives `UNAVAILABLE`; a `seat` outside 0 to 3
-  or unknown params give `INVALID_PARAMS`. A Theater camera is not
-  reported: the reply is the underlying game view. Types:
-  `CurrentViewParams` and `CurrentView` in
-  `crates/extensions/agent-proto/src/render.rs`, the method in
-  `crates/extensions/game/src/agent_spawn_view.rs`. The private camera is a spectator view: a pose replayed from the player's eye also draws that player's own body, which can cover part of the picture.
-- **`render.capture`.** With `lighting: "retail" | "e3" | "relight-on" |
-  "relight-off"`, the native
-  renderer draws a sealed scene into a private target. The default is
-  the latest sealed scene. An explicit `tick` selects that exact scene
-  tick, up to 240 ticks ahead of the latest seal. The draw uses the
-  resolution shown for that particular present, including a frame the
-  backend showed from its 1x reference. The answer includes the tick,
-  present, summary hash, lighting and a fresh PNG path. The most recent
-  successful private capture retains its scene for another request with
-  the same tick. A failed original Swap gives `UNAVAILABLE` with
-  `reference present failed` for that scene. Other retained ticks stay
-  available. Pass both paths to `render.compare` to compare the modes
-  while play continues.
-  A renderer reset releases the retained scene. A missing private
-  renderer or an unreplayable scene gives `UNAVAILABLE`. Combining
-  `lighting` with `pass` gives `INVALID_PARAMS`. The override applies
-  only to the private draw. The relight modes require a run started with
-  either reconstruction selected and a matching installed bake. Each
-  successfully recorded world stage counts selected ranges that bind a page
-  whose baked states differ.
-  Zero such ranges across the whole frame gives `UNAVAILABLE` with
-  `no native world range in this scene uses the installed lightmap`.
-  `lighting` in a successful reply echoes the requested state.
-  See the [three-render comparison](../graphics/relighting-review.md).
-  Tests: `private_captures_draw_the_same_pinned_scene_with_each_requested_mode`
-  and `retained_stage_uses_the_current_private_attachments_on_every_draw`.
+  local player `seat` (0 to 3, default 0) at the tick boundary, in
+  `render.view`'s conventions, plus the usual `at` stamp. Feeding its `eye`,
+  `yaw`, `pitch` and `fov` to `render.view` draws the same view in a test
+  boot. While a `render.view` or `render.spawn_view` camera is selected and
+  loaded, the reply is that camera's pose with `private: true`. No view
+  record for the seat (no world, a cinematic, a seat without a screen) gives
+  `UNAVAILABLE`; a `seat` outside 0 to 3 or unknown params give
+  `INVALID_PARAMS`. A Theater camera is not reported. Types:
+  `CurrentViewParams` and `CurrentView` in `agent-proto/src/render.rs`, the
+  method in `crates/extensions/game/src/agent_spawn_view.rs`
+  (`spectator_view::drawn_view`, `CurrentView::looking`). Derivation and the
+  player-body caveat: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+  "`render.view.current`".
+- **`render.capture`.** Takes a PNG of the frame for game tick `tick` (default
+  the next, at most 240 ahead). Four modes:
 
-  Without `lighting`, the frame is taken for game tick `tick` (as `at.tick`
-  counts it; default the next one, at most 240 ahead). On the D3D path
-  the frame of a tick is the present that follows it: the first guest
-  present after the tick has ended. `tick` in the answer is the last tick
-  that ended before that present, which is later than the one asked for
-  when the game ran two ticks in one frame; `present` numbers it as
-  `render.frame` and `H2_BOOT_GFX`'s `frame-N.png` do. Without `pass`,
-  the image is the presented frame at the render scale, the same image
-  `H2_BOOT_GFX` writes as `frame-N.png`, written as
-  `frames/capture-<pid>-<seq>-tick-<tick>.png` under the cache directory. That
-  needs a run that renders on the GPU with `H2_BOOT_GFX` (use
-  `H2_BOOT_GFX_EVERY=never` to write nothing else); without it the answer
-  is `UNAVAILABLE`, and under `H2_BOOT_GFX_LIGHTING_AB` too. With `pass`,
-  the frame recorder (`render.frame`) is armed at the end of the tick
-  before and reads that pass back at 1x as `render.frame`'s `snap` does
-  (the file is the snapshot's); it replaces a `render.frame` arming not
-  yet done, and one made while it waits makes it answer `INTERRUPTED`. `scene_hash` is the sealed scene's
-  summary hash at that present (from `render.scene`'s source); `null`
-  with no source registered. The answer waits for the
-  frame (up to the agent's 300-tick limit for deferred answers); a
-  paused game holds it. A new `render.capture` replaces one still waiting,
-  which answers `INTERRUPTED`. Unasked, the cost is one relaxed load per
-  tick and per present. Capture does not wait for unresident scene
-  content (framescene.md 9.2).
-  For a Live gallery capture, pass the capture session's `game_id` after
-  selecting a spawn view. The method waits for a whole frame that draws
-  that view at or after the requested tick. The result includes
-  `source: {game_id, map_id, map, camera, digest}`. The game resolves the
-  draw's cache alias to the installed package's full `MapId` and base map name.
-  `camera` gives the world-space `position`, `forward` and `up` the renderer
-  uses. `digest` is the SHA-256 of the exact PNG the display writer saves.
-  The Live CLI adds the capture permit when it submits the image.
-  `game_id` cannot be combined with `pass` or `lighting`.
-- **`render.scene`.** Map activation or snapshot load clears the last
-  scene and any private capture pin immediately. `sealed` stays false
-  until a frame on the new timeline seals. The last sealed `FrameScene`
-  comes from the source the frame step registers (`agent::render::set_scene_source`, in boot's
-  `scene_glue` over `render_bridge::scene_step`): whether
-  one has been sealed, its map epoch, frame, tick, summary hash and cut
-  reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
-  person's `first_person:0:0`) whether it
-  cut, its clusters, instances, parts, rows, guest-selected lights
-  (`lights`), all light candidates including those selections
-  (`lights_candidates`), candidates with both constant sets and any
-  required projection (`lights_with_constants`), shadow maps (its
-  lights that cast their shadow), its lights by each layer their passes
-  draw (`light_layers`, `"10"` to `"14"`), the items of its typed layer
-  draws by layer (`layer_items`) and those the guest still draws
-  (`layer_remainder`), the
-  instances the guest still draws (`remainder`), its parts by how they
-  draw beyond their material (`part_flags`: `stencil_mark`, `strip`,
-  `subparts`, `aux_depth`, `fade`, `shader_flag`;
-  framescene.md, slice 3), its model decorator draws (one per
-  placement), their instances and the draws the guest still draws
-  (`decorators`, `decorator_instances`, `decorator_remainder`;
-  native-decorators.md), its late passes when they ran (framescene.md,
-  slice 5): `fog` (layer 16) and `water` (layer 6), each `{draws, items,
-  materials, parts, drawn, kept, device_words}` (whether the layer's own
-  gate held, its items in the list, the materials and parts the native
-  stage draws, whether the stage took the layer, the items the guest
-  still draws, the device fog words of 7 that read), and `post`,
-  `{colour, late, view_kind, screen_effects, screen_effects_gated,
-  colour_pass, effects}` (`render_screen_effects`' arguments and gates,
-  whether the colour pass ran, the screen effects drawn under it); each
-  absent when its draw did not run in the view; `carried`, its ops by
-  slot from the scene sink's last frame (empty without
-  `frame-scene.sink`, and for a first-person view), and `camera_use`
-  counts the retained guest draws for that scene and game view,
-  including its overlay. `screen` is pretransformed or passes screen
-  positions through, `view` has the view's verified projection block
-  and viewport, and `unknown` covers the other draws. The map is
-  empty for other view kinds or without a retained matching scene.
-  For a game view, `visibility_clusters` counts the visible clusters,
-  `structure_clusters` the subsequent BSP structure list and
-  `visibility_objects` the view's object list; `visibility_source` is
-  `rust` when the Rust visibility supplied the clusters and objects (the
-  default) and `guest` when it declined for the view
-  ([native-visibility.md](../graphics/native-visibility.md)). All four
-  are absent if extraction cannot read the main gather at layer 3.
-  A zero is a successfully read empty list. With `{"dump":true}`, the scene
-  file has the BSP cluster IDs in `cluster_gathers[i].visible`, the
-  object handles in `.objects` (the guest's order, or ascending when
-  `.source` is `rust`) and `.structure` for `views[i]`. Its `mode` is 0
-  for a portal flood, 1 for a sphere and 2 for the potentially visible
-  set. The view's `clusters` range selects the
-  layer-3 IDs from the top-level `clusters` array. `views[i].camera` gives
-  the vertical FOV in radians, guest projection terms and viewport.
-  `visibility_first_mismatch` names the first game view since the map
-  loaded whose Rust visibility differed from the guest's: its key, frame
-  and tick, the first difference (`cluster 12 guest only`, `object
-  0x00050002 rust only`) and the counts each way.
-  `light_visibility_first_mismatch` does the same for the first light
-  whose Rust visibility differed from its struct's lists.
-  `first_person_visibility_first_mismatch` identifies the first differing
-  first-person slot count, handle, record count or record in replay order.
-  Its counters are `scene_first_person_visibility_checked`, `_equal`,
-  `_differ`, `_declined_unread` and `_declined_layout`.
+  | Mode | Params | What it gives |
+  |---|---|---|
+  | Presented frame | none of the below | the presented frame at the render scale, as `H2_BOOT_GFX` writes `frame-N.png`, at `frames/capture-<pid>-<seq>-tick-<tick>.png` under the cache directory |
+  | Pass | `pass` | the frame recorder (`render.frame`) is armed at the end of the previous tick and reads that pass back at 1x; it replaces a not-yet-done `render.frame` arming, and one made while it waits answers `INTERRUPTED` |
+  | Private lighting | `lighting`: `retail`, `e3`, `relight-on` or `relight-off` | the native renderer draws a sealed scene into a private target; default scene is the latest sealed, an explicit `tick` selects that scene |
+  | Live gallery | `game_id` (after selecting a spawn view) | waits for a whole frame drawing that view at or after `tick`; adds `source: {game_id, map_id, map, camera, digest}` (`camera` has `position`, `forward`, `up`; `digest` is the SHA-256 of the PNG); the Live CLI adds the capture permit |
 
-  `view_record_first_mismatch` names the first game view whose
-  Rust-built records differed from the guest's and the first field that
-  did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
-  `projection`, `start cluster`, `mode`).
-  The top-level `counters` include
-  the visibility differential's `scene_visibility_checked` (game views
-  whose Rust sets were made and compared), `scene_visibility_equal`,
-  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
-  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
-  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
-  computation), `scene_visibility_lens_retail`, `_guest` and `_display`
-  (game views by the lens their visibility used: retail, the single-copy
-  camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
-  a single-copy run whose views count under `_display` has views the hook
-  did not fit), `scene_visibility_display_views`, `_clusters` and
-  `_objects` (what the display supplement added),
-  `scene_visibility_display_incomplete` (display-only clusters left out
-  whole because a part draws in a layer the supplement has no display
-  draw for) and
-  `scene_visibility_declined_<reason>` (`unread`,
-  `layout`, `mode`, `frusta`, `overflow`, `camera`, `not_main`: views it
-  made no sets for); the light views' `scene_light_visibility_checked`,
-  `_equal`, `_differ`, `_ns` and `_declined_<reason>` (the same reasons);
-  the complete world/model geometry lists' `scene_geometry_lists_equal`,
-  `scene_geometry_lists_differ` and `scene_geometry_lists_taken` (whole lists
-  dispatched from a verified Rust result for the current inputs);
-  and the view records' `scene_view_record_checked`, `_equal`, `_differ`,
-  `_guest_lens_applied`, `_guest_lens_retail` and `_guest_lens_other`
-  (single-copy views the hook fitted, by whether the guest's own
-  horizontal projection scale is the widened one, the retail one, or
-  neither) and `_declined_<reason>` (`unread`, `layout`, `cinematic`,
-  `no_observer`, `override`). They also include
-  (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
-  `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
-  `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
-  did not read), `scene_decorator_draws`, `scene_decorator_instances`,
-  `scene_decorator_remainder`, and the decorator placement source by view
-  (`scene_decorator_placements_equal`, `_differ`, `_no_windows`, `_unread`,
-  `_nonresident`, `_virtual_shader`). The grid producer reports
-  `scene_decorator_grid_compared`, `_differ` and `_native`.
-  The decorator stage reports
-  `scene_decorator_views`, `scene_decorator_views_native`,
-  `scene_decorator_items_skipped`, `scene_decorator_draws_unready`,
-  `scene_decorator_draws_state` and `scene_decorator_views_declined`
-  (native-decorators.md),
-  `scene_light_extract_views`, `scene_light_extract_ns` and
-  `scene_light_extract_unread` (candidate extraction attempts, their
-  elapsed nanoseconds and attempts that return no candidates because
-  the input could not be read), `scene_light_groups`, `scene_light_groups_whole` (the
-  gathered light and shadow layers in the scene, and those with every
-  sorted entry in it), `scene_light_layers_alone` (light layers drawn
-  from the scene with no handler run), `scene_light_objects_alone`
-  (their object entries: model parts drawn with no handler),
-  `scene_first_person_light_layers_alone` (of those layers, the
-  first-person lights'),
-  `scene_host_lights_drawn`, `scene_host_lights_kept` and
-  `scene_host_lights_unread` (the host's own lights, ML5, drawn by the
-  light passes, made but kept, and whose constants did not read),
-  `scene_e3_lights_drawn`, `scene_e3_lights_kept`,
-  `scene_e3_lights_unread` and `scene_e3_lights_shadowed` (E3's chosen
-  lights beyond the guest's, queued as E3 stages, ready but not queued,
-  with no constants to draw from, and handed to the host with their
-  shadowed implementations over the renderer's cone shadow),
-  `scene_e3_first_person_lights_drawn`, `scene_e3_first_person_lights_kept`,
-  `scene_e3_first_person_lights_unread` and
-  `scene_e3_first_person_lights_far` (E3's chosen first-person lights
-  retail's first-person pass did not record: queued as E3 stages over the
-  first-person parts, ready but not queued, with no constants, and whose
-  sphere does not reach the eye), `scene_e3_first_person_parts` and
-  `scene_e3_first_person_parts_left` (the first-person object parts
-  offered with them, and those left out: subparts, auxiliary depth or no
-  rows),
-  `scene_light_entries` and
-  `scene_light_entry_remainder_<cause>` (sorted entries left to the
-  guest's handlers, by `scene_extract::light_groups::Cause`: `memory`,
-  `callback`, `owner`, `section`, `range`, `state`, `subparts`,
-  `material`, `pose`; framescene.md, slice 4),
-  `scene_shadow_groups` and `scene_shadow_groups_whole` (the shadow
-  groups and those with every sorted entry), also per layer as
-  `scene_shadow_groups_<layer>` and `scene_shadow_groups_whole_<layer>`
-  for 10, 11 and 14, `scene_shadow_layers_alone_10`, `_11` and `_14`
-  (caster, receiver and opacity groups drawn from the scene with no
-  handler), `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`,
-  `pose`, `program`, `state`, `target`, `callback`, `device`),
-  `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
-  filters replaced by native quads) and
-  `scene_shadow_filter_refused_<cause>` (`program`, `state`, `target`,
-  `callback`, `device`), `scene_shadow_chains_private` (object masks
-  drawn into a private chain) and `scene_shadow_chains_spilled` (of
-  those, chains copied back to target 10 for the guest's filter)
-  ([native-shadow-layers.md](../graphics/native-shadow-layers.md)),
-  `scene_fog_views`, `scene_fog_gate_held`, `scene_fog_drawn`,
-  `scene_fog_parts` and the same four for `scene_water_` (late layers
-  written, of those whose gate held, those the native stage took, and
-  the parts it took), `scene_post_views`, `scene_post_colour`,
-  `scene_post_effects` and `scene_post_unplaced` (post calls whose words
-  did not read, and colour passes or screen effects with no post call of
-  their view; slice 5), and from `d3d::scene_stage`
-  `scene_stages_<stage>`, the scene stages queued to the render thread,
-  and `scene_dropped_<stage>`, those it could not record after the guest
-  skipped their items, for `world` and `objects` (framescene.md, slice
-  2) and `fog` and `water` (slice 5). The world stipple counters
-  `scene_world_stipple_records`, `scene_world_stipple_solid`,
-  `scene_world_stipple_faded` and `scene_world_stipple_unreadable` count
-  the records the sorted handler enters with a placement fade below full
-  opacity, and of those how many the display detail drew solid (LOD
-  Distance; [occlusion-culling.md](../graphics/occlusion-culling.md),
-  "Projected size and level of detail"), how many still drew a stipple
-  pattern, and how many fell back to the record's own byte because the
-  placement did not read. They are session totals: the delta between two
-  `render.scene` replies is a frame's. The counters
-  `layer_plan_{6,16}_refused_<cause>` count fog and water batch refusals.
-  Item causes are `build`, `handler`, `record`, `object`, `subparts`, `material` and
-  `order`. View causes include `stencil_view`, `palette_view`,
-  `fog_words_view` and the water stage's `target_view`.
-  The water loader counts refused placement parts by `placement_rows_load`,
-  `rigid_program_load` and `placement_streams_load`.
-  Sorted range admission reports `native_{fog,water}_walk_examined`,
-  `walk_suppressed`, `walk_refused_inputs`, `walk_refused_resume` and
-  `walk_refused_reservation` under each stage. The counters
-  `scene_submitted_flares_reference_draws` and
-  `scene_submitted_flares_display_draws` accumulate flare ranges as
-  `GfxBackend::commit_external` appends them to each copy's command
-  stream. Private replays also contribute. These counters are available
-  with frame statistics and the residual census disabled. The corresponding
-  `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
-  `sky_plan_admitted` counts strips offered to the device after extraction and
-  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
-  material, transform, view, range, stencil or device. GPU reservation and
-  replay outcomes appear under `native_sky_*` in the frame counters.
-  `post_effect_refused_<cause>` counts screen-effect preflight refusals.
-  A call that needs the view but has no view strip increments `view_target`. A missing or empty
-  target 1 size increments `pass_target`.
-  Unless
-  `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
-  `layer_plan_items` and the plan's outcomes by layer,
-  `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
-  the alternate view's as `layer_plan_alt<layer>_*`, the first person's as `layer_plan_fp<layer>_*`, object items' causes
-  named `object_*` (`render_bridge::native_layers`; framescene.md,
-  slice 4); a later slice adds
-  `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
-  enabled, the device files
-  each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
-  `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
-  for both the original renderer and the frame owner. `carried` describes
-  the last recorded frame:
-  `slots`, each slot's `{draws, binds, clears, copies, uploads,
-  samples}` (slots with none left out), `side_targets`, each surface
-  other than the scene's presented colour and its depth that a game
-  view's ops name, `{aux, width, height, format, depth, ops}` (`ops` by
-  slot), and `readbacks` and `readbacks_outside`, the guest's reads of
-  what was drawn in and outside a game view by kind (`surface`,
-  `depth`, `mirror`, `pixel_count`); and the counters add
-  `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
-  `scene_side_target_frames` (frames that named a side target in a
-  game view), `scene_readback` and `scene_readback_<kind>` (in a game
-  view, since the start). `carried_census` keeps transient uses across
-  all recorded frames. `frames` counts sink presents from one and
-  `game_frames` counts those with guest D3D ops in a game view.
-  `targets` groups game-view side surfaces by `width`, `height`,
-  `format`, `depth`, `slot` and `operation`. Operations distinguish
-  attachment binds and clears, the source and destination of a copy,
-  uploads, snapshots, in-place samples and depth samples. `reads`
-  groups guest readbacks by `slot` and `kind`, including the overlay
-  and outside slots. Each row gives its `count`, `first_frame` and
-  `last_frame`. Compare counts at two boundaries to isolate a window.
-  On a direct level boot, `carried_activation` records the loaded map, its
-  activation present, sink frame and a snapshot of process counters. A row
-  whose `last_frame` exceeds `carried_activation.frame` occurred after loading.
-  `carried_checkpoint` freezes the census corpus at original Swap 3000.
-  It contains `present`, `sealed`, optional `inventory` and optional
-  `counters`. It appears once the device has submitted the boundary.
-  `sealed` records whether the active map already had a sealed scene.
-  The original census supplies an `inventory` with the same schema as
-  `carried_census` for original Swaps 1 through 3000 inclusive.
-  A device or ordinal gap leaves that inventory absent. When the display
-  worker completes Swap 3000, `counters` preserves its `scene_window_*`
-  readings for the interval after level activation through that Swap.
-  Missing or late activation, a second game start within the interval,
-  or a missing original or worker ordinal leaves the checkpoint without
-  counters. Later game activity does not modify the frozen values.
-  A threaded GPU sink also reports `scene_window_*` counters from one device.
-  `start` is its original Swap at activation and `through` is the last
-  completed Swap. The interval excludes `start` and includes `through`.
-  `owner_enabled` is 1 when this device selects a native frame owner.
-  `gaps` counts missing or out-of-order joins. `games` counts completed
-  frames that entered a game view or issued a game-view operation.
-  `owned` and `ordinary` count those game frames by actual display path.
-  `failed` counts failed presentations across the interval. `stage_drops`
-  includes guest-side and worker-side stage drops. For game frames,
-  `unresident` counts omitted instances and `unknown_residency` counts
-  frames without a complete observation. `palette_views` counts game-view
-  entries sampled for native map-palette residency. `palette_pending_frames`
-  counts game frames where a view entered with a known incomplete palette.
-  `palette_unknown_frames` counts game frames where a view lacked a valid
-  palette observation or game work had no recorded view entry. Each frame
-  retains observations from every split view. The current map's
-  `scene_palette_definitions` counts distinct scenario object palette
-  definitions. Each is in one of `scene_palette_pending`,
-  `scene_palette_no_model` (an explicit null model reference),
-  `scene_palette_failed`, `scene_palette_partial` or
-  `scene_palette_resident`. Resident means every drawable model part
-  has its uploaded geometry and its layer-3 material implementations.
-  These gauges appear after a valid palette manifest is available.
-  `read_surface`, `read_depth`,
-  `read_mirror` and `read_pixel_count` count guest requests in game views.
-  `flare_queries` counts original game-view reports installed by the
-  owner. `unmatched_flare_frames` counts owned frames where that number
-  differed from the original requests on the same Swap. Each read of
-  these counters covers a single completed interval, even when the
-  worker is drawing a later frame. The guest continues running.
-  `configured_scale_<bucket>` counts the raster setting used on each
-  completed original Swap. `physical_scale_<bucket>` counts the scale
-  of its presented image relative to that original surface's guest
-  extent. `game_physical_scale_<bucket>` counts that same observation
-  for game-view originals. Buckets use `1x`, `4x` or the other observed
-  integer factor. `unknown` counts missing observations. Empty buckets
-  are omitted. These histograms also appear in the frozen checkpoint.
-  The per-frame `aux` number appears only under `carried.side_targets`.
-  The cumulative census is available on the census-only path. Rendering
-  workers omit this extra scan. Both paths count
-  `scene_carried_game_frames`, the guest presents with a D3D op inside
-  a game view. With an installed frame owner, `scene_owned_presented`
-  counts successful native presentations and `scene_owned_declined`
-  counts presentations that take the ordinary backend path, including
-  frames outside game views. `scene_owned_flare_queries` counts
-  game-view pixel reports whose native result the owner installed.
-  `scene_owned_candidates` counts sealed game frames paired with their
-  guest presents and checked by the display worker. For each rejected
-  candidate the worker records the first cause. `scene_owned_barriers`
-  counts frames whose original commands had to run before Swap, for example
-  for a guest read. `scene_owned_mismatches` counts disagreement between
-  the seal and the queued commands or Swap parameters.
-  `scene_owned_target_refusals` counts missing physical attachments and
-  frames the physical backend cannot reproduce at the active scale or mode.
-  On a scaled display, `scene_owned_scaled_whole` and
-  `scene_owned_scaled_fractional` count owned frames on whole-number and
-  fractional grids, and `scene_owned_scaled_refused_<reason>` counts the
-  scaled owner's refusals by their first reason: `grid` (an axis
-  minifies or passes the scale limit), `two_copies`, `busy`, `sealed`,
-  `history` (1x E3 with older pixels), `targets`, `live_views`,
-  `samples` and `stages` ([framescene.md](../graphics/framescene.md),
-  slice 8, "Fractional grids").
-  The private renderer reports its own publication queue in
-  `scene_private_published`, `scene_private_taken`, `scene_private_replaced`
-  and `scene_private_waiting`. In paced mode a newer seal can replace an
-  unread private scene. In locked mode at most two scenes wait and each
-  reaches the reader. These counts describe capture availability.
-  With the sink and a render worker, `scene_residency_frames` counts
-  presents where the worker observed a draw, a committed scene stage,
-  an owned frame or a failure. `scene_unresident` counts distinct
-  object handles per present whose dropped work lacked the planned
-  GPU model, geometry buffer or material program.
-  `scene_residency_unknown_frames` counts frames with an unclassified
-  drop, a skipped guest packet or a worker failure. The counters appear
-  after the first observation. A post-load zero requires a positive
-  frame delta and zero growth in both omission counters. Private
-  captures have no effect. Legacy refusals can keep their guest draws.
-  Check native ownership across the same game views to measure native
-  coverage.
-  The raw `scene_readback_pixel_count` includes these requests.
-  Compare raw and native counts at the same recording boundaries
-  to identify requests that still need the reference.
-  Both carried records are absent until the sink records a frame.
-  Without the option the sink counters are also absent. With
-  `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
-  (`render_bridge::entry_census`; framescene.md, slice 4), totals since
-  the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
-  with site `scene`, `alternate`, `first_person`, `light`,
-  `object_shadow` or `other`, the late passes' fog and water calls
-  being `layer.scene.16` and `layer.scene.6`; `light_passes`,
-  `object_shadow`, `screen_effects`, and under it `colour_pass` and
-  `screen_effect`), each `{calls, d3d_draws, seed_steps,
-  effects_seed_steps, seed_unmatched, animation_gets,
-  particle_updates}`: the guest draws handed to the D3D backend under
-  the entry, the steps of the shared random seeds `+0` and `+4`, calls
-  whose seed was not a run of steps, and calls of
-  `animation_resource_get` and of the particle systems' per-view update
-  under it. Entries nest and each counts what is under it.
-  `unbalanced` counts entries whose exit never ran and exits with
-  nothing open; `draws_counted` is false when no D3D draw counter is
-  registered. Without the option `entries` is absent. With `dump`, the whole scene is written as JSON
-  under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
-  `dump` names the file. With no source
-  registered: `UNAVAILABLE`, "no scene has been built".
-- **`render.parity`.** `{"arm": true}` requests one game frame from the
-  sealed scene's private renderer and the D3D display. The sink retains
-  the original guest draws while armed. A frame that already admitted
-  a typed stage before arming gives way to the next complete guest
-  frame. The reference readback uses the ordinary display surface,
-  before gamma, at its display scale. The reference requires Retail display
-  lighting. An E3 display returns `UNAVAILABLE` because its scaled shadow
-  maps use a different filter from the sealed renderer's baseline. The
-  worker draws that present's sealed inputs on fresh targets at the
-  observed scale. Smaller auxiliary levels retain their guest dimensions.
-  The reply carries the sealed scene's `tick` and the pixel comparison
-  returned by `render.compare`. The comparison covers the carried
-  guest commands. Pixel parity of a typed substitution needs a separate
-  reference run exercising that stage.
-  The request completes at a tick boundary after both render paths
-  finish. A new arming interrupts one still waiting. Unavailable
-  inputs or a missing reference or private renderer give `UNAVAILABLE`.
-  When the scaled display also fails to show its final 1× fallback,
-  the matching capture and parity request report the failed Swap. A
-  later Swap can still supply its own image.
-  A request that receives no game frame within the deferred request
-  limit times out. `{"arm": false}` gives `INVALID_PARAMS`.
-- **`sim.hashes`.** The running game's post-tick digests in the rows sim
-  mode writes to its report as `state_hashes_v1` (sim.md §6): `tick`,
-  `gameplay` (16 hex digits) and, under `impl.sim.arena-hash`, `arena`
-  (the game-state arena's hash). Boot's `agent-frames` tick observer
-  computes them as sim mode does (the same digest function and the same
-  `impl.sim.metrics-projection` switch) on every tick where the players
-  can be read, on any run with an agent socket, rendered or not. It keeps
-  the last 108,000 rows (an hour of ticks, about 2.6 MB), dropping the
-  oldest (`dropped` counts them); a tick before the last, or more than 30
-  after it (a new map, a snapshot load), starts the series again
-  (`resets`). `from_tick` and `max` pick rows; `truncated` says more
-  matched. Compare two launches row by row:
+  On the D3D path a tick's frame is the first guest present after it; `tick`
+  in the answer is the last tick that ended before that present (later than
+  asked when two ticks ran in one frame) and `present` numbers it as
+  `render.frame` does. The presented-frame and `pass` modes need a GPU run
+  with `H2_BOOT_GFX` (`H2_BOOT_GFX_EVERY=never` writes nothing else);
+  without it, or under `H2_BOOT_GFX_LIGHTING_AB`, the answer is
+  `UNAVAILABLE`. `scene_hash` is the sealed scene's summary hash at that
+  present (`null` with no source). The answer waits for the frame (up to the
+  300-tick limit for deferred answers); a paused game holds it, and a new
+  `render.capture` replaces a waiting one, which answers `INTERRUPTED`.
+  Unasked, the cost is one relaxed load per tick and per present. Capture
+  does not wait for unresident scene content (framescene.md 9.2).
+
+  Private lighting: the most recent private capture retains its scene for
+  another request with the same tick; a renderer reset releases it. A missing
+  private renderer or an unreplayable scene gives `UNAVAILABLE`, as does a
+  failed original Swap (`reference present failed`). `lighting` with `pass`,
+  or `game_id` with `pass` or `lighting`, gives `INVALID_PARAMS`. The relight
+  modes need a run started with either reconstruction selected and a matching
+  installed bake; with no selected range binding a page whose baked states
+  differ the answer is `UNAVAILABLE` (`no native world range in this scene
+  uses the installed lightmap`). `lighting` in a successful reply echoes the
+  requested state. Pass both paths to `render.compare` to compare modes while
+  play continues. See the
+  [three-render comparison](../graphics/relighting-review.md). Tests:
+  `private_captures_draw_the_same_pinned_scene_with_each_requested_mode` and
+  `retained_stage_uses_the_current_private_attachments_on_every_draw`.
+  Resolution, retention and tick details: see the
+  [detail note](notes/2026-11-26-agent-api-detail.md), "`render.capture`".
+- **`render.scene`.** Reads the last sealed `FrameScene` from the source the
+  frame step registers (`agent::render::set_scene_source`, in boot's
+  `scene_glue` over `render_bridge::scene_step`). Map activation or snapshot
+  load clears the scene and any private capture pin; `sealed` stays false
+  until a frame on the new timeline seals. With no source registered the
+  answer is `UNAVAILABLE`, "no scene has been built". `{"dump":true}` writes
+  the whole scene as JSON to `scenes/scene-<frame>-<tick>.json` under the
+  cache directory and `dump` names it. Per-field detail, the full counter
+  lists and the dump layout: see the
+  [detail note](notes/2026-11-26-agent-api-detail.md), "`render.scene`".
+
+  | Field | Holds |
+  |---|---|
+  | `sealed`, `map_epoch`, `frame`, `tick`, `hash`, `cut` | whether a scene is sealed, its map epoch, frame, tick, summary hash and cut reasons |
+  | `views` | per view (`key` is `kind:player:view`: `game:0:0`, `first_person:0:0`): cut, clusters, instances, parts, rows, lights and their layers, shadow maps, layer items and remainders, `part_flags`, decorators, the late passes `fog` (layer 16), `water` (layer 6) and `post`, `camera_use`, and for a game view `visibility_clusters`, `structure_clusters`, `visibility_objects` and `visibility_source` (`rust` or `guest`, [native-visibility.md](../graphics/native-visibility.md)) |
+  | `counters` | session totals by family (below) |
+  | `visibility_first_mismatch` | first game view whose Rust visibility differed from the guest's: key, frame, tick, first difference, counts each way |
+  | `light_visibility_first_mismatch` | the same for the first light |
+  | `first_person_visibility_first_mismatch` | first differing first-person slot count, handle, record count or record |
+  | `view_record_first_mismatch` | first game view whose Rust-built records differed, and the first field (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`, `projection`, `start cluster`, `mode`) |
+  | `entries` | entry census, only with `frame-scene.census` in `H2_FEATURES` (`render_bridge::entry_census`): `by_entry` keyed `layer.<site>.<layer>` (site `scene`, `alternate`, `first_person`, `light`, `object_shadow`, `other`), `light_passes`, `object_shadow`, `screen_effects`; each `{calls, d3d_draws, seed_steps, effects_seed_steps, seed_unmatched, animation_gets, particle_updates}`; plus `unbalanced`, `draws_counted` |
+  | `carried`, `carried_census`, `carried_activation`, `carried_checkpoint` | with the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames) enabled: guest D3D ops by frame slot (`opaque`, `after_opaque`, `after_lights`, `transparents`, `after_post`, `overlay`, `outside`), side targets and readbacks of the last frame; the census across frames; the load activation record; the census frozen at original Swap 3000. All absent until the sink records a frame |
+  | `display_frame`, `private_frame` | the display worker's and private renderer's frame observations |
+
+  Counter families in `counters` (names under the prefix in the table):
+
+  | Prefix | Counts |
+  |---|---|
+  | `scene_visibility_*`, `scene_light_visibility_*`, `scene_geometry_lists_*`, `scene_view_record_*` | the Rust-versus-guest visibility, light, geometry-list and view-record differentials (`checked`, `equal`, `differ`, `taken`, `ns`, `declined_<reason>`, lens counters) |
+  | `scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`, `scene_refused_writes`, `scene_layers*` | scene and layer totals |
+  | `scene_decorator_*` | decorator draws, placements, grid producer and stage ([native-decorators.md](../graphics/native-decorators.md)) |
+  | `scene_light_*`, `scene_host_lights_*`, `scene_e3_*` | light extraction, groups, entries left to the guest by cause, host and E3 lights |
+  | `scene_shadow_*`, `scene_dropped_shadow_layers` | shadow groups, filters and chains ([native-shadow-layers.md](../graphics/native-shadow-layers.md)) |
+  | `scene_fog_*`, `scene_water_*`, `scene_post_*`, `post_effect_refused_<cause>` | late layers and post passes (framescene.md, slice 5) |
+  | `scene_stages_<stage>`, `scene_dropped_<stage>` | stages queued to the render thread and dropped (`world`, `objects`, `fog`, `water`) |
+  | `scene_world_stipple_*` | fade records and how the display detail drew them ([occlusion-culling.md](../graphics/occlusion-culling.md), "Projected size and level of detail") |
+  | `layer_plan_*`, `native_{fog,water}_walk_*`, `sky_plan_*`, `scene_submitted_*` | native layer plans and refusals by cause, sorted range admission, sky and flare draws (`render_bridge::native_layers`; off with `frame-scene.layers=off` in `H2_FEATURES`) |
+  | `scene_carried_*`, `scene_side_target_frames`, `scene_readback*` | the sink's carried ops and guest readbacks |
+  | `scene_window_*` | per-device interval counters (`start`, `through`, `owner_enabled`, `gaps`, `games`, `owned`, `ordinary`, `failed`, `stage_drops`, `unresident`, palette and scale histograms) |
+  | `scene_owned_*` | the frame owner's presentations, declines, candidates, barriers, mismatches, refusals, scaled grids ([framescene.md](../graphics/framescene.md), slice 8, "Fractional grids") |
+  | `scene_private_*` | the private renderer's publication queue |
+  | `scene_residency_*`, `scene_unresident`, `scene_palette_*` | object residency and palette gauges |
+
+  The world stipple and window counters are session totals: the delta between
+  two `render.scene` replies is a frame's.
+- **`render.parity`.** `{"arm": true}` requests one game frame from the sealed
+  scene's private renderer and the D3D display and returns the sealed scene's
+  `tick` with `render.compare`'s comparison. The reference is the ordinary
+  display surface before gamma, at its display scale, and needs Retail
+  display lighting: an E3 display returns `UNAVAILABLE`. The comparison covers
+  the carried guest commands; pixel parity of a typed substitution needs a
+  separate reference run exercising that stage. The request completes at a
+  tick boundary after both paths finish; a new arming interrupts one waiting.
+  Unavailable inputs or a missing reference or private renderer give
+  `UNAVAILABLE`; no game frame within the deferred request limit times out;
+  `{"arm": false}` gives `INVALID_PARAMS`. The sink retains the guest draws
+  while armed. Reference and failed-Swap details: see the
+  [detail note](notes/2026-11-26-agent-api-detail.md), "`render.parity`".
+- **`sim.hashes`.** The running game's post-tick digests, in the rows sim mode
+  writes as `state_hashes_v1` (sim.md §6): `tick`, `gameplay` (16 hex digits)
+  and, under `impl.sim.arena-hash`, `arena`. Boot's `agent-frames` tick
+  observer computes them with sim mode's digest function and
+  `impl.sim.metrics-projection` switch on any run with an agent socket. It
+  keeps the last 108,000 rows (`dropped` counts the oldest lost); a tick
+  before the last, or more than 30 after it, restarts the series (`resets`).
+  `from_tick` and `max` pick rows; `truncated` says more matched. Compare two
+  launches row by row:
 
   ```sh
   diff <(jq -c '.rows[]' off-hashes.json) <(jq -c '.rows[]' on-hashes.json) | head
@@ -2499,87 +1627,60 @@ h2 agent render.residual '{"top": 500}'        # the last finished window
 
 - **Arming.** `{"arm": {"frames": N}}` starts a window at the next guest
   `Swap` and ends it after N more; a new arming replaces one in progress.
-  `{}` reads. `state` is `idle`, `armed` (waiting or counting) or `done`.
-  The other fields are the last finished window's, so an armed answer can
-  carry the window before it. `h2 agent residual N [top K]` arms, polls
-  until a new window is done, and adds `per_frame`: each total over the
-  window's presents.
+  `{}` reads. `state` is `idle`, `armed` or `done`; the other fields are the
+  last finished window's. `h2 agent residual N [top K]` arms, polls until a
+  new window is done, and adds `per_frame`: each total over the window's
+  presents.
 - **`window`.** `{frames, game_frames, presents: [first, last], ticks:
-  [first, last], map, timing}`. `presents` are `Swap` ordinals since the
-  process started; `ticks` the last tick that had ended at each end
-  (`null` before the first). `game_frames` counts presents whose frame
-  entered a game view, through the `game_view` producer, so it is zero
-  without `frame-scene.census`. `timing` is true on a `render-timing` run.
-- **`totals`.** `draws` (guest draws `d3d` resolved, inline ones
-  included), `claimed` (of those, a native replacement committed: an
-  admission's recording or a post call's held originals), `residual`
-  (reached the backend: the growth of `d3d::device::backend_draws`, so it
-  equals the capture's backend draw count over the same window),
-  `entries` (D3D entry calls that ran), `push_words` (decoded),
-  `state_words` (render-state and texture-state words the deferred-state
-  commit applied), `clears`, `binds` (target, texture and palette binds),
-  `copies` (frame-buffer copies), `uploads` (texture uploads), `locks`
-  (`BlockOnResource`, `BlockOnTime`, `IsBusy`), `queries` (visibility
-  tests and results), `presents`, and `d3d_ms` (time in the adapter).
-  Totals and producer rows also count committed native rectangle plans
-  (`native_rect_clears`) and longer lists using the linear path
-  (`clear_refused_rect_count`). Title binds that complete without resource
-  destruction increment `native_guest_binds`. Final releases increment
-  `guest_bind_refused_destroy`. The helper rows are `scene_clear` and
-  `target_select`.
+  [first, last], map, timing}`. `presents` are `Swap` ordinals since process
+  start; `ticks` the last tick ended at each end (`null` before the first).
+  `game_frames` goes through the `game_view` producer, so it is zero without
+  `frame-scene.census`. `timing` is true on a `render-timing` run.
+- **`totals`.** Counters over the window:
+
+  | Field | Counts |
+  |---|---|
+  | `draws` | guest draws `d3d` resolved, inline ones included |
+  | `claimed` | of those, a native replacement committed |
+  | `residual` | reached the backend (growth of `d3d::device::backend_draws`) |
+  | `entries`, `push_words`, `state_words` | D3D entry calls, decoded push words, deferred-state words applied |
+  | `clears`, `binds`, `copies`, `uploads` | clears, target/texture/palette binds, frame-buffer copies, texture uploads |
+  | `locks`, `queries`, `presents`, `d3d_ms` | `BlockOnResource`/`BlockOnTime`/`IsBusy`, visibility tests and results, presents, time in the adapter |
+  | `native_rect_clears`, `clear_refused_rect_count`, `native_guest_binds`, `guest_bind_refused_destroy` | native rectangle plans, longer lists on the linear path, title binds without destruction, final releases (also on producer rows; helper rows `scene_clear`, `target_select`) |
 - **`callers`**, at most `top`, by `residual`, then calls:
-  `{function, sites, entries, draws, inline_draws, residual, d3d_ms}`.
-  A caller is the analysed guest function holding the entry calls' return
+  `{function, sites, entries, draws, inline_draws, residual, d3d_ms}`. A
+  caller is the analysed guest function holding the entry calls' return
   addresses (read at `[esp]`), named as `profile.fallbacks` names one
-  (`recomp::fallback::function_at`), or the return address itself before
-  the analysis is built. `sites` lists the return addresses, `entries`
-  the calls by entry name, `draws` what the entries resolved themselves
-  and `inline_draws` what the drain at its entries decoded (words written
-  before the call, possibly by other code). At most 4096 return
-  addresses are kept; later ones count in `totals` only and
-  `sites_full` is true.
+  (`recomp::fallback::function_at`), or the bare return address before the
+  analysis is built. At most 4096 return addresses are kept; later ones count
+  in `totals` only and `sites_full` is true.
 - **`producers`**, at most `top`, by `residual`, then `entries`:
   `{producer, status, slot, calls, draws, claimed, residual, entries,
   push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
   native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
-  guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
-  places an entry and an exit observer on each producer in
-  `residual_census::REGISTRY` (the views, scene passes, sky, object shadows,
-  decals, lights, water teardown, clears, target selection, transparents,
-  screen effects, post calls, HUD, UI, fade, frame end and loading screen)
-  and on the layer draw (`layer.<site>.<layer>`, as `render.scene`'s entry
-  census names them). The census switch controls whether `producers` is
-  present. Work goes to the innermost
-  open producer, so the rows sum to `totals`. Inside a render frame with
-  none open it is `unknown` (status `unknown`); outside every render
-  frame it is `outside_render`. At each boundary the device first decodes
-  the push buffer, so an inline draw is charged to the producer open when
-  its words were written. `status` is `native` or `d3d` from the
-  registry. Sky, clear, target selection, screen effects and `water_teardown`
-  are `partial`. Water teardown can hand off its indexed composite and still
-  owns its guest state changes and alpha clear. A layer draw is `partial`
-  when a native stage draws some items from the scene and skips their guest
-  draws. `residual_census::PARTIAL_LAYERS` lists the scene's layers 1, 2, 3,
-  5, 6, 7, 8, 16, 17 and 20, the alternate view's 2 and the first person's
-  1, 2, 3, 7, 8 and 20. The `residual` is what the stages leave. `slot` is
-  the carried slot the work lands in. `guest_ms` is the producer's exclusive
-  time less its D3D time, `null` without
-  `render-timing`; it ranks producers and is not a frame time.
-  `unbalanced` counts producer exits with nothing to end and producers
-  dropped unended.
+  guest_ms}`. Present only with `frame-scene.census` in `H2_FEATURES`, which
+  places entry and exit observers on each producer in
+  `residual_census::REGISTRY` and on the layer draw (`layer.<site>.<layer>`).
+  Work goes to the innermost open producer, so rows sum to `totals`; inside a
+  render frame with none open it is `unknown`, outside it `outside_render`.
+  `status` is `native`, `d3d` or `partial` (`residual_census::PARTIAL_LAYERS`
+  lists the partial layers); `slot` is the carried slot; `guest_ms` is the
+  producer's exclusive time less its D3D time, `null` without
+  `render-timing`. `unbalanced` counts producer exits with nothing to end and
+  producers dropped unended. Producer list, status rules and layer lists:
+  see the [detail note](notes/2026-11-26-agent-api-detail.md), "`render.residual`".
 - **`unattributed`.** `{draws, entries}`: with producers, the `unknown`
   row's; without, the inline draws, which no producer owns.
-- **Cost.** Unarmed, the adapter does one relaxed load per entry call.
-  Armed, it reads `[esp]`, copies the device's tally three times and
-  times the call; the census takes its own lock. The producer observers
-  exist only with `frame-scene.census` and drain only while a window is
-  armed. The always-on frame counters `d3d_entries`, `d3d_residual_draws`
-  and `d3d_push_words` are in [`profile`](#profile-where-a-frame-goes).
+- **Cost.** Unarmed, the adapter does one relaxed load per entry call. Armed,
+  it reads `[esp]`, copies the device's tally three times and times the call.
+  The producer observers exist only with `frame-scene.census` and drain only
+  while armed. The always-on frame counters `d3d_entries`,
+  `d3d_residual_draws` and `d3d_push_words` are in
+  [`profile`](#profile-where-a-frame-goes).
 - Tested in `crates/rewrites/render-bridge` (the window, caller rows,
   producer charging, claimed and residual totals, `unknown`), in
   `crates/extensions/agent` (ranking, grouping, params) and in `d3d`'s
-  draw rig (`tests/residual_tally.rs`: the drain and the entry's split
-  and the residual total against the backend's draws).
+  draw rig (`tests/residual_tally.rs`).
 
 ## Load timeline
 
@@ -2592,22 +1693,18 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 ```
 
 - **What a load is.** Read at each tick: the map changed (`map`), the BSP
-  changed (`bsp`), or no tick came for 500 ms (`stall`, the point the
-  `loading` phase starts). The run's first tick ends a `boot` load timed
-  from when the agent started. Each load has a `stall` segment (the last
-  tick before to the first after) and a `settle` segment (the next 30
-  ticks); a load cut short by the next one says `settled: false`.
+  changed (`bsp`), or no tick came for 500 ms (`stall`, where the `loading`
+  phase starts). The run's first tick ends a `boot` load. Each load has a
+  `stall` segment and a `settle` segment (the next 30 ticks); a load cut short
+  by the next says `settled: false`.
 - **What each segment counted.** The difference of the frame-stats running
-  totals (`timeline::phase::totals`) across it: frames, ms per phase
-  (`cpu`, `gpu-wait`, `render-wait`, ...) and each counter that moved
-  (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`, ...).
-  Frames are counted by present, so a load screen that presents shows its
-  frames; one that does not shows the stall's time only. With frame stats
-  off, `no_frame_stats` says the counts are missing.
-- **Now.** While no tick has come for 500 ms, `current` is the stall so far,
-  with what it has counted.
+  totals (`timeline::phase::totals`): frames, ms per phase and each counter
+  that moved (`read_bytes`, `uploads`, `shaders`, `pipelines`, `readbacks`,
+  ...). Frames count by present. With frame stats off, `no_frame_stats` says
+  the counts are missing.
+- **Now.** While no tick has come for 500 ms, `current` is the stall so far.
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
-  and the host time of each file call: `read_bytes` and `file_io_us`).
+  and host time: `read_bytes` and `file_io_us`).
 
 ## Game code: full speed or the slower start
 
@@ -2618,36 +1715,31 @@ full-speed module, or the Cranelift fast tier (`--tier fast`, or
 `crates/extensions/game/src/game_code.rs`; `h2 play` supplies it, other
 hosts don't have it.
 
-```json
-{"tier": "fast", "full_speed": false,
- "module": "/…/h2boot/…/fast/libh2game.dylib",
- "stamp": "<the module stamp's first line>",
- "background": {"state": "building", "log": "/…/clang-build.log",
-                "elapsed_s": 230, "typical_s": 900,
-                "step": "emit: 2.6s, 18662 owners"},
- "restart": {"ok": false, "why": "the full-speed version is still building"}}
-```
+| Field | Holds |
+|---|---|
+| `tier`, `full_speed` | `fast` or the full-speed tier; whether it is full speed |
+| `module`, `stamp` | the module path; the module stamp's first line |
+| `background` | `{state, log, elapsed_s, typical_s, step}` |
+| `restart` | `{ok, why}`: whether `game.code.restart` would run |
 
 `background.state` is `building`, `ready`, `failed` (from the log: its
-`clang (…): N compiled` summary line, or an `Error:` line), or `none` when
-this start began no background build (it already runs clang's module, or
-`--tier` forced one). `elapsed_s` is the log's age; `typical_s` is the
-estimate the banner counts down from; `step` is the log's last line.
+`clang (...): N compiled` summary line, or an `Error:` line), or `none` when
+this start began no background build. `elapsed_s` is the log's age;
+`typical_s` the estimate the banner counts down from; `step` the log's last
+line.
 
-`game.code.restart` (act, no params) starts `h2 play` again in this
-process: the same executable and arguments by `exec`, with the
-pid-named agent socket freed first, so the new start finds clang's module
-current and runs it. Unsaved progress is lost. It is refused
-(`UNAVAILABLE`, with `restart.why`'s text) unless this start runs the fast
-tier, the background build is ready and clang's module exists.
+`game.code.restart` (act, no params) starts `h2 play` again in this process:
+the same executable and arguments by `exec`, with the pid-named agent socket
+freed first, so the new start runs clang's module. Unsaved progress is lost.
+It is refused (`UNAVAILABLE`, with `restart.why`'s text) unless this start
+runs the fast tier, the background build is ready and clang's module exists.
 
 ## Returning to the main menu
 
 `game.menu` (act, no params) leaves the running campaign or multiplayer
 game for the main menu as the title's own departure does: at the next
 tick the agent's guest calls retire the network sessions
-(`LEAVE_SESSIONS`) and call `request_mainmenu(0)`, so the return-to-menu
-picture and the menu's load run as they do for a player
+(`LEAVE_SESSIONS`) and call `request_mainmenu(0)`
 ([level-boot.md](level-boot.md#returning-to-the-main-menu)). Host method,
 `crates/extensions/game/src/game_menu.rs`; it needs the `agent-calls`
 feature.
@@ -2659,7 +1751,6 @@ true, "calls": 2}`, where `from` is the game's options mode (1 campaign,
 `session.wait`, then measure it:
 
 ```sh
-h2 agent wait '{"phase":"gameplay","map_ticks":1800}' 120000
 h2 agent game.menu
 h2 agent wait '{"map":"mainmenu"}' 120000 && h2 agent loads 1
 ```
@@ -2668,21 +1759,16 @@ h2 agent wait '{"map":"mainmenu"}' 120000 && h2 agent loads 1
 
 `game.load {scenario, difficulty?, variant?}` (act) queues any campaign
 mission or multiplayer map on the disc as the next game, from the main
-menu or a running game. `scenario` is a map file's stem
-(`03a_oldmombasa`, `lockout`) or a scenario path, any case, or a level of
-a campaign installed under the data root (`a30`), resolved as
-`h2 play --level` resolves it (`level_boot::resolve_in`). `difficulty`
-(campaign only) is `easy`, `normal` (default), `heroic` or `legendary`.
-`variant` (multiplayer only) is a game type, `slayer` (default),
-`oddball`, `juggernaut`, `king`, `ctf`, `assault` or `territories`: a
-local game on that game type's default variant, built by
-`VARIANT_DEFAULTS` as the level boot builds Slayer's
-([community-gametypes.md](../game/community-gametypes.md)). The options
-are the level boot's ([level-boot.md](level-boot.md)), made by the
-agent's guest calls at the next tick (`Call::QueueGame`), as
-`maps.test.load` queues a test map. Host method,
-`crates/extensions/game/src/game_load.rs`; it needs the `agent-calls`
-feature.
+menu or a running game. Host method, `crates/extensions/game/src/game_load.rs`;
+it needs the `agent-calls` feature. The options are the level boot's
+([level-boot.md](level-boot.md)), made by the agent's guest calls at the next
+tick (`Call::QueueGame`), as `maps.test.load` queues a test map.
+
+| Param | Values |
+|---|---|
+| `scenario` | a map file's stem (`03a_oldmombasa`, `lockout`) or a scenario path, any case, or a level of a campaign installed under the data root (`a30`); resolved as `h2 play --level` does (`level_boot::resolve_in`) |
+| `difficulty` | campaign only: `easy`, `normal` (default), `heroic`, `legendary` |
+| `variant` | multiplayer only, a game type: `slayer` (default), `oddball`, `juggernaut`, `king`, `ctf`, `assault`, `territories`; a local game on that game type's default variant, built by `VARIANT_DEFAULTS` ([community-gametypes.md](../game/community-gametypes.md)) |
 
 The answer comes after the next tick: `{name, scenario, kind, difficulty?,
 variant?, check, queued}`, `kind` being `campaign` or `multiplayer`,
@@ -2693,9 +1779,8 @@ and `phase: "gameplay"`.
 Refusals: an unknown level is `INVALID_PARAMS` listing the disc's
 levels; so are a `difficulty` for a multiplayer map, a `variant` for a
 campaign mission and an unknown difficulty or game type. A co-op or
-networked session (simulation modes 2 to 5) is `UNAVAILABLE`: every
-machine plays its game, so leave it first with `game.menu`. Without the
-`agent-calls` feature, `UNAVAILABLE`.
+networked session (simulation modes 2 to 5) is `UNAVAILABLE`: leave it first
+with `game.menu`. Without the `agent-calls` feature, `UNAVAILABLE`.
 
 `game.levels` (read, no params) lists what `scenario` takes:
 `{campaign: [{name, scenario}], multiplayer: [{name, scenario}],
@@ -2736,19 +1821,19 @@ h2 agent live.join.status
 ### Matchmaking transitions
 
 `live.matchmaking.trace` takes no parameters. `transitions` holds up to 128
-changes in capture order. `hopper_failures` holds the last block-read failure per descriptor during this process, with the hopper index, guest caller and message. An empty rotation names the unavailable map IDs. Call it after a match starts or returns to the
-party. The history is retained across the lifecycle change.
+changes in capture order; `hopper_failures` holds the last block-read failure
+per descriptor (hopper index, guest caller, message). An empty rotation names
+the unavailable map IDs. Call it after a match starts or returns to the party.
 
-Each row has a `sequence`, an `event` and a `state`. Events are `frame`,
-`matchmaking_update` and `release_key`. A key release includes the guest
-return address as `caller`. The state includes the guest lifecycle
-(`6` is matchmaking progress and `1` is the party lobby), the matchmaking
-update's `result` (`3` while active), and the arbitration state and result.
+Each row has a `sequence`, an `event` (`frame`, `matchmaking_update` or
+`release_key`, which adds the guest return address as `caller`) and a `state`:
+guest lifecycle (`6` matchmaking progress, `1` party lobby), the update's
+`result` (`3` while active), and the arbitration state and result.
 
-`result` `2` is a started match. Any other value but `3` sends the party
-back to its lobby with the title's matchmaking failure, and the game logs
-`live: matchmaking ended with result R: <reason> (arbitration state S,
-result A)` once, from `game::agent_glue::matchmaking::result_reason`:
+`result` `2` is a started match. Any other value but `3` sends the party back
+to its lobby, and the game logs `live: matchmaking ended with result R:
+<reason> (arbitration state S, result A)` once, from
+`game::agent_glue::matchmaking::result_reason`:
 
 | `result` | set by | meaning |
 |---|---|---|
@@ -2761,19 +1846,13 @@ result A)` once, from `game::agent_glue::matchmaking::result_reason`:
 | `0x11` | `0x72260` | this console's arbitration registration failed (peer status above 2) |
 | `0x13` | `0x70765` | the update's `+0x10` flag is clear |
 
-`squad` and `target` are null when the session is absent. Each includes its
-session id when it has a key, its state and class, hopper index, host and
-local peer indices, player and roster counts, whether an arbitration round
-is set, and countdown seconds when set. `roster_ids_present` counts the expected player IDs found in the
-membership. Peers list their map, selected hopper and arbitration status
-and whether they are phantoms. Unavailable readings are null. The
-history contains no exchange keys, names or player IDs.
-
-`game::agent_glue::matchmaking` samples the lifecycle at `RENDER_FRAME`,
-the matchmaking result after `0x706f0`, and the target before the key
-cleanup at `0x5fb60`. The hosting update `0x71730` compares the target's
-player and roster counts and IDs at `0x71982` before checking map and
-arbitration readiness at `0x71a58` and `0x71b0d`.
+`squad` and `target` are null when the session is absent; each carries
+session id, state, class, hopper index, host and local peer indices, player
+and roster counts, arbitration and countdown, `roster_ids_present`, and peers
+(map, hopper, arbitration status, phantom). Unavailable readings are null. The
+history holds no exchange keys, names or player IDs. Sampling points
+(`RENDER_FRAME`, `0x706f0`, `0x5fb60`, `0x71730`): see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Matchmaking transitions".
 [Clankermatch lobby](../game/bots.md#84-search-and-lobby-built-the-empty-search)
 
 ```sh
@@ -2790,137 +1869,95 @@ The newest host perf line (`boot::host_perf`): `{line, age_ms}`;
 
 ### `host.metrics`
 
-`h2 agent hostmetrics`; no parameters. It reports the latest complete
-window of 30 intervals between returns from `GAME_TICK` (`0x00137fe0`).
-The first reading is available after 31 tick returns; until then it
-answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crates/extensions/game/src/host_metrics.rs)).
+`h2 agent hostmetrics`; no parameters. It reports the latest complete window
+of 30 intervals between returns from `GAME_TICK` (`0x00137fe0`); until 31 tick
+returns it answers `UNAVAILABLE`
+([`crates/extensions/game/src/host_metrics.rs`](../../crates/extensions/game/src/host_metrics.rs)).
 
 | Field | Meaning |
 |---|---|
 | `ticks` | Tick intervals in the sample (30) |
-| `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
-| `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
-| `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
-| `wall_ms_per_tick_p99` | On a light host, nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
-| `game_cpu_ms_per_tick_p99` | On a light host, nearest-rank p99 of per-tick game-thread CPU deltas (the thread clock's change between consecutive ticks) over the same 30 s window; it clears when gameplay ends, so each match starts empty. `null` when the window is empty or the platform has no thread clock. |
-| `late_ticks` | Number of intervals in that same window longer than 36 ms. Both interval fields are `null` outside the light profile. |
-| `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
-| `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
-| `package_idle_wakeups`, `interrupt_wakeups` | Process-lifetime counts from macOS `proc_pid_rusage` (`ri_pkg_idle_wkups` and `ri_interrupt_wkups`). Each successful request samples both counters together. |
-| `wakeups_at_ns` | Monotonic sample time in nanoseconds, or `null` when wakeup counters are unavailable. For two readings from the same process, divide the change in each count by the change in `wakeups_at_ns` and multiply by 1e9 for wakeups per second. |
-| `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
-| `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes. Each `host.metrics` request samples the process. |
-| `private_bytes`, `shared_bytes` | Private and shared resident mappings in Linux smaps, each including clean and dirty pages |
-| `private_dirty_bytes`, `shared_clean_bytes` | Linux smaps Private_Dirty and Shared_Clean in bytes, for comparing copy-on-write and file sharing |
+| `game_cpu_ms_per_tick` | Game-thread CPU per tick interval, including work between ticks |
+| `process_cpu_ms_per_tick` | CPU on all process threads per tick interval |
+| `wall_ms_per_tick` | Wall time per tick interval, including pacing sleeps, pauses and loads |
+| `wall_ms_per_tick_p99` | Light host: nearest-rank p99 of multiplayer tick intervals in the last 30 s; `null` when empty |
+| `game_cpu_ms_per_tick_p99` | Light host: p99 of per-tick game-thread CPU deltas over the same window; clears when gameplay ends; `null` when empty or no thread clock |
+| `late_ticks` | Intervals in that window longer than 36 ms; both interval fields are `null` outside the light profile |
+| `cpu_percent` | Whole-process CPU over the wall interval; 100 is one core |
+| `cpu_seconds` | User and system CPU seconds used by this process |
+| `package_idle_wakeups`, `interrupt_wakeups` | Process-lifetime macOS `proc_pid_rusage` counts, sampled together |
+| `wakeups_at_ns` | Monotonic sample time in ns, or `null`; divide count change by it for wakeups per second |
+| `rss_bytes` | Resident bytes at interval end (macOS, Linux) |
+| `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes |
+| `private_bytes`, `shared_bytes` | Private and shared resident mappings (Linux smaps) |
+| `private_dirty_bytes`, `shared_clean_bytes` | Linux smaps Private_Dirty and Shared_Clean |
 | `age_ms` | Time since the 30-tick CPU sample ended |
 | `host_light` | Whether the process uses the light host profile |
 
-A platform counter that is unavailable is `null`. Compare active
-gameplay windows after loading; a stale sample can survive a gap in ticks.
-The CPU fields exclude sleeping; the wall field shows the pace the host
-sustained.
+An unavailable platform counter is `null`. The CPU fields exclude sleeping;
+the wall field shows the pace the host sustained.
 
 ### `host.memory`
 
-`h2 agent hostmemory` reads the process watchdog. `h2 agent hostmemory report`
-sends `{"report":true}`, collects a diagnostic report on the game host, and
-returns its path as the last item in `reports`. Collection runs on the
-connection thread so the game can continue ticking. A write failure returns
-`UNAVAILABLE`. An ordinary read takes no parameters and creates no file.
+`h2 agent hostmemory` reads the process watchdog; no parameters, no file.
+`h2 agent hostmemory report` sends `{"report":true}`, collects a diagnostic
+report on the connection thread, and returns its path as the last item in
+`reports`; a write failure is `UNAVAILABLE`.
 
 | Field | Meaning |
 |---|---|
-| `footprint_bytes`, `peak_bytes` | Latest physical footprint and highest footprint sampled by the watchdog, in bytes |
-| `soft`, `hard` | Process limits in bytes. A zero disables that limit. |
+| `footprint_bytes`, `peak_bytes` | Latest and highest sampled physical footprint |
+| `soft`, `hard` | Process limits in bytes; zero disables one |
 | `growth_bytes_per_min` | Estimated footprint change per minute |
-| `samples` | Last 60 samples, oldest first, as `[milliseconds_since_watchdog_start, bytes]` |
-| `probes` | Named subsystem counts, including pending requests, socket reply buffers and queued pad steps |
+| `samples` | Last 60 samples, oldest first, `[ms_since_watchdog_start, bytes]` |
+| `probes` | Named subsystem counts (pending requests, socket reply buffers, queued pad steps) |
 | `reports` | Recent report paths on the game host |
 
 ### Explain memory growth
 
-The memory watchdog exposes these map-load and cache probes through
-`host.memory`, its reports, and the flight recorder. Byte gauges follow
-the listed owners. The process footprint also includes driver allocations,
-in-flight GPU work, and heap pages the allocator keeps for reuse.
+The map-load and cache probes appear in `host.memory`, its reports and the
+flight recorder. The footprint also includes driver allocations, in-flight GPU
+work and heap pages the allocator keeps.
 
 | Probe | Ownership measured |
 |---|---|
 | `native.map_retired_payloads` | Detached native payloads queued for or being destroyed by the retirement worker |
 | `native.decoded_image_bytes` | Capacity of shared native RGBA, mip and BC payloads, counted once per allocation |
 | `native.light_model_entries` | Models retained for standalone light and shadow passes |
-| `native.world_cpu_geometry_bytes`, `native.object_geometry_buffer_bytes` | Retained world vertex/index vector capacity and live object vertex/index buffer size |
+| `native.world_cpu_geometry_bytes`, `native.object_geometry_buffer_bytes` | Retained world vertex/index vector capacity and live object buffer size |
 | `native.world_buffer_cache_bytes`, `native.world_section_payload_bytes`, `native.transparent_packed_bytes` | Indexed draw caches and packed transparent geometry |
 | `native.world_section_windows`, `native.transparent_packed_bindings` | Live indexed windows and packed binding entries |
 | `gfx.pipeline_cache_entries`, `gfx.shader_cache_entries`, `gfx.texture_group_cache_entries` | Entries across live renderers or binding sets |
 | `gfx.pipeline_draw_jobs`, `gfx.pipeline_prewarm_jobs` | Queued compile slots, including cancelled slots awaiting removal |
-| `d3d.nv2a_program_entries`, `d3d.nv2a_archive_pending_keys`, `d3d.nv2a_archive_pipeline_records` | Translated program results, unregistered archive keys and archive pipeline records |
-| `gfx.upload_ring_staging_bytes`, `gfx.upload_ring_buffer_bytes` | CPU capacity and GPU buffer size for live upload rings |
-| `gfx.upload_idle_cpu_bytes`, `gfx.upload_idle_gpu_bytes` | The idle subset of the corresponding upload ring totals |
+| `d3d.nv2a_program_entries`, `d3d.nv2a_archive_pending_keys`, `d3d.nv2a_archive_pipeline_records` | Translated programs, unregistered archive keys, archive pipeline records |
+| `gfx.upload_ring_staging_bytes`, `gfx.upload_ring_buffer_bytes` | CPU capacity and GPU buffer size of live upload rings |
+| `gfx.upload_idle_cpu_bytes`, `gfx.upload_idle_gpu_bytes` | The idle subset of those totals |
 | `assets.rewritten_map_cache_bytes`, `assets.rewritten_shared_map_cache_bytes` | Rewritten level and shared resource payloads in the VFS cache |
 
-Use the memory history to compare the menu, level activation, settled
-play, and the return to the menu. For a short peak between recorder rows,
-read `host.memory` during the load. `host.memory.heap` breaks out live
-Rust allocations from the `native.*.load` and `assets.map_rewrite`
-scopes and can sample their allocation stacks.
+Compare menu, level activation, settled play and menu return in the memory
+history; `host.memory.heap` breaks out live Rust allocations by scope. See the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Explain memory growth".
 
 ### Finding a leak after the fact
 
-Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and
-`h2-editor`) keeps evidence that outlives it
+Every watched process (`h2 play`, `run`, `serve`, `h2 lab host`, `h2-editor`)
+keeps evidence that outlives it
 (`crates/platform/mem-watch/src/recorder.rs`):
 
-- **Flight recorder.** Every 10 s the process appends one JSON line to
-  `mem-<pid>.ndjson` in its report directory (`H2_MEM_REPORT_DIR`, else
-  `logs/mem/` under the data directory). A row holds `t_ms` (watchdog
-  uptime), `unix_ms`, `footprint_bytes`, `soft`, `probes`, `tags` (live
-  Rust heap bytes per scope tag), `stacks` (sampled stacks, when
-  sampling is on), `gpu` (the census below), `level`, `tick`,
-  `agent_connections` and `agent_calls`. Each line is written straight
-  to the file, so a kill loses at most a torn final line, which readers
-  skip. Segments rotate hourly or at 8 MiB, seven per process. An orderly
-  exit appends a `{"closed_cleanly":true}` footer.
-- **Reports.** A soft-limit, sustained-growth or hard-limit trigger
-  writes `mem-<pid>-<nanos>-<serial>.json` beside the recorder (written
-  to a `.partial` file, then renamed, before the OS diagnostics run). The
-  hard limit's report is written before the process exits with code 86.
-  Under `h2 play --follow --fresh-data` and `--watch --fresh-data`, whose
-  data dir (`<cache>/data/current`) is emptied at every launch, the
-  child's report directory is `<cache>/data/mem` unless
-  `H2_MEM_REPORT_DIR` is set, so a game the watchdog stopped leaves its
-  evidence for `h2 mem postmortem <file>` (`crates/apps/cli/src/follow.rs`).
-- **Recovery.** A starting recorder checks the directory for streams
-  whose owner lock is free. A stream without the footer, or whose last
-  row is over the soft limit, moves to `reports/mem-<pid>-<nanos>/` and
-  the process logs `memory recorder: recovered pid N (...)`. A clean
-  stream is deleted. Recorders and preserved streams share a 512 MiB
-  budget per directory. When it is full, a new process runs without a
-  recorder and logs where to move the evidence from.
-- **Heap tags.** `h2` and `h2-editor` allocate through
-  `mem_watch::TaggedAllocator`. A one-word trailer on each allocation
-  names the scope tag current on the allocating thread, so a free on
-  any thread credits the same tag. Scope guards
-  (`let _scope = mem_watch::scope("assets.bitmap");`) sit at the
-  suspects: asset and bitmap loads, pipeline creation, the native world
-  pass, agent requests and replies, trace and input recording, the perf
-  sampler and the editor's map loads and frames. Allocations outside a
-  guard count as `unscoped`. The counts are requested bytes; foreign
-  heaps (the GPU driver, C libraries) show only in the OS footprint.
-- **Sampled stacks.** With `H2_MEM_SAMPLE` set to a mean interval such
-  as `1M`, the allocator records the stack of a Poisson-sampled
-  allocation and keeps it until the allocation is freed. Large
-  allocations are proportionally more likely to be sampled. Unset, no
-  stack is captured.
-- **GPU census.** Each renderer registers its wgpu device. The census is
-  wgpu's `generate_report` counts of live user-held resources
-  (`wgpu.texture_count`, `wgpu.buffer_count` and the rest), HAL byte
-  counters on Vulkan and D3D12, Metal's `currentAllocatedSize` on macOS
-  as `metal.current_allocated_bytes`, and the renderer cache probes
-  (`gfx.*`, `native.*`).
+| Evidence | What it is |
+|---|---|
+| Flight recorder | One JSON line every 10 s to `mem-<pid>.ndjson` in `H2_MEM_REPORT_DIR`, else `logs/mem/` under the data directory; rows carry `t_ms`, `unix_ms`, `footprint_bytes`, `soft`, `probes`, `tags`, `stacks`, `gpu`, `level`, `tick`, `agent_connections`, `agent_calls`; hourly or 8 MiB segments, seven per process; a clean exit appends `{"closed_cleanly":true}` |
+| Reports | `mem-<pid>-<nanos>-<serial>.json` beside the recorder on a soft-limit, sustained-growth or hard-limit trigger; the hard limit's report is written before exit code 86; `--fresh-data` follow/watch runs use `<cache>/data/mem` (`crates/apps/cli/src/follow.rs`) |
+| Recovery | A starting recorder moves unfooted or over-soft streams to `reports/mem-<pid>-<nanos>/`, deletes clean ones, and shares a 512 MiB budget per directory |
+| Heap tags | `mem_watch::TaggedAllocator` tags each allocation by thread scope (`mem_watch::scope("assets.bitmap")`); untagged counts as `unscoped`; counts are requested bytes |
+| Sampled stacks | `H2_MEM_SAMPLE` (a mean interval such as `1M`) records Poisson-sampled allocation stacks; unset captures none |
+| GPU census | wgpu `generate_report` counts, HAL byte counters (Vulkan, D3D12), `metal.current_allocated_bytes`, and the `gfx.*` and `native.*` probes |
 
-All five methods run on the connection thread, one at a time per process;
-a second concurrent call is `UNAVAILABLE`.
+Details of each: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"Finding a leak after the fact".
+
+All five methods run on the connection thread, one at a time per process; a
+second concurrent call is `UNAVAILABLE`.
 
 | Method | Params | Result |
 |---|---|---|
@@ -2931,16 +1968,10 @@ a second concurrent call is `UNAVAILABLE`.
 | `host.memory.postmortem` | `{"pid"?}` | the newest dead process's evidence in this process's report directory: `{"pid","file","diff","reports","report"}` |
 
 A `change` is `{"category","name","unit","before","after","delta"}`.
-`category` is `tag`, `stack`, `gpu` or `probe`; `unit` is `bytes` or
-`count`. Growers are ranked by `delta` within each unit, bytes first.
-Categories overlap (a texture's bytes can show in a tag, a stack and the
-GPU census), so never add them together.
-
-A postmortem prefers the newest dead flight recorder, then falls back to
-watchdog and lab reports (`mem-<pid>-*.json`, `lab-host.json`) for a
-process that died before its first row. `report` carries the newest
-matching report's identifying fields; the full report, with `vmmap` and
-`footprint` output, stays at its path in `reports`.
+`category` is `tag`, `stack`, `gpu` or `probe`; `unit` is `bytes` or `count`.
+Growers rank by `delta` within each unit, bytes first. Categories overlap, so
+never add them together. A postmortem prefers the newest dead flight recorder,
+then watchdog and lab reports (`mem-<pid>-*.json`, `lab-host.json`).
 
 Offline, with no game running:
 
@@ -2951,28 +1982,26 @@ h2 mem postmortem ~/saved/mem-4242.ndjson
 h2 agent postmortem --pid 4242    # the same, through the agent CLI
 ```
 
-For a lab job, `h2 lab mem <id>` fetches the job's `mem/` directory and
-prints the largest growers ([lab.md](lab.md#memory-limits-and-reports)). A typical hunt:
-read `host.memory` for the growth rate, `host.memory.diff` from a time
-before the climb to name the growing tag or GPU count, then restart with
-`H2_MEM_SAMPLE=1M` and read `host.memory.heap` for the stacks inside it.
+`h2 lab mem <id>` fetches a lab job's `mem/` directory and prints the largest
+growers ([lab.md](lab.md#memory-limits-and-reports)). The hunt: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Finding a leak after the
+fact".
 
 ### `host.audit`
 
-Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
-method (`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
-parameters. It writes a snapshot to the configured path and returns the
-path, ticks, observed and registered function counts, tag range count and
-inclusive CPU timing. Each snapshot also flushes any enabled map read
-recording for the private store build. An orderly exit writes the final
-snapshot. Call the method before terminating a dedicated process externally. The collector
-changes dispatch and memory-watch costs, so use `host.metrics` for sizing.
-Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
+Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register it
+(`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
+parameters, writes a snapshot to that path and returns the path, ticks,
+observed and registered function counts, tag range count and inclusive CPU
+timing. It also flushes any enabled map read recording; an orderly exit writes
+the final snapshot, so call it before killing a dedicated process. The
+collector changes dispatch costs, so size with `host.metrics`. Report fields
+and corpus: [sim.md](sim.md#host-audit-corpus).
 
 ### `host.lobby`
 
-A System Link light host started with `H2_HOST_LOBBY=1` registers these
-four game methods (`crates/extensions/game/src/host_lobby.rs`, types
+A System Link light host started with `H2_HOST_LOBBY=1` registers these four
+game methods (`crates/extensions/game/src/host_lobby.rs`, types
 `crates/extensions/agent-proto/src/host_lobby.rs`). Each result also carries `at`.
 
 | Method | Parameters | Result |
@@ -2982,380 +2011,232 @@ four game methods (`crates/extensions/game/src/host_lobby.rs`, types
 | `host.lobby.start` | `{}` | an empty object when retail accepts the start request; observe `state` for load and play |
 | `host.lobby.close` | `{}` | an empty object once the network lobby has closed and the host is back at the menu |
 
-The host looks up `map` by short name, scenario path or English display
-name. The optional `variant` defaults to Slayer; it accepts a disc
-variant, a signed and valid saved variant present at boot, a stock game
-type or a built-in Live playlist variant key, case-insensitively. If a
-name matches two different saved or disc rulesets, open is
-`INVALID_PARAMS`. `max_players` is an integer from 1 to 16. The required
-`live` boolean selects System Link or a Live custom game; Live needs a
-working service identity that can publish sessions. Open waits for retail
-to publish the requested lobby parameters. Repeating the same open in
-pregame returns the existing lobby. Close it before changing parameters.
-Set `"synchronous":true` with `"live":false` and omit `variant` for a
-variant-free System Link probe. Open checks that the fresh squad keeps
-protocol 1, engine index 0 and the difficulty sentinel for multiplayer
-after the map setter. The lobby uses retail's normal readiness and start calls.
+| Param | Rule |
+|---|---|
+| `map` | Short name, scenario path or English display name |
+| `variant` | Optional, default Slayer: disc variant, signed saved variant present at boot, stock game type or built-in Live playlist key, case-insensitively; a name matching two rulesets is `INVALID_PARAMS` |
+| `max_players` | Integer 1 to 16 |
+| `live` | Required: System Link or a Live custom game (needs a service identity that can publish sessions) |
+| `synchronous` | With `"live":false` and no `variant`: a variant-free System Link probe |
 
-The phases are `menu`, `lobby`, `loading`, `playing` and `postgame`.
-Player slots are retail membership slots and can have gaps; split-screen
-players on a remote console share a peer index. An empty, joinable lobby
-reports `"players":[]` and `"ready":false`. Readiness needs a remote
-player, party leadership, the requested map and limit, loaded maps on every
-peer, and retail's ready-to-start result. Any connection may read state;
-mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
+Open waits for retail to publish the lobby parameters. Repeating the same open
+in pregame returns the existing lobby; close it before changing parameters.
+The phases are `menu`, `lobby`, `loading`, `playing` and `postgame`. Slots are
+retail membership slots and can have gaps; split-screen players on a remote
+console share a peer index. An empty joinable lobby reports `"players":[]` and
+`"ready":false`. Readiness needs a remote player, party leadership, the
+requested map and limit, loaded maps on every peer, and retail's
+ready-to-start result. Any connection may read state; mutations respect
+`session.claim`, and a concurrent mutation is `BUSY`.
 [Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby).
 
 ## `ui`: what the menus show
 
-`ui.screen` needs `H2_UI_WATCH=1`. Other UI methods read guest widgets
-or the game's UI state without UI watch. All are read-only except
-`ui.press`.
+`ui.screen` needs `H2_UI_WATCH=1`. Other UI methods read guest widgets or the
+game's UI state without it. All are read-only except `ui.press`.
 
-- **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
-  to, read each UI update, including during a campaign pause
-  (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
-  dialog, age_ms, layout_findings, content_findings}`, or `UNAVAILABLE` before the first read. `class` names
-  a Rust list screen whose numeric ID identifies its retail skin.
-  In a paused game, Player Settings reports screen 196 or 200. Its Video
-  Settings and Voice children report classes `video` and `voice` on
-  screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
-  check that the previous screen returns on the same window and slot. See the
-  [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
-  The main menu's one row of ours, Theater, follows System Link, so
-  Campaign, Xbox Live, Split Screen and System Link keep their retail rows
-  0 to 3 and lobby scripts press them there. `main_menu_theater` and
-  `main_menu_rows` (rows of ours between Xbox Live and Split Screen) are
-  absent; `agent_proto::sim::menu` still reads them from older logs. `dialog` is the dialog up (the first screen on windows 0 to
-  4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
-  recognized name (`dialog_live_signin` for the account picker,
-  `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
-  or `null` for an id not named yet. The party leader picker reports
-  `dialog.name = party_leader_picker` with id `0xb1`. The Clanker player
-  card reports `clanker_player_options`. The retail-style value picker
-  used by Theater reports `kit.picker` in the main menu and
-  `kit.picker.game` in game. These names identify the active kit class.
-  Their numeric ids identify the shared retail base class. Dialogs read as
-  `"screen": null`, so this
-  is how a driver tells one from another. The `ui: screen none` log line
-  names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
-  `layout_findings` contains visible text and row rectangles outside the
-  title-safe area or their container. Each entry has `screen`, `widget`,
-  `rect` ([top, left, bottom, right] in UI units), `text` when readable,
-  and an `issue` with a `kind` (`unsafe`, `outside_panel` or
-  `outside_container`). It samples the input screen and the active dialog.
-  `content_findings` reports broken strings, dead controls and missing
-  content. Every entry has `screen` and `issue: {kind, id, detail}`.
-  Findings from instantiated widgets include `widget` and `text`.
-  Findings from a registered Rust page model include
-  `source: "page_model"` and `screen_instance`. Model findings use the
-  currently focused row and the installed fonts when available. The
-  read does not activate controls. The
-  [UI builder](../game/ui-builder.md#content-findings) checks each named
-  state and exercises offline focus and input routes.
-- **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
-  read of the occupied channels, their active, pending and outgoing
-  screen instances, and the game-shell channel's saved screen IDs
-  (`history`, nearest parent first). Each screen has `id`, `instance`
-  (a guest address valid for that screen's lifetime), and `parent` where
-  a return is known. The map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`, `pack`), with the open
-  category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
-  (zero-based). Game-type and variant lists also expose their focused row.
-  A custom variant list identifies its group in `variant_category` and a kit
-  screen identifies its class in `class`. Both fields are null elsewhere.
-  `input` uses the same settled player-one target as `ui.audit`. `back` gives the instance that closes and its parent where
-  known, with action `close`, `reopen` (recreate a parent), or `wait`
-  (consume Back during a replacement). It is null when there is no menu
-  input target or when Back depends on a screen's custom handler. The kit
-  value picker's `close` target identifies the settled screen underneath it.
-  `ui.stack` is available without UI watch.
+- **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes to,
+  read each UI update, including during a campaign pause (`game::ui_watch`):
+  `{screen, window, slot, class?, live_menu_row, mode, dialog, age_ms,
+  layout_findings, content_findings}`, or `UNAVAILABLE` before the first read.
+  `class` names a Rust list screen whose numeric ID identifies its retail
+  skin. The main menu keeps Campaign, Xbox Live, Split Screen and System Link
+  at retail rows 0 to 3, with Theater after System Link. `dialog` is
+  `{id, name, window, slot}` for the dialog up, or `null`; `name` comes from
+  `boot::ui_watch::dialog_name` (`dialog_live_signin`, `confirmation_dialog`,
+  `error_dialog_ok`, `party_leader_picker`, `clanker_player_options`,
+  `kit.picker`, `kit.picker.game`, ...) and is `null` for an unnamed id.
+  Dialogs read as `"screen": null`. `layout_findings` lists text and rows
+  outside the title-safe area or their container: `screen`, `widget`, `rect`
+  ([top, left, bottom, right]), `text`, and `issue.kind` (`unsafe`,
+  `outside_panel`, `outside_container`). `content_findings` lists broken
+  strings, dead controls and missing content: `screen` and `issue: {kind, id,
+  detail}`, plus `widget` and `text` for widgets, or `source: "page_model"`
+  and `screen_instance` for Rust page models. The read activates nothing; the
+  [UI builder](../game/ui-builder.md#content-findings) checks each state.
+  Pause Settings walkthrough: [settings-menu](../game/settings-menu.md#to-check-in-game);
+  more: see the [detail note](notes/2026-11-26-agent-api-detail.md), "`ui`: what the menus show".
+- **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary read of
+  the occupied channels, their active, pending and outgoing screen instances,
+  and the game-shell channel's saved screen IDs (`history`, nearest parent
+  first). Each screen has `id`, `instance` (a guest address valid for its
+  lifetime) and `parent`. Map picker stages have `mode` `folders`, `maps` or
+  `pack`, with the open one in `folder`; `focused_row` is zero-based.
+  `variant_category` and `class` name a custom variant group and a kit class,
+  else null. `input` uses the same target as `ui.audit`; `back` gives the
+  instance that closes and its parent, with action `close`, `reopen` or `wait`,
+  or null when Back is custom. No UI watch needed.
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
-  read of the campaign menu from the guest screen and focus, without UI
-  watch (`crates/extensions/game/src/campaign_menu.rs`). With no installed Halo 1
-  campaign it returns `{"installed":false}`. With one it reports `page`
-  (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`),
-  `game` (the selected campaign key on the three game-specific pages),
-  `rows`, `focused_row` (zero-based) and `focused`; unknown selection or
-  focus is null. On the picker the rows are installed campaign keys.
-  With a focused picker row, `card.description` is the UTF-8 text in
-  that row's guest string slot, or null before it is available.
-  `card.picture_datum` is the selected bitmap datum, or null when the
-  artwork area is empty. `card` is null on other pages or without a
-  focused row. On Campaign Options the action keys are `resume`, `new_game`,
-  `select_level` and `co_op`; other pages report an empty row list. For
-  example, a fresh profile on Halo 2 has `"page":"options"`, `"game":"halo2"`
-  and three rows. With a saved Halo 2 checkpoint, Resume is the first of
-  four rows.
-  On the picker and Campaign Options, `pick` identifies the most recent
-  press during this visit. It is null before a game is picked. Its
-  `campaign` is the picked numeric id, and `request` is null until retail
-  receives the options screen request. The request gives the player
-  `mask`, `window`, `slot` and `loader` arguments. The active `page`
-  shows whether the options screen opened.
-  On those two pages `list` reports guest addresses for the `screen`,
-  its list `handler`, the `row_array` and the linked `children` in order.
-  `row_count` reads the number of active datums. On Halo 2 with a checkpoint
-  the four actions scroll through three linked item widgets. The handler's
-  `press_record` holds a `press_target` (the list) and a `press_function`
-  (the row-chosen callback). An unreadable field is null. On other pages
-  `pick` and `list` are null.
-  From the main menu's Campaign row, `h2 agent press a` opens the picker for
-  fresh and returning profiles. Main menu row zero requests the native
-  campaign dialog from `0x230888`; the picker intercepts it before the
-  later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
-  `lobby mode campaign` also recognizes the installed picker.
-
+  read of the campaign menu without UI watch
+  (`crates/extensions/game/src/campaign_menu.rs`). With no installed Halo 1
+  campaign it returns `{"installed":false}`. Otherwise it reports `page`
+  (`picker`, `options`, `levels`, `difficulty`, `dialog` or `other`), `game`,
+  `rows`, `focused_row` and `focused`; unknown values are null. On the picker
+  `card` has `description` and `picture_datum`; on Campaign Options the action
+  keys are `resume`, `new_game`, `select_level` and `co_op`. `pick` records the
+  latest press (`campaign`, and `request` with `mask`, `window`, `slot`,
+  `loader`) and `list` gives guest addresses (`screen`, `handler`,
+  `row_array`, `children`, `row_count`, `press_record`); both are null on
+  other pages. `h2 agent press a` on the main menu's Campaign row opens the
+  picker (native dialog request `0x230888`, solo branch `0x2b16ad`).
 - **`ui.browser.filters`** (`h2 agent ui.browser.filters`, no parameters):
-  reads the active Custom Game Browser preferences, even when the browser
-  is closed. The result is `{"filters":{...}}` with the same field names
-  and values as the [Live session query](../live/live-api.md#browser-filters).
-  Unset fields are omitted. With the default choices, it returns
-  `{"filters":{}}`. After opening Game Filters with Y and choosing a row
-  value with A, read this method to verify the selection.
-
+  reads the active Custom Game Browser preferences, even when the browser is
+  closed: `{"filters":{...}}` with the field names of the
+  [Live session query](../live/live-api.md#browser-filters). Unset fields are
+  omitted; the defaults give `{"filters":{}}`.
 - **`ui.lobby_options`** (`h2 agent ui.lobby_options`, no parameters):
-  `{"lines":[...]}` with the active custom game panel's visible Quick
-  Options lines in display order, up to six. This reads the lobby's text
-  widgets at a game boundary (`crates/extensions/game/src/lobby_options.rs`).
-  It returns `UNAVAILABLE` when the custom game pane is unavailable.
-  Open a pregame custom lobby to read its retail lines and any Clankers,
-  Halo 1 Options and Skulls summaries. After changing the settings,
-  close the dialog and read the panel again.
+  `{"lines":[...]}`, the custom game panel's visible Quick Options lines in
+  display order, up to six, read at a game boundary
+  (`crates/extensions/game/src/lobby_options.rs`). `UNAVAILABLE` when the pane
+  is unavailable.
+- **`host.peer_rtts`** (`h2 agent host.peer_rtts '{}'`): the simulation
+  membership's reliable-channel RTT at a game boundary. `players` has the same
+  slot, peer, name, bars and nullable RTT as `ui.lobby.players`; local players,
+  phantoms and unsampled routes are null. `UNAVAILABLE` without a simulation
+  membership.
+- **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters): the
+  pregame player list at a game boundary, without UI watch
+  (`crates/extensions/game/src/lobby_quality.rs`). Each entry has `slot`,
+  `peer`, `name`, `bars` (1 to 6) and `rtt_ms` (null with no sample).
+  Split-screen players share a console's peer and bars; local players and
+  phantoms have six bars and null RTT; unsampled remote peers have one. Slot
+  order; empty outside pregame. Example:
+  `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
+- **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the pregame
+  lobby's modes ([party-lobby.md](../game/party-lobby.md)), read at a game
+  boundary (`crates/extensions/game/src/lobby_tabs/header.rs`):
+  `{place, leader, selected, header, tabs, clanker, notice}`.
 
-- **`host.peer_rtts`** (`h2 agent host.peer_rtts '{}'`) reads the active simulation
-  membership's reliable-channel RTT at a game boundary. The result contains
-  `players` with the same slot, peer, name, bars and nullable RTT as
-  `ui.lobby.players`. Local players, phantoms and unsampled routes have
-  null RTT. The method returns `UNAVAILABLE` without a simulation membership.
-  Compare a remote client's `rtt_ms` to its matchmaking assignment's regional
-  probe sample during the match.
+  | Field | Meaning |
+  |---|---|
+  | `place` | `split_screen`, `system_link` or `xbox_live` |
+  | `leader` | Whether this console leads the party |
+  | `selected`, `header` | The current mode and its header text (`CUSTOM GAMES`, `FORGE`, ...) |
+  | `tabs` | `{tab, label, state, reason}`; `tab` is `multiplayer`, `custom_games`, `forge` or `co_op`; `state` is `selected`, `on` or `off`; `reason` is the status sentence of a mode that cannot run, else null |
+  | `clanker` | In MULTIPLAYER, whether the playlist is a Clanker playlist; null in other modes |
+  | `notice` | The status-line reason shown for four seconds after picking an off mode, else null |
 
-- **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
-  reads the pregame player list on a game boundary without UI watch
-  (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its
-  membership `slot`, console `peer`, `name`, `bars` (1 to 6) and `rtt_ms`
-  (milliseconds, or null when there is no network sample). Split-screen
-  players on a console share its peer and bar count. Local players and
-  phantoms have six bars and null RTT. Remote peers with no sample have
-  one bar. The list uses the squad's membership in custom games and the
-  target membership when the matchmaking lobby has one. Results are in
-  slot order, with an empty list outside pregame.
-  For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
+  `UNAVAILABLE` when the pregame lobby is not on top or unreadable.
 
-- **`ui.lobby.tabs`** (`h2 agent ui.lobby.tabs`, no parameters): the
-  pregame lobby's modes ([party-lobby.md](../game/party-lobby.md)),
-  read on a game boundary (`crates/extensions/game/src/lobby_tabs/header.rs`).
-  The result is `{place, leader, selected, header, tabs, clanker, notice}`:
-  `place` is `split_screen`, `system_link` or `xbox_live`; `leader` is
-  whether this console leads the party (a member has no prompt line and
-  its X is retail's); `selected` is the mode the lobby is in, and
-  `header` the text the lobby's update gives its header (`CUSTOM GAMES`,
-  `FORGE`, ...). `tabs` lists the modes present, each `{tab, label,
-  state, reason}` with `tab` one of `multiplayer`, `custom_games`,
-  `forge`, `co_op`, `state` one of `selected`, `on`, `off`,
-  and `reason` the status-line sentence of a mode that cannot run here
-  (else null). `clanker` is, in MULTIPLAYER, whether the lobby's
-  playlist is one the server marks as a Clanker playlist (null in
-  another mode). `notice` is the reason the status line shows after a
-  pick of a mode that is off, for four seconds, else null. It returns `UNAVAILABLE` when the pregame
-  lobby is not the screen on top or its session cannot be read.
-  For example, a Split Screen lobby's MULTIPLAYER entry is
-  `{"tab":"multiplayer","label":"MULTIPLAYER","state":"off","reason":"Matchmaking needs Xbox Live."}`.
-
-Screens already moved to Rust (the Video screen, the skulls page, the
-account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
-share one list-screen implementation (`crates/extensions/game/src/list_class.rs`).
+Screens moved to Rust (Video, skulls, account, co-op, sign-in;
+[feature-engine.md](../engine/feature-engine.md)) share one list-screen
+implementation (`crates/extensions/game/src/list_class.rs`).
 
 ### Menu inspection and navigation
 
-`ui.audit {}` inspects the instantiated widgets at one game boundary.
-`screen` is the underlying menu. `dialogs` contains the active dialog
-on each occupied dialog channel, including dialogs belonging to another
-controller. `active` is the surface that accepts player one's input.
-`target` is its opaque token, and `focused_row` is the zero-based focused
-item. A transition or ambiguous input receiver can leave these fields null. Each surface
-has a numeric `id`, `window`, controller `slot`, current `pane` and
-the kit class `name` when available. Kit dialogs can share a retail ID.
+`ui.audit {}` inspects the instantiated widgets at one game boundary. The
+result has `screen` (the underlying menu), `dialogs` (the active dialog on each
+occupied channel), `active` (the surface that accepts player one's input),
+`target` (its opaque token) and `focused_row`; ambiguous input leaves them
+null. Each surface has `id`, `window`, `slot`, `pane` and kit class `name`.
+`panes[].labels` and `panes[].lists[].rows` give text read after retail's
+localized lookup; `navigation` marks verified inspection actions; `item_count`
+includes off-screen items. `issues` names affected surfaces, panes and rows,
+and `transition` reports the compositor (`stuck_blur`, `stuck_transition`,
+`stuck_fade`, `requests_backdrop`). Source:
+[`ui_audit.rs`](../../crates/extensions/game/src/ui_audit.rs),
+[`ui_transition.rs`](../../crates/extensions/game/src/ui_transition.rs),
+[User-interface tags](../formats/ui.md). Field detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Menu inspection and navigation".
 
-Inspect `panes[].labels` and `panes[].lists[].rows` for the text at the
-widget. The audit reads the UTF-16 buffer *after* retail's localized
-string lookup. A row includes its datum index, text and individual labels.
-On the retail profile picker and action menu, `navigation` identifies a
-verified inspection action in the current list mode.
-A missing widget, an empty string and an unreadable text interface have
-distinct statuses. The list's `item_count` includes off-screen items.
-Rows describe the materialized viewport. Moving focus exposes the other
-rows of a scrolling list. The Y menu exposes its materialized tabs and
-marks the selected pane. Source and widget layout are in
-[`ui_audit.rs`](../../crates/extensions/game/src/ui_audit.rs) and
-[User-interface tags](../formats/ui.md).
+`ui.press` accepts `{target, action, row?, phase?}`; copy the token from the
+latest audit.
 
-`issues` identifies affected surfaces, panes and rows. It includes
-missing or empty row text, empty labels, unreadable data, empty panes
-and undersized lists. `transition` includes the startup fade time
-remaining, scene fade mode and weight, and the active, pending and
-outgoing layers of the menu compositor. A modal can request a blurred
-backdrop for as long as it is open. `stuck_blur` means a layer requesting
-that backdrop still carries its input-blocking transition more than
-one second past its authored delay and duration. Other overdue animations
-produce `stuck_transition`. `stuck_fade` means audits sampled the same
-unfinished main-menu startup fade and clock reading at least 150 game ticks
-apart. Unknown backdrop accessors give `requests_backdrop: null`.
-These diagnostics describe compositor inputs. The final image still
-requires a rendering check. [Transition reader](../../crates/extensions/game/src/ui_transition.rs)
+| Action | Effect |
+|---|---|
+| `up`, `down`, `left`, `right` | Move focus |
+| `choose` (A), `back` (B), `friends` (Y) | Press the button |
+| `open_live_menu` | A on the Live players screen in mode 3 |
+| `change_mode` | X in the pregame lobby: the GAME MODE picker, for the party leader; `GONE` on any other screen ([party-lobby.md](../game/party-lobby.md#changing-mode)) |
 
-`ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
-the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
-`back` (B), `friends` (Y), `open_live_menu` (A on the Live players
-screen in mode 3), and `change_mode` (X in the pregame lobby: the GAME
-MODE picker, for the party leader), refused with `GONE` on any other
-screen ([party-lobby.md](../game/party-lobby.md#changing-mode); the
-picker is then a kit dialog in `ui.audit`, and `ui.lobby.tabs` reads
-the mode a pick switches to). Move focus, audit again, then send `choose` with the
-observed row. A changed owner, row or requested phase invalidates the
-press. The XAPI tap checks the target again when the game reads the pad.
-A successful result contains `{delivered:true, target, action, row,
-player, at}` after the press and release. An unread gesture expires. Read
-`ui.audit` after the menu transition settles to check what the press opened.
-`session.methods` lists `ui.press` when the process has an XAPI input tap.
+A changed owner, row or phase invalidates the press, and the XAPI tap checks
+the target again when the game reads the pad. Success is `{delivered:true,
+target, action, row, player, at}`; an unread gesture expires. Audit again after
+the transition settles. `session.methods` lists `ui.press` when the process
+has an XAPI input tap.
 
 ### Crawling the menus
 
-On a running agent-enabled game, place a signed-in profile with a recent
-Clanker at the main menu. Set `H2_AGENT` to its socket path.
+On a running agent-enabled game with a signed-in profile and a recent Clanker
+at the main menu, set `H2_AGENT` to its socket path:
 
 ```sh
 h2 agent --socket "$H2_AGENT" ui-crawl --depth 6 --budget-ms 120000 --require-clanker
 ```
 
-Omit `--socket` to use the normal agent endpoint. The crawl claims one
-connection, explores known navigation actions, observes each destination
-and backs out before trying its siblings. It visits the Y menu and
-Recent Players, including entries for players who left the session.
-From Settings it can inspect an existing editable profile, open Controls
-and back out of the choice dialogs without selecting a value.
-It skips game starts, quit, unverified actions and changes to settings or
-accounts. `--from-current` starts at the open menu or dialog for a
-focused check. Depth zero audits only the current surface. The defaults
-are six menu transitions and a two-minute wall-clock budget.
-
-For a parity run, use `--require-clanker` so missing seed history or an
-unreached card fails the run. The JSON verdict lists visited paths,
-findings, skipped actions, Clanker cards and navigation errors. Findings
-or a failed traversal produce a nonzero exit. Save the report outside the
-repository because resolved text can contain profile names and disc strings.
+Omit `--socket` for the normal endpoint. The crawl explores known navigation
+actions and backs out before trying siblings; it skips game starts, quit,
+unverified actions and setting or account changes. `--from-current` starts at
+the open surface; depth zero audits only it; defaults are depth 6 and 2
+minutes. `--require-clanker` fails the run on missing seed history or an
+unreached card. The JSON verdict lists visited paths, findings, skipped
+actions, Clanker cards and navigation errors; findings or a failed traversal
+exit nonzero. Save the report outside the repository.
 [CLI implementation](../../crates/apps/cli/src/agent_ui_crawl.rs)
 
 ### `ui.attract`
 
-`h2 agent ui.attract` takes no parameters. Boot registers it when the Bink
-HLE selects playback outside a film recording or replay. It reads the menu's UI clock, idle time, music gate and
-movie flags at a game boundary (`timer`). The `state` says whether the
-menu is idle, fading, playing the attract movie or keeping its music.
-`asset` reports preparation or unavailability and `blocked_reason` gives
-the reason for keeping the music during the current idle cycle.
-
-`last_attempt` gives the UI time, idle time and present at the deadline.
-Its `outcome` says whether the wrapper started playback, the guard skipped
-it as unavailable, or the wrapper failed after preparation.
-`returned_ui_ms` is filled when the wrapper closes the attract movie after
-input or the final frame. [Attract timer](../audio/bink-hle.md#attract-timer)
-describes the sequence.
+`h2 agent ui.attract` takes no parameters; boot registers it when the Bink HLE
+selects playback outside a film recording or replay. It reads the menu's UI
+clock, idle time, music gate and movie flags at a game boundary (`timer`).
+`state` says whether the menu is idle, fading, playing the attract movie or
+keeping its music; `asset` reports preparation or unavailability;
+`blocked_reason` explains kept music. `last_attempt` gives UI time, idle time,
+present and an `outcome`; `returned_ui_ms` is set when the movie closes.
+[Attract timer](../audio/bink-hle.md#attract-timer)
 
 ## `audio`: voice routing
 
-`h2 agent audio.listeners` takes no parameters. At a game boundary it reads
-the guest's active world-sound listeners. Each row in `listeners` reports
-the local `user` index, its salted `player_datum` (null for an unmapped
-slot), whether the mapped player is a `phantom` (null without a resolved
-player), and the listener's world-space `position` as `[x, y, z]`.
-With one human and a roster of Clankers, only the human's slot
-appears. Splitscreen reports each active human slot. The method returns
-`UNAVAILABLE` if the game listener state is uninitialized or unreadable.
+`h2 agent audio.listeners` takes no parameters. At a game boundary it reads the
+active world-sound listeners. Each `listeners` row has the local `user` index,
+salted `player_datum` (null for an unmapped slot), `phantom` (null without a
+resolved player) and world-space `position` `[x, y, z]`. `UNAVAILABLE` if the
+listener state is uninitialized or unreadable.
 
-`h2 agent audio.voices` takes no parameters and is registered with
-DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
-`distance_reverb` (host enhancement enabled), `reverb_active` (audible
-environment configured), and `voices`. Each playing buffer, queued
-unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
-and `distance_units` (listener-relative world units, null for an
-unpositioned voice). `sends_to` lists the ids of the playing mix-ins the
-voice's bins reach: a Halo stream in a submix names its emitter there. A
-submix's `input_bin` is a host bin (`0x100` and up), which only its own
-streams carry. The guest sees bin `0x1f` in their place
-([dsound.md](../audio/dsound.md#positioned-sound)).
+`h2 agent audio.voices` takes no parameters and is registered with DirectSound
+(`crates/extensions/game/src/dsound_glue.rs`). The result has `distance_reverb`,
+`reverb_active` and `voices`. Each voice has a mixer `id`, `kind`,
+`volume_mb` and `distance_units` (null if unpositioned); `sends_to` lists the
+playing mix-in ids its bins reach; a submix's `input_bin` is a host bin
+(`0x100` and up; the guest sees `0x1f`;
+[dsound.md](../audio/dsound.md#positioned-sound)).
 
-`spatial` is null for a 2D voice. For a positioned one it gives the
-DirectSound 3D terms the mixer applies against the listener:
-`position` as the game set it, `relative` to the listener, `min_distance`
-and `max_distance` (null when not finite), `rolloff` (listener times
-source), `distance_gain` and `cone_gain` (linear), their product `gain`,
-`pan` (left and right gains), `front` (the front crosstalk share) and
-`pitch` (the Doppler ratio). `applied_gain` is `direct_gain` times that
-`gain`: the level the voice's direct path leaves with, before bin volumes
-and pan. Halo's submixes have `FLT_MAX` distances and rolloff 0, so their
-`distance_gain` is 1. The game's distance attenuation is the gain on the
-stream's bin into the submix, so one emitter's level at a distance is that
-bin `gain` times the submix's `applied_gain`.
+| Field | Meaning |
+|---|---|
+| `spatial` | Null for a 2D voice; else `position`, `relative`, `min_distance`, `max_distance`, `rolloff`, `distance_gain`, `cone_gain`, `gain`, `pan`, `front`, `pitch` |
+| `applied_gain` | `direct_gain` times `spatial.gain`: the direct path's level before bin volumes and pan |
+| `direct_gain`, `room_gain` | Linear low-frequency gains including voice volume and headroom |
+| `direct_hf_db`, `room_hf_db` | Extra loss at `reference_hz` |
+| `bins` | Ordered `{bin, volume_mb, gain}` routing entries; null for plain stereo |
 
-`direct_gain` and `room_gain` are linear low-frequency gains including
-voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
-additional loss at `reference_hz`. Each ordered entry in `bins` has its
-raw `bin`, `volume_mb` and its linear `gain` including that pair's volume
-and path gain. These are routing settings before spatial panning, master
-gain and the reverb return. A disabled environment or unconnected bus can
-have a configured send gain and deliver silence. Plain stereo routing has
-`bins: null`.
+Halo's submixes have `FLT_MAX` distances and rolloff 0; the game's distance
+attenuation is the gain on the stream's bin into the submix. More: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`audio`: voice routing".
 
 ### `audio.loops`
 
 `h2 agent audio.loops` takes no parameters. With DirectSound installed it
 reports the guest's active looping sounds and the host's playout health.
-Each row in `loops` gives the salted `loop_datum`, `tag_datum`, resolved
-`tag_name` when the map names the tag, zero-based `track`, `segment`,
-`sound_instance` and `sound_datum`. `segment` is `in`, `loop`, `out`, `alt`,
-`alt_in`, `alt_transition_out`, `alt_out` or `unknown`. Overlapping instances
-of a track get separate rows. `pitch_range`, `permutation` and `chunk` come
-from the engine's source state. `play_packet` and `play_position_frames`
-give the DirectSound stream's current packet and its source-frame offset.
-They are null while no queued stream packet can be resolved. The playback
-cursor is at the mixer. The guest can select the next segment while PCM
-from its predecessor is still queued.
 
-`transitions` keeps the last 64 changes in starts, stops, segments and
-permutation selection, sampled after the sound frame service. A null
-`from` denotes a start and a null `to` denotes a stop. The stamp includes
-the retail `tick` when available, the guest `present` counter,
-`logical_100ns` and `elapsed_us`. The last field uses a monotonic wall clock
-from audio-output creation. History starts over with a new map or a
-rewound guest clock. `records_transitions` says whether the observer runs.
+| Field | Meaning |
+|---|---|
+| `loops` | Rows: `loop_datum`, `tag_datum`, `tag_name`, `track`, `segment` (`in`, `loop`, `out`, `alt`, `alt_in`, `alt_transition_out`, `alt_out`, `unknown`), `sound_instance`, `sound_datum`, `pitch_range`, `permutation`, `chunk`, `play_packet`, `play_position_frames` (null with no queued packet) |
+| `transitions` | Last 64 start, stop, segment and permutation changes; null `from` is a start, null `to` a stop; stamp has `tick`, `present`, `logical_100ns`, `elapsed_us` |
+| `records_transitions` | Whether the observer runs |
+| `menu` | In the main menu: `ui_ms`, `idle_ms`, music gate, requested and applied music state, attract timeout, stop threshold, movie active |
+| `menu_changes` | Last 64 gate, music, movie or timer-reset changes |
+| `output` | Cumulative sink underruns and silent frames, playout starves, dropped frames, mixer stream starves, with last-change times on the `elapsed_us` clock; optional WMA counters; playout fill and target |
 
-In the main menu, `menu` gives `ui_ms`, `idle_ms`, the music gate and
-requested and applied music state, the attract timeout, the music stop
-threshold from the current map, and whether a movie is active.
-`menu_changes` keeps the last 64 changes in the gate, music state, movie
-state or timer reset. The threshold applies on the screens eligible for
-the attract movie. See [the attract timer](../audio/bink-hle.md#attract-timer).
-
-`output` reports cumulative sink underruns and silent frames, playout
-starves, dropped frames and mixer stream starves. Their last-change times
-use the same `elapsed_us` clock as the transitions. The output thread
-samples the sink counters as it services the device. Stream starves are
-counted when a dry stream receives data again. Optional WMA counters show
-codec restarts, errors and dropped partials. The playout fill and target
-give the approximate delay between the mixer and the device.
-
-Sample the main menu before and after an audible change. Compare present
-numbers in `transitions` and `menu_changes` with the output counters and
-their last-change times to identify the selection change, idle-triggered
-restart or gap at the device.
+History restarts with a new map or a rewound guest clock. Compare `present`
+numbers in `transitions` and `menu_changes` with the output counters to tell a
+selection change from an idle restart or a device gap. See
+[the attract timer](../audio/bink-hle.md#attract-timer) and the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`audio.loops`".
 
 ### `audio.meter`
 
-The level of the host mixer's output bus: the stereo samples
-DirectSound's output renders, before the device, so a run with no audio
-device meters the same samples
+The level of the host mixer's output bus, before the device, so a run with no
+audio device meters the same samples
 ([audio.md](../audio/audio.md#metering-the-mixer)). A game method in
 `crates/extensions/game/src/mixer_meter.rs`; types in
 `crates/extensions/agent-proto/src/audio.rs`.
@@ -3370,29 +2251,22 @@ h2 agent audio.meter '{"play": "pogo/spring"}'
 | `{window_ms?}`: 50 to 5000, default 1000 | `{window_ms, frames, rate, channels, peak_dbfs, rms_dbfs, lufs, max_momentary_lufs, clipped}` |
 | `{play}`: a host clip | the same, with `play: {clip, duration_ms}` |
 
-- **A window.** Meters the latest `window_ms` of output. The capture
-  starts with the first request and keeps 10 seconds, so the first call
-  answers once that much has been rendered.
-- **`play`.** Starts a host clip in the mixer as the game plays it:
-  `pogo/compress`, `pogo/spring`, `pogo/settle` or `announcer/<medal id>`
-  (an unknown name's error lists them). It answers when the clip has
-  played, metering from the call to its end plus 20 ms, with anything
-  else the game played meanwhile. `window_ms` is that span. The clip is
-  removed from the mixer when the method answers or times out.
-- **Levels.** Peak and RMS in dBFS, integrated loudness and the loudest
-  400 ms block in LUFS (ITU-R BS.1770-4, the meter Studio's
-  `sound.measure` uses), each to 0.1 dB; silence reads -120. `clipped`
-  counts samples at or past full scale.
-- **Errors.** A clock-only run (a light host or sim) renders no samples:
-  `UNAVAILABLE`. So is a clip still a Git LFS pointer, or one over
-  5 seconds. Bad params and unknown clips are `INVALID_PARAMS`. Audio
-  time is logical, so a paused game does not answer until it runs.
+- **A window.** Meters the latest `window_ms`; capture starts with the first
+  request and keeps 10 s.
+- **`play`.** Plays `pogo/compress`, `pogo/spring`, `pogo/settle` or
+  `announcer/<medal id>` and answers when it has played, metering to its end
+  plus 20 ms.
+- **Levels.** Peak and RMS in dBFS, integrated and loudest-400 ms LUFS
+  (ITU-R BS.1770-4), to 0.1 dB; silence reads -120; `clipped` counts samples at
+  full scale.
+- **Errors.** `UNAVAILABLE` on a clock-only run, a Git LFS pointer clip or a
+  clip over 5 s; `INVALID_PARAMS` for bad params and unknown clips. A paused
+  game does not answer until it runs.
 
 ### `audio.play`
 
-Starts a sound tag at a player's unit, so a sound can be heard and read
-back (`audio.voices`, `audio.meter`) without the game having a reason to
-play it. A game method of the sim provider
+Starts a sound tag at a player's unit so it can be heard and read back
+(`audio.voices`, `audio.meter`). A game method of the sim provider
 (`crates/extensions/agent/src/sim/mod.rs`, `Sim::audio_play`; types in
 `crates/extensions/agent-proto/src/sim/mod.rs`).
 
@@ -3404,25 +2278,19 @@ h2 agent audio.play '{"sound": "sound\\pogo\\spring"}'
 |---|---|
 | `{sound, player?}`: a `snd!` tag by datum or name (as `edit.tags` lists them); `player.<n>` or `sim.<n>`, default `player.0` | `{player, sound: {tag, group, name}, instance}` |
 
-- **The call.** The game's own `sound_start_at_marker`
-  (`SOUND_START_AT_MARKER`, `0x1891d0`) with the unit's head marker, the
-  call a dialogue line starts with, made at the start of the next tick
-  like `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)).
-  Presentation only: nothing is filed, sent or recorded, so a co-op
-  session may ask. `instance` is the sound instance the game made.
-- **Errors.** A tag that is not a `snd!` or is not found is
-  `INVALID_PARAMS`; a player with no unit is `GONE`; a sound the game
-  starts no instance for (a tag with no permutation, or a full sound
-  table) is `UNAVAILABLE` with the game's reason. Audio time is logical,
-  so a paused game answers when it runs.
+- **The call.** `SOUND_START_AT_MARKER` (`0x1891d0`) with the unit's head
+  marker, at the start of the next tick like `sim.give`
+  ([`sim`](#sim-simulated-players-and-direct-state)). Presentation only, so a
+  co-op session may ask.
+- **Errors.** Not a `snd!` or not found: `INVALID_PARAMS`; player with no unit:
+  `GONE`; no instance started: `UNAVAILABLE`. A paused game answers when it runs.
 
 ### `world.object.animate`
 
-Plays a named animation of an object's own graph, so an animation can be
-seen on the object without a gameplay reason to start it. A game method
-of the sim provider (`crates/extensions/agent/src/sim/mod.rs`,
-`Sim::object_animate`; the write in `crates/extensions/agent/src/probe/animation.rs`,
-`start`; types in `crates/extensions/agent-proto/src/sim/mod.rs`).
+Plays a named animation of an object's own graph. A game method of the sim
+provider (`crates/extensions/agent/src/sim/mod.rs`, `Sim::object_animate`; the
+write in `crates/extensions/agent/src/probe/animation.rs`, `start`; types in
+`crates/extensions/agent-proto/src/sim/mod.rs`).
 
 ```sh
 h2 agent world.object.animate '{"id": "scenery.12340000", "animation": "idle"}'
@@ -3432,34 +2300,25 @@ h2 agent world.object.animate '{"id": "scenery.12340000", "animation": "idle"}'
 |---|---|
 | `{id, animation}`: an object id as `world.object` spells it (not a player); the animation's name in the graph the object's manager holds | `{object, graph, animation, index, frames, frame, session}` |
 
-- **The call.** The name becomes a string ID of the loaded map; the
-  graph's animation block (`jmad` `+0x2c`) is searched for it, and the
-  object's first channel (the manager's own `+0x0`) is pointed at the
-  entry: the animation word at `+4` (graph -1, the channel's own, and the
-  index), the frame at `+0x1c` set to 0 and the rate at `+0x18` to 1.
-  It is made at the start of the next tick, like `sim.give`
-  ([`sim`](#sim-simulated-players-and-direct-state)). The animation is
-  the graph's own: an inherited one is not found.
-- **Host only.** An object's pose is simulation state, so a co-op
-  (synchronous) session refuses it as `sim.spawn` is refused.
-- **Errors.** A bad or player id, or a name the map has no string ID for,
-  is `INVALID_PARAMS`; an id that no longer names the object is `GONE`; a
-  graph with no such animation is `INVALID_PARAMS`; an object with no
-  animation manager or no loaded graph is `UNAVAILABLE`.
-- **Not yet confirmed in a running game.** The channel's fields are the
-  ones the engine's channel set and frame setter read and write
-  (`live-telemetry` `layout`), but a biped's own animation state restarts
-  its channel as its names change, so the method is for scenery, machines,
-  crates, creatures and vehicles; the answer's `frame` and a later
-  `anim`/`world.object` read are how a run checks it plays.
+- **The call.** Points the object's first animation channel at the graph's own
+  `jmad` entry (frame 0, rate 1) at the start of the next tick, like
+  `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)); inherited
+  animations are not found.
+- **Host only.** A co-op (synchronous) session refuses it, as `sim.spawn`.
+- **Errors.** Bad or player id, unknown string ID, or no such animation:
+  `INVALID_PARAMS`; a stale id: `GONE`; no animation manager or graph:
+  `UNAVAILABLE`.
+- **Not yet confirmed in a running game.** Use it for scenery, machines,
+  crates, creatures and vehicles, not bipeds; check with `frame` and a later
+  `anim`/`world.object` read. Channel layout: see the
+  [detail note](notes/2026-11-26-agent-api-detail.md), "`world.object.animate`".
 
 ### `recording.play`
 
-Plays one of the loaded scenario's recorded animations on a player's
-unit, as the script call `recording_play` does: the unit's control
-follows the recording's stream. The editor's Recordings section calls it
-([rich-editors.md](../editor/rich-editors.md), "Recordings"). A game
-method of the sim provider (`crates/extensions/agent/src/sim/mod.rs`,
+Plays one of the loaded scenario's recorded animations on a player's unit, as
+the script call `recording_play` does. The editor's Recordings section calls it
+([rich-editors.md](../editor/rich-editors.md), "Recordings"). A game method of
+the sim provider (`crates/extensions/agent/src/sim/mod.rs`,
 `Sim::recording_play`, the block read in `sim/recording.rs`; types in
 `crates/extensions/agent-proto/src/sim/mod.rs`).
 
@@ -3471,69 +2330,50 @@ h2 agent recording.play '{"recording": "arrive", "mode": "hover"}'
 |---|---|
 | `{recording, player?, mode?}`: a name in the scenario's recorded animations (without case); `player.<n>` or `sim.<n>`, default `player.0`; `play` (default), `delete` or `hover` | `{player, recording, index, unit}` |
 
-- **The call.** The recording player (`0x1fb360`; EAX the unit, CX the
-  recording's index, the play flags as its one stack argument, `ret 4`,
-  AL 0 when it starts nothing), made at the start of the next tick like
-  `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)). The
-  flags are the ones the three evaluators push (`0x2a2d1a`, `0x2a2d7a`,
-  `0x2a2dda`): 0 for `play`, 8 for `delete`
-  (`recording_play_and_delete`), `0x10` for `hover`
-  (`recording_play_and_hover`). The unit moves, so a co-op session may
-  not ask (`INVALID_REQUEST`, as for `sim.give`).
-- **Errors.** A name the scenario lacks, or a mode that is none, is
-  `INVALID_PARAMS` (the first lists the names the scenario has); a
-  player with no unit is `GONE`; a recording the player starts nothing
-  for (the unit already plays one, or no free slot) is `UNAVAILABLE`.
-  A disc multiplayer map has no recordings. A paused game answers when
-  it runs.
+- **The call.** The recording player (`0x1fb360`) at the start of the next tick
+  like `sim.give` ([`sim`](#sim-simulated-players-and-direct-state)); flags 0
+  for `play`, 8 for `delete`, `0x10` for `hover`. The unit moves, so a co-op
+  session gets `INVALID_REQUEST`.
+- **Errors.** Unknown name or mode: `INVALID_PARAMS` (the first lists the
+  names); player with no unit: `GONE`; nothing started: `UNAVAILABLE`. Disc
+  multiplayer maps have no recordings. A paused game answers when it runs.
 
 ## HaloScript state
 
-Three game methods with an empty parameter object (`crates/extensions/agent/src/hs_state.rs`)
-that sample guest state at a tick boundary. Each answers `UNAVAILABLE` if
-its backing state is unreadable or uninitialized.
+Three game methods with an empty parameter object
+(`crates/extensions/agent/src/hs_state.rs`) that sample guest state at a tick
+boundary. Each answers `UNAVAILABLE` if its backing state is unreadable or
+uninitialized.
 
-- `hs.threads` returns a `threads` array of live slots. Each row has
-  `slot`, numeric thread `category` and signed `wake` tick. Scenario script
-  threads also have their definition's `script` name and `kind`; both are
-  null for transient evaluation threads.
-- `hs.globals` returns a `globals` array in scenario declaration order.
-  Each row has `name`, `type`, `type_index` and `value.bits`; scalar types
-  also have `boolean`, `real` or signed `number`. Scenario declarations
-  start after the interpreter's external-global cells.
-- `hs.player_actions` returns three unsigned masks from local player
-  control. `latched` records inputs seen since the script's last
-  action-test reset; `capture` identifies inputs claimed by script tests;
-  `until_release` retains suppression through button-up after a reset. Bit
-  0 of each mask denotes the mapped action/reload button. The state is
-  shared by local controls, so the method takes no player index.
+- `hs.threads` returns `threads`, the live slots: `slot`, numeric `category`,
+  signed `wake` tick, and for scenario script threads `script` and `kind`
+  (null for transient threads).
+- `hs.globals` returns `globals` in scenario declaration order: `name`,
+  `type`, `type_index`, `value.bits`, and `boolean`, `real` or signed `number`
+  for scalars.
+- `hs.player_actions` returns three unsigned masks from local player control:
+  `latched`, `capture` and `until_release`; bit 0 is the action/reload button.
+  It takes no player index.
 
 ### `hs.parity`
 
 `h2 agent hs.parity` takes no parameters. It returns the switch name
-(`impl.sim.native.hs`) and a `checks` object keyed by VM operation.
-Each entry counts agreements (`matched`), disagreements (`mismatched`)
-and observations the Rust arm could not compare (`declined`).
-`first` holds the first mismatch description or `null`. The counters
-cover the lifetime of the process and can be read before a map loads.
-Compare two readings to see which checks ran during an encounter.
-[HaloScript VM](../engine/hs_vm.md)
+(`impl.sim.native.hs`) and a `checks` object keyed by VM operation, each with
+`matched`, `mismatched` and `declined` counts; `first` holds the first
+mismatch description or `null`. The counters cover the process lifetime and
+can be read before a map loads. [HaloScript VM](../engine/hs_vm.md)
 
 ### `hs.eval`
 
 `hs.eval {expression, type?}` compiles one HaloScript expression against
-the loaded map's scripts and answers its value (`crates/extensions/agent/src/hs_eval.rs`).
-It runs at the tick boundary the request is served at, over a snapshot:
-the scenario's tables (`hs::Scenario::read_memory`), the builtin table
-from the running image (`hs::Catalog::from_memory`, named by the map's own
-calls) and the live cell of each scenario global. The text is wrapped in
-a static script of a copy of the tables (`hs::compile`) and run on
-`hs::vm`, the native evaluator ([hs_vm.md](../engine/hs_vm.md)); nothing
-is written back to the game, so a `set` of a global changes the snapshot
-only. Control flow, arithmetic, comparison and reads of the map's globals
-run. A builtin that needs the game's objects, AI or sound is refused by
-name until the guest-backed engine exists, and an expression that sleeps
-is refused: the answer comes at one boundary.
+the loaded map's scripts and answers its value
+(`crates/extensions/agent/src/hs_eval.rs`). It runs at the tick boundary
+the request is served at, over a snapshot, on `hs::vm`, the native evaluator
+([hs_vm.md](../engine/hs_vm.md)). Nothing is written back to the game, so a
+`set` of a global changes the snapshot only. Builtins that need the game's
+objects, AI or sound are refused by name, and so is an expression that
+sleeps. Design: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"`hs.eval`".
 
 - **`type`** names the result's type (`real`, `short`, `boolean`, ...).
   Without it the expression's own is used where it is fixed: a call of a
@@ -3543,8 +2383,7 @@ is refused: the answer comes at one boundary.
   number, the string's text, or the raw bits of a handle or index, and
   `null` for void.
 - **Errors.** Problems in the text are `INVALID_PARAMS` with the compiler's
-  sentence and `data.problems: [{line, column, code, text}]`, counted in the
-  expression (a `(` it never closes is named at its own place). An unknown
+  sentence and `data.problems: [{line, column, code, text}]`. An unknown
   `type` is `INVALID_PARAMS`. The evaluator's refusal (an engine builtin,
   a sleeping expression, a thread that faults) and unreadable or
   uninitialized scripts and globals are `UNAVAILABLE`.
@@ -3557,17 +2396,15 @@ h2 agent hs.eval '{"expression":"(begin (set counter 3) counter)","type":"short"
 ## `input`: act like a player
 
 Input goes through the normal pad path, so the game cannot tell an agent
-from a person. The agent's tap is an `xapi::tap::InputTap` (the layer
-`H2_INPUT_RECORD` and `H2_INPUT_REPLAY` use, `crates/extensions/agent/src/tap.rs`
-over `input::backend::remote`'s step queue): it sees each
-`XInputGetState` result just before the guest gets it. Every host that
-runs the game through boot's XAPI has it: `h2 serve` (headless pad),
-`h2 play` and the Xbox app. It wraps the tap those variables set: a replay
-runs first (it stands in for the pad) and agent steps go on top; a
-recording runs last, so it logs agent steps too. Taps are told which port
-each handle opened on (`InputTap::opened`), which is how a step for
-`player` 1 finds controller port 1. Without XAPI input there is no tap and
-the input methods are not listed.
+from a person. The agent's tap is an `xapi::tap::InputTap`
+(`crates/extensions/agent/src/tap.rs`, the layer `H2_INPUT_RECORD` and
+`H2_INPUT_REPLAY` use) that sees each `XInputGetState` result before the
+guest gets it. Every host that runs the game through boot's XAPI has it:
+`h2 serve`, `h2 play` and the Xbox app. A replay runs first, agent steps go
+on top, and a recording runs last. Without XAPI input there is no tap and
+the input methods are not listed. Tap order: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`input`: act like a
+player".
 
 ```sh
 h2 agent press a                                # A for 150 ms
@@ -3583,68 +2420,57 @@ printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
 - **`input.pad {player, at_tick, steps, append}`.** Each step is
   `{buttons, left, right, lt, rt, ms, ticks, reads}`. `player` is the
   controller port (0 to 3, default 0); each port has a queue of steps. A
-  step holds for `ms` of wall time, `ticks` of game time (the stamp's
-  `tick`, the same on every run), or both, and until the game has read the
-  pad `reads` times (default once), so a short press is never lost to a
-  slow frame; with neither `ms` nor `ticks` it holds until replaced.
-  `at_tick` (a tick, or `"now"`, the default) holds the first step back
-  until the game's tick reaches it. `append` adds to the queue, otherwise
-  it replaces it. A step merges over what the read returns
-  (`input::backend::fallback::merge`): buttons are or'd, a stick or trigger
-  the step moves wins. Buttons are `a b x y black white lt rt` (analog,
-  fully pressed), `up down left right start back ls rs`; sticks `[x, y]`
-  from -1 to 1 (up is +y); triggers 0 to 1. The packet number moves
-  whenever the pad the game gets changes; until the first step, reads pass
-  untouched, so a run with the agent on and no steps is byte for byte the
-  same input. Queues outlive the connection that filled them (so a
-  one-shot `h2 agent press` works) and are emptied when the map changes,
-  since the tick starts again. The reply says `open: false` when the game
-  has not opened that controller: the steps are kept, but nothing reads
-  them.
+  step holds for `ms` of wall time, `ticks` of game time, or both, and until
+  the game has read the pad `reads` times (default once); with neither `ms`
+  nor `ticks` it holds until replaced. `at_tick` (a tick, or `"now"`, the
+  default) holds the first step back until the game's tick reaches it.
+  `append` adds to the queue, otherwise it replaces it. A step merges over
+  the read (buttons are or'd, a stick or trigger the step moves wins).
+  Buttons are `a b x y black white lt rt` (analog, fully pressed),
+  `up down left right start back ls rs`; sticks `[x, y]` from -1 to 1 (up is
+  +y); triggers 0 to 1. Queues outlive the connection and are emptied when
+  the map changes. The reply says `open: false` when the game has not opened
+  that controller: the steps are kept, but nothing reads them.
 - **`input.release {player}`** empties one port's queue, or all of them.
 - **`input.state`** gives `pad` (player one), `pads` (every port: `active`,
   `queued`, `done`, what is held), `open` ports, `tick`, and the recording
   or replay. It needs no claim while nobody holds control.
 - **`input.record {name, replace}`** logs every read (status, handle, the
   22 bytes, the game tick) to `inputs/<name>.input` under the
-  [agent output root](switches.md#tools). This is the `xapi::tap` text format
-  that `H2_INPUT_RECORD` writes. The log is saved at `input.stop` or when
-  the game exits. Names use 1 to 64 letters, digits, `.`, `_` or `-`
-  and may not start with a dot. An existing log is kept unless `replace`
-  is true. A [lab job](lab.md#runs) stores these logs in its run directory.
+  [agent output root](switches.md#tools), in the `xapi::tap` text format.
+  The log is saved at `input.stop` or when the game exits. Names use 1 to 64
+  letters, digits, `.`, `_` or `-` and may not start with a dot. An existing
+  log is kept unless `replace` is true. A [lab job](lab.md#runs) stores
+  these logs in its run directory.
 - **`input.list`** returns `{names}`, the sorted names of saved input logs
   without their `.input` suffix.
 - **`input.log.read {name, offset?, limit?}`** returns `{text, next}` from
-  a saved log. Use the same name as for `input.record`. The first offset
-  defaults to 0. Pass `next` as the offset for the next page and stop at
-  `null`. The limit is in bytes (default 16384, maximum 65536).
-  Concatenate the text pages to reconstruct the log. Both file methods
-  are read-only and require no claim.
-- **`input.replay {name}`** answers reads from a log read for read (keyed
-  by read index, as `H2_INPUT_REPLAY`). `input.state` and `input.stop` give
-  its counts: `reads` in the log, `replayed`, `matched` (same handle as
-  recorded), `handle_mismatches` (the runs have parted) and `past_end`
-  (left live). One recording or replay at a time. A replay reproduces a
-  run only from the same starting state: the same boot, or the same
-  [snapshot](#state-machine-snapshots). Recording and playback exclude
-  map reloads. A pending reload also prevents starting a recording or replay.
-  After the transition completes a new input log can start in the loaded map.
+  a saved log. Offset defaults to 0; pass `next` as the next offset and stop
+  at `null`. The limit is in bytes (default 16384, maximum 65536). Both file
+  methods are read-only and need no claim.
+- **`input.replay {name}`** answers reads from a log read for read.
+  `input.state` and `input.stop` give its counts: `reads` in the log,
+  `replayed`, `matched` (same handle as recorded), `handle_mismatches` (the
+  runs have parted) and `past_end` (left live). One recording or replay at a
+  time. A replay reproduces a run only from the same starting state: the
+  same boot, or the same [snapshot](#state-machine-snapshots). Recording and
+  playback exclude map reloads, and a pending reload prevents starting
+  either.
 
 #### Routes
 
 `input.route {player?, legs, timeout_ticks?}` starts a sequence on a local
-controller port (0 to 3, default 0). The timeout covers the whole route
-and defaults to 1800 simulation ticks. The route uses the Clankers' path
-search and movement on the game thread and feeds ordinary pad input
-through the same tap as `input.pad`. It uses the default stick and button
-layout and requires a living local player on foot. The route loads the
-active BSP's bot nav mesh from the game's `bots` data directory, even
-with no Clankers in the game. If the mesh is missing or stale, use
+controller port (0 to 3, default 0). The timeout covers the whole route and
+defaults to 1800 simulation ticks. The route uses the Clankers' path search
+and movement and feeds ordinary pad input through the same tap as
+`input.pad`. It uses the default stick and button layout and requires a
+living local player on foot. It loads the active BSP's bot nav mesh from the
+game's `bots` data directory; if the mesh is missing or stale, run
 `h2 bots nav <map>`. See [Clankers' navigation](../game/bots.md#32-navigation).
 
-Each route controls its port's full pad report while active. Starting a
-route on a port that already has a route or queued pad steps returns
-`BUSY`. `input.pad` also returns `BUSY` while the port runs a route.
+A route controls its port's full pad report while active. Starting a route
+on a port with a route or queued pad steps returns `BUSY`, as does
+`input.pad` on a port running a route.
 
 | Leg | What the controller does |
 |---|---|
@@ -3657,19 +2483,16 @@ route on a port that already has a route or queued pad steps returns
 `input.route.status {player?}` returns `player`, `state` (`idle`,
 `running`, `completed`, `failed` or `stopped`), elapsed `ticks`, the
 current zero-based `leg` (or null) and `legs`. Each leg reports
-`{ok, ticks, reason}`. `ok` is null while the leg is pending or running.
-After a failure or stop, legs the route never started get `ok: false`
-and `reason: "not_run"`. A jump leg includes its available `takeoff`,
-`apex` and `landing` samples in `jump`, each with `position`, `velocity`
-and `speed` in map units per second. The landing position comes from
-the contact tick, or the last descending tick on an immediate rebound.
-The landing velocity is the last observed incoming velocity.
+`{ok, ticks, reason}`; `ok` is null while the leg is pending or running.
+After a failure or stop, legs never started get `ok: false` and
+`reason: "not_run"`. A jump leg includes its available `takeoff`, `apex` and
+`landing` samples in `jump`, each with `position`, `velocity` and `speed` in
+map units per second.
 
-Use `input.route.stop {player?}` to stop the route and release its port.
-`input.release` also stops routes on the ports it releases. The final
-status stays available until a new route starts on that port. The `route`
-short form takes the array of legs. Use the full method to pick the
-port or set the timeout.
+`input.route.stop {player?}` stops the route and releases its port;
+`input.release` does the same on the ports it releases. The final status
+stays until a new route starts on that port. The `route` short form takes
+the array of legs; use the full method to pick the port or set the timeout.
 
 ```sh
 h2 agent route '[{"move_to":[1,2,3],"crouch":false},{"wait":30}]'
@@ -3677,60 +2500,28 @@ h2 agent route-status
 h2 agent input.route.stop
 ```
 
-**Ascension superbounce setup.** Begin at approximately `(−10.85, 1.16)`
-next to the low lip on Ascension. Face −120.7° for the crouch entry. The
-route releases the button while pushing into the lip, turns to −66° to
-exit, then walks to the upper ledge and jumps toward the floor seam.
-
-```sh
-h2 agent route '[
-  {"face":-120.7},
-  {"crouch_into":[-10.91,0.72,-1.16],"hold_ticks":15,"exit_face":-66},
-  {"move_to":[-8.0,2.2,-0.7],"crouch":false},
-  {"jump":{"from":[-8.42,2.51,-0.76],"land":[-10.39,4.00,-3.19]}}
-]'
-```
-
-Compare the recorded jump with the reference takeoff heading `(-0.8, 0.6)`
-at about 1.6 horizontal units/s and the landing's incoming vertical
-velocity of about −5.4 units/s. See [Superbounce](../game/superbounce.md) for the traces and
-collision geometry.
+Worked route: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"Routes" (Ascension superbounce setup), and
+[Superbounce](../game/superbounce.md).
 
 #### `input.host`: the host controllers
 
 `input.host` (`h2 agent hostpads`, read-only, no params) shows the
-controllers the host's input layer has, before the game sees anything.
-Use it when a pad, a button or the touchpad does not do what it should. It
-answers from the last input sync (`syncs` counts them), which runs
-whenever the game reads its pads. Boot adds it wherever the game has XAPI
-input (`crates/extensions/game/src/debug_menu_glue.rs`, `crates/extensions/agent/src/hostpads.rs`).
+controllers the host's input layer has, before the game sees anything. It
+answers from the last input sync (`syncs` counts them) and is added wherever
+the game has XAPI input (`crates/extensions/game/src/debug_menu_glue.rs`,
+`crates/extensions/agent/src/hostpads.rs`).
 
-- `devices`: each controller as its own backend reads it, before any
-  merging (`input::HostBackend::devices`). From Apple GameController:
-  `backend` (`game-controller`), `id`, `name` (the vendor name), `profile`
-  (the extended profile's class: `dualsense`, `dualshock4`, `extended`, or
-  `micro` for an Apple TV remote), `category` (the framework's product
-  category), and the state below. Other backends do not describe their
-  pads yet; theirs show under `pads`.
-- `pads`: each pad the input manager polled, as the debug menu's gate is
-  handed it: `backend` (the top-level one, such as `keyboard-fallback`),
-  `key` (backend index and id, the gate's key), `name`, `physical`, `port`
-  (0 to 3, or null) and the state. With the keyboard on, player one is a
-  single pad that merges the first controller with the keyboard.
-- The state, in both lists: `touchpad` (null without one, else `click`,
-  and `primary` and `secondary` as `[x, y]` from -1 to 1 with +y up, or
-  null for a lifted finger), `buttons` (`south east west north
-  left_bumper right_bumper back start left_stick right_stick dpad_up
-  dpad_down dpad_left dpad_right`; GameController's menu button is
-  `start`, Options is `back`), `left_stick`, `right_stick`, `triggers`.
-- `gate`: null with no debug menu, else `open`, `syncs`, and per pad `key`,
-  `touchpad`, `click`, `chord` (click and Start together), `chord_pending`
-  (Start held back waiting for the click), `opened_by_press` (the click
-  that opened the menu is still down) and `latched` (buttons hidden until
-  let go) ([debug-menu.md](debug-menu.md)).
-- `notes`: where a touchpad goes missing, in words: a plain `extended`
-  profile, a DualShock 4 profile without touchpad elements, a touchpad
-  under `devices` but on no pad the gate sees, no debug menu.
+| Field | Content |
+|---|---|
+| `devices` | each controller as its backend reads it (`input::HostBackend::devices`): `backend` (`game-controller`), `id`, `name`, `profile` (`dualsense`, `dualshock4`, `extended`, `micro`), `category`, and the state |
+| `pads` | each pad the input manager polled: `backend`, `key`, `name`, `physical`, `port` (0 to 3, or null) and the state |
+| state (in both) | `touchpad` (null, else `click`, `primary`, `secondary` as `[x, y]` or null), `buttons`, `left_stick`, `right_stick`, `triggers` |
+| `gate` | null with no debug menu, else `open`, `syncs`, and per pad `key`, `touchpad`, `click`, `chord`, `chord_pending`, `opened_by_press`, `latched` ([debug-menu.md](debug-menu.md)) |
+| `notes` | where a touchpad goes missing, in words |
+
+Button names, the keyboard merge and the `notes` cases: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`input.host`".
 
 ```sh
 H2_AGENT=/tmp/h2-play.sock h2 play           # then, holding the touchpad down:
@@ -3739,21 +2530,17 @@ h2 agent --socket /tmp/h2-play.sock hostpads
 
 #### `input.lightbar`: PlayStation controller colours
 
-The lightbar methods are available in player runs with XAPI input. They
-work without a controller connected. `input.lightbar` is read-only and
-takes no params. It returns `enabled` and four `ports`, each with a
-zero-based `port`, the last sampled `game_rgb`, the temporary
-`override_rgb`, and the desired `rgb`. Each colour is an array of three
-integers from 0 to 255, or null. The desired colour uses the override if
-set, otherwise the game colour. When the Lightbar setting is Off, desired
-`rgb` is null and the game gives up control of the light.
+The lightbar methods are available in player runs with XAPI input and work
+without a controller connected (`crates/extensions/agent/src/lightbar.rs`).
+`input.lightbar` is read-only with no params. It returns `enabled` and four
+`ports`, each with a zero-based `port`, the last sampled `game_rgb`, the
+temporary `override_rgb` and the desired `rgb`. Each colour is three
+integers from 0 to 255, or null. The desired colour is the override if set,
+otherwise the game colour; with the Lightbar setting Off it is null.
 
 `input.lightbar.set {port, rgb}` sets an override for one port and returns
-the same state. A null `rgb` clears the override. The override lasts until
-cleared or the run ends. Setting it follows the usual control
-ownership rules for actions. The desired colour applies at input sync
-when that port has a supported controller. It describes the host request
-independently of what the hardware displays.
+the same state. A null `rgb` clears it. The override lasts until cleared or
+the run ends, and follows the usual control ownership rules for actions.
 
 ```sh
 h2 agent input.lightbar
@@ -3762,38 +2549,35 @@ h2 agent input.lightbar.set '{"port":0,"rgb":null}'
 ```
 
 See [controller output](../audio/playstation-audio.md#player-colour-lightbars)
-for the guest palettes and macOS lightbar backend. The methods live in
-`crates/extensions/agent/src/lightbar.rs`.
+for the guest palettes and macOS lightbar backend.
 
 ## `state`: machine snapshots
 
 `state.save`, `load`, `list`, `drop` and `fork` (types in
 `crates/extensions/agent-proto/src/state.rs`, the executor's part in
 `crates/extensions/agent/src/exec/snap.rs`, the machine in
-`crates/extensions/game/src/snapshot_glue.rs`). A snapshot is the whole machine at one
-tick boundary, named. What is in it, how a load works and where files live:
+`crates/extensions/game/src/snapshot_glue.rs`). A snapshot is the whole
+machine at one tick boundary, named. Contents, load and file locations:
 [snapshots.md](snapshots.md). Snapshots stay in the cache directory, one
-directory per build, and never enter the repository: they contain game
-data. The game answers `UNAVAILABLE` when it has no snapshot support
-installed.
+directory per build, and never enter the repository. The game answers
+`UNAVAILABLE` when it has no snapshot support installed.
 
 | Method | Params | Does |
 |---|---|---|
 | `state.save` | `{name, replace?, cow?, max_ticks?}` | guest RAM, the kernel and its threads, D3D, audio, XAPI with the input cursor, every feature's section, and a RAM hash, at the first quiescent slice boundary after a tick. `cow: true` also writes a sparse raw RAM image `<name>.ram` beside it |
-| `state.load` | `{name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) is checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write in place of decoding RAM in; it is refused, naming the file, when the save wrote no image |
+| `state.load` | `{name, cow?, max_ticks?}` | back to exactly that tick; the RAM hash (`lockstep::hash_guest`) is checked against the saved one, naming the MiBs that differ. `cow: true` maps that RAM image private copy-on-write; it is refused, naming the file, when the save wrote no image |
 | `state.list`, `state.drop {name}` | | this build's snapshots, answered at once |
 | `state.fork` | `{from, name, replace?}` | load `from` and save it again as `name` |
 
-Names are `a-z 0-9 . _ -`, 1 to 64, not starting with a dot. A save or
-load waits for the next tick, then retries at each tick while something is
-live, for `max_ticks` (default 90, at most 1800), then answers `BUSY` with
-the blockers in `data.blockers`. One sent while the game is paused runs at
-the end of the held tick's slice and the game holds again at the next tick.
-Calls other than `state.list` need control when another connection holds
-it. A snapshot is refused while `agent-calls` writes are queued.
-An editor-bound DVD file or an unlinked placement preview prevents
-machine snapshots, snapshot-based rewind and film keyframes. The host
-keeps neither the play copy nor preview ownership in a snapshot.
+Names are `a-z 0-9 . _ -`, 1 to 64, not starting with a dot. A save or load
+waits for the next tick, then retries at each tick while something is live,
+for `max_ticks` (default 90, at most 1800), then answers `BUSY` with the
+blockers in `data.blockers`. One sent while the game is paused runs at the
+end of the held tick's slice. Calls other than `state.list` need control
+when another connection holds it. A snapshot is refused while `agent-calls`
+writes are queued, and while an editor-bound DVD file or an unlinked
+placement preview exists (this also blocks snapshot-based rewind and film
+keyframes).
 
 ```sh
 h2 agent state save NAME [replace]
@@ -3806,21 +2590,22 @@ h2 agent state fork FROM NAME [replace]
 ## `edit` and hot `render`: live tag and shader changes
 
 Host methods answered where the game's host registers them
-(`crates/extensions/agent/src/hot.rs`, names in `crates/extensions/agent-proto/src/hot.rs`).
-The design, the override directory and the rules are in
-[hot-iteration.md](../graphics/hot-iteration.md). The override directory
-is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
+(`crates/extensions/agent/src/hot.rs`, names in
+`crates/extensions/agent-proto/src/hot.rs`). The design, the override
+directory and the rules are in [hot-iteration.md](../graphics/hot-iteration.md).
+The override directory is `$H2_RENDER_OVERRIDES`, else `render-overrides` in
+the cache directory.
 
 | Method | Access | Params | Does |
 |---|---|---|---|
-| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session,bsp}` for the loaded map. File and checksum can be null. `bsp` is the loaded structure BSP's index in the scenario's block (`-1` before one loads, null when unreadable): the one BSP whose region is in guest memory. Session includes `writes` and the refusal reason in `why`. A multiplayer host with an unknown peer count reports `writes:false` and `why:"multiplayer host peer count is unknown"`. |
+| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session,bsp}` for the loaded map. File and checksum can be null. `bsp` is the loaded structure BSP's index (`-1` before one loads, null when unreadable). Session includes `writes` and the refusal reason in `why`. |
 | `edit.tags` | read | `{group?, name?, limit?}` | the loaded map's tags: `tag`, `group`, `name`, `address`, `size`, `defined` |
 | `edit.get` | read | `{tag, group?, path?, epoch?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
-| `edit.read` | read | `{epoch,at,len}` | Reads `len` bytes (1–524288) at numeric address `at` inside one loaded tag. Returns `{at,holds_bytes}` with lowercase hex bytes. |
-| `edit.batch` | act | `{writes,label?,epoch?,confirm_peers?}` | `{id,applied,changes}` at one boundary. Each batch has one journal entry with its ID, optional label and changed `fields`. |
+| `edit.read` | read | `{epoch,at,len}` | `len` bytes (1 to 524288) at numeric address `at` inside one loaded tag. Returns `{at,holds_bytes}` as lowercase hex. |
+| `edit.batch` | act | `{writes,label?,epoch?,confirm_peers?}` | `{id,applied,changes}` at one boundary. One journal entry with its ID, optional label and changed `fields`. |
 | `edit.set` | act | `{tag, group?, path, value, epoch?, confirm_peers?}` | writes the field now, journalled; returns the change |
-| `edit.changes` | read | none | the current epoch’s journal, including original `was_bytes`, `new_bytes` and current `holds` as hex |
-| `edit.revert` | act | `{id?,epoch?,confirm_peers?}` | restores a change or batch, or the whole journal in reverse order. `reverted[]` gives `id,at,tag,path,value,holds_bytes` for each restored field. `dropped[]` gives `id,at,tag,path,why,holds_bytes` for each field left alone. Addresses are numeric. Observed bytes are hex, or null when the field belongs to another map. |
+| `edit.changes` | read | none | the current epoch's journal, with `was_bytes`, `new_bytes` and current `holds` as hex |
+| `edit.revert` | act | `{id?,epoch?,confirm_peers?}` | restores a change or batch, or the whole journal in reverse order. `reverted[]` gives `id,at,tag,path,value,holds_bytes`. `dropped[]` gives `id,at,tag,path,why,holds_bytes` for each field left alone. |
 | `render.overrides` | read | none | the override directory, what is loaded and how each fared |
 | `render.reload` | act | `{dir?}` | reads the directory again (`dir` moves it) |
 | `render.programs` | read | `{vertex?, limit?}` | the translated programs, by id |
@@ -3828,37 +2613,30 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 | `render.param` | act | none, `{name}`, `{name, value}` | lists, reads, sets (`value: null` resets) a parameter |
 | `render.toggle` | act | none, `{name, on}` | lists, sets (`on: null` resets) a toggle |
 
-All three edit writes check the session at the game boundary. Co-op, clients,
-matchmade or other-hosted Live games, film playback and unknown sessions
-refuse writes. A System Link or Live custom game host with remote peers requires `confirm_peers` equal to the current total peer
-count. A client can pass `known_epoch:null` to `edit.map` to include the loaded
-tag datums in `loaded`, then send its cached epoch to receive the table only
-after a cut. An epoch pins a write or field read to the map reported by `edit.map`.
-A BSP switch revalidates the journal against surviving tag allocations.
-A map load or state restore clears it. During reverse revert, a field changed
-by the game protects its whole byte range. Older overlapping fields stay as
-the game holds them and appear in `dropped`.
+All three edit writes check the session at the game boundary. Co-op,
+clients, matchmade or other-hosted Live games, film playback and unknown
+sessions refuse writes (a multiplayer host with an unknown peer count
+reports `writes:false`). A System Link or Live custom game host with remote
+peers requires `confirm_peers` equal to the current total peer count. An
+epoch pins a write or field read to the map `edit.map` reported; a client
+passes `known_epoch:null` to get the tag datums in `loaded`. A BSP switch
+revalidates the journal; a map load or state restore clears it. In a
+reverse revert, a field the game changed protects its whole byte range and
+older overlapping fields appear in `dropped`.
 
-`edit.map.file` and the telemetry map identity follow the **source path
-recorded by the active cache slot**. The host resolves a direct `T:` or
-`W:` path through the guest's mounted drive link. A DVD slot can carry a
-map with a different header name. An installed package with that header
-name cannot shadow the DVD source. For an editor copy, `file` names the
-immutable host generation for the current activation. When the slot
-cannot identify an ordinary map, the host looks up the cache name. Ask again after a
-reload before opening a path from an earlier reply.
-After the first successful file binding, external Live sign-in gives the
-reason “An editor map was loaded. Restart the game to sign in to Xbox
-Live.” This applies even after switching maps.
+`edit.map.file` follows the source path recorded by the active cache slot
+(map identity, DVD slots and editor copies): see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`edit` and hot
+`render`". After the first successful file binding, external Live sign-in is
+refused until restart.
 
-Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
-or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.
-The entire address range must fit one loaded tag, or one block moved into
-the edit arena ([Block moves](#block-moves)). Overlapping writes are
-refused. If the game already holds the requested value the write succeeds.
-If it holds neither value, error 8 (`MISMATCH`) returns `data.fields` with
-`at`, `tag`, `path`, `was`, `holds` and `holds_bytes`. The entire batch and
-journal stay untouched.
+Each batch write takes `{tag,group?,path,value,was?}` with typed values, or
+`{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string. The
+whole range must fit one loaded tag, or one block moved into the edit arena
+([Block moves](#block-moves)). Overlapping writes are refused. A write the
+game already holds succeeds. If it holds neither value, error 8
+(`MISMATCH`) returns `data.fields` with `at`, `tag`, `path`, `was`, `holds`
+and `holds_bytes`, and the batch and journal stay untouched.
 
 ```sh
 h2 agent edit tags weap
@@ -3870,14 +2648,12 @@ Tag names come from the map file the game loaded ([`world`](#world-what-is-in-th
 
 ### Raw edits
 
-Section vertices and indices and bitmap pixels live in the map files' raw
-blocks, not in the tags, and a structure BSP that is not loaded lives in
-its region of the map file alone. These methods write them live, through the raw
-overlay that both the guest's page-ins and the native loaders read. The
-design is [realtime-edits.md](../editor/realtime-edits.md). The methods
-are in `crates/extensions/agent/src/hot.rs`, the editor half in
-`crates/extensions/hot-tags/src/raw.rs`, the overlay in
-`crates/runtime/vfs/src/map_override/overlay.rs` and the game's glue in
+Section vertices and indices, bitmap pixels and unloaded structure BSPs
+live in the map files' raw blocks. These methods write them live through the
+raw overlay that the guest's page-ins and the native loaders read. Design:
+[realtime-edits.md](../editor/realtime-edits.md). Code: `crates/extensions/agent/src/hot.rs`,
+`crates/extensions/hot-tags/src/raw.rs`,
+`crates/runtime/vfs/src/map_override/overlay.rs`,
 `crates/extensions/game/src/hot_glue.rs`.
 
 | Method | Access | Params | Result |
@@ -3885,69 +2661,43 @@ are in `crates/extensions/agent/src/hot.rs`, the editor half in
 | `edit.batch` | act | adds `raw: [{owner, offset, bytes, was?}]` and `evict: [owner]`; `writes` may be left out when either is given | adds `raw: [{owner, offset, resident, refresh}]` and `evicted: [owner]` |
 | `edit.raw.append` | act | `{file?, bytes, align?, epoch?, confirm_peers?}` | `{id, pointer, len}` |
 | `edit.stage.put` | act | `{stage?, bytes}` | `{stage, len}` |
-| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, metadata, metadata_bytes, files, owners}`: raw runs, appended extents and metadata runs (copies of tag writes; docs/editor/realtime-edits.md, "The edit overlay") |
+| `edit.overlay` | read | none | `{entries, bytes, appended, appended_bytes, metadata, metadata_bytes, files, owners}` |
 
-`owner` is `{section: {tag, kind, index}}`, with `kind` one of `cluster`,
-`instance_def` and `mode`, `{pixels: {tag, image, lod}}`, with `lod`
-0 to 2, `{sound: {tag, range, permutation, chunk}}`, one sample chunk
-of a `snd!` permutation, each index counted within the sound
-(docs/editor/realtime-edits.md, "Sound samples"), or `{bsp: {index}}`, the
-scenario's structure BSP `index`. `tag` is a datum or a name. `offset`
-counts from the start of the owner's raw block, LOD chain, chunk or BSP
-region (the region's virtual base, its file offset in the scenario's
-descriptor), and the bytes must fit inside it. A `bsp` owner is refused
-while it is the loaded BSP (`edit.map`'s `bsp`): its region is guest
-memory then, written with `at`. `bytes`
-is base64, or `{stage, at?, len?}` naming bytes `edit.stage.put` holds.
-`was` is base64 bytes or `{hash}`, their FNV-1a 64 as a number or a hex
-string.
+`owner` is one of:
 
-A batch checks every field and raw `was` before its first write. A raw
-write is checked against the file view (the map file through the overlay)
-and, when the owner's section is paged in, against the resident copy. With
-no `was`, the resident copy must equal the file view. A write the game
-already holds succeeds. Otherwise error 8 (`MISMATCH`) returns
-`data.fields` and `data.raw`, the second with `owner`, `offset`,
-`holds_hash`, `resident_holds_hash` and `why`, and nothing is written.
+| Owner | Names |
+|---|---|
+| `{section: {tag, kind, index}}` | `kind` is `cluster`, `instance_def` or `mode` |
+| `{pixels: {tag, image, lod}}` | `lod` 0 to 2 |
+| `{sound: {tag, range, permutation, chunk}}` | one sample chunk of a `snd!` permutation |
+| `{bsp: {index}}` | the scenario's structure BSP `index`; refused while it is the loaded BSP (write it with `at`) |
 
-At the boundary the batch writes the tag bytes, then each raw entry into
-the overlay and into the resident copy when there is one, then the
-evictions. `resident` says whether a resident copy was written; pixels,
-sections not paged in and BSPs not loaded take the overlay alone, which
-their next page-in or the switch to the BSP reads; sound chunks always take
-the overlay alone. An eviction clears the section's loaded flag, cache
-handle and runtime section block, or the sound chunk's runtime word, so the
-guest's next lookup pages it in from the file view; pixels cannot be
-evicted. `refresh` names the native refresh queued on
-`render_bridge::native_edits`: `section` (with `grown` when the batch
-evicts it), `model` or `image`, and is `null` for a sound chunk and for a
-`bsp` owner, whose switch loads the world from the overlaid file.
+`tag` is a datum or a name. `offset` counts from the start of the owner's
+raw block, LOD chain, chunk or BSP region, and the bytes must fit inside.
+`bytes` is base64, or `{stage, at?, len?}` naming bytes `edit.stage.put`
+holds. `was` is base64 bytes or `{hash}` (FNV-1a 64, a number or hex
+string). `edit.raw.append` reserves an extent past the end of `file`
+(`local`, `mainmenu`, `shared` or `single_player_shared`; `local` by
+default), aligned to `align` (a power of two, default 16); `pointer` is the
+raw pointer to write into a block info, file selector in its top two bits.
 
-`edit.raw.append` reserves an extent past the end of `file` (`local`,
-`mainmenu`, `shared` or `single_player_shared`; `local` by default),
-aligned to `align` (a power of two, 16 by default). It is invisible until
-a tag points at it: `pointer` is the raw pointer to write into a block
-info, with the file selector in its top two bits.
+A batch checks every field and raw `was` before its first write. A mismatch
+returns error 8 (`MISMATCH`) with `data.fields` and `data.raw` (`owner`,
+`offset`, `holds_hash`, `resident_holds_hash`, `why`), and nothing is
+written. `resident` says whether a resident copy was written; `refresh` names
+the native refresh queued (`section`, `model` or `image`, null for a sound
+chunk or `bsp` owner). An eviction clears the section's loaded flag so the
+guest pages it in again; pixels cannot be evicted. Order of writes, the
+checks and the eviction details: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Raw edits".
 
-`edit.changes` lists raw acts under `raw`, by journal id. `edit.revert`
-undoes them newest first: the overlay runs as they were before the write,
-the resident bytes where they still hold the written ones, a second
-eviction of an evicted section so the guest pages in the restored block,
-and appended extents dropped. Reverted raw entries appear in `reverted[]`
-with `raw`, `evict` or `append`.
-
-A stage belongs to the connection that made it. `stage` in
-`edit.stage.put` appends to an existing one. A request that names a stage
-uses it up when it applies. At most 256 MiB is staged at once.
-
-The overlay lives for one map. A map change drops it, the raw journal and
-every stage at the first tick of the new map, and a play-copy reload drops
-the overlay when it binds. The guest reads a map's raw data from the cache
-slot file the map was copied into, so the overlay is served on those slot
-files and never on the copy's source. A slot copy, a cache template and a
-play copy never hold an overlay byte. Raw writes refuse with `UNAVAILABLE`
-when the loaded map's cache slot is unknown or no VFS is mounted. The
-session rules are those of the other edit writes.
+`edit.changes` lists raw acts under `raw`; `edit.revert` undoes them newest
+first and lists them in `reverted[]` with `raw`, `evict` or `append`. A stage
+belongs to the connection that made it, is used up by the request that
+applies it, and at most 256 MiB is staged at once. The overlay, raw journal
+and stages live for one map. Raw writes refuse with `UNAVAILABLE` when the
+loaded map's cache slot is unknown or no VFS is mounted. Session rules are
+those of the other edit writes.
 
 ```sh
 h2 agent edit.batch '{"epoch":E,"raw":[{"owner":{"section":{"tag":"<sbsp>","kind":"cluster","index":0}},"offset":4096,"bytes":"AACAPw=="}]}'
@@ -3957,14 +2707,12 @@ h2 agent edit.revert '{"id":N}'
 
 ### Block moves
 
-A tag block is a `(count, address)` pair and a run of elements with
-nothing reserved after it. A block that must hold more elements than the
-map gave it moves into the **edit arena**: guest memory the host maps in
-the HLE reservation as the arena grows. The design is
-[realtime-edits.md](../editor/realtime-edits.md), "Four write primitives". The
-allocator is `crates/extensions/hot-tags/src/arena.rs`, the batch half
-`crates/extensions/hot-tags/src/batch.rs`, the methods
-`crates/extensions/agent/src/hot.rs` and the pages
+A block that must hold more elements than the map gave it moves into the
+**edit arena**: guest memory the host maps in the HLE reservation as the
+arena grows. Design: [realtime-edits.md](../editor/realtime-edits.md), "Four
+write primitives". Code: `crates/extensions/hot-tags/src/arena.rs`,
+`crates/extensions/hot-tags/src/batch.rs`,
+`crates/extensions/agent/src/hot.rs`,
 `crates/extensions/game/src/hot_glue.rs`.
 
 | Method | Access | Params | Result |
@@ -3972,44 +2720,30 @@ allocator is `crates/extensions/hot-tags/src/arena.rs`, the batch half
 | `edit.batch` | act | adds `moves: [{root, stride, count, capacity?, bytes, was}]`; `writes` may be left out when it is given | adds `moves: [{root, tag, path, count, address, capacity}]` |
 | `edit.arena` | read | none | `{base, len, mapped, used, largest_free, physical_free, physical_floor, moves: [{tag, name, root, address, capacity, stride, len}]}` |
 
-`root` names the pair: `{tag, group?, path}` with a path that ends at a
-block field (`postprocess[0].colors`) or at an 8-byte raw field
-(`+0x20:u32[2]`), or `{at}`, the pair's address, inside a loaded tag or
-inside a block an earlier move put in the arena. `stride` is the bytes of
-one element and must equal a defined block's element size. `bytes` holds
-the `count` new elements (base64 or `{stage, at?, len?}`), `capacity`
-(default `count`) the elements of room. `was` is `{count, address}`, the
-pair before the move; `address` is a number or a `0x` string.
+`root` is `{tag, group?, path}` (a path ending at a block field or an
+8-byte raw field such as `+0x20:u32[2]`) or `{at}`, the pair's address.
+`stride` is the bytes of one element and must equal a defined block's
+element size. `bytes` holds the `count` new elements (base64 or `{stage,
+at?, len?}`), `capacity` (default `count`) the room. `was` is `{count,
+address}`, the pair before the move.
 
-The batch checks each move with its fields and raw entries: a root that
-holds another pair than `was` answers error 8 (`MISMATCH`) with
-`data.moves: [{root, tag, path, was, holds}]`. A write over a move's root
-in the same batch is refused. Then it allocates every move's extent
-before the first write. An arena without room answers `REFUSED` (11) with
-`data.why`, `data.root`, `data.need` (bytes) and `data.largest_free`, and
-nothing is written: the edit falls back to a reload. At the boundary the
-block's bytes go into the extent, the room past `count` is zeroed, and
-the root takes the new count and address, after the batch's field writes
-and before its raw entries. Paths and addresses resolve against the
-blocks as they are before the batch, so an edit inside a moved block goes
-in its `bytes` or in a later batch.
+A root that holds another pair than `was` answers error 8 (`MISMATCH`) with
+`data.moves: [{root, tag, path, was, holds}]`. A write over a move's root in
+the same batch is refused. An arena without room answers `REFUSED` (11) with
+`data.why`, `data.root`, `data.need` and `data.largest_free`, and nothing is
+written. Paths and addresses resolve against the blocks as they are before
+the batch, so an edit inside a moved block goes in its `bytes` or a later
+batch. A moved block belongs to its tag: `{at}` writes and `edit.read`
+inside it are admitted. `edit.changes` lists moves under `moves`;
+`edit.revert` puts the old pair back and frees the extent.
 
-A moved block belongs to its tag: an `{at}` write and `edit.read` inside
-it are admitted as inside the tag, and a path through the pair reads and
-writes it. `edit.changes` lists moves under `moves`. `edit.revert` puts
-the old pair back and frees the extent, after reverting the batch's field
-writes; a root pointed elsewhere since is left alone and its extent kept.
-A field write inside a block that has moved back appears in `dropped`.
-
-`edit.arena` reports the window (`base`, `len`, 4080 KiB), the bytes
-mapped and held by extents, the largest extent a move could have now, the
-free physical memory, and the floor the arena leaves free for the game
-(`physical_floor`, 2 MiB). `world.placement.edit` grows placement blocks
-into the same arena ([Placement edits](#placement-edits)), and its extents
-are listed too, booked to the scenario. The arena lives for one map: the
-first tick of a new map frees every extent and unmaps its pages; a BSP
-switch keeps it. While it holds an extent, machine snapshots, rewind and
-film keyframes are refused, as for an unlinked placement preview.
+`edit.arena` reports the window (`base`, `len`, 4080 KiB), the bytes mapped
+and held, the largest extent a move could have, the free physical memory and
+the floor left free for the game (`physical_floor`, 2 MiB).
+`world.placement.edit` grows placement blocks into the same arena
+([Placement edits](#placement-edits)). The arena lives for one map (a BSP
+switch keeps it). While it holds an extent, machine snapshots, rewind and
+film keyframes are refused.
 
 ```sh
 h2 agent edit.arena
@@ -4019,85 +2753,56 @@ h2 agent edit.batch '{"epoch":E,"moves":[{"root":{"tag":"<shad>","path":"postpro
 ### Collision edits
 
 The lifted game reads a collision BSP in place through its eight
-`(count, address)` pairs, so a live collision edit stages the new blocks
-in the edit arena and then repoints the pairs at one tick boundary. The
-design is [realtime-edits.md](../editor/realtime-edits.md), "Collision";
-the methods are `crates/extensions/agent/src/hot/collision.rs`.
+`(count, address)` pairs, so a live collision edit stages the new blocks in
+the edit arena and repoints the pairs at one tick boundary. Design:
+[realtime-edits.md](../editor/realtime-edits.md), "Collision". Code:
+`crates/extensions/agent/src/hot/collision.rs`.
 
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `edit.collision.stage` | act | `{target, blocks: {name: {count, bytes}}, leaves?: {count, bytes}, mopp?, epoch, confirm_peers?}` | `{stage, bytes, blocks: {name: {count, address}}, arena: {used, largest_free}, activation}` |
 | `edit.collision.commit` | act | `{stage, mode: "append" \| "rebuild", activate?, was: {name: {count, address}}, epoch, confirm_peers?}` | `{at, stage, mode, pairs: {name: {count, address}}, activated, freed: [address]}` |
 
-`target` is `{structure: tag}` (the structure's level collision,
-`sbsp+0x14`), `{instance_def: {tag, index}}` (an instanced geometry
-definition's BSP, at the definition's `+0x70`) or `{coll: {tag, region,
-permutation, bsp?}}` (`bsp` defaults to 0); `tag` is a datum or a name.
-`blocks` holds all eight blocks by the field names of
-`tags::collision::Bsp` (`nodes`, `planes`, `leaves`, `refs`, `nodes_2d`,
-`surfaces`, `edges`, `vertices`), each `count` elements laid out as
-`Bsp::encode_blocks` lays them (`collision_build::coll::stage_blocks`).
-For a structure, `leaves` is the per-leaf block (`sbsp+0x2c`, 8 bytes a
-leaf, one per BSP leaf) and `mopp` the bytes of the `sbsp+0x1e0` block;
-either left out keeps the structure's own, and a structure whose per-leaf
-block would no longer have one element per leaf is refused. Bytes are
-base64 or `{stage, at?, len?}` naming `edit.stage.put` bytes. A stage of
-`pathfinding` is refused: its blocks hold pointers the host would have to
-relocate.
+`target` is `{structure: tag}` (`sbsp+0x14`), `{instance_def: {tag, index}}`
+(the definition's BSP at `+0x70`) or `{coll: {tag, region, permutation,
+bsp?}}` (`bsp` defaults to 0). `blocks` holds all eight blocks by the field
+names of `tags::collision::Bsp` (`nodes`, `planes`, `leaves`, `refs`,
+`nodes_2d`, `surfaces`, `edges`, `vertices`), laid out as
+`Bsp::encode_blocks` lays them (`collision_build::coll::stage_blocks`). For
+a structure, `leaves` is the per-leaf block (`sbsp+0x2c`) and `mopp` the
+`sbsp+0x1e0` block; either left out keeps the structure's own. Bytes are
+base64 or `{stage, at?, len?}`. A stage of `pathfinding` is refused.
 
-The stage decodes the blocks and runs `Bsp::validate` against the target's
-collision material count, then writes each nonempty block into its own
-arena extent. Nothing points at them, so the game reads nothing new. A
-full arena answers `REFUSED` (11) with `data.block`, `data.need` and
-`data.largest_free`, and holds nothing. A second stage of the same target
-before a commit replaces the first and frees its extents. `activation`
-says whether this game can run the BSP activation a commit asks for. A
-stage belongs to its connection and lives until a commit uses it or the
-map changes.
+The stage runs `Bsp::validate` and writes each nonempty block into its own
+arena extent; nothing points at them yet. A full arena answers `REFUSED`
+(11) with `data.block`, `data.need` and `data.largest_free`. A second stage
+of the same target replaces the first. A stage belongs to its connection and
+lives until a commit uses it or the map changes.
 
 The commit names in `was` every pair it repoints: the eight block names,
-`leaf_clusters` for the per-leaf block and `mopp`, each `{count,
-address}` before the commit (`address` a number or a `0x` string). A pair
-that holds another answers error 8 (`MISMATCH`) with `data.pairs: [{name,
-root, was, holds}]` and nothing is written. Every pair is checked before
-the first write, and all are written at the same boundary. `append` is
-the mode for added solids: every existing plane, leaf, surface, edge,
-vertex and per-leaf element keeps its index, so a block with fewer
-elements than the one it replaces is refused. `rebuild` changes indices:
-it always activates, and is refused on a structure with pathfinding,
-which names surfaces by index.
+`leaf_clusters` and `mopp`, each `{count, address}`. A pair that holds
+another answers error 8 (`MISMATCH`) with `data.pairs: [{name, root, was,
+holds}]` and nothing is written. All pairs are written at the same
+boundary.
 
-With `activate: true`, and always for `rebuild`, the commit asks the game
-to activate the loaded structure BSP again and answers after it has run,
-with `activated: true`. The activation is the second half of a BSP
-switch, which `BSP_SWITCH` itself skips for the BSP already loaded and
-active: at the next tick, through the agent's guest calls
-(`Call::ReactivateStructure`, `crates/extensions/agent/src/sim/calls.rs`),
-`STRUCTURE_BSP_DEACTIVATE` (`0x137da0`) then `STRUCTURE_BSP_ACTIVATE`
-(`0x137d40`), so every game system rebuilds its per-BSP state (physics
-its Havok world over the structure, objects their locations) and the
-BSP's tag data, with the new pairs, is not loaded again. A game with no
-activation (no agent guest calls) refuses these commits (`REFUSED`,
-nothing written); one whose activation does not start or fails (no
-structure loaded and active) puts the old pairs back, frees the stage,
-and answers `REFUSED` with the reason. The arena extents the old pairs named are freed after the next
-activation, listed in `freed`; until then Havok's shape may still read
-them. A `coll` BSP's old extents are kept until the map changes, since a
-live body's shape points at them until the object is made again
-(`world.object.respawn`).
+| Mode | Rule |
+|---|---|
+| `append` | for added solids: every existing element keeps its index, so a block with fewer elements than the one it replaces is refused |
+| `rebuild` | changes indices; always activates; refused on a structure with pathfinding |
 
-The lifted BSP walks follow the pairs on every query, so rays, sweeps
-and point location answer from the new blocks on the next tick, and
-`sim_collision`'s page watches over the pairs start a new generation. A
-structure commit hands the new BSP to `debug.view`'s `collision_geometry`
-and `invisible_barriers`, which are built from the map file and would
-otherwise show the old level. A commit on the active structure also
-rebuilds the bots' line-of-sight walls from the new BSP on a thread of
-their own (`bots::autonav::collision_edited`); their nav mesh keeps the
-old shape until the map loads again. The journal does not hold a commit: `edit.revert` leaves it, and the
-editor undoes it with the inverse stage and commit. Sessions are those
-of the other edit writes; with `confirm_peers` on a host the change stays
-local, as tag pokes do.
+With `activate: true`, and always for `rebuild`, the commit asks the game to
+activate the loaded structure BSP again (`Call::ReactivateStructure`,
+`crates/extensions/agent/src/sim/calls.rs`: `STRUCTURE_BSP_DEACTIVATE`
+`0x137da0`, then `STRUCTURE_BSP_ACTIVATE` `0x137d40`) and answers after it
+has run. A game with no activation refuses these commits (`REFUSED`); a
+failed activation puts the old pairs back, frees the stage and answers
+`REFUSED`. Old extents are freed after the next activation, listed in
+`freed`; a `coll` BSP's are kept until the map changes (respawn bodies with
+`world.object.respawn`). The journal does not hold a commit: `edit.revert`
+leaves it, and the editor undoes it with the inverse stage and commit.
+Sessions are those of the other edit writes. What the commit rebuilds
+(physics, `debug.view` geometry, bot line-of-sight walls): see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Collision edits".
 
 ```sh
 h2 agent edit.collision.stage '{"epoch":E,"target":{"structure":"<sbsp>"},"blocks":{"nodes":{"count":N,"bytes":"<base64>"},...},"leaves":{"count":L,"bytes":"<base64>"},"mopp":"<base64>"}'
@@ -4107,16 +2812,16 @@ h2 agent edit.collision.commit '{"epoch":E,"stage":1,"mode":"append","activate":
 ## Menu methods: settings, perf overlay, cheats
 
 The in-game debug menu is a client of this API ([debug-menu.md](debug-menu.md));
-the methods it added beside the agent's own are in
-`crates/extensions/debug-menu/src/sources/mod.rs` (`method`).
+its methods are in `crates/extensions/debug-menu/src/sources/mod.rs`
+(`method`).
 
 | Method | Access | Params | Does |
 |---|---|---|---|
 | `settings.list` | read | `{prefix?}` | settings (`settings.toml`) and how each applies (`crates/extensions/agent/src/menu.rs`) |
-| `settings.set` | act | `{key, value}` | saves the value and applies it as the setting applies; `UNAVAILABLE` when something else set it for this run |
+| `settings.set` | act | `{key, value}` | saves the value and applies it; `UNAVAILABLE` when something else set it for this run |
 | `perf.overlay` | act | `{}` reads, `{on}` sets | the perf overlay (the watermark) |
-| `cheat.list` | read | `{}` | `{refused, pending, cheats}`: each cheat's `name`, `label`, `about`, `kind` (`bool`, or `choice` with `choices`), `value`, `refused` (why the session refuses it) and `pending` (why it does nothing yet: on while no campaign or multiplayer game runs; it takes hold when one starts); the top-level `pending` says the same with no game running (`crates/extensions/game/src/cheats.rs`) |
-| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}` or `{"name":"game_speed","value":0.1}`; answers with `cheat.list`'s answer. Cheats: `god`, `infinite_ammo`, `bottomless_clip`, `game_speed` (0.1, 0.25, 0.5, 1, 1.5, 2, 4), `fly`, `noclip`, `hide_hud`, `ai_off` ([debug-menu.md](debug-menu.md#cheats)) |
+| `cheat.list` | read | `{}` | `{refused, pending, cheats}`: each cheat's `name`, `label`, `about`, `kind` (`bool`, or `choice` with `choices`), `value`, `refused` (why the session refuses it) and `pending` (why it does nothing yet); the top-level `pending` says the same with no game running (`crates/extensions/game/src/cheats.rs`) |
+| `cheat.set` | act | `{name, value}` | sets one, for example `{"name":"hide_hud","value":true}`; answers with `cheat.list`'s answer. Cheats: `god`, `infinite_ammo`, `bottomless_clip`, `game_speed` (0.1, 0.25, 0.5, 1, 1.5, 2, 4), `fly`, `noclip`, `hide_hud`, `ai_off` ([debug-menu.md](debug-menu.md#cheats)) |
 
 ### World debug views
 
@@ -4129,40 +2834,30 @@ Each row has `name`, `label`, `on` and an optional `why`. The names are
 `geometry_edges`, `trigger_volumes`, `kill_volumes`, `invisible_barriers`,
 `collision_geometry`, `hitboxes` and `traces`. For example,
 `h2 agent debug.view '{"name":"hitboxes","on":true}'` enables the same
-switch as the window's Debug views section. Range accepts whole world
-units from 1 to 512 (default 48). Trace lifetime accepts 1 to 300 guest
-ticks (default 30).
+switch as the window's Debug views section. Range accepts whole world units
+from 1 to 512 (default 48). Trace lifetime accepts 1 to 300 guest ticks
+(default 30).
 
-A host without a window lists the views with a reason. Enabling a refused
-view returns `UNAVAILABLE`. An enabled row can report a cache loading or
-decoding issue. The socketless debug menu refreshes the same map cache
-between execution slices.
-
-The window registers the debug views as a world-line source before boot.
-Changing a switch, range or lifetime affects subsequent genuine images.
-A captured image keeps its geometry, including the object poses and
-traces sampled for it. The overlay projects the sample with the image's
-split-screen cameras and draws hidden edges at full strength. The source
-and capture code live in `crates/extensions/game/src/debug_views.rs` and
-`crates/extensions/agent/src/debug_views/mod.rs`. See
+A host without a window lists the views with a reason, and enabling a
+refused view returns `UNAVAILABLE`. The source and capture code live in
+`crates/extensions/game/src/debug_views.rs` and
+`crates/extensions/agent/src/debug_views/mod.rs`; the wire types are in
+`crates/extensions/agent-proto/src/debug.rs`. Capture and trace behaviour:
+see the [detail note](notes/2026-11-26-agent-api-detail.md), "World debug
+views", [Debug views](debug-menu.md#debug-views), and
 [Drawing world-space lines over the frame](#drawing-world-space-lines-over-the-frame).
-
-Traces observe the named `SIM_COLLISION_QUERY` entry and its return while
-enabled. A true hit draws the world position from the result record. The
-query's ABI and result layout are in [Collision rewrite, §5.4](../engine/sim-rewrite-collision.md).
-See [Debug views](debug-menu.md#debug-views) for the data sources, draw caps
-and limits. The wire types are in `crates/extensions/agent-proto/src/debug.rs`.
+The collision query's layout is in
+[Collision rewrite, §5.4](../engine/sim-rewrite-collision.md).
 
 ## `editor`: a paired editor
 
 `h2 play` shows a plate in the top-right corner while an editor holds a
-link lease. The first line is “Editor · viewing”, “Editor · editing live”
-or “Editor · edits blocked”. Optional `text` appears on the second line.
-The plate expires on the wall clock, including while the game is paused.
-The shell draws it after the watermark and leaves room for the banner
-(`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
-While the debug menu is open, the plate's lines show inside the menu
-instead ([debug-menu.md](debug-menu.md#layout)).
+link lease: "Editor · viewing", "Editor · editing live" or "Editor · edits
+blocked", with optional `text` on the second line. The plate expires on the
+wall clock, even while the game is paused
+(`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`). While
+the debug menu is open the lines show inside it
+([debug-menu.md](debug-menu.md#layout)).
 
 | Method | Access | Params | Result |
 |---|---|---|---|
@@ -4171,579 +2866,437 @@ instead ([debug-menu.md](debug-menu.md#layout)).
 | `editor.marks` | read | `{marks, ttl_ms?}` | `{held, drawn, why?, refused}` |
 
 `editor` is a string. `mode` is `view`, `edit` or `blocked`. Each call
-replaces the lease, with a `ttl_ms` of 500 to 10000 (default 3000).
-`text` accepts up to 64 characters. Invalid arguments return
-`INVALID_PARAMS`. `expires_ms` gives the milliseconds remaining when the
-host accepts the lease, or zero when the plate is cleared or refused.
-Clearing returns `shown: false`. The link is available in every session
-kind (`crates/extensions/agent-proto/src/editor.rs`,
+replaces the lease, with a `ttl_ms` of 500 to 10000 (default 3000). `text`
+takes up to 64 characters. Invalid arguments return `INVALID_PARAMS`.
+`expires_ms` is the time remaining, or zero when the plate is cleared or
+refused; clearing returns `shown: false`. The link is available in every
+session kind (`crates/extensions/agent-proto/src/editor.rs`,
 `crates/extensions/agent/src/editor.rs`).
 
-`editor.focus` returns `focused: true` when it queues a request for the
-window. The event loop restores a minimized window and asks the window
-system to give it focus (`crates/apps/app/src/shell.rs`). On `h2 serve`,
-both methods are listed and answer with `shown: false` or `focused: false`
-and `why: "this host has no window"` (`crates/apps/boot/src/lib.rs`).
+`editor.focus` returns `focused: true` when it queues a request that
+restores a minimized window and focuses it (`crates/apps/app/src/shell.rs`).
+On `h2 serve` both methods answer `shown: false` or `focused: false` with
+`why: "this host has no window"` (`crates/apps/boot/src/lib.rs`).
 
-`editor.marks` replaces the mark set for 500 to 10000 ms (default 3000).
-An empty set clears it. Each of the up to 256 entries contains exactly
-one geometry key: `{object: "<eight hex digits>"}`,
-`{box: {origin, forward, up, size}}` or `{point: [x, y, z]}`. Box size
-gives the full lengths along forward, left and up from the origin.
-An entry takes `color: [r, g, b]` with components from 0 to 1,
-optional `style` (`selected` or `candidate`), optional `label`, and
-optional reserved `xray`. An invalid entry leaves the previous set intact.
-`held` counts accepted entries. Stale object handles and object entries
-without the agent tick observer are refused by index in
-`refused: [{index, why}]`. The tick observer retires handles when their
-objects go away and invalidates older images' mark samples. A live
-stream epoch change clears the entire set
+`editor.marks` replaces the mark set for 500 to 10000 ms (default 3000); an
+empty set clears it. Each of up to 256 entries has exactly one geometry key.
+
+| Entry key | Value |
+|---|---|
+| `object` | `"<eight hex digits>"` |
+| `box` | `{origin, forward, up, size}`; size is the full lengths along forward, left and up |
+| `point` | `[x, y, z]` |
+
+An entry takes `color: [r, g, b]` (components 0 to 1), optional `style`
+(`selected` or `candidate`), optional `label` and optional reserved `xray`
+(no effect). An invalid entry leaves the previous set intact. `held` counts
+accepted entries; stale object handles and object entries without the agent
+tick observer are refused by index in `refused: [{index, why}]`. A live
+stream epoch change clears the set
 (`crates/extensions/agent/src/editor/scene.rs`,
 `crates/extensions/agent/src/exec.rs`).
 
-Each genuine guest image captured while a mark lease is active carries
-the bounds sampled from the guest state that renders it, along with
-each view's camera and aspect factor.
-This applies to serial rendering and repeated
-scanout of the same image. The window projects marks over the finished
-frame. Hidden edges show at full strength, with the same styling as
-visible edges. The candidate style uses dashes. `xray` has no effect
+`drawn: true` reports a current genuine projection; `drawn: false` gives a
+reason (headless host, native rendering or scene capture off, a loading
+picture, a raw submission, an unusable world camera, or waiting for a
+render). The window projects marks over the finished frame, including on
+in-between frames ([high-framerate.md](../game/high-framerate.md), "World
+marks on made frames"). Capture and drawing code
 (`crates/rewrites/render-bridge/src/scene_step.rs`,
 `crates/platform/d3d/src/present_camera.rs`,
-`crates/apps/app/src/frame.rs`, `crates/apps/app/src/overlay/marks.rs`).
-
-`drawn: true` reports a current genuine projection. The window presents
-a genuine image with at least one shape from the current set and a
-usable camera. Individual edges still depend on clipping. `drawn: false`
-gives a reason such as a headless host, native rendering or scene
-capture being off, a loading picture, a raw submission, an unusable
-world camera, or waiting for a render with the set. Marks are also
-drawn on in-between frames (60 and 120 fps), from the source image's
-samples if it carries the current lease's marks, with the camera the
-frame drew each view with
-([high-framerate.md](../game/high-framerate.md), "World marks on made frames";
-`crates/platform/d3d/src/present_camera.rs`,
-`crates/apps/cli/src/play_cmd.rs`, `crates/apps/app/src/shell.rs`).
-
-A shell pause or paused Theater playback blocks the guest loop, so
-editor methods wait to be serviced. An agent pause continues to service
-them, and a newly sent mark appears only with the next genuine render.
-The window still expires the plate and marks on wall time
-(`crates/apps/app/src/lifecycle.rs`,
-`crates/extensions/agent/src/exec/poll_theater.rs`,
-`crates/extensions/agent/src/exec.rs`, `crates/apps/app/src/shell.rs`).
+`crates/apps/app/src/frame.rs`, `crates/apps/app/src/overlay/marks.rs`) and
+the pause behaviour: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`editor`: a paired
+editor". A shell pause or paused Theater playback makes editor methods wait;
+an agent pause keeps servicing them.
 
 ### Content previews from the editor
 
-A paired editor's `pair.preview` and `pair.audio` are clients of this API
-on a second connection to the paired game's socket
-([editor agent API](../editor/agent-api.md#previewing-content-in-the-paired-game);
+A paired editor's `pair.preview` and `pair.audio` are clients of this API on
+a second connection to the paired game's socket ([editor agent
+API](../editor/agent-api.md#previewing-content-in-the-paired-game);
 `crates/apps/studio/src/api/preview/run.rs`). They add no game method. A
-preview calls `session.methods`, then `sim.give` or `sim.spawn` (or
-`cheat.set hide_hud`), `session.wait`, `world.object`, `world.query`,
-`pogo.state`, `render.scene`, `ui.audit`, `ui.stack`, `ui.screen`,
-`render.capture` or `host.screenshot`, and `audio.voices` and
-`audio.loops`, each where the game lists it. A game that leaves one of
-these out answers a preview without that read. The host writes keep their
-own rules: `sim.give` and `sim.spawn` are refused in a co-op session and
-on a multiplayer client.
+preview calls `session.methods`, then the methods it needs (`sim.give`,
+`sim.spawn`, `cheat.set hide_hud`, `session.wait`, `world.object`,
+`world.query`, `pogo.state`, `render.scene`, `ui.audit`, `ui.stack`,
+`ui.screen`, `render.capture`, `host.screenshot`, `audio.voices`,
+`audio.loops`), each where the game lists it. A game that leaves one out
+answers a preview without that read. `sim.give` and `sim.spawn` are refused
+in a co-op session and on a multiplayer client.
 
 ### Drawing world-space lines over the frame
 
 A windowed host registers a `WorldLineSource` with
-`Host::add_world_line_source` before boot. Each source provides an
-immutable sample of world-space edges, with an anchor, color, dash
-flag, optional label and style for each group. A sample can live as long as
-its image or carry its own lease. Only the editor sample contributes
-to `editor.marks` status. The superbounce game type is another source, and
-its bounce view a third; their samples stay image-lived (`crates/extensions/game/src/superbounce_mode.rs`,
-`crates/extensions/game/src/superbounce_view.rs`;
+`Host::add_world_line_source` before boot. Each source supplies an immutable
+sample of world-space edges; each group has an anchor, colour, dash flag,
+optional label and a style. A sample lives as long as its image or carries its
+own lease. Only the editor sample feeds `editor.marks` status. The superbounce
+game type and its bounce view are two more sources, with image-lived samples
+(`crates/extensions/game/src/superbounce_mode.rs`,
+`crates/extensions/game/src/superbounce_view.rs`,
 `crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
 
-A group's `LineStyle` (`crates/platform/gfx/src/world_lines.rs`) sets
-how it is drawn; the default is a thin opaque line. A style has:
+A group's `LineStyle` (`crates/platform/gfx/src/world_lines.rs`) sets how it
+is drawn; the default is a thin opaque line.
 
-- a core `width` in pixels at 1080p, scaled by the output height;
-- an `alpha`;
-- an optional `glow`, a wider low-opacity halo around the core;
-- an optional `pulse`, a period and depth read from the present
-  time, so brightness breathes between full and `1 - depth`;
-- an optional distance `fade`, full opacity up to its start and none
-  from its end, in world units from the camera;
-- optional `chevrons`, small arrowheads lying flat in the world along
-  each edge and pointing along a world direction. They flow along
-  the direction when their speed is not zero, moved by the window's
-  clock at each present;
-- `stroke`, on by default: off leaves only the chevrons, ribbon and
-  label along the edges, with no line;
-- an optional floor `ribbon`, a translucent strip of a world width
-  along each edge, clipped at the near plane;
-- a `label_face`: the 8x8 debug font (`Debug`, the default), or the
-  disc's HUD font with its button glyphs (`Hud`), once a source has
-  published one with `gfx::world_lines::set_hud_font`. A `Hud` label is
-  drawn in the 8x8 font while none is published.
+| Field | Meaning |
+|---|---|
+| `width` | Core width in pixels at 1080p, scaled by output height |
+| `alpha` | Opacity |
+| `glow` | Optional wider low-opacity halo |
+| `pulse` | Optional period and depth, read from present time; brightness breathes between full and `1 - depth` |
+| `fade` | Optional distance fade: full to its start, none from its end, in world units from the camera |
+| `chevrons` | Optional arrowheads lying flat along each edge, pointing along a world direction; they flow when speed is not zero |
+| `stroke` | On by default; off leaves only chevrons, ribbon and label |
+| `ribbon` | Optional translucent floor strip of a world width along each edge, clipped at the near plane |
+| `label_face` | `Debug` (8x8 font, default) or `Hud` (the disc's HUD font with button glyphs, once `gfx::world_lines::set_hud_font` has published one; 8x8 until then) |
 
-A sample may also give marks in the image's HUD space
-(`ImageMarks::hud`, `gfx::world_lines::HudMark`): paths, filled convex
-polygons and text, in guest pixels of the 640 by 480 image with the
-host's HUD fit already applied. The window scales them with the image,
-as the guest's own HUD is scaled, after the world lines. The superbounce
-bounce view draws its tracker blips and map this way
-(`crates/extensions/game/src/superbounce_view.rs`).
+A sample may also give marks in the image's HUD space (`ImageMarks::hud`,
+`gfx::world_lines::HudMark`): paths, filled convex polygons and text in guest
+pixels of the 640 by 480 image, drawn after the world lines and scaled with
+the image. The superbounce bounce view draws its tracker blips and map this
+way (`crates/extensions/game/src/superbounce_view.rs`).
 
-The window draws every edge as an anti-aliased screen-space quad, with the
-core, halo and dashes in the fragment shader, and the ribbons, arrowheads
-and label pixels as triangles in the same vertex buffer. A HUD-font glyph
-is a textured quad sampling the font's atlas, bound once per draw. All of
-it is one pipeline and one draw per frame
-(`crates/apps/app/src/overlay/marks.rs`). A label's opacity is the
-style's `alpha` times its fade and pulse.
+All edges, ribbons, arrowheads and labels go through one pipeline and one draw
+per frame (`crates/apps/app/src/overlay/marks.rs`). A sample is captured once
+per guest frame, so motion belongs in the style (pulse, chevron speed), which
+runs at every present.
 
-A sample is captured once a guest frame, so motion within it belongs
-in the style (pulse, chevron speed), which the window runs at every
-present; geometry built from a capture-time clock steps at the tick
-rate at 60 and 120 fps.
-
-Genuine guest images captured with samples carry their own per-view
-cameras and aspect factors. Repeated scanout keeps the same samples
-and cameras. An in-between frame draws the samples of the newest
-genuine image, or of the one before while a blended replay is under
-half way, with each view's camera moved onto the one the frame drew
-the world with ([high-framerate.md](../game/high-framerate.md), "World
-marks on made frames"). The window draws
-all visible samples together in a 2D pass over the finished frame.
-There is no depth test, so hidden edges draw at full strength
+In-between frames draw the samples of the newest genuine image with each
+view's camera moved onto the frame's
+([high-framerate.md](../game/high-framerate.md), "World marks on made
+frames"). There is no depth test, so hidden edges draw at full strength
 (`crates/platform/d3d/src/present_camera.rs`,
-`crates/apps/app/src/overlay/marks.rs`, `crates/apps/app/src/shell.rs`).
-
-An inactive producer costs an atomic poll. When all producers are
-inactive, there is no capture, guest read for the overlay, or sample
-allocation. The inline collection holds two additional samples
-before growing. Active sources read only the supplied guest view
-and shared host data
+`crates/apps/app/src/overlay/marks.rs`, `crates/apps/app/src/shell.rs`). An
+inactive producer costs an atomic poll
 (`crates/extensions/game/src/world_lines.rs`,
-`crates/rewrites/render-bridge/src/scene_step.rs`).
+`crates/rewrites/render-bridge/src/scene_step.rs`). Detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Drawing world-space
+lines over the frame".
 
 ## Bot combat
 
 `h2 agent bots.stats` reads the host's brain-driven phantoms at a tick
-boundary. It takes no parameters. The result contains `at` and a `bots`
-array. Each row has the seat's `handle`, `name`, `player` (null until
-bound to a game player), `skill`, `profile`, `combat` and `accuracy`.
+boundary. It takes no parameters. The result is `at` and a `bots` array; each
+row has `handle`, `name`, `player` (null until bound to a game player),
+`skill`, `profile`, `combat` and `accuracy`.
 
-`maintenance` measures the host's phantom roster work on render frames with
-configured seats or pending removals. `frames` counts calls, `total_ns` sums
-their wall time, and `max_ns` is the longest call. `unchanged_lobby_frames`
-counts frames where the seated custom lobby's peer and player records matched
-the previous sample. Subtract two readings in the same session to get a
-window's mean cost (`Δtotal_ns / Δframes`) and cache hit fraction.
+`maintenance` measures the roster work on render frames with configured seats
+or pending removals; subtract two readings to get a window's mean cost.
 
-The write counters show how often the roster work changes the session's
-membership, which makes the game rebuild what depends on it.
-`write_frames` counts frames that wrote the membership and moved its
-counters: a join, a removal, or a repair. One frame's repairs share one
-bump. `props_writes` counts phantom peer properties rewritten to follow
-this console's. `identity_writes` counts phantom names or looks written
-back into the session's player records. `handicap_writes` counts phantom
-handicaps put back to none there ([bots.md](../game/bots.md), "A phantom's
-player configuration"). `team_moves` counts team
-rebalance moves. `props_diff_chunks` is a mask of the 8-byte chunks of
-the `0xc8`-byte peer properties that differed on any rewrite: bit `i`
-covers properties bytes `8i` to `8i + 7`, so bit 12 is the map status at
-`+0x60`. In a settled lobby `Δwrite_frames` stays near zero. If it grows
-with `Δframes`, the game is undoing a phantom write every frame. The log
-then says `bots: phantoms: the session's membership was rewritten on 30
-frames in a row (...)` once per run of such frames
-(`crates/live/bots/src/phantom.rs`, `churn_line`).
+| Counter | Meaning |
+|---|---|
+| `frames`, `total_ns`, `max_ns` | Calls, summed wall time, longest call |
+| `unchanged_lobby_frames` | Frames where the seated custom lobby's records matched the previous sample |
+| `write_frames` | Frames that wrote the session membership (join, removal, repair); stays near zero in a settled lobby |
+| `props_writes` | Phantom peer properties rewritten to follow this console's |
+| `identity_writes` | Phantom names or looks written back into player records |
+| `handicap_writes` | Phantom handicaps put back to none ([bots.md](../game/bots.md), "A phantom's player configuration") |
+| `team_moves` | Team rebalance moves |
+| `props_diff_chunks` | Mask of 8-byte chunks of the `0xc8`-byte peer properties that differed; bit `i` covers bytes `8i` to `8i + 7` |
+| `facing_releases` | Built actions after which the host cleared a phantom biped's facing-set flag ([bots.md](../game/bots.md), "The facing release"); counted on the action gather |
 
-`facing_releases` is counted on the action gather, not on render frames.
-It counts built actions after which the host cleared a phantom biped's
-facing-set flag, as retail's control update does for a local player
-([bots.md](../game/bots.md), "The facing release"). It rises by about
-one per melee lunge. A bot whose aim stops following its right stick
-while this stays flat points at a facing write the release does not
-cover.
+A growing `Δwrite_frames` means the game undoes a phantom write every frame;
+the log says `bots: phantoms: the session's membership was rewritten on 30
+frames in a row (...)` (`crates/live/bots/src/phantom.rs`, `churn_line`).
 
-`profile` contains the card's `summary`, its `archetype`, `favorite_weapon`, the name's
-`try_hard` score and the `weights` active for that difficulty and style.
-The full vector contains `radar_use`, `noob_combo`, `dual_wield`,
-`aggression`, `grenades`, `melee`, `weapon_preference`, `range_preference`,
-`strafe`, `jump`, `reaction_jitter` and `retreat`. Each value ranges
-from zero to one. Higher reaction jitter favors the later part of the
-difficulty’s reaction window.
+`profile` holds `summary`, `archetype`, `favorite_weapon`, the name's
+`try_hard` score and the `weights` (each 0 to 1): `radar_use`, `noob_combo`,
+`dual_wield`, `aggression`, `grenades`, `melee`, `weapon_preference`,
+`range_preference`, `strafe`, `jump`, `reaction_jitter`, `retreat`.
 
 | Field in `combat` | Meaning |
 |---|---|
-| `tick`, `observation_tick` | Most recent think tick and the world sample the decision used. The sample can be older because perception takes time. |
-| `goal`, `target`, `range` | Current activity, visible fight target's player index and distance in world units. The target and range are null outside a visible fight. |
-| `weapon`, `weapon_role` | Held weapon's map definition datum and handling class, null before an inventory read. |
-| `last_decisions` | Up to eight goal changes and combat input decisions, oldest first, each with `tick` and `action`. |
-| `melee_presses`, `switch_presses`, `grenade_requests` | Attack or switch inputs chosen by the brain, counted once per press. |
-| `weapon_switches`, `grenades_used` | Observed exchanges of the two carried weapon definitions and decreases in grenade inventory within a life. |
-| `last_reaction_ticks`, `total_reaction_ticks`, `reactions` | Ticks from the selected target's first fight observation to the first attack decision on that target. The mean is the total divided by the sample count. |
-| `think_ms`, `total_think_ms`, `think_ticks` | Wall time for the latest brain decision and controller update, accumulated time and sample count. Guest reads, worker queueing and retail input processing fall outside this interval. |
-| `goal_decisions`, `standing_decisions` | Decisions per goal for the match, and those whose left stick (under 0.2) stood the bot still. `standing_decisions.recover / goal_decisions.recover` is the share of shield recovery spent standing. |
-| `look_asked`, `look_stalled` | Decisions after one whose right stick asked for a turn (over 0.3), and those whose observed aim had not moved since. A healthy bot stalls only for its input latency. A stall share near one means the look is not reaching the unit ([bots.md](../game/bots.md), "The facing release"). |
+| `tick`, `observation_tick` | Latest think tick and the world sample it used (can be older) |
+| `goal`, `target`, `range` | Current activity; visible target's player index and distance in world units (null outside a fight) |
+| `weapon`, `weapon_role` | Held weapon's map datum and handling class; null before an inventory read |
+| `last_decisions` | Up to eight goal changes and combat decisions, oldest first, each `tick` and `action` |
+| `melee_presses`, `switch_presses`, `grenade_requests` | Inputs chosen by the brain, once per press |
+| `weapon_switches`, `grenades_used` | Observed weapon exchanges and grenade decreases within a life |
+| `last_reaction_ticks`, `total_reaction_ticks`, `reactions` | Ticks from first fight observation to first attack decision; mean is total over count |
+| `think_ms`, `total_think_ms`, `think_ticks` | Wall time of the latest brain decision and controller update, total, sample count |
+| `goal_decisions`, `standing_decisions` | Decisions per goal, and those whose left stick (under 0.2) stood still |
+| `look_asked`, `look_stalled` | Decisions after a right-stick turn ask (over 0.3), and those where aim had not moved; a share near one means the look is not reaching the unit ([bots.md](../game/bots.md), "The facing release") |
 
-`accuracy` groups the game's registered shots and credited enemy hits by
-weapon and decision range at fire time. Close is under 3 world units,
-mid is 3 to under 12 and long is 12 or more. An unknown range means
-the shot had no sampled visible target distance. Each row includes
-`damage_code`, `weapon`, `range`, `shots`, `hits` and their ratio
-`accuracy`. One shot can earn one hit credit. An empty list means the
-host has no registered shots to report for that seat.
+`accuracy` groups registered shots and credited enemy hits by weapon and
+decision range at fire time: close under 3 world units, mid 3 to under 12,
+long 12 or more, or unknown. Each row has `damage_code`, `weapon`, `range`,
+`shots`, `hits` and `accuracy`; an empty list means no registered shots.
+Detail: see the [detail note](notes/2026-11-26-agent-api-detail.md), "Bot
+combat".
 
 ## Bounce routes
 
-A brain-driven bot can be sent somewhere by way of a superbounce
-([bots.md](../game/bots.md#superbounce-routes), docs/game/superbounce.md).
-The API has no other method that sends a bot to a point; these are the way.
+A brain-driven bot is sent somewhere by a superbounce
+([bots.md](../game/bots.md#superbounce-routes), docs/game/superbounce.md);
+no other method sends a bot to a point.
 
-`bots.bounce_to {bot, to, mode?}` asks a bot for a route to `to`
-(`[x, y, z]`, world units). `bot` is a `handle` from `bots.stats`, a
-gamertag (any case) or a `player.<n>` id. It must be a brain seat: a
-script or a recording takes no orders (`INVALID_PARAMS`). `mode` is
-`help` (default: a bounce only where it gets the bot there when walking
-cannot, or much sooner, else the plain walk) or `fun` (the highest launch
-within reach, then on to `to`). The bot starts from where it stands: put it
-at `x` first with `sim.state.set` (its `pos`), then ask. The reply
-is `{bot, handle, mode, to}`; the route is planned at the bot's next
-sample.
+`bots.bounce_to {bot, to, mode?}` asks a bot for a route to `to` (`[x, y, z]`,
+world units). The reply is `{bot, handle, mode, to}`; the route is planned at
+the bot's next sample. Put the bot at its start first with `sim.state.set`.
 
-`bots.bounce_status {bot}` reads it back: `state` (`none`, `queued`,
-`running`, `done`, `failed`), `to`, `mode`, `why` (`helps`, `fun`, or
-`plain` when no bounce helped), `steps` (`walk_crouched`, `prime`, `walk`,
-`bounce`, `drop`, `fly`, `nav`), `step` (the index it is on), `phase` (the
-step's own: a prime's `start`, `in`, `release`, `out`; a drop's `line`,
-`run`, `air`), `tries` (the step's try, from 1), `primed` (the level
-pair word is at -3, so a landing bounces), `primed_read` (read from the
-game, or assumed after the walk out because it could not be), `landing`
-(the last touchdown in a bounce or a drop: `tick`, `at`, `speed_in`,
-`vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
-or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
-at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
-`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_<check>_<leg>`
-(the follower's check and the walk's leg, [bots.md, "Superbounce
-routes"](../game/bots.md#superbounce-routes)), `prime_failed`, `pair_lost`,
-`no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
-`no_route`, `practice_off`, `died` or `map_changed`. While a route runs
-the bot fights and picks up nothing. While the superbounce mode is on the
-bots practise bounces instead of fighting, and `practice` gives the tally:
-`state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces` and
-`spots` (each site's `stand`, `attempts`, `bounces` and `why`, by count)
-([bots.md](../game/bots.md#practising-bounces)). In a sim's training run
-([bounce-search.md](../game/bounce-search.md)) `practice.train` gives the
-round the bot flies: `site` (the stand its learned line keys), `stage`
-(`arms`, `shift`, `compass`, `scatter`), `axis` (in `compass`: `aim_along`,
-`aim_side`, `from_side`, `yaw`, `back`, `run`, `early`, `gain`, `letgo`,
-`drift`, `still`), `slot` (the try's, from 0) and `tries` (the site's
-scored tries). `knobs` is what the route's site is flown with, by the
-learned file's keys (`how`, `fx` `fy` `fz`, `ax` `ay`, `yaw`, `back`,
-`run`, `early`, `gain`, `letgo`, `drift`, `still`; only those set): its
-learned line's, or a training try's; `null` for the route's own. The
-types are `crates/extensions/agent-proto/src/bot_bounce.rs`
-(`LearnedKnobs`, `PracticeTrain`), filled in
-`crates/extensions/game/src/sim_bots.rs`.
+| Param | Meaning |
+|---|---|
+| `bot` | A `handle` from `bots.stats`, a gamertag (any case) or `player.<n>`; must be a brain seat, else `INVALID_PARAMS` |
+| `to` | Target point |
+| `mode` | `help` (default: bounce only where walking cannot get there, or much sooner) or `fun` (highest launch within reach, then on to `to`) |
+
+`bots.bounce_status {bot}` reads the route back.
+
+| Field | Meaning |
+|---|---|
+| `state` | `none`, `queued`, `running`, `done`, `failed` |
+| `to`, `mode` | As asked |
+| `why` | `helps`, `fun`, or `plain` when no bounce helped |
+| `steps` | Any of `walk_crouched`, `prime`, `walk`, `bounce`, `drop`, `fly`, `nav` |
+| `step`, `phase` | Index on, and the step's own phase (prime: `start`, `in`, `release`, `out`; drop: `line`, `run`, `air`) |
+| `tries` | The step's try, from 1 |
+| `primed`, `primed_read` | Level pair word is at -3; whether read from the game or assumed |
+| `landing` | Last touchdown: `tick`, `at`, `speed_in`, `vz_out`, `miss`, `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`) |
+| `log` | Last 64 step and phase changes, `{tick, step, what, at}` |
+| `error` | For a failed route: `timeout`, `no_map`, `no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_<check>_<leg>` ([bots.md, "Superbounce routes"](../game/bots.md#superbounce-routes)), `prime_failed`, `pair_lost`, `no_bounce`, `no_drop`, `stalled`, `state`, `enemy`, `no_route`, `practice_off`, `died`, `map_changed` |
+| `practice` | While the superbounce mode is on: `state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces`, `spots` ([bots.md](../game/bots.md#practising-bounces)) |
+| `practice.train` | In a sim training run ([bounce-search.md](../game/bounce-search.md)): `site`, `stage`, `axis`, `slot`, `tries` |
+| `knobs` | The learned file's keys the route's site is flown with; `null` for the route's own |
+
+While a route runs the bot fights and picks up nothing. Types:
+`crates/extensions/agent-proto/src/bot_bounce.rs` (`LearnedKnobs`,
+`PracticeTrain`), filled in `crates/extensions/game/src/sim_bots.rs`. Stages,
+axes and knob keys: see the [detail note](notes/2026-11-26-agent-api-detail.md),
+"Bounce routes".
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
-(default the loaded one): `map`, `scanned` (the nav worker has made or
-read a scan; the measured spots are listed regardless) and `spots`, the
-measured ones first, then the scan best first. Each has `kind` (`bounce`
-or `crouch`; `kind` in the request filters), `source` (`measured` or
-`scan`), `edge` (two points: a bounce spot's collision edge, its two
-end vertices to the float, a busy point's vertex twice), `stand`,
-`fall`, `launch`, `drift`, `score`, `need` and `fall` (measured
-only: 0 for a scanned spot, which the game reads as the one threshold
-every seam shares, [superbounce.md, "Speed"](../game/superbounce.md#speed);
-a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
-or one the map's verified file proved, `failed` for one it failed, else
-`likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
-`lip` (a crouch spot's edges overhead at `stand`, up to 8) and `shape`
-(`slot`, or `crease` or `vee` for a single-crease bounce candidate, or
-`busy` for a busy-point candidate). A bounce spot
-with a line in the map's learned file has `learned`: `state` (`open`,
-`learned`, `partial`, `dead`, `blocked`), `knobs` (as in
-`bots.bounce_status`), `tries`, `hits`, `n`, `ok`, `score`, `best` and,
-for a `dead` or `blocked` line, `why` (`SpotLearned`). A `dead` site is
-listed, but the bots leave it out unless it is proven.
+(default the loaded one): `map`, `scanned` and `spots`, measured first, then
+scan best first.
 
-```sh
-# a bot standing at x, sent to y over a ledge, bouncing on the way
-h2 agent sim.state.set '{"player":2,"pos":[-12.0,3.0,-3.2]}'
-h2 agent bots.bounce_to '{"bot":"Clanker","to":[-10.6,9.0,2.4],"mode":"fun"}'
-h2 agent bots.bounce_status '{"bot":"Clanker"}'
-h2 agent superbounce.spots '{"map":"ascension","kind":"crouch"}'
-```
+| Spot field | Meaning |
+|---|---|
+| `kind` | `bounce` or `crouch`; also the request filter |
+| `source` | `measured` or `scan` |
+| `edge` | Two points: a bounce spot's collision edge, a busy point's vertex twice |
+| `stand`, `fall`, `launch`, `drift`, `score` | Place and measures |
+| `need`, `fall` | Measured only; 0 for a scanned spot, which uses the shared threshold ([superbounce.md, "Speed"](../game/superbounce.md#speed)) |
+| `status` | `proven`, `failed`, else `likely` |
+| `out`, `lip` | Crouch spot's way out from `stand` (X, Y); its overhead edges at `stand`, up to 8 |
+| `shape` | `slot`, `crease`, `vee` or `busy` |
+| `learned` | For a bounce spot with a learned line: `state` (`open`, `learned`, `partial`, `dead`, `blocked`), `knobs`, `tries`, `hits`, `n`, `ok`, `score`, `best`, and `why` (`SpotLearned`) for `dead` or `blocked` |
+
+A `dead` site is listed, but the bots skip it unless it is proven.
 
 ## `player.goto`: drive the player somewhere
 
-`player.goto` drives `player.0` to a point or a spot with the bots'
-route brain, in one call instead of stepping the pad
-([bots.md](../game/bots.md#driving-a-player); the glue is
-`crates/extensions/game/src/player_goto.rs`, the autopilot
-`bots::goto`). It plans over the map's nav mesh, follows the path
-(jumps and drops included), plans again when the player strays or stops
-getting nearer, and holds the first controller's pad through the pad
-tap until it is over. It works with no bots in the game: the map's nav
-mesh is loaded for it (built by the nav worker when stale, else read
-from the cache; `h2 bots nav <map>` builds one by hand).
+`player.goto` drives `player.0` to a point or a spot with the bots' route
+brain, in one call ([bots.md](../game/bots.md#driving-a-player);
+`crates/extensions/game/src/player_goto.rs`, autopilot `bots::goto`). It plans
+over the nav mesh, replans when the player strays or stalls, and holds the
+first controller's pad through the pad tap. It works with no bots; the nav
+mesh is built by the nav worker when stale (`h2 bots nav <map>` builds by
+hand).
 
-Params: `to`, a point `[x, y, z]` (world units) or a spot
-`{"spot": n, "kind": "bounce" | "crouch"}` (default `bounce`), by its
-index among the mode's scanned spots of that kind, best first: the
-indices `superbounce.verify` uses (the mode must be on and its scan
-ready). `within` (world units, default 0.3, 0.05 to 10) is how near a
-point counts as there; a spot ends at its approach (a crouch spot's
-start, behind a bounce strip or on its launch floor). `face` turns the
-player to that yaw (radians from +X toward +Y) on arriving, with the
-game's teleport and no move. `timeout_ticks` (default 3600). `then`:
-`stop` (default), `crouch_recipe` (prime at the crouch spot, or at the
-one the planner picks for a bounce spot, then walk to its approach) or
-`bounce` (a bounce spot's whole route: prime unless primed, the jump or
-drop onto the strip, the ride down). The reply is `{job, kind, goal,
-then, map, nav}` (`nav` is `ready` or `loading`). A new `player.goto`
-replaces a running one. It is refused while a `superbounce.verify` batch
-drives `player.0`, and the batch is refused while a drive runs; without
-the pad tap (the `superbounce-assist` feature off) it is `UNAVAILABLE`.
+| Param | Meaning |
+|---|---|
+| `to` | Point `[x, y, z]` or `{"spot": n, "kind": "bounce" \| "crouch"}` (default `bounce`), n the index among scanned spots of that kind, best first (as `superbounce.verify` uses; mode on, scan ready) |
+| `within` | World units, default 0.3, range 0.05 to 10; a spot ends at its approach |
+| `face` | Yaw in radians from +X toward +Y, applied on arrival by teleport |
+| `timeout_ticks` | Default 3600 |
+| `then` | `stop` (default), `crouch_recipe` (prime, then walk to approach) or `bounce` (a bounce spot's whole route) |
 
-`player.goto_status {wait_ticks?}` reads it back (waiting up to 290
-ticks for the end): `state` (`none`, `loading`, `running`, `facing`,
-`done`, `failed`, `cancelled`), `job`, `kind`, `goal`, `then`, `steps`
-(`walk`, `walk_crouched`, `prime`, `bounce`, `drop`, `fly`, `nav`),
-`step`, `phase`, `primed`, `position`, `distance` (left along the walk
-under way, else straight to the goal), `path` (the player, then the
-waypoints ahead, at most 32), `replans`, `replanned` (`strayed`,
-`stuck`, `path_lost_<check>_<leg>`, `stalled`, `pair_lost`), `ticks` and, for a failed
-drive, `error` (the route's reasons as in `bots.bounce_status`, `stuck`,
-`timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed
-map). `player.goto_cancel` stops it and lets go of the pad. The player
-strafes along the path: it does not turn while it walks.
+The reply is `{job, kind, goal, then, map, nav}` (`nav` is `ready` or
+`loading`). A new call replaces a running one. It is refused while a
+`superbounce.verify` batch drives `player.0`, and the batch while a drive
+runs; without the pad tap (`superbounce-assist` off) it is `UNAVAILABLE`.
 
-```sh
-h2 agent player.goto '{"to":[-10.6,9.0,2.4],"within":0.2}'
-h2 agent player.goto_status '{"wait_ticks":280}'
-h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
-h2 agent player.goto_cancel
-```
+`player.goto_status {wait_ticks?}` reads it back, waiting up to 290 ticks for
+the end.
+
+| Field | Meaning |
+|---|---|
+| `state` | `none`, `loading`, `running`, `facing`, `done`, `failed`, `cancelled` |
+| `job`, `kind`, `goal`, `then` | As started |
+| `steps`, `step`, `phase`, `primed` | As in `bots.bounce_status` (steps add none beyond that list) |
+| `position`, `distance` | Player position; distance left along the walk, else straight to the goal |
+| `path` | Player, then waypoints ahead, at most 32 |
+| `replans`, `replanned` | Count, and reason (`strayed`, `stuck`, `path_lost_<check>_<leg>`, `stalled`, `pair_lost`) |
+| `ticks` | Ticks driven |
+| `error` | The route's reasons as in `bots.bounce_status`, plus `stuck`, `timeout`, `no_route`, `no_launch_floor`, a missing nav mesh, a changed map |
+
+`player.goto_cancel` stops it and lets go of the pad. The player strafes
+along the path and does not turn while it walks.
 
 ### Saved places: `player.mark` and `player.recall`
 
 `player.mark {slot?, player?}` keeps a player's position and aim under a
-slot; `player.recall {slot?, player?}` puts a player back there through
+slot; `player.recall {slot?, player?}` puts a player back through
 [`sim.state.set`'s teleport](#the-games-own-functions-teleport-give-spawn).
-Game methods in `crates/extensions/agent/src/sim/mod.rs`, wire types
+Code: `crates/extensions/agent/src/sim/mod.rs`; wire types
 `agent_proto::sim::{MarkParams, Mark}`.
 
-- `slot`: a name of 1 to 32 characters, or a number taken as its decimal
-  name; default `quick`. At most 32 slots; marking an existing slot
-  replaces it.
-- `player`: `player.<index>` or `sim.<n>`; default the player on local
-  user 0 (for a recall with none found, the mark's own player).
+| Param | Meaning |
+|---|---|
+| `slot` | Name of 1 to 32 characters, or a number taken as its decimal name; default `quick`; at most 32 slots, marking an existing slot replaces it |
+| `player` | `player.<index>` or `sim.<n>`; default the player on local user 0 (recall with none found: the mark's own player) |
 
-`player.mark` answers at once: `{slot, player, pos, forward?, yaw?,
-pitch?, map, slots}`, read at the tick boundary as `world.query` reads
-the player (`forward` is the unit's aiming vector), `slots` every slot
-kept. `player.recall` answers after the next tick with `sim.state.set`'s
-teleport result (`{player, wrote, teleport, session}`) plus `slot` and
-`mark`; the facing is the mark's aiming vector, else its yaw and pitch.
+`player.mark` answers at once with `{slot, player, pos, forward?, yaw?,
+pitch?, map, slots}`, read at the tick boundary. `player.recall` answers after
+the next tick with the teleport result (`{player, wrote, teleport, session}`)
+plus `slot` and `mark`.
 
-Refusals: a player with no position (between lives) or no local player
-is `GONE`, as is an empty slot on recall; a bad slot name, a 33rd slot or
-a `player` that is not a player is `INVALID_PARAMS`. A mark made on
-another map is `INVALID_REQUEST` on recall. A recall is a host write: a
-co-op or client session refuses it as `sim.state.set` does, and it needs
-the `agent-calls` feature. Marks live as long as the process.
+| Refusal | Cause |
+|---|---|
+| `GONE` | No position (between lives), no local player, or empty slot on recall |
+| `INVALID_PARAMS` | Bad slot name, a 33rd slot, or `player` not a player |
+| `INVALID_REQUEST` | Mark made on another map; or a recall in a co-op or client session, as `sim.state.set` |
 
-```sh
-h2 agent player.mark '{"slot":"ledge"}'
-h2 agent player.recall '{"slot":"ledge"}'
-```
+A recall needs the `agent-calls` feature. Marks live as long as the process.
 
 ## `sim`: simulated players and direct state
 
-`sim.*` lets an agent test co-op, multiplayer and Live flows from one
-running game: players that are not people, game state written directly,
-and assertions that answer pass or fail with what was seen. It never
-starts another game instance. They are game methods
-(`Agent::add_game_method`, `crates/extensions/agent/src/sim/`): answered on the
-game's thread with guest memory at hand, and like `world.*` at a tick
-boundary while the game ticks. The wire types are `agent_proto::sim`.
+`sim.*` lets an agent test co-op, multiplayer and Live flows from one running
+game: non-human players, direct state writes, and assertions. It never starts
+another game instance. They are game methods (`Agent::add_game_method`,
+`crates/extensions/agent/src/sim/`), answered on the game's thread at a tick
+boundary. Wire types: `agent_proto::sim`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.player.add` | act | `{kind: "phantom", identity: {xuid, gamertag}, source: script\|recording\|brain, team?, steps?, recording?}` adds a phantom peer and returns its `sim.<n>` id. `kind: "local"` is `INVALID_PARAMS` |
+| `sim.player.add` | act | `{kind: "phantom", identity: {xuid, gamertag}, source: script\|recording\|brain, team?, steps?, recording?}` adds a phantom peer, returns its `sim.<n>` id. `kind: "local"` is `INVALID_PARAMS` |
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
-| `sim.player.list` | read | `players` (simulated players and their game player `player.<i>`) and `clankers` (the host's brain-driven bots and their brain state) |
-| `sim.player.pad` | act | `{id, steps, append?}` sets or appends pad steps for a phantom with a script source, in `input.pad`'s step format |
-| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing go through the game's own teleport, answered after the next tick |
-| `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
-| `sim.spawn` | act | `{tag, pos, yaw?}`: the game makes an object from its tag at `pos`; answered after the next tick |
+| `sim.player.list` | read | `players` (simulated players and their `player.<i>`) and `clankers` (brain-driven bots and brain state) |
+| `sim.player.pad` | act | `{id, steps, append?}` sets or appends pad steps for a script-source phantom, in `input.pad`'s step format |
+| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and facing go through the game's teleport, answered after the next tick |
+| `sim.give` | act | `{player, weapon, ammo?, keep?}`: makes a weapon from a `weap` tag (datum or name) and gives it; answered after the next tick |
+| `sim.spawn` | act | `{tag, pos, yaw?}`: makes an object from its tag at `pos`; answered after the next tick |
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
-| `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
-| `sim.session` | read | the session kind and whether writes are allowed |
-| `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
-| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
+| `sim.expect` | read | `{checks}`: expectations judged against `sim.view` at one tick |
+| `sim.session` | read | The session kind and whether writes are allowed |
+| `sim.objects` | read | `{kinds?, max?}`: every live object in slot order, `{objects, truncated}` |
+| `sim.events` | read | `{kinds?}`: the last tick's events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
 
-**Brains.** For a brain-driven simulated player, `sim.player.add`,
-`sim.player.list` and the `sim` root of `sim.view` include `brain` when
-the backend provides it. The list's `clankers` array includes brain-driven
-phantom bots added by the game, headless matches and sim; each entry has
-`name`, `kind` and `brain`, and once joined `player`. Script and recording
-sources have no brain state. The `brain` object has `skill`,
-`profile` as described under [Bot combat](#bot-combat),
-`personality` (the nine 0 to 1 traits in
-[the Clankers trait table](../game/bots.md#personality-and-temperament) and
-`favorite_weapon`: `spray`, `precise`, `scatter`, `sniper`, `blast` or
-`blade`) and `mood` (`confidence`, `tilt`, `fear`, `streak`, and an
-optional `revenge_target` `player.<i>` while a killer is remembered).
+**Brains.** For a brain-driven player, `sim.player.add`, `sim.player.list` and
+the `sim` root of `sim.view` include `brain` when the backend provides it.
+`clankers` entries have `name`, `kind`, `brain`, and once joined `player`;
+script and recording sources have no brain state. `brain` holds `skill`,
+`profile` ([Bot combat](#bot-combat)), `personality` (the nine 0 to 1 traits
+in [the Clankers trait table](../game/bots.md#personality-and-temperament)
+and `favorite_weapon`: `spray`, `precise`, `scatter`, `sniper`, `blast`,
+`blade`) and `mood` (`confidence`, `tilt`, `fear`, `streak`, optional
+`revenge_target` `player.<i>`).
 
-For a joined phantom, `h2 agent sim list` includes `clankers[].aim` once
-the host has gathered input for its current unit. `tick` is the gather
-tick. `stick` (right, up) and `trigger` are the brain's latest report;
-`arrived_stick` and `arrived_trigger` are the report delivered by the
-uplink for that gather. `action_deg` is the accepted slot record's
-absolute [yaw, pitch] in degrees, or null if the gather was rejected.
-`fire_primary` is the accepted primary fire bit and `assist_strength` the
-two weapon strengths; a rejected gather reports false and zeros.
-`unit_forward` is the unit's actual aiming vector at query time.
-`assist_player` identifies the player controlling the selected aim-assist
-target when one exists. To verify damage, read the target's shield and
-health with `h2 agent sim view player`.
+For a joined phantom, `clankers[].aim` appears once the host has gathered
+input for its unit: `tick`, `stick`, `trigger`, `arrived_stick`,
+`arrived_trigger`, `action_deg`, `fire_primary`, `assist_strength`,
+`unit_forward`, `assist_player`. Field meanings: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`sim`: simulated players
+and direct state". Verify damage with `h2 agent sim view player`.
 
 **`sim.objects`** reads the objects pool through `sim-state`
-(`crates/rewrites/sim-state`, the read side of the object update rewrite,
-[sim-rewrite-objects.md](../engine/sim-rewrite-objects.md) section 8), so
-it shows what the simulation's own views see, offsets and all. `kinds`
-filters by tag group (`bipd`, `vehi`, `weap`, `eqip`, `garb`, `proj`,
-`scen`, `mach`, `ctrl`, `lifi`, `ssce`, `bloc`, `crea`); `max` caps the
-list (default and cap 2048) and `truncated` says more matched. Each object
-has `id` (its salted handle, `0x` and eight hex digits), `kind` (`null`
-outside the type table), `definition`, `flags` (the header flags set:
-`active`, `awake`, `post`, `new`, `deleting`, `defer`, `attach`, `child`),
-`parent`, `position`, `forward`, `up` and `scale` (parent-relative under a
-parent), `velocity` (units a second), `sphere {center, radius}`,
-`vitality {body, shield, depleted}`, `nodes` (node matrix count) and, for
-bipeds and vehicles, `unit {player, actor, team, seat, weapons, held}`.
-The wire types are `agent_proto::sim::objects`.
+(`crates/rewrites/sim-state`,
+[sim-rewrite-objects.md](../engine/sim-rewrite-objects.md) section 8).
+`kinds` filters by tag group (`bipd`, `vehi`, `weap`, `eqip`, `garb`, `proj`,
+`scen`, `mach`, `ctrl`, `lifi`, `ssce`, `bloc`, `crea`); `max` defaults to and
+is capped at 2048.
+
+| Object field | Meaning |
+|---|---|
+| `id`, `kind`, `definition` | Salted handle (`0x` and 8 hex digits), tag group (`null` outside the type table), definition |
+| `flags` | `active`, `awake`, `post`, `new`, `deleting`, `defer`, `attach`, `child` |
+| `parent`, `position`, `forward`, `up`, `scale` | Parent-relative under a parent |
+| `velocity`, `sphere {center, radius}`, `vitality {body, shield, depleted}`, `nodes` | Units a second; node matrix count |
+| `unit {player, actor, team, seat, weapons, held}` | Bipeds and vehicles only |
+
+Wire types: `agent_proto::sim::objects`.
 
 **`sim.events`** reads the simulation's event buffer through `sim-state`
 (`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)
-section 8). The game answers at a tick boundary, so the events are the
-tick that just ran, in the order they happened. The buffer is emptied when
-each tick starts. `kinds` filters by type. An unknown name returns
-`INVALID_PARAMS`. Datums are `0x` and eight hex digits,
-or `null` for none. Each event has a `type`:
+section 8): the tick that just ran, in order; the buffer empties at each tick
+start. An unknown `kinds` name is `INVALID_PARAMS`. Datums are `0x` and 8 hex
+digits, or `null`.
 
-- `deleted`: finalize deleted an object. `id`, `kind` (its tag group) and
-  `definition`.
-- `damage`: the damage report applied one damage instance. `tick`,
-  `victim`, `victim_kind`, `victim_player`, `owner_player`,
-  `owner_object`, `owner_team`, `code` with its halves `damage_type` (low
-  6 bits) and `modifier` (high 2), `effect` (the damage effect tag),
-  `flags`, `depleting` (the body was depleted), `body` and `shield`
-  (damage as fractions of full vitality), `direction`, `origin` and
-  `position` (the victim's).
-- `kill`: the game credited a kill. `tick`, `attacker` and `victim` (player
-  datums), `code`, `damage_type`, `modifier`, `victim_unit`,
-  `attacker_unit`, `position` and `attacker_position`.
-- `actor_killed`: a damage report depleted an actor unit's body.
-  `unit` is the object datum, `character` the character tag datum,
-  `killer` the credited player datum, and `weapon` the packed damage code.
+| `type` | Fields |
+|---|---|
+| `deleted` | `id`, `kind`, `definition` |
+| `damage` | `tick`, `victim`, `victim_kind`, `victim_player`, `owner_player`, `owner_object`, `owner_team`, `code` (`damage_type` low 6 bits, `modifier` high 2), `effect`, `flags`, `depleting`, `body`, `shield`, `direction`, `origin`, `position` |
+| `kill` | `tick`, `attacker`, `victim`, `code`, `damage_type`, `modifier`, `victim_unit`, `attacker_unit`, `position`, `attacker_position` |
+| `actor_killed` | `unit`, `character`, `killer`, `weapon` (packed damage code) |
 
-Events are recorded only while `impl.sim.native.objects` is on; with it
-off the list is empty. The records and where they are read are in
-[object-update.md](../engine/object-update.md), "Slice 8 body". The wire
-types are `agent_proto::sim::events`.
+Events are recorded only while `impl.sim.native.objects` is on
+([object-update.md](../engine/object-update.md), "Slice 8 body"). Wire types:
+`agent_proto::sim::events`.
 
-**`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
-answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the `world`
-object plus `lives` and `score`, and while the player has a unit
-`health`, `shield`, `grenades {frag, plasma}` and the held weapon's
-`ammo {loaded, reserve}`), `object` (every `world` object by id;
-only when asked for), `count` (by kind, `team` counting players per team,
-`total`), `sim` (simulated players by `<n>`, and `count`) and `input`
-(`input.state`). Pointers read straight off it: `/player/1/team`,
-`/object/<id>/occupied`, `/count/team/1`, `/sim/1/player`.
+**`sim.view`'s roots.**
 
-`lives` is the player record's lives remaining (`+0x1ac`, an `i16` the
-engine writes; `null` while unlimited, -1). `score` is the player's row
-in the game engine's stat rows (`+0x308 + 0x1c * index`, its `+0x00`, the
-value `SCORE_ADD` changes), `null` without a game engine (the menu, a
-campaign). Both are there between lives
-(`crates/extensions/agent/src/sim/state.rs`, `lives` and `score`;
+| Root | Content |
+|---|---|
+| `at` | The stamp |
+| `session` | Session view |
+| `ui` | `ui.screen`'s answer; `null` without `H2_UI_WATCH=1` |
+| `player` | By index: the `world` object plus `lives`, `score`, and with a unit `health`, `shield`, `grenades {frag, plasma}`, `ammo {loaded, reserve}` |
+| `object` | Every `world` object by id; only when asked for |
+| `count` | By kind, `team` per team, `total` |
+| `sim` | Simulated players by `<n>`, and `count` |
+| `input` | `input.state` |
+
+Pointers read straight off it: `/player/1/team`, `/object/<id>/occupied`,
+`/count/team/1`, `/sim/1/player`. `lives` is the record's lives remaining
+(`+0x1ac`, `i16`; `null` while unlimited, -1); `score` is the player's stat
+row (`+0x308 + 0x1c * index`, `+0x00`), `null` without a game engine. Both
+are there between lives (`crates/extensions/agent/src/sim/state.rs`;
 [firefight.md](../game/firefight.md#guest-boundary)).
 
 **Expectations** are `h2 agent run`'s: `"<pointer> <op> [JSON]"` or
-`{"pointer", "op", "want"}`, ops `==` `!=` `<` `<=` `>` `>=` `contains`
-`exists` `missing` and `near {"to": number or array, "within": d}` (for
-positions and vitality, read from `f32`s). One implementation,
-`agent_proto::expect`, serves both: `h2 agent run` judges the last answer
-on the client, `sim.expect` judges `sim.view` in the game. Its answer is
-the verdict's fields, `{"pass", "failed", "expects": [{expect, pass, want,
-got}], "at"}`.
+`{"pointer", "op", "want"}`; ops `==` `!=` `<` `<=` `>` `>=` `contains`
+`exists` `missing` and `near {"to": number or array, "within": d}`. One
+implementation, `agent_proto::expect`, serves `h2 agent run` (client side) and
+`sim.expect` (in the game). The answer is `{"pass", "failed", "expects":
+[{expect, pass, want, got}], "at"}`.
 
 ### `h2 agent sim` and scripts
 
-There is one script format: `h2 agent run`'s. Any line may be a `sim`
-verb, and `h2 agent sim run <script>` is `h2 agent run` that also removes
-the simulated players the script added (`"cleanup"` in the verdict). Run
-this against a game this console hosts; replace `ROSTER_XUID` and
-`ROSTER_GAMERTAG` with a bot identity issued by the local Live server.
+There is one script format, `h2 agent run`'s. Any line may be a `sim` verb;
+`h2 agent sim run <script>` also removes the simulated players the script
+added (`"cleanup"` in the verdict). Run it against a game this console hosts,
+with a bot identity issued by the local Live server. Example script: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`h2 agent sim` and
+scripts".
 
-```sh
-cat > bot-team.txt <<'X'
-sim session
-expect /kind == "mp_host"
-sim add phantom script xuid=ROSTER_XUID gamertag=ROSTER_GAMERTAG
-wait {"phase":"gameplay","map_ticks":30}
-sim until 600 /sim/1/player exists
-sim set sim.1 team=1 health=0.5 pos=[12.0,-3.5,2.0]
-expect /wrote contains "pos"
-sim view sim
-expect /sim/1/player exists
-sim pad sim.1 [{"left":[0,1],"ticks":60}]
-X
-h2 agent sim run bot-team.txt
-```
+Verbs (`crates/apps/cli/src/agent_sim.rs`):
 
-The verbs in `crates/apps/cli/src/agent_sim.rs`: `add phantom [source]
-xuid=X gamertag=G [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad
-<sim.N> <steps> [append]`, `set <player.N|sim.N> key=JSON...`, `give
-<player.N|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag>
-pos=[x,y,z] [yaw=DEG]`, `view [root...]`, `expect <expectation>`, `until
-<ticks> <expectation>` (`sim.expect` every 5 ticks until it passes; a
-timeout fails with the last verdict), `session`, `lobby ...` and `run`. In
-`h2 agent run`, a failed `sim until` is a failed call, so it stops the
-script.
+| Verb | Form |
+|---|---|
+| `add` | `add phantom [source] xuid=X gamertag=G [key=JSON...]` |
+| `remove` | `remove <sim.N\|all>` |
+| `list` | `list` |
+| `pad` | `pad <sim.N> <steps> [append]` |
+| `set` | `set <player.N\|sim.N> key=JSON...` |
+| `give` | `give <player.N\|sim.N> <weap tag> [loaded=N] [reserve=N] [keep]` |
+| `spawn` | `spawn <tag> pos=[x,y,z] [yaw=DEG]` |
+| `view` | `view [root...]` |
+| `expect` | `expect <expectation>` |
+| `until` | `until <ticks> <expectation>`: `sim.expect` every 5 ticks; timeout fails with the last verdict, and stops an `h2 agent run` script |
+| other | `session`, `lobby ...`, `run` |
 
 **Lobby steps** (`agent_proto::sim::menu`) press player one's pad
-(`input.pad`) and check each step on `ui.screen`, with a timeout, on the
-client, since a step spans many ticks:
+(`input.pad`) and check each step on `ui.screen` with a timeout, on the client.
 
-- `lobby mode <campaign|xbox_live|split_screen|system_link>`: from the main
-  menu, down to the row and A; expects the campaign screen or the players'
-  screen in that mode.
-- `lobby host live_coop`: from the players' screen in Xbox Live mode (or
-  the Live menu): A, then down from the restored row to Co-op Campaign
-  (row 4), A; expects the Live menu to go.
-- `lobby invite [ROW]`: Y in a lobby, then A on friend row ROW.
-- `lobby start`: A on Start Game (row 0); expects the screen to go.
-- `lobby press <b[+b...]> [JSON expect]`: any presses, then wait for
-  `{"screen", "main_menu", "mode", "not"}`.
+| Step | Does |
+|---|---|
+| `lobby mode <campaign\|xbox_live\|split_screen\|system_link>` | From the main menu, down to the row and A; expects the campaign or players' screen in that mode |
+| `lobby host live_coop` | From the players' screen in Xbox Live mode (or the Live menu): A, down to Co-op Campaign (row 4), A; expects the Live menu to go |
+| `lobby invite [ROW]` | Y in a lobby, then A on friend row ROW |
+| `lobby start` | A on Start Game (row 0); expects the screen to go |
+| `lobby press <b[+b...]> [JSON expect]` | Any presses, then wait for `{"screen", "main_menu", "mode", "not"}` |
 
-Their screen ids and rows are the ones `h2 coop test --drive` uses
+Screen ids and rows are those `h2 coop test --drive` uses
 (`agent_proto::sim::menu`, re-exported by `coop_drive`). They assume a menu
-opens on row 0; a wrong row shows as the wrong screen and the step fails
-saying what it saw.
+opens on row 0; a wrong row fails the step and names the screen seen.
 
 ### Determinism
 
 `sim.session` reads the simulation mode (`coop_probe::read_sim`,
-[live-coop.md](../live/live-coop.md) 1.1) and the squad session
-(`coop_probe::read_session`) through boot's probe
-(`boot::agent_glue::session_view`):
+[live-coop.md](../live/live-coop.md) 1.1) and squad session
+(`coop_probe::read_session`) through `boot::agent_glue::session_view`:
 
 | Mode | Kind | `sim.state.set` |
 |---|---|---|
@@ -4751,186 +3304,128 @@ saying what it saw.
 | 1 | `local` (campaign, split screen) | allowed |
 | 2, 3 | `coop_host`, `coop_guest` (synchronous) | refused: a write on one machine desyncs the others and trips the sim hash |
 | 4 | `mp_host` (distributed server world) | allowed: host-authoritative |
-| 5 | `mp_client` (distributed client world) | refused: the host owns the state and overwrites it |
+| 5 | `mp_client` (distributed client world) | refused: the host owns the state |
 | unreadable | `unknown` | refused |
 
 A refusal is `INVALID_REQUEST` with the session in `data`. In co-op, drive
-players with pads instead (`sim.player.pad`, `input.pad`): pads are
-inputs, which the pad schedule carries to every machine. Writes happen at
-a tick boundary only (`UNAVAILABLE` between slices), and every value is
-checked before the first write, so a refused set writes nothing. A `h2
-lockstep` comparison run is local (mode 1) and is not detected: a write
-there makes the runs differ by design.
+players with pads (`sim.player.pad`, `input.pad`). Writes happen at a tick
+boundary only (`UNAVAILABLE` between slices), and every value is checked
+before the first write, so a refused set writes nothing. An `h2 lockstep`
+comparison run is local (mode 1) and not detected: a write there makes the
+runs differ by design.
 
 ### What `sim.state.set` writes
 
 Teleport and facing go through the game ([below](#the-games-own-functions-teleport-give-spawn)).
 The other fields are host writes at the addresses Live telemetry reads
-(`live_telemetry::layout`, `engine::view`): the player record's team
-(`+0xc0`); the unit's team (`+0x138`), body and shield vitality (`+0xec`,
-`+0xf0`, [health.md](../halo1/health.md); `engine::view::objects::Body`),
-grenade counts (`+0x23e`) and the held weapon's first magazine (`+0x22c`
-loaded, `+0x22a` reserve). Spawning a player between lives is not a
-write; it needs the game's respawn and is not provided.
+(`live_telemetry::layout`, `engine::view`):
+
+| Field | Offset |
+|---|---|
+| Player record team | `+0xc0` |
+| Unit team | `+0x138` |
+| Body, shield vitality | `+0xec`, `+0xf0` ([health.md](../halo1/health.md); `engine::view::objects::Body`) |
+| Grenade counts | `+0x23e` |
+| Held weapon first magazine | `+0x22c` loaded, `+0x22a` reserve |
+
+Spawning a player between lives needs the game's respawn and is not provided.
 
 ### The game's own functions: teleport, give, spawn
 
-A host write of a position cannot move a player: the biped's physics puts
-the body back at the next tick. So a move goes through the game
-(`crates/extensions/agent/src/sim/calls.rs`), and its physics, cluster and vehicle
-seat hear of it.
+A host write of a position cannot move a player, because the biped's physics
+puts the body back. So a move goes through the game
+(`crates/extensions/agent/src/sim/calls.rs`). A game method answers in the
+tick observer, where nothing can call the guest, so it queues a call and
+defers its answer (`GameCtx::defer`, polled at each tick boundary, `TIMEOUT`
+after 30 ticks, held while paused). The `agent-calls` feature (a `before` on
+`game_tick`, first; `H2_FEATURES=-agent-calls` turns it off) makes the queued
+calls at the start of the next tick, then runs the tick; the answer comes
+after it. A snapshot is refused while calls are queued.
 
-A game method answers in the tick observer, after the tick, where nothing
-can call into the guest. So it queues a call and defers its answer
-(`GameCtx::defer`, the executor's deferred answers: polled at each tick
-boundary from the next, `TIMEOUT` after 30 ticks, held while paused). The
-`agent-calls` feature (a `before` on `game_tick`, first;
-`H2_FEATURES=-agent-calls` turns it off) finds the queue full at the start
-of the next tick, makes the calls, then runs the tick itself, as our
-skulls do. The answer comes after that tick. A snapshot is refused while
-calls are queued.
+| Call | Guest functions |
+|---|---|
+| Teleport (`sim.state.set` with `pos`, `yaw`/`pitch` or `facing`) | `object_teleport` body `0x29ffb0`; `PLAYER_PLACE_NEAR` `0x14e970` (EBX player, ESI point, anchor -1); vehicle exit `0xe68c0` action `0x1e`; place `0x14e200`; facing vectors `+0x150`, `+0x15c`, `+0x180`; view `0x1874b0`; `object_set_position` `0xb75a0` |
+| `sim.give` | `placement_data_new` `0xb7930`, `object_new` `0xb7b40`, `unit_add_weapon` `0xcd0c0` (stdcall `(unit, weapon, mode)`), delete `0xb8540`, empty slots `0xccff0`, weapon choice `0xcdeb0`; models `0xcce78`, `0x1e05c8` |
+| `sim.spawn` | Netgame equipment spawn `0x15ab94..0x15abe6`: `placement_data_new` with no owner, position at `+0x1c`, forward and up at `+0x28`/`+0x34`, then `object_new` |
 
-- **Teleport** (`sim.state.set` with `pos`, `yaw`/`pitch` or `facing`) is
-  HaloScript `object_teleport`'s body (`0x29ffb0`) for a player's unit,
-  with our position in place of a cutscene flag's. The position goes to
-  the co-op placement `PLAYER_PLACE_NEAR` (`0x14e970`; EBX the player, ESI
-  the point, anchor -1, as `0x2a01ec` calls it), which takes the unit out
-  of a vehicle (`0xe68c0` action `0x1e`) and places it through `0x14e200` a
-  little above the point. The facing: the unit's desired facing, aiming and
-  looking vectors (`+0x150`, `+0x15c`, `+0x180`, as `0x2a019e..0x2a01d9`
-  writes them), a local player's view (`0x1874b0`: yaw and pitch into the
-  player controls, `[0x4ed284] + 0x14 + 0x94 * user`, `+0x10`, `+0x14`),
-  then `object_set_position` (`0xb75a0`) with no position for the
-  orientation. A seated unit's facing is left (its seat's); the answer says
-  so. Other fields of the same call are written at once. The answer:
-  `wrote` (with `pos`, `facing`) and `teleport` (`pos` and `body_forward`
-  where the game put it, `faced`, `unit`). `yaw` is degrees about +z from
-  +x and `pitch` degrees up (-89 to 89), as `world.query` reports them; or
-  `facing: [x,y,z]` (also taken as `forward`, `world.query`'s name for it),
-  so a check can turn the player to face what a query found.
-- **`sim.give`** gives a weapon as a starting profile does (`0xcce78`) and
-  as an AI's equipment does (`0x1e05c8`): `placement_data_new` (`0xb7930`,
-  owner the unit), `object_new` (`0xb7b40`), then `unit_add_weapon`
-  (`0xcd0c0`, stdcall `(unit, weapon, mode)`), deleting the weapon
-  (`0xb8540`) if the unit refuses it. Default mode 2: the unit's weapon
-  slots are emptied first (`0xccff0`) and it readies the new one. `keep:
-  true` is mode 1, the starting profile's: added, held only if the unit's
-  own weapon choice (`0xcdeb0`) picks it. `ammo` writes the new weapon's
-  first magazine once it is made. The tag is a datum or a name with `/` or
-  `\` (names come from the map file, as `edit.tags` lists them: `h2 agent
-  edit tags weap`). A bare name is looked for among `weap` tags only, since
-  a weapon shares its name with its model, render model, collision and
-  animations (`hlmt mode coll jmad`); `group:name` or `name.group` gives
-  the group outright. The answer: `weapon` (`tag`, `group`, `name`),
-  `object`, `mode`, `held`.
-- **`sim.spawn`** makes an object as the netgame equipment spawn does
-  (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the position
-  at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
-  `object_new`. A distributed host with the
-  [creature probe](../game/ai-networking.md#creature-slot-probe) enrolls a
-  new creature after allocation. Any object group `object_new` knows (`bipd vehi weap eqip
-  garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked for
-  among those groups; if it names tags in more than one, the answer asks for
-  the group (`vehi:<tag name>`). The answer: `object`, `pos` (where it was
-  made), `tag`.
+- **Teleport.** `yaw` is degrees about +z from +x, `pitch` degrees up (-89 to
+  89), as `world.query` reports; or `facing: [x,y,z]` (also `forward`). A
+  seated unit's facing is left and the answer says so. The answer has `wrote`
+  (`pos`, `facing`) and `teleport` (`pos`, `body_forward`, `faced`, `unit`).
+- **`sim.give`.** Default mode 2 empties the weapon slots and readies the new
+  weapon; `keep: true` is mode 1 (added, held only if the unit's choice picks
+  it). `ammo` writes the first magazine. The tag is a datum or a name with `/`
+  or `\` (`h2 agent edit tags weap` lists them); a bare name looks among `weap`
+  tags only; `group:name` or `name.group` gives the group. The answer has
+  `weapon` (`tag`, `group`, `name`), `object`, `mode`, `held`.
+- **`sim.spawn`.** Takes any group `object_new` knows (`bipd vehi weap eqip
+  garb proj scen mach ctrl lifi ssce bloc crea`); a name in more than one
+  group needs `vehi:<tag name>`. A distributed host with the
+  [creature probe](../game/ai-networking.md#creature-slot-probe) enrolls a new
+  creature. The answer has `object`, `pos`, `tag`.
 
 All three are host writes: refused in a co-op session or on a multiplayer
-client, and only at a tick boundary, as `sim.state.set`.
-
-```sh
-h2 agent sim set player.0 'pos=[36.7,-80.8,1.7]' yaw=90 pitch=-10
-h2 agent query '{"kind":["player"],"fields":["pos","forward","yaw","pitch"]}'
-h2 agent sim give player.0 <weap tag name> reserve=108
-h2 agent sim spawn <vehi tag name> 'pos=[40,-80,2]' yaw=180
-```
+client, and only at a tick boundary, as `sim.state.set`. Detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "The game's own
+functions: teleport, give, spawn".
 
 ### Object edits
 
-The first authorized object edit or `map.reload` adopts the game for
-editing and installs its lifecycle observers. Starting the agent,
-listing methods and pairing with the game leave the ordinary hooks in
-place. The host needs the agent tick and guest-call features. Film
-recording and playback, or a boot configured to record or replay input,
-exclude these object edits.
+The first authorised object edit or `map.reload` adopts the game for editing
+and installs lifecycle observers; starting the agent, listing methods and
+pairing leave the ordinary hooks in place. The host needs the agent tick and
+guest-call features. Film recording and playback, or a boot configured to
+record or replay input, exclude these edits.
 
-These methods share the tick and session checks of `sim.state.set` and
-the peer-count confirmation of `edit.batch` (`confirm_peers` on a System
-Link host with other machines). An unknown multiplayer peer count, a Live
-matchmade game or a Live game another console hosts refuses the request
-before queueing (a Live custom game this console hosts is a host like a
-System Link one). Send the
-`epoch` from `edit.map` to pin a request to that edit session. At dispatch
-and again on the game thread before the engine call, a stale `epoch`
-returns `INVALID_REQUEST` with “the map epoch changed”, as for a tag
-edit. The hook also checks the cache identity, current session and peer
-count. A timed-out request loses its place in the queue.
-Object ids use the salted spelling from `world.object`. The hook checks
-the id at execution, so a removed object or reused slot returns
-`GONE`. Code: `crates/extensions/agent/src/sim/edits.rs` and
+These methods share the tick and session checks of `sim.state.set` and the
+peer-count confirmation of `edit.batch` (`confirm_peers` on a System Link host
+with other machines). An unknown peer count, a Live matchmade game or a Live
+game another console hosts is refused before queueing; a Live custom game
+this console hosts is a host like a System Link one. Send `epoch` from
+`edit.map` to pin a request; a stale `epoch` returns `INVALID_REQUEST` ("the
+map epoch changed") at dispatch and again before the engine call. A timed-out
+request loses its place in the queue. Object ids use the salted spelling from
+`world.object`; a removed object or reused slot returns `GONE`. Code:
+`crates/extensions/agent/src/sim/edits.rs`,
 `crates/extensions/agent/src/sim/calls.rs`.
 
 | Method | Params | Result after the tick |
 |---|---|---|
 | `world.object.set` | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` with the moved object's id |
 | `world.object.delete` | `{id, epoch?, confirm_peers?}` | `{at, deleted}` with the deleted id |
-| `world.object.respawn` | `{id, epoch?, confirm_peers?}`, `{placement: {block, index}, epoch?, confirm_peers?}` or `{definition, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the old id (null for an empty placement) and the new id; for a definition, `{at, definition, respawned, skipped, engine_made}` |
+| `world.object.respawn` | `{id, epoch?, confirm_peers?}`, `{placement: {block, index}, epoch?, confirm_peers?}` or `{definition, epoch?, confirm_peers?}` | `{at, old, object, linked}` (old is null for an empty placement); for a definition, `{at, definition, respawned, skipped, engine_made}` |
 
-- **Respawn by definition.** `definition` is a tag datum handle in hex.
-  Every placement of the loaded scenario whose palette entry names it and
-  that a live object occupies is remade by the sequence of "Linked
-  creation" below (`crates/extensions/agent/src/sim/calls/placement/definition.rs`):
-  the replacement first, with the placement index written into the
-  placement data, then the old object's deletion. `respawned` lists each
-  as `{placement: {block, index}, old, object, linked}`. A placement the
-  engine path cannot remake (held or attached occupant, a named or flagged
-  record, extra creation fields) or that no live object occupies is listed
-  in `skipped` with `{placement, why}` and left to its next creation. A
-  live object of the definition that no placement made is listed by id in
-  `engine_made` and not touched.
-- **Set** passes the position pointer in EAX, forward in ECX and up in
-  EDX to `OBJECT_SET_POSITION` (`0xb75a0`), with `(datum, 0, 0)` on the
-  stack. The projectile step loads all three registers before its call
-  to `OBJECT_SET_TRANSFORM`. [Retail call sites](../../crates/rewrites/engine/src/sim_objects/projectile_step.rs#L114),
-  [register setup and call](../../crates/rewrites/engine/src/sim_objects/projectile_step.rs#L1767).
-  The orientation-only teleport uses a null position.
-  A position-only move leaves the orientation pointers null. A partial
-  turn reads the missing axis from the body and requires the resulting
-  axes to be perpendicular unit vectors.
-- **Delete** calls `OBJECT_DELETE` (`0xb8540`) with the datum, as the
-  starting-profile weapon refusal does in `sim.give`.
-- **Respawn** reads the entry's palette index, salted definition tag,
-  position and yaw/pitch/roll. It prepares and creates the replacement
-  with the ownerless `placement_data_new` and `object_new` sequence of
-  `sim.spawn`. Only then does it delete the old occupant. A creation
-  refusal leaves the old object in the game. The method accepts unnamed
-  records with zero placement flags, default scale and zero type-specific fields. Other creation fields
-  return `REFUSED` before deletion. The preview has `linked: false`.
-  The host keeps the preview's salted id and placement in memory. Another
-  respawn replaces it, including when addressed by the returned id. A
-  fresh multiplayer activation or a change of scenario clears the records.
-  A campaign checkpoint can restore an older preview on the same map.
-  The host keeps its placement history and refuses snapshots until the
-  scenario changes.
-  A held weapon or equipment item is absent from the world-object view,
-  so its salted id returns `GONE`. Selecting a placement with a held
-  or attached occupant returns `REFUSED`. Multiple occupants and previews
-  that cannot be identified after a checkpoint also return `REFUSED`.
-  Supported blocks are
-  `scenery`, `vehicles`, `weapons`, `equipment`, `machines`, `controls`,
-  `crates` and `creatures`. Unsupported blocks return `REFUSED` before deletion.
-  The placement and palette offsets and record stride come from
-  `tags::object::OBJECT_TYPES`. The entry fields and palette stride follow
-  `crates/tools/scenario-edit/src/layout.rs`. The guest reads are in
-  `crates/extensions/agent/src/sim/calls/placement.rs`.
-  The placement builder's index flow is known. Calling it with a full
-  scenario record requires its register and stack conventions.
-  [Placement index evidence](../live/live-telemetry.md)
+- **Respawn by definition.** `definition` is a tag datum handle in hex. Every
+  placement of the loaded scenario that names it and a live object occupies is
+  remade by "Linked creation" below
+  (`crates/extensions/agent/src/sim/calls/placement/definition.rs`),
+  replacement first. `respawned` lists `{placement: {block, index}, old,
+  object, linked}`; `skipped` lists `{placement, why}` for placements the
+  path cannot remake; `engine_made` lists live objects no placement made.
+- **Set** calls `OBJECT_SET_POSITION` (`0xb75a0`) with position in EAX, forward
+  in ECX, up in EDX. A position-only move leaves orientation null; a partial
+  turn must give perpendicular unit axes.
+- **Delete** calls `OBJECT_DELETE` (`0xb8540`) with the datum.
+- **Respawn** reads the entry's palette index, definition, position and
+  orientation, creates the replacement with the `sim.spawn` sequence, then
+  deletes the old occupant; a creation refusal leaves the old object. It
+  accepts unnamed records with zero placement flags, default scale and zero
+  type-specific fields, else `REFUSED` before deletion. The preview has
+  `linked: false`. Held or attached occupants, multiple occupants, unidentified
+  previews and unsupported blocks are `REFUSED`; a held item's salted id is
+  `GONE`. Supported blocks: `scenery`, `vehicles`, `weapons`, `equipment`,
+  `machines`, `controls`, `crates`, `creatures` (offsets from
+  `tags::object::OBJECT_TYPES`, `crates/tools/scenario-edit/src/layout.rs`;
+  reads in `crates/extensions/agent/src/sim/calls/placement.rs`).
+
+Register conventions, preview bookkeeping and checkpoint behaviour: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Object edits".
+[Placement index evidence](../live/live-telemetry.md).
 
 ### Placement edits
 
-`world.placement.edit` is one transaction on one scenario placement block,
-at one tick boundary. The editor computes it from its document diff, so an
-add, a remove and their undos are the same call (design:
+`world.placement.edit` is one transaction on one scenario placement block, at
+one tick boundary. The editor computes it from its document diff (design:
 [realtime-edits.md](../editor/realtime-edits.md), "Placements"). It takes the
 session, epoch, identity and `confirm_peers` checks of
 [Object edits](#object-edits). Code:
@@ -4941,92 +3436,50 @@ session, epoch, identity and `confirm_peers` checks of
 |---|---|
 | `block` | A `placement::BLOCKS` name (`scenery`, `vehicles`, `weapons`, `equipment`, `machines`, `controls`, `crates`, `creatures`), or `sound_scenery`, `starting_locations`, `netgame_flags`, `netgame_equipment`, `starting_equipment` |
 | `was_count`, `count` | The root count the edit started from and the count after it |
-| `records` | `[{index, bytes, was?}]`: the record at `index` of the new numbering, exactly one stride in hex. `was` is the slot's current bytes in hex, or `{hash}`, their FNV-1a 64 as 16 hex digits |
-| `names` | `[{name, placement}]`: point scenario object name `name` at `placement` (-1: none); object blocks only |
+| `records` | `[{index, bytes, was?}]`: the record at `index` of the new numbering, one stride in hex. `was` is the slot's current bytes in hex, or `{hash}` (FNV-1a 64, 16 hex digits) |
+| `names` | `[{name, placement}]`: point scenario object name at `placement` (-1: none); object blocks only |
 | `delete` | `[index]` in the old numbering: delete the live objects of these entries |
-| `relink` | `[{from, to}]`: give the live objects of old entry `from` the placement index `to` |
+| `relink` | `[{from, to}]`: give old entry `from`'s live objects placement index `to` |
 | `create` | `[index]` in the new numbering: make an object for the entry; object blocks only |
 
-The result is `{at, count, capacity, moved?, deleted, relinked, created}`,
-where `deleted` and `relinked` are object ids and `created` is
-`[{index, object?, linked, created, why?}]`. `moved` is `{address,
-capacity}` when the block grew into the edit arena.
+The result is `{at, count, capacity, moved?, deleted, relinked, created}`:
+`deleted` and `relinked` are object ids, `created` is `[{index, object?,
+linked, created, why?}]`, and `moved` is `{address, capacity}` when the block
+grew into the edit arena.
 
-- **Order.** The host checks everything first: the block's root count
-  equals `was_count`, each record's `was` equals the slot's bytes, each name
-  exists and is of the block's type, and no object to delete or relink is
-  held or attached. A count that disagrees or a stale record answers
-  `MISMATCH` (`data.count`, or `data.records: [{index}]`) with nothing
-  changed. Then it deletes the occupants of `delete`, rewrites the placement
-  index of the occupants of `relink`, writes the records, the name
-  repoints and the count, and creates the objects of `create`. A respawn
-  preview of a deleted entry is deleted with it, and one of a relinked entry
-  follows it.
-- **Room.** A block holds as many records as the map loaded it with, or
-  the capacity of the edit arena extent it moved to
-  ([Block moves](#block-moves)). The host records the loaded count at the
-  block's first edit of a map activation. A removed entry's slot stays in
-  the block, so an add after a remove reuses it. A `count` past the room
-  moves the block into the arena with twice the room (at least `count`,
-  at most the per-type limit): the extent is allocated before anything is
-  written, the records and the dead tail are copied into it, and the root
-  is repointed with the records and the count. An extent the block left
-  is freed. A full arena, or a game without one, answers `REFUSED` with
-  `data.need` (entries) and `data.capacity`, and from a full arena also
-  `data.need_bytes` and `data.largest_free`; nothing is written.
-  `count` past the block's per-type limit (`map::scenario_layout`)
-  answers `REFUSED` with `data.limit`.
-- **Linked creation.** An object is made by the placement-data and
-  `object_new` sequence of `world.object.respawn`, with the entry's
-  placement index written into the placement data at `+0x10` before the
-  call, so the object carries its placement as a loaded one does.
-  `linked` is read back from the made object. The honoured record is the
-  one respawn honours: an unnamed entry with zero placement flags, default
-  scale and zero type-specific fields. Any other record is written and its
-  index comes back `created: false` with the reason; it shows after a
-  reload.
-- **Blocks the engine walks itself.** Starting locations, netgame
-  equipment, netgame flags and starting equipment take records and a count
-  only; `create`, `delete`, `relink` and `names` are invalid for them.
-- **Count changes with other people.** A transaction that changes the count
-  is refused when the session is a System Link host with other people in
-  it: a client checks the placement index of a network object creation
-  against its own count. Phantom bots do not count. Each is a machine with
-  one player in the session's peer count, so the people are the session's
-  peers less the host and the phantoms that have joined
-  (`Bots::joined_phantoms`). The refusal's `data` carries `people`, `peers`
-  and `phantoms`. A transaction that leaves the count alone (a move, a
-  relink) is not refused for peers. A Live custom game this console hosts
-  follows the same rule. Matchmaking, a client and an unreadable Live session
-  are refused before any method runs, by the Live edit check
-  (`agent_glue::live_edit_refusal`, installed with `Agent::set_live_edit_probe`);
-  without that probe every Live game is refused.
-- **Not reverted by `edit.revert`.** Objects were made and deleted: the
-  editor sends the inverse transaction.
+| Rule | Behaviour |
+|---|---|
+| Order | The host checks everything first (root count equals `was_count`, each `was` matches, names exist and match the block type, nothing to delete or relink is held or attached). A disagreeing count or stale record is `MISMATCH` (`data.count`, or `data.records: [{index}]`) with nothing changed. Then it deletes, relinks, writes records, name repoints and count, and creates |
+| Room | A block holds as many records as it loaded with, or its arena extent's capacity ([Block moves](#block-moves)). A `count` past the room moves the block into the arena with twice the room. A full arena, or a game without one, is `REFUSED` with `data.need`, `data.capacity`, and from a full arena `data.need_bytes`, `data.largest_free`. A `count` past the per-type limit (`map::scenario_layout`) is `REFUSED` with `data.limit` |
+| Linked creation | Objects are made by the `world.object.respawn` sequence with the placement index at `+0x10` of the placement data; `linked` is read back. Records beyond the honoured shape (unnamed, zero flags, default scale, zero type fields) are written and come back `created: false` with the reason |
+| Engine-walked blocks | Starting locations, netgame equipment, netgame flags and starting equipment take records and a count only; `create`, `delete`, `relink`, `names` are invalid |
+| Count changes with other people | Refused on a System Link host (or a Live custom game this console hosts) with other people in it; `data` carries `people`, `peers`, `phantoms`. Phantom bots do not count (`Bots::joined_phantoms`). A count-preserving edit is not refused for peers. Matchmaking, a client and an unreadable Live session are refused earlier by `agent_glue::live_edit_refusal` (`Agent::set_live_edit_probe`); without the probe every Live game is refused |
+| Not reverted by `edit.revert` | The editor sends the inverse transaction |
+
+A respawn preview of a deleted entry is deleted with it, and one of a relinked
+entry follows it. Detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Placement edits".
 
 ### Phantom backend
 
 `boot::sim_bots::SimBots` implements `agent::sim::bots::Bots` over the
-process-wide phantom registry. It places a player through
-`bots::phantom::add(identity, team, source)` using a
-`bots::pad_source::PadSource`. The bots feature must be enabled; a light
-host also needs `--host-bots` to accept simulated players. A script source
-uses the same `input::backend::remote::Remote` step queue as `input.pad`;
-phantom gather samples it once per game tick. A recording supplies
-successful reads of the input log's first pad. A brain supplies its own
-pad. `sim.player.remove` removes players created through
-`sim.player.add`. Phantoms join multiplayer games this console hosts; in a
-level-boot `h2 serve` session, drive the existing player with `input.pad`,
-`sim.state.set` or `sim.give`.
+process-wide phantom registry, placing a player through
+`bots::phantom::add(identity, team, source)` with a `bots::pad_source::PadSource`.
+The bots feature must be enabled; a light host also needs `--host-bots`. A
+script source uses the `input::backend::remote::Remote` step queue as
+`input.pad` does, sampled once per game tick; a recording supplies the input
+log's first pad; a brain supplies its own. `sim.player.remove` removes players
+made through `sim.player.add`. Phantoms join multiplayer games this console
+hosts; in a level-boot `h2 serve` session, drive the existing player with
+`input.pad`, `sim.state.set` or `sim.give`.
 
 ### Live
 
 Sim never talks to a Live server and never makes accounts or sessions. A
-phantom needs `identity: {xuid, gamertag}`, and the only place to get one
-is the local embedded server (`h2 play --live-local`,
-`live_server::start_embedded`), which issues bot identities and accepts
-`bot: true` only for xuids it issued. Never point a sim run at the public
-Live server.
+phantom needs `identity: {xuid, gamertag}` from the local embedded server
+(`h2 play --live-local`, `live_server::start_embedded`), which accepts
+`bot: true` only for xuids it issued. Never point a sim run at the public Live
+server.
 
 ## Local Forge session
 
@@ -5037,49 +3490,37 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`) to whether it is on. Links fields: `tool` (`objects`, `links` or `nav`), `aimed_link` and `link_from` (`{teleporter: flag}`, `{flag: id}` for a teleporter the session added, or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `added_teleporters` (`{id, sender, channel, position}`, the teleporter flags the session added, with the channel a link gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, and `dirty` edits since the last save or load. `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
-| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the running map was reloaded onto a build of the ground the document asks for now (false after an edit makes it stale, and while the game cannot reload the map). `recipe` is `{kit_version, home, probe}` or null before the first build. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to how many are placed (a `siege_barrier` is a label on a placed object, not a flag, so it is counted and is not in `markers`), and `markers` lists the flags as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers |
-| `forge.ground.build` (act) | `{if_stale?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when the ground is stale or was never built). Answers when the build has ended with `forge.ground`'s reply plus `built`, whether it built. The build runs off the game thread over a copy of the session, and edits wait meanwhile. Refused as `forge_refused` when this game has no builder (`This game cannot build AI ground.`), in a shared session, while another edit or file job waits, and with the build's own sentence when it fails (a map with no room for the ground names its cost and its biggest part); a failed build changes nothing |
-| `forge.nav` (act) | `{generate?}` or omitted | **Generate nav** ([forge-nav.md](../game/forge-nav.md)): `{state, available, generating, counts, problems, overlay}`. `state` is `not_built`, `current` or `stale`; `available` is whether this game has a generator; `generating` is true while one runs (edits wait for it). `counts` is null before a generation, else `{sectors, links, out_of_map, solids}`, `links` mapping each link kind (`walk`, `drop`, `jump`, `crouch_jump`, `teleporter`, `lift`, `elevator`) to its count. `problems` lists `{kind, what, position, reason}`, `kind` one of `start_off_mesh`, `teleporter_off_mesh` and `solid_left_out`. `overlay` lists `{kind, a, b}` lines: each sector's sides (`sector`, or `out_of_map` where no start reaches) and each link but a walk, by its kind. With `generate: true` (a local multiplayer tick) it generates first and answers when it has ended; refused as `forge_refused` when this game has no generator (`This game cannot generate nav.`), in a shared session, while another edit or file job waits, and with the generator's sentence when it fails; a failed generation changes nothing |
-| `forge.things` (read) | `{kind?, changed?}` or omitted | `{things, left_out}`. `things` is every thing of the session (the map's own entries in block and index order, then the added ones), or those of one `kind` (`object`, `item_spawner`, `starting_point`, `goal`, `teleporter`), or with `changed` those an entry op changes (`true`, which includes every added one) or not (`false`). Each is `{id, block, kind, own, changed, position, rotation, fields}`: `id` is the endpoint an entry op's `target` names, `{base:{block, index, print}}` or `{added: op}`; `fields` maps each layout field name to its value as the document writes one. Each netgame flag also has `area` in the document spelling, or `null` for an unshaped flag. An active area marks its flag as changed. A removed entry is not listed. `left_out` is each block of the map that did not read, as `"block: reason"`; its entries are not things |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending work, last notice. Fields: tool settings `rotation_snap`, `movement_snap`, `axes`; `overlays` (`markers`, `monitors`, `gizmo`, `nav`); links `tool`, `aimed_link`, `link_from`, `teleporters`, `added_teleporters`, `links`, `pending_rebuild`; `palette`, `palette_refused`; `parked`; `groups`, `selection`; `labels`, `prefabs`; things `aimed_thing`, `held_thing`, `game`, `show`; `variant` `{name, title, id, tier, dirty}`; `ground` and `nav` in brief; `fine`, `ui_up`, `dirty`, `screen`, `area_edit`. An inactive session returns `{session:"inactive", reason}` |
+| `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `recipe` is `{kit_version, home, probe}` or null; `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to its count; `markers` lists flags as `{id, label, number, position, facing, team}`; `problems` is `{label, position, reason}`; `report` is null before a build, else `{zones, squads, problems, receipt}` |
+| `forge.ground.build` (act) | `{if_stale?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when stale or never built). Answers when the build ends with `forge.ground`'s reply plus `built`. Runs off the game thread and edits wait. Refused as `forge_refused` with no builder, in a shared session, while another edit or file job waits, or with the build's own sentence on failure; a failed build changes nothing |
+| `forge.nav` (act) | `{generate?}` or omitted | **Generate nav** ([forge-nav.md](../game/forge-nav.md)): `{state, available, generating, counts, problems, overlay}`. `counts` is null before a generation, else `{sectors, links, out_of_map, solids}` with `links` keyed by `walk`, `drop`, `jump`, `crouch_jump`, `teleporter`, `lift`, `elevator`. `problems` is `{kind, what, position, reason}` with `kind` `start_off_mesh`, `teleporter_off_mesh` or `solid_left_out`; `overlay` is `{kind, a, b}` lines. `generate: true` (a local multiplayer tick) generates first. Refused as `forge_refused` with no generator, in a shared session, while another job waits, or with the generator's sentence; a failure changes nothing |
+| `forge.things` (read) | `{kind?, changed?}` or omitted | `{things, left_out}`. `kind` is `object`, `item_spawner`, `starting_point`, `goal` or `teleporter`; `changed` filters by whether an entry op changes the thing. Each thing is `{id, block, kind, own, changed, position, rotation, fields}`; `id` is `{base:{block, index, print}}` or `{added: op}`; netgame flags add `area` (or `null`). `left_out` lists unread blocks as `"block: reason"` |
 | `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
 | `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal: its sentence as the message and `{code, message}` as the error's `data`. `op` may be an entry op (`{"entry":{"set":{target, write}}}`, `remove`, `reset` or `{"entry":{"area":{target, area}}}`) naming a thing by its `forge.things` `id` |
-| `forge.look` (read) | `{seat?}` | The monitor look: `{session, look, drawn_as, saved, catalogue, locks}`, and `notice`, `catalogue_note` and `problems` when there are any. `look` is the session's look, or with no session the saved one as this machine can use it. `drawn_as` is what other players see: `{as: "model" \| "marker" \| "hidden", reason?}`. `saved` is `{look, source}` as the profile holds it. `catalogue` is each model of the census: `{key, name, source, sha256, variants, colours, light, nodes, triangles, available, refusal?}`. `locks` maps each locked field to its reason. A `seat` other than 0 is refused: offline there is one seat |
-| `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
-| `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
+| `forge.look` (read) | `{seat?}` | `{session, look, drawn_as, saved, catalogue, locks}`, plus `notice`, `catalogue_note`, `problems` when present. `drawn_as` is `{as: "model" \| "marker" \| "hidden", reason?}`; `catalogue` rows are `{key, name, source, sha256, variants, colours, light, nodes, triangles, available, refusal?}`. A `seat` other than 0 is refused |
+| `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`. `reset: true` takes no field; `variant: null` clears the variant; `save: true` writes the profile (`not_saved` says why not). Errors: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`), `monitor_look_no_session`; the look stays as it was |
+| `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. `pose` is `{position, yaw, pitch}`; `drawn_as` is always `hidden` in the seat's own view |
 
-The input queue accepts `toggle`, `accept`, `select`, `back`, `delete`, `palette`,
-`properties`, `tools`, `settings`, `overlays`, `undo`, `redo` and `link`. `palette`
-opens the object menu and `properties` the aimed or held thing's
-Properties, as X does by what is aimed at. In the Objects tool `accept`
-picks up the thing aimed at, own or added, mark or body, and drops it.
-With empty hands `select` toggles selection of the ungrouped thing under
-the reticle, like holding A. `delete` removes the thing; `tools` opens the Tools
-picker, `settings` the Tool settings and `overlays` the Overlays page. `link` switches to the Links
-tool; there `accept` starts a link on the aimed teleporter flag or
-placed machine and makes it on the second, `delete` removes the aimed
-thing's latest link, `properties` opens its Link dialog, and `link` or
-`back` cancels a started link. `link` with nothing aimed returns to the
-Objects tool. `back` with nothing to cancel does nothing. In player mode
-only `toggle` enters the monitor. The screens are the game's: while one
-is up (ours or the game's), `forge.input` is refused with "A screen is
-up; drive it with ui.press." and the screen is driven with `ui.press`.
-`menu` is refused with "The Forge menu is the game's GAME MENU; open it
-with Start.". An analog request supplies one 1/30-second sample
-with at least one axis. Movement is [right, forward, up], look is [yaw,
-pitch] and roll turns a preview with `rotating:true`. Each axis is in
-[-1, 1]. Read `forge.status` for the resulting monitor and document
-state: it adds `fine` (fine movement on), `ui_up` (a screen is up) and
-`dirty` (edits not saved), and `screen` is the Forge screen of ours that
-is up, with its rows and focus.
+Field-by-field detail for `forge.status`, `forge.ground`, `forge.nav`,
+`forge.things` and `forge.look`: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Local Forge session".
 
-Choose **Edit area** in a goal's Properties before sending area
-input. While a draft is active, `forge.status.area_edit` gives
-`{target, shape, below, above, radius?, points?}` with numeric world
-units. It is `null` outside the editor. `forge.things` shows the
-committed area.
+The input queue accepts `toggle`, `accept`, `select`, `back`, `delete`,
+`palette`, `properties`, `tools`, `settings`, `overlays`, `undo`, `redo` and
+`link`. In player mode only `toggle` enters the monitor. While a screen is
+up, `forge.input` is refused ("A screen is up; drive it with ui.press.") and
+`menu` is refused ("The Forge menu is the game's GAME MENU; open it with
+Start."). An analog request is one 1/30-second sample: `movement` is
+[right, forward, up], `look` is [yaw, pitch], each axis in [-1, 1]; `roll`
+turns a preview with `rotating:true`. Per-action behaviour: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Local Forge session".
+
+Choose **Edit area** in a goal's Properties before sending area input. While
+a draft is active, `forge.status.area_edit` gives
+`{target, shape, below, above, radius?, points?}` in world units, else
+`null`.
 
 | Input in the draft | Radius | Path |
 |---|---|---|
@@ -5090,30 +3531,21 @@ committed area.
 | `area_grab`, `area_release` | | Press or release A for a drag |
 | `back` | Cancel | Cancel |
 
-In a radius draft, the forward axis grows or shrinks the radius. In
-a path draft, use movement and look to aim at the floor.
-`forge.input` acknowledges the queued input. Read `forge.status.notice`
-for geometry refusals and `forge.log` for the area op written on save.
+In a radius draft the forward axis grows or shrinks the radius. Read
+`forge.status.notice` for geometry refusals and `forge.log` for the area op
+written on save.
 
 A proposal uses the [Forge document's](../game/forge-design.md#the-document)
-portable op and optional prior-value digest. The local host supplies the
-author and sequence. Placement waits for the engine's creation result.
-A saved document can create several objects in one tick. If the engine refuses
-a creation, the call releases objects it made for that load. A refusal leaves
-the log head in place. Moves, deletes and restores, including those of
-undo and redo, run at the next tick through the `world.object.set` and
-`world.object.delete` bodies and the ownerless spawn. A live object that
-no longer resolves by kind and salt is refused as `forge_object_gone`
-before any guest call. A block with no `world.object` kind (sound
-scenery) is refused as `forge_object_kind`.
+portable op and optional prior-value digest; the local host supplies author
+and sequence. Moves, deletes and restores run at the next tick. A live
+object that no longer resolves is refused as `forge_object_gone`, and a
+block with no `world.object` kind as `forge_object_kind`. A refusal leaves
+the log head in place.
 
 An entry op edits one of the map's own things
 ([forge-map-variants.md](../game/forge-map-variants.md), "Applying an
-edit in a session"): read its `id` from `forge.things`, whose print the
-session checks against the row it kept when it opened. A set of its
-position or rotation moves it, a removal makes its row inert and a reset
-puts the kept row back, at the next tick. A refused input or proposal
-carries its name in `data.code` (`agent_proto::forge::refusal`):
+edit in a session"): read its `id` from `forge.things`. A refused input or
+proposal carries its name in `data.code` (`agent_proto::forge::refusal`):
 
 | Code | Refused because |
 |---|---|
@@ -5124,32 +3556,25 @@ carries its name in `data.code` (`agent_proto::forge::refusal`):
 | `forge_no_kit` | an add or a drop of a starting location, netgame flag or netgame equipment row, on a map whose next row is not in the kit's spare form: the map has no kit (or its spare rows are used) |
 | `forge_refused` | any other: the message says why |
 
-A kit session adds those rows: the document's `Add` of such an entry is
-one `Add` base step, which writes the block's next spare row and raises
-its root count, and its removal or undo is one `Drop` step, which writes
-the spare form back and lowers the count (`agent::forge::base`). A batch
-is checked in order; a refusal changes nothing.
+A kit session adds those rows with one `Add` base step and removes them with
+one `Drop` step (`agent::forge::base`). A batch is checked in order; a
+refusal changes nothing.
 
 An area op names a netgame flag, own or added, and sets its
 [document area](../game/gametype-markers.md#in-the-document). Send
-`"area": null` to clear it. Radius, offsets and heights use the
-document's eight-digit lowercase hexadecimal float spelling. An area
-edit changes the document and can be undone through the edit log.
-`forge_refused` carries the area validator's sentence, including when
-a path crosses itself, a flag has no area to clear, or a hill already
-has corners. The `was` precondition applies to field sets.
+`"area": null` to clear it. Radius, offsets and heights use the document's
+eight-digit lowercase hexadecimal float spelling. `forge_refused` carries
+the area validator's sentence. The `was` precondition applies to field sets.
 
-A teleporter link or unlink, or the undo of one, writes each changed
-flag's identifier into the loaded scenario at the same tick, after the
-batch's objects. The call checks the flag index against the scenario's
-count and its type (7 or 8) before any guest write. A device link reaches
-the game only through a rebuild and counts in `pending_rebuild`. Deleting
-a linked machine ends its links in the same undo step.
+A teleporter link or unlink (or its undo) writes each changed flag's
+identifier into the loaded scenario at the same tick, after the batch's
+objects, checking the flag index and type (7 or 8) first. A device link
+reaches the game only through a rebuild and counts in `pending_rebuild`.
 
 ## Shared Forge session
 
-In a synchronous network game whose co-op link carries the Forge lanes,
-the local Forge methods answer for the shared session
+In a synchronous network game whose co-op link carries the Forge lanes, the
+local Forge methods answer for the shared session
 (`crates/extensions/agent/src/forge/net.rs`; the design is
 [forge-design.md](../game/forge-design.md), "F5 in detail").
 
@@ -5160,17 +3585,15 @@ the local Forge methods answer for the shared session
   (proposals and holds not yet settled) and `ended` (why the session
   ended, else null).
 - `forge.propose` sends the op to the host and answers when the stream
-  carries the entry (the entry, as locally) or the host refuses it. It
-  waits up to 240 ticks, not 30. A refusal's message begins with its
-  name and a colon: `forge_not_joined`, `forge_role`, `forge_held`,
-  `forge_not_holding`, `forge_stale`, `forge_ahead`, `forge_lane`,
-  `forge_was`, `forge_print`, `forge_refused`, `forge_map` (the game's
-  palette, budget or bounds), `forge_seat`, `forge_name`,
-  `forge_head_differs` and `forge_clock`. A proposal waiting when the
-  session ends is refused `forge_not_joined`.
+  carries the entry or the host refuses it. It waits up to 240 ticks, not
+  30. A refusal's message begins with its name and a colon: `forge_not_joined`,
+  `forge_role`, `forge_held`, `forge_not_holding`, `forge_stale`,
+  `forge_ahead`, `forge_lane`, `forge_was`, `forge_print`, `forge_refused`,
+  `forge_map` (the game's palette, budget or bounds), `forge_seat`,
+  `forge_name`, `forge_head_differs` and `forge_clock`. A proposal waiting
+  when the session ends is refused `forge_not_joined`.
 - `forge.log`, `forge.doc` and `forge.things` read what this machine has
-  applied, so the same call on two machines at the same `through`
-  returns the same entries.
+  applied, so two machines at the same `through` return the same entries.
 
 A session that has ended keeps answering `forge.status` with `ended` set
 and refuses every proposal.
@@ -5190,45 +3613,32 @@ The running game's agent registers these methods through
 | `forge.probe` (act) | `{what:"ai"}` | `{what, enabled, active, actors}` |
 | `forge.probe` (act) | `{what:"kit"}` | `{what, blocks, objects_by_group, actors}` |
 
-**Capacity and kit.** `headroom_bytes` is the difference between the
-two physical arena cursors at the stamp's tick. It includes space
-that cache pools may need. Each block reports `count`, the known
-`limit` or `null`, and `kit_left`. The candidate spare count is
-the contiguous marked tail of a block. The markers are palette index
-`-1` for placements, placement index `-1` for object names, player
-type `-1` for starting locations, flag type `0xffff` for netgame flags
-and a null item datum for netgame equipment. A block without a known
-marker reports `null`. The kit probe adds a runtime object census by
-group and the live actor count for base-versus-kit comparisons. The
-candidates' behavior is measured in the game.
+**Capacity and kit.** `headroom_bytes` is the gap between the two physical
+arena cursors. Each block reports `count`, `limit` (or `null`) and
+`kit_left`, the contiguous marked tail of the block; a block with no known
+marker reports `null`. The kit probe adds an object census by group and the
+live actor count.
 
-**Replication.** The host must be in a ticking `mp_host` session. The
-group must be one that [`sim.spawn`](#the-games-own-functions-teleport-give-spawn)
-accepts. A tag may be a datum or name in that group. With the group alone,
-the probe uses its first valid loaded tag in index order. With `pos`
-omitted, it uses one world unit above the first eligible scenario
-starting location. Pass an explicit `pos` to control the spawn location.
-The probe queues a single `sim.spawn` engine call. The returned
-`object` is the host's salted handle in the same form as `sim.objects`.
-The client can enumerate that group through `sim.objects` immediately
-afterward. A refused or missing spawn leaves replication unmeasured.
+**Replication.** The host must be in a ticking `mp_host` session. `group` is
+one that [`sim.spawn`](#the-games-own-functions-teleport-give-spawn) accepts;
+`tag` is a datum or name in it (default: the first valid loaded tag); `pos`
+defaults to one world unit above the first eligible starting location. The
+probe queues one `sim.spawn` call and returns the host's salted `object`
+handle, as `sim.objects` gives it.
 
-**Synchronous protocol.** `session` uses the same reader as
-`sim.session`. `scenario_type` is the loaded tag's kind (multiplayer
-is 1). `variant_engine` shows the engine in the active game options
-(none is 0). `desync` is the simulation world's desync latch. Fields
-whose backing globals are absent are `null`. The probe supplies the
-current multiplayer map's [`sim.hashes`](#framescene-checks-compare-capture-scene-parity-hashes)
-rows up to the sampled tick. `from_tick` is inclusive. `max` defaults
-to 4096 and accepts 1 to 4096. During pregame, or when the hash observer
-has no samples for the current map, `rows` is empty. Compare matching
-ticks across peers and check the latch on both.
+**Synchronous protocol.** `session` is read as `sim.session` reads it;
+`scenario_type` is the tag's kind (multiplayer is 1); `variant_engine` is
+the engine in the active game options (none is 0); `desync` is the desync
+latch. The probe returns the current map's
+[`sim.hashes`](#framescene-checks-compare-capture-scene-parity-hashes) rows
+up to the sampled tick. `from_tick` is inclusive; `max` defaults to 4096 and
+accepts 1 to 4096. The rows are empty in pregame or with no hash samples.
 
-**AI.** `enabled` is the flag the engine's `ai` builtin sets and
-`ai_update` reads. `active` is the adjoining activity flag used by
-the campaign AI extension. A missing AI-global pointer produces
-`null` for both, and a missing actor pool produces zero actors.
-Capacity, AI and kit reads require a gameplay tick.
+**AI.** `enabled` is the flag the engine's `ai` builtin sets; `active` is the
+adjoining activity flag. A missing AI global gives `null` for both; a missing
+actor pool gives zero actors. Capacity, AI and kit reads require a gameplay
+tick. Marker values and replication detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Forge probes".
 
 ## Firefight
 
@@ -5248,60 +3658,39 @@ registered; with the `firefight` feature off
 | `firefight.command` (act) | `{command?, director?: "hold" \| "run"}`, at least one | `{appended?: {seq, tick}, held, log}` |
 | `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, bases, characters, hunt_orders}` |
 
-**State.** `running` is false outside a multiplayer game, on a map
-without the kit, and with the feature off; `refused` names which (a map
-without the kit: "the map does not carry the Firefight kit"). `role` is
-`host` (the distributed server, a synchronous host, or a game with no
-session), `replica` (a synchronous peer, or a film's playback) or
-`client` (a distributed client). `team` is the actors' team, never a
-player team (with two player teams it is a third). `director`, on the
-host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
-`intermission`, `done`) with `phase_tick` for the timed ones, `round`
-and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
-`teams` (the player teams, 1 or 2), `pools` and `scores` (each team's
-shared lives and points, one entry per team), `live_actors` against
-`cap`, `players`, `skulls` and `held`.
-`log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
-entry applied here. `errors` holds the latest 16 entries the engine
-refused, each with its `seq` (none for the AI switch), `tick` and
-`error`.
+**State.** `running` is false outside a multiplayer game, on a map without
+the kit, and with the feature off; `refused` names which. `role` is `host`,
+`replica` or `client`. `team` is the actors' team. `director` (host only) has
+`phase` (`warmup`, `spawning`, `fighting`, `cleanup`, `intermission`,
+`done`), `phase_tick`, `round`, `wave`, `reserve`, `teams`, `pools`,
+`scores`, `live_actors`, `cap`, `players`, `skulls` and `held`. `log` is the
+head (`seq`, `tick`, `hash`) and `applied`. `errors` holds the latest 16
+refused entries, each with `seq`, `tick` and `error`.
 
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,
-weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
-{slot}`, `round {index}`, `wave {index}`, `skull {id, on}`, `lives
-{player?, pool}`, `team_lives {team, pool}`, `score {player, points,
-reason: kill | assist | player_kill}`, `respawn {player}` and `finish
-{outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
-player team a slot's squad goes for, and its next `hunt` heads for that
-team's base (team 0's until one is set); `team_lives` sets one team's
-shared pool and `lives` the one-team pool or a player's own lives, in
-the director, so its next respawns spend from the new count (a team at 0
-waits for the wave to end). It is appended at the tick after the last one
-the runtime stepped, with the author `agent`, and applied before that
-tick like the director's own. `director: "hold"` stops the director
-stepping, so only appended commands reach the game; `"run"` starts it
-again. A director change applies before the command. Refusals:
-`UNAVAILABLE` when the mode does not run, `REFUSED` (11) on a client or
-a replica (only the host writes the log), `INVALID_PARAMS` for a command
-of another shape, a class or zone the kit lacks, a `target` team the
-kit has no base for, a `team_lives` team above 1, and params with
-neither field. An engine refusal comes later, in `firefight.state`'s `errors`,
-as does a `lives` or `team_lives` the match keeps no such count for (a
-player's own lives with shared lives, a shared pool with lives each
-player's own, a player the director has not seen).
+weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad {slot}`,
+`round {index}`, `wave {index}`, `skull {id, on}`, `lives {player?, pool}`,
+`team_lives {team, pool}`, `score {player, points, reason: kill | assist |
+player_kill}`, `respawn {player}` and `finish {outcome: won | lost |
+{team_won: {team}} | draw}`. It is appended at the tick after the last one
+the runtime stepped, with the author `agent`. `director: "hold"` stops the
+director stepping; `"run"` restarts it; a director change applies before the
+command. Refusals:
 
-**Kit.** Read from the loaded scenario on any machine: `slots` gives
-each of the sixteen slots' scenario squad index (`null` where the kit
-reserves none), `zones` each drop zone's scenario index, point and
-firing position count, `classes` each kit class's character palette row,
-`characters` the palette's rows, `bases` each player team's base point
-(base 0 the home base, from the `ff_base_NN` zones) and `hunt_orders`
-the scenario order for each base's hunt (`ff_hunt_00`, `ff_hunt_01`;
-`null` where the kit has none).
-A map without the kit answers `{"kit": false, ...}` with empty lists.
-The kit's version string is not read: the game has no reader for the
-loaded map's string IDs.
+| Error | When |
+|---|---|
+| `UNAVAILABLE` | the mode does not run |
+| `REFUSED` (11) | on a client or a replica (only the host writes the log) |
+| `INVALID_PARAMS` | a command of another shape, a class or zone the kit lacks, a `target` team with no base, a `team_lives` team above 1, or params with neither field |
+
+An engine refusal comes later, in `firefight.state`'s `errors`.
+
+**Kit.** Read from the loaded scenario on any machine: `slots` (sixteen
+squad indices, `null` where unreserved), `zones`, `classes`, `characters`,
+`bases` (per player team; base 0 is home) and `hunt_orders` (`ff_hunt_00`,
+`ff_hunt_01`; `null` where none). A map without the kit answers
+`{"kit": false, ...}` with empty lists.
 
 ```sh
 h2 agent firefight.kit
@@ -5327,76 +3716,55 @@ builds with the `rules` cargo feature; with the `rules` switch off
 | `rules.zones` (read) | `{}` or omitted | `{zones: [{id, label, number?, shape: "area" \| "corners" \| "default", area, at, reports}]}` |
 | `rules.reload` (act) | `{ir_b64 \| source, mode?: auto \| in_place \| restart}` | `{mode: in_place \| restarted, hash, reasons, tick}` |
 
-`running` is false with the switch off, outside a multiplayer game, for
-a record that names no script, on a machine that is not the game
-engine's authority, after the game's end, and for a refused script;
-`refused` says which, and for a refusal names what the script needs
-("the script calls set_team, whose engine entry is untraced", "no
-built-in script has hash prefix ..., and fetching a blob from Live is
-not built"). `hash` is the blob's SHA-256 in hex, or the record's
-16-digit prefix when no blob was found. While a script runs: `script`
-and `version` are its header's, `source` is `builtin` or `live`,
-`carrier` the active variant record's physical index (6 on a script-index
-record), `scoring` who scores the game,
-`options` the record's option bits, and `authority` what
-`GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary (absent
-before it). `scoring` is `script`: the running script's VM scores. A
-script with a `uses` line has `scoring` `carrier`; its game
-([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules))
-runs the used type's built-in script, so `script`, `hash`, `source` and
-`options` are the built-in's. `stopped` names the script error that
-stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
-(`ops`) against `limit` (20,000), and the verifier's `worst_tick`
-estimate. `pending` counts the calls waiting for the next tick boundary.
-`errors` holds the latest 16 calls the engine refused, each with its
-`tick`, `call` (the entry's name) and `error`. `last_reload` is the
-last `rules.reload` on this run: its `mode` (`in_place`, `restarted` or
-`refused`), `hash`, `tick` and `reasons` (for a refusal, why).
+`running` is false with the switch off, outside a multiplayer game, for a
+record that names no script, on a machine that is not the engine's
+authority, after the game's end, and for a refused script; `refused` says
+which. The other fields:
 
-`blocked` lists every problem the host's start gate found with the map
-([rules-start-gate.md](../game/rules-start-gate.md)), in the check's
-order, while the block holds: the game was ended in its first tick (or,
-in a Forge session, the script does not run), until the next game
-starts. In the lobby, with no script running and no block of the
-host's, `blocked` lists the problems of the lobby's own check
-(`rules::gate`, the lobby's map file against the variant's script), and
-`refused` says Start Game is held (in Forge mode, that the script will
-not run); the lobby's check fills no `labelled`. `labelled` is the map's labelled things as the host counted
-them, for a blocked script or a running one that declares labels: each
-with its `label`, `class` (`object`, `flag`, `volume` or `spawn`),
-`number`, `team` (the placement's designator), `id` (the placement id
-`zone.id` reads) and `declared` (the script declares that label). To
-check a map against a script, choose both in the lobby as its leader,
-or start a game with them, and read `rules.state`; there is no separate
-census method, since the host's census is the loaded game's.
+| Field | Meaning |
+|---|---|
+| `hash` | the blob's SHA-256 in hex, or the record's 16-digit prefix when no blob was found |
+| `script`, `version` | the script header's |
+| `source` | `builtin` or `live` |
+| `carrier` | the active variant record's physical index (6 on a script-index record) |
+| `scoring` | who scores: `script` (the VM), or `carrier` for a script with a `uses` line ([rules-variants.md](../game/rules-variants.md#a-script-that-keeps-its-carriers-rules)) |
+| `options` | the record's option bits |
+| `authority` | what `GAME_ENGINE_AUTHORITATIVE` answered at the first tick boundary |
+| `stopped` | the script error that stopped the VM |
+| `budget` | `tick`, `ops` against `limit` (20,000), and the verifier's `worst_tick` |
+| `pending` | calls waiting for the next tick boundary |
+| `errors` | the latest 16 refused calls: `tick`, `call`, `error` |
+| `last_reload` | the last `rules.reload`: `mode` (`in_place`, `restarted`, `refused`), `hash`, `tick`, `reasons` |
+| `blocked` | the start gate's problems with the map ([rules-start-gate.md](../game/rules-start-gate.md)), in check order; in the lobby, the lobby check's (`rules::gate`) |
+| `labelled` | the map's labelled things: `label`, `class` (`object`, `flag`, `volume`, `spawn`), `number`, `team`, `id`, `declared` |
 
-`rules.zones` lists the zones the host built for the running script, in
-`id` order (empty when no script runs): each netgame flag's `id` (the
-placement id `zone.id` reads), `label` and `number`, `shape` (the step
-of the zone order that made it: the flag's own `area`, a hill's
-`corners`, or the `default` cylinder), `area` in plain numbers
-(`{radius, below, above}` or `{path: [[x, y], ...], below, above}`, a
-path in offsets from `at`), `at` (the centre marker in world units) and
-`reports` (this zone reports its enters and leaves; a hill's other
-corners name the same zone and report none)
+To check a map against a script, choose both in the lobby as its leader (or
+start a game) and read `rules.state`; there is no separate census method.
+Block and refusal wording: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Rules scripts".
+
+`rules.zones` lists the zones the host built for the running script, in `id`
+order: the flag's `id`, `label`, `number`, `shape` (the flag's own `area`, a
+hill's `corners`, or the `default` cylinder), `area` (`{radius, below,
+above}` or `{path: [[x, y], ...], below, above}`), `at` (centre in world
+units) and `reports`
 ([gametype-markers.md](../game/gametype-markers.md), "In a script";
 `Runtime::zones` in `crates/extensions/game/src/rules/runtime.rs`).
 
 `rules.reload` puts a new script into the running game
 ([rules-engine.md](../game/rules-engine.md#reloading-a-running-script);
-`crates/extensions/game/src/rules/reload.rs`). Give the blob
-(`ir_b64`, the IR's bytes in base64, as Studio sends it) or the
-`source` to compile; exactly one. With `mode` `auto` (the default) a
-script that keeps the running one's state shape goes in place between
-ticks, and keeps every variable's value; any other restarts the game on
-the same map and variant with the new script, and `reasons` says why it
-could not go in place. `in_place` refuses rather than restart;
-`restart` always restarts. A restart answers once the game has taken
-the queued options (up to 30 ticks later), and needs the agent's guest
-calls (the `agent-calls` feature). It is refused (`REFUSED`, with
-`data.why`) for a Theater film, a matchmade Live game (ranked or not),
-a guest, outside a multiplayer game, for a blob that does not verify or
-that this host cannot run; a Live custom game reloads in place only.
+`crates/extensions/game/src/rules/reload.rs`). Give exactly one of `ir_b64`
+(the IR in base64) or `source`.
+
+| `mode` | Behaviour |
+|---|---|
+| `auto` (default) | in place between ticks if the state shape is kept (every variable keeps its value), else restart; `reasons` says why |
+| `in_place` | refuses rather than restart |
+| `restart` | always restarts the game on the same map and variant; answers up to 30 ticks later; needs the `agent-calls` feature |
+
+It is refused (`REFUSED`, with `data.why`) for a Theater film, a matchmade
+Live game, a guest, outside a multiplayer game, and for a blob that does not
+verify or that this host cannot run; a Live custom game reloads in place only.
 
 ```sh
 h2 agent rules.state
@@ -5410,47 +3778,35 @@ h2 agent rules.reload '{"ir_b64":"...","mode":"in_place"}'
 The lobby variant's Quick Options as its rules script marks them
 ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)),
 read at a tick boundary, and one row changed through the lobby variant
-setter as the Quick Options dialog changes it.
-`crates/extensions/agent/src/variants.rs` checks the params, holds the
-wire types and calls the game's rows and changes
-(`game::variant_quick::AgentSource`, over
-`crates/extensions/game/src/variant_quick.rs` and
-`variant_quick/page.rs`).
+setter. `crates/extensions/agent/src/variants.rs` checks the params and
+calls the game's rows (`game::variant_quick::AgentSource`, over
+`crates/extensions/game/src/variant_quick.rs` and `variant_quick/page.rs`).
 
 | Method and access | Parameters | Result |
 |---|---|---|
 | `variants.quick` (read) | `{}` or omitted | `{variant, engine, script?: {name, hash}, shown, rows: [{slot, kind: setting \| option, name, label, value, text, line, help?, values: [{value, text}]}]}` |
 | `variants.quick.set` (act) | `{slot, value}` | `variants.quick`'s result, read after the change |
 
-The variant is the lobby's (the squad session's record, else the game's
-own copy); with neither it is `UNAVAILABLE`. `script` is the script the
-record's block names, when this machine has it (a store variant's
-bundle block counts, as at the start gate), and `hash` its SHA-256 in
-hex; absent for a variant with no script, whose panel keeps retail's
-rows. `shown` is true when the panel shows these rows: the
-`variant-quick` switch is on ([switches.md](switches.md)) and the script
-was found. `rows` are the script's `quick` marks in its order, at most
-five, empty for a script with no marks: `slot` is the row's place, `kind`
-a record setting of `rules::settings::TABLE` or one of the script's
-options, `value` the record's value (an option's from the block's option
-bits), `text` its text and `line` the panel's "Label: value". `help` is
-an option's description. `values` are what the row may take: for a
-setting, the values the editor offered at the last variant list load
-(none before one); for an option, its range. The panel's lines
-themselves are in [`ui.lobby_options`](#ui-what-the-menus-show).
+The variant is the lobby's; with none it is `UNAVAILABLE`. `script` is the
+script the record names, when this machine has it. `shown` is true when the
+`variant-quick` switch ([switches.md](switches.md)) is on and the script was
+found. `rows` are the script's `quick` marks in order, at most five: `kind`
+is a record setting (`rules::settings::TABLE`) or a script option, `line` is
+the panel's "Label: value", and `values` are what the row may take. The
+panel's lines are in [`ui.lobby_options`](#ui-what-the-menus-show).
 
-`variants.quick.set` sets row `slot` of the lobby variant to `value`,
-one of that row's `values`: a record setting, or the option's bits in
-the block in effect (the block's CRC made again). The record is checked
-with `record::refused`, then queued; the next UI update writes it and
-calls the lobby variant setter (`LOBBY_SET_VARIANT`), and the answer
-waits for that (`TIMEOUT` past the deferred limit). It answers with the
-rows as they are then. A variant with no script this machine has is
-`UNAVAILABLE`, as is a record the setter refuses ("the game refused the
-variant"); a slot past the script's marks, a value the row does not
-offer and a record `record::refused` refuses are `INVALID_PARAMS`, with
-the reason. It changes the lobby's variant, not a save, as the dialog
-does ([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)).
+`variants.quick.set` sets row `slot` to one of its `values`, checks the
+record with `record::refused`, queues it, and answers after the next UI
+update calls `LOBBY_SET_VARIANT`.
+
+| Error | When |
+|---|---|
+| `UNAVAILABLE` | no script on this machine, or the setter refuses ("the game refused the variant") |
+| `INVALID_PARAMS` | a slot past the script's marks, a value the row does not offer, or a record `record::refused` refuses (with the reason) |
+| `TIMEOUT` | the update does not run within the deferred limit |
+
+It changes the lobby's variant, not a save
+([rules-variants.md](../game/rules-variants.md#quick-options-in-the-lobby)).
 
 ```sh
 h2 agent variants.quick
@@ -5461,26 +3817,23 @@ h2 agent variants.quick.set '{"slot":0,"value":10}'
 
 Host methods while sim mode is on (`H2_SIM=<match file>`, `h2 sim run
 <match> --socket PATH`; `boot::sim_glue::Sim::add_methods`, [sim.md](sim.md)).
-Sim mode is a whole headless match with bots and no rendering, ending in a
-report; these let a client watch it, read its numbers so far and end it.
-The `sim.*` methods above are a different thing: simulated players added to
-an ordinary run. `sim.guest_census` is the one `sim.*` method of a sim
-match.
+Sim mode is a headless match with bots and no rendering, ending in a report;
+these let a client watch it, read its numbers and end it. The `sim.*` methods
+above are different: simulated players added to an ordinary run.
+`sim.guest_census` is the one `sim.*` method of a sim match.
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `lobby` (startup progress, below), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays), `drops` (a [seam drops](sim.md#seam-drops) match's `planned` and `done` drops, its `control` (`off`, `running`, `passed`, `failed`) and its `error`; `null` without a `[drops]` table), `bounces` (a [bounce search](bounce-search.md)'s `planned` and `done` trials, `sites`, `batches`, where it is (`phase`, `batch`, `variant`), its forks (`captures`, `restores`, `waves`, `busy`, and `last_busy`, what the last busy answer named) and its `error`; `null` without a `[bounces]` table) |
-| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md section 6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
-| `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
-| `sim.guest_census` | read | no parameters (any other is `INVALID_PARAMS`). `{now, match}`: `now` is the guest census read at this boundary, `{local_users, local_visibility_empty, arrays: {effect, particle_system, particles, decals, lights}}`, each `null` where the read failed (`null` as a whole with no guest); `match` is the report's `guest_census` block so far (`ticks`, `local_users`, `local_visibility`, `arrays` with `samples`, `mean`, `peak`), `null` before the match's first counted tick. sim.md section 6 names every address (`game::sim_census`) |
+| `match.status` | read | `match`, `map`, `game_type`, `bots`, `phase` (`waiting`, `binding`, `playing`, `over`), `lobby`, `bound_seats`, `ticks`, `max_ticks`, `game_seconds`, `wall_s`, `match_s`, `speedup`, `frames` (`skipped`, `rendered_world`, `other`, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays), `drops` (a [seam drops](sim.md#seam-drops) match's `planned`, `done`, `control`, `error`; `null` without `[drops]`), `bounces` (a [bounce search](bounce-search.md)'s trials, `sites`, `batches`, `phase`, `batch`, `variant`, forks `captures`, `restores`, `waves`, `busy`, `last_busy`, and `error`; `null` without `[bounces]`) |
+| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md section 6); `result.end` is `aborted` until the match ends |
+| `match.stop` | act | end the match: `end` becomes `stopped`, the report is written. `{stopping, end, already_over}` |
+| `sim.guest_census` | read | no parameters (any other is `INVALID_PARAMS`). `{now, match}`: `now` is the guest census at this boundary, `{local_users, local_visibility_empty, arrays: {effect, particle_system, particles, decals, lights}}`; `match` is the report's `guest_census` so far (`ticks`, `local_users`, `local_visibility`, `arrays` with `samples`, `mean`, `peak`). Each is `null` where unread. Addresses: sim.md section 6 (`game::sim_census`) |
 
 `match.status.lobby.step` advances through `Create`, `SquadCreated`,
-`SessionStarted`, `Start` and `Loading`. Its `wait` field gives the current
-setup blocker or `null`. The numeric `session_type` (retail lifecycle)
-and `squad_state` come from the same setup tick. A missing reading is
-`null`. An allocated idle squad reads 0, and a hosted pregame squad reads
-5 with session type 1 or 2. These fields retain the last setup observation
-during play. Use `phase` and `bound_seats` for gameplay progress.
+`SessionStarted`, `Start` and `Loading`; `wait` gives the current setup
+blocker or `null`. `session_type` and `squad_state` come from the same setup
+tick and keep the last setup reading during play. Use `phase` and
+`bound_seats` for gameplay progress.
 
 ```sh
 h2 sim run docs/runtime/sim-examples/aim-net-2v2.toml --socket /tmp/sim.sock &
@@ -5495,399 +3848,233 @@ H2_AGENT=/tmp/sim.sock h2 agent match.stop
 ## Theater transport
 
 The game agent lists these host methods in `session.methods`
-(`crates/extensions/agent-proto/src/theater.rs`, `crates/extensions/game/src/theater/controls.rs`).
-From a signed-in local multiplayer lobby, `python3 scripts/theater-e2e.py` starts and ends a game, opens its Recent film from Game Setup, exercises both cameras and the transport, and closes the player. Pass the map’s display name if it differs from the recorded map filename.
+(`crates/extensions/agent-proto/src/theater.rs`,
+`crates/extensions/game/src/theater/controls.rs`). From a signed-in local
+multiplayer lobby, `python3 scripts/theater-e2e.py` runs a game, opens its
+Recent film, exercises both cameras and the transport, and closes the player.
 
-A game that records its own games plays a film in itself. `theater.watch`
-queues the film's game options as the next game, as `game.load` queues a
-level, and the game loads the film's map and plays the film's updates; no
-process is started. The transport methods below then answer from that game
-until `theater.end`, and they answer with an unavailable error until the
-film's game has activated. Only one film is watched at a time. The
-session's recording is parked while the film plays and resumes at the next
-game, so a film being watched is not recorded. The film's simulation-scope
-settings are applied when it is queued and the viewer's put back when it
-ends. The film holds its last tick when it ends; `theater.end` queues the
-main menu and the game returns to it. A co-op or networked session refuses
-`theater.watch`, as it refuses `game.load`.
+A game that records its own games plays a film in itself: `theater.watch`
+queues the film's game options as the next game, and the transport methods
+answer from that game until `theater.end` (unavailable until it has
+activated). One film at a time; the session's recording is parked while it
+plays; a co-op or networked session refuses `theater.watch`. Details: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Theater transport".
 
 In any other CLI-hosted game, `theater.play` with a library ID starts an
-isolated playback process; subsequent transport requests through that
-game agent go to its player. During startup the caller can retry after a
-temporary unavailable response. The playback process also accepts calls
-directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
+isolated playback process, and later transport requests go to its player
+(retry after a temporary unavailable response). The process also accepts calls
+on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
-| `theater.watch` | `{"id":"film-id"}` or `{"path":"/films/a.h2film"}`; optional `tick`, `seat`, `camera` | on a game that records its games: `{id, length_ticks, queued}` once the film's options are queued. The film must be playable (`theater.compat`) and have a game start. `tick` plays unrendered to that tick, `seat` and `camera` choose the first view. Refused while a film is already watched |
-| `theater.end` | `{}` | on a game that watches a film: queues the main menu and leaves the film; the film page opens when the menu loads. Refused with no film |
+| `theater.watch` | `{"id":"film-id"}` or `{"path":"/films/a.h2film"}`; optional `tick`, `seat`, `camera` | on a game that records its games: `{id, length_ticks, queued}`. The film must be playable (`theater.compat`) and have a game start. `tick` plays unrendered to that tick. Refused while a film is watched |
+| `theater.end` | `{}` | on a game that watches a film: queues the main menu and leaves the film. Refused with no film |
 | `theater.exit` | `{}` on the library agent | Closes the active playback window. Wait for `theater.state` to return `active:false` on the original game. |
-| `theater.list` | `{}` on the library agent | Local films, newest first, as an array of `{id, map, variant, started_ms, length_ticks, saved}`. Pass the ID to `theater.play`. |
-| `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
-| `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` is a clip ID or two tick bounds | Returns `{film,url}` after publication. Visibility accepts `private`, `link` or `public`. A participant shares the existing host film by link. |
+| `theater.list` | `{}` on the library agent | Local films, newest first, as `{id, map, variant, started_ms, length_ticks, saved}`. Pass the ID to `theater.play`. |
+| `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
+| `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` (a clip ID or two tick bounds) | Returns `{film,url}` after publication. Visibility is `private`, `link` or `public`. A participant shares the existing host film by link. |
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
-| `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
+| `theater.pause` | `{}` | holds playback and reports state. During a seek it holds at the destination |
 | `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}], monitor_looks?: [{seat, map, reason}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` and `"source":"boot"` | a tick ahead of the one shown runs forward from it (`seek.source` is `forward`); a tick behind, or `"source":"boot"`, queues the film's options again in the same game, and the film plays from its game's first update to the target (`seek.source` is `boot`). The camera and timeline state carry across |
-| `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
-| `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
-| `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |
-| `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
-| `theater.start_point.capture` | `{"path":"/tmp/a.sp","key":"text","ids":"0a0b"}`; `ids` is optional hex, at most 64 bytes | on the game agent, at a tick boundary: writes the arena and the extension records as a tagged start point and returns `{path, tick, arena_hash, arena_bytes, ext_bytes, stored_bytes}`. Refused with no arena or no tick |
-| `theater.start_point.load` | `{"path":"/tmp/a.sp","key":"text","film_hash":"<16 hex>"}`; `film_hash` is optional | on the game agent: checks the tag, digest, size and hash before touching the game, writes the arena and records back, then returns `{tick, arena_hash, loaded_hash, matches, error?}`. `matches` is `StartPoint::check_loaded`; a file that loads but hashes differently reports `matches:false` and the game keeps the loaded state. A refused file changes nothing |
-| `theater.status` | `{}` | `{default_recording, recording, in_game, films, last_discard, notes, failure, watch_failure}` on any game or playback agent: whether the session records every game by default, the film file being written (`null` outside a game), whether a game is in play, the films sealed so far (film file paths, oldest first), why the last game went without a film, the outside changes the recording carried on through, and the failure that stopped it. `watch_failure` is why the last film watched in this game stopped before the viewer left it (a start or digest divergence): the film is left like `theater.end`, the game goes on |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` and `"source":"boot"` | a tick ahead runs forward (`seek.source` is `forward`); a tick behind, or `"source":"boot"`, queues the film's options again and replays from the game's first update (`boot`). Camera and timeline carry across |
+| `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. `tick` is ignored. With no active seek, returns state |
+| `theater.step` | `{"ticks":1}` | positive ticks while paused and outside a seek; runs them, holds, returns state. Read state again for the completed tick |
+| `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. Absolute film seat 0 to 15 |
+| `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility. Omitted fields keep their values |
+| `theater.start_point.capture` | `{"path":"/tmp/a.sp","key":"text","ids":"0a0b"}`; `ids` is optional hex, at most 64 bytes | game agent, at a tick boundary: writes the arena and extension records as a tagged start point; returns `{path, tick, arena_hash, arena_bytes, ext_bytes, stored_bytes}`. Refused with no arena or tick |
+| `theater.start_point.load` | `{"path":"/tmp/a.sp","key":"text","film_hash":"<16 hex>"}`; `film_hash` optional | game agent: checks tag, digest, size and hash before touching the game, then returns `{tick, arena_hash, loaded_hash, matches, error?}`. A file that loads but hashes differently reports `matches:false` and the loaded state stays; a refused file changes nothing |
+| `theater.status` | `{}` | `{default_recording, recording, in_game, films, last_discard, notes, failure, watch_failure}` on any game or playback agent: the recording state, the film file being written (`null` outside a game), sealed films (oldest first), why the last game went without a film, and the failures. `watch_failure` is why the last watched film stopped early (a start or digest divergence) |
 | `theater.measurements` | `{}` | timings and page counts from the instrumented recorder or playback child |
-| `theater.verify` | `{"from":1,"to":900}`, both optional | plays the film from its game start in an isolated, unpaced player and returns `{ticks, digests_checked, first_divergence}` |
-| `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`. Both fields are optional | `{path, width, height, tick}` for a clean PNG |
+| `theater.verify` | `{"from":1,"to":900}`, both optional | plays the film from its game start in an isolated, unpaced player; returns `{ticks, digests_checked, first_divergence}` |
+| `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`, both optional | `{path, width, height, tick}` for a clean PNG |
 | `theater.clip.mark` | `{"in":300}`, `{"out":900}`, or `{"clear":true}` | `{in, out}` with null for each unset mark |
-| `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`. Optional `path`. Use 30 or 60 fps and `png` or `mp4` | `{job}` once the offline player starts |
+| `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`; optional `path`; 30 or 60 fps, `png` or `mp4` | `{job}` once the offline player starts |
 | `theater.clip.status` | `{"job":"<job>"}` | `{frames_done, frames_total, path, error, finished}` |
 
-The start point methods are in `crates/extensions/agent-proto/src/theater.rs`
-and `crates/extensions/game/src/theater/start_point_agent.rs`, over the
-envelope in `theater/start_point.rs` and the state read and write in
-`theater/start_point_state.rs`. They serve the experiments of slice 15 in
-[theater-design.md](../game/theater-design.md): capture at tick N, run on,
-load, and compare the `sim.hashes` rows that follow with the first run's.
-Use them on a local game; a load writes the arena of a running match, so a
-co-op or Live session would desync. Without `film_hash`, load takes the
-hash the file declares, so only the tag and digest are checked.
+The start point methods are in `crates/extensions/game/src/theater/start_point_agent.rs`
+(envelope `start_point.rs`, state `start_point_state.rs`) and serve the
+experiments of slice 15 in [theater-design.md](../game/theater-design.md).
+Use them on a local game only; a load writes a running match's arena.
 
-Verification counts the ticks and the gameplay digests checked within the
-inclusive tick bounds. The verifier plays from the film's game start and
-reports the first divergence even when it prevents reaching the requested
-range. The active player's transport remains usable. A clean run returns
-`first_divergence: null`. A mismatch returns its tick and reason.
+Other rules, one line each:
 
-Screenshots use scale 1 by default and save the latest published game picture.
-Scales 2 through 4 render the view at a larger internal raster. The independent
-observer can redraw from its current state. When the redraw is
-unavailable, the method reports why. The default output is a new PNG in the
-film library's `screenshots` directory.
+- `theater.verify` bounds are inclusive; a clean run returns
+  `first_divergence: null`, a mismatch its tick and reason.
+- `theater.screenshot` defaults to scale 1; scales 2 to 4 render larger; the
+  default output is a new PNG under the library's `screenshots` directory.
+- `theater.clip.export` takes a half-open range (`to` excluded) from boot,
+  640x480, `(to - from) * fps / 30` frames, under the library's `exports`
+  directory. PNG makes a directory of `frame-000000.png`; MP4 needs `ffmpeg`
+  on `PATH` (else the `h2 movies` reason, exit 3) and mixes in 48 kHz stereo.
+  Use a fresh path. `finished` is true once published or failed; `error` is
+  null on success; the job ID survives seeks.
+- `theater.compat` accepts a local film ID or `live:<game-id>`. States are
+  `playable` and `unavailable`; `contract` and `hooks` are null with no
+  digest. It checks the XBE, the simulation ABI and the game start.
+- The rendered player starts at the clip's first tick and loops; its overlay
+  drives transport, camera and HUD over the player's socket.
 
-An export job copies the current camera rig into a windowless replay. The
-range is half-open, in ticks from boot. The tick at `to` is excluded. Output
-uses a 640×480 canvas and contains exactly `(to - from) * fps / 30` frames.
-At 60 fps, a tick with one presented frame uses it twice. The timeline holds
-the previous picture through skipped draws. MP4 includes the available
-48 kHz stereo game mix. Host recordings with clock-only audio export with
-silence.
+Export, screenshot, compat and start point detail: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Theater transport".
 
-The default destination is under the film library's `exports` directory.
-A PNG export creates a directory of numbered frames starting at
-`frame-000000.png`. MP4 uses the user's `ffmpeg` on `PATH`. When ffmpeg is
-missing, the job reports the same reason as `h2 movies` (exit 3) and PNG
-export remains available. Use a fresh destination path for either format.
-`finished` becomes true after the output is published or the job fails.
-`error` is null for a successful job. The job ID remains valid across seeks.
-These files stay on the user's machine.
+Camera modes: rendered local playback starts in `default`; host playback
+starts in `free`. `orbit`, `follow` and `first-person` take a player name or
+film seat; a recorded Forge monitor seat can be named too. If a subject has no
+recorded viewport, state reports `camera: "follow"` and `camera_fallback:
+"no-recorded-viewport"`. `theater.state` and `theater.compat` list
+`monitor_looks` (`{seat, map, reason: "monitor_look_source"}`), which never
+change `state`.
 
-`theater.compat` is a read method on the library agent. It accepts a local
-film ID or `live:<game-id>` for a cached host film. States are `playable` and
-`unavailable`. Reasons are strings, and `contract` and `hooks` are null
-when the recording supplies no digest. The preflight checks the XBE, the
-simulation ABI and that the film has a game start; any installed image of
-the XBE plays a film that passes. The replay verifies installed hooks
-before entering the guest.
+| Camera field | Meaning |
+|---|---|
+| `look` | yaw and pitch in radians, free and orbit modes |
+| `movement` | strafe, forward, rise in world units, free mode |
+| `zoom` | orbit radius in world units |
+| `fov` | horizontal field of view at 4:3, 20 to 140 degrees; omitted keeps the lens |
 
-The rendered player starts at the clip's first tick and loops at its end.
-Its overlay uses the player's agent socket for transport, camera and HUD
-controls. HUD and camera changes apply to the next rendered frame.
+Headless playback (`--render-every 0`) accepts only `default`; playerless
+playback has no game HUD.
 
-Both picture paths use the same rig. Rendered local playback starts in
-`default` with the whole retail frame. Host playback starts in `free`;
-`default` on a playerless film uses the first available player's eye.
-Use `orbit`, `follow` or `first-person` with a player name or film seat
-to select a subject. On rendered films, first person selects the recorded
-viewport. If the subject has no viewport, state reports `camera: "follow"`
-and `camera_fallback: "no-recorded-viewport"` until one is drawn.
-On playerless films, first person uses the unit's eye.
-A Forge monitor seat that the film recorded can be named by its seat number
-in `follow`, `orbit` and `first-person` even when the roster does not list
-it; first person looks from the monitor's recorded pose. `theater.state`
-and `theater.compat` list `monitor_looks` (`{seat, map, reason:
-"monitor_look_source"}`) the machine draws as the marker; they never change
-`state`.
+Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
+`speed_reached`, `seeking`, `compatibility`, `camera`, optional
+`camera_player` and `camera_seat`, `hud`, `bar`, `camera_pose` (`position`,
+`yaw`, `pitch`, `fov`, `radius`), `kills` and the `at` stamp. Tick zero is
+boot. `speed_reached` is ticks per wall second over the film's tick rate,
+capped at `speed`; null before a half-second sample or during a seek or step.
+Fast-forward checks the film's gameplay digests ([theater.md](../game/theater.md)).
 
-`look` adjusts yaw and pitch in radians in free and orbit modes. In free
-mode, `movement` adjusts strafe, forward and rise in world units. In orbit
-mode, `zoom` adjusts the radius in world units. `fov` sets the horizontal
-field of view at 4:3 in degrees (20 to 140). Omitting it keeps the current
-lens. Headless playback (`--render-every 0`) accepts only `default`.
-Playerless playback has no game HUD.
-
-Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`, `speed_reached`,
-`seeking`, `compatibility`, effective `camera`, optional `camera_player` and `camera_seat`,
-`hud`, `bar` and `camera_pose`. The pose has `position`, `yaw`, `pitch`,
-`fov` and `radius` once there is a view. State also carries discovered kill
-marker ticks in `kills` and the usual `at` stamp.
-Tick zero is boot. `speed` is the requested multiplier. `speed_reached`
-is completed ticks per wall second divided by the film's tick rate and
-capped at the requested speed. It is null before a half-second sample
-or during a seek or step, and zero while held. A paused seek holds at
-its target until play. Fast-forward checks the film's gameplay digests
-([theater.md](../game/theater.md)).
-
-The desktop playback socket also exposes these host page methods. They
-work while the guest is paused.
+The desktop playback socket also exposes these host page methods, which work
+while the guest is paused.
 
 | Method | Parameters | Result |
 |---|---|---|
-| `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
-| `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
+| `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with `focus` and the UI-builder `page`. `dialog` names the open picker, or is null. `native` is false |
+| `ui.input` | `{"input":"start"}` | Applies one page input and returns the screen. Inputs: `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left`, `right` |
 
-The `seek` object records `target`, `from_tick`, `source` and
-`remaining_ticks`. `seeking` is true while the film's game is queued
-again or the player is running forward. A replacement target keeps the
-original departure tick. The seek object remains available at the target
-with zero ticks left. Linear playback starts with `seek: null`. `source`
-is `forward` for a run on from the tick shown and `boot` for one from
-the film's game start.
+The `seek` object has `target`, `from_tick`, `source` (`forward` or `boot`)
+and `remaining_ticks`; it is `null` in linear playback and stays at the target
+with zero ticks left. A replacement target keeps the original `from_tick`.
 
-`theater.measurements` is a read on the recorder's or playback child's
-own socket when the run uses the Theater measurement switch
-([switches.md](switches.md#tools)). Its fields are:
+`theater.measurements` reads on the recorder's or playback child's own socket
+when the Theater measurement switch is set ([switches.md](switches.md#tools)).
 
-- `child_to_first_slice_ms` from the playback child entry to its first
-  guest scheduler slice.
-- `boot_to_match_start_ms` from configured boot to the first recorded
-  match tick, and `match_start_tick`. These stay null when the run
-  does not pass through that tick.
-- `fast_forward_ms` and `fast_forward_ticks` from the first scheduler
-  slice after boot to the seek target. Both are null until a forward
-  replay reaches its target.
-- `page_windows` with `{seconds, from_tick, to_tick, pages}` counts
-  distinct physical guest pages written in each 5 s and 30 s window of
-  match ticks. `page_windows_omitted` counts entries older than the 256
-  retained.
+| Field | Meaning |
+|---|---|
+| `child_to_first_slice_ms` | child entry to its first guest scheduler slice |
+| `boot_to_match_start_ms`, `match_start_tick` | boot to the first recorded match tick; null if never passed |
+| `fast_forward_ms`, `fast_forward_ticks` | first slice after boot to the seek target; null until reached |
+| `page_windows` | `{seconds, from_tick, to_tick, pages}` distinct guest pages written per 5 s and 30 s window |
+| `page_windows_omitted` | entries older than the 256 retained |
 
 ```sh
 h2 agent theater.state '{}' --socket "$film_run/play.sock"
-h2 agent theater.pause '{}' --socket "$film_run/play.sock"
 h2 agent theater.seek '{"tick":30,"source":"boot"}' --socket "$film_run/play.sock"
-h2 agent theater.step '{"ticks":1}' --socket "$film_run/play.sock"
-h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ```
 
 ## `anim`: the animation graph walk
 
-Under `impl.sim.native.anim` the animation graph's node walk `1dd1c0`
-runs as an arm: the guest answers each call, and the Rust result planned
-at the entry is compared with what the guest left
+Under `impl.sim.native.anim` the animation graph's node walk `1dd1c0` runs as
+an arm: the guest answers each call and the Rust result is compared with it
 ([skeleton-walk.md](../engine/skeleton-walk.md#the-graph-walk-1dd1c0)).
-The game method reads process counters at a tick boundary. Code:
-`crates/extensions/agent/src/anim.rs`, wire types in
+Code: `crates/extensions/agent/src/anim.rs`, wire types in
 `crates/extensions/agent-proto/src/anim.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
-| `anim.manager` | read | No parameters. Returns `switch` and `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
+| `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. `arm`: `checked`, `matched`, `mismatched`, `dropped`, `declined` by reason (`float`, `fault`, `count`, `queue`, `alias`, `parent`) and `first` (first mismatch: `what`, `plan`, `guest`, `entry`), or absent. `body`: `native`, `nodes`, `declined`, zero while the arm is installed |
+| `anim.manager` | read | No parameters. Returns `switch` and `entries`, keyed by the eight-digit guest address of each observed function: `matched`, `differed`, `declined`, `interrupted`, and `first` (`pc`, `what`, `plan`, `guest`) or `null` |
 
-`arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
-(calls that entered and never returned), `declined` by reason (`float`,
-`fault`, `count`, `queue`, `alias`, `parent`; the guest ran unchecked)
-and `first`: the first mismatch since start, or absent. `first.what`
-names the register or byte (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
-entry-0x3f8 (queue entry 1)`), `plan` and `guest` give both values in hex,
-and `entry` the general registers and MXCSR at that call's entry. `body`
-counts calls the Rust body answered without the guest (`native`, `nodes`
-posed, `declined`); it stays zero while the arm is installed. The counters
-are zero with the switch off. Sample before and after a scenario and
-subtract to isolate that run.
-
-```sh
-h2 agent anim.graph_walk
-```
-
-Parity is `mismatched` 0 over the run ladder's matches, with `declined`
-small against `checked`.
-
-`anim.manager` counts segments starting at a function entry or resuming
-after a call. For each observed function, `matched` and `differed` count
-completed comparisons. `declined` counts segments the Rust arm could
-not predict. `interrupted` counts predictions for which the guest exited
-before a comparison boundary. The first difference for each function is
-retained in `first`, with the starting selector (`pc`), differing field
-(`what`), and both values (`plan` and `guest`). An entry with `first` set
-to `null` has no recorded difference. Compare counts before and after
-the scenario to establish coverage. See [animation-manager.md](../engine/animation-manager.md).
-
-```sh
-h2 agent anim.manager
-```
+Counters are zero with the switch off; sample before and after a scenario and
+subtract. Parity is `mismatched` 0 with `declined` small against `checked`.
+See [animation-manager.md](../engine/animation-manager.md).
 
 ## `sim.arms`: the native-sim gate read
 
-`sim.arms` reads every native-sim shadow and authority arm in one call:
-the instrument that decides whether a sim phase may be on by default
-([sim-rewrite.md](../engine/sim-rewrite.md#3-determinism-and-exactness)).
-It is a game method answered at a tick boundary from process counters, so
-it needs no guest memory. Code: `crates/extensions/agent/src/sim_arms.rs`,
-wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
+`sim.arms` reads every native-sim shadow and authority arm in one call, the
+instrument that decides whether a sim phase may be on by default
+([sim-rewrite.md](../engine/sim-rewrite.md#3-determinism-and-exactness)). It
+is answered at a tick boundary from process counters. Code:
+`crates/extensions/agent/src/sim_arms.rs`, wire types in
+`crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
 | `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
 
-Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
-switch in this process), `arms` and `clean`: `checked > 0 && mismatched
-== 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
-`mismatched`, `answered` (calls Rust answered in the guest's place) and
-`declined` (calls left to the guest unchecked, summed over reasons). The
-sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
-the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
-`sim.effects` groups. A source without a counter reports 0 for that
-field: physics and collision have no `checked` (it is `matched` plus
-`mismatched`) and no `answered`; `anim.manager` has no `answered` and its
-`differed` is `mismatched`; shadow ports have no `answered` and their
-`skipped` is `declined`. A subsystem with its switch off reads zeros, so
-`clean` is false.
-
-```sh
-h2 agent sim.arms
-```
+Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on`, `arms`
+and `clean` (`checked > 0 && mismatched == 0`, summed). Each arm has `name`,
+`checked`, `matched`, `mismatched`, `answered` and `declined`. A source
+without a counter reports 0; a subsystem with its switch off reads zeros, so
+`clean` is false. Source counters and the zero mapping: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`sim.arms`".
 
 Run the scenario, read `sim.arms`, and flip a phase on only when its
-subsystem is `clean` with `checked` large enough for the scenario.
+subsystem is `clean` with `checked` large enough.
 
 ## `collision`: the native collision world
 
 The collision switch counts admitted native answers, declined queries,
-floating-point environments and comparisons with lifted returns. The
-game exposes these counters at a tick boundary. See the
+floating-point environments and comparisons with lifted returns, read at a
+tick boundary. See the
 [entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
-| `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (x87 precision calls at C and D), `vector` (C), `context` (D), `instance`, `flood`, `visit`, `query` (E, G, H, J) and `ray` (I). |
+| `collision.trace` | read | `{start, delta, flags}`: `start` and `delta` are three finite binary32 world coordinates, `flags` an unsigned 32-bit query mask. |
 | `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
-| `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
+| `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries at that tick boundary. |
 
-`collision.trace` evaluates entry J at a tick boundary on the active
-structure. The segment ends at `start + delta`. Both ignore handles are
-empty. The reply gives the tick stamp, numeric `hit_type` (zero for a
-miss), `fraction`, world `position`, optional `material` and `plane`, and
-the first and last `locations` as `{leaf, cluster, bsp}`. The arrays
-`cluster_marks`, `instance_marks` and `object_marks` give the slots J
-would mark in traversal order. The query leaves guest memory untouched.
-A path outside the native kernel returns `UNAVAILABLE` with the bail
-name in `error.data.reason`.
+`collision.trace` evaluates entry J on the active structure over the segment
+`start` to `start + delta`. It returns the tick stamp, `hit_type` (0 for a
+miss), `fraction`, `position`, optional `material` and `plane`, first and last
+`locations` (`{leaf, cluster, bsp}`) and the `cluster_marks`,
+`instance_marks` and `object_marks` in traversal order. Guest memory is
+untouched. A path outside the native kernel returns `UNAVAILABLE` with the
+bail name in `error.data.reason`.
 
-```sh
-h2 agent collision.trace '{"start":[0,0,1],"delta":[0,0,-2],"flags":1}'
-```
+Each `entries` row has `name`, eight-digit guest `addr`, `native` answers,
+`bails` by reason, and `mxcsr` and `x87_control` frequency maps (lowercase
+hex keys, eight and four digits). `budget_bytes` caps `bytes` at 8 MiB per
+loaded map. Sample before and after a scenario and subtract.
 
-Each row in `entries` gives the `name` and eight-digit guest `addr`, the
-count of `native` answers, and `bails` by reason. Two frequency maps count
-the control words at entry, including calls that fall back at the first
-environment check. Keys are lowercase hexadecimal strings with leading
-zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
-a call count. Each map counts its own register independently. `cluster_flood` includes recursive entries in
-its environment census. The `mopp_ray` and `query` rows count the
-environment while their comparison records report the lifted outcomes.
-An image without an observed entry leaves its row empty. The `object_sphere` row counts native answers at the
-whole query's object-reference pretest. `array_bytes` counts the decoded
-BSP allocations, the packed cluster table, the portal graph and the decoded MOPP trees (`mopps`
-of them; `decodes` and `decode_failures` include MOPP programs, a failure
-being one left to the guest). `bytes` adds the reserved space for BSP owners and address-index
-capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
-`ring_fallbacks` counts transitions to scalar ring reads, and
-`cluster_budget_reads` counts lookups that need the live cluster word
-because the packed table would exceed the budget. Sample before and after
-a scenario and subtract the counters to isolate that run.
+| Group | Fields |
+|---|---|
+| `vector`, `context` | `matched`, `mismatched`, `unverified` by bail reason, `first_mismatch` (C: AL or first differing byte; D: AL, R and the 40-byte context) |
+| `instance`, `flood`, `visit`, `query` | same counters; a declined prediction is `unverified`; J compares AL, flags, result and mark tables |
+| `ray` | `matched`, `mismatched`, `first_mismatch`, `unverified` by bail reason, `fraction_moved` |
 
-`vector` counts entry C’s `matched` and `mismatched` returns and
-`unverified` queries by bail reason. `first_mismatch` identifies AL or the
-first differing byte offset in the result record, with expected and guest values.
-`context` uses the same counters for entry D. It compares AL, R and the
-40-byte context, counting each outer walk once across its recursive calls.
-
-`instance`, `flood`, `visit` and `query` use the same comparison counters.
-An admitted native exit counts under `entries[].native`. A comparison
-counts only after the guest returns. A declined prediction is
-`unverified`. For J the comparison covers AL, flags, the result including
-padding, and the active mark tables and generations.
-
-`ray` counts the MOPP ray queries the native walk followed while the
-guest answered them: `matched` (every interpreter call, and every key
-where the instanced collection shows it, equal), `mismatched` with
-`first_mismatch` describing the first since start (the observation index
-and both sides), `unverified` by bail reason (the walk could not follow
-the query exactly, or its environment is one it does not model), and
-`fraction_moved` (no key was visible and a terminal lowered the fraction).
-Read `matched`, `mismatched` and `unverified` together to distinguish
-a covered query from one the walker could not follow.
-
-```sh
-h2 agent collision.stats
-```
-
-The bail audit (under 0.1% of calls bailing) reads `bails` against
-`native`. For `mopp_box`, `grow` counts answers that did not fit the
-key array's room. A reason that appears on one architecture only is a determinism
-bug.
+The bail audit (under 0.1% of calls bailing) reads `bails` against `native`.
+A reason that appears on one architecture only is a determinism bug. Field
+semantics, byte accounting and examples: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "`collision`".
 
 ### Checking a cold collision world
 
-At a tick boundary, `collision.sources` returns `sources` sorted by
-`kind` and guest `address`, with `cached` and `live` 64-bit hexadecimal
-fingerprints. A BSP fingerprint covers the live header, all eight blocks,
-the projection table and the zero used by the matcher. A MOPP fingerprint
-covers origin, scale, program length and bytecode. A failed live read
-returns `live: null` and the `bail` reason. The reply counts `mismatched`
-and `unreadable` separately. An empty list means no BSP or MOPP is
-resident. A debugger memory trap makes the method unavailable.
-
-For the cache-cold parity arm, `collision.sources.clear` gives the
-pre-clear readings and drops the BSPs, MOPPs, leaf table and portal graph.
-The next queries repopulate the world from current guest sources. The
-read-only form leaves the warm world's entries in place.
-
-Start each arm from the same match state and input with
-`impl.sim.native.collision` and `impl.sim.arena-hash` enabled.
-Use one claimed connection per arm. This example captures 1,800 cold ticks.
-Replace `collision.sources.clear` with `collision.sources` for the warm
-run and save its JSON lines separately.
-
-```sh
-{
-  echo claim
-  echo pause
-  echo collision.sources.clear
-  for tick in $(seq 1 1800); do
-    echo 'step 1'
-    echo collision.sources.clear
-  done
-  echo sim.hashes
-  echo release
-} | h2 agent -
-```
-
-Compare tick stamps and the sampled gameplay and arena rows from
-`sim.hashes`. At each tick, match the cold sources to warm sources of the
-same kind and address, and compare fingerprints. A warm world may retain
-entries from earlier ticks. Inspect unreadable sources, missing counterparts
-and cached/live differences before treating a run as clean.
+`collision.sources` returns `sources` sorted by `kind` and guest `address`
+with `cached` and `live` 64-bit hex fingerprints, `bail` when a live read
+fails (`live: null`), and separate `mismatched` and `unreadable` counts. A
+debugger memory trap makes it unavailable. `collision.sources.clear` is the
+cache-cold form for the parity arm; start each arm from the same state with
+`impl.sim.native.collision` and `impl.sim.arena-hash` on, one claimed
+connection per arm. The 1,800-tick capture script and comparison steps: see
+the [detail note](notes/2026-11-26-agent-api-detail.md), "Checking a cold
+collision world".
 
 ## Tick traces and the flight recorder
 
-Polling `world.object` from outside (`h2 agent -`) drops ticks when the
-game or the client is busy. `trace.*` and `flight.*` take the rows inside
-the game, in the tick observer, before queued requests are served, so each
-tick gives exactly one row. Code: `crates/extensions/agent/src/trace.rs` (tests in
-`trace/tests.rs`), wire types and `show` in `crates/extensions/agent-proto/src/trace.rs`,
-CLI in `crates/apps/cli/src/agent_flight.rs`. File readback lives in
+`trace.*` and `flight.*` take one row per tick inside the game, in the tick
+observer, before queued requests are served (polling `world.object` drops
+ticks). Code: `crates/extensions/agent/src/trace.rs` (tests `trace/tests.rs`),
+wire types and `show` in `crates/extensions/agent-proto/src/trace.rs`, CLI in
+`crates/apps/cli/src/agent_flight.rs`, readback in
 `crates/extensions/agent/src/outputs.rs`.
 
-The game puts `traces/`, `flights/` and `inputs/` under the
-[agent output root](switches.md#tools), which defaults to its cache
-directory. For a [lab job](lab.md#runs), that root is `runs/<id>` and
-`h2 lab fetch` includes the files.
+Files go under `traces/`, `flights/` and `inputs/` in the
+[agent output root](switches.md#tools) (the cache directory by default; for a
+[lab job](lab.md#runs), `runs/<id>`, included by `h2 lab fetch`).
 
 ```sh
 h2 agent trace start player.0 physics,pos          # rows to traces/trace-<ms>.jsonl
@@ -5896,77 +4083,51 @@ h2 agent flight start player.0 physics,pos,velocity 20
 h2 agent flight dump crouch-bug.jsonl              # flights/crouch-bug.jsonl
 h2 agent trace.list                                # saved trace and flight file names
 h2 agent flight show crouch-bug.jsonl --remote --field physics.crouch
-h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
-    --from 4100 --to 4160 --field physics.crouch --field physics.airborne --field input
 ```
 
 - **Rows.** One JSON line per tick: `{tick, ticks, map, objects: {id:
-  Object}, gone, error}`. `tick` is the stamp's game tick, `ticks` the
-  agent's count (never resets, one more each row). `objects` holds each
-  asked-for id in the world, trimmed to `fields` (`world.query`'s names;
-  `id` and `kind` always kept; all when absent). Ids not in the world that
-  tick are in `gone`; a failed world read gives `error` and still a row.
-  The world is read once a tick when either recorder runs, and not at all
-  otherwise. A paused game writes no rows; each `session.step` tick does.
-- **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows to
-  a bare file name in `traces/` (default `trace-<ms>.jsonl`).
-  An existing file is replaced. The writer flushes every 30 rows, at
-  `trace.stop` and at exit. Memory use stays constant with file length.
+  Object}, gone, error}`. `objects` holds each asked-for id trimmed to
+  `fields` (`world.query` names; `id` and `kind` kept); absent ids are in
+  `gone`. A paused game writes no rows; each `session.step` tick does.
+- **`trace.start {objects, fields?, path?}`.** 1 to 64 ids, streamed to a bare
+  file name in `traces/` (default `trace-<ms>.jsonl`, replaced if present).
   `trace.stop` and `trace.status` give `rows`, `bytes`, `first_tick`,
-  `last_tick`, `path` and `error` (a write failure ends the trace there).
-  One trace at a time; the last one's counts stay for `trace.status`.
+  `last_tick`, `path`, `error`. One trace at a time.
 - **`flight.start {objects, fields?, seconds?}`.** Keeps the last `seconds`
-  (default 30, 1 to 600) x 30 rows in memory, at most 64 MiB of JSON (the
-  oldest go first). Each row also has `input`: every `XInputGetState`
-  result the game got since the last tick, taken at the agent's input tap
-  after agent steps merge in (`{port, handle, status, packet, buttons,
-  left, right, raw}`, `raw` the 18 pad bytes in hex), at most 64 a tick
-  (`input_dropped` counts the rest, as during a load). Without XAPI input
-  there is no tap and rows have no `input`. `flight.dump {path?}` writes
-  the ring to a bare file name in `flights/` (default `flight-<ms>.jsonl`)
-  and keeps recording. `flight.stop` drops the ring. `flight.status` gives
-  `capacity`, `rows`, `bytes`, `ticks` seen and the ring's tick range.
-- **`trace.list`** returns `{traces, flights}`, with sorted file names
-  from each directory.
+  (default 30, 1 to 600) x 30 rows, at most 64 MiB. Each row also has `input`
+  (the `XInputGetState` results since the last tick, at most 64; absent
+  without XAPI input). `flight.dump {path?}` writes to `flights/` (default
+  `flight-<ms>.jsonl`) and keeps recording; `flight.stop` drops the ring;
+  `flight.status` gives `capacity`, `rows`, `bytes`, `ticks`, tick range.
+- **`trace.list`** returns `{traces, flights}`, sorted file names.
 - **`trace.read {path, kind?, from_tick?, to_tick?, offset?, limit?}`**
-  returns `{rows, next}`. Pass a bare file name. Set `kind` to `trace` or
-  `flight` to select a directory, or search `traces/` first and
-  `flights/` second by leaving it out. The tick bounds are inclusive.
-  Each row is a complete JSON line without its newline. The limit is in
-  rows (default 64, maximum 256), and file scanning is bounded per call.
-  Start at offset 0, then pass the returned byte cursor as `offset` until
-  `next` is `null`. Follow the cursor even after a short or empty page.
-  Read a finished trace or flight dump to keep the file stable across pages.
-- **Scrub.** `h2 agent flight show <file>` opens a local file when it exists.
-  A missing file or `--remote` reads through the game socket with
-  `trace.read`. Use `--kind trace|flight` to choose a socket directory.
-  The command prints whole rows or selected fields such as
-  `--field physics.crouch` and controller reads with `--field input`.
-  Use `--from` and `--to` to select game ticks. To re-simulate a stretch,
-  start from a [snapshot](#state-machine-snapshots).
-- **Access.** These methods require no claim and are answered between
-  slices as well as at tick boundaries.
+  returns `{rows, next}`. `kind` is `trace` or `flight` (default: `traces/`
+  then `flights/`); tick bounds inclusive; `limit` default 64, maximum 256.
+  Page with the returned byte cursor until `next` is `null`.
+- **Scrub.** `h2 agent flight show <file>` reads a local file, or the game
+  socket with `--remote` or a missing file; `--kind`, `--field`, `--from`,
+  `--to` select. To re-simulate a stretch, start from a
+  [snapshot](#state-machine-snapshots).
+- **Access.** No claim; answered between slices as well as at tick boundaries.
+
+Details of the per-row fields: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Tick traces and the flight recorder".
 
 ## Shadow checks
 
 Design: [shadow-exec.md](../engine/shadow-exec.md). Host methods
-(`agent::shadow`, registered by boot's agent glue) over
-`feature::shadow`'s registry. A native sim port is checked against the
-lifted original, each on its own copy of guest memory from the state the
-game reached, then runs on the live Guest as usual. Only installed ports
-are checked: a port's `impl.` switch puts it in the plan, and
-`shadow.enable` is the only switch for the checks.
-
+(`agent::shadow`) over `feature::shadow`'s registry. A native sim port is
+checked against the lifted original on its own copy of guest memory. Only
+installed ports are checked; `shadow.enable` is the only switch for checks.
 Select ports by switch name (`sim.native_unit_pose`), object point name
 (`OBJECT_FUNCTION_VALUE`), group (`sim.native`, `sim.physics`,
-`sim.native.objects`) or `all`. The object group samples individual entries
-and resumes, including those reached inside a fused walk.
+`sim.native.objects`) or `all`.
 
 | Method | Access | What |
 |---|---|---|
-| `shadow.enable` | act | `{ports, every?, step_limit?}`: checks on for those ports, their counts and mismatches reset. `every` checks one call in that many (default 1); `step_limit` caps the original's instructions per check (default 5,000,000). The first call builds the lifted original from the image's cached analysis (a few seconds on the game thread). → `{enabled, not_installed, every, step_limit}`. Unknown names: invalid params; no image in the process: unavailable |
-| `shadow.disable` | act | `{ports?}`: checks off (no ports: all). → `{disabled}`. Counts and mismatches stay |
-| `shadow.status` | read | `{on, ready, every, step_limit, calls, checked, matched, mismatched, skipped, ports, mismatches, mismatches_dropped}`. Each port: `name`, `group`, `point`, `function`, `installed`, `on`, `calls`, `checked`, `matched`, `mismatched`, `skipped`, `skip_reasons`. Each mismatch (at most 64 kept): `port`, `group`, `point`, `function`, `pc` (entry or resume), `tick`, `call` (which call since `enable`), `kind` (`transfer`, `registers`, `memory`, `returned`, `nondeterministic`), `summary`, `transfer` (`port`, `original`), `registers` (`name`, `port`, `original`), `memory` (runs of bytes: `address` folded physical, `virtual_addresses`, `before`, `port`, `original`), `memory_bytes`, `steps`, `entry` (every register at entry, hex) |
+| `shadow.enable` | act | `{ports, every?, step_limit?}`: checks on, counts reset. `every` (default 1) checks one call in that many; `step_limit` (default 5,000,000) caps the original's instructions per check. The first call builds the lifted original (a few seconds). → `{enabled, not_installed, every, step_limit}`. Unknown names: invalid params; no image: unavailable |
+| `shadow.disable` | act | `{ports?}`: checks off (none: all). → `{disabled}`. Counts stay |
+| `shadow.status` | read | `{on, ready, every, step_limit, calls, checked, matched, mismatched, skipped, ports, mismatches, mismatches_dropped}`. Each port: `name`, `group`, `point`, `function`, `installed`, `on`, `calls`, `checked`, `matched`, `mismatched`, `skipped`, `skip_reasons`. Each mismatch (64 kept): `port`, `group`, `point`, `function`, `pc`, `tick`, `call`, `kind` (`transfer`, `registers`, `memory`, `returned`, `nondeterministic`), `summary`, `transfer`, `registers`, `memory`, `memory_bytes`, `steps`, `entry` |
 
 ```sh
 H2_FEATURES=impl.sim.native_unit_pose h2 serve ...
@@ -5976,8 +4137,8 @@ h2 agent shadow.status
 ```
 
 `scripts/shadow-gate.sh` is the scripted disc gate over these methods: a
-headless sim match with the ports installed, checks on for N ticks, and a
-failure on any mismatch ([shadow-exec.md](../engine/shadow-exec.md#the-disc-gate)).
+headless sim match, checks on for N ticks, a failure on any mismatch
+([shadow-exec.md](../engine/shadow-exec.md#the-disc-gate)).
 
 ## Scripted scenarios with a verdict
 
@@ -5989,99 +4150,84 @@ claim
 press rt 100
 capture 90
 expect /over_budget <= 2
-expect /causes missing
 release
 X
 h2 agent run grenade.txt          # one JSON verdict; exit 1 unless it passed
 ```
 
 `h2 agent run <script|->` (`crates/apps/cli/src/agent_run.rs`) is the `h2
-agent -` script on one connection, plus `expect <pointer> <op> [JSON]` on
-the last answer (a JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=` on
-numbers, `contains` for a substring, an array element or an object key,
-`exists`, `missing`, and `near {"to", "within"}`) and `keep` (put the last
-answer in the verdict). The expectations are `agent_proto::expect`, which
-`sim.expect` judges in the game too. The verdict is `{"pass", "failed",
-"ms", "calls": [{line, call, ms, ok, error}], "expects": [{line, expect,
-want, pass, got}], "kept", "stopped"}`. A failed expect is recorded and
-the script goes on; a failed call stops it. Answers are not printed
-except kept ones, so a long scenario costs a few lines of context.
+agent -` script on one connection, plus `expect <pointer> <op> [JSON]` on the
+last answer (JSON pointer; ops `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`,
+`exists`, `missing`, `near {"to", "within"}`) and `keep` (put the last answer
+in the verdict). Expectations are `agent_proto::expect`, which `sim.expect`
+judges in the game too. The verdict is `{"pass", "failed", "ms", "calls":
+[{line, call, ms, ok, error}], "expects": [{line, expect, want, pass, got}],
+"kept", "stopped"}`. A failed expect is recorded and the script goes on; a
+failed call stops it. Only kept answers are printed.
 
 ## Test maps
 
-Purpose-built test maps from recipes: a spawn grid, a weapon range, the
-superbounce patch and more, built from the user's own disc while the game
-runs and queued as the next game. Design, recipe format and the built-in
-rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
-`crates/extensions/game/src/test_maps.rs` (the `test-maps` cargo feature of
-`boot`, which supplies the recipes in `crates/apps/boot/src/test_maps_recipes.rs`); wire types `agent_proto::test_maps`.
+Purpose-built test maps from recipes (a spawn grid, a weapon range, the
+superbounce patch), built from the user's disc while the game runs and queued
+as the next game. Design and recipes: [test-maps.md](../game/test-maps.md).
+Host methods in `crates/extensions/game/src/test_maps.rs` (the `test-maps`
+feature of `boot`, recipes in `crates/apps/boot/src/test_maps_recipes.rs`);
+wire types `agent_proto::test_maps`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `maps.load` | act | `{map_id}` → `{name, map {id, path}, check, queued, expect}`. Queues a local Slayer game on the installed multiplayer package with this full hash. The VFS verifies the list slot's package identity. When the id is not found, the offers are installed again and the VFS's map packages reloaded before the id is refused, so a package written while the game runs is found ([the tag workspace](../editor/tag-workspace.md)). Wait for gameplay on the basename of the returned path before driving the camera. |
-| `maps.test.list` | read | `{name?}` → `{recipes, maps}`: the built-in recipes (`name`, `title`, `base`, `fidelity`, `purpose`, `note`) and each test map (`name`, `base`, `state` `building`/`ready`/`failed`, `dir`, `error`, `map_id`, `listed {id, path}` once it has a multiplayer slot, `built`: the build report with `anchor`, `placed`, `counts`, `notes`, `expect`) |
-| `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread, then the offers are installed again. `base` builds on another disc map (`<recipe>-<base>`) |
-| `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game on the map is queued through the `agent-calls` feature (`Call::QueueGame`, the level boot's steps). Wait for it with `session.wait` or `h2 agent maps load` |
+| `maps.load` | act | `{map_id}` → `{name, map {id, path}, check, queued, expect}`. Queues a local Slayer game on the installed multiplayer package with this full hash. An unknown id reinstalls the offers and reloads the VFS packages before refusing ([the tag workspace](../editor/tag-workspace.md)). Wait for gameplay on the returned path's basename. |
+| `maps.test.list` | read | `{name?}` → `{recipes, maps}`: recipes (`name`, `title`, `base`, `fidelity`, `purpose`, `note`) and test maps (`name`, `base`, `state` `building`/`ready`/`failed`, `dir`, `error`, `map_id`, `listed {id, path}`, `built` with `anchor`, `placed`, `counts`, `notes`, `expect`) |
+| `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread. `base` builds on another disc map (`<recipe>-<base>`) |
+| `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game queued through the `agent-calls` feature (`Call::QueueGame`). Wait with `session.wait` or `h2 agent maps load` |
 | `maps.test.remove` | act | `{name}` → `{name, removed}` |
 
 `map.reload {}` queues the active campaign or multiplayer map again and
-returns `{queued, map, activation}` with the map name, the activation
-reserved for this request and the executor's tick stamp. It uses the
-[object edit session rules and hooks](#object-edits). Film and input
-recording or playback refuse both forms of reload.
-`Sim::reload_map` in `crates/extensions/agent/src/sim/edits.rs` copies the active options block into
-`Call::QueueGame`'s scratch. This preserves the scenario path, players,
-variant and difficulty. `OPTIONS_QUEUE` takes the scratch address in EAX
-and copies the block to the pending transition. See
-[level-boot.md](level-boot.md#addresses) for the active flag, block and
-entry. The answer confirms queueing. Pass its `activation` and `map` to
-`session.wait` together with `phase: "gameplay"` and `map_ticks: 1`.
-For a reply naming activation 4 on `lockout`, the wait is
-`{"until":{"activation":4,"map":"lockout","phase":"gameplay","map_ticks":1}}`.
-Use the returned value even when the file checksum stays the same.
+returns `{queued, map, activation}` (the map name, the activation reserved for
+this request and the executor's tick stamp). It follows the
+[object edit session rules and hooks](#object-edits); film and input recording
+or playback refuse it. `Sim::reload_map`
+(`crates/extensions/agent/src/sim/edits.rs`) copies the active options block
+into `Call::QueueGame`'s scratch, keeping scenario path, players, variant and
+difficulty; `OPTIONS_QUEUE` takes the scratch address in EAX (see
+[level-boot.md](level-boot.md#addresses)). Pass the returned `activation` and
+`map` to `session.wait` with `phase: "gameplay"` and `map_ticks: 1`, for
+example `{"until":{"activation":4,"map":"lockout","phase":"gameplay","map_ticks":1}}`.
 A checkpoint revert cannot publish a queued reload's activation.
 
 `map.reload {"file":"/absolute/path/<map>.map"}` loads a play copy for the
-active DVD map. Both the filename and the map name in its Xbox cache header
-must match the active name, ignoring ASCII case. A worker prepares a
-private generation and checks its cache type, slot capacity, tag index
-and retail payload checksum. A disconnect or timeout releases the preparation
-and the worker checks for cancellation between chunks. At the tick boundary
-the agent rechecks the session and active source, validates the pending
-options storage, reserves the DVD file and retires the old cache keys
-before calling the guest's options queue.
-The VFS publishes the copy when the guest accepts the transition. If the
-guest call is interrupted, the host checks the pending options before the
-loader uses them. Matching options publish the copy. Otherwise the host
-restores the retired keys. The result adds the requested `file` and the
-header's numeric `checksum`.
-After the activation wait, check that `live.status.map.checksum` or
-`edit.map.checksum` matches the returned checksum. Both reload forms accept `confirm_peers`
-on a System Link host. This total includes the host. Each peer needs its
-own matching file. A writable game with the agent enabled can accept a play
-copy even if it started without an override directory.
+active DVD map. The filename and the cache-header map name must match the
+active name (ASCII case ignored). A worker prepares a private generation and
+checks cache type, slot capacity, tag index and retail payload checksum; at
+the tick boundary the agent rechecks the session and source, reserves the DVD
+file and retires the old cache keys before the guest's options queue. The VFS
+publishes the copy when the guest accepts the transition, else the host
+restores the keys. The result adds `file` and the numeric `checksum`; after
+the activation wait, check that `live.status.map.checksum` or
+`edit.map.checksum` matches. Both forms accept `confirm_peers` on a System
+Link host (total includes the host; each peer needs its own file). A
+writable game with the agent enabled can accept a play copy without an
+override directory. Preparation and rollback steps: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Test maps".
 
-Forge's **Rebuild map** and the reload after **Build AI ground** run the
-same reload from the game thread (`agent::sim::MapReloader`, which calls
-`Sim::start_reload` with the checks `map.reload {file}` makes), so the
-rules and refusals above apply to them as well
-([forge-design.md](../game/forge-design.md), "Rebuild map").
+Forge's **Rebuild map** and the reload after **Build AI ground** run the same
+reload (`agent::sim::MapReloader`, calling `Sim::start_reload`), with the same
+refusals ([forge-design.md](../game/forge-design.md), "Rebuild map").
 
-A light host, a server-map mount, a scenario loaded from a content path,
-or a host without the editor map mount returns `REFUSED` with `data.why`.
-A film named with `--film`, film playback and external Live sign-in also
-exclude file binding. A session's
-[default recording](../game/film-format.md#recording-every-game) allows
-it: the first authorized editor write discards the film of the game in play; films of games already ended stay. After a file binding succeeds, restart
-the game before signing in to external Live. Machine snapshots and
-snapshot-based rewind are unavailable while a play copy is bound.
-See [Map overrides](storage.md#map-overrides) and [Changed maps](cache-slots.md#changed-maps).
+A light host, a server-map mount, a scenario loaded from a content path, or a
+host without the editor map mount returns `REFUSED` with `data.why`. `--film`,
+film playback and external Live sign-in also exclude file binding. A session's
+[default recording](../game/film-format.md#recording-every-game) allows it: the
+first authorized editor write discards the game in play's film. After a
+binding succeeds, restart before signing in to external Live. Machine
+snapshots and snapshot-based rewind are unavailable while a play copy is
+bound. See [Map overrides](storage.md#map-overrides) and
+[Changed maps](cache-slots.md#changed-maps).
 
 ```sh
 h2 agent maps                          # recipes and test maps
 h2 agent maps create superbounce       # waits for the build
 h2 agent maps load superbounce         # waits until the new map is in gameplay
-h2 agent sim expect '/player/0/pos near {"to":[-10.5,3.9,-3.15],"within":1.5}'
 ```
 
 `h2 agent maps` (`crates/apps/cli/src/agent_maps.rs`) reads a recipe file
@@ -6091,100 +4237,61 @@ verbs work in `h2 agent -` and `h2 agent run` scripts.
 ### Test maps on disk
 
 `h2 testmap <source.map> <script.json | -> --out <new.map> [--force]`
-(`crates/apps/h2-tools/src/testmap_cmd.rs`) is a host-only tool for a repro that
-needs one thing in an empty room. It runs a JSON edit script
-(`scenario_edit::script`, `crates/tools/scenario-edit/src/script.rs`) over the
-source's placement blocks through the editor's own `Session`, so every
-edit is checked as the editor checks it, and saves a new map (the source
-is never written). It prints what each operation did and the entries left
-per block. Operations: `clear` (blocks, or `"all"`; a block the editor
-will not empty is reported and left), `keep` (these entries of a block,
-renumbered from 0), `add` (a copy of `like`, or a zeroed entry with the
-palette's first item, then `set`), `set` (fields by the editor's names:
-`position` `[x, y, z]`, `rotation`, `facing`, `team`, palette `type`, ...),
-`remove`. `allow_growth` lets a block grow past its source size, as the
-editor's switch. Blocks: `scenery`, `vehicles`, `equipment`, `weapons`,
-`machines`, `sound_scenery`, `crates`, `starting_locations`,
-`netgame_flags`, `netgame_equipment`, `starting_equipment`. AI (squads and
-their spawn points) and tag references other than through a palette index
-are not covered. The user or coordinator loads the result (`H2_MAP_DIR`);
-agents do not.
+(`crates/apps/h2-tools/src/testmap_cmd.rs`) is a host-only tool that runs a
+JSON edit script (`scenario_edit::script`,
+`crates/tools/scenario-edit/src/script.rs`) over a map's placement blocks
+through the editor's `Session` and saves a new map; the source is never
+written. Operations: `clear`, `keep`, `add` (`like` or palette first item,
+then `set`), `set`, `remove`; `allow_growth` lets a block grow. Blocks:
+`scenery`, `vehicles`, `equipment`, `weapons`, `machines`, `sound_scenery`,
+`crates`, `starting_locations`, `netgame_flags`, `netgame_equipment`,
+`starting_equipment`. AI and non-palette tag references are not covered. The
+user or coordinator loads the result (`H2_MAP_DIR`); agents do not.
 
 ## Content packages
 
-The game's content packages: ours baked into `h2` from `content/<id>/`,
-then the user's under `<data>/packages/<id>/`, ordered and switched by
-`<data>/packages/set.toml` and the game's features, and what each map the
-game read got from them ([studio-redesign.md](../editor/studio-redesign.md),
-"How the game consumes packages"). Registered by
-`crates/apps/boot/src/packages.rs`; the set and the rows are
-`workspace::GameSet`, the maps `workspace::PackageRewrite`'s record.
+The game's content packages: ours baked into `h2` from `content/<id>/`, then
+the user's under `<data>/packages/<id>/`, ordered by
+`<data>/packages/set.toml` and the game's features
+([studio-redesign.md](../editor/studio-redesign.md), "How the game consumes
+packages"). Registered by `crates/apps/boot/src/packages.rs`; set and rows are
+`workspace::GameSet`, maps `workspace::PackageRewrite`'s record.
 
 | Method | Access | Params and result |
 |---|---|---|
 | `packages.list` | read | `{}` → `{packages, problems, content_hash, local_only, maps}` |
 
-- `packages`: every package read, those on in load order, then those off
-  by id. Each row has `id`, `name`, `package_id` (the `PackageId`),
-  `origin` (`baked` or `local`), `dir` for a local one, `on`, `why` when
-  off (switched off in `set.toml`, a feature that is off, a `requires`
-  that is missing or off, a set that cannot be ordered), `always_on`
-  (`core` and `ui`), `signed` (baked packages are; a local one is not and
-  loads in local games only), `features`, `items` (a count by kind) and
-  `scopes` (`sim`, `client`, `live`, `per-feature`).
-- `problems`: the lines the boot printed: a package that did not read, a
-  local package with a baked one's id, a `set.toml` that is not used (it
-  does not parse, or it switches `core` or `ui` off), a cycle.
-- `content_hash`: the SHA-256 of the content set (the `PackageId`s of the
-  packages on with a `sim` item), or `null` when the set did not order.
-- `local_only`: why a Live or System Link session would be refused with
-  this set (an unsigned package with a `sim` item, named), or `null`.
-- `maps`: by map name, each map the rewrite was asked for (or, with
-  `store-maps`, each level opened from the store): `scope` (its
-  header's class), `packages` applied in order, `held` (packages whose
-  tags the map has already, left out), `refused` when packages are off
-  for this map (each `package` and `why`: a `from`, `was` or `replaces`
-  that does not match what the map holds, a clash with an earlier
-  package, or a `requires` that is off), `key` (the cache key; with
-  `store-maps`, the level's `LevelId`, empty for a level with nothing
-  over it), `hits` and `builds`, `added` and `changed` tag counts, and
-  `error` when the map was served without its packages.
+| Field | Contents |
+|---|---|
+| `packages` | every package read, on in load order then off by id: `id`, `name`, `package_id`, `origin` (`baked`/`local`), `dir`, `on`, `why` when off, `always_on` (`core`, `ui`), `signed`, `features`, `items`, `scopes` (`sim`, `client`, `live`, `per-feature`) |
+| `problems` | boot's lines: unreadable package, a local package with a baked id, an unused `set.toml`, a cycle |
+| `content_hash` | SHA-256 of the packages on with a `sim` item; `null` if the set did not order |
+| `local_only` | why a Live or System Link session would be refused (an unsigned `sim` package), or `null` |
+| `maps` | by map name: `scope`, `packages`, `held`, `refused` (`package`, `why`), `key`, `hits`, `builds`, `added`, `changed`, `error` |
 
-```sh
-h2 agent packages.list
-```
+Reasons for `why` and `refused`: see the
+[detail note](notes/2026-11-26-agent-api-detail.md), "Content packages".
 
 ## The tag store
 
-The tag store at `<data>/tags` and the maps it can give back byte for
-byte from their skeletons and extent tables
-([asset-store.md](../engine/asset-store.md)). With the `store-maps`
-feature on, the game reads the disc's maps from it and never from the
-disc. Registered by `crates/apps/boot/src/store_status.rs`; the maps are
-`vfs::store_map::status`, read from the extent tables.
+The tag store at `<data>/tags` and the maps it gives back byte for byte from
+skeletons and extent tables ([asset-store.md](../engine/asset-store.md)). With
+`store-maps` on, the game reads the disc's maps from it, never the disc.
+Registered by `crates/apps/boot/src/store_status.rs`; maps are
+`vfs::store_map::status`.
 
 | Method | Access | Params and result |
 |---|---|---|
 | `store.status` | read | `{}` → `{root, exists, served, maps, stale, broken, images}` |
 
-- `root`: the store's directory; `exists`: whether it is a tag
-  repository.
-- `served`: whether this boot serves the disc's maps from it
-  (`store-maps`).
-- `maps`: each map it can serve: `map`, `length`, `sha256` (the file it
-  was extracted from), `skeleton_bytes` (the skeleton file, compressed),
-  `extents` and `extent_bytes`.
-- `stale`: maps `extract.toml` records with no skeleton or extent table
-  (`h2 tags extract --update` takes them again).
-- `broken`: maps whose extent table does not read, with `why`.
-- `images`: the level images under `<data>/store/images`
-  (`workspace::level`): `level_id`, `length` and `sha256` of the map file
-  each gives, `disk_bytes` (the image and its table), `extents` and
-  `extent_bytes`.
-
-```sh
-h2 agent store.status
-```
+| Field | Contents |
+|---|---|
+| `root`, `exists` | the store's directory; whether it is a tag repository |
+| `served` | whether this boot serves the disc's maps from it (`store-maps`) |
+| `maps` | `map`, `length`, `sha256`, `skeleton_bytes`, `extents`, `extent_bytes` |
+| `stale` | maps `extract.toml` records with no skeleton or table (`h2 tags extract --update`) |
+| `broken` | maps whose extent table does not read, with `why` |
+| `images` | level images under `<data>/store/images`: `level_id`, `length`, `sha256`, `disk_bytes`, `extents`, `extent_bytes` |
 
 ## Rules and limits
 
@@ -6203,82 +4310,58 @@ h2 agent store.status
   names.
 - Snapshots, captures, input logs, traces and flights live in the cache
   directory (`agent_proto::cache_dir`), never in the repository.
-- Methods a method table names but this build does not register (an
-  `input.*` method without XAPI input, `audio.voices` without
-  DirectSound, `host.lobby.*` without the light host) are absent from
-  `session.methods`.
+- Methods a table names but this build does not register (an `input.*`
+  method without XAPI input, `audio.voices` without DirectSound,
+  `host.lobby.*` without the light host) are absent from `session.methods`.
 
 ## Evidence
 
 Statements are **Code** (read from this repository, the path given) unless
 labelled. Guest addresses are **E** (read from the retail XBE with `h2
 disasm`) and are research points, not data. Tests that cover the page:
-`crates/extensions/agent/src/exec/tests.rs` (wire, control, wait, deferred answers),
-`crates/extensions/agent/src/sim/tests.rs` (`sim.*`, with the callees played by the
-tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/src/havok.rs` and
-`crates/extensions/agent/src/raw.rs` (synthetic guest memory), `crates/extensions/agent-proto`
-(wire types), `crates/apps/boot/tests/feature_plan.rs` (the observer order),
-`crates/extensions/agent/src/render/picture/tests.rs` and `exec/picture.rs`
-(`render.picture` over a synthetic frame source).
-
+`crates/extensions/agent/src/exec/tests.rs`, `sim/tests.rs`, `trace/tests.rs`,
+`havok.rs`, `raw.rs`, `crates/extensions/agent-proto` (wire types),
+`crates/apps/boot/tests/feature_plan.rs` (observer order),
+`crates/extensions/agent/src/render/picture/tests.rs` and `exec/picture.rs`.
 ## Not verified
 
-- Nothing here was checked by running the game unless a section says so:
-  the tests above use fake readers, synthetic guest memory, synthetic pads,
-  synthetic frames and a fake sampler.
-- `ui.audit`, `ui.press` and the menu crawl against a live game. Their regression
-  cases use synthetic memory, input and agent replies.
-- `input.route` and the Ascension recipe against a running game.
-- `state.*` against the real machine: the tests run over fakes.
-- `sim.give`, `sim.spawn` and teleport against a running game: the callees
-  are played by the tests.
-- Lobby steps `invite` and `start` have not been pressed through by `sim`
-  in a run.
-- `render.frame`, `load.timeline`, `world.raw`, `havok.*` and the
-  `trace`/`flight` recorder against a running game.
-- `shadow.*` and `scripts/shadow-gate.sh` against the disc: the tests run
-  over synthetic code and memory.
-- `render.compare`, `render.capture`, `render.scene`, `render.parity`,
-  `render.residual` and `sim.hashes` against a running game.
-- `render.picture` against a running game, and its readback's cost to the
-  game's frame time: the tests use a synthetic frame source.
-- `maps.test.*` against a running game: the build, the slot and the
-  queued load ([test-maps.md](../game/test-maps.md#not-verified)).
-- Not provided: effect, projectile and particle counts; per-subsystem
-  guest time; owner attribution of frame cost; kernel I/O seeks and cache
-  hits in the load timeline; a widget-level HUD; setting a feature switch through the API; loading a named level
-  other than a test map (`maps.test.load`).
+Nothing here was checked by running the game unless a section says so; the
+tests use fake readers, synthetic memory, pads and frames. Unchecked against a
+live game: `ui.audit`, `ui.press` and the menu crawl; `input.route`; `state.*`;
+`sim.give`, `sim.spawn` and teleport; lobby steps `invite` and `start`;
+`render.*`, `load.timeline`, `world.raw`, `havok.*`, `sim.hashes` and the
+`trace`/`flight` recorder; `shadow.*` and `scripts/shadow-gate.sh` against the
+disc; `maps.test.*` ([test-maps.md](../game/test-maps.md#not-verified)).
+Not provided: effect, projectile and particle counts; per-subsystem guest
+time; owner attribution of frame cost; kernel I/O seeks and cache hits in the
+load timeline; a widget-level HUD; setting a feature switch through the API;
+loading a named level other than a test map.
 
 ## Behaviour probes
 
 **Built.** A socket-enabled serve registers these four game methods under
-`agent-probes`. Their names and wire types are in `agent-proto`'s `probe` module (`crates/extensions/agent-proto/src/probe.rs`); the implementation is `crates/extensions/agent/src/probe/`. Discover them with `session.methods`. The three acting
-methods require a writable local/host session and a ticking game. Use a
-single controller connection for a multi-call experiment. Object arguments
-are full eight-digit hex datums, as returned by `sim.give`, `sim.spawn` or
-a player's `world.query` row.
+`agent-probes` (wire types `crates/extensions/agent-proto/src/probe.rs`,
+code `crates/extensions/agent/src/probe/`). The three acting methods need a
+writable local or host session and a ticking game; use one controller
+connection for a multi-call experiment. Objects are full eight-digit hex
+datums, as returned by `sim.give`, `sim.spawn` or a player's `world.query` row.
 
 | Method | Request and result |
 |---|---|
-| `probe.weapon` | Give the weapon with `sim.give` and wait until it is held. Send `{"player":0,"object":"e1230042","ticks":60,"steps":[{"rt":1,"ticks":55},{"ticks":5}]}`. The initial sample and one row per subsequent tick contain first-magazine loaded/reserve counts, magazine state and heat. Each tick's `shots` lists barrel events and the projectiles launched by each. Each projectile has its datum, definition datum, applied cone in radians, barrel error fraction (`bloom`), direction vector and measured deflection in radians. Two trigger steps separated by a neutral step exercise two presses. A step with `"buttons":["x"]` exercises a reload. |
-| `probe.animation` | Send `{"unit":"e1230043","path":["combat","rifle","ar","fire_1"],"overlay":false}`. The four strings are mode, class, weapon type and action. Set `overlay` for an overlay lookup. Returns the unit's graph datum/name, requested path, selected mode/class/type string IDs and names, inherited graph index, animation index, selected clip name and frame count. The native selector runs against the unit's current animation manager. This samples the answer to a state request without changing the unit's playing channel. |
-| `probe.hit` | Send `{"projectile":"proj:weapons/assault rifle/bullet","target":"e1230043","from":[3,0,1],"to":[2,0,1],"ticks":12}`. Coordinates are world-space, or target node-local when `node` is supplied. The projectile starts at `from` and travels in the direction of `to` with the projectile definition's velocity and range. Optional `shield` sets the target's shield fraction at launch. Returns the first collision of this projectile, including kind, position, object datum, region, node and global material index. Object hits include vitality `before` and `after` as [body, shield]. `damage` contains the game's damage reports for the specified victim during that projectile's impact. A wall or a different victim is a reportable hit. A miss through the entire window is an error. Damage and shield preparation affect the world. |
-| `probe.round` | Send `{}`. Returns the engine's round-start tick, per-player first applied control and first movement/fire ticks, and any observation error. Capture starts at map activation, so callers can ask after the countdown. Join player indices to `sim.player.list.clankers` to identify bots. |
+| `probe.weapon` | `{"player":0,"object":"e1230042","ticks":60,"steps":[{"rt":1,"ticks":55},{"ticks":5}]}`; give the weapon with `sim.give` first. Returns an initial sample and a row per tick: loaded/reserve counts, magazine state, heat, and `shots` (barrel events with projectile datum, definition, cone, `bloom`, direction, deflection). `"buttons":["x"]` reloads |
+| `probe.animation` | `{"unit":"e1230043","path":["combat","rifle","ar","fire_1"],"overlay":false}` (mode, class, weapon type, action). Returns graph datum and name, selected string IDs and names, inherited graph index, animation index, clip name and frame count. Does not change the playing channel |
+| `probe.hit` | `{"projectile":"proj:weapons/assault rifle/bullet","target":"e1230043","from":[3,0,1],"to":[2,0,1],"ticks":12}`; optional `node`, `shield`. Returns the first collision (kind, position, object datum, region, node, material index), vitality `before` and `after` as [body, shield], and `damage` reports. A miss through the window is an error; the world is changed |
+| `probe.round` | `{}` → round-start tick, per-player first applied control and first movement/fire ticks, observation error. Capture starts at map activation. Join indices to `sim.player.list.clankers` for bots |
 
-Weapon and hit captures share one slot. Their window is 1–290 ticks. A
-changed weapon, missing object, unreadable fields or discontinuous weapon
-trace fails the request. Machine snapshots preserve round history and refuse
-an in-progress capture. Take a snapshot before a destructive experiment and
-load it afterwards.
-
-The simulation hooks measure the barrel fire call at `0x104150`, the launch
-call at `0x1052c5`, projectile collision at `0xfaa60` and its nested damage
-report. The animation selectors are `0x1db170` and `0x1dbc80`, with entry
-resolution at `0x1daea0`. The round observer uses the two non-neutral
-per-player callers of `0xc6de0`. None of the probes requires rendering.
-
-The [Halo 1 parity suite](../halo1/parity.md) drives these methods against
-converted Blood Gulch and a30.
+Weapon and hit captures share one slot, window 1 to 290 ticks. A changed
+weapon, missing object, unreadable fields or discontinuous trace fails the
+request. Machine snapshots preserve round history and refuse an in-progress
+capture. Hook addresses: barrel fire `0x104150`, launch `0x1052c5`,
+projectile collision `0xfaa60`, animation selectors `0x1db170` and
+`0x1dbc80` (entry resolution `0x1daea0`), round observer callers of
+`0xc6de0`. None of the probes requires rendering. The
+[Halo 1 parity suite](../halo1/parity.md) drives them against converted Blood
+Gulch and a30.
 
 ## Related
 
