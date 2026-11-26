@@ -892,3 +892,44 @@ fn records_before_the_first_tick_are_refused_as_early() {
         "closing events before the film's first tick"
     );
 }
+
+#[test]
+fn forge_and_firefight_records_kept_private_read_back_with_their_ticks() {
+    // The public chunk leaves them out (`privacy::project`); the reader
+    // takes them from the private frame.
+    let mut header = header(4);
+    header.version = 3;
+    header.inputs_in_film = true;
+    let mut out = Writer::new(Cursor::new(Vec::new()), &header).unwrap();
+    let mut track = TrackWriter::default().without_inputs();
+    for n in 1..=4u64 {
+        let mut tick = Tick { tick: n, ..Tick::default() };
+        let mut records = Vec::new();
+        if n == 2 {
+            records.push(RecordData::forge(stream::FORGE_LOOK, b"{}"));
+            records.push(RecordData::forge(stream::FORGE_POSE, &[1, 2, 3]));
+        }
+        if n == 3 {
+            tick.firefight.push(b"{\"wave\":1}".to_vec());
+        }
+        track.push_clocked(&mut out, tick, records, Some(n)).unwrap();
+    }
+    track.finish(&mut out, &MatchHeader::default(), &Summary::default()).unwrap();
+    let bytes = out.finish().unwrap().into_inner();
+    let mut reader = TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap())
+        .unwrap()
+        .without_actions();
+    let mut read = Vec::new();
+    while let Some(tick) = reader.step().unwrap() {
+        read.push((tick.tick, tick.forge, tick.firefight));
+    }
+    assert_eq!(
+        read,
+        vec![
+            (1, vec![], vec![]),
+            (2, vec![vec![stream::FORGE_LOOK, b'{', b'}'], vec![stream::FORGE_POSE, 1, 2, 3]], vec![]),
+            (3, vec![], vec![b"{\"wave\":1}".to_vec()]),
+            (4, vec![], vec![]),
+        ]
+    );
+}
