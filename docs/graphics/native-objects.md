@@ -453,8 +453,11 @@ the call, and draws from the scene.
   after the world's transparents (slot 9) and before the flare query. The
   first-person lights (`0x000404b0`, `native-lights.md`) and the sorted pass
   `0x00040870` have their own slot-10 entries.
-- **Calls.** Argument 0 draws the base layers (1, 3, 7, 8, 20); argument 1
-  draws the overlay layer 2, as the world's layer 2 follows its lights.
+- **Calls.** The split is the guest's (`0x0003fdf0` tests the stack
+  argument at `0x0003ffa0`). Argument 0 draws layers 1, 3, 8, 20 and 7, then
+  layer 2 when `0x00044370` says so (`0x00040284`). Argument 1 draws layer 16
+  only (`0x0003ffbf` sets it, `0x00040010` jumps to the same draw at
+  `0x00040284`). `native_first_person::LATE_LAYER` is 16.
 - **No fallback.** There is no D3D draw and no mask edit. A part that does
   not draw is a named drop (`native_first_person::Dropped`): `no_view`,
   `no_host`, `unreadable` (its instance, rows or order range are not in the

@@ -162,13 +162,15 @@ fn first_person_draws_after_the_world_transparents() {
 #[test]
 fn each_call_draws_its_layers() {
     let stub = Stub::default();
-    *stub.set.lock().unwrap() = Some(set(&[0, 1, 2]));
-    let s = scene(&[1, native_first_person::OVERLAY_LAYER, 7]);
+    *stub.set.lock().unwrap() = Some(set(&[0, 1, 2, 3]));
+    // The guest's split (`0x0003fdf0`): argument 0 draws layers 1, 3, 8,
+    // 20, 7 and 2; argument 1 draws layer 16 only.
+    let s = scene(&[1, native_first_person::LATE_LAYER, 7, 2]);
     let first = run(&stub, &s, 0);
     let second = run(&stub, &s, 1);
-    assert_eq!((first.drawn, second.drawn), (2, 1), "both calls, argument 0 and 1");
+    assert_eq!((first.drawn, second.drawn), (3, 1), "both calls, argument 0 and 1");
     let drew = stub.drew.lock().unwrap();
-    assert_eq!(drew[0], (ViewSlot::FirstPerson, 0, vec![s.order[0], s.order[2]]));
+    assert_eq!(drew[0], (ViewSlot::FirstPerson, 0, vec![s.order[0], s.order[2], s.order[3]]));
     assert_eq!(drew[1], (ViewSlot::FirstPerson, 1, vec![s.order[1]]));
 }
 

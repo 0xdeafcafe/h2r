@@ -13,9 +13,12 @@
 //! is a named drop ([`Dropped`]): counted under its cause here and as the
 //! stage's `scene_dropped`, and nothing draws in its place.
 //!
-//! Which call draws a part follows the world's order around the lights:
-//! argument 0 draws the base layers (1, 3, 7, 8, 20), argument 1 the
-//! overlay layer 2 ([`OVERLAY_LAYER`], the world's slot 6 after its lights).
+//! Which call draws a part is the guest's own split (`0x0003fdf0`, the
+//! stack argument at `[esp+0x58]` tested at `0x0003ffa0`): argument 0 draws
+//! layers 1, 3, 8, 20, 7 and then 2 (`0x00040284`, after `0x00044370` with
+//! layer 2 chosen), argument 1 draws layer 16 only (`0x0003ffbf` sets it,
+//! `0x00040010` jumps to the draw at `0x00040284`). Layer 16 is
+//! [`LATE_LAYER`].
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,8 +53,9 @@ pub const CUT: Cut = Cut {
 /// transparents (slot 9).
 pub const SLOT: ViewSlot = ViewSlot::FirstPerson;
 
-/// The layer the second call draws; the first draws the others.
-pub const OVERLAY_LAYER: u8 = 2;
+/// The one layer the second call draws; the first draws the others
+/// (1, 3, 8, 20, 7 and 2).
+pub const LATE_LAYER: u8 = 16;
 
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
@@ -174,7 +178,7 @@ pub fn drops() -> Vec<(&'static str, u64)> {
 
 /// Whether call `mode` draws a part of `layer`.
 pub fn draws_layer(mode: u32, layer: u8) -> bool {
-    (mode == 1) == (layer == OVERLAY_LAYER)
+    (mode == 1) == (layer == LATE_LAYER)
 }
 
 /// One call, from the scene: the readable parts of `view` that `mode`
