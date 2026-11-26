@@ -186,7 +186,7 @@ parts (not objects) behind
 [framescene.md](framescene.md), "Slice 3"): `aux_state` a bit-11 part
 whose toggle's inputs (`scene_extract::layout::aux_depth`) do not read,
 `subparts` a bit-6 part whose visible-subpart mask does not read or
-names more than 64 subparts or a negative first.
+names a negative first subpart.
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).

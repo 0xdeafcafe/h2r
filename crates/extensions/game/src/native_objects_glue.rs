@@ -57,13 +57,13 @@ struct PartRange {
 }
 
 impl PartRange {
-    fn matches(self, part: WalkPart) -> bool {
+    fn matches(self, part: &WalkPart) -> bool {
         self.geometry_class == part.geometry_class
             && self.node_influences == part.node_influences
             && self.first == part.first_index
             && self.count == part.index_count
             && self.triangle_list == part.triangle_list
-            && part.subparts.is_none_or(|s| s.first == self.first_subpart && u16::from(s.count) == self.subpart_count)
+            && part.subparts.as_ref().is_none_or(|s| s.first == self.first_subpart && s.count == self.subpart_count)
     }
 }
 
@@ -668,10 +668,10 @@ fn plan_walk<B: d3d::backend::Backend>(
     let mut lit = lit.as_mut();
     let coverage = models.coverage.read().map_err(|_| ObjectWalk::Model)?;
     let mut draws = Vec::with_capacity(run.len());
-    for (slot, &item) in (first..).zip(run) {
+    for (slot, item) in (first..).zip(run) {
         let (handle, part) = match item {
             Entry::Excluded => continue,
-            Entry::Object { handle, part: Some(part) } => (handle, part),
+            Entry::Object { handle, part: Some(part) } => (*handle, part),
             _ => return Err(ObjectWalk::Unsupported),
         };
         let instance = scene.instance(view, InstanceKey(handle)).ok_or(ObjectWalk::Inputs)?;

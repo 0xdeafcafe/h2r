@@ -275,26 +275,33 @@ impl std::ops::BitOrAssign for PartFlags {
 
 /// Which of a part's subparts the guest's emitter (`0x0004daa0`) draws:
 /// the record's visible-subpart mask (record `+0x14`, a bit per subpart of
-/// the section) read over the part's own subparts. Bit `n` of `visible` is
-/// the section's subpart `first + n`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+/// the section) read over the part's own subparts, however many. Bit
+/// `n % 64` of `visible[n / 64]` is the section's subpart `first + n`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct Subparts {
     /// The part's first subpart (part `+0xa`).
     pub first: u16,
-    /// Its subparts (part `+0xc`); at most [`Subparts::MAX`].
-    pub count: u8,
-    pub visible: u64,
+    /// Its subparts (part `+0xc`).
+    pub count: u16,
+    /// The mask's bits over them, `count.div_ceil(64)` words.
+    pub visible: Vec<u64>,
 }
 
 impl Subparts {
-    /// The most subparts a part can have here; a part with more keeps its
-    /// D3D draw.
-    pub const MAX: u8 = 64;
+    /// The subparts of `first`, `count` of them, of which those in
+    /// `drawn` (by index among the part's own) draw.
+    pub fn of(first: u16, count: u16, drawn: impl IntoIterator<Item = u16>) -> Self {
+        let mut visible = vec![0u64; usize::from(count).div_ceil(64)];
+        for n in drawn.into_iter().filter(|&n| n < count) {
+            visible[usize::from(n / 64)] |= 1 << (n % 64);
+        }
+        Self { first, count, visible }
+    }
 
     /// The part's subparts that draw, by index among its own (0 the
     /// part's first), ascending.
-    pub fn drawn(self) -> impl Iterator<Item = u8> {
-        (0..self.count.min(Self::MAX)).filter(move |&n| self.visible >> n & 1 != 0)
+    pub fn drawn(&self) -> impl Iterator<Item = u16> + '_ {
+        (0..self.count).filter(move |&n| self.visible.get(usize::from(n / 64)).is_some_and(|w| *w >> (n % 64) & 1 != 0))
     }
 }
 
