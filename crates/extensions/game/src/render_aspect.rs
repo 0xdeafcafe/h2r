@@ -75,18 +75,11 @@ pub fn install(
     Ok(())
 }
 
-fn pixel_aspect((w, h): (u32, u32)) -> Option<f32> {
-    (w != 0 && h != 0 && u64::from(w) * 3 != u64::from(h) * 4)
-        .then(|| (w as f32 / 640.0) / (h as f32 / 480.0))
-}
-
-// The width term selected by the retail projection at 0x2fc45..0x2fc90.
-// Reading it here allows machines already in dashboard widescreen mode to
-// use the display aspect exactly once. The display lens changes only X.
-fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
-    let Some(pixel) = pixel_aspect(output) else {
-        return 1.0;
-    };
+// The width term selected by the retail projection at 0x2fc45..0x2fc90:
+// 1 for the 4:3 lens, the anamorphic factor on a machine in dashboard
+// widescreen mode. Reading it here allows such machines to use the
+// display aspect exactly once.
+fn retail_lens(mem: &impl GuestMemory) -> f32 {
     let suppressed = mem
         .u32(0x004e_6948)
         .ok()
@@ -97,15 +90,37 @@ fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
                 && mem.u16(p + 2).is_ok_and(|v| v != u16::MAX)
                 && mem.u32(p + 8).ok() == Some(3)
         });
-    let retail = if !suppressed && mem.u8(0x0048_5ac2).is_ok_and(|v| v != 0) {
+    if !suppressed && mem.u8(0x0048_5ac2).is_ok_and(|v| v != 0) {
         mem.f32(0x0045_dfdc)
             .ok()
             .filter(|v| v.is_finite() && *v > 0.0)
             .unwrap_or(1.0)
     } else {
         1.0
+    }
+}
+
+// The horizontal clip scale that shows the guest's lens on `output` with
+// square pixels. The display lens changes only X.
+fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
+    let Some(pixel) = ui_layout::stretch_ratio(output) else {
+        return 1.0;
     };
-    retail / pixel
+    retail_lens(mem) / pixel
+}
+
+/// The aspect of the lens a fitted guest camera gathers through, whatever
+/// the window's shape (docs/graphics/high-resolution.md, "Widescreen
+/// projection"): 12:5, which holds 16:9, 16:10 and the 21:9 monitors
+/// (2560x1080, 3440x1440, 3840x1600). A wider window gathers through its
+/// own lens.
+pub const GATHER_ASPECT: f32 = 12.0 / 5.0;
+
+// The gather lens as a factor on the guest's horizontal terms, the way
+// `projection_factor` states the window's: the guest's lens is 4:3 times
+// its retail width term. It depends on the guest's state alone.
+fn gather_factor(mem: &impl GuestMemory) -> f32 {
+    retail_lens(mem) * (ui_layout::CANVAS[0] / ui_layout::CANVAS[1]) / GATHER_ASPECT
 }
 
 // The lens a game view's visibility starts with: the display supplement
@@ -125,8 +140,9 @@ fn starting_lens(factor: f32) -> render_bridge::scene_step::VisibilityLens {
 
 // 0x2fd90 reserves 0x74 stack bytes. After its call to 0x2fb70 (the hook
 // runs at 0x2fda3, whose stack is the continuation's), +0x54 holds the X/Y biases, X/Y scales and four tangent bounds.
-// All three consumers (matrix, CPU pixel scale and frustum) use these
-// terms. Keep the vertical lens and the centre of an off-axis window.
+// The matrix and the CPU pixel scale use the biases and scales, the
+// frustum the bounds. Keep the vertical lens and the centre of an
+// off-axis window.
 /// What [`fit_view_projection`] did with one call of the projection terms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fit {
@@ -135,12 +151,13 @@ enum Fit {
     Networked,
     /// The terms were built for a caller that is not the displayed camera.
     Caller(u32),
-    /// A 4:3 window, or terms the fit cannot use.
+    /// Terms the fit cannot use.
     Unchanged,
 }
 
-fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Fit {
-    if factor == 1.0 || !factor.is_finite() || factor <= 0.0 {
+fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32, gather: f32) -> Fit {
+    let usable = |v: f32| v.is_finite() && v > 0.0;
+    if !usable(factor) || !usable(gather) || (factor == 1.0 && gather >= 1.0) {
         return Fit::Unchanged;
     }
     let Some(caller) = esp.checked_add(0x74).and_then(|at| mem.u32(at).ok()) else {
@@ -153,17 +170,30 @@ fn fit_view_projection(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Fit
         0x0001_3cc0 if mem.u32(0x0046_701c).ok() == Some(0) => {}
         _ => return Fit::Caller(caller),
     }
-    widen_terms(mem, esp, factor).map_or(Fit::Unchanged, |()| Fit::Applied)
+    widen_terms(mem, esp, factor, frustum_factor(factor, gather)).map_or(Fit::Unchanged, |()| Fit::Applied)
 }
 
-fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> Option<()> {
+/// The factor on the guest's tangent bounds for a window at `factor` and
+/// the gather lens at `gather`: the gather lens, the window's own when it
+/// is the wider, and never narrower than the guest's lens. A window
+/// within rounding of the gather lens takes the gather lens exactly.
+fn frustum_factor(factor: f32, gather: f32) -> f32 {
+    let frustum = if factor < gather * (1.0 - 1e-4) { factor } else { gather };
+    frustum.min(1.0)
+}
+
+// The projection's bias and scale take the window's `factor`: they make
+// the matrix and the CPU pixel scale. The tangent bounds take `frustum`:
+// the portal walk and the object planes are built from them, so the
+// guest lists what the gather lens holds while it draws the window's.
+fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) -> Option<()> {
     let at = esp.checked_add(0x54)?;
     let mut words = [0u8; 24];
     mem.read(at, &mut words).ok()?;
     let get = |i: usize| f32::from_le_bytes(words[i..i + 4].try_into().unwrap());
     let (bias, scale, left, right) = (get(0), get(8), get(16), get(20));
     let centre = (left + right) * 0.5;
-    let half = (right - left) * 0.5 / factor;
+    let half = (right - left) * 0.5 / frustum;
     let terms = [bias * factor, scale * factor, centre - half, centre + half];
     if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
         return None;
@@ -541,16 +571,19 @@ impl Feature for RenderAspect {
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
         let view_lens = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let view_gather = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let guest_lens = self.guest_lens;
         let projected = Arc::new(AtomicBool::new(false));
         for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
             let (size, sink, lens) = (self.size.clone(), self.sink.clone(), view_lens.clone());
+            let gather = view_gather.clone();
             let projected = projected.clone();
             b.raw()
                 .observe_before(point, "select the GPU projection", move |o| {
                     let factor = projection_factor(&*o.guest(), size());
                     projected.store(false, Ordering::Relaxed);
                     lens.store(factor.to_bits(), Ordering::Relaxed);
+                    gather.store(gather_factor(&*o.guest()).to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
                     render_bridge::scene_step::set_visibility_lens(starting_lens(factor));
@@ -567,18 +600,23 @@ impl Feature for RenderAspect {
             b.raw()
                 .before(&points::render_aspect::VIEW_PROJECTION_TERMS, "fit the displayed camera projection", move |c| {
                     let factor = f32::from_bits(view_lens.load(Ordering::Relaxed));
+                    let gather = f32::from_bits(view_gather.load(Ordering::Relaxed));
                     let mut mem = c.ctx.memory();
                     let fit = if crate::render_rng::networked(&*mem) {
                         Fit::Networked
                     } else {
-                        fit_view_projection(&mut *mem, c.cpu.esp, factor)
+                        fit_view_projection(&mut *mem, c.cpu.esp, factor, gather)
                     };
                     if let Fit::Applied = fit {
                         projected.store(true, Ordering::Relaxed);
                         sink.set_camera_projection_factor(factor);
                         #[cfg(feature = "desktop-runtime")]
                         render_bridge::scene_step::set_visibility_lens(
-                            render_bridge::scene_step::VisibilityLens::Guest(factor),
+                            render_bridge::scene_step::VisibilityLens::Guest {
+                                projection: factor,
+                                frustum: frustum_factor(factor, gather),
+                                gather,
+                            },
                         );
                     }
                     #[cfg(feature = "desktop-runtime")]
@@ -620,7 +658,7 @@ impl Feature for RenderAspect {
                             d.has_generated(points::ui_render::LAYERS_RETURN.base)
                         }
                     });
-                    if has_returns && pixel_aspect(output).is_some() {
+                    if has_returns && ui_layout::stretch_ratio(output).is_some() {
                         let mem = c.ctx.memory();
                         // UI layers receive the bounds of the specific player
                         // or fullscreen fallback view as their second argument.
@@ -996,7 +1034,8 @@ mod tests {
         for caller in [0x0002_badc, 0x0002_bb21, 0x0002_c7cc, 0x0002_c7ff, 0x0001_3cc0] {
             let mut camera = mem.clone();
             camera.put_u32(esp + 0x74, caller);
-            assert_eq!(fit_view_projection(&mut camera, esp, 0.75), Fit::Applied);
+            // A window as wide as the gather lens: the bounds are its edges.
+            assert_eq!(fit_view_projection(&mut camera, esp, 0.75, 0.75), Fit::Applied);
             let bias = camera.f32(at).unwrap();
             let scale = camera.f32(at + 8).unwrap();
             for (offset, pixel) in [(16, 0.), (20, 5120.)] {
@@ -1010,9 +1049,108 @@ mod tests {
         mem.put_u32(0x0046_701c, 1);
         for caller in [0x0003_f794, 0x0001_3cc0] {
             mem.put_u32(esp + 0x74, caller);
-            assert_eq!(fit_view_projection(&mut mem, esp, 0.75), Fit::Caller(caller));
+            assert_eq!(fit_view_projection(&mut mem, esp, 0.75, 0.5625), Fit::Caller(caller));
             assert_eq!(mem.f32(at + 8).unwrap(), terms[2]);
         }
+    }
+
+    /// A displayed camera's terms on the stack at `esp`: a centred retail
+    /// lens with a horizontal half tangent of 0.7, and the caller.
+    fn displayed_camera(esp: u32) -> FakeGuest {
+        let mut mem = FakeGuest::new();
+        let terms = [0.0, 0.0, 1.0 / 0.7, 2.0, -0.7, 0.7, -0.525, 0.525];
+        for (i, value) in terms.into_iter().enumerate() {
+            mem.put_f32(esp + 0x54 + i as u32 * 4, value);
+        }
+        mem.put_u32(esp + 0x74, 0x0002_badc);
+        mem
+    }
+
+    /// The fitted camera's clip x of the tangent `x`, and its bounds.
+    fn fitted(mem: &FakeGuest, esp: u32) -> (impl Fn(f32) -> f32, [f32; 2]) {
+        let at = esp + 0x54;
+        let (bias, scale) = (mem.f32(at).unwrap(), mem.f32(at + 8).unwrap());
+        (move |x: f32| x * scale + bias, [mem.f32(at + 16).unwrap(), mem.f32(at + 20).unwrap()])
+    }
+
+    #[test]
+    fn the_gather_lens_is_the_same_frustum_in_every_window_it_holds() {
+        let esp = 0x1000;
+        let mem = FakeGuest::new();
+        let gather = gather_factor(&mem);
+        close(gather, (4.0 / 3.0) / GATHER_ASPECT);
+        let wide = 0.7 / gather;
+        for output in [(640, 480), (1600, 1200), (2560, 1600), (5120, 2880), (3440, 1440), (3840, 1600)] {
+            let factor = projection_factor(&mem, output);
+            let mut camera = displayed_camera(esp);
+            assert_eq!(fit_view_projection(&mut camera, esp, factor, gather), Fit::Applied, "{output:?}");
+            let (clip, [left, right]) = fitted(&camera, esp);
+            // The frustum is the gather lens's, whatever the window.
+            close(left, -wide);
+            close(right, wide);
+            // The projection is the window's: its edge rays reach clip 1,
+            // and the vertical terms stand.
+            let edge = 0.525 * output.0 as f32 / output.1 as f32;
+            close(clip(edge), 1.0);
+            close(clip(-edge), -1.0);
+            assert!(edge <= wide + 1e-4, "the gather lens holds {output:?}");
+            for (i, value) in [(1, 0.0), (3, 2.0), (6, -0.525), (7, 0.525)] {
+                assert_eq!(camera.f32(esp + 0x54 + 4 * i).unwrap(), value);
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_wider_than_the_gather_lens_gathers_through_its_own() {
+        let esp = 0x1000;
+        let mem = FakeGuest::new();
+        let gather = gather_factor(&mem);
+        for output in [(5120, 1440), (7680, 1440)] {
+            let factor = projection_factor(&mem, output);
+            assert!(factor < gather);
+            let mut camera = displayed_camera(esp);
+            assert_eq!(fit_view_projection(&mut camera, esp, factor, gather), Fit::Applied);
+            let (clip, [left, right]) = fitted(&camera, esp);
+            close(clip(left), -1.0);
+            close(clip(right), 1.0);
+            close(right, 0.525 * output.0 as f32 / output.1 as f32);
+        }
+    }
+
+    #[test]
+    fn the_frustum_is_never_narrower_than_the_window_or_the_guest_lens() {
+        close(frustum_factor(0.75, 0.5625), 0.5625);
+        close(frustum_factor(1.0, 0.5625), 0.5625);
+        // A window narrower than 4:3 narrows the projection alone.
+        close(frustum_factor(1.25, 0.5625), 0.5625);
+        close(frustum_factor(0.375, 0.5625), 0.375);
+        close(frustum_factor(1.25, 1.5), 1.0);
+        let esp = 0x1000;
+        // An off-centre lens keeps its centre.
+        let mut camera = displayed_camera(esp);
+        camera.put_f32(esp + 0x54 + 16, -1.25).put_f32(esp + 0x54 + 20, 0.75);
+        assert_eq!(fit_view_projection(&mut camera, esp, 0.75, 0.5), Fit::Applied);
+        let (_, [left, right]) = fitted(&camera, esp);
+        close((left + right) * 0.5, -0.25);
+        close(right - left, 2.0 / 0.5);
+        // Nothing to change, and terms that do not read as a lens.
+        let mut camera = displayed_camera(esp);
+        assert_eq!(fit_view_projection(&mut camera, esp, 1.0, 1.0), Fit::Unchanged);
+        for (factor, gather) in [(f32::NAN, 0.5), (0.75, 0.0), (0.0, 0.5), (0.75, f32::INFINITY)] {
+            assert_eq!(fit_view_projection(&mut camera, esp, factor, gather), Fit::Unchanged);
+        }
+        close(fitted(&camera, esp).1[1], 0.7);
+    }
+
+    /// A machine in dashboard widescreen mode has a 16:9 guest lens: the
+    /// gather lens is the same 12:5 frustum, a smaller step from it.
+    #[test]
+    fn the_gather_lens_follows_the_guests_own_lens() {
+        let mut mem = FakeGuest::new();
+        mem.put_u8(0x0048_5ac2, 1).put_f32(0x0045_dfdc, 4.0 / 3.0);
+        close(gather_factor(&mem), (16.0 / 9.0) / GATHER_ASPECT);
+        close(projection_factor(&mem, (3440, 1440)), (16.0 / 9.0) / (3440.0 / 1440.0));
+        assert!(projection_factor(&mem, (3440, 1440)) >= gather_factor(&mem));
     }
 
     #[cfg(feature = "desktop-runtime")]

@@ -610,7 +610,7 @@ pub fn atlas_for(output: (u32, u32)) -> (u32, u32) {
     let scale = if output.0 == 0 || output.1 == 0 {
         1
     } else {
-        let uniform = (output.0 as f32).min(output.1 as f32 * 4.0 / 3.0) / 640.0;
+        let uniform = render_bridge::ui_layout::uniform_scale(output);
         (uniform.ceil().max(1.0).min(MAX_ATLAS_SCALE as f32)) as u32
     };
     let side = if scale > 1 { GlyphPages::PAGE * 2 } else { GlyphPages::PAGE };

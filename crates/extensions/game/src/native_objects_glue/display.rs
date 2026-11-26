@@ -22,10 +22,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let specular = device_specular(&device, mem);
         let read = crate::native_world_glue::ReadMemory(mem);
         let target = device.external_ready(&read, false).ok()?;
-        // A widened guest camera's objects outside the retail set are drawn
-        // whatever the device's own factor (`scene_step::retail_object`).
+        // A guest camera's objects outside the gather lens's set are drawn
+        // whatever the device's own factor (`scene_step::gather_lens_object`).
         if !visibility.guest_lens && device.projection_factor_for_target(target.surface_size) >= 1.0 { return None; }
         let (gpu, color, depth) = device.external_pipeline_target(&read)?;
+        // A part sampling the texture accumulation target needs its level
+        // in place; without one only that object is left out.
+        let levels_in_place = device.samples_levels_in_place();
         let mut draws = Vec::new();
         {
             let mut gpu_models = models.lit.try_lock().ok()?;
@@ -48,12 +51,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                         true
                     })
                 });
-                if !complete { draws.truncate(start); }
+                // Each object stands alone: one whose parts do not all plan,
+                // whose pipelines are still compiling, or whose accumulation
+                // level cannot be sampled is left out, and the rest draw.
+                if !complete
+                    || (!levels_in_place && draws[start..].iter().any(|(_, d)| d.texaccum))
+                    || !lit.prewarm_draws(&gpu, color, depth, &draws[start..])
+                {
+                    draws.truncate(start);
+                }
             }
-            if draws.is_empty() || !lit.prewarm_draws(&gpu, color, depth, &draws) { return None; }
+            if draws.is_empty() { return None; }
         }
         let texaccum = if draws.iter().any(|(_, d)| d.texaccum) {
-            if !device.samples_levels_in_place() { return None; }
             Some(native_render::world_layers::Texaccum::read(&Ro(mem))?)
         } else {
             None
