@@ -191,7 +191,7 @@ pub fn problems(def: &Def, classes: &[String], drops: usize) -> Vec<Problem> {
                     squad: (s + 1) as u8,
                     what,
                 };
-                if !classes.iter().any(|c| *c == squad.class) {
+                if !classes.contains(&squad.class) {
                     out.push(at(ProblemKind::ClassNotBuilt));
                 }
                 if let firefight::Drop::PreferZone(zone) = squad.drop
