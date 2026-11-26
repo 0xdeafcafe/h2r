@@ -385,7 +385,7 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
 
     // The record's flags as the geometry draw reads them: bit 9 on A's
     // part 0 made a strip part draws a strip; the record's fade byte
-    // keeps the item on D3D.
+    // marks the item faded.
     native_first_person::restore_pending(&mut m);
     let a_parts = model(&mut m, DEF_A);
     m.set_u32(a_parts, 0).unwrap();
@@ -400,8 +400,11 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
     native_first_person::restore_pending(&mut m);
     m.set_u32(record_1 + 0x18, 0x80 << 16).unwrap();
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
-    assert_eq!(masks(&m), vec![0b1010, 0b0010, 0b0010, 0b1010], "a fade byte keeps its item on D3D");
     let offered = stub.offered.lock().unwrap();
     let (_, items, _) = offered.last().unwrap();
-    assert!(items.iter().all(|item| item.key.record != 1));
+    let faded = items.iter().find(|item| item.key.record == 1).expect("a faded record is planned");
+    assert!(
+        faded.flags.contains(PartFlags::FADE),
+        "a fade byte is a part flag; the host decides whether the stipple masks it"
+    );
 }
