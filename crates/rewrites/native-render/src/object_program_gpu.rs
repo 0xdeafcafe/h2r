@@ -3815,7 +3815,7 @@ mod tests {
                 inputs: LayerInputs { defaults: Some(Defaults::default()), ..Default::default() },
             };
             let plan = |dirty| plan_layer_part_at_entry(&parts, Some(0), &|_| Some(&compiled), instance,
-                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)), None);
+                layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)), None, None);
             assert_eq!(plan(Some(false)).unwrap()[0].vertex.constants[18].map(f32::to_bits), device.map(f32::to_bits));
             assert!(plan(Some(true)).unwrap_err().contains("pending c[18] upload"));
             assert!(plan(None).is_err());
