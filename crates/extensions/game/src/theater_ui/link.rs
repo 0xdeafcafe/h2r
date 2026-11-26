@@ -486,12 +486,13 @@ impl Feature for Driver {
                         if ready.local && ready.waited < MENU_WAIT_UPDATES {
                             let up = cx.read(|m| ui_watch::read(&ReadGm(m)).top.is_some());
                             if !up || ready.waited < MENU_SETTLE_UPDATES {
-                                let mut slot =
-                                    theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
-                                if slot.is_none() {
-                                    *slot = Some(Ready { waited: ready.waited + 1, ..ready });
+                                {
+                                    let mut slot =
+                                        theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
+                                    if slot.is_none() {
+                                        *slot = Some(Ready { waited: ready.waited + 1, ..ready });
+                                    }
                                 }
-                                drop(slot);
                                 let out = cx
                                     .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
                                     .await?;
