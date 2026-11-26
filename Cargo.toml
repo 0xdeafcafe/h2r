@@ -19,7 +19,7 @@ version = "0.1.0"
 license = "WTFPL"
 
 [workspace.dependencies]
-mem-watch = { path = "crates/platform/mem-watch" }
+mem-watch = { path = "crates/runtime/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
 anim-edit = { path = "crates/tools/anim-edit" }

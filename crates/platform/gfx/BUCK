@@ -42,7 +42,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:bytemuck",
         "//third-party/rust:hashbrown",
@@ -68,7 +68,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -96,7 +96,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -125,7 +125,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -154,7 +154,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -183,7 +183,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -212,7 +212,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -241,7 +241,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
@@ -270,7 +270,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/mem-watch:mem-watch",
+        "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//third-party/rust:anyhow",
         "//third-party/rust:bytemuck",
