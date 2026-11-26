@@ -36,6 +36,8 @@ pub const KOTH_HILL: u32 = 0x1a0;
 /// each.
 pub const NETGAME_FLAGS: u32 = 0x118;
 pub const NETGAME_FLAG_STRIDE: u32 = 0x20;
+/// In a flag: its facing (`f32`, radians counter-clockwise from +x).
+pub const FLAG_FACING: u32 = 0xc;
 pub const FLAG_TYPE: u32 = 0x10;
 pub const FLAG_TEAM: u32 = 0x12;
 /// Netgame flags looked at, at most.
@@ -192,6 +194,22 @@ pub fn hill_corners(
         corners.push(at);
     }
     Ok(Some((id as u8, corners)))
+}
+
+/// The loaded scenario’s netgame flags' facings, in placement order, as
+/// [`netgame_flags`] lists them: what turns a box zone round its flag.
+pub fn netgame_flag_facings(m: &dyn GuestMemory) -> Result<Vec<f32>, MemFault> {
+    let s = m.u32(points::SCENARIO.base)?;
+    if s == 0 {
+        return Ok(Vec::new());
+    }
+    check_span(s, NETGAME_FLAGS + 8)?;
+    let n = m.i32(s + NETGAME_FLAGS)?.clamp(0, NETGAME_FLAG_LIMIT) as u32;
+    let at = m.u32(s + NETGAME_FLAGS + 4)?;
+    check_span(at, n * NETGAME_FLAG_STRIDE)?;
+    (0..n)
+        .map(|i| m.f32(at + i * NETGAME_FLAG_STRIDE + FLAG_FACING))
+        .collect()
 }
 
 /// The loaded scenario’s netgame flags, in placement order.

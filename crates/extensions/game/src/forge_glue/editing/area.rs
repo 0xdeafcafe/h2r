@@ -1,9 +1,12 @@
-//! One area in hand. Only accepting it writes to the Forge document.
+//! One area in hand: a circle, a box, a sphere or a path
+//! (docs/game/gametype-marker-forms.md, "Interfaces"). Y cycles the four
+//! shapes; only accepting the draft writes to the Forge document.
 use forge::camera::Camera;
 use forge::tool::{Action, Input};
-use forge::{BlockKind, Goal, Thing};
+use forge::{BlockKind, Thing};
 use forge_doc::Endpoint;
-use game_markers::{Area, Shape, area::MIN_POINTS};
+use game_markers::area::{DEFAULT_ABOVE, DEFAULT_BELOW, MAX_REACH, MIN_POINTS, MIN_RADIUS};
+use game_markers::{Area, Shape};
 use serde_json::{Value, json};
 
 use super::{After, Editor, Kind, screens, sheet};
@@ -15,9 +18,20 @@ pub(super) const FLOOR_NORMAL: f32 = 0.5;
 const POINT_AIM: f32 = 0.09;
 const DRAG_THRESHOLD: f32 = 0.025;
 const STICK_REPEAT: f32 = 0.18;
-/// Said when a box or a sphere area is opened for editing: Edit area
-/// handles a radius and a path until the four-shape editor lands.
-const UNEDITABLE: &str = "A box or sphere area cannot be edited here yet.";
+/// How far a stick axis leans before it steps a length.
+const STICK_DEAD: f32 = 0.12;
+const NO_AREA: &str = "Aim at a goal with an area: a hill, territory, site, flag return or bomb goal.";
+
+/// The area a flag of label `text` starts with when it has none stored:
+/// a hill's, a territory's and a site's default circle, the capture plate
+/// of a flag return, a bomb goal and a siege goal ([`Area::plate`]). `None`
+/// for a label whose marker has no area.
+pub(super) fn default_area(text: &str) -> Option<Area> {
+    if text == "hill_corner" {
+        return Some(Area::default());
+    }
+    game_markers::Kind::of_label(text)?.area().cloned()
+}
 
 #[derive(Clone, Copy)]
 struct Drag {
@@ -30,10 +44,16 @@ struct Drag {
 pub(super) struct Draft {
     pub id: Endpoint,
     pub centre: [f32; 3],
+    /// The marker's facing, which a box turns with.
+    pub yaw: f32,
     pub area: Area,
+    /// The radius a path or a box left, for the shape after it.
     radius: f32,
-    stick: i8,
-    repeat_in: f32,
+    /// The heights a sphere set aside, for the shape after it.
+    heights: (f32, f32),
+    /// Each stick axis's lean, -1, 0 or 1: right, then forward.
+    stick: [i8; 2],
+    repeat_in: [f32; 2],
     drag: Option<Drag>,
 }
 
@@ -45,23 +65,31 @@ pub(super) enum Next {
 }
 
 impl Draft {
-    fn new(id: Endpoint, centre: [f32; 3], area: Area) -> Self {
-        let radius = game_markers::area::DEFAULT_RADIUS;
+    fn new(id: Endpoint, centre: [f32; 3], yaw: f32, area: Area) -> Self {
+        let radius = match area.shape {
+            Shape::Radius(r) | Shape::Sphere(r) => r,
+            _ => area.equal_floor_radius().unwrap_or(game_markers::area::DEFAULT_RADIUS),
+        };
+        let heights = match area.shape {
+            Shape::Sphere(_) => (DEFAULT_BELOW, DEFAULT_ABOVE),
+            _ => (area.below, area.above),
+        };
         Self {
             id,
             centre,
+            yaw,
             area,
             radius,
-            stick: 0,
-            repeat_in: 0.,
+            heights,
+            stick: [0; 2],
+            repeat_in: [0.; 2],
             drag: None,
         }
     }
 
     pub fn mode(&self) -> AreaMode {
         match self.area.shape {
-            // A box or a sphere is refused before a draft is made
-            // (`begin_area`), so these never reach a draft.
+            // A box and a sphere take the stick as a radius does.
             Shape::Radius(_) | Shape::Box { .. } | Shape::Sphere(_) => AreaMode::Radius,
             Shape::Path(_) => AreaMode::Path,
         }
@@ -93,19 +121,51 @@ impl Draft {
 
     fn number(&mut self, field: AreaField, text: &str) -> Result<(), String> {
         let value = text.parse::<f32>().map_err(|_| "Type a number.")?;
-        self.change(|area| match field {
-            AreaField::Radius => area.shape = Shape::Radius(value),
-            AreaField::Below => area.below = value,
-            AreaField::Above => area.above = value,
+        let sphere = matches!(self.area.shape, Shape::Sphere(_));
+        if sphere && matches!(field, AreaField::Below | AreaField::Above) {
+            return Err("A sphere has no height: its radius is all of it.".into());
+        }
+        self.change(|area| match (field, &mut area.shape) {
+            (AreaField::Radius, Shape::Sphere(r)) => *r = value,
+            (AreaField::Radius, shape) => *shape = Shape::Radius(value),
+            (AreaField::Length, Shape::Box { half }) => half[0] = value,
+            (AreaField::Width, Shape::Box { half }) => half[1] = value,
+            (AreaField::Length | AreaField::Width, shape) => {
+                *shape = Shape::Box { half: [value; 2] }
+            }
+            (AreaField::Below, _) => area.below = value,
+            (AreaField::Above, _) => area.above = value,
         })
     }
 
+    /// Y: a circle becomes a box of its radius each way, a box a sphere
+    /// of the same floor, a sphere an empty path, and a path a circle of
+    /// the same floor (or the radius from before it, with fewer than
+    /// three points). A sphere sets the heights aside and the shape after
+    /// it takes them back.
     fn switch_shape(&mut self) -> Result<(), String> {
-        match self.area.shape {
-            Shape::Box { .. } | Shape::Sphere(_) => return Err(UNEDITABLE.into()),
+        let (below, above) = self.heights;
+        match self.area.shape.clone() {
             Shape::Radius(radius) => {
                 self.radius = radius;
-                self.area.shape = Shape::Path(Vec::new());
+                self.change(|area| area.shape = Shape::Box { half: [radius; 2] })?;
+            }
+            Shape::Box { .. } => {
+                let radius = self
+                    .area
+                    .equal_floor_radius()
+                    .unwrap_or(self.radius)
+                    .clamp(MIN_RADIUS, MAX_REACH);
+                self.heights = (self.area.below, self.area.above);
+                self.change(|area| *area = Area::sphere(radius))?;
+            }
+            Shape::Sphere(radius) => {
+                self.radius = radius;
+                self.area = Area {
+                    shape: Shape::Path(Vec::new()),
+                    below,
+                    above,
+                };
             }
             Shape::Path(_) => {
                 if self.points().len() >= MIN_POINTS {
@@ -115,32 +175,71 @@ impl Draft {
                 self.change(|area| area.shape = Shape::Radius(radius))?;
             }
         }
-        self.stick = 0;
+        self.stick = [0; 2];
         self.drag = None;
         Ok(())
     }
 
-    fn nudge_radius(
-        &mut self,
-        radius: f32,
-        axis: f32,
-        step: f32,
-        seconds: f32,
-    ) -> Result<(), String> {
-        let stick = if axis.abs() > 0.12 {
+    /// The step stick axis `i` (0 right, 1 forward) makes this sample: its
+    /// sign when it leans anew, or again every [`STICK_REPEAT`] seconds
+    /// while it is held; 0 otherwise.
+    fn lean(&mut self, i: usize, axis: f32, seconds: f32) -> f32 {
+        let stick = if axis.abs() > STICK_DEAD {
             axis.signum() as i8
         } else {
             0
         };
-        let nudge = stick != 0 && (stick != self.stick || self.repeat_in <= seconds);
-        self.stick = stick;
-        if nudge {
-            self.repeat_in = STICK_REPEAT;
-            self.change(|area| area.shape = Shape::Radius(radius + f32::from(stick) * step))?;
+        let step = stick != 0 && (stick != self.stick[i] || self.repeat_in[i] <= seconds);
+        self.stick[i] = stick;
+        if step {
+            self.repeat_in[i] = STICK_REPEAT;
+            f32::from(stick)
         } else {
-            self.repeat_in -= seconds;
+            self.repeat_in[i] -= seconds;
+            0.
         }
-        Ok(())
+    }
+
+    /// The left stick grows a circle and a sphere on its forward axis,
+    /// and a box on both. A box turns with its marker, so each stick axis
+    /// steps the box's axis nearer to it as the monitor `look`s (its yaw):
+    /// forward the half length along the marker's facing and right the
+    /// half width while the monitor looks more along the facing than
+    /// across it, the other way round while it looks across. Each lean is
+    /// one `step`.
+    fn grow(
+        &mut self,
+        movement: [f32; 3],
+        step: f32,
+        seconds: f32,
+        look: Option<f32>,
+    ) -> Result<(), String> {
+        let forward = self.lean(1, movement[1], seconds) * step;
+        match self.area.shape.clone() {
+            Shape::Radius(r) if forward != 0. => {
+                self.change(|area| area.shape = Shape::Radius(r + forward))
+            }
+            Shape::Sphere(r) if forward != 0. => {
+                self.change(|area| area.shape = Shape::Sphere(r + forward))
+            }
+            Shape::Box { half } => {
+                let right = self.lean(0, movement[0], seconds) * step;
+                if forward == 0. && right == 0. {
+                    return Ok(());
+                }
+                let across = look.is_some_and(|look| {
+                    let (s, c) = (look - self.yaw).sin_cos();
+                    s.abs() > c.abs()
+                });
+                let (length, width) = if across { (right, forward) } else { (forward, right) };
+                self.change(|area| {
+                    area.shape = Shape::Box {
+                        half: [half[0] + length, half[1] + width],
+                    }
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     fn path_input(
@@ -234,16 +333,17 @@ impl Draft {
                 Ok(Next::Keep)
             }
             action => match self.area.shape {
-                Shape::Box { .. } | Shape::Sphere(_) => Err(UNEDITABLE.into()),
-                Shape::Radius(radius) => {
+                Shape::Radius(_) | Shape::Box { .. } | Shape::Sphere(_) => {
                     let step = if step > 0. { step } else { 0.25 };
-                    self.nudge_radius(radius, input.movement[1], step, seconds)?;
+                    let look = camera.as_ref().map(|camera| camera.yaw);
+                    self.grow(input.movement, step, seconds, look)?;
+                    // The axes that size the shape do not fly the monitor.
+                    let right = match self.area.shape {
+                        Shape::Box { .. } => 0.,
+                        _ => input.movement[0],
+                    };
                     if let Some(camera) = camera {
-                        camera.fly(
-                            [input.movement[0], 0., input.movement[2]],
-                            input.look,
-                            seconds,
-                        );
+                        camera.fly([right, 0., input.movement[2]], input.look, seconds);
                     }
                     Ok(match action {
                         Some(A::Accept) => Next::Save,
@@ -277,18 +377,19 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 impl Editor {
-    pub(super) fn area_goal(&self, thing: &Thing) -> Option<Goal> {
+    /// The area a goal's Edit area starts from when it has none stored;
+    /// `None` for a thing that has no area.
+    pub(super) fn area_default(&self, thing: &Thing) -> Option<Area> {
         let labels = self.session.labels().ok()?;
-        Goal::of_label(&forge::flag_label(thing, &labels)?.text)
+        default_area(&forge::flag_label(thing, &labels)?.text)
     }
 
     pub(super) fn begin_area(&mut self, id: Endpoint) -> Result<(), String> {
         let thing = self.session.thing(id).ok_or("The goal is gone.")?;
         let labels = self.session.labels()?;
-        let label =
-            forge::flag_label(&thing, &labels).ok_or("Aim at a hill, territory or site.")?;
-        let goal = Goal::of_label(&label.text).ok_or("Aim at a hill, territory or site.")?;
-        if goal == Goal::Hill
+        let label = forge::flag_label(&thing, &labels).ok_or(NO_AREA)?;
+        let default = default_area(&label.text).ok_or(NO_AREA)?;
+        if label.text == "hill_corner"
             && self
                 .session
                 .things()
@@ -306,12 +407,14 @@ impl Editor {
         let area = areas
             .get(&id.identity())
             .map(forge_doc::Area::marker_area)
-            .unwrap_or_default();
-        if matches!(area.shape, Shape::Box { .. } | Shape::Sphere(_)) {
-            return Err(UNEDITABLE.into());
-        }
+            .unwrap_or(default);
         self.tool.clear_selection();
-        self.area = Some(Draft::new(thing.id, thing.frame.position, area));
+        self.area = Some(Draft::new(
+            thing.id,
+            thing.frame.position,
+            thing.frame.rotation[0],
+            area,
+        ));
         Ok(())
     }
 

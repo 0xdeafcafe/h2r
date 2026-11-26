@@ -66,7 +66,7 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureCamera, CaptureLighting, CurrentView, CurrentViewParams, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
     DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    LayoutTexture, MarkerRow, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
     ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
     ResidualUnattributed, ResidualWindow, SceneCarried, UiStats,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,

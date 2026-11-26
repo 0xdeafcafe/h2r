@@ -15,6 +15,38 @@ pub struct MarkersParams {
     /// the counts still cover every marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Only the markers drawn in this form, `edit` or `play`
+    /// (docs/game/gametype-marker-forms.md); the counts still cover every
+    /// marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+}
+
+/// One row of `render.markers`' `markers`: a marker the last present drew.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerRow {
+    /// What it stands for: `<block>:<index>`, `added:<op>`,
+    /// `problem:<label>`, `nav:<what>` or `zone:<hex>`.
+    pub thing: String,
+    /// `game_markers::Kind::name`, or `wall`.
+    pub kind: String,
+    /// 0 to 7, or none.
+    pub team: Option<u8>,
+    /// Where its label sits, in world units.
+    pub anchor: [f32; 3],
+    /// Its line count, the dimmed edit-only parts' included.
+    pub lines: usize,
+    /// A marker of another game type, drawn at a quarter.
+    pub faded: bool,
+    /// The form it drew: `edit` or `play`.
+    pub form: String,
+    /// The icon on its plate (`game_markers::Icon::name`); none for a wall
+    /// and a volume.
+    pub icon: Option<String>,
+    /// How much its plate was scaled with the eye's distance, 1 out to 8
+    /// world units; none when no plate drew.
+    pub plate_scale: Option<f32>,
 }
 
 /// `render.spawn_view`: select a player starting location, or release the camera.
@@ -1196,9 +1228,36 @@ mod tests {
         assert_eq!(none.kind, None);
         let one: MarkersParams = serde_json::from_value(serde_json::json!({"kind": "hill"})).unwrap();
         assert_eq!(one.kind.as_deref(), Some("hill"));
-        for bad in [serde_json::json!({"team": 1}), serde_json::json!({"kind": 3})] {
+        let play: MarkersParams = serde_json::from_value(serde_json::json!({"form": "play"})).unwrap();
+        assert_eq!((play.kind, play.form.as_deref()), (None, Some("play")));
+        for bad in [
+            serde_json::json!({"team": 1}),
+            serde_json::json!({"kind": 3}),
+            serde_json::json!({"form": true}),
+        ] {
             assert!(serde_json::from_value::<MarkersParams>(bad).is_err());
         }
+    }
+
+    #[test]
+    fn a_marker_row_carries_its_form_icon_and_plate_scale() {
+        let row = MarkerRow {
+            thing: "netgame_flags:0".into(),
+            kind: "hill".into(),
+            team: None,
+            anchor: [1.0, 2.0, 3.0],
+            lines: 40,
+            faded: false,
+            form: "edit".into(),
+            icon: Some("crown".into()),
+            plate_scale: Some(2.0),
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["form"], "edit");
+        assert_eq!(json["icon"], "crown");
+        assert_eq!(json["plate_scale"], 2.0);
+        assert_eq!(json["team"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<MarkerRow>(json).unwrap(), row);
     }
 
     #[test]

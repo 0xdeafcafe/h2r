@@ -320,7 +320,12 @@ impl Coordinate {
 /// The dimensions the area editor accepts from the Properties keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AreaField {
+    /// A circle's or a sphere's radius.
     Radius,
+    /// A box's half length along the marker's x.
+    Length,
+    /// A box's half length along the marker's y.
+    Width,
     Below,
     Above,
 }
@@ -329,6 +334,8 @@ impl AreaField {
     fn label(self) -> &'static str {
         match self {
             Self::Radius => "Radius",
+            Self::Length => "Half length",
+            Self::Width => "Half width",
             Self::Below => "Below",
             Self::Above => "Above",
         }
@@ -1052,17 +1059,25 @@ fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, String, Cho
     }
 }
 
-/// Add the entry point for a hill, territory or site's area editor.
+/// Add the entry point for the area editor of a goal with an area: a
+/// hill, a territory, a site, a flag return, a bomb goal or a siege goal.
 pub fn add_area_row(sheet: &mut Sheet, id: forge::Endpoint) {
     sheet.rows.push(SheetRow::new("Edit area", Act::Choose(Choice::EditArea(id))));
 }
 
-/// The typed dimensions of a radius draft. Closing the page returns to
-/// the monitor with the draft still in hand.
+/// The typed dimensions of a draft: a circle's radius, a box's two half
+/// lengths, a sphere's radius, then the heights of every shape but a
+/// sphere, which has none. Closing the page returns to the monitor with
+/// the draft still in hand.
 pub fn area_fields(area: &game_markers::Area) -> Sheet {
-    let mut fields = vec![(AreaField::Below, area.below), (AreaField::Above, area.above)];
-    if let game_markers::Shape::Radius(r) = &area.shape {
-        fields.insert(0, (AreaField::Radius, *r));
+    use game_markers::Shape;
+    let mut fields = match &area.shape {
+        Shape::Radius(r) | Shape::Sphere(r) => vec![(AreaField::Radius, *r)],
+        Shape::Box { half } => vec![(AreaField::Length, half[0]), (AreaField::Width, half[1])],
+        Shape::Path(_) => Vec::new(),
+    };
+    if !matches!(area.shape, Shape::Sphere(_)) {
+        fields.extend([(AreaField::Below, area.below), (AreaField::Above, area.above)]);
     }
     let rows = fields.into_iter().map(|(field, value)| {
         let value = number(value);

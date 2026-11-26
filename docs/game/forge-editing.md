@@ -219,8 +219,9 @@ block's objects have a group (`Group::of_block`).
 - **Goal areas.** The Goals group lists the goals the session's game
   type reads (`Session::goals`): a Hill with King of the Hill, a
   Territory with Territories, and Siege site always. **Edit area** in
-  Properties opens the draft radius or path
-  editor ([gametype-markers.md](gametype-markers.md#forge)).
+  Properties opens the draft circle, box, sphere or path
+  editor on these goals, a flag return, a bomb goal and a siege goal
+  ([gametype-markers.md](gametype-markers.md#forge)).
 - **Kit sessions.** Spawns, teleporters and item entries are
   rows of scenario blocks that cannot grow in a loaded map. A game
   started from the lobby in Forge mode runs on the base map's empty draft
