@@ -38,8 +38,9 @@ fn small_def(shared: bool, rounds: usize) -> Def {
         format: FORMAT,
         name: "Hud".into(),
         teams: 1,
+        set: ::firefight::SetRules::finite(),
         // Each skull is switched on by one round only.
-        rounds: [Skull::Famine, Skull::Blind, Skull::Ghost, Skull::Catch, Skull::Mythic]
+        rounds: [Skull::Famine, Skull::BlackEye, Skull::Ghost, Skull::Catch, Skull::Mythic]
             .into_iter()
             .take(rounds)
             .map(|skull| Round {
@@ -105,6 +106,7 @@ fn seen(players: &[u8], alive: [u16; SQUAD_SLOTS], kills: Vec<Kill>) -> Observed
                 seen: false,
                 distance: 100,
                 team_distance: [100, 100],
+                roles: ::firefight::ALL_ZONE_ROLES,
             };
             3
         ],
@@ -584,7 +586,7 @@ fn the_skulls_on_ride_in_the_blob() {
         Skull::Assassins
         | Skull::Thunderstorm
         | Skull::Famine
-        | Skull::Blind
+        | Skull::BlackEye
         | Skull::Ghost
         | Skull::Catch
         | Skull::Mythic
@@ -611,14 +613,14 @@ fn the_skulls_on_ride_in_the_blob() {
 }
 
 /// A round's skull switched on is a note a client sends from the blob
-/// alone, with the round's: the second round of the test set turns Blind
+/// alone, with the round's: the second round of the test set turns Black Eye
 /// on.
 #[test]
 fn a_rounds_skull_is_a_note_from_the_blob() {
     let played = play(director(small_def(true, 2)), &[0], 0);
     assert_eq!(played.finished, Some(Outcome::Won));
     let at = |t: &str| played.notes.iter().position(|n| n == t);
-    let (round, skull) = (at("Round 2 of 2"), at("Blind skull on"));
+    let (round, skull) = (at("Round 2 of 2"), at("Black Eye skull on"));
     assert!(round.is_some() && skull.is_some(), "{:?}", played.notes);
     assert!(round < skull, "{:?}", played.notes);
 }

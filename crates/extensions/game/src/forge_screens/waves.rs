@@ -719,6 +719,7 @@ fn drop_text(drop: Drop) -> String {
     match drop {
         Drop::Edge => "Any drop".into(),
         Drop::PreferZone(z) => format!("Drop zone {z}"),
+        Drop::Role(role) => format!("{role:?} zones"),
     }
 }
 

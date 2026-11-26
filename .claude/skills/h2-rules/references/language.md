@@ -236,7 +236,7 @@ a host refuse the script) or `vm`.
 | `is_objective(o)` | object -> bool | named |
 | `squad_alive(s)` | squad -> int | named |
 | `carrier_of(o)` | object -> player | named |
-| `zone_seen(o)`, `zone_distance(o)` | object -> bool, int | named (Firefight's `ff_drop` zones) |
+| `zone_seen(o)`, `zone_distance(o)`, `zone_has_role(o, mask)` | object -> bool, int, bool | named (Firefight's `ff_drop` zones) |
 | `object_team(o)` | object -> team | named |
 | `player_of(o)` | object -> player | named |
 | `label_number(o)`, `zone_id(o)` | object -> int | named |
@@ -323,7 +323,7 @@ outline and folding. A name is the declaration's number, a `const`.
 | `forge_delete` | object | `forge.delete` | queued | named |
 | `forge_place` | tag, object | `forge.place` | queued | named |
 | `forge_scale` | object, fixed | `forge.scale` | queued | named |
-| `ff_round`, `ff_wave` | int | `firefight.director` | queued | named |
+| `ff_set`, `ff_round`, `ff_wave` | int | `firefight.director` | queued | named |
 | `ff_skull` | int, bool | `firefight.director` | queued | named |
 | `ff_lives` | player, int | `firefight.director` | queued | named |
 | `ff_score` | player, int, bool | `firefight.director` | queued | named |

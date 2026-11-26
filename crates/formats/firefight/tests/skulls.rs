@@ -54,6 +54,7 @@ fn three_rounds() -> Def {
             round(vec![Skull::Mythic, Skull::Angry]),
             round(vec![Skull::Ghost]),
         ],
+        set: firefight::SetRules::finite(),
         lives: Lives {
             pool_start: 3,
             per_round_bonus: 0,
@@ -122,6 +123,7 @@ fn play(def: Def, skulls: BTreeSet<Skull>) -> Vec<(u32, Command)> {
                 seen: false,
                 distance: 10,
                 team_distance: [10, 10],
+                roles: firefight::ALL_ZONE_ROLES,
             }],
             kills,
             player_kills: Vec::new(),

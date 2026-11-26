@@ -1,0 +1,409 @@
+{
+ "format": 3,
+ "name": "Endless",
+ "teams": 1,
+ "rounds": [
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "ghost"
+   ]
+  },
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 2,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "catch"
+   ]
+  },
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 3,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 6
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "black_eye"
+   ]
+  }
+ ],
+ "lives": {
+  "pool_start": 7,
+  "per_round_bonus": 1,
+  "shared": true
+ },
+ "caps": {
+  "live_actors_by_players": [
+   [
+    4,
+    16
+   ],
+   [
+    8,
+    16
+   ],
+   [
+    16,
+    16
+   ]
+  ]
+ },
+ "scoring": {
+  "by_class": {
+   "elite": 100
+  },
+  "player_kill": 0,
+  "difficulty_multiplier": {
+   "easy": 750,
+   "normal": 1000,
+   "heroic": 1250,
+   "legendary": 1500
+  },
+  "skull_multipliers": {
+   "black_eye": 1100,
+   "catch": 1100,
+   "famine": 1100,
+   "ghost": 1100,
+   "mythic": 1100,
+   "thunderstorm": 1100
+  },
+  "assist": 250
+ },
+ "set": {
+  "endless": true,
+  "scale": 100,
+  "skulls": [
+   "thunderstorm",
+   "famine",
+   "mythic"
+  ]
+ }
+}

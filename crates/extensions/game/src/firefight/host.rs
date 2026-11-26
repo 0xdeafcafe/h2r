@@ -650,8 +650,8 @@ impl Host {
                 squad(game, SquadOp::Hunt { slot: *slot, base })
             }
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
-            // The HUD reads rounds and waves from the mode blob.
-            Command::Round { .. } | Command::Wave { .. } => Ok(()),
+            // The HUD reads sets, rounds and waves from the mode blob.
+            Command::Set { .. } | Command::Round { .. } | Command::Wave { .. } => Ok(()),
             Command::Skull { id, on } => game.skull(*id, *on),
             // The engine keeps no pool: the director's is the pool its
             // respawns spend, so a `Lives` or `TeamLives` sets it there (the
@@ -851,6 +851,8 @@ fn observe(
             seen: game.sees(zone),
             distance: all.map_or(0, |centre| distance(centre, zone)),
             team_distance: by_team.map(|c| c.map_or(u32::MAX, |centre| distance(centre, zone))),
+            // Until the kit's own roles are read back, a zone serves every role.
+            roles: ::firefight::ALL_ZONE_ROLES,
         })
         .collect();
     let kills = game

@@ -183,6 +183,10 @@ pub enum Command {
     EraseSquad {
         slot: u8,
     },
+    /// An endless definition's zero-based set begins.
+    Set {
+        index: u8,
+    },
     Round {
         index: u8,
     },
@@ -223,7 +227,7 @@ pub enum Skull {
     Assassins,
     Thunderstorm,
     Famine,
-    Blind,
+    BlackEye,
     Ghost,
     Catch,
     Mythic,

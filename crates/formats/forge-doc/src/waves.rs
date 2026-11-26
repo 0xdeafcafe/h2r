@@ -168,7 +168,9 @@ impl Problem {
                 firefight::Drop::PreferZone(z) => {
                     format!("{at}: no wave drop is zone {z}.")
                 }
-                firefight::Drop::Edge => format!("{at}: its wave drop is not placed."),
+                firefight::Drop::Edge | firefight::Drop::Role(_) => {
+                    format!("{at}: its wave drop is not placed.")
+                }
             },
             (ProblemKind::ClassNotBuilt, None) => format!("{at}: its class is not built."),
             (ProblemKind::ZoneNotPlaced, None) => format!("{at}: its wave drop is not placed."),
