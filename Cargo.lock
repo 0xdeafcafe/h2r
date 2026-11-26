@@ -6687,6 +6687,7 @@ dependencies = [
 name = "sim-bridge"
 version = "0.1.0"
 dependencies = [
+ "audio",
  "engine",
  "hooks",
  "hs",
@@ -6694,6 +6695,7 @@ dependencies = [
  "lifted",
  "runtime",
  "sim-ext",
+ "sim-sound",
 ]
 
 [[package]]

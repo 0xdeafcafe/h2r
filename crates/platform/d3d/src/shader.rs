@@ -116,9 +116,10 @@ impl Microcode {
     pub fn clip_text(&self) -> String {
         #[cfg(feature = "gpu")]
         {
-            use crate::interp::epilogue::Position;
+            use crate::clip_space::epilogue::Position;
             match self.clip_position() {
                 Position::Rows(b) => format!("rows({b})"),
+                Position::FarPlaneRows(b) => format!("far({b})"),
                 Position::Fixed => "fixed".into(),
                 Position::Unknown => "unknown".into(),
             }
