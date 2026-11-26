@@ -81,16 +81,21 @@ impl Runtime {
     /// each local user (`crate::rules::world::hud`), and hides them once no
     /// script feeds them. `None` for a game with no guest to read.
     pub(super) fn publish_hud(&mut self, m: Option<&dyn GuestMemory>) {
-        let on = match (&self.status, m) {
-            (Status::Running(r), Some(m)) => {
-                crate::rules::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones)
-            }
-            _ => false,
+        let (on, objective) = match (&self.status, m) {
+            (Status::Running(r), Some(m)) => (
+                crate::rules::world::hud::publish(m, r.vm.ir(), r.vm.show(), &r.zones),
+                crate::objective_hud::publish(m, r.vm.ir(), r.vm.ext(), &r.zones),
+            ),
+            _ => (false, false),
         };
         if self.hud_on && !on {
             crate::rules::world::hud::clear();
         }
+        if self.objective_on && !objective {
+            crate::objective_hud::clear();
+        }
         self.hud_on = on;
+        self.objective_on = objective;
     }
 
     /// Sends the areas the script shows to the clients as a walls cue

@@ -65,6 +65,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("audio.play", "plays sounds, dialogue and music", false),
     cap("hud.widgets", "draws on the HUD", false),
     cap("hud.waypoints", "marks places and things", false),
+    cap("hud.objective", "shows objectives, marks and a clock", false),
     cap(
         "hud.superbounce",
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
@@ -357,6 +358,10 @@ pub mod id {
     pub const ZONE_HAS_ROLE: u16 = 128;
     pub const OFFER: u16 = 129;
     pub const CHOICE: u16 = 130;
+    pub const OBJECTIVE: u16 = 131;
+    pub const OBJECTIVE_MARK: u16 = 132;
+    pub const METER: u16 = 133;
+    pub const COUNTDOWN: u16 = 134;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -685,6 +690,19 @@ pub const ENTRIES: &[Entry] = &[
     // open. The state holds both, so a film replays them.
     act(id::OFFER, "offer", &[Player, Int, Int], Some("player.pick"), Now, Named),
     vm(id::CHOICE, "choice", &[Player], Int),
+    // The scripted objective HUD (docs/game/hud-kit.md, "The scripted
+    // objective HUD"), per team. `objective(to, text)` is the line the HUD
+    // keeps; `objective_mark(to, zone, kind)` marks a zone, kind 1 attack,
+    // 2 defend, 0 lifts it (at most `vm::MAX_OBJECTIVE_MARKS`);
+    // `meter(to, value, of)` is the gauge, none for `of` 0 or less;
+    // `countdown(to, ticks)` is the clock, none for 0 or less. The VM
+    // keeps them (`vm::RulesExt::objectives`) and the HUD reads them: the
+    // host adds no call of its own. A mark is spelled `objective_mark` as
+    // `mark` is the waypoint's.
+    act(id::OBJECTIVE, "objective", &[Team, Text], Some("hud.objective"), Now, Named),
+    act(id::OBJECTIVE_MARK, "objective_mark", &[Team, Object, Int], Some("hud.objective"), Now, Named),
+    act(id::METER, "meter", &[Team, Int, Int], Some("hud.objective"), Now, Named),
+    act(id::COUNTDOWN, "countdown", &[Team, Int], Some("hud.objective"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -1003,6 +1021,20 @@ mod tests {
 
     /// A host uses `hud.superbounce` to turn its mode on. The capability
     /// table allows it in every kind of game.
+    #[test]
+    fn hud_objective_gates_its_four_entries() {
+        let c = capability("hud.objective", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        let gated: Vec<&str> = ENTRIES.iter().filter(|e| e.cap == Some(c.name)).map(|e| e.name).collect();
+        assert_eq!(gated, ["objective", "objective_mark", "meter", "countdown"]);
+        for name in &gated {
+            let e = entry_named(name).unwrap();
+            assert_eq!((e.kind, e.order, e.status), (Kind::Action, Order::Now, Status::Named), "{name}");
+            assert_eq!(e.args[0], Team, "{name}");
+        }
+        assert_eq!(entry_named("countdown").unwrap().id, id::COUNTDOWN);
+    }
+
     #[test]
     fn hud_superbounce_is_a_declared_host_feature() {
         let c = capability("hud.superbounce", API_VERSION).unwrap();

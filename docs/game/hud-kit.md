@@ -1759,6 +1759,34 @@ ground ([superbounce.md](superbounce.md#the-jump-cue)), settled by the
 game. The kit writes one of them on the box's label. It carries no
 chance field and shows no percentage beside the call.
 
+## The scripted objective HUD
+
+`crates/rewrites/hud-kit-core/src/views/script_objective.rs` (its elements
+are `content/modes/huds/script-objective.hud.yaml`) shows what a script
+sets with the `hud.objective` capability (`objective(to, text)`,
+`objective_mark(to, zone, kind)`, `meter(to, value, of)`,
+`countdown(to, ticks)`; [rules-engine.md](rules-engine.md#the-engine-api))
+of the viewer's team. The VM keeps the state per team
+(`rules::vm::Objective`, `RulesExt::objectives`); the game's
+`crates/extensions/game/src/objective_hud.rs` makes a `View` of it for each
+local user each tick and publishes its values. A script that does not
+require `hud.objective` draws nothing: the HUD is registered hidden and
+hidden again once a script stops feeding it. It is multiplayer only.
+
+| Element | Kind | Shows |
+|---|---|---|
+| `so.banner` | banner | the objective line, started again by the kit when the text changes (a phase change); a text the banner cannot take (`banner_fault`) is left out |
+| `so.clock` | text, `hud` font, right-justified, top right | `m:ss` of the countdown, rounded up; the help flash from 30 s down |
+| `so.line` | text, `hud` font, right-justified, top right under the clock | the objective line as resting text |
+| `so.meter` | meter, the retail strip, under the grenade row's next pill | `value` of `of`; not drawn for an `of` of 0 or less |
+| `so.nav.1` to `so.nav.3` | navpoint | the first three marked zones, each with its distance in metres from the viewer's unit; the point is the zone's middle |
+
+The banner and the clock have half and quarter places; the line, gauge and
+navpoints are fullscreen only (fullscreen first). The HUD's `never_with`
+lists the HUDs that use the grenade row's next pill. Its states are `idle`,
+`phase`, `capturing`, `defending`, `last-30` and `widest`
+(`script_objective::views`), each checked by the layout and `hud.render`.
+
 ## Interfaces
 
 - A feature calls `hud_kit::register(describe) -> Handle`, then

@@ -261,6 +261,7 @@ pub mod superbounce_font;
 pub mod superbounce_flight;
 pub mod superbounce_ghost;
 pub mod superbounce_guide;
+pub mod objective_hud;
 pub mod superbounce_hud;
 pub mod superbounce_options;
 pub mod superbounce_prompts;
