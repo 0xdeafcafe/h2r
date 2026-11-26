@@ -497,14 +497,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return Err(ObjectWalk::State);
         }
         let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
-        let texaccum = if draws.iter().any(|(_, draw)| draw.texaccum) {
-            if !device.samples_levels_in_place() {
-                return Err(ObjectWalk::Inputs);
-            }
-            Some(native_render::world_layers::Texaccum::read(&Ro(mem)).ok_or(ObjectWalk::Inputs)?)
-        } else {
-            None
-        };
+        let texaccum = sampled_texaccum(&device, mem, draws.iter().any(|(_, draw)| draw.texaccum))
+            .map_err(|()| ObjectWalk::Inputs)?;
         let display_draws = display_lod.and_then(|lod| {
             display::plan_lod(&models, &device, mem, scene, scene_view, run, &draws, lod)
         });
@@ -725,7 +719,7 @@ fn plan_walk<B: d3d::backend::Backend>(
 /// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0, `c[0..3]`
 /// the rows off, and the program clip range off, owned by the game and
 /// pushed. Every comparison is of the bits.
-fn aux_depth_at_rest<B: d3d::backend::Backend>(
+pub(crate) fn aux_depth_at_rest<B: d3d::backend::Backend>(
     device: &d3d::Device<B>, mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth,
 ) -> bool {
     use d3d::layout::device_field::{CLIP_FLAGS, CLIP_PROGRAM};
@@ -1611,18 +1605,7 @@ impl ObjectsPass {
         report_missing: bool,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("object view constants unavailable")?;
-        let texaccum = match self.texaccum {
-            Some(target) => {
-                let level = t.sampled.first().and_then(Option::as_ref).ok_or("object texture accumulation unavailable")?;
-                Some(Texaccum { view: &level.view, guest_size: target.size })
-            }
-            None => None,
-        };
-        if let Some(accum) = &texaccum
-            && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
-        {
-            return Err("object texture accumulation is an attachment");
-        }
+        let texaccum = texaccum_level(t, self.texaccum)?;
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = lit.as_mut().ok_or_else(|| {
             if report_missing {
@@ -1656,9 +1639,77 @@ impl ObjectsPass {
     }
 }
 
+/// The texture accumulation level a pass sampling `target` (the guest's
+/// engine texture 3, read when the pass was planned:
+/// `world_layers::Texaccum::read`) binds on this target copy: the first
+/// level the pass asked for (`d3d::ExternalPass::sampled`, the target's
+/// texture header), at the target's guest size. `None` without a target;
+/// an error when the level is not given or is one of the attachments
+/// the pass draws into (the layer that accumulates into it).
+pub(crate) fn texaccum_level(
+    t: &d3d::backend::ExternalAttachments, target: Option<native_render::world_layers::Texaccum>,
+) -> Result<Option<Texaccum<'_>>, &'static str> {
+    let Some(target) = target else { return Ok(None) };
+    let level = t.sampled.first().and_then(Option::as_ref).ok_or("object texture accumulation unavailable")?;
+    if level.view.texture() == t.color.texture() || level.view.texture() == t.depth.texture() {
+        return Err("object texture accumulation is an attachment");
+    }
+    Ok(Some(Texaccum { view: &level.view, guest_size: target.size }))
+}
+
+/// The texture accumulation target a pass whose draws sample it binds,
+/// read at the hook as layer 3's objects read it: the guest binds one
+/// only while `0x0001dcc0` gives it (`world_layers::Texaccum::read`), and
+/// the pass is given the level only where levels are sampled in place.
+/// `Ok(None)` when no draw samples it; `Err` when one does and it cannot
+/// be bound.
+pub(crate) fn sampled_texaccum<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, samples: bool,
+) -> Result<Option<native_render::world_layers::Texaccum>, ()> {
+    if !samples {
+        return Ok(None);
+    }
+    if !device.samples_levels_in_place() {
+        return Err(());
+    }
+    native_render::world_layers::Texaccum::read(&Ro(mem)).map(Some).ok_or(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pass whose draws sample the texture accumulation target binds it
+    /// only where the device samples render-to-texture levels in place and
+    /// the guest has the target to bind (`0x0001dcc0`); a pass with no
+    /// such draw asks for nothing. Every caller (layer 3's objects, the
+    /// first person's layer 3, the world layers' object items) declines
+    /// on the error.
+    #[test]
+    fn a_pass_sampling_the_accumulation_target_binds_it_only_where_it_is_there_and_sampled_in_place() {
+        use native_render::object_nodes::TEXACCUM_TARGET;
+        let config = d3d::DeviceConfig::halo2(
+            d3d::GuestRange { addr: 0x0041_0000, len: 0x1_0000 },
+            d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 },
+        );
+        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x20_0000);
+        mem.set_u32(TEXACCUM_TARGET + 0x80, 640).unwrap();
+        mem.set_u32(TEXACCUM_TARGET + 0x84, 480).unwrap();
+        mem.set_u32(TEXACCUM_TARGET + 0x88, 0x0050_0000).unwrap();
+        let elsewhere = d3d::Device::new(config, d3d::RecordingBackend::default());
+        assert!(!elsewhere.samples_levels_in_place());
+        assert_eq!(sampled_texaccum(&elsewhere, &mem, false), Ok(None), "nothing samples it");
+        assert_eq!(sampled_texaccum(&elsewhere, &mem, true), Err(()), "a level the pass would not be given");
+        let mut backend = d3d::RecordingBackend::new();
+        backend.sample_surfaces = true;
+        let in_place = d3d::Device::new(config, backend);
+        assert!(in_place.samples_levels_in_place());
+        let got = sampled_texaccum(&in_place, &mem, true).unwrap().expect("the bound target");
+        assert_eq!((got.texture, got.size), (native_render::object_program::TEXACCUM_HEADER, (640, 480)));
+        // The byte at `+0x95` set: the game binds no texture there.
+        mem.set_u32(TEXACCUM_TARGET + 0x94, 1 << 8).unwrap();
+        assert_eq!(sampled_texaccum(&in_place, &mem, true), Err(()));
+    }
 
     /// A live edit's drain names the native models it edited, each once
     /// and by the load's own tag (matched by index), and every image;

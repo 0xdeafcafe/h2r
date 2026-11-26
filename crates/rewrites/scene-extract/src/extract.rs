@@ -178,6 +178,9 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
     })?;
     let bit = 1u32 << layer;
     let mut out = Layer::default();
+    // Whether the view holds what the auxiliary state toggle sets, once
+    // an item toggles it.
+    let mut aux = false;
     for slot in first..end {
         let Some(item) = ITEM_SIZE.checked_mul(slot).and_then(|o| items.checked_add(o)) else {
             break;
@@ -192,6 +195,14 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
         }
         match layer_item(mem, layer, item, slot, lighting) {
             Some((entry, rows)) => {
+                // A toggling item's draw takes the view's rows and clip
+                // on; `layer_part` named a cause when they do not read.
+                if !aux && entry.refusal.is_none() && entry.flags.contains(PartFlags::AUX_DEPTH) {
+                    if let Some(a) = aux_depth::read(mem) {
+                        builder.set_aux_depth(a)?;
+                    }
+                    aux = true;
+                }
                 builder.push_layer_item(entry, &rows)?;
                 out.items += 1;
             }
