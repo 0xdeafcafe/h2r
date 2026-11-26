@@ -232,6 +232,13 @@ fn toolbar(ui: &Ui, app: &mut App, dialogs: bool) {
         ui.tooltip_text("Rename the name at the cursor and every use of it (F2).");
     }
     ui.same_line();
+    if ui.button("In game") {
+        reload(app);
+    }
+    if ui.is_item_hovered() {
+        ui.tooltip_text("Compile the script and reload it into Studio's game, in the mode picked here.");
+    }
+    ui.same_line();
     ui.set_next_item_width(110.0);
     if let Some(_combo) = ui.begin_combo("##rules-mode", mode_label(app.rules.mode)) {
         for mode in [ReloadMode::Auto, ReloadMode::InPlace, ReloadMode::Restart] {
@@ -392,7 +399,7 @@ fn save_game_variant(app: &mut App, dialogs: bool) {
     }
 }
 
-#[allow(dead_code)] // Not wired yet.
+/// Compiles the script and queues its reload into Studio's own game.
 fn reload(app: &mut App) {
     if let Err(why) = app.rules.queue_reload() {
         app.error(format!("Script not reloaded: {why}"));

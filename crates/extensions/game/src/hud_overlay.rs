@@ -101,7 +101,7 @@ where
     B: d3d::Backend + Send + 'static,
     F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
 {
-    let taken = capture(device, mem, Source::Screen(what), issue);
+    let taken = capture(device, mem, Source::Screen, issue);
     if taken {
         what.counter().count();
     } else {
@@ -146,7 +146,7 @@ enum Source<'a> {
     /// A glyph: the glyph cache, which must be bound.
     Glyph(&'a HudTagQuad),
     /// A screen draw: its first bound texture, no tag.
-    Screen(#[allow(dead_code)] ScreenDraw),
+    Screen,
 }
 
 impl Source<'_> {
@@ -154,7 +154,7 @@ impl Source<'_> {
     fn shader(&self) -> (u32, [f32; 4]) {
         match self {
             Source::Tag(at) | Source::Glyph(at) => (at.shader, at.hud_input),
-            Source::Screen(_) => (0, [0.0; 4]),
+            Source::Screen => (0, [0.0; 4]),
         }
     }
 
@@ -169,7 +169,7 @@ impl Source<'_> {
         Some(match (self, first) {
             (_, None) => OverlayTexture::None,
             (Source::Tag(at), Some(_)) => OverlayTexture::Bitmap { tag: at.bitmap, image: at.image },
-            (Source::Glyph(_) | Source::Screen(_), Some(n)) => stages[n]?,
+            (Source::Glyph(_) | Source::Screen, Some(n)) => stages[n]?,
         })
     }
 }
@@ -925,9 +925,9 @@ mod tests {
         assert_eq!(Source::Glyph(&at).texture(&bound, Some(1)), bound[1]);
         let other = [Some(OverlayTexture::Bound { header: 0x50 }), None, None, None];
         assert_eq!(Source::Glyph(&at).texture(&other, Some(0)), None, "the cache is not bound");
-        let screen = Source::Screen(ScreenDraw::Loading);
+        let screen = Source::Screen;
         assert_eq!(screen.texture(&other, Some(0)), other[0]);
-        assert_eq!(Source::Screen(ScreenDraw::Fade).texture(&[None; 4], None), Some(OverlayTexture::None));
+        assert_eq!(Source::Screen.texture(&[None; 4], None), Some(OverlayTexture::None));
         assert_eq!(screen.shader(), (0, [0.0; 4]));
         assert_eq!(Source::Tag(&at).shader(), (0xe000_0001, [0.5; 4]));
     }
@@ -955,7 +955,7 @@ mod tests {
 
     #[test]
     fn widget_fans_use_the_sampled_stage_even_without_a_tag() {
-        let widget = Source::Screen(ScreenDraw::Widget);
+        let widget = Source::Screen;
         let stages = [Some(OverlayTexture::Bound { header: 0x10 }), None,
             Some(OverlayTexture::Bound { header: 0x30 }), None];
         assert_eq!(widget.texture(&stages, Some(2)), stages[2]);

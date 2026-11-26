@@ -194,8 +194,8 @@ fn actions_film() -> Vec<u8> {
 #[test]
 fn film_stat_fields_counts_changes_and_prices_each_predictor() {
     let bytes = actions_film();
-    let films = || vec![film::Reader::new(Cursor::new(bytes.clone())).unwrap()];
-    let report = fields(films()).unwrap();
+    let films = || vec![film::blam::TrackReader::new(film::Reader::new(Cursor::new(bytes.clone())).unwrap()).unwrap()];
+    let report = field_table(films()).unwrap();
     assert!(report.contains("films: 1\nticks: 40\n"), "{report}");
     assert!(
         report.contains("FIELD yaw words=1 seat_ticks=40 changed=40 (100.0%) seat_chunks=1 stored_chunks=1 "),
@@ -211,7 +211,7 @@ fn film_stat_fields_counts_changes_and_prices_each_predictor() {
         "{report}"
     );
     // Two films are one report.
-    let both = fields(films().into_iter().chain(films()).collect::<Vec<_>>()).unwrap();
+    let both = field_table(films().into_iter().chain(films()).collect::<Vec<_>>()).unwrap();
     assert!(both.contains("films: 2\nticks: 80\n"), "{both}");
     assert!(both.contains("FIELD yaw words=1 seat_ticks=80 changed=80 "), "{both}");
 }
