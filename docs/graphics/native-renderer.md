@@ -288,7 +288,25 @@ the shared reference slots plus layer-15 cluster parts
 (`native_world/section.rs`, `native_scene_lists/transparents/display.rs`).
 `order_exact` is false when equal keys or a plane cycle make the merged order
 depend on the wide gather's insertion order; the queue is not drawn then.
-The native water draw does not yet consume the queue.
+`DisplayTransparentQueue::runs` turns a drawable queue (`order_exact`, no
+`unresolved_clusters`) into the display geometry grouped by the reference
+ordinal it sorts after, which is the order the display copy draws it in
+(`frame-scene/src/transparent.rs`); it refuses a queue whose reference
+ordinals are not `0, 1, 2, ...`. `render.stats` counts each built queue as
+`layer_plan_15_display_queue_{built,geometry,unresolved_clusters,inexact}`.
+
+The native water draw does not consume the queue. The display water pass
+(`native_water_glue`) runs at the layer-6 draw (`0x0002c11b`), before the
+sorted dispatch (`0x0002c19a`) builds the queue, so it draws only a lone
+display part and leaves several to the guest. Consuming the queue means
+drawing the water parts of `runs` from the dispatch, between the guest's
+handlers; that needs a hook at the dispatch loop's per-entry return
+(`0x0001e3f3`) for ordinals that have no geometry handler, and a display
+pass that takes a part list. Neither is built. The guest's own sorted
+loop (`0x0001e370`, 1,010 entries a frame on Old Mombasa) keeps running,
+because each handler's state setup, and the effects seed and
+`0x00174420` particle stamps that the effect entries write, are not
+reproduced in Rust (retire-d3d.md, R2).
 
 ## Scene list builders
 

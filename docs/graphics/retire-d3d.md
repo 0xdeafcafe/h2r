@@ -531,6 +531,22 @@ D3D entry calls.
 | R10 | Delete `d3d`'s draw path and the backends that replay it | M | R9, a soak the owner sets | build time and about 30,000 lines | the tree builds; the gate corpus against `d3d-reference` |
 | R11 | Delete the crate | M | R10; the decision on non-draw entries below | the last guest D3D call | no `d3d` in `cargo metadata`; boot to menu on the laptop |
 
+### R2's first slice
+
+Built (**Code**): the display queue's order as a plan.
+`DisplayTransparentQueue::runs` (`frame-scene/src/transparent.rs`) groups
+display geometry by the reference ordinal it sorts after, and refuses a
+queue that is not `order_exact` or has an unresolved cluster. Tests:
+`display_geometry_runs_follow_the_reference_ordinal_they_sort_after`,
+`a_queue_the_guest_must_order_has_no_runs`. `render.stats` carries
+`layer_plan_15_display_queue_{built,geometry,unresolved_clusters,inexact}`.
+
+Not built: drawing from the plan. The water pass runs before the queue
+exists (layer 6 precedes the sorted dispatch), so it needs the dispatch
+hook described in native-renderer.md; replacing the guest's loop needs the
+handlers' state and the effects seed and `0x00174420` stamps first, so
+the loop's residual count does not drop yet.
+
 ### R1's remainder
 
 Every R1 layer is `partial` (`residual_census::PARTIAL_LAYERS`): its
