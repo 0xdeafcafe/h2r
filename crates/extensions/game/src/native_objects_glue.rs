@@ -12,7 +12,7 @@ use engine::memory::GuestMemory;
 use render_bridge::native_map_work;
 use render_bridge::native_objects::Host;
 use map::TagId;
-use frame_scene::{FrameScene, InstanceKey, PartFlags, View};
+use frame_scene::{FrameScene, InstanceKey, PartFlags, View, ViewSlot};
 use native_render::gpu::Image;
 use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
@@ -461,8 +461,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_walk(
-        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, first: usize, run: &[Entry],
-        display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
+        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, slot: ViewSlot, first: usize,
+        run: &[Entry], display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
@@ -508,7 +508,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
             Box::new(ObjectsPass {
-                display_only: false, display_draws: display_draws.clone(),
+                slot, display_only: false, display_draws: display_draws.clone(),
                 models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch,
             })
         };
@@ -1634,6 +1634,9 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 /// `texaccum`, `view` and `w_clip` are owned values) and reads no guest
 /// state after the walk.
 struct ObjectsPass {
+    /// The view slot the run draws in ([`render_bridge::native_objects::SLOT`]):
+    /// the place in the traced draw order the frame graph orders it by.
+    slot: ViewSlot,
     display_only: bool,
     /// Alternative geometry for the display. The original run still owns
     /// all guest writes and is the only geometry sent to the reference.
@@ -1659,7 +1662,7 @@ struct ObjectsPass {
 impl d3d::ExternalPass for ObjectsPass {
     fn display_only(&self) -> bool { self.display_only }
 
-    fn replays_scene(&self) -> bool { true }
+    fn replays_scene(&self) -> bool { debug_assert_eq!(self.slot, ViewSlot::OpaqueBase); true }
 
     fn batch_key(&self) -> Option<u64> { Some(self.run) }
 
@@ -1890,6 +1893,7 @@ mod tests {
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let mut pass = ObjectsPass {
+            slot: ViewSlot::OpaqueBase,
             display_only: false,
             display_draws: None,
             models: Arc::new(Models::default()),

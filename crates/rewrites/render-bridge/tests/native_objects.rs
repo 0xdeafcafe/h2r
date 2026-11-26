@@ -125,3 +125,29 @@ fn an_item_is_accepted_only_for_the_part_and_implementation_its_record_picked() 
     assert!(!set.accepts(DEF_A, &key(4, 0, 0xe000_0011, 0)), "another shader");
     assert!(!set.accepts(DEF_B, &key(4, 0, 0xe000_0010, 0)), "B's model refused the material");
 }
+
+/// Objects draw only from the scene, in the opaque base's slot; a host that
+/// takes nothing says so by a named cause, and the walk drops the run
+/// (consumed, `scene_dropped`) rather than leave it to the guest's draws.
+#[test]
+fn objects_draw_in_the_opaque_base_slot_and_a_refusal_is_a_drop() {
+    use engine::memory::FlatMemory;
+    use frame_scene::ViewSlot;
+    use native_objects::Host;
+    use timeline::native::ObjectWalk;
+
+    assert_eq!(native_objects::SLOT, ViewSlot::OpaqueBase);
+    struct Takes;
+    impl Host for Takes {}
+    let mut mem = FlatMemory::new(0x1000, 16);
+    let mut consumed = false;
+    let out = Takes.draw_walk(&mut mem, None, native_objects::SLOT, 0, &[], None, &mut |_| {
+        consumed = true;
+        true
+    });
+    assert!(matches!(out, Err(ObjectWalk::Reservation)), "the default host declines by name");
+    assert!(!consumed, "a declined run is consumed by the walk, not the host");
+    let walk = include_str!("../src/native_objects.rs");
+    assert!(!walk.contains("reason.fallback("), "no refused run goes back to the guest's draws");
+    assert!(walk.contains("reason.dropped(run.objects)"));
+}

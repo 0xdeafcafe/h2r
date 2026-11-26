@@ -197,6 +197,40 @@ pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, detail: LodDetail) -> (Sc
     (SceneList::ObjectSetup, setup(m, cpu, detail))
 }
 
+/// [`super::residency_request`].
+pub(super) fn residency_request(m: &dyn GuestMemory, resource: u32, request: bool) -> ResidencyRequest {
+    let mut staged = Staged::new(m);
+    match residency::touch(&mut staged, resource, request) {
+        Ok(resident) => {
+            let writes = staged.finish().writes.into_iter().map(|w| (w.addr, w.bytes.slice().to_vec())).collect();
+            ResidencyRequest::Made { resident, writes }
+        }
+        Err(Refusal::Residency) => ResidencyRequest::NeedsGuestService,
+        Err(_) => ResidencyRequest::Unreadable,
+    }
+}
+
+/// The cut's answer for a call the setup cannot build: the "not drawn"
+/// exit ([`outside_gather_lens`]'s), so the object has no render records
+/// and nothing of it draws, in any layer. Its flag bit 0 is set, AL is 0,
+/// ECX and EDX hold the flag's address and the column. `Err` when the
+/// call's list does not read either (nothing to mark).
+pub(super) fn not_drawn(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
+    let list = List::read(m, ptr(m, at(cpu.esi, 0x14)?)?)?;
+    let index = u32::from(stack(m, cpu, 4)? as u16);
+    if index as usize >= list.count {
+        return Err(Refusal::Layout);
+    }
+    let column = list.column(m, 8)?;
+    let mut staged = Staged::new(m);
+    let address = mark_no_draw(&mut staged, column, index)?;
+    let mut out = staged.finish();
+    out.ecx = Some(address);
+    out.edx = Some(column);
+    out.al = Some(0);
+    Ok(out)
+}
+
 fn projected(m: &dyn GuestMemory, body: u32) -> Result<([f32; 3], f32, f32, f32)> {
     let [px, py, pz] = m.vec3(at(body, 0x30)?)?;
     let radius = m.f32(at(body, 0x3c)?)?;

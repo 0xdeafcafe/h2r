@@ -363,7 +363,7 @@ would have:
 | Present counter `0x00485aa0`, frame timing `0x004e63a8` | `0x00013f10`, the frame wait `0x0012b2e0` | guest code keeps running |
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
 | Render frame counter `0x004ba034`, the one-shot byte `0x004e6098` | `render_views`, `0x00223080` | guest code keeps running |
-| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the Rust object setup keeps making the guest's requests (it does today); the renderer's own resources come from the tags and do not depend on them |
+| Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the cut object setup (`0x00133790`, [native-objects.md](native-objects.md), "Object setup is cut") makes the guest's stamps and requests in its own turn; a request that needs a new queue entry is the guest cache's service; the renderer's own resources come from the tags and do not depend on them |
 | Object visit marks, the object `+0xcc` handle, light render fields | the gathers | not read by the tick (class a); kept while any guest consumer is left, then dropped |
 
 Each slice that replaces an entry adds its row to a table in
@@ -566,8 +566,10 @@ writes the body made, in `frame_step::ROWS` order (guest order: the
 seed, the effects word, the stamps and residency requests inside the
 views, then `render_views`' frame counter and one-shot byte, then the
 present counter). The frame owner runs the `Step::Frame` rows once per
-frame. The rows for the seed, effects word, stamps and residency are
-empty until the slice that cuts their writer fills them, and each row
+frame. The rows for the seed, effects word and stamps are
+empty until the slice that cuts their writer fills them; the residency
+row belongs to the object setup, whose own producer (`cut::OWN_PRODUCER`)
+stages it with the records, and each row
 names its test in `crates/rewrites/render-bridge/tests/cut.rs`. From slice 6 the fallback for a
 stage that is not ready is to stay carried, which costs guest time but
 draws correctly.

@@ -553,7 +553,7 @@ const SCENE_LISTS: &[&str] = &[
     "sphere_regions",
     "window_record",
 ];
-const SCENE_LIST_RESULTS: [&str; 11] = [
+const SCENE_LIST_RESULTS: [&str; 12] = [
     "native",
     "fallback",
     "memory",
@@ -565,6 +565,7 @@ const SCENE_LIST_RESULTS: [&str; 11] = [
     "object_model",
     "compared",
     "mismatch",
+    "dropped",
 ];
 
 #[derive(Clone, Copy)]
@@ -640,6 +641,10 @@ pub enum SceneListResult {
     ObjectModel,
     Compared,
     Mismatch,
+    /// A cut producer that could not build its output: the call is
+    /// answered by the "not drawn" exit and counted here under its cause
+    /// (`Memory`, `Layout`, ...), never handed to the guest body.
+    Dropped,
 }
 
 impl SceneList {
@@ -947,6 +952,14 @@ impl ObjectWalk {
     pub fn fallback(self, n: usize) {
         Self::Fallback.count(n);
         self.count(n);
+    }
+
+    /// `n` objects the scene could not draw and nothing draws instead:
+    /// counted under this cause and as the objects stage's
+    /// `scene_dropped`. No guest draw follows.
+    pub fn dropped(self, n: usize) {
+        self.count(n);
+        Stage::Objects.count(Metric::SceneDropped, n as u64);
     }
 }
 pub(crate) fn labels() -> &'static [String] {

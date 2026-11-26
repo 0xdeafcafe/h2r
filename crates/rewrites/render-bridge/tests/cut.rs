@@ -178,3 +178,67 @@ fn the_cut_table_names_every_registry_producer() {
         Err(Refused::WrongEntry { name: "game_view", cut: 0x1234, row: 0x0002_b790 })
     );
 }
+
+/// The object setup's residency step makes the guest's requests, as
+/// writes in its output (`native_scene_lists::residency_request`), so the
+/// cut makes them with the records: a resident block stamps its cache
+/// entry, a request already queued stamps and counts the structure miss,
+/// and one that needs a new queue entry is the guest cache's own service.
+#[test]
+fn object_setup_makes_the_guests_residency_requests() {
+    use engine::testing::FakeGuest;
+    use render_bridge::native_scene_lists::{ResidencyRequest, residency_request};
+    const CACHE: u32 = 0x004e_649c;
+    const REQUESTS: u32 = 0x004e_648c;
+    const NONBLOCKING: u32 = 0x0046_8c4c;
+    const STRUCTURE_MISSES: u32 = 0x004e_64a8;
+    const TAGS: u32 = 0x004e_3b44;
+    let (resource, cache, pool, slots) = (0x10000, 0x20000, 0x21000, 0x22000);
+    let word = |v: u32| v.to_le_bytes().to_vec();
+    let mut mem = FakeGuest::new();
+    mem.put_u32(CACHE, cache)
+        .put_u32(cache + 0x64, pool)
+        .put_u32(cache + 0x38, 324)
+        .put_u32(pool + 0x24, 0x18)
+        .put_u32(pool + 0x38, 2)
+        .put_u32(pool + 0x44, slots);
+
+    // Resident: the cache's current epoch into the block's entry.
+    mem.put_u8(resource + 0x1e, 1).put_u16(resource + 0x20, 1);
+    assert_eq!(
+        residency_request(&mem, resource, true),
+        ResidencyRequest::Made { resident: true, writes: vec![(slots + 0x18 + 0x14, word(324))] }
+    );
+
+    // Not resident, its request already queued at the priority the
+    // nonblocking path asks for: stamped, and a structure miss counted.
+    let (handle, requests, queue, tags) = (0x8900_0000u32, 0x23000, 0x24000, 0x25000);
+    mem.put_u8(resource + 0x1e, 0)
+        .put_u32(resource + 8, 12)
+        .put_u32(resource + 0x20, handle)
+        .put_u32(REQUESTS, requests)
+        .put_u32(requests + 0x24, 12)
+        .put_u32(requests + 0x38, 1)
+        .put_u32(requests + 0x44, queue)
+        .put_u16(queue, (handle >> 16) as u16)
+        .put_u8(queue + 3, 2)
+        .put_u32(TAGS, tags)
+        .put_u32(tags, u32::from_be_bytes(*b"sbsp"))
+        .put_u32(STRUCTURE_MISSES, 3)
+        .put_u8(NONBLOCKING, 1);
+    assert_eq!(
+        residency_request(&mem, resource, true),
+        ResidencyRequest::Made {
+            resident: false,
+            writes: vec![(slots + 0x14, word(324)), (STRUCTURE_MISSES, word(4))],
+        }
+    );
+
+    // No queue entry yet: a new request is the guest cache's service.
+    mem.put_u32(resource + 0x20, u32::MAX);
+    assert_eq!(residency_request(&mem, resource, true), ResidencyRequest::NeedsGuestService);
+
+    // The object setup is cut by its own producer, and the table says so.
+    assert!(CUTS.iter().any(|c| c.name == "object_setup" && c.entry == 0x0013_3790 && c.pop == 20));
+    assert!(cut::OWN_PRODUCER.iter().all(|n| CUTS.iter().any(|c| c.name == *n)));
+}

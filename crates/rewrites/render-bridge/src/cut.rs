@@ -37,7 +37,19 @@ pub struct Cut {
 }
 
 /// The cut producers. A slice adds its row here with its test.
-pub const CUTS: &[Cut] = &[];
+pub const CUTS: &[Cut] = &[Cut {
+    name: "object_setup",
+    entry: 0x0013_3790,
+    // AL is the caller's only read, and the setup's own answer sets it.
+    abi_result: 0,
+    pop: 20,
+}];
+
+/// Cuts whose producer is a feature that builds the call's whole output
+/// from the call's registers (the object setup: `native_scene_lists`), so
+/// [`install`] leaves their points to it. Each still has its row here, so
+/// the census and the table cannot drift.
+pub const OWN_PRODUCER: &[&str] = &["object_setup"];
 
 /// Why a cut does not match the census.
 #[derive(Debug, PartialEq, Eq)]
@@ -89,6 +101,9 @@ pub fn install(b: &mut hooks::Builder, cuts: &'static [Cut]) {
     }
     for cut in cuts {
         let cut = *cut;
+        if OWN_PRODUCER.contains(&cut.name) {
+            continue;
+        }
         b.raw()
             .implement(point(&cut), cut.name, move |cpu, ctx, _| {
                 let mut guest = ctx.memory();
