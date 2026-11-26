@@ -465,6 +465,22 @@ fn the_viewers_settings_come_back_when_the_film_never_starts_or_the_session_ends
 }
 
 #[test]
+fn a_film_armed_but_never_started_is_left_by_end_film() {
+    let v = viewer();
+    let rec = &v.rec;
+    let store = store(rec);
+    store.run_as(SETTING, Setting::Bool(false)).unwrap();
+    rec.arm_watch(rec.plan_watch(&v.film, api::InitialView::default()).unwrap());
+    assert_eq!(store.get(SETTING), Some(Setting::Bool(true)));
+    rec.end_film().unwrap();
+    assert_eq!(store.get(SETTING), Some(Setting::Bool(false)), "the viewer's setting is back");
+    assert_eq!(v.pending(), vec![Call::QueueGame { steps: crate::game_menu::steps() }]);
+    // Nothing is armed any more: its game does not start the film.
+    rec.game_activated(&machine(&named(MODE_MULTIPLAYER, 3, SECOND), [1, 2]));
+    assert!(!rec.watching());
+}
+
+#[test]
 fn a_film_that_this_session_cannot_play_is_refused_before_anything_is_queued() {
     let v = viewer();
     let rec = &v.rec;

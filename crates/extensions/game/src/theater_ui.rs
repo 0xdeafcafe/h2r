@@ -1111,6 +1111,12 @@ impl Theater {
         self.session().owns_pads()
     }
 
+    /// A film is loaded and playing: the host draws the playback bar for it
+    /// and for nothing else (not over the menus, not while a film is queued).
+    pub fn film_loaded(&self) -> bool {
+        self.session().loaded()
+    }
+
     pub fn release_keys(&self) {
         self.session().release_keys();
     }

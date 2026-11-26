@@ -291,6 +291,12 @@ export only.
    game starts from its options alone, and a lobby's Forge mode would move
    a plain Slayer record onto the script index at the activation
    (`rules::record::move_onto_script_index`).
+   The playback bar is drawn only once the film's game answers the
+   transport (`Session::loaded`, `Theater::film_loaded`); until then the
+   menu keeps the pads and nothing is drawn over it. A film whose game has
+   not started after 60 s is given up: the viewer's film page says "The
+   film's game did not start" and `theater.end` disarms it
+   (`Session::stall`, `Session::end_film`).
 3. The game tears down, loads the map and activates it as it does for any
    game. At the activation the session moves from recording to playing at
    the game boundary (`Session::game_activated`): the recorder's state is
@@ -310,7 +316,8 @@ export only.
    menu activates: the recorder's state returns, the viewer's settings are
    put back and the film page opens (`Theater::reopen_film`) once the main
    menu is the active game and one screen has been on top of it for 20
-   menu updates in a row (`theater_ui::link`). The next
+   menu updates in a row (`theater_ui::link`). The Theater list opens
+   first and the film page over it, so B goes back to the list. The next
    game is recorded from the tick the recording stopped at; none of the
    film's ticks are in any film file. A session that ends while a film
    plays drops the film and seals the recorder's own games.

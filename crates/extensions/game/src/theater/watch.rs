@@ -449,6 +449,12 @@ impl Session {
     /// Leave the film for the main menu (`theater.end`, End Film). The game
     /// goes back at the next boundary, which is the menu's activation.
     pub fn end_film(&self) -> Result<(), RpcError> {
+        // A film whose game never started is given up: its settings go back
+        // and the menu is queued over the film's options.
+        if !self.watching() && self.watch.armed.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            self.disarm_watch();
+            return self.queue(crate::game_menu::steps()).map_err(unavailable);
+        }
         {
             let mut s = self.lock();
             let Some(info) = &mut s.watch else {
