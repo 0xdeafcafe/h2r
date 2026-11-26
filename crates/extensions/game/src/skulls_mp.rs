@@ -123,6 +123,8 @@ pub static MP: [MpSkull; 3] = [
 
 pub const FAMINE: usize = 4;
 pub const BLIND: usize = 6;
+/// Black Eye's engine index: a Firefight skull, shared by every machine.
+pub const BLACK_EYE: usize = 8;
 
 /// The row of skull `index` on the multiplayer screen.
 pub fn row_of(index: usize) -> Option<usize> {
@@ -371,9 +373,9 @@ pub const SKULL_ARRAY: u32 = 0x4f55dc;
 pub const FIREFIGHT_AI_SKULLS: [usize; 7] = [2, 3, 4, 7, 9, 12, 13];
 
 /// Skulls that change what a machine draws or simulates without actors,
-/// through the multiplayer set above: Famine (placed weapons), Blind and
+/// through the multiplayer set above: Famine (placed weapons), Black Eye and
 /// Low Gravity.
-pub const FIREFIGHT_SHARED_SKULLS: [usize; 3] = [FAMINE, BLIND, crate::skulls_custom::LOW_GRAVITY];
+pub const FIREFIGHT_SHARED_SKULLS: [usize; 3] = [FAMINE, BLACK_EYE, crate::skulls_custom::LOW_GRAVITY];
 
 /// What a Firefight skull does on a machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -384,7 +386,7 @@ pub enum FirefightScope {
     /// Both: the actors' reader on the host (a drop's rounds) and the
     /// multiplayer reader on every machine (a placed weapon's rounds).
     HostAiAndShared(Reach),
-    /// The multiplayer path: Blind locally, Low Gravity for everyone.
+    /// The multiplayer path: Black Eye and Low Gravity for everyone.
     Shared(Reach),
 }
 
@@ -401,7 +403,7 @@ pub fn firefight_scope(skull: ::firefight::Skull) -> FirefightScope {
             FirefightScope::HostAi
         }
         S::Famine => FirefightScope::HostAiAndShared(Reach::Simulation),
-        S::Blind => FirefightScope::Shared(Reach::Local),
+        S::BlackEye => FirefightScope::Shared(Reach::Simulation),
         S::LowGravity => FirefightScope::Shared(Reach::Simulation),
     }
 }
@@ -1341,20 +1343,20 @@ mod tests {
     #[test]
     fn ai_skulls_apply_on_the_host_only() {
         use ::firefight::Skull as S;
-        let on = ff(&[S::Mythic, S::Angry, S::Famine, S::Blind, S::LowGravity]);
+        let on = ff(&[S::Mythic, S::Angry, S::Famine, S::BlackEye, S::LowGravity]);
         for role in [Role::Alone, Role::Host { peers: 3 }] {
             assert_eq!(firefight_ai(&role, &on), [4, 12, 13], "{role:?}");
         }
         assert!(firefight_ai(&Role::Guest { class: 2 }, &on).is_empty());
         // Player-scoped skulls do not depend on the role.
-        assert_eq!(firefight_shared(&on), [4, 6, 16]);
+        assert_eq!(firefight_shared(&on), [4, 8, 16]);
 
         let mp = MpSkulls::new(store(), None, None);
         mp.activate(&[]);
         mp.set_firefight(&Role::Host { peers: 2 }, &on);
         assert!(mp.ff_ai_active(12) && mp.ff_ai_active(13) && mp.ff_ai_active(4));
         assert!(!mp.ff_ai_active(2), "Assassins is not on");
-        assert!(mp.active(BLIND) && mp.active(FAMINE));
+        assert!(mp.active(BLACK_EYE) && mp.active(FAMINE));
         assert!(mp.active(crate::skulls_custom::LOW_GRAVITY));
         // A guest applies no AI skull and adds nothing of its own: the
         // host's player-scoped set reaches it through the session.
@@ -1399,13 +1401,13 @@ mod tests {
         assert_eq!(guest, 0);
         assert!(GATES.iter().all(|g| gate_resume(g, guest).is_none()));
         // One skull on answers its own readers only.
-        let mythic = gate_bits(&Role::Host { peers: 2 }, &ff(&[S::Mythic, S::Blind]));
+        let mythic = gate_bits(&Role::Host { peers: 2 }, &ff(&[S::Mythic, S::BlackEye]));
         assert_eq!(mythic, 1 << 12);
         for g in &GATES {
             assert_eq!(gate_resume(g, mythic).is_some(), g.skull == 12, "{}", g.site.name);
         }
         // The player-scoped skulls have no gate of their own.
-        for skull in [6u8, 16] {
+        for skull in [8u8, 16] {
             assert!(of(skull).next().is_none());
         }
     }
@@ -1451,8 +1453,8 @@ mod tests {
                 4,
                 FirefightScope::HostAiAndShared(Reach::Simulation),
             ),
-            (S::Blind, 6, FirefightScope::Shared(Reach::Local)),
             (S::Ghost, 7, FirefightScope::HostAi),
+            (S::BlackEye, 8, FirefightScope::Shared(Reach::Simulation)),
             (S::Catch, 9, FirefightScope::HostAi),
             (S::Mythic, 12, FirefightScope::HostAi),
             (S::Angry, 13, FirefightScope::HostAi),
@@ -1466,7 +1468,7 @@ mod tests {
             S::Assassins,
             S::Thunderstorm,
             S::Famine,
-            S::Blind,
+            S::BlackEye,
             S::Ghost,
             S::Catch,
             S::Mythic,

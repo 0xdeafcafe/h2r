@@ -336,7 +336,7 @@ fn a_skull_command_reaches_the_skull_writer() {
     let (shared, skulls) = shared(false);
     let (mut m, _) = guest(true, 1);
     shared.lock().start(&mut m, false);
-    for id in ["blind", "mythic"] {
+    for id in ["black_eye", "mythic"] {
         shared
             .lock()
             .command(wire_command(
@@ -351,8 +351,8 @@ fn a_skull_command_reaches_the_skull_writer() {
     assert_eq!(
         *skulls.lock().unwrap(),
         [
-            BTreeSet::from([Skull::Blind]),
-            BTreeSet::from([Skull::Blind, Skull::Mythic])
+            BTreeSet::from([Skull::BlackEye]),
+            BTreeSet::from([Skull::BlackEye, Skull::Mythic])
         ]
     );
 }

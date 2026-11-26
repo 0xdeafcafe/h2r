@@ -137,7 +137,8 @@ named by **class** (`grunt`, `elite`, `jackal`, `hunter`, ...) and the
 kit maps each class to a character on the machine.
 
 ```
-Def      { format: 2, name, teams, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring }
+Def      { format: 3, name, teams, rounds: [Round], set: SetRules, lives: Lives, caps: Caps, scoring: Scoring }
+SetRules { endless: bool, scale, skulls: [Skull] }
 Round    { waves: [Wave], skulls_on: [Skull] }
 Wave     { squads: [SquadSpec], boss: bool, gap_ticks }
 SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier }
@@ -170,11 +171,27 @@ output and hashes depend on the definition alone.
   in [AI networking](ai-networking.md#cpu-on-the-host).
 - `"edge"` lets the director choose among the kit's edge zones.
   `{"prefer_zone":n}` prefers zone `n` (0 through 11) when present
-  and unseen. Weapon tiers range from 0 to 3.
-- A round's `skulls_on` adds skulls to those already enabled. Each skull
+  and unseen. `{"role":"line"|"flank"|"heavy"}` keeps only the zones
+  whose `ZoneSeen::roles` carry the role, then applies the unseen and
+  farther-half rule to them as for `"edge"`; `validate` refuses a squad
+  whose role no zone of the kit carries (`Limits::zone_roles`). An auto-built kit tags every zone with all three
+  roles. Weapon tiers range from 0 to 3.
+- **Sets.** `rounds` describes one set. A finite definition (`set.endless`
+  false, `scale` 0, no set skulls) plays it once and ends `Won`. An
+  endless one has one team and exactly three rounds. When the last round's
+  boss wave is cleared the next set begins: `Set{index}`, the round
+  skulls switch off, the set's skull switches on, and its first `Round`
+  follows. The game ends only `Lost`. Set *n* (zero-based) scales each
+  squad's count by `1 + n * scale / 1,000`, capped by the actor cap
+  (`scale` is at most 500). `set.skulls` lists up to three skulls that
+  arrive at the start of sets 2, 3 and 4, in that order, and stay on;
+  none arrives after the list ends. A set skull is listed once and is not
+  a round skull. A skull the match began with is never switched off.
+- A round's `skulls_on` adds skulls to those already enabled; in an
+  endless definition a new set switches them off again. Each skull
   appears at most once in the schedule. The JSON names are
-  `assassins`, `thunderstorm`, `famine`, `blind`, `ghost`, `catch`,
-  `mythic`, `angry` and `low_gravity`.
+  `assassins`, `thunderstorm`, `famine`, `black_eye`, `ghost`, `catch`,
+  `mythic`, `angry` and `low_gravity`. Blind is not a Firefight skull.
 - Class scores range from 1 to 1,000 points. The four difficulty
   multipliers (`easy`, `normal`, `heroic`, `legendary`) and the optional
   multiplier for each skull are integers in thousandths, from 1 to
@@ -186,14 +203,19 @@ output and hashes depend on the definition alone.
   scoring table holds up to 32 classes.
 
 `firefight::builtin::definitions()` returns Holdout, Attrition and Last
-Stand for one team, then Crossfire for two (a player kill scores 50).
+Stand for one team, Crossfire for two (a player kill scores 50), then
+Endless for one team: round skulls Ghost, Catch and Black Eye, set skulls
+Thunderstorm, Famine and Mythic (two of them stand in for ODST's two
+skulls Halo 2 lacks, so they are data to swap), 7 starting lives, one more
+each round, squads growing 10 percent a set.
 They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
 (`firefight::builtin::SETS` embeds them), and the package lists each as a
 `rules` item: `h2 package check` reads it as a `Def`, builds the director
 script from it (`script::compile`) and refuses a set the lobby would
 refuse (`workspace::wave_sets` lists a set's). The reference test in
 `builtin.rs` holds the files to the sets written as Rust.
-Each has three rounds and uses the stage-one kit's Elite class.
+Each has three rounds and uses the stage-one kit's Elite class. Holdout's
+round skulls are Ghost, Famine and Thunderstorm.
 `builtin::with_teams(def, n)` plays a set with `n` teams: with two, a
 player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
 (50); with one, nothing.
@@ -349,9 +371,10 @@ a one-team match.
 The runtime loads it with a wave set, and the director's tests are its
 scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 
-- `script::load(&def)` validates the definition, supplies the squads,
-  waves, round skull schedule, actor caps, points and multipliers as a
-  data module, then compiles and verifies the script. A definition with
+- `script::load(&def)` validates the definition, supplies the squads
+  (with each one's zone-role mask), waves, round skull schedule, set
+  skulls, set constants (`endless`, `set_scale`), actor caps, points and
+  multipliers as a data module, then compiles and verifies the script. A definition with
   more than 256 squads is refused by name, since a table holds 256 rows.
 - Global variables hold match progress, player variables hold lives
   and registration, and object variables on the host's 16 `ff_slots`
@@ -375,6 +398,15 @@ scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
 - `ScriptDirector::state` reads `director::State` back from the script's
   variables and the VM generator. `ScriptDirector::resume` continues
   from `RulesExt`.
+
+- Sets run in the script: the global `set_index`, `end_wave` starting the
+  next set when `endless` is 1, and `begin_set` queuing `ff_set(n)`, a
+  `ff_skull(id, false)` for each scheduled skull the match did not begin
+  with (`base_skulls`), and the set's skull. `zone_has_role(z, mask)`
+  reads `ZoneSeen::roles` (every zone fits mask 0). `director::State::set`
+  reads `set_index` back. The director is the script alone, so the sets
+  tests (`tests/sets.rs`) hold it to itself: a fresh script over what a
+  match observed gives the commands the match was played with.
 
 - Two teams run in the script too. Each team's pool and score are
   globals (`pool_0`, `pool_1`, `score_0`, `score_1`), the player's team
@@ -818,7 +850,8 @@ limits").
   `Respawn` gives back the one life ("Guest boundary").
 - **Rounds.** Five waves, the last a boss wave; an intermission between
   rounds refills ammunition crates (a kit placement the director
-  re-enables) and adds `per_round_bonus` lives.
+  re-enables) and adds `per_round_bonus` lives. An endless definition's
+  last round is followed by the next set's first, with the same bonus.
 - **Skulls.** Two kinds ([skulls.md](skulls.md), "Where each effect
   lives"). AI-scoped skulls (Mythic, Angry, Catch, Thunderstorm, Ghost,
   Assassins) change what actors do, and only the host runs actors, so
@@ -849,8 +882,8 @@ the Firefight page, a kit screen on Quick
 Options' dialog with six choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams
 (`firefight.teams`: the wave set's own, one team or two), Wave set
-(`firefight.waveset`: the lobby map's own sets first, then the four
-built-ins, Crossfire the fourth — [Map-specific
+(`firefight.waveset`: the lobby map's own sets first, then the five
+built-ins, Crossfire the fourth and Endless the fifth — [Map-specific
 sets](#map-specific-sets)), Difficulty, Starting
 lives (the wave set's own, or 1 to 30) and Skulls (whether each round
 switches its skull on). A on a row opens the value picker over the page; left and right step

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
-    Outcome, PlayerKill, Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave, builtin,
+    Outcome, PlayerKill, Round, Scoring, SetRules, ScriptDirector, Skull, SquadSpec, Wave, builtin,
 };
 
 /// One round of five one-actor waves, two ticks apart, with Famine on.
@@ -37,6 +37,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
             waves,
             skulls_on: vec![Skull::Famine],
         }],
+        set: SetRules::finite(),
         lives: Lives {
             pool_start: pool,
             per_round_bonus: 0,
@@ -198,6 +199,7 @@ pub fn zone(seen: bool, distance: u32) -> ZoneSeen {
         seen,
         distance,
         team_distance: [distance; 2],
+        roles: firefight::ALL_ZONE_ROLES,
     }
 }
 
@@ -257,7 +259,7 @@ impl TestRng {
 }
 
 /// The built-in sets with short gaps, so a match takes a few thousand ticks.
-pub fn quick_builtins() -> [Def; 4] {
+pub fn quick_builtins() -> [Def; 5] {
     builtin::definitions().map(|mut def| {
         for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
             wave.gap_ticks = 10;

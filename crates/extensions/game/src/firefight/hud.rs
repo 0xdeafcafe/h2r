@@ -105,7 +105,7 @@ pub const FIREFIGHT_SKULLS: [Skull; 9] = [
     Skull::Assassins,
     Skull::Thunderstorm,
     Skull::Famine,
-    Skull::Blind,
+    Skull::BlackEye,
     Skull::Ghost,
     Skull::Catch,
     Skull::Mythic,

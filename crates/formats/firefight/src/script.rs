@@ -15,6 +15,11 @@ use crate::director::{
 use crate::scoring::ScoreReason;
 use crate::{Def, Difficulty, Drop, MULTIPLIER_SCALE, Outcome, Refusal, Skull, WAVES_PER_ROUND};
 
+/// The index of `skull` in [`SKULLS`]: its bit, and its row in the tables.
+fn skull_index(skull: Skull) -> Option<usize> {
+    SKULLS.iter().position(|&entry| entry == skull)
+}
+
 const SOURCE: &str = include_str!("../../../../content/modes/rules/firefight.rules");
 const WAVE_MODULE: &str = "firefight-waves.rules";
 const ZONE_LABEL: &str = "ff_drop";
@@ -27,7 +32,7 @@ const SKULLS: [Skull; 9] = [
     Skull::Assassins,
     Skull::Thunderstorm,
     Skull::Famine,
-    Skull::Blind,
+    Skull::BlackEye,
     Skull::Ghost,
     Skull::Catch,
     Skull::Mythic,
@@ -108,20 +113,24 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         ("assist_share", u32::from(def.scoring.assist)),
         ("largest_roster", u32::from(largest)),
         ("waves_per_round", WAVES_PER_ROUND as u32),
+        ("endless", u32::from(def.set.endless)),
+        ("set_scale", u32::from(def.set.scale)),
+        ("set_skull_count", def.set.skulls.len() as u32),
     ];
     for (name, value) in constants {
         writeln!(data, "const {name} = {value}").unwrap();
     }
 
-    data.push_str("table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int) = [\n");
+    data.push_str("table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [\n");
     for squad in def.rounds.iter().flat_map(|r| &r.waves).flat_map(|w| &w.squads) {
-        let preferred = match squad.drop {
-            Drop::Edge => -1,
-            Drop::PreferZone(zone) => i32::from(zone),
+        let (preferred, role) = match squad.drop {
+            Drop::Edge => (-1, 0),
+            Drop::PreferZone(zone) => (i32::from(zone), 0),
+            Drop::Role(role) => (-1, i32::from(role.bit())),
         };
         writeln!(
             data,
-            "(\"{}\", {}, {}, {}, {preferred}, {}),",
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
             squad.class,
             squad.count.per_player,
             squad.count.min,
@@ -142,13 +151,23 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
     for round in &def.rounds {
         let row = std::array::from_fn::<_, 9, _>(|i| {
             round.skulls_on.get(i)
-                .and_then(|skull| SKULLS.iter().position(|entry| entry == skull))
+                .and_then(|&skull| skull_index(skull))
                 .map_or(-1, |index| index as i32)
                 .to_string()
         });
         writeln!(data, "({}),", row.join(", ")).unwrap();
     }
 
+    // The set skulls, by `skull_data` row: sets 2, 3 and 4. A table needs a
+    // row, so an empty list is one `-1` that `set_skull_count` (0) never reads.
+    data.push_str("]\ntable set_skulls: (which: int) = [\n");
+    for skull in &def.set.skulls {
+        let index = skull_index(*skull).expect("a set skull is one the director knows");
+        writeln!(data, "({index}),").unwrap();
+    }
+    if def.set.skulls.is_empty() {
+        data.push_str("(-1),\n");
+    }
     data.push_str("]\ntable actor_caps: (actors: int) = [\n");
     for players in 1..=largest {
         writeln!(data, "({}),", def.caps.for_players(players).unwrap_or(0)).unwrap();
@@ -162,7 +181,7 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         writeln!(data, "({}),", def.scoring.difficulty_multiplier.get(difficulty)).unwrap();
     }
 
-    data.push_str("]\ntable skull_data: (id: int, bit: int, multiplier: int) = [\n");
+    data.push_str("]\ntable skull_data: (id: int, bit: int, multiplier: int, scheduled: int) = [\n");
     for (index, skull) in SKULLS.iter().enumerate() {
         let multiplier = def
             .scoring
@@ -170,7 +189,16 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
             .get(skull)
             .copied()
             .unwrap_or(MULTIPLIER_SCALE);
-        writeln!(data, "({}, {}, {multiplier}),", *skull as i32, 1 << index).unwrap();
+        // `scheduled`: some round switches it on, so a new set switches it off.
+        let scheduled = def.rounds.iter().any(|round| round.skulls_on.contains(skull));
+        writeln!(
+            data,
+            "({}, {}, {multiplier}, {}),",
+            *skull as i32,
+            1 << index,
+            u8::from(scheduled)
+        )
+        .unwrap();
     }
     data.push_str("]\n");
     Ok(data)
@@ -372,6 +400,7 @@ impl ScriptDirector {
             .collect();
         State {
             phase,
+            set: g("set_index") as u8,
             round: g("round") as u8,
             wave: g("wave") as u8,
             next_squad: g("next_squad") as u8,
@@ -566,6 +595,9 @@ impl Game for Host<'_> {
                 .actors_alive_by_squad
                 .get(usize::from(*s))
                 .map_or(0, |&n| i32::from(n)),
+            // A mask of 0 names no role: every zone fits.
+            (id::ZONE_HAS_ROLE, [Arg::Object(Some(z)), Arg::Int(mask)]) => zone(z)
+                .map_or(0, |z| i32::from(*mask == 0 || i32::from(z.roles) & *mask != 0)),
             (id::ZONE_SEEN, [Arg::Object(Some(z))]) => zone(z).map_or(0, |z| i32::from(z.seen)),
             (id::ZONE_DISTANCE, [Arg::Object(Some(z))]) => {
                 zone(z).map_or(0, |z| i32::try_from(z.distance).unwrap_or(i32::MAX))
@@ -609,6 +641,9 @@ fn command(call: &Call) -> Option<Command> {
         },
         (id::HUNT, [Arg::Squad(slot)]) => Command::Hunt { slot: *slot },
         (id::ERASE_SQUAD, [Arg::Squad(slot)]) => Command::EraseSquad { slot: *slot },
+        (id::FF_SET, [Arg::Int(index)]) => Command::Set {
+            index: narrow_u8(*index)?,
+        },
         (id::FF_ROUND, [Arg::Int(index)]) => Command::Round {
             index: narrow_u8(*index)?,
         },

@@ -353,6 +353,8 @@ pub mod id {
     pub const OFFER_PICK: u16 = 124;
     pub const PICK_ROW: u16 = 125;
     pub const PICKED: u16 = 126;
+    pub const FF_SET: u16 = 127;
+    pub const ZONE_HAS_ROLE: u16 = 128;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -667,6 +669,12 @@ pub const ENTRIES: &[Entry] = &[
     act(id::OFFER_PICK, "offer_pick", &[Int, Text], Some("player.pick"), Now, Named),
     act(id::PICK_ROW, "pick_row", &[Int, Text], Some("player.pick"), Now, Named),
     vm(id::PICKED, "picked", &[Player, Int], Int),
+    // Firefight's sets and zone roles: `ff_set(n)` is `firefight::Command::Set`
+    // (the zero-based set begins), queued with the other director entries;
+    // `zone_has_role(z, mask)` reads whether the `ff_drop` zone carries any
+    // role of the mask (`ZoneSeen::roles`; true for mask 0).
+    act(id::FF_SET, "ff_set", &[Int], Some("firefight.director"), Queued, Named),
+    read(id::ZONE_HAS_ROLE, "zone_has_role", &[Object, Int], Bool, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

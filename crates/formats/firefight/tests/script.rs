@@ -153,7 +153,7 @@ fn kill_points_are_exact_at_the_limits() {
         (Skull::Assassins, 2_000),
         (Skull::Thunderstorm, 1_999),
         (Skull::Famine, 1_100),
-        (Skull::Blind, 1),
+        (Skull::BlackEye, 1),
         (Skull::Ghost, 1_333),
         (Skull::Catch, 2_000),
         (Skull::Mythic, 1_500),
@@ -176,7 +176,7 @@ fn kill_points_are_exact_at_the_limits() {
         Skull::Assassins,
         Skull::Thunderstorm,
         Skull::Famine,
-        Skull::Blind,
+        Skull::BlackEye,
         Skull::Ghost,
         Skull::Catch,
         Skull::Mythic,
@@ -234,10 +234,11 @@ fn the_built_ins_as_authored_replay_the_same_commands() {
         Difficulty::Heroic,
         Difficulty::Legendary,
         Difficulty::Easy,
+        Difficulty::Normal,
     ];
     for (i, def) in builtin::definitions().into_iter().enumerate() {
         let settings = with(40 + i as u64, difficulties[i], &[]);
-        let players = 1 + 5 * i as u8;
+        let players = (1 + 5 * i as u8).min(16);
         let run = check(&def, &settings, players, eight_zones(), 50_000, random_script(41 + i as u64));
         assert!(run.outcome.is_some(), "{} never ended", def.name);
     }
@@ -245,7 +246,7 @@ fn the_built_ins_as_authored_replay_the_same_commands() {
 
 #[test]
 fn starting_skulls_and_difficulty_replay_the_same_commands() {
-    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::Blind];
+    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::BlackEye, Skull::Mythic];
     for (i, def) in quick_builtins().into_iter().enumerate() {
         let settings = with(7 + i as u64, Difficulty::Heroic, &skulls[..=i]);
         check(&def, &settings, 3, eight_zones(), 50_000, random_script(9 + i as u64));
