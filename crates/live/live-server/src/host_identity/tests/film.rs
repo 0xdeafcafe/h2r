@@ -1124,6 +1124,22 @@ async fn a_live_game_sends_its_stats_stream_and_its_film_file_as_two_objects() {
     let games = format!("/v1/games/{id}/film");
     let films = format!("/v1/films/{id}/film");
 
+    // The unranged read is the film file, for signed-in accounts only.
+    let anonymous = read(games.clone(), None, None).await.unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    // An account's token is no lease: it cannot send a host's film file.
+    let (key, account) = &readers[0];
+    let account_token = issue_token(key, &account.id, &live.identity.id, lxm::FILMS_WRITE, now());
+    let by_account = Request::post(format!("/v1/games/{id}/film?object=film"))
+        .header(header::AUTHORIZATION, format!("Bearer {account_token}"))
+        .body(Body::from(film.clone()))
+        .unwrap();
+    let refused = app.clone().oneshot(by_account).await.unwrap().status();
+    assert!(
+        matches!(refused, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+        "{refused}"
+    );
+
     let ranged = read(games.clone(), None, Some("bytes=0-31")).await.unwrap();
     assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(body(ranged).await, &stats[..32]);

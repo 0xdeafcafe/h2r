@@ -549,8 +549,11 @@ the game, and walks the block lengths and the trailer; it inflates no
 tick chunk (`films/upload/film_file.rs`). It stores the bytes as sent
 under `input-films/<game>/` and signs a `HostFilmFileStored` receipt. The
 first film file of a game is kept: a retry with the same bytes returns
-204 and a different file 409. A pinned host game counts both objects
-against the account's quota.
+204 and a different file 409. Only the game's lease token (`telemetry.ingest`)
+sends it; an account token returns 401 or 403. A pinned host game counts both objects
+against the account's quota, and a pin that does not fit returns 413. The unranged
+`GET /v1/games/<game>/film` returns the file to any signed-in account that can see
+the game, and 401 without a token.
 
 ### Switching a host to film ingestion
 

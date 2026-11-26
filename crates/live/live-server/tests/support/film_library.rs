@@ -494,6 +494,7 @@ pub async fn exercise(live: Arc<Live>) {
     assert!(list().await.iter().all(|r| r["game_id"] != host));
     private_seed_is_refused(&live).await;
     host_film_file(&live).await;
+    host_film_file_access(&live).await;
 }
 
 /// A shared film whose seed still names the recording machine's address
@@ -614,4 +615,54 @@ async fn host_film_file(live: &Arc<Live>) {
         store.get(&stored[0].key).await.unwrap().unwrap().as_ref(),
         film.as_slice()
     );
+}
+
+/// Who may send, read and pin a Live game's film file: only the game's lease
+/// sends it; any signed-in account reads it; a pin charges the account for
+/// it, so one that does not fit is refused with 413.
+async fn host_film_file_access(live: &Arc<Live>) {
+    let owner = account(live, "FileOwner").await;
+    let guest = account(live, "FileGuest").await;
+    let write = Some((&owner, lxm::FILMS_WRITE));
+    let pin = |game: &str| format!("/v1/films/{game}/save");
+
+    // Scope: an account token, with or without write scope, is no lease.
+    let sent = host_film("scope-game", 2);
+    for token in [None, write, Some((&owner, lxm::READ))] {
+        let (code, _) = call(
+            live,
+            "POST",
+            "/v1/games/scope-game/film?object=film",
+            token,
+            None,
+            sent.clone(),
+        )
+        .await;
+        assert!(matches!(code, 401 | 403), "an account sent a film file: {code}");
+    }
+
+    // Quota: the film file counts against a pinned game's space.
+    let fits = host_film("fits-game", 3);
+    live.fixture_host_film(owner.xuid, "heavy-game", 1000).await;
+    live.fixture_host_film_file("heavy-game", ACCOUNT_QUOTA, None)
+        .await;
+    live.fixture_host_film(owner.xuid, "light-game", 1000).await;
+    live.fixture_host_film(owner.xuid, "fits-game", 1000).await;
+    live.fixture_host_film_file("fits-game", 0, Some(&fits)).await;
+    let (code, _) = call(live, "POST", &pin("heavy-game"), write, None, vec![]).await;
+    assert_eq!(code, 413, "a pin over the quota through the film file");
+    for game in ["light-game", "fits-game"] {
+        let (code, _) = call(live, "POST", &pin(game), write, None, vec![]).await;
+        assert_eq!(code, 204, "{game}");
+    }
+
+    // Visibility: a film file needs a signed-in account, and any account
+    // that can see the game gets the stored bytes.
+    let whole = "/v1/games/fits-game/film";
+    assert_eq!(call(live, "GET", whole, None, None, vec![]).await.0, 401);
+    for reader in [&owner, &guest] {
+        let (code, body) = call(live, "GET", whole, Some((reader, lxm::READ)), None, vec![]).await;
+        assert_eq!(code, 200);
+        assert_eq!(body, fits);
+    }
 }
