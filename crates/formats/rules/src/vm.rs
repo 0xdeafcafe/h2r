@@ -393,6 +393,22 @@ pub struct RulesExt {
     /// picker, in the order made. The host reports a pick
     /// ([`Vm::choose`]); `picked` reads it.
     pub choices: Vec<Choice>,
+    /// Each player's loadout window ([`Window`]): the rows of a picker the
+    /// player may pick from now, and the row last picked. The script sets
+    /// the window (`offer`); the host reports the pick
+    /// ([`Vm::choose_loadout`]); `choice` reads the row. The row outlives a
+    /// round, the window does not.
+    pub loadout: [Window; MAX_PLAYERS],
+}
+
+/// One player's loadout window: the picker whose rows the player picks
+/// from, how many of its first rows are open (0 = none offered) and the
+/// row last picked (0 until one is). A row at or past `count` is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Window {
+    pub picker: u8,
+    pub count: u8,
+    pub row: u8,
 }
 
 /// One picker a script offers: its slot, and its title and rows as indexes
@@ -524,8 +540,8 @@ const STATE_MAGIC: [u8; 4] = *b"H2RX";
 /// 2 added the `ticks_held` counters; 3 the teams' spawn rules and
 /// bodies; 4 the script role mask and the shown areas; 5 the show state;
 /// 6 the movers; 7 the sight table; 8 the open barriers; 9 the pickers and
-/// what each player picked.
-const STATE_VERSION: u8 = 9;
+/// what each player picked; 10 the loadout windows.
+const STATE_VERSION: u8 = 10;
 
 impl RulesExt {
     /// Whether `player` holds `cap` (an index into `requires`) with uses
@@ -681,6 +697,9 @@ impl RulesExt {
         w.push(self.choices.len() as u8);
         for c in &self.choices {
             w.extend_from_slice(&[c.player, c.slot, c.row]);
+        }
+        for l in &self.loadout {
+            w.extend_from_slice(&[l.picker, l.count, l.row]);
         }
         w
     }
@@ -939,6 +958,18 @@ impl RulesExt {
             }
             choices.push(c);
         }
+        let mut loadout = [Window::default(); MAX_PLAYERS];
+        for l in &mut loadout {
+            let at = r.at;
+            *l = Window { picker: r.u8()?, count: r.u8()?, row: r.u8()? };
+            if l.picker as usize >= MAX_PICKS
+                || l.count as usize > MAX_PICK_ROWS
+                || (l.count > 0 && l.row >= l.count)
+                || (l.count == 0 && l.row as usize >= MAX_PICK_ROWS)
+            {
+                return Err(StateError::Malformed(at));
+            }
+        }
         if r.at != bytes.len() {
             return Err(StateError::Malformed(r.at));
         }
@@ -965,6 +996,7 @@ impl RulesExt {
             gates,
             picks,
             choices,
+            loadout,
         })
     }
 }
@@ -1129,6 +1161,7 @@ impl Vm {
             gates: Vec::new(),
             picks: Vec::new(),
             choices: Vec::new(),
+            loadout: [Window::default(); MAX_PLAYERS],
         };
         Ok(Vm {
             role_traits: role_traits(&ir, options),
@@ -1563,6 +1596,9 @@ impl Vm {
                 self.ext.sight.clear();
                 self.ext.picks.clear();
                 self.ext.choices.clear();
+                for l in &mut self.ext.loadout {
+                    l.count = 0;
+                }
                 // Every barrier still open stands where it closed.
                 for gate in std::mem::take(&mut self.ext.gates) {
                     game.step_object(gate.object, gate.home, [0; 3]);
@@ -1626,6 +1662,42 @@ impl Vm {
     /// What the players picked, in the order made.
     pub fn choices(&self) -> &[Choice] {
         &self.ext.choices
+    }
+
+    /// The pickers some player's loadout window reads its rows from: the
+    /// host asks those players through [`Window`], not as a plain picker.
+    pub fn loadout_pickers(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.ext.loadout.iter().filter(|l| l.count > 0).map(|l| l.picker).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// The pickers that are plain ones: all but [`Vm::loadout_pickers`].
+    pub fn plain_picks(&self) -> Vec<PickOffer> {
+        let held = self.loadout_pickers();
+        self.ext.picks.iter().filter(|o| !held.contains(&o.slot)).cloned().collect()
+    }
+
+    /// A player's loadout window.
+    pub fn window(&self, player: u8) -> Option<Window> {
+        self.ext.loadout.get(player as usize).copied()
+    }
+
+    /// The host reports that `player` picked `row` of the loadout window.
+    /// A row the window does not open (at or past its count, or past the
+    /// rows its picker holds), or a player outside the roster, is refused
+    /// (`false`) and the last pick stands. A pick holds until the next.
+    pub fn choose_loadout(&mut self, player: u8, row: u8) -> bool {
+        let Some(l) = self.ext.loadout.get(player as usize).copied() else {
+            return false;
+        };
+        let rows = self.ext.picks.iter().find(|o| o.slot == l.picker).map_or(0, |o| o.rows.len());
+        if row >= l.count || row as usize >= rows {
+            return false;
+        }
+        self.ext.loadout[player as usize].row = row;
+        true
     }
 
     /// A string of the script's table, as an offer names its title and rows.
@@ -2174,6 +2246,12 @@ impl<'a> Run<'a> {
                             .map_or(-1, |c| i32::from(c.row)),
                         _ => -1,
                     },
+                    // The row the player last picked in the loadout window,
+                    // 0 when none was; -1 for a player out of range.
+                    caps::id::CHOICE => u8::try_from(raw[0])
+                        .ok()
+                        .and_then(|p| self.ext.loadout.get(p as usize))
+                        .map_or(-1, |l| i32::from(l.row)),
                     caps::id::RANDOM => {
                         if raw[0] > 0 {
                             (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
@@ -2216,6 +2294,7 @@ impl<'a> Run<'a> {
                         self.mover(game, e.id, &raw)?;
                         self.gate(game, e.id, &raw)?;
                         self.pick(e.id, &raw)?;
+                        self.offer(e.id, &raw)?;
                         self.stand(game, e.id, &raw)?;
                         let mut call = self.resolve(e, &raw);
                         if caps::is_message(e.id) {
@@ -2318,6 +2397,24 @@ impl<'a> Run<'a> {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// `offer(p, picker, count)`: opens the first `count` rows of `picker`
+    /// to the player (1 up to [`MAX_PICK_ROWS`]). A row last picked that the
+    /// window still holds stays the player's; else the player is back on
+    /// row 0. A picker out of range, a count out of range, or a player out
+    /// of the roster is a script error.
+    fn offer(&mut self, entry: u16, raw: &[i32]) -> Result<(), ErrorKind> {
+        let (caps::id::OFFER, &[player, picker, count]) = (entry, raw) else {
+            return Ok(());
+        };
+        let player = usize::try_from(player).ok().filter(|&p| p < MAX_PLAYERS).ok_or(ErrorKind::Picks)?;
+        let picker = u8::try_from(picker).ok().filter(|&s| (s as usize) < MAX_PICKS).ok_or(ErrorKind::Picks)?;
+        let count = u8::try_from(count).ok().filter(|&n| n >= 1 && n as usize <= MAX_PICK_ROWS).ok_or(ErrorKind::Picks)?;
+        let l = &mut self.ext.loadout[player];
+        let row = if l.row < count { l.row } else { 0 };
+        *l = Window { picker, count, row };
         Ok(())
     }
 
@@ -2715,6 +2812,7 @@ mod tests {
                 Choice { player: 2, slot: 0, row: 2 },
                 Choice { player: 0, slot: 1, row: 0 },
             ],
+            loadout: std::array::from_fn(|i| Window { picker: (i % MAX_PICKS) as u8, count: 3, row: (i % 3) as u8 }),
         }
     }
 
@@ -2768,7 +2866,8 @@ mod tests {
             + (1 + 13 * e.sight.len())
             + (1 + 16 * e.gates.len())
             + (1 + e.picks.iter().map(|o| 4 + 2 * o.rows.len()).sum::<usize>())
-            + (1 + 3 * e.choices.len());
+            + (1 + 3 * e.choices.len())
+            + 3 * MAX_PLAYERS;
         let rules = (1 + 2 + 4) + (MAX_TEAMS - 2) + (1 + 4 + 1);
         let first = bytes.len() - held - MAX_TEAMS - rules;
         assert_eq!(bytes[first], 1, "team 0 has an Areas rule");
@@ -3070,6 +3169,7 @@ mod tests {
             choices: (0..MAX_PICKS as u8)
                 .flat_map(|slot| (0..MAX_PLAYERS as u8).map(move |player| Choice { player, slot, row: MAX_PICK_ROWS as u8 - 1 }))
                 .collect(),
+            loadout: [Window { picker: MAX_PICKS as u8 - 1, count: MAX_PICK_ROWS as u8, row: MAX_PICK_ROWS as u8 - 1 }; MAX_PLAYERS],
         };
         let bytes = e.encode();
         assert!(bytes.len() <= MAX_STATE_BYTES, "{} bytes", bytes.len());

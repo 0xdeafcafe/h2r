@@ -117,14 +117,16 @@ impl Runtime {
     /// sends none: it has no channel.
     pub(super) fn send_picks(&mut self, tick: u32) {
         let offers = match &self.status {
-            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.picks(),
+            // The loadout pickers are asked through the player's window
+            // (`crate::rules::world::choice`), not as cues.
+            Status::Running(r) if r.authority == Some(true) && !self.film => r.vm.plain_picks(),
             _ => return,
         };
         let (sent, at) = match self.pick_cue.as_ref() {
             Some((sent, at)) => (Some(sent.as_slice()), *at),
             None => (None, tick),
         };
-        let changed = sent != Some(offers);
+        let changed = sent != Some(offers.as_slice());
         let repeat = !offers.is_empty() && tick.wrapping_sub(at) >= ::rules::show::PICK_REPEAT;
         if !changed && !repeat {
             return;
@@ -141,10 +143,10 @@ impl Runtime {
                 );
             }
         }
-        for offer in offers {
+        for offer in &offers {
             crate::rules::world::show::pick_offer(tick, offer.clone());
         }
-        self.pick_cue = Some((offers.to_vec(), tick));
+        self.pick_cue = Some((offers, tick));
     }
 
     /// The walls the running script shows in play (`show_area`), in the

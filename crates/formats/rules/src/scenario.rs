@@ -320,10 +320,27 @@ pub enum ScenarioEvent {
     /// `player`'s run of bounces with no ground between them ended.
     Grounded(u8),
     RoundEnd,
+    /// The host reports that the player in roster `slot` picked row `row`
+    /// of their loadout window ([`crate::vm::Vm::choose_loadout`]), as it
+    /// reports a picker's press: after the tick runs, so a spawn of the
+    /// next tick reads it. It is no event the script handles.
+    Choose {
+        slot: u8,
+        row: u8,
+    },
 }
 
 impl ScenarioEvent {
-    pub fn input(&self) -> Input {
+    /// The input the script's handlers see; `None` for what the host
+    /// reports between ticks ([`ScenarioEvent::Choose`]).
+    pub fn input(&self) -> Option<Input> {
+        if matches!(self, ScenarioEvent::Choose { .. }) {
+            return None;
+        }
+        Some(self.handled())
+    }
+
+    fn handled(&self) -> Input {
         match self.clone() {
             ScenarioEvent::Kill { victim, killer } => Input::Kill { victim, killer },
             ScenarioEvent::Spawn(p) => Input::Spawn(p),
@@ -364,6 +381,7 @@ impl ScenarioEvent {
             ScenarioEvent::Launch { player, spot, speed } => Input::Launch { player, spot, speed },
             ScenarioEvent::Grounded(p) => Input::Grounded(p),
             ScenarioEvent::RoundEnd => Input::RoundEnd,
+            ScenarioEvent::Choose { .. } => unreachable!("input() answers None for a choose"),
         }
     }
 }
@@ -476,6 +494,10 @@ pub struct RunResult {
     /// picker the script had not offered, a row it does not hold or a
     /// player outside the roster.
     pub refused_picks: Vec<(u32, ScenarioPick)>,
+    /// The loadout picks the VM refused ([`ScenarioEvent::Choose`]), with
+    /// the tick each was reported at, the roster slot and the row: a row
+    /// the player's window does not open, or no window.
+    pub refused_choices: Vec<(u32, u8, u8)>,
 }
 
 impl RunResult {
@@ -608,18 +630,26 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
     let mut ended_at = None;
     let mut made = 0usize;
     let mut refused_picks = Vec::new();
+    let mut refused_choices = Vec::new();
     let count = scenario.ticks.len().max(1);
     for t in 0..count {
         let tick = t as u32;
         let inputs: Vec<Input> = scenario
             .ticks
             .get(t)
-            .map(|st| st.events.iter().map(ScenarioEvent::input).collect())
+            .map(|st| st.events.iter().filter_map(ScenarioEvent::input).collect())
             .unwrap_or_default();
         let stepped = step(&mut vm, &mut game, tick, true, &inputs);
         for pick in scenario.ticks.get(t).map(|st| st.picks.as_slice()).unwrap_or_default() {
             if !vm.choose(pick.player, pick.slot, pick.row) {
                 refused_picks.push((tick, *pick));
+            }
+        }
+        for event in scenario.ticks.get(t).map(|st| st.events.as_slice()).unwrap_or_default() {
+            if let ScenarioEvent::Choose { slot, row } = *event
+                && !vm.choose_loadout(slot, row)
+            {
+                refused_choices.push((tick, slot, row));
             }
         }
         if t + 1 == count {
@@ -648,6 +678,7 @@ pub fn run(ir: Ir, scenario: &Scenario) -> Result<RunResult, RunError> {
         ended_at,
         game,
         refused_picks,
+        refused_choices,
     })
 }
 
@@ -709,7 +740,7 @@ on kill(victim, killer) {
             }
         );
         assert_eq!(
-            s.ticks[0].events[6].input(),
+            s.ticks[0].events[6].input().unwrap(),
             Input::ActorAssist {
                 killer: Some(0),
                 assist: Some(1),
@@ -718,7 +749,7 @@ on kill(victim, killer) {
         );
         // A bounce is a single, normal one unless it says otherwise.
         assert_eq!(
-            s.ticks[0].events[3].input(),
+            s.ticks[0].events[3].input().unwrap(),
             Input::Bounce {
                 player: 0,
                 spot: 0,
@@ -727,7 +758,7 @@ on kill(victim, killer) {
             }
         );
         assert_eq!(
-            s.ticks[0].events[7].input(),
+            s.ticks[0].events[7].input().unwrap(),
             Input::Bounce {
                 player: 1,
                 spot: 9,
@@ -735,7 +766,7 @@ on kill(victim, killer) {
                 monster: true
             }
         );
-        assert_eq!(s.ticks[0].events[8].input(), Input::Bounced(1));
+        assert_eq!(s.ticks[0].events[8].input().unwrap(), Input::Bounced(1));
         assert!(serde_json::from_str::<Scenario>(r#"{"nope":1}"#).is_err());
     }
 
@@ -784,7 +815,7 @@ on kill(victim, killer) {
         assert!(!r.game.players[&1].alive);
         let mut vm = Vm::new(crate::build(src).unwrap().0, 0, 0).unwrap();
         let mut g = game_of(&crate::build(src).unwrap().0, &s).unwrap();
-        step(&mut vm, &mut g, 0, true, &[s.ticks[0].events[0].input()]);
+        step(&mut vm, &mut g, 0, true, &[s.ticks[0].events[0].input().unwrap()]);
         assert_eq!(vm.global("seen"), Some(11));
     }
 

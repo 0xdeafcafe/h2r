@@ -1273,13 +1273,19 @@ objects the author labelled `siege_barrier`, numbered by the phase they
 open in (a barrier numbered 0 is open from the start), are opened with
 `set_open` as each phase begins (`label barrier: objects at most 8`; a
 placement's label is set from Forge's Properties page, and a map with none
-plays as before). The lobby's `kits` option picks each side's weapons from
-three sets (standard, close quarters, long range); each local player also
-picks a set in a select dialog at the round's start (`offer_pick`,
-`pick_row`, `picked`: [rules-world-api.md](rules-world-api.md#pickers)),
-which holds from that player's next spawn and takes the lobby's set's
-place; a player who does not pick, and a player on another machine, gets
-the lobby's set. Siege has no core to carry.
+plays as before). Each side has a table of loadout rows, lightest first
+(`attack_rows`, `defend_rows`), and `tier_rows` says how many a phase
+opens: two in the first, four in the second, all five in the final
+assault (a map with no numbered sites stays on the first). At the round's
+start and as each phase begins the script `offer`s every player the rows of
+their side's tier (`offer(p, picker, count)`; the two sides' labels are
+the pickers 0 and 1), and `on spawn` gives the row `choice(p)` reads. A
+local player picks in a select dialog that opens when their window grows
+(`rules/world/choice.rs`, over the `kit.picker.game` dialog): a row above
+the tier is refused by the VM (`Vm::choose_loadout`) and the last pick
+stands. The pick never blocks a spawn: a player who picks nothing keeps
+their last row, row 0 at first, and so does a player on another machine.
+Siege has no core to carry.
 
 ### A Forge graph is the same IR
 
@@ -2348,7 +2354,7 @@ The phased mode is the check that the API is wide enough:
 | a core carried to a goal | the objective registry as CTF and Assault | traced |
 | the map opens per phase | `set_open` on the `siege_barrier` objects, numbered by phase (a barrier is put below its place and back; `delete` and `create` are not hostable) | named; the built-in Siege |
 | spawn areas switch per phase | `spawn_areas` over labelled starting locations; `spawn_near` over a zone, which needs no labels | named; the built-in Siege (`spawn_near`) |
-| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; the lobby's `kits` option picks the set, and a player's own pick (`offer_pick`, `picked`) takes its place | named; the built-in Siege; a pick is carried for a local player only |
+| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; a player picks a row of their side's table among the rows the phase's tier opens (`offer`, `choice`), row 0 until they pick | named; the built-in Siege; a pick is carried for a local player only |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
 | the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock is the kit's `koth.phase` row |
