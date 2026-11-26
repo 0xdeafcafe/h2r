@@ -51,6 +51,7 @@ fn small_def(shared: bool, rounds: usize) -> Def {
             pool_start: 6,
             per_round_bonus: 2,
             shared,
+            zero_holds: false,
         },
         caps: Caps {
             live_actors_by_players: vec![(4, 8)],
@@ -67,6 +68,7 @@ fn small_def(shared: bool, rounds: usize) -> Def {
             skull_multipliers: [(Skull::Famine, 1_100)].into(),
             assist: 250,
         },
+        bonus: None,
     }
 }
 
@@ -590,6 +592,8 @@ fn the_skulls_on_ride_in_the_blob() {
         | Skull::Mythic
         | Skull::Angry
         | Skull::LowGravity => FIREFIGHT_SKULLS.contains(&s),
+        // Iron is a bonus-round rule, not a mode-blob skull.
+        Skull::Iron => !FIREFIGHT_SKULLS.contains(&s),
     };
     assert!(FIREFIGHT_SKULLS.iter().all(|s| listed(*s)));
     assert_eq!(SKULL_BITS.count_ones(), 9);

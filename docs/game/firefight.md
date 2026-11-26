@@ -137,11 +137,13 @@ named by **class** (`grunt`, `elite`, `jackal`, `hunter`, ...) and the
 kit maps each class to a character on the machine.
 
 ```
-Def      { format: 2, name, teams, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring }
+Def      { format: 2, name, teams, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring,
+           bonus: Option<Bonus> }
 Round    { waves: [Wave], skulls_on: [Skull] }
 Wave     { squads: [SquadSpec], boss: bool, gap_ticks }
 SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier }
-Lives    { pool_start, per_round_bonus, shared: bool }
+Lives    { pool_start, per_round_bonus, shared: bool, zero_holds: bool }
+Bonus    { ticks, squad: SquadSpec, lives_by_points: [(points, lives)] }
 Caps     { live_actors_by_players: [(players, actors)] }
 Scoring  { by_class, player_kill, difficulty_multiplier, skull_multipliers, assist }
 ```
@@ -175,6 +177,16 @@ output and hashes depend on the definition alone.
   appears at most once in the schedule. The JSON names are
   `assassins`, `thunderstorm`, `famine`, `blind`, `ghost`, `catch`,
   `mythic`, `angry` and `low_gravity`.
+- `zero_holds` (default false, left out of the JSON when false) makes a
+  dead player at zero lives wait for the next grant (a round's end, the
+  bonus round's end) instead of returning free at the wave's end.
+- `bonus` (default absent) is the bonus round played after each set
+  ("The bonus round"). `ticks` is 1 to 9,000. `squad` is checked as a
+  wave's squad is: a scored class, bounds, and under the actor cap at
+  every player count. `lives_by_points` has up to six rows, points
+  strictly ascending up to 1,000,000, 1 to 1,000 lives each.
+- `iron` is a JSON skull name too, but only the bonus round turns it on:
+  `skulls_on` and `skull_multipliers` refuse it.
 - Class scores range from 1 to 1,000 points. The four difficulty
   multipliers (`easy`, `normal`, `heroic`, `legendary`) and the optional
   multiplier for each skull are integers in thousandths, from 1 to
@@ -243,7 +255,8 @@ pub struct Observed { players: Vec<PlayerSeen { slot, alive, team }>,
 pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Target { slot, team },
                    Hunt { slot }, EraseSquad { slot }, Round { index }, Wave { index },
                    Skull { id, on }, Lives { player, pool }, TeamLives { team, pool },
-                   Score { player, points, reason }, Respawn { player }, Finish { outcome } }
+                   Score { player, points, reason }, Respawn { player },
+                   Bonus { on, ticks }, Finish { outcome } }
 pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
 ```
 
@@ -805,13 +818,56 @@ limits").
   is never ranked (`ranks::rank_game`). Bots stay game-only, as today.
   A Firefight match is not multiplayer's kills or deaths.
 
+### The bonus round
+
+A definition with a `bonus` plays it after each set's last round (a set
+is the definition's rounds: `script.rs::set_rounds`), before the next
+set or the finish. It is part of the director script
+(`content/modes/rules/firefight.rules`: `start_bonus`, `end_bonus`,
+`grant_side`), so the host log carries it as commands and a replayed log
+agrees.
+
+- **Start.** When the set's last boss wave is cleared the director emits
+  `Bonus { on: true, ticks }` and the phase is `Phase::Bonus { until }`.
+  No `Wave` or `Round` command follows. The tick's score is noted per
+  team, so the bonus round's points are what is scored after it.
+- **Skulls.** Every skull of `BONUS_SKULLS` (Ghost, Catch, Thunderstorm,
+  Famine, Mythic) that is not already on is switched on with `Skull`,
+  and Iron (`Skull::Iron`, 11) with them. The script remembers which it
+  turned on; at the end it turns exactly those off, so the set's own
+  skulls are what remain. Iron is a director rule, not an engine skull:
+  `Command::Skull { id: Iron }` is not applied to the engine
+  (`host.rs`), and it takes no score multiplier.
+- **Enemies.** The bonus squad is the last row of the script's `squads`
+  and `waves` tables. Whenever the actor cap and a free slot allow, one is
+  placed again, at most one a tick, until the time is up.
+- **Deaths.** Iron means no respawn and no charge: the script issues
+  neither `Respawn` nor `Lives` while it runs, and defeat is not checked.
+  When every player present is dead the bonus round ends, not the game.
+- **End.** On time, or when all players are dead: the squads are erased,
+  the skulls it switched on go off, `Bonus { on: false }` follows, lives
+  are granted by the points the team scored in it, every dead player
+  respawns free, and the director goes on as after a round: the next
+  round, or the finish.
+- **Lives by points.** Each team takes the lives of the last
+  `lives_by_points` row its bonus points reach (rows do not add). A shared
+  pool gets them (`Lives` or `TeamLives`); with each player's own lives,
+  every player of the team gets them (`Lives { player }`).
+
+`tests/bonus.rs` covers the window and its length, the grant table by
+kills, a bonus death, all dead, the skulls on and restored, Iron, two
+teams, `zero_holds`, the validation, and 48 random matches replayed
+through a fresh script for the same commands.
+
 ### Lives, rounds and skulls
 
 - **Lives.** The pool is the director's. A player's death takes one life
   from the pool at respawn (`Respawn`, then `Lives` with the new pool);
   with the pool at zero the player waits for the wave to end and
   respawns then without a charge. Between waves an empty pool does not
-  hold a respawn. `Lives.shared = false` gives each player their own
+  hold a respawn. With `Lives.zero_holds` the player instead waits for
+  the next grant (a round's `per_round_bonus`, or the bonus round's lives,
+  or its end), and between waves an empty pool holds the respawn. `Lives.shared = false` gives each player their own
   count instead, announced when the player first appears. The engine's
   own respawn stays off: the variant's lives setting is 1, so a death
   leaves the player with none and the engine holds the respawn, and

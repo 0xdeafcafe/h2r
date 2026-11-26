@@ -25,6 +25,7 @@ const fighting = 2
 const cleanup = 3
 const intermission = 4
 const done = 5
+const bonus_round = 6
 
 const free = 0
 const placed = 1
@@ -48,6 +49,15 @@ global var pool_1: int = second_pool
 global var score_0: int = 0
 global var score_1: int = 0
 global var skulls: int = 0
+// The bonus round: the skulls it switched on (a bit mask, so the set's own
+// are kept), each side's score when it began, the shift that points
+// `wave_index()` at the bonus squad's row, and Iron.
+global var bonus_added: int = 0
+global var bonus_base_0: int = 0
+global var bonus_base_1: int = 0
+global var bonus_shift: int = 0
+global var iron: bool = false
+global var extra: int = 0
 
 player var registered: bool = false
 player var remaining_lives: int = start_pool
@@ -95,7 +105,7 @@ global var limb_10: int = 0
 global var limb_11: int = 0
 global var limb_12: int = 0
 
-fn wave_index() -> int = round * waves_per_round + wave
+fn wave_index() -> int = round * waves_per_round + wave + bonus_shift
 fn active(s: object) -> bool = s.squad_state == placed or s.squad_state == reported
 
 fn show_pool(side: int, pool: int) {
@@ -293,7 +303,7 @@ fn bring_back(p: player) {
 }
 
 fn respawn_players() {
-    let between = phase == warmup or phase == intermission
+    let between = zero_holds == 0 and (phase == warmup or phase == intermission)
     for each players p {
         if p.alive { p.respawning = false }
         else if not p.respawning {
@@ -370,13 +380,18 @@ fn round_bonus() {
     }
 }
 
-fn end_wave(tick: int, here_0: bool, here_1: bool) {
-    for each players p where not p.alive and not p.respawning { bring_back(p) }
-    if wave + 1 < waves_per_round { wave = wave + 1 }
-    else if round + 1 < len(round_data) {
+fn pause(tick: int) {
+    phase = intermission
+    phase_tick = tick + waves[wave_index()].gap
+}
+
+// A round is over and no bonus round follows: the next round, or the end.
+fn next_round(tick: int, here_0: bool, here_1: bool) {
+    if round + 1 < len(round_data) {
         round = round + 1
         wave = 0
         round_bonus()
+        pause(tick)
     } else {
         if team_count == 1 { ff_finish(true) }
         else {
@@ -387,9 +402,97 @@ fn end_wave(tick: int, here_0: bool, here_1: bool) {
         }
         phase = done
     }
-    if phase != done {
-        phase = intermission
-        phase_tick = tick + waves[wave_index()].gap
+}
+
+fn bonus_skull(index: int) {
+    if index >= 0 {
+        let skull = skull_data[index]
+        if skulls / skull.bit % 2 == 0 {
+            skulls = skulls + skull.bit
+            bonus_added = bonus_added + skull.bit
+            ff_skull(skull.id, true)
+        }
+    }
+}
+
+fn bonus_restore(index: int) {
+    if index >= 0 {
+        let skull = skull_data[index]
+        if bonus_added / skull.bit % 2 == 1 {
+            skulls = skulls - skull.bit
+            ff_skull(skull.id, false)
+        }
+    }
+}
+
+// Every skull on for the bonus round's length, Iron with them. No life is
+// spent in it and no respawn is issued: `on tick` skips both while it runs.
+fn start_bonus(tick: int) {
+    phase = bonus_round
+    phase_tick = tick + bonus_ticks
+    bonus_shift = len(waves) - 1 - (round * waves_per_round + wave)
+    bonus_base_0 = score_0
+    bonus_base_1 = score_1
+    bonus_added = 0
+    next_squad = 0
+    wave_actors = 0
+    ff_bonus(true, bonus_ticks)
+    let listed = bonus_skulls[0]
+    bonus_skull(listed.s0)
+    bonus_skull(listed.s1)
+    bonus_skull(listed.s2)
+    bonus_skull(listed.s3)
+    bonus_skull(listed.s4)
+    bonus_skull(listed.s5)
+    bonus_skull(listed.s6)
+    bonus_skull(listed.s7)
+    bonus_skull(listed.s8)
+    if not iron {
+        iron = true
+        ff_skull(11, true)
+    }
+}
+
+fn end_wave(tick: int, here_0: bool, here_1: bool) {
+    for each players p where not p.alive and not p.respawning and zero_holds == 0 { bring_back(p) }
+    if wave + 1 < waves_per_round {
+        wave = wave + 1
+        pause(tick)
+    } else if bonus_on == 1 and (round + 1) % set_rounds == 0 { start_bonus(tick) }
+    else { next_round(tick, here_0, here_1) }
+}
+
+// The lives of the last row of the table the points reach.
+fn reach(points: int, need: int, lives_given: int) {
+    if need >= 0 and points >= need { extra = lives_given }
+}
+
+fn grant_side(side: int, points: int) {
+    let t = bonus_rows[0]
+    extra = 0
+    reach(points, t.need0, t.extra0)
+    reach(points, t.need1, t.extra1)
+    reach(points, t.need2, t.extra2)
+    reach(points, t.need3, t.extra3)
+    reach(points, t.need4, t.extra4)
+    reach(points, t.need5, t.extra5)
+    if extra > 0 {
+        if shared_lives == 1 {
+            if side == 0 {
+                pool_0 = pool_0 + extra
+                show_pool(0, pool_0)
+            } else {
+                pool_1 = pool_1 + extra
+                show_pool(1, pool_1)
+            }
+        } else {
+            for each ff_slots s {
+                if let p = player_of(s) and p.registered and p.side == side {
+                    p.remaining_lives = p.remaining_lives + extra
+                    ff_lives(p, p.remaining_lives)
+                }
+            }
+        }
     }
 }
 
@@ -511,39 +614,82 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
     }
 }
 
+fn erase_all(tick: int) {
+    for each ff_slots s where active(s) {
+        erase_squad(squad(s.slot_index))
+        s.squad_state = draining
+        s.squad_tick = tick
+        s.squad_remaining = 0
+    }
+    live_count = 0
+    load_0 = 0
+    load_1 = 0
+    chosen_slot = first(ff_slots s where s.squad_state == free)
+}
+
+// The bonus round ends on time or when every player is dead, never the
+// game: erase, switch its skulls off, grant lives by the points it scored,
+// bring everyone back, and go on as a finished round does.
+fn end_bonus(tick: int, here_0: bool, here_1: bool) {
+    erase_all(tick)
+    let listed = bonus_skulls[0]
+    bonus_restore(listed.s0)
+    bonus_restore(listed.s1)
+    bonus_restore(listed.s2)
+    bonus_restore(listed.s3)
+    bonus_restore(listed.s4)
+    bonus_restore(listed.s5)
+    bonus_restore(listed.s6)
+    bonus_restore(listed.s7)
+    bonus_restore(listed.s8)
+    bonus_added = 0
+    if iron {
+        iron = false
+        ff_skull(11, false)
+    }
+    ff_bonus(false, 0)
+    grant_side(0, score_0 - bonus_base_0)
+    if team_count == 2 { grant_side(1, score_1 - bonus_base_1) }
+    for each players p where not p.alive and not p.respawning { bring_back(p) }
+    bonus_shift = 0
+    next_round(tick, here_0, here_1)
+}
+
 on tick {
     if phase != done {
         let tick = ticks(now())
         observe_squads(tick)
-        respawn_players()
         let here_0 = count(players p where p.side == 0) > 0
         let here_1 = count(players p where p.side == 1) > 0
-        check_defeat(here_0, here_1)
+        if phase != bonus_round {
+            respawn_players()
+            check_defeat(here_0, here_1)
+        }
 
         if phase == cleanup and (live_count == 0 or tick >= phase_tick + ticks(cleanup_timeout)) {
-            for each ff_slots s where active(s) {
-                erase_squad(squad(s.slot_index))
-                s.squad_state = draining
-                s.squad_tick = tick
-                s.squad_remaining = 0
-            }
-            live_count = 0
-            load_0 = 0
-            load_1 = 0
-            chosen_slot = first(ff_slots s where s.squad_state == free)
+            erase_all(tick)
             end_wave(tick, here_0, here_1)
         } else if phase == fighting and live_count == 0 {
             end_wave(tick, here_0, here_1)
         }
 
         if (phase == warmup or phase == intermission) and tick >= phase_tick { start_wave() }
-        if phase == spawning {
+        if phase == bonus_round {
+            for each players p where p.alive { p.respawning = false }
+            if tick >= phase_tick or count(players p where p.alive) == 0 { end_bonus(tick, here_0, here_1) }
+        }
+        if phase == spawning or phase == bonus_round {
             let size = clamp(count(players), 1, largest_roster)
             let cap = actor_caps[size - 1].actors
             let before = next_squad
+            // The bonus squad is the last row of the tables: one squad
+            // placed again each time there is room, until time is up.
+            if phase == bonus_round { next_squad = 0 }
             place_next(tick, size, cap, here_0, here_1)
-            if next_squad > before { place_next(tick, size, cap, here_0, here_1) }
-            if next_squad == waves[wave_index()].count { phase = fighting }
+            if phase == spawning {
+                if next_squad > before { place_next(tick, size, cap, here_0, here_1) }
+                if next_squad == waves[wave_index()].count { phase = fighting }
+            }
         }
         if phase == fighting and live_count > 0 and live_count <= cleanup_actors and live_count < wave_actors {
             for each ff_slots s where active(s) { hunt(squad(s.slot_index)) }

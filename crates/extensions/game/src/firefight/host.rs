@@ -652,6 +652,14 @@ impl Host {
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
             // The HUD reads rounds and waves from the mode blob.
             Command::Round { .. } | Command::Wave { .. } => Ok(()),
+            // The bonus round is a director rule: the host applies it in
+            // its own slice (docs/game/firefight.md, "The bonus round").
+            Command::Bonus { .. } => Ok(()),
+            // Iron is a director rule, never an engine skull.
+            Command::Skull {
+                id: ::firefight::Skull::Iron,
+                ..
+            } => Ok(()),
             Command::Skull { id, on } => game.skull(*id, *on),
             // The engine keeps no pool: the director's is the pool its
             // respawns spend, so a `Lives` or `TeamLives` sets it there (the

@@ -353,6 +353,7 @@ pub mod id {
     pub const OFFER_PICK: u16 = 124;
     pub const PICK_ROW: u16 = 125;
     pub const PICKED: u16 = 126;
+    pub const FF_BONUS: u16 = 127;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -503,6 +504,9 @@ pub const ENTRIES: &[Entry] = &[
     // kill across the teams (`ScoreReason::PlayerKill`), and the end with a
     // winning team, `none` for a draw (`Outcome::TeamWon`, `Outcome::Draw`).
     read(id::ZONE_TEAM_DISTANCE, "zone_team_distance", &[Object, Team], Int, Named),
+    // `firefight::Command::Bonus`: the bonus round begins (`on`, for `ticks`)
+    // or ends. A director rule's host log entry, queued like the rest.
+    act(id::FF_BONUS, "ff_bonus", &[Bool, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_TARGET, "ff_target", &[Squad, Team], Some("firefight.director"), Queued, Named),
     act(id::FF_TEAM_LIVES, "ff_team_lives", &[Team, Int], Some("firefight.director"), Queued, Named),
     act(id::FF_PLAYER_SCORE, "ff_player_score", &[Player, Int], Some("firefight.director"), Queued, Named),

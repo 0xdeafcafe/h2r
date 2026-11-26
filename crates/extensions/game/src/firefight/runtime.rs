@@ -1398,7 +1398,10 @@ pub fn bot_context(host: &Host) -> Option<bots::firefight::Context> {
             let phase = match s.phase {
                 Phase::Done => return None,
                 Phase::Warmup { .. } | Phase::Intermission { .. } => BotPhase::Between,
-                Phase::Spawning | Phase::Fighting | Phase::Cleanup { .. } => BotPhase::Fighting,
+                Phase::Spawning
+                | Phase::Fighting
+                | Phase::Cleanup { .. }
+                | Phase::Bonus { .. } => BotPhase::Fighting,
             };
             let shared = d.def().lives.shared;
             let lives = s.pools[..teams]
@@ -1499,6 +1502,7 @@ fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
         Phase::Fighting => ("fighting", None),
         Phase::Cleanup { since } => ("cleanup", Some(since)),
         Phase::Intermission { until } => ("intermission", Some(until)),
+        Phase::Bonus { until } => ("bonus", Some(until)),
         Phase::Done => ("done", None),
     };
     let teams = usize::from(d.def().teams).clamp(1, MAX_TEAMS);

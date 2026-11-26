@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SKULLS,
+    Bonus, Caps, MAX_BONUS_TICKS, Skull, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SKULLS,
     MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Result, Scoring, WAVES_PER_ROUND, Wave,
     wire,
 };
@@ -19,6 +19,7 @@ const MAX_DROP_ZONES: u8 = 12;
 const MAX_WEAPON_TIER: u8 = 3;
 const MAX_CLASS_POINTS: u16 = 1_000;
 const MAX_PLAYER_KILL_POINTS: u16 = 1_000;
+const MAX_BONUS_POINTS: u32 = 1_000_000;
 const MAX_MULTIPLIER: u16 = 2 * MULTIPLIER_SCALE;
 
 /// Classes provided by the target kit. An empty kit admits no definitions.
@@ -71,10 +72,16 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
 
     caps(&def.caps)?;
     scoring(&def.scoring)?;
+    if let Some(bonus) = &def.bonus {
+        self::bonus(bonus, def)?;
+    }
     let mut enabled = BTreeSet::new();
     for (round_index, round) in def.rounds.iter().enumerate() {
         wire::check_size(round.skulls_on.len(), "skulls_on", MAX_SKULLS)?;
         for &skull in &round.skulls_on {
+            if skull == Skull::Iron {
+                return Err(invalid("skulls_on", "Iron is only on in the bonus round"));
+            }
             if !enabled.insert(skull) {
                 return Err(invalid("skulls_on", "each skull may be enabled once"));
             }
@@ -205,6 +212,49 @@ fn wave_actors(wave: &Wave, scoring: &Scoring) -> Result<[u32; MAX_PLAYERS as us
     Ok(actors)
 }
 
+/// The bonus round's time, its squad against the actor caps, and its
+/// points-to-lives table (ascending in points, positive lives).
+fn bonus(bonus: &Bonus, def: &Def) -> Result<()> {
+    if !(1..=MAX_BONUS_TICKS).contains(&bonus.ticks) {
+        return Err(invalid("bonus", "the time must be 1 to 9,000 ticks"));
+    }
+    let wave = Wave {
+        squads: vec![bonus.squad.clone()],
+        boss: false,
+        gap_ticks: 0,
+    };
+    for (index, actors) in wave_actors(&wave, &def.scoring)?.into_iter().enumerate() {
+        let Some(cap) = def.caps.for_players((index + 1) as u8) else {
+            break;
+        };
+        if actors > u32::from(cap) {
+            return Err(invalid(
+                "bonus",
+                "the squad needs more actors than the cap at some player count",
+            ));
+        }
+    }
+    wire::check_size(
+        bonus.lives_by_points.len(),
+        "bonus rows",
+        crate::MAX_BONUS_ROWS,
+    )?;
+    let mut previous = None;
+    for &(points, lives) in &bonus.lives_by_points {
+        if points > MAX_BONUS_POINTS || previous.is_some_and(|p| points <= p) {
+            return Err(invalid(
+                "bonus",
+                "points must increase down the table, to at most 1,000,000",
+            ));
+        }
+        if lives == 0 || lives > MAX_LIVES {
+            return Err(invalid("bonus", "each row grants 1 to 1,000 lives"));
+        }
+        previous = Some(points);
+    }
+    Ok(())
+}
+
 fn scoring(scoring: &Scoring) -> Result<()> {
     wire::check_size(scoring.by_class.len(), "scoring classes", MAX_CLASSES)?;
     for (class, &points) in &scoring.by_class {
@@ -229,6 +279,9 @@ fn scoring(scoring: &Scoring) -> Result<()> {
             "scoring multiplier",
             "must be in 1..=2,000 thousandths",
         ));
+    }
+    if scoring.skull_multipliers.contains_key(&Skull::Iron) {
+        return Err(invalid("skull_multipliers", "Iron has no multiplier"));
     }
     if scoring.assist > MULTIPLIER_SCALE {
         return Err(invalid("assist", "must be in 0..=1,000 thousandths"));

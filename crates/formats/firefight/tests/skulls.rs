@@ -58,11 +58,13 @@ fn three_rounds() -> Def {
             pool_start: 3,
             per_round_bonus: 0,
             shared: true,
+            zero_holds: false,
         },
         caps: Caps {
             live_actors_by_players: vec![(4, 4)],
         },
         scoring: scoring(BTreeMap::new()),
+        bonus: None,
     }
 }
 
