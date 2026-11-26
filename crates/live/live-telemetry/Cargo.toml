@@ -11,6 +11,7 @@ runtime.workspace = true
 hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 sim-objects = { path = "../../rewrites/sim-objects" }
+sim-havok.workspace = true
 # Guest structure offsets and global addresses (src/layout.rs aliases them).
 guest-layout = { path = "../../hooking/guest-layout" }
 live-proto.workspace = true

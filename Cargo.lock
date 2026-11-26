@@ -4127,6 +4127,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sim-havok",
  "sim-objects",
  "tags",
  "time",
