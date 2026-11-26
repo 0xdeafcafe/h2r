@@ -302,10 +302,7 @@ fn the_bots_generator_reads_a_linked_pair_and_links_it() {
     )
     .unwrap();
     let (mut map, _) = scenario(&built);
-    let scnr = map.scenario().unwrap().clone();
-    let bytes = map.read_tag_bytes(scnr.id).unwrap();
-    let address = scnr.location.unwrap().address;
-    let flags = teleporter_flags(&bytes, address).unwrap();
+    let flags = teleporter_flags(&mut map).unwrap();
     let ours: Vec<&Teleporter> = flags.iter().filter(|f| f.channel == 5).collect();
     assert_eq!(ours.len(), 2, "{flags:?}");
     let sender = ours.iter().find(|f| f.sender).expect("a sender");

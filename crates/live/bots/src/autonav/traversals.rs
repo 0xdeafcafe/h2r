@@ -18,11 +18,44 @@ pub struct Teleporter {
     pub sender: bool,
 }
 
-/// The teleporter flags of a scenario tag's bytes, in flag order, as the
-/// generator reads them ([`Placements::read`]); `address` is the tag's
-/// payload address.
-pub fn teleporter_flags(scenario: &[u8], address: u32) -> Result<Vec<Teleporter>, String> {
-    flags(&TagView::new(scenario, address)).map_err(|e| e.to_string())
+/// The teleporter flags of `map`'s scenario, in flag order, as the
+/// generator reads them ([`Placements::read`]). A block is read wherever in
+/// the map's metadata it lies, so a map whose blocks a builder moved out of
+/// the scenario's payload reads as one that has not.
+pub fn teleporter_flags<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<Teleporter>, String> {
+    let scenario = scenario_bytes(map)?;
+    Ok(flags_of(&rows(map, &scenario, 0x118, 0x20)?))
+}
+
+/// The scenario tag's bytes.
+fn scenario_bytes<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<u8>, String> {
+    let scenario = map.scenario().ok_or("no scenario")?.clone();
+    map.read_tag_bytes(scenario.id).map_err(|e| e.to_string())
+}
+
+/// The elements of the block whose (count, address) pair is at `field` in
+/// `record`, wherever in the map's metadata they lie.
+fn rows<R: Read + Seek>(
+    map: &mut map::Map<R>,
+    record: &[u8],
+    field: usize,
+    stride: usize,
+) -> Result<Vec<Vec<u8>>, String> {
+    let pair = record
+        .get(field..field + 8)
+        .ok_or("a tag block field is outside its record")?;
+    let count = u32::from_le_bytes(pair[0..4].try_into().unwrap());
+    let address = u32::from_le_bytes(pair[4..8].try_into().unwrap());
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let len = u64::from(count) * stride as u64;
+    if len > 1 << 20 {
+        return Err("a tag block is too large".into());
+    }
+    let at = map.file_offset(address, len as u32).map_err(|e| e.to_string())?;
+    let bytes = map.read_file_range(at, len).map_err(|e| e.to_string())?;
+    Ok(bytes.chunks_exact(stride).map(<[u8]>::to_vec).collect())
 }
 
 /// Link `flags` into `data`'s mesh as the generator does after the BSP's
@@ -65,15 +98,10 @@ pub(super) struct Placements {
 pub struct Lifts(Vec<Lift>);
 
 impl Lifts {
-    /// The lifts of the scenario tag `scenario` (payload address
-    /// `address`) of `map`, as the generator reads them.
-    pub fn read<R: Read + Seek>(
-        scenario: &[u8],
-        address: u32,
-        map: &map::Map<R>,
-    ) -> Result<Self, String> {
-        let view = TagView::new(scenario, address);
-        Ok(Self(Placements::read(&view, map)?.lifts))
+    /// The lifts of `map`'s scenario, as the generator reads them.
+    pub fn read<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Self, String> {
+        let scenario = scenario_bytes(map)?;
+        Ok(Self(Placements::read(&scenario, map)?.lifts))
     }
 
     pub fn len(&self) -> usize {
@@ -110,10 +138,14 @@ fn point(record: &[u8], at: usize) -> V3 {
 }
 
 fn flags(view: &TagView<'_>) -> tags::Result<Vec<Teleporter>> {
+    Ok(flags_of(&view.block(view.bytes(), 0x118, 0x20)?))
+}
+
+fn flags_of<F: AsRef<[u8]>>(records: &[F]) -> Vec<Teleporter> {
     // The H2 converter applies types 7/8 and pairs at +0x14 (identifier).
-    Ok(view
-        .block(view.bytes(), 0x118, 0x20)?
-        .into_iter()
+    records
+        .iter()
+        .map(AsRef::as_ref)
         .filter_map(|f| {
             let kind = short(f, 0x10);
             let position = point(f, 0);
@@ -125,7 +157,7 @@ fn flags(view: &TagView<'_>) -> tags::Result<Vec<Teleporter>> {
                 }
             })
         })
-        .collect())
+        .collect()
 }
 
 fn lift_kind(path: &str) -> Option<LiftKind> {
@@ -167,18 +199,15 @@ fn lift_kind(path: &str) -> Option<LiftKind> {
 
 impl Placements {
     pub(super) fn read<R: Read + Seek>(
-        view: &TagView<'_>,
-        map: &map::Map<R>,
+        root: &[u8],
+        map: &mut map::Map<R>,
     ) -> Result<Self, String> {
-        let teleporters = flags(view).map_err(|e| e.to_string())?;
-        let root = view.bytes();
+        let teleporters = flags_of(&rows(map, root, 0x118, 0x20)?);
         let mut lifts = Vec::new();
         for (at, stride, palette_at) in
             [(0x50, 0x5c, 0x58), (0xa8, 0x48, 0xb0), (0x328, 0x4c, 0x330)]
         {
-            let palette = view
-                .block(root, palette_at, 0x28)
-                .map_err(|e| e.to_string())?;
+            let palette = rows(map, root, palette_at, 0x28)?;
             let classes: Vec<_> = palette
                 .iter()
                 .map(|p| {
@@ -189,7 +218,7 @@ impl Placements {
             if classes.iter().all(Option::is_none) {
                 continue;
             }
-            for record in view.block(root, at, stride).map_err(|e| e.to_string())? {
+            for record in &rows(map, root, at, stride)? {
                 let k = short(record, 0);
                 let Some(&Some(kind)) = classes.get(k as usize) else {
                     continue;
