@@ -2274,6 +2274,7 @@ dependencies = [
 name = "forge-build"
 version = "0.1.0"
 dependencies = [
+ "bots",
  "content",
  "firefight-kit",
  "forge-doc",

@@ -130,9 +130,9 @@ impl Decline {
     }
 }
 
-type Step<T> = Result<T, Decline>;
+type Planned<T> = Result<T, Decline>;
 
-fn read<T>(r: Result<T, GuestFault>) -> Step<T> {
+fn read<T>(r: Result<T, GuestFault>) -> Planned<T> {
     r.map_err(|_| Decline::Fault)
 }
 
@@ -145,7 +145,7 @@ fn below(sp: u32, off: u32) -> u32 {
 }
 
 /// `len` bytes from `start` as a physical range: inside one mapping.
-fn span(g: &impl Memory, start: u32, len: u32) -> Step<Range<u64>> {
+fn span(g: &impl Memory, start: u32, len: u32) -> Planned<Range<u64>> {
     let p = g.physical_read(start, len as usize).ok_or(Decline::Alias)?;
     Ok(u64::from(p)..u64::from(p) + u64::from(len))
 }
