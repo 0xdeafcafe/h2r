@@ -413,9 +413,6 @@ fn run_configured(
             Decision::Record => {
                 let dir = film_dir();
                 let now = std::time::SystemTime::now();
-                // Tapes a hard-killed session left are sealed into films
-                // before this session records (autorecord::recover).
-                autorecord::recover(&dir, now);
                 let ready = std::fs::create_dir_all(&dir)
                     .map_err(anyhow::Error::from)
                     .and_then(|()| autorecord::prune(&dir, autorecord::KEEP, now));

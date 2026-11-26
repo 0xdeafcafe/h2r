@@ -29,7 +29,7 @@ pub(crate) enum Call {
 /// position, once.
 #[derive(Default)]
 pub(crate) struct Fake {
-    next: u32,
+    pub(crate) next: u32,
     pub calls: Vec<Call>,
     pub refuse_at: Option<usize>,
 }

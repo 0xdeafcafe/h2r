@@ -334,14 +334,14 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
     let film = &entry.film;
     Action::for_entry(entry)
         .map(|action| {
-            let label = match action {
-                Action::Watch => "Watch".into(),
-                Action::Share => "Share".into(),
-                Action::CopyLink => "Copy Link".into(),
-                Action::Save if film.saved => "Unsave".into(),
-                Action::Save => "Save".into(),
-                Action::Delete if state.confirm_delete => "Confirm delete".into(),
-                Action::Delete => "Delete".into(),
+            let label: &str = match action {
+                Action::Watch => "Watch",
+                Action::Share => "Share",
+                Action::CopyLink => "Copy Link",
+                Action::Save if film.saved => "Unsave",
+                Action::Save => "Save",
+                Action::Delete if state.confirm_delete => "Confirm delete",
+                Action::Delete => "Delete",
             };
             if action.blocked(state) {
                 RowSpec::info(&label, "")
