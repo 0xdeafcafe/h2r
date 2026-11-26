@@ -660,6 +660,40 @@ impl Live {
         })).await.unwrap();
     }
 
+    /// Install the receipt of a Live game's film file for the two-home suites.
+    /// With `bytes` the file is also stored, so it can be downloaded; without
+    /// them only `size` counts, as the quota does.
+    #[cfg(feature = "conformance")]
+    pub async fn fixture_host_film_file(&self, id: &str, size: u64, bytes: Option<&[u8]>) {
+        let blob = format!("{}{id}/fixture", upload::film_file::PREFIX);
+        if let Some(bytes) = bytes {
+            self.blobs()
+                .expect("the film store")
+                .private
+                .put(
+                    &blob,
+                    bytes::Bytes::copy_from_slice(bytes),
+                    &crate::blobs::Meta::default(),
+                )
+                .await
+                .unwrap();
+        }
+        let file = upload::film_file::FilmFile {
+            blob,
+            size: bytes.map_or(size, |b| b.len() as u64),
+            sha256: "0".repeat(64),
+            ticks: 1,
+        };
+        let version = self.model.read().films.next_version;
+        self.append_film(
+            version,
+            upload::film_file::STORED,
+            json!({"game": id, "file": file}),
+        )
+        .await
+        .unwrap();
+    }
+
     async fn set_pin(&self, headers: &HeaderMap, id: String, save: bool) -> ApiResult<StatusCode> {
         let author = self.film_author(headers)?;
         let by = account(&author)?;
