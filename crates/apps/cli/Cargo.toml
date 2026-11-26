@@ -33,6 +33,8 @@ h1convert = { path = "../../tools/h1convert", optional = true }
 gfx = { path = "../../platform/gfx", default-features = false, optional = true }
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 pogo-kit = { path = "../../tools/pogo-kit", optional = true }
+# `h2 flood-pod`: Firefight's Flood pod put into a map to look at.
+flood-pod-kit = { path = "../../tools/flood-pod-kit", optional = true }
 forge = { workspace = true, optional = true }
 # `h2 live maps census`: the start gate's census of a map file.
 forge-doc = { workspace = true, optional = true }
@@ -169,6 +171,7 @@ desktop = [
     "dep:scenario-edit",
     "host-data/firefight",
     "dep:pogo-kit",
+    "dep:flood-pod-kit",
     "dep:forge",
     "dep:forge-doc",
     "dep:gfx",
