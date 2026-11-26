@@ -126,6 +126,17 @@ pub fn gather_scene_passes(scene: &frame_scene::FrameScene, view: &frame_scene::
         .collect()
 }
 
+/// Whether the scene's own light path runs this frame: the host draws
+/// the scene's light layers, so the guest's light frame is cut
+/// ([`crate::cut`], row `dynamic_lights`). Without it the frame body
+/// gathers and the guest's passes draw.
+pub fn scene_path_ready() -> bool {
+    HOST.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|h| h.draws_scene())
+}
+
 static SCENE_DRAWN: AtomicU64 = AtomicU64::new(0);
 
 /// Light layers the host drew from the scene's groups (slots 4 and 10).
@@ -258,6 +269,12 @@ pub trait Host: Send + Sync {
     /// the lights drawn; a light it keeps draws nothing.
     fn draw_host(&self, _mem: &mut dyn GuestMemory, _draw: host::HostDraw<'_>) -> usize {
         0
+    }
+    /// Whether the host draws the scene's light layers ([`Self::draw_scene`])
+    /// and the frame fills the scene's groups itself, so the guest's light
+    /// frame can be cut whole.
+    fn draws_scene(&self) -> bool {
+        false
     }
     /// Draw `draw`'s light layers from the scene, slot 4's and then slot
     /// 10's, in the view whose light pass is over. Returns the layers
@@ -1268,6 +1285,9 @@ mod tests {
         fn target(&self) -> Option<[u32; 8]> {
             None
         }
+        fn draws_scene(&self) -> bool {
+            true
+        }
         fn draw_scene(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> usize {
             let mut slots = self.0.lock().unwrap();
             slots.extend(draw.passes.iter().filter_map(|p| p.slot.number()));
@@ -1317,5 +1337,16 @@ mod tests {
         let mut m = FlatMemory::new(0, 0x1000);
         assert_eq!(draw_scene(&mut m, &passes), 1);
         assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
+    }
+
+    #[test]
+    fn the_light_frame_is_cut_only_while_the_scene_path_runs() {
+        // One implementation at the point: the frame body answers the cut.
+        assert!(crate::cut::OWN_PRODUCER.contains(&"dynamic_lights"));
+        assert_eq!(crate::cut::cut("dynamic_lights").map(|c| c.entry), Some(0x0003_1c80));
+        set_host(Arc::new(Stub(false)));
+        assert!(!scene_path_ready(), "a host that does not draw the scene leaves the frame to the body");
+        set_host(Arc::new(Records(Mutex::new(Vec::new()))));
+        assert!(scene_path_ready());
     }
 }

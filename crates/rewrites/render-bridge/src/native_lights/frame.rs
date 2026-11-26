@@ -27,6 +27,12 @@ pub(super) fn install(b: &mut Builder) {
                 if addr != points::RENDER_DYNAMIC_LIGHTS.base || Stage::Lights.standing_down() {
                     return original(cpu, ctx, addr);
                 }
+                // The scene's own light path answers the frame: the cut.
+                if super::scene_path_ready() {
+                    if let Some(cut) = crate::cut::cut("dynamic_lights") {
+                        return crate::cut::answer(cut, cpu, ctx);
+                    }
+                }
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
