@@ -37,7 +37,9 @@ pub fn is_kit_map(map: &Map) -> bool {
     map.name.starts_with(KIT_NAME_PREFIX)
 }
 
-/// Kit packages on which a variant's director has a wave set.
+/// Kit packages on which a variant's director has a wave set. Map Waves
+/// ([`::firefight::builtin::MAP_WAVES`]) is on none: a kit package holds
+/// no wave set of its own.
 pub fn supports_wave(map: &Map, prefix: [u8; 8]) -> bool {
     is_kit_map(map) && ::firefight::builtin::variant(prefix).is_some_and(|wave|
         wave.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
@@ -46,12 +48,23 @@ pub fn supports_wave(map: &Map, prefix: [u8; 8]) -> bool {
 /// Whether a map variant with AI ground on `map` can play the wave set
 /// `wave` (a Firefight game variant's prefix; `None` for the lobby's own
 /// choice): a set made for one base map needs that map, as it does of a
-/// kit package ([`supports_wave`]).
+/// kit package ([`supports_wave`]). Map Waves plays on any ground pick;
+/// whether the pick carries a set is [`map_waves_refusal`]'s.
 pub fn supports_ground_wave(map: &Map, wave: Option<[u8; 8]>) -> bool {
     wave.is_none_or(|prefix| {
-        ::firefight::builtin::variant(prefix).is_some_and(|set|
+        prefix == ::firefight::builtin::MAP_WAVES
+            || ::firefight::builtin::variant(prefix).is_some_and(|set|
             set.map.is_none_or(|base| map.short_name().eq_ignore_ascii_case(base)))
     })
+}
+
+/// Why the Map Waves entry (`wave` is its prefix) cannot start: the lobby's
+/// pick carries no wave set of its own (`own`,
+/// [`crate::map_variant::waves_on`]). `None` for any other entry, and
+/// for Map Waves on a pick with a set.
+pub fn map_waves_refusal(wave: Option<[u8; 8]>, own: bool) -> Option<crate::lobby_tabs::Reason> {
+    (wave == Some(::firefight::builtin::MAP_WAVES) && !own)
+        .then_some(crate::lobby_tabs::Reason::NoOwnWaves)
 }
 
 /// The installed multiplayer maps in catalogue order.

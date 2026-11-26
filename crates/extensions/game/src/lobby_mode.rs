@@ -213,10 +213,17 @@ pub struct VariantEntry {
     /// The variant's document has AI ground: a Firefight lobby takes it
     /// (`forge::files::variants::Listed::ground`).
     pub ground: bool,
+    /// The variant's document holds a wave set of its own: a Firefight
+    /// lobby's picker says so ([`OWN_WAVES`]).
+    pub waves: bool,
 }
 
 /// The detail line of a variant a Firefight lobby cannot take.
 pub const NO_GROUND: &str = "No AI ground.";
+
+/// What a Firefight lobby's picker adds to the line of a variant with a
+/// wave set of its own.
+pub const OWN_WAVES: &str = "Has its own waves.";
 
 /// The map variants of the lobby's map `map` (its list id) the picker
 /// lists, saved on this machine, by name: those that pass the store's
@@ -247,6 +254,7 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
                 id: l.id,
                 suggested_for: None,
                 ground: l.ground,
+                waves: l.waves,
             }
         })
         .collect())
@@ -373,6 +381,13 @@ pub fn map_variant_pick_for(
     details.extend(listed.iter().map(|v| match (&v.sentence, &v.suggested_for) {
         (Some(why), _) => why.clone(),
         (None, _) if firefight && !v.ground => NO_GROUND.to_owned(),
+        (None, _) if firefight && v.waves => {
+            let line = match &v.suggested_for {
+                None => v.detail.clone(),
+                Some(game) => format!("{} Made for {game}.", v.detail),
+            };
+            format!("{line} {OWN_WAVES}").trim().to_owned()
+        }
         (None, None) => v.detail.clone(),
         (None, Some(game)) => format!("{} Made for {game}.", v.detail).trim().to_owned(),
     }));
@@ -491,6 +506,17 @@ fn choice_label(def: &settings::Def, value: i64) -> String {
     }
 }
 
+/// The held map variant's own wave set while the lobby's game variant is
+/// Map Waves (`firefight::builtin::MAP_WAVES`); `None` for any other
+/// entry or a pick with no set.
+fn map_waves_in_lobby(m: &dyn GuestMemory) -> Option<::firefight::Def> {
+    let script = crate::pause_change_map::lobby_variant(m)?.ext().script;
+    (script.mode == variants::ext::Mode::Firefight
+        && script.prefix == ::firefight::builtin::MAP_WAVES)
+        .then(|| crate::map_variant::picked()?.waves)
+        .flatten()
+}
+
 /// The panel lines' string ids for the lobby now, their texts written to
 /// guest memory first; none in Multiplayer. A Firefight lobby on a map
 /// without the kit says so in place of the options
@@ -506,8 +532,14 @@ pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, Mem
     let lines = match no_map {
         Some(lines) => lines,
         None => {
-            let firefight = (state.mode == Mode::Firefight)
-                .then(|| ff::Options::for_map(store, lobby_start::kit_map().as_deref()));
+            let own = map_waves_in_lobby(&*m);
+            let firefight = (state.mode == Mode::Firefight).then(|| {
+                ff::Options::for_map(store, lobby_start::kit_map().as_deref()).map(|mut o| {
+                    // Map Waves: the panel names the pick's own set.
+                    o.waves = own;
+                    o
+                })
+            });
             let mut lines = panel_lines(state.mode, state.forge_map.as_deref(), firefight);
             // In CUSTOM GAMES the variant's name is the line under the map's.
             if state.mode == Mode::Multiplayer
@@ -599,7 +631,10 @@ pub fn start_refusal(m: &dyn GuestMemory) -> Option<Reason> {
             let wave = variant.as_ref().map(|v| v.ext().script)
                 .filter(|s| s.mode == variants::ext::Mode::Firefight).map(|s| s.prefix);
             let ground = crate::map_variant::ground_on(id);
-            refusal(mode, Some(0), KitMaps::for_pick(catalogue.as_deref(), id, wave, ground))
+            // Map Waves needs the pick's own set (FA4), whichever map it is on.
+            lobby_start::map_waves_refusal(wave, crate::map_variant::waves_on(id)).or_else(|| {
+                refusal(mode, Some(0), KitMaps::for_pick(catalogue.as_deref(), id, wave, ground))
+            })
         }
     }
 }

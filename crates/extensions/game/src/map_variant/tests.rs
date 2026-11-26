@@ -380,3 +380,35 @@ fn clearing_the_pick_refuses_the_start_again() {
     sync(Some(8));
     assert!(!lobby(), "a change of map drops the pick");
 }
+
+#[test]
+fn a_pick_keeps_its_wave_set_and_a_game_keeps_the_pick_it_started_from() {
+    clear();
+    set_running(None);
+    let set = forge_doc::waves::default_set();
+    let d = doc("Basin").with_waves(Some(set.clone()));
+    let dir = Dir::new();
+    let file = variants::save(&dir.0, &d, false).unwrap();
+    let maps = library(installed());
+    pick(&dir.0, "fixture", Some(7), &file, &maps).unwrap().join().unwrap();
+    assert_eq!(picked().unwrap().waves, Some(set.clone()));
+    assert!(waves_on(Some(7)));
+    assert!(!waves_on(Some(8)), "another lobby map");
+    assert_eq!(running(), None, "nothing has started");
+    begin_run();
+    assert_eq!(running().unwrap().waves, Some(set.clone()));
+    // The lobby moves on; the game keeps the pick it was built from.
+    clear();
+    assert!(!waves_on(Some(7)));
+    assert_eq!(running().unwrap().waves, Some(set));
+    // The next game starts from no pick.
+    begin_run();
+    assert_eq!(running(), None);
+    // A variant without a set has none to play.
+    let (plain, file) = store("Castle");
+    pick(&plain.0, "fixture", Some(7), &file, &maps).unwrap().join().unwrap();
+    assert_eq!(picked().unwrap().waves, None);
+    assert!(!waves_on(Some(7)));
+    begin_run();
+    assert_eq!(running().unwrap().waves, None);
+}

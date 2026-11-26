@@ -1702,14 +1702,27 @@ mod tests {
     /// record whose extension is mode 1 with the set's hash prefix, team
     /// play as given.
     fn firefight_slot(file: &mut HopperFile, i: usize, j: usize, n: usize, team_play: bool) {
-        use live_proto::hopper::variant::GameType;
         let def = &firefight::builtin::definitions()[n];
-        let stock = VariantRecord::stock(GameType::Slayer, &def.name);
+        let prefix = def.id().unwrap().0[..8].try_into().unwrap();
+        prefix_slot(file, i, j, (&def.name, prefix), team_play);
+    }
+
+    /// Entry `j` of playlist `i` as a mode-1 Firefight record named `name`
+    /// with the hash prefix `prefix`.
+    fn prefix_slot(
+        file: &mut HopperFile,
+        i: usize,
+        j: usize,
+        (name, prefix): (&str, [u8; 8]),
+        team_play: bool,
+    ) {
+        use live_proto::hopper::variant::GameType;
+        let stock = VariantRecord::stock(GameType::Slayer, name);
         let mut v = variants::record::GameVariant::from_bytes(stock.bytes()).unwrap();
         let mut e = v.ext();
         e.script = variants::ext::Script {
             mode: variants::ext::Mode::Firefight,
-            prefix: def.id().unwrap().0[..8].try_into().unwrap(),
+            prefix,
             options: 0,
         };
         v.set_ext(&e).unwrap();
@@ -1751,6 +1764,30 @@ mod tests {
         assert!(err.message.starts_with("playlist 1 entry 2: "), "{}", err.message);
         assert!(err.message.contains("Crossfire"), "{}", err.message);
         assert!(err.message.contains("needs team play"), "{}", err.message);
+    }
+
+    /// Map Waves names no built-in set, so a hopper refuses it by the
+    /// variant's name: it plays a map variant's own waves, and a hopper's
+    /// entry has none (docs/game/forge-firefight.md, "Playing it").
+    #[test]
+    fn a_hopper_refuses_map_waves() {
+        let mut file = base_file();
+        let mut p = patch(0, vec![]);
+        p.hoppers[0].records = None;
+        let own = (
+            firefight::builtin::MAP_WAVES_NAME,
+            firefight::builtin::MAP_WAVES,
+        );
+        firefight_slot(&mut file, 0, 0, 0, false);
+        prefix_slot(&mut file, 0, 1, own, false);
+        let err = check_scripts(&file, &p, |_, _| Ok(())).unwrap_err();
+        assert!(err.message.starts_with("playlist 1 entry 2: "), "{}", err.message);
+        assert!(err.message.contains("\"Map Waves\""), "{}", err.message);
+        assert!(
+            err.message.contains("naming no built-in wave set"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]

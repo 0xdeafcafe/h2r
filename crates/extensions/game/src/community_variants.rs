@@ -270,7 +270,7 @@ fn registry() -> &'static ::rules::builtin::Registry {
 pub const MAX_ENTRIES: usize =
     (crate::game_variants::inject::DESCRIPTION_BASE - DESCRIPTION_BASE) as usize;
 const _: () = assert!(MAX_ENTRIES <= 0x74);
-const SCRIPT_SLOTS: usize = MAX_ENTRIES - ::firefight::builtin::SETS.len() - ::firefight::builtin::MAP_SETS.len();
+const SCRIPT_SLOTS: usize = MAX_ENTRIES - ::firefight::builtin::SETS.len() - ::firefight::builtin::MAP_SETS.len() - 1;
 const _: () = assert!(::rules::builtin::LISTED.len() <= SCRIPT_SLOTS);
 
 /// The listed scripts, by their index in the list: the entry's name, its
@@ -310,7 +310,22 @@ pub fn listed() -> &'static [Result<Listed, String>] {
                 record,
             })
         });
-        scripts().iter().map(|b| Listed::of(&b.source)).chain(waves).collect()
+        // Map Waves, last: it names no set of its own, the runtime plays
+        // the running map variant's (docs/game/forge-firefight.md,
+        // "Playing it").
+        let own = std::iter::once_with(|| {
+            let name = ::firefight::builtin::MAP_WAVES_NAME;
+            let record = GameVariant::firefight(name, 1, ::firefight::builtin::MAP_WAVES)
+                .map_err(|e| e.to_string())?;
+            Ok(Listed {
+                about: "Fight the wave set the map variant carries.".to_owned(),
+                name: name.to_owned(),
+                list_type: goof_type(record.game_type()).unwrap(),
+                game_type: Type::Firefight,
+                record,
+            })
+        });
+        scripts().iter().map(|b| Listed::of(&b.source)).chain(waves).chain(own).collect()
     })
 }
 

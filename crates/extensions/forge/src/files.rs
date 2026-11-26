@@ -214,6 +214,9 @@ pub mod variants {
         /// takes it as a Firefight map (docs/game/forge-firefight.md,
         /// "Playing it").
         pub ground: bool,
+        /// The document holds a wave set of its own, which Firefight's
+        /// Map Waves entry plays.
+        pub waves: bool,
     }
 
     fn map_dir(data: &Path, map: &str) -> Result<PathBuf, Error> {
@@ -312,6 +315,7 @@ pub mod variants {
                 let ground = read
                     .as_ref()
                     .is_ok_and(|doc| matches!(doc.ground_recipe(), Ok(Some(_))));
+                let waves = read.as_ref().is_ok_and(|doc| doc.waves.is_some());
                 let sentence = problem.map(|p| p.sentence(&name, map));
                 part.push(Listed {
                     source,
@@ -322,6 +326,7 @@ pub mod variants {
                     problem,
                     sentence,
                     ground,
+                    waves,
                 });
             }
             part.sort_by_cached_key(|l| (l.name.to_lowercase(), l.file.clone()));

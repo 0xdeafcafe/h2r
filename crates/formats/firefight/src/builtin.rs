@@ -99,6 +99,17 @@ pub fn variant(prefix: [u8; 8]) -> Option<&'static Variant> {
     variants().iter().find(|v| v.prefix == prefix)
 }
 
+/// The name of the Map Waves entry: the Firefight game variant that plays
+/// the running map variant's own wave set (docs/game/forge-firefight.md,
+/// "Playing it").
+pub const MAP_WAVES_NAME: &str = "Map Waves";
+
+/// The hash prefix of the Map Waves entry: the first eight bytes of the
+/// SHA-256 of `firefight.map-waves`. It names no definition ([`variant`]
+/// and [`by_prefix`] have none for it): the runtime resolves it to the
+/// running map variant's set.
+pub const MAP_WAVES: [u8; 8] = [0x82, 0x42, 0xf8, 0x47, 0x54, 0xfb, 0x3e, 0x5d];
+
 /// The built-in definition whose id ([`Def::id`]) starts with `prefix`:
 /// what a mode-1 variant extension names (docs/game/firefight.md, "Live").
 pub fn by_prefix(prefix: [u8; 8]) -> Option<Def> {
@@ -260,6 +271,18 @@ mod tests {
         }
         assert_eq!(map_sets("beavercreek"), map_reference());
         assert!(map_sets("coagulation").is_empty());
+    }
+
+    #[test]
+    fn map_waves_is_the_hash_of_its_name_and_no_built_in() {
+        assert_eq!(
+            crate::Sha256::of(b"firefight.map-waves").0[..8],
+            MAP_WAVES,
+            "the prefix is the SHA-256 of the entry's key"
+        );
+        assert!(variant(MAP_WAVES).is_none());
+        assert!(by_prefix(MAP_WAVES).is_none());
+        assert!(variants().iter().all(|v| v.prefix != MAP_WAVES));
     }
 
     struct Preset {
