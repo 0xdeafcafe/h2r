@@ -1548,6 +1548,13 @@ pub const DRIVE_COUNTERPARTS: &[(&[&str], &[&str])] = &[
         &["ghost"],
         &["objects\\vehicles\\ghost\\ghost_mp", "objects\\vehicles\\ghost\\ghost"],
     ),
+    (
+        &["scorpion"],
+        &[
+            "objects\\vehicles\\scorpion\\scorpion_mp",
+            "objects\\vehicles\\scorpion\\scorpion",
+        ],
+    ),
 ];
 
 /// The Halo 2 tags `path`'s Halo 1 vehicle takes drive tuning from.
@@ -1608,9 +1615,10 @@ fn copy_drive(r: &mut Record, from: &Record, vehicle_type: u16) -> Result<()> {
 
 /// Gives point `i` of `n` Halo 1 points (`x`, which holds Halo 1's marker,
 /// region and radius) the tuning of the counterpart's point: its `i`th when
-/// it has `n`, else its first, with the flags kept Halo 1's and the mass
-/// shared equally. The fields kept Halo 1's are the point's place on the
-/// model.
+/// it has `n`, else the one at the same fraction of its list (`i * m / n`
+/// of `m`, so the order of the two sides carries over), with the mass
+/// shared equally among Halo 1's points. The marker, region and radius
+/// stay Halo 1's: they are the point's place on the model.
 fn copy_point_tuning(
     x: &mut Record,
     from: &[Record],
@@ -1619,20 +1627,17 @@ fn copy_point_tuning(
     friction: bool,
 ) -> Result<()> {
     let same = from.len() == n;
-    let source = from.get(if same { i } else { 0 }).ok_or_else(|| {
+    let source = from.get(if same { i } else { i * from.len() / n }).ok_or_else(|| {
         Error::Invalid("the counterpart has no point to take tuning from".into())
     })?;
     if x.fields.len() != source.fields.len() {
         return Err(Error::Invalid("counterpart point is not a point record".into()));
     }
-    let mut keep = if friction {
+    let keep = if friction {
         vec![FRICTION_MARKER, "radius", FRICTION_REGION, FRICTION_REGION_INDEX]
     } else {
         vec![HOVER_MARKER, "radius", HOVER_REGION, "damage_region_index"]
     };
-    if !same && friction {
-        keep.extend([FRICTION_FLAGS, "fraction_of_total_mass"]);
-    }
     for (to, from) in x.fields.iter_mut().zip(&source.fields) {
         if to.0 != from.0 {
             return Err(Error::Invalid(format!("point field {} differs from {}", to.0, from.0)));

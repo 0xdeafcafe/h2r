@@ -3032,11 +3032,10 @@ fn drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
             // the mass is shared equally.
             let mass = if ours == theirs { 1.0 / theirs as f32 } else { 1.0 / ours as f32 };
             assert_eq!(got.at(&format!("{block}[{i}].fraction_of_total_mass")), Some(&Val::Float(mass)));
-            if ours == theirs {
-                assert_eq!(got.at(&format!("{block}[{i}].flags")), Some(&Val::Flags(0x26 + i as u32)));
-            }
+            let source = if ours == theirs { i } else { i * theirs / ours };
+            assert_eq!(got.at(&format!("{block}[{i}].flags")), Some(&Val::Flags(0x26 + source as u32)));
         } else {
-            let strength = 2.0 + if ours == theirs { i as f32 } else { 0.0 };
+            let strength = 2.0 + if ours == theirs { i } else { i * theirs / ours } as f32;
             assert_eq!(got.at(&format!("{block}[{i}].antigrav_strength")), Some(&Val::Float(strength)));
         }
     }
@@ -3070,6 +3069,10 @@ fn drive_counterparts_are_named_per_vehicle() {
             "{path}"
         );
     }
+    assert_eq!(
+        drive_counterpart("vehicles\\scorpion\\scorpion_mp"),
+        Some(&["objects\\vehicles\\scorpion\\scorpion_mp", "objects\\vehicles\\scorpion\\scorpion"][..])
+    );
     assert_eq!(drive_counterpart("vehicles\\pelican\\pelican"), None);
 }
 
@@ -3095,5 +3098,18 @@ fn ghost_drive_is_the_counterparts_and_the_rest_halo_1s() {
         false,
         3,
         3,
+    );
+}
+
+/// The scorpion: eight tread points of Halo 1 on the twelve of Halo 2's,
+/// each taking the tuning at the same fraction of the list.
+#[test]
+fn scorpion_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\scorpion\\scorpion_mp",
+        0,
+        true,
+        8,
+        12,
     );
 }
