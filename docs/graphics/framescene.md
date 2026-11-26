@@ -166,6 +166,7 @@ pub struct FrameScene {
     pub shadows: Vec<ShadowMap>,
     pub carried: Carried,       // ordered guest ops per slot (4.4)
     pub uploads: Vec<TextureUpload>, // guest-made textures changed this frame (Bink, glyph pages)
+    pub overlay: Overlay,       // one ordered list over the views: Quad, TextRun, Fill, Blur, ModelView items, each with its clip rectangle (frame-scene/src/overlay.rs)
 }
 
 pub struct View {
@@ -215,6 +216,8 @@ guest pointers. `InstanceKey` is opaque to the renderer.
 Bounds come from the guest's own tables (850 render records, 2,560 layer
 entries, **Code**, `object_walk.rs`), so a scene's typed part is a few
 hundred kilobytes at most (**Estimate**).
+
+A text run is shaped in Rust (`native-render/src/text.rs`: the font tag's glyph metrics give the pens, its bitmaps are packed once into `GlyphPages`, never the guest's glyph cache) and is one `TextRun` item, so one draw under its clip's scissor.
 
 ### 4.3 What is extracted, and where from
 
