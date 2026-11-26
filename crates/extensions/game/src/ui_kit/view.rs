@@ -131,19 +131,16 @@ impl Opener {
         focus: 4,
         ..Opener::GAME_SETUP
     };
-    /// [`Opener::GAME_SETUP`] as a custom game on a Halo 2 map lists it,
-    /// on the Firefight Options row (after Clanker Options, as the hooks
-    /// add them).
+    /// [`Opener::GAME_SETUP`] as the FIREFIGHT tab lists it, on the
+    /// Firefight Options row (`crate::lobby_mode::arrange`).
     pub const GAME_SETUP_FIREFIGHT: Opener = Opener {
         rows: &[
             "Change Map...",
-            crate::lobby_mode::MAP_VARIANT_LABEL,
-            "Change Rules...",
+            "Firefight Options...",
             "Quick Options...",
             "Clanker Options...",
-            "Firefight Options...",
         ],
-        focus: 5,
+        focus: 1,
         ..Opener::GAME_SETUP
     };
     /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Map Variant

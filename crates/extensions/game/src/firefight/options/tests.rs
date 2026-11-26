@@ -574,6 +574,19 @@ fn only_a_custom_games_list_gets_the_row_once() {
     assert!(!wants_row(&[0, ROW_ACTION]), "already there");
 }
 
+/// The row is on a custom game's list only in Firefight mode.
+#[test]
+fn the_row_shows_only_in_firefight_mode() {
+    use crate::lobby_mode::{arrange, Offer};
+    use crate::lobby_start::Mode;
+    let all = Offer { forge: true, firefight: true };
+    let list = [CHANGE_MAP, 1, 2, ROW_ACTION];
+    let has = |m| arrange(m, all, &list).unwrap_or_else(|| list.to_vec()).contains(&ROW_ACTION);
+    assert!(!has(Mode::Multiplayer), "Slayer and the other game types");
+    assert!(!has(Mode::Forge));
+    assert!(has(Mode::Firefight));
+}
+
 /// Our action is past retail's ten and the other rows of ours.
 #[test]
 fn the_rows_action_is_its_own() {
