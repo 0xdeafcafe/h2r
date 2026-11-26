@@ -240,12 +240,11 @@ texts (`lobby_status::custom_game_text`).
 
 ### The lobby by tab
 
-With Theater installed, Game Setup also offers **Theater** in the party lobby, including when the party returns from a game. It opens Recent for the selecting controller.
 
 | Mode | Pane | Game Setup's rows | Panel | Start Game |
 |---|---|---|---|---|
 | MULTIPLAYER | matchmaking | Change Playlist... (retail's action 9; the Clanker and the human playlists on one page) | retail's playlist lines | starts the search; a Clanker playlist's search hosts and its Clankers fill the lobby (`clankers::Driver::tick_match`) |
-| CUSTOM GAMES | custom | Change Map, Map Variant..., Change Rules, Quick Options, and ours (Clanker Options..., Firefight Options..., Halo 1 Options...) | retail's five lines with ours (`lobby_options.rs`), and the map variant's name under the map's | retail's countdown |
+| CUSTOM GAMES | custom | Change Map, Map Variant..., Change Rules, Quick Options, and ours (Clanker Options..., Halo 1 Options...) | retail's five lines with ours (`lobby_options.rs`), and the map variant's name under the map's | retail's countdown |
 | FORGE | custom | Change Map (the installed multiplayer maps), Map Variant..., Change Rules, Quick Options, Clanker Options... | "New Forge map" or the map variant's name | retail's; the session loads the draft (`forge_glue::request_draft`) |
 | CO-OP | co-op | Select Level, Difficulty (retail's `load_level_lobby` and `difficulty_lobby`) | retail's level and difficulty lines | retail's co-op start (`coop_live`'s start check) |
 
