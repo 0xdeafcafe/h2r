@@ -603,49 +603,30 @@ Forge options has the Enemy types row whenever they do.
 
 ## The Firefight HUD
 
-A HUD kit `Hud` named `firefight` (`hud_kit_core::huds::firefight`), fed
-by `hud::view` from the mode blob as it is ([firefight.md](firefight.md),
-"The HUD"), with the kit's elements, places and checks.
-
-| Element | Kind | Place | Shows |
-|---|---|---|---|
-| `ff.banner` | Banner (slice K2) | the message routine's centred line | GET READY, WAVE 3, BOSS WAVE, ROUND COMPLETE, VICTORY, GAME OVER; timed, then gone |
-| `ff.lives.pill`, `.end`, `ff.lives.count` | Icon and LCD Text | the grenade row's next place | lives; `Flash(Pulse::TimeWarning)` at 1 and 0 |
-| `ff.enemies.pill`, `.end`, `ff.enemies.count` | Icon and LCD Text | the place after | enemies left while a wave is on |
-| `ff.note` | Message | the notification list | "Round 2 of 3", "Mythic skull on", a life lost, the round's bonus lives, "Cleared 2/3" at the end (`huds::firefight::notes`; the skulls ride in the mode blob) |
-
-- The round and wave are not permanent lines. They are in the banner
-  when they change and in the notification list.
-- The score is the game's own: kills credit Slayer's score
-  ([firefight.md](firefight.md), "Guest boundary"), which the retail
-  score display and scoreboard show.
-- Split screen: the pills keep the grenade row's half and quarter
-  offsets; the banner and the notes are the game's in every mode.
-- The enemies pill is a kit pill's width and the retail panel's 3-pixel
-  gap right of the lives pill (`huds::firefight::PILL_STEP`, 30); a
-  count shows 99 at most.
-- A pill has no icon: the fallback, never new art. A pill's icon is
-  retail art by widget name, chosen from the disc census (**S**, not
-  done).
+A HUD kit `Hud` named `firefight` (`hud_kit_core::views::firefight`),
+fed by `hud::view_on` from the mode blob as it is ([firefight.md](firefight.md),
+"The HUD"; [hud-kit.md](hud-kit.md), "The Firefight HUD"): the score,
+lives and progress lines, the enemies meter, the seven skull slots and the
+banner, at the frame's bottom right above the retail score plate. The
+elements, their places and their checks are there; a banner is an event
+(a set, round, skull or wave that begins), not a stage.
 
 **While editing** (built, FA3). A wave test in a Forge session draws
 the Firefight HUD from the same mode blob, by what the local user is
 (`hud::Scope`, `Scope::of(testing, in_monitor)`):
 
-| The user is | `ff.banner`, `ff.note` | `ff.enemies.*` | `ff.lives.*` | The monitor HUD |
+| The user is | `ff.banner` | `ff.enemies`, `ff.progress`, `ff.score`, skulls | `ff.lives` | The monitor HUD |
 |---|---|---|---|---|
 | in the monitor | shown | hidden: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
-| in the biped | shown | shown, in its match place (`PILL_STEP`, 30) | hidden: a test charges no lives | not drawn |
+| in the biped | shown | shown, in their match places | hidden: a test charges no lives | not drawn |
 
-- `hud::view_of(mode, slot, scope)`, `hud::view` and `hud::current`
-  take the scope with the roster slot (`Scope::Match`, `Biped`,
-  `Monitor`), so the client's view stays a pure function of the blob,
-  the slot and the scope. The feed takes each local user's scope each
-  tick (`forge_controls::monitor`); the monitor's values are
-  `views::firefight::monitor_values`, the banner alone, and the monitor
-  HUD's count is `hud::test_enemies`.
-- The banner and the notes are the game's channels and need no place.
-  WAVE n, BOSS WAVE and ROUND COMPLETE read over the monitor as over a
+- `hud::view_on(mode, slot, scope, screen, banner)` takes the scope
+  with the roster slot (`Scope::Match`, `Biped`, `Monitor`), so the
+  client's view stays a pure function of the blob, the slot, the scope,
+  the screen and the banner. The feed takes each local user's scope each
+  tick (`forge_controls::monitor`); the monitor's layout is the banner
+  alone, and the monitor HUD's count is `hud::test_enemies`.
+- WAVE n, BOSS WAVE and WAVE CLEAR read over the monitor as over a
   player; the end of a test says "Waves cleared." or "Waves stopped." as
   a `forge.notice`, not VICTORY or GAME OVER.
 - The tool line keeps the tool's name. Nothing else of the monitor's

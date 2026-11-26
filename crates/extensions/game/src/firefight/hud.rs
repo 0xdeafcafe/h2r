@@ -12,22 +12,27 @@
 //! channel's capture sends it (`actor_net::host::Host::set_mode`) and a
 //! client extracts the HUD portion in `actor_net::roles` before [`Mode::decode`].
 //!
-//! **The view.** [`view`] is a pure function of a [`Mode`], the viewing
-//! player's roster slot and the [`Scope`]: a match, or a wave test in a
-//! Forge session seen from the biped or from the monitor
-//! (docs/game/forge-firefight-ui.md, "The Firefight HUD", while editing).
-//! It reads no game memory and no clock, so the host and a client agree by
-//! construction, and a test can show it.
+//! **The view.** [`view_on`] is a pure function of a [`Mode`], the viewing
+//! player's roster slot, the [`Scope`], the [`layout::Screen`] and the
+//! banner up: a match, or a wave test in a Forge session seen from the
+//! biped or from the monitor (docs/game/forge-firefight-ui.md, "The
+//! Firefight HUD", while editing). It reads no game memory and no clock,
+//! so the host and a client agree by construction, and a test can show it.
+//!
+//! **The layout.** [`layout`] places the elements of the Firefight block
+//! in a viewer's viewport from the blob alone, at the bottom right above
+//! Halo 2's score plate, with the seven fixed skull slots, and
+//! [`layout::check`] holds them off the weapon, grenades, tracker and plate
+//! rectangles. [`banners`] reads what began between two blobs (set, round,
+//! skull, wave, the ends) and queues it, three seconds each.
 //!
 //! **The HUD.** The HUD kit's `firefight` HUD
-//! (`hud_kit_core::views::firefight`, docs/game/forge-firefight-ui.md,
-//! "The Firefight HUD") draws it on Halo 2's own HUD: [`view_of`] turns a
-//! blob into the kit's `View` for one viewer, [`view`] into its `Values`.
-//! The kit's layout, its checks (`h2 hud preview firefight`) and its
-//! runtime (`crate::hud_kit`) are the kit's. [`install`] registers the HUD
-//! and adds its feed, which each tick publishes [`current`] for each local
-//! player, its own values for each split-screen player, and sends each
-//! the notes a change makes ([`Feed`], [`tick_all`]).
+//! (`hud_kit_core::views::firefight`, `content/modes/huds/firefight.hud.yaml`)
+//! draws it on Halo 2's own HUD: [`state_of`] turns the layout's elements
+//! into the kit's `State` and [`view_on`] into its `Values`. [`install`]
+//! registers the HUD and adds its feed, which each tick reads
+//! [`current`] once and, for each local player, the layout for that
+//! player's roster slot, scope and screen ([`Feed`], [`tick_all`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -35,10 +40,10 @@ use std::sync::{Arc, Mutex};
 use ::firefight::director::Phase;
 use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
 use engine::memory::{GuestMemory, MemFault};
-use hud_kit_core::views::firefight::{self as kit, Firefight};
+use hud_kit_core::views::firefight::{self as kit, Firefight, LivesLook};
 
-pub use hud_kit_core::views::firefight::{BANNER, ENEMIES_COUNT, LIVES_COUNT, NOTE, Stage, View};
 pub use hud_kit_core::model::{Style, Value, Values};
+pub use hud_kit_core::views::firefight::{BANNER, State, Stage};
 
 use crate::hud_kit::{self, Handle};
 
@@ -95,10 +100,26 @@ pub struct Mode {
     pub left: u16,
     /// The skulls on, one bit a session skull index ([`skull_mask`]).
     pub skulls: u32,
+    /// The zero-based set; 0 in a finite definition.
+    pub set: u8,
+    /// The definition's sets go on until the players are out
+    /// (`SetRules::endless`): the progress line names the set.
+    pub endless: bool,
+    /// Ticks left of the bonus round; 0 when none is on.
+    pub bonus_left: u16,
+    /// The wave's actors, placed and still to be placed, while a wave is
+    /// on: the enemies meter's full length; in a bonus round the bonus
+    /// round's length in ticks; else 0.
+    pub total: u16,
+    /// The team's points with one team; 0 with two (`teams` has theirs).
+    pub score: u32,
     pub lives: Lives,
     /// Two teams' points and members; none with one team.
     pub teams: Option<Teams>,
 }
+
+pub mod banners;
+pub mod layout;
 
 /// Every skull Firefight turns on, by its session skull index.
 pub const FIREFIGHT_SKULLS: [Skull; 9] = [
@@ -168,14 +189,16 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Bytes before the teams and lives: version, stage, round, rounds, wave,
-/// waves, flags, left (2), the skulls (4), the team count.
-const HEAD: usize = 14;
+/// waves, flags, left (2), the skulls (4), the set, the bonus ticks left
+/// (2), the total (2), the team count.
+const HEAD: usize = 19;
 /// Where the team count is.
 const TEAM_COUNT: usize = HEAD - 1;
 /// The two teams' part, when the team count is 2: each team's points (4
 /// each) and the second team's slot bits (2).
 const TEAMS: usize = 4 * MAX_TEAMS + 2;
 const FLAG_BOSS: u8 = 1;
+const FLAG_ENDLESS: u8 = 2;
 const LIVES_SHARED: u8 = 0;
 const LIVES_EACH: u8 = 1;
 const LIVES_TEAMS: u8 = 2;
@@ -249,6 +272,17 @@ impl Mode {
                 0
             },
             skulls: skull_mask(&state.skulls),
+            set: state.set,
+            endless: def.set.endless,
+            // The director's bonus round (`ff_bonus`) fills these when the
+            // host runs it; until then no bonus round is on.
+            bonus_left: 0,
+            total: if stage.wave_on() {
+                state.wave_actors.saturating_add(director.reserve(players))
+            } else {
+                0
+            },
+            score: if two { 0 } else { state.scores[0] },
             lives,
             teams,
         })
@@ -256,6 +290,7 @@ impl Mode {
 
     /// The blob's bytes, at most [`MAX_BLOB`].
     pub fn encode(&self) -> Vec<u8> {
+        let flags = u8::from(self.boss) * FLAG_BOSS | u8::from(self.endless) * FLAG_ENDLESS;
         let mut out = vec![
             VERSION,
             self.stage as u8,
@@ -263,12 +298,18 @@ impl Mode {
             self.rounds,
             self.wave,
             self.waves,
-            if self.boss { FLAG_BOSS } else { 0 },
+            flags,
         ];
         out.extend_from_slice(&self.left.to_le_bytes());
         out.extend_from_slice(&self.skulls.to_le_bytes());
+        out.push(self.set);
+        out.extend_from_slice(&self.bonus_left.to_le_bytes());
+        out.extend_from_slice(&self.total.to_le_bytes());
         match &self.teams {
-            None => out.push(1),
+            None => {
+                out.push(1);
+                out.extend_from_slice(&self.score.to_le_bytes());
+            }
             Some(teams) => {
                 out.push(MAX_TEAMS as u8);
                 for score in teams.scores {
@@ -328,7 +369,7 @@ impl Mode {
         if waves == 0 || waves > MAX_WAVES || wave >= waves {
             return Err(Error::Field("wave"));
         }
-        if bytes[6] & !FLAG_BOSS != 0 {
+        if bytes[6] & !(FLAG_BOSS | FLAG_ENDLESS) != 0 {
             return Err(Error::Field("flags"));
         }
         let left = u16::from_le_bytes([bytes[7], bytes[8]]);
@@ -336,8 +377,23 @@ impl Mode {
         if skulls & !SKULL_BITS != 0 {
             return Err(Error::Field("skulls"));
         }
+        let endless = bytes[6] & FLAG_ENDLESS != 0;
+        let set = bytes[13];
+        if set != 0 && !endless {
+            return Err(Error::Field("set"));
+        }
+        let bonus_left = u16::from_le_bytes([bytes[14], bytes[15]]);
+        let total = u16::from_le_bytes([bytes[16], bytes[17]]);
+        let mut score = 0;
         let (teams, at) = match bytes[TEAM_COUNT] {
-            1 => (None, HEAD),
+            1 => {
+                let end = HEAD + 4;
+                if bytes.len() < end {
+                    return Err(short(end));
+                }
+                score = u32::from_le_bytes([bytes[HEAD], bytes[HEAD + 1], bytes[HEAD + 2], bytes[HEAD + 3]]);
+                (None, end)
+            }
             2 => {
                 let end = HEAD + TEAMS;
                 if bytes.len() < end {
@@ -357,6 +413,9 @@ impl Mode {
         };
         if teams.is_none() && stage.two_teams_only() {
             return Err(Error::Field("stage"));
+        }
+        if teams.is_some() && endless {
+            return Err(Error::Field("flags"));
         }
         let kind = *bytes.get(at).ok_or_else(|| short(at + 1))?;
         let at = at + 1;
@@ -410,6 +469,11 @@ impl Mode {
             boss: bytes[6] & FLAG_BOSS != 0,
             left,
             skulls,
+            set,
+            endless,
+            bonus_left,
+            total,
+            score,
             lives,
             teams,
         })
@@ -451,12 +515,11 @@ pub fn received() -> &'static Slot {
 }
 
 /// What the HUD shows on this machine for the player at roster slot
-/// `local` seen in `scope`: the host's own blob or else the one received,
-/// decoded and viewed the same way. None while no mode runs; an error is a
-/// blob this build cannot read.
-pub fn current(local: u8, scope: Scope) -> Option<Result<View, Error>> {
+/// The mode now: the host's own blob or else the one received, decoded.
+/// None while no mode runs; an error is a blob this build cannot read.
+pub fn current() -> Option<Result<Mode, Error>> {
     let blob = slot().get().or_else(|| received().get())?;
-    Some(Mode::decode(&blob).map(|mode| view_of(&mode, local, scope)))
+    Some(Mode::decode(&blob))
 }
 
 // ---- a wave test ----
@@ -531,38 +594,62 @@ fn lives_of(m: &Mode, local: u8) -> Option<u16> {
     }
 }
 
-/// What the player at roster slot `local` sees of `mode` in `scope`: the
-/// kit's view. A pure function of the blob, the slot and the scope: the
-/// host and a client agree. A test shows no lives.
-pub fn view_of(mode: &Mode, local: u8, scope: Scope) -> View {
-    View {
-        stage: mode.stage,
-        round: mode.round,
-        rounds: mode.rounds,
-        wave: mode.wave,
-        boss: mode.boss,
-        left: mode.left,
-        skulls: mode.skulls,
-        lives: match scope {
-            Scope::Match => lives_of(mode, local),
-            Scope::Biped | Scope::Monitor => None,
-        },
+/// The kit's state for the elements [`layout::layout`] made: each line's
+/// words, the meter's fill, the skulls on, the banner's words.
+pub fn state_of(elements: &[layout::Element]) -> State {
+    let mut out = State::default();
+    for e in elements.iter().filter(|e| e.shown) {
+        let words = || Some(e.text.clone());
+        match e.id {
+            layout::SCORE => out.score = words(),
+            layout::LIVES => {
+                let look = match (e.look, e.text.as_str()) {
+                    (layout::Look::Warning, _) => LivesLook::Out,
+                    (_, layout::LAST_LIFE) => LivesLook::Last,
+                    _ => LivesLook::Normal,
+                };
+                out.lives = Some((e.text.clone(), look));
+            }
+            layout::PROGRESS => out.progress = words(),
+            layout::ENEMIES => {
+                let (now, total) = e.fill;
+                out.enemies = Some(if total == 0 {
+                    0.0
+                } else {
+                    f32::from(now) / f32::from(total)
+                });
+            }
+            layout::BANNER => out.banner = words(),
+            id => {
+                if let Some(i) = layout::SKULL_IDS.iter().position(|s| *s == id) {
+                    out.skulls[i] = true;
+                }
+            }
+        }
     }
+    out
 }
 
-/// The kit's values for a view seen in `scope`: the monitor's are the
-/// banner alone (`kit::monitor_values`).
-fn values_in(v: &View, scope: Scope) -> Values {
-    match scope {
-        Scope::Monitor => kit::monitor_values(v),
-        Scope::Match | Scope::Biped => kit::values(v),
-    }
+/// What the player at roster slot `local` sees of `mode` in `scope` on
+/// `screen`, with `banner`'s words up if any: the kit's values. A pure
+/// function of the blob, the slot, the scope, the screen and the banner:
+/// the host and a client agree. A test shows no lives.
+pub fn view_on(
+    mode: &Mode,
+    local: u8,
+    scope: Scope,
+    screen: layout::Screen,
+    banner: Option<&str>,
+) -> Values {
+    kit::values(&state_of(&layout::layout(mode, local, scope, screen, banner)))
 }
 
-/// The HUD for `mode`, as the player at roster slot `local` sees it in
-/// `scope`: the kit's values for [`view_of`].
+/// [`view_on`] at full size with the banner the match's end keeps up, if
+/// it is over: the blob alone gives no banner of a set, round, skull or
+/// wave, which are events ([`banners::events`]).
 pub fn view(mode: &Mode, local: u8, scope: Scope) -> Values {
-    values_in(&view_of(mode, local, scope), scope)
+    let ending = mode.stage.over().then(|| banners::ending(mode.stage).text());
+    view_on(mode, local, scope, layout::Screen::Full, ending.as_deref())
 }
 
 // ---- the feed ----
@@ -570,25 +657,34 @@ pub fn view(mode: &Mode, local: u8, scope: Scope) -> Values {
 /// The feed's feature id in the plan.
 pub const FEED: &str = "firefight-hud";
 
-/// What the feed keeps from tick to tick: the last view, for the notes a
-/// change sends, and the last unreadable blob's reason, logged once.
+/// What the feed keeps from tick to tick for one local user: the last
+/// blob, the banners it began ([`banners::Banners`]) and the last
+/// unreadable blob's reason, logged once.
 #[derive(Default)]
 pub struct Feed {
-    last: Option<View>,
+    last: Option<Mode>,
+    banners: banners::Banners,
     error: Option<String>,
 }
 
 impl Feed {
-    /// One tick: the values to publish and the notes to send for `now`,
-    /// what [`current`] gives for the local player, seen in `scope`. No
+    /// One tick: the values to publish for the player at roster slot
+    /// `local` seeing `now`, the current blob, in `scope` on `screen`. No
     /// match, no local player and a blob this build cannot read hide every
-    /// element and forget the last view; the reason for an unreadable blob
-    /// is logged when it changes.
-    pub fn tick(&mut self, now: Option<Result<View, Error>>, scope: Scope) -> (Values, Vec<String>) {
-        let view = match now {
-            Some(Ok(v)) => {
+    /// element and forget the last blob and the banners; the reason for an
+    /// unreadable blob is logged when it changes. A wave test has no
+    /// lives, so "LAST LIFE" is no banner in one.
+    pub fn tick(
+        &mut self,
+        now: Option<Result<Mode, Error>>,
+        local: u8,
+        scope: Scope,
+        screen: layout::Screen,
+    ) -> Values {
+        let mode = match now {
+            Some(Ok(m)) => {
                 self.error = None;
-                Some(v)
+                Some(m)
             }
             Some(Err(e)) => {
                 let why = e.to_string();
@@ -600,13 +696,20 @@ impl Feed {
             }
             None => None,
         };
-        let notes = match &view {
-            Some(v) => kit::notes(self.last.as_ref(), v, skull_name),
-            None => Vec::new(),
+        let Some(mode) = mode else {
+            self.last = None;
+            self.banners.clear();
+            return kit::hidden();
         };
-        let values = view.as_ref().map_or_else(kit::hidden, |v| values_in(v, scope));
-        self.last = view;
-        (values, notes)
+        let mut events = banners::events(self.last.as_ref(), &mode, local, skull_name);
+        if scope != Scope::Match {
+            events.retain(|b| *b != banners::Banner::LastLife);
+        }
+        let shown = self.banners.tick(events);
+        let words = shown.map(|s| s.banner.text());
+        let values = view_on(&mode, local, scope, screen, words.as_deref());
+        self.last = Some(mode);
+        values
     }
 }
 
@@ -642,18 +745,23 @@ const USERS: usize = hud_kit::USERS as usize;
 /// The feeds of the local users, one each.
 pub type Feeds = [Feed; USERS];
 
-/// One tick for every local user: user `u`'s view of the blob at its
-/// roster slot (`slots[u]`) in its scope (`scopes[u]`, through `current`),
-/// its values and its notes. A user with no slot is hidden and its feed
-/// forgets its last view.
+/// One tick for every local user: user `u`'s view of `now` at its roster
+/// slot (`slots[u]`) in its scope (`scopes[u]`), on `screen`. A user with
+/// no slot is hidden and its feed forgets what it kept.
 pub fn tick_all(
     feeds: &mut Feeds,
     slots: &[Option<u8>; USERS],
     scopes: &[Scope; USERS],
-    current: impl Fn(u8, Scope) -> Option<Result<View, Error>>,
-) -> [(Values, Vec<String>); USERS] {
+    screen: layout::Screen,
+    now: &Option<Result<Mode, Error>>,
+) -> [Values; USERS] {
+    let mut feeds = feeds.iter_mut();
     std::array::from_fn(|u| {
-        feeds[u].tick(slots[u].and_then(|slot| current(slot, scopes[u])), scopes[u])
+        let feed = feeds.next().expect("one feed a user");
+        match slots[u] {
+            Some(slot) => feed.tick(now.clone(), slot, scopes[u], screen),
+            None => feed.tick(None, 0, scopes[u], screen),
+        }
     })
 }
 
@@ -666,11 +774,12 @@ pub fn scopes_now() -> [Scope; USERS] {
     std::array::from_fn(|u| Scope::of(testing, monitor && u as u32 == crate::forge_hud::USER))
 }
 
-/// The feed on the plan: each tick, [`current`] for each local user's
-/// roster slot and scope ([`scopes_now`]) through its [`Feed`]: user 0's values are the HUD's shared
-/// ones (the banner, the channels), every other local user's its own
-/// (`Handle::publish_for`), so each split-screen player sees its own
-/// lives; each user's notes go to that user.
+/// The feed on the plan: each tick, [`current`] once, and for each local
+/// user the layout for its roster slot, scope ([`scopes_now`]) and screen
+/// ([`layout::Screen::for_users`], from the local user count) through its
+/// [`Feed`]: user 0's values are the HUD's shared ones, every other local
+/// user's its own (`Handle::publish_for`), so each split-screen player
+/// sees its own lives.
 struct FeedFeature {
     handle: Handle,
     feeds: Arc<Mutex<Feeds>>,
@@ -684,27 +793,28 @@ impl hooks::Feature for FeedFeature {
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
-        // Rebuilt from the mode blob each tick; the last view only words
-        // the next tick's notes.
+        // Rebuilt from the mode blob each tick; the last blob and the
+        // banner queue only word the next tick's banners.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         let (handle, feeds) = (self.handle, Arc::clone(&self.feeds));
         b.frame().on_tick("firefight hud: values", move |o| {
-            let slots = local_slots(&*o.guest()).unwrap_or_default();
+            let guest = o.guest();
+            let mem: &dyn GuestMemory = &*guest;
+            let slots = local_slots(mem).unwrap_or_default();
+            let screen = layout::Screen::for_users(hud_kit::local_users(mem).unwrap_or(1));
             let all = tick_all(
                 &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
                 &slots,
                 &scopes_now(),
-                current,
+                screen,
+                &current(),
             );
-            for (user, (values, notes)) in all.into_iter().enumerate() {
+            for (user, values) in all.into_iter().enumerate() {
                 let user = user as u32;
                 if user == 0 {
                     handle.publish(values);
                 } else {
                     handle.publish_for(user, slots[user as usize].map(|_| values));
-                }
-                for text in notes {
-                    handle.notify(user, &text);
                 }
             }
         });

@@ -1,69 +1,100 @@
-//! The Firefight HUD (docs/game/forge-firefight-ui.md, "The Firefight
-//! HUD"; docs/game/firefight.md, "The HUD"): what Halo 2's own HUD shows
-//! of a Firefight match, as kit elements.
+//! The Firefight HUD (docs/game/firefight.md, "The HUD"): the block at the
+//! bottom right, above Halo 2's score plate, as kit elements, in Halo 2's
+//! own HUD font and colour.
 //!
-//! - `ff.banner`: the message routine's timed centred line
-//!   ([`Kind::Banner`]): GET READY, WAVE 3, BOSS WAVE, FINISH THEM, WAVE
-//!   COMPLETE, ROUND COMPLETE, and the end. Written when its text changes,
-//!   then gone.
-//! - `ff.lives.pill`, `ff.lives.end`, `ff.lives.count`: a pill cut from
-//!   the frag pill's art with an LCD count, the grenade row's next pill:
-//!   the lives the viewer has, flashing at 1 and 0.
-//! - `ff.enemies.pill`, `ff.enemies.end`, `ff.enemies.count`: the same,
-//!   the place after, while a wave is on: the enemies left.
-//! - `ff.note`: a notification ([`Kind::Message`]): the round that starts,
-//!   a skull switched on, a life lost ([`notes`]). Sent once each, not
-//!   published.
+//! - `ff.score`, `ff.lives`, `ff.progress`: three right-justified lines,
+//!   14 pixels apart, from the frame's bottom right corner up;
+//! - `ff.enemies`: a strip meter (`Art::StripMeter`, 92 by 8) over them,
+//!   the enemies left over the wave's total, or the bonus round's time;
+//! - `ff.skull.0..6`: seven gauges of two steps, off and on, one fixed slot
+//!   a skull ([`SKULL_SLOTS`]), the pictures drawn from the skulls' strokes
+//!   (`font::skulls`, from `game::skull_glyphs`'s strokes);
+//! - `ff.banner`: the centred line at the top, the set, the round, the
+//!   skull or the wave that begins, and the ends.
 //!
-//! The round and wave are not permanent lines: they are in the banner when
-//! they change and in the notification list. The score is the game's own
-//! (kills credit Slayer's score, which the retail score display and
-//! scoreboard show). A pill has no icon: the fallback the design allows
-//! until a retail widget's art is chosen for each from the disc's census.
+//! One layout: a state never adds, removes or moves an element, so the
+//! skull slots and the meter keep their places. The quarter screen (three
+//! or four players) draws the lives and progress lines alone, one line
+//! lower. Where the lines' words and the places differ by screen the game
+//! (`game::firefight::hud::layout`) is the source and the HUD takes its
+//! numbers; the game gives one [`State`] for each local user's screen.
 //!
-//! [`View`] is what the HUD shows; the game (`game::firefight::hud`) makes
-//! it from the mode blob alone, so a client draws what the host draws.
+//! A skull switched on blinks three times ([`Motion::Arrive`]) and stays
+//! lit; the last life blinks the same way; the meter eases. The banner's
+//! ease in and out is not drawn: a fade needs the colour hook
+//! (docs/game/hud-kit.md, "Colours"), so the banner is at full strength
+//! for the three seconds it is up.
+//!
+//! The forge monitor's pills ([`super::forge`]) keep this module's count
+//! constants ([`COUNT_MAX`], [`COUNT_LONGEST`], [`PILL_STEP`]).
 
-use crate::model::{Describe, Hud, PILL_BODY, PILL_END, Pulse, Style, Value, Values};
+use crate::model::{Describe, Glyphs, Hud, PILL_BODY, PILL_END, Pulse, Style, Value, Values};
+use crate::motion::Motion;
 
 pub const NAME: &str = "firefight";
 
+pub const SCORE: &str = "ff.score";
+pub const LIVES: &str = "ff.lives";
+pub const PROGRESS: &str = "ff.progress";
+pub const ENEMIES: &str = "ff.enemies";
 pub const BANNER: &str = "ff.banner";
-pub const LIVES_PILL: &str = "ff.lives.pill";
-pub const LIVES_END: &str = "ff.lives.end";
-pub const LIVES_COUNT: &str = "ff.lives.count";
-pub const ENEMIES_PILL: &str = "ff.enemies.pill";
-pub const ENEMIES_END: &str = "ff.enemies.end";
-pub const ENEMIES_COUNT: &str = "ff.enemies.count";
-pub const NOTE: &str = "ff.note";
 
-/// The elements' ids, in draw order.
-pub const IDS: [&str; 8] = [
-    BANNER,
-    LIVES_PILL,
-    LIVES_END,
-    LIVES_COUNT,
-    ENEMIES_PILL,
-    ENEMIES_END,
-    ENEMIES_COUNT,
-    NOTE,
+/// How many skull slots: Ghost, Catch, Black Eye, Thunderstorm, Famine,
+/// Mythic, Iron, in that order (`font::skulls::SLOT_SKULLS`;
+/// `game::firefight::hud::layout::SKULL_SLOTS`).
+pub const SKULL_SLOTS: usize = font::skulls::SLOTS;
+/// The skull slots' ids, in slot order.
+pub const SKULLS: [&str; SKULL_SLOTS] = [
+    "ff.skull.0",
+    "ff.skull.1",
+    "ff.skull.2",
+    "ff.skull.3",
+    "ff.skull.4",
+    "ff.skull.5",
+    "ff.skull.6",
 ];
 
-/// The widest banner: the longest of the stage words.
-pub const BANNER_LONGEST: &str = "ROUND COMPLETE";
+/// The elements' ids, in draw order.
+pub const IDS: [&str; 4 + SKULL_SLOTS + 1] = [
+    SCORE, LIVES, PROGRESS, ENEMIES, SKULLS[0], SKULLS[1], SKULLS[2], SKULLS[3], SKULLS[4],
+    SKULLS[5], SKULLS[6], BANNER,
+];
+
+/// The widest score line: two teams at the most points.
+pub const SCORE_LONGEST: &str = "RED 9999999 BLUE 9999999";
+/// The widest lives line.
+pub const LIVES_LONGEST: &str = "LIVES 999";
+/// The widest progress line: an endless set's.
+pub const PROGRESS_LONGEST: &str = "SET 256 ROUND 12 WAVE 16";
+/// The widest banner.
+pub const BANNER_LONGEST: &str = "BONUS OVER 99 LIVES";
+
+/// The skull pictures' first code unit, U+E600 (`font::skulls::FIRST`).
+pub const SKULL_FIRST: u16 = font::skulls::FIRST;
+/// The skull pictures' size, wide and tall: inside the full screen's 16
+/// pixel slots and the half screen's 14.
+pub const SKULL_PICTURE: i16 = font::skulls::PICTURE as i16;
+
+/// Skull slot `slot`'s pictures: step 0 off, step 1 on.
+pub const fn skull_glyphs(slot: usize) -> Glyphs {
+    Glyphs {
+        first: font::skulls::unit(slot, false),
+        steps: 1,
+        size: (SKULL_PICTURE, SKULL_PICTURE),
+    }
+}
+
 /// The widest count a pill shows: two digits, as a grenade count's. A
-/// larger number shows as [`COUNT_MAX`].
+/// larger number shows as [`COUNT_MAX`]. (The Forge monitor's pills.)
 pub const COUNT_LONGEST: &str = "99";
 pub const COUNT_MAX: u16 = 99;
-/// The widest notification.
-pub const NOTE_LONGEST: &str = "Round 12 of 12";
 
 /// The gap between the kit's two pills: the retail panel's, its count
 /// step (53) less a pill's width (50) (V: `grenade_bkd`; docs/game/hud-kit.md,
 /// "The pill").
 pub const PILL_GAP: i16 = 3;
-/// From the lives pill's left edge to the enemies pill's: the kit pill's
-/// width ([`PILL_BODY`] and [`PILL_END`]) and the gap.
+/// From one pill's left edge to the next's: the kit pill's width
+/// ([`PILL_BODY`] and [`PILL_END`]) and the gap.
 pub const PILL_STEP: i16 = PILL_BODY + PILL_END + PILL_GAP;
 
 /// Where the match is.
@@ -144,46 +175,73 @@ impl Stage {
     }
 }
 
-/// What the HUD shows, for one viewer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct View {
-    pub stage: Stage,
-    /// Zero-based; the round and wave that are on or next.
-    pub round: u8,
-    pub rounds: u8,
-    pub wave: u8,
-    pub boss: bool,
-    /// Actors alive and still to be placed, while a wave is on.
-    pub left: u16,
-    /// The skulls on, one bit a session skull index.
-    pub skulls: u32,
-    /// The lives the viewer has: the shared pool, its own, its team's;
-    /// none when it has no count.
-    pub lives: Option<u16>,
+/// How the lives line is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LivesLook {
+    Normal,
+    /// The last life: the line blinks three times as it appears.
+    Last,
+    /// None left: the warning colour, steady.
+    Out,
 }
 
-/// The banner for `v`'s stage, if it has one: every stage but the fight
-/// itself.
-pub fn banner_text(v: &View) -> Option<String> {
-    Some(match v.stage {
-        Stage::Warmup => "GET READY".into(),
-        Stage::Spawning if v.boss => "BOSS WAVE".into(),
-        Stage::Spawning => format!("WAVE {}", u16::from(v.wave) + 1),
-        Stage::Fighting => return None,
-        Stage::Cleanup => "FINISH THEM".into(),
-        Stage::Intermission if v.wave == 0 && v.round > 0 => "ROUND COMPLETE".into(),
-        Stage::Intermission => "WAVE COMPLETE".into(),
-        Stage::Won => "VICTORY".into(),
-        Stage::Lost | Stage::Over => "GAME OVER".into(),
-        Stage::Team0Won => "RED TEAM WINS".into(),
-        Stage::Team1Won => "BLUE TEAM WINS".into(),
-        Stage::Draw => "DRAW".into(),
-    })
+/// What the HUD shows one local user.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct State {
+    /// The score line's words; none when it is hidden.
+    pub score: Option<String>,
+    /// The lives line's words and look; none for a viewer with no count.
+    pub lives: Option<(String, LivesLook)>,
+    pub progress: Option<String>,
+    /// The enemies meter's fill, 0 to 1; none when it is hidden.
+    pub enemies: Option<f32>,
+    /// Which skull slots are on.
+    pub skulls: [bool; SKULL_SLOTS],
+    /// The banner's words.
+    pub banner: Option<String>,
 }
 
-/// A count as a pill shows it: at most [`COUNT_MAX`].
-pub fn count_text(n: u16) -> String {
-    n.min(COUNT_MAX).to_string()
+/// Every element hidden: no match runs.
+pub fn hidden() -> Values {
+    values(&State::default())
+}
+
+/// The values for `state`: one for each element.
+pub fn values(state: &State) -> Values {
+    let mut out = Values::default();
+    let text = |t: &Option<String>| t.as_ref().map_or_else(Value::hidden, |t| Value::text(t.clone()));
+    out.set(SCORE, text(&state.score));
+    out.set(
+        LIVES,
+        match &state.lives {
+            None => Value::hidden(),
+            Some((t, LivesLook::Normal)) => Value::text(t.clone()),
+            Some((t, LivesLook::Last)) => Value::text(t.clone()).moving(Motion::Arrive),
+            Some((t, LivesLook::Out)) => {
+                Value::text(t.clone()).styled(Style::Flash(Pulse::TimeWarning))
+            }
+        },
+    );
+    out.set(PROGRESS, text(&state.progress));
+    out.set(
+        ENEMIES,
+        match state.enemies {
+            Some(f) => Value::fill(f.clamp(0.0, 1.0)).moving(Motion::Ease),
+            None => Value::hidden(),
+        },
+    );
+    for (id, on) in SKULLS.into_iter().zip(state.skulls) {
+        out.set(
+            id,
+            if on {
+                Value::fill(1.0).moving(Motion::Arrive)
+            } else {
+                Value::hidden()
+            },
+        );
+    }
+    out.set(BANNER, text(&state.banner));
+    out
 }
 
 /// The elements, in draw order ([`IDS`]).
@@ -191,228 +249,62 @@ pub fn hud() -> Hud {
     crate::data::builtin(NAME)
 }
 
-/// Every element hidden: no match runs.
-pub fn hidden() -> Values {
-    let mut out = Values::default();
-    for id in IDS {
-        out.set(id, Value::hidden());
-    }
-    out
+fn some(t: &str) -> Option<String> {
+    Some(t.to_owned())
 }
 
-/// The values for `v`. The note is hidden: a notification is sent
-/// ([`notes`]), not published.
-pub fn values(v: &View) -> Values {
-    let mut out = hidden();
-    if let Some(t) = banner_text(v) {
-        out.set(BANNER, Value::text(t));
-    }
-    if let Some(n) = v.lives.filter(|_| !v.stage.over()) {
-        // The last life, and none: the time warning's flash.
-        let style = if n <= 1 {
-            Style::Flash(Pulse::TimeWarning)
-        } else {
-            Style::Normal
-        };
-        out.set(LIVES_PILL, Value::shown().styled(style));
-        out.set(LIVES_END, Value::shown().styled(style));
-        out.set(LIVES_COUNT, Value::text(count_text(n)).styled(style));
-    }
-    if v.stage.wave_on() {
-        out.set(ENEMIES_PILL, Value::shown());
-        out.set(ENEMIES_END, Value::shown());
-        out.set(ENEMIES_COUNT, Value::text(count_text(v.left)));
-    }
-    out
-}
-
-/// The values a user in the Forge monitor sees of a wave test
-/// (docs/game/forge-firefight-ui.md, "The Firefight HUD", while editing):
-/// the banner alone. The monitor HUD's own pill shows the enemies left
-/// (`super::forge::ENEMIES_COUNT`), and a test charges no lives.
-pub fn monitor_values(v: &View) -> Values {
-    let mut out = hidden();
-    if let Some(t) = banner_text(v) {
-        out.set(BANNER, Value::text(t));
-    }
-    out
-}
-
-/// The notifications the change from `before` to `now` sends: a round
-/// that starts ("Round 2 of 3"), each skull switched on, lowest index
-/// first ("Mythic skull on", its name from `skull_name`; a skull with no
-/// name sends none), lives lost ("A life lost", "2 lives lost") and lives
-/// gained, the round's bonus ("Bonus life", "4 bonus lives"). The match's
-/// end sends one note, the rounds cleared ([`results_note`]), and the
-/// notes stop after it. None from no view (the match's first: the skulls
-/// on from the start are the lobby's).
-pub fn notes(
-    before: Option<&View>,
-    now: &View,
-    skull_name: impl Fn(u8) -> Option<&'static str>,
-) -> Vec<String> {
-    let Some(b) = before else {
-        return Vec::new();
+/// The named states: the match as it goes, each look of the lives line, a
+/// bonus round, two teams, the end, and the widest words.
+pub fn states() -> Vec<(&'static str, State)> {
+    let fighting = State {
+        score: some("SCORE 3400"),
+        lives: Some(("LIVES 4".into(), LivesLook::Normal)),
+        progress: some("SET 2 ROUND 2 WAVE 3"),
+        enemies: Some(0.75),
+        skulls: [true, false, false, false, false, true, false],
+        banner: None,
     };
-    if now.stage.over() {
-        return if b.stage.over() {
-            Vec::new()
-        } else {
-            results_note(now).into_iter().collect()
-        };
-    }
-    let mut out = Vec::new();
-    if now.round > b.round {
-        out.push(format!(
-            "Round {} of {}",
-            u16::from(now.round) + 1,
-            now.rounds
-        ));
-    }
-    let on = now.skulls & !b.skulls;
-    for n in (0..32u8).filter(|n| on & (1 << n) != 0) {
-        if let Some(name) = skull_name(n) {
-            out.push(format!("{name} skull on"));
-        }
-    }
-    if let (Some(was), Some(is)) = (b.lives, now.lives) {
-        if is < was {
-            out.push(match was - is {
-                1 => "A life lost".to_owned(),
-                n => format!("{n} lives lost"),
-            });
-        } else if is > was {
-            out.push(match is - was {
-                1 => "Bonus life".to_owned(),
-                n => format!("{n} bonus lives"),
-            });
-        }
-    }
-    out
-}
-
-/// The note the match's end sends beside its banner: the rounds cleared of
-/// the rounds there are ("Cleared 2/3"), all of them for a one-team win.
-/// None for the two-team ends, where the banner names the winner and a
-/// team can win a round the other never finished, and for a match the
-/// director left without an outcome.
-pub fn results_note(v: &View) -> Option<String> {
-    let cleared = match v.stage {
-        Stage::Won => v.rounds,
-        Stage::Lost => v.round.min(v.rounds),
-        _ => return None,
-    };
-    Some(format!("Cleared {cleared}/{}", v.rounds))
-}
-
-/// The named states: each stage, a boss wave, a round's end, the lives at
-/// their extremes, the viewer without a count, and the widest numbers.
-pub fn views() -> Vec<(&'static str, View)> {
-    let base = View {
-        stage: Stage::Fighting,
-        round: 0,
-        rounds: 3,
-        wave: 1,
-        boss: false,
-        left: 7,
-        skulls: 0,
-        lives: Some(12),
-    };
-    let with = |f: &dyn Fn(&mut View)| {
-        let mut v = base.clone();
-        f(&mut v);
-        v
+    let with = |f: &dyn Fn(&mut State)| {
+        let mut s = fighting.clone();
+        f(&mut s);
+        s
     };
     vec![
-        (
-            "warmup",
-            with(&|v| {
-                v.stage = Stage::Warmup;
-                v.wave = 0;
-                v.left = 0;
-            }),
-        ),
-        ("spawning", with(&|v| v.stage = Stage::Spawning)),
-        (
-            "boss",
-            with(&|v| {
-                v.stage = Stage::Spawning;
-                v.wave = 4;
-                v.boss = true;
-            }),
-        ),
-        ("fighting", base.clone()),
-        (
-            "cleanup",
-            with(&|v| {
-                v.stage = Stage::Cleanup;
-                v.left = 2;
-            }),
-        ),
-        (
-            "wave-complete",
-            with(&|v| {
-                v.stage = Stage::Intermission;
-                v.left = 0;
-            }),
-        ),
-        (
-            "round-complete",
-            with(&|v| {
-                v.stage = Stage::Intermission;
-                v.round = 1;
-                v.wave = 0;
-                v.left = 0;
-            }),
-        ),
-        ("won", with(&|v| v.stage = Stage::Won)),
-        ("lost", with(&|v| v.stage = Stage::Lost)),
-        ("over", with(&|v| v.stage = Stage::Over)),
-        ("last-life", with(&|v| v.lives = Some(1))),
-        ("skull-on", with(&|v| v.skulls = 1 << 12)),
-        ("no-lives", with(&|v| v.lives = Some(0))),
-        ("no-own-lives", with(&|v| v.lives = None)),
-        (
-            "widest",
-            with(&|v| {
-                v.round = 11;
-                v.rounds = 12;
-                v.wave = 15;
-                v.left = u16::MAX;
-                v.lives = Some(u16::MAX);
-            }),
-        ),
-        // A wave test in a Forge session, seen from the biped: no lives.
-        (
-            "test",
-            with(&|v| {
-                v.stage = Stage::Spawning;
-                v.lives = None;
-            }),
-        ),
-        ("red-wins", with(&|v| v.stage = Stage::Team0Won)),
-        ("blue-wins", with(&|v| v.stage = Stage::Team1Won)),
-        ("draw", with(&|v| v.stage = Stage::Draw)),
+        ("fighting", fighting.clone()),
+        ("wave-banner", with(&|s| s.banner = some("WAVE 3"))),
+        ("skull-banner", with(&|s| s.banner = some("MYTHIC ON"))),
+        ("between-waves", with(&|s| {
+            s.enemies = None;
+            s.banner = some("WAVE CLEAR");
+        })),
+        ("last-life", with(&|s| s.lives = Some(("LAST LIFE".into(), LivesLook::Last)))),
+        ("no-lives", with(&|s| s.lives = Some(("NO LIVES".into(), LivesLook::Out)))),
+        ("no-own-lives", with(&|s| s.lives = None)),
+        ("bonus", with(&|s| {
+            s.progress = some("BONUS 0:42");
+            s.enemies = Some(0.4);
+            s.banner = some("BONUS ROUND");
+        })),
+        ("two-teams", with(&|s| {
+            s.score = some("RED 450 BLUE 1100");
+            s.progress = some("ROUND 2 OF 3 WAVE 3");
+        })),
+        ("all-skulls", with(&|s| s.skulls = [true; SKULL_SLOTS])),
+        ("game-over", State {
+            score: some("SCORE 3400"),
+            banner: some("GAME OVER"),
+            ..State::default()
+        }),
+        ("none", State::default()),
+        ("widest", State {
+            score: some(SCORE_LONGEST),
+            lives: Some((LIVES_LONGEST.into(), LivesLook::Normal)),
+            progress: some(PROGRESS_LONGEST),
+            enemies: Some(1.0),
+            skulls: [true; SKULL_SLOTS],
+            banner: some(BANNER_LONGEST),
+        }),
     ]
-}
-
-/// The sample notification a state's preview shows: what [`notes`] sends
-/// on the way into it.
-fn sample_note(state: &str) -> Option<&'static str> {
-    match state {
-        "round-complete" => Some("Round 2 of 3"),
-        "last-life" => Some("A life lost"),
-        "skull-on" => Some("Mythic skull on"),
-        "widest" => Some(NOTE_LONGEST),
-        _ => None,
-    }
-}
-
-/// The state of a wave test seen from the Forge monitor: the banner of a
-/// wave that starts, and nothing placed.
-fn test_in_monitor() -> Option<(&'static str, Values)> {
-    let (_, v) = views().into_iter().find(|(name, _)| *name == "test")?;
-    Some(("test-monitor", monitor_values(&v)))
 }
 
 /// The HUD's description.
@@ -424,28 +316,16 @@ impl Describe for Firefight {
     }
 
     fn states(&self) -> Vec<(&'static str, Values)> {
-        views()
-            .into_iter()
-            .map(|(name, v)| {
-                let mut out = values(&v);
-                if let Some(t) = sample_note(name) {
-                    out.set(NOTE, Value::text(t));
-                }
-                (name, out)
-            })
-            .chain(test_in_monitor())
-            .collect()
+        states().into_iter().map(|(n, s)| (n, values(&s))).collect()
     }
 
     fn multiplayer_only(&self) -> Option<&'static str> {
-        Some("Firefight runs on multiplayer maps; a campaign player HUD may have no grenade row")
+        Some("Firefight runs on multiplayer maps; its enemies meter is the energy sword's battery strip, which a campaign player HUD may lack")
     }
 
     /// Firefight is a game of its own: never on the screen with a
-    /// superbounce game's HUDs. Its placed elements never meet Forge's: a
-    /// wave test seen from the monitor shows only the banner and the
-    /// notes ([`monitor_values`]), the game's channels, which claim no
-    /// place.
+    /// superbounce game's HUDs, and its block, at the bottom right, never
+    /// meets the Forge readout's.
     fn never_with(&self) -> &'static [&'static str] {
         &[
             super::superbounce::NAME,
@@ -458,260 +338,219 @@ impl Describe for Firefight {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Origin;
-    use crate::model::{BANNER_UNITS, banner_fault, message_fault};
+    use crate::model::{Anchor, Art, Font, Justify, Kind};
+    use crate::records::{self, NO_FONT, WidgetKind, text as tf};
+    use crate::templates::{ArtTemplate, GrenadeRow, TextTemplate, Templates};
+    use crate::{Mode, compile};
+    use map::{FourCC, TagId};
 
-    fn view(stage: Stage) -> View {
-        View {
-            stage,
-            round: 1,
-            rounds: 3,
-            wave: 2,
-            boss: false,
-            left: 9,
-            skulls: 0,
-            lives: Some(4),
+    fn u16_at(b: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([b[at], b[at + 1]])
+    }
+
+    fn templates() -> Templates {
+        let shad = FourCC(*b"shad");
+        Templates {
+            nhdt: TagId(0xe000_0001),
+            text: Ok(TextTemplate {
+                shader: (shad, TagId(0xe000_0003)),
+                string: 0x0400_0123,
+            }),
+            art: vec![(
+                Art::StripMeter,
+                Ok(ArtTemplate {
+                    bitmap: TagId(0xe000_0010),
+                    shader: (shad, TagId(0xe000_0002)),
+                    sequences: [3, 4, 5],
+                    crop: None,
+                    ramp: None,
+                }),
+            )],
+            row: Ok(GrenadeRow {
+                pill_anchor: 1,
+                pill: [(106, 0), (80, 1), (60, 2)],
+                count_anchor: 1,
+                count: [(118, -1), (90, -2), (70, -3)],
+                panel: 103.0,
+                frag: [53.0, 50.0],
+                step: [(53, 0), (40, 0), (30, 0)],
+            }),
         }
     }
 
-    fn name(n: u8) -> Option<&'static str> {
-        match n {
-            12 => Some("Mythic"),
-            16 => Some("Low Gravity"),
-            _ => None,
-        }
-    }
-
-    fn shown(v: &Values, id: &str) -> Option<String> {
-        v.get(id).filter(|x| x.shown).map(|x| x.text.clone())
-    }
-
-    /// Every stage has its banner or none, each one line the game keeps
-    /// whole, within the element's longest.
+    /// The HUD compiles against the player's templates: eleven text
+    /// records (three lines, seven skull gauges, the banner), the meter's
+    /// bitmap, no channel; each text has its font in the modes it has an
+    /// offset in and none in the others (the quarter screen draws the
+    /// lives and progress lines alone); every place is from the bottom
+    /// right corner but the banner's, from the top left.
     #[test]
-    fn every_stage_has_a_banner_or_none() {
-        let table: [(Stage, bool, Option<&str>); 13] = [
-            (Stage::Warmup, false, Some("GET READY")),
-            (Stage::Spawning, false, Some("WAVE 3")),
-            (Stage::Spawning, true, Some("BOSS WAVE")),
-            (Stage::Fighting, false, None),
-            (Stage::Fighting, true, None),
-            (Stage::Cleanup, false, Some("FINISH THEM")),
-            (Stage::Intermission, false, Some("WAVE COMPLETE")),
-            (Stage::Won, false, Some("VICTORY")),
-            (Stage::Lost, false, Some("GAME OVER")),
-            (Stage::Over, false, Some("GAME OVER")),
-            (Stage::Team0Won, false, Some("RED TEAM WINS")),
-            (Stage::Team1Won, false, Some("BLUE TEAM WINS")),
-            (Stage::Draw, false, Some("DRAW")),
-        ];
-        for (stage, boss, want) in table {
-            let v = View {
-                boss,
-                ..view(stage)
-            };
-            assert_eq!(banner_text(&v).as_deref(), want, "{stage:?} boss {boss}");
-            assert_eq!(shown(&values(&v), BANNER).as_deref(), want, "{stage:?}");
-            if let Some(t) = want {
-                assert_eq!(banner_fault(t), None);
-                assert!(t.len() <= BANNER_LONGEST.len(), "{t}");
-                assert!(t.len() <= BANNER_UNITS);
-            }
-        }
-        // A round's first wave between rounds is the round's end.
-        let between = View {
-            wave: 0,
-            ..view(Stage::Intermission)
+    fn the_firefight_hud_compiles_to_records_in_every_mode() {
+        let hud = hud();
+        assert_eq!(hud.problems(), Vec::<String>::new());
+        assert_eq!(hud.elements.iter().map(|e| e.id).collect::<Vec<_>>(), IDS);
+        assert!(!hud.uses_grenade_row() && hud.has_text());
+        let c = compile(&hud, &templates()).unwrap();
+        assert!(c.channels.is_empty());
+        assert_eq!(c.widgets.len(), 12);
+        let meter = c.widgets.iter().find(|w| w.id == ENEMIES).unwrap();
+        assert_eq!(meter.kind, WidgetKind::Bitmap);
+        let font = |w: &records::Widget, mode: Mode| w.bytes[tf::FONTS + mode.index()] as i8;
+        let shown = |id: &str| -> [bool; 3] {
+            let w = c.widgets.iter().find(|w| w.id == id).unwrap();
+            assert_eq!(w.kind, WidgetKind::Text, "{id}");
+            Mode::ALL.map(|m| font(w, m) != NO_FONT)
         };
-        assert_eq!(banner_text(&between).as_deref(), Some("ROUND COMPLETE"));
-        let first = View {
-            round: 0,
-            ..between
-        };
-        assert_eq!(banner_text(&first).as_deref(), Some("WAVE COMPLETE"));
-        // Every stage is in the table.
-        for s in Stage::ALL {
-            assert!(table.iter().any(|(t, ..)| *t == s), "{s:?}");
-            assert_eq!(Stage::from_code(s as u8), Some(s));
+        assert_eq!(shown(SCORE), [true, true, false]);
+        assert_eq!(shown(LIVES), [true, true, true]);
+        assert_eq!(shown(PROGRESS), [true, true, true]);
+        assert_eq!(shown(BANNER), [true, true, false]);
+        for id in SKULLS {
+            assert_eq!(shown(id), [true, true, false], "{id}");
         }
-        assert_eq!(Stage::from_code(11), None);
+        let at = |id: &str| {
+            let w = c.widgets.iter().find(|w| w.id == id).unwrap();
+            (
+                u16_at(&w.bytes, tf::ANCHOR),
+                tf::OFFSETS.map(|o| (u16_at(&w.bytes, o) as i16, u16_at(&w.bytes, o + 2) as i16)),
+            )
+        };
+        let corner = Anchor::BottomRight as u16;
+        assert_eq!(at(SCORE).0, corner);
+        assert_eq!(at(SCORE).1[0], (0, -58));
+        assert_eq!(at(LIVES).1, [(0, -72), (0, -72), (0, -58)]);
+        assert_eq!(at(PROGRESS).1, [(0, -86), (0, -86), (0, -72)]);
+        assert_eq!(at(BANNER).0, Anchor::TopLeft as u16);
+        assert_eq!(at(BANNER).1[0], (272, 60));
+        assert_eq!(at(BANNER).1[1], (272, 48));
+        // Every line is right-justified at the corner, the banner centred.
+        for (id, justify) in [(SCORE, Justify::End), (LIVES, Justify::End), (BANNER, Justify::Centre)] {
+            let e = hud.element(id).unwrap();
+            assert!(matches!(e.kind, Kind::Text { font: Font::Hud, justify: j, .. } if j == justify), "{id}");
+        }
+        for (i, id) in SKULLS.into_iter().enumerate() {
+            assert_eq!(at(id).0, corner, "{id}");
+            // A fixed slot a skull: 18 pixels on at full size, 14 at half.
+            let (x, y) = (-(18 * i as i16 + 15), -113);
+            let (hx, hy) = (-(14 * i as i16 + 14), -110);
+            assert_eq!(at(id).1[..2], [(x, y), (hx, hy)], "{id}");
+            let e = hud.element(id).unwrap();
+            assert_eq!(e.kind, Kind::Gauge { glyphs: skull_glyphs(i) });
+        }
     }
 
-    /// The lives pill shows while the match is on and the viewer has a
-    /// count, flashing at 1 and 0; the enemies pill while a wave is on;
-    /// the note is never published.
+    /// Every state is the one layout, and a skull's slot is the same
+    /// whatever is on.
     #[test]
-    fn the_pills_follow_the_view() {
-        let on = values(&view(Stage::Fighting));
-        assert_eq!(shown(&on, LIVES_COUNT).as_deref(), Some("4"));
-        assert_eq!(shown(&on, ENEMIES_COUNT).as_deref(), Some("9"));
-        for id in [LIVES_PILL, LIVES_END, ENEMIES_PILL, ENEMIES_END] {
-            let x = on.get(id).unwrap();
-            assert!(x.shown && x.style == Style::Normal, "{id}");
-        }
-        assert!(!on.get(NOTE).unwrap().shown);
-        for n in [0, 1] {
-            let v = values(&View {
-                lives: Some(n),
-                ..view(Stage::Fighting)
-            });
-            for id in [LIVES_PILL, LIVES_END, LIVES_COUNT] {
-                assert_eq!(
-                    v.get(id).unwrap().style,
-                    Style::Flash(Pulse::TimeWarning),
-                    "{n} {id}"
-                );
-            }
-        }
-        let between = values(&view(Stage::Intermission));
-        assert!(shown(&between, LIVES_COUNT).is_some());
-        for id in [ENEMIES_PILL, ENEMIES_END, ENEMIES_COUNT] {
-            assert!(!between.get(id).unwrap().shown, "{id}: no wave is on");
-        }
-        let over = values(&view(Stage::Won));
-        for id in [LIVES_PILL, LIVES_COUNT, ENEMIES_COUNT] {
-            assert!(!over.get(id).unwrap().shown, "{id}: the match is over");
-        }
-        let none = values(&View {
-            lives: None,
-            ..view(Stage::Fighting)
-        });
-        assert!(!none.get(LIVES_PILL).unwrap().shown, "no count, no pill");
-        // A count past two digits shows the most.
-        let many = values(&View {
-            left: 300,
-            lives: Some(100),
-            ..view(Stage::Fighting)
-        });
-        assert_eq!(shown(&many, ENEMIES_COUNT).as_deref(), Some("99"));
-        assert_eq!(shown(&many, LIVES_COUNT).as_deref(), Some("99"));
-        // Every state is the one layout.
+    fn every_state_is_the_one_layout() {
         let h = hud();
-        assert_eq!(h.problems(), Vec::<String>::new());
         for (name, v) in Firefight.states() {
             assert_eq!(v.layout_problems(&h), Vec::<String>::new(), "{name}");
         }
         assert_eq!(hidden().layout_problems(&h), Vec::<String>::new());
+        for (id, v) in &hidden().0 {
+            assert!(!v.shown, "{id}");
+        }
+        // Slots never move: the places do not read the state.
+        let before = hud();
+        for (_, s) in states() {
+            let _ = values(&s);
+        }
+        assert_eq!(before, hud());
+        assert_eq!(skull_glyphs(0).first, SKULL_FIRST);
+        assert_eq!(skull_glyphs(6).unit(1.0), SKULL_FIRST + 13);
+        assert_eq!(skull_glyphs(3).unit(0.0), SKULL_FIRST + 6);
+        for i in 0..SKULL_SLOTS {
+            let g = skull_glyphs(i);
+            assert_eq!(g.units().count(), 2);
+            assert_eq!((g.size.0, g.size.1), (SKULL_PICTURE, SKULL_PICTURE));
+        }
     }
 
-    /// A round that starts and lives lost are notes, once each; the first
-    /// view and the end send none.
+    /// A skull on arrives blinking and stays lit; the last life blinks as
+    /// it appears; none left is the warning colour; the meter eases.
     #[test]
-    fn a_new_round_and_a_lost_life_are_notes() {
-        let a = view(Stage::Fighting);
-        assert!(notes(None, &a, name).is_empty());
-        assert!(notes(Some(&a), &a, name).is_empty());
-        let next = View {
-            round: 2,
-            wave: 0,
-            stage: Stage::Spawning,
-            ..a.clone()
+    fn the_looks_move_as_designed() {
+        let s = State {
+            lives: Some(("LAST LIFE".into(), LivesLook::Last)),
+            enemies: Some(2.0),
+            skulls: [false, false, true, false, false, false, false],
+            ..State::default()
         };
-        assert_eq!(notes(Some(&a), &next, name), ["Round 3 of 3"]);
-        let hit = View {
-            lives: Some(3),
-            ..a.clone()
-        };
-        assert_eq!(notes(Some(&a), &hit, name), ["A life lost"]);
-        let two = View {
-            lives: Some(2),
-            ..a.clone()
-        };
-        assert_eq!(notes(Some(&a), &two, name), ["2 lives lost"]);
-        // Skulls switched on, lowest index first; one with no name and one
-        // switched off send none.
-        let skulls = View {
-            skulls: 1 << 16 | 1 << 12 | 1 << 3,
-            ..a.clone()
-        };
-        assert_eq!(
-            notes(Some(&a), &skulls, name),
-            ["Mythic skull on", "Low Gravity skull on"]
-        );
-        assert!(notes(Some(&skulls), &a, name).is_empty());
-        let both = View {
-            round: 2,
-            skulls: 1 << 12,
-            lives: Some(3),
-            ..a.clone()
-        };
-        assert_eq!(
-            notes(Some(&a), &both, name),
-            ["Round 3 of 3", "Mythic skull on", "A life lost"]
-        );
-        // Lives gained are the round's bonus, one note.
-        assert_eq!(notes(Some(&hit), &a, name), ["Bonus life"]);
-        let more = View {
-            round: 2,
-            lives: Some(8),
-            ..a.clone()
-        };
-        assert_eq!(
-            notes(Some(&a), &more, name),
-            ["Round 3 of 3", "4 bonus lives"]
-        );
-        // The end sends the rounds cleared once, then nothing.
-        let end = View {
-            lives: Some(0),
-            ..view(Stage::Lost)
-        };
-        assert_eq!(notes(Some(&a), &end, name), ["Cleared 1/3"]);
-        assert!(notes(Some(&end), &end, name).is_empty());
-        let won = View {
-            round: 2,
-            ..view(Stage::Won)
-        };
-        assert_eq!(notes(Some(&a), &won, name), ["Cleared 3/3"]);
-        for stage in [Stage::Team0Won, Stage::Team1Won, Stage::Draw, Stage::Over] {
-            assert!(notes(Some(&a), &view(stage), name).is_empty(), "{stage:?}");
+        let v = values(&s);
+        let skull = v.get(SKULLS[2]).unwrap();
+        assert!(skull.shown && skull.fill == 1.0 && skull.motion == Motion::Arrive);
+        assert!(!v.get(SKULLS[3]).unwrap().shown);
+        assert_eq!(v.get(LIVES).unwrap().motion, Motion::Arrive);
+        let meter = v.get(ENEMIES).unwrap();
+        assert_eq!((meter.fill, meter.motion), (1.0, Motion::Ease));
+        let out = values(&State {
+            lives: Some(("NO LIVES".into(), LivesLook::Out)),
+            ..State::default()
+        });
+        assert_eq!(out.get(LIVES).unwrap().style, Style::Flash(Pulse::TimeWarning));
+        assert_eq!(out.get(LIVES).unwrap().motion, Motion::None);
+    }
+
+    /// A skull switched on blinks three times in half a second and stays
+    /// lit; one already on does not blink again when another comes on.
+    #[test]
+    fn a_skull_blinks_three_times_when_switched_on() {
+        use crate::motion::{self, BLINK_MS, BLINKS};
+        let skulls = |on: [bool; SKULL_SLOTS]| values(&State { skulls: on, ..State::default() });
+        let off = skulls([false; SKULL_SLOTS]);
+        let mut one = [false; SKULL_SLOTS];
+        one[2] = true;
+        let on = skulls(one);
+        let (before, now) = (off.get(SKULLS[2]).unwrap(), on.get(SKULLS[2]).unwrap());
+        assert!(motion::changed(before, now), "off to on starts the motion");
+        let stamped = motion::restamp(Some((before, 60_000.0)), now, true).unwrap();
+        let slot = BLINK_MS / (2 * BLINKS) as f32;
+        let seen: Vec<bool> = (0..2 * BLINKS)
+            .map(|k| motion::animate(&stamped, k as f32 * slot + 1.0, true).shown)
+            .collect();
+        assert_eq!(seen, [true, false, true, false, true, false]);
+        assert_eq!(seen.iter().filter(|s| !**s).count(), BLINKS as usize);
+        for ms in [BLINK_MS, BLINK_MS + 1.0, 2_000.0, 600_000.0] {
+            let v = motion::animate(&stamped, ms, true);
+            assert!(v.shown && v.fill == 1.0, "{ms}: steady after the blinks");
         }
-        for t in [
-            "Round 12 of 12",
-            "A life lost",
-            "65535 lives lost",
-            "65535 bonus lives",
-            "Cleared 12/12",
-            "Unlimited Grenades skull on",
+        // The same value keeps its stamp; a second skull on restamps its
+        // own value alone.
+        assert_eq!(motion::restamp(Some((&stamped, 3_000.0)), now, true), None);
+        let mut two = one;
+        two[0] = true;
+        let both = skulls(two);
+        assert!(!motion::changed(now, both.get(SKULLS[2]).unwrap()));
+        assert!(motion::changed(off.get(SKULLS[0]).unwrap(), both.get(SKULLS[0]).unwrap()));
+    }
+
+    #[test]
+    fn the_firefight_hud_is_never_shown_with_superbounce() {
+        assert!(Firefight.never_with().contains(&super::super::superbounce::NAME));
+        assert!(Firefight.never_with().contains(&super::super::superbounce_readout::NAME));
+        // The other side says it too, or the runtime's check finds one
+        // direction enough.
+        let ours = Firefight.hud().name;
+        for d in [
+            Box::new(super::super::superbounce::Superbounce) as Box<dyn Describe>,
+            Box::new(super::super::superbounce_readout::Readout),
         ] {
-            assert_eq!(message_fault(t), None, "{t}");
-        }
-    }
-
-    /// The pills are the grenade row's next place and the one after, a
-    /// kit pill's width and the gap apart, in every screen mode; the
-    /// counts on them; the channels in every mode.
-    #[test]
-    fn the_pills_are_the_grenade_rows_next_places() {
-        let h = hud();
-        assert_eq!(h.elements.iter().map(|e| e.id).collect::<Vec<_>>(), IDS);
-        assert!(h.uses_grenade_row() && h.has_text());
-        let at = |id: &str| {
-            let p = h.element(id).unwrap().at;
-            assert_eq!(p.full, p.half.unwrap(), "{id}");
-            assert_eq!(p.full, p.quarter.unwrap(), "{id}");
-            (p.origin, p.full)
-        };
-        let (pill, count) = (Origin::NextGrenadePill, Origin::NextGrenadeCount);
-        assert_eq!(at(LIVES_PILL), (pill, (0, 0)));
-        assert_eq!(at(LIVES_END), (pill, (20, 0)));
-        assert_eq!(at(LIVES_COUNT), (count, (0, 0)));
-        assert_eq!(at(ENEMIES_PILL), (pill, (30, 0)));
-        assert_eq!(at(ENEMIES_END), (pill, (50, 0)));
-        assert_eq!(at(ENEMIES_COUNT), (count, (30, 0)));
-        assert_eq!(h.element(LIVES_COUNT).unwrap().over, Some(LIVES_PILL));
-        assert_eq!(h.element(ENEMIES_COUNT).unwrap().over, Some(ENEMIES_PILL));
-        for id in [BANNER, NOTE] {
-            let e = h.element(id).unwrap();
-            assert!(e.kind.is_channel(), "{id}");
-            for m in crate::Mode::ALL {
-                assert!(e.at.offset(m).is_some(), "{id} {m:?}");
-            }
+            let meets = d.never_with().contains(&ours) || Firefight.never_with().contains(&d.hud().name);
+            assert!(meets, "{}", d.hud().name);
         }
         assert!(Firefight.multiplayer_only().is_some());
-        assert!(
-            Firefight
-                .never_with()
-                .contains(&super::super::superbounce::NAME)
-        );
+    }
+
+    /// The stage codes read back, and the stages say what they are.
+    #[test]
+    fn the_stages_read_back() {
+        for s in Stage::ALL {
+            assert_eq!(Stage::from_code(s as u8), Some(s));
+        }
+        assert_eq!(Stage::from_code(11), None);
+        assert!(Stage::Fighting.wave_on() && !Stage::Intermission.wave_on());
+        assert!(Stage::Draw.over() && Stage::Draw.two_teams_only());
+        assert_eq!(Stage::team_won(1), Stage::Team1Won);
     }
 }

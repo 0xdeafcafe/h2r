@@ -296,10 +296,11 @@ impl Glyphs {
             .unwrap_or_default()
     }
     /// The picture that shows `fill`, as the code that draws it gives it
-    /// (`font::ring::picture`): what the fonts are served with. `None`
-    /// for a unit no code of ours draws.
+    /// (`font::ring::picture`, `font::skulls::picture`): what the fonts
+    /// are served with. `None` for a unit no code of ours draws.
     pub fn picture(&self, fill: f32) -> Option<font::ring::Picture> {
-        font::ring::picture(self.unit(fill))
+        let unit = self.unit(fill);
+        font::ring::picture(unit).or_else(|| font::skulls::picture(unit))
     }
 }
 

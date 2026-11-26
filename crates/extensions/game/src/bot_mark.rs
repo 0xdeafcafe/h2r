@@ -14,7 +14,8 @@
 //! font the HUD's eight direction arrows (`font::arrows`,
 //! U+E2B0..U+E2B7; docs/game/hud-kit.md, "Direction arrows") and the
 //! charge ring's arcs (`font::ring`, U+E2C0..U+E2FE; "The charge
-//! segments").
+//! segments") and the Firefight HUD's skull pictures (`font::skulls`,
+//! U+E600..U+E60D; docs/game/firefight.md, "The HUD").
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;
@@ -23,7 +24,8 @@ impl GearRewrite {
     /// The font file `name` (a bare name or its path) with the gear and
     /// the Mods list's marks (`font::mod_marks`: new, installed,
     /// downloading), the HUD's direction arrows (`font::arrows`) and the
-    /// charge ring's arcs (`font::ring`) added,
+    /// charge ring's arcs (`font::ring`) and the Firefight HUD's skull
+    /// pictures (`font::skulls`) added,
     /// and the superbounce medals for a message font
     /// (`font::medals::wants_font`), or `None` if it is not a font or draws
     /// them all already.
@@ -34,6 +36,7 @@ impl GearRewrite {
         add.extend(font::mod_marks::replacements(&font));
         add.extend(font::arrows::replacements(&font));
         add.extend(font::ring::replacements(&font));
+        add.extend(font::skulls::replacements(&font));
         if font::medals::wants_font(name) {
             add.extend(font::medals::replacements(&font));
         }
