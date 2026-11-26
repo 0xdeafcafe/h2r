@@ -586,11 +586,18 @@ fn boxed(p: &BoxPart, rect: [f32; 4]) -> Result<Builder> {
     Ok(b)
 }
 
-/// The source's parts as meshes, in the source's order.
+/// The source's parts as meshes, in the source's order, on the stick's
+/// atlas ([`source::region`]).
 pub fn build(source: &Source) -> Result<Mesh> {
+    build_on(source, &source::region)
+}
+
+/// [`build`] on another atlas: `region` gives a region's rectangle in
+/// texture coordinates (u0, v0, u1, v1) by name (`flood-pod-kit`'s atlas).
+pub fn build_on(source: &Source, region: &dyn Fn(&str) -> Option<[f32; 4]>) -> Result<Mesh> {
     let mut parts = Vec::with_capacity(source.parts.len());
     for (i, p) in source.parts.iter().enumerate() {
-        let Some(rect) = source::region(p.region()) else {
+        let Some(rect) = region(p.region()) else {
             bail!("{}: part {i}: no region {:?}", source.name, p.region());
         };
         let Some(node) = source.node(p.node()) else {

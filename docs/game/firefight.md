@@ -949,6 +949,22 @@ Every machine in a session loads the kit map: the host's entities name
 tags by index, so the indices must agree (ai-networking.md, "Rules and
 limits").
 
+#### The Flood pod
+
+Flood squads arrive in a pod of our own, not a disc model: a fleshy seed
+that falls root first and bursts open, drawn in
+[art/flood-pod](../../art/flood-pod/README.md) and built by
+`crates/tools/flood-pod-kit` (`kit::install`) as `bitm`, `shad`, `mode`,
+`phmo`, `hlmt` and `vehi` named `objects\vehicles\flood_pod\flood_pod`.
+The object is a seatless stationary vehicle, the class of Halo 2's
+insertion pod. Its model has a `shell` node and four `petal` nodes hinged
+on it (`flood_pod_kit::RIG` gives each hinge's axis and the open angle),
+an `impact` marker at the tip and `squad_exit_0` to `squad_exit_3` on the
+ground beside it. `h2 flood-pod kit MAP --out FILE` puts it into a disc
+multiplayer map to look at in Studio. `firefight-kit` does not add it to a
+kit map and no arrival uses it; the engine has not loaded the vehicle
+(**S**).
+
 ### Scoring and stats
 
 - `Scoring` gives points by class; the multiplier is difficulty times
