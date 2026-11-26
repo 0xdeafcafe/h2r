@@ -792,6 +792,46 @@ mod monitor_looks {
         assert!(failure.contains("Forge monitor"), "{failure}");
         assert_eq!(s.tick, 4);
     }
+
+    #[test]
+    fn after_a_ring_jump_the_monitors_are_the_entrys_and_later_records_come_at_their_ticks() {
+        use crate::theater::ring::{Ring, fakes::Fake};
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[
+            (5, look_record(13, MARKER)),
+            (5, pose_record(13, 5, 1., true)),
+            (25, look_record(14, MARKER)),
+            (25, pose_record(14, 25, 2., true)),
+        ]);
+        let session = fixture.open();
+        let fake = Fake { forge: true, ..Fake::default() };
+        session.lock().ring = Some(Ring::new(256 << 20, Box::new(fake)).every(10));
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, 30);
+        assert!(is_monitor(13) && is_monitor(14));
+        assert_eq!(session.lock().keyframes().ring, [10, 20, 30]);
+
+        // Back to 22: the entry at 20 loads, and with it the monitors the
+        // film showed there, before seat 14's look.
+        let state = session.transport(api::SEEK, json!({ "tick": 22 })).unwrap();
+        assert_eq!(state["seek"]["source"], json!("ring"), "{state}");
+        assert_eq!(session.ring_frame(&mut g), None);
+        assert_eq!(session.lock().tick, 20);
+        assert!(is_monitor(13) && !is_monitor(14));
+
+        // On past 25: seat 14's look comes at its own tick, not late and not
+        // early.
+        let mut seen = Vec::new();
+        while session.lock().tick < 27 && tick(&session, &mut g, |_| ()) {
+            seen.push((session.lock().tick, is_monitor(13), is_monitor(14)));
+        }
+        assert_eq!(
+            seen,
+            (21..=27).map(|n| (n, true, n >= 25)).collect::<Vec<_>>(),
+            "the monitors follow the film from the entry's tick"
+        );
+        assert_eq!(session.lock().failure, None);
+    }
 }
 
 #[test]

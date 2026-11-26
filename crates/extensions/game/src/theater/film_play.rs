@@ -31,8 +31,10 @@
 //! A film with no game start is refused ([`super::NO_GAME_START`]). The
 //! player restores nothing of the recording machine: the data directory
 //! is empty and private, and the guest's storage writes go to a scratch
-//! (`vfs::Vfs::guard_writes`). A seek behind the tick shown queues the
-//! film's options again and runs forward (`Session::requeue`).
+//! (`vfs::Vfs::guard_writes`). A seek behind the tick shown loads the
+//! session ring's latest entry at or before its target and runs forward
+//! from it (`super::ring`, [`Play::resume_at`]); with no entry for it, it
+//! queues the film's options again and runs forward (`Session::requeue`).
 use super::{Session, State, forge_film, metadata};
 use anyhow::{Context, Result, bail, ensure};
 use film::blam::{TrackReader, stream};
@@ -105,6 +107,9 @@ struct Looks {
     /// every game tick from here, and the playback is cleared when the film
     /// starts over or ends. A film with no monitor record leaves it alone.
     fed: bool,
+    /// After a ring jump: the container ticks up to here are read past and
+    /// not handed over, as the playback is the ring entry's.
+    skip_through: u64,
 }
 
 impl Looks {
@@ -116,6 +121,7 @@ impl Looks {
             at: 0,
             done: false,
             fed: false,
+            skip_through: 0,
         })
     }
 
@@ -130,9 +136,21 @@ impl Looks {
         self.track = None;
         self.at = 0;
         self.done = false;
+        self.skip_through = 0;
         if std::mem::take(&mut self.fed) {
             forge_film::clear();
         }
+    }
+
+    /// A ring entry was loaded (`Play::resume_at`): the playback is the
+    /// entry's (`forge_film::ring`), and the container is read again from
+    /// its start, handing over nothing up to container tick `at`, the one
+    /// the entry's last game tick ended on.
+    fn resume(&mut self, at: u64) {
+        self.track = None;
+        self.at = at;
+        self.done = false;
+        self.skip_through = at;
     }
 
     /// A game tick ended: hand `forge_film` the records of the container's
@@ -156,6 +174,9 @@ impl Looks {
                     self.done = true;
                     break;
                 };
+                if tick.tick <= self.skip_through {
+                    continue;
+                }
                 let monitors = tick.forge.iter().any(|payload| {
                     matches!(payload.first(), Some(&stream::FORGE_LOOK | &stream::FORGE_POSE))
                 });
@@ -324,6 +345,11 @@ impl Play {
         self.applied = 0;
         self.game_ticks = game_ticks;
         super::extension::clear();
+        if let Some(looks) = &mut self.looks {
+            // Counted in game ticks from the game's first update, as
+            // `update` begins them.
+            looks.resume(self.start.game.first_update - 1 + game_ticks);
+        }
         if tick < self.length {
             self.deliver(tick + 1)?;
         }

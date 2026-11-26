@@ -523,11 +523,14 @@ pub(super) mod fakes {
     }
 
     /// The ring's outside state in a test: shared records and a count of
-    /// monitor loads. The process's statics are left alone.
+    /// monitor loads. The process's statics are left alone, but for the
+    /// Forge monitors when `forge` is set (the test holds
+    /// `forge_film::tests::turn`).
     #[derive(Clone, Default)]
     pub struct Fake {
         pub ext: SharedExt,
         pub monitors_put: Arc<AtomicUsize>,
+        pub forge: bool,
     }
 
     impl Fake {
@@ -541,9 +544,12 @@ pub(super) mod fakes {
             &mut self.ext
         }
         fn monitors(&self) -> forge_film::ring::Kept {
-            forge_film::ring::Kept::default()
+            if self.forge { forge_film::ring::snapshot() } else { Default::default() }
         }
-        fn put_monitors(&mut self, _: &forge_film::ring::Kept) {
+        fn put_monitors(&mut self, kept: &forge_film::ring::Kept) {
+            if self.forge {
+                forge_film::ring::restore(kept);
+            }
             self.monitors_put.fetch_add(1, Ordering::SeqCst);
         }
     }

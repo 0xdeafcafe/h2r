@@ -5643,13 +5643,17 @@ work while the guest is paused.
 | `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
 | `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
 
-The `seek` object records `target`, `from_tick`, `source`, `requested`
-and `remaining_ticks`. `seeking` is true while the film's game is queued
-again or the player is running forward. A replacement target keeps the
-original departure tick. The seek object remains available at the target
-with zero ticks left. Linear playback starts with `seek: null`. `source`
-is `forward` for a run on from the tick shown and `boot` for one from
-the film's game start. `requested` is the route the caller named in
+The `seek` object records `target`, `from_tick`, `source`, `requested`,
+`remaining_ticks` and `restore_ms`. `seeking` is true while the film's
+game is queued again, a ring entry waits to load, or the player is
+running forward. A replacement target keeps the original departure tick.
+The seek object remains available at the target with zero ticks left.
+Linear playback starts with `seek: null`. `source` is `forward` for a run
+on from the tick shown, `ring` for one from a session ring entry and
+`boot` for one from the film's game start; a ring jump whose entry fails
+its check becomes `boot`. `restore_ms` is the time a ring jump's entry
+took to load, in milliseconds rounded up, present once it has loaded.
+`requested` is the route the caller named in
 `theater.seek`'s `source` (`boot`), and is absent when the player chose
 the route.
 
