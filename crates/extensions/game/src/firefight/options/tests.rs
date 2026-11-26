@@ -690,3 +690,46 @@ fn the_page_shows_all_its_rows_with_no_scrolling() {
     assert!(bottom >= i32::from(crate::ui_kit::layout::SAFE.bottom), "bottom {bottom}");
     assert!(bottom >= -240);
 }
+
+/// The Wave set row lists Endless first, on a map with sets of its own and
+/// on one without; every value in it is one the store admits and plays.
+#[test]
+fn the_wave_set_row_lists_endless_first() {
+    for map in [None, Some("coagulation"), Some("beavercreek")] {
+        let menu = wave_menu(map);
+        assert!(menu[0].1.set.endless, "{map:?}: {}", menu[0].1.name);
+        assert_eq!(menu.iter().filter(|(_, def)| def.set.endless).count(), 1);
+        for (value, _) in &menu {
+            assert!(builtin::names_set(*value), "{value}");
+        }
+    }
+    // The map's own set follows Endless; the other built-ins keep their order.
+    let names: Vec<_> = wave_menu(Some("beavercreek"))
+        .into_iter()
+        .map(|(_, d)| d.name)
+        .collect();
+    assert_eq!(names[0], "Endless");
+    assert_eq!(names[1], builtin::map_sets("beavercreek")[0].name);
+    // Every Endless choice the setting offers resolves to it.
+    let Kind::Choice(choices) = &WAVE_SET.kind else {
+        panic!("the Wave set is a choice");
+    };
+    assert_eq!(choices[0].name, "endless", "the setting lists it first too");
+    let endless = choices[0].value;
+    assert!(builtin::resolve(endless, None).unwrap().set.endless);
+}
+
+/// Skulls off leaves no skull on any round, and none a set brings.
+#[test]
+fn skulls_off_leaves_endless_without_round_or_set_skulls() {
+    let endless = wave_menu(None)[0].0;
+    let o = Options {
+        wave_set: usize::try_from(endless).unwrap(),
+        skulls: false,
+        ..Options::default()
+    };
+    let def = o.definition().unwrap();
+    assert!(def.set.endless);
+    assert!(def.rounds.iter().all(|r| r.skulls_on.is_empty()));
+    assert!(def.set.skulls.is_empty());
+}

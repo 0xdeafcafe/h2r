@@ -210,12 +210,13 @@ struct FfAgg {
     games: u64,
     won: u64,
     rounds_cleared: u64,
+    sets_cleared: u64,
     lives_used: u64,
     score: u64,
     player_kills: u64,
     versus: firefight::VersusRow,
-    /// Wave set -> (games, won, rounds cleared).
-    sets: BTreeMap<String, (u64, u64, u64)>,
+    /// Wave set -> (games, won, rounds cleared, sets cleared).
+    sets: BTreeMap<String, (u64, u64, u64, u64)>,
     classes: BTreeMap<String, u64>,
     players: HashMap<Xuid, FfPlayer>,
 }
@@ -225,6 +226,7 @@ impl FfAgg {
         self.games += o.games;
         self.won += o.won;
         self.rounds_cleared += o.rounds_cleared;
+        self.sets_cleared += o.sets_cleared;
         self.lives_used += o.lives_used;
         self.score += o.score;
         self.player_kills += o.player_kills;
@@ -234,7 +236,7 @@ impl FfAgg {
         self.versus.draws += o.versus.draws;
         for (k, v) in &o.sets {
             let e = self.sets.entry(k.clone()).or_default();
-            *e = (e.0 + v.0, e.1 + v.1, e.2 + v.2);
+            *e = (e.0 + v.0, e.1 + v.1, e.2 + v.2, e.3 + v.3);
         }
         for (k, n) in &o.classes {
             *self.classes.entry(k.clone()).or_default() += n;
@@ -266,11 +268,12 @@ impl FfAgg {
         let mut sets: Vec<firefight::SetRow> = self
             .sets
             .iter()
-            .map(|(set, (games, won, rounds))| firefight::SetRow {
+            .map(|(set, (games, won, rounds, sets))| firefight::SetRow {
                 set: set.clone(),
                 games: *games,
                 won: *won,
                 rounds_cleared: *rounds,
+                sets_cleared: *sets,
             })
             .collect();
         sets.sort_by(|a, b| b.games.cmp(&a.games).then_with(|| a.set.cmp(&b.set)));
@@ -304,6 +307,7 @@ impl FfAgg {
             games: self.games,
             won: self.won,
             rounds_cleared: self.rounds_cleared,
+            sets_cleared: self.sets_cleared,
             lives_used: self.lives_used,
             score: self.score,
             player_kills: self.player_kills,
@@ -697,11 +701,13 @@ impl Inner {
                 }
             }
             f.rounds_cleared += u64::from(d.rounds_cleared);
+            f.sets_cleared += u64::from(d.sets_cleared);
             f.lives_used += u64::from(d.lives_used);
             let set = f.sets.entry(d.set.clone()).or_default();
             set.0 += 1;
             set.1 += won as u64;
             set.2 += u64::from(d.rounds_cleared);
+            set.3 += u64::from(d.sets_cleared);
             for (x, name) in &names {
                 f.player(*x, name, at).games += 1;
             }

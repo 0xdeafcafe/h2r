@@ -856,7 +856,9 @@ limits").
 - In the stats stream: the host's `Host::post_tick` pairs each `Score`
   command with the class of the kill it was for (`Credit`) and, on
   `Finish`, makes the result (`Ended`: the set's name, the outcome, the
-  team count, each team's score, rounds cleared, respawns issued). The
+  team count, each team's score, rounds cleared, sets cleared, respawns
+  issued; an endless match counts rounds across sets, and a set it was lost
+  in the bonus round of is played through). The
   runtime reports each ([`runtime::Report`]) to Live telemetry, which
   writes two public game events the server takes only from the game's
   host (`live_proto::firefight`):
@@ -865,7 +867,8 @@ limits").
     `class`; an assist and a player kill carry none, and a player kill's
     points are the definition's `player_kill`.
   - `FirefightEnded`: `tick`, `set`, `teams` (1 or 2), `outcome`, `team`,
-    `scores`, `rounds_cleared` and `lives_used`. `scores` has one entry
+    `scores`, `rounds_cleared`, `sets_cleared` (left out when 0) and
+    `lives_used`. `scores` has one entry
     per team, team 0's first. `outcome` is `won` (one team only), `lost`
     (one team out of lives, or the only team present of two),
     `team_won` (two teams, with `team` 0 or 1) or `draw` (two teams);
@@ -879,7 +882,8 @@ limits").
   composes, so both homes give the same answer) folds them into the
   summary's `firefight` section (`live_proto::firefight::Summary`):
   finished matches (`games`), one-team wins (`won`), rounds cleared,
-  lives used, points (`score`), player kills (`player_kills`, every
+  lives used, sets cleared (`sets_cleared`, with a count in each set's
+  row), points (`score`), player kills (`player_kills`, every
   `player_kill` credit, bots' included), matches by wave set, kills by
   class, and a row per account (score, kills, assists, player kills,
   matches). Every finished match counts in `games`; a two-team match
@@ -949,14 +953,35 @@ through a fresh script for the same commands.
 - **Rounds.** Five waves, the last a boss wave; an intermission between
   rounds refills ammunition crates (a kit placement the director
   re-enables) and adds `per_round_bonus` lives. An endless definition's
-  last round is followed by the next set's first, with the same bonus.
+  last round is followed by its bonus round, then the next set's first
+  round, with the same bonus.
+- **Sets and the bonus round on the host.** The host runs the definition's
+  rules script (`ScriptDirector`) and applies what it logs
+  (`Host::apply`). `Set { index }` and `Round`, `Wave` change nothing in the
+  engine: the mode blob carries them to the HUD. The round skulls a new
+  set switches off arrive as `Skull { on: false }`, which the guest game
+  takes out of its set and writes to the skull array. `Bonus { on, ticks }`
+  sets the host's bonus flag, and while it is on the host refuses a
+  `Respawn` by name ("no respawn is made in the bonus round (Iron)"): the
+  script issues none and charges no life in it, and the grant at its end
+  comes after `Bonus { on: false }`. `Skull { id: Iron }` is a rule, not an
+  engine skull, and is not written. `Ended.sets_cleared` counts the sets
+  played through (`progress`); `Ended.rounds_cleared` of an endless match
+  counts every set's rounds.
 - **Skulls.** Two kinds ([skulls.md](skulls.md), "Where each effect
   lives"). AI-scoped skulls (Mythic, Angry, Catch, Thunderstorm, Ghost,
   Assassins) change what actors do, and only the host runs actors, so
   only the host applies them: the reader's campaign gate is answered as
   "on" for a Firefight host. Player-scoped skulls reach every machine by
   the path multiplayer skulls already use (`live_proto::skulls`, the
-  session data). The round schedule is in the definition.
+  session data). The round schedule is in the definition, and an endless
+  match's next set switches the previous set's round skulls off. Black
+  Eye (8) is shared and `Reach::Simulation`: every machine answers its
+  gate and holds its array byte whatever its role (`sim_bits`,
+  `black_eye_reaches_every_machine`); Iron is a director rule with no
+  engine byte (`FirefightScope::Rule`). A skull the director switches off
+  leaves the array, the gate set and the multiplayer set's active bits
+  (`a_skull_switched_off_leaves_the_array`).
   `skulls_mp::firefight_scope` names where each takes effect;
   `firefight_ai` gives the set a machine runs (every AI skull on a
   host or a lone machine, none on a guest), `firefight_shared` the
@@ -980,8 +1005,8 @@ the Firefight page, a kit screen on Quick
 Options' dialog with six choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams
 (`firefight.teams`: the wave set's own, one team or two), Wave set
-(`firefight.waveset`: the lobby map's own sets first, then the five
-built-ins, Crossfire the fourth and Endless the fifth — [Map-specific
+(`firefight.waveset`: Endless first, then the lobby map's own sets, then
+the other built-ins in their order (`options::wave_menu`) — [Map-specific
 sets](#map-specific-sets)), Difficulty, Starting
 lives (the wave set's own, or 1 to 30) and Skulls (whether each round
 switches its skull on). A on a row opens the value picker over the page; left and right step
@@ -992,7 +1017,7 @@ that match: `Options::definition` is the wave set the value names on the
 map the game started on (`builtin::resolve`, [Map-specific
 sets](#map-specific-sets)), with the chosen starting
 pool, played with the chosen teams (`builtin::with_teams`) and, with
-skulls off, no round skull; the difficulty goes to the
+skulls off, no round skull and no set skull; the difficulty goes to the
 director's settings, where it scales kill points. Firefight off in Game
 Setup leaves the mode idle with that reason in `firefight.state`. A
 choice the store cannot give refuses the mode with the setting named. The
@@ -1272,7 +1297,7 @@ log.
 
 | Method | Access | Purpose |
 |---|---|---|
-| `firefight.state` | read | whether the mode runs and why not, the role, round, wave, phase, reserve, pool, live actors against the cap, the log head, and the entries the engine refused, and the placements no actor was ever seen for |
+| `firefight.state` | read | whether the mode runs and why not, the role, set, round, wave, phase (the bonus round included), reserve, pool, live actors against the cap, the log head, and the entries the engine refused, and the placements no actor was ever seen for |
 | `firefight.command` | act | append one director command to the log on a host, or hold or run the director; refused on a client and in playback |
 | `firefight.kit` | read | whether the loaded map carries the kit, its slots, zones, classes and hunt order |
 

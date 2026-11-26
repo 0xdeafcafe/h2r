@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{
-    Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
+    Kill, PlayerSeen, Phase, SQUAD_SLOTS, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
     Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
@@ -223,8 +223,12 @@ pub struct Ended {
     pub set: String,
     /// With two teams the winner is in it (`TeamWon { team }`).
     pub outcome: Outcome,
-    /// Rounds whose last wave was cleared.
+    /// Rounds whose last wave was cleared (an endless game counts every
+    /// set's).
     pub rounds_cleared: u32,
+    /// Sets played through, bonus round included (an endless game); a
+    /// finite game is one set, cleared when it ends `Won`.
+    pub sets_cleared: u32,
     /// Respawns the director has issued.
     pub lives_used: u32,
     /// The definition's player teams: 1, or 2.
@@ -236,9 +240,13 @@ pub struct Ended {
 /// Where the match was when the director finished it, for [`Ended`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Progress {
-    /// The round it was in (zero-based) and the definition's rounds.
+    /// The rounds cleared before it ended, when it did not clear them all
+    /// (an endless game counts every set's), and the definition's rounds in
+    /// one set.
     round: u32,
     rounds: u32,
+    /// The sets played through when it ended.
+    sets: u32,
     /// The last round's last wave is cleared: no actor of it is alive.
     last_wave_cleared: bool,
     respawns: u32,
@@ -255,6 +263,9 @@ pub struct Host {
     log: Log<Command>,
     /// The sequence number of the last applied entry.
     applied: u32,
+    /// The bonus round is on (`Bonus { on }` applied): no respawn is made
+    /// in it.
+    bonus: bool,
     kit: Kit,
     by_character: BTreeMap<u16, String>,
     team: u8,
@@ -337,6 +348,7 @@ impl Host {
             director,
             log,
             applied: 0,
+            bonus: false,
             kit,
             by_character,
             team,
@@ -712,9 +724,14 @@ impl Host {
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
             // The HUD reads sets, rounds and waves from the mode blob.
             Command::Set { .. } | Command::Round { .. } | Command::Wave { .. } => Ok(()),
-            // The bonus round is a director rule: the host applies it in
-            // its own slice (docs/game/firefight.md, "The bonus round").
-            Command::Bonus { .. } => Ok(()),
+            // The bonus round is a director rule (docs/game/firefight.md,
+            // "The bonus round"): the host keeps whether it is on, and
+            // [`Command::Respawn`] is refused while it is. Its enemies are
+            // ordinary `PlaceSquad`s and its skulls ordinary `Skull`s.
+            Command::Bonus { on, .. } => {
+                self.bonus = *on;
+                Ok(())
+            }
             // Iron is a director rule, never an engine skull.
             Command::Skull {
                 id: ::firefight::Skull::Iron,
@@ -743,6 +760,9 @@ impl Host {
                 game.set_team_lives(*team, *pool)
             }
             Command::Score { player, points, .. } => game.credit_score(*player, *points),
+            Command::Respawn { .. } if self.bonus => {
+                anyhow::bail!("no respawn is made in the bonus round (Iron)")
+            }
             Command::Respawn { player } => game.respawn(*player),
             Command::Finish { outcome } => game.end_game(*outcome),
             // The game takes no call: the HUD draws the blob.
@@ -806,9 +826,13 @@ fn credits(
     out
 }
 
-/// Where the director is after a step: the round, whether the last
-/// round's last wave is cleared, and the teams' points. The respawns are
-/// the host's to fill in.
+/// Where the director is after a step: the rounds and sets cleared, whether
+/// the last round's last wave is cleared, and the teams' points. The
+/// respawns are the host's to fill in.
+///
+/// An endless game counts across sets: a set played through is
+/// `rounds` rounds and a set. The bonus round follows a set, so in it the
+/// set is already played through.
 fn progress(director: &ScriptDirector) -> Progress {
     let (state, def) = (director.state(), director.def());
     let rounds = def.rounds.len() as u32;
@@ -817,9 +841,20 @@ fn progress(director: &ScriptDirector) -> Progress {
         .rounds
         .get(usize::from(state.round))
         .map_or(0, |r| r.waves.len());
+    let (sets, cleared) = if def.set.endless {
+        let set = u32::from(state.set);
+        let bonus = matches!(state.phase, Phase::Bonus { .. });
+        (
+            set + u32::from(bonus),
+            set * rounds + if bonus { rounds } else { round },
+        )
+    } else {
+        (0, round)
+    };
     Progress {
-        round,
+        round: cleared,
         rounds,
+        sets,
         last_wave_cleared: round + 1 == rounds
             && usize::from(state.wave) + 1 == waves
             && director.live_actors() == 0,
@@ -848,6 +883,7 @@ fn result(tick: u32, set: String, progress: Progress, commands: &[Command]) -> O
         set,
         outcome,
         rounds_cleared: if all { progress.rounds } else { progress.round },
+        sets_cleared: if progress.sets > 0 { progress.sets } else { u32::from(all) },
         lives_used: progress.respawns,
         teams: progress.teams,
         scores: progress.scores,

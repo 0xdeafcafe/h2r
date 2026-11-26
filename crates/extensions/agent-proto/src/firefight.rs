@@ -88,13 +88,17 @@ pub struct State {
 /// The director's mode blob, summarised.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Director {
-    /// `warmup`, `spawning`, `fighting`, `cleanup`, `intermission` or
-    /// `done`.
+    /// `warmup`, `spawning`, `fighting`, `cleanup`, `intermission`, `bonus`
+    /// or `done`.
     pub phase: String,
-    /// The tick a warmup or intermission lasts until, or a cleanup began.
+    /// The tick a warmup, intermission or bonus round lasts until, or a
+    /// cleanup began.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_tick: Option<u32>,
-    /// Zero-based.
+    /// Zero-based set (always 0 in a finite definition).
+    #[serde(default)]
+    pub set: u8,
+    /// Zero-based round of the set.
     pub round: u8,
     pub wave: u8,
     /// Actors of the wave not placed yet, at the current player count.
@@ -219,6 +223,11 @@ pub enum Command {
     Respawn {
         player: u8,
     },
+    /// The bonus round starts (`on`, for `ticks`) or ends.
+    Bonus {
+        on: bool,
+        ticks: u32,
+    },
     Finish {
         outcome: Outcome,
     },
@@ -234,6 +243,8 @@ pub enum Skull {
     BlackEye,
     Ghost,
     Catch,
+    /// The bonus round's: a director rule, no engine skull.
+    Iron,
     Mythic,
     Angry,
     LowGravity,
@@ -329,9 +340,13 @@ mod tests {
             json!({"target": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),
             json!({"erase_squad": {"slot": 0}}),
+            json!({"set": {"index": 2}}),
             json!({"round": {"index": 1}}),
             json!({"wave": {"index": 4}}),
+            json!({"bonus": {"on": true, "ticks": 1800}}),
             json!({"skull": {"id": "low_gravity", "on": true}}),
+            json!({"skull": {"id": "black_eye", "on": false}}),
+            json!({"skull": {"id": "iron", "on": true}}),
             json!({"lives": {"pool": 3}}),
             json!({"lives": {"player": 1, "pool": 2}}),
             json!({"team_lives": {"team": 1, "pool": 9}}),
@@ -348,7 +363,8 @@ mod tests {
         for value in [
             json!({"hunt": {"slot": 3, "zone": 1}}),
             json!({"skip_wave": {}}),
-            json!({"skull": {"id": "iron", "on": true}}),
+            json!({"skull": {"id": "blind", "on": true}}),
+            json!({"bonus": {"on": true}}),
             json!({"finish": {"outcome": "tie"}}),
             json!({"finish": {"outcome": {"team_won": {}}}}),
             json!({"target": {"slot": 0}}),

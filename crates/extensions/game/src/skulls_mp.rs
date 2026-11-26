@@ -377,6 +377,14 @@ pub const FIREFIGHT_AI_SKULLS: [usize; 7] = [2, 3, 4, 7, 9, 12, 13];
 /// Low Gravity.
 pub const FIREFIGHT_SHARED_SKULLS: [usize; 3] = [FAMINE, BLACK_EYE, crate::skulls_custom::LOW_GRAVITY];
 
+/// Shared skulls whose reader every machine runs, actors or not, so every
+/// machine answers the reader's campaign gate and holds the skull array's
+/// byte for them, whatever its role: Black Eye (shield recharge). The
+/// director's `Skull` entry reaches every machine that applies entries
+/// (the host, a synchronous peer, a film), and a distributed client takes
+/// the host's mode state, so host and guest agree on the byte.
+pub const FIREFIGHT_SIM_SKULLS: [usize; 1] = [BLACK_EYE];
+
 /// What a Firefight skull does on a machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FirefightScope {
@@ -450,12 +458,23 @@ pub fn firefight_shared(on: &BTreeSet<::firefight::Skull>) -> Vec<u8> {
     set
 }
 
-/// The AI skulls a machine in `role` answers the campaign gate for, as
-/// bits (bit `n` skull `n`): [`firefight_ai`]'s set.
+/// The simulation skulls of `on` ([`FIREFIGHT_SIM_SKULLS`]) as bits: every
+/// machine's, in any role.
+pub fn sim_bits(on: &BTreeSet<::firefight::Skull>) -> u32 {
+    firefight_shared(on)
+        .iter()
+        .filter(|&&s| FIREFIGHT_SIM_SKULLS.contains(&usize::from(s)))
+        .fold(0u32, |b, s| b | 1 << s)
+}
+
+/// The skulls a machine in `role` answers the campaign gate for, as bits
+/// (bit `n` skull `n`): [`firefight_ai`]'s set on the machine that runs the
+/// actors, and [`sim_bits`] on every machine.
 pub fn gate_bits(role: &Role, on: &BTreeSet<::firefight::Skull>) -> u32 {
     firefight_ai(role, on)
         .iter()
         .fold(0u32, |b, s| b | 1 << s)
+        | sim_bits(on)
 }
 
 /// Where a reader stopped at `gate`'s `jne` goes when this machine answers
@@ -487,9 +506,14 @@ pub struct MpSkulls {
     profiles: Mutex<Vec<String>>,
     /// Bit `n`: skull `n` is on in this game.
     active: AtomicU32,
-    /// Bit `n`: a Firefight host runs AI skull `n` ([`firefight_ai`]). Not
-    /// part of a snapshot: the mode's own blob rebuilds it from the director.
+    /// Bit `n`: this machine answers skull `n`'s reader gate for the
+    /// Firefight director ([`gate_bits`]: a host's AI skulls, every
+    /// machine's simulation skulls). Not part of a snapshot: the mode's own
+    /// blob rebuilds it from the director.
     ff_ai: AtomicU32,
+    /// Bit `n`: the Firefight director added player-scoped skull `n` to
+    /// `active` (it was not in the game's own set), so it can take it away.
+    ff_added: AtomicU32,
     /// Each effect says the first time it acts in a game.
     said_blind: AtomicBool,
     said_famine: AtomicBool,
@@ -519,6 +543,7 @@ impl MpSkulls {
             profiles: Mutex::new(Vec::new()),
             active: AtomicU32::new(0),
             ff_ai: AtomicU32::new(0),
+            ff_added: AtomicU32::new(0),
             said_blind: AtomicBool::new(false),
             said_famine: AtomicBool::new(false),
             famine: Mutex::new(Vec::new()),
@@ -575,6 +600,7 @@ impl MpSkulls {
         let bits = set.iter().fold(0u32, |b, s| b | 1 << s);
         self.active.store(bits, Ordering::SeqCst);
         self.ff_ai.store(0, Ordering::SeqCst);
+        self.ff_added.store(0, Ordering::SeqCst);
         engine::skull_gate::answer(0);
         self.said_blind.store(false, Ordering::Relaxed);
         self.said_famine.store(false, Ordering::Relaxed);
@@ -585,7 +611,8 @@ impl MpSkulls {
     pub fn active(&self, index: usize) -> bool {
         index < 32 && self.active.load(Ordering::SeqCst) & (1 << index) != 0
     }
-    /// AI skull `index` runs on this machine: a Firefight host's AI set.
+    /// The Firefight director's skull `index` is answered on this machine:
+    /// a host's AI set, and the simulation skulls on every machine.
     pub fn ff_ai_active(&self, index: usize) -> bool {
         index < 32 && self.ff_ai.load(Ordering::SeqCst) & (1 << index) != 0
     }
@@ -603,16 +630,25 @@ impl MpSkulls {
         // ([`gate_resume`], and the native bodies through `skull_gate`).
         engine::skull_gate::answer(ai);
         if !matches!(role, Role::Guest { .. }) {
-            self.active
-                .fetch_or(bits(firefight_shared(on)), Ordering::SeqCst);
+            // What the director put there last time and the game's own set
+            // did not hold goes first: a skull it switched off leaves.
+            let before = self
+                .active
+                .fetch_and(!self.ff_added.load(Ordering::SeqCst), Ordering::SeqCst);
+            let own = before & !self.ff_added.load(Ordering::SeqCst);
+            let now = bits(firefight_shared(on));
+            self.active.fetch_or(now, Ordering::SeqCst);
+            self.ff_added.store(now & !own, Ordering::SeqCst);
         }
     }
-    /// Writes the engine's skull array for the Firefight AI set: 1 for each
-    /// AI skull on, 0 for each AI skull off, other bytes untouched (they
-    /// are the campaign's). `false` if the array could not be written.
+    /// Writes the engine's skull array for the Firefight set: 1 for each
+    /// AI skull on and each simulation skull on ([`FIREFIGHT_SIM_SKULLS`]),
+    /// 0 for each one off, other bytes untouched (they are the campaign's).
+    /// `false` if the array could not be written.
     pub fn write_firefight_array<M: Gm>(&self, m: &mut M) -> bool {
         FIREFIGHT_AI_SKULLS
             .iter()
+            .chain(&FIREFIGHT_SIM_SKULLS)
             .all(|&i| m.wr(SKULL_ARRAY + i as u32, &[u8::from(self.ff_ai_active(i))]))
     }
     /// The multiplayer start: work out the set for `role` and make it
@@ -1363,11 +1399,16 @@ mod tests {
         assert!(mp.active(BLACK_EYE) && mp.active(FAMINE));
         assert!(mp.active(crate::skulls_custom::LOW_GRAVITY));
         // A guest applies no AI skull and adds nothing of its own: the
-        // host's player-scoped set reaches it through the session.
+        // host's player-scoped set reaches it through the session. Black
+        // Eye's byte is the one thing every machine holds
+        // (`black_eye_reaches_every_machine`).
         let guest = MpSkulls::new(store(), None, None);
         guest.activate(&[]);
         guest.set_firefight(&Role::Guest { class: 2 }, &on);
-        assert!(!(0..32).any(|i| guest.ff_ai_active(i) || guest.active(i)));
+        assert!(
+            !(0..32).any(|i| i != BLACK_EYE && (guest.ff_ai_active(i) || guest.active(i)))
+        );
+        assert!(guest.ff_ai_active(BLACK_EYE) && !guest.active(BLACK_EYE));
         // The next game's start clears the AI set.
         mp.activate(&[]);
         assert!(!mp.ff_ai_active(12));
@@ -1406,7 +1447,7 @@ mod tests {
         assert!(GATES.iter().all(|g| gate_resume(g, guest).is_none()));
         // One skull on answers its own readers only.
         let mythic = gate_bits(&Role::Host { peers: 2 }, &ff(&[S::Mythic, S::BlackEye]));
-        assert_eq!(mythic, 1 << 12);
+        assert_eq!(mythic, 1 << 12 | 1 << BLACK_EYE);
         for g in &GATES {
             assert_eq!(gate_resume(g, mythic).is_some(), g.skull == 12, "{}", g.site.name);
         }
@@ -1461,6 +1502,7 @@ mod tests {
             (S::BlackEye, 8, FirefightScope::Shared(Reach::Simulation)),
             (S::Catch, 9, FirefightScope::HostAi),
             (S::Mythic, 12, FirefightScope::HostAi),
+            (S::Iron, 11, FirefightScope::Rule),
             (S::Angry, 13, FirefightScope::HostAi),
             (S::LowGravity, 16, FirefightScope::Shared(Reach::Simulation)),
         ] {
@@ -1475,14 +1517,84 @@ mod tests {
             S::BlackEye,
             S::Ghost,
             S::Catch,
+            S::Iron,
             S::Mythic,
             S::Angry,
             S::LowGravity,
         ]
         .into_iter()
-        .filter(|s| !matches!(firefight_scope(*s), FirefightScope::Shared(_)))
+        .filter(|s| {
+            !matches!(
+                firefight_scope(*s),
+                FirefightScope::Shared(_) | FirefightScope::Rule
+            )
+        })
         .map(firefight_index)
         .collect();
         assert_eq!(ai, FIREFIGHT_AI_SKULLS);
+    }
+
+    /// Black Eye's reader runs in every machine's simulation: the host, a
+    /// guest and a machine alone all answer its gate and hold its byte of
+    /// the skull array, and a guest adds nothing else of its own.
+    #[test]
+    fn black_eye_reaches_every_machine() {
+        use ::firefight::Skull as S;
+        let on = ff(&[S::BlackEye, S::Mythic]);
+        assert_eq!(firefight_shared(&on), [8]);
+        for role in [Role::Alone, Role::Host { peers: 2 }, Role::Guest { class: 2 }] {
+            let mp = MpSkulls::new(store(), None, None);
+            mp.activate(&[]);
+            mp.set_firefight(&role, &on);
+            assert!(mp.ff_ai_active(BLACK_EYE), "{role:?}");
+            assert_ne!(gate_bits(&role, &on) & 1 << BLACK_EYE, 0, "{role:?}");
+            let mut f = Fake::default();
+            assert!(mp.write_firefight_array(&mut f));
+            assert_eq!(f.u8(SKULL_ARRAY + BLACK_EYE as u32), Some(1), "{role:?}");
+            // Mythic is the host's actors' alone.
+            let mythic = f.u8(SKULL_ARRAY + 12) == Some(1);
+            assert_eq!(mythic, !matches!(role, Role::Guest { .. }), "{role:?}");
+        }
+        assert_eq!(
+            firefight_scope(S::BlackEye),
+            FirefightScope::Shared(Reach::Simulation)
+        );
+    }
+
+    /// A skull the director switches off leaves the array, the gate set and
+    /// the game's active set; the game's own skulls and the campaign's bytes
+    /// stay.
+    #[test]
+    fn a_skull_switched_off_leaves_the_array() {
+        use ::firefight::Skull as S;
+        let mp = MpSkulls::new(store(), None, None);
+        // Famine is in the game's own set: the director's off never takes it.
+        mp.activate(&[FAMINE as u8]);
+        let host = Role::Host { peers: 2 };
+        mp.set_firefight(&host, &ff(&[S::Thunderstorm, S::Catch, S::BlackEye]));
+        let mut f = Fake::default();
+        f.wr(SKULL_ARRAY + 6, &[1]);
+        assert!(mp.write_firefight_array(&mut f));
+        assert_eq!(f.u8(SKULL_ARRAY + 9), Some(1));
+        assert_eq!(f.u8(SKULL_ARRAY + 8), Some(1));
+        assert!(mp.active(BLACK_EYE));
+
+        mp.set_firefight(&host, &ff(&[S::Thunderstorm, S::Famine]));
+        assert!(mp.write_firefight_array(&mut f));
+        let bytes: Vec<_> = (0..15)
+            .map(|i| f.u8(SKULL_ARRAY + i).unwrap_or(0))
+            .collect();
+        assert_eq!(bytes, [0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(!mp.ff_ai_active(9) && !mp.ff_ai_active(BLACK_EYE));
+        assert!(!mp.active(BLACK_EYE), "Black Eye left the active set");
+        assert!(mp.active(FAMINE));
+        // Off for good: nothing of the director's is left, the game's own
+        // set is.
+        mp.set_firefight(&host, &ff(&[]));
+        assert!(mp.write_firefight_array(&mut f));
+        assert!((0..32)
+            .filter(|&i| i != 6)
+            .all(|i| f.u8(SKULL_ARRAY + i).unwrap_or(0) == 0 || i == 6));
+        assert!(mp.active(FAMINE), "the game's own Famine stays");
     }
 }

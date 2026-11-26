@@ -64,10 +64,20 @@ pub struct FirefightEnded {
     pub team: Option<u8>,
     /// Each team's points, by team: one entry per team.
     pub scores: Vec<u32>,
-    /// Rounds whose last wave was cleared.
+    /// Rounds whose last wave was cleared (an endless set counts every
+    /// set's).
     pub rounds_cleared: u32,
+    /// Sets played through, bonus round included: an endless match's count
+    /// (it ends only `lost`); a finite one is a single set, so 1 when it
+    /// ended `won`. Left out when 0.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub sets_cleared: u32,
     /// Lives the players spent, summed.
     pub lives_used: u32,
+}
+
+fn zero<T: Default + PartialEq>(n: &T) -> bool {
+    *n == T::default()
 }
 
 /// A name that is one to 32 printable characters.
@@ -140,6 +150,10 @@ pub struct Summary {
     /// One-team matches won.
     pub won: u64,
     pub rounds_cleared: u64,
+    /// Sets played through, over every match (an endless match's count).
+    /// Left out when 0.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub sets_cleared: u64,
     pub lives_used: u64,
     /// Points credited, over every player.
     pub score: u64,
@@ -172,6 +186,9 @@ pub struct SetRow {
     /// One-team wins ([`Summary::won`]).
     pub won: u64,
     pub rounds_cleared: u64,
+    /// Left out when 0.
+    #[serde(default, skip_serializing_if = "zero")]
+    pub sets_cleared: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +249,7 @@ mod tests {
             team,
             scores: vec![100; usize::from(teams)],
             rounds_cleared: 2,
+            sets_cleared: 0,
             lives_used: 3,
         }
     }
@@ -285,6 +303,26 @@ mod tests {
         let e: FirefightEnded = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(e.winner(), Some(0));
         assert_eq!(serde_json::to_value(&e).unwrap(), v);
+    }
+
+    #[test]
+    fn an_end_carries_sets_cleared_and_leaves_out_none() {
+        let endless = serde_json::json!({
+            "tick": 9, "set": "Endless", "teams": 1, "outcome": "lost", "scores": [900],
+            "rounds_cleared": 7, "sets_cleared": 2, "lives_used": 8
+        });
+        let e: FirefightEnded = serde_json::from_value(endless.clone()).unwrap();
+        assert_eq!((e.sets_cleared, e.validate()), (2, Ok(())));
+        assert_eq!(serde_json::to_value(&e).unwrap(), endless);
+        // A report from a host that counts no sets reads as none, and says
+        // none back.
+        let old = serde_json::json!({
+            "tick": 9, "set": "Holdout", "teams": 1, "outcome": "lost", "scores": [1],
+            "rounds_cleared": 1, "lives_used": 2
+        });
+        let e: FirefightEnded = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(e.sets_cleared, 0);
+        assert_eq!(serde_json::to_value(&e).unwrap(), old);
     }
 
     #[test]

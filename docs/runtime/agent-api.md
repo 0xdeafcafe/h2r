@@ -5319,8 +5319,9 @@ session), `replica` (a synchronous peer, or a film's playback) or
 `client` (a distributed client). `team` is the actors' team, never a
 player team (with two player teams it is a third). `director`, on the
 host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
-`intermission`, `done`) with `phase_tick` for the timed ones, `round`
-and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
+`intermission`, `bonus`, `done`) with `phase_tick` for the timed ones (a
+bonus round: the tick it ends at), `set` (zero-based; always 0 in a finite
+definition), `round` (of the set) and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
 `teams` (the player teams, 1 or 2), `pools` and `scores` (each team's
 shared lives and points, one entry per team), `live_actors` against
 `cap`, `players`, `skulls` and `held`.
@@ -5338,11 +5339,14 @@ actor for slot N: class row R at zone Z").
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,
 weapon_tier}`, `target {slot, team}`, `hunt {slot}`, `erase_squad
-{slot}`, `round {index}`, `wave {index}`, `skull {id, on}`, `lives
+{slot}`, `set {index}`, `round {index}`, `wave {index}`, `bonus {on,
+ticks}`, `skull {id, on}`, `lives
 {player?, pool}`, `team_lives {team, pool}`, `score {player, points,
 reason: kill | assist | player_kill}`, `respawn {player}` and `finish
 {outcome: won | lost | {team_won: {team}} | draw}`. `target` picks the
-player team a slot's squad goes for, and its next `hunt` heads for that
+player team a slot's squad goes for, `respawn` is refused while a `bonus`
+round is on (the engine error is in `errors`: no respawn in the bonus
+round), and its next `hunt` heads for that
 team's base (team 0's until one is set); `team_lives` sets one team's
 shared pool and `lives` the one-team pool or a player's own lives, in
 the director, so its next respawns spend from the new count (a team at 0

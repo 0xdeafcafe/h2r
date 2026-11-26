@@ -124,6 +124,7 @@ pub fn ended_report(ended: super::host::Ended) -> live_proto::firefight::Firefig
         },
         scores: ended.scores[..teams].to_vec(),
         rounds_cleared: ended.rounds_cleared,
+        sets_cleared: ended.sets_cleared,
         lives_used: ended.lives_used,
     }
 }
@@ -1498,10 +1499,11 @@ fn log(host: &Host) -> wire::Log {
     }
 }
 
-fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
+/// A phase as `firefight.state` names it, with the tick it runs until (a
+/// cleanup: since).
+fn phase_name(phase: ::firefight::director::Phase) -> (&'static str, Option<u32>) {
     use ::firefight::director::Phase;
-    let s = d.state();
-    let (phase, phase_tick) = match s.phase {
+    match phase {
         Phase::Warmup { until } => ("warmup", Some(until)),
         Phase::Spawning => ("spawning", None),
         Phase::Fighting => ("fighting", None),
@@ -1509,11 +1511,17 @@ fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
         Phase::Intermission { until } => ("intermission", Some(until)),
         Phase::Bonus { until } => ("bonus", Some(until)),
         Phase::Done => ("done", None),
-    };
+    }
+}
+
+fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
+    let s = d.state();
+    let (phase, phase_tick) = phase_name(s.phase);
     let teams = usize::from(d.def().teams).clamp(1, MAX_TEAMS);
     wire::Director {
         phase: phase.into(),
         phase_tick,
+        set: s.set,
         round: s.round,
         wave: s.wave,
         reserve: d.reserve(game.players),
