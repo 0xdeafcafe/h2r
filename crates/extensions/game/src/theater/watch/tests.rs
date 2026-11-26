@@ -506,4 +506,16 @@ fn a_film_that_diverges_in_the_running_game_ends_like_end_film_and_the_game_goes
     // Nothing of the film was recorded: the library has the one game.
     assert_eq!(cuts(rec).len(), 1);
     assert!(rec.status().watch_failure.is_some(), "kept for the page");
+    // Nothing is left that would stop the session: the slice loop stops on a
+    // completed or failed playing state, a pending restart or seek, and a
+    // closed window, and the recorder that came back has none of them.
+    {
+        let s = rec.lock();
+        assert!(matches!(s.mode, Mode::Record(_)) && s.watch.is_none() && s.pacing.is_none());
+        assert!(!s.complete && s.failure.is_none() && s.restart.is_none() && s.seeking.is_none());
+    }
+    rec.finish(3, false).expect("the recorder goes on at the menu");
+    let menus = arena();
+    rec.checkpoint(&menus);
+    assert!(!rec.lock().complete);
 }
