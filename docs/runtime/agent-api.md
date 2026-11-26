@@ -5276,7 +5276,7 @@ registered; with the `firefight` feature off
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `firefight.state` (read) | `{}` or omitted | `{running, test, refused?, map?, role?, team?, director?, log?, errors}` |
+| `firefight.state` (read) | `{}` or omitted | `{running, test, refused?, map?, role?, team?, director?, log?, errors, placements_unseen}` |
 | `firefight.command` (act) | `{command?, director?: "hold" \| "run"}`, at least one | `{appended?: {seq, tick}, held, log}` |
 | `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, bases, characters, hunt_orders}` |
 
@@ -5299,7 +5299,13 @@ shared lives and points, one entry per team), `live_actors` against
 `log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
 entry applied here. `errors` holds the latest 16 entries the engine
 refused, each with its `seq` (none for the AI switch), `tick` and
-`error`.
+`error`. `placements_unseen` counts the squad placements applied here whose
+slot showed no actor within 90 ticks (the director's slot timeout), each
+also one row in `errors` ("slot N: C placed at tick T, none seen"); a wave
+that clears at once with this above 0 means the game never made, or the
+runtime never counted, its actors. A placement the engine answers by adding
+no actor to the squad is an `errors` row of its own ("the engine placed no
+actor for slot N: class row R at zone Z").
 
 **Command.** `command` is one director command in the host log's shape
 (externally tagged, snake_case): `place_squad {slot, class, count, zone,

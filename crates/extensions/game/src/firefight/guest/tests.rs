@@ -139,6 +139,51 @@ fn layout() -> KitLayout {
     read_kit(&scenario()).unwrap().expect("the kit")
 }
 
+const ACTOR_POOL: u32 = 0x7_0000;
+const OBJECT_POOL: u32 = 0x8_0000;
+const BODY: u32 = 0x9_0000;
+
+/// `m` with an actor pool holding one AI unit that belongs to no squad
+/// and has no replication entity, as a local game's actors have none.
+/// The returned actor is the one a placement "creates" by giving it a
+/// squad ([`joins_squad`]).
+fn with_an_idle_actor(mut m: FakeGuest) -> (FakeGuest, guest_layout::actor::Actor) {
+    use guest_layout::{Datum, Object, Unit, actor::Actor, view::fake, view::objects::Header};
+    let actors = fake::datums::<Actor>(&mut m, ACTOR_POOL, 4);
+    let objects = fake::datums::<Header>(&mut m, OBJECT_POOL, 4);
+    m.put_u32(guest_layout::global::ACTORS.base, actors.array.addr)
+        .put_u32(guest_layout::global::OBJECTS.base, objects.array.addr);
+    let (id, actor) = fake::push(&mut m, &actors);
+    let (handle, header) = fake::push(&mut m, &objects);
+    let body = Object::at(BODY);
+    let unit = body.as_unit();
+    m.map(body.addr, Unit::SIZE);
+    actor.set_unit(&mut m, Some(handle)).unwrap();
+    actor.set_squad(&mut m, 0xffff).unwrap();
+    header.set_body(&mut m, body.addr).unwrap();
+    unit.set(&mut m, Unit::ACTOR, Datum(id.raw())).unwrap();
+    unit.set(&mut m, Unit::PLAYER, Datum::NONE).unwrap();
+    body.set(&mut m, Object::ENTITY, u32::MAX).unwrap();
+    body.set(&mut m, Object::PARENT, Datum::NONE).unwrap();
+    body.set(&mut m, Object::POSITION, [0.0; 3]).unwrap();
+    (m, actor)
+}
+
+/// A callee that answers 0, and on its first call (the placement) puts
+/// the idle actor in `squad`.
+fn joins_squad(
+    actor: guest_layout::actor::Actor,
+    squad: u32,
+) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs {
+    let mut first = true;
+    move |_, m| {
+        if std::mem::take(&mut first) {
+            actor.set_squad(m, squad).unwrap();
+        }
+        Regs::default()
+    }
+}
+
 fn placement(slot: u8, character: u16, zone: u8) -> Placement {
     Placement {
         slot,
@@ -287,13 +332,14 @@ fn a_map_without_kit_squads_has_no_kit() {
 #[test]
 fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
     let kit = layout();
+    let (guest, actor) = with_an_idle_actor(scenario());
     let (result, calls, m) = drive(
-        scenario(),
+        guest,
         move |cx| {
             let kit = kit.clone();
             Box::pin(async move { place_squad(&cx, &kit, placement(0, 0, 0)).await })
         },
-        returns(0),
+        joins_squad(actor, 1),
     );
     result.unwrap();
     assert_eq!(
@@ -313,6 +359,26 @@ fn a_placement_sets_the_squad_then_places_and_sets_the_team() {
     assert_eq!(m.vec3(STARTS + 4).unwrap(), [10.0, 0.0, 0.0]);
     assert_eq!(m.vec3(STARTS + 0x64 + 4).unwrap(), [20.0, 0.0, 0.0]);
     assert_eq!(m.u16(STARTS + 0x10).unwrap(), 0xffff);
+}
+
+#[test]
+fn a_placement_that_adds_no_actor_is_refused() {
+    let kit = layout();
+    let (guest, _) = with_an_idle_actor(scenario());
+    let (result, calls, _) = drive(
+        guest,
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { place_squad(&cx, &kit, placement(0, 0, 0)).await })
+        },
+        returns(0),
+    );
+    // The engine was called, made nothing, and the team was not set.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "the engine placed no actor for slot 0: class row 0 at zone 0"
+    );
 }
 
 #[test]

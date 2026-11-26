@@ -32,6 +32,8 @@ const PLAYERS: u32 = 0x1003_0000;
 const OBJECTS: u32 = 0x1004_0000;
 const UNIT: u32 = 0x1005_0000;
 const SCRATCH: u32 = 0x1006_0000;
+const ACTOR_POOL: u32 = 0x1007_0000;
+const AI_BODY: u32 = 0x1008_0000;
 /// The variant's flags: `[GAME_GLOBALS] + 8 + 0x17c`, team play in bit 0.
 const VARIANT_FLAGS: u32 = GAME_GLOBALS + 8 + 0x17c;
 /// The Elite's invented character tag datum.
@@ -63,7 +65,6 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         .put_u8(AI + 1, 1)
         .put_u32(points::SIM_GLOBALS.base, WORLD)
         .put_u32(WORLD + 8, world)
-        .put_u32(guest_layout::global::ACTORS.base, 0)
         .put(
             guest_layout::global::CACHE_MAP_NAME.base,
             b"firefight-probe\0",
@@ -95,6 +96,10 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
     }
     m.put_u32(points::PLAYERS.base, PLAYERS)
         .put_u32(points::OBJECTS.base, OBJECTS);
+    // An empty actor pool, and the object pool the actors' units live in.
+    let actors = fake::datums::<guest_layout::actor::Actor>(&mut m, ACTOR_POOL, 8);
+    m.put_u32(guest_layout::global::ACTORS.base, actors.array.addr)
+        .put_u32(guest_layout::global::OBJECTS.base, OBJECTS);
     let players = fake::datums::<Player>(&mut m, PLAYERS, 16);
     let objects = fake::datums::<Header>(&mut m, OBJECTS, 8);
     let (unit, header) = fake::push(&mut m, &objects);
@@ -167,6 +172,40 @@ fn crossfire(it: &Arc<Shared>) {
 
 fn wire_command(value: serde_json::Value) -> wire::CommandParams {
     serde_json::from_value(value).unwrap()
+}
+
+/// An AI unit of scenario squad `squad` and no replication entity, as a
+/// local game's actors are.
+fn add_actor(m: &mut FakeGuest, squad: u16) {
+    use guest_layout::{Object, Unit, actor::Actor, view::Datums, view::objects::Header};
+    let actors = Datums::<Actor>::at(ACTOR_POOL);
+    let objects = Datums::<Header>::at(OBJECTS);
+    let (id, actor) = fake::push(m, &actors);
+    let (handle, header) = fake::push(m, &objects);
+    let body = Object::at(AI_BODY);
+    let unit = body.as_unit();
+    m.map(body.addr, Unit::SIZE);
+    actor.set_unit(m, Some(handle)).unwrap();
+    actor.set_squad(m, u32::from(squad)).unwrap();
+    header.set_body(m, body.addr).unwrap();
+    unit.set(m, Unit::ACTOR, Datum(id.raw())).unwrap();
+    unit.set(m, Unit::PLAYER, Datum::NONE).unwrap();
+    body.set(m, Object::ENTITY, u32::MAX).unwrap();
+    body.set(m, Object::PARENT, Datum::NONE).unwrap();
+    body.set(m, Object::POSITION, [0.0; 3]).unwrap();
+}
+
+/// A local game (world mode 1) publishes no replication entities, so its
+/// squads' actors are counted without one.
+#[test]
+fn a_local_game_counts_its_squads_actors() {
+    let (mut m, _) = guest(true, 1);
+    let kit = guest::read_kit(&m).unwrap().expect("the kit");
+    assert_eq!(read_actors(&m, &kit), [0; SQUAD_SLOTS]);
+    add_actor(&mut m, 0);
+    let mut want = [0; SQUAD_SLOTS];
+    want[0] = 1;
+    assert_eq!(read_actors(&m, &kit), want);
 }
 
 #[test]

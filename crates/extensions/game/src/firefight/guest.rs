@@ -292,11 +292,24 @@ fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
         .ok_or_else(|| anyhow::anyhow!("the kit reserves no squad for slot {slot}"))
 }
 
+/// The AI units in scenario squad `squad`, with or without a replication
+/// entity: a local game publishes none.
+fn squad_actors(cx: &Cx, squad: u16) -> anyhow::Result<usize> {
+    cx.read(|m| {
+        let mut n = 0;
+        sim_state::visit_ai_units(m, false, |a| n += usize::from(a.squad == squad))
+            .map_err(|e| anyhow::anyhow!("the actor pool faulted: {e:?}"))?;
+        Ok(n)
+    })
+}
+
 /// Place a squad: set the slot squad's character, zone and starts in the
 /// scenario, place `count` actors through the engine's squad placement as
 /// the counted `ai_place` does, then set their team. The scenario writes
 /// are the same on every machine that applies the entry. The placement's
-/// weapon tier is not applied: the stage-one kit authors one weapon.
+/// weapon tier is not applied: the stage-one kit authors one weapon. A
+/// placement that adds no actor to the squad is an error naming the slot,
+/// the class row and the zone, so a wave is never silently empty.
 pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Result<()> {
     let squad = squad_index(kit, p.slot)?;
     let zone = kit
@@ -338,6 +351,7 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
         Ok::<_, MemFault>(())
     })
     .map_err(guest)?;
+    let before = squad_actors(cx, squad)?;
     // Any start (-1), not forced, spawn flag 1: the arguments the counted
     // evaluator passes at 0x2a5052.
     call(
@@ -347,6 +361,13 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
             .args([u32::from(squad), u32::MAX, 0, 1]),
     )
     .await?;
+    anyhow::ensure!(
+        squad_actors(cx, squad)? > before,
+        "the engine placed no actor for slot {}: class row {} at zone {}",
+        p.slot,
+        p.character,
+        p.zone
+    );
     call(
         cx,
         GuestCall::new(points::AI_SET_TEAM.base)

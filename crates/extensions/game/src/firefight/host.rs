@@ -282,7 +282,18 @@ pub struct Host {
     test: bool,
     /// The outcome of the test's `Finish`, until the runtime takes it.
     test_end: Option<Outcome>,
+    /// Placements applied here whose slot has shown no actor yet: the slot
+    /// to the tick it was applied and its class.
+    unseen: BTreeMap<u8, (u32, String)>,
+    /// Placements that showed no actor within [`UNSEEN_AFTER`] ticks.
+    placements_unseen: u32,
+    /// Their error rows, until the runtime takes them.
+    unseen_errors: Vec<ApplyError>,
 }
+
+/// Ticks after a placement is applied at which a slot with no actor counts
+/// as a placement nobody sees: the director's slot timeout (3 s).
+pub const UNSEEN_AFTER: u32 = 90;
 
 impl Host {
     /// Start the mode at map load, or refuse it.
@@ -341,6 +352,9 @@ impl Host {
             mode_sent: None,
             test: false,
             test_end: None,
+            unseen: BTreeMap::new(),
+            placements_unseen: 0,
+            unseen_errors: Vec::new(),
         })
     }
 
@@ -495,12 +509,21 @@ impl Host {
         for entry in due {
             self.applied = entry.seq;
             game.begin_entry(entry.seq);
-            if let Err(error) = self.apply(&entry.op, game) {
-                errors.push(ApplyError {
+            match self.apply(&entry.op, game) {
+                Ok(()) => match &entry.op {
+                    Command::PlaceSquad { slot, class, .. } => {
+                        self.unseen.insert(*slot, (entry.tick, class.clone()));
+                    }
+                    Command::EraseSquad { slot } => {
+                        self.unseen.remove(slot);
+                    }
+                    _ => {}
+                },
+                Err(error) => errors.push(ApplyError {
                     seq: Some(entry.seq),
                     tick: entry.tick,
                     error,
-                });
+                }),
             }
         }
         errors
@@ -515,6 +538,7 @@ impl Host {
         }
         let teams = self.director.as_ref().map_or(1, |d| d.def().teams);
         let seen = observe(&self.kit, &self.by_character, teams, game);
+        self.check_unseen(tick, &seen.actors_alive_by_squad);
         let Some(director) = self.director.as_mut() else {
             return Ok(0);
         };
@@ -552,6 +576,42 @@ impl Host {
             })?;
         }
         Ok(appended)
+    }
+
+    /// A placement whose slot shows no actor [`UNSEEN_AFTER`] ticks after it
+    /// was applied is reported once: a counter and one error row. A wave
+    /// whose actors nobody counts would otherwise clear at the director's
+    /// slot timeout with no error.
+    fn check_unseen(&mut self, tick: u32, alive: &[u16]) {
+        self.unseen
+            .retain(|slot, _| alive.get(usize::from(*slot)).is_none_or(|&n| n == 0));
+        let due: Vec<u8> = self
+            .unseen
+            .iter()
+            .filter(|(_, (at, _))| tick >= at.saturating_add(UNSEEN_AFTER))
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in due {
+            let Some((at, class)) = self.unseen.remove(&slot) else {
+                continue;
+            };
+            self.placements_unseen = self.placements_unseen.saturating_add(1);
+            self.unseen_errors.push(ApplyError {
+                seq: None,
+                tick,
+                error: anyhow::anyhow!("slot {slot}: {class} placed at tick {at}, none seen"),
+            });
+        }
+    }
+
+    /// Placements that showed no actor, since the game started.
+    pub fn placements_unseen(&self) -> u32 {
+        self.placements_unseen
+    }
+
+    /// The error rows of placements newly found unseen.
+    pub fn take_unseen_errors(&mut self) -> Vec<ApplyError> {
+        std::mem::take(&mut self.unseen_errors)
     }
 
     /// The scores credited since the last call, in the order the director

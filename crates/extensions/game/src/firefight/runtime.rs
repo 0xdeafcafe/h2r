@@ -348,7 +348,7 @@ pub fn read_players(m: &dyn GuestMemory) -> Result<Vec<(PlayerView, Option<u32>)
 /// Live actors by kit slot.
 pub fn read_actors(m: &dyn GuestMemory, kit: &KitLayout) -> [u16; SQUAD_SLOTS] {
     let mut by_squad = [0u16; SQUAD_SLOTS];
-    let _ = sim_state::visit_actors(m, false, |a| {
+    let _ = sim_state::visit_ai_units(m, false, |a| {
         if let Some(slot) = kit.squads.iter().position(|s| *s == Some(a.squad)) {
             by_squad[slot] = by_squad[slot].saturating_add(1);
         }
@@ -1222,6 +1222,7 @@ impl Runtime {
         // A wave test is no match: it reports no score and no result.
         let credits = host.take_credits();
         let ended = host.take_ended();
+        let unseen = host.take_unseen_errors();
         if !host.test() {
             for credit in credits {
                 (self.reports)(Report::Score(score_report(credit)));
@@ -1261,6 +1262,9 @@ impl Runtime {
             }
             None => {}
         }
+        for e in unseen {
+            self.error(None, e.tick, e.error);
+        }
         if let Err(e) = result {
             self.error(None, tick, format!("the director's entries: {e}"));
         }
@@ -1294,6 +1298,7 @@ impl Runtime {
                 director: game.host.director().map(|d| director(d, game)),
                 log: Some(log(&game.host)),
                 errors,
+                placements_unseen: game.host.placements_unseen(),
             },
         }
     }

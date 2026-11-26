@@ -79,6 +79,10 @@ pub struct State {
     /// The latest entries (and AI switch) the engine refused, oldest first.
     #[serde(default)]
     pub errors: Vec<Refusal>,
+    /// Placements applied here whose slot showed no actor within 90 ticks
+    /// (each also one row in `errors`).
+    #[serde(default)]
+    pub placements_unseen: u32,
 }
 
 /// The director's mode blob, summarised.
