@@ -78,6 +78,7 @@ the workspace checks are in
 | `firefight` | formats | Portable Firefight definitions and admission rules |  |  |
 | `font` | formats | Halo 2 packed bitmap font parser and CPU text rasteriser | [fonts.md](formats/fonts.md) | done |
 | `forge-doc` | formats | Forge documents: portable map edits, bounded canonical JSON and the host edit log |  |  |
+| `forge-shapes` | formats | Block-out pieces: a piece's definition, its canonical name and the generators that turn it into a closed shell and convex hulls, the same bits on every machine | [forge-blockout.md](game/forge-blockout.md) | in progress |
 | `game-markers` | formats | Game type markers: the shapes Forge and Studio draw for spawns, goals, areas, teleporters, item spawns, volumes and script labels, and the area a hill or a site covers | [gametype-markers.md](game/gametype-markers.md) | in progress |
 | `h1-contract` | formats | The names both Halo 1 halves share: what the converters write and the game's Halo 1 hooks read (tag layouts, markers, script slots, function names) | [text.md](halo1/text.md), [script-builtins.md](halo1/script-builtins.md), [crate-structure.md](dev/crate-structure.md) |  |
 | `host-dirs` | formats | The per-user data, cache and config directories under each host's convention (docs/runtime/storage.md) | [storage.md](runtime/storage.md) |  |
