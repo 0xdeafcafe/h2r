@@ -111,14 +111,12 @@ pub const OBJECT_POOL_NAME: &[u8] = b"loopobjects\0";
 const POOL_STORAGE: usize = 0x28;
 const POOL_SIZE: usize = 0x2c;
 const POOL_STORAGE_AT: usize = 0x40;
-/// The pool's storage is a chain of blocks, each a [`BLOCK_HEADER`]-byte
-/// header (the block's size, its owner's address in the `object` array,
-/// the links to the next and previous blocks, a check word and flags)
-/// and its body. A block's size is the distance to the next block.
-pub const BLOCK_HEADER: usize = 0x20;
-/// The most a block of the object memory pool can be; a size past it ends
-/// the walk.
-const POOL_MIN: usize = BLOCK_HEADER;
+/// Bytes at the start of the pool's storage that are left alone when it is
+/// cleared: the allocator's first block header (its size, the links to the
+/// neighbouring blocks, a check word). Every later block of an empty pool is
+/// free, and a chain of blocks cannot be walked once games have been
+/// through it: the walk of an earlier version stopped a quarter of the way.
+pub const POOL_KEEP: usize = 0x40;
 const GLOBALS_FROM: usize = 0x28;
 const GLOBALS_TO: usize = 0x80;
 
@@ -154,7 +152,7 @@ pub fn object_pool(block: &[u8], base: u32) -> Option<ObjectPool> {
         .find(|&at| block[at..].starts_with(OBJECT_POOL_NAME))?;
     let start = (word(header + POOL_STORAGE)?.checked_sub(base)?) as usize;
     let size = word(header + POOL_SIZE)? as usize;
-    (start == header + POOL_STORAGE_AT && size > BLOCK_HEADER && start + size <= block.len())
+    (start == header + POOL_STORAGE_AT && size > POOL_KEEP && start + size <= block.len())
         .then(|| {
             let end = start + size;
             ObjectPool {
@@ -163,28 +161,6 @@ pub fn object_pool(block: &[u8], base: u32) -> Option<ObjectPool> {
                 globals: (end + GLOBALS_FROM).min(block.len())..(end + GLOBALS_TO).min(block.len()),
             }
         })
-}
-
-/// The bodies of the blocks of an object memory pool's storage, walked as a
-/// chain by block size from its start: what can be zeroed without touching
-/// the allocator's headers. The walk stops, keeping what it has, at a block
-/// whose size is not a multiple of four, is smaller than a header, or runs
-/// past the storage.
-pub fn pool_bodies(block: &[u8], storage: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
-    let mut bodies = Vec::new();
-    let mut at = storage.start;
-    while at + POOL_MIN <= storage.end {
-        let Some(size) = block.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
-        else {
-            break;
-        };
-        if size < POOL_MIN || size % 4 != 0 || at + size > storage.end {
-            break;
-        }
-        bodies.push(at + BLOCK_HEADER..at + size);
-        at += size;
-    }
-    bodies
 }
 
 /// Zero the elements of every data array of `block` that are free (a zero

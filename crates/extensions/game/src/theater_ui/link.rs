@@ -68,6 +68,13 @@ pub(super) struct Ready {
 const MENU_SETTLE_UPDATES: u32 = 20;
 const MENU_WAIT_UPDATES: u32 = 900;
 
+/// Whether a local page keeps waiting at this update: the menu has no
+/// screen on top yet, or has not had it for [`MENU_SETTLE_UPDATES`]; and the
+/// wait has not run out.
+fn menu_not_settled(waited: u32, screen_on_top: bool) -> bool {
+    waited < MENU_WAIT_UPDATES && (!screen_on_top || waited < MENU_SETTLE_UPDATES)
+}
+
 pub(super) fn share_url(
     archive: &live_hle::films::Archive,
     location: &Location,
@@ -483,9 +490,17 @@ impl Feature for Driver {
                             .and_then(|l| {
                                 l.signed_in.as_ref()?.signed_in_account(ready.controller)
                             });
-                        if ready.local && ready.waited < MENU_WAIT_UPDATES {
+                        if ready.local {
                             let up = cx.read(|m| ui_watch::read(&ReadGm(m)).top.is_some());
-                            if !up || ready.waited < MENU_SETTLE_UPDATES {
+                            if menu_not_settled(ready.waited, up) {
+                                // The update goes on first, with the page
+                                // not yet pending: the call below passes
+                                // through this very hook, which would take
+                                // a pending page again and call itself
+                                // without end.
+                                let out = cx
+                                    .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
+                                    .await?;
                                 {
                                     let mut slot =
                                         theater.0.link.lock().unwrap_or_else(|e| e.into_inner());
@@ -493,9 +508,6 @@ impl Feature for Driver {
                                         *slot = Some(Ready { waited: ready.waited + 1, ..ready });
                                     }
                                 }
-                                let out = cx
-                                    .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
-                                    .await?;
                                 return Ok(Ret::new(out.eax, 4));
                             }
                         }
@@ -546,6 +558,15 @@ impl Feature for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_page_waits_for_a_settled_menu_and_not_for_ever() {
+        assert!(menu_not_settled(0, false) && menu_not_settled(0, true));
+        assert!(menu_not_settled(MENU_SETTLE_UPDATES - 1, true));
+        assert!(!menu_not_settled(MENU_SETTLE_UPDATES, true), "settled: open the page");
+        assert!(menu_not_settled(MENU_SETTLE_UPDATES, false), "no screen yet: wait on");
+        assert!(!menu_not_settled(MENU_WAIT_UPDATES, false), "give up and try");
+    }
 
     #[test]
     fn linked_selection_focuses_watch_and_waits_for_a_press() {

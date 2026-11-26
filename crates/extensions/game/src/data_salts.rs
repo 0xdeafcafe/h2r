@@ -70,9 +70,8 @@ pub fn reseed(m: &mut dyn GuestMemory) -> Result<usize, MemFault> {
 /// is not zeroed when a game frees an object, so a game after another keeps
 /// the bytes of the earlier game's objects in the parts of the pool the new
 /// objects do not write. Before `GAME_ACTIVATE`, when the `object` array
-/// has no live element, the bodies of the pool's blocks are zeroed and the
-/// allocator's block headers are left ([`lockstep::gameplay::pool_bodies`]),
-/// and so are the
+/// has no live element, the pool's storage is zeroed except the allocator's
+/// first block header ([`lockstep::gameplay::POOL_KEEP`]), and so are the
 /// object globals past it (the next object sequence number and the
 /// placement scratch). With live
 /// objects still in it (the previous game is disposed inside the
@@ -149,14 +148,11 @@ pub fn clear_object_pool(m: &mut dyn GuestMemory) -> Result<Cleared, MemFault> {
     if pool.live != 0 {
         return Ok(Cleared::Live(pool.live));
     }
-    let mut zeroed = 0;
-    for body in lockstep::gameplay::pool_bodies(&block, pool.storage.clone()) {
-        m.write(base + body.start as u32, &vec![0u8; body.len()])?;
-        zeroed += body.len();
-    }
+    let start = pool.storage.start + lockstep::gameplay::POOL_KEEP;
+    m.write(base + start as u32, &vec![0u8; pool.storage.end - start])?;
     let globals = pool.globals.clone();
     m.write(base + globals.start as u32, &vec![0u8; globals.len()])?;
-    Ok(Cleared::Zeroed(zeroed + globals.len()))
+    Ok(Cleared::Zeroed(pool.storage.end - start + globals.len()))
 }
 
 #[cfg(test)]
