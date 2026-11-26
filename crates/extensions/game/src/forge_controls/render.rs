@@ -2,7 +2,7 @@
 //! parked biped's flags and render-list exit are named in skulls_custom and
 //! docs/graphics/occlusion-culling.md (“Where to skip”).
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::{
     GuestMemory,
@@ -19,20 +19,6 @@ use crate::skulls_custom::{BODY_DAMAGE_FLAGS, CANNOT_TAKE_DAMAGE, local_units};
 use crate::spectator_view::{Pose, draw_world_view, retail_view};
 
 static HIDDEN: AtomicU32 = AtomicU32::new(u32::MAX);
-/// The current `render_views` call draws the monitor's view: set at its
-/// entry by "draw Forge monitor", read by the HUD's black overlay.
-static MONITOR_VIEW: AtomicBool = AtomicBool::new(false);
-
-/// Whether the engine's black overlay (`HUD_BLACK_OVERLAY`) is skipped:
-/// the view drawn is the monitor's and has no local user. The monitor's
-/// view is a playerless world view (`spectator_view::replace_world_view`
-/// puts none in its player word), and the engine draws a view with no user
-/// fully black, as it draws a local user waiting to spawn. Theater's views
-/// hide the HUD, the overlay's caller; the monitor keeps the HUD for its
-/// own.
-fn skips_black_overlay(m: &dyn GuestMemory, monitor_view: bool) -> bool {
-    monitor_view && m.u32(vis::VIEW_PLAYER).is_ok_and(|user| user == u32::MAX)
-}
 
 #[derive(Clone, Copy)]
 struct Parked {
@@ -145,8 +131,8 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
     b.raw()
         .before(&points::RENDER_VIEWS, "draw Forge monitor", move |call| {
             let active = lock().state.active;
-            let drawn = active
-                && draw_world_view(call, scratch, |guest, views| {
+            if active {
+                draw_world_view(call, scratch, |guest, views| {
                     let mut state = lock();
                     if !state.state.active {
                         return None;
@@ -174,25 +160,10 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
                         None,
                     ))
                 });
-            MONITOR_VIEW.store(drawn, Ordering::Relaxed);
+            }
             Ok(Flow::Continue)
         })
         .first()
-        .context_only();
-    b.raw()
-        .before(
-            &points::HUD_BLACK_OVERLAY,
-            "no black overlay over the Forge monitor's view",
-            |call| {
-                let mem = call.ctx.memory();
-                if !skips_black_overlay(&*mem, MONITOR_VIEW.load(Ordering::Relaxed)) {
-                    return Ok(Flow::Continue);
-                }
-                let target = mem.u32(call.cpu.esp)?;
-                call.cpu.esp = call.cpu.esp.wrapping_add(4);
-                Ok(Flow::Return(runtime::TransferAbi::ret(target)))
-            },
-        )
         .context_only();
     b.raw()
         .before(
@@ -275,41 +246,6 @@ mod tests {
         m.put_u16(object.addr + ObjectHeader::SALT.offset, 0x751);
         park(&mut m, false);
         assert_eq!(m.u16(body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
-    }
-
-    /// The monitor's view has no local user, which the engine's overlay
-    /// draws opaque black: skipped there, and only there.
-    #[test]
-    fn the_monitor_view_draws_no_black_overlay() {
-        let mut m = FakeGuest::new();
-        m.put_u32(vis::VIEW_PLAYER, u32::MAX);
-        assert!(skips_black_overlay(&m, true), "the monitor's playerless view");
-        assert!(!skips_black_overlay(&m, false), "a view the monitor did not draw");
-        m.put_u32(vis::VIEW_PLAYER, 0);
-        assert!(!skips_black_overlay(&m, true), "a local user's spawn fade stays");
-        assert!(!skips_black_overlay(&FakeGuest::new(), true), "an unread user");
-    }
-
-    #[test]
-    fn the_camera_hooks_answer_the_black_overlay() {
-        struct MonitorCamera;
-        impl hooks::Feature for MonitorCamera {
-            fn manifest(&self) -> hooks::Manifest {
-                hooks::Manifest::new("forge-camera", "the Forge monitor's camera")
-            }
-            fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-                camera_hooks(b)
-            }
-        }
-        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
-        assert!(registry.add(&MonitorCamera).unwrap());
-        let text = registry.build(&hooks::Base).unwrap().text();
-        assert!(
-            text.contains(
-                "HUD_BLACK_OVERLAY: before [forge-camera:no black overlay over the Forge monitor's view]"
-            ),
-            "{text}"
-        );
     }
 
     #[test]

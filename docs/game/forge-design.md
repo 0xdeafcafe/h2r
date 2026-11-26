@@ -819,10 +819,13 @@ The monitor's view is a playerless world view
 game engine's black overlay (`HUD_BLACK_OVERLAY` `0x00159880`, from
 `0x001396a0`), which draws a local user's spawn fade
 (`[GAME_ENGINE] + 0xe4 + 4 * user`) and a view with no user at 1.0, opaque
-black. The monitor keeps the HUD for its own, so the hook "no black
-overlay over the Forge monitor's view" returns from it while the monitor's
-view draws and the view has no user (`forge_controls::render::skips_black_overlay`).
-Theater's views hide the HUD and never reach it.
+black. The monitor keeps the HUD for its own, so the `private-view-overlay`
+feature returns from the overlay while a private view draws and the view
+has no user (`spectator_view::skips_black_overlay`). Every view drawn
+through `spectator_view::replace_world_view` is one: the monitor, the
+agent camera, the Pogo chase camera and Theater's cameras. A player's
+own view keeps its index in `VIEW_PLAYER`, so the retail fade for a dead
+or respawning player stays.
 `forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
 A local level boot starts in the biped. D-pad Up or Tab switches between
 the biped and the monitor.
