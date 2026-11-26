@@ -6,7 +6,7 @@ use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use firefight::scoring::kill_points;
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
-    Round, Scoring, ScriptDirector, Skull, SquadSpec, Wave,
+    Round, Scoring, ScriptDirector, Side, Skull, SquadSpec, Wave,
 };
 
 fn round(skulls_on: Vec<Skull>) -> Round {
@@ -21,12 +21,17 @@ fn round(skulls_on: Vec<Skull>) -> Round {
                 },
                 drop: Drop::Edge,
                 weapon_tier: 0,
+                side: Side::Enemy,
             }],
             boss: wave == 4,
             gap_ticks: 2,
         })
         .collect();
-    Round { waves, skulls_on }
+    Round {
+        waves,
+        skulls_on,
+        allies: Vec::new(),
+    }
 }
 
 fn scoring(skull_multipliers: BTreeMap<Skull, u16>) -> Scoring {

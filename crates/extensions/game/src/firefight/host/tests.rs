@@ -1369,7 +1369,7 @@ fn a_placement_nobody_sees_is_reported_once() {
 /// Endless (three-round sets, one after another) with a 60-tick bonus round
 /// of one Elite at a time.
 fn endless() -> Def {
-    use ::firefight::{Bonus, Count, Drop, SquadSpec};
+    use ::firefight::{Bonus, Count, Drop, Side, SquadSpec};
     let mut def = builtin::definitions()
         .into_iter()
         .find(|def| def.set.endless)
@@ -1385,6 +1385,7 @@ fn endless() -> Def {
             },
             drop: Drop::Edge,
             weapon_tier: 0,
+            side: Side::Enemy,
         },
         lives_by_points: vec![(100, 1)],
     });

@@ -140,9 +140,9 @@ kit maps each class to a character on the machine.
 Def      { format: 3, name, teams, rounds: [Round], set: SetRules, lives: Lives, caps: Caps, scoring: Scoring,
            bonus: Option<Bonus> }
 SetRules { endless: bool, scale, skulls: [Skull] }
-Round    { waves: [Wave], skulls_on: [Skull] }
+Round    { waves: [Wave], skulls_on: [Skull], allies: [SquadSpec] }
 Wave     { squads: [SquadSpec], boss: bool, gap_ticks }
-SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier }
+SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier, side: enemy|ally }
 Lives    { pool_start, per_round_bonus, shared: bool, zero_holds: bool }
 Bonus    { ticks, squad: SquadSpec, lives_by_points: [(points, lives)] }
 Caps     { live_actors_by_players: [(players, actors)] }
@@ -197,6 +197,20 @@ output and hashes depend on the definition alone.
 - `zero_holds` (default false, left out of the JSON when false) makes a
   dead player at zero lives wait for the next grant (a round's end, the
   bonus round's end) instead of returning free at the wave's end.
+- **Allies.** A round's `allies` (default none, left out of the JSON when
+  empty; `side` likewise left out when `enemy`) are squads on the
+  players' side that arrive when the round starts and again after a boss
+  wave for any that fell. Each is `side: ally`, a wave's squad is
+  `enemy`, and `validate` refuses the other way round. An ally class has
+  no score entry and is no wave's enemy class, so killing an ally scores
+  nothing, and a kill by an ally has no credited player. A round has at
+  most 4 ally actors at every player count (`MAX_ALLIES`), and their
+  actors are added to each wave's when the cap is checked
+  (`WaveOverCap`), since they count toward the live-actor cap. With two
+  teams a round has at most two ally squads, the first on team 0 and the
+  second on team 1. `Limits::with_factions` gives the kit's class
+  factions: an ally class listed there must be `Human`, and one not
+  listed is admitted.
 - `bonus` (default absent) is the bonus round played after each set
   ("The bonus round"). `ticks` is 1 to 9,000. `squad` is checked as a
   wave's squad is: a scored class, bounds, and under the actor cap at
@@ -319,6 +333,15 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
   lowest count reported. An unreported squad is treated as gone after
   three seconds. An erased slot is reused only once the host reports it
   empty or three seconds pass.
+- **Allies.** A round's `allies` are placed (`PlaceSquad`, on foot, at a
+  zone chosen as for any squad) when the round starts and after a boss
+  wave, one a tick, each only if no squad of that entry is alive and the
+  cap has room (live actors, allies included, plus its count); a tick
+  that is placing a wave places no ally. The wave's clear, its cleanup and
+  its `Hunt` and `EraseSquad` look at enemy slots only, so a wave clears
+  while allies live, and a standing ally stays through the next wave.
+  `Slot::Placed::ally` marks an ally's slot, and its `target` is the
+  team it serves. No `Target` follows an ally's `PlaceSquad`.
 - **Where a squad enters.** The kit gives each map drop zones. The
   director honours an unseen preferred zone when the kit has it.
   Otherwise it takes the zones no player has line of sight to (all zones
@@ -423,6 +446,19 @@ scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
   reads `set_index` back. The director is the script alone, so the sets
   tests (`tests/sets.rs`) hold it to itself: a fresh script over what a
   match observed gives the commands the match was played with.
+
+- Allies run in the script: the tables `ally_squads` and `ally_rounds`
+  (each round's first row and count), the globals `allies_due`,
+  `ally_next` and `ally_count`, `arrive_allies` in `next_round` and
+  `place_ally` in the tick. A slot's `squad_ally` is 0 for an enemy squad
+  and the ally's row in its round plus one otherwise. `observe_squads`
+  sums an ally's actors into `ally_count`, not `live_count`; `place_next`
+  checks `live_count + ally_count`. The tests (`tests/script.rs`) are
+  `a_wave_clears_while_allies_live`, `allies_count_toward_the_actor_cap`,
+  `an_ally_kill_scores_nothing`,
+  `allies_arrive_at_round_start_and_after_a_boss` and
+  `ally_rules_give_the_same_commands`; `tests/factions.rs` holds the
+  admission rules.
 
 - Two teams run in the script too. Each team's pool and score are
   globals (`pool_0`, `pool_1`, `score_0`, `score_1`), the player's team
@@ -672,7 +708,9 @@ record is an error. Every faction is on its own team, so under Slayer's
 "teams differ" test each is hostile to the others and to the players with
 no table of ours (**V**: that actors choose targets by that test and not
 the campaign allegiance table; the coordinator's run R5 settles it). Enemy
-humans are legal in a custom set; allies are a later slice. The kit version
+humans are legal in a custom set; allies are a round's `allies`
+("The definition"), which the director places but the game does not yet
+put on the home team or give a hold order. The kit version
 (`KIT_VERSION`) is 5, the first whose record carries the faction.
 
 The Flood and human classes are named in `retail::FACTION_CLASSES`, with

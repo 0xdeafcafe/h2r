@@ -90,13 +90,15 @@ pub fn load(def: &Def) -> Result<Ir, ScriptRefusal> {
 }
 
 fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
+    let ally_rows = def.rounds.iter().map(|round| round.allies.len()).sum::<usize>();
     let squad_rows = def
         .rounds
         .iter()
         .flat_map(|round| &round.waves)
         .map(|wave| wave.squads.len())
         .sum::<usize>()
-        + usize::from(def.bonus.is_some());
+        + usize::from(def.bonus.is_some())
+        + ally_rows;
     if squad_rows > MAX_TABLE_ROWS {
         return Err(ScriptRefusal::Squads { rows: squad_rows });
     }
@@ -132,11 +134,7 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
 
     data.push_str("table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [\n");
     for squad in def.rounds.iter().flat_map(|r| &r.waves).flat_map(|w| &w.squads) {
-        let (preferred, role) = match squad.drop {
-            Drop::Edge => (-1, 0),
-            Drop::PreferZone(zone) => (i32::from(zone), 0),
-            Drop::Role(role) => (-1, i32::from(role.bit())),
-        };
+        let (preferred, role) = drop_columns(squad.drop);
         writeln!(
             data,
             "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
@@ -151,17 +149,40 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
     // The bonus squad is the last row, after every wave's.
     if let Some(bonus) = &def.bonus {
         let squad = &bonus.squad;
-        let (preferred, role) = match squad.drop {
-            Drop::Edge => (-1, 0),
-            Drop::PreferZone(zone) => (i32::from(zone), 0),
-            Drop::Role(role) => (-1, i32::from(role.bit())),
-        };
+        let (preferred, role) = drop_columns(squad.drop);
         writeln!(
             data,
             "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
             squad.class, squad.count.per_player, squad.count.min, squad.count.max, squad.weapon_tier,
         )
         .unwrap();
+    }
+    // The rounds' allies: a row each, and each round's first row and count.
+    // A table needs a row, so a definition with none has one that no
+    // round's count reaches.
+    data.push_str("]\ntable ally_squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [\n");
+    for squad in def.rounds.iter().flat_map(|round| &round.allies) {
+        let (preferred, role) = drop_columns(squad.drop);
+        writeln!(
+            data,
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
+            squad.class,
+            squad.count.per_player,
+            squad.count.min,
+            squad.count.max,
+            squad.weapon_tier,
+        )
+        .unwrap();
+    }
+    if ally_rows == 0 {
+        let class = &def.rounds[0].waves[0].squads[0].class;
+        writeln!(data, "(\"{class}\", 0, 1, 1, -1, 0, 0),").unwrap();
+    }
+    data.push_str("]\ntable ally_rounds: (first: int, count: int) = [\n");
+    let mut first = 0;
+    for round in &def.rounds {
+        writeln!(data, "({first}, {}),", round.allies.len()).unwrap();
+        first += round.allies.len();
     }
     data.push_str("]\ntable waves: (first: int, count: int, gap: int) = [\n");
     let mut first = 0;
@@ -263,6 +284,15 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
     data.push_str(&cells.join(", "));
     data.push_str("),\n]\n");
     Ok(data)
+}
+
+/// A squad's preferred zone and zone-role mask columns.
+fn drop_columns(drop: Drop) -> (i32, i32) {
+    match drop {
+        Drop::Edge => (-1, 0),
+        Drop::PreferZone(zone) => (i32::from(zone), 0),
+        Drop::Role(role) => (-1, i32::from(role.bit())),
+    }
 }
 
 /// Rounds in a set: the bonus round follows each set's last round. A
@@ -441,6 +471,7 @@ impl ScriptDirector {
                     seen: mode == 2,
                     placed_at: since,
                     target: field("squad_side") as u8,
+                    ally: field("squad_ally") > 0,
                 },
                 3 => Slot::Draining { since },
                 _ => Slot::Free,

@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    ALL_ZONE_ROLES, Bonus, Caps, Def, Drop, FORMAT, MAX_BONUS_TICKS, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS,
+    ALL_ZONE_ROLES, Bonus, Caps, Def, Drop, FORMAT, Faction, MAX_ALLIES, Side, SquadSpec, MAX_BONUS_TICKS, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS,
     MAX_ROUNDS, MAX_SET_SCALE, MAX_SET_SKULLS, MAX_SKULLS, MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal,
     Result, SET_ROUNDS, Scoring, Skull, WAVES_PER_ROUND, Wave, wire,
 };
@@ -32,6 +32,10 @@ pub struct Limits {
     /// The roles ([`crate::ZoneRole::bit`]) at least one zone of the kit
     /// carries. A squad's `Drop::Role` needs its role here.
     pub zone_roles: u8,
+    /// The faction of the classes the kit knows it for. An ally squad's
+    /// class that is listed here must be [`Faction::Human`]; one not listed
+    /// is admitted (a kit that does not say).
+    pub factions: BTreeMap<String, Faction>,
 }
 
 impl Limits {
@@ -40,12 +44,25 @@ impl Limits {
             classes: classes.into_iter().map(Into::into).collect(),
             cut: BTreeSet::new(),
             zone_roles: ALL_ZONE_ROLES,
+            factions: BTreeMap::new(),
         }
     }
 
     /// The same limits for a kit that cut `classes` to fit.
     pub fn with_cut(mut self, classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.cut = classes.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The same limits for a kit that wrote these classes' factions.
+    pub fn with_factions(
+        mut self,
+        factions: impl IntoIterator<Item = (impl Into<String>, Faction)>,
+    ) -> Self {
+        self.factions = factions
+            .into_iter()
+            .map(|(class, faction)| (class.into(), faction))
+            .collect();
         self
     }
 
@@ -67,6 +84,7 @@ pub fn validate(def: &Def, limits: &Limits) -> Result<()> {
         .iter()
         .flat_map(|round| &round.waves)
         .flat_map(|wave| &wave.squads)
+        .chain(def.rounds.iter().flat_map(|round| &round.allies))
         .map(|squad| &squad.class);
     for class in def.scoring.by_class.keys().chain(squad_classes) {
         if limits.cut.contains(class) {
@@ -82,6 +100,7 @@ pub fn validate(def: &Def, limits: &Limits) -> Result<()> {
         .iter()
         .flat_map(|round| &round.waves)
         .flat_map(|wave| &wave.squads)
+        .chain(def.rounds.iter().flat_map(|round| &round.allies))
     {
         if let Drop::Role(role) = squad.drop
             && limits.zone_roles & role.bit() == 0
@@ -90,6 +109,15 @@ pub fn validate(def: &Def, limits: &Limits) -> Result<()> {
                 "drop",
                 "a squad's zone role is carried by no zone of the kit",
             ));
+        }
+    }
+    for squad in def.rounds.iter().flat_map(|round| &round.allies) {
+        if limits
+            .factions
+            .get(&squad.class)
+            .is_some_and(|&faction| faction != Faction::Human)
+        {
+            return Err(invalid("allies", "an ally squad's class must be human"));
         }
     }
     wire::measure(def, MAX_DOC_BYTES)
@@ -137,6 +165,7 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
         if round.waves.len() != WAVES_PER_ROUND {
             return Err(invalid("waves", "each round requires five waves"));
         }
+        let allies = allies(round, def)?;
         for (wave_index, wave) in round.waves.iter().enumerate() {
             if wave.boss != (wave_index + 1 == WAVES_PER_ROUND) {
                 return Err(invalid(
@@ -147,6 +176,9 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
             let actors_by_player = wave_actors(wave, &def.scoring)?;
             for (index, actors) in actors_by_player.into_iter().enumerate() {
                 let players = (index + 1) as u8;
+                // The round's allies are alive beside the wave and count
+                // toward the cap.
+                let actors = actors + allies[index];
                 let Some(cap) = def.caps.for_players(players) else {
                     break;
                 };
@@ -163,6 +195,49 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
         }
     }
     sets(def, &enabled)
+}
+
+/// A round's allied squads, and their actors at each player count. Each is
+/// an ally, whose class is never scored (killing one scores nothing), and
+/// all of them together are at most [`MAX_ALLIES`] at any player count.
+/// With two teams there is at most one for each team.
+fn allies(round: &crate::Round, def: &Def) -> Result<[u32; MAX_PLAYERS as usize]> {
+    if def.teams > 1 && round.allies.len() > usize::from(def.teams) {
+        return Err(invalid(
+            "allies",
+            "with two teams a round has at most one ally squad for each",
+        ));
+    }
+    let mut actors = [0; MAX_PLAYERS as usize];
+    for squad in &round.allies {
+        if squad.side != Side::Ally {
+            return Err(invalid("side", "a round's allies are on the ally side"));
+        }
+        if def.scoring.by_class.contains_key(&squad.class)
+            || def
+                .rounds
+                .iter()
+                .flat_map(|round| &round.waves)
+                .flat_map(|wave| &wave.squads)
+                .any(|enemy| enemy.class == squad.class)
+        {
+            return Err(invalid(
+                "allies",
+                "an ally class is not scored and is no wave's enemy class",
+            ));
+        }
+        squad_shape(squad)?;
+        for (players, total) in (1..=MAX_PLAYERS).zip(&mut actors) {
+            *total += u32::from(squad.count.for_players(players));
+        }
+    }
+    if actors.iter().any(|&total| total > u32::from(MAX_ALLIES)) {
+        return Err(invalid(
+            "allies",
+            "a round's allies are at most 4 actors at any player count",
+        ));
+    }
+    Ok(actors)
 }
 
 /// Endless play and the set skulls: an endless definition has one team
@@ -273,28 +348,38 @@ fn wave_actors(wave: &Wave, scoring: &Scoring) -> Result<[u32; MAX_PLAYERS as us
 
     let mut actors = [0; MAX_PLAYERS as usize];
     for squad in &wave.squads {
+        if squad.side != Side::Enemy {
+            return Err(invalid("side", "a wave's squads are enemies"));
+        }
         class_name(&squad.class)?;
         if !scoring.by_class.contains_key(&squad.class) {
             return Err(invalid("class", "each squad class needs a scoring entry"));
         }
+        squad_shape(squad)?;
         let count = squad.count;
-        if count.min == 0 || count.min > count.max || count.max > MAX_ACTORS {
-            return Err(invalid("count", "requires 1 <= min <= max <= 32"));
-        }
-        if let Drop::PreferZone(zone) = squad.drop
-            && zone >= MAX_DROP_ZONES
-        {
-            return Err(invalid("drop", "the preferred zone must be in 0..12"));
-        }
-        if squad.weapon_tier > MAX_WEAPON_TIER {
-            return Err(invalid("weapon_tier", "the weapon tier must be in 0..=3"));
-        }
-
         for (players, total) in (1..=MAX_PLAYERS).zip(&mut actors) {
             *total += u32::from(count.for_players(players));
         }
     }
     Ok(actors)
+}
+
+/// A squad's count, drop zone and weapon tier within their limits.
+fn squad_shape(squad: &SquadSpec) -> Result<()> {
+    class_name(&squad.class)?;
+    let count = squad.count;
+    if count.min == 0 || count.min > count.max || count.max > MAX_ACTORS {
+        return Err(invalid("count", "requires 1 <= min <= max <= 32"));
+    }
+    if let Drop::PreferZone(zone) = squad.drop
+        && zone >= MAX_DROP_ZONES
+    {
+        return Err(invalid("drop", "the preferred zone must be in 0..12"));
+    }
+    if squad.weapon_tier > MAX_WEAPON_TIER {
+        return Err(invalid("weapon_tier", "the weapon tier must be in 0..=3"));
+    }
+    Ok(())
 }
 
 /// The bonus round's time, its squad against the actor caps, and its

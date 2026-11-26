@@ -17,6 +17,11 @@ pub(crate) const WAVES_PER_ROUND: usize = 5;
 pub(crate) const MAX_SQUADS: usize = 16;
 pub(crate) const MAX_CLASSES: usize = 32;
 pub(crate) const MAX_SKULLS: usize = 9;
+/// Squads in a round's `allies`: one for each of four actors.
+pub(crate) const MAX_ALLY_SQUADS: usize = 4;
+/// Allies alive at once, at any player count; they count toward the live
+/// actor cap besides.
+pub const MAX_ALLIES: u16 = 4;
 /// Rounds in a set that repeats: Firefight's own count.
 pub const SET_ROUNDS: usize = 3;
 /// Set skulls a definition lists: one for each of sets 2 to 4.
@@ -125,6 +130,15 @@ pub struct Round {
     /// Skulls enabled at the start of this round. Earlier skulls stay on.
     #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_SKULLS>")]
     pub skulls_on: Vec<Skull>,
+    /// Allied squads that arrive when the round starts, and again after a
+    /// boss wave for any that fell. Each is [`Side::Ally`]. With two teams,
+    /// the first belongs to team 0 and the second to team 1.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "wire::bounded_seq::<_, _, MAX_ALLY_SQUADS>"
+    )]
+    pub allies: Vec<SquadSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +157,27 @@ pub struct SquadSpec {
     pub count: Count,
     pub drop: Drop,
     pub weapon_tier: u8,
+    /// Whom the squad fights for. A wave's squads are enemies; a round's
+    /// `allies` are allies.
+    #[serde(default, skip_serializing_if = "Side::is_enemy")]
+    pub side: Side,
+}
+
+/// Which side of the players a squad is on. An ally takes the team of the
+/// players it serves, is not counted for a wave's clear, scores nothing
+/// and is not scored for killing (docs/game/firefight.md, "Allies").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    #[default]
+    Enemy,
+    Ally,
+}
+
+impl Side {
+    pub(crate) fn is_enemy(&self) -> bool {
+        *self == Self::Enemy
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

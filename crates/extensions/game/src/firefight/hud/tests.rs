@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use ::firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ZoneSeen};
 use ::firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Observed, Outcome,
-    Round, Scoring, ScriptDirector, Settings, Skull, SquadSpec, Wave,
+    Round, Scoring, ScriptDirector, Settings, Side, Skull, SquadSpec, Wave,
 };
 
 use super::*;
@@ -28,6 +28,7 @@ fn small_def(shared: bool, rounds: usize) -> Def {
                         },
                         drop: Drop::Edge,
                         weapon_tier: 0,
+                        side: Side::Enemy,
                     })
                     .collect(),
                 boss: wave == 4,
@@ -47,6 +48,7 @@ fn small_def(shared: bool, rounds: usize) -> Def {
             .map(|skull| Round {
                 waves: waves(),
                 skulls_on: vec![skull],
+                allies: Vec::new(),
             })
             .collect(),
         lives: ::firefight::Lives {

@@ -9,7 +9,7 @@ use common::*;
 use firefight::director::SQUAD_SLOTS;
 use firefight::{
     BONUS_SKULLS, Bonus, Command, Count, Def, Drop, Observed, Outcome, Refusal,
-    ScriptDirector, Settings, Skull, SquadSpec, validate,
+    ScriptDirector, Settings, Side, Skull, SquadSpec, validate,
 };
 
 const BONUS_TICKS: u32 = 20;
@@ -31,6 +31,7 @@ fn bonus_def(pool: u16, table: &[(u32, u16)]) -> Def {
             },
             drop: Drop::Edge,
             weapon_tier: 0,
+            side: Side::Enemy,
         },
         lives_by_points: table.to_vec(),
     });

@@ -1,7 +1,7 @@
 //! Factions: the teams classes are placed on, and a definition whose
 //! classes the kit cut.
 
-use firefight::{Def, Faction, Limits, Refusal, builtin, teams, validate};
+use firefight::{Count, Def, Drop, Faction, Limits, Refusal, Side, SquadSpec, builtin, teams, validate};
 
 /// A built-in definition whose first squad is `class`, scored.
 fn naming(class: &str) -> Def {
@@ -48,4 +48,79 @@ fn a_set_naming_a_cut_class_is_refused_by_name() {
         Err(Refusal::UnknownClass("flood_carrier".into()))
     );
     assert_eq!(validate(&def, &Limits::new(["elite", "flood_carrier"])), Ok(()));
+}
+
+/// A built-in definition whose first round has `allies`.
+fn allied(allies: Vec<SquadSpec>) -> Def {
+    let [mut def, ..] = builtin::definitions();
+    def.rounds[0].allies = allies;
+    def
+}
+
+fn ally(class: &str, count: u16) -> SquadSpec {
+    SquadSpec {
+        class: class.into(),
+        count: Count { per_player: 0, min: count, max: count },
+        drop: Drop::Edge,
+        weapon_tier: 0,
+        side: Side::Ally,
+    }
+}
+
+fn invalid(def: &Def, kit: &Limits, field: &'static str) {
+    assert!(
+        matches!(validate(def, kit), Err(Refusal::Invalid { field: found, .. }) if found == field),
+        "{:?}",
+        validate(def, kit)
+    );
+}
+
+#[test]
+fn allies_are_human_unscored_and_at_most_four() {
+    let kit = Limits::new(["elite", "marine", "grunt"])
+        .with_factions([("marine", Faction::Human), ("grunt", Faction::Covenant)]);
+    assert_eq!(validate(&allied(vec![ally("marine", 4)]), &kit), Ok(()));
+    // A kit that does not say a class's faction admits it.
+    let silent = Limits::new(["elite", "marine"]);
+    assert_eq!(validate(&allied(vec![ally("marine", 2)]), &silent), Ok(()));
+
+    invalid(&allied(vec![ally("grunt", 2)]), &kit, "allies");
+    invalid(&allied(vec![ally("marine", 3), ally("marine", 2)]), &kit, "allies");
+    // An ally class is not scored and is no wave's enemy.
+    invalid(&allied(vec![ally("elite", 2)]), &kit, "allies");
+    let mut scored = allied(vec![ally("marine", 2)]);
+    scored.scoring.by_class.insert("marine".into(), 50);
+    invalid(&scored, &kit, "allies");
+    // The sides are kept apart: an ally in a round's list, an enemy in a wave.
+    let mut enemy = ally("marine", 2);
+    enemy.side = Side::Enemy;
+    invalid(&allied(vec![enemy.clone()]), &kit, "side");
+    let mut waved = allied(vec![]);
+    waved.rounds[0].waves[0].squads.push(ally("marine", 1));
+    invalid(&waved, &kit, "side");
+    // The kit must have it, and not have cut it.
+    assert_eq!(
+        validate(&allied(vec![ally("marine", 2)]), &Limits::new(["elite"])),
+        Err(Refusal::UnknownClass("marine".into()))
+    );
+    assert_eq!(
+        validate(&allied(vec![ally("marine", 2)]), &silent.clone().with_cut(["marine"])),
+        Err(Refusal::CutClass("marine".into()))
+    );
+}
+
+#[test]
+fn two_teams_have_one_ally_squad_each() {
+    let kit = Limits::new(["elite", "marine"]);
+    let mut def = builtin::with_teams(allied(vec![ally("marine", 1); 3]), 2);
+    invalid(&def, &kit, "allies");
+    def.rounds[0].allies.truncate(2);
+    assert_eq!(validate(&def, &kit), Ok(()));
+}
+
+#[test]
+fn a_definition_without_allies_keeps_its_id() {
+    // Neither field is written when it is the default.
+    let json = builtin::definitions()[0].canonical_json().unwrap();
+    assert!(!json.contains("allies") && !json.contains("side"));
 }

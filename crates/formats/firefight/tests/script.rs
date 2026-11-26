@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use common::*;
 use firefight::director::{Kill, PlayerSeen, ZoneSeen};
 use firefight::{
-    Command, Def, Difficulty, Observed, Outcome, ScriptDirector, Settings, Skull, builtin,
+    Command, Count, Def, Difficulty, Drop, Observed, Outcome, Refusal, ScriptDirector, Settings,
+    Side, Skull, SquadSpec, builtin,
 };
 use rules::vm::RulesExt;
 
@@ -454,4 +455,225 @@ fn targets_and_team_sides_replay_the_same_picks() {
         z.team_distance = [90, 10];
     }
     check(&def, &settings(6), 4, zones, 400, kill_at_age_three);
+}
+
+/// An allied squad: `class`, scaled by the players, never scored.
+fn ally_squad(class: &str, per_player: u8, min: u16, max: u16) -> SquadSpec {
+    SquadSpec {
+        class: class.into(),
+        count: Count { per_player, min, max },
+        drop: Drop::Edge,
+        weapon_tier: 0,
+        side: Side::Ally,
+    }
+}
+
+/// `rounds` rounds of [`small_def`]'s waves (one elite each), actor cap 6
+/// at four players, and two marines (an ally class, so unscored) with each
+/// round.
+fn ally_def(rounds: usize) -> Def {
+    let mut def = small_def(3, true);
+    def.name = "Allied".into();
+    def.caps.live_actors_by_players = vec![(4, 6)];
+    let mut round = def.rounds[0].clone();
+    round.allies = vec![ally_squad("marine", 0, 2, 2)];
+    def.rounds = (0..rounds)
+        .map(|index| {
+            let mut round = round.clone();
+            if index > 0 {
+                round.skulls_on.clear();
+            }
+            round
+        })
+        .collect();
+    def
+}
+
+/// Every enemy squad dies to player 0 three ticks after it appears; the
+/// allies are left alone.
+fn kill_enemies_at_age_three(tick: u32, world: &mut World) {
+    for slot in 0..world.squads.len() {
+        let ally = world.classes[slot] == "marine";
+        if !ally && world.squads[slot].0 > 0 && tick - world.squads[slot].1 == 3 {
+            world.kill_squad(slot, Some(0));
+        }
+    }
+}
+
+fn places(run: &Run, class: &str) -> Vec<usize> {
+    run.commands
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, command))| {
+            matches!(command, Command::PlaceSquad { class: placed, .. } if placed == class)
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+fn at(run: &Run, wanted: &Command) -> usize {
+    run.commands
+        .iter()
+        .position(|(_, command)| command == wanted)
+        .unwrap_or_else(|| panic!("{wanted:?} was never commanded"))
+}
+
+#[test]
+fn a_wave_clears_while_allies_live() {
+    let mut allies_at_end = 0;
+    let run = check(&ally_def(1), &settings(3), 1, two_zones(), 200, |tick, world| {
+        kill_enemies_at_age_three(tick, world);
+        allies_at_end = (0..world.squads.len())
+            .filter(|&slot| world.classes[slot] == "marine")
+            .map(|slot| world.squads[slot].0)
+            .sum::<u16>();
+    });
+    // Five waves cleared and the match won with both marines standing.
+    let waves = run
+        .commands
+        .iter()
+        .filter(|(_, command)| matches!(command, Command::Wave { .. }))
+        .count();
+    assert_eq!(waves, 5);
+    assert_eq!(run.outcome, Some(Outcome::Won));
+    assert_eq!(allies_at_end, 2);
+    // Allies are never hunted or erased by a cleanup.
+    assert!(run.commands.iter().all(|(_, command)| !matches!(
+        command,
+        Command::Hunt { .. } | Command::EraseSquad { .. }
+    )));
+}
+
+#[test]
+fn allies_count_toward_the_actor_cap() {
+    // Two squads of two and two allies: six, the cap, and never more.
+    let mut def = ally_def(1);
+    for wave in &mut def.rounds[0].waves {
+        let mut squad = wave.squads[0].clone();
+        squad.count = Count { per_player: 0, min: 2, max: 2 };
+        wave.squads = vec![squad.clone(), squad];
+    }
+    let mut peak = 0;
+    let run = check(&def, &settings(5), 1, two_zones(), 400, |tick, world| {
+        kill_enemies_at_age_three(tick, world);
+        peak = peak.max(world.live());
+    });
+    assert_eq!(run.outcome, Some(Outcome::Won));
+    assert_eq!(peak, 6);
+
+    // The same set under a cap of five is refused: the wave and its allies
+    // do not fit together.
+    def.caps.live_actors_by_players = vec![(4, 5)];
+    let kit = firefight::Limits::new(["elite", "marine"]);
+    assert!(matches!(
+        firefight::validate(&def, &kit),
+        Err(Refusal::WaveOverCap { actors: 6, cap: 5, .. })
+    ));
+}
+
+#[test]
+fn an_ally_kill_scores_nothing() {
+    let mut allies_killed = 0;
+    let run = check(&ally_def(1), &settings(3), 1, two_zones(), 200, |tick, world| {
+        kill_enemies_at_age_three(tick, world);
+        // Player 0 kills the allies the tick after they land.
+        for slot in 0..world.squads.len() {
+            if world.classes[slot] == "marine" && world.squads[slot].0 > 0 && tick > world.squads[slot].1 {
+                allies_killed += world.squads[slot].0;
+                world.kill_squad(slot, Some(0));
+            }
+        }
+    });
+    assert_eq!(allies_killed, 2);
+    // Only the five enemy kills scored, and no life was spent on an ally.
+    let scores = run
+        .commands
+        .iter()
+        .filter(|(_, command)| matches!(command, Command::Score { .. }))
+        .count();
+    assert_eq!(scores, 5);
+    assert!(run.commands.iter().all(|(_, command)| !matches!(
+        command,
+        Command::Lives { .. } | Command::Respawn { .. }
+    )));
+}
+
+#[test]
+fn allies_arrive_at_round_start_and_after_a_boss() {
+    let def = ally_def(2);
+    let (round_1, wave_4) = (Command::Round { index: 1 }, Command::Wave { index: 4 });
+
+    // The marines fall in the first round's middle: they arrive with it,
+    // and arrive again after its boss wave, before the next round.
+    let run = check(&def, &settings(2), 1, two_zones(), 400, |tick, world| {
+        kill_enemies_at_age_three(tick, world);
+        if tick == 10 {
+            for slot in 0..world.squads.len() {
+                if world.classes[slot] == "marine" && world.squads[slot].0 > 0 {
+                    world.kill_squad(slot, None);
+                }
+            }
+        }
+    });
+    assert_eq!(run.outcome, Some(Outcome::Won));
+    let marines = places(&run, "marine");
+    assert_eq!(marines.len(), 2, "{:?}", run.commands);
+    assert!(marines[0] < at(&run, &Command::Wave { index: 0 }));
+    assert!(at(&run, &wave_4) < marines[1] && marines[1] < at(&run, &round_1));
+
+    // Standing allies are not placed again.
+    let run = check(&def, &settings(2), 1, two_zones(), 400, kill_enemies_at_age_three);
+    assert_eq!(places(&run, "marine").len(), 1);
+}
+
+#[test]
+fn ally_rules_give_the_same_commands() {
+    // One team, many seeds: the allies are killed at random, replaced, and
+    // the cap holds with them counted.
+    for seed in 0..16u64 {
+        let players = 1 + (seed % 4) as u8;
+        let def = ally_def(2);
+        let mut director = ScriptDirector::new(def.clone(), settings(seed)).unwrap();
+        let mut world = World::new(players, eight_zones());
+        let cap = director.cap(players);
+        let run = run(
+            &mut director,
+            &mut world,
+            3_000,
+            random_script(seed),
+            |_, director, _, _, _| assert!(director.live_actors() <= cap),
+        );
+        assert_eq!(replay(&def, &settings(seed), &run.observed), run.commands, "seed {seed}");
+        assert!(!places(&run, "marine").is_empty(), "seed {seed}");
+        assert_eq!(director.error(), None);
+    }
+
+    // Two teams: one ally squad for each, on its team.
+    for seed in 0..8u64 {
+        let mut def = ally_def(2);
+        def.teams = 2;
+        def.scoring.player_kill = 40;
+        def.caps.live_actors_by_players = vec![(8, 10)];
+        for round in &mut def.rounds {
+            round.allies = vec![ally_squad("marine", 0, 2, 2), ally_squad("marine", 0, 1, 1)];
+        }
+        let mut director = ScriptDirector::new(def.clone(), settings(seed)).unwrap();
+        let mut world = World::new(2 + (seed % 5) as u8, eight_zones());
+        let mut sides = BTreeSet::new();
+        let run = run(
+            &mut director,
+            &mut world,
+            3_000,
+            random_script(seed),
+            |_, director, _, _, _| {
+                for slot in director.state().slots {
+                    if let firefight::director::Slot::Placed { ally: true, target, .. } = slot {
+                        sides.insert(target);
+                    }
+                }
+            },
+        );
+        assert_eq!(replay(&def, &settings(seed), &run.observed), run.commands, "seed {seed}");
+        assert_eq!(sides, BTreeSet::from([0, 1]), "seed {seed}");
+    }
 }
