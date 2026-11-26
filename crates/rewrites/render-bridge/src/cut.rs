@@ -43,13 +43,24 @@ pub const CUTS: &[Cut] = &[Cut {
     // AL is the caller's only read, and the setup's own answer sets it.
     abi_result: 0,
     pop: 20,
+},
+// The object shadows (docs/graphics/native-shadows.md): the Rust list
+// answers every call, and a shadow it cannot draw is
+// `scene_dropped_object_shadows`. Its layers draw in slot 3, before
+// layer 7. `eax` is the list's own count of casters, none on a drop.
+Cut {
+    name: "object_shadows",
+    entry: 0x0003_35e0,
+    abi_result: 0,
+    pop: 4,
 }];
 
 /// Cuts whose producer is a feature that builds the call's whole output
 /// from the call's registers (the object setup: `native_scene_lists`), so
 /// [`install`] leaves their points to it. Each still has its row here, so
-/// the census and the table cannot drift.
-pub const OWN_PRODUCER: &[&str] = &["object_setup"];
+/// the census and the table cannot drift. The object shadows are the same:
+/// `native_lights::object_shadows` answers the list, and its drop is a count.
+pub const OWN_PRODUCER: &[&str] = &["object_setup", "object_shadows"];
 
 /// Why a cut does not match the census.
 #[derive(Debug, PartialEq, Eq)]

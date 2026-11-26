@@ -241,4 +241,5 @@ fn object_setup_makes_the_guests_residency_requests() {
     // The object setup is cut by its own producer, and the table says so.
     assert!(CUTS.iter().any(|c| c.name == "object_setup" && c.entry == 0x0013_3790 && c.pop == 20));
     assert!(cut::OWN_PRODUCER.iter().all(|n| CUTS.iter().any(|c| c.name == *n)));
+    assert!(CUTS.iter().any(|c| c.name == "object_shadows" && c.entry == 0x0003_35e0 && c.pop == 4));
 }

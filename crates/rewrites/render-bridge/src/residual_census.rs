@@ -291,7 +291,7 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
-        status: Status::Partial,
+        status: Status::Native,
         slot: "opaque",
     },
     Row {
@@ -1404,7 +1404,7 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if r.name == "object_setup" {
+                if matches!(r.name, "object_setup" | "object_shadows") {
                     Status::Native
                 } else if matches!(
                     r.name,
@@ -1412,7 +1412,6 @@ mod tests {
                         | "alternate_view"
                         | "scene_passes"
                         | "object_shadow"
-                        | "object_shadows"
                         | "water_teardown"
                         | "sky"
                         | "scene_clear"

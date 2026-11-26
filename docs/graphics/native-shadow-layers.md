@@ -137,7 +137,7 @@ pixel side through `shaders::psh`, and its state block.
 `native_render::shadow_scene::plan` reuses
 `native_render::light_scene::plan_entries`: the sorted order, duplicates
 kept, adjacent list ranges of one stream, binding, class and pose joined.
-A group with a remainder is refused; its layer keeps its handlers.
+A group with a remainder is dropped (`remainder`); its handlers do not run.
 
 The scene carries what the layer's begin decided, so the plan needs no
 device. `frame_scene::LightGroup` holds `pass: Option<ShadowPass>` for
@@ -205,8 +205,8 @@ At the layer's build, with the group in the scene and whole,
    pending push callback refuses.
 2. Check the device against the group's `ShadowPass`: the bound target,
    its size, the clip control, the offset and the stencil state. A
-   difference refuses (`state`). The device must be the single retail
-   backend at render scale 1, as the shadow stage requires today.
+   difference drops the layer (`state`). The size is the pass's own, so
+   a scaled view draws its layers like an unscaled one.
 3. Plan the entries, resolve every program, buffer and texture, and
    build every pipeline. A missing one refuses.
 4. For layer 11, take the receiver term's frozen map
@@ -215,8 +215,8 @@ At the layer's build, with the group in the scene and whole,
    (`Device::prepare_external_bound`). `None` refuses.
 6. Hand the guest's entry loop no entries.
 
-A refusal at 1 to 5 issues nothing and leaves the layer on the gathered
-or resolved-draw path. The begin and end still run, so the clear, the
+A refusal at 1 to 5 issues nothing and drops the layer under its cause
+(`scene_dropped_shadow_layers_<cause>`); the guest's handlers do not run. The begin and end still run, so the clear, the
 raster state and its restore are the guest's. The freeze stays at the
 start of layer 11, and a caster generation is counted as today, so
 `observe_receivers` consumers see no change.
@@ -333,11 +333,11 @@ coordinator's; lanes write code and tests.
 - Tests: `native_render::light_gpu` renders a tiny caster scene and checks
   its pixels and projection uniforms; `native_render::shadow_scene`
   checks pass-state refusals; `render_bridge::native_shadows` checks that
-  a whole group commits and a refusal keeps the handlers. The planned
+  a whole group commits at any size and a refusal is dropped under its cause. The planned
   differential of a planned group against resolved draws, including depth,
   colour mask, stencil and bias, is not run here.
 - `render.scene` counters: `scene_shadow_layers_alone_10`,
-  `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`, `pose`,
+  `scene_dropped_shadow_layers_<cause>` (`remainder`, `stream`, `pose`,
   `program`, `state`, `target`, `callback`, `device`),
   `scene_dropped_shadow_layers` (zero).
 - Census: `layer.light.10` and `layer.object_shadow.10` count no
@@ -361,14 +361,14 @@ coordinator's; lanes write code and tests.
   none where layers 12 and 13 are alone too; `object_shadow` counts
   exactly the filter's quads.
 - `render.compare` as slice 3, and at the E3 lighting setting, where
-  the stage must still refuse the scaled copies.
+  the scaled copies draw their layers like the rest.
 
 **Slice 5.**
 - Tests: `native_render::shadow_filter_gpu` copies a tiny mask through
   target 11 and back to target 10 and checks every pixel. The lifted
   quad differential and resolved-quad comparison are not run here.
 - `render.scene` counters: `scene_shadow_filters_native`,
-  `scene_shadow_filter_refused_<cause>`.
+  `scene_dropped_shadow_filter_<cause>`.
 - Census: `object_shadow` counts no backend draw.
 - `render.capture {pass}` of the filtered mask, compared with the D3D
   launch's.
@@ -424,13 +424,13 @@ coordinator's; lanes write code and tests.
   split between scene draws and handlers in one layer.
 - A layer never draws alone into a target the device does not have
   bound, and never with a resolved fallback: every refusal is before
-  the issue.
+  the issue and is a counted drop.
 - A private chain has no guest reader of target 10 or 11. A guest draw
   that would read target 10 (the guest's filter) runs only after a
   spill has copied the private mask there.
-- Scaled and E3 display copies and interpolated replay keep the
-  original renderer until the renderer draws the frame once
-  (framescene.md, slice 6).
+- Scaled and E3 display copies and interpolated replay draw their
+  shadow layers from the scene, in slot 3 before layer 7. Nothing keeps
+  the original renderer.
 - A query-counting draw, a material animation and a template callback
   are remainders of the group by cause; their layers keep the handlers.
 - Model casters need `native_render::light_models`. Without it only

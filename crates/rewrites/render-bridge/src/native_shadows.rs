@@ -1,6 +1,11 @@
 //! Layer boundaries for the native shadow maps, on with the native
 //! renderer (`impl.render.native`, on by default). No observer mutates
 //! guest state, including on a malformed or partially readable list.
+//!
+//! The object shadows (`0x000335e0`) are a cut (`crate::cut`): their layers
+//! draw from the scene in [`SLOT`], before layer 7, at any render scale. A
+//! group the host cannot draw is not handed to the guest's handlers; it is
+//! `scene_dropped_shadow_layers_<cause>`.
 
 use crate::native_world::Mem;
 use engine::render::light_gather::{object_shadows, passes};
@@ -13,6 +18,9 @@ use native_render::{
 use std::sync::{Arc, Mutex};
 
 pub const ID: &str = "native-shadows";
+
+/// The view slot the object shadows draw in: slot 3, then layer 7.
+pub const SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::ShadowsAndLayer7;
 
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
@@ -83,7 +91,7 @@ pub fn clear_host() {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-const REFUSALS: [&str; 8] = [
+const DROP_CAUSES: [&str; 8] = [
     "remainder",
     "stream",
     "pose",
@@ -95,8 +103,9 @@ const REFUSALS: [&str; 8] = [
 ];
 static ALONE: [std::sync::atomic::AtomicU64; 3] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 3];
-static REFUSED: [std::sync::atomic::AtomicU64; REFUSALS.len()] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; REFUSALS.len()];
+static DROPPED_BY: [std::sync::atomic::AtomicU64; DROP_CAUSES.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; DROP_CAUSES.len()];
+static DROPPED_LISTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn alone_index(layer: u32) -> Option<usize> {
     match layer {
@@ -107,8 +116,10 @@ fn alone_index(layer: u32) -> Option<usize> {
     }
 }
 
-/// Draw a shadow group from the scene and empty its guest entry loop on
-/// success. Every refusal leaves the gathered/resolved-draw path intact.
+/// Draw a shadow group from the scene and empty its guest entry loop. A
+/// group the host cannot draw is dropped under its cause, never left to the
+/// guest's handlers: the result is true for every shadow layer. False only
+/// for a layer that is not a shadow layer.
 pub fn draw_alone(
     mem: &mut dyn GuestMemory,
     layer: u32,
@@ -133,12 +144,13 @@ pub fn draw_alone(
             true
         }
         Err(why) => {
-            let n = REFUSALS
+            let n = DROP_CAUSES
                 .iter()
                 .position(|&name| name == why)
-                .unwrap_or(REFUSALS.len() - 1);
-            REFUSED[n].fetch_add(1, Ordering::Relaxed);
-            false
+                .unwrap_or(DROP_CAUSES.len() - 1);
+            DROPPED_BY[n].fetch_add(1, Ordering::Relaxed);
+            dropped_layer();
+            true
         }
     }
 }
@@ -150,7 +162,7 @@ pub fn drawn_alone(layer: u32) -> u64 {
     })
 }
 
-/// `render.scene` counters for scene-shadow refusals by category.
+/// `render.scene` counters for the shadow layers drawn and dropped, by cause.
 pub fn alone_counters() -> Vec<(&'static str, u64)> {
     [
         ("scene_shadow_layers_alone_10", drawn_alone(10)),
@@ -158,19 +170,23 @@ pub fn alone_counters() -> Vec<(&'static str, u64)> {
         ("scene_shadow_layers_alone_14", drawn_alone(14)),
     ]
     .into_iter()
-    .chain(REFUSALS.iter().zip(&REFUSED).map(|(name, count)| {
+    .chain(DROP_CAUSES.iter().zip(&DROPPED_BY).map(|(name, count)| {
         let name = match *name {
-            "remainder" => "scene_shadow_alone_refused_remainder",
-            "stream" => "scene_shadow_alone_refused_stream",
-            "pose" => "scene_shadow_alone_refused_pose",
-            "program" => "scene_shadow_alone_refused_program",
-            "state" => "scene_shadow_alone_refused_state",
-            "target" => "scene_shadow_alone_refused_target",
-            "callback" => "scene_shadow_alone_refused_callback",
-            _ => "scene_shadow_alone_refused_device",
+            "remainder" => "scene_dropped_shadow_layers_remainder",
+            "stream" => "scene_dropped_shadow_layers_stream",
+            "pose" => "scene_dropped_shadow_layers_pose",
+            "program" => "scene_dropped_shadow_layers_program",
+            "state" => "scene_dropped_shadow_layers_state",
+            "target" => "scene_dropped_shadow_layers_target",
+            "callback" => "scene_dropped_shadow_layers_callback",
+            _ => "scene_dropped_shadow_layers_device",
         };
         (name, count.load(std::sync::atomic::Ordering::Relaxed))
     }))
+    .chain(std::iter::once((
+        "scene_dropped_object_shadows",
+        DROPPED_LISTS.load(std::sync::atomic::Ordering::Relaxed),
+    )))
     .chain(std::iter::once((
         "scene_dropped_shadow_layers",
         DROPPED.load(std::sync::atomic::Ordering::Relaxed),
@@ -194,7 +210,13 @@ pub fn chain_spilled() {
     CHAINS_SPILLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// A committed shadow pass that failed while recording on the render side.
+/// An object shadow list, row gather or caster the Rust body could not take:
+/// the call answers with nothing drawn.
+pub fn dropped_object_shadows() {
+    DROPPED_LISTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A shadow pass that could not be drawn, or that failed while recording on the render side.
 /// Its generation draws no shadow. The caller logs the cause once.
 pub fn dropped_layer() {
     DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -292,11 +314,11 @@ pub fn filter_counters() -> Vec<(&'static str, u64)> {
             .zip(&FILTER_REFUSED)
             .map(|(name, count)| {
                 let name = match *name {
-                    "program" => "scene_shadow_filter_refused_program",
-                    "state" => "scene_shadow_filter_refused_state",
-                    "target" => "scene_shadow_filter_refused_target",
-                    "callback" => "scene_shadow_filter_refused_callback",
-                    _ => "scene_shadow_filter_refused_device",
+                    "program" => "scene_dropped_shadow_filter_program",
+                    "state" => "scene_dropped_shadow_filter_state",
+                    "target" => "scene_dropped_shadow_filter_target",
+                    "callback" => "scene_dropped_shadow_filter_callback",
+                    _ => "scene_dropped_shadow_filter_device",
                 };
                 (name, count.load(std::sync::atomic::Ordering::Relaxed))
             }),
@@ -591,7 +613,7 @@ mod tests {
     static HOST_TURN: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn a_whole_caster_group_commits_and_a_refusal_keeps_its_handlers_and_counts() {
+    fn a_whole_caster_group_commits_and_a_refusal_is_dropped_under_its_cause() {
         let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
         let mut mem = engine::FlatMemory::new(0, 0x1000);
         let group = group();
@@ -603,17 +625,19 @@ mod tests {
         assert!(draw_alone(&mut mem, 14, &group), "an opacity group");
         assert!(!draw_alone(&mut mem, 12, &group), "not a shadow layer");
         assert_eq!(drawn_alone(10), before + 1);
+        let stream = |rows: &[(&'static str, u64)]| counter(rows, "scene_dropped_shadow_layers_stream");
+        let dropped = stream(&alone_counters());
         set_host(Arc::new(Stub(Err("stream"))));
-        assert!(!draw_alone(&mut mem, 10, &group));
+        assert!(draw_alone(&mut mem, 10, &group), "the guest's handlers do not run");
         assert_eq!(drawn_alone(10), before + 1);
-        let counters = alone_counters();
+        assert!(stream(&alone_counters()) > dropped);
         assert!(
-            counters
+            alone_counters()
                 .iter()
-                .any(|(name, count)| *name == "scene_shadow_alone_refused_stream" && *count > 0)
+                .all(|(name, _)| !name.contains("shadow_alone_refused"))
         );
         clear_host();
-        assert!(!draw_alone(&mut mem, 10, &group));
+        assert!(draw_alone(&mut mem, 10, &group), "no host is a `device` drop");
     }
 
     fn counter(rows: &[(&'static str, u64)], name: &str) -> u64 {
