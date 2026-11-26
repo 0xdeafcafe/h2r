@@ -58,7 +58,7 @@ fn run(opts: &Options, request: Verify) -> Result<VerificationReport> {
     if let Some(movies) = &opts.movies {
         cmd.arg("--movies").arg(movies);
     }
-    let header = film::Reader::open(&opts.film)?.header;
+    let header = film::file::header_of(&opts.film)?;
     boot::theater::configure_replay_child(&header, &mut cmd)?;
     let status = cmd
         .status()

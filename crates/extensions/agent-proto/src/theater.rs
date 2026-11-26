@@ -181,15 +181,16 @@ pub struct StartPointLoaded {
 pub struct Status {
     /// The session records the games a player plays into the film library.
     pub default_recording: bool,
-    /// The running tape's file while recording, as a path.
-    pub tape: Option<String>,
-    /// A game is on the tape now.
+    /// The film file of the game being recorded, as a path, from the
+    /// game's activation to its end.
+    pub recording: Option<String>,
+    /// A game is being recorded now.
     pub in_game: bool,
-    /// Films cut so far this session, oldest first, as paths.
-    pub games_cut: Vec<String>,
-    /// Why the last tape or game went without a film, if one did.
+    /// Films sealed so far this session, oldest first, as film file paths.
+    pub films: Vec<String>,
+    /// Why the last game went without a film, if one did.
     pub last_discard: Option<String>,
-    /// Changes from outside the tape the recording carried on through.
+    /// Changes from outside the film the recording carried on through.
     pub notes: Vec<String>,
     /// The failure that stopped the recording, if one did.
     pub failure: Option<String>,

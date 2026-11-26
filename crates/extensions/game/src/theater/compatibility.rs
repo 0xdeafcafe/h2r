@@ -278,22 +278,23 @@ impl Session {
         self.set_simulation_hooks(actual)
     }
 
-    /// Record mode takes `actual` as the film's digest and puts it on the
-    /// tape, whose boot header was written before the hooks were installed;
-    /// every film cut from the tape, and a tape sealed after a hard kill,
-    /// read it from there. Replay requires the film's digest to equal it.
+    /// Record mode takes `actual` as the film's digest. A film opened
+    /// before the hooks were installed (a named recording, open from boot)
+    /// takes it in a header appended to its stats container; its game
+    /// start's stamp names it too. Replay requires the film's digest to
+    /// equal it.
     pub(super) fn set_simulation_hooks(&self, actual: String) -> Result<()> {
         let mut state = self.lock();
         if state.header.version < 3 {
             return Ok(());
         }
         if matches!(&state.mode, Mode::Record(_)) {
-            state.header.simulation_hooks = Some(actual);
-            let header = state.header.clone();
+            state.header.simulation_hooks = Some(actual.clone());
             if let Mode::Record(rec) = &mut state.mode
-                && let Some(out) = rec.out.as_mut()
+                && let Some(game) = rec.game.as_mut()
             {
-                out.chunk(film::HEAD, &header)?;
+                game.header.simulation_hooks = Some(actual);
+                game.stats.chunk(film::HEAD, &game.header)?;
             }
         } else {
             ensure!(
@@ -449,22 +450,20 @@ mod tests {
             live_service: false,
             features: String::new(),
             player_features: false,
-            tape_id: None,
         };
         header.meta.image_stamp = STAMP.into();
+        // Each film is a pair: its film file, holding a game start, and its
+        // stats container beside it.
         for (id, abi) in [("old", "h2-sim/0"), ("current", SIMULATION_ABI)] {
             header.meta.id = id.into();
             header.runtime_stamp = abi.into();
-            let file = fs::File::create(dir.0.join(format!("{id}.h2film"))).unwrap();
+            let path = dir.0.join(format!("{id}.h2film"));
+            let file = fs::File::create(film::file::stats_of(&path)).unwrap();
             let mut writer = film::Writer::new(file, &header).unwrap();
             writer
                 .chunk(film::blam::SUMM, &film::blam::Summary::default())
                 .unwrap();
             writer.finish().unwrap();
-        }
-        // A film plays from its game start: the current film has the film
-        // file beside its container, holding one.
-        {
             let start = film::start::GameStart {
                 stamp: Default::default(),
                 game: film::start::Game { first_update: 1, ..Default::default() },
@@ -477,9 +476,8 @@ mod tests {
                 hash_detail: None,
             };
             let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
-            let path = film::file::beside(&dir.0.join("current.h2film"));
             let mut writer =
-                film::file::FilmWriter::new(fs::File::create(path).unwrap(), &seed, 30).unwrap();
+                film::file::FilmWriter::new(fs::File::create(&path).unwrap(), &seed, 30).unwrap();
             writer.game_start(&start).unwrap();
             writer.finish().unwrap();
         }

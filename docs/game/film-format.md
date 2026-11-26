@@ -1,6 +1,6 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the game start block (written for each game the recorder sees), the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. Extension blocks and one file for each game are not built, and the file still carries a seed ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
+Status: Design. The film file's tick chunks, the game start block, the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. A default recording writes one film for each game, `<id>.h2film` with `<id>.h2stats` beside it, opened at the game's activation and sealed at its end (slice 6). Extension blocks are not built, the file still carries a seed, and a `--film` or host recording is one film from boot to its first game's end ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
 Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -34,9 +34,9 @@ camera copies nothing.
 ([Recording every game](#recording-every-game)), and a leased dedicated
 host records each match. To choose the file, pass `--film FILE` to
 `h2 play`, `h2 run` or `h2 serve`, or set `H2_FILM_OUT`. The destination
-must be a new file. It takes the session's first game; a later game of
-the same session goes to `FILE` with `-2`, `-3` and so on before the
-extension.
+must be a new file; its stats container is the same name with
+`.h2stats`. The film opens at boot, with tick 1 the session's first tick,
+and seals at the end of the session's first game.
 
 ```sh
 h2 play --film match.h2film --level ascension
@@ -75,11 +75,13 @@ decision and the library rules live in
   (`theater-film`, `theater::OBSERVER_FEATURE`) beside the in-game
   Theater's screens (`theater-films`, `theater-film-detail`). No other
   feature takes its id; `registration/tests.rs` builds that plan.
-- **Outside changes end the film.** An editor write or an agent API write
-  changes a running game's ticks from outside the update. The film is
-  sealed at the tick before it (`Session::outside_change`) and
-  `theater.status` lists the reason in `notes`. A change a feature records
-  as an extension block does not end the film
+- **Outside changes.** A Live session link joined changes nothing the
+  film replays: the recording carries on and `theater.status` lists the
+  reason in `notes`. An editor write or an agent API write changes a
+  running game's ticks from outside the update: the game in play goes
+  without a film, its files are deleted, `last_discard` says why, and the
+  next game records as usual (`Session::outside_change`). A change a
+  feature records as an extension block keeps the film
   ([The film file](#the-film-file)).
 - **A film being watched is not recorded.**
 - **Sessions that skip recording.** An `h2 lab` job (its frame times stay
@@ -105,7 +107,10 @@ decision and the library rules live in
   an unsealed film. The recorder writes a checkpoint of the open chunk
   every 150 ticks (`FilmWriter::checkpoint`), so the film opens as it
   stands and loses at most 150 ticks; the library lists it without
-  scores.
+  scores. Before the next game's film opens, the library prune seals an
+  unsealed default film untouched for an hour at its last checkpoint
+  (`film::file::recover`), or deletes it with its stats container when it
+  holds no game start or no tick (`autorecord::prune`).
 
 Recent lists up to 25 unsaved games. Saving a film moves it to Saved.
 Opening Theater reads the local library even when Live has no entry for
@@ -132,10 +137,14 @@ frame of a recording draws inside the render's private random stream
 A film is one game, from the activation of its map to its end.
 
 1. **Open.** When `GAME_ACTIVATE` returns success for a scenario that is
-   not the main menu, the recorder creates the film and the stats file
-   and writes the header and the game start.
-2. **The first update** fills the game start's random words and start
-   hash. A game whose arena came from a saved checkpoint, or one already
+   not the main menu, with options other than the game in play's, the
+   recorder seals the game before it, makes room in the library and
+   creates `<id>.h2film` and `<id>.h2stats` with their headers
+   (`State::open_game`). A campaign revert activates the same options and
+   is the same game.
+2. **The first update** takes the game start, with the random words and
+   start hash, and writes it just before tick 1. A game gone before its
+   first update has no film: both files are deleted. A game whose arena came from a saved checkpoint, or one already
    running when recording starts, gets a start point block here.
 3. **Each update** adds a record; every 256 make a tick chunk.
 4. **Seal.** The game-over latch, a map unload or the session's exit
@@ -181,9 +190,9 @@ four-byte tag, a u32 length and that many bytes (`film::start`), inside
 one zstd frame. A reader refuses a missing required section, a repeated
 or unknown one, a length past the frame, bytes after the last section and
 an options block that is not 0x1118 bytes. The file stores it as a block of
-kind 4 (`FilmWriter::game_start`); a film of a session holds one for each
-game it played, each written just before its first update's tick, and
-`FilmReader::game_start` reads the last, the game the film is of. Until the
+kind 4 (`FilmWriter::game_start`); a film holds one, written just before
+tick 1, the game's first update. The writer refuses a second, and a
+reader refuses a file that holds a second. Until the
 seed goes the block sits among the other blocks and the header's flag bit 3
 says the file has one.
 

@@ -291,18 +291,7 @@ pub(super) fn open<R: Read + Seek>(mut input: R, len: u64) -> Result<Reader<R>> 
         "film render hook profile changed"
     );
     validate_header(&header, &front)?;
-    match &header.tape_id {
-        // A cut keeps its tape's boot HEAD: the same image, the tape's ID.
-        Some(tape) => ensure!(
-            initial.version == 3
-                && &initial.meta.id == tape
-                && initial.tape_id.is_none()
-                && initial.meta.image_stamp == front.image_stamp
-                && initial.runtime_stamp == front.runtime_stamp,
-            "v3 cut and its tape's boot header differ"
-        ),
-        None => validate_header(&initial, &front)?,
-    }
+    validate_header(&initial, &front)?;
     Ok(Reader {
         input,
         header,

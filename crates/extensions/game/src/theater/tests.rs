@@ -4,6 +4,7 @@ mod transport;
 
 use super::*;
 use agent_proto::theater as api;
+use film::Reader;
 use runtime::guest::Permissions;
 use serde_json::json;
 use std::path::Path;
@@ -42,11 +43,11 @@ pub(super) fn film_tick(session: &Arc<Session>, g: &mut runtime::Guest) {
     session.checkpoint(g);
 }
 
-/// Write the film file a replay of `container` plays from, over any the
-/// recording left: the start of [`film_game`] at tick 1, then `ticks` ticks
-/// with no actions and an empty body.
-pub(super) fn with_game_start(container: &Path, ticks: u64) {
-    let header = Reader::open(container).unwrap().header;
+/// Write the film file at `path` a replay plays from, over the one the
+/// recording left: the recording's header, the start of [`film_game`] at
+/// tick 1, then `ticks` ticks with no actions and an empty body.
+pub(super) fn with_game_start(path: &Path, ticks: u64) {
+    let header = Reader::open(film::file::stats_of(path)).unwrap().header;
     let seed = film::file::Seed { header: header.clone(), descriptor: Default::default() };
     let mut w = film::file::FilmWriter::new(std::io::Cursor::new(Vec::new()), &seed, 30).unwrap();
     let start = game_start::first_update(&film_game(), film_options(), &header, None, 1).unwrap();
@@ -55,7 +56,7 @@ pub(super) fn with_game_start(container: &Path, ticks: u64) {
         w.push_tick(0, 0, &[None; film::columns::SEATS]).unwrap();
         w.tail(&[0; film::columns::BODY_BYTES]).unwrap();
     }
-    std::fs::write(film::file::beside(container), w.finish().unwrap().into_inner()).unwrap();
+    std::fs::write(path, w.finish().unwrap().into_inner()).unwrap();
 }
 
 /// A replay of `path` with these settings and the rest at their defaults.
@@ -257,7 +258,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
             rec.checkpoint(&guest);
         }
         rec.finish(true).unwrap();
-        let header = Reader::open(&path).unwrap().header;
+        let header = Reader::open(film::file::stats_of(&path)).unwrap().header;
         assert_eq!(header.telemetry_hooks, Some(hooks));
         assert_eq!(header.render_hooks, Some(film::RenderHooks::Slim));
         let switches = hooks::Switches::parse(&header.features).unwrap();
@@ -477,7 +478,7 @@ fn local_film_records_the_consumed_action_and_both_edges_of_a_tickless_pause() {
     rec.checkpoint(&guest);
     rec.finish(true).unwrap();
 
-    let mut track = TrackReader::open(file).unwrap();
+    let mut track = TrackReader::open(film::file::stats_of(&file)).unwrap();
     let first = track.step().unwrap().unwrap();
     assert_eq!(first.inputs, vec![action]);
     assert_eq!(first.events, vec![Event::Pause { paused: true }, Event::Pause { paused: false }]);
@@ -575,7 +576,7 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     observer.scene(hill(f64::INFINITY)).unwrap();
     session.finish(true).unwrap();
 
-    let mut range = film::range::RangeReader::new(File::open(&path).unwrap()).unwrap();
+    let mut range = film::range::RangeReader::new(File::open(film::file::stats_of(&path)).unwrap()).unwrap();
     assert_eq!(
         range.front.summary.dropped_samples,
         [
@@ -603,7 +604,7 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     assert!(observed.contains(&1) && !observed.contains(&2) && observed.contains(&3));
     assert!((poses.scene().hill.unwrap().corners[0][0] - 2.0).abs() < 0.002);
     assert_eq!(poses.extras().unwrap().tick, 3);
-    // A host's actions are in the film file beside its stats stream.
+    // A host's actions are in its film file, beside its stats container.
     let mut replay = film::blam::TrackReader::open_with_film(path).unwrap();
     for tick in 1..=3 {
         assert_eq!(replay.step().unwrap().unwrap().tick, tick);

@@ -51,7 +51,6 @@ pub(crate) fn header(id: u64) -> Header {
         live_service: false,
         features: String::new(),
         player_features: false,
-        tape_id: None,
     }
 }
 #[test]
@@ -196,8 +195,8 @@ fn library_keeps_25_recent_plus_pins_by_header_id() {
 #[test]
 fn upload_rejects_large_files_before_making_a_request() {
     let dir = Temp::new();
-    let p = dir.0.join("oversize");
-    File::create(&p).unwrap().set_len(MAX_UPLOAD + 1).unwrap();
+    let p = dir.0.join("oversize.h2film");
+    File::create(crate::file::stats_of(&p)).unwrap().set_len(MAX_UPLOAD + 1).unwrap();
     assert!(
         upload("http://127.0.0.1", "test", "game", &p)
             .unwrap_err()
@@ -271,7 +270,8 @@ fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
     let dir = Temp::new();
     let path = dir.0.join("host.h2film");
     let bytes = encoded();
-    fs::write(&path, &bytes).unwrap();
+    // A stats container with no film file beside it.
+    fs::write(crate::file::stats_of(&path), &bytes).unwrap();
     run_upload(&path, move |listener| {
         let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
         assert_eq!(body, bytes);
@@ -288,13 +288,13 @@ fn upload_posts_the_exact_bytes_then_advances_without_resending_them() {
 }
 
 #[test]
-fn a_film_file_beside_the_stats_stream_follows_it_as_its_own_object() {
+fn a_film_file_follows_its_stats_container_as_its_own_object() {
     let dir = Temp::new();
     let path = dir.0.join("host.h2film");
     let stats = encoded();
-    fs::write(&path, &stats).unwrap();
+    fs::write(crate::file::stats_of(&path), &stats).unwrap();
     let film = b"H2FILM4! stands in for the film file".to_vec();
-    fs::write(crate::file::beside(&path), &film).unwrap();
+    fs::write(&path, &film).unwrap();
     run_upload(&path, move |listener| {
         let (stream, body) = film_request(&listener, "POST /v1/games/a%2Fb/film");
         assert_eq!(body, stats);
@@ -312,7 +312,7 @@ fn multipart_upload_advances_each_part_before_uploading_the_next_and_waits_for_p
     let dir = Temp::new();
     let path = dir.0.join("split.h2film");
     let size = SINGLE_UPLOAD_BYTES + 1;
-    File::create(&path).unwrap().set_len(size).unwrap();
+    File::create(crate::file::stats_of(&path)).unwrap().set_len(size).unwrap();
 
     run_upload(&path, move |listener| {
         let mut hash = Sha256::new();
@@ -392,80 +392,10 @@ fn a_single_chunk_cannot_hide_a_second_zstd_frame() {
     assert!(read_bytes(&mut Cursor::new(data), &e, 256).is_err());
 }
 
-/// One game cut from a running v3 tape (docs/game/film-format.md, "One film
-/// per game"): the copy of the tape so far, closed as a film of its own,
-/// while the tape records on and seals as itself.
+/// A v3 film whose boot `HEAD` has another ID than its final one is
+/// refused.
 #[test]
-fn a_cut_of_a_running_tape_reads_as_a_film_of_its_own() {
-    use blam::{MatchHeader, Summary, Tick, TrackWriter};
-    let tick = |n| Tick {
-        tick: n,
-        inputs: vec![],
-        events: vec![],
-        closing_events: vec![],
-        post_hash: None,
-        forge: vec![],
-        firefight: vec![],
-    };
-    let mut tape_header = header(7);
-    tape_header.version = 3;
-    tape_header.meta.source = Source::Local;
-    tape_header.player_features = true;
-    let mut tape = Writer::new(Cursor::new(Vec::new()), &tape_header).unwrap();
-    let mut track = TrackWriter::default();
-    for n in 1..=40 {
-        track.push(&mut tape, tick(n)).unwrap();
-    }
-
-    let mut cut_header = tape_header.clone();
-    cut_header.meta.id = "8".into();
-    cut_header.meta.started_ms = 9_000;
-    cut_header.meta.length_ticks = 40;
-    cut_header.tape_id = Some("7".into());
-    // A cut names its tape, has an ID of its own and starts from the
-    // tape's every byte.
-    let so_far = tape.out.get_ref().clone();
-    let mut stranger = cut_header.clone();
-    stranger.tape_id = Some("other".into());
-    assert!(tape.fork(Cursor::new(so_far.clone()), &stranger).is_err());
-    let mut same_id = cut_header.clone();
-    same_id.meta.id = "7".into();
-    assert!(tape.fork(Cursor::new(so_far.clone()), &same_id).is_err());
-    assert!(tape.fork(Cursor::new(so_far[..so_far.len() - 1].to_vec()), &cut_header).is_err());
-
-    let mut cut = tape.fork(Cursor::new(so_far), &cut_header).unwrap();
-    let mut cut_track = track.clone();
-    cut.chunk(HEAD, &cut_header).unwrap();
-    let game = MatchHeader {
-        match_start_tick: Some(10),
-        ..Default::default()
-    };
-    cut_track.finish(&mut cut, &game, &Summary::default()).unwrap();
-    let bytes = cut.finish().unwrap().into_inner();
-    let reader = Reader::new(Cursor::new(bytes)).unwrap();
-    assert_eq!(reader.header.meta.id, "8");
-    assert_eq!(reader.header.tape_id.as_deref(), Some("7"));
-    let front = reader.front.as_ref().unwrap();
-    assert_eq!((front.id.as_str(), front.started_ms), ("8", 9_000));
-    assert_eq!(front.match_start_tick, Some(10));
-    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 40);
-
-    // The tape records on past the cut and is a film of its own when sealed.
-    for n in 41..=50 {
-        track.push(&mut tape, tick(n)).unwrap();
-    }
-    tape.chunk(HEAD, &tape_header).unwrap();
-    track.finish(&mut tape, &MatchHeader::default(), &Summary::default()).unwrap();
-    let bytes = tape.finish().unwrap().into_inner();
-    let reader = Reader::new(Cursor::new(bytes)).unwrap();
-    assert_eq!(reader.header.meta.id, "7");
-    assert_eq!(reader.ranges.as_ref().unwrap().chunks.last().unwrap().last, 50);
-}
-
-/// Only a cut's final header may name another boot header: a v3 film whose
-/// boot `HEAD` has another ID is still refused.
-#[test]
-fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
+fn a_film_whose_boot_header_has_another_id_is_refused() {
     use blam::{MatchHeader, Summary, Tick, TrackWriter};
     let mut boot = header(7);
     boot.version = 3;
@@ -485,7 +415,7 @@ fn a_film_whose_boot_header_differs_without_naming_its_tape_is_refused() {
             },
         )
         .unwrap();
-    // Forge a final header with another ID, without `tape_id`.
+    // Forge a final header with another ID.
     let mut other = boot.clone();
     other.meta.id = "8".into();
     w.ranges.as_mut().unwrap().front.id = "8".into();

@@ -1,6 +1,8 @@
 //! The film file (docs/game/input-film.md, "Layout"): a seed, the seats'
 //! action columns in chunks of 256 ticks ([`crate::columns`]), the game
-//! starts, and a trailer that finds a chunk without a search.
+//! start, and a trailer that finds a chunk without a search. A film is one
+//! game: `<id>.h2film` is this file and `<id>.h2stats` beside it the stats
+//! container ([`stats_of`]).
 //!
 //! ```text
 //! header, 64 bytes, little-endian
@@ -14,8 +16,8 @@
 //!   48  16  digest of the dictionary the chunks name, or zero
 //! seed      one zstd frame of JSON: the film header and the match descriptor
 //! blocks    u8 kind (0 tick chunk, 2 start point, 3 checkpoint, 4 game
-//!           start), u32 stored bytes, then the payload: a tick chunk is
-//!           its zstd frame; a start point and a game start
+//!           start, at most one), u32 stored bytes, then the payload: a
+//!           tick chunk is its zstd frame; a start point and a game start
 //!           ([`crate::start`]) are a zstd frame
 //! trailer   u32 chunk count, then a u64 offset per tick chunk
 //! ```
@@ -46,7 +48,7 @@ pub const VERSION: u16 = 4;
 pub const HEADER_BYTES: usize = 64;
 pub const FLAG_SEALED: u16 = 2;
 pub const FLAG_START_POINT: u16 = 4;
-/// The file holds at least one game start ([`crate::start`]).
+/// The file holds its game's start ([`crate::start`]).
 pub const FLAG_GAME_START: u16 = 8;
 const KIND_TICKS: u8 = 0;
 const KIND_START: u8 = 2;
@@ -143,11 +145,6 @@ pub struct FilmWriter<W: Write + Seek> {
     ticks: u64,
     last_digest: u64,
     head: Head,
-    /// Where the blocks start, after the seed.
-    body: u64,
-    seed_id: String,
-    /// A cut: its last chunk is written, and no tick follows.
-    closed: bool,
 }
 
 impl<W: Write + Seek> FilmWriter<W> {
@@ -172,9 +169,6 @@ impl<W: Write + Seek> FilmWriter<W> {
             ticks: 0,
             last_digest: 0,
             head,
-            body: (HEADER_BYTES + frame.len()) as u64,
-            seed_id: seed.header.meta.id.clone(),
-            closed: false,
         })
     }
 
@@ -190,7 +184,6 @@ impl<W: Write + Seek> FilmWriter<W> {
         digest: u64,
         seats: &[Option<[u8; ACTION_BYTES]>; SEATS],
     ) -> Result<()> {
-        ensure!(!self.closed, "a cut film takes no more ticks");
         // A full chunk stays open until the next tick, so a seat record can
         // still follow the 256th.
         if self.encoder.ticks() == CHUNK_TICKS {
@@ -206,14 +199,13 @@ impl<W: Write + Seek> FilmWriter<W> {
     /// chunk: stored as the bytes that differ from the tick before's. A
     /// tick given none holds the tick before's.
     pub fn tail(&mut self, body: &[u8]) -> Result<()> {
-        ensure!(!self.closed, "a cut film takes no more tails");
         self.encoder.tail(body)
     }
 
     /// A seat record on the tick just pushed, even the last of a chunk.
     pub fn seat_record(&mut self, seat: u8, kind: u8, bytes: &[u8]) -> Result<()> {
         let n = self.encoder.ticks();
-        ensure!(n > 0 && !self.closed, "a seat record needs a tick");
+        ensure!(n > 0, "a seat record needs a tick");
         self.encoder.seat_record(n - 1, seat, kind, bytes)
     }
 
@@ -221,7 +213,7 @@ impl<W: Write + Seek> FilmWriter<W> {
     /// unsealed file takes as the file's last chunk until a whole chunk
     /// replaces it. A recording that dies keeps its ticks to here.
     pub fn checkpoint(&mut self) -> Result<()> {
-        if self.encoder.ticks() == 0 || self.closed {
+        if self.encoder.ticks() == 0 {
             return Ok(());
         }
         let frame = self.encoder.finish_copy(self.last_digest)?;
@@ -230,9 +222,8 @@ impl<W: Write + Seek> FilmWriter<W> {
         Ok(())
     }
 
-    /// A game's start, before the game's first update: the film tick the
-    /// start names is the next one this writer takes. A film of a session
-    /// holds one for each game it played, each at its first update's tick.
+    /// The game's start, before the game's first update: the film tick the
+    /// start names is the next one this writer takes. A film holds one.
     pub fn game_start(&mut self, start: &GameStart) -> Result<()> {
         ensure!(
             start.game.first_update == self.ticks + 1,
@@ -245,7 +236,7 @@ impl<W: Write + Seek> FilmWriter<W> {
 
     /// A game start as the file stores it, copied from another film file.
     pub fn game_start_frame(&mut self, frame: &[u8]) -> Result<()> {
-        ensure!(!self.closed, "a cut film takes no more game starts");
+        ensure!(self.head.flags & FLAG_GAME_START == 0, "a film holds one game start");
         ensure!(frame.len() as u64 <= u64::from(MAX_GAME_START), "film game start is too large");
         self.head.flags |= FLAG_GAME_START;
         self.block(KIND_GAME, frame)
@@ -299,59 +290,6 @@ impl<W: Write + Seek> FilmWriter<W> {
     }
 }
 
-impl<W: Read + Write + Seek> FilmWriter<W> {
-    /// Cut a film of its own from this one as it stands, into `out`: the
-    /// `seed`'s film (a new ID), every block written so far, and a copy of
-    /// the chunk still open. This film keeps recording, untouched. The cut
-    /// takes [`FilmWriter::finish`], but no more ticks.
-    pub fn fork<V: Write + Seek>(&mut self, mut out: V, seed: &Seed) -> Result<FilmWriter<V>> {
-        ensure!(
-            seed.header.meta.id != self.seed_id,
-            "a cut has an ID of its own"
-        );
-        let json = serde_json::to_vec(seed)?;
-        ensure!(json.len() <= MAX_SEED, "film seed is too large");
-        let frame = zstd::bulk::compress(&json, 3)?;
-        let mut head = Head {
-            flags: self.head.flags,
-            ticks_per_second: self.head.ticks_per_second,
-            id: film_id(&seed.header.meta.id),
-            length: 0,
-            seed_len: u32::try_from(frame.len())?,
-            trailer: 0,
-        };
-        head.flags &= !FLAG_SEALED;
-        out.write_all(&head.encode())?;
-        out.write_all(&frame)?;
-        let shift = (HEADER_BYTES + frame.len()) as u64;
-        let end = self.out.stream_position()?;
-        self.out.seek(SeekFrom::Start(self.body))?;
-        let copied = std::io::copy(&mut (&mut self.out).take(end - self.body), &mut out);
-        self.out.seek(SeekFrom::Start(end))?;
-        ensure!(copied? == end - self.body, "film file is shorter than written");
-        let mut chunks: Vec<u64> = self.chunks.iter().map(|&at| at - self.body + shift).collect();
-        if self.encoder.ticks() > 0 {
-            let at = out.stream_position()?;
-            let frame = self.encoder.finish_copy(self.last_digest)?;
-            out.write_all(&[KIND_TICKS])?;
-            out.write_all(&u32::try_from(frame.len())?.to_le_bytes())?;
-            out.write_all(&frame)?;
-            chunks.push(at);
-        }
-        Ok(FilmWriter {
-            out,
-            encoder: ChunkEncoder::new()?,
-            chunks,
-            ticks: self.ticks,
-            last_digest: self.last_digest,
-            head,
-            body: shift,
-            seed_id: seed.header.meta.id.clone(),
-            closed: true,
-        })
-    }
-}
-
 /// A start point or game start in the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Block {
@@ -372,8 +310,8 @@ pub struct FilmReader<R: Read + Seek> {
     pub length_ticks: u64,
     chunks: Vec<(u64, u32)>,
     pub start_points: Vec<Block>,
-    /// The game starts, in file order: one for each game the film holds
-    /// ([`FilmReader::game_start`]).
+    /// The game's start, when the film holds one
+    /// ([`FilmReader::game_start`]); a file with two is refused.
     pub game_starts: Vec<Block>,
 }
 
@@ -458,6 +396,7 @@ impl<R: Read + Seek> FilmReader<R> {
                 }
                 KIND_GAME => {
                     ensure!(stored <= MAX_GAME_START, "film game start is too large");
+                    ensure!(game_starts.is_empty(), "film holds a second game start");
                     game_starts.push(Block {
                         tag: *b"GAME",
                         offset: body,
@@ -548,12 +487,9 @@ impl<R: Read + Seek> FilmReader<R> {
         decoder.load((index * CHUNK_TICKS) as u64 + 1, buf)
     }
 
-    /// The film's game: the last game start in the file. A film of a
-    /// session holds the starts of every game it played, and the game it
-    /// is the film of is the one played last. `None` for a film that
-    /// predates game starts.
+    /// The film's game start. `None` for a film that holds none.
     pub fn game_start(&mut self) -> Result<Option<GameStart>> {
-        let Some(block) = self.game_starts.last().copied() else {
+        let Some(block) = self.game_starts.first().copied() else {
             return Ok(None);
         };
         self.game_start_at(&block).map(Some)
@@ -658,7 +594,7 @@ impl FilmActions {
         Ok(())
     }
 
-    /// The film's game: its last game start ([`FilmReader::game_start`]).
+    /// The film's game start ([`FilmReader::game_start`]).
     pub fn game_start(&mut self) -> Result<Option<GameStart>> {
         self.reader.game_start()
     }
@@ -749,34 +685,48 @@ impl FilmActions {
     }
 }
 
-/// The game start of the film file beside `container` (its last: the game
-/// the film is of), or `None` when there is no film file or it holds no game
-/// start. Reads the file's index and the one block; no tick chunk is
-/// inflated.
-pub fn game_start_of(container: &Path) -> Result<Option<GameStart>> {
-    let path = beside(container);
-    if !path.try_exists()? {
+/// The game start of the film file at `film`, or `None` when there is no
+/// such file or it holds no game start. Reads the file's index and the one
+/// block; no tick chunk is inflated.
+pub fn game_start_of(film: &Path) -> Result<Option<GameStart>> {
+    if !film.try_exists()? {
         return Ok(None);
     }
-    let file = File::open(&path).with_context(|| path.display().to_string())?;
+    let file = File::open(film).with_context(|| film.display().to_string())?;
     FilmReader::open(file)?.game_start()
 }
 
-/// The film file's path beside its container.
-pub fn beside(container: &Path) -> PathBuf {
-    container.with_extension("h2f")
+/// The film's header as its seed holds it, with the length the file reads
+/// to (sealed, or up to its last checkpoint) and the simulation hooks of
+/// its game start's stamp: a recording that opened its film before the
+/// hooks were installed names them there. An unsealed film reads too.
+pub fn header_of(film: &Path) -> Result<Header> {
+    let file = File::open(film).with_context(|| film.display().to_string())?;
+    let mut reader = FilmReader::open(file)?;
+    let start = reader.game_start()?;
+    let mut header = reader.seed.header.clone();
+    header.meta.length_ticks = reader.length_ticks;
+    if let Some(hooks) = start.and_then(|start| start.stamp.hooks_sha256) {
+        header.simulation_hooks = Some(hooks);
+    }
+    Ok(header)
 }
 
-/// Seal the unsealed film file beside `container`, ending at `end_tick`:
-/// a sealed copy of its game starts, its ticks up to `end_tick` and their
-/// seat records, renamed over it once it is whole. A hard-killed recording
-/// leaves its film file as the recorder last wrote it, with the open chunk
-/// as of the last [`FilmWriter::checkpoint`].
-pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
-    let film = beside(container);
-    let staging = film.with_extension("h2f.recover");
+/// The stats container of the film file at `film`: `<id>.h2stats` beside
+/// `<id>.h2film` (docs/game/film-format.md).
+pub fn stats_of(film: &Path) -> PathBuf {
+    film.with_extension("h2stats")
+}
+
+/// Seal the unsealed film file at `film`, ending at `end_tick`: a sealed
+/// copy of its start, its ticks up to `end_tick` and their seat records,
+/// renamed over it once it is whole. A hard-killed recording leaves its
+/// film file as the recorder last wrote it, with the open chunk as of the
+/// last [`FilmWriter::checkpoint`].
+pub fn recover(film: &Path, end_tick: u64) -> Result<()> {
+    let staging = film.with_extension("h2film.recover");
     let sealed = (|| -> Result<File> {
-        let mut reader = FilmReader::open(File::open(&film)?)?;
+        let mut reader = FilmReader::open(File::open(film)?)?;
         ensure!(
             reader.length_ticks >= end_tick,
             "film file ends at tick {}, before tick {end_tick}",
@@ -791,12 +741,9 @@ pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
             let frame = reader.read_block(&block)?;
             out.start_point(&frame)?;
         }
-        // The starts of the games the kept ticks reach.
-        for block in reader.game_starts.clone() {
+        if let Some(block) = reader.game_starts.first().copied() {
             let frame = reader.read_block(&block)?;
-            if GameStart::decode(&frame)?.game.first_update <= end_tick {
-                out.game_start_frame(&frame)?;
-            }
+            out.game_start_frame(&frame)?;
         }
         let mut decoder = ChunkDecoder::new()?;
         let mut buf = Vec::new();
@@ -834,7 +781,7 @@ pub fn recover_beside(container: &Path, end_tick: u64) -> Result<()> {
         Ok(file)
     })();
     match sealed {
-        Ok(_) => Ok(std::fs::rename(&staging, &film)?),
+        Ok(_) => Ok(std::fs::rename(&staging, film)?),
         Err(error) => {
             let _ = std::fs::remove_file(&staging);
             Err(error)

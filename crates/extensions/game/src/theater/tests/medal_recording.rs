@@ -73,7 +73,7 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     );
     session.finish(true).unwrap();
 
-    let mut reader = film::range::RangeReader::new(std::fs::File::open(&file).unwrap()).unwrap();
+    let mut reader = film::range::RangeReader::new(std::fs::File::open(film::file::stats_of(&file)).unwrap()).unwrap();
     let summary: BTreeMap<_, _> = reader
         .front
         .summary
@@ -188,7 +188,7 @@ fn sealed_menu_counts_the_recorded_bounce_medals() {
     );
     session.finish(true).unwrap();
 
-    let mut reader = film::range::RangeReader::new(std::fs::File::open(&file).unwrap()).unwrap();
+    let mut reader = film::range::RangeReader::new(std::fs::File::open(film::file::stats_of(&file)).unwrap()).unwrap();
     let summary: BTreeMap<_, _> = reader
         .front
         .summary

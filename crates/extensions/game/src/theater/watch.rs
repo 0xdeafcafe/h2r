@@ -10,8 +10,8 @@
 //! takes its place ([`Session::game_activated`]); the player's state is the
 //! one a film player process opens with, so a film plays the same way in
 //! both. Nothing is recorded while the film plays: the parked recorder is
-//! not touched, and its ticks, tape and film file resume where they were
-//! when the watch ends ([`Session::end_watch`]).
+//! not touched, and its ticks and the film it was writing resume where they
+//! were when the watch ends ([`Session::end_watch`]).
 //!
 //! The watch ends at the next game boundary after the viewer leaves
 //! (`theater.end`, End Film, which queue the main menu), or when another
@@ -161,8 +161,7 @@ impl Session {
         let request = level_boot::Request::recorded(&play.start().options)?;
         let steps = level_boot::game_steps(&request)
             .context("the film's options do not fit the options block")?;
-        let reader = Reader::open(path)?;
-        let mut header = reader.header.clone();
+        let mut header = film::file::header_of(path)?;
         ensure!(
             header.xbe_sha256 == own.xbe_sha256 && header.title_id == own.title_id,
             "film boot facts differ"

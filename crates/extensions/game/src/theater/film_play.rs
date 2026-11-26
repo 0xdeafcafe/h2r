@@ -1,5 +1,5 @@
 //! Playing a film from its game start (docs/game/theater-design.md,
-//! "Playback"). The player takes the film file's last game start
+//! "Playback"). The player takes the film file's game start
 //! (`film::start::GameStart`), has the game load the map with the film's
 //! options as `level_boot` answers the first map request, and plays from
 //! the game's first update:
@@ -56,15 +56,15 @@ pub(super) struct Play {
 }
 
 impl Play {
-    /// The film file beside the container, if it has a game start: the
-    /// film plays from it. `None` for a container with no film file or a
-    /// film file from before game starts, which does not play.
-    pub(super) fn open(container: &Path) -> Result<Option<Self>> {
-        let file = film::file::beside(container);
-        if !file.try_exists()? {
+    /// The film file at `path`, if it has a game start: the film plays
+    /// from it. `None` for no film file or a film file with no game start,
+    /// which does not play. An unsealed film (its recording was killed)
+    /// plays up to its last checkpoint.
+    pub(super) fn open(path: &Path) -> Result<Option<Self>> {
+        if !path.try_exists()? {
             return Ok(None);
         }
-        let mut actions = FilmActions::open(&file)?;
+        let mut actions = FilmActions::open(path)?;
         let Some(start) = actions.game_start()? else {
             return Ok(None);
         };

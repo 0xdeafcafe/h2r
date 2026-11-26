@@ -14,15 +14,14 @@ pub const MAX_UPLOAD: u64 = MAX_UPLOAD_BYTES;
 pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// A completed host match, sent after it using its telemetry.ingest token:
-/// the stats stream at `path`, then the film file beside it
-/// ([`crate::file::beside`]) when the recording has one. Live stores the
+/// the stats container beside the film ([`crate::file::stats_of`]), then
+/// the film file at `film` when the recording wrote one. Live stores the
 /// two as separate objects (docs/live/live-api.md, "Theater").
-pub fn upload(live_url: &str, token: &str, game_id: &str, path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    upload_object(live_url, token, game_id, path, None)?;
-    let film = crate::file::beside(path);
+pub fn upload(live_url: &str, token: &str, game_id: &str, film: impl AsRef<Path>) -> Result<()> {
+    let film = film.as_ref();
+    upload_object(live_url, token, game_id, &crate::file::stats_of(film), None)?;
     if film.is_file() {
-        upload_object(live_url, token, game_id, &film, Some("film"))
+        upload_object(live_url, token, game_id, film, Some("film"))
             .context("upload the film file")?;
     }
     Ok(())

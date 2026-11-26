@@ -1,5 +1,6 @@
 //! `h2 film stat FILE`: the stats container's header and the keyframes it
-//! stores.
+//! stores. FILE is a film (`<id>.h2film`, whose stats container is
+//! `<id>.h2stats` beside it) or a stats container.
 //! `h2 film stat --fields FILE...`: how often each field of the 92-byte
 //! action changes in the films' tick tracks, and what each predictor of the
 //! column encoder stores it in (docs/game/input-film.md, "The encoding").
@@ -130,9 +131,9 @@ struct Row {
     anchor: Option<Option<u64>>,
 }
 
-/// The error for a file that begins as a v3 film but has no range footer: a
-/// tape a session was killed in the middle of writing. The library's prune
-/// removes it (`theater::autorecord::prune`); it is not read here.
+/// The error for a stats container that begins as v3 but has no range
+/// footer: its recording was killed in the middle of the game. Its film
+/// file reads to its last checkpoint; the container is not read here.
 fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
     use std::io::{Read, Seek, SeekFrom};
     let ends = || -> std::io::Result<([u8; 8], [u8; 8])> {
@@ -148,7 +149,7 @@ fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
             if first == film::range::MAGIC && last != film::range::FOOTER_MAGIC =>
         {
             anyhow::anyhow!(
-                "{}: an unsealed tape, not a film: its session ended without sealing it ({error})",
+                "{}: an unsealed stats container: its recording ended without sealing it ({error})",
                 path.display()
             )
         }
@@ -157,6 +158,13 @@ fn unsealed(path: &Path, error: anyhow::Error) -> anyhow::Error {
 }
 
 pub fn stat(path: &Path) -> Result<String> {
+    // A film's stats container is beside its film file.
+    let stats = film::file::stats_of(path);
+    let path = if path.extension().is_some_and(|e| e == "h2film") && stats.is_file() {
+        stats.as_path()
+    } else {
+        path
+    };
     let mut reader = film::Reader::open(path).map_err(|error| unsealed(path, error))?;
     let mut out = String::new();
     let header = &reader.header;

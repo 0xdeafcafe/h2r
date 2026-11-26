@@ -166,8 +166,10 @@ pub(super) fn apply_look(m: &mut dyn GuestMemory, update: u32, first_person: boo
 /// A game's first update: take the start the activation left waiting, with
 /// the random words and the arena hash as they are at entry to this update,
 /// and hold it until the tick's observer has described the game
-/// ([`game_start::Starts::release`]). A recording with no film file keeps no
-/// start. A start that cannot be read says so and the recording goes on.
+/// ([`game_start::Starts::release`]). A default recording's film counts its
+/// ticks from here: this update is its tick 1. A recording with no film
+/// open keeps no start. A start that cannot be read says so and the
+/// recording goes on.
 pub(super) fn note_first_update(
     store: Option<&Arc<settings::Store>>,
     state: &mut State,
@@ -177,6 +179,7 @@ pub(super) fn note_first_update(
         return;
     }
     let header = state.header.clone();
+    let session_tick = state.tick;
     let Mode::Record(rec) = &mut state.mode else {
         return;
     };
@@ -185,10 +188,16 @@ pub(super) fn note_first_update(
     };
     // The game's own tick count begins here.
     rec.frame.last_stamp = None;
-    let Some(film) = &rec.film else {
+    let Some(game) = rec.game.as_mut() else {
         return;
     };
-    let tick = film.lock().unwrap_or_else(|e| e.into_inner()).ticks() + 1;
+    if game.base.is_none() {
+        game.base = Some(session_tick);
+        // A game described before its first update starts at its film's
+        // tick 1.
+        rec.meta.begin_at(1);
+    }
+    let tick = game.film.ticks() + 1;
     match game_start::first_update(memory, options, &header, store.map(|s| &**s), tick) {
         Ok(start) => rec.starts.hold(start),
         Err(error) => eprintln!("theater: this game has no start in its film: {error:#}"),

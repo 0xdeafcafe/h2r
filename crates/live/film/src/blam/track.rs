@@ -63,8 +63,8 @@ fn validate_summary(summary: &Summary) -> Result<()> {
     Ok(())
 }
 
-/// Cloned when a running tape is cut into a game's film: the clone closes
-/// the cut and the original keeps recording.
+/// The stats stream writer of one game's film: pending ticks, flushed in
+/// chunks to the stats container.
 #[derive(Clone, Default)]
 pub struct TrackWriter {
     pending: Vec<Tick>,
@@ -344,7 +344,7 @@ impl TrackWriter {
     }
 
     /// Flush resolved match settings and scores before the end mark. The
-    /// caller writes the final HEAD and outer index for the whole tape.
+    /// caller writes the final HEAD and outer index for the whole film.
     pub fn finish<W: Write + Seek>(
         &mut self,
         out: &mut Writer<W>,
@@ -519,13 +519,13 @@ impl TrackReader<File> {
         Self::new(Reader::open(path)?)
     }
 
-    /// Open a film for playback: its stats container, and its film file
-    /// beside it when the container's actions are there.
-    pub fn open_with_film(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        let mut track = Self::open(path)?;
+    /// Open the film at `film` for reading: its stats container
+    /// ([`crate::file::stats_of`]), with the actions from the film file.
+    pub fn open_with_film(film: impl AsRef<Path>) -> Result<Self> {
+        let film = film.as_ref();
+        let mut track = Self::open(crate::file::stats_of(film))?;
         if track.inputs_in_film {
-            track.attach_film(FilmActions::open(&crate::file::beside(path))?)?;
+            track.attach_film(FilmActions::open(film)?)?;
         }
         Ok(track)
     }

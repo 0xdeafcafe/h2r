@@ -16,8 +16,8 @@ use crate::{
     telemetry::{self, layout},
 };
 
-/// A game's name for the tape's header (docs/game/film-format.md, "An exit
-/// without a teardown still seals").
+/// A game's name for its stats container's header
+/// (docs/game/film-format.md, "Recording every game").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Described {
     pub(super) map: String,
@@ -38,16 +38,16 @@ pub(super) struct Capture {
     result_order: Vec<u32>,
     host_machine: Option<String>,
     lease_mode: Option<Mode>,
-    /// A default recording cuts each game into a film of its own and keeps
-    /// recording ([`super::autorecord`]): it describes one game after another.
+    /// A default recording records each game into a film of its own
+    /// ([`super::autorecord`]): it describes one game after another.
     games: bool,
-    /// The last game ended and its film is cut; the next game starts once
-    /// the guest leaves it (a map unload, or a new game's globals).
+    /// The last game ended and its film is sealed; the next game starts
+    /// once the guest leaves it (a map unload, or a new game's globals).
     between_games: bool,
     /// A game left in play (a campaign mission, a multiplayer game): the
-    /// recorder cuts its film at the next slice's check, so the next game
+    /// recorder seals its film at the next slice's check, so the next game
     /// describes itself instead of inheriting this one's start and map.
-    cut_left: bool,
+    left_game: bool,
     /// The described game was read off a mounted map. Only a game the
     /// guest was seen in can be left.
     on_map: bool,
@@ -84,7 +84,7 @@ impl Capture {
             sim_bots: vec![],
             games,
             between_games: false,
-            cut_left: false,
+            left_game: false,
             on_map: false,
         }
     }
@@ -93,8 +93,8 @@ impl Capture {
         &self.descriptor
     }
 
-    /// Forget the game just cut (or left before its end) and describe the
-    /// next one from its start. The match sources stay.
+    /// Forget the game just sealed (or left before its end) and describe
+    /// the next one from its start. The match sources stay.
     pub(super) fn next_game(&mut self) {
         self.descriptor = MatchHeader::default();
         self.map_digest = None;
@@ -108,15 +108,23 @@ impl Capture {
         self.on_map = false;
     }
 
-    /// The guest still shows the game whose film was just cut.
+    /// The game's first update is film tick `tick`: a game described
+    /// before it (between its activation and that update) starts there.
+    pub(super) fn begin_at(&mut self, tick: u64) {
+        if self.descriptor.match_start_tick.is_some() {
+            self.descriptor.match_start_tick = Some(tick);
+        }
+    }
+
+    /// The guest still shows the game whose film was just sealed.
     pub(super) fn between_games(&self) -> bool {
         self.between_games
     }
 
     /// Whether a game was left in play since the last call: its film is
-    /// cut as it stands, a campaign mission and a multiplayer game alike.
-    pub(super) fn take_cut_left(&mut self) -> bool {
-        std::mem::take(&mut self.cut_left)
+    /// sealed as it stands, a campaign mission and a multiplayer game alike.
+    pub(super) fn take_left(&mut self) -> bool {
+        std::mem::take(&mut self.left_game)
     }
 
     #[cfg(test)]
@@ -141,9 +149,9 @@ impl Capture {
         Ok(())
     }
 
-    /// The game on the tape as a session's header names it: its map,
-    /// variant and the players seen so far (scores are left out; they are
-    /// in the cut's own header). None outside a game.
+    /// The game being recorded as its stats container's header names it:
+    /// its map, variant and the players seen so far (scores are left out;
+    /// they are in the final header). None outside a game.
     pub(super) fn description(&self) -> Option<Described> {
         let map = &self.descriptor.map.name;
         if map.is_empty() {
@@ -193,11 +201,11 @@ impl Capture {
             self.between_games = false;
             if self.games && self.on_map && self.descriptor.match_start_tick.is_some() {
                 // A game left in play (the guest is out of it with no
-                // game-over) keeps its descriptor for the cut: a left
+                // game-over) keeps its descriptor for its seal: a left
                 // multiplayer game is a film of what was played, as a left
                 // mission is. Only a game seen on a mounted map can be
-                // left, and only a default recording cuts one.
-                self.cut_left = true;
+                // left, and only a default recording seals one so.
+                self.left_game = true;
             }
             return Ok(events);
         };
@@ -719,7 +727,7 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
                 && rec.meta.descriptor.seed.is_none()
             {
                 let g = o.guest();
-                // After a cut, the next game's seed, not the ended game's.
+                // After a game's film is sealed, the next game's seed, not the ended game's.
                 if active_options(&g).is_some() && !(rec.meta.between_games() && game_ended(&g)) {
                     rec.meta.descriptor.seed = g
                         .u32(crate::sim_glue::RANDOM_SEED_PTR)

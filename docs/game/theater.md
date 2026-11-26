@@ -182,9 +182,13 @@ In the original version 1 layout:
   complete checkpoint. `KEYF` is reserved.
 
 `film::Library::list` shows the 25 newest films and any older saved
-films. Save and Unsave manage pins beside the film. Delete resolves a
-film by its header ID and removes its pin, the film file beside it and
-the container. The host UI uses `H2_FILM_DIR` or `<data>/films`.
+films. A recorded film is two files, `<id>.h2film` and `<id>.h2stats`;
+the row comes from the film file's header and game start, with the map,
+players and scoreboard from a sealed stats container of the same film
+when there is one (`LibraryEntry::read`), and no tick chunk is read.
+Save and Unsave manage pins beside the film. Delete resolves a film by
+its header ID and removes its pin, the film file and its stats
+container. The host UI uses `H2_FILM_DIR` or `<data>/films`.
 
 **Record once.** Use a provisioned human-player lease and a LAN host from
 the combined dedicated-host build. Export its normal supervisor inputs
@@ -237,7 +241,8 @@ runs forward from the tick shown; a seek behind it queues the film's game
 again in the same process and runs forward from its start. Fast-forward
 checks the film's digests and runs without host pacing. The coordinator
 should also seek backwards across a received packet while paused and
-resume. `h2 film stat FILE` lists a stats container's stored keyframes,
+resume. `h2 film stat FILE` lists a stats container's stored keyframes
+(given a film file, its `.h2stats`),
 and `h2 film stat --fields FILE...` the change rate and stored bytes of
 each action field. The
 [measurement procedure](notes/theater-seek.md) uses both tools.
@@ -283,8 +288,8 @@ there. **Watch** appears for playable films and host films awaiting their
 first download.
 
 Recent combines the newest 25 unsaved local games and the signed-in Live
-account's unsaved games. `h2 play` records each session into the local library, one
-film per game, so each game played on this console appears there and
+account's unsaved games. `h2 play` records each game into the local library as a film
+of its own, so each game played on this console appears there and
 opens at its own start; the account's archive adds
 games whose dedicated host recorded a film
 ([Recording every game](film-format.md#recording-every-game) lists what

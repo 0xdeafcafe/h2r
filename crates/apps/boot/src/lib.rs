@@ -413,8 +413,10 @@ fn run_configured(
                     .and_then(|()| autorecord::prune(&dir, autorecord::KEEP, now));
                 match ready {
                     Ok(_) => {
-                        film_path = Some(autorecord::destination(&dir, now));
+                        // A default recording is given the library: each
+                        // game's film opens there at the game's activation.
                         eprintln!("theater: recording this session; each game's film goes to {}", dir.display());
+                        film_path = Some(dir);
                         true
                     }
                     Err(e) => {
@@ -1951,9 +1953,8 @@ fn run_configured(
         sampling::set_game_thread();
     }
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
-    // Cut the game in play and discard the tape even when the loop below
-    // exits by error or panic, skipping its teardown
-    // (`theater::Session::seal_on_drop`).
+    // Seal the game in play's film even when the loop below exits by error
+    // or panic, skipping its teardown (`theater::Session::seal_on_drop`).
     let _film_seal = film.as_ref().and_then(|f| f.seal_on_drop());
     let first_slice = 0;
     let mut next_slice = 0;

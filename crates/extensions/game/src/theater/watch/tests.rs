@@ -79,9 +79,10 @@ fn tick(session: &Arc<Session>, g: &mut runtime::Guest, n: u64) -> bool {
     true
 }
 
-fn recorder_of(dir: &Temp, name: &str, xbe: &[u8]) -> Arc<Session> {
+/// A default recording into the library `dir`.
+fn recorder_of(dir: &Temp, xbe: &[u8]) -> Arc<Session> {
     let facts = Facts { light: false, player_features: true, ..host_facts() };
-    let session = Session::open(Some(dir.0.join(name)), None, facts, xbe, &options(&dir.0))
+    let session = Session::open(Some(dir.0.clone()), None, facts, xbe, &options(&dir.0))
         .unwrap()
         .unwrap();
     let store = Arc::new(settings::Store::defaults(&[&crate::setting_defs::SINGLE_COPY]));
@@ -93,18 +94,19 @@ fn store(session: &Session) -> Arc<settings::Store> {
     session.video_menu.get().unwrap().clone()
 }
 
-fn film_ticks(session: &Session) -> u64 {
+/// The ticks of the film being recorded; `None` outside a game.
+fn film_ticks(session: &Session) -> Option<u64> {
     let s = session.lock();
     let Mode::Record(r) = &s.mode else { panic!("a recording") };
-    r.film.as_ref().unwrap().lock().unwrap().ticks()
+    r.game.as_ref().map(|game| game.film.ticks())
 }
 
 /// Play one game of `ticks` ticks into the recorder and end it, so its
-/// film is cut. Returns the film tick of its first update.
+/// film is sealed. Returns the film tick of its first update.
 fn record_game(rec: &Arc<Session>, options: &[u8], words: [u32; 2], ticks: u64) -> u64 {
     let mut g = machine(options, words);
     rec.game_activated(&g);
-    let first = film_ticks(rec) + 1;
+    let first = film_ticks(rec).expect("the game's film opens at its activation") + 1;
     {
         let mut s = rec.lock();
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
@@ -117,14 +119,13 @@ fn record_game(rec: &Arc<Session>, options: &[u8], words: [u32; 2], ticks: u64) 
         let mut s = rec.lock();
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
         r.meta.start_for_test(first, "zanzibar", film::blam::Mode::Custom);
-        r.game_started_ms = Some(1_795_000_000_000 + first);
         r.match_over = true;
     }
     rec.finish(false).unwrap();
     first
 }
 
-/// The films cut so far, oldest first.
+/// The films sealed so far, by path.
 fn cuts(rec: &Session) -> Vec<PathBuf> {
     let s = rec.lock();
     let mut films = s.outcome.films.clone();
@@ -149,7 +150,7 @@ const MENUS: u64 = 10;
 /// [`MENUS`] of menus, and is back in its menus.
 fn viewer() -> Viewer {
     let dir = Temp::new();
-    let rec = recorder_of(&dir, "auto-20261125-100000-000.h2film", b"xbe");
+    let rec = recorder_of(&dir, b"xbe");
     let queue = calls::shared();
     calls::lock(&queue).arm();
     rec.attach_calls(queue.clone());
@@ -188,13 +189,13 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
     let v = viewer();
     let rec = &v.rec;
     let store = store(rec);
-    assert_eq!(v.first, MENUS + 1);
+    assert_eq!(v.first, 1, "the film's tick 1 is its game's first update");
 
     // The viewer's setting is not the film's, which is recorded with the
     // default.
     store.run_as(SETTING, Setting::Bool(false)).unwrap();
     let planned = rec.plan_watch(&v.film, api::InitialView::default()).unwrap();
-    assert_eq!(planned.length_ticks(), MENUS + LENGTH);
+    assert_eq!(planned.length_ticks(), LENGTH);
     assert_eq!(
         planned.steps(),
         level_boot::game_steps(&level_boot::Request::recorded(&v.options).unwrap()).unwrap()
@@ -203,13 +204,13 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
     assert_eq!(store.get(SETTING), Some(Setting::Bool(true)), "the film's setting");
     assert!(!rec.watching(), "the film starts with its game");
 
-    // Until its game activates the session records its menus.
+    // Until its game activates the session is in its menus, which record
+    // nothing.
     let menus = arena();
     for _ in 0..3 {
         rec.checkpoint(&menus);
     }
-    let recorded = film_ticks(rec);
-    assert_eq!(recorded, MENUS + LENGTH + 3);
+    assert_eq!(film_ticks(rec), None);
 
     let mut g = machine(&v.options, [999, 888]);
     rec.game_activated(&g);
@@ -228,7 +229,7 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
         let s = rec.lock();
         assert_eq!((ticks, s.failure.clone()), (LENGTH, None), "digests matched");
         assert!(s.complete && s.holds_in_game(), "the last tick is held");
-        assert_eq!(s.tick, MENUS + LENGTH);
+        assert_eq!(s.tick, LENGTH);
     }
 
     // Leave: the main menu is queued, and the game is the film's until it loads.
@@ -239,7 +240,8 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
     assert!(!rec.watching());
     assert_eq!(*v.returned.lock().unwrap(), vec![rec.film_id_of(&v.film)]);
     assert_eq!(store.get(SETTING), Some(Setting::Bool(false)), "the viewer's setting is back");
-    assert_eq!(film_ticks(rec), recorded, "a film being watched is not recorded");
+    assert_eq!(film_ticks(rec), None, "a film being watched is not recorded");
+    assert_eq!(cuts(rec).len(), 1);
 
     // The next game records as if the film had not been watched.
     for _ in 0..5 {
@@ -247,32 +249,36 @@ fn a_session_records_a_game_watches_it_leaves_and_records_another_and_both_recor
     }
     let second = named(MODE_MULTIPLAYER, 2, SECOND);
     let first = record_game(rec, &second, [21, 22], 20);
-    assert_eq!(first, recorded + 5 + 1);
+    assert_eq!(first, 1);
     rec.finish(true).unwrap();
 
     let films = cuts(rec);
     assert_eq!(films.len(), 2);
     let starts = |path: &Path| {
-        let mut reader = film::file::FilmReader::open(std::fs::File::open(film::file::beside(path)).unwrap()).unwrap();
+        let mut reader = film::file::FilmReader::open(std::fs::File::open(path).unwrap()).unwrap();
         let blocks = reader.game_starts.clone();
         blocks.iter().map(|b| reader.game_start_at(b).unwrap()).collect::<Vec<_>>()
     };
-    let length = |path: &Path| FilmActions::open(&film::file::beside(path)).unwrap().length_ticks();
-    let (a, b) = (starts(&films[0]), starts(&films[1]));
-    assert_eq!((a.len(), a[0].game.first_update, a[0].options.clone()), (1, 11, v.options.clone()));
-    assert_eq!(length(&films[0]), MENUS + LENGTH);
-    // The second film holds the first game and then its own: the ticks of
-    // the watched film are in neither.
-    assert_eq!(b.len(), 2);
-    assert_eq!((b[0].game.first_update, b[1].game.first_update), (11, first));
-    assert_eq!((b[1].options.clone(), b[1].random), (second, [21, 22]));
-    assert_eq!(length(&films[1]), recorded + 5 + 20);
+    let length = |path: &Path| FilmActions::open(path).unwrap().length_ticks();
+    // Each film holds its own game from its tick 1: the ticks of the
+    // watched film are in neither.
+    let (a, b) = if starts(&films[0])[0].options == v.options {
+        (&films[0], &films[1])
+    } else {
+        (&films[1], &films[0])
+    };
+    let (sa, sb) = (starts(a), starts(b));
+    assert_eq!((sa.len(), sa[0].game.first_update, sa[0].options.clone()), (1, 1, v.options.clone()));
+    assert_eq!(length(a), LENGTH);
+    assert_eq!((sb.len(), sb[0].game.first_update), (1, 1));
+    assert_eq!((sb[0].options.clone(), sb[0].random), (second, [21, 22]));
+    assert_eq!(length(b), 20);
 }
 
 impl Session {
     /// The id a film's header names.
     fn film_id_of(&self, path: &Path) -> String {
-        Reader::open(path).unwrap().header.meta.id
+        film::file::header_of(path).unwrap().meta.id
     }
 }
 
@@ -284,7 +290,7 @@ fn a_start_route_seek_queues_the_options_again_and_reaches_its_tick() {
     for n in 0..25 {
         assert!(tick(rec, &mut g, n));
     }
-    assert_eq!(rec.lock().tick, MENUS + 25);
+    assert_eq!(rec.lock().tick, 25);
 
     // Behind the tick shown: the film starts over.
     let target = v.first + 4;
@@ -328,7 +334,7 @@ fn a_cancelled_start_route_seek_goes_back_to_the_tick_it_left_and_holds_there() 
     for n in 0..25 {
         assert!(tick(rec, &mut g, n));
     }
-    let from = MENUS + 25;
+    let from = 25;
     rec.transport(api::SEEK, json!({ "tick": v.first + 4 })).unwrap();
     assert_eq!(v.pending().len(), 1);
 
@@ -393,7 +399,7 @@ fn the_start_route_can_be_asked_for_and_a_seek_beyond_the_film_is_refused() {
     rec.transport(api::SEEK, json!({ "tick": late, "source": "boot" })).unwrap();
     assert!(rec.lock().play.as_ref().unwrap().awaiting());
     assert_eq!(v.pending().len(), 1);
-    assert!(rec.transport(api::SEEK, json!({ "tick": MENUS + LENGTH + 1 })).is_err());
+    assert!(rec.transport(api::SEEK, json!({ "tick": LENGTH + 1 })).is_err());
 }
 
 #[test]
@@ -436,7 +442,7 @@ fn a_film_that_this_session_cannot_play_is_refused_before_anything_is_queued() {
     let rec = &v.rec;
     // Not a film of this session's XBE.
     let other = Temp::new();
-    let foreign = recorder_of(&other, "auto-20261125-100001-000.h2film", b"another xbe");
+    let foreign = recorder_of(&other, b"another xbe");
     let menus = arena();
     for _ in 0..3 {
         foreign.checkpoint(&menus);

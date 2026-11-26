@@ -127,13 +127,6 @@ pub struct Header {
     /// file beside it (`film::file`, `TrackReader::attach_film`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inputs_in_film: bool,
-    /// A film cut from a session's running tape at one game's end
-    /// (docs/game/film-format.md, "One film per game"): the tape's ID. The
-    /// cut keeps the tape's boot `HEAD`, which carries this ID and the
-    /// session's start; the cut's own ID and start are in its final `HEAD`
-    /// and the front.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tape_id: Option<String>,
 }
 impl Header {
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
@@ -304,39 +297,6 @@ impl<W: Write + Seek> Writer<W> {
             });
         Ok(())
     }
-    /// Continue a copy of this unsealed v3 tape as a film of its own, cut
-    /// at this point (docs/game/film-format.md, "One film per game").
-    /// `out` holds every byte written so far, and nothing more.
-    /// `header.tape_id` names this tape; the cut's ID and start replace the
-    /// tape's in the front. The caller writes the cut's final `HEAD` and
-    /// track and seals it with [`Writer::finish`]. This tape keeps
-    /// recording.
-    pub fn fork<V: Write + Seek>(&mut self, mut out: V, header: &Header) -> Result<Writer<V>> {
-        ensure!(!self.failed, "film output already failed");
-        let ranges = self.ranges.as_ref().context("a cut requires a v3 tape")?;
-        ensure!(
-            header.version == self.version
-                && header.tape_id.as_deref() == Some(ranges.front.id.as_str())
-                && header.meta.id != ranges.front.id,
-            "a cut names its tape and has an ID of its own"
-        );
-        let len = self.out.stream_position()?;
-        ensure!(
-            out.seek(SeekFrom::End(0))? == len,
-            "the cut's copy differs in length from the tape"
-        );
-        let mut ranges = ranges.clone();
-        ranges.front.id.clone_from(&header.meta.id);
-        ranges.front.started_ms = header.meta.started_ms;
-        Ok(Writer {
-            out,
-            index: self.index.clone(),
-            failed: false,
-            version: self.version,
-            ranges: Some(ranges),
-        })
-    }
-
     fn write(&mut self, tag: Tag, raw: &[u8]) -> Result<()> {
         ensure!(!self.failed, "film output already failed");
         let bytes = compress_chunk(raw)?;

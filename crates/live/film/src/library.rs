@@ -30,6 +30,51 @@ impl LibraryEntry {
             || self.summary.as_ref().is_some_and(|s| !s.level.is_empty() || !s.players.is_empty())
     }
 
+    /// A recorded film: `<id>.h2film`, the film file, with `<id>.h2stats`
+    /// beside it (docs/game/film-format.md). The row is the film file's
+    /// header and seed, read with its game start's block; no tick chunk is
+    /// inflated. A sealed stats container of the same film adds its final
+    /// header (the map, players and scores) and its scoreboard. An unsealed
+    /// film (its recording was killed) lists with the ticks up to its last
+    /// checkpoint.
+    fn film(path: &Path, file: fs::File) -> Result<Self> {
+        let mut reader = crate::file::FilmReader::open(file)?;
+        let start = reader.game_start()?;
+        let seed = reader.seed.header.clone();
+        let listed = fs::File::open(crate::file::stats_of(path))
+            .ok()
+            .and_then(|mut f| crate::range::listing(&mut f).ok().flatten())
+            .filter(|(header, _)| header.meta.id == seed.meta.id);
+        let (header, summary) = match listed {
+            Some((header, front)) => (header, Some(front.summary)),
+            None => (seed, None),
+        };
+        let mut meta = header.meta;
+        meta.length_ticks = reader.length_ticks;
+        if let Some(start) = &start
+            && meta.map.is_empty()
+        {
+            meta.map.clone_from(&start.game.descriptor.map.name);
+        }
+        Ok(Self {
+            meta,
+            summary,
+            ticks_per_second: Some(reader.ticks_per_second.into()),
+            version: header.version,
+            runtime_stamp: header.runtime_stamp,
+            // The hooks the game ran under are its game start's stamp.
+            simulation_hooks: start
+                .and_then(|s| s.stamp.hooks_sha256)
+                .or(header.simulation_hooks),
+            xbe_sha256: header.xbe_sha256,
+            guest_image: header.guest_image,
+            saved: path.with_extension("h2film.saved").is_file(),
+            game_id: header.game_id.or_else(|| header.lease_id.clone()),
+            lease_id: header.lease_id,
+            path: path.into(),
+        })
+    }
+
     fn split(path: &Path, file: &mut fs::File) -> Result<Self> {
         let (header, layout, seed) = crate::share::read_seed(file)?;
         let stats = match fs::File::open(path.with_extension("h2stats")) {
@@ -103,7 +148,12 @@ impl LibraryEntry {
         let mut magic = [0; 8];
         file.read_exact(&mut magic)?;
         if &magic == b"H2FILM4!" {
-            return Self::split(path, &mut file);
+            // A recorded film's seed is the film's header; a film shared
+            // through Live carries the sharing seed.
+            return match Self::film(path, file.try_clone()?) {
+                Ok(entry) => Ok(entry),
+                Err(_) => Self::split(path, &mut file),
+            };
         }
         let (header, summary, ticks_per_second) = match crate::range::listing(&mut file)? {
             Some((header, front)) => (header, Some(front.summary), front.ticks_per_second),
@@ -211,10 +261,11 @@ impl Library {
     pub fn unsave(&self, id: &str) -> Result<()> {
         remove_pin(&self.get(id)?.path)
     }
+    /// Delete a film: its film file, its stats container and its pin.
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.get(id)?.path;
         remove_pin(&path)?;
-        match fs::remove_file(crate::file::beside(&path)) {
+        match fs::remove_file(crate::file::stats_of(&path)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             r => r?,
         }
