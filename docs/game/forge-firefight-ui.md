@@ -1,6 +1,6 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)) and the Waves screens (slice FA5; the Enemy types page waits for the recipe's classes, FA6); the rest is design, the AI tool among it (slice FA7).
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)), the Waves screens (slice FA5) and the Enemy types page (slice FA6); the rest is design, the AI tool among it (slice FA7).
 Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_screens/waves.rs` (the Waves screens), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -345,7 +345,7 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Waves, Round, Wave, Squad | **Waves...** on Forge options; X in the AI tool with nothing aimed at (FA7) | list pages on the Controller Settings host, value rows opening `kit.picker.game` ("The Waves screens") | built (FA5) |
 | Rounds, Squads, Problems | a row of Waves or Wave | the large dialog, a row an item, each opening its page | built (FA5) |
 | Drop | X on a drop zone in the AI tool | a list page on the same host | FA7 |
-| Enemy types | a row of Forge options | a list page on the Controller Settings host, a row a class, each On or Off | built (FA5); its row waits for the recipe's classes (FA6) |
+| Enemy types | a row of Forge options | a list page on the Controller Settings host, a row a class, each On or Off | built (FA5, FA6) |
 
 - **Object menu.** Each picker has its six rows, scroll arrows and
   description block. The groups come from a table
@@ -564,7 +564,7 @@ two and four players.", `waves::wave_help`).
 
 | Row | Value | A |
 |---|---|---|
-| Enemy | the class's name | a picker of the classes the built ground has (`forge_glue::ground::wave_classes`; the Elite until the recipe names classes, FA6); a class named the first time takes its points from a built-in set |
+| Enemy | the class's name | a picker of the classes the built ground has (`forge_glue::ground::wave_classes`: the last build's classes, and before a build the Elite and the classes the recipe asks for); a class named the first time takes its points from a built-in set |
 | For each player | 1 to 8 | picker |
 | At least | 1 to 32 | picker; At most rises with it |
 | At most | 1 to 32 | picker; At least falls with it |
@@ -583,13 +583,12 @@ from's opens over WAVES (`forge_screens::ask_over`), as its choice comes
 from the picker.
 
 **Enemy types** (`forge.enemy-types`) is a list page on Forge options, a
-row a class of the retail class table, each On or Off in a picker with
-its tag cost from the last build as its help ("Grunt. 212 KB.", "Hunter.
-Cut, no room."). A change marks the ground stale; the classes arrive at
-the next build. The page is built (`waves::enemy_types_sheet`); its rows
-come from `forge_glue::ground::enemy_types`, which has none until the
-recipe names classes (FA6), so Forge options has no Enemy types row
-yet.
+row a class of the retail class table past the Elite (which is always
+built), each On or Off in a picker with its tag cost from the last build
+as its help ("Grunt. 212 KB.", "Hunter. Cut, no room."). A change marks
+the ground stale (`Session::set_ground_classes`); the classes arrive at
+the next build. The rows come from `forge_glue::ground::enemy_types`, and
+Forge options has the Enemy types row whenever they do.
 
 ## The Firefight HUD
 

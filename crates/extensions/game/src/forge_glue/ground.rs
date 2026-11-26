@@ -40,26 +40,55 @@ pub(super) fn waves_or_default(session: &Session) -> ::firefight::Def {
 }
 
 /// The classes the built ground has, which the Waves screens' Enemy
-/// picker offers: the stage-one ground's (`forge_doc::waves::GROUND_CLASSES`,
-/// the Elite) until the recipe names its own (slice FA6, the build's
-/// report).
-pub(super) fn wave_classes(_session: &Session) -> Vec<String> {
-    forge_doc::waves::GROUND_CLASSES.map(String::from).to_vec()
+/// picker offers: the last build's (`GroundReport::classes`), and before a
+/// build the Elite and the classes the recipe asks for
+/// ([`Session::ground_built_classes`]).
+pub(super) fn wave_classes(session: &Session) -> Vec<String> {
+    session.ground_built_classes()
 }
 
 /// The Enemy types page's rows (docs/game/forge-firefight-ui.md, "The
-/// Waves screens"): each class of the recipe, On or Off, with its cost
-/// from the last build. None until the recipe names classes (slice FA6),
-/// so Forge options has no Enemy types row.
-pub(super) fn enemy_types(_session: &Session) -> Vec<crate::forge_screens::waves::EnemyType> {
-    Vec::new()
+/// Waves screens"): each class past the Elite in the retail class table,
+/// On when the session asks for it, with its cost from the last build as
+/// the line ("Grunt. 212 KB.", "Hunter. Cut, no room."). The Elite is
+/// always built and has no row.
+pub(super) fn enemy_types(session: &Session) -> Vec<crate::forge_screens::waves::EnemyType> {
+    use crate::forge_screens::waves::{class_title, EnemyType};
+    let asked = session.ground_classes();
+    let report = session.ground_report();
+    forge_doc::retail_classes()
+        .iter()
+        .map(|class| {
+            let on = asked.iter().any(|a| a == class);
+            let title = class_title(class);
+            let cost = report.and_then(|r| r.costs.iter().find(|c| c.name == *class));
+            let cut = report.is_some_and(|r| r.cut.iter().any(|c| c == class));
+            let line = match (on, cost, cut) {
+                (true, _, true) => format!("{title}. Cut, no room."),
+                (true, Some(c), _) => format!("{title}. {} KB.", c.bytes.div_ceil(1024)),
+                (true, None, _) => format!("{title}. Built next."),
+                (false, Some(_), _) => format!("{title}. Dropped next build."),
+                (false, None, _) => format!("{title}."),
+            };
+            EnemyType {
+                class: (*class).to_owned(),
+                on,
+                line,
+            }
+        })
+        .collect()
 }
 
 /// An Enemy types row's choice: ask the recipe for `class`, or not, which
-/// marks the ground stale. Refused until the recipe names classes (slice
-/// FA6); the row that sends it is absent until then.
-pub(super) fn set_enemy_type(_session: &mut Session, class: &str, _on: bool) -> Result<(), String> {
-    Err(format!("The AI ground cannot take {class} yet."))
+/// marks the ground stale ([`Session::set_ground_classes`], which keeps
+/// the table's order). A class the table lacks is refused by name.
+pub(super) fn set_enemy_type(session: &mut Session, class: &str, on: bool) -> Result<(), String> {
+    let mut names = session.ground_classes();
+    names.retain(|n| n != class);
+    if on {
+        names.push(class.to_owned());
+    }
+    session.set_ground_classes(&names)
 }
 
 /// Tests that install the process-wide builder run one at a time.
@@ -158,6 +187,7 @@ mod tests {
                 kit_version: 1,
                 home: 0,
                 probe: false,
+                classes: vec![],
             }
         }
 
@@ -223,13 +253,89 @@ mod tests {
     }
 
     #[test]
+    fn the_enemy_types_rows_follow_the_classes_asked_for() {
+        let mut s = session();
+        let rows = enemy_types(&s);
+        assert_eq!(
+            rows.iter().map(|r| r.class.as_str()).collect::<Vec<_>>(),
+            forge_doc::retail_classes()
+        );
+        assert!(rows.iter().all(|r| !r.on));
+        assert_eq!(wave_classes(&s), vec!["elite".to_string()]);
+
+        set_enemy_type(&mut s, "jackal", true).unwrap();
+        set_enemy_type(&mut s, "grunt", true).unwrap();
+        let rows = enemy_types(&s);
+        let on: Vec<_> = rows.iter().filter(|r| r.on).map(|r| r.class.as_str()).collect();
+        assert_eq!(on, ["grunt", "jackal"], "kept in the table's order");
+        assert_eq!(rows.iter().find(|r| r.class == "grunt").unwrap().line, "Grunt. Built next.");
+        assert_eq!(wave_classes(&s), vec!["elite", "grunt", "jackal"]);
+
+        set_enemy_type(&mut s, "grunt", false).unwrap();
+        assert_eq!(s.ground_classes(), vec!["jackal".to_string()]);
+        assert!(set_enemy_type(&mut s, "flood", true).is_err());
+        assert_eq!(s.ground_classes(), vec!["jackal".to_string()]);
+    }
+
+    #[test]
+    fn an_enemy_type_line_says_its_cost_or_its_cut() {
+        let mut s = session();
+        set_enemy_type(&mut s, "grunt", true).unwrap();
+        set_enemy_type(&mut s, "hunter", true).unwrap();
+        // A build of those two: the Hunter is cut for headroom.
+        struct Cutting;
+        impl GroundBuilder for Cutting {
+            fn recipe(&self) -> GroundRecipe {
+                GroundRecipe {
+                    kit_version: 1,
+                    home: 0,
+                    probe: false,
+                    classes: vec![],
+                }
+            }
+
+            fn classes(&mut self, names: &[String]) -> Result<Vec<forge_doc::GroundClass>, String> {
+                Ok(names
+                    .iter()
+                    .map(|n| forge_doc::GroundClass {
+                        name: n.clone(),
+                        donor: forge_doc::MapRef {
+                            map: "a30".into(),
+                            sha256: forge_doc::Sha256::of(b"a donor"),
+                        },
+                    })
+                    .collect())
+            }
+
+            fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+                Ok(GroundReport {
+                    classes: vec!["elite".into(), "grunt".into()],
+                    cut: vec!["hunter".into()],
+                    costs: vec![forge::GroundClassCost {
+                        name: "grunt".into(),
+                        tags: 40,
+                        bytes: 212 * 1024 - 5,
+                    }],
+                    ..GroundReport::default()
+                })
+            }
+        }
+        s.build_ground(&mut Cutting).unwrap();
+        let line = |class: &str| {
+            enemy_types(&s).into_iter().find(|r| r.class == class).unwrap().line
+        };
+        assert_eq!(line("grunt"), "Grunt. 212 KB.");
+        assert_eq!(line("hunter"), "Hunter. Cut, no room.");
+        assert_eq!(wave_classes(&s), vec!["elite", "grunt"]);
+    }
+
+    #[test]
     fn the_notice_says_what_was_built_and_whether_the_map_changed() {
         let _one_at_a_time = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let report = GroundReport {
             zones: 3,
             squads: 16,
-            problems: vec![],
-            receipt: None,
+            ..GroundReport::default()
         };
         crate::forge_glue::reload::set_reloads(false);
         assert_eq!(
@@ -271,6 +377,7 @@ mod tests {
                     kit_version: 1,
                     home: 0,
                     probe: false,
+                    classes: vec![],
                 }
             }
 

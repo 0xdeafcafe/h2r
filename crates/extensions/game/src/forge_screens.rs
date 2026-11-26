@@ -89,8 +89,9 @@ pub struct Facts {
     /// The wave set and what the Waves screens read with it; `None` with
     /// no waves to edit, and Forge options has no Waves row.
     pub waves: Option<waves::Facts>,
-    /// The Enemy types page's rows; empty while the recipe names no
-    /// classes, and Forge options has no Enemy types row.
+    /// The Enemy types page's rows (a class of the retail table each);
+    /// empty when there are none, and Forge options has no Enemy types
+    /// row.
     pub enemy_types: Vec<waves::EnemyType>,
 }
 

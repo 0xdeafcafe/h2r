@@ -9,7 +9,8 @@ use std::{
 
 use super::*;
 use forge_doc::{
-    BuilderVersions, Edit, ForgeDoc, Limits, MapRef, Placement, Recipe, Sha256, WorldBounds,
+    BuilderVersions, Edit, ForgeDoc, GroundClass, Limits, MapRef, Placement, Recipe, Sha256,
+    WorldBounds,
 };
 
 /// A world that counts what a session asks of it.
@@ -38,11 +39,16 @@ impl World for Counting {
     }
 }
 
-/// A builder that records the documents it was given.
+/// A builder that records the documents it was given. Its disc carries
+/// every class on one invented donor, `outskirts`; with `room` set the map
+/// keeps that many classes and cuts the rest from the end.
 #[derive(Default)]
 struct Kit {
     built: Vec<ForgeDoc>,
     refuse: bool,
+    room: Option<usize>,
+    /// Donor choices it was asked for.
+    asked: Vec<Vec<String>>,
 }
 
 fn recipe() -> GroundRecipe {
@@ -50,6 +56,15 @@ fn recipe() -> GroundRecipe {
         kit_version: 3,
         home: 0,
         probe: false,
+        classes: vec![],
+    }
+}
+
+/// The invented donor every class of [`Kit`] comes from.
+fn outskirts() -> MapRef {
+    MapRef {
+        map: "outskirts".into(),
+        sha256: Sha256::of(b"an invented campaign map"),
     }
 }
 
@@ -58,16 +73,37 @@ impl GroundBuilder for Kit {
         recipe()
     }
 
+    fn classes(&mut self, names: &[String]) -> Result<Vec<GroundClass>, String> {
+        self.asked.push(names.to_vec());
+        Ok(names
+            .iter()
+            .map(|name| GroundClass {
+                name: name.clone(),
+                donor: outskirts(),
+            })
+            .collect())
+    }
+
     fn build(&mut self, play: &ForgeDoc) -> Result<GroundReport, String> {
         if self.refuse {
             return Err("No room: the sectors take 9 KB too many.".into());
         }
         self.built.push(play.clone());
+        let names = play
+            .ground_recipe()
+            .ok()
+            .flatten()
+            .map(|r| r.class_names())
+            .unwrap_or_default();
+        let keep = self.room.unwrap_or(names.len()).min(names.len());
         Ok(GroundReport {
             zones: 2,
             squads: 16,
-            problems: vec![],
-            receipt: None,
+            classes: std::iter::once("elite".to_owned())
+                .chain(names[..keep].iter().cloned())
+                .collect(),
+            cut: names[keep..].iter().rev().cloned().collect(),
+            ..GroundReport::default()
         })
     }
 }
@@ -427,4 +463,121 @@ fn the_play_form_a_build_sees_is_a_map_variant() {
             .iter()
             .any(|op| matches!(op.edit, Edit::Placement(Placement::Add { .. })))
     );
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|n| (*n).to_owned()).collect()
+}
+
+#[test]
+fn a_class_change_marks_the_ground_stale() {
+    let mut session = session();
+    let mut kit = Kit::default();
+    session.build_ground(&mut kit).unwrap();
+    assert_eq!(session.ground_state(), GroundState::Current);
+    assert_eq!(session.ground_classes(), Vec::<String>::new());
+
+    // Asking for classes marks it stale; the list is kept in keep order.
+    session
+        .set_ground_classes(&names(&["hunter", "grunt"]))
+        .unwrap();
+    assert_eq!(session.ground_classes(), names(&["grunt", "hunter"]));
+    assert_eq!(session.ground_state(), GroundState::Stale);
+    assert!(kit.asked.is_empty(), "donors are chosen at the build");
+
+    // The build asks the builder for the donors and puts them in the recipe.
+    assert!(session.ensure_ground(&mut kit).unwrap());
+    assert_eq!(kit.asked, [names(&["grunt", "hunter"])]);
+    assert_eq!(session.ground_state(), GroundState::Current);
+    let recipe = session.ground_recipe().unwrap();
+    assert_eq!(recipe.class_names(), names(&["grunt", "hunter"]));
+    assert!(recipe.classes.iter().all(|c| c.donor == outskirts()));
+    let seen = kit.built.last().unwrap().ground_recipe().unwrap().unwrap();
+    assert_eq!(seen, recipe);
+    assert_eq!(
+        session.ground_report().unwrap().classes,
+        names(&["elite", "grunt", "hunter"])
+    );
+
+    // The same list again changes nothing; another marks it stale.
+    session
+        .set_ground_classes(&names(&["grunt", "hunter"]))
+        .unwrap();
+    assert_eq!(session.ground_state(), GroundState::Current);
+    session.set_ground_classes(&names(&["grunt"])).unwrap();
+    assert_eq!(session.ground_state(), GroundState::Stale);
+    // Going back to the built list makes it current again.
+    session
+        .set_ground_classes(&names(&["grunt", "hunter"]))
+        .unwrap();
+    assert_eq!(session.ground_state(), GroundState::Current);
+
+    // A name the table lacks, or one given twice, changes nothing.
+    for bad in [names(&["elite"]), names(&["marine"]), names(&["grunt", "grunt"])] {
+        assert!(session.set_ground_classes(&bad).is_err(), "{bad:?}");
+        assert_eq!(session.ground_state(), GroundState::Current);
+    }
+}
+
+#[test]
+fn a_failed_class_build_keeps_the_list_asked_for() {
+    let mut session = session();
+    let mut kit = Kit::default();
+    session.build_ground(&mut kit).unwrap();
+    session.set_ground_classes(&names(&["jackal"])).unwrap();
+    kit.refuse = true;
+    assert!(session.build_ground(&mut kit).is_err());
+    assert_eq!(session.ground_classes(), names(&["jackal"]));
+    assert!(session.ground_recipe().unwrap().classes.is_empty());
+    assert_eq!(session.ground_state(), GroundState::Stale);
+
+    // A builder that copies no classes refuses the list by name.
+    struct Plain;
+    impl GroundBuilder for Plain {
+        fn recipe(&self) -> GroundRecipe {
+            recipe()
+        }
+        fn build(&mut self, _: &ForgeDoc) -> Result<GroundReport, String> {
+            Ok(GroundReport::default())
+        }
+    }
+    assert_eq!(
+        session.build_ground(&mut Plain).unwrap_err(),
+        crate::NO_CLASSES
+    );
+    assert_eq!(session.ground_classes(), names(&["jackal"]));
+}
+
+#[test]
+fn wave_problems_name_the_classes_the_ground_built() {
+    let mut session = session();
+    let mut kit = Kit::default();
+    let mut def = forge_doc::waves::default_set();
+    def.rounds[0].waves[0].squads[0].class = "grunt".into();
+    session.set_waves(Some(def)).unwrap();
+    let grunts = |s: &Session| {
+        s.wave_problems()
+            .iter()
+            .filter(|p| p.what == forge_doc::waves::ProblemKind::ClassNotBuilt)
+            .count()
+    };
+    // No grunt asked for: the one grunt squad is a problem.
+    assert_eq!(grunts(&session), 1);
+    // Asked for, before a build: the recipe's list counts.
+    session.set_ground_classes(&names(&["grunt"])).unwrap();
+    assert_eq!(grunts(&session), 0);
+    // Built: the build's classes count.
+    session.build_ground(&mut kit).unwrap();
+    assert_eq!(grunts(&session), 0);
+    // Cut for headroom: a problem again.
+    session
+        .set_ground_classes(&names(&["grunt", "jackal"]))
+        .unwrap();
+    kit.room = Some(0);
+    session.build_ground(&mut kit).unwrap();
+    assert_eq!(
+        session.ground_report().unwrap().cut,
+        names(&["jackal", "grunt"])
+    );
+    assert_eq!(grunts(&session), 1);
 }

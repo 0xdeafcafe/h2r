@@ -27,7 +27,8 @@ mod waves;
 pub use area::{Goal, flag_label};
 
 pub use ground::{
-    GroundBuilder, GroundProblem, GroundReceipt, GroundReport, GroundState, PlacedMarker,
+    GroundBuilder, GroundClassCost, GroundProblem, GroundReceipt, GroundReport, GroundState,
+    NO_CLASSES, PlacedMarker,
 };
 pub use groups::GroupInfo;
 #[cfg(test)]

@@ -256,3 +256,96 @@ fn ground_over_headroom_is_refused_with_its_biggest_part() {
     assert!(error.contains("exceeds tag headroom by "), "{error}");
     assert!(error.contains("the biggest part is "), "{error}");
 }
+
+/// The invented donor's classes `names`, in that order, over `donor`.
+fn classes<'a>(
+    donor: &'a [u8],
+    schema: &'a tags::schema::Schema,
+    names: &[&str],
+    cut_to_fit: bool,
+) -> Classes<'a> {
+    let all = testkit::donor_classes();
+    Classes {
+        schema,
+        donors: vec![crate::Donor {
+            name: testkit::DONOR,
+            bytes: donor,
+        }],
+        specs: names
+            .iter()
+            .map(|n| all.iter().find(|c| c.name == *n).unwrap().clone())
+            .collect(),
+        cut_to_fit,
+    }
+}
+
+#[test]
+fn ground_with_classes_equals_the_kits_stage_two_build() {
+    let (base, donor, schema) = (testkit::court(), testkit::donor(), testkit::donor_schema());
+    let with = classes(&donor, &schema, &["grunt", "jackal"], true);
+    let ground = build_with(&base, NAME, &Labels::default(), &recipe(), Some(&with)).unwrap();
+    let kit = crate::build_with_classes(
+        &base,
+        NAME,
+        Mode::Kit,
+        &Config::default(),
+        &Labels::default(),
+        Some(&with),
+    )
+    .unwrap();
+    assert_eq!(ground.bytes, kit.bytes);
+    assert_eq!(ground.costs, kit.costs);
+    assert_eq!(ground.classes, kit.classes);
+    assert!(ground.cut.is_empty());
+    assert_eq!(
+        ground.classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["grunt", "jackal"]
+    );
+    // The palette: the Elite, then the classes in keep order.
+    assert_eq!(ai(&ground.bytes).character_palette.len(), 3);
+    // With no classes it is the stage-one ground.
+    let none = build_with(&base, NAME, &placed(), &recipe(), None).unwrap();
+    assert_eq!(none.bytes, build(&base, NAME, &placed(), &recipe()).unwrap().bytes);
+    assert!(none.classes.is_empty() && none.cut.is_empty());
+    // Over placed labels the classes come along the same way.
+    let labelled = build_with(&base, NAME, &placed(), &recipe(), Some(&with)).unwrap();
+    assert_eq!(labelled.zones, none.zones);
+    assert_eq!(labelled.classes, ground.classes);
+    // The package it installs has the same id as the kit's stage two.
+    let dir = temp_dir("classes");
+    let package = ground.install(&base, NAME, &dir, "ground", false).unwrap();
+    let stage_two = crate::build_package_with(
+        &base,
+        NAME,
+        Mode::Kit,
+        &Config::default(),
+        Some(&with),
+        &dir,
+        "kit",
+        false,
+    )
+    .unwrap();
+    assert_eq!(package.id, stage_two.id);
+    assert_eq!(package.classes, stage_two.classes);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn ground_cuts_classes_from_the_end_to_fit() {
+    let (donor, schema) = (testkit::donor(), testkit::donor_schema());
+    let base = testkit::tight(&testkit::court(), 0x2000);
+    let with = classes(&donor, &schema, &["grunt", "jackal", "hunter"], true);
+    let ground = build_with(&base, NAME, &Labels::default(), &recipe(), Some(&with)).unwrap();
+    assert_eq!(ground.cut, ["hunter"]);
+    assert_eq!(
+        ground.classes.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["grunt", "jackal"]
+    );
+    // Without the cut the same build is refused with each class's cost.
+    let strict = classes(&donor, &schema, &["grunt", "jackal", "hunter"], false);
+    let error = build_with(&base, NAME, &Labels::default(), &recipe(), Some(&strict))
+        .err()
+        .expect("must refuse")
+        .to_string();
+    assert!(error.contains("hunter "), "{error}");
+}

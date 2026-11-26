@@ -360,6 +360,7 @@ fn the_variant_list_reports_each_entrys_ground() {
             kit_version: 3,
             home: 0,
             probe: false,
+            classes: vec![],
         }
         .to_recipe(),
     );

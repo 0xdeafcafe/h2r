@@ -14,9 +14,11 @@
 //!   flag), numbered by the phase it opens in, which the ground build does
 //!   not read: the script finds it by its label.
 //! - **The recipe.** A `generate` recipe named [`GROUND_RECIPE`] with the
-//!   kit's version, the home team and the mode ([`GroundRecipe`]). It is
-//!   not a Forge-map recipe: a document that holds it stays a map
-//!   variant ([`Tier::Variant`](crate::Tier)).
+//!   kit's version, the home team, the mode and the enemy classes past the
+//!   Elite ([`GroundRecipe`], [`GroundClass`]). It is not a Forge-map
+//!   recipe: a document that holds it stays a map variant
+//!   ([`Tier::Variant`](crate::Tier)), and the class donors it names are
+//!   the one source maps a variant may name.
 //! - **The stamp.** [`ForgeDoc::ground_stamp`] digests what the ground is
 //!   built from: the recipe, the marks and every op that moves a mark or
 //!   adds, moves or removes something solid. A session compares it with
@@ -24,8 +26,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BlockKind, Edit, Endpoint, EntryOp, FieldWrite, Forge, ForgeDoc, OpId, Placement, Recipe,
-    Refusal, Result, Sha256, Value,
+    BlockKind, Edit, Endpoint, EntryOp, FieldWrite, Forge, ForgeDoc, MapRef, OpId, Placement,
+    Recipe, Refusal, Result, Sha256, Value,
 };
 
 /// The generate recipe that asks for AI ground.
@@ -149,49 +151,84 @@ pub struct GroundMark {
     pub number: Option<i32>,
 }
 
+/// The classes a ground recipe may ask for past the Elite, in keep order
+/// (the first is the last cut): `firefight_kit::retail::CLASSES`, which
+/// forge-build's `the_documents_classes_are_the_kits` holds equal.
+pub fn retail_classes() -> &'static [&'static str] {
+    static ALL: [&str; crate::waves::CLASSES.len()] = crate::waves::CLASSES;
+    &ALL[1..]
+}
+
+/// One enemy class the ground copies in: its name (a
+/// [`retail_classes`] entry) and the campaign map it is copied from, by
+/// name and hash, as the author's machine chose it. The document holds
+/// the name and the hash, never a tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroundClass {
+    pub name: String,
+    pub donor: MapRef,
+}
+
 /// The generator's settings as a document holds them: the kit's version,
-/// which team's base is home (0 red, 1 blue) and whether it builds the kit
-/// or the probe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// which team's base is home (0 red, 1 blue), whether it builds the kit
+/// or the probe, and the classes past the Elite in keep order.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroundRecipe {
     pub kit_version: u32,
     pub home: u8,
     pub probe: bool,
+    pub classes: Vec<GroundClass>,
 }
 
 const KIT_VERSION: &str = "kit_version";
 const HOME: &str = "home";
 const MODE: &str = "mode";
+/// A class's parameter is `class_<name>`, its value `<donor map>:<hash>`.
+const CLASS: &str = "class_";
 
 impl GroundRecipe {
-    /// The recipe as a document holds it.
-    pub fn to_recipe(self) -> Recipe {
+    /// The class names, in keep order.
+    pub fn class_names(&self) -> Vec<String> {
+        self.classes.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// The recipe as a document holds it. A recipe with no classes has the
+    /// three settings alone, so its identity is the one it always had.
+    pub fn to_recipe(&self) -> Recipe {
+        let mut parameters = vec![
+            FieldWrite {
+                field: KIT_VERSION.into(),
+                value: Value::Int(i64::from(self.kit_version)),
+            },
+            FieldWrite {
+                field: HOME.into(),
+                value: Value::Int(i64::from(self.home)),
+            },
+            FieldWrite {
+                field: MODE.into(),
+                value: Value::Text(if self.probe { "probe" } else { "kit" }.into()),
+            },
+        ];
+        parameters.extend(self.classes.iter().map(|c| FieldWrite {
+            field: format!("{CLASS}{}", c.name),
+            value: Value::Text(format!("{}:{}", c.donor.map, c.donor.sha256)),
+        }));
         Recipe::Generate {
             generator: GROUND_RECIPE.into(),
-            parameters: vec![
-                FieldWrite {
-                    field: KIT_VERSION.into(),
-                    value: Value::Int(i64::from(self.kit_version)),
-                },
-                FieldWrite {
-                    field: HOME.into(),
-                    value: Value::Int(i64::from(self.home)),
-                },
-                FieldWrite {
-                    field: MODE.into(),
-                    value: Value::Text(if self.probe { "probe" } else { "kit" }.into()),
-                },
-            ],
+            parameters,
         }
     }
 
     /// The recipe a `generate` recipe's parameters give: each of the
-    /// three, once, in any order.
+    /// three settings once, and a `class_<name>` for each class, in any
+    /// order. The classes come back in keep order; a class the table does
+    /// not name, or one donor map given two hashes, is refused.
     pub fn from_parameters(parameters: &[FieldWrite]) -> Result<Self> {
         let bad = |reason: &str| Refusal::invalid("ground recipe", reason.to_string());
         let mut kit_version = None;
         let mut home = None;
         let mut probe = None;
+        let mut classes: Vec<GroundClass> = Vec::new();
         for write in parameters {
             let seen = match (write.field.as_str(), &write.value) {
                 (KIT_VERSION, Value::Int(n)) => kit_version
@@ -212,10 +249,29 @@ impl GroundRecipe {
                         _ => return Err(bad("mode is kit or probe")),
                     })
                     .is_some(),
-                _ => return Err(bad("want kit_version, home and mode, as numbers and text")),
+                (field, Value::Text(donor)) if field.starts_with(CLASS) => {
+                    let class = parse_class(&field[CLASS.len()..], donor)?;
+                    let seen = classes.iter().any(|c| c.name == class.name);
+                    classes.push(class);
+                    seen
+                }
+                _ => {
+                    return Err(bad(
+                        "want kit_version, home and mode, as numbers and text, and class_<name> as donor:hash",
+                    ));
+                }
             };
             if seen {
                 return Err(bad("a setting is given twice"));
+            }
+        }
+        classes.sort_by_key(|c| retail_classes().iter().position(|n| *n == c.name));
+        for (i, a) in classes.iter().enumerate() {
+            if classes[..i]
+                .iter()
+                .any(|b| b.donor.map.eq_ignore_ascii_case(&a.donor.map) && b.donor != a.donor)
+            {
+                return Err(bad("a donor map is given two hashes"));
             }
         }
         match (kit_version, home, probe) {
@@ -223,6 +279,7 @@ impl GroundRecipe {
                 kit_version,
                 home,
                 probe,
+                classes,
             }),
             _ => Err(bad("want kit_version, home and mode")),
         }
@@ -238,6 +295,38 @@ impl GroundRecipe {
             _ => Ok(None),
         }
     }
+}
+
+/// A `class_<name>` parameter: a class of the table, and its donor as
+/// `<map>:<hash>`.
+fn parse_class(name: &str, donor: &str) -> Result<GroundClass> {
+    let bad = |reason: String| Refusal::invalid("ground recipe", reason);
+    if !retail_classes().contains(&name) {
+        return Err(bad(format!(
+            "{name:?} is no enemy class; want one of {}",
+            retail_classes().join(", ")
+        )));
+    }
+    let (map, hash) = donor
+        .split_once(':')
+        .ok_or_else(|| bad(format!("class_{name} wants donor:hash")))?;
+    if !content::manifest::is_map_name(map) {
+        return Err(bad(format!("class_{name}'s donor is not a plain map name")));
+    }
+    let sha256: Sha256 = hash
+        .parse()
+        .map_err(|_| bad(format!("class_{name}'s donor hash is not a SHA-256")))?;
+    // One spelling of a hash, so a document has one identity.
+    if sha256.to_string() != hash {
+        return Err(bad(format!("class_{name}'s donor hash is not lowercase hex")));
+    }
+    Ok(GroundClass {
+        name: name.to_owned(),
+        donor: MapRef {
+            map: map.to_owned(),
+            sha256,
+        },
+    })
 }
 
 /// Whether a recipe is a well-formed ground recipe.
@@ -370,6 +459,16 @@ impl ForgeDoc {
                 out.extend(r.kit_version.to_le_bytes());
                 out.push(r.home);
                 out.push(u8::from(r.probe));
+                // The class list: a class added, cut or given another
+                // donor makes the ground stale.
+                out.extend((r.classes.len() as u32).to_le_bytes());
+                for class in &r.classes {
+                    for text in [class.name.as_str(), class.donor.map.as_str()] {
+                        out.extend((text.len() as u32).to_le_bytes());
+                        out.extend(text.as_bytes());
+                    }
+                    out.extend(class.donor.sha256.0);
+                }
             }
             None => out.push(0),
         }

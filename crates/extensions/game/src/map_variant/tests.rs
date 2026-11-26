@@ -333,6 +333,7 @@ fn ground_store(title: &str) -> (Dir, String) {
             kit_version: 3,
             home: 0,
             probe: false,
+            classes: vec![],
         }
         .to_recipe(),
     );

@@ -408,18 +408,23 @@ collision and each machine builds its own.
   (`Session::place_marker`, `crates/extensions/forge/src/scene.rs`
   `Marker`).
 - **The recipe** is a `generate` recipe named `ai_ground`
-  (`forge_doc::GROUND_RECIPE`) with the kit's version, the home team and
-  the mode (`GroundRecipe`). `ForgeDoc::tier` allows it, so a variant
-  with markers and a recipe is a map variant (`Tier::Variant`); the
-  validator refuses a malformed one and a second. A session keeps the
+  (`forge_doc::GROUND_RECIPE`) with the kit's version, the home team,
+  the mode and the enemy classes past the Elite, each with its donor
+  map's name and hash (`GroundRecipe`, `GroundClass`;
+  [forge-firefight.md](forge-firefight.md), "Enemy classes").
+  `ForgeDoc::tier` allows it, so a variant with markers and a recipe is
+  a map variant (`Tier::Variant`); the validator refuses a malformed one
+  and a second. A session keeps the
   recipe beside its document, not in it, so the log's chain is
   untouched: a save writes the document with the recipe
   (`Session::ground_form`) and a load takes it out again.
 - **Materialising.** `forge_build::build` reads each marker's position,
   facing and team from the finished scenario and hands them, with the
-  recipe, to `firefight_kit::ground::build` over the materialised map.
-  The bytes it makes are the map, and `Built::ground` reports the zones,
-  squad slots, problems and receipt (`crates/tools/forge-build/src/ground.rs`).
+  recipe, to `firefight_kit::ground::build_with` over the materialised
+  map, with the recipe's classes copied from their donors. The bytes it
+  makes are the map, and `Built::ground` reports the zones, squad slots,
+  problems, the classes kept and cut, the costs and the receipt
+  (`crates/tools/forge-build/src/ground.rs`).
   The build equals the kit's own over the same labels. `ai_ground` and
   `forge_kit` are not built together: the ground is built over the live
   form of the play form (`Session::ground_copy_form`; forge-design.md,

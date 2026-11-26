@@ -13,11 +13,18 @@
 //! document, not in it: the log's chain starts at the document, and the
 //! recipe and the wave set (`waves.rs`) are what a save adds. A save writes
 //! the document with the recipe; a load takes it back out.
+//!
+//! **Enemy classes** (docs/game/forge-firefight.md, "Enemy classes"). The
+//! recipe names the classes past the Elite and the donor each is copied
+//! from. [`Session::set_ground_classes`] takes the names alone; the next
+//! build asks the builder for each donor ([`GroundBuilder::classes`], the
+//! machine's own disc) and puts them in the recipe, so a class change
+//! marks the ground stale until it is built.
 use std::path::Path;
 
 use forge_doc::{
     BlockKind, Edit, Endpoint, F32, FieldWrite, Forge, ForgeDoc, GROUND_BLOCK, GroundLabel,
-    GroundMark, GroundRecipe, Label, Op, OpId, Placement, Sha256, Value,
+    GroundClass, GroundMark, GroundRecipe, Label, Op, OpId, Placement, Sha256, Value,
 };
 
 use super::{Session, files, reason, scene, vector};
@@ -66,6 +73,16 @@ pub struct GroundReceipt {
     pub kit_version: u32,
 }
 
+/// What one class the build kept added to the map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroundClassCost {
+    pub name: String,
+    /// Tags copied in (those the map already had are not counted).
+    pub tags: usize,
+    /// Tag memory of the copied tags and their index entries.
+    pub bytes: usize,
+}
+
 /// What a build made, for the overlay and the HUD.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroundReport {
@@ -74,7 +91,29 @@ pub struct GroundReport {
     pub problems: Vec<GroundProblem>,
     /// Absent from a builder that has none to give.
     pub receipt: Option<GroundReceipt>,
+    /// The classes the ground has, in palette order, the Elite first.
+    /// Empty from a builder that does not say: the Elite alone.
+    pub classes: Vec<String>,
+    /// The classes cut to fit the map's headroom, first cut first.
+    pub cut: Vec<String>,
+    /// What each class past the Elite added, in palette order.
+    pub costs: Vec<GroundClassCost>,
 }
+
+impl GroundReport {
+    /// The classes the ground has: [`GroundReport::classes`], or the Elite
+    /// alone when the builder named none.
+    pub fn built_classes(&self) -> Vec<String> {
+        if self.classes.is_empty() {
+            forge_doc::waves::GROUND_CLASSES.map(String::from).to_vec()
+        } else {
+            self.classes.clone()
+        }
+    }
+}
+
+/// What a class list is refused with when the builder cannot copy classes.
+pub const NO_CLASSES: &str = "This game cannot build enemy classes.";
 
 /// The build, supplied by the game: the Firefight kit's ground over the
 /// materialised map.
@@ -82,6 +121,18 @@ pub trait GroundBuilder {
     /// The recipe a first build asks for: this build's kit version, red
     /// home, the kit's mode.
     fn recipe(&self) -> GroundRecipe;
+
+    /// The donor of each class `names` names, as this machine's disc has
+    /// them: its first campaign map that carries the class, by name and
+    /// hash. A class no donor on the disc carries is refused by name. The
+    /// default copies none.
+    fn classes(&mut self, names: &[String]) -> Result<Vec<GroundClass>, String> {
+        if names.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(NO_CLASSES.into())
+        }
+    }
 
     /// Build over `play`, the document's play form with the ground recipe,
     /// and reload the map with it. An `Err` is a sentence for the HUD: a
@@ -93,6 +144,9 @@ pub trait GroundBuilder {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Track {
     recipe: Option<GroundRecipe>,
+    /// A class list asked for whose donors the next build chooses; `None`
+    /// when the recipe's list is the one asked for.
+    wanted: Option<Vec<String>>,
     built: Option<Built>,
 }
 
@@ -119,17 +173,78 @@ impl Session {
     /// The document with the ground recipe: what a build reads. A save
     /// writes it with the wave set ([`Session::variant_form`]).
     pub fn ground_form(&self) -> ForgeDoc {
-        self.doc.with_ground(self.ground.recipe)
+        self.doc.with_ground(self.ground.recipe.clone())
     }
 
     pub fn ground_recipe(&self) -> Option<GroundRecipe> {
-        self.ground.recipe
+        self.ground.recipe.clone()
     }
 
-    /// Change the recipe (the home team, the probe). The ground is stale
-    /// until it is built again.
+    /// Change the recipe (the home team, the probe, the classes). The
+    /// ground is stale until it is built again.
     pub fn set_ground_recipe(&mut self, recipe: Option<GroundRecipe>) {
         self.ground.recipe = recipe;
+        self.ground.wanted = None;
+    }
+
+    /// The classes past the Elite the session asks for, in keep order:
+    /// the list [`Session::set_ground_classes`] gave, else the recipe's.
+    pub fn ground_classes(&self) -> Vec<String> {
+        match &self.ground.wanted {
+            Some(names) => names.clone(),
+            None => self
+                .ground
+                .recipe
+                .as_ref()
+                .map(GroundRecipe::class_names)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Ask for the classes `names` past the Elite (`grunt`, `jackal`,
+    /// `drone`, `brute`, `hunter`, in any order; they are kept in the
+    /// table's keep order). The next build chooses each donor; until then
+    /// built ground is stale. A name the table lacks, or one given twice,
+    /// is refused and changes nothing.
+    pub fn set_ground_classes(&mut self, names: &[String]) -> Result<(), String> {
+        let table = forge_doc::retail_classes();
+        for (i, name) in names.iter().enumerate() {
+            if !table.contains(&name.as_str()) {
+                return Err(format!(
+                    "{name} is no enemy class: want {}.",
+                    table.join(", ")
+                ));
+            }
+            if names[..i].contains(name) {
+                return Err(format!("{name} is asked for twice."));
+            }
+        }
+        let ordered: Vec<String> = table
+            .iter()
+            .filter(|t| names.iter().any(|n| n == *t))
+            .map(|t| (*t).to_owned())
+            .collect();
+        let recipe = self
+            .ground
+            .recipe
+            .as_ref()
+            .map(GroundRecipe::class_names)
+            .unwrap_or_default();
+        self.ground.wanted = (ordered != recipe).then_some(ordered);
+        Ok(())
+    }
+
+    /// The recipe the next build reads: the session's, else the builder's,
+    /// with the donors of a class list asked for chosen by the builder.
+    fn next_recipe(
+        &self,
+        builder: &mut (impl GroundBuilder + ?Sized),
+    ) -> Result<GroundRecipe, String> {
+        let mut recipe = self.ground.recipe.clone().unwrap_or_else(|| builder.recipe());
+        if let Some(names) = &self.ground.wanted {
+            recipe.classes = builder.classes(names)?;
+        }
+        Ok(recipe)
     }
 
     pub(super) fn ground_stamp(&self) -> Result<Sha256, String> {
@@ -141,6 +256,8 @@ impl Session {
     pub fn ground_state(&self) -> GroundState {
         match (&self.ground.built, self.ground_stamp()) {
             (None, _) => GroundState::NotBuilt,
+            // A class list asked for and not built yet.
+            (Some(_), _) if self.ground.wanted.is_some() => GroundState::Stale,
             (Some(built), Ok(now)) if built.stamp == now => GroundState::Current,
             _ => GroundState::Stale,
         }
@@ -170,21 +287,34 @@ impl Session {
         counts
     }
 
+    /// What the wave set's squads may name: the last build's classes, else
+    /// the Elite and the classes the session asks for.
+    pub fn ground_built_classes(&self) -> Vec<String> {
+        match self.ground_report() {
+            Some(report) => report.built_classes(),
+            None => forge_doc::waves::GROUND_CLASSES
+                .iter()
+                .map(|c| (*c).to_owned())
+                .chain(self.ground_classes())
+                .collect(),
+        }
+    }
+
     /// Build the ground now: **Build AI ground**. The first build puts the
-    /// builder's recipe in the session; a failed one leaves the recipe, the
-    /// last build and so the state as they were.
+    /// builder's recipe in the session, and a class list asked for gets
+    /// its donors from the builder; a failed build leaves the recipe, the
+    /// list asked for, the last build and so the state as they were.
     pub fn build_ground(
         &mut self,
         builder: &mut (impl GroundBuilder + ?Sized),
     ) -> Result<&GroundReport, String> {
-        let before = self.ground.recipe;
-        if before.is_none() {
-            self.ground.recipe = Some(builder.recipe());
-        }
-        let stamp = self.ground_stamp();
-        // The live form, so the map the game reloads onto keeps every row
-        // where the session has it (`reload.rs`).
-        let built = stamp.and_then(|stamp| {
+        let before = (self.ground.recipe.clone(), self.ground.wanted.clone());
+        let built = self.next_recipe(builder).and_then(|recipe| {
+            self.ground.recipe = Some(recipe);
+            self.ground.wanted = None;
+            let stamp = self.ground_stamp()?;
+            // The live form, so the map the game reloads onto keeps every
+            // row where the session has it (`reload.rs`).
             let play = self.ground_copy_form()?;
             builder.build(&play).map(|report| Built { stamp, report })
         });
@@ -194,7 +324,7 @@ impl Session {
                 Ok(&built.report)
             }
             Err(error) => {
-                self.ground.recipe = before;
+                (self.ground.recipe, self.ground.wanted) = before;
                 Err(error)
             }
         }
@@ -250,6 +380,7 @@ impl Session {
     pub(super) fn restart_ground(&mut self, recipe: Option<GroundRecipe>) {
         self.ground = Track {
             recipe,
+            wanted: None,
             built: None,
         };
     }

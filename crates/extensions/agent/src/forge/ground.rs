@@ -36,6 +36,11 @@ fn report(session: &Session) -> Value {
     let Some(report) = session.ground_report() else {
         return Value::Null;
     };
+    let costs: Vec<Value> = report
+        .costs
+        .iter()
+        .map(|c| json!({"name": c.name, "tags": c.tags, "bytes": c.bytes}))
+        .collect();
     json!({
         "zones": report.zones,
         "squads": report.squads,
@@ -43,6 +48,9 @@ fn report(session: &Session) -> Value {
         "receipt": report.receipt.as_ref().map(|r| json!({
             "base": r.base, "labels": r.labels, "kit_version": r.kit_version,
         })),
+        "classes": report.built_classes(),
+        "cut": report.cut,
+        "costs": costs,
     })
 }
 
@@ -63,8 +71,9 @@ pub fn status(session: &Session, facts: Facts) -> Value {
     out
 }
 
-/// `forge.ground`: the state, the recipe, how many of each label are placed
-/// and where, and the last build's report with its problems and receipt.
+/// `forge.ground`: the state, the recipe, the classes asked for, how many of
+/// each label are placed and where, and the last build's report with its
+/// problems, receipt, classes kept and cut, and each class's cost.
 pub fn reply(session: &Session, facts: Facts) -> Value {
     let counts: serde_json::Map<String, Value> = GroundLabel::ALL
         .iter()
@@ -89,7 +98,11 @@ pub fn reply(session: &Session, facts: Facts) -> Value {
         "loaded": facts.loaded,
         "recipe": session.ground_recipe().map(|r| json!({
             "kit_version": r.kit_version, "home": r.home, "probe": r.probe,
+            "classes": r.classes.iter().map(|c| json!({
+                "name": c.name, "donor": c.donor.map, "sha256": c.donor.sha256.to_string(),
+            })).collect::<Vec<_>>(),
         })),
+        "classes": session.ground_classes(),
         "counts": counts,
         "markers": markers,
         "problems": problems(session),
