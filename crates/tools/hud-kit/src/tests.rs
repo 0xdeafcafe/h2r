@@ -1717,9 +1717,10 @@ fn the_banner_is_drawn_centred_above_the_frames_bottom() {
 
 /// The Firefight HUD on the synthetic sheet (`h2 hud preview firefight
 /// --state all --mode all --synthetic`): every state and mode passes every
-/// check but the glyphs (no fonts); in a wave's placing the banner, both
-/// pills and their counts draw in every mode, the enemies pill right of
-/// the lives pill, and the banner is the wave's.
+/// check but the glyphs (no fonts); in a fighting state the lines, the
+/// meter and the skulls on draw at full and half size, a quarter screen
+/// draws the lives and progress lines alone, the banner draws at full and
+/// half size, and a skull off draws nothing.
 #[test]
 fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
     use crate::views::firefight::{self as ff, Firefight};
@@ -1727,44 +1728,42 @@ fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
     let r = check::all(&mut src, &[&Firefight], &Mode::ALL).unwrap();
     assert!(r.findings.is_empty(), "{:#?}", r.findings);
     assert_eq!(r.shots.len(), Firefight.states().len() * 3);
-    for mode in Mode::ALL {
-        let s = r
-            .shots
+    let shot = |state: &str, mode: Mode| {
+        r.shots
             .iter()
-            .find(|s| s.state == "spawning" && s.mode == mode)
-            .unwrap();
-        for id in [
-            ff::BANNER,
-            ff::LIVES_PILL,
-            ff::LIVES_END,
-            ff::LIVES_COUNT,
-            ff::ENEMIES_PILL,
-            ff::ENEMIES_END,
-            ff::ENEMIES_COUNT,
-        ] {
+            .find(|s| s.state == state && s.mode == mode)
+            .unwrap()
+    };
+    for mode in [Mode::Full, Mode::Half] {
+        let s = shot("fighting", mode);
+        for id in [ff::SCORE, ff::LIVES, ff::PROGRESS, ff::ENEMIES, ff::SKULLS[0], ff::SKULLS[5]] {
             assert!(s.element(id).unwrap().drawn, "{mode:?} {id}");
         }
-        let rect = |id: &str| s.element(id).unwrap().rect.unwrap();
-        assert!(
-            rect(ff::LIVES_END).x1 <= rect(ff::ENEMIES_PILL).x0,
-            "{mode:?}: {:?} {:?}",
-            rect(ff::LIVES_END),
-            rect(ff::ENEMIES_PILL)
-        );
-        assert_eq!(
-            s.element(ff::BANNER).unwrap().text.as_deref(),
-            Some("WAVE 2")
-        );
-        assert!(!s.element(ff::NOTE).unwrap().drawn, "{mode:?}: no note");
+        for id in [ff::BANNER, ff::SKULLS[1], ff::SKULLS[6]] {
+            assert!(!s.element(id).unwrap().drawn, "{mode:?} {id}");
+        }
+        let b = shot("wave-banner", mode);
+        assert!(b.element(ff::BANNER).unwrap().drawn, "{mode:?}");
+        assert_eq!(b.element(ff::BANNER).unwrap().text.as_deref(), Some("WAVE 3"));
+        // The skulls sit right to left, one slot a skull.
+        let x = |id: &str| s.element(id).unwrap().rect.unwrap().x0;
+        assert!(x(ff::SKULLS[5]) < x(ff::SKULLS[0]), "{mode:?}");
+        // The lines are stacked up from the corner: score, lives, progress.
+        let y = |id: &str| s.element(id).unwrap().rect.unwrap().y0;
+        assert!(y(ff::PROGRESS) < y(ff::LIVES) && y(ff::LIVES) < y(ff::SCORE), "{mode:?}");
+        assert!(y(ff::ENEMIES) < y(ff::PROGRESS), "{mode:?}");
     }
-    // Between waves the enemies pill is gone and the lives pill stays.
-    let between = r
-        .shots
-        .iter()
-        .find(|s| s.state == "wave-complete" && s.mode == Mode::Full)
-        .unwrap();
-    assert!(between.element(ff::LIVES_PILL).unwrap().drawn);
-    assert!(!between.element(ff::ENEMIES_PILL).unwrap().drawn);
+    let q = shot("fighting", Mode::Quarter);
+    for id in [ff::LIVES, ff::PROGRESS] {
+        assert!(q.element(id).unwrap().drawn, "{id}");
+    }
+    for id in [ff::SCORE, ff::ENEMIES, ff::SKULLS[0], ff::BANNER] {
+        assert!(!q.element(id).unwrap().drawn, "quarter {id}");
+    }
+    // Between waves the meter is gone and the lines stay.
+    let between = shot("between-waves", Mode::Full);
+    assert!(!between.element(ff::ENEMIES).unwrap().drawn);
+    assert!(between.element(ff::LIVES).unwrap().drawn);
 }
 
 /// A gizmo axis is a segment in the axis' colour: the check refuses an

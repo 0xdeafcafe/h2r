@@ -27,6 +27,8 @@ pub mod mod_marks;
 pub mod patch;
 pub mod raster;
 pub mod ring;
+pub mod skulls;
+pub mod strokes;
 
 pub use raster::{Bitmap, GlyphAt, Layout, RenderOptions, layout, render};
 

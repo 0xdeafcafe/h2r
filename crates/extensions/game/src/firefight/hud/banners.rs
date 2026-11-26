@@ -79,7 +79,7 @@ impl Banner {
 }
 
 /// The ending banner of an over stage.
-fn ending(stage: Stage) -> Banner {
+pub fn ending(stage: Stage) -> Banner {
     match stage {
         Stage::Won => Banner::Victory,
         Stage::Team0Won => Banner::RedWins,

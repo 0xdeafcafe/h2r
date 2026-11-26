@@ -27,8 +27,12 @@ pub const PLATE_TOP: i16 = 44;
 /// score line of its own (**V**).
 pub const PLATE_SHOWS_TOTAL: bool = false;
 /// The enemies meter's size.
-pub const METER_W: i16 = 96;
-pub const METER_H: i16 = 6;
+/// The battery strip the kit draws the meter with is 92 by 8
+/// (`hud_kit_core::views::firefight`, docs/game/hud-kit.md, "The Firefight HUD").
+pub const METER_W: i16 = 92;
+pub const METER_H: i16 = 8;
+/// The lives line at one life: it blinks as it appears.
+pub const LAST_LIFE: &str = "LAST LIFE";
 /// The largest points and lives the lines show.
 pub const SCORE_MAX: u32 = 9_999_999;
 pub const LIVES_MAX: u16 = 999;
@@ -147,6 +151,16 @@ impl Screen {
         ]
     }
 
+    /// The screen of `users` local players: one has the whole screen, two
+    /// a half each, three or four a quarter each.
+    pub fn for_users(users: u32) -> Screen {
+        match users {
+            0 | 1 => Screen::Full,
+            2 => Screen::Half,
+            _ => Screen::Quarter,
+        }
+    }
+
     /// Whether the whole block is drawn: a quarter drops the score, the
     /// meter, the skulls and the banner.
     fn small(self) -> bool {
@@ -232,7 +246,7 @@ pub fn score_text(m: &Mode) -> String {
 pub fn lives_text(n: u16) -> (String, Look) {
     match n {
         0 => ("NO LIVES".into(), Look::Warning),
-        1 => ("LAST LIFE".into(), Look::Normal),
+        1 => (LAST_LIFE.into(), Look::Normal),
         n => (format!("LIVES {}", n.min(LIVES_MAX)), Look::Normal),
     }
 }

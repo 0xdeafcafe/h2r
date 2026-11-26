@@ -31,6 +31,10 @@ pub enum Motion {
     /// Lost: the value blinks [`BLINKS`] times in [`BLINK_MS`], then is
     /// hidden.
     Blink,
+    /// Arrived: the value blinks [`BLINKS`] times in [`BLINK_MS`], then
+    /// stays shown (a skull switched on, a last life reached). A value
+    /// that is shown from the first draw blinks then too.
+    Arrive,
 }
 
 impl Motion {
@@ -41,6 +45,7 @@ impl Motion {
             Motion::Ending => "ending",
             Motion::RunOut => "run out",
             Motion::Blink => "blink",
+            Motion::Arrive => "arrive",
         }
     }
 }
@@ -85,7 +90,7 @@ fn lerp(from: f32, to: f32, t: f32) -> f32 {
 /// The fill `ms` after a change from `from` to `to` under `motion`.
 pub fn fill_at(motion: Motion, from: f32, to: f32, ms: f32) -> f32 {
     match motion {
-        Motion::None | Motion::Blink => to,
+        Motion::None | Motion::Blink | Motion::Arrive => to,
         Motion::Ease => lerp(from, to, ease(ms / EASE_MS)),
         Motion::Ending => lerp(from, to, ease(ms / ending::SWEEP_END)),
         Motion::RunOut => lerp(from, to, ease(ms / RUN_OUT_MS)),
@@ -110,6 +115,10 @@ pub fn shown_at(motion: Motion, ms: f32, scaled: bool) -> bool {
         Motion::Blink => {
             let slot = BLINK_MS / (2 * BLINKS) as f32;
             ms < BLINK_MS && ((ms.max(0.0) / slot) as u32).is_multiple_of(2)
+        }
+        Motion::Arrive => {
+            let slot = BLINK_MS / (2 * BLINKS) as f32;
+            ms >= BLINK_MS || ((ms.max(0.0) / slot) as u32).is_multiple_of(2)
         }
     }
 }
@@ -227,8 +236,17 @@ mod tests {
         assert_eq!(on, [true, false, true, false, true, false]);
         assert!(!shown_at(Motion::Blink, BLINK_MS, true));
         assert_eq!(fill_at(Motion::Blink, 0.5, 0.0, 10.0), 0.0);
+        // The arrival: on, off, three times, then shown for good.
+        let on: Vec<bool> = (0..6)
+            .map(|k| shown_at(Motion::Arrive, k as f32 * BLINK_MS / 6.0 + 1.0, true))
+            .collect();
+        assert_eq!(on, [true, false, true, false, true, false]);
+        for ms in [BLINK_MS, BLINK_MS + 1.0, 10_000.0] {
+            assert!(shown_at(Motion::Arrive, ms, true), "{ms}");
+        }
+        assert_eq!(fill_at(Motion::Arrive, 0.0, 1.0, 10.0), 1.0);
         // Nothing but the ending scales.
-        for m in [Motion::None, Motion::Ease, Motion::RunOut, Motion::Blink] {
+        for m in [Motion::None, Motion::Ease, Motion::RunOut, Motion::Blink, Motion::Arrive] {
             assert_eq!(scale_at(m, 200.0), [1.0, 1.0], "{m:?}");
         }
     }

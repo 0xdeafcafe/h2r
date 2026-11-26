@@ -334,11 +334,13 @@ impl Fonts {
     /// fonts with the superbounce medals added (`font::medals`,
     /// docs/game/hud-kit.md, "The medals"), and every font with the
     /// HUD's direction arrows (`font::arrows`, "Direction arrows") and
-    /// the charge ring's arcs (`font::ring`, "The charge segments").
+    /// the charge ring's arcs (`font::ring`, "The charge segments") and the
+    /// Firefight HUD's skull pictures (`font::skulls`).
     fn as_served(name: &str, bytes: Vec<u8>) -> Vec<u8> {
         let bytes = font::medals::patch(name, &bytes).unwrap_or(bytes);
         let bytes = font::arrows::patch(&bytes).unwrap_or(bytes);
-        font::ring::patch(&bytes).unwrap_or(bytes)
+        let bytes = font::ring::patch(&bytes).unwrap_or(bytes);
+        font::skulls::patch(&bytes).unwrap_or(bytes)
     }
     fn table(b: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(b)

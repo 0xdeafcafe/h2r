@@ -1,47 +1,70 @@
-# The Firefight HUD (docs/game/forge-firefight-ui.md, "The Firefight HUD"):
-# the wave banner, the lives and enemies pills in the grenade row, and the
-# notification list. Elements in draw order.
+# The Firefight HUD (docs/game/firefight.md, "The HUD"): the block at the
+# bottom right above Halo 2's score plate, in the HUD font. Offsets are from
+# the frame's bottom right corner (the banner's from its top left), up from
+# the plate's top edge (44) in 14 pixel lines. The quarter screen draws the
+# lives and progress lines alone, one line lower. Elements in draw order.
 name: firefight
 elements:
+  - id: ff.score
+    kind: text
+    font: hud
+    justify: end
+    longest: "RED 9999999 BLUE 9999999"
+    at: {anchor: bottom-right, full: [0, -58], half: [0, -58]}
+  - id: ff.lives
+    kind: text
+    font: hud
+    justify: end
+    longest: "LIVES 999"
+    at: {anchor: bottom-right, full: [0, -72], half: [0, -72], quarter: [0, -58]}
+  - id: ff.progress
+    kind: text
+    font: hud
+    justify: end
+    longest: "SET 256 ROUND 12 WAVE 16"
+    at: {anchor: bottom-right, full: [0, -86], half: [0, -86], quarter: [0, -72]}
+  # The enemies meter: the battery strip (92 by 8), right-justified.
+  - id: ff.enemies
+    kind: meter
+    art: {type: strip-meter}
+    at: {anchor: bottom-right, full: [0, -94], half: [0, -94], registration: [1.0, 0.0]}
+  # Seven fixed skull slots, right to left: Ghost, Catch, Black Eye,
+  # Thunderstorm, Famine, Mythic, Iron. Each is two pictures (off, on) of the
+  # skulls' strokes (game::skull_glyphs), 14 pixels square, from U+E600 two a
+  # slot. 18 pixels apart at full size, 14 at half.
+  - id: ff.skull.0
+    kind: gauge
+    glyphs: {first: 58880, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-15, -113], half: [-14, -110]}
+  - id: ff.skull.1
+    kind: gauge
+    glyphs: {first: 58882, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-33, -113], half: [-28, -110]}
+  - id: ff.skull.2
+    kind: gauge
+    glyphs: {first: 58884, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-51, -113], half: [-42, -110]}
+  - id: ff.skull.3
+    kind: gauge
+    glyphs: {first: 58886, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-69, -113], half: [-56, -110]}
+  - id: ff.skull.4
+    kind: gauge
+    glyphs: {first: 58888, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-87, -113], half: [-70, -110]}
+  - id: ff.skull.5
+    kind: gauge
+    glyphs: {first: 58890, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-105, -113], half: [-84, -110]}
+  - id: ff.skull.6
+    kind: gauge
+    glyphs: {first: 58892, steps: 1, size: [14, 14]}
+    at: {anchor: bottom-right, full: [-123, -113], half: [-98, -110]}
+  # The banner: centred on the frame's width (544), 60 below its top (48 at
+  # half). None in a quarter.
   - id: ff.banner
-    kind: banner
-    longest: "ROUND COMPLETE"
-    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
-  # Each pill is two pieces of the frag pill's art and an LCD count, in the
-  # grenade row's next place.
-  - id: ff.lives.pill
-    kind: icon
-    art: {type: grenade-pill, part: body}
-    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-pill}
-  - id: ff.lives.end
-    kind: icon
-    art: {type: grenade-pill, part: end}
-    at: {anchor: top-left, full: [20, 0], half: [20, 0], quarter: [20, 0], origin: next-grenade-pill}
-  - id: ff.lives.count
     kind: text
-    font: lcd
+    font: hud
     justify: centre
-    longest: "99"
-    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0], origin: next-grenade-count}
-    over: ff.lives.pill
-  # The enemies pill is the next place after the lives pill: 30 right, the
-  # kit pill's width (20 and 7) and a gap of 3.
-  - id: ff.enemies.pill
-    kind: icon
-    art: {type: grenade-pill, part: body}
-    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-pill}
-  - id: ff.enemies.end
-    kind: icon
-    art: {type: grenade-pill, part: end}
-    at: {anchor: top-left, full: [50, 0], half: [50, 0], quarter: [50, 0], origin: next-grenade-pill}
-  - id: ff.enemies.count
-    kind: text
-    font: lcd
-    justify: centre
-    longest: "99"
-    at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-count}
-    over: ff.enemies.pill
-  - id: ff.note
-    kind: message
-    longest: "Round 12 of 12"
-    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+    longest: "BONUS OVER 99 LIVES"
+    at: {anchor: top-left, full: [272, 60], half: [272, 48]}

@@ -1,403 +1,19 @@
-//! Each skull's glyph, the mark pressed into the model picture's forehead
-//! (docs/game/skulls.md, "The model picture"): our own line art, a simple
-//! geometric sign for what the skull does, one per skull in
-//! [`skulls::ABOUT`](crate::skulls::ABOUT)'s order. None copies a Halo
-//! game's skull symbols. They are vector data, sampled at run time into a
-//! signed distance field ([`distance_field`]) that the renderer projects
-//! onto the forehead and cuts as a groove, its edge resolved at the
-//! picture's own resolution whatever the field's size.
-//!
-//! A glyph lives in a box from -1 to 1 on both axes, y up. Every stroke,
-//! with its width, stays inside [`BOX`], so the field's outer texels are
-//! always outside every stroke and the decal has no hard edge.
+//! Each skull's glyph (docs/game/skulls.md, "The model picture"): our own
+//! line art, one per skull in [`skulls::ABOUT`](crate::skulls::ABOUT)'s
+//! order. The strokes and their sampling live in `font::strokes`, a crate
+//! with no game in it, so the HUD kit's offline tools draw the Firefight
+//! HUD's skull gauges from the same strokes (`font::skulls`); this module
+//! is the game's name for them and holds what needs the skull list.
 
-use crate::skulls::TOTAL;
-
-/// Half a line's width, in glyph units.
-pub const HALF_WIDTH: f32 = 0.07;
-/// How far from the centre any stroke may reach, its width included.
-pub const BOX: f32 = 0.9;
-/// The distance field's size in texels (square): a stroke is 18 texels
-/// wide, so its ends and joins keep their shape.
-pub const FIELD: u32 = 256;
-
-/// One stroke of a glyph.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Stroke {
-    /// A line from `a` to `b`, [`HALF_WIDTH`] either side.
-    Line { a: [f32; 2], b: [f32; 2] },
-    /// An arc of the circle at `centre` with `radius`, counter-clockwise
-    /// from `from` to `to` degrees (0 is +x; `to` may pass 360), drawn as
-    /// a line.
-    Arc {
-        centre: [f32; 2],
-        radius: f32,
-        from: f32,
-        to: f32,
-    },
-    /// A filled disc.
-    Dot { centre: [f32; 2], radius: f32 },
-}
-
-use Stroke::{Arc, Dot, Line};
-
-const fn l(ax: f32, ay: f32, bx: f32, by: f32) -> Stroke {
-    Line {
-        a: [ax, ay],
-        b: [bx, by],
-    }
-}
-const fn arc(cx: f32, cy: f32, radius: f32, from: f32, to: f32) -> Stroke {
-    Arc {
-        centre: [cx, cy],
-        radius,
-        from,
-        to,
-    }
-}
-const fn ring(cx: f32, cy: f32, radius: f32) -> Stroke {
-    arc(cx, cy, radius, 0.0, 360.0)
-}
-const fn dot(cx: f32, cy: f32, radius: f32) -> Stroke {
-    Dot {
-        centre: [cx, cy],
-        radius,
-    }
-}
-
-/// Envy (active camouflage): a ring whose right half has faded to dots.
-const ENVY: &[Stroke] = &[
-    arc(0.0, 0.0, 0.6, 90.0, 270.0),
-    dot(0.3, 0.52, 0.08),
-    dot(0.6, 0.0, 0.08),
-    dot(0.3, -0.52, 0.08),
-];
-
-/// Grunt Birthday Party (confetti): a burst of eight rays round a ring.
-const GRUNT_BIRTHDAY_PARTY: &[Stroke] = &[
-    ring(0.0, 0.0, 0.18),
-    l(0.38, 0.0, 0.72, 0.0),
-    l(0.269, 0.269, 0.509, 0.509),
-    l(0.0, 0.38, 0.0, 0.72),
-    l(-0.269, 0.269, -0.509, 0.509),
-    l(-0.38, 0.0, -0.72, 0.0),
-    l(-0.269, -0.269, -0.509, -0.509),
-    l(0.0, -0.38, 0.0, -0.72),
-    l(0.269, -0.269, 0.509, -0.509),
-];
-
-/// Assassins (enemies cloaked): a diamond with its corners missing round a
-/// point.
-const ASSASSINS: &[Stroke] = &[
-    l(0.18, 0.54, 0.54, 0.18),
-    l(0.54, -0.18, 0.18, -0.54),
-    l(-0.18, -0.54, -0.54, -0.18),
-    l(-0.54, 0.18, -0.18, 0.54),
-    dot(0.0, 0.0, 0.1),
-];
-
-/// Thunderstorm (enemies promoted): two rank chevrons under a star point.
-const THUNDERSTORM: &[Stroke] = &[
-    l(-0.6, -0.05, 0.0, 0.45),
-    l(0.0, 0.45, 0.6, -0.05),
-    l(-0.6, -0.55, 0.0, -0.05),
-    l(0.0, -0.05, 0.6, -0.55),
-    dot(0.0, 0.72, 0.09),
-];
-
-/// Famine (dropped weapons half empty): a ring with only its lower part
-/// filled.
-const FAMINE: &[Stroke] = &[
-    ring(0.0, 0.0, 0.65),
-    l(-0.5, -0.25, 0.5, -0.25),
-    l(-0.36, -0.45, 0.36, -0.45),
-];
-
-/// I Would Have Been Your Daddy (rare lines): a speech ring with three dots
-/// and a tail.
-const IWHBYD: &[Stroke] = &[
-    arc(0.0, 0.1, 0.62, 265.0, 585.0),
-    l(-0.262, -0.462, -0.45, -0.75),
-    dot(-0.25, 0.1, 0.08),
-    dot(0.0, 0.1, 0.08),
-    dot(0.25, 0.1, 0.08),
-];
-
-/// Blind (no HUD): an eye struck through.
-const BLIND: &[Stroke] = &[
-    arc(0.0, -0.5, 0.9, 34.0, 146.0),
-    arc(0.0, 0.5, 0.9, 214.0, 326.0),
-    l(-0.55, -0.55, 0.55, 0.55),
-];
-
-/// Ghost (no flinching): a plumb line hanging dead still.
-const GHOST: &[Stroke] = &[
-    l(-0.4, 0.7, 0.4, 0.7),
-    l(0.0, 0.7, 0.0, -0.25),
-    dot(0.0, -0.45, 0.2),
-];
-
-/// Black Eye (melee recharges the shield): a shield's arc over a blow.
-const BLACK_EYE: &[Stroke] = &[
-    arc(0.0, -0.1, 0.7, 20.0, 160.0),
-    l(-0.25, -0.35, 0.25, 0.15),
-    l(-0.25, 0.15, 0.25, -0.35),
-];
-
-/// Catch (more grenades thrown): a dashed throw landing.
-const CATCH: &[Stroke] = &[
-    arc(0.0, -0.55, 0.95, 40.0, 60.0),
-    arc(0.0, -0.55, 0.95, 75.0, 105.0),
-    arc(0.0, -0.55, 0.95, 120.0, 140.0),
-    dot(0.7, -0.4, 0.11),
-];
-
-/// Sputnik (things fly far): a body with an orbit and its satellite.
-const SPUTNIK: &[Stroke] = &[
-    dot(-0.15, -0.15, 0.2),
-    arc(0.0, 0.0, 0.68, 60.0, 330.0),
-    dot(0.657, 0.176, 0.1),
-];
-
-/// Iron (co-op restarts on a death): a loop that comes round to its
-/// start.
-const IRON: &[Stroke] = &[
-    arc(0.0, 0.0, 0.6, 60.0, 360.0),
-    l(0.6, 0.12, 0.38, -0.12),
-    l(0.6, 0.12, 0.8, -0.12),
-];
-
-/// Mythic (enemies tougher): nested rings.
-const MYTHIC: &[Stroke] = &[
-    ring(0.0, 0.0, 0.68),
-    ring(0.0, 0.0, 0.42),
-    ring(0.0, 0.0, 0.16),
-];
-
-/// Angry (enemies fire faster): three chevrons pressing forward.
-const ANGRY: &[Stroke] = &[
-    l(-0.55, 0.45, -0.25, 0.0),
-    l(-0.25, 0.0, -0.55, -0.45),
-    l(-0.1, 0.45, 0.2, 0.0),
-    l(0.2, 0.0, -0.1, -0.45),
-    l(0.35, 0.45, 0.65, 0.0),
-    l(0.65, 0.0, 0.35, -0.45),
-];
-
-/// Bandana (endless ammunition): two rings joined, an endless line.
-const BANDANA: &[Stroke] = &[ring(-0.36, 0.0, 0.32), ring(0.36, 0.0, 0.32)];
-
-/// Acrophobia (flight): an arrow rising on two wings.
-const ACROPHOBIA: &[Stroke] = &[
-    l(0.0, -0.6, 0.0, 0.65),
-    l(0.0, 0.65, -0.28, 0.37),
-    l(0.0, 0.65, 0.28, 0.37),
-    l(-0.6, -0.1, -0.2, 0.1),
-    l(0.6, -0.1, 0.2, 0.1),
-];
-
-/// Low Gravity: a ball floating above the ground.
-const LOW_GRAVITY: &[Stroke] = &[
-    ring(0.0, 0.3, 0.32),
-    l(-0.7, -0.6, 0.7, -0.6),
-    l(-0.25, -0.42, -0.25, -0.22),
-    l(0.25, -0.42, 0.25, -0.22),
-];
-
-/// Fall Damage: an arrow striking the ground and cracking it.
-const FALL_DAMAGE: &[Stroke] = &[
-    l(0.0, 0.7, 0.0, -0.3),
-    l(0.0, -0.3, -0.25, -0.05),
-    l(0.0, -0.3, 0.25, -0.05),
-    l(-0.7, -0.55, 0.7, -0.55),
-    l(-0.15, -0.55, -0.35, -0.78),
-    l(0.15, -0.55, 0.35, -0.78),
-];
-
-/// Unlimited Ammo: three rounds standing on a line.
-const UNLIMITED_AMMO: &[Stroke] = &[
-    l(-0.4, -0.4, -0.4, 0.3),
-    dot(-0.4, 0.5, 0.1),
-    l(0.0, -0.4, 0.0, 0.3),
-    dot(0.0, 0.5, 0.1),
-    l(0.4, -0.4, 0.4, 0.3),
-    dot(0.4, 0.5, 0.1),
-    l(-0.65, -0.62, 0.65, -0.62),
-];
-
-/// Unlimited Grenades: a banded sphere with its pin.
-const UNLIMITED_GRENADES: &[Stroke] = &[
-    ring(0.0, -0.15, 0.5),
-    l(-0.35, -0.15, 0.35, -0.15),
-    l(0.0, 0.35, 0.0, 0.6),
-    l(-0.25, 0.6, 0.25, 0.6),
-];
-
-/// Invincible: a shield with a spine.
-const INVINCIBLE: &[Stroke] = &[
-    l(-0.6, 0.65, 0.6, 0.65),
-    l(-0.6, 0.65, -0.6, 0.05),
-    l(0.6, 0.65, 0.6, 0.05),
-    l(-0.6, 0.05, 0.0, -0.7),
-    l(0.6, 0.05, 0.0, -0.7),
-    l(0.0, 0.45, 0.0, -0.35),
-];
-
-/// Every skull's glyph, by skull index (`skulls::ABOUT`'s order).
-pub static GLYPHS: [&[Stroke]; TOTAL] = [
-    ENVY,
-    GRUNT_BIRTHDAY_PARTY,
-    ASSASSINS,
-    THUNDERSTORM,
-    FAMINE,
-    IWHBYD,
-    BLIND,
-    GHOST,
-    BLACK_EYE,
-    CATCH,
-    SPUTNIK,
-    IRON,
-    MYTHIC,
-    ANGRY,
-    BANDANA,
-    ACROPHOBIA,
-    LOW_GRAVITY,
-    FALL_DAMAGE,
-    UNLIMITED_AMMO,
-    UNLIMITED_GRENADES,
-    INVINCIBLE,
-];
-
-/// Skull `index`'s glyph.
-pub fn glyph(index: usize) -> Option<&'static [Stroke]> {
-    GLYPHS.get(index).copied()
-}
-
-fn length(v: [f32; 2]) -> f32 {
-    (v[0] * v[0] + v[1] * v[1]).sqrt()
-}
-
-fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
-    let ab = [b[0] - a[0], b[1] - a[1]];
-    let ap = [p[0] - a[0], p[1] - a[1]];
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 > 0.0 {
-        ((ap[0] * ab[0] + ap[1] * ab[1]) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    length([ap[0] - t * ab[0], ap[1] - t * ab[1]])
-}
-
-fn on_circle(centre: [f32; 2], radius: f32, degrees: f32) -> [f32; 2] {
-    let (s, c) = degrees.to_radians().sin_cos();
-    [centre[0] + radius * c, centre[1] + radius * s]
-}
-
-impl Stroke {
-    /// The distance from `p` to the stroke's filled shape: negative
-    /// inside.
-    pub fn signed_distance(&self, p: [f32; 2]) -> f32 {
-        match *self {
-            Line { a, b } => segment_distance(p, a, b) - HALF_WIDTH,
-            Dot { centre, radius } => length([p[0] - centre[0], p[1] - centre[1]]) - radius,
-            Arc {
-                centre,
-                radius,
-                from,
-                to,
-            } => {
-                let d = [p[0] - centre[0], p[1] - centre[1]];
-                let sweep = (to - from).clamp(0.0, 360.0);
-                let angle = d[1].atan2(d[0]).to_degrees();
-                let along = (angle - from).rem_euclid(360.0);
-                let distance = if along <= sweep {
-                    (length(d) - radius).abs()
-                } else {
-                    let ends = [
-                        on_circle(centre, radius, from),
-                        on_circle(centre, radius, to),
-                    ];
-                    ends.map(|e| length([p[0] - e[0], p[1] - e[1]]))
-                        .into_iter()
-                        .fold(f32::INFINITY, f32::min)
-                };
-                distance - HALF_WIDTH
-            }
-        }
-    }
-
-    /// How far the stroke reaches from the centre on either axis, its
-    /// width included (an arc measured at every degree).
-    pub fn reach(&self) -> f32 {
-        let far = |p: [f32; 2], pad: f32| p[0].abs().max(p[1].abs()) + pad;
-        match *self {
-            Line { a, b } => far(a, HALF_WIDTH).max(far(b, HALF_WIDTH)),
-            Dot { centre, radius } => far(centre, radius),
-            Arc {
-                centre,
-                radius,
-                from,
-                to,
-            } => {
-                let sweep = (to - from).clamp(0.0, 360.0);
-                (0..=sweep as u32)
-                    .map(|k| far(on_circle(centre, radius, from + k as f32), HALF_WIDTH))
-                    .chain([far(on_circle(centre, radius, to), HALF_WIDTH)])
-                    .fold(0.0, f32::max)
-            }
-        }
-    }
-}
-
-/// The distance from `p` to the nearest of `strokes`' filled shapes, in
-/// glyph units: negative inside one.
-pub fn signed_distance(strokes: &[Stroke], p: [f32; 2]) -> f32 {
-    strokes
-        .iter()
-        .map(|s| s.signed_distance(p))
-        .fold(f32::INFINITY, f32::min)
-}
-
-/// `strokes` as a `size` by `size` signed distance field: each texel the
-/// distance from its centre to the strokes ([`signed_distance`]), row 0 at
-/// the top (+y). The box's edges are the field's edges. Deterministic.
-pub fn distance_field(strokes: &[Stroke], size: u32) -> Vec<f32> {
-    let texel = 2.0 / size.max(1) as f32;
-    let mut out = Vec::with_capacity((size as usize) * (size as usize));
-    for row in 0..size {
-        let y = 1.0 - (row as f32 + 0.5) * texel;
-        for col in 0..size {
-            let x = -1.0 + (col as f32 + 0.5) * texel;
-            out.push(signed_distance(strokes, [x, y]));
-        }
-    }
-    out
-}
-
-/// Rasterises `strokes` to a `size` by `size` coverage mask, a byte a
-/// texel (255 inside a stroke, 0 outside, the edge anti-aliased over one
-/// texel), row 0 at the top (+y). Deterministic: the same strokes give the
-/// same bytes.
-pub fn rasterise(strokes: &[Stroke], size: u32) -> Vec<u8> {
-    let texel = 2.0 / size.max(1) as f32;
-    let mut out = Vec::with_capacity((size * size) as usize);
-    for row in 0..size {
-        let y = 1.0 - (row as f32 + 0.5) * texel;
-        for col in 0..size {
-            let x = -1.0 + (col as f32 + 0.5) * texel;
-            let d = signed_distance(strokes, [x, y]);
-            let coverage = (0.5 - d / texel).clamp(0.0, 1.0);
-            out.push((coverage * 255.0).round() as u8);
-        }
-    }
-    out
-}
+pub use font::strokes::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::skulls::ABOUT;
+
+    /// Iron's name in [`ABOUT`], the skull of the HUD's seventh slot.
+    const ABOUT_NAME_OF_IRON: &str = "Iron";
 
     /// The masks' size in these tests.
     const SIZE: u32 = 64;
@@ -514,5 +130,65 @@ mod tests {
         // A dot is filled.
         let d = rasterise(&[dot(0.0, 0.0, 0.3)], 20);
         assert_eq!(d[9 * 20 + 9], 255);
+    }
+
+    /// The strokes this module names are the font crate's, and the list
+    /// they are indexed by is the skull list.
+    #[test]
+    fn the_strokes_index_the_skull_list() {
+        assert_eq!(font::strokes::TOTAL, crate::skulls::TOTAL);
+        assert_eq!(GLYPHS.len(), crate::skulls::TOTAL);
+    }
+
+    /// The Firefight HUD's skull pictures are the skulls' own strokes
+    /// rasterised (`font::skulls`): each slot shows the skull the layout's
+    /// slot names (Iron, which has no session skull of ours yet, by its
+    /// name in the skull list), off faint and on lit, at the picture size
+    /// the kit's gauge claims, and the served font gets them.
+    #[test]
+    fn skull_pictures_come_from_our_strokes() {
+        use crate::firefight::hud::layout::SKULL_SLOTS;
+        use hud_kit_core::views::firefight::{SKULL_PICTURE, skull_glyphs};
+        assert_eq!(font::skulls::SLOTS, SKULL_SLOTS.len());
+        for (slot, skull) in SKULL_SLOTS.iter().enumerate() {
+            let index = font::skulls::SLOT_SKULLS[slot];
+            match skull {
+                Some(s) => assert_eq!(*s as usize, index, "slot {slot}"),
+                None => assert_eq!(ABOUT_NAME_OF_IRON, ABOUT[index].name, "slot {slot} is Iron"),
+            }
+            let strokes = glyph(index).expect("a glyph");
+            let mask = rasterise(strokes, SKULL_PICTURE as u32);
+            let g = skull_glyphs(slot);
+            let on = g.picture(1.0).expect("the lit picture");
+            let off = g.picture(0.0).expect("the off picture");
+            assert_eq!((on.width, on.height), (SKULL_PICTURE as u16, SKULL_PICTURE as u16));
+            assert_eq!((g.size.0, g.size.1), (SKULL_PICTURE, SKULL_PICTURE));
+            for (i, c) in mask.iter().enumerate() {
+                let lit = (f32::from(*c) / 255.0 * 15.0).round() as u16;
+                assert_eq!(on.pixels[i] >> 12, lit, "slot {slot} texel {i}");
+                assert!(off.pixels[i] >> 12 <= lit.min(4), "slot {slot} texel {i}");
+            }
+        }
+        // A font without them is served them, each once, in every file.
+        let blank = {
+            let mut data = vec![0; font::RECORDS_OFFSET + font::RECORD_LEN];
+            let put = |data: &mut Vec<u8>, at: usize, n: u32| {
+                data[at..at + 4].copy_from_slice(&n.to_le_bytes())
+            };
+            put(&mut data, font::HEADER_OFFSET, font::MAGIC);
+            put(&mut data, font::HEADER_OFFSET + 4, 18);
+            put(&mut data, font::HEADER_OFFSET + 0xc, 1);
+            data
+        };
+        let served = crate::bot_mark::GearRewrite::patch("maps\\fonts\\blank", &blank).unwrap();
+        let f = font::Font::parse(&served).unwrap();
+        for slot in 0..font::skulls::SLOTS {
+            for on in [false, true] {
+                let unit = font::skulls::unit(slot, on);
+                assert!(font::ring::has_glyph(&f, unit), "U+{unit:04X}");
+                let g = f.glyph(unit).unwrap();
+                assert_eq!((g.record.width, g.record.height), (14, 14), "U+{unit:04X}");
+            }
+        }
     }
 }
