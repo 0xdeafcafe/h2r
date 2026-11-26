@@ -115,6 +115,8 @@ of another game type than the one shown is `Mesh::faded` to a quarter.
 ```rust
 pub enum Shape {
     Radius(f32),            // a circle round the centre marker
+    Box { half: [f32; 2] }, // a box on the marker's own axes
+    Sphere(f32),            // a ball round the marker
     Path(Vec<[f32; 2]>),    // offsets from the centre marker, in the order dropped
 }
 pub struct Area { pub shape: Shape, pub below: f32, pub above: f32 }
@@ -128,18 +130,29 @@ pub struct Area { pub shape: Shape, pub below: f32, pub above: f32 }
   half a unit under the marker and one and a half over
   (`area::DEFAULT_RADIUS`, `DEFAULT_BELOW`, `DEFAULT_ABOVE`, equal to
   `zones::RADIUS`, `BELOW` and `ABOVE`).
+- **A box** is the marker's own axes, x the way it faces and y its
+  left, by two half lengths, with the area's `below` and `above` as its
+  height. **A sphere** is a ball round the marker: a radius and no
+  height, so its `below` and `above` are ignored and written as zero
+  (`Area::sphere`, `Area::boxed`).
 - **A path** is a custom area: the points joined in the order they were
   dropped and closed back to the first. It may be concave and may not
   cross itself.
 - **`Area::validate`** refuses what a tool must not store, each with a
   sentence (`AreaError`): a number that is not finite; a radius outside
-  0.25 to 64; a height under 0 or over 32, or under 0.25 in all; a path
+  0.25 to 64 (a sphere's too); a box's half length outside 0.25 to 64
+  (`AreaError::Half`); a height under 0 or over 32, or under 0.25 in all; a path
   of fewer than 3 or more than 32 points (`MAX_POINTS`); a point farther than
   64 from the marker; an edge under 0.1; points in a line; edges that
   cross or touch.
 - **`Area::contains(centre, p)`** is the zone test, edges included: the
-  heights, then the circle or the polygon (an edge test, then the
-  crossings of a ray).
+  heights, then the circle, the box or the polygon (an edge test, then
+  the crossings of a ray); a sphere is tested by distance from the
+  marker, in three axes, with no height test. `Area::contains_turned`
+  takes the marker's facing in radians, which turns a box and no other
+  shape; a box holds its edge to within `area::EDGE_SLACK` (0.0001) so a
+  corner survives the turn. `Area::outline` of a box is its four
+  corners and of a sphere its equator, in the marker's own axes.
 - **`Area::of_corners`** is the area of a retail hill: the convex hull
   of its corners round their mean, from half a unit under the lowest to
   one and a half over the highest, which is the polygon
@@ -157,6 +170,8 @@ clear the area, or one of
 ```json
 {"radius": {"radius": "40000000", "below": "3f000000", "above": "3fc00000"}}
 {"path": {"points": [["c0000000", "c0000000"], ["40000000", "c0000000"], ["40000000", "40000000"]], "below": "3f000000", "above": "3fc00000"}}
+{"box": {"half": ["40400000", "3f800000"], "below": "3f000000", "above": "3fc00000"}}
+{"sphere": {"radius": "40000000"}}
 ```
 
 The wire format uses `forge_doc::F32` for each distance and offset. The
@@ -196,10 +211,12 @@ carries them as a record at the end of its file
 record  = "H2AR" version:u8 count:u16le row*count crc:u32le
 row     = block:u8 index:u32le type:i16le identifier:i16le
           at:[u32le;3] shape:u8 below:u32le above:u32le
-          (radius:u32le | points:u8 [u32le;2]*points)
+          (radius:u32le | points:u8 [u32le;2]*points | half:[u32le;2] | radius:u32le)
 trailer = length:u32le "H2AE"           ; the file's last 8 bytes
 ```
 
+- **Shapes.** `shape` is 0 for a radius, 1 a path, 2 a box and 3 a
+  sphere; a sphere's `below` and `above` are written as zero.
 - **Same area as the document's.** The distances are the exact `f32`
   bits `forge_doc::Area` spells in hex, and every row passes
   `Area::validate` on read, so a record and a document name one area one

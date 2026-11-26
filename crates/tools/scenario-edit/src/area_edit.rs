@@ -70,6 +70,9 @@ pub fn handles(centre: Vec3, area: &Area) -> Vec<(Handle, Vec3)> {
     let mut out = Vec::new();
     match &area.shape {
         Shape::Radius(r) => out.push((Handle::Rim, [centre[0] + r, centre[1], centre[2]])),
+        // A box and a sphere have no handle but their heights until their
+        // editor lands (a box's, not a sphere's).
+        Shape::Box { .. } | Shape::Sphere(_) => {}
         Shape::Path(points) => {
             let n = points.len();
             for (i, p) in points.iter().enumerate() {
@@ -88,8 +91,10 @@ pub fn handles(centre: Vec3, area: &Area) -> Vec<(Handle, Vec3)> {
             }
         }
     }
-    out.push((Handle::Top, [centre[0], centre[1], centre[2] + area.above]));
-    out.push((Handle::Bottom, [centre[0], centre[1], centre[2] - area.below]));
+    if !matches!(area.shape, Shape::Sphere(_)) {
+        out.push((Handle::Top, [centre[0], centre[1], centre[2] + area.above]));
+        out.push((Handle::Bottom, [centre[0], centre[1], centre[2] - area.below]));
+    }
     out
 }
 
@@ -113,6 +118,7 @@ pub fn drag(area: &Area, h: Handle, centre: Vec3, to: Vec3) -> Result<Area, Refu
             }
             points.insert(i + 1, offset);
         }
+        (Handle::Top | Handle::Bottom, Shape::Sphere(_)) => return Err(Refused::NoHandle),
         (Handle::Top, _) => out.above = to[2] - centre[2],
         (Handle::Bottom, _) => out.below = centre[2] - to[2],
         _ => return Err(Refused::NoHandle),

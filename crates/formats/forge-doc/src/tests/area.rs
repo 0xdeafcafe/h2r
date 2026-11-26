@@ -172,3 +172,48 @@ fn an_area_cannot_share_its_hill_with_corners() {
     doc.ops.push(entry(4, EntryOp::Reset { target: centre }));
     assert!(doc.areas(&same_hill.base_counts).unwrap().is_empty());
 }
+
+#[test]
+fn box_and_sphere_areas_round_trip_the_variant_wire_form() {
+    let centre = target(FLAGS, 0);
+    let boxed = MarkerArea::boxed([3.0, 1.0]);
+    let ball = MarkerArea::sphere(2.0);
+    let place = |id, area: &MarkerArea| area_op(id, centre, Some(Area::try_from(area).unwrap()));
+    let doc = doc(vec![place(1, &boxed), place(2, &ball)]);
+    let limits = limits(&[10]);
+    let canonical = doc.canonical_json().unwrap();
+    assert!(canonical.contains(
+        r#""area":{"box":{"above":"3fc00000","below":"3f000000","half":["40400000","3f800000"]}}"#
+    ));
+    assert!(canonical.contains(r#""area":{"sphere":{"radius":"40000000"}}"#));
+    let back = ForgeDoc::from_bytes(canonical.as_bytes(), &limits).unwrap();
+    assert_eq!(back, doc);
+    assert_eq!(back.canonical_json().unwrap(), canonical);
+    // The document decodes to the area the marker and the zone use.
+    assert_eq!(Area::try_from(&boxed).unwrap().marker_area(), boxed);
+    assert_eq!(Area::try_from(&ball).unwrap().marker_area(), ball);
+    // A sphere written with heights is not a spelling.
+    let heights = serde_json::json!({"sphere": {"radius": "40000000", "below": "0", "above": "0"}});
+    assert!(serde_json::from_value::<Area>(heights).is_err());
+}
+
+#[test]
+fn box_and_sphere_areas_are_refused_by_the_markers_sentence() {
+    let centre = target(FLAGS, 0);
+    let limits = limits(&[10]);
+    let tiny_box = Area::Box {
+        half: [0.1, 1.0].map(|v| F32::new(v).unwrap()),
+        below: F32::new(0.5).unwrap(),
+        above: F32::new(1.5).unwrap(),
+    };
+    let huge_ball = Area::Sphere {
+        radius: F32::new(100.0).unwrap(),
+    };
+    for (area, why) in [
+        (tiny_box, AreaError::Half([0.1, 1.0])),
+        (huge_ball, AreaError::Radius(100.0)),
+    ] {
+        let refused = validate(&doc(vec![area_op(1, centre, Some(area))]), &limits).unwrap_err();
+        assert_eq!(refused.to_string(), why.to_string());
+    }
+}

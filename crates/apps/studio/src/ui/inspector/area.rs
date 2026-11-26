@@ -58,6 +58,10 @@ pub(super) fn rows(ui: &Ui, app: &mut App, index: usize) {
     }
     let _id = ui.push_id(index);
 
+    if matches!(area.shape, Shape::Box { .. } | Shape::Sphere(_)) {
+        ui.text_disabled("A box or a sphere is not editable here yet: the Shape row leaves it as it is.");
+    }
+
     // Shape.
     let path = matches!(area.shape, Shape::Path(_));
     ui.text("Shape");

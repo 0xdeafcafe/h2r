@@ -14,7 +14,8 @@
 //! record  = "H2AR" version:u8 count:u16le row*count crc:u32le
 //! row     = block:u8 index:u32le type:i16le identifier:i16le
 //!           at:[u32le;3] shape:u8 below:u32le above:u32le
-//!           (radius:u32le | points:u8 [u32le;2]*points)
+//!           (radius:u32le | points:u8 [u32le;2]*points | half:[u32le;2] | radius:u32le)
+//! shape   = 0 radius, 1 path, 2 box, 3 sphere (a sphere's below and above are zero)
 //! trailer = length:u32le "H2AE"          ; the last 8 bytes of the file
 //! ```
 //!
@@ -111,11 +112,25 @@ pub fn encode(rows: &[Row]) -> Vec<u8> {
         match &r.area.shape {
             Shape::Radius(_) => w.push(0),
             Shape::Path(_) => w.push(1),
+            Shape::Box { .. } => w.push(2),
+            Shape::Sphere(_) => w.push(3),
         }
-        w.extend_from_slice(&r.area.below.to_bits().to_le_bytes());
-        w.extend_from_slice(&r.area.above.to_bits().to_le_bytes());
+        // A sphere has no height: its two are written as zero.
+        let (below, above) = match r.area.shape {
+            Shape::Sphere(_) => (0.0, 0.0),
+            _ => (r.area.below, r.area.above),
+        };
+        w.extend_from_slice(&below.to_bits().to_le_bytes());
+        w.extend_from_slice(&above.to_bits().to_le_bytes());
         match &r.area.shape {
-            Shape::Radius(radius) => w.extend_from_slice(&radius.to_bits().to_le_bytes()),
+            Shape::Radius(radius) | Shape::Sphere(radius) => {
+                w.extend_from_slice(&radius.to_bits().to_le_bytes());
+            }
+            Shape::Box { half } => {
+                for v in half {
+                    w.extend_from_slice(&v.to_bits().to_le_bytes());
+                }
+            }
             Shape::Path(points) => {
                 w.push(points.len().min(255) as u8);
                 for p in points.iter().take(255) {
@@ -196,7 +211,7 @@ pub fn decode(record: &[u8]) -> Result<Vec<Row>, RecordError> {
         let identifier = r.i16()?;
         let at = [r.f32()?, r.f32()?, r.f32()?];
         let shape = r.u8()?;
-        let (below, above) = (r.f32()?, r.f32()?);
+        let (mut below, mut above) = (r.f32()?, r.f32()?);
         let shape = match shape {
             0 => Shape::Radius(r.f32()?),
             1 => {
@@ -206,6 +221,13 @@ pub fn decode(record: &[u8]) -> Result<Vec<Row>, RecordError> {
                     points.push([r.f32()?, r.f32()?]);
                 }
                 Shape::Path(points)
+            }
+            2 => Shape::Box {
+                half: [r.f32()?, r.f32()?],
+            },
+            3 => {
+                (below, above) = (0.0, 0.0);
+                Shape::Sphere(r.f32()?)
             }
             other => return Err(RecordError::Shape(other)),
         };

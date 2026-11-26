@@ -21,6 +21,14 @@ pub enum Area {
         below: F32,
         above: F32,
     },
+    /// A box on the marker's axes, by its half lengths.
+    Box {
+        half: [F32; 2],
+        below: F32,
+        above: F32,
+    },
+    /// A ball: no heights.
+    Sphere { radius: F32 },
 }
 
 impl Area {
@@ -28,6 +36,16 @@ impl Area {
     pub fn marker_area(&self) -> MarkerArea {
         let (shape, below, above) = match self {
             Self::Radius { radius, below, above } => (Shape::Radius(radius.get()), below, above),
+            Self::Box { half, below, above } => (
+                Shape::Box {
+                    half: half.map(F32::get),
+                },
+                below,
+                above,
+            ),
+            Self::Sphere { radius } => {
+                return MarkerArea::sphere(radius.get());
+            }
             Self::Path { points, below, above } => (
                 Shape::Path(points.iter().map(|point| point.map(F32::get)).collect()),
                 below,
@@ -58,6 +76,14 @@ impl TryFrom<&MarkerArea> for Area {
                 radius: F32::new(*radius)?,
                 below,
                 above,
+            },
+            Shape::Box { half } => Self::Box {
+                half: [F32::new(half[0])?, F32::new(half[1])?],
+                below,
+                above,
+            },
+            Shape::Sphere(radius) => Self::Sphere {
+                radius: F32::new(*radius)?,
             },
             Shape::Path(points) => Self::Path {
                 points: points

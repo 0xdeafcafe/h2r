@@ -1,6 +1,7 @@
 //! The ground a hill, a territory or a site covers
 //! (docs/game/gametype-markers.md, "Areas"): a radius round the centre
-//! marker, or a path of points dropped round it, between two heights.
+//! marker, a box on the marker's axes, a ball round it, or a path of
+//! points dropped round it. All but the ball lie between two heights.
 //!
 //! A path's points are offsets from the centre marker across the floor,
 //! so moving the marker moves its area. They are joined in the order
@@ -37,12 +38,21 @@ pub const DEFAULT_BELOW: f32 = 0.5;
 pub const DEFAULT_ABOVE: f32 = 1.5;
 /// The points a radius's outline is drawn with.
 pub const SEGMENTS: usize = 32;
+/// How far past a turned box's edge a point still counts as on it, in
+/// world units, so a corner survives the turn's rounding.
+pub const EDGE_SLACK: f32 = 1e-4;
 
 /// An area's outline across the floor.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// A circle of this radius round the centre marker.
     Radius(f32),
+    /// A box on the marker's own axes: these half lengths along x (the
+    /// way the marker faces) and y (its left).
+    Box { half: [f32; 2] },
+    /// A ball of this radius round the centre marker. It has no height:
+    /// `below` and `above` of its [`Area`] are ignored and kept at zero.
+    Sphere(f32),
     /// The polygon through these offsets from the centre marker, in the
     /// order they were dropped.
     Path(Vec<[f32; 2]>),
@@ -64,6 +74,9 @@ pub enum AreaError {
     NotFinite,
     /// The radius is outside [`MIN_RADIUS`] to [`MAX_REACH`].
     Radius(f32),
+    /// A box's half lengths are not both within [`MIN_RADIUS`] to
+    /// [`MAX_REACH`].
+    Half([f32; 2]),
     /// A height is negative or over [`MAX_HEIGHT`], or the two together
     /// are under [`MIN_HEIGHT`].
     Height { below: f32, above: f32 },
@@ -89,6 +102,10 @@ impl fmt::Display for AreaError {
             Self::Radius(r) => write!(
                 f,
                 "An area's radius is {MIN_RADIUS} to {MAX_REACH} world units; this one is {r}."
+            ),
+            Self::Half([x, y]) => write!(
+                f,
+                "A box's half lengths are {MIN_RADIUS} to {MAX_REACH} world units; this one is {x} by {y}."
             ),
             Self::Height { below, above } => write!(
                 f,
@@ -207,6 +224,24 @@ impl Area {
         }
     }
 
+    /// A box of these half lengths at the default heights.
+    pub fn boxed(half: [f32; 2]) -> Self {
+        Self {
+            shape: Shape::Box { half },
+            below: DEFAULT_BELOW,
+            above: DEFAULT_ABOVE,
+        }
+    }
+
+    /// A ball of `radius`: no height, so both heights are zero.
+    pub fn sphere(radius: f32) -> Self {
+        Self {
+            shape: Shape::Sphere(radius),
+            below: 0.0,
+            above: 0.0,
+        }
+    }
+
     /// The polygon through `points` at the default heights.
     pub fn path(points: Vec<[f32; 2]>) -> Self {
         Self {
@@ -260,16 +295,18 @@ impl Area {
 
     fn validate_with(&self, draft: bool) -> Result<(), AreaError> {
         let shape_finite = match &self.shape {
-            Shape::Radius(r) => r.is_finite(),
+            Shape::Radius(r) | Shape::Sphere(r) => r.is_finite(),
+            Shape::Box { half } => half.iter().all(|h| h.is_finite()),
             Shape::Path(points) => points.iter().flatten().all(|c| c.is_finite()),
         };
         if !(shape_finite && self.below.is_finite() && self.above.is_finite()) {
             return Err(AreaError::NotFinite);
         }
         let height = 0.0..=MAX_HEIGHT;
-        if !height.contains(&self.below)
-            || !height.contains(&self.above)
-            || self.below + self.above < MIN_HEIGHT
+        if !matches!(self.shape, Shape::Sphere(_))
+            && (!height.contains(&self.below)
+                || !height.contains(&self.above)
+                || self.below + self.above < MIN_HEIGHT)
         {
             return Err(AreaError::Height {
                 below: self.below,
@@ -277,9 +314,14 @@ impl Area {
             });
         }
         match &self.shape {
-            Shape::Radius(r) => {
+            Shape::Radius(r) | Shape::Sphere(r) => {
                 if !(MIN_RADIUS..=MAX_REACH).contains(r) {
                     return Err(AreaError::Radius(*r));
+                }
+            }
+            Shape::Box { half } => {
+                if !half.iter().all(|h| (MIN_RADIUS..=MAX_REACH).contains(h)) {
+                    return Err(AreaError::Half(*half));
                 }
             }
             Shape::Path(points) => validate_path(points, draft)?,
@@ -291,7 +333,8 @@ impl Area {
     /// An unfinished path has no floor.
     pub fn equal_floor_radius(&self) -> Option<f32> {
         match &self.shape {
-            Shape::Radius(radius) => Some(*radius),
+            Shape::Radius(radius) | Shape::Sphere(radius) => Some(*radius),
+            Shape::Box { half } => Some((4.0 * half[0] * half[1] / std::f32::consts::PI).sqrt()),
             Shape::Path(points) if points.len() >= MIN_POINTS => {
                 Some((doubled_floor(points).abs() / (2.0 * std::f32::consts::PI)).sqrt())
             }
@@ -301,10 +344,13 @@ impl Area {
 
     /// The outline across the floor, counter-clockwise, as offsets from
     /// the centre marker: a radius as [`SEGMENTS`] points, a path as its
-    /// own points.
+    /// own points. A box is its four corners and a sphere its equator;
+    /// both are in the marker's own axes, which a caller turns to the
+    /// marker's facing.
     pub fn outline(&self) -> Vec<[f32; 2]> {
         match &self.shape {
-            Shape::Radius(r) => circle(*r, SEGMENTS),
+            Shape::Radius(r) | Shape::Sphere(r) => circle(*r, SEGMENTS),
+            Shape::Box { half: [x, y] } => vec![[-x, -y], [*x, -y], [*x, *y], [-x, *y]],
             Shape::Path(points) => {
                 let mut points = points.clone();
                 if doubled_floor(&points) < 0.0 {
@@ -341,23 +387,41 @@ impl Area {
     /// Whether the world point `p` is in the area of a marker at
     /// `centre`, edges included.
     pub fn contains(&self, centre: [f32; 3], p: [f32; 3]) -> bool {
+        self.contains_turned(centre, 0.0, p)
+    }
+
+    /// [`Area::contains`] for a marker facing `yaw` radians (counter-
+    /// clockwise from +x): a box turns with the marker, every other shape
+    /// is the same at any facing.
+    pub fn contains_turned(&self, centre: [f32; 3], yaw: f32, p: [f32; 3]) -> bool {
+        let q = [p[0] - centre[0], p[1] - centre[1]];
+        if let Shape::Sphere(r) = &self.shape {
+            let dz = p[2] - centre[2];
+            return q[0] * q[0] + q[1] * q[1] + dz * dz <= r * r;
+        }
         if p[2] < centre[2] - self.below || p[2] > centre[2] + self.above {
             return false;
         }
-        let q = [p[0] - centre[0], p[1] - centre[1]];
         match &self.shape {
             Shape::Radius(r) => q[0] * q[0] + q[1] * q[1] <= r * r,
+            Shape::Box { half } => {
+                let (s, c) = yaw.sin_cos();
+                let local = [q[0] * c + q[1] * s, q[1] * c - q[0] * s];
+                local[0].abs() <= half[0] + EDGE_SLACK && local[1].abs() <= half[1] + EDGE_SLACK
+            }
+            Shape::Sphere(_) => false,
             Shape::Path(points) => inside_path(points, q),
         }
     }
 
     /// The middle of the area of a marker at `centre`: the marker across
-    /// the floor for a radius, the mean of a path's points, halfway
+    /// the floor for a radius or a box, the marker itself for a sphere, the mean of a path's points, halfway
     /// between the heights.
     pub fn middle(&self, centre: [f32; 3]) -> [f32; 3] {
         let z = centre[2] + (self.above - self.below) / 2.0;
         match &self.shape {
-            Shape::Radius(_) => [centre[0], centre[1], z],
+            Shape::Radius(_) | Shape::Box { .. } => [centre[0], centre[1], z],
+            Shape::Sphere(_) => centre,
             Shape::Path(points) => {
                 let n = points.len().max(1) as f32;
                 let x = points.iter().map(|p| p[0]).sum::<f32>() / n;
@@ -446,3 +510,7 @@ fn inside_path(points: &[[f32; 2]], q: [f32; 2]) -> bool {
     }
     inside
 }
+
+#[cfg(test)]
+#[path = "area_shape_tests.rs"]
+mod shape_tests;
