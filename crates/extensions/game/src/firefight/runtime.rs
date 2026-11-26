@@ -19,11 +19,23 @@
 //! Ticks are numbered as the tick a boundary belongs to: before a tick it
 //! is the game time's tick count plus one, after it the count, so the
 //! director's entries for "the next tick" are due at the next boundary.
+//!
+//! **A wave test** (docs/game/forge-firefight.md, "Test waves"): a lobby
+//! match stays off in a Forge session ([`record_options`]), and **Test
+//! waves** is the one way the director runs there. The session asks
+//! ([`Runtime::ask_test`]) and the next [`Runtime::pre_tick`] starts it
+//! ([`Runtime::start_test`]): a [`Host::start_test`] over the same
+//! [`GuestGame`] a match uses. A test reports no score or result, writes
+//! nothing to the film and publishes no log head. [`Runtime::stop_test`]
+//! (the session's Stop waves, a ground build, Rebuild map, a load, leaving)
+//! and the test's own `Finish` end it: every slot's squad is erased at the
+//! next boundary and the mode blob is cleared. The session reads how it
+//! went from [`Runtime::take_test_event`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ::firefight::director::SQUAD_SLOTS;
-use ::firefight::{Command, MAX_TEAMS, Outcome, PlayerKill, Settings, Skull};
+use ::firefight::{Command, Def, Difficulty, MAX_TEAMS, Outcome, PlayerKill, Settings, Skull};
 use agent_proto::firefight as wire;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{GuestMemory, MemFault, points};
@@ -464,6 +476,66 @@ impl Game for GuestGame<'_> {
     }
 }
 
+/// The settings a wave test plays at: seed 0 and Normal, no skulls past
+/// the definition's own.
+pub fn test_settings() -> Settings {
+    Settings {
+        seed: SEED,
+        difficulty: Difficulty::Normal,
+        skulls: BTreeSet::new(),
+    }
+}
+
+/// Where a wave test is, as the Forge session reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestPhase {
+    Off,
+    /// Asked for, and taken at the next tick boundary.
+    Starting,
+    Running,
+}
+
+/// How a wave test went, once each, for the session's notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestEvent {
+    /// The director runs the session's set.
+    Started,
+    /// It did not start, and why.
+    Refused(String),
+    /// It ended: the sentence the session says ([`WAVES_CLEARED`],
+    /// [`WAVES_STOPPED`]).
+    Ended(&'static str),
+}
+
+/// What ends a wave test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestEnd {
+    /// Stop waves, or the session moving on: a ground build, Rebuild map,
+    /// a load, leaving.
+    Stopped,
+    /// The director's `Finish`.
+    Finished(Outcome),
+}
+
+/// The end of a test whose waves were all cleared.
+pub const WAVES_CLEARED: &str = "Waves cleared.";
+/// The end of any other test.
+pub const WAVES_STOPPED: &str = "Waves stopped.";
+/// Why a test is not started while one runs or is starting.
+pub const TEST_RUNNING: &str = "A wave test is running.";
+/// Why a test is not started while a match runs.
+pub const MATCH_RUNNING: &str = "A Firefight match is running.";
+
+impl TestEnd {
+    /// The sentence the session says.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            TestEnd::Finished(Outcome::Won) => WAVES_CLEARED,
+            TestEnd::Finished(_) | TestEnd::Stopped => WAVES_STOPPED,
+        }
+    }
+}
+
 /// One match on the loaded map.
 pub struct Match {
     pub map: String,
@@ -506,6 +578,14 @@ pub enum Status {
 /// The runtime for the whole run: one match at a time.
 pub struct Runtime {
     pub status: Status,
+    /// A wave test the session asked for, taken at the next
+    /// [`Runtime::pre_tick`].
+    asked: Option<(Def, Settings)>,
+    /// A wave test ended: its kit, whose every slot is erased at the next
+    /// [`Runtime::pre_tick`].
+    stopping: Option<KitLayout>,
+    /// How tests went, for the session ([`Runtime::take_test_event`]).
+    events: VecDeque<TestEvent>,
     errors: VecDeque<wire::Refusal>,
     sink: Box<SkullSink>,
     /// What Game Setup chose, read when a game starts.
@@ -604,6 +684,9 @@ impl Runtime {
     pub fn new(sink: Box<SkullSink>) -> Self {
         Self {
             status: Status::Idle("no game has started"),
+            asked: None,
+            stopping: None,
+            events: VecDeque::new(),
             errors: VecDeque::new(),
             sink,
             // Without a settings store (a headless run with none) the match
@@ -701,8 +784,15 @@ impl Runtime {
         })
     }
 
-    /// A game started. Returns the line to log.
+    /// A game started. Returns the line to log. A wave test of the last
+    /// map ends with it, and one asked for there is not started here.
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
+        if self.testing() {
+            self.events.push_back(TestEvent::Ended(WAVES_STOPPED));
+        }
+        self.asked = None;
+        self.stopping = None;
+        hud::set_testing(false);
         self.errors.clear();
         hud::slot().set(None);
         film::clear();
@@ -812,9 +902,173 @@ impl Runtime {
         }
     }
 
+    /// Whether a wave test runs.
+    pub fn testing(&self) -> bool {
+        self.running().is_some_and(|game| game.host.test())
+    }
+
+    /// Where a wave test is.
+    pub fn test_phase(&self) -> TestPhase {
+        if self.asked.is_some() {
+            TestPhase::Starting
+        } else if self.testing() {
+            TestPhase::Running
+        } else {
+            TestPhase::Off
+        }
+    }
+
+    /// How the last tests went, oldest first, once each.
+    pub fn take_test_event(&mut self) -> Option<TestEvent> {
+        self.events.pop_front()
+    }
+
+    /// **Test waves**: start a wave test of `def` at the next tick
+    /// boundary ([`Runtime::start_test`]). Refused while one runs or is
+    /// asked for, or while a match runs.
+    pub fn ask_test(&mut self, def: Def, settings: Settings) -> Result<(), String> {
+        if self.test_phase() != TestPhase::Off {
+            return Err(TEST_RUNNING.into());
+        }
+        if self.running().is_some() {
+            return Err(MATCH_RUNNING.into());
+        }
+        self.asked = Some((def, settings));
+        Ok(())
+    }
+
+    /// Start a wave test of `def` on the loaded map: the host of a match
+    /// with the test arm ([`Host::start_test`]), on a multiplayer game this
+    /// machine is the host of, whose map holds the kit (the session's AI
+    /// ground). Never over a match. Returns the line to log.
+    pub fn start_test(
+        &mut self,
+        m: &mut dyn GuestMemory,
+        def: Def,
+        settings: Settings,
+    ) -> Result<String, String> {
+        if self.testing() {
+            return Err(TEST_RUNNING.into());
+        }
+        if self.running().is_some() {
+            return Err(MATCH_RUNNING.into());
+        }
+        if bots::guest::game_mode(&*m) != Some(MODE_MULTIPLAYER) {
+            return Err("A wave test runs in a multiplayer game.".into());
+        }
+        if role(&*m, false) != Role::Host {
+            return Err("Only the host's seat tests waves.".into());
+        }
+        if let Some(why) = teams_refusal(def.teams, team_play(&*m)) {
+            return Err(format!("The waves cannot be tested: {why}."));
+        }
+        let map = map_name(&*m);
+        let kit = guest::read_kit(&*m)
+            .map_err(|e| format!("The AI ground could not be read: {}.", fault(e)))?
+            .ok_or("The running map has no AI ground.")?;
+        let mut skulls = BTreeSet::new();
+        let host = {
+            let game = GuestGame::new(m, Some(&kit), &[], &mut skulls, &*self.sink);
+            Host::start_test(def, settings, &game)
+        }
+        .map_err(|refusal| format!("The waves cannot be tested: {refusal}."))?;
+        let line = format!(
+            "firefight: wave test on {map}: {} zones, actors on team {}",
+            kit.zones.len(),
+            host.team()
+        );
+        let context = bot_context(&host);
+        bots::firefight::set_context(context.clone());
+        self.errors.clear();
+        hud::set_testing(true);
+        self.status = Status::Running(Box::new(Match {
+            #[cfg(feature = "rules")]
+            announce_type: false,
+            #[cfg(feature = "rules")]
+            announced_round: None,
+            map,
+            sight: vec![false; kit.zones.len()],
+            host,
+            kit,
+            sight_due: 0,
+            pre: None,
+            post: None,
+            players: 0,
+            skulls,
+            assists: Assists::default(),
+            hud_failed: false,
+            bots: context,
+        }));
+        Ok(line)
+    }
+
+    /// End the wave test, if one runs or is asked for: every slot's squad
+    /// is erased at the next [`Runtime::pre_tick`] and the mode blob is
+    /// cleared now. Whether there was one.
+    pub fn stop_test(&mut self, end: TestEnd) -> bool {
+        let asked = self.asked.take().is_some();
+        if !self.testing() {
+            if asked {
+                self.events.push_back(TestEvent::Ended(end.sentence()));
+            }
+            return asked;
+        }
+        let Status::Running(game) =
+            std::mem::replace(&mut self.status, Status::Idle("the wave test ended"))
+        else {
+            unreachable!("a test runs");
+        };
+        self.stopping = Some(game.kit.clone());
+        hud::set_testing(false);
+        hud::slot().set(None);
+        bots::firefight::set_context(None);
+        self.events.push_back(TestEvent::Ended(end.sentence()));
+        true
+    }
+
+    /// The calls that erase every slot of a stopped test's kit: each slot
+    /// the kit has a squad for, in slot order.
+    fn erase_all(kit: &KitLayout) -> impl Iterator<Item = (u32, Call)> + '_ {
+        kit.squads
+            .iter()
+            .enumerate()
+            .filter(|(_, squad)| squad.is_some())
+            .map(|(slot, _)| {
+                (
+                    0,
+                    Call::Squad(SquadOp::Erase { slot: slot as u8 }),
+                )
+            })
+    }
+
     /// Before the game tick: apply what is due. The work's calls and sight
-    /// pass are for the async body; none means the tick runs as it is.
+    /// pass are for the async body; none means the tick runs as it is. A
+    /// stopped test's erases come first, then an asked test starts.
     pub fn pre_tick(&mut self, m: &mut dyn GuestMemory) -> Option<Work> {
+        if let Some(kit) = self.stopping.take()
+            && let Some(tick) = bots::guest::game_tick(&*m).map(|t| t.wrapping_add(1))
+        {
+            let calls = Self::erase_all(&kit).collect();
+            return Some(Work {
+                tick,
+                kit,
+                calls,
+                sight: None,
+            });
+        }
+        if let Some((def, settings)) = self.asked.take() {
+            let event = match self.start_test(m, def, settings) {
+                Ok(line) => {
+                    eprintln!("{line}");
+                    TestEvent::Started
+                }
+                Err(why) => {
+                    eprintln!("firefight: no wave test: {why}");
+                    TestEvent::Refused(why)
+                }
+            };
+            self.events.push_back(event);
+        }
         let Status::Running(game) = &mut self.status else {
             return None;
         };
@@ -851,19 +1105,23 @@ impl Runtime {
             }
         }
         let before = host.applied();
-        let (calls, errors) = {
+        let (mut calls, errors) = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             let errors = host.pre_tick(tick, &mut g);
             (std::mem::take(&mut g.calls), errors)
         };
-        // The entries applied this tick, for the film being recorded.
+        // The entries applied this tick, for the film being recorded; a
+        // wave test's are not recorded.
         let applied = host.applied();
-        film_errors.extend(film::record(
-            host.log()
-                .since(before)
-                .iter()
-                .take_while(|entry| entry.seq <= applied),
-        ));
+        if !host.test() {
+            film_errors.extend(film::record(
+                host.log()
+                    .since(before)
+                    .iter()
+                    .take_while(|entry| entry.seq <= applied),
+            ));
+        }
+        let test_end = host.take_test_end();
         // A replica draws the host's mode blob, from the log.
         if host.role() == Role::Replica {
             hud::slot().set(host.mode_state().map(<[u8]>::to_vec));
@@ -888,6 +1146,18 @@ impl Runtime {
         for e in film_errors {
             self.error(None, tick, e);
         }
+        // The test's own end: its last entries, then every slot erased, in
+        // this tick's body.
+        let sight = match test_end {
+            Some(outcome) => {
+                self.stop_test(TestEnd::Finished(outcome));
+                if let Some(stopped) = self.stopping.take() {
+                    calls.extend(Self::erase_all(&stopped));
+                }
+                None
+            }
+            None => sight,
+        };
         (!calls.is_empty() || sight.is_some()).then_some(Work {
             tick,
             kit,
@@ -949,11 +1219,16 @@ impl Runtime {
             *players = g.players().len().min(usize::from(u8::MAX)) as u8;
             host.post_tick(tick, &g)
         };
-        for credit in host.take_credits() {
-            (self.reports)(Report::Score(score_report(credit)));
-        }
-        if let Some(ended) = host.take_ended() {
-            (self.reports)(Report::Ended(ended_report(ended)));
+        // A wave test is no match: it reports no score and no result.
+        let credits = host.take_credits();
+        let ended = host.take_ended();
+        if !host.test() {
+            for credit in credits {
+                (self.reports)(Report::Score(score_report(credit)));
+            }
+            if let Some(ended) = ended {
+                (self.reports)(Report::Ended(ended_report(ended)));
+            }
         }
         // The Clankers' view of the match, when it changed.
         let context = bot_context(&game.host);
@@ -962,8 +1237,9 @@ impl Runtime {
             game.bots = context;
         }
         // The host log's head, for the actor channel's digest: only the
-        // machine that writes the log publishes it.
-        if game.host.role() == Role::Host {
+        // machine that writes the log publishes it, and a wave test's log
+        // is no match's.
+        if game.host.role() == Role::Host && !game.host.test() {
             crate::actor_net::publish_log_head(Some(game.host.head().hash.0));
         }
         // The HUD's mode blob, for the actor channel and the local draw.
@@ -1010,6 +1286,7 @@ impl Runtime {
             },
             Status::Running(game) => wire::State {
                 running: true,
+                test: game.host.test(),
                 refused: None,
                 map: Some(game.map.clone()),
                 role: Some(wire_role(game.host.role())),
@@ -1144,9 +1421,18 @@ pub fn bot_context(host: &Host) -> Option<bots::firefight::Context> {
 }
 
 /// The HUD's mode blob for the director on this machine (`hud`); none where
-/// no director runs. The outcome is the last `Finish` in the host log.
+/// no director runs, and none for a test that is over. The outcome is the
+/// last `Finish` in the host log.
 fn mode_blob(host: &Host, players: u8) -> Option<Result<Vec<u8>, hud::Error>> {
     let director = host.director()?;
+    // A test's end is the session's notice, never VICTORY or GAME OVER:
+    // the blob it had stays until the stop clears it.
+    if host.test() {
+        return match hud::Mode::of(director, players, None) {
+            Ok(mode) if mode.stage.over() => None,
+            made => Some(made.map(|mode| mode.encode())),
+        };
+    }
     let finished = host.log().since(0).iter().rev().find_map(|e| match e.op {
         Command::Finish { outcome } => Some(outcome),
         _ => None,

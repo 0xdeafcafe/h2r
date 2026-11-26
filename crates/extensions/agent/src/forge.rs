@@ -18,6 +18,7 @@ pub mod ground;
 pub mod local;
 pub mod nav;
 pub mod net;
+pub mod test;
 pub mod waves;
 
 const AI_GLOBALS: u32 = 0x004f_55d0;

@@ -20,17 +20,22 @@
 //!   map offers) run outside it, the last-class ones (the sim harness, the
 //!   Forge monitor) inside.
 //! - `GAME_TICK`, an observer after: step the director ([`Runtime::post_tick`]).
+//!
+//! A Forge session's **Test waves** reaches the runtime through
+//! [`WaveTests`] ([`wave_tests`]): the session asks, and the tick hook
+//! starts the test at the next boundary (docs/game/forge-firefight.md,
+//! "Test waves").
 
 use std::collections::BTreeSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use ::firefight::Skull;
+use ::firefight::{Def, Skull};
 use agent_proto::firefight as wire;
 use engine::GuestMemory;
 use engine::entry::EntryFuture;
 
-use super::runtime::{self, Runtime};
+use super::runtime::{self, Runtime, TestEnd, TestEvent, TestPhase};
 use crate::layout_glue::Gm;
 
 /// The feature id in the plan and `H2_FEATURES`.
@@ -194,8 +199,9 @@ impl hooks::Feature for Firefight {
         let live = Arc::clone(&self.0);
         b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
             live.lock().running().map(|m| {
+                let what = if m.host.test() { "wave test" } else { "match" };
                 format!(
-                    "a Firefight match on {} keeps its director and host log outside guest memory",
+                    "a Firefight {what} on {} keeps its director and host log outside guest memory",
                     m.map
                 )
             })
@@ -241,6 +247,45 @@ pub fn install_with(
     }
     let _ = SHARED.set(shared);
     Ok(true)
+}
+
+/// What a Forge session asks of the runtime for **Test waves** and **Stop
+/// waves** (docs/game/forge-firefight.md, "Test waves"). Each call runs on
+/// the game thread; a start is taken at the next tick boundary.
+pub trait WaveTests: Send + Sync {
+    /// Start a test of `def` at seed 0 and Normal
+    /// ([`runtime::test_settings`]). Refused while a test runs or is
+    /// starting, while a match runs, and in a film's playback.
+    fn start(&self, def: Def) -> Result<(), String>;
+    /// Stop the test that runs or is starting: whether there was one.
+    fn stop(&self) -> bool;
+    fn phase(&self) -> TestPhase;
+    /// How the last test went, once each.
+    fn take_event(&self) -> Option<TestEvent>;
+}
+
+impl WaveTests for Shared {
+    fn start(&self, def: Def) -> Result<(), String> {
+        if self.film {
+            return Err("A film's playback tests no waves.".into());
+        }
+        self.lock().ask_test(def, runtime::test_settings())
+    }
+    fn stop(&self) -> bool {
+        self.lock().stop_test(TestEnd::Stopped)
+    }
+    fn phase(&self) -> TestPhase {
+        self.lock().test_phase()
+    }
+    fn take_event(&self) -> Option<TestEvent> {
+        self.lock().take_test_event()
+    }
+}
+
+/// The run's runtime as a Forge session's wave tests see it; none without
+/// the feature.
+pub fn wave_tests() -> Option<Arc<dyn WaveTests>> {
+    SHARED.get().map(|s| Arc::clone(s) as Arc<dyn WaveTests>)
 }
 
 /// Why `firefight.*` has no runtime to answer from.

@@ -25,6 +25,13 @@ pub mod method {
     pub const KIT: &str = "firefight.kit";
 
     pub const ALL: &[&str] = &[STATE, COMMAND, KIT];
+
+    /// **Test waves** in a local Forge session: start a wave test, building
+    /// the AI ground first when the running map does not hold it, or stop
+    /// one ([`super::WavesTestParams`], [`super::WavesTestReply`];
+    /// docs/game/forge-firefight.md, "Test waves"). A `forge.*` method the
+    /// Forge session registers, beside the Firefight runtime's.
+    pub const WAVES_TEST: &str = "forge.waves.test";
 }
 
 // ---- firefight.state ----
@@ -46,6 +53,11 @@ pub enum Role {
 pub struct State {
     /// The mode runs on this map.
     pub running: bool,
+    /// What runs is a wave test in a Forge session, not a match
+    /// (`forge.waves.test`): its `Lives` and `Respawn` are not applied, and
+    /// its `Finish` ends the test.
+    #[serde(default)]
+    pub test: bool,
     /// Why it does not: the feature is off, no game, not a multiplayer
     /// game, or the start's refusal (a map without the kit names it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,3 +363,38 @@ mod tests {
         assert!(from_value::<CommandParams>(json!({"op": "respawn"})).is_err());
     }
 }
+
+// ---- forge.waves.test ----
+
+/// `forge.waves.test`'s params: none starts a test, `stop` stops one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WavesTestParams {
+    #[serde(default)]
+    pub stop: bool,
+}
+
+/// `forge.waves.test`'s answer: once the test has started or stopped, or
+/// at once when the ground must be built first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WavesTestReply {
+    /// A wave test runs now.
+    pub testing: bool,
+    /// The running map does not hold the current AI ground: it is being
+    /// built, and the test starts once the map is reloaded onto it
+    /// (`firefight.state`'s `test` says when).
+    #[serde(default)]
+    pub building: bool,
+    /// A stop found a test to stop.
+    #[serde(default)]
+    pub stopped: bool,
+    /// The wave set the test plays, by its name and `Def::id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// How many game ticks `forge.waves.test` waits for its answer: the
+/// runtime takes a start or a stop at its next tick boundary.
+pub const WAVES_TEST_WAIT_TICKS: u64 = 30;
