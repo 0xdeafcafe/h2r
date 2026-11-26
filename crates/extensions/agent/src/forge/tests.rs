@@ -2081,7 +2081,6 @@ mod ground {
                     labels: "bb22".into(),
                     kit_version: 3,
                 }),
-                ..GroundReport::default()
             })
         }
     }

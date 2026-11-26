@@ -340,6 +340,10 @@ impl TextPool {
     pub fn len(&self) -> u32 {
         self.len
     }
+    /// Whether the pool has no room at all.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
     fn take(&self, cap: u32) -> Option<u32> {
         let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
         (*next + cap <= self.len).then(|| {

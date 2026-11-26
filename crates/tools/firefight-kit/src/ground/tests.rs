@@ -344,8 +344,7 @@ fn ground_cuts_classes_from_the_end_to_fit() {
     // Without the cut the same build is refused with each class's cost.
     let strict = classes(&donor, &schema, &["grunt", "jackal", "hunter"], false);
     let error = build_with(&base, NAME, &Labels::default(), &recipe(), Some(&strict))
-        .err()
-        .expect("must refuse")
+        .expect_err("must refuse")
         .to_string();
     assert!(error.contains("hunter "), "{error}");
 }
