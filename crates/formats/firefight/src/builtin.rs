@@ -351,6 +351,7 @@ mod tests {
                     Round {
                         waves,
                         skulls_on: vec![skull],
+                        allies: Vec::new(),
                     }
                 })
                 .collect();
@@ -405,6 +406,7 @@ mod tests {
                 },
                 drop: Drop::Edge,
                 weapon_tier: 0,
+                side: Side::Enemy,
             }
         }
     }
