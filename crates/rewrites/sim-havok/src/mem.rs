@@ -564,7 +564,7 @@ mod retail_tests {
 
     impl Heap {
         fn run<T>(&mut self, f: impl FnOnce(&mut Journal) -> Option<T>) -> Option<T> {
-            let mut j = Journal::new(self);
+            let mut j = Journal::new(&*self);
             let r = f(&mut j)?;
             let w = j.finish();
             self.0.extend(w);
