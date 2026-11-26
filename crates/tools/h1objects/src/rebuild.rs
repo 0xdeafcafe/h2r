@@ -1544,6 +1544,10 @@ pub const DRIVE_COUNTERPARTS: &[(&[&str], &[&str])] = &[
     (&["rwarthog"], &["objects\\vehicles\\warthog\\warthog"]),
     (&["rocket warthog"], &["objects\\vehicles\\warthog\\warthog"]),
     (&["warthog"], &["objects\\vehicles\\warthog\\warthog"]),
+    (
+        &["ghost"],
+        &["objects\\vehicles\\ghost\\ghost_mp", "objects\\vehicles\\ghost\\ghost"],
+    ),
 ];
 
 /// The Halo 2 tags `path`'s Halo 1 vehicle takes drive tuning from.

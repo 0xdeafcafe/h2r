@@ -3063,6 +3063,13 @@ fn drive_counterparts_are_named_per_vehicle() {
     ] {
         assert_eq!(drive_counterpart(path), Some(warthog), "{path}");
     }
+    for path in ["vehicles\\ghost\\ghost_mp", "vehicles\\ghost\\ghost"] {
+        assert_eq!(
+            drive_counterpart(path),
+            Some(&["objects\\vehicles\\ghost\\ghost_mp", "objects\\vehicles\\ghost\\ghost"][..]),
+            "{path}"
+        );
+    }
     assert_eq!(drive_counterpart("vehicles\\pelican\\pelican"), None);
 }
 
@@ -3076,5 +3083,17 @@ fn warthog_drive_is_the_counterparts_and_the_rest_halo_1s() {
         true,
         4,
         4,
+    );
+}
+
+/// The ghost: three hover points, the H2 ghost's three.
+#[test]
+fn ghost_drive_is_the_counterparts_and_the_rest_halo_1s() {
+    drive_vehicle_keeps_halo1_and_takes_the_counterpart_drive(
+        "vehicles\\ghost\\ghost_mp",
+        4,
+        false,
+        3,
+        3,
     );
 }
