@@ -4,17 +4,22 @@
 //! (`h2 firefight kit zanzibar --layout-report`).
 use super::*;
 
-/// V: which team's CTF stand the base building holds, and which team's
-/// starting locations are the beach landing.
+/// V: which team's CTF stand the base building holds. Every start is team
+/// 0's: Zanzibar's starts carry no team split, so the beach landing is a
+/// weapon pad on the sand.
 const HOME: Team = Team::Red;
-const ATTACKERS: Team = Team::Blue;
 
 const STAND: Anchor = Anchor::Flag {
     kind: FlagKind::CtfStand,
     team: Some(HOME),
     nth: 0,
 };
-const LANDING: Anchor = Anchor::Starts { team: ATTACKERS };
+/// V: the beach's first plasma rifle pad, on the sand clear of the far
+/// stand's base exclusion.
+const LANDING: Anchor = Anchor::Item {
+    suffix: "plasma_rifle",
+    nth: 0,
+};
 /// The wheel: its hill, else its territory.
 const WHEEL: Anchor = Anchor::Or(
     &Anchor::Flag {
@@ -34,12 +39,12 @@ const HUT_PAD: Anchor = Anchor::Item {
     nth: 0,
 };
 const RUIN_PAD: Anchor = Anchor::Item {
-    suffix: "rocket_launcher",
+    suffix: "ammo_rocket_launcher",
     nth: 0,
 };
 /// V: the sea wall's turret end, as a weapon pad on the wall.
 const TURRET: Anchor = Anchor::Item {
-    suffix: "turret",
+    suffix: "h_turret_ap",
     nth: 0,
 };
 /// V: along the wall from the gate to the water.
