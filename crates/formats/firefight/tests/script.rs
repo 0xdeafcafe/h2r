@@ -240,7 +240,13 @@ fn the_built_ins_as_authored_replay_the_same_commands() {
         let settings = with(40 + i as u64, difficulties[i], &[]);
         let players = (1 + 5 * i as u8).min(16);
         let run = check(&def, &settings, players, eight_zones(), 50_000, random_script(41 + i as u64));
-        assert!(run.outcome.is_some(), "{} never ended", def.name);
+        if def.set.endless {
+            // An endless set only ends lost, so a bounded run may end with
+            // no outcome. The replay inside `check` is what this covers.
+            assert_ne!(run.outcome, Some(Outcome::Won), "{} cannot be won", def.name);
+        } else {
+            assert!(run.outcome.is_some(), "{} never ended", def.name);
+        }
     }
 }
 

@@ -122,10 +122,10 @@ fn the_options_page_steps_and_opens_pickers() {
             &[Down, Left],
             vec![
                 ListEffect::Focus(1),
-                stepped("firefight: left on row 1: firefight.waveset -> Crossfire"),
+                stepped("firefight: left on row 1: firefight.waveset -> Endless"),
             ],
-            "focus 1 Wave set = Crossfire",
-            vec![(&WAVE_SET, Value::Int(3))],
+            "focus 1 Wave set = Endless",
+            vec![(&WAVE_SET, Value::Int(4))],
         ),
         // The teams start at the wave set's own and wrap both ways.
         case(
@@ -238,7 +238,7 @@ fn a_opens_the_value_picker_on_every_row() {
     let s = screen(&store());
     let expected: [(&str, &[&str]); 6] = [
         ("FIREFIGHT", &["Off", "On"]),
-        ("WAVE SET", &["Holdout", "Attrition", "Last Stand", "Crossfire"]),
+        ("WAVE SET", &["Holdout", "Attrition", "Last Stand", "Crossfire", "Endless"]),
         ("TEAMS", &["Default", "One team", "Two teams"]),
         ("DIFFICULTY", &["Easy", "Normal", "Heroic", "Legendary"]),
         (
@@ -441,7 +441,7 @@ fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     let pick = picker::current().expect("a pick");
     assert_eq!(
         pick.values,
-        ["Basin", "Holdout", "Attrition", "Last Stand", "Crossfire"]
+        ["Basin", "Holdout", "Attrition", "Last Stand", "Crossfire", "Endless"]
     );
     assert_eq!(pick.opener, Opener::GAME_SETUP_FIREFIGHT);
     assert_eq!(

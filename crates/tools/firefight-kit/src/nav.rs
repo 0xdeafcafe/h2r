@@ -761,7 +761,11 @@ fn choose_zones_with(
         };
         // A layout that placed nothing still returns its refusals, so the
         // build names them.
-        if zones.len() < wanted && refused.is_empty() {
+        // (A drop the layout could not resolve on the map is refused too.)
+        if zones.len() < wanted
+            && refused.is_empty()
+            && layout.is_none_or(|l| l.refused.is_empty())
+        {
             why(format!(
                 "the bases' area has room for {} drop zones of {wanted}",
                 zones.len()

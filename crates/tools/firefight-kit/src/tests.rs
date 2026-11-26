@@ -386,9 +386,12 @@ const BLUE_STAND: builtin::Anchor = builtin::Anchor::Flag {
     nth: 0,
 };
 
-/// One drop in the middle of the court, named `name`.
+/// One drop in the middle of the court, named `name`, with `roles`.
 macro_rules! court_layout {
     ($name:expr) => {
+        court_layout!($name, builtin::Roles::HEAVY)
+    };
+    ($name:expr, $roles:expr) => {
     builtin::Layout {
         map: "court",
         home: Team::Red,
@@ -402,7 +405,7 @@ macro_rules! court_layout {
             anchor: builtin::Anchor::Between(&RED_STAND, &BLUE_STAND, 0.5),
             offset: [0.0; 3],
             radius: 5.0,
-            roles: builtin::Roles::HEAVY,
+            roles: $roles,
             sides: builtin::Sides::Both,
         }],
         cover: &[],
@@ -412,6 +415,7 @@ macro_rules! court_layout {
 
 static MIDDLE: builtin::Layout = court_layout!("middle");
 static CENTRE: builtin::Layout = court_layout!("centre");
+static LINE: builtin::Layout = court_layout!("middle", builtin::Roles::LINE);
 
 #[test]
 fn the_layout_hash_changes_the_package_id() {
@@ -433,7 +437,9 @@ fn the_layout_hash_changes_the_package_id() {
     // Naming the drop differently builds the same map...
     let renamed = build(&base, "court", Mode::Kit, &with(Some(&CENTRE))).unwrap();
     assert_eq!(built.bytes, renamed.bytes);
-    // ...but not the same package: the layout's hash is in the patch.
+    // ...and not the same package when the layout changes the map: the
+    // package id is the patch's hash, so the roles a drop carries are in
+    // it, as is a layout against none.
     let dir = std::env::temp_dir().join(format!(
         "ff-layout-{}-{}",
         std::process::id(),
@@ -448,7 +454,7 @@ fn the_layout_hash_changes_the_package_id() {
             .id
     };
     let (a, a_again) = (id(Some(&MIDDLE), "a"), id(Some(&MIDDLE), "a2"));
-    let (b, none) = (id(Some(&CENTRE), "b"), id(None, "none"));
+    let (b, none) = (id(Some(&LINE), "b"), id(None, "none"));
     assert_eq!(a, a_again);
     assert_ne!(a, b);
     assert_ne!(a, none);

@@ -119,8 +119,8 @@ fn canonical_form_is_stable_under_key_order() {
     assert!(reordered.starts_with("{\n  \"format\":"));
     // The derived serializer orders skull keys by enum order. Canonical JSON
     // sorts these keys by their spelling as it does for every object.
-    assert!(canonical.find("\"blind\":") < canonical.find("\"thunderstorm\":"));
-    assert!(reordered.find("\"thunderstorm\":") < reordered.find("\"blind\":"));
+    assert!(canonical.find("\"famine\":") < canonical.find("\"thunderstorm\":"));
+    assert!(reordered.find("\"thunderstorm\":") < reordered.find("\"famine\":"));
     let decoded = Def::from_bytes(reordered.as_bytes(), &elite_kit()).unwrap();
     assert_eq!(decoded.canonical_json().unwrap(), canonical);
     assert_eq!(decoded.id().unwrap(), def.id().unwrap());

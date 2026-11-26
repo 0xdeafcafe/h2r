@@ -48,8 +48,8 @@ fn the_byte_limit_applies_before_parsing_and_hashing() {
 fn malformed_documents_are_refused_at_the_wire_boundary() {
     let (base, limits) = fixture();
     let cases = [
-        base.replace("\"format\":2", "\"format\":2,\"format\":2"),
-        base.replace("\"format\":2", "\"format\":2,\"data\":[1,2,3]"),
+        base.replace("\"format\":3", "\"format\":3,\"format\":3"),
+        base.replace("\"format\":3", "\"format\":3,\"data\":[1,2,3]"),
         base.replace("\"max\":5", "\"max\":5,\"raw_count\":15"),
         base.replace("\"max\":5", "\"max\":-1"),
         base.replace("\"max\":5", "\"max\":5.0"),
@@ -62,11 +62,11 @@ fn malformed_documents_are_refused_at_the_wire_boundary() {
             r#""drop":{"prefer_zone":0,"prefer_zone":1}"#,
         ),
         base.replace(
-            r#""skulls_on":["blind"]"#,
+            r#""skulls_on":["ghost"]"#,
             r#""skulls_on":["unimplemented"]"#,
         ),
         base.replace(r#""elite":100"#, r#""elite":100,"\u0065lite":0"#),
-        base.replace(r#""blind":1100"#, r#""blind":1100,"blind":1100"#),
+        base.replace(r#""ghost":1100"#, r#""ghost":1100,"ghost":1100"#),
         base.replace(r#""heroic":1250,"#, ""),
         base.replace(r#""name":"Holdout""#, r#""name":"\ud800""#),
         base.replace(
@@ -87,7 +87,7 @@ fn malformed_documents_are_refused_at_the_wire_boundary() {
         );
     }
     let version = FORMAT + 1;
-    let bytes = base.replace("\"format\":2", &format!("\"format\":{version}"));
+    let bytes = base.replace("\"format\":3", &format!("\"format\":{version}"));
     assert_eq!(
         Def::from_bytes(bytes.as_bytes(), &limits),
         Err(Refusal::Format(version))

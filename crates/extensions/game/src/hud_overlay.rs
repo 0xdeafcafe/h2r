@@ -1220,7 +1220,10 @@ mod tests {
         let ys: Vec<f32> = overlay.vertices.iter().map(|v| v.position[1]).collect();
         assert_eq!(ys, [240.0, 240.0, 480.0, 480.0]);
         let clip = &overlay.items[0].clip;
-        assert_eq!((clip.x, clip.y, clip.width, clip.height), (80, 0, 480, 480));
+        // A clip that is the whole canvas stays the whole display, so a
+        // run clipped to the canvas spans a wide window
+        // (`render_bridge::ui_layout::map_rect`).
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (0, 0, 640, 480));
         // The plan then stretches the fitted units over the window: the
         // fill's x spans 1440 of 1920, centred.
         let plan = OverlayPlan::new(&overlay, [1920, 1080], &NoGlyphs);

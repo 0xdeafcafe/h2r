@@ -553,8 +553,8 @@ fn install(
         Mode::Kit => format!("Firefight – {base_name}"),
         Mode::Probe => format!("Firefight Probe – {base_name}"),
     };
-    // The layout's digest is in the label, so the package id follows the
-    // layout as it follows the kit's version.
+    // The layout's digest is in the label, which a PPF patch carries. A
+    // layout that changes the map changes the patch, so the id follows it.
     let label = match layout {
         None => format!("Firefight kit v{KIT_VERSION}"),
         Some(l) => format!("Firefight kit v{KIT_VERSION} layout {}", l.digest()),

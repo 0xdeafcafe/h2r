@@ -542,20 +542,20 @@ mod tests {
     #[test]
     fn a_shader_that_draws_nothing_drops_its_parts() {
         use crate::sky_shaders::maps_draw_nothing;
-        // Two elements of 0x10 bytes, bitmap reference at 4: the id is the
-        // reference's last four bytes.
+        // Two elements of 0x14 bytes, bitmap reference at 4 (16 bytes: group,
+        // name address, name length, id): the id is the last four bytes.
         let element = |id: u32| {
-            let mut e = [0u8; 0x10];
+            let mut e = [0u8; 0x14];
             e[4..8].copy_from_slice(&Group::new(b"bitm").0.to_le_bytes());
-            e[12..16].copy_from_slice(&id.to_le_bytes());
+            e[16..20].copy_from_slice(&id.to_le_bytes());
             e
         };
         let null = element(u32::MAX);
         let lit = element(7);
-        assert!(maps_draw_nothing(&[], 0x10, 4), "no stages");
-        assert!(maps_draw_nothing(&[null, null].concat(), 0x10, 4));
-        assert!(!maps_draw_nothing(&[null, lit].concat(), 0x10, 4));
-        assert!(!maps_draw_nothing(&null[..8], 0x10, 4), "a short element is an error");
+        assert!(maps_draw_nothing(&[], 0x14, 4), "no stages");
+        assert!(maps_draw_nothing(&[null, null].concat(), 0x14, 4));
+        assert!(!maps_draw_nothing(&[null, lit].concat(), 0x14, 4));
+        assert!(!maps_draw_nothing(&null[..8], 0x14, 4), "a short element is an error");
 
         let mut parts = vec!["glow", "wall", "glow", "floor"];
         let dropped = drop_no_draw_parts(&mut parts, |p| p, |n| n == "glow");

@@ -171,8 +171,12 @@ pub fn names_set(value: i64) -> bool {
 
 /// `def` played by `teams` player teams (1 or 2, clamped): with two, a
 /// player kill scores the set's own points, or [`PLAYER_KILL_POINTS`]
-/// when it has none; with one, nothing.
+/// when it has none; with one, nothing. An endless set has one team
+/// ([`crate::validate`] refuses two), so it is returned as it is.
 pub fn with_teams(mut def: Def, teams: u8) -> Def {
+    if def.set.endless {
+        return def;
+    }
     def.teams = teams.clamp(1, MAX_TEAMS as u8);
     def.scoring.player_kill = match (def.teams, def.scoring.player_kill) {
         (1, _) => 0,
