@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(server.groups(), source.groups());
         let ai = h1campaign::ai::h2::ScenarioAi::read_map(&mut server).unwrap();
         assert_eq!(ai, h1campaign::ai::h2::ScenarioAi::read_map(&mut source).unwrap());
-        assert_eq!(ai.squads.len(), 16);
+        assert_eq!(ai.squads.len(), 17);
         assert!(ai.zones.iter().any(|z| z.name == "ff_base_00"));
         let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);

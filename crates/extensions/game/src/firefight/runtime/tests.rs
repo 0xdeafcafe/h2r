@@ -49,7 +49,8 @@ fn pair(m: &mut FakeGuest, at: u32, count: u32, address: u32) {
 /// A multiplayer game (world `mode`) at tick [`TICK`] on `firefight-probe`
 /// with AI set up but off. With `kit`: squad `ff_slot_00` (team 3, two
 /// starts), zone `ff_drop_00` (two firing positions, area mean (40, 0, 0)),
-/// one palette row (the Elite) and the `ff_hunt` order. Player 0 is on team
+/// one palette row (the Elite, recorded by squad `ff_class_elite`) and the
+/// `ff_hunt` order. Player 0 is on team
 /// 0 with a unit at (5, 0, 0).
 fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
     let mut m = FakeGuest::new();
@@ -70,9 +71,12 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         .put_u32(points::SCENARIO.base, SCNR);
     m.map(SCNR, 0x300).map(SCRATCH, 0x20);
     if kit {
-        pair(&mut m, SCNR + 0x160, 1, SQUADS);
-        m.map(SQUADS, 0x74);
+        pair(&mut m, SCNR + 0x160, 2, SQUADS);
+        m.map(SQUADS, 2 * 0x74);
         named(&mut m, SQUADS, "ff_slot_00");
+        // The kit's class record: the Elite on palette row 0.
+        named(&mut m, SQUADS + 0x74, "ff_class_elite");
+        m.put_u16(SQUADS + 0x74 + 0x36, 0);
         m.put_u16(SQUADS + 0x24, 3);
         pair(&mut m, SQUADS + 0x48, 2, STARTS);
         m.map(STARTS, 2 * 0x64);
