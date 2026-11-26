@@ -1418,7 +1418,8 @@ mod tests {
         let to = engine::points::skull_gates::GATES[0].resume;
         assert_eq!(gate_transfer(&runtime::Dispatch::default(), to), None);
         let mut d = runtime::Dispatch::default();
-        d.register_generated_rust(to, |_, _, _| unreachable!()).unwrap();
+        d.register_generated_rust(to, |_, _, _| unreachable!())
+            .unwrap();
         assert!(!d.has_resume(to));
         assert_eq!(gate_transfer(&d, to), Some(runtime::TransferAbi::jump(to)));
     }
