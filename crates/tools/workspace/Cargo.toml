@@ -53,7 +53,7 @@ pogo-kit = { path = "../pogo-kit" }
 firefight = { path = "../../formats/firefight" }
 
 # The UI screen tag generator and retail edit format.
-game = { path = "../../extensions/game", default-features = false }
+game = { path = "../../extensions/game", default-features = false, features = ["rules"] }
 
 # Validate the playlist editor's hopper images and download envelopes.
 live-proto.workspace = true
