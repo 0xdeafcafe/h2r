@@ -1527,6 +1527,43 @@ fn every_campaign_level_converts() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// The levels that failed before the blockers were fixed (a hunter's fuel
+/// rod, an AI weapon the swap keeps, a dropped ammo pickup, a shader Halo 1
+/// draws as nothing) convert, with Halo 2's assets and with Halo 1's.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn blocked_levels_convert() {
+    let s = scripting();
+    let donors = donors();
+    let mut failed = Vec::new();
+    for level in ["b30", "c10", "c20", "c40", "d20", "d40", "a30"] {
+        for assets in [
+            h1campaign::h2assets::Assets::Halo1,
+            h1campaign::h2assets::Assets::Halo2,
+        ] {
+            let h1 = h1_level(level);
+            let mut base = h2_map(h1campaign::base_for(level));
+            let opts = Options {
+                objects: true,
+                ai: true,
+                scripts: Some(&s),
+                donors: Some(&donors),
+                assets,
+                ..Default::default()
+            };
+            match h1campaign::convert(&h1, &mut base, &opts) {
+                Ok(done) => {
+                    let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+                    m.validate_checksum().unwrap();
+                    println!("{level} {assets:?}: converted\n{}", done.report);
+                }
+                Err(e) => failed.push(format!("{level} {assets:?}: {e}")),
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// The equipment and projectile names of each grenade type of a map's
 /// globals (`h1convert::globals`).
 fn globals_grenades(m: &mut Map<Cursor<Vec<u8>>>) -> Vec<(String, String)> {

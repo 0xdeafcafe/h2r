@@ -189,6 +189,34 @@ pub(crate) fn slide(e: &[u8], at: usize) -> Option<shad::Slide> {
     })
 }
 
+/// Whether a `schi`, `scex` or `sotr` shader's map elements (`size` bytes
+/// each, the bitmap reference at `bitmap`) draw nothing: no stage, or every
+/// stage's bitmap null. A reference that does not read is not null: the
+/// shader keeps its error.
+pub fn maps_draw_nothing(elements: &[u8], size: usize, bitmap: usize) -> bool {
+    elements.len() % size == 0
+        && elements
+            .chunks_exact(size)
+            .all(|e| TagRef::read(e, bitmap).is_some_and(|r| r.id.is_none()))
+}
+
+/// Whether Halo 1 draws the shader `tag` as nothing: a `schi`, `scex` or
+/// `sotr` with no stage or only null maps ([`maps_draw_nothing`]). A shader
+/// of another group, or one whose maps fail to read, is not.
+pub fn draws_nothing(h1: &H1Map, tag: &h1map::Tag) -> bool {
+    let (size, bitmap, _) = if tag.group == Group::new(b"schi") || tag.group == Group::new(b"scex") {
+        SCHI_MAP
+    } else if tag.group == Group::new(b"sotr") {
+        SOTR_MAP
+    } else {
+        return false;
+    };
+    let Ok(d) = h1.tag_data(tag) else { return false };
+    let Some(block) = h1map::Block::read(d, MAPS) else { return false };
+    h1.block(block, size)
+        .is_ok_and(|bytes| maps_draw_nothing(bytes, size, bitmap))
+}
+
 /// A Halo 1 sky shader, as the conversion needs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct H1SkyShader {

@@ -191,6 +191,7 @@ fn prepare<R: Read + Seek>(
     };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     structure::fix_winding(&mut meshes);
+    let no_draw = h1convert::textures::drop_no_draw_meshes(h1, &mut meshes);
     let mut index_of: BTreeMap<String, u16> = BTreeMap::new();
     let mut names = Vec::new();
     let material: Vec<u16> = meshes
@@ -215,7 +216,10 @@ fn prepare<R: Read + Seek>(
     let templates = Templates::default();
     let picks: Vec<_> = names.into_iter().enumerate().collect();
     let materials = (0..picks.len()).collect();
-    let textures = h1convert::textures::plan_bsp(h1, base, &picks, &src.collision_materials()?)?;
+    let mut textures = h1convert::textures::plan_bsp(h1, base, &picks, &src.collision_materials()?)?;
+    textures
+        .notes
+        .extend(no_draw.iter().map(|n| h1convert::textures::no_draw_note(n)));
 
     let skyless = h1convert::clusters::skyless(&src)?;
     let lightmap = h1convert::clusters::lightmap_bitmap(h1, &src, &laid.pages)?

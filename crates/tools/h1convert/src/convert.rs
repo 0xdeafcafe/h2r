@@ -432,6 +432,7 @@ fn prepare_plan<R: Read + Seek>(
     };
     let mut meshes: Vec<Mesh> = structure::meshes(&src, name_of)?;
     let flipped = structure::fix_winding(&mut meshes);
+    let no_draw = crate::textures::drop_no_draw_meshes(h1, &mut meshes);
     let mut index: BTreeMap<String, u16> = BTreeMap::new();
     let mut materials = Vec::new();
     let material: Vec<u16> = meshes
@@ -470,8 +471,11 @@ fn prepare_plan<R: Read + Seek>(
         })?;
     let templates = Templates::default();
     let material_shaders: Vec<_> = materials.iter().cloned().enumerate().collect();
-    let textures =
+    let mut textures =
         crate::textures::plan_bsp(h1, base, &material_shaders, &src.collision_materials()?)?;
+    textures
+        .notes
+        .extend(no_draw.iter().map(|n| crate::textures::no_draw_note(n)));
 
     // The base's lightmap bitmap's slot takes the converted lightmap.
     let lightmap_slot = slots::lightmap_bitmap(base, ltmp)?;

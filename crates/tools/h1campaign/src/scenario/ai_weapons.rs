@@ -6,6 +6,7 @@ use map::TagId;
 use map::build::{Block, TagSet};
 
 use super::{BaseScenario, PALETTE, put_block, u32_at};
+use crate::h2assets::StandIn;
 use crate::{Result, invalid};
 
 fn field() -> u32 {
@@ -20,6 +21,17 @@ pub(super) fn base_palette(base: &BaseScenario) -> Result<Vec<TagId>> {
         .into_iter()
         .map(|entry| u32_at(entry, 4).map(TagId))
         .collect()
+}
+
+/// The retail tag an AI weapon's stand-in places: `Ok(None)` for one the swap
+/// keeps (Halo 1's own, converted with the roster as placements are),
+/// `Err(why)` for one it drops.
+fn retail_choice(stand: StandIn) -> std::result::Result<Option<TagId>, String> {
+    match stand {
+        StandIn::Retail(id) => Ok(Some(id)),
+        StandIn::Own => Ok(None),
+        StandIn::Dropped(why) => Err(why),
+    }
 }
 
 /// Look up retail tags before placing converted objects with similar
@@ -47,11 +59,14 @@ pub(super) fn retail_tags(
             crate::ai::h1::weapon_loudness(h1, tag).map_err(|e| invalid(format!("ai weapon {}: {e}", tag.name)))?;
         // A weapon the swap leaves out, or one with no retail counterpart
         // in the map, has no AI weapon here: a named error, not an
-        // unarmed variant.
+        // unarmed variant. One the swap keeps is Halo 1's own, converted
+        // with the roster (`roster::prepare`), as placements do.
         let named = |why: String| h1convert::Error::no_rebuild(&h1.header().name, &tag.name, format!("ai weapon: {why}"));
-        let retail = crate::h2assets::stand_in(set, tag)
-            .map_err(named)?
-            .ok_or_else(|| named("no retail counterpart in the map".into()))?;
+        let stand = crate::h2assets::stand_in(set, tag).map_err(named)?;
+        let Some(retail) = retail_choice(stand).map_err(named)? else {
+            tags.push(None);
+            continue;
+        };
         if let Some(name) = set.slots[retail.index()].name.clone() {
             loudness.push((name, loud));
         }
@@ -99,6 +114,13 @@ pub(super) fn install(
 mod tests {
     use super::*;
     use map::build::FixupKind;
+
+    #[test]
+    fn a_kept_ai_weapon_converts_halo1s_own() {
+        assert_eq!(retail_choice(StandIn::Own), Ok(None));
+        assert_eq!(retail_choice(StandIn::Retail(TagId(5))), Ok(Some(TagId(5))));
+        assert_eq!(retail_choice(StandIn::Dropped("gone".into())), Err("gone".into()));
+    }
 
     #[test]
     fn keeps_placed_weapons_and_shares_new_actor_weapons() {

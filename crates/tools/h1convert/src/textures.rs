@@ -265,6 +265,10 @@ pub fn plan<R: Read + Seek>(
         if candidates.next().is_some() {
             return Err(fail("ambiguous source shader path"));
         }
+        if crate::sky_shaders::draws_nothing(h1, tag) {
+            out.notes.push(no_draw_note(name));
+            continue;
+        }
         let s = shad::read_h1(h1, tag).ok_or_else(|| fail("unsupported shader definition"))?;
         if !out.library.has(s.layout) {
             return Err(fail(s.layout.stem));
@@ -319,6 +323,50 @@ pub fn plan<R: Read + Seek>(
     Ok(out)
 }
 
+/// The report line for a shader Halo 1 draws as nothing.
+pub fn no_draw_note(shader: &str) -> String {
+    format!("{shader}: Halo 1 draws nothing (no stage has a map); its parts are left out")
+}
+
+/// Removes the parts of `parts` whose shader Halo 1 draws as nothing
+/// (`no_draw`, [`crate::sky_shaders::draws_nothing`]); returns the names of
+/// those shaders, sorted, once each, for the report ([`no_draw_note`]).
+pub fn drop_no_draw_parts<T>(
+    parts: &mut Vec<T>,
+    shader: impl Fn(&T) -> &str,
+    mut no_draw: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    let mut seen: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    parts.retain(|p| {
+        let name = shader(p);
+        let drops = match seen.get(name) {
+            Some(&d) => d,
+            None => {
+                let d = no_draw(name);
+                seen.insert(name.to_owned(), d);
+                d
+            }
+        };
+        !drops
+    });
+    seen.into_iter().filter_map(|(n, d)| d.then_some(n)).collect()
+}
+
+/// [`drop_no_draw_parts`] for a map's shaders: those Halo 1 draws as nothing.
+/// A name no shader tag has is left for [`plan`]'s named error.
+pub fn drop_no_draw_meshes(h1: &H1Map, parts: &mut Vec<crate::structure::Mesh>) -> Vec<String> {
+    drop_no_draw_parts(
+        parts,
+        |m| m.shader.as_str(),
+        |name| {
+            h1.tags()
+                .iter()
+                .filter(|t| t.name == name && shad::H1_GROUPS.contains(&t.group.to_string().as_str()))
+                .any(|t| crate::sky_shaders::draws_nothing(h1, t))
+        },
+    )
+}
+
 /// Plan render and collision shaders together so a collision-only shader also gets a datum.
 pub fn plan_bsp<R: Read + Seek>(
     h1: &H1Map,
@@ -347,6 +395,11 @@ pub fn plan_bsp<R: Read + Seek>(
             .position(|n| n.as_str() == *global)
             .and_then(|i| u16::try_from(i).ok())
             .ok_or_else(|| fail(global))?;
+        if crate::sky_shaders::draws_nothing(h1, tag) {
+            // Collision keeps its material; there is no shader to draw.
+            palette.push((None, index));
+            continue;
+        }
         palette.push((Some(tag.name.clone()), index));
         if !all.iter().any(|(_, name)| name == &tag.name) {
             all.push((all.len(), tag.name.clone()));
@@ -485,6 +538,31 @@ impl ModelTemplate {
 mod tests {
     use super::*;
     use tags::shader::{ImplementationBindings, IndexRange, ParameterBinding, TemplatePostprocess};
+
+    #[test]
+    fn a_shader_that_draws_nothing_drops_its_parts() {
+        use crate::sky_shaders::maps_draw_nothing;
+        // Two elements of 0x10 bytes, bitmap reference at 4: the id is the
+        // reference's last four bytes.
+        let element = |id: u32| {
+            let mut e = [0u8; 0x10];
+            e[4..8].copy_from_slice(&Group::new(b"bitm").0.to_le_bytes());
+            e[12..16].copy_from_slice(&id.to_le_bytes());
+            e
+        };
+        let null = element(u32::MAX);
+        let lit = element(7);
+        assert!(maps_draw_nothing(&[], 0x10, 4), "no stages");
+        assert!(maps_draw_nothing(&[null, null].concat(), 0x10, 4));
+        assert!(!maps_draw_nothing(&[null, lit].concat(), 0x10, 4));
+        assert!(!maps_draw_nothing(&null[..8], 0x10, 4), "a short element is an error");
+
+        let mut parts = vec!["glow", "wall", "glow", "floor"];
+        let dropped = drop_no_draw_parts(&mut parts, |p| p, |n| n == "glow");
+        assert_eq!(parts, ["wall", "floor"]);
+        assert_eq!(dropped, ["glow"]);
+        assert!(no_draw_note("glow").starts_with("glow:"));
+    }
 
     #[test]
     fn native_shader_names_cannot_fill_a_missing_source_material() {
