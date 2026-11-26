@@ -256,11 +256,20 @@ fn resolve(
 }
 
 impl Theater {
-    fn select_link(&self, entry: Entry, view: api::InitialView, account: live_proto::Xuid) {
+    fn select_link(
+        &self,
+        entry: Entry,
+        view: api::InitialView,
+        account: live_proto::Xuid,
+        notice: Option<String>,
+    ) {
         let mut state = self.state();
         state.account = Some(account);
         state.working = false;
         state.select(entry);
+        if let Some(notice) = notice {
+            state.status = notice;
+        }
         state.view = Some(view);
     }
 
@@ -338,7 +347,10 @@ impl Theater {
     /// The page opens at the next menu update, as a linked film page does.
     /// The entry the menu's Watch played is the page's (a Live film is not
     /// in the local library); with none, the film is found in the library.
+    /// A reason the session recorded (`return_notice`) is used when `why`
+    /// gives none.
     pub fn reopen_film(&self, film: &str, why: Option<&str>) {
+        let notice = why.map(str::to_owned).or_else(|| self.state().return_notice.take());
         let location = self
             .0
             .location
@@ -396,7 +408,7 @@ impl Theater {
             local: true,
             waited: 0,
             menu: Menu::default(),
-            notice: why.map(str::to_owned),
+            notice,
         });
     }
 
@@ -595,12 +607,7 @@ impl Feature for Driver {
                                 let player = theater.state().player.clone();
                                 theater.open(ready.controller, player);
                             }
-                            theater.select_link(ready.entry, ready.view, ready.account);
-                            if let Some(notice) = ready.notice {
-                                let mut state = theater.state();
-                                state.status = notice;
-                                state.changed();
-                            }
+                            theater.select_link(ready.entry, ready.view, ready.account, ready.notice);
                             for (_, loader) in reopen_screens(list, detail) {
                                 cx.call(
                                     GuestCall::new(points::OPEN_SCREEN.base)
@@ -698,6 +705,7 @@ mod tests {
                 camera: Some(api::CameraMode::Orbit),
             },
             live_proto::Xuid(42),
+            None,
         );
         let screen = super::super::pages::spec(&theater, false);
         assert_eq!(screen.name, DETAIL);

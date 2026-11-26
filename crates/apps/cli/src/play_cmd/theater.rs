@@ -176,7 +176,7 @@ impl shell::Controller for Controller {
         }
         self.theater.pump();
         let playing = self.theater.playing();
-        let page = self.theater.film_loaded().then(|| self.theater.playback_page()).flatten().and_then(|spec| {
+        let page = (self.theater.film_loaded() || self.theater.film_loading()).then(|| self.theater.playback_page()).flatten().and_then(|spec| {
             self.pages.lock().unwrap_or_else(|e| e.into_inner()).render(spec, self.theater.playback_timeline())
         });
         shell::View { playing, page }

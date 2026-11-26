@@ -21,6 +21,7 @@ use selector::Selector;
 pub const FILMS: &str = "theater.films";
 pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
+pub const LOADING: &str = "theater.loading";
 pub const PAUSE_MENU: &str = "theater.pause-menu";
 
 /// The main menu's retail list constructor, item text and press, and
@@ -254,6 +255,8 @@ struct State {
     player: Option<String>,
     controller: u32,
     account: Option<live_proto::Xuid>,
+    /// Why a film's load failed, for the film page the viewer returns to.
+    return_notice: Option<String>,
 }
 
 impl State {
@@ -1133,6 +1136,21 @@ impl Theater {
         self.session().loaded()
     }
 
+    /// A film queued in this game has not played its first tick: the host
+    /// draws the loading panel (`playback_page`) and nothing else.
+    pub fn film_loading(&self) -> bool {
+        self.session().loading()
+    }
+
+    /// The film's load failed (the game could not start it): the loading
+    /// state ends and the viewer returns to the film page with `why`.
+    pub fn load_failed(&self, why: &str) {
+        let mut session = self.session();
+        if session.loading() {
+            session.fail_load(why.to_owned());
+        }
+    }
+
     pub fn release_keys(&self) {
         self.session().release_keys();
     }
@@ -1174,12 +1192,13 @@ impl Theater {
         for (generation, action, entry, result) in done {
             self.finish_archive_action(generation, action, entry, result);
         }
-        let (clip, open_error, save) = {
+        let (clip, open_error, failed, save) = {
             let mut session = self.session();
             session.pump();
             (
                 session.completed_clip.take(),
                 session.open_error.take(),
+                session.failed_film.take(),
                 std::mem::take(&mut session.save_requested),
             )
         };
@@ -1188,6 +1207,9 @@ impl Theater {
         }
         if let Some(error) = open_error {
             let mut state = self.state();
+            if failed.is_some() {
+                state.return_notice = Some(error.clone());
+            }
             state.status = error;
             state.changed();
         }

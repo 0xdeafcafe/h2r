@@ -419,6 +419,27 @@ enum Request {
     Camera,
 }
 
+/// What the loading panel shows: the film, its map, how long the load has
+/// run and the status the transport reports.
+pub(super) struct Loading {
+    pub name: String,
+    pub map: String,
+    pub since: Instant,
+    pub status: Option<String>,
+}
+
+impl Loading {
+    fn of(entry: &Entry, now: Instant) -> Self {
+        let film = &entry.film;
+        Self {
+            name: if film.variant_name.is_empty() { film.id.clone() } else { film.variant_name.clone() },
+            map: film.map.clone(),
+            since: now,
+            status: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Session {
     rpc: Option<Playback>,
@@ -445,6 +466,11 @@ pub(super) struct Session {
     in_game: bool,
     /// When the film's game was queued, while it has not yet started.
     opened_at: Option<Instant>,
+    /// The loading panel's facts, from the queued game's answer to the
+    /// film's first answer of the transport.
+    loading: Option<Loading>,
+    /// The film whose load failed, until the host hands the viewer back.
+    pub failed_film: Option<String>,
     pub completed_clip: Option<Clip>,
     held_keys: HashSet<Key>,
     key_skip: SkipHold,
@@ -565,13 +591,23 @@ impl Session {
         if !waiting {
             return false;
         }
+        self.fail_load("The film's game did not start".into());
+        true
+    }
+
+    /// The film's load failed: the loading state and the bar go, the film
+    /// is disarmed (`theater.end`), and the host opens the film page again
+    /// with `why`.
+    pub fn fail_load(&mut self, why: String) {
+        self.failed_film = self.track.as_ref().map(|t| t.film.clone());
         self.opened_at = None;
+        self.loading = None;
         self.track = None;
         self.in_game = false;
+        self.ready = false;
         self.menu = None;
-        self.open_error = Some("The film's game did not start".into());
+        self.open_error = Some(why);
         self.send(api::END, json!({}), Request::End);
-        true
     }
 
     fn pump_transport(&mut self, now: Instant) {
@@ -605,10 +641,12 @@ impl Session {
             (Request::Open, Ok(_)) => {
                 // The film's game is queued: the bar is this game's own.
                 if let Some(entry) = self.opening.take() {
+                    let now = Instant::now();
                     self.track = Some(Track::from_entry(&entry));
                     self.ready = false;
                     self.in_game = true;
-                    self.opened_at = Some(Instant::now());
+                    self.opened_at = Some(now);
+                    self.loading = Some(Loading::of(&entry, now));
                     self.menu = None;
                 }
             }
@@ -622,6 +660,7 @@ impl Session {
                 } else {
                     // The menu is queued; the film page opens when it loads.
                     self.track = None;
+                    self.loading = None;
                     self.ready = false;
                     self.in_game = false;
                     self.menu = None;
@@ -658,6 +697,7 @@ impl Session {
                         s.camera = None;
                     }
                     self.ready = true;
+                    self.loading = None;
                     self.starting_seek = None;
                     let seeking = s.seeking;
                     track.read(s);
@@ -674,6 +714,16 @@ impl Session {
                     {
                         self.seek(start);
                     }
+                }
+            }
+            (Request::State, Err(status)) if !self.ready && self.loading.is_some() => {
+                // The transport's own word for the wait ("film … is
+                // loading"); the panel says it. Other answers are the
+                // menu's, and the panel keeps waiting.
+                if status.contains("is loading")
+                    && let Some(loading) = &mut self.loading
+                {
+                    loading.status = Some(status);
                 }
             }
             (Request::State, Err(_)) if !self.ready || self.track.as_ref().is_some_and(|t| t.seeking) => {}
@@ -754,6 +804,9 @@ impl Session {
 
     pub fn view(&self) -> Option<ScreenSpec> {
         let track = self.track.as_ref()?;
+        if let Some(loading) = self.loading.as_ref().filter(|_| !self.ready) {
+            return Some(playback_page::loading(loading, Instant::now()));
+        }
         Some(if let Some(menu) = &self.menu {
             menu.spec(track, self.notice.as_deref())
         } else {
@@ -976,6 +1029,12 @@ impl Session {
     /// A film is loaded and its transport answers: the bar is drawn.
     pub fn loaded(&self) -> bool {
         self.track.is_some() && self.ready
+    }
+
+    /// A film queued in this game has not played its first tick: the host
+    /// draws the loading panel, not the bar.
+    pub fn loading(&self) -> bool {
+        self.track.is_some() && self.loading.is_some() && !self.ready
     }
 
     pub fn key(&mut self, key: Key, down: bool, repeat: bool) -> bool {
@@ -1640,6 +1699,58 @@ mod tests {
         assert!(session.loaded() && session.owns_pads());
     }
 
+    fn queued() -> Session {
+        let mut session = Session::default();
+        session.opening = Some(Entry {
+            film: super::super::adapter::FilmMeta {
+                id: "test".into(),
+                map: "Lockout".into(),
+                variant_name: "Slayer".into(),
+                ..Default::default()
+            },
+            clip: None,
+            archive_clip: None,
+        });
+        session.answer(Request::Open, Ok(json!({"queued": true})));
+        session
+    }
+
+    #[test]
+    fn the_loading_panel_shows_from_watch_to_the_first_tick_then_the_bar_takes_over() {
+        let mut session = queued();
+        assert!(session.loading() && !session.loaded());
+        let panel = session.view().expect("the panel");
+        assert_eq!(panel.name, super::super::LOADING);
+        // The transport's word for the wait is on the panel.
+        session.answer(Request::State, Err("film test is loading".into()));
+        assert!(session.loading() && !session.loaded(), "the menu's other answers change nothing");
+        session.answer(Request::State, Err("no method".into()));
+        assert_eq!(
+            session.loading.as_ref().and_then(|l| l.status.as_deref()),
+            Some("film test is loading")
+        );
+        session.answer(Request::State, Ok(json!({"tick": 1})));
+        assert!(!session.loading() && session.loaded());
+        assert_eq!(session.view().expect("the bar").name, OVERLAY);
+    }
+
+    #[test]
+    fn the_bar_is_not_drawn_before_the_film_plays() {
+        let session = queued();
+        assert!(!session.loaded(), "the host draws the bar only for a loaded film");
+        assert!(!Session::default().loaded() && !Session::default().loading());
+    }
+
+    #[test]
+    fn a_failed_load_ends_the_loading_state_and_names_the_film_and_reason() {
+        let mut session = queued();
+        session.fail_load("The film's game could not start".into());
+        assert!(!session.loading() && !session.loaded() && session.track.is_none());
+        assert_eq!(session.failed_film.as_deref(), Some("test"));
+        assert_eq!(session.open_error.as_deref(), Some("The film's game could not start"));
+        assert!(session.view().is_none());
+    }
+
     #[test]
     fn a_film_whose_game_never_starts_is_given_up_with_a_reason() {
         let start = Instant::now();
@@ -1652,7 +1763,7 @@ mod tests {
         assert!(!session.stall(start + START_WAIT - Duration::from_secs(1)));
         assert!(session.track.is_some());
         assert!(session.stall(start + START_WAIT));
-        assert!(session.track.is_none() && !session.in_game);
+        assert!(session.track.is_none() && !session.in_game && !session.loading());
         assert_eq!(session.open_error.as_deref(), Some("The film's game did not start"));
     }
 
