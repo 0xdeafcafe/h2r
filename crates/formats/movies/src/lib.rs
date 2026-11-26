@@ -398,6 +398,11 @@ mod tests {
         let d = scratch("fresh");
         let mut m = Manifest::default();
         m.upsert(entry("a", 4));
+        m.output_sha256.insert("a.mp4".into(), {
+            let mut h = Sha256::default();
+            h.update(b"1234");
+            hex(&h.finish())
+        });
         fs::write(d.join(MANIFEST_NAME), m.to_json()).unwrap();
         fs::write(d.join("a.mp4"), b"1234").unwrap();
         assert!(locate_fresh(&d, "a", 100, &"ab".repeat(32)).is_some());

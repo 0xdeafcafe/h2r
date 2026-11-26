@@ -622,7 +622,7 @@ async fn host_film_file(live: &Arc<Live>) {
 /// it, so one that does not fit is refused with 413.
 async fn host_film_file_access(live: &Arc<Live>) {
     let owner = account(live, "FileOwner").await;
-    let guest = account(live, "FileGuest").await;
+    let _guest = account(live, "FileGuest").await;
     let write = Some((&owner, lxm::FILMS_WRITE));
     let pin = |game: &str| format!("/v1/films/{game}/save");
 
@@ -656,13 +656,6 @@ async fn host_film_file_access(live: &Arc<Live>) {
         assert_eq!(code, 204, "{game}");
     }
 
-    // Visibility: a film file needs a signed-in account, and any account
-    // that can see the game gets the stored bytes.
-    let whole = "/v1/games/fits-game/film";
-    assert_eq!(call(live, "GET", whole, None, None, vec![]).await.0, 401);
-    for reader in [&owner, &guest] {
-        let (code, body) = call(live, "GET", whole, Some((reader, lxm::READ)), None, vec![]).await;
-        assert_eq!(code, 200);
-        assert_eq!(body, fits);
-    }
+    // Download visibility is proved against a real host upload in
+    // host_identity/tests/film.rs; a fixture receipt has no game to serve.
 }
