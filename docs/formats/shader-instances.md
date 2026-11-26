@@ -317,13 +317,47 @@ and samples it again at the render clock (`0x004858a0`):
 Studio uses the same sampler with its preview clock, for the planned
 layers and for layer 3 (`layers_load::plan_layer3`). A texture transform
 may use any slot fields supplied by this draw. A required inherited
-field, an animated bitmap frame or pipeline state, an unavailable wave
-table, or a curve requiring an object callback leaves the affected draw
-with its refusal. On an object a ranged curve refuses too: its range
-input is the lighting record's callback. The
+field, animated pipeline state, an unavailable wave table, or a curve
+requiring an object callback leaves the affected draw with its refusal.
+On an object a ranged curve refuses too: its range input is the lighting
+record's callback. An animated bitmap frame draws on objects (below) and
+is refused on the other paths. The
 `native_shader_animation_*` counters
 ([native-renderer.md](../graphics/native-renderer.md#frame-counters))
 count the passes each path samples and refuses.
+
+### Animated bitmap frames and components
+
+A bitmap binding's component (each reference's b1) names the slot float
+it writes, `[ctx+0x338+64*slot+4*component]` (`0x00017642`): 0 is the
+frame (`+0x18`), 1 to 7 the texture transform (`+0x1c..+0x34`), and 8
+and 9 `+0x38` and `+0x3c`. The texture bindings (`0x00018a90`) copy the
+whole slot record to the stage (`rep movsd` at `0x00018afb`), and
+`0x0001b0a0` picks the stage's image from its frame: image 0 when
+`|frame|` is below `1e-4` (`[0x45dbdc]`), otherwise
+`floor(fmod(frame, count))` through the CRT `fmod` at `0x00373b6a`. The
+bind (`0x000143c0`) replaces a negative image, one at or above the count,
+or a missing bitmap with the rasterizer default texture.
+
+Components 8 and 9 are written and never read. Every instruction that
+forms a slot or stage address from the setup context was checked: the
+parameter copy (`0x00016fab`: `+0`, `+0x10..+0x18`), the record copy
+(`0x00018ae8`, `0x00018aef`), the size refresh (`0x00018b11..0x00018d2e`:
+`+0..+0x18`), the image pick (`0x0001b0d2`: `+0`, `+4`, `+0x10..+0x18`)
+and the transform (`0x0001b7bd`: `+0x1c..+0x34`). No displacement
+`0x358`/`0x35c` or `0x1358`/`0x135c` from the context occurs in `.text`.
+The sampler skips them (`layer_pass::animation::UNREAD_COMPONENTS`).
+
+`tags::material::AnimatedTarget::stages` lists the stages a bitmap
+target's slot reaches in its implementation, each with the image count
+of the bitmap bound there. Native objects preload every image of such a
+stage (`object_program_gpu::frame_images`, at most `MAX_FRAME_IMAGES`)
+and pick one per draw with `layer_pass::frame_image`, the same rule as
+`0x0001b0a0`; the draw's bind group is cached per image choice. A frame
+that resolves to the default texture, a frame on a stage whose size a
+vertex constant reads (`LayerRefusal::FrameSize`, since `0x00018b31`
+refreshes the size from the picked image), a stage with no bitmap, or a
+pass that binds an engine target per encode is refused.
 
 ## Element budgets and aliasing
 

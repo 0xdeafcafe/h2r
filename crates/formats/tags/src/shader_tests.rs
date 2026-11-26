@@ -830,6 +830,7 @@ fn animation_targets_follow_the_instance_tree() {
                     component: 1
                 },
             ],
+            stages: Vec::new(),
         }]
     );
     // Direct constant writers mask off the count and dereference the start.
@@ -852,6 +853,26 @@ fn animation_targets_follow_the_instance_tree() {
     };
     assert_eq!(destinations(None), [Some((true, 1)), None]);
     assert_eq!(destinations(Some(EngineInputs::default())), [None, Some((false, 8))]);
+
+    // A bitmap animation of slot 5 names the stage the implementation's
+    // binding copies that slot to (stage 0), with the bitmap's image count;
+    // the lightmap stage copies no slot. Its references are the range's.
+    w16(&mut f.arena.b, leaf + 6, 0);
+    w16(&mut f.arena.b, leaf, range(0, 1));
+    w16(&mut f.arena.b, range_at, range(0, 2));
+    let anims = f.arena.put(&[5, 0, 0, 0]);
+    blk(&mut f.arena.b, sp + 0x54, 1, anims);
+    let m = library(&f).material(SHAD_ID, None).unwrap();
+    let a = &m.layers[0].passes[0].implementations[1].animated;
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].kind, AnimationKind::Bitmap);
+    assert_eq!(a[0].stages, [FrameStage { stage: 0, images: 2 }]);
+    assert_eq!(a[0].properties.len(), 2);
+    // A slot no stage copies feeds none.
+    let anims = f.arena.put(&[6, 0, 0, 0]);
+    blk(&mut f.arena.b, sp + 0x54, 1, anims);
+    let m = library(&f).material(SHAD_ID, None).unwrap();
+    assert!(m.layers[0].passes[0].implementations[1].animated[0].stages.is_empty());
 
     // A clear layer bit means no animation (0x000174d0).
     let lod_at = target(&f, sp + 0x1c);

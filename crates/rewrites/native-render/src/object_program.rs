@@ -260,7 +260,7 @@ fn object_pass_with(
     lightmap: bool,
     blends: bool,
 ) -> Result<ObjectPass, String> {
-    let (baseline, animation) = PassAnimation::baseline(imp, properties, true, 0)
+    let (baseline, animation) = PassAnimation::baseline_with_frames(imp, properties, true, 0)
         .map_err(|r| format!("animated constants: {}: {r:?}", r.name()))?;
     let imp = &baseline;
     let state = object_pass_state_with(imp, blends)?;
@@ -331,29 +331,42 @@ fn object_pass_with(
 
 /// The blocks an object's draw of `pass` starts from: the compiled
 /// pass's, or for an animated pass its registers sampled at `time` (the
-/// render clock) over them ([`PassAnimation::sample`]), counted in
-/// `native_shader_animation_objects_*`. The object's lighting and rows go
-/// in after ([`object_vertex_uniforms`], [`object_pixel_uniforms`]), so a
-/// lighting binding wins a lane an animation also writes. An error names
-/// the sampler's refusal; the item keeps its D3D draw.
+/// render clock) over them ([`PassAnimation::sample_with_frames`]),
+/// counted in `native_shader_animation_objects_*`; and per stage an
+/// animated bitmap frame reaches, the image it selects
+/// ([`crate::layer_pass::frame_image`] over the stage bitmap's count,
+/// [`PassAnimation::frame_counts`]), `None` where the stage binds its
+/// compiled image. The object's lighting and rows go in after
+/// ([`object_vertex_uniforms`], [`object_pixel_uniforms`]), so a lighting
+/// binding wins a lane an animation also writes. An error names the
+/// sampler's refusal, or a frame that binds the rasterizer default
+/// texture; the item keeps its D3D draw.
 pub fn animated_blocks(
     pass: &ObjectPass,
     time: Option<f64>,
-) -> Result<(std::borrow::Cow<'_, VertexUniforms>, PixelUniforms), String> {
+) -> Result<(std::borrow::Cow<'_, VertexUniforms>, PixelUniforms, [Option<u32>; 4]), String> {
     use timeline::native::ShaderAnimation;
     let Some(animation) = &pass.animation else {
-        return Ok((std::borrow::Cow::Borrowed(&pass.program.vertex), pass.program.pixel));
+        return Ok((std::borrow::Cow::Borrowed(&pass.program.vertex), pass.program.pixel, [None; 4]));
     };
-    match animation.sample(time) {
-        Ok(at) => {
-            ShaderAnimation::ObjectsDrawn.count(1);
-            Ok((std::borrow::Cow::Owned(at.vertex(&pass.program.vertex)), at.pixel(&pass.program.pixel)))
+    let sampled = animation.sample_with_frames(time).map_err(|r| format!("animated constants: {}: {r:?}", r.name()));
+    let drawn = sampled.and_then(|(at, frames)| {
+        let counts = animation.frame_counts();
+        let mut images = [None; 4];
+        for (n, frame) in frames.iter().enumerate() {
+            let Some(frame) = *frame else { continue };
+            let count = counts[n].unwrap_or(0);
+            images[n] = Some(crate::layer_pass::frame_image(frame, count).ok_or_else(|| {
+                format!("animated frame {frame} of stage {n} ({count} images) binds the rasterizer default texture")
+            })?);
         }
-        Err(r) => {
-            ShaderAnimation::ObjectsRefused.count(1);
-            Err(format!("animated constants: {}: {r:?}", r.name()))
-        }
+        Ok((std::borrow::Cow::Owned(at.vertex(&pass.program.vertex)), at.pixel(&pass.program.pixel), images))
+    });
+    match drawn {
+        Ok(_) => ShaderAnimation::ObjectsDrawn.count(1),
+        Err(_) => ShaderAnimation::ObjectsRefused.count(1),
     }
+    drawn
 }
 
 /// `pass`'s implementation `imp` as an object draws it, or why not: what
@@ -1543,7 +1556,7 @@ pub(crate) mod tests {
         let still = object_pass(map::TagId(0xe000_0001), &imp, &[], &rigid_program(), WORLD, [shaders::vsh::InputFetch::Float; 16], true)
             .unwrap_or_else(|e| panic!("{e}"));
         assert!(still.animation.is_none());
-        let (vertex, _) = animated_blocks(&still, None).unwrap();
+        let (vertex, _, _) = animated_blocks(&still, None).unwrap();
         assert_eq!(*vertex, still.program.vertex, "nothing animates: the compiled block, no clock needed");
 
         imp.animated = vec![target];
@@ -1553,11 +1566,49 @@ pub(crate) mod tests {
         let p = object_pass(map::TagId(0xe000_0001), &imp, &props, &rigid_program(), WORLD, fetch, true)
             .unwrap_or_else(|e| panic!("{e}"));
         assert!(p.implementation.animated.is_empty() && p.animation.is_some());
-        let (vertex, _) = animated_blocks(&p, Some(11.0)).unwrap();
+        let (vertex, _, images) = animated_blocks(&p, Some(11.0)).unwrap();
+        assert_eq!(images, [None; 4], "no animated frame: every stage binds its compiled image");
         assert_eq!(vertex.constants[23][2], 1.5, "11 s over 4 s: 0.75 of 0..2");
         assert_eq!(p.program.vertex.constants[23][2], 0.0, "the compiled block holds clock 0");
         let e = animated_blocks(&p, None).unwrap_err();
         assert!(e.contains("time"), "no clock: the item keeps its D3D draw: {e}");
+    }
+
+    /// An object pass whose stage 0 takes an animated frame of slot 5
+    /// (`images` images in its bitmap): its frame runs 0..8 over 4 s,
+    /// alongside the unread component 8.
+    pub(crate) fn frame_pass(images: u32) -> ObjectPass {
+        use crate::layer_pass::tests::{animated, identity, timed};
+        let mut target = animated(tags::material::AnimationKind::Bitmap, &[(0, 0), (0, 8)]);
+        target.binding.target = 5;
+        target.stages = vec![tags::material::FrameStage { stage: 0, images }];
+        let mut imp = lit();
+        imp.animated = vec![target];
+        let props = [timed(4.0, identity([0.0, 8.0], 0))];
+        object_pass(map::TagId(0xe000_0001), &imp, &props, &rigid_program(), WORLD, [shaders::vsh::InputFetch::Float; 16], true)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Each draw binds the image its clock's frame selects
+    /// (`0x0001b0a0`): the frame's remainder over the bitmap's image
+    /// count, floored; a one-image bitmap always its image 0; a frame
+    /// that binds the default texture keeps the item's D3D draw.
+    #[test]
+    fn an_animated_frame_selects_its_stages_image_per_draw() {
+        let p = frame_pass(3);
+        assert_eq!(p.animation.as_ref().unwrap().frame_counts(), [Some(3), None, None, None]);
+        for (time, image) in [(0.0, 0), (1.0, 2), (2.0, 1), (3.5, 1)] {
+            // 1 s: 2.0; 2 s: 4.0 wraps to 1; 3.5 s: 7.0 wraps to 1.
+            let (_, _, images) = animated_blocks(&p, Some(time)).unwrap();
+            assert_eq!(images, [Some(image), None, None, None], "{time} s");
+        }
+        let one = frame_pass(1);
+        for time in [0.5, 1.0, 3.9] {
+            assert_eq!(animated_blocks(&one, Some(time)).unwrap().2[0], Some(0), "{time} s");
+        }
+        let none = frame_pass(0);
+        let e = animated_blocks(&none, Some(1.0)).unwrap_err();
+        assert!(e.contains("default texture"), "{e}");
     }
 
 }

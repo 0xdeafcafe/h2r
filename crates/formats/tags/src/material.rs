@@ -137,7 +137,24 @@ pub struct AnimatedTarget {
     pub pixel_register: Option<(bool, u8)>,
     /// The property components feeding it.
     pub properties: Vec<PropertyRef>,
+    /// A [`AnimationKind::Bitmap`] target's texture stages: each stage this
+    /// implementation's texture bindings copy from the target's slot
+    /// (`binding.target`; `0x00018afb` copies the whole slot, its frame
+    /// included, after the animation wrote it), the last binding of a stage
+    /// winning. Empty for the other kinds.
+    pub stages: Vec<FrameStage>,
 }
+
+/// One texture stage an animated bitmap slot feeds ([`AnimatedTarget::stages`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameStage {
+    pub stage: u8,
+    /// The image count of the slot's bitmap, which `0x0001b0a0` wraps the
+    /// frame by; 0 when the slot holds no instance bitmap (the rasterizer
+    /// default texture, or no parameter).
+    pub images: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnimationKind {
     Bitmap,
@@ -763,6 +780,9 @@ impl ShaderLibrary {
         // The stage takes the slot's size before this binding refreshes it.
         let mut slot_sizes = state.as_ref().map(|s| s.slot_sizes.clone()).unwrap_or_default();
         let mut textures = state.as_ref().map(|s| s.stages).unwrap_or_default();
+        // The slot each stage last copied in this implementation, with its
+        // bitmap's image count ([`AnimatedTarget::stages`]).
+        let mut stage_slots: [Option<(u8, u32)>; 4] = [None; 4];
         for t in &spas.textures[imp.textures.indices()] {
             let stage = textures
                 .get_mut(usize::from(t.stage))
@@ -773,6 +793,7 @@ impl ShaderLibrary {
                     11 => TextureSource::Lightmap,
                     n => TextureSource::Engine(n),
                 };
+                stage_slots[usize::from(t.stage)] = None;
                 let engine = StageTexture { source, size: None, stage_size: None };
                 *stage = Some(match t.source {
                     PROPERTY_BITMAP_TEXTURE => self.property_bitmap(sp).unwrap_or(engine),
@@ -786,9 +807,11 @@ impl ShaderLibrary {
                 .copied()
                 .unwrap_or((TextureSource::UnsetSlot(t.slot), 0));
             let mut size = None;
+            stage_slots[usize::from(t.stage)] = Some((t.slot, 0));
             match &mut source {
                 TextureSource::Bitmap { bitmap, image, .. } => {
                     let (count, _) = self.bitmap_image(*bitmap, None)?;
+                    stage_slots[usize::from(t.stage)] = Some((t.slot, count));
                     // 0x00018b31 compares the raw frame with the image count
                     // and skips the refresh when frame >= count.
                     if t.flags & 2 != 0 && i64::from(frame) < i64::from(count) {
@@ -911,11 +934,24 @@ impl ShaderLibrary {
                     } else {
                         None
                     };
+                    let stages = if kind == AnimationKind::Bitmap {
+                        (0..4u8)
+                            .filter_map(|n| match stage_slots[usize::from(n)] {
+                                Some((slot, images)) if slot == binding.target => {
+                                    Some(FrameStage { stage: n, images })
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     animated.push(AnimatedTarget {
                         pixel_register,
                         kind,
                         binding: *binding,
                         properties: refs.to_vec(),
+                        stages,
                     });
                 }
             }
