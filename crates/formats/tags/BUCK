@@ -50,6 +50,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//third-party/rust:flate2",
         "//third-party/rust:sha2-0_10",
@@ -69,6 +70,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -89,6 +91,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -110,6 +113,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -131,6 +135,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -152,6 +157,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -173,6 +179,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
@@ -194,6 +201,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/content:content",
         "//crates/formats/map:map",
         "//crates/formats/xiso:xiso",
         "//third-party/rust:flate2",
