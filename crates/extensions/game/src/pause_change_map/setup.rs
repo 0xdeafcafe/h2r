@@ -1,6 +1,7 @@
 //! Game Setup's screens on the pause menu: Game Setup itself, the map
-//! categories, the game types, Quick Options and Clanker Options, each a
-//! list class of ours built on screen 200 in a game; and the value picker
+//! categories, the game types (Select Game), a game type's variants
+//! (Change Rules), Quick Options and Clanker Options, each a list class of
+//! ours built on screen 200 in a game; and the value picker
 //! (`crate::ui_kit::picker`, the large dialog in a game) for the maps, the
 //! variants, the Quick Options values and the Clankers' settings
 //! (docs/game/settings-menu.md "Game Setup from the pause menu").
@@ -17,6 +18,7 @@
 //!   Setup; B on the dialog goes back to Game Setup with the draft kept.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::{GuestMemory, MemFault};
@@ -25,6 +27,8 @@ use engine::points;
 use crate::list_class::{self, Action, ListClass, Rows};
 use crate::map_select::Category;
 use crate::ui::Chosen;
+use crate::ui_kit::dialog::DialogBase;
+use crate::ui_kit::input::footer_legend;
 use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::{dialog_tag, lifecycle};
 
@@ -76,7 +80,7 @@ fn close_list(visit: &Arc<Visit>) -> Action {
         let v = Arc::clone(&v);
         Box::pin(async move {
             if let Some(screen) = v.with(|s| s.list_screen.take()) {
-                lifecycle::close(&cx, screen).await?;
+                dialog_tag::close(&cx, screen).await?;
             }
             Ok(())
         })
@@ -110,19 +114,11 @@ pub fn map_pick(visit: &Arc<Visit>, c: Category, from_list: bool) -> Option<Pick
     Some(if from_list { pick.after(close_list(visit)) } else { pick })
 }
 
-/// The picker over `group`'s variants; the game types list is under it.
-pub fn rules_pick(visit: &Arc<Visit>, group: Group) -> Option<Pick> {
-    let list = visit.with(|s| game_types::of_group(&s.rules, group));
-    if list.is_empty() {
-        return None;
-    }
-    let values: Vec<String> = list.iter().map(|l| l.name.clone()).collect();
-    let held = visit.with(|s| s.draft.rules.clone());
-    let current = held
-        .and_then(|n| list.iter().position(|l| l.name == n))
-        .unwrap_or(0);
+/// What choosing variant `i` of `list` does: the draft takes it, and the
+/// maps follow its mode.
+fn rules_set(visit: &Arc<Visit>, list: Vec<game_types::Listed>) -> Arc<dyn Fn(usize) -> String + Send + Sync> {
     let v = Arc::clone(visit);
-    let set = Arc::new(move |i: usize| match list.get(i) {
+    Arc::new(move |i: usize| match list.get(i) {
         Some(l) => {
             let mode = crate::lobby_start::mode();
             let maps = catalogue().for_variant(mode, Some(&l.variant));
@@ -135,7 +131,21 @@ pub fn rules_pick(visit: &Arc<Visit>, group: Group) -> Option<Pick> {
             format!("pause game setup: the next game plays {}", l.name)
         }
         None => format!("pause game setup: no variant {i}"),
-    });
+    })
+}
+
+/// The picker over `group`'s variants; the game types list is under it.
+pub fn rules_pick(visit: &Arc<Visit>, group: Group) -> Option<Pick> {
+    let list = visit.with(|s| game_types::of_group(&s.rules, group));
+    if list.is_empty() {
+        return None;
+    }
+    let values: Vec<String> = list.iter().map(|l| l.name.clone()).collect();
+    let held = visit.with(|s| s.draft.rules.clone());
+    let current = held
+        .and_then(|n| list.iter().position(|l| l.name == n))
+        .unwrap_or(0);
+    let set = rules_set(visit, list);
     Some(Pick::new(&group.label(), values, current, RULES_HELP, set).after(close_list(visit)))
 }
 
@@ -261,7 +271,7 @@ impl Rows for SetupRows {
                 Some(Opening::Maps(c)) => offer(map_pick(&self.0, c, false)),
                 None => Chosen::Nothing,
             },
-            SetupRow::ChangeRules => Chosen::Push(TYPES_SCREEN),
+            SetupRow::ChangeRules => Chosen::Open(TYPES_SCREEN),
             SetupRow::QuickOptions => Chosen::Push(QUICK_SCREEN),
             SetupRow::ClankerOptions => Chosen::Push(CLANKERS_SCREEN),
         }
@@ -338,7 +348,10 @@ impl Rows for TypeRows {
     }
     fn press(&self, row: i16) -> Chosen {
         match usize::try_from(row).ok().and_then(|r| self.groups().get(r).copied()) {
-            Some(g) => offer(rules_pick(&self.0, g)),
+            Some(g) => {
+                self.0.with(|s| s.group = Some(g));
+                Chosen::Open(RULES_SCREEN)
+            }
             None => Chosen::Nothing,
         }
     }
@@ -348,6 +361,77 @@ impl Rows for TypeRows {
     fn describe(&self, count: usize) -> Option<String> {
         let labels: Vec<String> = self.groups().iter().map(|g| g.label()).collect();
         Some(format!("{TYPES_TITLE}: {count} rows ({})", labels.join(", ")))
+    }
+}
+
+/// Change Rules' list: the variants of the game type Select Game chose,
+/// one row each. A on one sets it and closes this list and Select Game.
+pub struct RulesRows {
+    visit: Arc<Visit>,
+    /// A press chose a variant: the action closes the dialog.
+    chosen: AtomicBool,
+}
+
+impl RulesRows {
+    pub fn new(visit: Arc<Visit>) -> Self {
+        RulesRows { visit, chosen: AtomicBool::new(false) }
+    }
+    fn list(&self) -> Vec<game_types::Listed> {
+        self.visit.with(|s| {
+            s.group
+                .map_or_else(Vec::new, |g| game_types::of_group(&s.rules, g))
+        })
+    }
+    /// A on a variant has set it: close this list, then Select Game.
+    fn act(self: &Arc<Self>) -> Action {
+        let me = Arc::clone(self);
+        Arc::new(move |cx: Cx, screen: u32| -> ActionFuture {
+            let me = Arc::clone(&me);
+            Box::pin(async move {
+                if me.chosen.swap(false, Ordering::SeqCst) {
+                    dialog_tag::close(&cx, screen).await?;
+                    close_list(&me.visit)(cx, screen).await?;
+                }
+                Ok(())
+            })
+        })
+    }
+}
+
+impl Rows for RulesRows {
+    fn title(&self) -> u32 {
+        IDS.id(RULES_TITLE_SLOT)
+    }
+    fn count(&self) -> usize {
+        let label = self.visit.with(|s| s.group).map_or_else(String::new, |g| g.label());
+        TEXTS.set(RULES_TITLE_SLOT, &picker::title(&label));
+        self.chosen.store(false, Ordering::SeqCst);
+        self.list().len()
+    }
+    fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+        let Some(r) = usize::try_from(row).ok() else {
+            return Vec::new();
+        };
+        match self.list().get(r) {
+            Some(l) => vec![(0, TEXTS.set(RULES_SLOTS + (r % LIST_ROWS) as u32, &l.name))],
+            None => Vec::new(),
+        }
+    }
+    fn press(&self, row: i16) -> Chosen {
+        let list = self.list();
+        let Some(i) = usize::try_from(row).ok().filter(|i| *i < list.len()) else {
+            return Chosen::Nothing;
+        };
+        eprintln!("{}", rules_set(&self.visit, list)(i));
+        self.chosen.store(true, Ordering::SeqCst);
+        Chosen::Act
+    }
+    fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        TEXTS.write(m)
+    }
+    fn describe(&self, count: usize) -> Option<String> {
+        let names: Vec<String> = self.list().into_iter().map(|l| l.name).collect();
+        Some(format!("Change Rules: {count} rows ({})", names.join(", ")))
     }
 }
 
@@ -422,6 +506,13 @@ fn forget_list(visit: &Arc<Visit>) -> Action {
     })
 }
 
+/// The list of Select Game and Change Rules: Quick Options' dialog's, showing
+/// `rows` rows, at most [`LIST_ROWS`] (what its panel holds in the 640 x 480
+/// safe area).
+pub fn list_layout(rows: usize) -> list_class::ListLayout {
+    dialog_tag::base_layout(DialogBase::QuickOptions, rows.min(LIST_ROWS))
+}
+
 /// Game Setup first, then the categories, the game types, Quick Options
 /// and, with `clankers`, Clanker Options. Each opens in a game, on the
 /// in-game Controller Settings' tag (`crate::list_class`, module docs);
@@ -438,12 +529,24 @@ pub fn classes(visit: &Arc<Visit>, clankers: Option<Arc<settings::Store>>) -> Ve
     )
     .pane_ready(note_list(visit))
     .on_free(forget_list(visit));
+    let footer = TEXTS.set(FOOTER_SLOT, &footer_legend(&picker::prompts()));
     let types = ListClass::with_rows(TYPES_SCREEN, TYPES_SCREEN, Arc::new(TypeRows(Arc::clone(visit))))
+        .dialog(DialogBase::QuickOptions)
+        .layout(list_layout(game_types::ORDER.len()))
+        .action_buttons(&[])
+        .footer(footer)
         .pane_ready(note_list(visit))
         .on_free(forget_list(visit));
+    let rules = Arc::new(RulesRows::new(Arc::clone(visit)));
+    let rules = ListClass::with_rows(RULES_SCREEN, RULES_SCREEN, Arc::clone(&rules) as Arc<dyn Rows>)
+        .dialog(DialogBase::QuickOptions)
+        .layout(list_layout(LIST_ROWS))
+        .action(rules.act())
+        .action_buttons(&[])
+        .footer(footer);
     let quick = ListClass::with_rows(QUICK_SCREEN, QUICK_SCREEN, Arc::new(QuickRows(Arc::clone(visit))))
         .lines();
-    let mut out = vec![setup, categories, types, quick];
+    let mut out = vec![setup, categories, types, rules, quick];
     if let Some(store) = clankers {
         out.push(
             ListClass::with_rows(CLANKERS_SCREEN, CLANKERS_SCREEN, Arc::new(ClankerRows(store)))

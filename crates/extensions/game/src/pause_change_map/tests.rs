@@ -142,12 +142,15 @@ fn every_text_has_its_own_slot() {
         TYPES_TITLE_SLOT,
         QUICK_TITLE_SLOT,
         CLANKER_TITLE_SLOT,
+        RULES_TITLE_SLOT,
+        FOOTER_SLOT,
     ];
     slots.extend((0..Category::ALL.len() as u32).map(|i| CATEGORY_SLOTS + i));
     slots.extend((0..game_types::ORDER.len() as u32).map(|i| TYPE_SLOTS + i));
     slots.extend((0..SetupRow::ALL.len() as u32).map(|i| SETUP_SLOTS + i));
     slots.extend((0..Setting::ALL.len() as u32).map(|i| QUICK_SLOTS + i));
     slots.extend((0..crate::clankers::DEFS.len() as u32).map(|i| CLANKER_SLOTS + i));
+    slots.extend((0..LIST_ROWS as u32).map(|i| RULES_SLOTS + i));
     let unique: std::collections::BTreeSet<_> = slots.iter().collect();
     assert_eq!(unique.len(), slots.len());
     assert_eq!(slots.len() as u32, SLOTS);
@@ -600,10 +603,10 @@ fn clanker_options_is_a_screen_only_with_the_clankers_store() {
     let names = |c: &[list_class::ListClass]| c.iter().map(|c| c.screen).collect::<Vec<_>>();
     assert_eq!(
         names(&setup::classes(&visit, None)),
-        [SETUP_SCREEN, CATEGORIES_SCREEN, TYPES_SCREEN, QUICK_SCREEN]
+        [SETUP_SCREEN, CATEGORIES_SCREEN, TYPES_SCREEN, RULES_SCREEN, QUICK_SCREEN]
     );
     let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
-    assert_eq!(setup::classes(&visit, Some(store)).len(), 5);
+    assert_eq!(setup::classes(&visit, Some(store)).len(), 6);
 }
 
 #[test]
@@ -640,4 +643,34 @@ fn a_change_rules_press_limits_the_map_rows_to_the_chosen_wave_set() {
     assert_eq!(maps.maps(Category::Firefight), [creek]);
     assert_eq!(maps.all().count(), 1);
     assert_eq!(cat.for_variant(Mode::Forge, chosen).categories(), cat.categories());
+}
+
+/// Where a Quick Options dialog's list ends for `l`: its anchor less one
+/// 26-unit item a row (`view::Geometry::item_height`).
+fn list_bottom(l: list_class::ListLayout) -> i32 {
+    i32::from(l.anchor[1]) - i32::from(l.visible) * 26
+}
+
+#[test]
+fn select_game_shows_every_game_type_with_no_scrolling() {
+    let rows = game_types::ORDER.len();
+    assert!(rows <= LIST_ROWS, "{rows} game types in a window of {LIST_ROWS}");
+    let l = setup::list_layout(rows);
+    assert_eq!(l.visible as usize, rows, "visible rows are the rows");
+    // The dialog's panel (Quick Options', which holds eleven rows) ends
+    // below the list, and the list inside the 640 x 480 safe area.
+    let safe = crate::ui_kit::layout::SAFE;
+    assert!(list_bottom(l) >= i32::from(safe.bottom), "bottom {}", list_bottom(l));
+    assert!(-240 <= list_bottom(l));
+}
+
+#[test]
+fn change_rules_shows_its_variants_up_to_what_fits_at_four_by_three() {
+    for n in 1..=LIST_ROWS {
+        assert_eq!(setup::list_layout(n).visible as usize, n, "{n} variants");
+    }
+    // A longer list is capped where the safe area ends, and scrolls.
+    let capped = setup::list_layout(LIST_ROWS + 20);
+    assert_eq!(capped.visible as usize, LIST_ROWS);
+    assert!(list_bottom(capped) >= i32::from(crate::ui_kit::layout::SAFE.bottom));
 }
