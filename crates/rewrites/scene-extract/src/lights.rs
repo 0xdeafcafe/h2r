@@ -3,6 +3,7 @@
 //! light spheres. The guest's ranked and faded draw list is observed
 //! separately at the light-pass entries.
 
+pub mod gather;
 mod volume;
 
 use engine::datum::DatumArray;

@@ -66,12 +66,19 @@ pub enum Clip {
 
 impl Clip {
     fn admits(&self, cluster: u16, info: &ObjectInfo) -> bool {
+        self.admits_sphere(cluster, info.centre, info.radius)
+    }
+
+    /// Whether a sphere reaches the clip from `cluster`'s windows: an
+    /// object's second sphere here, and a light's bounds in
+    /// [`crate::lights::gather`] (`0x00132a30` takes the same tests).
+    pub(crate) fn admits_sphere(&self, cluster: u16, centre: [f32; 3], radius: f32) -> bool {
         match self {
-            Self::Frusta(frusta) => frusta.admits(cluster, info.centre, info.radius),
-            Self::Sphere { centre, radius } => {
+            Self::Frusta(frusta) => frusta.admits(cluster, centre, radius),
+            Self::Sphere { centre: view, radius: view_radius } => {
                 // In the guest's order; NaN rejects.
-                let [dx, dy, dz] = [0, 1, 2].map(|i| info.centre[i] - centre[i]);
-                let reach = info.radius + *radius;
+                let [dx, dy, dz] = [0, 1, 2].map(|i| centre[i] - view[i]);
+                let reach = radius + *view_radius;
                 reach * reach >= (dz * dz + dx * dx) + dy * dy
             }
             Self::All => true,

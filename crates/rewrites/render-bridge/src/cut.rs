@@ -37,7 +37,18 @@ pub struct Cut {
 }
 
 /// The cut producers. A slice adds its row here with its test.
-pub const CUTS: &[Cut] = &[];
+pub const CUTS: &[Cut] = &[
+    // The light frame: gather, per-light passes and first-person lights in
+    // one producer. Its gather is `scene_extract::lights::gather`
+    // (docs/graphics/native-lights.md); it ends in `ret` with EAX 0
+    // (`0x00031f4f`).
+    Cut {
+        name: "dynamic_lights",
+        entry: 0x0003_1c80,
+        abi_result: 0,
+        pop: 0,
+    },
+];
 
 /// Why a cut does not match the census.
 #[derive(Debug, PartialEq, Eq)]

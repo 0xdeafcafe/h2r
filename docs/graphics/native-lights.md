@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
 Status: Partly built. Rust gathers visible lights and their lists. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
-Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -84,6 +84,43 @@ The light path in the order the game draws it ([e3-lighting.md](e3-lighting.md),
   and 1, 13 on the view's target. The layer draws return to
   `0x00040642`, `0x000406ab`, `0x00040718` and `0x0004079c`
   (`render_bridge::native_lights::FIRST_PERSON_LAYERS`).
+
+### The visible-light gather in Rust
+
+The list at `[0x00547f88 + 0x10]` that `0x00031910` ranks is built by the
+main view's visibility gather, and `scene_extract::lights::gather` builds
+the same list from sim data (`h2 disasm 0x00132220`, `0x00132a30`,
+`0x000c3140`, `0x000c3950`, `0x00163c80`). It reads no front-end
+product: `read_world` takes the light datums, the light references per
+cluster (heads `[0x004e0310]`, nodes `[0x004e0314]`), the tag table and
+the capacity of the list's allocation, and `gather` takes the view's
+visible clusters and clip from `scene_extract::visibility`.
+
+- Per visible cluster, in the order reached, each referenced light is
+  tested by `0x00132a30`: live, brightness and colour tests
+  (`0x000c3140`, as `visible::active`), not already stamped, then the
+  clip of the view's mode over the light's bounds (`+0x18`, `+0x24`): the
+  cluster's frusta, the view sphere plus the light's radius, or none.
+  View flag `0x80` takes a light the clip rejects.
+- A light is appended only below capacity minus one (`0x00163c80`) and
+  stamped only when appended, so a clipped or refused light can still be
+  listed through a later cluster, and a light in two clusters is listed
+  once.
+- The tail (`0x00132589`) follows for a view whose start cluster is set:
+  the first four lights in slot order that `0x000c3950` takes (owner test
+  `0x00031520`, definition bits `0x20` and `0x40000`, none when the view
+  index `[0x004b9ed4]` is `-1`), each appended when it has no cluster, is
+  live and is not stamped.
+- View flag `0x10` lists no lights.
+
+The order of the result is the guest's append order, which the ranking
+reads. `the_light_gather_equals_the_guest_list` runs a fixture with
+lights inside and outside the view, one behind a portal, one not live,
+one listed from two clusters and the player-only tail, and compares the
+result with the list as `lights::candidates` reads it from the guest's
+memory. `the_gather_stops_at_the_guests_cap` covers the capacity. The
+light frame is a cut producer (`render_bridge::cut::CUTS`, row
+`dynamic_lights`); the gather feeds the per-light passes of the scene.
 
 ### Gathered light and shadow geometry
 
