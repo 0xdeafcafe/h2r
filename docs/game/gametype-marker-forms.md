@@ -132,7 +132,9 @@ ignored and written as zero. `Area::validate` holds a box's half
 lengths (`AreaError::Half`) and a sphere's radius to the radius's
 limits (0.25 to 64). `Area::contains` tests the box in the marker's own
 axes and the sphere by distance; `Area::contains_turned` turns the box
-to the marker's facing. The document's wire form, the record at the end of a
+to the marker's facing. A box lies on its marker's facing everywhere:
+Studio, the game's drawer (`markers_world::place_of`) and a zone's test
+(`rules::world::zones`, at the flag's facing). The document's wire form, the record at the end of a
 Studio map and `rules.zones` carry the two shapes as they carry a
 radius.
 
@@ -228,8 +230,10 @@ no collision and no guest memory. The drawer changes in three ways
 | `rules.zones` | game | `area` carries the two new shapes |
 
 In Forge, **Edit area** cycles Radius, Box, Sphere and Path on Y; a box
-grows on the left stick's two axes (forward its half length, right its
-half width) and a sphere on the forward one. A flag return, a bomb goal
+grows on the left stick's two axes, each stepping the box's axis
+nearer to it as the monitor looks (forward the half length and right
+the half width while looking along the marker's facing, the other way
+round across it), and a sphere on the forward one. A flag return, a bomb goal
 and a siege goal take **Edit area** as a hill does, from `Area::plate()`
 when none is stored ([gametype-markers.md](gametype-markers.md),
 "Forge"). Properties

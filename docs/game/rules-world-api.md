@@ -483,7 +483,8 @@ A zone's shape is an area round its flag
 ([gametype-markers.md](gametype-markers.md), "In a script"), from the
 first of three that applies: the flag's own area, stored in the Forge
 document of a map variant and carried by the census (`Thing::area`), a
-radius or a path at its own heights; else the flags that share a label
+radius, a box (turned with the flag's facing), a sphere or a path at its
+own heights; else the flags that share a label
 and a number, three or more of them (a King of the Hill hill's corners),
 as one zone, `Area::of_corners`: the convex hull of their positions
 across the floor; else the default area of the flag's marker around

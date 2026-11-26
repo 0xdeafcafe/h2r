@@ -325,6 +325,16 @@ fn radius_steps_with_movement_snap_and_typed_dimensions_commit_together() {
 fn forge_input_grows_a_box_on_the_sticks_two_axes_and_saves_it_in_one_op() {
     let (mut e, id) = hill();
     let mut script = Script::new();
+    let facing = e.session.thing(id).unwrap().frame.rotation[0];
+    // The monitor looks along the flag's facing.
+    let look = |e: &mut Editor, yaw: f32| {
+        e.tool.camera = Some(Camera {
+            position: [-3., 0., 0.],
+            yaw,
+            pitch: 0.,
+        });
+    };
+    look(&mut e, facing);
     e.choose(2, Choice::EditArea(id)).unwrap();
     script.press(&mut e, "area_shape").unwrap();
     assert_eq!(e.status()["area_edit"]["shape"], "box");
@@ -334,6 +344,18 @@ fn forge_input_grows_a_box_on_the_sticks_two_axes_and_saves_it_in_one_op() {
     script.input(&mut e, json!({"movement":[1, 0, 0]})).unwrap();
     script.input(&mut e, json!({"movement":[0, 1, 0]})).unwrap();
     assert_eq!(e.status()["area_edit"]["half"], json!([1.5, 1.25]));
+    // The box in hand is drawn on the flag's facing.
+    let entry = &e.marker_entries()[0];
+    assert!((entry.place.forward[0] - facing.cos()).abs() < 1e-4);
+    assert!((entry.place.forward[1] - facing.sin()).abs() < 1e-4);
+    // Looking across the facing, forward steps the half width and right
+    // the half length.
+    look(&mut e, facing + std::f32::consts::FRAC_PI_2);
+    script.input(&mut e, json!({"movement":[0, -1, 0]})).unwrap();
+    assert_eq!(e.status()["area_edit"]["half"], json!([1.5, 1.0]));
+    script.input(&mut e, json!({"movement":[0, 1, 0]})).unwrap();
+    assert_eq!(e.status()["area_edit"]["half"], json!([1.5, 1.25]));
+    look(&mut e, facing);
     script.press(&mut e, "properties").unwrap();
     assert_eq!(screens::take_request(), Some(Kind::Properties));
     let sheet = screens::screen(Kind::Properties).sheet();
@@ -461,6 +483,12 @@ fn a_flag_return_edits_its_capture_plate() {
     assert_eq!(draft["shape"], "radius");
     assert_eq!(draft["radius"], json!(0.5));
     script.press(&mut e, "area_shape").unwrap();
+    // Looking along the flag's facing, right steps the half width.
+    e.tool.camera = Some(Camera {
+        position: [-3., 0., 0.],
+        yaw: e.session.thing(id).unwrap().frame.rotation[0],
+        pitch: 0.,
+    });
     script.input(&mut e, json!({"movement":[1, 0, 0]})).unwrap();
     script.press(&mut e, "accept").unwrap();
     assert_eq!(e.session.document().ops.len(), ops + 1);

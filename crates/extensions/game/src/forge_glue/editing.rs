@@ -721,6 +721,8 @@ impl Editor {
         {
             entry.marker.kind = entry.marker.kind.clone().with_area(draft.area.clone());
             entry.draft_path = matches!(draft.area.shape, game_markers::Shape::Path(_));
+            // A box in hand turns with its marker, as it will once saved.
+            entry.place = super::markers_world::place_of(&entry.marker.kind, entry.place.at, draft.yaw);
         }
         entries.extend(nav);
         entries

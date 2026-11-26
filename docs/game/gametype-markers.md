@@ -165,7 +165,10 @@ pub struct Area { pub shape: Shape, pub below: f32, pub above: f32 }
   marker, in three axes, with no height test. `Area::contains_turned`
   takes the marker's facing in radians, which turns a box and no other
   shape; a box holds its edge to within `area::EDGE_SLACK` (0.0001) so a
-  corner survives the turn. `Area::outline` of a box is its four
+  corner survives the turn. A zone (`rules::world::zones`) tests with
+  `contains_turned` at its flag's facing, and the drawers place a box on
+  that facing (`markers_world::place_of`), so a box scores where it is
+  drawn. `Area::outline` of a box is its four
   corners and of a sphere its equator, in the marker's own axes.
 - **`Area::of_corners`** is the area of a retail hill: the convex hull
   of its corners round their mean, from half a unit under the lowest to
@@ -447,8 +450,11 @@ make the same document.
   radius each way, a box a sphere of the same floor, a sphere an empty
   path, and a path a circle of the same floor
   ([gametype-marker-forms.md](gametype-marker-forms.md), "Boundaries").
-  The left stick's forward axis steps a box's half length and its right
-  axis its half width, one step a lean; a sphere grows on the forward
+  A box lies on its marker's facing, as Studio draws it and the game
+  scores it. The left stick's forward axis steps the box's half length
+  and its right axis its half width while the monitor looks more along
+  the marker's facing than across it, and the other way round while it
+  looks across, one step a lean; a sphere grows on the forward
   axis alone. X types a box's **Half length**, **Half width**, **Below**
   and **Above**, and a sphere's **Radius**: a sphere has no height, so
   it sets the heights aside and the shape after it takes them back.

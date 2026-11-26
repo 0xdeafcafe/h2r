@@ -145,3 +145,20 @@ fn a_record_writes_a_spheres_heights_as_zero_and_refuses_a_bad_box() {
         Err(record::RecordError::Area(_))
     ));
 }
+
+#[test]
+fn a_box_turned_onto_the_worlds_axes_holds_what_the_turned_box_holds() {
+    let boxed = Area::boxed([3.0, 1.0]);
+    let yaw = 0.6;
+    let flat = boxed.turned(yaw);
+    assert!(matches!(&flat.shape, Shape::Path(points) if points.len() == 4));
+    assert_eq!((flat.below, flat.above), (boxed.below, boxed.above));
+    let (s, c) = yaw.sin_cos();
+    for (x, y) in [(0.0, 0.0), (2.9, 0.9), (-2.9, -0.9), (3.1, 0.0), (0.0, 1.1), (2.5, -1.2)] {
+        let p = at(x * c - y * s, x * s + y * c, 0.0);
+        assert_eq!(flat.contains(HERE, p), boxed.contains_turned(HERE, yaw, p), "{x} {y}");
+    }
+    // Any other shape is itself.
+    assert_eq!(Area::sphere(2.0).turned(yaw), Area::sphere(2.0));
+    assert_eq!(Area::default().turned(yaw), Area::default());
+}

@@ -468,6 +468,7 @@ fn wall(zone: u32, team: Option<u8>, at: [f32; 3]) -> Wall {
         name: format!("zone:{zone:x}"),
         team,
         at,
+        yaw: 0.0,
         area: Area::default(),
     }
 }
@@ -753,4 +754,42 @@ fn the_play_form_draws_only_the_play_parts_and_a_plate_only_where_play_has_one()
     assert_eq!(report.markers[1].plate_scale, None, "a capture plate has no sign in play");
     assert_eq!(report.markers[2].plate_scale, Some(1.0), "a territory's sign is in play");
     assert!(report.markers.iter().all(|m| m.form == Form::Play));
+}
+
+#[test]
+fn a_box_area_draws_on_its_markers_facing_and_any_other_area_on_the_worlds_axes() {
+    let things = [flag(0, 10, 0, [0.; 3]), flag(1, 10, 0, [20., 0., 0.])];
+    let boxed = Area::boxed([2.0, 0.5]);
+    let areas: BTreeMap<Endpoint, forge_doc::Area> = [
+        (things[0].id.identity(), forge_doc::Area::try_from(&boxed).unwrap()),
+        (things[1].id.identity(), forge_doc::Area::try_from(&Area::radius(2.0)).unwrap()),
+    ]
+    .into();
+    let mut f = facts(&things);
+    f.areas = &areas;
+    let got = entries(&f);
+    // `flag` faces 0.5 rad.
+    assert!((got[0].place.forward[0] - 0.5f32.cos()).abs() < 1e-6);
+    assert!((got[0].place.forward[1] - 0.5f32.sin()).abs() < 1e-6);
+    assert_eq!(got[1].place.forward, [1.0, 0.0, 0.0]);
+    // The drawn box's floor corners are the ones contains_turned holds.
+    let (groups, _) = draw(&got[..1], [&None, &None], None, &Palette::default(), BUDGET);
+    let floor = groups[0]
+        .edges
+        .iter()
+        .flatten()
+        .map(|p| p[2])
+        .fold(f32::INFINITY, f32::min);
+    let corners: Vec<[f32; 3]> = groups[0]
+        .edges
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|p| (p[2] - floor).abs() < 1e-4)
+        .collect();
+    assert!(!corners.is_empty());
+    for c in &corners {
+        assert!(boxed.contains_turned([0.; 3], 0.5, [c[0], c[1], 0.0]), "{c:?}");
+        assert!(!boxed.contains_turned([0.; 3], 0.5, [c[0] * 1.05, c[1] * 1.05, 0.0]), "{c:?}");
+    }
 }

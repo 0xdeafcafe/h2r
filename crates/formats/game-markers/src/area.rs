@@ -414,6 +414,27 @@ impl Area {
         }
     }
 
+    /// The area of a marker facing `yaw` on the world's axes, for a reader
+    /// that tests with [`Area::contains`]: a box becomes the path through
+    /// its four corners turned by `yaw`, which holds the floor
+    /// [`Area::contains_turned`] holds at `yaw`; any other shape is itself.
+    pub fn turned(&self, yaw: f32) -> Area {
+        let Shape::Box { .. } = self.shape else {
+            return self.clone();
+        };
+        let (s, c) = yaw.sin_cos();
+        Area {
+            shape: Shape::Path(
+                self.outline()
+                    .into_iter()
+                    .map(|[x, y]| [x * c - y * s, x * s + y * c])
+                    .collect(),
+            ),
+            below: self.below,
+            above: self.above,
+        }
+    }
+
     /// The middle of the area of a marker at `centre`: the marker across
     /// the floor for a radius or a box, the marker itself for a sphere, the mean of a path's points, halfway
     /// between the heights.

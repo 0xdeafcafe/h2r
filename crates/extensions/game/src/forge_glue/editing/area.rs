@@ -44,6 +44,8 @@ struct Drag {
 pub(super) struct Draft {
     pub id: Endpoint,
     pub centre: [f32; 3],
+    /// The marker's facing, which a box turns with.
+    pub yaw: f32,
     pub area: Area,
     /// The radius a path or a box left, for the shape after it.
     radius: f32,
@@ -63,7 +65,7 @@ pub(super) enum Next {
 }
 
 impl Draft {
-    fn new(id: Endpoint, centre: [f32; 3], area: Area) -> Self {
+    fn new(id: Endpoint, centre: [f32; 3], yaw: f32, area: Area) -> Self {
         let radius = match area.shape {
             Shape::Radius(r) | Shape::Sphere(r) => r,
             _ => area.equal_floor_radius().unwrap_or(game_markers::area::DEFAULT_RADIUS),
@@ -75,6 +77,7 @@ impl Draft {
         Self {
             id,
             centre,
+            yaw,
             area,
             radius,
             heights,
@@ -198,9 +201,19 @@ impl Draft {
     }
 
     /// The left stick grows a circle and a sphere on its forward axis,
-    /// and a box on both: forward its half length along x, right its
-    /// half width along y. Each lean is one `step`.
-    fn grow(&mut self, movement: [f32; 3], step: f32, seconds: f32) -> Result<(), String> {
+    /// and a box on both. A box turns with its marker, so each stick axis
+    /// steps the box's axis nearer to it as the monitor `look`s (its yaw):
+    /// forward the half length along the marker's facing and right the
+    /// half width while the monitor looks more along the facing than
+    /// across it, the other way round while it looks across. Each lean is
+    /// one `step`.
+    fn grow(
+        &mut self,
+        movement: [f32; 3],
+        step: f32,
+        seconds: f32,
+        look: Option<f32>,
+    ) -> Result<(), String> {
         let forward = self.lean(1, movement[1], seconds) * step;
         match self.area.shape.clone() {
             Shape::Radius(r) if forward != 0. => {
@@ -214,9 +227,14 @@ impl Draft {
                 if forward == 0. && right == 0. {
                     return Ok(());
                 }
+                let across = look.is_some_and(|look| {
+                    let (s, c) = (look - self.yaw).sin_cos();
+                    s.abs() > c.abs()
+                });
+                let (length, width) = if across { (right, forward) } else { (forward, right) };
                 self.change(|area| {
                     area.shape = Shape::Box {
-                        half: [half[0] + forward, half[1] + right],
+                        half: [half[0] + length, half[1] + width],
                     }
                 })
             }
@@ -317,7 +335,8 @@ impl Draft {
             action => match self.area.shape {
                 Shape::Radius(_) | Shape::Box { .. } | Shape::Sphere(_) => {
                     let step = if step > 0. { step } else { 0.25 };
-                    self.grow(input.movement, step, seconds)?;
+                    let look = camera.as_ref().map(|camera| camera.yaw);
+                    self.grow(input.movement, step, seconds, look)?;
                     // The axes that size the shape do not fly the monitor.
                     let right = match self.area.shape {
                         Shape::Box { .. } => 0.,
@@ -390,7 +409,12 @@ impl Editor {
             .map(forge_doc::Area::marker_area)
             .unwrap_or(default);
         self.tool.clear_selection();
-        self.area = Some(Draft::new(thing.id, thing.frame.position, area));
+        self.area = Some(Draft::new(
+            thing.id,
+            thing.frame.position,
+            thing.frame.rotation[0],
+            area,
+        ));
         Ok(())
     }
 

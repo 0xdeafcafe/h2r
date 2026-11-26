@@ -22,11 +22,12 @@ pub fn of(shown: &[(u32, Option<u8>)], zones: &Zones) -> Vec<Wall> {
     shown
         .iter()
         .filter_map(|&(zone, team)| {
-            let Shape::Area { at, area } = &zones.get(zone)?.shape;
+            let Shape::Area { at, yaw, area } = &zones.get(zone)?.shape;
             Some(Wall {
                 name: format!("zone:{zone:x}"),
                 team,
                 at: *at,
+                yaw: *yaw,
                 area: area.clone(),
             })
         })

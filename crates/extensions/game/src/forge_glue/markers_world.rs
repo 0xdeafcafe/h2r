@@ -32,7 +32,8 @@ use forge::tool::{Show, in_game};
 use forge::{Endpoint, GroundProblem, PlacedMarker, Thing, ThingKind, Value};
 use game_markers::form::{EDIT_ALPHA, PLATE, icon_scale};
 use game_markers::{
-    Area, Form, Item, Kind, LINE_ALPHA, Marker, Mesh, Palette, Part, Place, SpawnUse, Tint, Tri,
+    Area, Form, Item, Kind, LINE_ALPHA, Marker, Mesh, Palette, Part, Place, Shape, SpawnUse, Tint,
+    Tri,
 };
 use serde_json::{Value as Json, json};
 
@@ -164,6 +165,25 @@ fn label_of(kind: &Kind, team: Option<u8>, number: Option<i32>) -> String {
     }
 }
 
+/// Where a marker of `kind` at `at` facing `yaw` stands: a box area turns
+/// with its marker, as Studio draws it and `Area::contains_turned` scores
+/// it; any other area (a circle, a sphere, a path, whose points are
+/// offsets on the world's axes) lies on the world's axes; a kind with no
+/// area faces `yaw`.
+pub fn place_of(kind: &Kind, at: [f32; 3], yaw: f32) -> Place {
+    match kind.area() {
+        Some(area) => area_place(area, at, yaw),
+        None => Place::facing(at, yaw),
+    }
+}
+
+fn area_place(area: &Area, at: [f32; 3], yaw: f32) -> Place {
+    match area.shape {
+        Shape::Box { .. } => Place::facing(at, yaw),
+        _ => Place::facing(at, 0.0),
+    }
+}
+
 /// The number a kind's plate shows of its flag's `number` (from 0): one
 /// more, and a hill with none is Hill 1, as its label says.
 fn plate_number(kind: &Kind, number: Option<i32>) -> Option<u32> {
@@ -193,7 +213,7 @@ fn entry(
         id,
         name,
         label: label_of(&kind, team, number),
-        place: Place::facing(at, if kind.area().is_some() { 0.0 } else { yaw }),
+        place: place_of(&kind, at, yaw),
         number: plate_number(&kind, number),
         marker: Marker::new(kind, team),
         tone,
@@ -399,6 +419,8 @@ pub struct Wall {
     pub name: String,
     pub team: Option<u8>,
     pub at: [f32; 3],
+    /// The centre marker's facing, which turns a box.
+    pub yaw: f32,
     pub area: Area,
 }
 
@@ -527,7 +549,7 @@ pub fn draw_walls(walls: &[Wall], eye: Option<[f32; 3]>, palette: &Palette) -> (
             continue;
         }
         let colour = palette.colour(Tint::Team, w.team);
-        let mesh = Kind::wall(&w.area, colour).placed(&Place::facing(w.at, 0.0));
+        let mesh = Kind::wall(&w.area, colour).placed(&area_place(&w.area, w.at, w.yaw));
         let top = mesh.bounds().map_or(w.at[2], |(_, max)| max[2]);
         let anchor = [w.at[0], w.at[1], top];
         groups.push(Group {

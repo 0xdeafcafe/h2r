@@ -5111,8 +5111,11 @@ the committed area.
 | `back` | Cancel | Cancel | Cancel | Cancel |
 
 In a radius or sphere draft, the forward axis steps the radius; in a box
-draft, the forward axis steps the half length and the right axis the
-half width, one step a lean and again every 0.18 s while held. In a path
+draft, which lies on the marker's facing, each axis steps the box's
+axis nearer to it as the monitor looks: forward the half length and
+right the half width while the monitor's yaw is within 45 degrees of the
+marker's facing (or its back), the other way round otherwise; one step a
+lean and again every 0.18 s while held. In a path
 draft, use movement and look to aim at the floor.
 `forge.input` acknowledges the queued input. Read `forge.status.notice`
 for geometry refusals and `forge.log` for the area op written on save.
@@ -5398,8 +5401,10 @@ census method, since the host's census is the loaded game's.
 placement id `zone.id` reads), `label` and `number`, `shape` (the step
 of the zone order that made it: the flag's own `area`, a hill's
 `corners`, or the `default` cylinder), `area` in plain numbers
-(`{radius, below, above}` or `{path: [[x, y], ...], below, above}`, a
-path in offsets from `at`), `at` (the centre marker in world units) and
+(`{radius, below, above}`, `{box: [half length, half width], below,
+above, yaw}`, `{sphere, below, above}` or `{path: [[x, y], ...], below,
+above}`, a path in offsets from `at` on the world's axes, a box turned
+`yaw` radians with its flag, which is how it scores), `at` (the centre marker in world units) and
 `reports` (this zone reports its enters and leaves; a hill's other
 corners name the same zone and report none)
 ([gametype-markers.md](../game/gametype-markers.md), "In a script";
