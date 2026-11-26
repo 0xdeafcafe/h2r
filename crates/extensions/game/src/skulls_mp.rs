@@ -401,7 +401,7 @@ pub fn firefight_scope(skull: ::firefight::Skull) -> FirefightScope {
             FirefightScope::HostAi
         }
         S::Famine => FirefightScope::HostAiAndShared(Reach::Simulation),
-        S::Blind => FirefightScope::Shared(Reach::Local),
+        S::BlackEye => FirefightScope::Shared(Reach::Simulation),
         S::LowGravity => FirefightScope::Shared(Reach::Simulation),
     }
 }

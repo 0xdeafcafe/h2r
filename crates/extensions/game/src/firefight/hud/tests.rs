@@ -38,8 +38,9 @@ fn small_def(shared: bool, rounds: usize) -> Def {
         format: FORMAT,
         name: "Hud".into(),
         teams: 1,
+        set: ::firefight::SetRules::finite(),
         // Each skull is switched on by one round only.
-        rounds: [Skull::Famine, Skull::Blind, Skull::Ghost, Skull::Catch, Skull::Mythic]
+        rounds: [Skull::Famine, Skull::BlackEye, Skull::Ghost, Skull::Catch, Skull::Mythic]
             .into_iter()
             .take(rounds)
             .map(|skull| Round {
@@ -105,6 +106,7 @@ fn seen(players: &[u8], alive: [u16; SQUAD_SLOTS], kills: Vec<Kill>) -> Observed
                 seen: false,
                 distance: 100,
                 team_distance: [100, 100],
+                roles: ::firefight::ALL_ZONE_ROLES,
             };
             3
         ],
@@ -584,7 +586,7 @@ fn the_skulls_on_ride_in_the_blob() {
         Skull::Assassins
         | Skull::Thunderstorm
         | Skull::Famine
-        | Skull::Blind
+        | Skull::BlackEye
         | Skull::Ghost
         | Skull::Catch
         | Skull::Mythic

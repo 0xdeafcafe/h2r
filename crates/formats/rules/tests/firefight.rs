@@ -15,8 +15,11 @@ const player_kill_points = 0
 const assist_share = 500
 const largest_roster = 1
 const waves_per_round = 5
-table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int) = [
-    ("fixture", 0, 1, 1, 1, 2),
+const endless = 0
+const set_scale = 0
+const set_skull_count = 0
+table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [
+    ("fixture", 0, 1, 1, 1, 2, 0),
 ]
 table waves: (first: int, count: int, gap: int) = [
     (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1),
@@ -27,9 +30,10 @@ table round_data: (s0: int, s1: int, s2: int, s3: int, s4: int, s5: int, s6: int
 table actor_caps: (actors: int) = [(1)]
 table class_points: (kind: Class, value: int) = [("fixture", 7)]
 table difficulties: (multiplier: int) = [(1000), (1500), (1000), (1000)]
-table skull_data: (id: int, bit: int, multiplier: int) = [
-    (0, 1, 1500), (1, 2, 1000), (2, 4, 1000), (3, 8, 1000), (4, 16, 1000),
-    (5, 32, 1000), (6, 64, 1000), (7, 128, 1000), (8, 256, 1000),
+table set_skulls: (which: int) = [(-1)]
+table skull_data: (id: int, bit: int, multiplier: int, scheduled: int) = [
+    (0, 1, 1500, 1), (1, 2, 1000, 0), (2, 4, 1000, 0), (3, 8, 1000, 0), (4, 16, 1000, 0),
+    (5, 32, 1000, 0), (6, 64, 1000, 0), (7, 128, 1000, 0), (8, 256, 1000, 0),
 ]
 "#;
 
@@ -66,6 +70,7 @@ impl Game for World {
     fn read(&mut self, call: &Call) -> i32 {
         match (call.entry.id, call.args.as_slice()) {
             (id::ALIVE, _) => 1,
+            (id::ZONE_HAS_ROLE, _) => 1,
             (id::SQUAD_ALIVE, [Arg::Squad(0)]) => self.observed_squad,
             _ => 0,
         }

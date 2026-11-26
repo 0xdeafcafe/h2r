@@ -12,7 +12,7 @@ option difficulty: int 0..3 = 1 "Difficulty"
 option skull_assassins: bool = false
 option skull_thunderstorm: bool = false
 option skull_famine: bool = false
-option skull_blind: bool = false
+option skull_black_eye: bool = false
 option skull_ghost: bool = false
 option skull_catch: bool = false
 option skull_mythic: bool = false
@@ -39,6 +39,7 @@ const slot_timeout = 3s
 global var started: bool = false
 global var phase: int = warmup
 global var phase_tick: int = 0
+global var set_index: int = 0
 global var round: int = 0
 global var wave: int = 0
 global var next_squad: int = 0
@@ -48,6 +49,8 @@ global var pool_1: int = second_pool
 global var score_0: int = 0
 global var score_1: int = 0
 global var skulls: int = 0
+// The skulls the match began with: a new set leaves them on.
+global var base_skulls: int = 0
 
 player var registered: bool = false
 player var remaining_lives: int = start_pool
@@ -119,12 +122,13 @@ on init {
     if skull_assassins { skulls = skulls + 1 }
     if skull_thunderstorm { skulls = skulls + 2 }
     if skull_famine { skulls = skulls + 4 }
-    if skull_blind { skulls = skulls + 8 }
+    if skull_black_eye { skulls = skulls + 8 }
     if skull_ghost { skulls = skulls + 16 }
     if skull_catch { skulls = skulls + 32 }
     if skull_mythic { skulls = skulls + 64 }
     if skull_angry { skulls = skulls + 128 }
     if skull_low_gravity { skulls = skulls + 256 }
+    base_skulls = skulls
 }
 
 on join(p) {
@@ -377,6 +381,12 @@ fn end_wave(tick: int, here_0: bool, here_1: bool) {
         round = round + 1
         wave = 0
         round_bonus()
+    } else if endless == 1 {
+        // The next set begins; the game ends only when the team is out.
+        set_index = set_index + 1
+        round = 0
+        wave = 0
+        round_bonus()
     } else {
         if team_count == 1 { ff_finish(true) }
         else {
@@ -403,8 +413,36 @@ fn enable_skull(index: int) {
     }
 }
 
+// A round skull the set switched on goes off at a new set, unless the
+// match began with it.
+fn reset_skull(index: int) {
+    let skull = skull_data[index]
+    if skull.scheduled == 1 and skulls / skull.bit % 2 == 1 and base_skulls / skull.bit % 2 == 0 {
+        skulls = skulls - skull.bit
+        ff_skull(skull.id, false)
+    }
+}
+
+// Sets 2, 3 and 4 add one set skull each, and it stays.
+fn begin_set() {
+    ff_set(set_index)
+    if set_index > 0 {
+        reset_skull(0)
+        reset_skull(1)
+        reset_skull(2)
+        reset_skull(3)
+        reset_skull(4)
+        reset_skull(5)
+        reset_skull(6)
+        reset_skull(7)
+        reset_skull(8)
+        if set_index - 1 < set_skull_count { enable_skull(set_skulls[set_index - 1].which) }
+    }
+}
+
 fn start_wave() {
     if wave == 0 {
+        if round == 0 and endless == 1 { begin_set() }
         ff_round(round)
         let scheduled = round_data[round]
         enable_skull(scheduled.s0)
@@ -425,17 +463,19 @@ fn start_wave() {
 
 // Prefer a hidden authored zone. Otherwise pick from the farther half
 // of hidden zones (or all zones if exposed), with ties in kit order.
-fn pick_zone(preferred: int, target: team, other: team) {
+// A role (a bit mask; 0 for any) keeps only the zones that carry it.
+fn pick_zone(preferred: int, role: int, target: team, other: team) {
     chosen_zone = -1
     cursor = 0
-    let all_exposed = count(ff_drop z where not zone_seen(z)) == 0
+    let all_exposed = count(ff_drop z where zone_has_role(z, role) and not zone_seen(z)) == 0
     candidate_count = 0
     near_count = 0
     for each ff_drop z {
         let hidden = not zone_seen(z)
+        let fits = zone_has_role(z, role)
         z.zone_index = cursor
-        z.zone_candidate = all_exposed or hidden
-        if hidden and cursor == preferred { chosen_zone = cursor }
+        z.zone_candidate = fits and (all_exposed or hidden)
+        if hidden and fits and cursor == preferred { chosen_zone = cursor }
         if z.zone_candidate {
             candidate_count = candidate_count + 1
             if team_count == 2 {
@@ -470,7 +510,9 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
     if next_squad < current.count {
         if let s = chosen_slot {
             let entry = squads[current.first + next_squad]
-            let size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
+            let base_size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
+            // Each set grows the squads by set_scale thousandths, up to the cap.
+            let size = min(base_size * (1000 + set_scale * set_index) / 1000, cap)
             if live_count + size <= cap {
                 cursor = 0
                 if team_count == 2 {
@@ -489,7 +531,7 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     target_team = team 1
                     other_team = team 0
                 }
-                pick_zone(entry.preferred, target_team, other_team)
+                pick_zone(entry.preferred, entry.zone_role, target_team, other_team)
                 if chosen_zone >= 0 {
                     let id = squad(s.slot_index)
                     s.squad_state = placed

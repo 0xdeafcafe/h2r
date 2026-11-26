@@ -62,6 +62,9 @@ pub struct ZoneSeen {
     /// Distance from each Firefight team's players' centre, in the same
     /// unit; `u32::MAX` for a team with no unit. Read with two teams only.
     pub team_distance: [u32; MAX_TEAMS],
+    /// The roles the kit tags the zone with ([`crate::ZoneRole::bit`]); a
+    /// zone of an auto-built kit has them all ([`crate::ALL_ZONE_ROLES`]).
+    pub roles: u8,
 }
 
 /// A player killed by a player (`SimEvent` kill of a player's unit).
@@ -107,7 +110,13 @@ pub enum Command {
     EraseSquad {
         slot: u8,
     },
-    /// The zero-based round starts.
+    /// The zero-based set starts (endless definitions only). Right after it
+    /// the previous set's round skulls switch off (the match's own stay) and
+    /// the set's skull switches on, then its first `Round` follows.
+    Set {
+        index: u8,
+    },
+    /// The zero-based round of the current set starts.
     Round {
         index: u8,
     },
@@ -154,7 +163,7 @@ pub enum Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
-    /// The last round's boss wave was cleared (one team).
+    /// The last round's boss wave was cleared (one team, finite set).
     Won,
     /// Every player was dead with no lives left (one team, or the only
     /// team present of two).
@@ -223,6 +232,8 @@ pub struct PlayerState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub phase: Phase,
+    /// The zero-based set (always 0 in a finite definition).
+    pub set: u8,
     pub round: u8,
     pub wave: u8,
     /// The next squad of the wave to place; the rest is the reserve.

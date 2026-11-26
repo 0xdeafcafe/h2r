@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Limits, Refusal, Result, Sha256, validate, wire};
 
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 pub const MAX_DOC_BYTES: usize = 64 * 1024;
 pub const MAX_PLAYERS: u8 = 16;
 pub const MULTIPLIER_SCALE: u16 = 1_000;
@@ -17,6 +17,12 @@ pub(crate) const WAVES_PER_ROUND: usize = 5;
 pub(crate) const MAX_SQUADS: usize = 16;
 pub(crate) const MAX_CLASSES: usize = 32;
 pub(crate) const MAX_SKULLS: usize = 9;
+/// Rounds in a set that repeats: Firefight's own count.
+pub const SET_ROUNDS: usize = 3;
+/// Set skulls a definition lists: one for each of sets 2 to 4.
+pub(crate) const MAX_SET_SKULLS: usize = 3;
+/// The most a set may scale its squads by, in thousandths per set.
+pub const MAX_SET_SCALE: u16 = 500;
 const MAX_CAPS: usize = MAX_PLAYERS as usize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +35,9 @@ pub struct Def {
     pub teams: u8,
     #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_ROUNDS>")]
     pub rounds: Vec<Round>,
+    /// What happens after the last round: the game ends, or the next set
+    /// begins.
+    pub set: SetRules,
     pub lives: Lives,
     pub caps: Caps,
     pub scoring: Scoring,
@@ -57,6 +66,36 @@ impl Def {
     /// SHA-256 of the entire canonical definition, including its version.
     pub fn id(&self) -> Result<Sha256> {
         Ok(Sha256::of(self.canonical_json()?.as_bytes()))
+    }
+}
+
+/// Sets: `rounds` describes one set. A finite definition plays it once and
+/// ends `Won`; an endless one plays it again and again until the team is
+/// out, and ends only `Lost`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetRules {
+    /// The next set begins when the last round's last wave is cleared. Needs
+    /// one team and [`SET_ROUNDS`] rounds.
+    pub endless: bool,
+    /// Squad counts grow by this many thousandths for each set played
+    /// (set 3 is 2 x `scale` over set 1), capped by the actor cap.
+    pub scale: u16,
+    /// Skulls that arrive at the start of sets 2, 3 and 4, in that order, and
+    /// stay on. None arrives after the list ends. Round skulls (`skulls_on`)
+    /// switch off when a new set begins; these do not.
+    #[serde(deserialize_with = "wire::bounded_seq::<_, _, MAX_SET_SKULLS>")]
+    pub skulls: Vec<Skull>,
+}
+
+impl SetRules {
+    /// One set, played once: what a finite definition says.
+    pub fn finite() -> Self {
+        Self {
+            endless: false,
+            scale: 0,
+            skulls: Vec::new(),
+        }
     }
 }
 
@@ -112,7 +151,35 @@ pub enum Drop {
     Edge,
     /// Prefer this zero-based kit zone if available and unseen.
     PreferZone(u8),
+    /// Pick among the kit zones that carry this role, unseen or farther
+    /// half first as for `Edge`.
+    Role(ZoneRole),
 }
+
+/// What a kit zone is for: the roles it carries, written with the zone
+/// (`ZoneSeen::roles`). Stage-one `line` squads are Elite tier 0-1,
+/// `flank` tier 1-2, `heavy` tier 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneRole {
+    Line,
+    Flank,
+    Heavy,
+}
+
+impl ZoneRole {
+    /// The bit of `ZoneSeen::roles` and of the script's role column.
+    pub const fn bit(self) -> u8 {
+        match self {
+            Self::Line => 1,
+            Self::Flank => 2,
+            Self::Heavy => 4,
+        }
+    }
+}
+
+/// Every role bit: a zone of an auto-built kit carries all of them.
+pub const ALL_ZONE_ROLES: u8 = 0b111;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -181,8 +248,8 @@ pub enum Skull {
     Assassins = 2,
     Thunderstorm = 3,
     Famine = 4,
-    Blind = 6,
     Ghost = 7,
+    BlackEye = 8,
     Catch = 9,
     Mythic = 12,
     Angry = 13,

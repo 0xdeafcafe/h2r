@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SKULLS,
-    MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Result, Scoring, WAVES_PER_ROUND, Wave,
-    wire,
+    Caps, Def, Drop, FORMAT, MAX_CLASSES, MAX_DOC_BYTES, MAX_PLAYERS, MAX_ROUNDS, MAX_SET_SCALE,
+    MAX_SET_SKULLS, MAX_SKULLS, MAX_SQUADS, MAX_TEAMS, MULTIPLIER_SCALE, Refusal, Result,
+    SET_ROUNDS, Scoring, WAVES_PER_ROUND, Wave, wire,
 };
 
 /// The provisional host budget in the AI networking design, by inclusive
@@ -105,6 +105,43 @@ pub(crate) fn definition(def: &Def) -> Result<()> {
                     });
                 }
             }
+        }
+    }
+    sets(def, &enabled)
+}
+
+/// Endless play and the set skulls: an endless definition has one team
+/// and a set of [`SET_ROUNDS`] rounds; a set skull is listed once, is not a
+/// round skull (a new set would switch it off again), and only an endless
+/// definition has any.
+fn sets(def: &Def, round_skulls: &BTreeSet<crate::Skull>) -> Result<()> {
+    let set = &def.set;
+    wire::check_size(set.skulls.len(), "set skulls", MAX_SET_SKULLS)?;
+    if set.scale > MAX_SET_SCALE {
+        return Err(invalid("scale", "must be in 0..=500 thousandths per set"));
+    }
+    if !set.endless {
+        if set.scale != 0 || !set.skulls.is_empty() {
+            return Err(invalid(
+                "set",
+                "a scale and set skulls need an endless definition",
+            ));
+        }
+        return Ok(());
+    }
+    if def.teams != 1 {
+        return Err(invalid("set", "an endless definition has one team"));
+    }
+    if def.rounds.len() != SET_ROUNDS {
+        return Err(invalid("rounds", "a set is three rounds"));
+    }
+    let mut arriving = BTreeSet::new();
+    for &skull in &set.skulls {
+        if round_skulls.contains(&skull) || !arriving.insert(skull) {
+            return Err(invalid(
+                "set skulls",
+                "a set skull is listed once and is not a round skull",
+            ));
         }
     }
     Ok(())

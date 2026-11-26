@@ -32,6 +32,7 @@ fn set_of(name: &str, rounds: usize, squads: &[SquadSpec]) -> waves::Def {
         format: firefight::FORMAT,
         name: name.into(),
         teams: 1,
+        set: firefight::SetRules::finite(),
         rounds: (0..rounds)
             .map(|_| Round {
                 waves: (0..5)
