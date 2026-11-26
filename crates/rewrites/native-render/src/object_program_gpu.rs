@@ -31,7 +31,10 @@ use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_pas
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
-use frame_scene::{AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, Subparts};
+use frame_scene::{
+    AuxDepth, Defaults, FrameScene, Instance, LayerItem, LayerOwner, LayerPass, Lighting, PartDraw, PartFlags, StructureParameters,
+    Subparts,
+};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// Shader state for the object-layer prefix. The hardware row is the drained device's;
@@ -1212,12 +1215,17 @@ impl LitObjects {
     /// the scene's parts draw theirs ([`plan_item_part`]), an animated
     /// pass sampled at `time` (the render clock). A record toggling the
     /// auxiliary state draws with `aux`, what the toggle sets for the
-    /// first person's view, and refuses without it.
+    /// first person's view, and refuses without it. A record whose
+    /// shader's prologue uploads the structure's parameter block
+    /// (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with
+    /// `structure`, the upload, and refuses without it
+    /// ([`with_structure_parameters`]).
     pub fn plan_item(
         &self, index: u32, frame: &ObjectFrame, item: &ItemDraw, entry: &EntryStates, time: Option<f64>,
-        aux: Option<&AuxDepth>,
+        aux: Option<&AuxDepth>, structure: Option<&StructureParameters>,
     ) -> Result<PlannedDraw, String> {
-        let inputs = PartInputs { time, ..item_inputs(frame, item, aux.is_some())? };
+        let structure = uploaded(item.flags, structure)?;
+        let inputs = PartInputs { time, structure, ..item_inputs(frame, item, aux.is_some())? };
         let mut draw = self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)?;
         draw.aux_depth = toggled(item.flags, aux);
         Ok(draw)
@@ -1230,12 +1238,16 @@ impl LitObjects {
     /// [`Self::plan_scene`] for a part of a view of the scene: the
     /// instance's lighting and defaults, the part's key and its rows, all
     /// as extraction copied them, an animated pass sampled at `time` (the
-    /// render clock).
+    /// render clock); a part whose shader's prologue uploads the
+    /// structure's parameter block with `structure`, its view's
+    /// ([`with_structure_parameters`]).
     pub fn plan_part_of(
         &self, index: u32, scene: &FrameScene, instance: &Instance, part: &PartDraw, entry: &EntryStates,
-        time: Option<f64>,
+        time: Option<f64>, structure: Option<&StructureParameters>,
     ) -> Result<PlannedDraw, String> {
+        let structure = uploaded(part.flags, structure)?;
         let inputs = PartInputs {
+            structure,
             instance: instance.key,
             lighting: instance.lighting.as_ref(),
             defaults: instance.defaults,
@@ -1293,10 +1305,12 @@ impl LitObjects {
                 item.key.shader, item.key.section, item.key.part
             ));
         }
-        let aux = scene.view_of_pass(pass).and_then(|v| v.aux_depth);
+        let view = scene.view_of_pass(pass);
+        let aux = view.and_then(|v| v.aux_depth);
+        let structure = view.and_then(|v| v.structure_parameters);
         plan_layer_part_at_entry(
             &m.layers, at, &|program| m.programs.get(program).map(|p| &p.pass), instance, layer, rows, pass, item, &entry.states,
-            Some(entry.c18), aux.as_ref(),
+            Some(entry.c18), aux.as_ref(), structure.as_ref(),
         )
     }
 
@@ -1723,7 +1737,7 @@ pub fn plan_layer_part<'a>(
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
 ) -> Result<Vec<PlannedDraw>, String> {
-    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None, None)
+    plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1731,11 +1745,12 @@ fn plan_layer_part_at_entry<'a>(
     layers: &[LitLayerPart], at: Option<usize>,
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
-    c18: Option<MaterialConstant18>, aux: Option<&AuxDepth>,
+    c18: Option<MaterialConstant18>, aux: Option<&AuxDepth>, structure: Option<&StructureParameters>,
 ) -> Result<Vec<PlannedDraw>, String> {
     if let Some(why) = item.refusal {
         return Err(why.name().into());
     }
+    let structure = uploaded(item.flags, structure)?;
     if item.prt.is_some() && layer != PRT_LAYER {
         return Err(format!("a PRT stream in layer {layer}"));
     }
@@ -1802,7 +1817,8 @@ fn plan_layer_part_at_entry<'a>(
             let end = (first + prt.constants.len()).min(vertex.constants.len());
             vertex.constants[first..end].copy_from_slice(&prt.constants[..end - first]);
         }
-        let pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
+        let mut pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
+        with_structure_parameters(compiled, structure, &mut vertex, &mut pixel)?;
         let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
         let imp = &compiled.implementation;
         let mut states = std::borrow::Cow::Borrowed(&imp.render_states);
@@ -1853,6 +1869,9 @@ struct PartInputs<'a> {
     /// The render clock an animated pass samples its constants at
     /// ([`animated_blocks`]); `None` refuses one.
     time: Option<f64>,
+    /// What the part's prologue uploads from the structure's parameter
+    /// block; `None` when it uploads nothing ([`uploaded`]).
+    structure: Option<&'a StructureParameters>,
 }
 
 impl<'a> PartInputs<'a> {
@@ -1864,8 +1883,57 @@ impl<'a> PartInputs<'a> {
             subparts: None,
             strip: None,
             time: None,
+            structure: None,
         }
     }
+}
+
+/// What the prologue of a part with `flags` uploads: `structure` with
+/// [`PartFlags::STRUCTURE_PARAMETERS`], refused when that is not given,
+/// nothing without the flag.
+fn uploaded(flags: PartFlags, structure: Option<&StructureParameters>) -> Result<Option<&StructureParameters>, String> {
+    if !flags.contains(PartFlags::STRUCTURE_PARAMETERS) {
+        return Ok(None);
+    }
+    structure
+        .map(Some)
+        .ok_or_else(|| "the structure's parameter block, whose upload the draw was not given".into())
+}
+
+/// The draw of a pass `compiled` whose prologue uploaded `structure`, the
+/// active structure's parameter block (`0x0003c650`, `0x0003d000`;
+/// `frame_scene::StructureParameters`): the rows of `c[21..25]` its
+/// program reads and its pass does not set ([`ObjectPass::structure_reads`];
+/// the pass's own rows are written after the prologue, so they stay), and
+/// the bump matrices of stages 1 to 3 its pixel shader's bump stages take.
+/// The fog colour the upload sets is the device's at the call, which the
+/// host requires to hold it. Without an upload a program reading those
+/// rows refuses: no other draw sets them.
+pub fn with_structure_parameters(
+    compiled: &ObjectPass, structure: Option<&StructureParameters>, vertex: &mut VertexUniforms, pixel: &mut PixelUniforms,
+) -> Result<(), String> {
+    let first = StructureParameters::FIRST_CONSTANT;
+    let Some(p) = structure else {
+        if compiled.structure_reads != 0 {
+            let read = (0..5usize).find(|n| compiled.structure_reads >> n & 1 != 0).unwrap_or(0);
+            return Err(format!(
+                "vertex program reads c[{}], which only a flagged shader's upload of the structure's parameter block sets",
+                first + read
+            ));
+        }
+        return Ok(());
+    };
+    for (n, row) in p.constants.iter().enumerate() {
+        if compiled.structure_reads >> n & 1 != 0 {
+            vertex.constants[first + n] = row.map(f32::from_bits);
+        }
+    }
+    for stage in 1..4 {
+        if let Some(m) = p.bump_matrix(stage) {
+            pixel.bump_mat[stage] = m;
+        }
+    }
+    Ok(())
 }
 
 /// The index ranges a part draws (`whole` its own topology's, `subparts`
@@ -1919,8 +1987,9 @@ fn plan_indexed_part<'a>(
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { layer: None, lighting: frame.lighting, defaults: &defaults, shader: p.shader };
     let (vertex_base, pixel_base) = animated_blocks(pass, frame.time)?;
-    let vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
-    let pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
+    let mut vertex = object_vertex_uniforms(&vertex_base, &pass.implementation, &inputs, rows, p.decompression)?;
+    let mut pixel = object_pixel_uniforms(&pixel_base, &pass.implementation, &inputs)?;
+    with_structure_parameters(pass, frame.structure, &mut vertex, &mut pixel)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
     let resolve = if scene { object_state::resolve_scene } else { object_state::resolve };
     let mut cached = inherited.map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
@@ -2978,6 +3047,47 @@ mod tests {
         }
     }
 
+    /// A synthetic upload of the structure's parameter block: every word
+    /// distinct.
+    fn structure_upload() -> StructureParameters {
+        let f = |v: f32| v.to_bits();
+        StructureParameters {
+            bump_env: std::array::from_fn(|s| std::array::from_fn(|n| f((10 * s + n) as f32 + 0.5))),
+            constants: std::array::from_fn(|r| std::array::from_fn(|n| f((100 + 10 * r + n) as f32))),
+            fog_colour: 0x0012_3456,
+            scratch: [0; 13],
+        }
+    }
+
+    /// The rows of `c[21..25]` a pass's program reads and the pass does not
+    /// set take the upload's; the rest of the block keeps what the pass
+    /// set. Stages 1 to 3 take the upload's bump matrices (`00`, `01`,
+    /// `10`, `11` from states 22, 23, 25, 24). A program reading those
+    /// rows refuses an item without the upload, and one reading none
+    /// draws without it as before.
+    #[test]
+    fn a_flagged_shaders_draw_takes_the_structures_rows_and_bump_matrices() {
+        let mut pass = equal_pass(0);
+        let upload = structure_upload();
+        let (mut vertex, mut pixel) = (VertexUniforms::default(), PixelUniforms::default());
+        vertex.constants[22] = [-1.0; 4];
+        let (before_v, before_p) = (vertex.clone(), pixel);
+        assert!(with_structure_parameters(&pass, None, &mut vertex, &mut pixel).is_ok());
+        assert_eq!((&vertex.constants[..], &pixel.bump_mat), (&before_v.constants[..], &before_p.bump_mat), "nothing to put in");
+        pass.structure_reads = 0b10101;
+        let e = with_structure_parameters(&pass, None, &mut vertex, &mut pixel).unwrap_err();
+        assert!(e.contains("c[21]"), "{e}");
+        with_structure_parameters(&pass, Some(&upload), &mut vertex, &mut pixel).unwrap();
+        assert_eq!(vertex.constants[21], [100.0, 101.0, 102.0, 103.0]);
+        assert_eq!(vertex.constants[22], [-1.0; 4], "a row the pass sets stays");
+        assert_eq!(vertex.constants[23], [120.0, 121.0, 122.0, 123.0]);
+        assert_eq!(vertex.constants[24], [0.0; 4], "a row the program does not read");
+        assert_eq!(vertex.constants[25], [140.0, 141.0, 142.0, 143.0]);
+        assert_eq!(pixel.bump_mat[0], before_p.bump_mat[0], "stage 0 takes none");
+        assert_eq!(pixel.bump_mat[1], [0.5, 1.5, 3.5, 2.5]);
+        assert_eq!(pixel.bump_mat[3], [20.5, 21.5, 23.5, 22.5]);
+    }
+
     /// An opaque implementation `index` of the lit fixture, setting depth
     /// Equal with no writes and leaving the rest (cull, winding, colour
     /// writes) to the device.
@@ -3886,6 +3996,24 @@ mod tests {
                 assert_eq!(d.state, p.state, "{flags:?}: the same state");
             }
         }
+        // A flagged shader whose prologue uploads the structure's
+        // parameter block: refused without the view's upload; with it,
+        // planned as the plain item, its passes' bump matrices of stages
+        // 1 to 3 the upload's (these programs read no row of c[21..25]).
+        let uploading = LayerItem { flags: PartFlags::SHADER_FLAG | PartFlags::STRUCTURE_PARAMETERS, ..item(1) };
+        assert!(plan(Some(0), 7, &seven, &uploading, &e).unwrap_err().contains("parameter block"));
+        let upload = structure_upload();
+        let d = plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, &uploading, &e, None, None, Some(&upload))
+            .unwrap();
+        assert_eq!(d.len(), plain.len());
+        for (d, p) in d.iter().zip(&plain) {
+            assert_eq!((d.implementation, d.program, &d.ranges, &d.state), (p.implementation, p.program, &p.ranges, &p.state));
+            assert_eq!(d.vertex.constants, p.vertex.constants, "no row of c[21..25] read");
+            assert_eq!(d.pixel.bump_mat[0], p.pixel.bump_mat[0]);
+            for stage in 1..4 {
+                assert_eq!(Some(d.pixel.bump_mat[stage]), upload.bump_matrix(stage), "stage {stage}");
+            }
+        }
         let prt = frame_scene::PrtStream { kind: 0x39, stride: 10, data: 0x8000_0000, constants: vec![[0.0; 4]; 2] };
         let streamed = LayerItem { prt: Some(prt), ..item(0) };
         assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
@@ -3901,7 +4029,7 @@ mod tests {
             rest_clip: [2.0, 900.0],
         };
         let with_view = |item: &LayerItem| {
-            plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, item, &e, None, Some(&toggle))
+            plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, item, &e, None, Some(&toggle), None)
         };
         let d = with_view(&aux).unwrap();
         assert_eq!(d.len(), 2);

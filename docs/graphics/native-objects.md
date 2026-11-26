@@ -278,19 +278,37 @@ their addresses.
   not resident), which sets no device state. With its program's flag bit
   20 it calls `0x0003bea0`, which the first time a frame (`0x00509430`
   clear; `0x0002c0f5` clears it) clears the shader cache and copies and
-  binds the structure's target. And when the active structure
-  (`[0x004e0348]`) has a parameter block (`+0x214` above 0, the block at
-  `+0x218`), the prologue runs `0x0003c650` (texture stages and bitmaps)
-  and `0x0003d000` (`c[21..25]` through `SetVertexShaderConstant1` and
-  the fog colour). The part carries `PartFlags::SHADER_FLAG` where none
-  of that sets device state: no parameter block, and in a world layer or
-  the first person's layer 3, whose items' programs are chosen under the
-  layer draw, the frame's target copy made; layer 3's walk refuses
-  program bit 20 itself. A flagged layer-3 record with a structure
-  lightmap index is refused, since the native draw would bind it.
-  Extraction reads no PRT stream for a flagged layer-5 item. The native
-  passes compile only programs whose constants the object pass sets, so
-  none reads `c[21..25]`.
+  binds the structure's target. The part carries
+  `PartFlags::SHADER_FLAG` where the target copy sets nothing: in a
+  world layer or the first person's layer 3, whose items' programs are
+  chosen under the layer draw, the frame's copy made; layer 3's walk
+  refuses program bit 20 itself. A flagged layer-3 record with a
+  structure lightmap index is refused, since the native draw would bind
+  it and the guest's leaves the stage as the device holds it. Extraction
+  reads no PRT stream for a flagged layer-5 item.
+- **The structure's parameter block.** When the active structure
+  (`[0x004e0348]`) has one (`+0x214` above 0), a flagged shader's
+  prologue runs `0x0003c650` and `0x0003d000` on its first element
+  (`[+0x218]`). The first rotates the up vector `[0x004687b0]` by the
+  angle of the view words `0x004b9dac`, `0x004b9db0` (`fpatan`) plus the
+  block's `+0x8c`, stores thirteen words at `0x004c1b9c`, and sets the
+  bump matrices of stages 1 to 3 (`0x003f5e30`) from four of them times
+  `+0x68`, `-(+0x6c)` and `+0x70`. The second sets `c[21..25]`
+  (`0x003f71d0`) and the fog colour (`0x003f5370`, `+0x58` packed by
+  `0x00131ed0`). `engine::render_loop::structure_parameters` computes
+  all of it in the original's order, x87 and SSE steps included.
+  Extraction gives such a part `PartFlags::STRUCTURE_PARAMETERS` and its
+  view the upload (`View::structure_parameters`; the item refuses
+  `object_shader_flag` when it does not compute). An object pass
+  compiles a program reading rows of `c[21..25]` its pass does not set
+  and records them (`ObjectPass::structure_reads`); the draw puts the
+  upload's rows there and its bump matrices into stages 1 to 3
+  (`object_program_gpu::with_structure_parameters`), and an item without
+  the upload refuses such a program. The draw takes the fog colour from
+  the device at the call. The host takes the part only where the device
+  and the engine already hold every word of the upload
+  (`native_objects_glue::structure_at_rest`), so skipping the draws
+  that would run it leaves what running it would.
 - **The item's argument** (`+0xc`) and its `+0x14` and `+0x15` bytes. The
   sorted dispatch passes them to the draw (`0x0003bc7b`..`0x0003bc8d`).
   The argument's high byte is the item's projected size: `0x0004d9c0`
@@ -307,8 +325,10 @@ their addresses.
 
 What still declines, by name: `object_fade` (the device's stipple is on:
 layers 1 and 3 outside view kinds 4 to 7), `object_stipple` (the cached fade or the
-pattern is not what the epilogue leaves), `object_shader_flag` (a
-parameter block, or in layer 3 a structure lightmap index),
+pattern is not what the epilogue leaves), `object_shader_flag` (the
+structure's parameter block's upload does not compute or the device
+and the engine do not hold it, or in layer 3 a structure lightmap
+index),
 `object_shader_flag_target` (the target copy not made yet) and
 `object_argument` (another pass, level or part). In layer 3's walk these
 are `walk_unsupported` (extraction) or `State` (the stipple); in the

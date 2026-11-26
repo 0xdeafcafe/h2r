@@ -13,6 +13,7 @@ use frame_scene::{
 
 use crate::GuestRead;
 use crate::layout::aux_depth;
+use crate::layout::structure_parameters;
 use crate::layout::camera::{self, RENDER_CAMERA};
 use crate::layout::layer_inputs;
 use crate::layout::object_nodes::{RECORD_KEY, texaccum_bound};
@@ -181,6 +182,9 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
     // Whether the view holds what the auxiliary state toggle sets, once
     // an item toggles it.
     let mut aux = false;
+    // Whether the view holds the structure parameters a flagged shader's
+    // prologue uploads, once an item uploads them.
+    let mut structure: Option<bool> = None;
     for slot in first..end {
         let Some(item) = ITEM_SIZE.checked_mul(slot).and_then(|o| items.checked_add(o)) else {
             break;
@@ -194,7 +198,7 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
             }
         }
         match layer_item(mem, layer, item, slot, lighting) {
-            Some((entry, rows)) => {
+            Some((mut entry, rows)) => {
                 // A toggling item's draw takes the view's rows and clip
                 // on; `layer_part` named a cause when they do not read.
                 if !aux && entry.refusal.is_none() && entry.flags.contains(PartFlags::AUX_DEPTH) {
@@ -202,6 +206,22 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
                         builder.set_aux_depth(a)?;
                     }
                     aux = true;
+                }
+                // A flagged shader's prologue uploads the structure's
+                // parameter block: the view takes what it sets, once;
+                // when that does not compute, such items keep the guest's
+                // draw.
+                if entry.refusal.is_none() && entry.flags.contains(PartFlags::STRUCTURE_PARAMETERS) {
+                    if structure.is_none() {
+                        let read = structure_parameters::read(mem);
+                        if let Some(p) = read {
+                            builder.set_structure_parameters(p)?;
+                        }
+                        structure = Some(read.is_some());
+                    }
+                    if structure == Some(false) {
+                        entry.refusal = Some(frame_scene::LayerObjectRefusal::ShaderFlag);
+                    }
                 }
                 builder.push_layer_item(entry, &rows)?;
                 out.items += 1;
@@ -289,6 +309,8 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
     let mut out = Objects::default();
     // Whether the view's auxiliary depth is set, once asked.
     let mut aux = None;
+    // Whether the view's structure parameters are set, once asked.
+    let mut structure = None;
     for (handle, slots) in order {
         let Some(frame) = read_object(mem, handle) else {
             out.remainder += slots.len() as u32;
@@ -329,6 +351,19 @@ pub fn objects(mem: &dyn GuestRead, entries: &[Entry], builder: &mut SceneBuilde
                     aux = Some(read.is_some());
                 }
                 if aux == Some(false) {
+                    out.remainder += 1;
+                    continue;
+                }
+            }
+            if part.flags.contains(PartFlags::STRUCTURE_PARAMETERS) {
+                if structure.is_none() {
+                    let read = structure_parameters::read(mem);
+                    if let Some(p) = read {
+                        builder.set_structure_parameters(p)?;
+                    }
+                    structure = Some(read.is_some());
+                }
+                if structure == Some(false) {
                     out.remainder += 1;
                     continue;
                 }

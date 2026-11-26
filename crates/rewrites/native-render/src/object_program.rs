@@ -160,6 +160,13 @@ pub struct ObjectPass {
     pub program: MaterialProgram,
     /// The material leaves hardware c[18] untouched and the program reads it.
     pub inherits_c18: bool,
+    /// The rows of `c[21..25]` the program reads and the pass does not set
+    /// (bit `n`: `c[21 + n]`): what the prologue uploads from the active
+    /// structure's parameter block for a shader with flag bit 0
+    /// (`frame_scene::StructureParameters`). An item without that upload
+    /// refuses a program reading them
+    /// (`object_program_gpu::with_structure_parameters`).
+    pub structure_reads: u8,
     /// The object program supplies D3D's default final combiner using
     /// the fog and specular uniforms.
     pub default_final: bool,
@@ -273,7 +280,7 @@ fn object_pass_with(
         }
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let (mut program, inherits_c18) = compile_with_layer_constants(
+    let (mut program, inherits_c18, structure_reads) = compile_with_layer_constants(
         &look,
         EngineBound {
             normalization,
@@ -285,6 +292,7 @@ fn object_pass_with(
         provided,
         fetch,
         blends,
+        true,
     )?;
     let default_final = !program.def.has_final_combiner();
     program.state = Some(state);
@@ -307,6 +315,7 @@ fn object_pass_with(
     Ok(ObjectPass {
         program,
         inherits_c18,
+        structure_reads,
         default_final,
         blend_color: None,
         implementation: baseline.clone(),
@@ -500,10 +509,16 @@ pub fn compile_object_stages(
     provided_inputs: u16,
     input_fetch: [shaders::vsh::InputFetch; 16],
 ) -> Result<MaterialProgram, String> {
-    compile_with_layer_constants(look, engine, microcode, alpha_test, provided_inputs, input_fetch, false)
-        .map(|(program, _)| program)
+    compile_with_layer_constants(look, engine, microcode, alpha_test, provided_inputs, input_fetch, false, false)
+        .map(|(program, _, _)| program)
 }
 
+/// [`compile_object_stages`] for an object pass: with
+/// `inherits_material_constants`, a read of `c[18]` the pass does not set
+/// is the device's (the second value); with `structure_constants`, reads
+/// of `c[21..25]` it does not set are the structure parameters' (the third
+/// value, [`ObjectPass::structure_reads`]).
+#[allow(clippy::too_many_arguments)]
 fn compile_with_layer_constants(
     look: &PassLook,
     engine: EngineBound,
@@ -512,8 +527,11 @@ fn compile_with_layer_constants(
     provided_inputs: u16,
     input_fetch: [shaders::vsh::InputFetch; 16],
     inherits_material_constants: bool,
-) -> Result<(MaterialProgram, bool), String> {
+    structure_constants: bool,
+) -> Result<(MaterialProgram, bool, u8), String> {
+    const STRUCTURE: usize = frame_scene::StructureParameters::FIRST_CONSTANT;
     let mut inherits_c18 = false;
+    let mut structure_reads = 0u8;
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
         for s in i.sources() {
@@ -527,6 +545,10 @@ fn compile_with_layer_constants(
                 if !relative && !object_sets(look, c) {
                     if c == 18 && inherits_material_constants {
                         inherits_c18 = true;
+                        continue;
+                    }
+                    if structure_constants && (STRUCTURE..STRUCTURE + 5).contains(&c) {
+                        structure_reads |= 1 << (c - STRUCTURE);
                         continue;
                     }
                     return Err(format!(
@@ -583,7 +605,7 @@ fn compile_with_layer_constants(
         rigid: None,
         animation: None,
         texaccum_dimensions: Vec::new(),
-    }, inherits_c18))
+    }, inherits_c18, structure_reads))
 }
 
 /// Puts the texture accumulation target's size (`guest_size`, what
@@ -1373,6 +1395,38 @@ pub(crate) mod tests {
         assert_eq!(
             e,
             "vertex program reads c[a0.x + 18], outside the node rows"
+        );
+    }
+
+    /// An object pass's program may read the rows of `c[21..25]` the pass
+    /// does not set: a flagged shader's prologue uploads them from the
+    /// structure's parameter block, and the pass records which
+    /// (`ObjectPass::structure_reads`) for the draw to refuse without the
+    /// upload. `c[26]` stays refused, as does `c[21]` outside an object
+    /// pass.
+    #[test]
+    fn an_object_pass_records_the_structure_rows_its_program_reads() {
+        let reads = |src: O| {
+            program(&[
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(src), None).to_out(
+                    false,
+                    OutReg::Pos,
+                    0xf,
+                ),
+            ])
+        };
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = |microcode: &[u8]| {
+            object_pass(map::TagId(0xe000_0001), &lit(), &[], microcode, WORLD, fetch, true)
+        };
+        for (c, mask) in [(21, 1u8), (23, 1 << 2), (25, 1 << 4)] {
+            let p = pass(&reads(O::c(c))).unwrap_or_else(|e| panic!("c[{c}]: {e}"));
+            assert_eq!(p.structure_reads, mask, "c[{c}]");
+        }
+        assert_eq!(pass(&rigid_program()).unwrap().structure_reads, 0);
+        assert_eq!(
+            pass(&reads(O::c(26))).unwrap_err(),
+            "vertex program reads c[26], which the object pass does not set"
         );
     }
 

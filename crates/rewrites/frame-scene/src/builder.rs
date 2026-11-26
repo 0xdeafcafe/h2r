@@ -212,6 +212,7 @@ impl SceneBuilder {
             display_visibility: None,
             display_transparents: None,
             aux_depth: None,
+            structure_parameters: None,
             lights: l..l,
             layers: p..p,
             decorators: d..d,
@@ -308,6 +309,14 @@ impl SceneBuilder {
     pub fn set_aux_depth(&mut self, aux: AuxDepth) -> Result<(), BuildError> {
         let (scene, open) = self.open_mut()?;
         scene.views[open].aux_depth = Some(aux);
+        Ok(())
+    }
+
+    /// What the open view's [`crate::PartFlags::STRUCTURE_PARAMETERS`]
+    /// parts' prologue uploads.
+    pub fn set_structure_parameters(&mut self, parameters: crate::StructureParameters) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        scene.views[open].structure_parameters = Some(parameters);
         Ok(())
     }
 

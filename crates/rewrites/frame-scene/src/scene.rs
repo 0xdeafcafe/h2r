@@ -116,6 +116,37 @@ pub struct AuxDepth {
     pub rest_clip: [f32; 2],
 }
 
+/// What the geometry draw's prologue (`0x0004d640`) uploads for a shader
+/// with flag bit 0 while the active structure has a parameter block
+/// (`0x0003c650`, `0x0003d000`; `engine::render_loop::structure_parameters`):
+/// the bump environment matrices of stages 1 to 3, `c[21..25]`, the fog
+/// colour, and the engine words `0x0003c650` stores at `0x004c1b9c`. All
+/// as words, as the device and the engine hold them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct StructureParameters {
+    /// Per stage 1, 2 and 3, the texture-stage states 22 to 25
+    /// (`BUMPENVMAT00`, `01`, `11`, `10`).
+    pub bump_env: [[u32; 4]; 3],
+    /// `c[21..25]` (hardware numbering).
+    pub constants: [[u32; 4]; 5],
+    /// `D3DRS_FOGCOLOR`.
+    pub fog_colour: u32,
+    /// The words at `0x004c1b9c`.
+    pub scratch: [u32; 13],
+}
+
+impl StructureParameters {
+    /// The first constant the upload sets.
+    pub const FIRST_CONSTANT: usize = 21;
+
+    /// Stage `stage`'s (1 to 3) bump matrix as the pixel shader takes it:
+    /// `00`, `01`, `10`, `11`.
+    pub fn bump_matrix(&self, stage: usize) -> Option<[f32; 4]> {
+        let [s00, s01, s11, s10] = *self.bump_env.get(stage.checked_sub(1)?)?;
+        Some([s00, s01, s10, s11].map(f32::from_bits))
+    }
+}
+
 /// Geometry admitted by the display lens outside the retail view. These
 /// IDs belong to this BSP and this frame's object table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -158,6 +189,9 @@ pub struct View {
     /// What its [`PartFlags::AUX_DEPTH`] parts draw with; read when the
     /// view has one.
     pub aux_depth: Option<AuxDepth>,
+    /// What its [`PartFlags::STRUCTURE_PARAMETERS`] parts' prologue
+    /// uploads; read when the view has one.
+    pub structure_parameters: Option<StructureParameters>,
     /// Into [`FrameScene::lights`], with guest selections in draw order.
     pub lights: Range<u32>,
     /// Into [`FrameScene::layer_passes`], in the guest's draw order.
@@ -233,17 +267,25 @@ impl PartFlags {
     /// the guest's would.
     pub const FADE: PartFlags = PartFlags(1 << 4);
     /// The shader's flag bit 0 (`+0x16`), in the case the scene draws:
-    /// the active structure has no parameter block, so the prologue
-    /// uploads nothing, and the draw neither binds a lightmap (layer 3)
-    /// nor adds a PRT stream (layer 5).
+    /// the draw neither binds a lightmap (layer 3) nor adds a PRT stream
+    /// (layer 5), and its prologue uploads nothing unless the part also
+    /// has [`PartFlags::STRUCTURE_PARAMETERS`].
     pub const SHADER_FLAG: PartFlags = PartFlags(1 << 5);
-    const NAMES: [(PartFlags, &'static str); 6] = [
+    /// With [`PartFlags::SHADER_FLAG`]: the active structure has a
+    /// parameter block, so the prologue uploads its view's
+    /// [`StructureParameters`]. The part draws with them (`c[21..25]` and
+    /// the bump matrices); the host takes it only where the device and
+    /// the engine already hold them, so skipping its handler leaves what
+    /// the upload would.
+    pub const STRUCTURE_PARAMETERS: PartFlags = PartFlags(1 << 6);
+    const NAMES: [(PartFlags, &'static str); 7] = [
         (PartFlags::STENCIL_MARK, "stencil_mark"),
         (PartFlags::STRIP, "strip"),
         (PartFlags::SUBPARTS, "subparts"),
         (PartFlags::AUX_DEPTH, "aux_depth"),
         (PartFlags::FADE, "fade"),
         (PartFlags::SHADER_FLAG, "shader_flag"),
+        (PartFlags::STRUCTURE_PARAMETERS, "structure_parameters"),
     ];
 
     pub fn contains(self, other: PartFlags) -> bool {
