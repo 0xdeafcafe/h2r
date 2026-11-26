@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, ShipSeen, ZoneSeen};
 use firefight::{
     Caps, Command, Count, Def, Difficulty, DifficultyMultipliers, Drop, FORMAT, Lives, Observed,
-    Outcome, PlayerKill, Round, Scoring, SetRules, ScriptDirector, Skull, SquadSpec, Wave, builtin,
+    Outcome, PlayerKill, Round, Scoring, SetRules, ScriptDirector, Side, Skull, SquadSpec, Wave, builtin,
 };
 
 /// One round of five one-actor waves, two ticks apart, with Famine on.
@@ -24,6 +24,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
                 },
                 drop: Drop::Edge,
                 weapon_tier: 0,
+                side: Side::Enemy,
             }],
             boss: wave == 4,
             gap_ticks: 2,
@@ -36,6 +37,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
         rounds: vec![Round {
             waves,
             skulls_on: vec![Skull::Famine],
+            allies: Vec::new(),
         }],
         set: SetRules::finite(),
         lives: Lives {

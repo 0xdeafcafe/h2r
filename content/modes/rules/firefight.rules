@@ -74,6 +74,13 @@ global var extra: int = 0
 global var ship_state: int = ship_parked
 global var ship_tick: int = 0
 global var ship_zone: int = 0
+// The round's allies arrive when it starts and after a boss wave: due is
+// set, and each tick places the next one that is not already alive.
+global var allies_due: bool = true
+global var ally_next: int = 0
+// Actors alive in ally squads: they are no part of the wave's clear
+// (`live_count`), but count toward the actor cap.
+global var ally_count: int = 0
 
 player var registered: bool = false
 player var remaining_lives: int = start_pool
@@ -86,6 +93,8 @@ object var squad_count: int = 0
 object var squad_remaining: int = 0
 object var squad_tick: int = 0
 object var squad_side: int = 0
+// 0 for an enemy squad; an ally's row in the round's allies, plus one.
+object var squad_ally: int = 0
 
 object var zone_index: int = 0
 object var zone_rank_distance: int = 0
@@ -290,6 +299,7 @@ on kill(victim, killer) {
 
 fn observe_squads(tick: int) {
     live_count = 0
+    ally_count = 0
     load_0 = 0
     load_1 = 0
     chosen_slot = none
@@ -308,9 +318,12 @@ fn observe_squads(tick: int) {
             s.squad_state = free
         }
         if s.squad_state == free and chosen_slot == none { chosen_slot = s }
-        live_count = live_count + s.squad_remaining
-        if s.squad_side == 0 { load_0 = load_0 + s.squad_remaining }
-        else { load_1 = load_1 + s.squad_remaining }
+        if s.squad_ally > 0 { ally_count = ally_count + s.squad_remaining }
+        else {
+            live_count = live_count + s.squad_remaining
+            if s.squad_side == 0 { load_0 = load_0 + s.squad_remaining }
+            else { load_1 = load_1 + s.squad_remaining }
+        }
     }
 }
 
@@ -402,11 +415,18 @@ fn pause(tick: int) {
     phase_tick = tick + waves[wave_index()].gap
 }
 
+// The round that begins brings its allies, those that fell replaced.
+fn arrive_allies() {
+    allies_due = true
+    ally_next = 0
+}
+
 // A round is over and no bonus round follows: the next round, or the end.
 fn next_round(tick: int, here_0: bool, here_1: bool) {
     if round + 1 < len(round_data) {
         round = round + 1
         wave = 0
+        arrive_allies()
         round_bonus()
         pause(tick)
     } else if endless == 1 {
@@ -414,6 +434,7 @@ fn next_round(tick: int, here_0: bool, here_1: bool) {
         set_index = set_index + 1
         round = 0
         wave = 0
+        arrive_allies()
         round_bonus()
         pause(tick)
     } else {
@@ -645,7 +666,7 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
             let base_size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
             // Each set grows the squads by set_scale thousandths, up to the cap.
             let size = min(base_size * (1000 + set_scale * set_index) / 1000, cap)
-            if live_count + size <= cap {
+            if live_count + ally_count + size <= cap {
                 cursor = 0
                 if team_count == 2 {
                     if here_1 and not here_0 { cursor = 1 }
@@ -671,6 +692,7 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     s.squad_remaining = size
                     s.squad_tick = tick
                     s.squad_side = target_side
+                    s.squad_ally = 0
                     // A free ship takes the squad to a zone it can fly to;
                     // every other squad, and a wave's others while the ship
                     // is out, arrive on foot.
@@ -696,8 +718,48 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
     }
 }
 
+// One ally squad of the round, if it is not alive and there is room: at a
+// zone the same way an enemy's is picked, on foot, on the team it serves
+// (with two teams, the first on team 0 and the second on team 1). It is
+// no wave squad: no `ff_target` follows, and the wave's clear ignores it.
+fn place_ally(tick: int, players_in_match: int, cap: int) {
+    let rows = ally_rounds[round]
+    if ally_next >= rows.count { allies_due = false }
+    else if count(ff_slots t where active(t) and t.squad_ally == ally_next + 1) > 0 {
+        ally_next = ally_next + 1
+    } else if let s = chosen_slot {
+        let entry = ally_squads[rows.first + ally_next]
+        let size = clamp(players_in_match * entry.per_player, entry.minimum, entry.maximum)
+        if live_count + ally_count + size <= cap {
+            cursor = 0
+            if team_count == 2 { cursor = ally_next % 2 }
+            let home = cursor
+            if home == 0 {
+                target_team = team 0
+                other_team = team 1
+            } else {
+                target_team = team 1
+                other_team = team 0
+            }
+            pick_zone(entry.preferred, entry.zone_role, target_team, other_team)
+            if chosen_zone >= 0 {
+                s.squad_state = placed
+                s.squad_count = size
+                s.squad_remaining = size
+                s.squad_tick = tick
+                s.squad_side = home
+                s.squad_ally = ally_next + 1
+                place_squad_at(squad(s.slot_index), entry.kind, size, chosen_zone, entry.tier)
+                ally_count = ally_count + size
+                ally_next = ally_next + 1
+                chosen_slot = first(ff_slots slot where slot.squad_state == free)
+            }
+        }
+    }
+}
+
 fn erase_all(tick: int) {
-    for each ff_slots s where active(s) {
+    for each ff_slots s where active(s) and s.squad_ally == 0 {
         erase_squad(squad(s.slot_index))
         s.squad_state = draining
         s.squad_tick = tick
@@ -761,6 +823,10 @@ on tick {
             for each players p where p.alive { p.respawning = false }
             if tick >= phase_tick or count(players p where p.alive) == 0 { end_bonus(tick, here_0, here_1) }
         }
+        if allies_due and phase != done {
+            let roster = clamp(count(players), 1, largest_roster)
+            place_ally(tick, roster, actor_caps[roster - 1].actors)
+        }
         if phase == spawning or phase == bonus_round {
             let size = clamp(count(players), 1, largest_roster)
             let cap = actor_caps[size - 1].actors
@@ -775,7 +841,7 @@ on tick {
             }
         }
         if phase == fighting and live_count > 0 and live_count <= cleanup_actors and live_count < wave_actors {
-            for each ff_slots s where active(s) { hunt(squad(s.slot_index)) }
+            for each ff_slots s where active(s) and s.squad_ally == 0 { hunt(squad(s.slot_index)) }
             phase = cleanup
             phase_tick = tick
         }

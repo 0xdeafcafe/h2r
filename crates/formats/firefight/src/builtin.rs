@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use crate::{
         Caps, Count, DifficultyMultipliers, Drop, FORMAT, Lives, Round, Scoring, SetRules, Skull,
-        SquadSpec, WAVES_PER_ROUND, Wave,
+        Side, SquadSpec, WAVES_PER_ROUND, Wave,
     };
 
     /// The sets written as Rust: the reference the package files are held to.

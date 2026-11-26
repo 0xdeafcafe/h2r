@@ -3,7 +3,7 @@
 //! invented.
 use std::collections::BTreeMap;
 
-use firefight::{Caps, Count, DifficultyMultipliers, Drop, Lives, Round, Scoring, SquadSpec, Wave};
+use firefight::{Caps, Count, DifficultyMultipliers, Drop, Lives, Round, Scoring, Side, SquadSpec, Wave};
 
 use super::*;
 use crate::waves::{self, MAX_WAVES_BYTES, Problem, ProblemKind};
@@ -18,6 +18,7 @@ fn squad(class: &str, drop: Drop) -> SquadSpec {
         },
         drop,
         weapon_tier: 0,
+        side: Side::Enemy,
     }
 }
 
@@ -43,6 +44,7 @@ fn set_of(name: &str, rounds: usize, squads: &[SquadSpec]) -> waves::Def {
                     })
                     .collect(),
                 skulls_on: vec![],
+                allies: Vec::new(),
             })
             .collect(),
         lives: Lives {
@@ -357,6 +359,7 @@ fn seeded_fuzz_of_documents_with_waves() {
                             _ => Drop::PreferZone(rng.below(14) as u8),
                         },
                         weapon_tier: rng.below(5) as u8,
+                        side: Side::Enemy,
                     })
                     .collect();
                 let mut def = set_of("Fuzz", rng.below(3), &squads);

@@ -254,6 +254,10 @@ pub enum Slot {
         placed_at: u32,
         /// The Firefight team the squad is sent at (0 with one team).
         target: u8,
+        /// An allied squad ([`crate::Round::allies`]): not counted for the
+        /// wave's clear, never erased by a cleanup, not scored.
+        #[serde(default)]
+        ally: bool,
     },
     /// Erased; free once the host reports it empty or the timeout passes.
     Draining {
