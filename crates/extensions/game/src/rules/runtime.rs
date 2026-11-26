@@ -229,7 +229,12 @@ pub const ACTIONS: &[u16] = &[
 /// Where the `RULES` record lives: the process's `SimExt` blob in the
 /// game ([`SimExtStore`]), a local container in tests.
 pub trait Store: Send {
+    /// A copy of the record; none when there is none.
     fn get(&self) -> Option<Vec<u8>>;
+    /// Whether the record's bytes are `written`, compared in place; none
+    /// when there is no record. The check before every run, so it copies
+    /// nothing.
+    fn same(&self, written: &[u8]) -> Option<bool>;
     fn set(&mut self, bytes: Vec<u8>) -> Result<(), String>;
     fn remove(&mut self);
 }
@@ -241,6 +246,9 @@ pub struct SimExtStore;
 impl Store for SimExtStore {
     fn get(&self) -> Option<Vec<u8>> {
         sim_ext::global().ext.get(&sim_ext::RULES).map(<[u8]>::to_vec)
+    }
+    fn same(&self, written: &[u8]) -> Option<bool> {
+        sim_ext::global().ext.get(&sim_ext::RULES).map(|now| now == written)
     }
     fn set(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         sim_ext::global()
@@ -1178,14 +1186,18 @@ fn describe(e: &ScriptError) -> String {
 }
 
 /// The record's bytes changed since `r` wrote them (a revert or a load):
-/// resume from them. A record that is gone stops the script.
+/// resume from them. A record that is gone stops the script. The record
+/// is compared in place and copied only when it changed.
 fn sync(r: &mut Running, store: &dyn Store) -> Result<(), String> {
-    let Some(now) = store.get() else {
-        return Err("the RULES record was cleared (a full restore); the script stops".into());
-    };
-    if now == r.written {
-        return Ok(());
+    const CLEARED: &str = "the RULES record was cleared (a full restore); the script stops";
+    match store.same(&r.written) {
+        None => return Err(CLEARED.into()),
+        Some(true) => return Ok(()),
+        Some(false) => {}
     }
+    let Some(now) = store.get() else {
+        return Err(CLEARED.into());
+    };
     let ext = RulesExt::decode(&now).map_err(|e| format!("the RULES record: {e}"))?;
     r.vm = Vm::resume(r.vm.ir().clone(), r.options, ext)
         .map_err(|e| format!("resuming from the RULES record: {e}"))?;
