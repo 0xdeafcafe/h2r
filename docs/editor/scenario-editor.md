@@ -503,8 +503,10 @@ grow in guest memory after the load.
   policy, unique ID, editor folder in the public layout) is preserved but
   not typed.
 - What the object bits that arm a respawn mode's countdown mean (byte
-  `+0x12c` bits 0 and 1 for mode 0, byte `+0x10a` bit 2 for mode 1), and
-  what the netgame equipment flags' bit 0 does at spawn.
+  `+0x12c` bits 0 and 1 for mode 0, byte `+0x10a` bit 2 for mode 1; where
+  each is set is in
+  [notes/2026-11-26-forge-loose-ends.md](../game/notes/2026-11-26-forge-loose-ends.md)),
+  and what the netgame equipment flags' bit 0 does at spawn.
 - The AI, device-group and trigger-volume readers have not been checked
   for placement indices (§6, S).
 - The trigger volume, kill trigger and BSP switch layouts rest on this

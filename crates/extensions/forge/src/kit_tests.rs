@@ -302,3 +302,170 @@ fn the_room_after_a_block_is_its_run_of_spare_rows() {
     // A map that has used its own entries' sentinels is not a spare row.
     assert_ne!(kit::inert_row(block), vec![0; spare.len()]);
 }
+
+fn identifier_write(row: u32, channel: i64) -> Call {
+    Call::BaseField(
+        BlockKind::NetgameFlags,
+        row,
+        "identifier".into(),
+        Value::Int(channel),
+    )
+}
+
+/// The map's flag 0 sends on channel 1 and flag 2 receives on channel 3.
+fn linked_session() -> Session {
+    use crate::Teleporter;
+    kit_session()
+        .with_teleporters(vec![
+            Teleporter {
+                index: 0,
+                position: [0., 5., 0.],
+                sender: true,
+                channel: 1,
+            },
+            Teleporter {
+                index: 2,
+                position: [2., 5., 0.],
+                sender: false,
+                channel: 3,
+            },
+        ])
+        .unwrap()
+}
+
+#[test]
+fn a_link_between_added_teleporters_writes_the_channel_to_the_receivers_row() {
+    use crate::Linkable;
+    let mut s = linked_session();
+    let mut w = Fake::default();
+    let base = s.document().clone();
+    // Senders on channels 0 and 2, then a receiver on the later one's.
+    let first = s.place_teleporter(&mut w, 1, true, frame(1., 0.)).unwrap();
+    let second = s.place_teleporter(&mut w, 2, true, frame(2., 0.)).unwrap();
+    let receiver = s.place_teleporter(&mut w, 3, false, frame(3., 0.)).unwrap();
+    let channels = |s: &Session| {
+        s.added_teleporters()
+            .iter()
+            .map(|t| (t.sender, t.channel))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(channels(&s), [(true, 0), (true, 2), (false, 2)]);
+    let calls = w.calls.len();
+
+    // The receiver leaves the second sender's channel for the first's.
+    let link = s
+        .link(&mut w, 4, Linkable::Flag(receiver), Linkable::Flag(first))
+        .unwrap();
+    assert_eq!(
+        s.document().ops.last().unwrap().edit,
+        Edit::Forge(forge_doc::Forge::Link(forge_doc::Link::Teleporter {
+            sender: Endpoint::Added(first),
+            receiver: Endpoint::Added(receiver),
+            channel: 0,
+        }))
+    );
+    // The map has three flags, so the added are rows 3 to 5.
+    assert_eq!(w.calls[calls..], [identifier_write(5, 0)]);
+    assert_eq!(channels(&s), [(true, 0), (true, 2), (false, 0)]);
+    let thing = s.thing(Endpoint::Added(receiver)).unwrap();
+    assert!(
+        thing
+            .fields
+            .contains(&("identifier", Value::Int(0))),
+        "{:?}",
+        thing.fields
+    );
+    assert_eq!(s.links_of(Linkable::Flag(first)).len(), 1);
+
+    // Undo and unlink each give the add's channel back.
+    s.undo(&mut w, 5).unwrap();
+    assert_eq!(channels(&s), [(true, 0), (true, 2), (false, 2)]);
+    s.redo(&mut w, 6).unwrap();
+    s.unlink(&mut w, 7, link).unwrap();
+    assert_eq!(channels(&s), [(true, 0), (true, 2), (false, 2)]);
+    assert_eq!(
+        w.calls[calls..],
+        [
+            identifier_write(5, 0),
+            identifier_write(5, 2),
+            identifier_write(5, 0),
+            identifier_write(5, 2),
+        ]
+    );
+    assert_eq!(forge_doc::fold(&base, s.log()).unwrap(), *s.document());
+    let _ = second;
+}
+
+#[test]
+fn a_link_between_an_added_teleporter_and_the_maps_own_moves_one_flag() {
+    use crate::Linkable;
+    let mut s = linked_session();
+    let mut w = Fake::default();
+    let sender = s.place_teleporter(&mut w, 1, true, frame(1., 0.)).unwrap();
+    let receiver = s.place_teleporter(&mut w, 2, false, frame(2., 0.)).unwrap();
+    let calls = w.calls.len();
+
+    // The added sender is on channel 0: the map's receiver joins it, with
+    // the map's own write and no write to the added row.
+    s.link(&mut w, 3, Linkable::Teleporter(2), Linkable::Flag(sender))
+        .unwrap();
+    assert_eq!(w.calls[calls..], [Call::Channel(2, 0)]);
+    let calls = w.calls.len();
+
+    // The added receiver joins the map's sender on channel 1.
+    s.link(&mut w, 4, Linkable::Teleporter(0), Linkable::Flag(receiver))
+        .unwrap();
+    assert_eq!(w.calls[calls..], [identifier_write(4, 1)]);
+    let channels: Vec<_> = s.teleporters().iter().map(|t| t.channel).collect();
+    assert_eq!(channels, [1, 0]);
+}
+
+#[test]
+fn added_teleporters_are_refused_the_wrong_role_and_a_flag_that_is_not_one() {
+    use crate::Linkable;
+    let mut s = linked_session();
+    let mut w = Fake::default();
+    let a = s.place_teleporter(&mut w, 1, true, frame(1., 0.)).unwrap();
+    let b = s.place_teleporter(&mut w, 2, true, frame(2., 0.)).unwrap();
+    let before = (s.document().clone(), w.calls.len());
+    for (x, y, why) in [
+        (Linkable::Flag(a), Linkable::Flag(b), "sender to a receiver"),
+        (Linkable::Flag(a), Linkable::Flag(crate::OpId(99)), "not a teleporter"),
+        (Linkable::Flag(a), Linkable::Teleporter(1), "not a teleporter"),
+    ] {
+        let error = s.link(&mut w, 3, x, y).unwrap_err();
+        assert!(error.contains(why), "{error}");
+    }
+    assert_eq!((s.document().clone(), w.calls.len()), before);
+
+    // A proposal that names a sender as a receiver is refused too.
+    let op = forge_doc::Op {
+        id: crate::OpId(s.last_op_id().0 + 1),
+        edit: Edit::Forge(forge_doc::Forge::Link(forge_doc::Link::Teleporter {
+            sender: Endpoint::Added(a),
+            receiver: Endpoint::Added(b),
+            channel: 5,
+        })),
+    };
+    let error = s.propose(&mut w, 4, op, None).unwrap_err();
+    assert!(error.contains("not a teleporter receiver"), "{error}");
+    assert_eq!((s.document().clone(), w.calls.len()), before);
+}
+
+#[test]
+fn deleting_a_linked_added_teleporter_ends_its_link_in_one_undo_step() {
+    use crate::Linkable;
+    let mut s = linked_session();
+    let mut w = Fake::default();
+    let sender = s.place_teleporter(&mut w, 1, true, frame(1., 0.)).unwrap();
+    let receiver = s.place_teleporter(&mut w, 2, false, frame(2., 0.)).unwrap();
+    s.link(&mut w, 3, Linkable::Flag(sender), Linkable::Teleporter(2))
+        .unwrap();
+    s.remove(&mut w, 4, Endpoint::Added(sender)).unwrap();
+    assert!(s.links_of(Linkable::Teleporter(2)).is_empty());
+    assert_eq!(s.added_teleporters().len(), 1);
+    s.undo(&mut w, 5).unwrap();
+    assert_eq!(s.links_of(Linkable::Teleporter(2)).len(), 1);
+    assert_eq!(s.added_teleporters().len(), 2);
+    let _ = receiver;
+}

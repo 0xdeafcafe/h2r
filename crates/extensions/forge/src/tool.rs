@@ -1001,12 +1001,18 @@ impl Tool {
             let flags = teleporters
                 .iter()
                 .map(|t| (Linkable::Teleporter(t.index), t.position));
+            let added = session
+                .added_teleporters()
+                .into_iter()
+                .map(|t| (Linkable::Flag(t.id), t.position))
+                .collect::<Vec<_>>();
             let machines = session
                 .objects()
                 .iter()
                 .filter(|o| o.item.block == BlockKind::Machines)
                 .map(|o| (Linkable::Object(o.id), o.frame.position));
             self.aimed_link = flags
+                .chain(added)
                 .chain(machines)
                 .filter_map(|(thing, at)| {
                     aim(&camera, forward, 80., at, LINK_RADIUS).map(|d| (thing, d))

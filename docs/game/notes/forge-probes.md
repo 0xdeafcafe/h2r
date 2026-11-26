@@ -180,3 +180,82 @@ place of a spare to confirm the exercised reader can observe it.
 Record load errors, extra objects or actors, changed behavior, and
 untested readers by block. An equal aggregate census can corroborate
 the behavior checks but cannot establish inertness by itself.
+
+## Probes for the loose ends (not yet run)
+
+Each is for a coordinator's run on a loaded game with a Forge session, and
+each has an expected result that closes the named row. Record the date, the
+commit, the map and the outcome under it when run.
+
+### Added teleporters on a channel (F6)
+
+A kit session on a multiplayer map the kit is built for. Add a sender and a
+receiver with the Teleporters group, link them with the Links tool, and
+check that the engine's teleporter reader takes the channel the link wrote
+into the kit row.
+
+```sh
+h2 agent forge.status                       # added_teleporters: ids, channel
+h2 agent forge.input '{"action":"link"}'    # the Links tool; aim, accept, accept
+h2 agent forge.status                       # added_teleporters: both on one channel
+h2 agent sim.state.set '{"player":"player.0","pos":[SENDER_X,SENDER_Y,SENDER_Z]}'
+h2 agent wait '{"ticks":60}' 10000
+h2 agent sim.state.get '{"player":"player.0"}'   # the unit near the receiver
+```
+
+Expected: the unit arrives at the receiver. Repeat after changing the
+receiver's channel through a link to a sender on another channel, to learn
+whether the reader takes a channel written into the loaded scenario at once
+or from the next round (forge-design.md, "Not verified"). Record which.
+
+### The respawn bits (D1)
+
+On a map with a spawner of respawn mode 1 and one of mode 0 (the census,
+`disc_item_game_types_and_respawn_modes_census`, lists them), read the
+object's `+0x10a` and `+0x12c` through `sim.objects` with the object's id
+before and after (a) the object is picked up, (b) it is moved from its spot,
+(c) it is deleted by `forge.propose` remove. Expected: the bit that arms
+each mode changes at one of these. A bit's name comes from which.
+
+### A weapon's reserve on the ground (D5, spare clips)
+
+1. Find a spawned weapon: `sim.objects {"kinds":["weap"]}`, the object whose
+   `+0xaf` equals a spawner's index.
+2. Read its magazine: `object` `weapon_magazine` (`loaded`, `reserve`).
+3. Write the reserve (the call D5 adds, `sim.object.ammo`, or by `sim.give`
+   on a weapon the player holds as the control): `{loaded?, reserve?}`.
+4. Pick the weapon up with a player and read the held reserve through
+   `sim.state.get`.
+
+Expected: the picked-up reserve is what was written, up to the element's
+`+0x0c` cap. Also read the reserve of a weapon the spawner made fresh after
+a respawn, to learn whether the engine resets it. Whether `rounds per clip`
+is the magazine element's `+0x0a` is read from the same weapon's tag with
+`h2 tag`.
+
+### The spawn bias (D5, starting point weight)
+
+On a map with four or more starting locations and a multiplayer game, kill a
+player repeatedly (`sim.state.set` health 0) and record the index
+`PLAYER_SPAWN` chose each time with `world.query` for the players' positions
+against the locations. Then place a hook that adds a bias to one location
+and repeat: the location with the bias is chosen whenever it passes the
+free-spot test. The hook point is `0x14efb1` (after the weight returns,
+before the `comiss` at `0x14efb6`).
+
+### The synchronous Forge link in a real game (F5)
+
+After the F3 synchronous-protocol probe passes ("Synchronous protocol on a
+multiplayer map" above), start a co-op Forge lobby between two machines
+(`h2 coop test`), and on both:
+
+```sh
+h2 agent forge.status     # session "shared", role, net.head equal on both
+h2 agent forge.propose ...  # an entry op on the host
+h2 agent forge.status     # the guest's head follows within a second
+```
+
+Expected: both heads equal after each edit and the guest's `forge.things`
+equals the host's. Lifting the lobby's refusal for a remote member
+(`lobby_mode::REMOTE_REFUSAL`, forge-firefight-ui.md) waits on this, and on
+the lobby choosing the synchronous protocol for a Forge game.
