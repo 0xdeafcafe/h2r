@@ -1731,7 +1731,7 @@ mod tests {
         );
         session.answer(Request::State, Ok(json!({"tick": 1})));
         assert!(!session.loading() && session.loaded());
-        assert_eq!(session.view().expect("the bar").name, OVERLAY);
+        assert_eq!(session.view().expect("the bar").name, super::super::OVERLAY);
     }
 
     #[test]
