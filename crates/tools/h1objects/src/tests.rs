@@ -2209,7 +2209,7 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
     let got = convert(&fs, &inputs, &mut notes);
     assert_eq!(got.len(), 4, "A to D only");
     // D's input is unset: not converted, and said so.
-    assert!(got[3].is_none());
+    assert!(got[3].is_err());
     assert_eq!(notes.len(), 1, "{notes:?}");
     let s: Vec<_> = got.iter().flatten().collect();
     assert_eq!(
@@ -2279,9 +2279,16 @@ fn additive_and_orphaned_switch_functions_do_not_convert() {
     switched.turn_off_with = 0;
     let mut notes = Vec::new();
     let got = crate::functions::convert(&[additive, switched], &inputs, &mut notes);
-    assert!(got.iter().all(Option::is_none), "{got:?}");
+    assert!(got.iter().all(Result::is_err), "{got:?}");
     assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(crate::functions::primary_scale(1, &got).is_err());
+    assert_eq!(
+        crate::functions::primary_scale(1, &got).unwrap_err(),
+        "output 1's function did not convert: additive accumulation, H1 0x8c06d"
+    );
+    assert_eq!(
+        crate::functions::primary_scale(2, &got).unwrap_err(),
+        "output 2's function did not convert: turns off with function 0, which has no converted output"
+    );
 }
 
 #[test]
