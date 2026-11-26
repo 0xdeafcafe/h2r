@@ -125,7 +125,7 @@ the workspace checks are in
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
 | `hot-render` | platform | Hot iteration on the host renderer: WGSL overrides of translated programs from a watched directory, tunable parameters and toggles (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `input` | platform | Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp | [input.md](input/input.md) | done, foundation only |
-| `mem-watch` | platform | Process footprint history, memory limits, diagnostic reports and the memory flight recorder |  |  |
+| `mem-watch` | runtime | Process footprint history, memory limits, diagnostic reports and the memory flight recorder |  |  |
 | `voice` | platform | The communicator under the title's own voice engine: microphone and headphone media objects over host capture and playback (docs/live/live-voice.md) | [live-voice.md](live/live-voice.md) |  |
 | `wma` | platform | Native WMAv2 decoder ([wma.md](audio/wma.md)) † | [wma.md](audio/wma.md) | done |
 | `xapi` | platform | Guest XAPI service replacements for Halo 2 | [xapi.md](runtime/xapi.md) | done |

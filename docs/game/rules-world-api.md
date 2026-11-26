@@ -219,7 +219,7 @@ dropped by (tick, sequence) (**Code**,
 **System Link.** The actor channel rides the Live tunnel, and a System
 Link session has none (ai-networking.md "Decisions"). The show channel
 gets a LAN carrier of datagrams of ours (slice W11): the `show-lan` crate
-(**Code**, `crates/platform/show-lan`). It has the Live channel's
+(**Code**, `crates/live/show-lan`). It has the Live channel's
 handshake and tag, over a plain datagram socket the caller owns:
 
 - A client sends a hello (its X25519 key and a nonce); the host answers
@@ -577,7 +577,7 @@ Where it travels:
   and the Cloudflare worker's host room forward each frame as bytes, so
   both homes carry the frame as they carry the key request
   ([dedicated-host.md](../live/dedicated-host.md)).
-- **System Link.** `crates/platform/show-lan` carries the same message as
+- **System Link.** `crates/live/show-lan` carries the same message as
   a signed `pick` datagram (kind 4: peer id, a counter newer than the last
   accepted, the machine id, the message, the channel's tag), which
   `Host::take_picks` hands back with its machine id. The carrier is not
@@ -917,7 +917,7 @@ own target on top of the three common ones, as `rules.world_ns` at the
 | W8 | Vehicles and drop ships: `vehicle`, `path`, `fly`, `seat`, `place_squad_in`, `unload` (built on the fake, with host hover and unload; see "Vehicles and drop ships") | `rules/labels.rs` (`path`), `game/rules/world/vehicles.rs`, the kit's stage 2 and its labelled ship and paths in `crates/tools/firefight-kit` | a `path` with a gap blocks the start; a ship flies a path in the stated ticks, facing its tangent; riders are placed and unloaded on the fake | a Firefight wave arrives by drop ship on a kit map | W3, W6; R6, R7, R8 | a drop ship with 8 riders in flight: 0.2 ms |
 | W9 | Advanced data: tag reads, squad state, `on damage`, squads by name | `game/rules/world/data.rs` (new), the field resolver over `tags::schema` | a field the schema lacks is a load error naming it; a tag read is the same on two fake machines | a boss wave's bar shows the boss's shield | W2 | 64 tag reads every tick: 0.02 ms |
 | W10 | Modules: `use` (language, CLI, editors and bundle **built**) | `lang/*`, `crates/formats/variants` (the bundle's files), Live's script routes, the workbench's tabs | two files compile to the blob of the same text in one; a cycle is an error naming both files | Firefight's director and its wave tables are two files | W6 | none in the game; `h2 rules check` on 256 KiB of source in under 50 ms |
-| W11 | The show channel on System Link | a LAN carrier beside `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs`: `crates/platform/show-lan` (**built**, carrier only; wiring waits on R10) | two invented peers over an in-memory LAN and over loopback UDP exchange a `Key` and a `Cue`; a forged tag, a replay, a foreign host key and a flood are dropped and counted (`show_lan::tests`) | a System Link guest sees a script's HUD and hears its sounds | W2; R10 | W2's gate over the LAN carrier |
+| W11 | The show channel on System Link | a LAN carrier beside `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs`: `crates/live/show-lan` (**built**, carrier only; wiring waits on R10) | two invented peers over an in-memory LAN and over loopback UDP exchange a `Key` and a `Cue`; a forged tag, a replay, a foreign host key and a flood are dropped and counted (`show_lan::tests`) | a System Link guest sees a script's HUD and hears its sounds | W2; R10 | W2's gate over the LAN carrier |
 
 W0 is first. W1, W3 and W7 then run side by side; W2 follows W1; W4 and
 W5 follow W2; W6 closes Firefight, W8 adds the drop ship, and W9 to W11

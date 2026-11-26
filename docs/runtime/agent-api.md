@@ -2869,7 +2869,7 @@ scopes and can sample their allocation stacks.
 
 Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and
 `h2-editor`) keeps evidence that outlives it
-(`crates/platform/mem-watch/src/recorder.rs`):
+(`crates/runtime/mem-watch/src/recorder.rs`):
 
 - **Flight recorder.** Every 10 s the process appends one JSON line to
   `mem-<pid>.ndjson` in its report directory (`H2_MEM_REPORT_DIR`, else

@@ -31,12 +31,12 @@ crate_tree(
 workspace_library(
     name = "mem-watch",
     crate = "mem_watch",
-    crate_root = "crates/platform/mem-watch/src/lib.rs",
+    crate_root = "crates/runtime/mem-watch/src/lib.rs",
     description = "Process footprint history, memory limits, diagnostic reports and the memory flight recorder",
     features = [
         "gpu",
     ],
-    manifest = "crates/platform/mem-watch",
+    manifest = "crates/runtime/mem-watch",
     package = "mem-watch",
     tree = ":lib-tree",
     version = "0.1.0",
@@ -63,12 +63,12 @@ workspace_library(
 workspace_test(
     name = "unit-tests",
     crate = "mem_watch",
-    crate_root = "crates/platform/mem-watch/src/lib.rs",
+    crate_root = "crates/runtime/mem-watch/src/lib.rs",
     description = "Process footprint history, memory limits, diagnostic reports and the memory flight recorder",
     features = [
         "gpu",
     ],
-    manifest = "crates/platform/mem-watch",
+    manifest = "crates/runtime/mem-watch",
     package = "mem-watch",
     tree = ":test-tree",
     version = "0.1.0",

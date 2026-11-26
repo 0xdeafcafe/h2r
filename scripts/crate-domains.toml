@@ -29,20 +29,21 @@ crates = [
 about = "The machine the lifted code runs on: memory, CPU state, kernel, filesystem, snapshots, the build-and-load driver"
 uses = ["formats", "recompiler"]
 crates = [
-    "background", "kernel", "lifted", "recomp", "runtime", "runtime-test-probe",
+    "background", "kernel", "lifted", "mem-watch", "recomp", "runtime", "runtime-test-probe",
     "snapshot", "timeline", "vfs",
 ]
 # Guest-free: no workspace dependencies, no guest memory. `background`
-# names and lowers worker threads; `timeline` records trace events. Any
+# names and lowers worker threads; `timeline` records trace events;
+# `mem-watch` counts footprint (serde, backtrace, libc only). Any
 # guest-free crate may use them.
-guest_free = ["background", "timeline"]
+guest_free = ["background", "mem-watch", "timeline"]
 
 [platform]
 about = "Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8, DirectSound, XAPI, pads, Bink, voice) and the host graphics and audio under them"
 uses = ["formats", "runtime"]
 crates = [
     "assets", "audio", "bink-hle", "d3d", "dsound", "frame-types", "gfx", "hot-render",
-    "input", "mem-watch", "voice", "wma", "xapi",
+    "input", "voice", "wma", "xapi",
 ]
 
 [hooking]
@@ -68,7 +69,7 @@ guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-c
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
 uses = ["formats", "runtime", "platform", "hooking", "rewrites"]
 crates = [
-    "actor-net", "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
+    "actor-net", "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto", "show-lan",
     "live-server", "live-telemetry", "live-worker", "sim-bench",
 ]
 
@@ -116,6 +117,16 @@ until = "the guest readers native-render re-exports (src/camera.rs, the `layout`
 from = "sim-core"
 to = "simd"
 until = "simd's exact SSE lanes move to a guest-free crate sim-core may use"
+
+[[exception]]
+from = "sim-anim"
+to = "simd"
+until = "simd's exact SSE lanes move to a guest-free crate sim-anim may use (manager_channels.rs's masked scalar ops)"
+
+[[exception]]
+from = "game"
+to = "hud-edit"
+until = "hud-edit's render module (Art, Fonts, sprite_at: the map's bitmaps and the disc's fonts) moves to a crate extensions may use; hud_overlay.rs and hud_overlay/menu_text.rs read them behind the `gpu` feature"
 
 [[exception]]
 from = "game"
