@@ -194,6 +194,7 @@ pub(super) fn first_update(
         "the options block is {} bytes",
         options.len()
     );
+    dump_arena(g, "recorded", film_tick);
     Ok(GameStart {
         stamp: stamp(header),
         game: Game {
@@ -211,6 +212,29 @@ pub(super) fn first_update(
         variant: script(g),
         map_variant: None,
     })
+}
+
+/// With `H2_THEATER_ARENA_DUMP=<dir>`, write the arena as it stands to
+/// `<dir>/arena-<role>-<tick>-<pid>.bin`: a recording's start, or a
+/// watched film's start, to be compared byte for byte.
+pub(super) fn dump_arena(g: &Guest, role: &str, first_update: u64) {
+    let Some(dir) = std::env::var_os("H2_THEATER_ARENA_DUMP") else { return };
+    let (mut bytes, mut pages) = (Vec::new(), Vec::new());
+    let Some((base, _)) = lockstep::hash_sim_blocks(
+        g,
+        lockstep::SimRegion::HALO2,
+        film::start::DETAIL_PAGE,
+        &mut bytes,
+        &mut pages,
+    ) else {
+        return;
+    };
+    let path = std::path::Path::new(&dir)
+        .join(format!("arena-{role}-{first_update}-{}.bin", std::process::id()));
+    match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &bytes)) {
+        Ok(()) => eprintln!("theater: arena at the {role} start ({base:#x}) written to {}", path.display()),
+        Err(e) => eprintln!("theater: could not write {}: {e}", path.display()),
+    }
 }
 
 /// What the arena hash at this moment is made of: the extension records'
