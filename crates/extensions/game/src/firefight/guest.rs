@@ -73,6 +73,8 @@ pub mod scenario {
     /// Starting location: position, then the reference frame `i16`.
     pub const START_POSITION: u32 = 0x04;
     pub const START_REFERENCE_FRAME: u32 = 0x10;
+    /// Zone: flags, `u32`; the kit's roles are above the engine's bits.
+    pub const ZONE_FLAGS: u32 = 0x20;
     /// Zone: firing positions and areas.
     pub const ZONE_FIRING_POSITIONS: (u32, u32) = (0x28, 0x20);
     pub const ZONE_AREAS: (u32, u32) = (0x30, 0x88);
@@ -114,6 +116,9 @@ pub struct KitZone {
     /// Its firing positions and their reference frames: where a squad
     /// placed into the zone starts.
     pub starts: Vec<([f32; 3], u16)>,
+    /// The roles the kit gave the zone (`::firefight::roles`); none for a
+    /// base zone.
+    pub roles: u8,
 }
 
 /// The kit on the loaded map, read from the scenario's AI blocks.
@@ -241,6 +246,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
             index: index as u16,
             point: m.vec3(area + scenario::AREA_MEAN)?,
             starts,
+            roles: ::firefight::roles::unpack(m.u32(at + scenario::ZONE_FLAGS)?),
         };
         match base {
             Some(n) => {

@@ -249,3 +249,107 @@ fn only_the_arenas_walkable_area_keeps_sectors() {
     let size = |pf: &PathfindingData| pathfind::build::element(pf).unwrap().tree_len();
     assert!(size(&kept) < size(&pf));
 }
+
+fn authored(name: &'static str, point: V3, radius: f32, roles: u8) -> crate::builtin::ResolvedDrop {
+    crate::builtin::ResolvedDrop {
+        name,
+        anchor: point,
+        point,
+        radius,
+        roles,
+    }
+}
+
+fn layout_of(drops: Vec<crate::builtin::ResolvedDrop>) -> Resolved {
+    Resolved {
+        base_point: None,
+        base_positions: 4,
+        drops,
+        covers: Vec::new(),
+        refused: Vec::new(),
+    }
+}
+
+fn authored_arena(layout: &Resolved) -> Arena {
+    let (pf, data) = build_with_pathfinding(&grid_with_far_floor(), 0, 7).unwrap();
+    choose_zones_with(
+        Some(layout),
+        &pf,
+        &data,
+        &BASE_STARTS,
+        &BASES,
+        2,
+        |_| Some(3),
+        &Labels::default(),
+        &mut |_| {},
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_authored_drop_snaps_to_the_nearest_usable_sector() {
+    // The sector centres of the arena lie 4 units apart; (13.2, 9.7) is
+    // nearest (14, 10).
+    let want = [13.2, 9.7, 0.0];
+    let layout = layout_of(vec![
+        authored("centre_hill", want, 3.0, firefight::roles::LINE),
+        authored("east_ledge", [21.5, 21.0, 0.0], 3.0, firefight::roles::FLANK),
+    ]);
+    let arena = authored_arena(&layout);
+    assert!(arena.refused.is_empty(), "{:?}", arena.refused);
+    // Only the authored drops: no generated pick is added, and each keeps
+    // the layout's order and roles.
+    assert_eq!(arena.zones.len(), 2);
+    assert_eq!(arena.zones[0].name, "ff_drop_00");
+    assert_eq!(arena.zones[1].name, "ff_drop_01");
+    assert_eq!(
+        firefight::roles::unpack(arena.zones[0].flags),
+        firefight::roles::LINE
+    );
+    assert_eq!(
+        firefight::roles::unpack(arena.zones[1].flags),
+        firefight::roles::FLANK
+    );
+    // The engine's own flag bit is kept below the roles.
+    assert_eq!(arena.zones[0].flags & 0xff, 1);
+    // The zone is on the nearest sector, its first position the sector's
+    // centre, and the snap says how far it moved.
+    let (_, data) = build_with_pathfinding(&grid_with_far_floor(), 0, 7).unwrap();
+    let nearest = data.nav.poly_near([14.0, 10.0, 0.0]).unwrap();
+    assert_eq!(arena.zones[0].firing_positions[0].sector, nearest);
+    assert!(
+        distance2(arena.zones[0].firing_positions[0].position, [14.0, 10.0, 0.0]) < 0.01
+    );
+    assert_eq!(arena.snapped[0].sector, nearest as usize);
+    assert_eq!(arena.snapped[0].wanted, want);
+    assert_eq!(arena.snapped[1].name, "east_ledge");
+    // The bases still get their zones.
+    assert_eq!(arena.bases.len(), 2);
+    assert!(arena.bases.iter().all(|z| z.firing_positions.len() <= 4));
+}
+
+#[test]
+fn a_drop_with_no_sector_is_refused_by_name() {
+    let layout = layout_of(vec![
+        authored("north_cave", [14.0, 60.0, 0.0], 4.0, firefight::roles::FLANK),
+        // Inside the base exclusion: the first base's own polygon.
+        authored("on_the_base", BASES[0], 1.0, firefight::roles::LINE),
+        // On the detached square beside the east base: it has no engine
+        // link to the arena, so no path to both bases.
+        authored("seam_island", [30.2, 14.0, 0.0], 1.0, firefight::roles::LINE),
+        authored("centre_hill", [10.0, 6.0, 0.0], 2.0, firefight::roles::LINE),
+    ]);
+    let arena = authored_arena(&layout);
+    assert_eq!(
+        arena.refused,
+        [
+            "drop 'north_cave': no usable sector within 4.0",
+            "drop 'on_the_base': no usable sector within 1.0 (inside the base exclusion)",
+            "drop 'seam_island': no usable sector within 1.0 (no path to both bases)",
+        ]
+    );
+    // The drop that could be placed still is, and the generator picked
+    // none in place of the refused ones.
+    assert_eq!(arena.zones.len(), 1);
+    assert_eq!(arena.snapped[0].name, "centre_hill");
+}

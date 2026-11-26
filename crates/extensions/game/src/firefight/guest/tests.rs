@@ -197,6 +197,7 @@ fn the_kit_is_read_from_the_scenario_ai_blocks() {
                 ([20.0, 0.0, 0.0], 0xffff),
                 ([30.0, 0.0, 0.0], 0xffff),
             ],
+            roles: 0,
         }]
     );
     assert_eq!((kit.characters, kit.team), (3, 3));
@@ -251,11 +252,13 @@ fn read_kit_finds_the_bases_and_hunt_orders() {
                 index: 3,
                 point: [-90.0, 0.0, 0.0],
                 starts: vec![([50.0, 0.0, 0.0], 0xffff)],
+                roles: 0,
             },
             KitZone {
                 index: 2,
                 point: [90.0, 0.0, 0.0],
                 starts: vec![([40.0, 0.0, 0.0], 0xffff)],
+                roles: 0,
             },
         ]
     );
@@ -271,6 +274,30 @@ fn read_kit_finds_the_bases_and_hunt_orders() {
     assert!(kit.bases.is_empty());
     assert_eq!(kit.hunt_orders, [None, Some(1)]);
     assert_eq!(kit.kit().bases, Vec::<[f32; 3]>::new());
+}
+
+#[test]
+fn zone_roles_read_back() {
+    use ::firefight::roles;
+    // The kit writes the roles above the engine's flag bits; the engine's
+    // own bit (1) is not a role.
+    let mut m = scenario();
+    let flags = 1 | roles::pack(roles::LINE | roles::HEAVY);
+    m.put_u32(ZONES + 0x38 + 0x20, flags);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.zones[0].roles, roles::LINE | roles::HEAVY);
+
+    // A zone with the engine's bit alone has no role, and so do the bases.
+    m.put_u32(ZONES + 0x38 + 0x20, 1);
+    m.put_u32(ZONES + 0x38 * 2 + 0x20, 1);
+    let kit = read_kit(&m).unwrap().unwrap();
+    assert_eq!(kit.zones[0].roles, 0);
+    assert!(kit.bases.iter().all(|b| b.roles == 0));
+
+    // Every role survives the round trip.
+    for r in 0..=roles::ALL {
+        assert_eq!(roles::unpack(1 | roles::pack(r)), r);
+    }
 }
 
 #[test]

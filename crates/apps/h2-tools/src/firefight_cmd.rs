@@ -11,9 +11,18 @@ use scenario_edit::{MapSource, recipe};
 const USAGE: &str =
     "usage: h2 firefight kit MAP [--home red|blue] [--disc ISO_OR_EXTRACTED_DISC] [--data DIR] [--probe] [--replace]
     [--retail-classes] [--class NAME=DONOR:CHAR_PATH]... [--classes FILE] [--cut]
+    [--layout] [--layout-report]
   builds <data>/maps/firefight-MAP from a multiplayer map on the disc, e.g. beavercreek.
   --home picks the map team whose base is the home base (default red): the
     players' base, or team 0's with two teams. Drops keep off both bases.
+  --layout takes the drops from the map's authored layout (coagulation,
+    zanzibar) instead of the generator's picks. A drop the map has no
+    usable sector for fails the build by name.
+  --layout-report prints, and builds nothing: every netgame flag, start
+    cluster and weapon pad of the map with its kind, team and index; then
+    each of the map's layout anchors with the point it resolves to, the
+    sector it snaps to, its distance to each base, each refusal by name
+    and the build's cost table.
   --probe builds the firefight-probe test map with one squad of two Elites.
   --replace updates an existing package of the same name.
   --class copies a character class from a campaign map on the disc: DONOR is
@@ -39,6 +48,8 @@ struct Args {
     /// `--retail-classes`: the retail class table before `classes`.
     retail: bool,
     cut: bool,
+    /// `--layout-report`: print the census and build nothing.
+    report: bool,
 }
 
 /// One requested class: a donor disc map and a `char` tag in it.
@@ -159,12 +170,16 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
     let mut classes = Vec::new();
     let mut retail = false;
     let mut cut = false;
+    let mut report = false;
+    let mut layout = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--probe" => probe = true,
             "--replace" => replace = true,
             "--cut" => cut = true,
+            "--layout" => layout = true,
+            "--layout-report" => report = true,
             "--retail-classes" => retail = true,
             "--class" => {
                 classes.push(parse_class(&it.next().context("--class requires NAME=DONOR:CHAR_PATH")?)?)
@@ -197,8 +212,15 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
             _ => bail!("unexpected argument {arg:?}\n{USAGE}"),
         }
     }
+    let base = base.context(USAGE)?;
+    if layout {
+        config.layout = Some(
+            firefight_kit::builtin::for_map(&base)
+                .with_context(|| format!("{base} has no authored layout"))?,
+        );
+    }
     Ok(Some(Args {
-        base: base.context(USAGE)?,
+        base,
         disc,
         data,
         probe,
@@ -207,6 +229,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
         classes,
         retail,
         cut,
+        report,
     }))
 }
 
@@ -215,6 +238,15 @@ pub fn run(words: Vec<String>) -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     };
+    if args.report {
+        let disc = args.disc.map(Ok).unwrap_or_else(crate::default_disc)?;
+        let bytes = read_disc_map(&disc, &args.base)?;
+        print!(
+            "{}",
+            firefight_kit::builtin::layout_report(&bytes, &args.base, &args.config)?
+        );
+        return Ok(());
+    }
     let (mode, dir) = if args.probe {
         let recipe = recipe::built_in_named("firefight-probe")?.on_base(&args.base)?;
         (Mode::Probe, recipe.package_dir())
@@ -305,6 +337,19 @@ mod tests {
         ] {
             assert!(args(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_layout_options_name_the_maps_authored_layout() {
+        let plain = args("kit coagulation").unwrap().unwrap();
+        assert!(plain.config.layout.is_none() && !plain.report);
+        let a = args("kit coagulation --layout").unwrap().unwrap();
+        assert_eq!(a.config.layout.unwrap().map, "coagulation");
+        let r = args("kit Zanzibar.map --layout-report").unwrap().unwrap();
+        assert!(r.report && r.config.layout.is_none());
+        // A map with no layout is named, not quietly built without one.
+        let err = args("kit lockout --layout").err().unwrap();
+        assert!(format!("{err:#}").contains("lockout has no authored layout"));
     }
 
     #[test]
