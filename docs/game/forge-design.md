@@ -90,12 +90,14 @@ tags added at build time so that most edits in a session are Live.
   on each walk.
 - Spare device groups, squad groups and squad slots follow the same
   active-count rule.
-- Generated tags of our own, built from nothing on the disc: barrier
-  boxes in a ladder of sizes, a block-out set (box, ramp, wedge,
-  cylinder), marker objects for emitters and volumes. Each is a `bloc` or
-  `scen` with a `coll` and `phmo` from the `collision-build` crate
-  ([modeling.md](../editor/modeling.md) slice 8) and, for block-out
-  pieces, a `mode` from the section encoder.
+- Generated tags of our own, built from nothing on the disc: the
+  block-out set ([forge-blockout.md](forge-blockout.md): the dev
+  textures, a starter set of pieces, spare slots a session rewrites to
+  a new size, and every definition the document's pieces use) and
+  marker objects for emitters and volumes. A piece is a `bloc` with a
+  `coll` from the `collision-build` crate
+  ([modeling.md](../editor/modeling.md) slice 8), a `phmo` with one
+  fixed body and a `mode`; a barrier is a piece with no `mode`.
 - The tags a document's recipes ask for (monitor bodies, AI characters,
   imports).
 
@@ -103,8 +105,8 @@ The kit costs tag memory. Multiplayer maps have 0.1 to 1.5 MiB of
 headroom under the bound the writer keeps, and one map has none (**V**,
 scenario-editor.md section 6). The real headroom is not measured; slice
 F3 measures it. A kit that does not fit is cut in a fixed order (block-out
-set, spare entries, then recipes are refused by name), so two machines
-cut alike.
+set, in the order of forge-blockout.md, "Reaching the game"; spare
+entries; then recipes are refused by name), so two machines cut alike.
 
 A session document requests the kit with the `forge_kit` generate
 recipe. F2 reserves up to eight slots per block, in scenario root
@@ -509,11 +511,11 @@ can settle.
 | Placed lights | medium | M | the kit's generators; tag field writes | dynamic light count; that a generated light lights the level |
 | Teleporters, buttons, triggers | high for teleporters and triggers; medium for device groups | M | the kit; `ForgeExt` | device groups |
 | Projectile emitters | high alone and synchronous; host-replicated by shared schedule in F15 | M | `SimExt`; a trace of projectile creation | replication |
-| Invisible barriers | high for new ones; low for retail ones before collision writes | M, then L | `collision-build` | scale, collision groups |
+| Invisible barriers | high for new ones; low for retail ones before collision writes | M, then L | `collision-build`; [forge-blockout.md](forge-blockout.md) | collision groups |
 | Nav mesh | high for bots; medium for AI sectors | M | `bots::autonav`, `pathfind` | AI on generated sectors in multiplayer |
 | Monitor bodies (Forge sessions only) | medium | L | transplant, tag headroom, player control of a flying biped | several |
 | Spawn AI | medium synchronous; host-replicated as puppets in F15 | L | transplant, `h1campaign`'s squad writers, the synchronous probe | several |
-| Geometry in game | block-out high; face push and pull medium (F13); full vertex editing on a pad medium, after it (F16) | L, then L | modeling slices 1 to 4, 7, 8, 11 | every write class |
+| Geometry in game | block-out high ([forge-blockout.md](forge-blockout.md): pieces sized on a grid, the natural set, the dev textures); face push and pull medium (F13); full vertex editing on a pad medium, after it (F16) | L, then L | modeling slices 1 to 4, 7, 8, 11 | a crate's fixed body; every write class |
 | Textures in game | medium | M | modeling slices 5, 6 | cache behaviour |
 | Character import | medium for a skin on a chassis; low for own animation | L | the `mode` writer, `assets::encode` | every imported kind |
 | Sharing on Live | high | M | the content store, `MapGate` | one deploy check |
@@ -664,6 +666,7 @@ sink.
 | The synchronous protocol may not hold a multiplayer map | F5 cannot ship; F15 moves ahead of it and AI waits for puppets | F3, before F5 is built |
 | `SimExt` has no user | no emitters, triggers or logic | the blob is built and tested on synthetic memory (`crates/rewrites/sim-ext`; sim-rewrite.md, "The `SimExt` blob"); F7 gives `FORGE` its first record and proves it on a running game |
 | The modeling crates are design | geometry and paint cannot start | block-out needs only `collision-build`; the rest follows modeling's own slices |
+| A crate with a fixed body may not stop a player | block-out pieces are walked through, as scenery is | BO4's first game run places one block; a piece becomes a machine if it fails ([forge-blockout.md](forge-blockout.md), "Not verified") |
 | A game that loads a map with added tags is unproven on retail bases | every recipe | map-builder.md, "Not verified"; F10's first run is one transplanted scenery tag |
 | Materialise time grows with a document | long holds on Rebuild | cache by op-prefix hash; measure in F2 |
 | A shared document is hostile input | crashes, resource exhaustion | the validator's caps; fuzzing in F1; the Forge step's budget |
@@ -685,7 +688,7 @@ and the game. Sizes as under Features.
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash. **Built** (below), except the `ForgeExt` hash, which waits for F7; the co-op link offers its lanes (`game/src/forge_glue/link.rs`) and the game's run of it is unproven; the lobby still refuses Start Game with a remote member (`lobby_mode::REMOTE_REFUSAL`) until that run is proved ([notes/forge-probes.md](notes/forge-probes.md), "The synchronous Forge link in a real game") |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, for the map's own flags and the flags a kit session adds (`link_tests`, `kit_tests`); the generator half is `bots::autonav::teleporter_flags` and `link_teleporters`, checked over a linked pair in `crates/tools/forge-build/tests/links.rs` |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
-| **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
+| **F8** | Barriers and block-out: pieces from a definition in the document, the natural set, the dev textures, sizing on a grid, slots, the Structure and Natural groups. Its slices are BO1 to BO12 of [forge-blockout.md](forge-blockout.md) | L | F2, modeling slice 8; BO12's enable input needs F7 | each generated `coll` passes `collision_build::verify::check` and random segment tests against brute force; the same definition gives the same bytes twice; a barrier's enable input switches it over a fake game; the rest in that page's slice table |
 | **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**: the Nav tool draws the sectors and links in the game, and the bots take the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
 | **F10** | Transplant recipes and monitor bodies | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
 | **F11** | AI: squads, the AI tool, sectors at materialise | L | F7, F10, a synchronous session from F5 | squad blocks on a fixture read back through `h1campaign`'s decoder; a wave graph places squads on the table's ticks |
@@ -715,7 +718,10 @@ that edit the map's own entries and build map variants (M1 to M10, D1
 to D5, V1 to V9, G1) are in
 [forge-map-variants.md](forge-map-variants.md), "Slices", and their UI
 (K5, H1 to H3, S1 to S6) in
-[forge-map-variants-ui.md](forge-map-variants-ui.md), "Slices".
+[forge-map-variants-ui.md](forge-map-variants-ui.md), "Slices". F8's
+slices (BO1 to BO12) are in [forge-blockout.md](forge-blockout.md),
+"Slices", and the markers' icons and play forms (MK10 to MK16) in
+[gametype-marker-forms.md](gametype-marker-forms.md), "Slices".
 
 **F1 in detail.** `crates/formats/forge-doc` defines `ForgeDoc`, `Op`,
 `OpId`, `Recipe`, `ImportSlot`, `Entry`, `Proposal` and `Refusal`.

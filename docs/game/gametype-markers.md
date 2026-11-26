@@ -530,6 +530,9 @@ them; MK3, MK5 and MK7 follow their needs; MK8 and MK9 are last.
 
 ## Related
 
+- [gametype-marker-forms.md](gametype-marker-forms.md): the design for
+  icons on a plate, the edit form and the play form of each kind, the
+  box and sphere areas, and what shows in a match (MK10 to MK16).
 - [forge-editing.md](forge-editing.md): the Objects tool, the object
   menu and Properties.
 - [forge-map-variants.md](forge-map-variants.md): the things, entry ops

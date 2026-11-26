@@ -135,9 +135,10 @@ replicating a projectile made outside weapon fire.
   (Live), drawn only in the editor as a tinted volume, and take an
   enable input. Options: blocks players, vehicles, projectiles
   (**S**: which collision groups each maps to, to be read in the `phmo`
-  and `coll` material flags). Sizes come from the kit's ladder; an exact
-  size is a `generate` recipe and a Rebuild. Whether a placement's scale
-  reaches collision is **S**, and would remove the ladder.
+  and `coll` material flags). A barrier is a block-out piece with the
+  `Clip` material, sized as any piece is: Live from the kit's starter
+  set or a slot, else a Rebuild
+  ([forge-blockout.md](forge-blockout.md), "Reaching the game").
 - **The map's own barriers** are collision surfaces with no drawn
   counterpart. The editor overlay shows them (collision surfaces whose
   material is not in any render part near them, **Design**). Removing or
@@ -205,7 +206,7 @@ The kernels are the editor's: `mesh-edit`, `geometry-edit`,
 
 | Tier | In game with a pad | Class |
 |---|---|---|
-| Block-out | kit pieces placed, scaled by swapping within the ladder, given a material | Live |
+| Block-out | pieces placed, sized on a grid and given a material; a natural set of generated rocks; dev textures ([forge-blockout.md](forge-blockout.md)) | Live, Kit for a new size with a slot free, else Rebuild |
 | Instances and models | move, turn and delete instanced geometry; swap an object's material or permutation | Live preview, Rebuild to keep (instances); Live (objects) |
 | Faces | pick a face, push or pull it (`ExtrudeFaces`, `Transform`), delete, set material, planar texture coordinates | Live preview, Rebuild for collision |
 | Paint | brush, fill, colour pick on the texture under the reticle | Live picture; saved as strokes |
