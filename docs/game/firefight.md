@@ -556,6 +556,7 @@ that id, and each machine loads its own build.
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
+| Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
@@ -567,6 +568,7 @@ h2 firefight kit beavercreek --home blue --replace
 h2 firefight kit coagulation --probe
 h2 firefight kit beavercreek --classes my-classes.txt --cut
 h2 firefight kit zanzibar --retail-classes --cut
+h2 firefight kit zanzibar --dropship none
 ```
 
 The first command installs `<data>/maps/firefight-coagulation`. `--home
@@ -651,19 +653,52 @@ last class until the build fits, and `Package::cut` names what it cut,
 first cut first. A refusal by the schema (a tag it cannot copy) or a
 missing `char` is an error naming the class, never a cut.
 
-**A drop ship (rules-world-api.md W8, R8).** The same machinery copies
-any group's tree, but three things are missing for a `vehi` root. The
-class takes `char` roots only (`ClassSpec` has no group), so a root group
-and a palette row for it are needed: the scenario's vehicle palette,
-written like the weapon palette row (`ai::weapon_slot`), and a squad's
-`vehicle` index. The schema (`layouts.txt`) must describe every group in
-the ship's closure (vehicle, model, render model, collision, physics,
-animation graph, effects, sounds): the transplant refuses the whole tree
-for one group without a layout, and a census on the player's campaign
-maps says which ship has a closure that copies. And the headroom: a ship
-with its animation graph and physics is far larger than a character, so
-Waterworks, Zanzibar and the other maps with a few KB of room refuse it
-and the cut order drops it first; R8 measures it per map in notes.
+**The dropship (rules-world-api.md, "Vehicles and drop ships").** A kit
+carries a ship the host flies squads in on (`src/ship.rs`,
+`h2 firefight kit MAP --dropship auto|phantom|spirit|none`, `auto` by
+default, `firefight_kit::Config::dropship`):
+
+- **The tag.** The Phantom, `objects\vehicles\phantom\phantom`, copied in by the
+  stage-two transplant from the first donor that carries it
+  (`transplant::add`, a `vehi` root; the command adds Outskirts,
+  `03a_oldmombasa`, as a donor when the disc has it and no class named it).
+  A map built from Halo 1's campaign already holds Halo 1's Covenant
+  dropship (the Spirit, `vehicles\c_dropship\c_dropship`; `h1campaign::h2assets`
+  keeps it as a set piece) and uses it with no donor. `auto` takes the
+  Spirit, then a Phantom the map holds, then a donor's; with none to be had it
+  builds the kit as before and says why. `phantom` and `spirit`
+  fail when their ship cannot be had; `none` writes nothing.
+- **The placement.** One vehicle placement named `ff_ship` (an object name),
+  on a new vehicle palette row for the ship, placed at the start (not
+  "not at start") at the first path's run-in, with that path's yaw. The base's
+  own vehicles, names and palette rows keep their indices; the new ones
+  follow them (`ship::author`).
+- **The paths.** For each drop zone `NN` with a clear column, a point set
+  `ff_path_NN` in the scenario's scripting data with three points,
+  `run_in`, `hover` and `run_out`, in flying order. `hover` is
+  `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
+  runs are at the sky height, 10 units over the tallest collision, and
+  outside the collision's horizontal bounds by at least 20. `ship::plan`
+  casts rays on the arena BSP's collision (`bots::los::Walls::clear`):
+  from just above the zone's floor to the sky (a roof over the zone
+  fails it), and, for the first of eight compass directions (starting
+  away from the map's middle) where both clear, from the run-in down to
+  the hover and from the hover up to the run-out, which lie on opposite sides.
+  A zone with no such direction gets no point set, and its squads spawn on foot.
+  The paths are not placed by hand; a map keeps what the rays find.
+- **Fit.** The ship is cut before any class: with a map short of headroom
+  the builder takes the `Fit` steps with the ship, then tries without it,
+  and only then drops classes (`fit_within`). A kit with no ship has
+  the bytes of the kit before it. `Package::ship` (`ShipReport`) and the
+  command's `dropship:` line say `kept (tag, tags copied, bytes, zone
+  paths)` or `cut (reason)`: over the tag headroom, no donor, or no clear
+  column; `Costs::ship` is the bytes (the copied tags, the placement, the
+  palette row, the name and the point sets). A probe kit has no ship.
+
+The ship's flight, hover and unload are the rules engine's (rules-world-api.md,
+"Vehicles and drop ships"); the kit only places it parked and gives it the
+points to fly. The placement carries no hover flag: the script calls
+`hover` once the ship is flown.
 
 The build is `firefight_kit::ground::build`, which takes the labels
 placed on the map and the recipe, and gives each label's place to the
