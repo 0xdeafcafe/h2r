@@ -713,3 +713,71 @@ fn the_game_reads_the_ship_and_its_paths() {
     m.put_u16(NAMES + 0x24 + 0x20, 2);
     assert_eq!(read_kit(&m).unwrap().unwrap().ship, None);
 }
+
+/// [`scenario`] with the pools' object names and two zone falls and a
+/// start's, in the scripting data.
+fn with_pods(points: &[&str]) -> FakeGuest {
+    let mut m = scenario();
+    pair(&mut m, SCNR + 0x48, 4, NAMES);
+    m.map(NAMES, 4 * 0x24);
+    for (i, (name, kind, at)) in [
+        ("ff_pod_01", 1u16, 3u16),
+        ("ff_pod_00", 1, 2),
+        ("ff_ppod_00", 1, 4),
+        ("ff_pod_02", 2, 9),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = NAMES + 0x24 * i as u32;
+        named(&mut m, n, name);
+        m.put_u16(n + 0x20, kind).put_u16(n + 0x22, at);
+    }
+    pair(&mut m, SCNR + 0x1d8, 1, SCRIPTING);
+    m.map(SCRIPTING, 0x80);
+    pair(&mut m, SCRIPTING, 3, SETS);
+    m.map(SETS, 3 * 0x30);
+    m.map(POINTS, 6 * 0x3c);
+    for (set, name) in [(0u32, "ff_fall_00"), (1, "ff_fall_05"), (2, "ff_pfall_03")] {
+        let at = SETS + 0x30 * set;
+        named(&mut m, at, name);
+        pair(&mut m, at + 0x20, points.len() as u32, POINTS + 2 * 0x3c * set);
+        for (i, point) in points.iter().enumerate() {
+            let p = POINTS + 2 * 0x3c * set + 0x3c * i as u32;
+            named(&mut m, p, point);
+            for (k, v) in [10.0 * (set + 1) as f32 + i as f32, 1.0, 2.0].into_iter().enumerate() {
+                m.put_f32(p + 0x20 + 4 * k as u32, v);
+            }
+        }
+    }
+    m
+}
+
+#[test]
+fn the_game_reads_pods_and_falls() {
+    // The base kit carries none.
+    let kit = layout();
+    assert!(kit.pods.is_empty() && kit.player_pods.is_empty() && kit.player_falls.is_empty());
+    assert_eq!(kit.falls, vec![None]);
+
+    let kit = read_kit(&with_pods(&["top", "ground"])).unwrap().unwrap();
+    // Squad pods in NN order; the player pool apart; a pod name on another
+    // object type is no pod.
+    assert_eq!(kit.pods, [2, 3]);
+    assert_eq!(kit.player_pods, [4]);
+    // `ff_fall_00` is `ff_drop_00`'s; `ff_fall_05` has no zone; the start's
+    // fall is by its number.
+    assert_eq!(
+        kit.falls,
+        [Some(PodFall { top: [10.0, 1.0, 2.0], ground: [11.0, 1.0, 2.0] })]
+    );
+    assert_eq!(
+        kit.player_falls,
+        [(3, PodFall { top: [30.0, 1.0, 2.0], ground: [31.0, 1.0, 2.0] })]
+    );
+    assert_eq!(kit.kit(), layout().kit());
+
+    // A set missing a point is no fall.
+    let kit = read_kit(&with_pods(&["top", "hover"])).unwrap().unwrap();
+    assert_eq!((kit.falls, kit.player_falls), (vec![None], vec![]));
+}
