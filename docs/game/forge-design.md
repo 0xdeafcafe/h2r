@@ -813,6 +813,16 @@ skip"). The hook is ordered first, ahead of the native scene lists'
 setup, so the biped has no layer-3 items and the native objects stage,
 which draws only the walk of those items, never meets it. The biped stays
 in the visibility list, so its shadow is still chosen as a caster.
+The monitor's view is a playerless world view
+(`spectator_view::replace_world_view` puts none in its player word, so
+`VIEW_PLAYER` `0x004b9ed8` is none while it draws). The HUD draw calls the
+game engine's black overlay (`HUD_BLACK_OVERLAY` `0x00159880`, from
+`0x001396a0`), which draws a local user's spawn fade
+(`[GAME_ENGINE] + 0xe4 + 4 * user`) and a view with no user at 1.0, opaque
+black. The monitor keeps the HUD for its own, so the hook "no black
+overlay over the Forge monitor's view" returns from it while the monitor's
+view draws and the view has no user (`forge_controls::render::skips_black_overlay`).
+Theater's views hide the HUD and never reach it.
 `forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
 A local level boot starts in the biped. D-pad Up or Tab switches between
 the biped and the monitor.

@@ -55,6 +55,7 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::SCREEN_EFFECT,
         &points::TEMPLATE_PASS,
         &points::TEMPLATE_QUAD,
+        &points::HUD_BLACK_OVERLAY,
     ] {
         assert!(
             analysis.functions.contains_key(&p.base),

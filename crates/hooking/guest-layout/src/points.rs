@@ -1335,6 +1335,11 @@ points! { ALL;
     MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
+    /// The game engine's black overlay over the view, from the HUD draw
+    /// (`0x001396a0`): the view's local user's spawn fade
+    /// (`[GAME_ENGINE] + 0xe4 + 4 * user`); a view with no local user
+    /// (`0x004b9ed8` none) draws it at 1.0 (`0x0045dbc0`), opaque.
+    HUD_BLACK_OVERLAY @ 0x0015_9880: [fn() ret 0]; "docs/game/forge-design.md";
     HUD_TEXT_SETUP @ 0x0013_edb0: [fn(font: esi, colour: edi, shadow: stack 3) ret 16], Optional; "docs/halo1/text.md";
     HUD_TEXT_MEASURE @ 0x0013_ee20: [fn(text: ecx, font: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
     HUD_TEXT_BOUNDS @ 0x0024_ce9d: [fn(text: stack 0) ret 4], Optional; "docs/halo1/text.md";
