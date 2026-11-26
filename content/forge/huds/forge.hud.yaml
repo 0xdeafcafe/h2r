@@ -1,8 +1,9 @@
 # The monitor's HUD (docs/game/forge-firefight-ui.md, "The monitor HUD"):
 # the prompt line, the notification list and the training box, a pill in the
 # grenade row with the objects left and the battery strip under it with the
-# share used, the tool's name top right, and a second pill for the edits
-# Rebuild map has still to apply. Elements in draw order.
+# share used, the tool's name top right, a second pill for the edits
+# Rebuild map has still to apply, and a third for the enemies left in a wave
+# test. Elements in draw order.
 name: forge
 elements:
   - id: forge.prompt
@@ -58,6 +59,23 @@ elements:
     longest: "99"
     at: {anchor: top-left, full: [30, 0], half: [30, 0], quarter: [30, 0], origin: next-grenade-count}
     over: forge.rebuild.pill
+  # The enemies pill is the third place, 60 right, after the budget and the
+  # rebuild pills: the enemies left while a wave test's wave is on.
+  - id: forge.enemies.pill
+    kind: icon
+    art: {type: grenade-pill, part: body}
+    at: {anchor: top-left, full: [60, 0], half: [60, 0], quarter: [60, 0], origin: next-grenade-pill}
+  - id: forge.enemies.pill.end
+    kind: icon
+    art: {type: grenade-pill, part: end}
+    at: {anchor: top-left, full: [80, 0], half: [80, 0], quarter: [80, 0], origin: next-grenade-pill}
+  - id: forge.enemies.count
+    kind: text
+    font: lcd
+    justify: centre
+    longest: "99"
+    at: {anchor: top-left, full: [60, 0], half: [60, 0], quarter: [60, 0], origin: next-grenade-count}
+    over: forge.enemies.pill
   # The held or aimed thing, the link's first end, and the nearest two other
   # monitors are the game's navpoints (arrow, marker and the distance in
   # metres); the gizmo is three world segments, one for each axis.

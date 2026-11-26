@@ -11,6 +11,12 @@
 //! entries: a distributed client applies none and checks the actor
 //! channel's digest instead (`crate::actor_net::client`). The director never touches the game; every change goes through a
 //! [`Game`] entry.
+//!
+//! [`Host::start_test`] starts a wave test in a Forge session
+//! (docs/game/forge-firefight.md, "Test waves"): the host of a match over
+//! the same game, whose `apply` has a test arm. `Lives`, `TeamLives` and
+//! `Respawn` are not applied (the session's variant respawns players as it
+//! does), and `Finish` ends the test, not the game ([`Host::take_test_end`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -272,6 +278,10 @@ pub struct Host {
     mode: Option<Vec<u8>>,
     /// The mode blob of the last `ModeState` entry the host appended.
     mode_sent: Option<Vec<u8>>,
+    /// A wave test, not a match ([`Host::start_test`]).
+    test: bool,
+    /// The outcome of the test's `Finish`, until the runtime takes it.
+    test_end: Option<Outcome>,
 }
 
 impl Host {
@@ -329,7 +339,28 @@ impl Host {
             targets: [0; SQUAD_SLOTS],
             mode: None,
             mode_sent: None,
+            test: false,
+            test_end: None,
         })
+    }
+
+    /// Start a wave test in a Forge session: the host of a match, on this
+    /// machine, whose `Lives`, `TeamLives` and `Respawn` are not applied
+    /// and whose `Finish` ends the test ([`Host::take_test_end`]).
+    pub fn start_test(def: Def, settings: Settings, game: &impl Game) -> Result<Self, Refusal> {
+        let mut host = Host::start(Role::Host, def, settings, game)?;
+        host.test = true;
+        Ok(host)
+    }
+
+    /// Whether this is a wave test, not a match.
+    pub fn test(&self) -> bool {
+        self.test
+    }
+
+    /// The outcome of the test's `Finish`, once: the runtime ends the test.
+    pub fn take_test_end(&mut self) -> Option<Outcome> {
+        self.test_end.take()
     }
 
     pub fn role(&self) -> Role {
@@ -558,6 +589,22 @@ impl Host {
     }
 
     fn apply(&mut self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
+        if self.test {
+            match op {
+                // A test charges no lives, and the session's variant
+                // respawns its players as it does.
+                Command::Lives { .. } | Command::TeamLives { .. } | Command::Respawn { .. } => {
+                    return Ok(());
+                }
+                // The end of the waves ends the test: the runtime erases
+                // the squads and the session goes on.
+                Command::Finish { outcome } => {
+                    self.test_end = Some(*outcome);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match op {
             Command::PlaceSquad {
                 slot,

@@ -266,7 +266,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 
 /// The screens `h2 ui preview` knows, including the design specimens
 /// and layout gallery. Append new screens to preserve existing ids.
-pub const NAMES: [&str; 74] = [
+pub const NAMES: [&str; 82] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -341,6 +341,14 @@ pub const NAMES: [&str; 74] = [
     "layout.code-entry",
     "layout.picker",
     "forge.map-limits",
+    "forge.waves",
+    "forge.rounds",
+    "forge.round",
+    "forge.wave",
+    "forge.squads",
+    "forge.squad",
+    "forge.wave-problems",
+    "forge.enemy-types",
 ];
 
 /// The value picker as the Map Variant row opens it, with two usable map
@@ -380,7 +388,9 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
         | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
-        | "forge.variants" | "forge.variant" | "forge.map-limits" => {
+        | "forge.variants" | "forge.variant" | "forge.map-limits" | "forge.waves"
+        | "forge.rounds" | "forge.round" | "forge.wave" | "forge.squads" | "forge.squad"
+        | "forge.wave-problems" | "forge.enemy-types" => {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
@@ -1110,7 +1120,7 @@ mod tests {
                 | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
                 | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games"
-                | "forge.variant",
+                | "forge.variant" | "forge.rounds" | "forge.squads" | "forge.wave-problems",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")

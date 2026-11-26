@@ -76,16 +76,21 @@ monitor's HUD and the Forge screens are the game's
 ([forge-firefight-ui.md](forge-firefight-ui.md)).
 
 The Forge screens are the game's: list classes of ours on the large
-dialog (the object menu, Tools, Link and the questions) and on the
-in-game Controller Settings host (Properties, Tool settings, Forge
-options, Controls, Map limits), opened over the running world
+dialog (the object menu, Tools, Link, the questions, and the Waves
+screens' Rounds, Squads and Problems lists) and on the in-game
+Controller Settings host (Properties, Tool settings, Forge options,
+Controls, Map limits, the Waves screens' WAVES, ROUND, WAVE and SQUAD
+pages, Enemy types), opened over the running world
 (`crates/extensions/game/src/forge_screens.rs`,
-[forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
-row opens `kit.picker.game` over them. Their preview pages are
-`forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
-`forge.link`, `forge.question`, `forge.options`, `forge.controls`,
-`forge.games`, `forge.variants`, `forge.variant` and `forge.map-limits`,
-drawn over the main menu, which stands in for the game.
+[forge-firefight-ui.md](forge-firefight-ui.md), "The screens" and "The
+Waves screens"). A value row opens `kit.picker.game` over them. Their
+preview pages are `forge.objects`, `forge.properties`, `forge.tools`,
+`forge.settings`, `forge.link`, `forge.question`, `forge.options`,
+`forge.controls`, `forge.games`, `forge.variants`, `forge.variant`,
+`forge.map-limits`, `forge.waves`, `forge.rounds`, `forge.round`,
+`forge.wave`, `forge.squads`, `forge.squad`, `forge.wave-problems` and
+`forge.enemy-types`, drawn over the main menu, which stands in for the
+game.
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,
