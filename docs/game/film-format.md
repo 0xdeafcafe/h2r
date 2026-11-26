@@ -271,7 +271,7 @@ and chronological directory when the viewer opens.
 | 0 | Eight ASCII bytes `H2BLAM3!` |
 | 8 | u32 version 3 |
 | 12 | u32 front capacity, 131072 |
-| 16 | u32 front JSON byte length (1 through capacity in a sealed file) |
+| 16 | u32 front JSON byte length (1 through capacity) |
 | 20 | u32 flags = 0, u64 reserved = 0 |
 | 32 | UTF-8 JSON, followed by zero padding up to byte 131104 |
 | 131104 | First private `HEAD` envelope, followed by time chunks and their private twins |
@@ -288,8 +288,15 @@ The front object contains `id`, `image_stamp`, `runtime_stamp`,
 results). The menu reads the front and the footer regardless of match
 length. Web reads just the used prefix and JSON.
 Zero padding reserves room for the final scoreboard and may be sparse
-on disk. The recorder writes the footer last. Truncation or an incomplete
-front makes a stats file unreadable; its film still plays.
+on disk. The writer puts a provisional front (identity, empty roster and
+results) in the file when it opens it, rewrites it when the descriptor
+arrives, and writes the sealed front, then the footer, last. A front that
+would pass the capacity is shrunk until it fits (`Front::encode`): the
+dropped-sample counts go, names are cut to 64 characters, then the medals
+go. A reader names why a front is unusable: length 0 is a recording that
+stopped before the front was written, and a length over the capacity is
+reported with its size. Truncation makes a stats file unreadable; its film
+still plays.
 
 Each envelope uses a four-byte ASCII tag and a u32 compressed size,
 followed by exactly that many bytes of one checksummed zstd frame.

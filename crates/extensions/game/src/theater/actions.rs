@@ -167,7 +167,8 @@ pub(super) fn apply_look(m: &mut dyn GuestMemory, update: u32, first_person: boo
 /// the random words and the arena hash as they are at entry to this update,
 /// and hold it until the tick's observer has described the game
 /// ([`game_start::Starts::release`]). A default recording's film counts its
-/// ticks from here: this update is its tick 1. A recording with no film
+/// ticks from here: this update is its tick 1. A game the observer has not
+/// described is taken again at the next update. A recording with no film
 /// open keeps no start. A start that cannot be read says so and the
 /// recording goes on.
 pub(super) fn note_first_update(
@@ -187,7 +188,9 @@ pub(super) fn note_first_update(
         return;
     };
     // The game's own tick count begins here.
-    rec.frame.last_stamp = None;
+    if !rec.starts.retaking() {
+        rec.frame.last_stamp = None;
+    }
     let Some(game) = rec.game.as_mut() else {
         return;
     };

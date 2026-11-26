@@ -247,8 +247,11 @@ are not measured. Halo 3 stores 45,000 to 63,000 bytes per player-minute
    the recorder seals the game before it and opens `<id>.h2film` and
    `<id>.h2stats` (`State::open_game`). The game start, with the stamp,
    is written at the first update, which is film tick 1
-   (`actions::note_first_update`). A game gone before its first update
-   leaves no file.
+   (`actions::note_first_update`). A game the observer has not described
+   by then is taken again at each next update, and its start is written
+   before the first update that has a description (`game_start::Starts::release`);
+   one still undescribed after 600 updates keeps no start. A game gone
+   before its first update leaves no file.
 2. **Each update.** The hook at `SIM_UPDATE_APPLY` hands the update's body
    to the film; the observer after `GAME_TICK` adds the tick's digest and
    the stats records (`record::Recording::post_tick`).
