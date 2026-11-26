@@ -152,7 +152,7 @@ impl KitLayout {
 }
 
 /// A block's elements: `(address, count)`.
-fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
+pub(super) fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
     let count = m.u32(owner + field)?;
     let at = m.u32(owner + field + 4)?;
     if at == 0 {
@@ -276,15 +276,15 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     }))
 }
 
-fn guest(e: impl Into<EntryError>) -> anyhow::Error {
+pub(super) fn guest(e: impl Into<EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
-async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
+pub(super) async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
     cx.call(c).await.map_err(guest)
 }
 
-fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
+pub(super) fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {
     kit.squads
         .get(usize::from(slot))
         .copied()

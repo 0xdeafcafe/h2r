@@ -438,6 +438,17 @@ points! { ALL;
     /// Request exit from occupied seats matching the mapping (-1 for all).
     /// The accepted action count occupies the low word of EAX.
     VEHICLE_UNLOAD @ 0x0011_b2b0: [fn(vehicle: edx, mapping: ecx) -> eax ret 0], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// Seat the units of an HS object list in the vehicle's empty compatible
+    /// seats (`vehicle_load_magic`'s body). The vehicle is in EDX; the seat
+    /// mapping (-1 for all) and the object list datum are on the stack. The
+    /// accepted count occupies the low word of EAX. The stack layout and
+    /// the pop are read from the call at `0x2a411c`, not yet confirmed by a run.
+    VEHICLE_LOAD @ 0x0011_b0c0: [fn(vehicle: edx, mapping: stack 0, list: stack 1) -> eax ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// The HS cast of an AI reference to an object list of its actors; EAX
+    /// the reference (a plain squad's index), the list datum returned in
+    /// EAX. The register convention is read from the cast table
+    /// (docs/engine/hs_vm.md) and not yet confirmed by a run.
+    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: eax) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a

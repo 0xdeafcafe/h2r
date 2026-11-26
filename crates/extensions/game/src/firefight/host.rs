@@ -29,6 +29,7 @@ use ::firefight::{
 };
 use host_log::{Entry, Log, LogHead, Sha256};
 
+use super::ship::{Boarding, Launch};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 
 /// Teams a game can hold.
@@ -140,6 +141,16 @@ pub trait Game: SquadEntry {
     /// applies it: a game that makes its calls later reports their errors
     /// by sequence number.
     fn begin_entry(&mut self, _seq: u32) {}
+    /// `fly`: begin a ship's flight along its keyed path, which the host
+    /// steps every tick (`ship`). A game that holds no ships refuses.
+    fn fly(&mut self, _launch: Launch) -> anyhow::Result<()> {
+        anyhow::bail!("this game flies no ships")
+    }
+    /// `place_squad_in`: place `min(count, free seats)` of the squad in the
+    /// ship and the rest on foot (`ship::drop_squad`).
+    fn drop_squad(&mut self, _boarding: Boarding) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no ships to place a squad in")
+    }
 }
 
 /// Why the mode does not start on this map.
