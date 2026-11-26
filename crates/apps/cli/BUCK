@@ -100,6 +100,7 @@ workspace_binary(
         "//crates/runtime/mem-watch:mem-watch",
         "//crates/runtime/timeline:timeline",
         "//crates/runtime/vfs:vfs",
+        "//crates/tools/firefight-kit:firefight-kit",
         "//crates/tools/flood-pod-kit:flood-pod-kit",
         "//crates/tools/h1-assets:h1-assets",
         "//crates/tools/h1campaign:h1campaign",

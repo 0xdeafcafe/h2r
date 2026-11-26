@@ -18,6 +18,9 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//crates/apps/boot:src",
+        "//crates/extensions/game:src",
+        "//crates/formats/tags:src",
     ],
 )
 
@@ -26,6 +29,9 @@ crate_tree(
     files = [
         ":all",
         "//:scripts",
+        "//crates/apps/boot:src",
+        "//crates/extensions/game:src",
+        "//crates/formats/tags:src",
     ],
 )
 
