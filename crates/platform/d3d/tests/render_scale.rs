@@ -2670,3 +2670,21 @@ fn single_copy_feedback_draw_snapshots_the_active_level() {
     assert_eq!(d.stats().rtt_direct_samples, 1);
     assert_eq!((d.backend.stats().downsamples, d.backend.stats().cpu_readbacks), (0, 0));
 }
+
+#[test]
+fn ui_fit_full_canvas_clip_spans_the_display_and_interior_clips_stay_fitted() {
+    use d3d::backend::{PixelRect, UiFit};
+    let full = PixelRect { x: 0, y: 0, width: 640, height: 480 };
+    for output in [(1920, 1200), (2560, 1080)] {
+        let fit = UiFit::about(output, [320., 240.]).unwrap();
+        assert_eq!(fit.map_rect(full), full, "{output:?}");
+        let [sx, sy, ox, oy] = fit.transform;
+        // Left canvas edge stays on the display; the interior edge is fitted.
+        let part = fit.map_rect(PixelRect { x: 0, y: 0, width: 160, height: 480 });
+        assert_eq!((part.x, part.y, part.height), (0, 0, 480));
+        assert_eq!(part.width, (160. * sx + ox).round() as u32, "{output:?}");
+        let inner = fit.map_rect(PixelRect { x: 100, y: 100, width: 200, height: 200 });
+        assert_eq!(inner.x, (100. * sx + ox).round() as u32);
+        assert_eq!(inner.y, (100. * sy + oy).round() as u32);
+    }
+}

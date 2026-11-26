@@ -1160,16 +1160,24 @@ impl UiFit {
         !self.fit_scissor
     }
 
+    /// Fit a scissor into the box. An edge on the canvas boundary (0 or the
+    /// 640x480 far side) of a shrunk axis stays on the display boundary, so a
+    /// clip that is the whole canvas spans the whole display; interior edges
+    /// are fitted.
     pub fn map_rect(&self, r: PixelRect) -> PixelRect {
         if !self.fit_scissor { return r; }
         let [sx, sy, ox, oy] = self.transform;
-        let x = |edge: u32| (edge as f32 * sx + ox).round() as u32;
-        let y = |edge: u32| (edge as f32 * sy + oy).round() as u32;
-        let left = x(r.x);
-        let top = y(r.y);
-        PixelRect { x: left, y: top,
-            width: x(r.x.saturating_add(r.width)).saturating_sub(left),
-            height: y(r.y.saturating_add(r.height)).saturating_sub(top) }
+        let axis = |s: f32, o: f32, size: u32, start: u32, len: u32| {
+            let end = start.saturating_add(len);
+            let edge = |e: u32| {
+                if s < 1.0 && (e == 0 || e == size) { e } else { (e as f32 * s + o).round() as u32 }
+            };
+            let lo = edge(start);
+            (lo, edge(end).saturating_sub(lo))
+        };
+        let (x, width) = axis(sx, ox, 640, r.x, r.width);
+        let (y, height) = axis(sy, oy, 480, r.y, r.height);
+        PixelRect { x, y, width, height }
     }
 }
 

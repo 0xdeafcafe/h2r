@@ -700,6 +700,9 @@ stays valid:
   words in guest pixels. Unchanged.
 - **Scissors.** `SetScissors` (`0x3f8760`) and the device's scissor region
   work in guest pixels. The view scales the result.
+  A fitted draw's clip edge on the canvas boundary (0 or 640/480) of a shrunk
+  axis maps to the display boundary (`UiFit::map_rect`), so a full-canvas clip
+  spans a wide window; interior edges are fitted.
 - **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)).
   One rule places every draw: `render_bridge::ui_layout` fits the canvas
   uniformly — `min(w/640, h/480)` display pixels per guest pixel
@@ -936,7 +939,10 @@ same in every window:
   `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs`): no
   section choice, pose evaluation, animation selection, palette or
   record. That set is the Rust visibility at the view record's retail
-  camera widened to the gather lens (`scene_step::gather_lens_object`).
+  camera widened to the gather lens (`scene_step::gather_lens_object`). A
+  menu model view (`MODEL_VIEW_CALL` to `MODEL_VIEW_RETURN`, the Choose
+  Profile Spartan) has its own camera, so no lens test applies and the
+  setup runs for every object in it.
   The display supplement draws those objects from the mounted model on a
   private overlay (`DisplayVisibility::guest_lens`): their opaque layer
   alone, each object on its own, so one still compiling its pipelines or
