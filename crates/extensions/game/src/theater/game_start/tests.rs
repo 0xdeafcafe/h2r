@@ -236,3 +236,35 @@ fn a_game_whose_first_update_cannot_be_read_still_records_its_ticks() {
     assert_eq!(reader.length_ticks, 3);
     assert!(reader.game_start().unwrap().is_none());
 }
+
+/// A datum array header named `name` at `at` of `arena`.
+fn array_header(arena: &mut [u8], at: usize, name: &str) {
+    arena[at..at + name.len()].copy_from_slice(name.as_bytes());
+    arena[at + name.len()] = 0;
+    let sig = engine::datum::layout::SIGNATURE as usize;
+    arena[at + sig..at + sig + 4].copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+}
+
+#[test]
+fn a_start_that_differs_names_the_arrays_that_own_its_pages() {
+    use film::start::{DETAIL_PAGE, HashDetail};
+    let mut arena = vec![0u8; 4 * DETAIL_PAGE];
+    array_header(&mut arena, 0x100, "players");
+    array_header(&mut arena, DETAIL_PAGE + 0x200, "object");
+    let film = HashDetail { ext: None, pages: vec![1, 2, 3, 4] };
+    let now = HashDetail { ext: None, pages: vec![1, 2, 9, 9] };
+    assert_eq!(
+        start_differences(&film, &now, Some(&arena)),
+        "2 arena page(s) differ, at offsets 0x2000 0x3000; in object \u{d7}2"
+    );
+    // Without the arena the pages are named by offset alone.
+    assert_eq!(
+        start_differences(&film, &now, None),
+        "2 arena page(s) differ, at offsets 0x2000 0x3000"
+    );
+    // The same start names no owner.
+    assert_eq!(
+        start_differences(&film, &film, Some(&arena)),
+        "arena pages and extension records are the same"
+    );
+}

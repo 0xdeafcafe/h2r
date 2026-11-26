@@ -403,6 +403,34 @@ fn the_start_route_can_be_asked_for_and_a_seek_beyond_the_film_is_refused() {
 }
 
 #[test]
+fn theater_state_reports_the_route_asked_for_beside_the_route_taken() {
+    let v = viewer();
+    let rec = &v.rec;
+    let mut g = v.watch();
+    for n in 0..5 {
+        assert!(tick(rec, &mut g, n));
+    }
+    // A seek ahead with no route asked for: forward, and nothing requested.
+    let ahead = v.first + 10;
+    let state = rec.transport(api::SEEK, json!({ "tick": ahead })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("forward"));
+    assert!(state["seek"].get("requested").is_none(), "{state}");
+
+    // The start asked for, though the target is ahead: the route taken and
+    // the route asked for are both reported, by `theater.state` too.
+    let state = rec.transport(api::SEEK, json!({ "tick": ahead + 5, "source": "boot" })).unwrap();
+    assert_eq!(state["seek"]["source"], json!("boot"));
+    assert_eq!(state["seek"]["requested"], json!("boot"));
+    let state = rec.transport(api::STATE, json!({})).unwrap();
+    assert_eq!(state["seek"]["requested"], json!("boot"), "{state}");
+    let seek = rec.lock().seek_info().unwrap();
+    assert_eq!(
+        (seek.source, seek.requested),
+        (api::SeekSource::Boot, Some(api::SeekRoute::Boot))
+    );
+}
+
+#[test]
 fn the_viewers_settings_come_back_when_the_film_never_starts_or_the_session_ends() {
     let v = viewer();
     let rec = &v.rec;
@@ -761,4 +789,18 @@ fn a_cancelled_ring_jump_holds_the_tick_it_left_and_keyframes_answer_with_no_rin
     let ring = rec.transport(api::KEYFRAMES, json!({})).unwrap();
     assert_eq!(ring["ring"], json!([]));
     assert!(ring["off"].is_string(), "{ring}");
+}
+
+#[test]
+fn a_film_is_watched_from_no_lobby_so_a_forge_lobby_does_not_reach_its_game() {
+    use crate::lobby_start::{self, Mode as LobbyMode};
+    let v = viewer();
+    // The viewer is in a Forge lobby when they watch.
+    lobby_start::set_mode(LobbyMode::Forge);
+    assert!(lobby_start::forge_session());
+    v.rec.arm_watch(v.rec.plan_watch(&v.film, api::InitialView::default()).unwrap());
+    // At the film's activation the lobby is gone: no Forge swap of the
+    // record, no Forge editor.
+    assert_eq!(lobby_start::mode(), LobbyMode::Multiplayer);
+    assert!(!lobby_start::forge_session());
 }

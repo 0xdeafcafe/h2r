@@ -45,8 +45,8 @@ impl Playtest {
         }
     }
 
-    /// Plays through `source`.
-    #[allow(dead_code)] // Not wired yet.
+    /// Plays through `source`: the seam the tests give a fake game.
+    #[cfg(test)]
     pub fn with_source(source: Box<dyn Source>) -> Self {
         Playtest {
             source: Some(source),

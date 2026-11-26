@@ -155,8 +155,21 @@ impl Session {
             "a film is already being watched; leave it first (theater.end)"
         );
         let own = &self.watch.own;
-        let play = film_play::Play::open(path)?.context(NO_GAME_START)?;
+        let mut play = film_play::Play::open(path)?.context(NO_GAME_START)?;
+        // The film's map is checked at its first update against the maps
+        // this session plays from, as a film player process checks it; a
+        // film recorded with other simulation hooks is refused by name.
+        let (vfs, hooks, build) = {
+            let s = self.lock();
+            let vfs = match &s.mode {
+                Mode::Record(rec) => rec.meta.vfs(),
+                Mode::Replay(_) => None,
+            };
+            (vfs, s.header.simulation_hooks.clone(), s.header.meta.image_stamp.clone())
+        };
+        play.map_vfs = vfs;
         play.check_stamp(&own.xbe_sha256)?;
+        play.check_build(hooks.as_deref(), &build)?;
         ensure!(
             play.start().settings.switches == own.features,
             "the film was recorded with other feature switches than this session runs"
@@ -242,8 +255,16 @@ impl Session {
     /// The film's options are queued: apply its simulation-scope settings
     /// and wait for its game to activate. A film already waiting is
     /// replaced, and its settings given back first.
+    ///
+    /// The viewer leaves any lobby, as the main menu's Theater does: the
+    /// film's game starts from its options alone. A lobby left in Forge
+    /// mode would otherwise move a plain Slayer film's record onto the
+    /// script index at its activation (`rules::record::move_onto_script_index`)
+    /// and open the Forge editor on it, and the film's game would not be
+    /// the one recorded.
     pub fn arm_watch(&self, planned: Planned) {
         self.disarm_watch();
+        crate::lobby_start::clear();
         let Planned { mut state, settings, .. } = planned;
         let loaned = self.lend_settings(&settings);
         if let Some(info) = &mut state.watch {

@@ -215,6 +215,11 @@ pub struct ResolvedImplementation {
     /// binding an engine texture puts its size in again
     /// ([`EngineVertexConstant::eval_size`]).
     pub dimension_bindings: Vec<EngineVertexConstant>,
+    /// The implementation's flag bit 20 ([`Implementation::copies_target`]):
+    /// a flagged shader's draw with it calls `0x0003bea0`, which, when the
+    /// frame's structure target copy is not made yet, clears the shader
+    /// cache and makes the copy.
+    pub copies_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -892,6 +897,7 @@ impl ShaderLibrary {
                 .map(|&e| EngineVertexConstant::of(e))
                 .filter(|c| (5..=20).contains(&c.mode))
                 .collect(),
+            copies_target: imp.copies_target(),
         })
     }
 }
@@ -1549,6 +1555,7 @@ mod uses_tests {
             engine_render_states: Vec::new(),
             engine_stage_states: Vec::new(),
             dimension_bindings: Vec::new(),
+            copies_target: false,
         }
     }
 

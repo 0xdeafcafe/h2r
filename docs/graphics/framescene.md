@@ -901,12 +901,13 @@ commits. The three parts are built.
   makes the geometry draw `0x0004d0b0` do (`object_walk::layer_part`,
   research points in its module notes): its `PartFlags` (the stencil
   mark only in layers 1 and 3, where the prologue `0x0004d640` sets a
-  stencil mode, the fade byte, the shader's flag bit 0, and whether its
+  stencil mode, the fade byte, the shader's flag bit 0, whether its
   prologue uploads the structure's parameter block, which the view then
-  holds in `View::structure_parameters`) and chosen subparts, or a named
+  holds in `View::structure_parameters`, and whether the frame's
+  structure target copy is still to be made, `TARGET_UNCOPIED`) and
+  chosen subparts, or a named
   cause the scene cannot reproduce it (`LayerObjectRefusal`: the shader's
-  flag bit 0 where that upload does not compute or before the frame's
-  target copy, another pass, level or part in the item's argument, layer 5's PRT
+  flag bit 0 where that upload does not compute, another pass, level or part in the item's argument, layer 5's PRT
   stream left as the draws before it left it, subparts or auxiliary
   state that do not read; [native-objects.md](native-objects.md), "Fade,
   the shader flag and the item's argument"). In layer 5 an object item
@@ -1159,7 +1160,9 @@ to the guest's draws (**Code**):
     extraction's object causes (`LayerObjectRefusal::name`,
     `object_shader_flag` and the rest; `object_shader_flag` also where
     the device or the engine does not hold the structure parameters an
-    item uploads), `object_fade` (an item with a
+    item uploads), `object_shader_flag_target` (a flagged item before the
+    frame's structure target copy whose pass's program has flag bit 20,
+    `object_program_gpu::makes_target_copy`), `object_fade` (an item with a
     fade byte where the device's stipple is on), `object_stipple` (where
     the device or the engine does not hold what its epilogue leaves),
     `object_prt` (layer 5's PRT stream
@@ -1247,6 +1250,9 @@ to the guest's draws (**Code**):
     (`native_render::object_program_gpu`; an aux-depth item with and
     without its view's values, and a faded and a flagged item that plan
     as any other, among its cases),
+    `a_flagged_item_before_the_target_copy_keeps_its_draw_only_where_a_program_makes_it`
+    (`native_render::object_program_gpu`),
+    `the_resolved_implementation_carries_flag_bit_20` (`tags::shader_tests`),
     `a_pass_sampling_the_accumulation_target_binds_it_only_where_it_is_there_and_sampled_in_place`
     and `a_faded_record_is_skipped_only_where_the_epilogue_leaves_the_device_as_it_is`
     (`game::native_objects_glue`), `a_views_layer_draws_keep_their_items_and_rows_and_a_first_person_view_is_its_own`

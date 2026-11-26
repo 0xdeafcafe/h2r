@@ -78,6 +78,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "use_declaration"
+        },
+        {
+          "type": "SYMBOL",
           "name": "points_declaration"
         },
         {
@@ -195,6 +199,23 @@
         {
           "type": "FIELD",
           "name": "text",
+          "content": {
+            "type": "SYMBOL",
+            "name": "string"
+          }
+        }
+      ]
+    },
+    "use_declaration": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "use"
+        },
+        {
+          "type": "FIELD",
+          "name": "path",
           "content": {
             "type": "SYMBOL",
             "name": "string"

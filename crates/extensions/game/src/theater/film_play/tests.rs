@@ -677,3 +677,164 @@ fn a_record_too_large_to_keep_ends_the_film_at_the_tick_before() {
     let actions = film::file::FilmActions::open(&file).unwrap();
     assert_eq!(actions.length_ticks(), 2);
 }
+
+mod monitor_looks {
+    //! The film's Forge monitor looks and poses, read from its stats
+    //! container a game tick at a time (`Looks`).
+    use super::*;
+    use crate::theater::forge_film::tests::{look_record, pose_record, turn};
+    use crate::theater::forge_film::{active, is_monitor};
+    use film::blam::{MatchHeader, RecordData, Summary, Tick, TrackWriter};
+    use forge::look::MARKER;
+
+    impl Fixture {
+        /// The film's stats container written again with `records`, each a
+        /// game tick and a Forge monitor record, and nothing else.
+        fn with_looks(records: &[(u64, Vec<u8>)]) -> Self {
+            let fixture = Self::new();
+            let stats = film::file::stats_of(&fixture.file);
+            let mut header = film::Reader::open(&stats).unwrap().header;
+            header.version = 3;
+            header.inputs_in_film = true;
+            header.meta.length_ticks = GAME;
+            fs::remove_file(&stats).unwrap();
+            let mut out = film::Writer::new(fs::File::create_new(&stats).unwrap(), &header).unwrap();
+            let mut track = TrackWriter::default().without_inputs();
+            for n in 1..=GAME {
+                let tick = Tick { tick: n, ..Tick::default() };
+                let forge = records
+                    .iter()
+                    .filter(|(at, _)| *at == n)
+                    .map(|(_, payload)| RecordData::forge_payload(payload.clone()))
+                    .collect();
+                track.push_clocked(&mut out, tick, forge, Some(n)).unwrap();
+            }
+            track.finish(&mut out, &MatchHeader::default(), &Summary::default()).unwrap();
+            out.finish().unwrap().sync_all().unwrap();
+            fixture
+        }
+    }
+
+    /// Plays until the session's film tick is `to` or the film stops, and
+    /// says after each game tick whether seat 13 is a monitor.
+    fn play_to(session: &Arc<Session>, g: &mut runtime::Guest, to: u64) -> Vec<(u64, bool)> {
+        let mut seen = Vec::new();
+        while session.lock().tick < to && tick(session, g, |_| ()) {
+            seen.push((session.lock().tick, is_monitor(13)));
+        }
+        seen
+    }
+
+    #[test]
+    fn a_monitor_look_in_the_film_is_shown_from_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[
+            (5, look_record(13, MARKER)),
+            (5, pose_record(13, 5, 1., true)),
+        ]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        let seen = play_to(&session, &mut g, GAME);
+        assert_eq!(session.lock().failure, None);
+        assert!(session.lock().complete);
+        let want: Vec<_> = (1..=GAME).map(|n| (n, n >= 5)).collect();
+        assert_eq!(seen, want, "the look is the playback's from game tick 5 on");
+        // The film's player goes: its monitors go with it.
+        drop(session.lock().play.take());
+        assert!(!active());
+    }
+
+    #[test]
+    fn a_film_without_monitor_records_leaves_the_playback_alone() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, GAME);
+        assert_eq!(session.lock().failure, None);
+        assert!(!active());
+    }
+
+    #[test]
+    fn a_start_route_seek_back_across_a_look_reads_it_again_at_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[
+            (5, look_record(13, MARKER)),
+            (5, pose_record(13, 5, 1., true)),
+        ]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, 10);
+        assert!(is_monitor(13));
+
+        // Back to tick 3: the film starts over and what was read goes.
+        session.lock().restart_play(3);
+        assert!(!is_monitor(13) && !active());
+        session.lock().play.as_mut().unwrap().activated();
+        let mut again = machine(&fixture.options, [21, 22]);
+        let seen = play_to(&session, &mut again, 3);
+        assert_eq!(seen, vec![(1, false), (2, false), (3, false)]);
+        // Forward across the look: it is shown from its tick again.
+        let seen = play_to(&session, &mut again, 6);
+        assert_eq!(seen, vec![(4, false), (5, true), (6, true)]);
+        assert_eq!(session.lock().failure, None);
+    }
+
+    #[test]
+    fn an_unreadable_monitor_record_is_a_named_film_error_at_its_tick() {
+        let _turn = turn();
+        let fixture = Fixture::with_looks(&[(4, vec![forge::look::film::POSE, 1, 2, 3])]);
+        let session = fixture.open();
+        let mut g = machine(&fixture.options, [21, 22]);
+        play_to(&session, &mut g, GAME);
+        let s = session.lock();
+        let failure = s.failure.clone().expect("the film stops");
+        assert!(failure.contains("Forge monitor"), "{failure}");
+        assert_eq!(s.tick, 4);
+    }
+}
+
+#[test]
+fn a_film_of_other_hooks_is_refused_and_another_builds_start_is_named() {
+    let fixture = Fixture::new();
+    let mut play = Play::open(&fixture.file).unwrap().unwrap();
+    play.start.stamp.hooks_sha256 = Some("hooks A".into());
+    play.start.stamp.build = "xbe A generator B codegen clang\ntarget t\n".into();
+    // Other hooks: refused by name before anything is queued.
+    let why = play.check_build(Some("hooks B"), "xbe A generator B codegen clang\n").unwrap_err();
+    let why = format!("{why:#}");
+    assert!(why.starts_with(ANOTHER_BUILD), "{why}");
+    assert!(why.contains("recorded on xbe A generator B codegen clang)"), "{why}");
+    // The same hooks on the same build: no note.
+    play.check_build(Some("hooks A"), "xbe A generator B codegen clang\ntarget t\n").unwrap();
+    assert_eq!(play.other_build, None);
+    // A digest either side lacks is not compared.
+    play.check_build(None, "").unwrap();
+    // The same hooks on another build (another tier) plays, and the build
+    // is kept for a start that does not reproduce.
+    play.check_build(Some("hooks A"), "xbe A generator B codegen cranelift\n").unwrap();
+    assert_eq!(play.other_build.as_deref(), Some("xbe A generator B codegen cranelift"));
+}
+
+#[test]
+fn a_start_that_does_not_reproduce_on_another_build_says_so() {
+    let fixture = Fixture::new();
+    let session = fixture.open();
+    {
+        let mut s = session.lock();
+        let play = s.play.as_mut().unwrap();
+        play.start.stamp.build = "build of the film".into();
+        play.other_build = Some("build of the viewer".into());
+    }
+    let mut g = machine(&fixture.options, [21, 22]);
+    g.set_u32(STATE + 64, 0xfeed).unwrap();
+    assert!(tick(&session, &mut g, |_| ()));
+    let s = session.lock();
+    let why = s.failure.as_deref().expect("the film stopped");
+    assert!(
+        why.contains(&format!(
+            "{ANOTHER_BUILD} It was recorded on build of the film; this is build of the viewer."
+        )) && why.contains("start hash"),
+        "{why}"
+    );
+}

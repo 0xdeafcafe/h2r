@@ -69,12 +69,6 @@ pub fn on_wall(ray: &Ray, at: Vec3) -> Option<Vec3> {
 }
 
 impl AreaHandles {
-    /// Whether a handle is being dragged.
-    #[allow(dead_code)] // Not wired yet.
-    pub fn dragging(&self) -> bool {
-        self.drag.is_some()
-    }
-
     /// Draws the handles of the selected flag's area and runs their
     /// drags. Returns whether the mouse is over a handle and whether one
     /// is being dragged, so the camera and picking leave the mouse alone.

@@ -529,6 +529,12 @@ fn plan_view(
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
             let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref(), entry.structure.as_ref())?;
+            // A flagged shader's item before the frame's structure target
+            // copy (`frame_scene::PartFlags::TARGET_UNCOPIED`): drawn unless
+            // its program has flag bit 20, whose draw would make the copy.
+            if native_render::object_program_gpu::makes_target_copy(item.flags, [lit.planned_pass(model, &draw)]) {
+                return Err("the shader's flag bit 0 before the frame's structure target copy, with a program of flag bit 20, whose draw would make the copy".into());
+            }
             if draw.texaccum && entry.texaccum.is_none() {
                 return Err(
                     "it samples the texture accumulation target, which is not bound or not given to this pass"

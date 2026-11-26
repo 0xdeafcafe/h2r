@@ -5,10 +5,11 @@ use forge::look::film::{LookRecord, PoseRecord, Source};
 use forge::look::{MARKER, MonitorLook, VERSION};
 use std::sync::MutexGuard;
 
-/// The state is a static: tests that use it take turns.
+/// The state is a static: tests that use it take turns (the film player's
+/// tests too, `film_play::tests`).
 static TURN: Mutex<()> = Mutex::new(());
 
-fn turn() -> MutexGuard<'static, ()> {
+pub(crate) fn turn() -> MutexGuard<'static, ()> {
     let guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
     clear();
     guard
@@ -34,7 +35,7 @@ fn source() -> Source {
     }
 }
 
-fn look_record(seat: u8, model: &str) -> Vec<u8> {
+pub(crate) fn look_record(seat: u8, model: &str) -> Vec<u8> {
     LookRecord {
         seat,
         look: look(model),
@@ -43,7 +44,7 @@ fn look_record(seat: u8, model: &str) -> Vec<u8> {
     .to_payload()
 }
 
-fn pose_record(seat: u8, tick: u32, x: f32, monitor: bool) -> Vec<u8> {
+pub(crate) fn pose_record(seat: u8, tick: u32, x: f32, monitor: bool) -> Vec<u8> {
     PoseRecord {
         seat,
         tick,
@@ -174,19 +175,14 @@ fn an_unreadable_record_is_a_named_film_error() {
 }
 
 #[test]
-fn a_ring_entry_puts_back_what_it_held() {
+fn a_film_that_starts_over_reads_its_monitors_again() {
     let _t = turn();
     deliver(
         30,
         &[look_record(13, MARKER), pose_record(13, 30, 5., true)],
     )
     .unwrap();
-    let kept = snapshot();
-    deliver(60, &[look_record(14, MARKER), pose_record(14, 60, 7., true)]).unwrap();
-    assert!(is_monitor(14));
-    restore(&kept);
-    assert!(is_monitor(13) && !is_monitor(14));
-    // A keyframe restore starts again from the checkpoint.
+    assert!(active() && is_monitor(13));
     clear();
     assert!(!active());
     assert!(!is_monitor(13));

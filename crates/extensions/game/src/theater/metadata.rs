@@ -93,6 +93,12 @@ impl Capture {
         &self.descriptor
     }
 
+    /// The mounted maps the session was given (`Session::set_match_sources`):
+    /// a film watched in this session checks its map against them.
+    pub(super) fn vfs(&self) -> Option<Arc<Mutex<vfs::Vfs>>> {
+        self.vfs.clone()
+    }
+
     /// Forget the game just sealed (or left before its end) and describe
     /// the next one from its start. The match sources stay.
     pub(super) fn next_game(&mut self) {
@@ -738,90 +744,6 @@ pub(super) fn install(session: &Arc<super::Session>, b: &mut hooks::Builder) {
                 }
             }
         });
-}
-
-/// Verify the final transition affecting each seat on this tick. A replacement
-/// can leave and join the same slot before the next engine update.
-#[allow(dead_code)] // Playback does not check seat transitions yet.
-pub(super) fn verify_events(g: &Guest, events: &[Event]) -> Result<()> {
-    if events.is_empty() {
-        return Ok(());
-    }
-    let mut slots = BTreeMap::<u8, (Option<&Seat>, &Event)>::new();
-    let mut host = None;
-    for event in events {
-        match event {
-            Event::HostMigration { host_id } => host = Some(host_id),
-            Event::Pause { .. } => {}
-            Event::Join { player } => {
-                slots.insert(player.seat, (Some(player), event));
-            }
-            Event::Leave { seat } | Event::Quit { seat } => {
-                slots.insert(*seat, (None, event));
-            }
-            Event::Team { seat, .. } => {
-                slots
-                    .entry(*seat)
-                    .and_modify(|(_, last)| *last = event)
-                    .or_insert((None, event));
-            }
-        }
-    }
-    if let Some(host) = host {
-        let machine = bots::lobby::game_session(g)
-            .ok()
-            .and_then(|s| host_machine(g, s));
-        ensure!(
-            machine.as_ref() == Some(host),
-            "film host migration differs"
-        );
-    }
-    if slots.is_empty() {
-        return Ok(());
-    }
-    let rows = players::array(g)
-        .map_err(|e| anyhow::anyhow!("film players: {e:?}"))?
-        .map(|a| a.live(g, 16))
-        .transpose()
-        .map_err(|e| anyhow::anyhow!("film players: {e:?}"))?
-        .unwrap_or_default();
-    for (seat, (joined, event)) in slots {
-        let row = rows
-            .iter()
-            .find(|(h, _)| h.index() == u16::from(seat))
-            .map(|(_, p)| *p);
-        if let Some(player) = joined {
-            let row = row.context("film player did not join")?;
-            let mut name = [0; players::NAME_UNITS];
-            let n = row
-                .name_units(g, &mut name)
-                .map_err(|e| anyhow::anyhow!("film player name: {e:?}"))?;
-            ensure!(
-                player
-                    .name
-                    .encode_utf16()
-                    .eq(live_proto::bots::unmarked_units(&name[..n]).iter().copied()),
-                "film player joining seat {seat} differs"
-            );
-        }
-        match event {
-            Event::Leave { .. } => ensure!(row.is_none(), "film seat {seat} did not leave"),
-            Event::Quit { .. } => ensure!(
-                row.is_some_and(|p| p.flags(g).is_ok_and(|v| v & 2 != 0)),
-                "film seat {seat} did not quit"
-            ),
-            Event::Team { team, .. } => ensure!(
-                row.and_then(|p| p.team(g).ok()).map(i32::from) == Some(*team),
-                "film seat {seat} team differs"
-            ),
-            Event::Join { player } => ensure!(
-                row.and_then(|p| p.team(g).ok()).map(i32::from) == Some(player.team),
-                "film seat {seat} join team differs"
-            ),
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// A networked game's session is System Link: a networked protocol (1 or

@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). A dedicated host uploads its film file and stats stream, a machine uploads its own films as the host does, and a participant's Watch reads the host's film file from Live by range; Live stores the file as sent, reads the film file with the lease's token only, serves it to any signed-in account that can see the game, and charges a pinned game for it (slice 12; the run of a host film's arena hashes on a local playback is not made). The session ring is built: a seek behind the tick shown loads the latest entry at or before its target in the running game and runs forward from it, `theater.state` reports the route `ring` and `theater.keyframes` the entries (slice 8; its run, the after-restore step and the timeline's covered stretch are not made). Extension records are built, with a shared Forge session's edits their first user, and an outside change with no record ends the film at the tick before it (slice 11).
+Status: Design. The per-update action and body capture and apply, the film file and its column and tail codec, the game start block, start points, the camera rig, the film selector, the Live film routes and the recorded look in first person (`coop_look::follow_film`, slice 9) are built; a film plays from its game start, in the running game and in a film player process, one film tick for each application of the update (slices 1b, 2, 3, 4 and 5). A default recording writes one film for each game, `<id>.h2film` and `<id>.h2stats`, opened at the game's activation with tick 1 its first update and sealed at its end; there is no session tape, cut or fork, and the library prune seals a hard-killed film at its last checkpoint (slice 6). The machine film is gone from Theater and the film crate: a film without a game start does not open, a seek runs in the process that plays the film, and nothing is restored from a keyframe (slice 7a). The call tape is gone: no HLE call, pad read, keyboard command, bot outcome, lobby call or network result is recorded or answered from a film, the stats container holds no machine section, arena hash or mark, and the film file holds no machine part (slice 7b). A dedicated host uploads its film file and stats stream, a machine uploads its own films as the host does, and a participant's Watch reads the host's film file from Live by range; Live stores the file as sent, reads the film file with the lease's token only, serves it to any signed-in account that can see the game, and charges a pinned game for it (slice 12; the run of a host film's arena hashes on a local playback is not made). The session ring is built: a seek behind the tick shown loads the latest entry at or before its target in the running game and runs forward from it, `theater.state` reports the route `ring` and `theater.keyframes` the entries (slice 8; its run, the after-restore step and the timeline's covered stretch are not made). Extension records are built, with a shared Forge session's edits their first user, and an outside change with no record ends the film at the tick before it (slice 11). A film plays the Forge monitor looks and poses its stats container holds, a game tick at a time (`film_play::Looks`), a start-route seek reads them again from the start, and a ring jump puts back the entry's and reads on from its tick.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the update hook), `crates/extensions/game/src/theater/record.rs` (the recorder's tick), `crates/live/film/src/columns.rs` (the chunk codec), `crates/extensions/game/src/theater/film_play.rs` (play from the game start), `crates/extensions/game/src/theater/watch.rs` (watching in the running game), `crates/extensions/game/src/theater/pacing.rs`, `crates/live/film/src/file.rs` (the film file), `crates/extensions/game/src/theater/start_point_state.rs` (arena state). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/extensions/game/src/theater/film_play/tests.rs`, `crates/extensions/game/src/theater/watch/tests.rs`, `crates/live/film/src/file/tests.rs`.
 Switch: [the film player's `H2_THEATER_*`](../runtime/switches.md).
 
@@ -190,7 +190,12 @@ at its head). The film stores that record, as Halo 3's film does.
   recorder writes a game tick's records before its first film tick; the
   player hands them to their feature when the tick before ends, and the
   feature applies them in the game tick that follows
-  (`theater/extension.rs`). A change with no record (an editor write, an
+  (`theater/extension.rs`). The Forge monitor looks and poses are
+  presentation, not outside input: they stay in the stats container, and
+  the player hands them to `theater::forge_film` as each game tick ends
+  (`film_play::Looks`), counted in game ticks because the container holds
+  one tick for each game tick. A film whose stats container is not on
+  this machine plays without them. A change with no record (an editor write, an
   agent API write) ends the film at the tick before it and keeps it to
   there (`Session::outside_change`). A film with records of a feature
   this build does not have does not open.
@@ -271,16 +276,21 @@ export only.
 1. `theater.watch` and the Theater menu's Watch plan the film
    (`Session::plan_watch`): the film has a game start, its stamp is this
    build's XBE and simulation contract ("Film compatibility", checked by
-   the caller), it was recorded with the feature switches this session
-   runs, and the options block names a scenario. One film is watched at a
-   time.
+   the caller), its simulation hook digest is this session's
+   (`film_play::Play::check_build`; a film of other hooks is refused as
+   "recorded by another build"), it was recorded with the feature switches
+   this session runs, and the options block names a scenario. One film is
+   watched at a time.
 2. The film's options are queued as the next game through the agent's
    guest calls (`agent::sim::calls::Call::QueueGame`, the path `game.load`
    takes), the recorded block with its session kind byte set to local (a
    campaign's, 0, stays 0). Once the calls have queued them the film is
    armed (`Session::arm_watch`): its simulation-scope settings are applied
    by value (`settings::Store::run_as`) and the viewer's running values are
-   kept.
+   kept, and the viewer leaves any lobby (`lobby_start::clear`): the film's
+   game starts from its options alone, and a lobby's Forge mode would move
+   a plain Slayer record onto the script index at the activation
+   (`rules::record::move_onto_script_index`).
 3. The game tears down, loads the map and activates it as it does for any
    game. At the activation the session moves from recording to playing at
    the game boundary (`Session::game_activated`): the recorder's state is
@@ -288,15 +298,19 @@ export only.
    left as it is when its player quits to the menu; no film is made of it.
    An activation of another game while the film is armed drops the film and
    puts the settings back.
-4. At the first update the player writes the two random words and compares
-   the arena hash with the film's start hash. Each update after is fed from
+4. At the first update the player writes the two random words, checks the
+   loaded map, variant, difficulty and skulls against the film's
+   (`metadata::verify_start`, over the maps the session plays from), and
+   compares the arena hash with the film's start hash. Each update after is fed from
    the film until the last record. The player then holds the last tick
    (`Session::holds_in_game`, answered as zero ticks at `GAME_UPDATE_TICKS`)
    with the bar showing the end.
 5. **End Film**, `theater.end`, or B at the end queues the main menu's
    options (`game.menu`'s calls). The film's game is gone when the main
    menu activates: the recorder's state returns, the viewer's settings are
-   put back and the film page opens (`Theater::reopen_film`). The next
+   put back and the film page opens (`Theater::reopen_film`) once the main
+   menu is the active game and one screen has been on top of it for 20
+   menu updates in a row (`theater_ui::link`). The next
    game is recorded from the tick the recording stopped at; none of the
    film's ticks are in any film file. A session that ends while a film
    plays drops the film and seals the recorder's own games.
@@ -307,7 +321,11 @@ export only.
    `theater.status`'s `watch_failure`. The start hash is made of the arena
    and the extension records' digest; the film's `HDET` section holds both
    by page, so the reason names the arena pages or the extension state
-   that differ. `H2_THEATER_ARENA_DUMP` writes the arena at both starts for a
+   that differ, and the data arrays of the arena that own those pages
+   (`lockstep::pools::page_owners`, from the arena's array headers). A
+   film of another build (its stamp's `build` is not this session's) says
+   so before the hash: the start state is the build's as well as the
+   options'. `H2_THEATER_ARENA_DUMP` writes the arena at both starts for a
    byte comparison.
 
 No process is started and nothing is booted to watch a film or to seek in
@@ -356,7 +374,7 @@ A request for tick T takes the cheapest route:
 
 After the restore the player runs forward to T unrendered, checking every
 digest on the way, then holds or plays as asked. `theater.state` reports
-the route (`forward`, `ring` or `boot` for the start route), the ticks left and the tick of the first divergence. A jump
+the route (`forward`, `ring` or `boot` for the start route), the route the caller asked for (`requested`), the ticks left and the tick of the first divergence. A jump
 while a jump is running replaces its target. Cancel returns to the tick
 the jump left. The film file holds no seek point, as Halo 3's does not.
 
@@ -601,7 +619,7 @@ nothing.
 | Method | Parameters | Result |
 |---|---|---|
 | `theater.watch` | `{id \| path, tick?, seat?, camera?}` | queues the film in the running game; `{id, length_ticks, queued}`. The transport answers once the film's game has activated |
-| `theater.state` | `{}` | `tick`, `length`, `paused`, `speed`, `speed_reached`, `seek` (`{target, from_tick, source: "forward" \| "ring" \| "start", remaining_ticks, restore_ms}` or null), `verified_through`, `divergence` (`{tick, kind}` or null), `camera_pose`, `hud`, `bar` |
+| `theater.state` | `{}` | `tick`, `length`, `paused`, `speed`, `speed_reached`, `seek` (`{target, from_tick, source: "forward" \| "ring" \| "start", requested?: "boot", remaining_ticks, restore_ms}` or null), `verified_through`, `divergence` (`{tick, kind}` or null), `camera_pose`, `hud`, `bar` |
 | `theater.play`, `theater.pause`, `theater.speed`, `theater.step` | `{}`, `{}`, `{speed}`, `{ticks}` | transport state |
 | `theater.seek` | `{tick, source?: "start"}` or `{cancel: true}` | transport state |
 | `theater.end` | `{}` | queues the main menu; the film page opens when it loads |

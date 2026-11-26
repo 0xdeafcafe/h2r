@@ -671,6 +671,14 @@ impl<R: Read + Seek> TrackReader<R> {
         Ok(())
     }
 
+    /// Read the stats stream's own records only: events, digests and the
+    /// Forge and Firefight records, with no actions, so a reader that wants
+    /// the presentation needs no film file. Call before the first step.
+    pub fn without_actions(mut self) -> Self {
+        self.inputs_in_film = false;
+        self
+    }
+
     /// Last completed tick in the machine timeline, including lobby ticks.
     pub fn length_ticks(&self) -> u64 {
         self.reader.header.meta.length_ticks
@@ -715,12 +723,17 @@ impl<R: Read + Seek> TrackReader<R> {
                     "corrupt private events at tick {}",
                     block.tick
                 );
+                // The private frame holds what the public chunk leaves out:
+                // the identities in the lifecycle events, and every Forge
+                // and Firefight record.
                 for (frame, original) in public
                     .iter_mut()
                     .zip(unified::decode(&private, block.tick, count)?)
                 {
                     frame.events = original.events;
                     frame.closing_events = original.closing_events;
+                    frame.forge = original.forge;
+                    frame.firefight = original.firefight;
                 }
             }
             Ok(public)
