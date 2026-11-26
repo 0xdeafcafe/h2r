@@ -15,7 +15,7 @@ pub(crate) fn install(b: &mut Builder) {
                 if fp_supported(c.cpu).is_err() {
                     return;
                 }
-                let mem = c.guest();
+                let mut mem = c.guest();
                 // 0x1e370's saved registers and locals are below its caller.
                 if !c
                     .cpu
@@ -25,7 +25,7 @@ pub(crate) fn install(b: &mut Builder) {
                 {
                     return;
                 }
-                crate::scene_step::display_transparents(|clusters| {
+                let built = crate::scene_step::display_transparents(|clusters| {
                     queue(&*mem, clusters, |id| {
                         crate::native_world::display_cluster_transparents(
                             &*mem,
@@ -34,7 +34,33 @@ pub(crate) fn install(b: &mut Builder) {
                         )
                     })
                 });
+                // The head run: before the loop's first entry.
+                if let Some(built) = built {
+                    crate::native_water::begin_display_runs(&mut *mem, &built, c.cpu.esp);
+                }
             },
+        )
+        .context_only()
+        .optional();
+    // After each entry of the loop, the one it called or the one it skipped
+    // for a null handler: `esi` is the ordinal. `0x0001e3f3`, where the
+    // call returns, is a call's continuation, so no hook runs there.
+    b.raw()
+        .observe_before(
+            &points::scene_effects::TRANSPARENT_DISPATCH_NEXT,
+            "draw display runs after a sorted entry",
+            |c| {
+                let mut mem = c.guest();
+                crate::native_water::display_runs_after_entry(&mut *mem, c.cpu.esp, c.cpu.esi);
+            },
+        )
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_before(
+            &points::scene_effects::SCENE_TRANSPARENTS_END,
+            "end display runs",
+            |_| crate::native_water::end_display_runs(),
         )
         .context_only()
         .optional();

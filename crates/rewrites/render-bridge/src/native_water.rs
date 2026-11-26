@@ -27,6 +27,7 @@ use engine::points;
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{self, Cleared, CURRENT_LAYER};
 
+use frame_scene::transparent::{DisplayTransparentPart, DisplayTransparentQueue};
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-water";
@@ -55,6 +56,53 @@ pub const WATER_LAYER: u32 = 6;
 /// clear `0x3c515` keeps its guest order after it.
 pub trait Host: Send + Sync {
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<Cleared>;
+
+    /// Whether the display pass draws this part of the sorted display
+    /// queue: a water part the native set holds, whose live shader is the
+    /// queue's. Default: none.
+    fn draws_display_part(&self, _mem: &dyn GuestMemory, _part: &DisplayTransparentPart) -> bool {
+        false
+    }
+
+    /// Draws `parts` (cluster, part) in order on the display copy, one
+    /// display pass for the run, from inside the sorted dispatch. Returns
+    /// how many it drew: 0 when it refused, with nothing drawn. The
+    /// reference view is untouched. Default: refuses.
+    fn draw_display_parts(&self, _mem: &mut dyn GuestMemory, _parts: &[PartKey]) -> usize {
+        0
+    }
+
+    /// The parts the last [`ask`](Self::ask) drew on the display copy at
+    /// layer 6, taken: the queue's runs do not draw them again.
+    fn take_layer6_display(&self) -> Vec<PartKey> {
+        Vec::new()
+    }
+}
+
+mod display_runs;
+pub use display_runs::{PartKey, Plan};
+
+/// The queue's head run, at `TRANSPARENT_ORDER_READY` once the queue is
+/// built (`esp` the dispatch's stack pointer). Without a host nothing is
+/// planned.
+pub(crate) fn begin_display_runs(mem: &mut dyn GuestMemory, queue: &DisplayTransparentQueue, esp: u32) {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(host) = host else { return };
+    let already = host.take_layer6_display();
+    display_runs::begin(mem, &*host, queue, esp, &already);
+}
+
+/// After the dispatch loop's entry `ordinal` returned or was skipped
+/// (`TRANSPARENT_DISPATCH_NEXT`).
+pub(crate) fn display_runs_after_entry(mem: &mut dyn GuestMemory, esp: u32, ordinal: u32) {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(host) = host else { return };
+    display_runs::after_entry(mem, &*host, esp, ordinal);
+}
+
+/// The dispatch loop's exit (`SCENE_TRANSPARENTS_END`).
+pub(crate) fn end_display_runs() {
+    display_runs::end();
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);

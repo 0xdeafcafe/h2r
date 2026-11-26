@@ -1190,21 +1190,27 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
-pub(crate) fn display_transparents(build: impl FnOnce(&[u16]) -> Option<frame_scene::transparent::DisplayTransparentQueue>) {
+/// Builds the view's display queue and keeps it in the scene; returns it for
+/// the sorted dispatch's display runs (`native_water::begin_display_runs`).
+pub(crate) fn display_transparents(
+    build: impl FnOnce(&[u16]) -> Option<frame_scene::transparent::DisplayTransparentQueue>,
+) -> Option<Arc<frame_scene::transparent::DisplayTransparentQueue>> {
     with_step(|step| {
-        let Some(view) = step.builder.view() else { return };
-        if view.key.kind != ViewKind::Game { return; }
-        let Some(visibility) = view.display_visibility.as_ref() else { return };
-        if visibility.clusters.is_empty() { return; }
-        let Some(queue) = build(&visibility.clusters) else { return };
+        let view = step.builder.view()?;
+        if view.key.kind != ViewKind::Game { return None; }
+        let visibility = view.display_visibility.as_ref()?;
+        if visibility.clusters.is_empty() { return None; }
+        let queue = build(&visibility.clusters)?;
         // `render.stats`: `layer_plan_15_display_queue_*` (docs/graphics/native-renderer.md).
         let count = |outcome, n| crate::native_layers::count(15, outcome, n);
         count("display_queue_built", 1);
         count("display_queue_geometry", queue.geometry().count() as u64);
         count("display_queue_unresolved_clusters", queue.unresolved_clusters.len() as u64);
         count("display_queue_inexact", u64::from(!queue.order_exact));
-        let _ = step.builder.set_display_transparents(queue);
-    });
+        let queue = Arc::new(queue);
+        let _ = step.builder.set_display_transparents(Arc::clone(&queue));
+        Some(queue)
+    })
 }
 
 /// Runs `f` on the overlay of the scene being written (`FrameScene::overlay`,
