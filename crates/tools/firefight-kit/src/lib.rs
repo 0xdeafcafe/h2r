@@ -20,6 +20,7 @@ use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 
 mod ai;
 mod bases;
+pub mod builtin;
 pub mod ground;
 mod nav;
 pub mod retail;
@@ -387,6 +388,14 @@ fn assemble(
     let base_memory = map.header().meta_size;
     let scenario = map.scenario().context("missing scenario")?.id;
     let nav = nav::prepare(&mut map, config, labels, Fit::lean(fit))?;
+    ensure!(
+        nav.refused.is_empty(),
+        "Firefight layout{}: {}",
+        config
+            .layout
+            .map_or(String::new(), |l| format!(" for {}", l.map)),
+        nav.refused.join("; ")
+    );
     let zones = nav.zones.len();
     let bases = nav.bases;
     let problems = nav.problems;
@@ -533,6 +542,7 @@ fn install(
     base: &[u8],
     base_name: &str,
     mode: Mode,
+    layout: Option<&builtin::Layout>,
     bytes: &[u8],
     maps_dir: &Path,
     package_dir: &str,
@@ -543,7 +553,13 @@ fn install(
         Mode::Kit => format!("Firefight – {base_name}"),
         Mode::Probe => format!("Firefight Probe – {base_name}"),
     };
-    let patch = content::patch::diff(base, bytes, &format!("Firefight kit v{KIT_VERSION}"));
+    // The layout's digest is in the label, so the package id follows the
+    // layout as it follows the kit's version.
+    let label = match layout {
+        None => format!("Firefight kit v{KIT_VERSION}"),
+        Some(l) => format!("Firefight kit v{KIT_VERSION} layout {}", l.digest()),
+    };
+    let patch = content::patch::diff(base, bytes, &label);
     let sha256 = Sha256::of(&patch.bytes);
     let file = format!("kit-{sha256}.{}", patch.format.extension());
     manifest.patches.push(Layer {
@@ -610,6 +626,7 @@ pub fn build_package_with(
         base,
         base_name,
         mode,
+        config.layout,
         &built.bytes,
         maps_dir,
         package_dir,

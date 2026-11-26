@@ -332,7 +332,10 @@ pub fn build_with(
     );
     labels.check()?;
     let canonical = labels.canonical();
-    let config = Config { home: recipe.home };
+    let config = Config {
+        home: recipe.home,
+        ..Config::default()
+    };
     let built =
         crate::build_with_classes(base, base_name, recipe.mode, &config, &canonical, classes)?;
     Ok(Ground {
@@ -369,6 +372,7 @@ impl Ground {
             base,
             base_name,
             self.receipt.recipe.mode,
+            None,
             &self.bytes,
             maps_dir,
             package_dir,

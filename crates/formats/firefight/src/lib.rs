@@ -25,7 +25,34 @@ pub use validate::{HOST_ACTOR_CAPS, Limits, validate};
 /// The Firefight map kit's version (`firefight_kit` writes it into the map
 /// it builds, so it is part of the package's id). Session data names it
 /// (`live_proto::session::Firefight::kit`) so every machine plays one kit.
-pub const KIT_VERSION: u32 = 3;
+pub const KIT_VERSION: u32 = 4;
+
+/// The roles a kit gives a drop zone, in the zone's flags
+/// (`scnr` zone `+0x20`, above the engine's own low bits). The kit writes
+/// them, the guest reads them back (`firefight-kit`'s `Roles`,
+/// `game::firefight::guest::read_kit`).
+pub mod roles {
+    /// First flag bit of the roles.
+    pub const SHIFT: u32 = 8;
+    /// A line squad's zone.
+    pub const LINE: u8 = 1;
+    /// A flanking squad's zone.
+    pub const FLANK: u8 = 2;
+    /// A heavy (boss wave) squad's zone.
+    pub const HEAVY: u8 = 4;
+    /// Every role: what a kit with no authored layout gives each zone.
+    pub const ALL: u8 = LINE | FLANK | HEAVY;
+
+    /// The roles as zone flag bits.
+    pub fn pack(roles: u8) -> u32 {
+        u32::from(roles & ALL) << SHIFT
+    }
+
+    /// The roles a zone's flags carry.
+    pub fn unpack(flags: u32) -> u8 {
+        ((flags >> SHIFT) as u8) & ALL
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Refusal>;
 

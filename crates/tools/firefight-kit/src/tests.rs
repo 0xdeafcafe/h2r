@@ -190,7 +190,10 @@ fn the_kit_writes_each_start_its_base_team() {
     let mut map = Map::from_reader(Cursor::new(&base[..])).unwrap();
     assert_eq!(start_teams(&mut map), [0, 1, 8]);
     for (home, teams) in [(Team::Red, [0, 1, 0]), (Team::Blue, [1, 0, 0])] {
-        let built = build(&base, "court", Mode::Kit, &Config { home }).unwrap();
+        let built = build(&base, "court", Mode::Kit, &Config {
+                home,
+                ..Config::default()
+            }).unwrap();
         let mut map = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
         // The middle start is as near one base as the other: it takes
         // the home base.
@@ -206,7 +209,10 @@ fn the_kit_writes_each_start_its_base_team() {
         }
     }
     let red = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
-    let blue = build(&base, "court", Mode::Kit, &Config { home: Team::Blue }).unwrap();
+    let blue = build(&base, "court", Mode::Kit, &Config {
+            home: Team::Blue,
+            ..Config::default()
+        }).unwrap();
     assert_eq!(
         blue.bases.points,
         [red.bases.points[1], red.bases.points[0]]
@@ -340,4 +346,137 @@ fn a_map_short_of_headroom_takes_the_fit_steps_in_order() {
     ] {
         assert!(error.contains(part), "{error}");
     }
+}
+
+fn zones_of(bytes: &[u8]) -> Vec<h1campaign::ai::h2::Zone> {
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    ScenarioAi::read_map(&mut map).unwrap().zones
+}
+
+#[test]
+fn auto_kits_tag_every_role() {
+    let built = build(&fixture(), "court", Mode::Kit, &Config::default()).unwrap();
+    let zones = zones_of(&built.bytes);
+    assert_eq!(zones.len(), built.zones + 2);
+    for zone in &zones[..built.zones] {
+        assert!(zone.name.starts_with("ff_drop_"), "{}", zone.name);
+        assert_eq!(
+            firefight::roles::unpack(zone.flags),
+            firefight::roles::ALL,
+            "{}",
+            zone.name
+        );
+        // The engine's own bit is untouched.
+        assert_eq!(zone.flags & 0xff, 1, "{}", zone.name);
+    }
+    // A base zone is nobody's drop.
+    for zone in &zones[built.zones..] {
+        assert_eq!(firefight::roles::unpack(zone.flags), 0, "{}", zone.name);
+    }
+}
+
+const RED_STAND: builtin::Anchor = builtin::Anchor::Flag {
+    kind: builtin::FlagKind::CtfStand,
+    team: Some(Team::Red),
+    nth: 0,
+};
+const BLUE_STAND: builtin::Anchor = builtin::Anchor::Flag {
+    kind: builtin::FlagKind::CtfStand,
+    team: Some(Team::Blue),
+    nth: 0,
+};
+
+/// One drop in the middle of the court, named `name`.
+const fn court_layout(name: &'static str) -> builtin::Layout {
+    builtin::Layout {
+        map: "court",
+        home: Team::Red,
+        two_teams: true,
+        base: builtin::BaseSpec {
+            anchor: RED_STAND,
+            positions: 4,
+        },
+        drops: &[builtin::DropSpec {
+            name,
+            anchor: builtin::Anchor::Between(&RED_STAND, &BLUE_STAND, 0.5),
+            offset: [0.0; 3],
+            radius: 5.0,
+            roles: builtin::Roles::HEAVY,
+            sides: builtin::Sides::Both,
+        }],
+        cover: &[],
+    }
+}
+
+static MIDDLE: builtin::Layout = court_layout("middle");
+static CENTRE: builtin::Layout = court_layout("centre");
+
+#[test]
+fn the_layout_hash_changes_the_package_id() {
+    let base = fixture();
+    let with = |layout| Config {
+        layout,
+        ..Config::default()
+    };
+    // A layout is built from: its one drop, with its roles, and the bases
+    // still armed.
+    let built = build(&base, "court", Mode::Kit, &with(Some(&MIDDLE))).unwrap();
+    assert_eq!(built.zones, 1);
+    let zones = zones_of(&built.bytes);
+    assert_eq!(zones.len(), 3);
+    assert_eq!(
+        firefight::roles::unpack(zones[0].flags),
+        firefight::roles::HEAVY
+    );
+    // Naming the drop differently builds the same map...
+    let renamed = build(&base, "court", Mode::Kit, &with(Some(&CENTRE))).unwrap();
+    assert_eq!(built.bytes, renamed.bytes);
+    // ...but not the same package: the layout's hash is in the patch.
+    let dir = std::env::temp_dir().join(format!(
+        "ff-layout-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let id = |layout, name| {
+        build_package(&base, "court", Mode::Kit, &with(layout), &dir, name, false)
+            .unwrap()
+            .id
+    };
+    let (a, a_again) = (id(Some(&MIDDLE), "a"), id(Some(&MIDDLE), "a2"));
+    let (b, none) = (id(Some(&CENTRE), "b"), id(None, "none"));
+    assert_eq!(a, a_again);
+    assert_ne!(a, b);
+    assert_ne!(a, none);
+    assert_ne!(b, none);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_layout_that_cannot_place_a_drop_fails_the_build_by_name() {
+    static LOST: builtin::Layout = {
+        let mut l = court_layout("lost");
+        l.drops = &[builtin::DropSpec {
+            name: "west_cave",
+            anchor: builtin::Anchor::Item {
+                suffix: "rocket_launcher",
+                nth: 0,
+            },
+            offset: [0.0; 3],
+            radius: 4.0,
+            roles: builtin::Roles::FLANK,
+            sides: builtin::Sides::Both,
+        }];
+        l
+    };
+    let config = Config {
+        layout: Some(&LOST),
+        ..Config::default()
+    };
+    let err = build(&fixture(), "court", Mode::Kit, &config).err().unwrap();
+    let text = format!("{err:#}");
+    assert!(text.contains("drop 'west_cave'"), "{text}");
+    assert!(text.contains("rocket_launcher"), "{text}");
 }

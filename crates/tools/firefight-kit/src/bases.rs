@@ -48,8 +48,12 @@ impl Team {
 /// What the kit builder is asked for besides the base map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
-    /// Which map team's base becomes the home base, base 0.
+    /// Which map team's base becomes the home base, base 0. A layout names
+    /// its own.
     pub home: Team,
+    /// The authored layout the drops come from, for a map that has one
+    /// (`crate::builtin::for_map`); the generator picks them otherwise.
+    pub layout: Option<&'static crate::builtin::Layout>,
 }
 
 /// Where the two base points came from.

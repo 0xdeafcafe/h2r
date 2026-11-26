@@ -694,7 +694,49 @@ drops come `ff_base_00` and `ff_base_01`, each one area with up to 8
 firing positions around its base, and the orders `ff_hunt_00` and
 `ff_hunt_01`, whose primary areas are that base's area only, so a squad
 hunted at team N pushes into base N. The kit refuses maps without six
-suitable drops or without the required local tags. `KIT_VERSION` is 3.
+suitable drops or without the required local tags. `KIT_VERSION` is 4.
+
+**Built-in layouts.** A map with an authored layout takes its drops from
+it, not from the generator. Layouts are code in
+`crates/tools/firefight-kit/src/builtin/{mod,coagulation,zanzibar}.rs`;
+`builtin::for_map(name)` finds one and `Config::layout` carries it.
+`Layout { map, home, two_teams, base, drops, cover }` names each drop by an
+`Anchor` on the map's own data, never a coordinate: `Flag { kind, team,
+nth }` (netgame flags, `scnr+0x118`: CTF stand, oddball, teleporter source
+and exit, territory, hill corner), `Starts { team }` (the mean of a team's
+starting locations), `Item { suffix, nth }` (a weapon placement by the end
+of its tag name), `Between(a, b, t)` and `Or(a, b)` (the first that
+resolves). A drop is its anchor, an offset, a snap radius, its `Roles` and
+its `Sides`. The base anchor replaces the home base's point and caps the
+base zone's firing positions (4 on Zanzibar, which is short of headroom).
+
+`nav::choose_zones_with` snaps each drop to the nearest sector within its
+radius that is on the walkable area both bases share, outside the base
+exclusion, not on an earlier drop's sector and with room for two firing
+positions. Drops keep the layout's order (`ff_drop_NN`). A drop that
+resolves nowhere or finds no such sector is refused by name, with the
+reason (`drop 'west_cave': no usable sector within 4.0`, `... (inside the
+base exclusion)`, `... (no path to both bases)`), and the build fails
+with every refusal; the generator never picks in its place. The package
+label carries the layout's digest (`Layout::digest`), so the package id
+changes with the layout, and `KIT_VERSION` 4 changes it for every kit.
+
+Each drop zone carries its roles in its flags above the engine's bits
+(`firefight::roles`: `LINE`, `FLANK`, `HEAVY`, from bit 8). A kit with no
+layout gives every drop zone all three, so a wave set plays as it does
+without roles. The game reads them back into `KitZone::roles`
+(`guest.rs::read_kit`); base zones have none. The director does not filter
+by role yet.
+
+Positions the layouts cannot know without the disc map (the wall offsets,
+pad suffixes, snap radii and which team's stand the Zanzibar base is) are
+named constants marked `V` in the layout files. `h2 firefight kit MAP
+--layout-report` is the census that settles them: every flag, start
+cluster and weapon pad with its kind, team and index, then each anchor's
+resolved point, the sector it snapped to, its distance to each base, each
+refusal and the cost table. `--layout` builds the kit with the map's
+layout. Coagulation's layout has two teams (Crossfire is offered); Zanzibar's
+has one.
 
 **Sectors the AI can use.** The generator gives every walkable collision
 surface a sector, including floors no player reaches: decorative
