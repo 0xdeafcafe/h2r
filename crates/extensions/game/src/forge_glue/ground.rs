@@ -16,12 +16,30 @@
 //! when the worker is done. Edits wait meanwhile, so the copy is the session
 //! as it was. A builder holds this module's lock for the whole build, so the
 //! game thread only ever asks [`available`], which does not wait for it.
+//!
+//! **Test waves** then runs the session's wave set on the running map
+//! (docs/game/forge-firefight.md, "Test waves"): [`waves_or_default`] is
+//! the set, and the editor hands it to the Firefight runtime once the map
+//! holds the current ground (`editing::Editor::test_waves`).
 use std::sync::{Mutex, TryLockError};
 
 use forge::{GroundBuilder, GroundReport, Session};
 
 /// What a row says when no builder is installed.
 pub const NO_BUILDER: &str = "This game cannot build AI ground.";
+/// What Test waves says when the game has no Firefight runtime.
+pub const NO_FIREFIGHT: &str = "This game cannot run Firefight waves.";
+/// What Test waves says when the build left the running map without the
+/// ground (the game cannot reload it).
+pub const NOT_LOADED: &str = "The running map does not hold the AI ground, so the waves cannot be tested.";
+
+/// The wave set **Test waves** plays: the session's, else Holdout. This is
+/// the design's `forge::Session::waves_or_default`; until the session
+/// keeps a wave set of its own (slice FA2) it is Holdout, the first
+/// built-in set.
+pub(super) fn waves_or_default(_session: &Session) -> ::firefight::Def {
+    ::firefight::builtin::definitions()[0].clone()
+}
 
 /// Tests that install the process-wide builder run one at a time.
 #[cfg(test)]

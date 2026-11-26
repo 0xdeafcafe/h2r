@@ -1,6 +1,6 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). Slices FA1 to FA8 below are not built.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)), and **Test waves** (FA3, with Holdout's set until FA2). Slices FA1, FA2 and FA4 to FA8 below are not built.
 Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -26,7 +26,7 @@ What a player does, and what carries each step.
 | 2 | places drop zones, two bases and cover from the object menu's **AI and objectives** group | `GroundLabel` markers: a netgame flag with a label op | built |
 | 3 | chooses **Build AI ground** | `firefight_kit::ground::build` over the play form, then the reload | built |
 | 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | design |
-| 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | design; the row builds the ground and does not start a match |
+| 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | built; it plays Holdout's set until the document carries one (FA2) |
 | 6 | saves the map variant | the variant store; the save builds stale ground first | built; the wave set joins it in FA2 |
 | 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | design; the lobby takes only `h2 firefight kit` packages |
 
@@ -171,23 +171,35 @@ needs no change. The lobby is what stands between.
 **Test waves** runs the session's set on the session's map, with the
 editor still open (FA3).
 
-1. The row builds the ground when the running map does not hold the
-   current one and waits for the reload (built,
-   `forge_glue::ground::test_waves`).
-2. It starts a test: `firefight::runtime::Runtime::start_test(def,
-   settings)` makes a `Host` in the `Host` role over the same `GuestGame`
-   a match uses, with the session's set, seed 0 and Normal. A lobby
-   Firefight match stays off in a Forge session (`record_options`); the
-   test is the one way the director runs there.
+1. When the running map does not hold the current ground, the row builds
+   it (`start_ground` with `if_stale`) and starts the test once the
+   reload has opened the session again (`Editor::reopen`). A build that
+   leaves the ground unloaded answers "The running map does not hold the
+   AI ground, so the waves cannot be tested." (`forge_glue::ground::NOT_LOADED`).
+2. The set is `forge_glue::ground::waves_or_default(session)`: Holdout's
+   built-in set until the document carries one (FA2). The editor asks the
+   runtime through `firefight::feature::WaveTests`;
+   `Runtime::ask_test(def, settings)` queues it and the next `pre_tick`
+   starts it (`Runtime::start_test`). `Host::start_test` makes a `Host` in
+   the `Host` role over the same `GuestGame` a match uses, with seed 0,
+   Normal and no skulls (`runtime::test_settings`). The start is refused
+   outside a multiplayer game, off the host's seat, on a map with no AI
+   ground, while a match or a test runs, and in a film's playback. A
+   lobby Firefight match stays off in a Forge session (`record_options`);
+   the test is the one way the director runs there.
 3. The director runs as in a match: the AI switch, `PlaceSquad`, `Hunt`,
-   `EraseSquad`, scores. Three commands differ in a test, in
-   `Host::apply`'s test arm: `Lives` and `Respawn` are not applied (the
-   session's variant respawns players as it does), and `Finish` ends the
-   test, not the game.
-4. The row reads **Stop waves** while a test runs. Stopping erases every
-   slot's squad (`SquadOp::Erase`) and clears the mode blob. A ground
-   build, a Rebuild map, a load and leaving the session stop the test
-   first.
+   `EraseSquad`, scores. Four commands differ in a test, in
+   `Host::apply`'s test arm: `Lives`, `TeamLives` and `Respawn` are not
+   applied (the session's variant respawns players as it does), and
+   `Finish` ends the test, not the game. A test's log is not recorded to
+   the film, it reports no score or result, and its stage end shows no
+   VICTORY or GAME OVER.
+4. The row reads **Stop waves** while a test runs. Stopping
+   (`Runtime::stop_test`) erases every slot's squad (`SquadOp::Erase`),
+   clears the mode blob and leaves the mode idle. A ground build, a
+   Rebuild map, a load, a new map and leaving the session stop the test
+   first. The notice says "Waves cleared." after a won test and "Waves
+   stopped." otherwise.
 
 A monitor is not a target the director counts on: the parked biped is
 invulnerable (`forge_controls::render::park`), so it reads as alive and
@@ -195,7 +207,7 @@ the test never ends with everyone dead while a seat is in the monitor.
 D-pad Up puts the player in the fight.
 
 `firefight.state` reports `test: true`, and `forge.waves.test {stop?}`
-starts and stops one.
+starts and stops one ([agent-api.md](../runtime/agent-api.md#local-forge-session)).
 
 ### Enemy classes
 

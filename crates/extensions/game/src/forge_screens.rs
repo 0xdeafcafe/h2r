@@ -81,6 +81,9 @@ pub struct Facts {
     /// ([`sheet::folder_rows`]).
     pub folders: Vec<sheet::Folder>,
     pub(crate) map_limits: map_limits::Usage,
+    /// A wave test runs or is starting: Forge options' Test waves row reads
+    /// Stop waves.
+    pub testing: bool,
 }
 
 /// The longest name Save as takes: a map variant's.
@@ -270,7 +273,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
     let sheet = match kind {
         Kind::Tools => sheet::tools(f.tool.unwrap_or(sheet::Tool::Objects)),
         Kind::Settings => sheet::settings(f.rotation_snap, f.movement_snap, f.local_axes),
-        Kind::Options => sheet::options_with_groups(&f.folders, &f.placed),
+        Kind::Options => sheet::options_for(&f.folders, &f.placed, f.testing),
         Kind::Variants => variants::list_sheet(&f.variants, f.filename.as_deref()),
         Kind::Controls => sheet::controls(),
         Kind::MapLimits => map_limits::sheet(&f.map_limits),

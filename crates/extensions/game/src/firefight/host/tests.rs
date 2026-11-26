@@ -953,7 +953,7 @@ fn team_lives_and_team_won_reach_the_blob() {
     assert_eq!(game.calls.last(), Some(&Call::End(won)));
     let mode = hud::Mode::of(host.director().unwrap(), 2, Some(won)).unwrap();
     assert_eq!(mode.stage, hud::Stage::Team1Won);
-    let view = hud::view(&hud::Mode::decode(&mode.encode()).unwrap(), 0);
+    let view = hud::view(&hud::Mode::decode(&mode.encode()).unwrap(), 0, hud::Scope::Match);
     assert_eq!(view.get(hud::BANNER).unwrap().text, "BLUE TEAM WINS");
 }
 
@@ -1201,4 +1201,88 @@ fn the_mode_state_is_appended_when_it_changes() {
     let mut game = game;
     assert!(host.pre_tick(7, &mut game).is_empty());
     assert_eq!(host.mode_state(), Some(&[3, 2][..]));
+}
+
+/// A test of Holdout over the scripted match makes the match's calls in
+/// order, the squad's placement among them, less the lives and the
+/// respawn: the director runs as in a match.
+#[test]
+fn a_test_makes_a_matchs_squad_calls_in_order() {
+    let mut game = FakeGame::new();
+    game.ai = Some(AiGlobals {
+        on: false,
+        initialised: true,
+    });
+    let mut test = Host::start_test(holdout(), settings(), &game).unwrap();
+    assert!(test.test() && test.role() == Role::Host);
+    assert!(!start(Role::Host, &game).test());
+    scripted_match(&mut game, &mut test);
+    let want: Vec<Call> = expected_calls()
+        .into_iter()
+        .filter(|c| !matches!(c, Call::Lives(..) | Call::TeamLives(..) | Call::Respawn(_)))
+        .collect();
+    assert!(want.iter().any(|c| matches!(c, Call::Squad(SquadOp::Place(_)))));
+    assert_eq!(game.calls, want);
+    // The director still wrote every entry a match's writes.
+    assert_eq!(test.log().since(0).len(), 8);
+}
+
+/// In a test the lives and the respawns are not the game's: an operator's
+/// `Lives` and `Respawn` make no call, where a match's make one each.
+#[test]
+fn lives_and_respawn_are_not_applied_in_a_test() {
+    let ops = [
+        Command::Lives {
+            player: None,
+            pool: 3,
+        },
+        Command::Respawn { player: 0 },
+    ];
+    let mut game = FakeGame::new();
+    let mut test = Host::start_test(holdout(), settings(), &game).unwrap();
+    for op in ops.clone() {
+        test.append(1, op).unwrap();
+    }
+    assert!(test.pre_tick(1, &mut game).is_empty());
+    assert!(game.calls.is_empty(), "{:?}", game.calls);
+    assert_eq!(test.applied(), 2, "applied, as no-ops");
+
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    for op in ops {
+        host.append(1, op).unwrap();
+    }
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(game.calls, [Call::Lives(None, 3), Call::Respawn(0)]);
+}
+
+/// A test's `Finish` ends the test, once, and not the game: no end call.
+#[test]
+fn finish_ends_the_test_and_not_the_game() {
+    let mut game = FakeGame::new();
+    let mut test = Host::start_test(holdout(), settings(), &game).unwrap();
+    test.append(
+        1,
+        Command::Finish {
+            outcome: Outcome::Won,
+        },
+    )
+    .unwrap();
+    assert!(test.pre_tick(1, &mut game).is_empty());
+    assert!(game.calls.is_empty(), "{:?}", game.calls);
+    assert_eq!(test.take_test_end(), Some(Outcome::Won));
+    assert_eq!(test.take_test_end(), None, "once");
+    // A match's Finish is the game's end.
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    host.append(
+        1,
+        Command::Finish {
+            outcome: Outcome::Won,
+        },
+    )
+    .unwrap();
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(game.calls, [Call::End(Outcome::Won)]);
+    assert_eq!(host.take_test_end(), None);
 }

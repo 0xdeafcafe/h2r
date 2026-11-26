@@ -323,8 +323,11 @@ pub enum Choice {
     EditArea(forge::Endpoint),
     /// **Build AI ground**.
     BuildGround,
-    /// **Test waves**: build the ground when it is not current.
+    /// **Test waves**: run the session's wave set on the running map,
+    /// building the ground first when the map does not hold it.
     TestWaves,
+    /// **Stop waves**: end the wave test, its squads erased.
+    StopWaves,
     /// **Generate nav**: the bots' nav with the placed objects in.
     GenerateNav,
     /// **Rebuild map** (GAME MENU): build the map from the document and
@@ -1591,6 +1594,20 @@ pub fn options_with(placed: &[Placed]) -> Sheet {
 
 /// [`options_with`] with the groups' folders listed first.
 pub fn options_with_groups(folders: &[Folder], placed: &[Placed]) -> Sheet {
+    options_for(folders, placed, false)
+}
+
+/// [`options_with_groups`] while a wave test runs or not (`testing`): the
+/// Test waves row reads **Stop waves** while one does
+/// (docs/game/forge-firefight.md, "Test waves").
+pub fn options_for(folders: &[Folder], placed: &[Placed], testing: bool) -> Sheet {
+    let waves = if testing {
+        SheetRow::new("Stop waves", Act::Choose(Choice::StopWaves))
+            .describe("Erase the test's enemies and stop the waves.")
+    } else {
+        SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
+            .describe("Fight the waves here, building the AI ground first if needed.")
+    };
     Sheet {
         kind: Kind::Options,
         title: "FORGE OPTIONS".into(),
@@ -1602,8 +1619,7 @@ pub fn options_with_groups(folders: &[Folder], placed: &[Placed]) -> Sheet {
                 placed_row_with(folders, placed),
                 SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
                     .describe("Build the nav mesh and zones for the placed labels now."),
-                SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
-                    .describe("Build the AI ground if it is stale, then test."),
+                waves,
                 SheetRow::new("Generate nav", Act::Choose(Choice::GenerateNav))
                     .describe("Build the bots' nav with the placed objects in."),
             ])

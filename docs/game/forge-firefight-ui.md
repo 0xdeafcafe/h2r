@@ -1,6 +1,6 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3; the rest is design, the AI tool, the Waves screens and the HUD of a wave test among it (slices FA3, FA5 and FA7 of [forge-firefight.md](forge-firefight.md)).
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, and the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)); the rest is design, the AI tool and the Waves screens among it (slices FA5 and FA7).
 Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -267,7 +267,7 @@ when the tool's state changes. One layout:
 | `forge.budget.meter` | Meter, `Art::StripMeter` | under the pill (`rects::below`) | used over limit; `Flash(Pulse::TimeWarning)` from 90% |
 | `forge.tool` | Text, `Font::Hud`, longest "VOLUMES" | top right, where a weapon's name line sits | the tool; capitals |
 | `forge.rebuild.pill`, `.pill.end`, `.count` | Icon and LCD Text | the grenade row's second place | pending Rebuild edits; hidden at 0 |
-| `forge.enemies.pill`, `.pill.end`, `.count` (FA3) | Icon and LCD Text | the grenade row's third place | enemies left while a wave test runs; hidden otherwise |
+| `forge.enemies.pill`, `.pill.end`, `.count` | Icon and LCD Text | the grenade row's third place (`views::forge::ENEMIES_STEP`, 60) | enemies left while a wave test runs; hidden otherwise |
 | `forge.nav.target` | Navpoint | over the held, aimed or placed thing; in the Links tool, over the aimed end | while there is one; the number is the distance in metres |
 | `forge.nav.from` | Navpoint | over the link's first end | while a link is started |
 | `forge.nav.monitor.1`, `.2` | Navpoint | over the nearest two other monitors | while another seat's monitor is up |
@@ -586,21 +586,26 @@ by `hud::view` from the mode blob as it is ([firefight.md](firefight.md),
   retail art by widget name, chosen from the disc census (**S**, not
   done).
 
-**While editing** (design, FA3). A wave test in a Forge session draws
-the Firefight HUD from the same mode blob, by what the local user is:
+**While editing** (built, FA3). A wave test in a Forge session draws
+the Firefight HUD from the same mode blob, by what the local user is
+(`hud::Scope`, `Scope::of(testing, in_monitor)`):
 
 | The user is | `ff.banner`, `ff.note` | `ff.enemies.*` | `ff.lives.*` | The monitor HUD |
 |---|---|---|---|---|
 | in the monitor | shown | hidden: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
-| in the biped | shown | shown, at the grenade row's next place | hidden: a test charges no lives | not drawn |
+| in the biped | shown | shown, in its match place (`PILL_STEP`, 30) | hidden: a test charges no lives | not drawn |
 
-- `hud::view_of` takes the scope with the roster slot (a match, a test
-  in the biped, a test in the monitor), so the client's view stays a
-  pure function of the blob, the slot and the scope.
+- `hud::view_of(mode, slot, scope)`, `hud::view` and `hud::current`
+  take the scope with the roster slot (`Scope::Match`, `Biped`,
+  `Monitor`), so the client's view stays a pure function of the blob,
+  the slot and the scope. The feed takes each local user's scope each
+  tick (`forge_controls::monitor`); the monitor's values are
+  `views::firefight::monitor_values`, the banner alone, and the monitor
+  HUD's count is `hud::test_enemies`.
 - The banner and the notes are the game's channels and need no place.
   WAVE n, BOSS WAVE and ROUND COMPLETE read over the monitor as over a
-  player; the end of a test says "Waves cleared" or "Waves stopped" as a
-  `forge.notice`, not VICTORY or GAME OVER.
+  player; the end of a test says "Waves cleared." or "Waves stopped." as
+  a `forge.notice`, not VICTORY or GAME OVER.
 - The tool line keeps the tool's name. Nothing else of the monitor's
   HUD changes in a test, and with no test the monitor draws nothing of
   Firefight.

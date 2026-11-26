@@ -226,6 +226,18 @@ pub fn values(v: &View) -> Values {
     out
 }
 
+/// The values a user in the Forge monitor sees of a wave test
+/// (docs/game/forge-firefight-ui.md, "The Firefight HUD", while editing):
+/// the banner alone. The monitor HUD's own pill shows the enemies left
+/// (`super::forge::ENEMIES_COUNT`), and a test charges no lives.
+pub fn monitor_values(v: &View) -> Values {
+    let mut out = hidden();
+    if let Some(t) = banner_text(v) {
+        out.set(BANNER, Value::text(t));
+    }
+    out
+}
+
 /// The notifications the change from `before` to `now` sends: a round
 /// that starts ("Round 2 of 3"), each skull switched on, lowest index
 /// first ("Mythic skull on", its name from `skull_name`; a skull with no
@@ -370,6 +382,14 @@ pub fn views() -> Vec<(&'static str, View)> {
                 v.lives = Some(u16::MAX);
             }),
         ),
+        // A wave test in a Forge session, seen from the biped: no lives.
+        (
+            "test",
+            with(&|v| {
+                v.stage = Stage::Spawning;
+                v.lives = None;
+            }),
+        ),
         ("red-wins", with(&|v| v.stage = Stage::Team0Won)),
         ("blue-wins", with(&|v| v.stage = Stage::Team1Won)),
         ("draw", with(&|v| v.stage = Stage::Draw)),
@@ -386,6 +406,13 @@ fn sample_note(state: &str) -> Option<&'static str> {
         "widest" => Some(NOTE_LONGEST),
         _ => None,
     }
+}
+
+/// The state of a wave test seen from the Forge monitor: the banner of a
+/// wave that starts, and nothing placed.
+fn test_in_monitor() -> Option<(&'static str, Values)> {
+    let (_, v) = views().into_iter().find(|(name, _)| *name == "test")?;
+    Some(("test-monitor", monitor_values(&v)))
 }
 
 /// The HUD's description.
@@ -406,6 +433,7 @@ impl Describe for Firefight {
                 }
                 (name, out)
             })
+            .chain(test_in_monitor())
             .collect()
     }
 
@@ -414,7 +442,10 @@ impl Describe for Firefight {
     }
 
     /// Firefight is a game of its own: never on the screen with a
-    /// superbounce game's HUDs or Forge's readout.
+    /// superbounce game's HUDs. Its placed elements never meet Forge's: a
+    /// wave test seen from the monitor shows only the banner and the
+    /// notes ([`monitor_values`]), the game's channels, which claim no
+    /// place.
     fn never_with(&self) -> &'static [&'static str] {
         &[
             super::superbounce::NAME,

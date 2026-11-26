@@ -253,12 +253,15 @@ impl Driver {
     fn reset(&mut self) {
         GENERATION.fetch_add(1, Ordering::AcqRel);
         // A reload of ours keeps the editor for the session that opens on
-        // the copy; any other change of map ends it.
-        let editor = self.editor.take();
-        if let Some(carry) = &mut self.carry
-            && carry.editor.is_none()
-        {
-            carry.editor = editor;
+        // the copy; any other change of map ends it, its wave test first.
+        let mut editor = self.editor.take();
+        match &mut self.carry {
+            Some(carry) if carry.editor.is_none() => carry.editor = editor,
+            _ => {
+                if let Some(e) = editor.as_mut() {
+                    e.leave();
+                }
+            }
         }
         self.draft = None;
         self.looks.close();
@@ -695,7 +698,8 @@ pub fn install(
                 driver.lock().unwrap_or_else(|e| e.into_inner()).reloader = Some(reloader);
                 reload::set_reloads(true);
             }
-            local::install(&a.agent, Backend(driver));
+            local::install(&a.agent, Backend(driver.clone()));
+            agent::forge::test::install(&a.agent, Backend(driver));
         }
     }
     Ok(())
@@ -711,6 +715,17 @@ impl Backend {
             .as_ref()
             .map(f)
             .ok_or_else(|| driver.reason.clone())
+    }
+}
+
+/// `forge.waves.test`: the session's Test waves and Stop waves.
+impl agent::forge::test::WavesTest for Backend {
+    fn waves_test(&self, stop: bool) -> Result<agent::forge::test::TestReply, String> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(e) = driver.editor.as_mut() else {
+            return Err(driver.reason.clone());
+        };
+        e.waves_test(stop)
     }
 }
 

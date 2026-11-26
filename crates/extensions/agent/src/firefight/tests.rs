@@ -80,6 +80,7 @@ impl Source for Fake {
         };
         State {
             running: true,
+            test: false,
             map: Some("firefight-probe".into()),
             role: Some(role),
             team: Some(3),
