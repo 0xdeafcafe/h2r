@@ -223,11 +223,27 @@ impl PartFlags {
     /// state toggle `0x00012d50`, and the part draws with its view's
     /// [`AuxDepth`] (its view-projection rows and clip range scaled).
     pub const AUX_DEPTH: PartFlags = PartFlags(1 << 3);
-    const NAMES: [(PartFlags, &'static str); 4] = [
+    /// The record's fade byte (`+0x1a`) is below `0xff`: the prologue
+    /// (`0x0004d640`) sets the polygon stipple pattern the byte selects
+    /// and the epilogue (`0x0004d720`) the solid one, each only when the
+    /// engine's cached fade (`0x004b8494`) differs. The pattern masks the
+    /// draw only while the device's stipple is on; the host takes the part
+    /// only with the stipple off and the solid pattern and a cached one
+    /// held, so drawing it unmasked and skipping its handler leave what
+    /// the guest's would.
+    pub const FADE: PartFlags = PartFlags(1 << 4);
+    /// The shader's flag bit 0 (`+0x16`), in the case the scene draws:
+    /// the active structure has no parameter block, so the prologue
+    /// uploads nothing, and the draw neither binds a lightmap (layer 3)
+    /// nor adds a PRT stream (layer 5).
+    pub const SHADER_FLAG: PartFlags = PartFlags(1 << 5);
+    const NAMES: [(PartFlags, &'static str); 6] = [
         (PartFlags::STENCIL_MARK, "stencil_mark"),
         (PartFlags::STRIP, "strip"),
         (PartFlags::SUBPARTS, "subparts"),
         (PartFlags::AUX_DEPTH, "aux_depth"),
+        (PartFlags::FADE, "fade"),
+        (PartFlags::SHADER_FLAG, "shader_flag"),
     ];
 
     pub fn contains(self, other: PartFlags) -> bool {

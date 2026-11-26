@@ -47,6 +47,12 @@ struct LayerEntry {
     /// (`native_objects_glue::sampled_texaccum`); an item sampling it
     /// refuses without one.
     texaccum: Option<native_render::world_layers::Texaccum>,
+    /// The device's polygon stipple at the call: off
+    /// (`native_objects_glue::stipple_off`), and holding what a faded
+    /// record's epilogue leaves (`native_objects_glue::stipple_at_rest`).
+    /// An item with a fade byte draws unmasked only with both.
+    stipple_off: bool,
+    stipple_at_rest: bool,
 }
 
 /// A live shader edit (`native_edits::Edit::Shader`;
@@ -217,6 +223,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 aux: native_render::aux_depth::read(&Ro(mem))
                     .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(&device, mem, aux)),
                 texaccum: crate::native_objects_glue::sampled_texaccum(&device, mem, true).ok().flatten(),
+                stipple_off: crate::native_objects_glue::stipple_off(&device, mem),
+                stipple_at_rest: crate::native_objects_glue::stipple_at_rest(&device, mem),
             }
         };
         if !entry.w_buffered {
@@ -495,6 +503,17 @@ fn plan_view(
         let planned = (|| -> Result<PlannedDraw, String> {
             if !entry.w_buffered {
                 return Err("the device's draws are not W-buffered".into());
+            }
+            // A record's fade byte: its prologue sets the stipple pattern
+            // the byte picks and its epilogue the solid one
+            // (`frame_scene::PartFlags::FADE`).
+            if item.flags.contains(frame_scene::PartFlags::FADE) {
+                if !entry.stipple_off {
+                    return Err("the record's fade byte, drawn with the polygon stipple on, which the first-person draw does not apply".into());
+                }
+                if !entry.stipple_at_rest {
+                    return Err("the record's fade byte, where the device does not hold the solid stipple and a cached fade of one, which its epilogue leaves".into());
+                }
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
             let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref())?;

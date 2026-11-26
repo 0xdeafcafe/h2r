@@ -116,6 +116,32 @@ pub fn stipple_table(m: &dyn GuestMemory, byte: u8, fcw: u16, mxcsr: u32) -> Res
     Ok(Some(TABLE + 0x80 * index.value.clamp(0, 16) as u32))
 }
 
+/// The pattern a record's epilogue (`0x0004d720`) restores: the table
+/// entry for the engine's one (`0x0045dbc0`), by [`stipple`]'s leave
+/// arithmetic under each of the four x87 rounding modes, so the caller
+/// need not know the guest's control word. `None` when the modes pick
+/// different entries (the scaled one is not a whole number) or the
+/// arithmetic does not run.
+pub fn rest_stipple_table(m: &dyn GuestMemory, mxcsr: u32) -> Option<u32> {
+    const TABLE_SCALE: u32 = 0x0044_541c;
+    const TABLE: u32 = 0x0048_7288;
+    let one = m.u32(crate::light_constants::constant::ONE).ok()?;
+    let scaled = Sse { mxcsr }.mul(one, m.u32(TABLE_SCALE).ok()?).ok()?;
+    let mut picked = None;
+    for rounding in 0..4u16 {
+        let mut x = X87::new(0x027f | rounding << 10);
+        x.fld(scaled).ok()?;
+        let (code, index) = x87::abi::st_i32(&x.0, 0);
+        X87::ok(code).ok()?;
+        let at = TABLE + 0x80 * index.value.clamp(0, 16) as u32;
+        if picked.is_some_and(|p| p != at) {
+            return None;
+        }
+        picked = Some(at);
+    }
+    picked
+}
+
 pub const CACHED_FADE: u32 = 0x004b_8494;
 
 #[cfg(test)]
@@ -141,5 +167,22 @@ mod stipple_tests {
         assert_eq!(stipple_table(&m, 5, 0x037f, 0x1f80).unwrap(), Some(0x0048_7388));
         assert_eq!(stipple_table(&m, 5, 0x0b7f, 0x1f80).unwrap(), Some(0x0048_7408));
         assert_eq!(stipple_table(&m, 0xff, 0x037f, 0x1f80).unwrap(), None);
+    }
+
+    /// The pattern a record's epilogue restores is the table entry for
+    /// one, the same under every rounding mode, and the one a leave from
+    /// another fade sets; a scale that makes the modes disagree gives
+    /// none.
+    #[test]
+    fn the_rest_pattern_is_the_entry_for_one_in_every_rounding_mode() {
+        let mut m = FakeGuest::new();
+        m.put_f32(0x0045_dbb4, 0.25).put_f32(0x0045_dbdc, 0.02)
+            .put_f32(0x0044_541c, 16.0).put_f32(CACHED_FADE, 0.5)
+            .put_f32(crate::light_constants::constant::ONE, 1.0);
+        let rest = rest_stipple_table(&m, 0x1f80);
+        assert_eq!(rest, Some(0x0048_7288 + 0x80 * 16));
+        assert_eq!(stipple(&m, 5, false, 0x037f, 0x1f80).unwrap().map(|(_, at)| at), rest);
+        m.put_f32(0x0044_541c, 2.5);
+        assert_eq!(rest_stipple_table(&m, 0x1f80), None, "2.5 rounds to 2 or 3");
     }
 }

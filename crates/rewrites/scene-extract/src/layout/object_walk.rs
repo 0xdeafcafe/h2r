@@ -43,6 +43,50 @@
 //!   part is in the scene and draws with its view's
 //!   [`frame_scene::AuxDepth`]; when the toggle's inputs do not read it
 //!   refuses ([`Refusal::AuxState`]).
+//!
+//! ## What else the draw takes from the record, the shader and the item
+//!
+//! - **The fade byte** (record `+0x1a`, [`PartFlags::FADE`]). Below `0xff`
+//!   the prologue `0x0004d640` scales it by `0x0045dbb4` and, when that
+//!   differs from the engine's cached fade `0x004b8494` by more than
+//!   `0x0045dbdc`, sets the polygon stipple pattern `0x0001c290` picks
+//!   for it (one of 17 at `0x00487288`) through `SetStipple`
+//!   (`0x003f8cc0`) and caches the fade. The epilogue `0x0004d720` does
+//!   the same for the engine's one (`0x0045dbc0`). The pattern masks the
+//!   draw only while the device's stipple is on: the layer draws' target
+//!   mode `0x00015680` turns it on (mode 1) for layers 1 and 3 outside
+//!   view kinds 4 to 7 and off for layers 5, 8 and 20
+//!   (`0x0002be17`..`0x0002bfef`). The part is in the scene with the flag;
+//!   the host decides from the device.
+//! - **The shader's flag bit 0** (`+0x16`, [`PartFlags::SHADER_FLAG`]).
+//!   The draw then takes no lightmap in layer 3 (`0x0004d2ab`) and no PRT
+//!   stream in layer 5 (`0x0004d237`); it asks for the stage bitmaps of
+//!   the shader's templates (`0x0004d486`..`0x0004d55d`: `0x0012ccf0`,
+//!   then `0x0012ce00` for one not resident), residency only; with its
+//!   program's flag bit 20 it calls `0x0003bea0`, which, the first time a
+//!   frame (`0x00509430` clear, cleared at `0x0002c0f5`), clears the shader
+//!   cache and copies and binds the structure's target; and the prologue,
+//!   when the active structure (`[0x004e0348]`) has a parameter block
+//!   (`+0x214` above 0, the block at `+0x218`), runs `0x0003c650` (texture
+//!   stages and bitmaps) and `0x0003d000` (`c[21..25]` and the fog
+//!   colour). The scene carries the case with no parameter block, no
+//!   target copy to make and no structure lightmap
+//!   ([`frame_scene::LayerObjectRefusal::ShaderFlag`],
+//!   [`frame_scene::LayerObjectRefusal::ShaderFlagTarget`]).
+//! - **The item's argument** (`+0xc`: its high byte, the record, the
+//!   part). The high byte is the item's projected size: the pass setup
+//!   `0x0004d9c0` scales it by the part's `+0x2c`, `0x004670e4` and
+//!   `0x0045dc10`, and the shader begin `0x00016b90` turns that into the
+//!   two distance words at the shader context's `+0x28` and `+0x2c`
+//!   (`0x00016c6e`..`0x00016cb0`). Only the texture-stage resolve reads
+//!   them, for the level of detail it asks residency for
+//!   (`0x0001b0a0`; `render_bridge`'s `opaque_material_textures`), so the
+//!   byte changes no render state, constant or binding of the draw. The
+//!   item's `+0x15` and `+0x14` bytes are the draw's third and fifth
+//!   arguments (`0x0003bc7b`..`0x0003bc8d`), the shader level and the
+//!   pass within the layer `0x00016b90` selects; the scene's passes are
+//!   the first level's from the layer's first pass
+//!   ([`frame_scene::LayerObjectRefusal::Argument`]).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -68,6 +112,12 @@ const ENTRY_CLASSIFICATION: u32 = 8;
 const ENTRY_PROGRAM: u32 = 0x10;
 const PROGRAM_VERTEX_SHADER: u32 = 0x100;
 const PROGRAM_FLAGS: u32 = 0x118;
+/// The active structure, its parameter block count (`> 0` makes the
+/// prologue upload the block for a flagged shader), and the frame's
+/// structure target copy flag `0x0003bea0` sets.
+const ACTIVE_BSP: u32 = 0x004e_0348;
+const BSP_PARAMETER_COUNT: u32 = 0x214;
+const BSP_TARGET_READY: u32 = 0x0050_9430;
 const HANDLER_COUNTER: u32 = 0x28;
 const RECORD_DRAW_FLAGS: u32 = 0x1a;
 const SECTION_COUNT: u32 = MODEL_SECTIONS - 4;
@@ -320,8 +370,8 @@ fn read_part(
     packed: u32,
     aux_reads: &mut Option<bool>,
 ) -> Result<Part, Refusal> {
-    let (part, flags, conditional) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
-    let flags = record_flags(flags, part.triangle_list, conditional.is_some());
+    let (part, flags, conditional, extra) = read_part_layout(mem, slot, item, record, program, packed).ok_or(Refusal::Other)?;
+    let flags = record_flags(flags, part.triangle_list, conditional.is_some()) | extra;
     if flags.contains(PartFlags::AUX_DEPTH)
         && !*aux_reads.get_or_insert_with(|| crate::layout::aux_depth::read(mem).is_some())
     {
@@ -338,40 +388,55 @@ fn read_part(
 /// 1, 5, 7, 8 and 20, or 3 for the first person's items, which the sorted
 /// walk does not read; `item` its list entry, `record` its render record,
 /// `key` its key) makes the geometry draw `0x0004d0b0` do beyond its
-/// material, or why the scene cannot reproduce it (**Code**):
+/// material, or why the scene cannot reproduce it (**Code**; the module
+/// notes):
 ///
 /// - Outside layer 3 the draw takes no lightmap (`0x0004d28b`: the page
 ///   and its coordinate stream only for layer 3), and in layer 5 it adds
 ///   the model's PRT stream for an object's record (`0x0004d220`,
-///   `0x00024040` and `0x00024490`), which [`crate::layout::prt`] reads.
-/// - The prologue `0x0004d640` changes a render state from the record's
-///   fade byte (`+0x1a`) unless it is `0xff`
-///   ([`LayerObjectRefusal::Fade`]), toggles the auxiliary state with
-///   bit 11, and marks the stencil with bit 14 only in layers 1 and 3
-///   (`0x0004d6b5`): elsewhere the bit is no flag.
-/// - With the shader's flag bit 0 (`+0x16`) the draw walks the model's
-///   attachments (`0x0004d486`) and may call `0x0003bea0`
-///   ([`LayerObjectRefusal::ShaderFlag`]); the argument's high byte goes
-///   to the pass setup (`0x0004d9c0`), and the layer-3 walk takes no item
-///   with it or with `+0x14` set ([`LayerObjectRefusal::Argument`]).
+///   `0x00024040` and `0x00024490`), which [`crate::layout::prt`] reads,
+///   unless the shader has flag bit 0.
+/// - The prologue `0x0004d640` sets the polygon stipple from the record's
+///   fade byte (`+0x1a`) unless it is `0xff` ([`PartFlags::FADE`]),
+///   toggles the auxiliary state with bit 11, and marks the stencil with
+///   bit 14 only in layers 1 and 3 (`0x0004d6b5`): elsewhere the bit is
+///   no flag.
+/// - With the shader's flag bit 0 ([`PartFlags::SHADER_FLAG`]) the draw
+///   asks for its bitmaps' residency, and the prologue uploads the active
+///   structure's parameter block when it has one
+///   ([`LayerObjectRefusal::ShaderFlag`]); the entry's program, which
+///   may make the draw copy the structure's target first, is built under
+///   the layer draw, so that refuses unless the frame's copy is made
+///   ([`LayerObjectRefusal::ShaderFlagTarget`]). In layer 3 a flagged
+///   record with a structure lightmap index refuses too.
+/// - The argument's high byte reaches only the residency the stage
+///   resolve asks for; its `+0x14` and `+0x15` and a low byte other than
+///   the key's part refuse ([`LayerObjectRefusal::Argument`]).
 /// - Bits 9 and 6 as in layer 3 ([`record_flags`], [`visible_subparts`]).
+///
+/// [`LayerObjectRefusal::ShaderFlag`]: frame_scene::LayerObjectRefusal::ShaderFlag
+/// [`LayerObjectRefusal::ShaderFlagTarget`]: frame_scene::LayerObjectRefusal::ShaderFlagTarget
+/// [`LayerObjectRefusal::Argument`]: frame_scene::LayerObjectRefusal::Argument
 pub fn layer_part(
     mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
 ) -> Result<(PartFlags, Option<Subparts>), frame_scene::LayerObjectRefusal> {
     use frame_scene::LayerObjectRefusal as R;
     let packed = word(mem, item, 0xc).ok_or(R::Unread)?;
-    if (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX {
-        return Err(R::Fade);
-    }
+    let fade = (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX;
     let tag_table = word(mem, TAG_INSTANCES, 0).ok_or(R::Unread)?;
     if word(mem, tag_table, 16 * (key.shader & 0xffff)) != Some(u32::from_be_bytes(*b"shad")) {
         return Err(R::Unread);
     }
     let shader = word(mem, tag_table, 16 * (key.shader & 0xffff) + 8).ok_or(R::Unread)?;
-    if half(mem, shader, SHADER_FLAGS).ok_or(R::Unread)? & 1 != 0 {
-        return Err(R::ShaderFlag);
+    let flagged = half(mem, shader, SHADER_FLAGS).ok_or(R::Unread)? & 1 != 0;
+    if flagged {
+        flagged_shader(mem, true)?;
+        let record_key = word(mem, record, 0xc).ok_or(R::Unread)?;
+        if layer == LIGHTMAP_LAYER as u8 && ((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP {
+            return Err(R::ShaderFlag);
+        }
     }
-    if (packed >> 24) != 0 || packed as u8 != key.part || half(mem, item, 0x14).ok_or(R::Unread)? != 0 {
+    if packed as u8 != key.part || half(mem, item, 0x14).ok_or(R::Unread)? != 0 {
         return Err(R::Argument);
     }
     let flags = word(mem, record, 0).ok_or(R::Unread)?;
@@ -407,6 +472,12 @@ pub fn layer_part(
         Refusal::Other => R::Unread,
     };
     let mut out = record_flags(flags, triangle_list, conditional.is_some());
+    if fade {
+        out = out | PartFlags::FADE;
+    }
+    if flagged {
+        out = out | PartFlags::SHADER_FLAG;
+    }
     if !matches!(layer, 1 | 3) {
         out = PartFlags(out.0 & !PartFlags::STENCIL_MARK.0);
     }
@@ -420,6 +491,23 @@ pub fn layer_part(
     Ok((out, subparts))
 }
 
+/// Whether a shader with flag bit 0 leaves the draw as the scene draws
+/// it (the module notes): the active structure has no parameter block,
+/// so the prologue uploads nothing, and, where the entry's program may
+/// have flag bit 20 (`may_copy_target`), the frame's structure target
+/// copy is made, so `0x0003bea0` returns at once.
+fn flagged_shader(mem: &dyn GuestRead, may_copy_target: bool) -> Result<(), frame_scene::LayerObjectRefusal> {
+    use frame_scene::LayerObjectRefusal as R;
+    let bsp = word(mem, ACTIVE_BSP, 0).ok_or(R::Unread)?;
+    if (word(mem, bsp, BSP_PARAMETER_COUNT).ok_or(R::Unread)? as i32) > 0 {
+        return Err(R::ShaderFlag);
+    }
+    if may_copy_target && word(mem, BSP_TARGET_READY, 0).ok_or(R::Unread)? & 0xff == 0 {
+        return Err(R::ShaderFlagTarget);
+    }
+    Ok(())
+}
+
 /// A part whose record draws only its visible subparts: the mask's
 /// address and the part's first subpart and count.
 #[derive(Clone, Copy)]
@@ -429,10 +517,15 @@ struct Conditional {
     count: i16,
 }
 
-/// The part an item draws (without its flags), its record's `+0` flags
-/// and, when the record's bit 6, subpart mask and its section's subpart
-/// count are all set, where its visible subparts are read from; `None`
-/// when the item's layout or a check against the guest's choice fails.
+/// The part an item draws (without its flags), its record's `+0` flags,
+/// when the record's bit 6, subpart mask and its section's subpart count
+/// are all set, where its visible subparts are read from, and the flags
+/// its record's fade byte and its shader's flag bit 0 add
+/// ([`PartFlags::FADE`], [`PartFlags::SHADER_FLAG`]); `None` when the
+/// item's layout or a check against the guest's choice fails, or the
+/// flagged shader's draw is not the scene's ([`flagged_shader`]; the
+/// walk refuses program flag bit 20 itself, and a flagged record with a
+/// structure lightmap index).
 fn read_part_layout(
     mem: &dyn GuestRead,
     slot: u32,
@@ -440,7 +533,7 @@ fn read_part_layout(
     record: u32,
     program: u32,
     packed: u32,
-) -> Option<(Part, u32, Option<Conditional>)> {
+) -> Option<(Part, u32, Option<Conditional>, PartFlags)> {
     let key = objects::item_key(mem, item)?;
     let record_key = word(mem, record, 0xc)?;
     let flags = word(mem, record, 0)?;
@@ -469,20 +562,31 @@ fn read_part_layout(
     let shader = word(mem, tag_table, 16 * (key.shader & 0xffff) + 8)?;
     let part = parts.checked_add(PART_SIZE * u32::from(key.part))?;
     let index_count = half(mem, part, PART_INDEX_COUNT)?;
+    let lightmapped = ((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP;
     if record_key & 0xe000_0000 != MODEL_RECORD
-        || (((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP
-            && !matches!(key.implementation, 2 | 3))
-        || (half(mem, record, RECORD_DRAW_FLAGS)? as u8) != u8::MAX
-        || (packed >> 24) != 0
+        || (lightmapped && !matches!(key.implementation, 2 | 3))
         || packed as u8 != key.part
         || half(mem, item, 0x14)? != 0
         || word(mem, tag_table, 16 * (key.shader & 0xffff))? != u32::from_be_bytes(*b"shad")
-        || half(mem, shader, SHADER_FLAGS)? & 1 != 0
         || word(mem, program, PROGRAM_FLAGS)? & (1 << 20) != 0
         || usize::from(half(mem, slot, ENTRY_IMPLEMENTATION)? as u8) != key.implementation
         || index_count == 0
     {
         return None;
+    }
+    // The argument's high byte (the projected size) changes nothing the
+    // draw sets (the module notes). A flagged shader draws as the scene
+    // draws it only without the structure's parameter block, and with no
+    // lightmap to leave unbound.
+    let mut extra = PartFlags::NONE;
+    if (half(mem, record, RECORD_DRAW_FLAGS)? as u8) != u8::MAX {
+        extra = extra | PartFlags::FADE;
+    }
+    if half(mem, shader, SHADER_FLAGS)? & 1 != 0 {
+        if lightmapped || flagged_shader(mem, false).is_err() {
+            return None;
+        }
+        extra = extra | PartFlags::SHADER_FLAG;
     }
     // Read only under bit 6, as the guest does (`0x0004d5ff`).
     let mut conditional = None;
@@ -509,7 +613,7 @@ fn read_part_layout(
         flags: PartFlags::NONE,
         subparts: None,
     };
-    Some((read, flags, conditional))
+    Some((read, flags, conditional, extra))
 }
 
 /// A balanced span of sorted dispatches. Every object touched by the
@@ -730,6 +834,39 @@ mod tests {
         assert!(read(&mem, 0x2000, 0x1000, at).is_none());
     }
 
+    /// The layer-3 walk takes a part with a fade byte, a projected size
+    /// or a flagged shader with the flags they add, and refuses a flagged
+    /// shader whose draw is not the scene's.
+    #[test]
+    fn the_walk_takes_a_fade_a_projected_size_and_a_flagged_shader_it_can_draw() {
+        let (mut mem, _) = sorted_part();
+        let at = 0x1000 + HANDLER_COUNTER + 4;
+        let (item, record, shader) = (0x3000, RENDER_RECORDS + RENDER_RECORD_SIZE, 0xa000);
+        let flags_of = |mem: &Mem| match read(mem, 0x2000, 0x1000, at).unwrap().entries.as_slice() {
+            [Entry::Object { part, .. }] => part.as_ref().map(|p| p.flags),
+            other => panic!("{other:?}"),
+        };
+        mem.w(record + 0x18, 0x40 << 16);
+        assert_eq!(flags_of(&mem), Some(PartFlags::FADE));
+        mem.w(record + 0x18, 0xff << 16);
+        mem.w(item + 0xc, 0x20 << 24 | 1 << 8 | 2);
+        assert_eq!(flags_of(&mem), Some(PartFlags::NONE), "the projected size");
+        mem.w(item + 0xc, 1 << 8 | 2);
+        let bsp = 0xd000;
+        mem.w(0x004e_0348, bsp);
+        mem.w(bsp + 0x214, 0);
+        mem.w(shader + 0x14, 1 << 16);
+        // The fixture's record names structure lightmap 0, which the
+        // flagged draw leaves unbound.
+        assert_eq!(flags_of(&mem), None, "a lightmap the flagged draw leaves unbound");
+        mem.w(record + 0xc, MODEL_RECORD | NO_STRUCTURE_LIGHTMAP << 18 | 9 << 9 | 2);
+        // The walk refuses program bit 20 itself, so the target copy is
+        // not asked for.
+        assert_eq!(flags_of(&mem), Some(PartFlags::SHADER_FLAG));
+        mem.w(bsp + 0x214, 1);
+        assert_eq!(flags_of(&mem), None, "the structure's parameter block");
+    }
+
     /// An object item of a world layer other than 3 carries its record's
     /// flags (the stencil mark only in layers 1 and 3), or names what the
     /// draw does for it that the scene does not carry.
@@ -747,15 +884,45 @@ mod tests {
         assert_eq!(at(&mem, 1), Ok((PartFlags::STENCIL_MARK, None)));
         assert_eq!(at(&mem, 8), Ok((PartFlags::NONE, None)), "no mark outside layers 1 and 3");
         mem.w(record, 3 << 29);
+        // A fade byte below 0xff is the part's flag: the host decides
+        // from the device's stipple.
         mem.w(record + 0x18, 0x80 << 16);
-        assert_eq!(at(&mem, 7), Err(R::Fade));
+        for layer in [1, 3, 5, 7, 8, 20] {
+            assert_eq!(at(&mem, layer), Ok((PartFlags::FADE, None)), "layer {layer}");
+        }
         mem.w(record + 0x18, 0xff << 16);
+        // The shader's flag bit 0: drawn without the structure's parameter
+        // block and once the frame's target copy is made, named otherwise.
+        let (bsp, target_ready) = (0xd000, 0x0050_9430);
+        mem.w(0x004e_0348, bsp);
+        mem.w(bsp + 0x214, 0);
+        mem.w(target_ready, 1);
         mem.w(shader + 0x14, 1 << 16);
-        assert_eq!(at(&mem, 7), Err(R::ShaderFlag));
+        assert_eq!(at(&mem, 7), Ok((PartFlags::SHADER_FLAG, None)));
+        mem.w(bsp + 0x214, 2);
+        assert_eq!(at(&mem, 7), Err(R::ShaderFlag), "the prologue uploads the parameter block");
+        mem.w(bsp + 0x214, 0);
+        mem.w(target_ready, 0);
+        assert_eq!(at(&mem, 7), Err(R::ShaderFlagTarget), "the draw may copy the structure's target");
+        mem.w(target_ready, 1);
+        mem.w(record + 0xc, MODEL_RECORD | 5 << 18 | 9 << 9 | 2);
+        assert_eq!(at(&mem, 3), Err(R::ShaderFlag), "layer 3 leaves the lightmap unbound");
+        assert_eq!(at(&mem, 7), Ok((PartFlags::SHADER_FLAG, None)), "no lightmap outside layer 3");
+        mem.w(record + 0xc, MODEL_RECORD | 9 << 9 | 2);
         mem.w(shader + 0x14, 0);
-        mem.w(item + 0xc, 1 << 24 | 1 << 8 | 2);
-        assert_eq!(at(&mem, 7), Err(R::Argument));
+        mem.w(target_ready, 0);
+        // The argument's high byte (the projected size) changes nothing
+        // the draw sets; another pass, level or part does.
+        mem.w(item + 0xc, 0x80 << 24 | 1 << 8 | 2);
+        assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)));
+        mem.w(item + 0xc, 1 << 8 | 3);
+        assert_eq!(at(&mem, 7), Err(R::Argument), "another part");
         mem.w(item + 0xc, 1 << 8 | 2);
+        mem.w(item + 0x14, 1);
+        assert_eq!(at(&mem, 7), Err(R::Argument), "another pass");
+        mem.w(item + 0x14, 1 << 8);
+        assert_eq!(at(&mem, 7), Err(R::Argument), "another level");
+        mem.w(item + 0x14, 0);
         // A part that is not a triangle list draws as a strip only with
         // bit 9.
         mem.w(parts + 2 * PART_SIZE, 0);

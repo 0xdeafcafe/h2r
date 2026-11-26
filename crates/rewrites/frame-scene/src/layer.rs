@@ -88,14 +88,24 @@ pub const PRT_FIRST_CONSTANT: u8 = 68;
 /// (**Code**, the module notes of `scene_extract::layout::object_walk`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum LayerObjectRefusal {
-    /// The record's fade byte (`+0x1a`) is not `0xff`: the prologue
-    /// (`0x0004d640`) changes a render state from it.
-    Fade,
-    /// The shader's flag bit 0 (`+0x16`): the draw walks the model's
-    /// attachments (`0x0004d486`) and may call `0x0003bea0`.
+    /// The shader's flag bit 0 (`+0x16`) while the active structure has a
+    /// parameter block (`[[0x004e0348] +0x214] > 0`): the prologue
+    /// (`0x0004d640`) runs `0x0003c650` and `0x0003d000`, which set texture
+    /// stages, the fog colour and `c[21..25]` from it. In layer 3, also a
+    /// flagged record with a structure lightmap index, which the draw does
+    /// not bind for the shader.
     ShaderFlag,
-    /// The item's argument has a high byte, or its `+0x14` is set: the
-    /// pass setup (`0x0004d9c0`) takes them.
+    /// The shader's flag bit 0 where the draw may call `0x0003bea0` (its
+    /// program's flag bit 20, which a world layer's item does not carry)
+    /// before the frame's structure target copy is made (`0x00509430`
+    /// clear): that call clears the shader cache and copies and binds a
+    /// target.
+    ShaderFlagTarget,
+    /// The item's `+0x14` or `+0x15` byte is set, or its argument's low
+    /// byte is not its key's part: the draw would set up another pass of
+    /// the layer or another level of the shader (`+0x14` and `+0x15` go
+    /// to the shader begin `0x00016b90` through `0x0004d9c0` as the pass
+    /// and level), which the scene's passes are not.
     Argument,
     /// Layer 5: the stream and constants the draw adds for an object's
     /// record whose model has a PRT block (`0x00024040`, `0x00024490`)
@@ -115,8 +125,8 @@ impl LayerObjectRefusal {
     /// The cause's name, as `render.scene` counts it.
     pub fn name(self) -> &'static str {
         match self {
-            LayerObjectRefusal::Fade => "object_fade",
             LayerObjectRefusal::ShaderFlag => "object_shader_flag",
+            LayerObjectRefusal::ShaderFlagTarget => "object_shader_flag_target",
             LayerObjectRefusal::Argument => "object_argument",
             LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
             LayerObjectRefusal::Subparts => "object_subparts",

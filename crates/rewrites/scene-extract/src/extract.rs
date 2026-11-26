@@ -242,9 +242,9 @@ fn layer_item(mem: &dyn GuestRead, layer: u8, item: u32, slot: u32, lighting: bo
             let part = crate::layout::object_walk::layer_part(mem, layer, item, at, key);
             // Layer 5 adds the model's PRT stream (`layout::prt`); the
             // part's checks first, since the draw takes it only for a
-            // shader without flag bit 0.
+            // shader without flag bit 0 (`0x0004d237`).
             let part = part.and_then(|p| match layer {
-                5 => crate::layout::prt::read(mem, at).map(|s| (p, s)),
+                5 if !p.0.contains(PartFlags::SHADER_FLAG) => crate::layout::prt::read(mem, at).map(|s| (p, s)),
                 _ => Ok((p, None)),
             });
             match part {
