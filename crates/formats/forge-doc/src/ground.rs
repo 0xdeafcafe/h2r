@@ -489,8 +489,10 @@ impl ForgeDoc {
                 }
                 _ => false,
             };
-            // Properties and areas are document data with no scenario bytes.
-            if matches!(&op.edit, Edit::Entry(EntryOp::Property { .. } | EntryOp::Area { .. }))
+            // Properties, areas and shown flags are document data with no scenario bytes.
+            if matches!(&op.edit, Edit::Entry(
+                EntryOp::Property { .. } | EntryOp::Area { .. } | EntryOp::Show { .. }
+            ))
                 || !touches
             {
                 continue;

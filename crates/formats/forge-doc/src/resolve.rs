@@ -146,8 +146,11 @@ pub fn resolve(ops: &[Op], base_counts: &BTreeMap<BlockKind, u32>) -> Result<Res
                             index: index as u32,
                         }
                     }
-                    // Properties and areas have no scenario bytes.
-                    EntryOp::Reset { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => {
+                    // Properties, areas and shown flags have no scenario bytes.
+                    EntryOp::Reset { .. }
+                    | EntryOp::Property { .. }
+                    | EntryOp::Area { .. }
+                    | EntryOp::Show { .. } => {
                         continue;
                     }
                 };

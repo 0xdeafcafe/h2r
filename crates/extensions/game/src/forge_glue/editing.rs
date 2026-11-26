@@ -1864,6 +1864,9 @@ impl Editor {
                 if self.area_default(&thing).is_some() {
                     sheet::add_area_row(&mut sheet, thing.id);
                 }
+                if self.tool.placing.is_none() && forge::props::has_show(&thing) {
+                    sheet::add_show_row(&mut sheet, self.session.shown(thing.id));
+                }
                 self.coordinates = Some((target, frame));
                 screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
                 screens::open(sheet)?;
@@ -2304,6 +2307,13 @@ impl Editor {
                         value: forge_doc::Value::Int(i as i64),
                     },
                 );
+            }
+            Choice::Set(Prop::ShowInPlay, i) => {
+                if i > 1 {
+                    return Err("No such value.".into());
+                }
+                let id = self.property_target()?;
+                return self.stage(After::Edited, move |s, w| s.set_shown(w, tick, id, i == 0));
             }
             Choice::Set(Prop::Coordinates, _) => {
                 return Err("Coordinates opens its own screen.".into());

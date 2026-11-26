@@ -15,7 +15,11 @@
 //! row     = block:u8 index:u32le type:i16le identifier:i16le
 //!           at:[u32le;3] shape:u8 below:u32le above:u32le
 //!           (radius:u32le | points:u8 [u32le;2]*points | half:[u32le;2] | radius:u32le)
-//! shape   = 0 radius, 1 path, 2 box, 3 sphere (a sphere's below and above are zero)
+//! shape   = kind | SHOWN
+//! kind    = 0 radius, 1 path, 2 box, 3 sphere (a sphere's below and above are zero),
+//!           4 none (the row says only that the flag is shown: nothing follows
+//!           the kind byte but the next row)
+//! SHOWN   = 0x80, the flag's play form shows in a match
 //! trailer = length:u32le "H2AE"          ; the last 8 bytes of the file
 //! ```
 //!
@@ -33,6 +37,11 @@ pub const VERSION: u8 = 1;
 pub const NETGAME_FLAGS: u8 = 0;
 /// The most rows a record holds.
 pub const MAX_ROWS: usize = 256;
+/// The bit of a row's shape byte that says the flag's play form shows in a
+/// match (docs/game/gametype-marker-forms.md, "When a form shows").
+pub const SHOWN: u8 = 0x80;
+/// The kind of a row that has no area, only [`Row::show`].
+pub const NO_AREA: u8 = 4;
 /// The trailer's size in bytes.
 pub const TRAILER: usize = 8;
 
@@ -47,7 +56,11 @@ pub struct Row {
     pub identifier: i16,
     /// The flag's position when the record was written.
     pub at: [f32; 3],
-    pub area: Area,
+    /// The flag's own area, or none for a row that only shows the flag.
+    pub area: Option<Area>,
+    /// Whether the flag's play form shows in a match. A map of the map's
+    /// own flags shows none by default, so a row says so for the flags that do.
+    pub show: bool,
 }
 
 /// A netgame flag as the game or Studio reads it, for [`place`].
@@ -109,20 +122,25 @@ pub fn encode(rows: &[Row]) -> Vec<u8> {
         for v in r.at {
             w.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        match &r.area.shape {
-            Shape::Radius(_) => w.push(0),
-            Shape::Path(_) => w.push(1),
-            Shape::Box { .. } => w.push(2),
-            Shape::Sphere(_) => w.push(3),
+        let shown = if r.show { SHOWN } else { 0 };
+        let Some(area) = &r.area else {
+            w.push(NO_AREA | shown);
+            continue;
+        };
+        match &area.shape {
+            Shape::Radius(_) => w.push(shown),
+            Shape::Path(_) => w.push(1 | shown),
+            Shape::Box { .. } => w.push(2 | shown),
+            Shape::Sphere(_) => w.push(3 | shown),
         }
         // A sphere has no height: its two are written as zero.
-        let (below, above) = match r.area.shape {
+        let (below, above) = match area.shape {
             Shape::Sphere(_) => (0.0, 0.0),
-            _ => (r.area.below, r.area.above),
+            _ => (area.below, area.above),
         };
         w.extend_from_slice(&below.to_bits().to_le_bytes());
         w.extend_from_slice(&above.to_bits().to_le_bytes());
-        match &r.area.shape {
+        match &area.shape {
             Shape::Radius(radius) | Shape::Sphere(radius) => {
                 w.extend_from_slice(&radius.to_bits().to_le_bytes());
             }
@@ -211,6 +229,19 @@ pub fn decode(record: &[u8]) -> Result<Vec<Row>, RecordError> {
         let identifier = r.i16()?;
         let at = [r.f32()?, r.f32()?, r.f32()?];
         let shape = r.u8()?;
+        let show = shape & SHOWN != 0;
+        let shape = shape & !SHOWN;
+        if shape == NO_AREA {
+            rows.push(Row {
+                index,
+                flag_type,
+                identifier,
+                at,
+                area: None,
+                show,
+            });
+            continue;
+        }
         let (mut below, mut above) = (r.f32()?, r.f32()?);
         let shape = match shape {
             0 => Shape::Radius(r.f32()?),
@@ -238,7 +269,8 @@ pub fn decode(record: &[u8]) -> Result<Vec<Row>, RecordError> {
             flag_type,
             identifier,
             at,
-            area,
+            area: Some(area),
+            show,
         });
     }
     if r.at != body.len() {
@@ -278,6 +310,19 @@ pub fn read_tail<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<Row>>, Recor
 /// second list (the flag moved, changed type or was removed after the
 /// save), and the game and Studio leave them out.
 pub fn place(rows: &[Row], flags: &[Flag]) -> (Vec<(usize, Area)>, Vec<usize>) {
+    let (found, lost) = place_rows(rows, flags);
+    (
+        found
+            .into_iter()
+            .filter_map(|(i, row)| Some((i, row.area.clone()?)))
+            .collect(),
+        lost,
+    )
+}
+
+/// [`place`] giving each flag its whole row, for what the row says besides
+/// the area (its [`Row::show`]).
+pub fn place_rows<'a>(rows: &'a [Row], flags: &[Flag]) -> (Vec<(usize, &'a Row)>, Vec<usize>) {
     let bits = |p: [f32; 3]| p.map(f32::to_bits);
     let same = |row: &Row, f: &Flag| row.flag_type == f.flag_type && bits(row.at) == bits(f.at);
     let mut taken = vec![false; flags.len()];
@@ -296,7 +341,7 @@ pub fn place(rows: &[Row], flags: &[Flag]) -> (Vec<(usize, Area)>, Vec<usize>) {
         match found {
             Some(i) => {
                 taken[i] = true;
-                placed.push((i, row.area.clone()));
+                placed.push((i, row));
             }
             None => lost.push(n),
         }
@@ -318,14 +363,16 @@ mod tests {
                 flag_type: 11,
                 identifier: 0,
                 at: [1.0, 2.0, 0.5],
-                area: Area::radius(2.5),
+                area: Some(Area::radius(2.5)),
+                show: true,
             },
             Row {
                 index: 5,
                 flag_type: 10,
                 identifier: 3,
                 at: [-4.0, 0.25, 1.0],
-                area: Area::path(vec![[-2.0, -2.0], [2.0, -2.0], [0.0, 3.0]]),
+                area: Some(Area::path(vec![[-2.0, -2.0], [2.0, -2.0], [0.0, 3.0]])),
+                show: false,
             },
         ]
     }
@@ -339,6 +386,41 @@ mod tests {
         // A file with no trailer has no areas; an empty record is none.
         assert_eq!(read_tail(&mut Cursor::new(vec![7u8; 100])).unwrap(), None);
         assert_eq!(read_tail(&mut Cursor::new(encode(&[]))).unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_rows_shown_bit_rides_the_shape_byte_and_places_with_its_flag() {
+        let r = rows();
+        let back = decode(&encode(&r)[..encode(&r).len() - TRAILER]).unwrap();
+        assert_eq!(back.iter().map(|row| row.show).collect::<Vec<_>>(), [true, false]);
+        // The shape survives the bit: the path stays a path.
+        assert_eq!(back[1].area, r[1].area);
+        // A row with no area only shows its flag, and places with none.
+        let only = [Row {
+            index: 0,
+            flag_type: 11,
+            identifier: 0,
+            at: [1.0, 2.0, 0.5],
+            area: None,
+            show: true,
+        }];
+        let bytes = encode(&only);
+        assert_eq!(decode(&bytes[..bytes.len() - TRAILER]).unwrap(), only);
+        let flag = Flag {
+            flag_type: 11,
+            identifier: 0,
+            at: [1.0, 2.0, 0.5],
+        };
+        assert!(place(&only, &[flag]).0.is_empty());
+        assert_eq!(place_rows(&only, &[flag]).0.len(), 1);
+        let flags = [Flag {
+            flag_type: 11,
+            identifier: 0,
+            at: [1.0, 2.0, 0.5],
+        }];
+        let (placed, _) = place_rows(&r, &flags);
+        assert_eq!(placed.len(), 1);
+        assert!(placed[0].1.show);
     }
 
     #[test]
@@ -358,7 +440,7 @@ mod tests {
     #[test]
     fn an_area_that_does_not_validate_is_not_read() {
         let mut r = rows();
-        r[0].area = Area::radius(500.0);
+        r[0].area = Some(Area::radius(500.0));
         let bytes = encode(&r);
         assert!(matches!(
             decode(&bytes[..bytes.len() - TRAILER]),
@@ -384,7 +466,7 @@ mod tests {
         ];
         let (placed, lost) = place(&r, &flags);
         assert_eq!(placed.iter().map(|p| p.0).collect::<Vec<_>>(), [2, 3]);
-        assert_eq!(placed[1].1, r[0].area);
+        assert_eq!(Some(&placed[1].1), r[0].area.as_ref());
         assert!(lost.is_empty());
         // A flag that moved loses its row.
         let flags = [flag(11, 0, [1.0, 2.0, 0.6]), flag(10, 3, [-4.0, 0.25, 1.0])];

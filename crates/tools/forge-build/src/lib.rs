@@ -4,6 +4,7 @@
 //! through scenario-edit's writer.
 #![forbid(unsafe_code)]
 
+mod areas;
 pub mod blockout;
 mod entry;
 mod ground;
@@ -417,6 +418,18 @@ pub fn build_with(
             receipt: built.receipt,
         });
         output = built.bytes;
+    }
+    // The areas and the shown flags the document gives its flags, in the
+    // areas record at the map's tail.
+    let record = areas::record(
+        &for_game,
+        &limits.base_counts,
+        session
+            .scenario()
+            .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?,
+    )?;
+    if let Some(record) = record {
+        output.extend_from_slice(&record);
     }
     let geometry = geometry_hash(&mut Map::from_reader(Cursor::new(output.as_slice()))?)?;
     if let Some(expect) = doc.expect

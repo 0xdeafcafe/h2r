@@ -279,6 +279,7 @@ opens a picker; an action row acts and closes.
 | goal | Order | the flag's identifier, for hills and territories | built | P2 |
 | teleporter | Channel | the flag's identifier, through a link (`forge_doc::Forge::Link`); a teleporter the session added has its channel from the add, and a link to it writes the channel to its kit row | Kit; built for the map's own flags and the session's | F6, P2 |
 | scenery, crate, machine | Physics: Normal, Fixed | **S**: no placement field that pins a physical object is known | | after a probe |
+| netgame flag | Show in play: On, Off | whether players see the flag's marker in a match: `EntryOp::Show`, a flag the document added on and a map's own flag off until set ([gametype-marker-forms.md](gametype-marker-forms.md), "When a form shows") | none: document data | built |
 | any thing | Label, Label number, Clear label | a label and number in the document ([rules-engine.md](rules-engine.md#forge-labels)): `Forge::Label` | none: scripts read it | built |
 | object the session placed | Save as prefab | `<data>/forge/prefabs/<name>.h2prefab` | none | built |
 | any object | Select, Group selection | tool state; the group op | none | built |

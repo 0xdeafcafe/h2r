@@ -793,3 +793,136 @@ fn a_box_area_draws_on_its_markers_facing_and_any_other_area_on_the_worlds_axes(
         assert!(!boxed.contains_turned([0.; 3], 0.5, [c[0] * 1.05, c[1] * 1.05, 0.0]), "{c:?}");
     }
 }
+
+#[cfg(feature = "rules")]
+fn labelled_flag(index: u32, flag_type: u16, show: bool) -> forge_doc::LabelledThing {
+    forge_doc::LabelledThing {
+        block: BlockKind::NetgameFlags,
+        index,
+        label: forge_doc::builtin_label(flag_type).unwrap(),
+        class: ::rules::labels::Class::Flag,
+        team: Some(0),
+        area: None,
+        show,
+    }
+}
+
+#[cfg(feature = "rules")]
+#[test]
+fn only_a_flag_the_census_shows_has_a_play_entry_at_its_place_and_facing() {
+    let mut start = labelled_flag(0, 0, true);
+    start.block = BlockKind::StartingLocations;
+    let things = [
+        labelled_flag(0, 1, true),
+        labelled_flag(1, 1, false),
+        labelled_flag(2, 10, true),
+        // A hill corner has no area of its own: nothing to draw.
+        labelled_flag(3, 11, true),
+        // Not a flag: never drawn.
+        start,
+    ];
+    let flags = [
+        ([1., 2., 0.5], 0.25),
+        ([9., 9., 9.], 0.),
+        ([4., 5., 0.], 1.5),
+        ([7., 7., 7.], 0.),
+    ];
+    let got = play_entries(&things, &flags);
+    assert_eq!(got.len(), 2);
+    assert!(got.iter().all(|e| e.form == Form::Play && e.id.is_some() && !e.other_game));
+    assert_eq!(got[0].marker.kind, Kind::FlagReturn(Area::plate()));
+    assert_eq!(got[0].place.at, [1., 2., 0.5]);
+    assert_eq!(got[0].name, thing_name(Endpoint::base(BlockKind::NetgameFlags, 0)));
+    assert_eq!(got[1].marker.kind.name(), Kind::Territory(Area::default()).name());
+    assert_eq!(got[1].place.at, [4., 5., 0.]);
+    // A flag's own area is the one drawn; a hill with one is a hill.
+    let mut shaped = labelled_flag(3, 11, true);
+    shaped.area = Some(Area::radius(4.0));
+    let got = play_entries(&[shaped], &flags);
+    assert_eq!(got[0].marker.kind, Kind::Hill(Area::radius(4.0)));
+    // No place for the flag, no marker.
+    assert!(play_entries(&[labelled_flag(5, 1, true)], &flags).is_empty());
+}
+
+#[cfg(feature = "rules")]
+#[test]
+fn a_match_on_a_variants_map_lists_the_capture_plate_with_the_monitor_off() {
+    use engine::{points, testing::FakeGuest};
+    use game_markers::record::Row;
+
+    const SCNR: u32 = 0x1006_0000;
+    const FLAGS_AT: u32 = SCNR + 0x1000;
+    let _one = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    clear();
+    publish_play(Vec::new());
+    // A scenario with one CTF flag return (type 1).
+    let mut m = FakeGuest::new();
+    m.put_u32(points::SCENARIO.base, SCNR);
+    m.map(SCNR, 0x2000);
+    m.put_u32(SCNR + engine::objectives::NETGAME_FLAGS, 1)
+        .put_u32(SCNR + engine::objectives::NETGAME_FLAGS + 4, FLAGS_AT);
+    m.put_f32(FLAGS_AT, 1.0)
+        .put_f32(FLAGS_AT + 4, 2.0)
+        .put_f32(FLAGS_AT + 8, 0.5)
+        .put_u16(FLAGS_AT + engine::objectives::FLAG_TYPE, 1);
+    let row = |show| Row {
+        index: 0,
+        flag_type: 1,
+        identifier: 0,
+        at: [1.0, 2.0, 0.5],
+        area: None,
+        show,
+    };
+
+    // The map's record shows the flag: the capture plate is a row of
+    // `render.markers`, in its play form, with no session and no monitor.
+    crate::map_areas::set(vec![row(true)]);
+    play_stale();
+    assert!(PLAY_STALE.load(Ordering::Acquire));
+    assert!(refresh_play(&m));
+    assert!(!PLAY_STALE.load(Ordering::Acquire));
+    assert!(PLAY_ACTIVE.load(Ordering::Acquire));
+    let drawn = frame_entries(Arc::new(Vec::new()));
+    let (groups, report) = draw(&drawn, [&None, &None], None, &Palette::default(), BUDGET);
+    assert_eq!(groups.len(), 1);
+    let rows = report_json(&report, None, Some(Form::Play));
+    assert_eq!(rows["shown"], 1);
+    assert_eq!(rows["markers"][0]["kind"], Kind::FlagReturn(Area::plate()).name());
+    assert_eq!(rows["markers"][0]["form"], "play");
+    assert_eq!(rows["markers"][0]["thing"], "netgame_flags:0");
+    // The edit form's rows are none: it is a match.
+    assert_eq!(report_json(&report, None, Some(Form::Edit))["markers"], json!([]));
+    // A Forge session's own markers come first when it has any.
+    let session = Arc::new(lined(1, 1.));
+    assert_eq!(*frame_entries(session.clone()), *session);
+
+    // A retail map with no record draws nothing.
+    crate::map_areas::set(Vec::new());
+    play_stale();
+    assert!(refresh_play(&m));
+    assert!(!PLAY_ACTIVE.load(Ordering::Acquire));
+    assert!(frame_entries(Arc::new(Vec::new())).is_empty());
+    // A record that does not show the flag draws nothing either.
+    crate::map_areas::set(vec![row(false)]);
+    play_stale();
+    assert!(refresh_play(&m));
+    assert!(frame_entries(Arc::new(Vec::new())).is_empty());
+    // Nothing to read twice: the next frame reads nothing.
+    assert!(!refresh_play(&m));
+    crate::map_areas::set(Vec::new());
+    publish_play(Vec::new());
+}
+
+#[cfg(feature = "rules")]
+#[test]
+fn a_map_that_is_not_loaded_yet_leaves_the_play_forms_to_the_next_frame() {
+    use engine::{points, testing::FakeGuest};
+    let _one = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = FakeGuest::new();
+    m.put_u32(points::SCENARIO.base, 0);
+    play_stale();
+    assert!(!refresh_play(&m));
+    assert!(PLAY_STALE.load(Ordering::Acquire), "still stale: try again");
+    publish_play(Vec::new());
+    assert!(!PLAY_STALE.load(Ordering::Acquire));
+}

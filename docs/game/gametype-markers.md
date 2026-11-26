@@ -198,6 +198,13 @@ clear requires an active area. An entry op gives the document format 3.
 The area stays in the map variant (`Tier::Variant`) and lowers to no
 scenario write.
 
+`EntryOp::Show { target, on }` shows a netgame flag's play form in a
+match or hides it
+([gametype-marker-forms.md](gametype-marker-forms.md), "When a form
+shows"); it is document data with no scenario bytes as an area is, and
+`ForgeDoc::shown_flags` resolves it with the default of who added the
+flag to final flag indices.
+
 `ForgeDoc::areas` resolves active areas to final flag indices.
 `LabelledThing::area` carries a flag's area into the census. An area
 follows its flag through appends and swap-removes. Clear the area
@@ -227,13 +234,23 @@ carries them as a record at the end of its file
 ```text
 record  = "H2AR" version:u8 count:u16le row*count crc:u32le
 row     = block:u8 index:u32le type:i16le identifier:i16le
-          at:[u32le;3] shape:u8 below:u32le above:u32le
-          (radius:u32le | points:u8 [u32le;2]*points | half:[u32le;2] | radius:u32le)
+          at:[u32le;3] shape:u8
+          (below:u32le above:u32le
+           (radius:u32le | points:u8 [u32le;2]*points | half:[u32le;2] | radius:u32le))?
 trailer = length:u32le "H2AE"           ; the file's last 8 bytes
 ```
 
-- **Shapes.** `shape` is 0 for a radius, 1 a path, 2 a box and 3 a
-  sphere; a sphere's `below` and `above` are written as zero.
+- **Shapes.** The low bits of `shape` are 0 for a radius, 1 a path, 2 a
+  box and 3 a sphere; a sphere's `below` and `above` are written as
+  zero. 4 is a row with no area: nothing follows it, and it only says
+  the flag is shown. The bit `0x80` (`record::SHOWN`, `Row::show`) says
+  the flag's play form shows in a match.
+- **From a variant.** The materialiser (`forge_build::build`) writes the
+  same record at the end of the map it builds: a row for each flag with
+  an area, and for each flag the document shows whose marker has a play
+  form (`crates/tools/forge-build/src/areas.rs`), so the game that loads
+  the variant reads them as it reads a Studio map's, and a retail map and
+  a document that shows and shapes nothing carry no record.
 - **Same area as the document's.** The distances are the exact `f32`
   bits `forge_doc::Area` spells in hex, and every row passes
   `Area::validate` on read, so a record and a document name one area one
@@ -256,8 +273,9 @@ trailer = length:u32le "H2AE"           ; the file's last 8 bytes
   game reads the record through the VFS (`game::map_areas::activate`).
   The census (`rules::census::things`) attaches each row to its flag
   (`LabelledThing::area`), so the flag's zone takes it (step 1 of "In a
-  script") and the bots read the hill from it. A flag with an area of its
-  own (a Forge document's) keeps it.
+  script") and the bots read the hill from it, and a row that is shown
+  shows the flag (`LabelledThing::show`). A flag with an area of its own
+  (a Forge document's) keeps it.
 
 ### In a script
 

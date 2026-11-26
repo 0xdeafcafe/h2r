@@ -262,6 +262,8 @@ pub enum Prop {
     Order,
     /// An item entry's respawn time.
     RespawnTime,
+    /// A flag's **Show in play**, On (value 0) or Off (value 1).
+    ShowInPlay,
 }
 
 /// A tool of the Tools picker.
@@ -1063,6 +1065,19 @@ fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, String, Cho
 /// hill, a territory, a site, a flag return, a bomb goal or a siege goal.
 pub fn add_area_row(sheet: &mut Sheet, id: forge::Endpoint) {
     sheet.rows.push(SheetRow::new("Edit area", Act::Choose(Choice::EditArea(id))));
+}
+
+/// **Show in play** on a flag's Properties page: On or Off, the value the
+/// document gives it (`forge::Session::shown`).
+pub fn add_show_row(sheet: &mut Sheet, on: bool) {
+    let values = ["On".to_string(), "Off".to_string()];
+    sheet.rows.push(text_value_row(
+        forge::props::SHOW_IN_PLAY,
+        "Whether players see this flag's marker in a match.",
+        Prop::ShowInPlay,
+        &values,
+        usize::from(!on),
+    ));
 }
 
 /// The typed dimensions of a draft: a circle's radius, a box's two half

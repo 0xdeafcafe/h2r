@@ -436,6 +436,111 @@ fn walls() -> Vec<Wall> {
     WALLS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// The play forms a match draws (docs/game/gametype-marker-forms.md, "When
+/// a form shows"): the flags the document shows, read from the loaded
+/// map's census when the map was activated ([`refresh_play`]).
+static PLAY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+static PLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// A map was activated and its play forms are not read yet.
+static PLAY_STALE: AtomicBool = AtomicBool::new(false);
+
+/// The play entry of each netgame flag of `things` that is shown in play
+/// (`LabelledThing::show`): the flag's marker in its play form, at
+/// `flags`' position and facing by flag index (`engine::objectives`). A
+/// flag with no position or no marker (a label with no kind; a hill's
+/// corner, which has no area of its own) draws nothing, and so does any
+/// other thing.
+pub fn play_entries(things: &[forge_doc::LabelledThing], flags: &[([f32; 3], f32)]) -> Vec<Entry> {
+    let mut out = Vec::new();
+    for t in things {
+        if t.block != forge::BlockKind::NetgameFlags || !t.show {
+            continue;
+        }
+        let Some(&(at, yaw)) = flags.get(t.index as usize) else {
+            continue;
+        };
+        let area = t.area.clone();
+        let kind = if t.label.text == "hill_corner" {
+            match area {
+                Some(area) => Kind::Hill(area),
+                None => continue,
+            }
+        } else {
+            let Some(kind) = Kind::of_label(&t.label.text) else {
+                continue;
+            };
+            match area {
+                Some(area) => kind.with_area(area),
+                None => kind,
+            }
+        };
+        let id = Endpoint::base(t.block, t.index);
+        let mut e = entry(
+            Some(id),
+            thing_name(id),
+            kind,
+            t.team,
+            t.label.number,
+            at,
+            yaw,
+            Tone::Normal,
+            false,
+        );
+        e.form = Form::Play;
+        out.push(e);
+    }
+    out
+}
+
+/// A map was activated: its play forms are read again at the next frame
+/// ([`refresh_play`]).
+pub fn play_stale() {
+    PLAY_STALE.store(true, Ordering::Release);
+}
+
+/// The play forms a match draws from now on, in place of the last ones.
+pub fn publish_play(entries: Vec<Entry>) {
+    PLAY_ACTIVE.store(!entries.is_empty(), Ordering::Release);
+    *PLAY.lock().unwrap_or_else(|e| e.into_inner()) = entries;
+    PLAY_STALE.store(false, Ordering::Release);
+}
+
+/// Reads the play forms of the loaded map when a map was activated since
+/// the last read: its census (`rules::census::things`, with the areas
+/// record the map carries) and its flags' places. A scenario that is not
+/// loaded yet leaves them to the next frame. True when it read them.
+#[cfg(feature = "rules")]
+pub fn refresh_play(m: &dyn engine::GuestMemory) -> bool {
+    if !PLAY_STALE.load(Ordering::Acquire) {
+        return false;
+    }
+    if m.u32(engine::points::SCENARIO.base).unwrap_or(0) == 0 {
+        return false;
+    }
+    let Ok(things) = crate::rules::census::things(m) else {
+        return false;
+    };
+    let facings = engine::objectives::netgame_flag_facings(m).unwrap_or_default();
+    let flags: Vec<([f32; 3], f32)> = engine::objectives::netgame_flags(m)
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (at, _, _))| (at, facings.get(i).copied().unwrap_or(0.0)))
+        .collect();
+    publish_play(play_entries(&things, &flags));
+    true
+}
+
+/// What a frame draws: the session's markers, or with none (no session, or
+/// the monitor off) the play forms of the map.
+#[cfg(any(feature = "gpu", test))]
+fn frame_entries(session: Arc<Vec<Entry>>) -> Arc<Vec<Entry>> {
+    if !session.is_empty() {
+        return session;
+    }
+    Arc::new(PLAY.lock().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
 /// The markers the window draws from now on, and the things aimed at and
 /// held, which are drawn selected and never fade.
 pub fn publish(entries: &Arc<Vec<Entry>>, aimed: Option<Endpoint>, held: Option<Endpoint>) {
@@ -915,7 +1020,10 @@ mod gpu {
 
     impl WorldLineSource for Source {
         fn active(&self) -> bool {
-            let on = ACTIVE.load(Ordering::Acquire) || WALLS_ACTIVE.load(Ordering::Acquire);
+            let on = ACTIVE.load(Ordering::Acquire)
+                || WALLS_ACTIVE.load(Ordering::Acquire)
+                || PLAY_ACTIVE.load(Ordering::Acquire)
+                || PLAY_STALE.load(Ordering::Acquire);
             if !on {
                 // Nothing to draw: the frame graph's batch goes too.
                 native_render::markers::publish(None);
@@ -925,8 +1033,11 @@ mod gpu {
 
         fn capture(&self, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {
             let p = published().unwrap_or_default();
+            #[cfg(feature = "rules")]
+            refresh_play(guest);
+            let entries = frame_entries(p.entries);
             let (eye, palette) = (eye(), palette(guest));
-            let (mut groups, mut report) = draw(&p.entries, [&p.aimed, &p.held], eye, &palette, BUDGET);
+            let (mut groups, mut report) = draw(&entries, [&p.aimed, &p.held], eye, &palette, BUDGET);
             let (walls, shown) = draw_walls(&walls(), eye, &palette);
             report.shown += walls.len();
             report.markers.extend(shown);

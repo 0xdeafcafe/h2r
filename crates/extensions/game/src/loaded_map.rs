@@ -53,6 +53,8 @@ impl EditorSources {
         if let Some(vfs) = self.mount.upgrade() {
             let file = crate::map_slots::active_file(&crate::layout_glue::ReadGm(guest));
             crate::map_areas::activate(&vfs, file.as_deref());
+            // Its play forms are read again with the record in hand.
+            crate::forge_glue::markers_world::play_stale();
             // The map's tag paths, for a script's tag reads.
             #[cfg(feature = "rules")]
             crate::rules::world::map_tags::activate(&vfs, file.as_deref());

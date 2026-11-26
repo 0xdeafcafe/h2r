@@ -280,7 +280,10 @@ pub(crate) fn desired(
                 own.fields[at] = write.value.clone();
             }
             EntryOp::Remove { .. } => own.removed = true,
-            EntryOp::Reset { .. } | EntryOp::Property { .. } | EntryOp::Area { .. } => {}
+            EntryOp::Reset { .. }
+            | EntryOp::Property { .. }
+            | EntryOp::Area { .. }
+            | EntryOp::Show { .. } => {}
         }
     }
     for ((block, index), own) in &mut out {

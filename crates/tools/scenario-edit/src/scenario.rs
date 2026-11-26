@@ -742,7 +742,10 @@ impl Scenario {
                 flag_type: flags[i].flag_type,
                 identifier: flags[i].identifier,
                 at: flags[i].at,
-                area: area.clone(),
+                area: Some(area.clone()),
+                // Studio has no show control yet: a Studio map's flags are
+                // the base map's, which shows none.
+                show: false,
             })
             .collect()
     }

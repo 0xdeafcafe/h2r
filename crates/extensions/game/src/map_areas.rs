@@ -70,16 +70,20 @@ pub fn flags(m: &dyn GuestMemory) -> Result<Vec<Flag>, MemFault> {
 }
 
 /// Gives each netgame flag of `things` the area the record has for it. A
-/// flag whose own area is already set (a Forge document's) keeps it.
+/// flag whose own area is already set (a Forge document's) keeps it. A row
+/// that says its flag is shown in play shows it; a row never hides a flag
+/// the document shows.
 pub fn attach(things: &mut [LabelledThing], flags: &[Flag], rows: &[Row]) {
-    let (placed, _lost) = record::place(rows, flags);
-    for (index, area) in placed {
+    let (placed, _lost) = record::place_rows(rows, flags);
+    for (index, row) in placed {
         if let Some(t) = things
             .iter_mut()
             .find(|t| t.block == BlockKind::NetgameFlags && t.index as usize == index)
-            && t.area.is_none()
         {
-            t.area = Some(area);
+            if t.area.is_none() {
+                t.area = row.area.clone();
+            }
+            t.show |= row.show;
         }
     }
 }
@@ -120,6 +124,7 @@ mod tests {
             class: ::rules::labels::Class::Flag,
             team: None,
             area: None,
+            show: false,
         }
     }
 
@@ -140,13 +145,16 @@ mod tests {
             flag_type: 11,
             identifier: 0,
             at: [1.0, 2.0, 0.5],
-            area: Area::radius(3.0),
+            area: Some(Area::radius(3.0)),
+            show: true,
         }];
         let mut things = vec![thing(0), thing(1), thing(2)];
         attach(&mut things, &found, &rows);
         assert_eq!(things[0].area, None);
         assert_eq!(things[1].area, Some(Area::radius(3.0)));
         assert_eq!(things[2].area, None);
+        // The row's flag is shown in play; the others are as they were.
+        assert_eq!(things.iter().map(|t| t.show).collect::<Vec<_>>(), [false, true, false]);
         // A flag with an area of its own keeps it.
         let mut own = vec![thing(0), thing(1), thing(2)];
         own[1].area = Some(Area::radius(5.0));

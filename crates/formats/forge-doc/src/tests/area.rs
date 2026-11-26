@@ -217,3 +217,108 @@ fn box_and_sphere_areas_are_refused_by_the_markers_sentence() {
         assert_eq!(refused.to_string(), why.to_string());
     }
 }
+
+fn show_op(id: u32, target: Endpoint, on: bool) -> Op {
+    entry(id, EntryOp::Show { target, on })
+}
+
+#[test]
+fn a_show_op_round_trips_the_format_3_variant_wire_form() {
+    let centre = target(FLAGS, 0);
+    let doc = doc(vec![show_op(1, centre, true), show_op(2, centre, false)]);
+    let limits = limits(&[10]);
+    let canonical = doc.canonical_json().unwrap();
+    assert!(canonical.contains(r#""show":{"on":true,"target":"#), "{canonical}");
+    assert!(canonical.contains(r#""show":{"on":false,"target":"#), "{canonical}");
+    // The op needs both its fields.
+    let no_on = serde_json::json!({"entry": {"show": {"target": centre}}});
+    assert!(serde_json::from_value::<Edit>(no_on).is_err());
+    let back = ForgeDoc::from_bytes(canonical.as_bytes(), &limits).unwrap();
+    assert_eq!(back, doc);
+    assert_eq!(back.canonical_json().unwrap(), canonical);
+    // A show op is an entry op: format 3, the variant tier, no scenario bytes.
+    assert_eq!(back.format, FORMAT_ENTRIES);
+    assert_eq!(back.tier(), Tier::Variant);
+    let resolved = resolve(&back.ops, &limits.base_counts).unwrap();
+    assert!(resolved.lowered.is_empty());
+    assert_eq!(resolved.prints.len(), 1);
+}
+
+#[test]
+fn a_show_op_belongs_to_a_netgame_flag() {
+    let limits = limits(&[10]);
+    let refusal = |ops| validate(&doc(ops), &limits).unwrap_err().to_string();
+    assert!(refusal(vec![show_op(1, target(BlockKind::Weapons, 0), true)])
+        .contains("shown in play belongs to a netgame flag"));
+    assert!(refusal(vec![
+        add(1, BlockKind::Weapons),
+        show_op(2, Endpoint::Added(OpId(1)), true),
+    ])
+    .contains("shown in play belongs to a netgame flag"));
+}
+
+#[test]
+fn a_flag_the_document_added_is_shown_and_a_base_flag_is_not_until_an_op_flips_each() {
+    let limits = limits(&[10, 10, 10]);
+    let counts = &limits.base_counts;
+    // Nothing added, nothing said: a retail map shows nothing.
+    assert!(doc(vec![]).shown_flags(counts).unwrap().is_empty());
+    assert!(doc(vec![]).show_targets(counts).unwrap().is_empty());
+    // An added flag (index 3) is shown; the base flags are not.
+    let mut ops = vec![add(1, FLAGS)];
+    assert_eq!(doc(ops.clone()).shown_flags(counts).unwrap(), [3].into());
+    // The op shows base flag 1 and hides the added flag.
+    ops.push(show_op(2, target(FLAGS, 1), true));
+    assert_eq!(doc(ops.clone()).shown_flags(counts).unwrap(), [1, 3].into());
+    ops.push(show_op(3, Endpoint::Added(OpId(1)), false));
+    let flipped = doc(ops.clone());
+    validate(&flipped, &limits).unwrap();
+    assert_eq!(flipped.shown_flags(counts).unwrap(), [1].into());
+    assert_eq!(
+        flipped.show_targets(counts).unwrap(),
+        BTreeMap::from([(target(FLAGS, 1).identity(), true), (Endpoint::Added(OpId(1)), false)])
+    );
+    // The last op wins, and a base flag turned off again is as it was.
+    ops.push(show_op(4, target(FLAGS, 1), false));
+    ops.push(show_op(5, Endpoint::Added(OpId(1)), true));
+    assert_eq!(doc(ops.clone()).shown_flags(counts).unwrap(), [3].into());
+    // A reset puts a base flag back as the map has it.
+    ops.push(show_op(6, target(FLAGS, 2), true));
+    assert_eq!(doc(ops.clone()).shown_flags(counts).unwrap(), [2, 3].into());
+    ops.push(entry(7, EntryOp::Reset { target: target(FLAGS, 2) }));
+    assert_eq!(doc(ops).shown_flags(counts).unwrap(), [3].into());
+}
+
+#[test]
+fn a_shown_flag_follows_its_index_through_swap_removes_and_a_removed_one_is_not_shown() {
+    let limits = limits(&[10, 10, 10]);
+    let counts = &limits.base_counts;
+    // Removing flag 0 moves the last flag into its place: the show on flag 2
+    // follows it to index 0, and the one on the removed flag goes.
+    let doc = doc(vec![
+        show_op(1, target(FLAGS, 0), true),
+        show_op(2, target(FLAGS, 2), true),
+        entry(3, EntryOp::Remove { target: target(FLAGS, 0) }),
+    ]);
+    validate(&doc, &limits).unwrap();
+    assert_eq!(doc.shown_flags(counts).unwrap(), [0].into());
+}
+
+#[test]
+fn the_census_marks_the_flags_the_document_shows() {
+    let limits = limits(&[10, 11]);
+    let rows = MapRows {
+        counts: limits.base_counts.clone(),
+        flags: [10, 11].map(|kind| FlagRow { kind, team: 0 }).to_vec(),
+        ..MapRows::default()
+    };
+    // A retail map with no document shows nothing.
+    assert!(labelled(&rows, None).unwrap().iter().all(|t| !t.show));
+    let doc = doc(vec![add(1, FLAGS), show_op(2, target(FLAGS, 1), true)]);
+    let things = labelled(&rows, Some(&doc)).unwrap();
+    assert_eq!(things.len(), 3);
+    assert_eq!(
+        things.iter().map(|t| (t.index, t.show)).collect::<Vec<_>>(),
+        [(0, false), (1, true), (2, true)]
+    );
+}

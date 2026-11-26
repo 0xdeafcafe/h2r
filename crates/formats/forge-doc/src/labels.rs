@@ -187,6 +187,11 @@ pub struct LabelledThing {
     pub team: Option<u8>,
     /// The area on the flag, in offsets from its placement.
     pub area: Option<MarkerArea>,
+    /// Whether the flag's play form shows in a match: a flag the document
+    /// added unless its `Show` op turns it off, a flag of the base map only
+    /// when one turns it on ([`ForgeDoc::shown_flags`]). Never set on a
+    /// thing that is no flag.
+    pub show: bool,
 }
 
 /// A team field as a census member's team: designators 0 to 7; neutral (8),
@@ -211,17 +216,19 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
     // (`EntryOp::Property`), by the spawner's final index.
     let mut spawner_teams: BTreeMap<u32, u8> = BTreeMap::new();
     let mut areas = BTreeMap::new();
+    let mut shown = std::collections::BTreeSet::new();
     if let Some(doc) = doc {
         labels = doc.labels(&rows.counts)?;
         areas = doc.areas(&rows.counts)?;
+        shown = doc.shown_flags(&rows.counts)?;
         let teams = crate::teams(&doc.ops);
-        let resolved = (!areas.is_empty() || !teams.is_empty())
+        let resolved = (!areas.is_empty() || !teams.is_empty() || !shown.is_empty())
             .then(|| crate::resolve(&doc.ops, &rows.counts))
             .transpose()?;
         for op in &doc.ops {
             let placement = match &op.edit {
                 Edit::Placement(p) => Some(p),
-                Edit::Entry(_) if !areas.is_empty() => {
+                Edit::Entry(_) if !areas.is_empty() || !shown.is_empty() => {
                     resolved.as_ref().and_then(|r| r.lowered.get(&op.id))
                 }
                 _ => None,
@@ -256,6 +263,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
                 class: Class::Flag,
                 team: designator(i64::from(f.team)),
                 area: areas.remove(&index),
+                show: shown.contains(&index),
             });
         }
     }
@@ -278,6 +286,7 @@ pub fn labelled(rows: &MapRows, doc: Option<&ForgeDoc>) -> Result<Vec<LabelledTh
             class,
             team,
             area: None,
+            show: false,
         });
     }
     out.sort_by_key(|t| (t.block, t.index));
