@@ -190,3 +190,34 @@ fn six_transparent_materials_bind_the_source_images_and_programs() {
         );
     }
 }
+
+/// Every shielded biped's plasma shader converts: the offset and tint
+/// sources are read, not refused. cyborg_mp (bloodgulch), the a30 elite and
+/// the c20 monitor were the maps that failed.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn shielded_bipeds_plasma_converts() {
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    for (level, needle) in [("bloodgulch", "cyborg"), ("a30", "elite"), ("c20", "monitor")] {
+        let h1 = h1_map(level);
+        let bipeds: Vec<_> = h1
+            .tags()
+            .iter()
+            .filter(|t| t.group == Group::new(b"bipd") && t.name.contains(needle))
+            .collect();
+        assert!(!bipeds.is_empty(), "{level}: no {needle} biped");
+        for biped in bipeds {
+            let mut conv = Converter::new(&h1, &base);
+            conv.object(biped)
+                .unwrap_or_else(|e| panic!("{level} {}: {e}", biped.name));
+            let plasma = base.find(b"vrtx", PLASMA_VERTEX).unwrap();
+            let uses_plasma = conv.tree.tags.iter().any(|(_, c)| {
+                c.group == FourCC(*b"spas") && {
+                    let r = from_built(Defs::builtin().group(c.group).unwrap(), &c.root).unwrap();
+                    reference(&r, "postprocess[0].implementations[0].vertex_shader") == plasma
+                }
+            });
+            assert!(uses_plasma, "{level} {}: no plasma pass", biped.name);
+        }
+    }
+}
