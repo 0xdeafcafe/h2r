@@ -355,6 +355,7 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
             enabled: true,
             map: None,
             wave_set: 2,
+            waves: None,
             teams: None,
             difficulty: Difficulty::Legendary,
             lives: Some(3),

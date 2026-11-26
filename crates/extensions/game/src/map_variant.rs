@@ -118,6 +118,9 @@ pub struct Picked {
     /// map a Firefight map (`ForgeDoc::ground_recipe`; docs/game/forge-firefight.md,
     /// "Playing it").
     pub ground: bool,
+    /// The pick's document holds a wave set of its own
+    /// (`ForgeDoc::waves`): Map Waves plays it ([`running`]).
+    pub waves: Option<forge_doc::waves::Def>,
 }
 
 type Cell = Arc<Mutex<Option<Picked>>>;
@@ -136,6 +139,22 @@ fn cell() -> Cell {
         static PICK: Cell = Cell::default();
     }
     PICK.with(Cell::clone)
+}
+
+/// The pick the running game was built from ([`begin_run`]), kept apart
+/// from the lobby's: the lobby can change its pick while a game plays.
+#[cfg(not(test))]
+fn run_cell() -> Cell {
+    static RUN: std::sync::OnceLock<Cell> = std::sync::OnceLock::new();
+    RUN.get_or_init(Cell::default).clone()
+}
+
+#[cfg(test)]
+fn run_cell() -> Cell {
+    thread_local! {
+        static RUN: Cell = Cell::default();
+    }
+    RUN.with(Cell::clone)
 }
 
 fn with_pick<T>(f: impl FnOnce(&mut Option<Picked>) -> T) -> T {
@@ -195,6 +214,36 @@ pub fn ground_on(lobby_map: Option<u32>) -> bool {
     })
 }
 
+/// Whether the lobby holds a pick on its map `lobby_map` whose document
+/// has a wave set of its own: what the Map Waves entry plays
+/// ([`crate::lobby_start::map_waves_refusal`]).
+pub fn waves_on(lobby_map: Option<u32>) -> bool {
+    with_pick(|p| {
+        p.as_ref()
+            .is_some_and(|p| p.waves.is_some() && !p.kit && p.lobby_map == lobby_map)
+    })
+}
+
+/// A game is starting: it is built from the lobby's pick as it stands,
+/// kept as [`running`] until the next game starts. A pick that is not
+/// built (or none, as in a campaign game) leaves no running pick.
+pub fn begin_run() {
+    let built = picked().filter(|p| matches!(p.prep, Prep::Ready(_)));
+    *run_cell().lock().unwrap_or_else(|e| e.into_inner()) = built;
+}
+
+/// The pick the running game was built from ([`begin_run`]); `None` for
+/// Original, and before any game has started.
+pub fn running() -> Option<Picked> {
+    run_cell().lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The running pick set directly, for tests of what plays from it.
+#[cfg(test)]
+pub(crate) fn set_running(picked: Option<Picked>) {
+    *run_cell().lock().unwrap_or_else(|e| e.into_inner()) = picked;
+}
+
 /// Pick the variant `file` of `map`, the lobby's map being `lobby_map`, and
 /// start its build. A variant that fails a check is held as picked and
 /// refused ([`Prep::Refused`]), so Start Game says why. The thread the build
@@ -219,6 +268,7 @@ pub fn pick(
         prep: Prep::Building,
         kit: false,
         ground: false,
+        waves: None,
     };
     let doc = match variants::load(data, map, file, installed.as_ref()) {
         Ok(doc) => doc,
@@ -229,6 +279,7 @@ pub fn pick(
         }
     };
     picked.ground = matches!(doc.ground_recipe(), Ok(Some(_)));
+    picked.waves = doc.waves.clone();
     begin(picked, doc, maps)
 }
 
@@ -256,6 +307,7 @@ pub fn pick_kit(
         prep: Prep::Building,
         kit: true,
         ground: false,
+        waves: None,
     };
     let Some(sha256) = installed else {
         picked.prep = Prep::Refused(Refusal::new(
@@ -346,6 +398,7 @@ pub fn pick_installed(
             )),
             kit: false,
             ground: false,
+            waves: None,
         });
         return None;
     };

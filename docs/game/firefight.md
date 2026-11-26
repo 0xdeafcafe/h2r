@@ -213,8 +213,10 @@ Angry and Ghost. Squads still drop at the edges, away from both bases;
 a map set carries the map's tuning, not its own drop zones.
 
 A map variant built in Forge can carry one set of its own in its
-document, played by the **Map Waves** entry (design,
-[forge-firefight.md](forge-firefight.md), "Playing it").
+document, played by the **Map Waves** entry, listed after the built-in
+sets (`builtin::MAP_WAVES`; [forge-firefight.md](forge-firefight.md),
+"Playing it"). It is no hopper entry: a hopper refuses a prefix that names
+no built-in set.
 
 Change Rules → Firefight lists the built-in sets and each map-specific
 variant. The record identifies its wave set by hash. Change Map filters by

@@ -445,7 +445,11 @@ fn every_listed_record_gets_its_block_at_load() {
         let script = Ext::in_effect(&block).script;
         if l.game_type == Type::Firefight {
             assert_eq!(script.mode, variants::ext::Mode::Firefight);
-            assert_eq!(::firefight::builtin::by_prefix(script.prefix).unwrap().name, l.name);
+            if script.prefix == ::firefight::builtin::MAP_WAVES {
+                assert_eq!(l.name, ::firefight::builtin::MAP_WAVES_NAME);
+            } else {
+                assert_eq!(::firefight::builtin::by_prefix(script.prefix).unwrap().name, l.name);
+            }
             assert_eq!(record_type(&g, r), Some(Type::Firefight));
             continue;
         }
@@ -655,4 +659,31 @@ fn every_listed_script_is_offered_on_the_retail_disc() {
         lines.join("\n")
     );
     assert_eq!(ours.len(), listed().len());
+}
+
+/// The listed Firefight entries are the built-in sets in menu order and
+/// then Map Waves, which names the map-waves prefix and no definition
+/// (docs/game/forge-firefight.md, "Playing it").
+#[test]
+fn map_waves_is_listed_after_the_built_ins() {
+    let fights: Vec<&Listed> = all_listed()
+        .into_iter()
+        .filter(|l| l.game_type == Type::Firefight)
+        .collect();
+    let sets = ::firefight::builtin::variants().len();
+    assert_eq!(fights.len(), sets + 1, "every set, then Map Waves");
+    let own = fights[sets];
+    assert_eq!(own.name, ::firefight::builtin::MAP_WAVES_NAME);
+    let script = Ext::in_effect(&own.block()).script;
+    assert_eq!(script.mode, variants::ext::Mode::Firefight);
+    assert_eq!(script.prefix, ::firefight::builtin::MAP_WAVES);
+    assert!(::firefight::builtin::by_prefix(script.prefix).is_none());
+    for (set, listed) in ::firefight::builtin::variants().iter().zip(&fights) {
+        assert_eq!(listed.name, set.def.name, "the sets keep their order");
+    }
+    assert_eq!(
+        all_listed().last().map(|l| l.name.as_str()),
+        Some(own.name.as_str()),
+        "last in the list"
+    );
 }

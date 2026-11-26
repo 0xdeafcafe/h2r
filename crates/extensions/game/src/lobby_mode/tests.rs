@@ -269,6 +269,7 @@ fn entry(file: &str, name: &str, sentence: Option<&str>) -> VariantEntry {
         id: Some(content::Sha256::of(file.as_bytes())),
         suggested_for: None,
         ground: true,
+        waves: false,
     }
 }
 
@@ -1258,4 +1259,39 @@ fn the_picker_refuses_original_and_groundless_variants_in_firefight() {
     assert_eq!(other.blocked, [false, false, false, true]);
     assert_eq!(other.current, 0);
     assert!(seen.lock().unwrap().is_empty());
+}
+
+/// A variant with a wave set of its own says so on its picker line, in a
+/// Firefight lobby only, after its detail and any suggestion.
+#[test]
+fn the_picker_says_which_variants_have_their_own_waves() {
+    let mut basin = entry("Basin", "Basin", None);
+    basin.waves = true;
+    let mut plain = entry("Castle", "Castle", None);
+    plain.waves = false;
+    let mut nothing = entry("Dune", "Dune", None);
+    nothing.ground = false;
+    nothing.waves = true;
+    let listed = vec![basin, plain, nothing];
+    let pick = map_variant_pick_for(Ok(listed.clone()), None, recorder().0, true);
+    assert_eq!(pick.values, [ORIGINAL, "Basin", "Castle", "Dune"]);
+    assert_eq!(pick.line(1), "By Builder. Adds 2 Crates (Basin). Has its own waves.");
+    assert_eq!(pick.line(2), "By Builder. Adds 2 Crates (Castle).");
+    assert_eq!(pick.line(3), NO_GROUND, "no ground, no line about waves");
+    assert_eq!(OWN_WAVES, "Has its own waves.");
+    let other = map_variant_pick_for(Ok(listed), None, recorder().0, false);
+    assert_eq!(other.line(1), "By Builder. Adds 2 Crates (Basin).");
+}
+
+/// With Map Waves the panel names the set the pick carries, not the Wave
+/// set row's.
+#[test]
+fn the_panel_names_the_set_map_waves_plays() {
+    let mut own = ::firefight::builtin::definitions()[2].clone();
+    own.name = "Invented Basin".into();
+    let o = ff::Options { waves: Some(own), ..ff::Options::default() };
+    assert_eq!(
+        panel_lines(Mode::Firefight, None, Some(Ok(o)))[0],
+        "Invented Basin waves"
+    );
 }

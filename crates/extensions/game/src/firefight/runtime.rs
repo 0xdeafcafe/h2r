@@ -525,6 +525,17 @@ fn map_name(m: &dyn GuestMemory) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
+/// The sentence a Map Waves game is refused with when the map variant it
+/// plays carries no wave set (the lobby refuses it first,
+/// `lobby_start::map_waves_refusal`).
+pub const MAP_WAVES_REFUSAL: &str = "This map has no waves of its own.";
+
+/// The wave set of the map variant the running game was built from: what
+/// the Map Waves entry plays (`map_variant::running`).
+fn map_waves() -> Option<::firefight::Def> {
+    crate::map_variant::running()?.waves
+}
+
 /// Apply the wave set carried by the selected game variant to the match options.
 fn record_options(m: &dyn GuestMemory, at: u32, mut choices: Options) -> Result<Options, String> {
     if crate::lobby_start::mode() == crate::lobby_start::Mode::Forge {
@@ -535,7 +546,14 @@ fn record_options(m: &dyn GuestMemory, at: u32, mut choices: Options) -> Result<
     if m.read(at + variants::ext::AT as u32, &mut block).is_ok() {
         let script = variants::ext::Ext::in_effect(&block).script;
         match script.mode {
+            variants::ext::Mode::Firefight if script.prefix == ::firefight::builtin::MAP_WAVES => {
+                // Map Waves plays the running map variant's own set.
+                choices.waves = Some(map_waves().ok_or(MAP_WAVES_REFUSAL)?);
+                choices.teams = None;
+                choices.enabled = true;
+            }
             variants::ext::Mode::Firefight => {
+                choices.waves = None;
                 let wave = ::firefight::builtin::variant(script.prefix)
                     .ok_or_else(|| format!("unknown Firefight wave set {:02x?}", script.prefix))?;
                 if let Some(required) = wave.map
@@ -648,7 +666,13 @@ impl Runtime {
     /// game plays ([`session_firefight`], none for any other game) to the
     /// session sink. Returns the line to log when it wrote.
     pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
-        if film || m.u32(options).ok()? != MODE_MULTIPLAYER {
+        if film {
+            return None;
+        }
+        // This game is built from the lobby's pick as it stands: Map Waves
+        // plays that map variant's set, from here until the next game.
+        crate::map_variant::begin_run();
+        if m.u32(options).ok()? != MODE_MULTIPLAYER {
             return None;
         }
         let chosen = (self.options)().and_then(|o| record_options(m, options + crate::variant_ext::OPTIONS_VARIANT, o)).ok();

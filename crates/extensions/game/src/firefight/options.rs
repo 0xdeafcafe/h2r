@@ -233,6 +233,9 @@ pub struct Options {
     /// The Wave set row's value ([`builtin::resolve`]: a built-in by its
     /// position, a map-specific set from [`builtin::MAP_SET_BASE`]).
     pub wave_set: usize,
+    /// The set Map Waves plays: the running map variant's own, which
+    /// [`Options::wave_set`] then does not choose (`runtime::record_options`).
+    pub waves: Option<Def>,
     /// The player teams, or the wave set's own.
     pub teams: Option<u8>,
     pub difficulty: Difficulty,
@@ -250,6 +253,7 @@ impl Default for Options {
             enabled: true,
             map: None,
             wave_set: 0,
+            waves: None,
             teams: None,
             difficulty: Difficulty::Normal,
             lives: None,
@@ -309,6 +313,7 @@ impl Options {
             enabled,
             map: map.map(str::to_owned),
             wave_set,
+            waves: None,
             teams,
             difficulty,
             lives,
@@ -316,14 +321,24 @@ impl Options {
         })
     }
 
-    /// The definition the match plays: the wave set the value names on
-    /// [`Options::map`] ([`builtin::resolve`]), played by the teams the
+    /// The set before the page's teams, lives and skulls: Map Waves' own
+    /// ([`Options::waves`]), else the one the value names on
+    /// [`Options::map`] ([`builtin::resolve`]).
+    fn base_set(&self) -> Option<Def> {
+        self.waves.clone().or_else(|| {
+            i64::try_from(self.wave_set)
+                .ok()
+                .and_then(|value| builtin::resolve(value, self.map.as_deref()))
+        })
+    }
+
+    /// The definition the match plays: the set [`Options::base_set`]
+    /// names, played by the teams the
     /// page chose (`builtin::with_teams`), with the starting pool it chose
     /// and, with skulls off, no skull on any round.
     pub fn definition(&self) -> Result<Def, String> {
-        let value = i64::try_from(self.wave_set)
-            .map_err(|_| format!("no wave set {}", self.wave_set))?;
-        let mut def = builtin::resolve(value, self.map.as_deref())
+        let mut def = self
+            .base_set()
             .ok_or_else(|| format!("no wave set {}", self.wave_set))?;
         if let Some(teams) = self.teams {
             def = builtin::with_teams(def, teams);
@@ -342,20 +357,14 @@ impl Options {
     /// The player teams the match has: the page's choice, else the wave
     /// set's own (1 for a wave set the build does not have).
     pub fn player_teams(&self) -> u8 {
-        self.teams.unwrap_or_else(|| {
-            i64::try_from(self.wave_set)
-                .ok()
-                .and_then(|value| builtin::resolve(value, self.map.as_deref()))
-                .map_or(1, |def| def.teams)
-        })
+        self.teams
+            .unwrap_or_else(|| self.base_set().map_or(1, |def| def.teams))
     }
 
     /// The Wave set row's label: the set the value names on
     /// [`Options::map`], or the built-in a map set falls back to.
     pub fn wave_set_label(&self) -> String {
-        i64::try_from(self.wave_set)
-            .ok()
-            .and_then(|value| builtin::resolve(value, self.map.as_deref()))
+        self.base_set()
             .map(|def| def.name)
             .unwrap_or_else(|| format!("wave set {}", self.wave_set))
     }

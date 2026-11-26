@@ -192,7 +192,7 @@ back by `h1_options_row::rewrite_rows`):
 |---|---|
 | CUSTOM GAMES | retail's, with ours as they are, and Map Variant... (action 15) after Change Map... while the `forge` feature is on |
 | FORGE | Change Map..., Map Variant... (action 15), then the rest with Clanker Options...; Firefight Options... is hidden |
-| Custom Games with Firefight selected | Change Map... lists compatible kits and, in the design, the maps that have a map variant with AI ground; Map Variant... lists those variants. Change Rules opens the game types and variants, Map Waves among the Firefight ones ([forge-firefight.md](forge-firefight.md), "Playing it"). |
+| Custom Games with Firefight selected | Change Map... lists compatible kits and, in the design, the maps that have a map variant with AI ground; Map Variant... lists those variants. Change Rules opens the game types and variants, Map Waves among the Firefight ones (a variant with its own set ends its picker line "Has its own waves.") ([forge-firefight.md](forge-firefight.md), "Playing it"). |
 
 Every mode's list loses the Switch To rows: the GAME MODE picker changes the mode
 ([party-lobby.md](party-lobby.md#the-lobby-by-tab)). Clanker Options...

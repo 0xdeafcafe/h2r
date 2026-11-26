@@ -1,6 +1,6 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`; the notices that show a set's first problem come with the screens that show them (FA3, FA5). FA1 is built too. FA3 to FA8 below are not.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`; the notices that show a set's first problem come with the screens that show them (FA3, FA5). FA1 and FA4 are built too: the lobby takes a variant with ground, and Map Waves plays its own set. FA3, FA5 to FA8 below are not.
 Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe), `crates/formats/forge-doc/src/waves.rs` (the wave set), `crates/extensions/forge/src/session/waves.rs` (the set in a session), `crates/extensions/agent/src/forge/waves.rs` (`forge.waves`), `crates/tools/forge-build/src/ground.rs` (the build), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`), `crates/extensions/forge/src/session/ground.rs`, `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -28,7 +28,7 @@ What a player does, and what carries each step.
 | 4 | edits the waves, or keeps Holdout's | the wave set in the document (FA2), the Waves screens (FA5) | the set built, `forge.waves` edits it; the screens design |
 | 5 | chooses **Test waves** and fights them in the session | the director over the session's map (FA3) | design; the row builds the ground and does not start a match |
 | 6 | saves the map variant | the variant store; the save builds stale ground first and writes the wave set | built |
-| 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | built (FA1); Map Waves is FA4 |
+| 7 | in Custom Games picks Firefight, the map and the map variant, and starts | the lobby's kit check takes a variant with ground (FA1); **Map Waves** plays the map's own set (FA4) | built (FA1, FA4) |
 
 FA1 alone closes the loop with the built-in wave sets: steps 1 to 3, 6
 and 7. FA2 to FA5 make the waves the author's. FA6 adds the enemy classes
@@ -173,17 +173,29 @@ needs no change. The lobby is what stands between.
   (`map_variant::pick_installed`, `forge_build::build`, which builds the
   ground the recipe names), and the build's refusal is the status line: a
   map with no room for the ground says the kit's cost sentence.
-- **Map Waves** (FA4) is a fifth Firefight entry under Change Rules, a
-  record whose hash prefix is `firefight::builtin::MAP_WAVES`: the first
-  eight bytes of the SHA-256 of `firefight.map-waves`. It names no
-  definition. At the start the runtime resolves it to the running map
-  variant's own set (`map_variant::running`, the pick the running game was built from, kept until the game ends), and
-  `lobby_start::supports_wave` takes it only for a pick that carries one.
-  With none, Start Game is refused with "This map has no waves of its
-  own." Every other Firefight entry plays its built-in set on the Forge
-  map as on a kit package. The session data names the set the match
-  plays (`runtime::session_firefight`: its name and `Def::id`), whichever
-  entry chose it.
+- **Map Waves** is a fifth Firefight entry under Change Rules, a record
+  whose hash prefix is `firefight::builtin::MAP_WAVES`: the first eight
+  bytes of the SHA-256 of `firefight.map-waves`. It is listed after the
+  built-in sets (`community_variants::listed`) and names no definition
+  (`builtin::variant` and `by_prefix` have none for it). The picker's line
+  for a variant whose document holds a set ends "Has its own waves."
+  (`lobby_mode::OWN_WAVES`, from `forge::files::variants::Listed::waves`).
+  When a game starts (`Runtime::activate`), `map_variant::begin_run` keeps
+  the lobby's built pick as `map_variant::running`, until the next game
+  starts, and `record_options` resolves the entry to its set
+  (`Options::waves`, which `Options::definition`, `player_teams` and
+  `wave_set_label` read before the Wave set row's value). Game Setup's
+  lives and skulls still apply to it. The lobby's panel names the set
+  (`lobby_mode::map_waves_in_lobby`). A kit package holds no set, so
+  `lobby_start::supports_wave` is false for the entry; a pick with ground
+  takes it (`supports_ground_wave`), and
+  `lobby_start::map_waves_refusal` refuses Start Game, with
+  `Reason::NoOwnWaves`, "This map has no waves of its own.", when the pick
+  carries none (`map_variant::waves_on`). The runtime refuses the same
+  sentence if the running pick has none. Every other Firefight entry plays
+  its built-in set on the Forge map as on a kit package. The session data
+  names the set the match plays (`runtime::session_firefight`: its name
+  and `Def::id`), whichever entry chose it.
 - **Films and replicas** resolve Map Waves the same way: a film names the
   Forge document in `HEAD` and playback materialises it first
   ([forge-design.md](forge-design.md), "Films and determinism"), so the
@@ -339,7 +351,14 @@ FA1). FA7 follows FA5, FA8 follows FA4.
   `crates/extensions/forge/src/waves_tests.rs`,
   `crates/tools/forge-build/tests/ground.rs` and
   `crates/extensions/agent/src/forge/tests.rs`).
-- **Design** Map Waves, the test arm, the classes in the recipe.
+- **Test** Map Waves: its listed record, its resolution from the running
+  pick, its refusals and the session's set
+  (`crates/extensions/game/src/firefight/runtime/tests.rs`,
+  `crates/extensions/game/src/community_variants/tests.rs`,
+  `crates/extensions/game/src/map_variant/tests.rs`,
+  `crates/extensions/game/src/lobby_mode/tests.rs`,
+  `crates/live/live-server/src/admin.rs`).
+- **Design** The test arm, the classes in the recipe.
 
 ## Not verified
 

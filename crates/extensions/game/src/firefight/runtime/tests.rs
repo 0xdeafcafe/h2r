@@ -1032,3 +1032,147 @@ fn change_rules_crossfire_starts_its_director_with_the_stored_setting_off() {
     assert!(state.running, "{:?}", state.refused);
     assert_eq!(state.director.unwrap().teams, 2);
 }
+
+/// An invented map variant's wave set: Attrition's shape under a name no
+/// built-in has.
+fn own_set() -> ::firefight::Def {
+    let mut def = ::firefight::builtin::definitions()[1].clone();
+    def.name = "Invented Basin".into();
+    def
+}
+
+/// A built pick standing for the map variant the running game was made
+/// from, with `waves` as its document's set.
+fn running_pick(waves: Option<::firefight::Def>) -> crate::map_variant::Picked {
+    use crate::map_variant::{Picked, Prep};
+    Picked {
+        map: "fixture".into(),
+        lobby_map: Some(7),
+        file: "invented-basin".into(),
+        name: "Invented Basin".into(),
+        id: None,
+        prep: Prep::Ready(std::path::PathBuf::from("invented-package")),
+        kit: false,
+        ground: true,
+        waves,
+    }
+}
+
+const ENTRY: u32 = 0x1008_0000;
+
+/// Invented guest memory holding a Firefight entry's extension block at
+/// [`ENTRY`]: mode 1 with `prefix`.
+fn entry_naming(prefix: [u8; 8]) -> FakeGuest {
+    use variants::ext::{Ext, Mode, Script};
+    let ext = Ext {
+        script: Script { mode: Mode::Firefight, prefix, options: 0 },
+        ..Ext::RETAIL
+    };
+    let mut m = FakeGuest::new();
+    m.map(ENTRY, 0x200).put(ENTRY + variants::ext::AT as u32, &ext.encode());
+    m
+}
+
+fn map_waves_entry() -> FakeGuest {
+    entry_naming(::firefight::builtin::MAP_WAVES)
+}
+
+/// The Map Waves entry plays the set of the map variant the running game
+/// was built from, as the match's definition, teams and label.
+#[test]
+fn map_waves_resolves_to_the_running_variants_set() {
+    let own = own_set();
+    crate::map_variant::set_running(Some(running_pick(Some(own.clone()))));
+    let m = map_waves_entry();
+    let chosen = record_options(&m, ENTRY, Options::default()).unwrap();
+    assert!(chosen.enabled);
+    assert_eq!(chosen.waves.as_ref(), Some(&own));
+    assert_eq!(chosen.definition().unwrap(), own);
+    assert_eq!(chosen.player_teams(), own.teams);
+    assert_eq!(chosen.wave_set_label(), "Invented Basin");
+    // Game Setup's lives and skulls still apply on top of it.
+    let tuned = Options { lives: Some(3), skulls: false, ..chosen };
+    let def = tuned.definition().unwrap();
+    assert_eq!(def.lives.pool_start, 3);
+    assert!(def.rounds.iter().all(|r| r.skulls_on.is_empty()));
+    // A different pick running is a different set.
+    let mut other = own_set();
+    other.name = "Another Invented".into();
+    crate::map_variant::set_running(Some(running_pick(Some(other.clone()))));
+    let chosen = record_options(&m, ENTRY, Options::default()).unwrap();
+    assert_eq!(chosen.definition().unwrap(), other);
+}
+
+/// A pick with no set of its own, no running pick, and a lobby that holds
+/// none are each refused by name: the runtime's sentence, and the lobby's
+/// before the game starts.
+#[test]
+fn map_waves_without_a_set_is_refused_by_name() {
+    use crate::lobby_tabs::Reason;
+    let m = map_waves_entry();
+    for running in [Some(running_pick(None)), None] {
+        crate::map_variant::set_running(running);
+        assert_eq!(
+            record_options(&m, ENTRY, Options::default()).unwrap_err(),
+            "This map has no waves of its own."
+        );
+    }
+    let own = Some(::firefight::builtin::MAP_WAVES);
+    assert_eq!(
+        crate::lobby_start::map_waves_refusal(own, false),
+        Some(Reason::NoOwnWaves)
+    );
+    assert_eq!(Reason::NoOwnWaves.text(), "This map has no waves of its own.");
+    assert_eq!(crate::lobby_start::map_waves_refusal(own, true), None);
+    let holdout = ::firefight::builtin::variants()[0].prefix;
+    assert_eq!(crate::lobby_start::map_waves_refusal(Some(holdout), false), None);
+    assert_eq!(crate::lobby_start::map_waves_refusal(None, false), None);
+}
+
+/// Every other Firefight entry plays its built-in set, whatever the
+/// running map variant carries.
+#[test]
+fn a_built_in_set_plays_on_a_variant_with_its_own_waves() {
+    crate::map_variant::set_running(Some(running_pick(Some(own_set()))));
+    for (index, set) in ::firefight::builtin::variants().iter().enumerate() {
+        if set.map.is_some() {
+            continue;
+        }
+        let m = entry_naming(set.prefix);
+        let chosen = record_options(&m, ENTRY, Options::default()).unwrap();
+        assert_eq!(chosen.waves, None, "{}", set.def.name);
+        assert_eq!(chosen.definition().unwrap(), set.def, "set {index}");
+    }
+}
+
+/// The session data names the set the match plays, Map Waves' own among
+/// them: its name and `Def::id`.
+#[test]
+fn the_session_names_the_set_the_match_plays() {
+    let own = own_set();
+    crate::map_variant::set_running(Some(running_pick(Some(own.clone()))));
+    let chosen = record_options(&map_waves_entry(), ENTRY, Options::default()).unwrap();
+    let sent = session_firefight(&chosen, true).expect("a kit map with Firefight on");
+    assert_eq!(sent.set, "Invented Basin");
+    assert_eq!(sent.id, own.id().unwrap().to_string());
+    assert_eq!(sent.validate(), Ok(()));
+    // A built-in entry on the same running pick names the built-in.
+    let holdout = ::firefight::builtin::variants()[0].clone();
+    let chosen = record_options(&entry_naming(holdout.prefix), ENTRY, Options::default()).unwrap();
+    let sent = session_firefight(&chosen, true).unwrap();
+    assert_eq!((sent.set, sent.id), (holdout.def.name, holdout.def.id().unwrap().to_string()));
+}
+
+/// A game starts from the lobby's pick as it stands: it is the running
+/// pick from then on, and a game with none leaves none.
+#[test]
+fn a_game_start_keeps_the_pick_it_was_built_from() {
+    let (it, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    options_block(&mut m, MODE_MULTIPLAYER, 0);
+    crate::map_variant::set_running(Some(running_pick(Some(own_set()))));
+    it.lock().activate(&mut m, OPTIONS, true);
+    assert!(crate::map_variant::running().is_some(), "a film leaves it");
+    it.lock().activate(&mut m, OPTIONS, false);
+    assert_eq!(crate::map_variant::running(), None, "no pick, no running pick");
+}
