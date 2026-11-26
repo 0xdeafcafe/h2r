@@ -158,6 +158,12 @@ const WEAPONS: usize = 0x90;
 const WEAPON: usize = 0x54;
 const WEAPON_PALETTE: usize = 0x98;
 const PALETTE: usize = 0x28;
+/// The netgame equipment block (`scnr+0x120`, `0x90` bytes each): what a
+/// multiplayer map spawns at its pads. The position is at `+0x40`, the item
+/// (a weapon or an item collection) as group then tag id at `+0x58`. Retail
+/// multiplayer maps place their weapons here and have no weapon placements.
+const NETGAME_EQUIPMENT: usize = 0x120;
+const NETGAME_EQUIPMENT_ROW: usize = 0x90;
 
 impl Census {
     /// The census of a map whose scenario root is `scnr`: the flags and
@@ -187,6 +193,21 @@ impl Census {
             items.push(Item {
                 name,
                 position: [f(&row, 8), f(&row, 12), f(&row, 16)],
+            });
+        }
+        for row in metadata_block(map, scnr, NETGAME_EQUIPMENT, NETGAME_EQUIPMENT_ROW)
+            .unwrap_or_default()
+        {
+            let id = TagId(u32::from_le_bytes(row[0x5c..0x60].try_into().unwrap()));
+            if id == TagId::NULL {
+                continue;
+            }
+            let Some(name) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
+                continue;
+            };
+            items.push(Item {
+                name,
+                position: [f(&row, 0x40), f(&row, 0x44), f(&row, 0x48)],
             });
         }
         Census {
