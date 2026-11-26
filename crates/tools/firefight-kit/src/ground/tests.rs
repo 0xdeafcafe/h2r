@@ -100,8 +100,9 @@ fn a_placed_drop_is_its_zone_and_a_moved_one_moves_it() {
     assert_eq!(zones[1].firing_positions[0].position, [21., 18., 0.]);
     assert_ne!(first.bytes, moved.bytes);
     assert_ne!(first.receipt, moved.receipt);
-    // Every squad slot still starts at one of the two zones.
-    assert_eq!(ai(&moved.bytes).squads.len(), 16);
+    // Every squad slot still starts at one of the two zones, and the
+    // Elite's class record follows them.
+    assert_eq!(ai(&moved.bytes).squads.len(), 17);
 }
 
 #[test]
