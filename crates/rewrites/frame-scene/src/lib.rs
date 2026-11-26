@@ -13,6 +13,7 @@ pub mod blend;
 pub mod builder;
 pub mod decorator;
 pub mod display;
+pub mod effect;
 pub mod late;
 pub mod layer;
 pub mod light;

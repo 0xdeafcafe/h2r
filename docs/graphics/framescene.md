@@ -343,8 +343,8 @@ would have:
 | State | Writer in the guest's frame | Rule for a replaced entry |
 |---|---|---|
 | The shared random seed `[0x004e7408]` | object code the render reaches (`0x001032a0`) | **Blocking.** A replaced entry makes the same draws from the seed in the same order, or it still calls the guest function that makes them. A sim-mode run already differs from a rendered run here |
-| The effects random word | particle draws | the particle producers keep running (they are carried, then typed with the same draws from the word) |
-| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the replaced object entry calls `0x00174420` for the same systems in the same order |
+| The effects random word | particle draws | the particle producers keep running and keep drawing from the word; the typed effect list (`frame_scene::effect`, in the guest's visit order) carries what they produce, not the draws |
+| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the guest keeps calling `0x00174420`: its writes (flag `+0x0d`, `+0x10`, `+0x30`, `+0x44`) are not described by any code in the tree, so a Rust effect pass cannot make them yet |
 | Animation cache use stamps (`+0x14` per entry) | `animation_resource_get` `0x001237e0` | replayed in visit order, as the pipelined prototype does |
 | Present counter `0x00485aa0`, frame timing `0x004e63a8` | `0x00013f10`, the frame wait `0x0012b2e0` | guest code keeps running |
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
