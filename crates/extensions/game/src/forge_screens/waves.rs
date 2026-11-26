@@ -1366,7 +1366,7 @@ pub fn sample_facts() -> Facts {
             .collect()
     };
     let set: Def = serde_json::from_value(serde_json::json!({
-        "format": 2,
+        "format": 3,
         "name": "Yard",
         "teams": 1,
         "rounds": [

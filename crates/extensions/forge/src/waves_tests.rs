@@ -103,7 +103,7 @@ fn set(name: &str, class: &str, drops: &[Json]) -> Def {
     let mut by_class = serde_json::Map::new();
     by_class.insert(class.into(), json!(100));
     serde_json::from_value(json!({
-        "format": 2,
+        "format": 3,
         "name": name,
         "teams": 1,
         "rounds": [{"waves": waves, "skulls_on": []}],
