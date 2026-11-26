@@ -61,24 +61,26 @@ pub(crate) fn retains_draw_stage(stage: timeline::native::Stage) -> bool {
 }
 
 /// The native producers whose commit a replaying sink carries
-/// ([`Backend::begin_native_carry`]): each issues one packet that is the draw
-/// its guest code would, as a pass that records again from that packet and
-/// the textures captured with it. Particles, transparents and sky are
-/// carried only as the guest's own admitted draws.
+/// ([`Backend::begin_native_carry`]): each issues the packets that are the
+/// draws its guest code would (one, or a UI batch's head and siblings), as
+/// a pass that records again from those packets and the textures captured
+/// with them. Particles, transparents and sky are carried only as the
+/// guest's own admitted draws.
 pub(crate) fn carries_native_stage(stage: timeline::native::Stage) -> bool {
     use timeline::native::Stage;
     matches!(stage, Stage::Water | Stage::Flares | Stage::Ui) && retains_draw_stage(stage)
 }
 
 /// Why a replaying sink cannot keep a native pass that carries nothing, for
-/// the refusal's report. Post's glow and screen effects replace several
-/// guest draws and write blur levels of their own; no one packet stands in
-/// for them, so they stay on the guest path.
+/// the refusal's report. Post's glow and screen effects are carried as
+/// typed stages ([`ReplayOp::Stage`], through
+/// [`Backend::prepare_carried_stage`]); a post pass that reaches a plain
+/// reservation was not sealed as one.
 fn unretained_cause(stage: timeline::native::Stage) -> &'static str {
     use timeline::native::Stage;
     match stage {
-        Stage::Post => "a swallowed post pass replaces several guest draws and writes its own blur targets: no single packet to retain",
-        Stage::Ui | Stage::Flares | Stage::Water => "the pass has no exact single packet the replay can retain (indexed siblings, a depth write, a sampled or side target, or a guest reference request)",
+        Stage::Post => "a post pass is carried only as a sealed scene stage; this one reached a plain reservation",
+        Stage::Ui | Stage::Flares | Stage::Water => "the pass has no exact packets the replay can retain (a depth write, a sampled or side target, a pass that cannot record again, or a guest reference request)",
         _ => "the scene recorder cannot retain an unsealed reservation",
     }
 }
@@ -286,18 +288,19 @@ impl<B: Backend> SceneSink<B> {
         }
         let result = self.inner.draw_shared(color, depth, Arc::clone(&draw), inputs);
         if matches!(result.0, Ok(DrawOutcome::Drawn)) {
-            let external = admission.and_then(|a| self.retain_admission(a, &draw, color, depth));
+            let external = admission.and_then(|a| self.retain_admission(a, std::slice::from_ref(&draw), color, depth));
             self.replay_draw(color, depth, draw, textures, external);
         }
         result
     }
 
-    /// What a replay keeps of a typed admission offered with the guest's
-    /// one draw, or `None`: the admission is not exact for this draw and
-    /// replay draws the packet alone. Checked here, at capture; replay
-    /// checks again against what it resolves.
+    /// What a replay keeps of a typed admission offered for `draws` (the
+    /// guest's one draw, or a native producer's packets in order), or
+    /// `None`: the admission is not exact for them and replay draws the
+    /// packets alone. Checked here, at capture; replay checks again against
+    /// what it resolves. The result is the first draw's (`at` 0).
     fn retain_admission(
-        &mut self, admission: crate::backend::RetainedAdmission<B::Surface>, draw: &Arc<ResolvedDraw>,
+        &mut self, admission: crate::backend::RetainedAdmission<B::Surface>, draws: &[Arc<ResolvedDraw>],
         colour: B::Surface, depth: Option<B::Surface>,
     ) -> Option<Box<RetainedExternal>> {
         use timeline::native::Stage;
@@ -310,15 +313,18 @@ impl<B: Backend> SceneSink<B> {
             || !s.sampled.is_empty() || !s.slots.is_empty() || !s.slot_sizes.is_empty()
             || !known(&s.color) || !known(&s.depth) || !room
             || !retains_draw_stage(admission.plan.stage)
-            || (admission.plan.stage == Stage::Flares && draw.writes_depth_stencil())
-            || !(Arc::ptr_eq(&admission.packet, draw) || *admission.packet == **draw)
+            || draws.is_empty()
+            || (admission.plan.stage == Stage::Flares && draws.iter().any(|d| d.writes_depth_stencil()))
+            || admission.packets.len() != draws.len()
+            || !admission.packets.iter().zip(draws).all(|(p, d)| Arc::ptr_eq(p, d) || **p == **d)
             || !admission.pass.lock().is_ok_and(|p| p.replays_scene())
         {
             return None;
         }
         let surfaces = s.try_map(|surface| Some(self.replay_target(*surface)))?;
         Some(Box::new(RetainedExternal {
-            packet: Arc::clone(draw),
+            packets: draws.iter().cloned().collect(),
+            at: 0,
             surfaces,
             request: admission.request,
             plan: admission.plan,
@@ -925,24 +931,30 @@ impl<B: Backend> Backend for SceneSink<B> {
         if !self.replaying() || !carries_native_stage(admission.plan.stage) {
             return false;
         }
-        let packet = Arc::clone(&admission.packet);
+        let packets = Arc::clone(&admission.packets);
         let again = crate::backend::RetainedAdmission {
-            packet: Arc::clone(&packet),
+            packets: Arc::clone(&packets),
             surfaces: admission.surfaces.clone(),
             request: admission.request,
             plan: admission.plan.clone(),
             pass: Arc::clone(&admission.pass),
         };
-        self.carry = self.retain_admission(again, &packet, color, depth);
+        self.carry = self.retain_admission(again, &packets, color, depth);
         self.carry.is_some()
     }
     fn record_native_carry(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, textures: [Option<&Self::Texture>; 4],
     ) {
+        // One replay draw per packet, in the guest's order, each holding
+        // the admission and its place in it. A batch's siblings were
+        // resolved against its head's textures.
         let Some(external) = self.carry.take() else { return };
-        let draw = Arc::clone(&external.packet);
-        self.record_draw(color, depth, &draw);
-        self.replay_draw(color, depth, draw, textures, Some(external));
+        for at in 0..external.packets.len() {
+            let draw = Arc::clone(&external.packets[at]);
+            self.record_draw(color, depth, &draw);
+            let held = Box::new(RetainedExternal { at, ..(*external).clone() });
+            self.replay_draw(color, depth, draw, textures, Some(held));
+        }
         self.carrying = true;
     }
     fn end_native_carry(&mut self) {

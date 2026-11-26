@@ -137,10 +137,11 @@ impl Retarget {
                 };
                 self.counts.draws += 1;
                 let moved = Arc::new(moved);
-                let external = external.as_ref().and_then(|admission| {
+                let external = external.as_ref().filter(|admission| admission.packets.len() == 1).and_then(|admission| {
                     let pass = admission.pass.lock().ok()?.with_draw(Arc::clone(&moved))?;
                     let mut adjusted = (**admission).clone();
-                    adjusted.packet = Arc::clone(&moved);
+                    adjusted.packets = Arc::from([Arc::clone(&moved)]);
+                    adjusted.at = 0;
                     adjusted.pass = Arc::new(Mutex::new(pass));
                     Some(Box::new(adjusted))
                 });

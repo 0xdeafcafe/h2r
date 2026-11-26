@@ -48,11 +48,19 @@ pub enum ReplaySample {
 /// ([`crate::backend::ExternalPass::replays_scene`]) and reads only the
 /// draw's own texture inputs, so a replay's live and frozen bindings
 /// reach it unchanged.
+///
+/// One admission may stand in for several guest draws (a UI batch's head
+/// and its siblings): the replay holds one draw for each packet, in order,
+/// each with this admission and its place `at`. The first prepares the
+/// pass, which records them all; a later one draws nothing after the
+/// first did, and its own packet after the first drew its packet.
 #[derive(Clone)]
 pub struct RetainedExternal {
-    /// The packet the admission was made for. Replay uses the admission
-    /// only for a draw that still equals it.
-    pub packet: Arc<ResolvedDraw>,
+    /// The packets the admission was made for, in the guest's issue order.
+    /// Replay uses the admission only for draws that still equal them.
+    pub packets: Arc<[Arc<ResolvedDraw>]>,
+    /// This draw's place in `packets`.
+    pub at: usize,
     pub surfaces: ExternalSurfaces<TargetRef>,
     pub request: ExternalPassRequest,
     pub plan: ExternalPlan,
@@ -60,6 +68,16 @@ pub struct RetainedExternal {
 }
 
 impl RetainedExternal {
+    /// The packet of this draw.
+    pub fn packet(&self) -> &Arc<ResolvedDraw> {
+        &self.packets[self.at]
+    }
+
+    /// A later draw of a run whose first draw records the pass for all.
+    pub fn follows(&self) -> bool {
+        self.at > 0
+    }
+
     /// The admission's attachments on this replay's targets, only when it
     /// still describes `draw`: the draw equals the packet it was made for,
     /// its surfaces are the attachments `draw` is bound to (a colour-only
@@ -74,7 +92,8 @@ impl RetainedExternal {
         display: bool,
         scale: impl Into<gfx::raster::RenderScale>,
     ) -> Option<ExternalSurfaces<S>> {
-        if !(display || scale.into() == gfx::raster::RenderScale::ONE) || !(Arc::ptr_eq(&self.packet, draw) || *self.packet == **draw) {
+        let packet = self.packets.get(self.at)?;
+        if !(display || scale.into() == gfx::raster::RenderScale::ONE) || !(Arc::ptr_eq(packet, draw) || **packet == **draw) {
             return None;
         }
         let surfaces = self.surfaces.try_map(|r| targets.get(r).copied())?;
@@ -86,6 +105,7 @@ impl std::fmt::Debug for RetainedExternal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RetainedExternal")
             .field("plan", &self.plan)
+            .field("at", &(self.at, self.packets.len()))
             .field("colour", &self.surfaces.color)
             .field("depth", &self.surfaces.depth)
             .finish_non_exhaustive()
@@ -114,7 +134,9 @@ pub enum ReplayOp {
     /// A guest draw. `external`, when set, is the typed replacement the
     /// guest's draw was admitted as: replay prepares it on its own
     /// attachments with this op's own texture inputs, and draws `draw`
-    /// (the exact D3D packet) when it cannot.
+    /// (the exact D3D packet) when it cannot. A draw that follows in its
+    /// admission's run ([`RetainedExternal::follows`]) draws nothing when
+    /// the run's first draw recorded the pass.
     Draw {
         draw: Arc<ResolvedDraw>,
         textures: [Option<ReplayTexture>; 4],

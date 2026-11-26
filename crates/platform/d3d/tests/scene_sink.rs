@@ -685,7 +685,7 @@ mod retained_admission {
         let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
         let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
         let mut admission = RetainedAdmission {
-            packet: Arc::new(draw.clone()),
+            packets: Arc::from([Arc::new(draw.clone())]),
             surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest {
                 rect: (0, 0, 32, 32),
@@ -724,7 +724,7 @@ mod retained_admission {
         assert_eq!(o.result, Ok(DrawOutcome::Drawn));
         assert_eq!((o.issued, o.replay_draws), (1, 1), "issued once, carried once");
         let external = o.external.expect("exact for this draw");
-        assert_eq!(*external.packet, o.submitted);
+        assert_eq!(**external.packet(), o.submitted);
         assert_eq!(external.plan.stage, Stage::Flares);
         assert_ne!(external.surfaces.color, external.surfaces.depth, "the draw's own depth, not scratch");
         assert!(o.refusals.is_empty(), "{:?}", o.refusals);
@@ -740,10 +740,39 @@ mod retained_admission {
     /// One native producer's water commit through a real sink: the frame
     /// the replay keeps, and what the sink answered at each step.
     fn native_water(stage: Stage, reference: bool) -> (bool, Vec<ReplayOp>, Vec<&'static str>) {
+        native_carry(stage, reference, |_| {})
+    }
+
+    /// A UI batch's packets: the head and `siblings` more, each its own
+    /// draw (the siblings' geometry differs, as an indexed range's does).
+    fn batch(siblings: usize) -> impl FnOnce(&mut Vec<ResolvedDraw>) {
+        move |packets| {
+            for n in 0..siblings {
+                let mut sibling = packets[0].clone();
+                sibling.vertex_count += 1 + n as u32;
+                packets.push(sibling);
+            }
+        }
+    }
+
+    /// Makes `draw` write the depth it is bound with.
+    fn write_depth(draw: &mut ResolvedDraw) {
+        draw.target.depth_format = Some(D3DFormat::LinD24S8);
+        draw.state.render.stencil.enable = true;
+        draw.state.render.stencil.write_mask = 0xff;
+        draw.state.render.stencil.pass = gfx::state::StencilOp::Replace;
+    }
+
+    /// [`native_water`] with the admission's packets as `packets` leaves
+    /// them (the producer's one draw to start).
+    fn native_carry(
+        stage: Stage, reference: bool, packets: impl FnOnce(&mut Vec<ResolvedDraw>),
+    ) -> (bool, Vec<ReplayOp>, Vec<&'static str>) {
         let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
         set_states(&mut device, &mut memory);
         quad(&mut device, &mut memory, 0xFF40_8020);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let mut draws = vec![device.backend.draws().pop().unwrap().clone()];
+        packets(&mut draws);
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
         let mut sink = SceneSink::new(RecordingBackend::new(), slot)
@@ -753,11 +782,12 @@ mod retained_admission {
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
         let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
         let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let ranges = draws.len();
         let admission = RetainedAdmission {
-            packet: Arc::new(draw),
+            packets: draws.into_iter().map(Arc::new).collect(),
             surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
-            plan: ExternalPlan { stage, view: 0, ranges: 1, slots: vec![] },
+            plan: ExternalPlan { stage, view: 0, ranges, slots: vec![] },
             pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
         };
         let begun = sink.begin_native_carry(colour, Some(depth), &admission);
@@ -816,19 +846,70 @@ mod retained_admission {
             let carried: Vec<_> = ops
                 .iter()
                 .filter_map(|op| match op {
-                    ReplayOp::Draw { external, .. } => Some(external.as_ref().map(|e| e.plan.stage)),
+                    ReplayOp::Draw { external, .. } => Some(external.as_ref().map(|e| (e.plan.stage, e.at, e.packets.len()))),
                     _ => None,
                 })
                 .collect();
-            assert_eq!(carried, [Some(stage)], "{stage:?}");
+            assert_eq!(carried, [Some((stage, 0, 1))], "{stage:?}");
             assert!(refusals.is_empty(), "{stage:?}: {refusals:?}");
         }
+
+        // A UI batch with siblings: one replay draw per packet, in order,
+        // each the packet it holds, all under the one admission.
+        let (begun, ops, refusals) = native_carry(Stage::Ui, false, batch(2));
+        assert!(begun);
+        let held: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                ReplayOp::Draw { draw, external: Some(e), .. } => Some((draw, e)),
+                ReplayOp::Draw { external: None, .. } => panic!("a batch draw lost its admission"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(held.len(), 3);
+        for (at, (draw, external)) in held.iter().enumerate() {
+            assert_eq!((external.plan.stage, external.at, external.packets.len()), (Stage::Ui, at, 3));
+            assert!(Arc::ptr_eq(draw, external.packet()), "draw {at} holds its own packet");
+            assert_eq!(external.follows(), at > 0);
+            assert!(Arc::ptr_eq(&external.pass, &held[0].1.pass), "one pass for the run");
+            assert!(Arc::ptr_eq(&external.packets, &held[0].1.packets));
+        }
+        assert_eq!(held[1].0.vertex_count, held[0].0.vertex_count + 1);
+        assert!(refusals.is_empty(), "{refusals:?}");
+    }
+
+    #[test]
+    fn a_flare_that_writes_depth_still_declines() {
+        let (begun, ops, _) = native_carry(Stage::Flares, false, |p| write_depth(&mut p[0]));
+        assert!(!begun);
+        assert!(!ops.iter().any(|op| matches!(op, ReplayOp::Draw { .. })));
+        // Any packet of a run that writes depth declines the run.
+        let (begun, _, _) = native_carry(Stage::Flares, false, |p| {
+            batch(1)(p);
+            write_depth(&mut p[1]);
+        });
+        assert!(!begun);
+        // A UI pass may write the depth it is bound with.
+        let (begun, _, _) = native_carry(Stage::Ui, false, |p| write_depth(&mut p[0]));
+        assert!(begun);
+    }
+
+    #[test]
+    fn a_guest_draws_admission_for_several_packets_is_not_kept() {
+        // A guest draw is one packet: an admission naming more is not exact
+        // for it, and the draw is carried as its packet alone.
+        let o = capture(false, |admission, draw, _| {
+            admission.packets = Arc::from([Arc::new(draw.clone()), Arc::new(draw.clone())]);
+        });
+        assert_eq!((o.issued, o.replay_draws), (1, 1));
+        assert!(o.external.is_none());
     }
 
     #[test]
     fn other_native_stages_and_any_guest_reference_are_not_carried() {
-        // Post's glow and screen effects have no one packet; the rest are
-        // carried only as the guest's own admitted draws.
+        // Post's glow and screen effects are carried as sealed scene
+        // stages, not admitted draws; the rest are carried only as the
+        // guest's own admitted draws.
         for (stage, reference) in [
             (Stage::Post, false),
             (Stage::Transparents, false),
@@ -852,7 +933,7 @@ mod retained_admission {
             draw.state.render.stencil.enable = true;
             draw.state.render.stencil.write_mask = 0xff;
             draw.state.render.stencil.pass = gfx::state::StencilOp::Replace;
-            admission.packet = Arc::new(draw.clone());
+            admission.packets = Arc::from([Arc::new(draw.clone())]);
         });
         assert!(o.submitted.writes_depth_stencil());
         assert_eq!(o.external.unwrap().plan.stage, Stage::Sky);
@@ -893,7 +974,7 @@ mod retained_admission {
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
         let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
         let admission = RetainedAdmission {
-            packet: Arc::new(draw.clone()),
+            packets: Arc::from([Arc::new(draw.clone())]),
             surfaces: ExternalSurfaces { color: colour, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
             plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
@@ -915,7 +996,7 @@ mod retained_admission {
         let fmt = D3DFormat::LinA8R8G8B8;
         let colour = backend.create_texture_target(fmt, 32, 32).unwrap();
         let admission = RetainedAdmission {
-            packet: Arc::new(draw.clone()),
+            packets: Arc::from([Arc::new(draw.clone())]),
             surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
             plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
@@ -966,7 +1047,7 @@ mod retained_admission {
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
         let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
         let admission = RetainedAdmission {
-            packet: Arc::new(draw.clone()),
+            packets: Arc::from([Arc::new(draw.clone())]),
             surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
             plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },
@@ -981,7 +1062,7 @@ mod retained_admission {
             _ => None,
         }).expect("retained");
         assert_eq!(external.surfaces.color, external.surfaces.depth);
-        let draw = external.packet.clone();
+        let draw = external.packet().clone();
         let targets = HashMap::from([(external.surfaces.color, 3u32)]);
         assert!(external.resolve(&draw, &targets, (3, None), true, 1u32).is_some());
         assert!(external.resolve(&draw, &targets, (3, Some(4)), true, 1u32).is_none());
@@ -1004,7 +1085,7 @@ mod retained_admission {
         let decoded = decode_texture(&desc, &[1, 2, 3, 4], None, Default::default()).unwrap();
         let image = sink.upload_texture(&decoded).unwrap();
         let admission = RetainedAdmission {
-            packet: Arc::new(draw.clone()),
+            packets: Arc::from([Arc::new(draw.clone())]),
             surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
             request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
             plan: ExternalPlan { stage: Stage::Flares, view: 0, ranges: 1, slots: vec![] },

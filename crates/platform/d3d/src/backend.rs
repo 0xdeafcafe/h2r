@@ -387,6 +387,17 @@ pub trait ExternalPass: Send {
     /// it must be the whole draw the guest would issue.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
 
+    /// The packets the pass stands in for, in the order the guest issues
+    /// them, for a scene that retains the frame ([`RetainedAdmission`]):
+    /// the replay keeps one draw for each, all under the one admission.
+    /// By default the [`Self::resolved_fallback`] packet alone. A pass that
+    /// replaces several guest draws (a UI batch with sibling ranges) has no
+    /// single fallback but names each of them here; empty when none is
+    /// exact.
+    fn resolved_packets(&self) -> Vec<std::sync::Arc<ResolvedDraw>> {
+        self.resolved_fallback().into_iter().collect()
+    }
+
     /// The same pass drawing `draw` in place of its own (the draw
     /// [`Self::resolved_fallback`] gives, with other constants): a display
     /// frame between ticks moves a typed draw onto a blended camera this
@@ -738,12 +749,15 @@ pub struct QueuedExternalDraw<S> {
 }
 
 /// The typed admission a guest draw was offered as and did not take: the
-/// exact packet the pass would replace, and the pass, with the attachments it
+/// exact packets the pass would replace, and the pass, with the attachments it
 /// resolved. A backend that retains the frame keeps it beside the draw
 /// ([`Backend::draw_admitted`]) so replay can prepare the pass on its own
 /// attachments; any other backend drops it.
 pub struct RetainedAdmission<S> {
-    pub packet: std::sync::Arc<ResolvedDraw>,
+    /// The guest's draws the pass replaces, in issue order
+    /// ([`ExternalPass::resolved_packets`]): one for a guest draw's own
+    /// admission, a native producer's head and siblings for a batch.
+    pub packets: std::sync::Arc<[std::sync::Arc<ResolvedDraw>]>,
     pub surfaces: ExternalSurfaces<S>,
     pub request: ExternalPassRequest,
     pub plan: ExternalPlan,
@@ -1795,8 +1809,9 @@ pub trait Backend: Send {
     /// A native producer is about to commit `admission`'s pass with no guest
     /// draw to carry it (the guest's call is skipped, [`Self::draw_admitted`]
     /// is never reached). A backend that retains the frame answers whether it
-    /// will carry that commit and the packet the pass replaces, so the
-    /// retained frame holds the pass as it holds an admitted guest draw. On
+    /// will carry that commit and the packets the pass replaces, so the
+    /// retained frame holds the pass as it holds an admitted guest draw: one
+    /// draw per packet, in order, under the one admission. On
     /// true, [`Self::prepare_external`] and the commits that follow are not
     /// refused as unretainable until [`Self::end_native_carry`]. Every
     /// `begin_native_carry` is closed by one `end_native_carry`.
@@ -1805,8 +1820,9 @@ pub trait Backend: Send {
     ) -> bool { false }
 
     /// The pass prepared under a true [`Self::begin_native_carry`] is about to
-    /// commit: retain its packet, with the textures it was resolved against,
-    /// as an admitted draw.
+    /// commit: retain its packets, each with the textures the pass was
+    /// resolved against (a batch's siblings share its head's), as admitted
+    /// draws.
     fn record_native_carry(
         &mut self, _color: Self::Surface, _depth: Option<Self::Surface>, _textures: [Option<&Self::Texture>; 4],
     ) {}

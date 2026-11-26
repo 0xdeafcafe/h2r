@@ -286,7 +286,12 @@ guest would have issued ([render-thread.md](render-thread.md), "Keeping
 guest-visible semantics exact"). A model draw with sibling ranges, or any
 draw on the synchronous backend, is validated against every required target
 copy and commits before the hook changes control flow; a refusal there
-leaves the guest to issue its original draw. Outstanding push callbacks, visibility queries, replay,
+leaves the guest to issue its original draw. A scene that keeps the frame
+for a two-copy replay ([framescene.md](framescene.md), slice 6) carries the
+UI pass with it: a single-draw pass as its packet, a model draw with
+sibling ranges as its head and each sibling under one admission
+(`ExternalPass::resolved_packets`), and replay records the pass again at
+the head. Outstanding push callbacks, visibility queries, replay,
 unavailable resources or attachments, unsupported shaders or methods,
 and GPU preparation failure all preserve the original path. In particular,
 the built-in diffuse shader, backend-specific shadow textures and enabled
@@ -360,7 +365,10 @@ Admission handles affine fans and projected 2D texture stages. Each stage
 uses its own bound texture, sampler and vertex-program coordinates. The
 waypoint emblem combines separate foreground and background images. A draw outside the supported material, raster or texture state
 continues through the UI fan path. A reserved draw retains its resolved
-packet for replay if the worker cannot record the overlay. The
+packet for replay if the worker cannot record the overlay. A kept scene
+carries the widget's pass with its packet and records it again
+(`WidgetPass::replays_scene`): its `Bound` textures are the recording's
+own stage views. The
 `native_ui_overlay_hud_*` counters distinguish bitmap and glyph
 reservations and refusals, display recordings, and failed recordings.
 

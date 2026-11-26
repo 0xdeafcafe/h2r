@@ -462,7 +462,8 @@ fn a_retained_filter_samples_its_input_and_counts_only_a_native_commit() {
             answer: answer.clone(),
         };
         let external = RetainedExternal {
-            packet: filter.clone(),
+            packets: Arc::from([filter.clone()]),
+            at: 0,
             surfaces: ExternalSurfaces {
                 color: output,
                 depth,

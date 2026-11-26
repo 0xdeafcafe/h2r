@@ -37,6 +37,10 @@ pub(crate) struct Commands<B: SceneDevice> {
     pub(crate) private_lighting: Option<crate::Lighting>,
     relit_ranges: usize,
     bound: Option<(B::Surface, Option<B::Surface>)>,
+    /// The admission whose run's first draw recorded the pass for all its
+    /// packets: the run's later draws draw nothing
+    /// ([`crate::scene_sink::RetainedExternal::follows`]).
+    carried: Option<crate::backend::SharedReplacement>,
     pub(crate) outputs: Outputs<B::Texture>,
 }
 
@@ -46,6 +50,7 @@ impl<B: SceneDevice> Default for Commands<B> {
             private_lighting: None,
             relit_ranges: 0,
             bound: None,
+            carried: None,
             outputs: Outputs::default(),
         }
     }
@@ -180,10 +185,19 @@ impl<B: SceneDevice> Commands<B> {
                     };
                 }
                 if let Some(external) = external {
-                    if self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles) {
+                    if external.follows() {
+                        // The run's first draw recorded every packet, or
+                        // drew its own and this one draws its own too.
+                        if self.carried.as_ref().is_some_and(|p| Arc::ptr_eq(p, &external.pass)) {
+                            return Ok(());
+                        }
+                    } else if self.draw_external(gpu, targets, display, scale, (colour, depth), draw, external, &handles) {
+                        self.carried = (external.packets.len() > 1).then(|| Arc::clone(&external.pass));
                         return Ok(());
+                    } else {
+                        self.carried = None;
+                        external.plan.stage.count(timeline::native::Metric::RefusedReplay, 1);
                     }
-                    external.plan.stage.count(timeline::native::Metric::RefusedReplay, 1);
                 }
                 drawn(gpu.draw(colour, depth, draw, handles.each_ref().map(Option::as_ref))?)?;
             }
