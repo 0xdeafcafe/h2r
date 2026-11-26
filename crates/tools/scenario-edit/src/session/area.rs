@@ -45,7 +45,7 @@ impl Session {
         }
         let ty = Gameplay::of(Some(scenario), m).flag_type?;
         let default = flag_kind(ty).and_then(|k| k.area().cloned())?;
-        (!scenario.is_hill_corner(index)).then(|| (m.position, default, AreaFrom::Default))
+        (!scenario.is_hill_corner(index)).then_some((m.position, default, AreaFrom::Default))
     }
 
     /// Sets or clears netgame flag `index`'s area as one undo step, or

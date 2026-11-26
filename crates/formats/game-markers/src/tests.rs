@@ -662,7 +662,7 @@ fn a_capture_plate_is_its_areas_ring_an_inner_ring_and_a_low_rim() {
         .filter(|l| near(l.a, [-l.b[0], -l.b[1], LIFT]))
         .collect();
     assert_eq!(cross.len(), 2);
-    assert!(cross.iter().all(|l| (radius(*l) - 1.2).abs() < EPS));
+    assert!(cross.iter().all(|l| (radius(l) - 1.2).abs() < EPS));
 }
 
 #[test]
