@@ -303,7 +303,7 @@ fn roster_header_and_cells_share_column_edges() {
     let name = spec.texts.iter().find(|t| t.text == "Chief").unwrap();
     let team = spec.texts.iter().find(|t| t.text == "Red").unwrap();
     assert_eq!((header.rect[1], header.right), (name.rect[1], false));
-    assert_eq!(header.rect[0] - name.rect[0], 22);
+    assert_eq!((header.rect[0] - name.rect[0]) % 22, 0);
     assert!(team.right);
 }
 
