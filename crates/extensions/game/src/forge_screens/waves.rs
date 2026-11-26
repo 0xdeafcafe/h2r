@@ -1373,6 +1373,7 @@ pub fn sample_facts() -> Facts {
             {"waves": waves(&first), "skulls_on": ["catch"]},
             {"waves": waves(&one), "skulls_on": []},
         ],
+        "set": {"endless": false, "scale": 0, "skulls": []},
         "lives": {"pool_start": 7, "per_round_bonus": 2, "shared": true},
         "caps": {"live_actors_by_players": [[4, 16], [8, 16], [16, 16]]},
         "scoring": {

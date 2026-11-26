@@ -107,6 +107,7 @@ fn set(name: &str, class: &str, drops: &[Json]) -> Def {
         "name": name,
         "teams": 1,
         "rounds": [{"waves": waves, "skulls_on": []}],
+        "set": {"endless": false, "scale": 0, "skulls": []},
         "lives": {"pool_start": 5, "per_round_bonus": 1, "shared": true},
         "caps": {"live_actors_by_players": [[4, 32]]},
         "scoring": {
