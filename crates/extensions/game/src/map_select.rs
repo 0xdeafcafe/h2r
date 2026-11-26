@@ -1104,7 +1104,7 @@ impl hooks::Feature for MapSelect {
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::points::{
-            GAME_TICK, LOBBY_SET_MAP, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
+            GAME_TICK, LOBBY_SET_MAP, LOBBY_START_STATE, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
             MP_LEVEL_ARRAY, MP_LEVEL_NAME,
         };
         use hooks::Flow as F;
@@ -1152,6 +1152,47 @@ impl hooks::Feature for MapSelect {
             .first()
             .after_feature(agent::sim::calls::FEATURE)
             .after_feature(crate::skulls_custom::FEATURE);
+
+        // The built-in Firefight kits finished building while the lobby
+        // waited on a map without the kit: put it on Coagulation's
+        // (`lobby_start::landing_map`), as switching to Firefight does.
+        b.raw().before(&GAME_TICK, "land a Firefight lobby on its kit map", move |c| {
+            if !crate::lobby_start::take_kit_landing() {
+                return Ok(F::Continue);
+            }
+            let landing = {
+                let mem = c.ctx.runtime().memory();
+                let state = crate::lobby_start::state();
+                (state.lobby && state.mode == crate::lobby_start::Mode::Firefight)
+                    .then(|| {
+                        let catalogue = current()?;
+                        let id = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
+                        (!crate::lobby_start::KitMaps::now(&*mem).lobby)
+                            .then(|| crate::lobby_start::landing_map(&catalogue, id))
+                            .flatten()
+                    })
+                    .flatten()
+            };
+            let Some(map) = landing else {
+                return Ok(F::Continue);
+            };
+            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    // Not while the game is starting or counting down.
+                    let state = cx
+                        .call(GuestCall::new(LOBBY_START_STATE.base).args([0]))
+                        .await?
+                        .eax;
+                    if !matches!(state, 8 | 10) {
+                        cx.call(GuestCall::new(LOBBY_SET_MAP.base).esi(map).args([u32::MAX]))
+                            .await?;
+                        eprintln!("lobby: landed on the Firefight kit map {map}");
+                    }
+                    let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
+                    Ok(engine::entry::Ret::new(r.eax, 0))
+                })
+            })
+        });
 
         // The list's array for a Select Map of ours.
         let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
@@ -1581,6 +1622,33 @@ pub fn packages_changed(disc: &Path) {
     refresh(sel, sources, || {
         crate::new_maps::install_at_boot(&sources.data_root, disc)
     });
+}
+
+static VFS_RESCAN: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// The boot's way to make the VFS read the maps folder again
+/// ([`publish_packages`]).
+pub fn on_vfs_rescan(rescan: Box<dyn Fn() + Send + Sync>) {
+    let _ = VFS_RESCAN.set(rescan);
+}
+
+/// Whether [`publish_packages`] has everything it needs: the boot prepared
+/// the catalogue and gave the VFS's rescan.
+pub fn publish_ready() -> bool {
+    prepared() && VFS_RESCAN.get().is_some()
+}
+
+/// Packages were written under `<data>/maps` while the game runs (the
+/// built-in Firefight kits): [`packages_changed`], then the VFS reads the
+/// folder again. A no-op before [`publish_ready`].
+pub fn publish_packages(disc: &Path) {
+    if !publish_ready() {
+        return;
+    }
+    packages_changed(disc);
+    if let Some(rescan) = VFS_RESCAN.get() {
+        rescan();
+    }
 }
 
 /// Install and publish the updated set on the caller's thread.

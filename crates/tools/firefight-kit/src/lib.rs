@@ -20,6 +20,7 @@ use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 
 mod ai;
 mod bases;
+pub mod builtin;
 pub mod ground;
 mod nav;
 pub mod retail;

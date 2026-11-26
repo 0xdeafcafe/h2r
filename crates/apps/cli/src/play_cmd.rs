@@ -775,6 +775,8 @@ pub(crate) fn run_with_theater(
     // the game disc), before the level is resolved so `--level a30` finds
     // a level this converts.
     crate::package_prepare::before_boot(&disc, &data, no_halo1, no_mappack);
+    // The built-in Firefight kits build on a worker while the game boots.
+    crate::firefight_kits::start(&disc, &data);
     // Before the build and the window, so a bad name stops here with the
     // disc's list.
     let mut level = match level_choice(

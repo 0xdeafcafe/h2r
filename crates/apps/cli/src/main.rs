@@ -151,6 +151,8 @@ mod mappack_cmd;
 #[cfg(feature = "desktop")]
 mod maps;
 #[cfg(feature = "desktop")]
+mod firefight_kits;
+#[cfg(feature = "desktop")]
 mod package_prepare;
 #[cfg(feature = "desktop")]
 mod store_prepare;
