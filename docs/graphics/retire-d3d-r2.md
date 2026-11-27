@@ -218,8 +218,11 @@ with nothing cached (the call's shader-cache clear then writes nothing),
 and with a structure parameter block the pass copies the bound colour into
 the refraction target before its first draw
 (`snapshot_gpu::Snapshots::into_target`); with a cached implementation it
-is refused `object_target`. A copy beside a draw sampling the view is
-refused `object_shader_flag_target_view`. The other refusals are the
+is refused `object_target`. 
+A copy beside a draw sampling the view is
+refused `object_shader_flag_target_view`.
+
+The other refusals are the
 object plan's (extraction's cause, `object_model`, `object_texaccum`, the
 plan's names) and `object_scene`, `object_item`, `object_layer_begin`,
 `object_restore`, `object_shader_flag_target`.
