@@ -348,14 +348,15 @@ fn build_with_classes(
     fit_within(base, base_name, mode, config, labels, classes, available)
 }
 
-/// The most `+0x1c` a kit may take a multiplayer map to: the largest retail
-/// campaign map's, `max_metadata_size(Campaign)` (`0xc24000`). The engine
-/// reserves one physical arena for every map type (`0x30e4000` bytes), and
-/// a campaign map loads that much beside its two shared maps, which
-/// is more than a multiplayer map of this size plus its one shared map
-/// (docs/game/firefight.md, "The kit"). It is not a loader constant:
-/// the multiplayer bound `max_metadata_size(Multiplayer)` is the largest
-/// retail multiplayer map, which Zanzibar sits 132 KiB under.
+/// The most `+0x1c` a kit may take a multiplayer map to:
+/// `max_metadata_size(Campaign)`, the largest retail campaign map's
+/// (`0xc24000`) plus the arena's growth (`map::arena::GROWTH`). The engine
+/// reserves one physical arena for every map type, and a campaign map loads
+/// its largest beside its two shared maps, which is more than a multiplayer
+/// map of this size plus its one shared map (docs/game/firefight.md, "The
+/// kit"). It is not a loader constant: the multiplayer bound
+/// `max_metadata_size(Multiplayer)` is the largest retail multiplayer map
+/// plus the same growth.
 const KIT_METADATA_BUDGET: CacheType = CacheType::Campaign;
 
 /// The one run a zone has: the widest kept ship's where it has one, else the

@@ -1103,10 +1103,12 @@ before anything is installed. A refusal says by how much the kit is over
 and names its biggest part.
 
 Available is `writer::max_metadata_size(Campaign)` (`0xc24000`, the
-kit's `KIT_METADATA_BUDGET`) minus the map's `+0x1c`. It is not a loader
+largest retail campaign map's, plus the arena's 8 MiB growth: the kit's
+`KIT_METADATA_BUDGET`) minus the map's `+0x1c`. It is not a loader
 constant: the loader takes `+0x1c` from one physical arena that is the same
-size for every map type (`0x30e4000`), and growth comes out of the pool that
-gets the arena's free pages after the load (map-format.md, "Growing the
+size for every map type (`0x38e4000` in our runtime, retail's `0x30e4000`
+plus 8 MiB), and growth comes out of the pool that gets the arena's free
+pages after the load (map-format.md, "The tag arena" and "Growing the
 metadata"). A campaign map loads that much beside its two shared maps,
 which is more than a multiplayer map at that total beside its one shared
 map, so the kit takes the retail campaign maximum rather than the
@@ -1114,8 +1116,9 @@ multiplayer one (`0x62c000`, the largest retail multiplayer map, which
 the map editor keeps). Before the kit, on the owner's disc (**V**,
 docs/halo1/notes/shared-map.md), the room under the multiplayer maximum was:
 Waterworks none, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation 876 KiB.
-Under the kit's budget Zanzibar has 6.1 MiB and keeps the Phantom with
-its drops (`h2 firefight kit zanzibar` reports the growth and the room).
+Under the retail campaign maximum Zanzibar had 6.1 MiB and Waterworks
+was 164 KB short after every fit step; the arena's growth adds 8 MiB to
+each. Zanzibar keeps the Phantom with its drops (`h2 firefight kit zanzibar` reports the growth and the room).
 The numbers are in
 [notes/2026-11-23-firefight-kit-headroom.md](notes/2026-11-23-firefight-kit-headroom.md).
 
@@ -1306,9 +1309,9 @@ through a fresh script for the same commands.
 A map is built in when `h2 firefight kit MAP` makes a package for it from the
 retail disc: six or more drop zones off both bases and the starts, a walkable
 path to both bases, and the tag headroom for the sectors, zones and squads.
-The two refused maps are listed in `builtin::REFUSED`; they are not built at
-start, report their reason in the lobby's kit line, and
-`builtin::refusal(map)` names it. Tests: `the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for`,
+The refused map is listed in `builtin::REFUSED`; it is not built at
+start, reports its reason in the lobby's kit line, and
+`builtin::refusal(map)` names it. Tests: `the_builtin_list_is_the_eleven_maps_the_builder_makes_a_kit_for`,
 `a_refused_retail_map_is_named_with_its_reason_and_never_read`
 (`firefight-kit/src/builtin/ensure/tests.rs`). The survey is the builder's
 own result on the retail disc, by `h2 firefight kit`; a map the disc does
@@ -1327,7 +1330,7 @@ not hold (the Multiplayer Map Pack's) is left to the user's own kit.
 | Lockout (`lockout`) | yes | generated, 12 drop zones |
 | Midship (`midship`) | yes | generated, 12 drop zones |
 | Ivory Tower (`cyclotron`) | no | no six drop zones: the bases' area has room for 5, and the area of 6 polygons with 2 starts has no walkable path |
-| Waterworks (`waterworks`) | no | 164 KB over the tag headroom, sectors, after every fit step |
+| Waterworks (`waterworks`) | yes | generated; fits the grown tag arena (`waterworks_fits_the_grown_tag_arena`, disc tier) |
 
 ### Making your own kit
 
@@ -1399,13 +1402,13 @@ team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
-**The built-in kits build themselves.** Ten retail multiplayer maps are
+**The built-in kits build themselves.** Eleven retail multiplayer maps are
 built in (`firefight_kit::builtin::MAPS`); Coagulation and Zanzibar have
-authored layouts (`firefight_kit::builtin`), the other eight are built by the
+authored layouts (`firefight_kit::builtin`), the other nine are built by the
 kit's generator from their own flags and starts (`Config::default()`, home
 team red, no layout). No one runs `h2 firefight kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
 `crates/apps/cli/src/firefight_kits.rs` asks
-`firefight_kit::builtin::pending` which of the ten packages
+`firefight_kit::builtin::pending` which of the eleven packages
 (`<data>/maps/firefight-<map>`) is missing or stale and, if any is, runs
 `firefight_kit::builtin::ensure` on a worker thread while the game boots.
 A package is current when its manifest is on disk and the stamp beside it

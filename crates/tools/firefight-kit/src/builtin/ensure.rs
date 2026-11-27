@@ -19,7 +19,7 @@ use crate::{Config, Fit, KIT_VERSION, Mode};
 /// them was built by `h2 firefight kit` on the retail disc with six or
 /// more drop zones, a path to both bases and the tag headroom to spare
 /// (docs/game/firefight.md, "Built-in kits").
-pub const MAPS: [&str; 10] = [
+pub const MAPS: [&str; 11] = [
     "coagulation",
     "zanzibar",
     "ascension",
@@ -30,14 +30,14 @@ pub const MAPS: [&str; 10] = [
     "headlong",
     "lockout",
     "midship",
+    "waterworks",
 ];
 
 /// The retail multiplayer maps the builder refuses, each with the reason
 /// it gives. They are not built at start; `h2 firefight kit MAP` still
 /// tries one and says the same.
-pub const REFUSED: [(&str, &str); 2] = [
+pub const REFUSED: [(&str, &str); 1] = [
     ("cyclotron", "no six drop zones: the bases' area has room for 5"),
-    ("waterworks", "164 KB over the tag headroom, sectors"),
 ];
 
 /// Why the built-in set leaves `map` out, if it does.
