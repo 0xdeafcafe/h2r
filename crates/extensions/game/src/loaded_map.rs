@@ -132,8 +132,14 @@ impl Feature for LoadedMap {
                 Ok(hooks::Flow::Continue)
             })
             // Every reader at the start (the HUD kit, Firefight, the H1
-            // swaps) may open the map, so the path is published first.
-            .first();
+            // swaps) may open the map, so the path is published in the
+            // first class, after the class's other members (which only
+            // reset state and never read the path).
+            .first()
+            .after_feature("data-salts")
+            .after_feature("object-pool-clear")
+            .after_feature("game-variants")
+            .after_feature("h1-scope-zoom");
         b.game()
             .on_start("publish the loaded map", |o| republish(&*o.guest()))
             .after_feature("hud");
