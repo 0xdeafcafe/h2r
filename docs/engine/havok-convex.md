@@ -1,7 +1,7 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; the query's triangle case `0x00303dd0`, the manifold update and the contact commit stay guest code, and no arm calls the query yet.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query and its leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs` and `shape_support.rs`.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so is the manifold refresh `0x00302eb0`; the query's triangle case `0x00303dd0`, the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query and its leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs` and `manifold.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -91,7 +91,8 @@ frame and runs the closest-feature query. **E**
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
 | `0x003032c0` (thiscall state; cache, separation, out; `ret 0xc`; the cache is not read) | the contact: the negated direction, the distance, and A's support point (A's simplex one vertex, weight 1.0), B's moved back by the distance (B's one vertex, 0.0) or the state's midpoint `+0x130` (0.5) | `gjk::contact` |
 | `0x002da6e0` (thiscall out; transform, vector; `ret 8`) | the separating direction back into the world | `gjk::rotate` |
-| `0x00302c70`, `0x00302eb0` | the manifold: add a point through the manager's `vt[+0x04]` (then Halo's contact callback), refresh and drop points through `vt[+0x08]` | no |
+| `0x00302c70` (cdecl; A, B, input, contact, manager, slots, count) | add a point: a slot within the match radius takes it in place, else a new slot and an ID from the manager's `vt[+0x04]` (then Halo's contact callback); past four slots `0x00302a10` cuts back to four | no |
+| `0x00302eb0` (cdecl; A, B, input, floor, slots, count, collector, manager) | refresh: each point kept as a contact in the collector's array or dropped through the manager's `vt[+0x08]` ("The manifold" below) | `manifold::refresh` |
 
 The ported functions are compared with the lifted ones in
 `sim_havok_differential.rs`. The arm still declines the query path
@@ -153,6 +154,30 @@ flowchart TD
 | `+0x20`, `+0x60` | A's vertices, a parallel array |
 | `+0xa0`, `+0xe0` | B's vertices in A's frame and in B's |
 | `+0x120`, `+0x130`, `+0x160` | the normal, the closest points, the edge tests |
+
+## The manifold
+
+`manifold::refresh` runs `0x00302eb0` on a journal. Its two calls out go
+through the caller's `manifold::Calls`. **E**
+
+| Step | Does |
+|---|---|
+| reserve | the array's size plus the count past its capacity (top bit masked): `0x002d9160` to the larger of twice the capacity and the need |
+| size | raised by the count before the loop |
+| place | each slot's A and B points through their motions' transforms (`+0x20` columns, `+0x50` translation), `(c0 x + c1 y) + (c2 z + t)` |
+| test | `d = (A - B) . n`; kept when `d` is below the input's `+0x08`, above the floor, and `\|A - (B + d n)\|^2` below the drift radius squared (input `+0x0c` then `+0x08`, squared on the x87 and stored) |
+| keep | `w A + (1 - w) B` with `d` in `w`, the normal, the 16-bit ID at `+0x20`; the element's other bytes are not written |
+| drop | the manager's `vt[+0x08]` with the ID, the count down one, the last slot copied over this one (which is tested next), the array's size down one |
+
+- Every compare is ordered (`fcomp`, `test ah,5` or `0x41`): a NaN
+  drops. The port declines a non-finite x87 load (`float`).
+- At the return, eax is the last kept point's weight (or the array after
+  a drop, the count with no points), ecx and edx the kept count (edx the
+  slots after a drop; the array and its data with no points).
+- `sim_havok_differential.rs` compares it with the lifted function, 1024
+  seeds of zero to four points, the removals answered by a stub. The
+  seeds leave the array room; the lifted reserve calls the system
+  allocator.
 
 ## Support virtuals
 

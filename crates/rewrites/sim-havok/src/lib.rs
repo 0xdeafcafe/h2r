@@ -13,6 +13,7 @@ pub mod island_solve;
 pub mod jacobian;
 pub mod joint;
 pub mod layout;
+pub mod manifold;
 pub mod mem;
 pub mod motion;
 pub mod motion_solve;
