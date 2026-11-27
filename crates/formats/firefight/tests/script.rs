@@ -592,10 +592,13 @@ fn an_ally_kill_scores_nothing() {
         .filter(|(_, command)| matches!(command, Command::Score { .. }))
         .count();
     assert_eq!(scores, 5);
-    assert!(run.commands.iter().all(|(_, command)| !matches!(
-        command,
-        Command::Lives { .. } | Command::Respawn { .. }
-    )));
+    // The shared pool is shown at its start of three and never lowered,
+    // and nobody is brought back.
+    assert!(run.commands.iter().all(|(_, command)| match command {
+        Command::Lives { pool, .. } => *pool == 3,
+        Command::Respawn { .. } => false,
+        _ => true,
+    }));
 }
 
 #[test]

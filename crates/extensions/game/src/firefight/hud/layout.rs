@@ -36,8 +36,8 @@ pub const LAST_LIFE: &str = "LAST LIFE";
 /// The largest points and lives the lines show.
 pub const SCORE_MAX: u32 = 9_999_999;
 pub const LIVES_MAX: u16 = 999;
-/// The widest banner, in characters.
-pub const BANNER_CHARS: usize = 20;
+/// The widest banner, in characters: the longest skull name and " ON".
+pub const BANNER_CHARS: usize = 23;
 /// The skull slots: one per skull, by slot, fixed for the HUD's life.
 /// Slot 6 is Iron, which has no session skull yet.
 pub const SKULL_SLOTS: [Option<Skull>; 7] = [

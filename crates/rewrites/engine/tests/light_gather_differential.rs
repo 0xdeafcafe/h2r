@@ -4388,3 +4388,198 @@ fn first_person_final_slot_returns_as_the_lifted_loop_exit() {
         eprintln!("SKIPPED first_person_final_slot_returns_as_the_lifted_loop_exit: no XBE (set H2_XBE)");
     }
 }
+
+// ---------------------------------------------------------------------
+// The first-person draw's items: 0x0003fdf0 up to its layer draws.
+
+use engine::render::light_gather::first_person_items as fp_items;
+
+const FIRST_PERSON_DRAW: u32 = 0x0003_fdf0;
+/// Where the record loop ends, both when it ran and when it had nothing.
+const FIRST_PERSON_LOOP_END: u32 = 0x0003_ff9c;
+/// The first-person effects, stubbed (`ret 4`).
+const FIRST_PERSON_EFFECTS: u32 = 0x0017_4220;
+const ITEMS_ZERO: u32 = 0x033d_0000;
+const SORTED_ENTRIES: u32 = 0x033e_0000;
+const OBJECT_SECTIONS: u32 = 4;
+
+/// Objects' first-person records over [`items_world`]: a render model
+/// with sections, materials and node matrices, the first person's record
+/// list, list 0 and the sorted list, and the view the sorted depth is
+/// taken along.
+fn first_person_items_world(w: &mut World, r: &mut Rng) {
+    let (start, end) = items_world(w, r, 1);
+    let m = &mut w.mem;
+    // The render model: its flags, sections and materials.
+    put8(m, OBJECT_TAGS + 4, if r.chance(2) { 4 } else { 0 });
+    put(m, OBJECT_TAGS + 0x64, MATERIALS);
+    for s in (0..OBJECT_SECTIONS).chain([0xff]) {
+        let at = OBJECT_REGIONS + 0x5c * s;
+        put(
+            m,
+            at + 0x34,
+            if r.chance(8) {
+                0
+            } else {
+                GEOMETRIES + 0x100 * r.below(GEOMETRY_COUNT)
+            },
+        );
+        put16(
+            m,
+            at + 0x2c,
+            if r.chance(4) { 0xffff } else { r.below(8) as u16 },
+        );
+    }
+    // The node matrices and the remap the model's flag bit 2 reads.
+    for k in 0..0x200 {
+        putf(m, fp_items::NODE_MATRICES + 4 * k, r.float(-8.0, 8.0));
+    }
+    for k in 0..16 {
+        put16(m, fp_items::NODE_MATRICES + 4 + 4 * k, r.below(8) as u16);
+    }
+    for k in 0..SHADERS {
+        put8(m, SHADER_DATA + 0x100 * k + 0x16, r.below(4) as u8);
+    }
+    // The first person's records: objects' records of the light's range.
+    let count = if end > start { r.below(12) } else { 0 };
+    put(m, fp_items::RECORD_COUNT, count);
+    for n in 0..count {
+        let index = if r.chance(8) {
+            0xffff
+        } else {
+            start + r.below(end - start)
+        };
+        put16(m, fp_items::RECORDS + 2 * n, index as u16);
+        if index == 0xffff {
+            continue;
+        }
+        let at = SCENE_RECORDS + 0x20 * index;
+        put(
+            m,
+            at + 4,
+            if r.chance(12) {
+                NONE
+            } else {
+                (0xe130 << 16) | OBJECT_TAG
+            },
+        );
+        put(
+            m,
+            at + 8,
+            if r.chance(16) { NONE } else { 4 * r.below(0x40) },
+        );
+        let section = if r.chance(8) { 0xff } else { r.below(OBJECT_SECTIONS) };
+        let packed = word(m, at + 0xc) & !(0x1ff << 9);
+        put(m, at + 0xc, packed | (section << 9));
+        put8(m, at + 0x1b, r.u32() as u8);
+        put8(m, PIXEL_BYTES + index, r.u32() as u8);
+    }
+    // List 0, the sorted list and the view.
+    let header = items::LISTS;
+    let capacity = if r.chance(5) { r.below(3) } else { 4 + r.below(24) };
+    put(m, header, capacity);
+    put(m, header + 4, r.below(capacity + 1));
+    put(m, header + 8, r.u32());
+    put(m, header + 0xc, r.u32());
+    put(m, header + 0x10, r.u32());
+    put(m, header + 0x14, ITEMS_ZERO);
+    fill(m, r, ITEMS_ZERO, 32 * 0x18);
+    put(
+        m,
+        fp_items::SORTED_COUNT,
+        if r.chance(6) { 0x3fe + r.below(3) } else { r.below(16) },
+    );
+    put(m, fp_items::SORTED_ENTRIES, SORTED_ENTRIES);
+    fill(m, r, SORTED_ENTRIES, 0x400 * fp_items::SORTED_ENTRY + 0x100);
+    for k in 0..3 {
+        putf(m, fp_items::VIEW_POSITION + 4 * k, r.float(-4.0, 4.0));
+        putf(m, fp_items::VIEW_FORWARD + 4 * k, r.float(-1.0, 1.0));
+    }
+}
+
+/// `0x0003fdf0` lifted from its entry to the end of its record loop, the
+/// first-person effects stubbed.
+fn original_first_person_items(
+    lifted: &mut Lifted<'_>,
+    m: &mut FlatMemory,
+    cpu: &mut Cpu,
+    esp: u32,
+    mode: u32,
+    call: u32,
+) -> Result<(), String> {
+    put(m, esp, HARNESS_EXIT);
+    put(m, esp + 4, call);
+    cpu.gpr[4] = esp;
+    cpu.gpr[0] = mode;
+    cpu.eip = FIRST_PERSON_DRAW;
+    lifted
+        .run(cpu, m, &[FIRST_PERSON_LOOP_END, HARNESS_EXIT], |pc, cpu, m| {
+            if pc != FIRST_PERSON_EFFECTS {
+                return false;
+            }
+            let sp = cpu.gpr[4];
+            cpu.eip = word(m, sp);
+            cpu.gpr[4] = sp + 8;
+            true
+        })
+        .and_then(|pc| match pc {
+            FIRST_PERSON_LOOP_END => Ok(()),
+            _ => Err(format!("left at {pc:#x}")),
+        })
+}
+
+#[test]
+fn first_person_items_match_the_lifted_original() {
+    if !with_image(first_person_items_cases) {
+        eprintln!("SKIPPED first_person_items_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn first_person_items_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    let mut tally = Tally::default();
+    for seed in seeds() {
+        for n in 0..96u32 {
+            let mut r = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ u64::from(n) ^ 0xfdf0);
+            let mut w = World::new(image, &mut r, 4);
+            first_person_items_world(&mut w, &mut r);
+            let mode = r.below(3);
+            let call = r.below(2);
+            let label = format!("seed {seed} case {n} (mode {mode}, call {call})");
+            let mut c = cpu(&mut r);
+            let esp = c.gpr[4] - 8;
+
+            let mut port = Ram(w.mem.clone());
+            let made = match fp_items::make(&port, mode) {
+                Ok(made) => made,
+                Err(why) => {
+                    tally.add(format!("refused {why:?}"));
+                    continue;
+                }
+            };
+            made.writes.apply(&mut port).unwrap();
+
+            let mut a = w.mem;
+            original_first_person_items(&mut lifted, &mut a, &mut c, esp, mode, call)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+            compare(&label, &a, &port.0, esp);
+            assert_eq!(made.layers, word(&a, items::LISTS + 8), "{label}: list 0's layers");
+            tally.add("native");
+            for part in &made.made {
+                if part.item.is_some() {
+                    tally.add("an item");
+                }
+                if part.sorted.is_some() {
+                    tally.add("a sorted entry");
+                }
+                if part.item.is_none() && part.layers & 0xffff_7fff != 0 {
+                    tally.add("a full list");
+                }
+            }
+        }
+    }
+    eprintln!("first-person items: {:#?}", tally.0);
+    assert!(tally.get("native") >= 96, "too few calls answered: {:#?}", tally.0);
+    for k in ["an item", "a sorted entry", "a full list"] {
+        assert!(tally.get(k) > 0, "never {k}: {:#?}", tally.0);
+    }
+}
