@@ -295,7 +295,12 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        assert!(plan.chains.is_empty(), "off: nothing installs");
+        // The default-on animation manager arms install their own entries;
+        // none of them is an object body.
+        for body in objects::BODIES {
+            let chain = plan.chains.get(&body.point.base);
+            assert!(chain.is_none_or(|c| c.implement.is_none()), "off: {}", body.point.name);
+        }
         assert!(plan.save_sections().is_empty());
 
         let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
