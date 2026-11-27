@@ -5869,7 +5869,7 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, in that order. |
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, `effects-parts`, in that order. |
 
 Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
@@ -5891,8 +5891,13 @@ field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
-`answered`. A subsystem with its switch off reads zeros, so
-`clean` is false.
+`answered`. `effects-parts` is the effects phase in Rust, under
+`impl.sim.effects-parts` rather than an `impl.sim.native.*` switch: its
+`effects.damage` arm is `sim_effects_parts::status`'s damage arm, and
+`effects.parts` counts the parts returned from Rust as `answered` and the
+parts the guest's arm ran as `declined`
+([effects-parts.md](../engine/effects-parts.md)). A subsystem with its
+switch off reads zeros, so `clean` is false.
 
 ```sh
 h2 agent sim.arms

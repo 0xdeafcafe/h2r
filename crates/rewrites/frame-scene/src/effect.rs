@@ -224,3 +224,31 @@ mod tests {
         assert_eq!(WeatherPlate::SLOT.number(), Some(9));
     }
 }
+
+/// What a visual effect part made, as the sim's effects phase reports it
+/// (docs/engine/effects-parts.md): a decal, a light or a lens flare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum PartKind {
+    Decal,
+    Light,
+    Flare,
+}
+
+/// One visual effect part created since the last scene, in creation order.
+/// The sim keeps these out of guest memory, so they never reach the arena
+/// hash; decals and lights are also in the guest's arrays.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct PartEvent {
+    /// Creation order, from 1; never reused.
+    pub seq: u64,
+    pub tick: u32,
+    pub kind: PartKind,
+    /// The part's tag and its effect's definition tag.
+    pub tag: u32,
+    pub effect: u32,
+    pub position: [f32; 3],
+    pub direction: [f32; 3],
+    pub scale: f32,
+    /// The guest made it too.
+    pub guest_made: bool,
+}

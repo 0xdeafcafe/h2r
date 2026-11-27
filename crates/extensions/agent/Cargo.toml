@@ -13,6 +13,8 @@ render-overrides = ["dep:hot-render"]
 mem-watch.workspace = true
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
+# The effects phase's counters for sim.arms (docs/engine/effects-parts.md).
+sim-effects.workspace = true
 agent-proto = { path = "../agent-proto" }
 forge = { path = "../forge" }
 forge-doc.workspace = true

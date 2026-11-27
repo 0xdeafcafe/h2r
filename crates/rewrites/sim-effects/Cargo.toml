@@ -3,7 +3,7 @@ name = "sim-effects"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Effect part dispatch for the native simulation: damage parts as sim state, visual-only parts as events for the renderer"
+description = "The effects phase of the native simulation: the effect walk, the damage part arm and the renderer's part events"
 
 [package.metadata.h2]
 status = "in progress"

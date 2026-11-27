@@ -31,6 +31,12 @@ pub fn ledger() -> Ledger {
 
 pub struct TickDriver;
 
+/// The Rust phase bodies the switches leave on: the effects phase with
+/// `impl.sim.effects-parts` (on by default; off, the guest runs it).
+pub fn bodies(switches: &hooks::Switches) -> sim_tick::Bodies {
+    sim_tick::Bodies { effects: crate::sim_effects_parts::on(switches) }
+}
+
 impl Feature for TickDriver {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "The game tick, run from Rust").doc("docs/engine/sim-rewrite.md")
@@ -41,8 +47,9 @@ impl Feature for TickDriver {
         // ledger is a counter of this process, not of the game.
         b.snapshot(SnapshotPolicy::Stateless);
         let present = crate::present::mode(b.switches());
+        let bodies = bodies(b.switches());
         b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
-            Box::pin(sim_tick::run_with(cx, &LEDGER, present))
+            Box::pin(sim_tick::run_with(cx, &LEDGER, present, bodies))
         });
         Ok(())
     }
@@ -53,6 +60,14 @@ mod tests {
     use super::*;
     use engine::entry::{self, Regs};
     use engine::sim_tick::{Owner, PHASES};
+
+    #[test]
+    fn the_effects_body_follows_its_switch() {
+        let on = |spec: &str| bodies(&hooks::Switches::parse(spec).unwrap()).effects;
+        assert!(on(""));
+        assert!(!on("-impl.sim.effects-parts"));
+        assert_eq!(PHASES.iter().filter(|p| p.owner == Owner::Rust).count(), 1);
+    }
     use engine::memory::GuestMemory;
     use engine::testing::FakeGuest;
     use hooks::Flow;
@@ -102,9 +117,10 @@ mod tests {
         want.extend(PHASES.iter().map(|p| p.entry));
         want.push(sim_tick::RECORD_AFTER);
         assert_eq!(targets, want);
+        // `sim_tick::run` is the lifted form: every phase a guest call.
         let l = ledger.lock().unwrap();
         for (i, p) in PHASES.iter().enumerate() {
-            assert_eq!(l.calls(i), u32::from(p.owner == Owner::Guest), "{}", p.name);
+            assert_eq!(l.calls(i), 1, "{}", p.name);
         }
         assert_eq!((l.ticks(), l.tick()), (1, 6));
         // The phases' times are spans inside the tick: they sum to at most

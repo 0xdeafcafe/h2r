@@ -622,6 +622,13 @@ impl SceneBuilder {
         scene.views[open].order = start as u32..scene.order.len() as u32;
     }
 
+    /// Adds the visual effect parts created since the last scene.
+    pub fn push_part_events(&mut self, events: impl IntoIterator<Item = crate::effect::PartEvent>) -> Result<(), BuildError> {
+        let scene = self.scene.as_mut().ok_or(BuildError::NoScene)?;
+        scene.part_events.extend(events);
+        Ok(())
+    }
+
     /// Seals the scene: the open view, the cut reasons (a new map epoch, a
     /// changed set of views, and any [`Self::cut`] asked), and the stamp.
     /// `None` when no scene was begun.

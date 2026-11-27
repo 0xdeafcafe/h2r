@@ -81,6 +81,7 @@ dependencies = [
  "settings",
  "sim-bench",
  "sim-bridge",
+ "sim-effects",
  "sim-havok",
  "sim-state",
  "snapshot",
@@ -2077,6 +2078,7 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-effects",
  "sim-havok",
  "sim-objects",
  "sim-sound",
@@ -5855,6 +5857,7 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "scene-extract",
+ "sim-effects",
  "tags",
  "timeline",
 ]
