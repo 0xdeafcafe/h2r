@@ -723,6 +723,16 @@ points! { ALL;
     /// tag, an object and node or -1, -1, and a location or source; XMM0 the
     /// scale.
     LIGHT_CREATE @ 0x000c_0350: [fn(scale: xmm0, tag: stack 0, object: stack 1, node: stack 2, at: stack 3) ret 16], Optional; "docs/engine/effects-parts.md";
+    /// The effect walk's first per-effect call: the effect's object
+    /// bookkeeping; true when the effect is gone (a Rust body,
+    /// `engine::effect_update`).
+    EFFECT_ALIVE @ 0x0017_94e0: [fn(effect: stack 0) -> al ret 4], Optional; "docs/engine/effects-parts.md";
+    /// The effect walk's cull: true when the walk skips the effect.
+    EFFECT_CULLED @ 0x0017_9730: [fn(effect: ebx) -> al ret 0], Optional; "docs/engine/effects-parts.md";
+    /// Free an effect's datum and its links.
+    EFFECT_DELETE @ 0x0017_74f0: [fn(effect: eax) ret 0], Optional; "docs/engine/effects-parts.md";
+    /// One effect's event clock for `dt` seconds; true when it retired.
+    EFFECT_UPDATE @ 0x0017_92b0: [fn(effect: stack 0, dt: stack 1) -> al ret 8], Optional; "docs/engine/effects-parts.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
     /// `animation_resource_get`: EAX a graph's resource record; loads it
     /// through the animation cache when needed and stamps the cache entry's

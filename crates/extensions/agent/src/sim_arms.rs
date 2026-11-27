@@ -78,7 +78,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             }),
             subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
             subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
-            effects_parts(switches, sim_bridge::sim_effects_parts::status()),
+            effects_parts(switches, sim_bridge::sim_effects_parts::status(), engine::effect_update::arm::stats()),
         ],
     }
 }
@@ -107,8 +107,13 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
 /// the damage, object, sound, character, `coln`, decal and light arms, and
 /// the part switch's other parts
 /// (`answered` the ones returned from Rust, `declined` the ones the guest's
-/// arm ran unchecked).
-fn effects_parts(switches: &Switches, (parts, arms): (EffectParts, EffectArms)) -> Subsystem {
+/// arm ran unchecked), then the per-effect bodies' arm, one arm per entry
+/// (`effects.body.<entry>`).
+fn effects_parts(
+    switches: &Switches,
+    (parts, arms): (EffectParts, EffectArms),
+    bodies: Vec<(u32, walk_arm::Stats)>,
+) -> Subsystem {
     let on = sim_bridge::sim_effects_parts::on(switches);
     let wire = |name: &str, a: EffectArm| Arm {
         name: name.to_owned(),
@@ -118,7 +123,7 @@ fn effects_parts(switches: &Switches, (parts, arms): (EffectParts, EffectArms)) 
         answered: a.answered,
         declined: a.declined(),
     };
-    let arms = vec![
+    let mut arms = vec![
         wire("effects.damage", arms.damage),
         wire("effects.object", arms.object),
         wire("effects.sound", arms.sound),
@@ -133,6 +138,7 @@ fn effects_parts(switches: &Switches, (parts, arms): (EffectParts, EffectArms)) 
             ..Arm::default()
         },
     ];
+    arms.extend(segment_wire("effects.body", bodies));
     verdict("effects-parts", "impl.sim.effects-parts".to_owned(), on, arms)
 }
 
@@ -215,10 +221,15 @@ fn function_wire(s: function::Status) -> Arm {
 /// The walk arm, one arm per entry (`objects.walk.<entry>`); faulted,
 /// stopped and yielded guest segments count as declined.
 fn walk_wire(entries: Vec<(u32, walk_arm::Stats)>) -> Vec<Arm> {
+    segment_wire("objects.walk", entries)
+}
+
+/// A segment arm's entries as `<prefix>.<entry>`, the walk arm's way.
+fn segment_wire(prefix: &str, entries: Vec<(u32, walk_arm::Stats)>) -> Vec<Arm> {
     entries
         .into_iter()
         .map(|(entry, s)| Arm {
-            name: format!("objects.walk.{entry:08x}"),
+            name: format!("{prefix}.{entry:08x}"),
             checked: s.matched + s.mismatched,
             matched: s.matched,
             mismatched: s.mismatched,
@@ -418,6 +429,7 @@ mod tests {
                     ..EffectArms::default()
                 },
             ),
+            vec![(0x1792b0, walk_arm::Stats { matched: 3, answered: 2, interrupted: 1, ..walk_arm::Stats::default() })],
         );
         let names: Vec<&str> = e.arms.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
@@ -430,13 +442,15 @@ mod tests {
                 "effects.coln",
                 "effects.decal",
                 "effects.light",
-                "effects.parts"
+                "effects.parts",
+                "effects.body.001792b0"
             ]
         );
         assert_eq!(e.arms[5].answered, 5);
         assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (6, 3, 2));
         assert_eq!((e.arms[1].checked, e.arms[1].answered, e.arms[1].declined), (4, 9, 1));
         assert_eq!((e.arms[7].answered, e.arms[7].declined), (4, 3));
+        assert_eq!((e.arms[8].checked, e.arms[8].answered, e.arms[8].declined), (3, 2, 1));
         assert!(!e.clean);
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
         assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));

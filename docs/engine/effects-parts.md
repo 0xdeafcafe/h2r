@@ -1,7 +1,7 @@
 # The effects phase in Rust: the effect walk and the part arms
 
-Status: Partly built. The walk, an arm for every part class the switch handles (damage, object, sound, character, `coln`, decal, light), the returned arms and the scene events are written; nothing draws the scene events yet.
-Code: `crates/rewrites/sim-effects` (pure), `crates/rewrites/engine/src/effects_phase.rs` (the walk over the guest), `crates/rewrites/sim-bridge/src/sim_effects_parts.rs` (the part switch). Tests: `effects_phase_ledger_is_zero` (`engine::sim_tick`), `visual_events_leave_hash_unchanged` and `object_and_sound_parts_answer_after_their_own_proof` (`sim_effects::dispatch`), `the_object_answer_calls_the_leaves_in_retails_order`, `the_sound_answer_makes_retails_call`, `the_character_answer_pushes_as_retail`, `the_decal_answer_draws_between_the_leaves` and `the_light_answer_makes_retails_call` (`sim_bridge::sim_effects_parts`), `the_other_arms_answer_after_their_own_proof` (`sim_effects::dispatch`), `a_draw_is_retails_lcg_and_scale` (`sim_effects::random`), `damage_parts_match_lifted` (`crates/rewrites/engine/tests/sim_effects_differential.rs`).
+Status: Partly built. The walk, its four per-effect callees, an arm for every part class the switch handles (damage, object, sound, character, `coln`, decal, light), the returned arms and the scene events are written; nothing draws the scene events yet.
+Code: `crates/rewrites/sim-effects` (pure), `crates/rewrites/engine/src/effects_phase.rs` (the walk over the guest), `crates/rewrites/engine/src/effect_update` (the per-effect bodies and their arm), `crates/rewrites/sim-bridge/src/sim_effects_parts.rs` (the part switch), `crates/rewrites/sim-bridge/src/effect_update.rs` (the bodies' hooks). Tests: `effects_phase_ledger_is_zero` (`engine::sim_tick`), `visual_events_leave_hash_unchanged` and `object_and_sound_parts_answer_after_their_own_proof` (`sim_effects::dispatch`), `the_object_answer_calls_the_leaves_in_retails_order`, `the_sound_answer_makes_retails_call`, `the_character_answer_pushes_as_retail`, `the_decal_answer_draws_between_the_leaves` and `the_light_answer_makes_retails_call` (`sim_bridge::sim_effects_parts`), `the_other_arms_answer_after_their_own_proof` (`sim_effects::dispatch`), `a_draw_is_retails_lcg_and_scale` (`sim_effects::random`), `damage_parts_match_lifted` (`crates/rewrites/engine/tests/sim_effects_differential.rs`), the per-effect bodies' tests (`engine::effect_update::tests`), `the_switch_installs_every_body_with_its_sites_and_the_resets` and `the_native_effects_port_keeps_the_update` (`sim_bridge::effect_update`).
 Switch: `impl.sim.effects-parts` (on), listed in [switches.md](../runtime/switches.md). Off, the guest runs the phase and every part: the A arm of `h2 sim diff`.
 
 The tick driver runs the effects phase (phase 15, `0x176e40`) as a Rust body, so `sim.ledger` counts no guest call for it and `tick-ledger.toml` allows 28 guest phases. Every part stays exact: each class's arm is compared with the guest until proven, and the draws keep their order. Visual parts become events in Rust for the renderer's scene, outside the arena. No RNG draw changes place.
@@ -11,10 +11,11 @@ The tick driver runs the effects phase (phase 15, `0x176e40`) as a Rust body, so
 ```text
 tick driver ── phase 15 ──> effects_phase::run (Rust)
                               │ per live effect, in index order
-                              ├─ 0x1794e0  alive?        guest
-                              ├─ 0x179730  culled?       guest
-                              ├─ 0x1774f0  retire        guest   (flag bit 6, lifetime -1)
-                              └─ 0x1792b0  events        guest ──> part switch 0x17a8a0
+                              ├─ 0x1794e0  alive?        body ──> 0x1774f0 when the object is gone
+                              ├─ 0x179730  culled?       body
+                              ├─ 0x1774f0  delete        body    (flag bit 6, lifetime -1)
+                              └─ 0x1792b0  events        body ──> part switch 0x17a8a0
+                                 (segment arm: compare until proven, then answer)
                                                                     │
                     sim_effects_parts::enter (Rust) <───────────────┘
                      ├─ jpt!              damage arm (audit or answer)
@@ -58,7 +59,27 @@ tick driver ── phase 15 ──> effects_phase::run (Rust)
    Rust's draws run on a copy of the entry's x87 state, and the arm answers only when no x87 exception is pending and all six are masked. The audit is staged: `EFFECT_PART_PLACE`'s entry (from `0x17aad9`) checks the stream after the gate and the call, its return predicts step 3, `DECAL_CREATE`'s entry (from `0x17ab10`) checks the stream and the call, and the switch's return checks a part the gate stopped.
 10. **The draws** (`sim_effects::random`). `0x259a0` and `0x259d0` are the LCG `seed * 0x19660d + 0x3c6ef35f` and `fild(seed >> 16) * [0x45dc50]`, scaled to the range. Rust runs them with the recompiler's x87 helpers (`x87::abi`), the same code the lifted functions call.
 11. **The light arm** (`sim_effects::light`). One call to `0xc0350` with the scale in `XMM0`: on the object (the tag, the object, its node, location `+0x24`) or at a point (the tag, -1, -1, the source). The observer on `LIGHT_CREATE` (from `0x17acb0` and `0x17ace2`) compares it.
-12. **Scene events** (`sim_effects::scene`). Decal, light and flare parts are queued in a Rust queue (4096, oldest dropped and counted). The frame step drains it into `FrameScene::part_events` at each seal (`render_bridge::scene_step::seal`).
+12. **The per-effect bodies** (`engine::effect_update`): see below.
+13. **Scene events** (`sim_effects::scene`). Decal, light and flare parts are queued in a Rust queue (4096, oldest dropped and counted). The frame step drains it into `FrameScene::part_events` at each seal (`render_bridge::scene_step::seal`).
+
+## The per-effect bodies
+
+The walk's four callees are Rust bodies (`sim_objects::Body`): an entry and the return addresses of its guest calls, run from either to its next transfer on the retail frame, so the runtime can stop at any callout and resume at its site.
+
+| Entry | Body | Its guest calls |
+|---|---|---|
+| `0x1794e0` | `alive`: the effect's object (`+48`): gone, delete and return true; else its offset and marker, the function values `+6c`, `+70` and colour `+24`, the end, stop or restart by the definition's bit 0 and the effect's bits 2 and 4, and the light record `+104`, `+108` | `badc0`, `baf80`, `1794a0`, `bab40` twice, `bad50`, `177260`, `177610`, `177310`, `3ddd0`; `1774f0` is a body |
+| `0x179730` | `culled`: the visibility bit 3 of `+2` from the cluster, split-screen and the definition's bit 2; turning visible may end the effect | `3eb20`, `11c080` or `11c050`, `177610` |
+| `0x1774f0` | `delete`: the salt check, the attachment's bit, the three unlinks, a tail jump to the free | `177590`, `1771a0`, `1773a0`, `177460`, `16ba40` |
+| `0x1792b0` | `update`: up to 8 passes of the event clock `+60` towards `+64`; in an event the emitters, locations and the next event; at a delay's end the event's start, its length `+64` fixed or drawn, its parts and beams | `179020`, `179fb0`, `179190`, `1782a0`, `177610`, `177c20`, `259d0`, `17a380`, `17add0` |
+
+Every segment's flags are its last flag-setting instruction's, so a callee that reads them, and the return, see retail's. The draw `259d0` stays the guest's, called where retail calls it; Rust stores its `fstp` with the recompiler's x87 helpers. No draw moves.
+
+The arm (`effect_update::arm`) is the walk arm's rule over these four. Each segment gets a turn: until its entry has matched 4096 segments, and on every 64th after, the guest answers, and the Rust segment, run on the same state inside a trial that puts every byte back, is compared at the guest's transfer: the transfer, every register, the flags both define, x87, XMM and each byte Rust stored. Otherwise Rust answers, fusing from `1794e0` into `1774f0` when that turn is an answer too.
+
+One difference hands all four back to the guest until the next map; a revert or a restore starts the audit slots over. An unsupported float environment runs the guest's, counted as `declined`.
+
+`impl.sim.native.effects` ports `1792b0` too (`engine::sim_effects::events`); with it on, that port keeps the point and the update body is not installed.
 
 ## Interfaces
 
@@ -76,26 +97,30 @@ tick driver ── phase 15 ──> effects_phase::run (Rust)
 | `DECAL_CREATE` | `0x17e670` | `observe_before` "effect decal arm: compare the create" | the point's only hook |
 | `LIGHT_CREATE` | `0xc0350` | `observe_before` "effect light arm: compare" | the point's only hook |
 | `CACHE_TAGS_LOAD` | | `observe_before` "effect part arm: reset" | beside the other arms' resets; observers need no order |
+| `EFFECT_ALIVE`, `EFFECT_CULLED`, `EFFECT_DELETE`, `EFFECT_UPDATE` | `0x1794e0`, `0x179730`, `0x1774f0`, `0x1792b0` | `implement` "effect bodies", with the sites as resumes | the only implementation; guarded when another feature hooks the point |
+| `CACHE_TAGS_LOAD`, `GAME_STATE_REVERT`, `GAME_STATE_RESTORE` | | `observe_before` "effect bodies: reset the arm", "effect bodies: slots at a revert", "effect bodies: slots at a restore" | last |
 
-`sim.arms` reports the subsystem `effects-parts`: `effects.damage`, `effects.object`, `effects.sound`, `effects.character`, `effects.coln`, `effects.decal` and `effects.light` (each arm's counters) and `effects.parts` (`answered` the parts returned from Rust, `declined` the refusals).
+`sim.arms` reports the subsystem `effects-parts`: `effects.damage`, `effects.object`, `effects.sound`, `effects.character`, `effects.coln`, `effects.decal` and `effects.light` (each arm's counters) `effects.parts` (`answered` the parts returned from Rust, `declined` the refusals), and `effects.body.<entry>` for each per-effect body (faulted, stopped and yielded guest segments count as `declined`).
 
 ## Rules and limits
 
 - **RNG order.** Unchanged. The damage, sound, light, character and returned arms draw nothing in the switch. The object arm's draws (word 0) are inside `0x177d10` and `0x177f60`, which Rust's answer calls in retail's order. The `coln` and decal draws (word `+4`) are Rust's, made where retail makes them: the decal's gate draw before `0x177d10`, which draws from `+4` too, and its range draw after it.
 - **Refusals** are named counters in `sim_effects::dispatch::Stats`: `guest_other` (a group with no arm) and `declined_fault` (an unreadable input, or arithmetic that could raise an unmasked exception). The walk's are in `sim_effects::walk::Stats` (`declined_fault`: the array header could not be read, so the driver calls the guest phase).
 - **What an answered part leaves different.** The return address under each leaf's frame is the driver's, not the switch's; it is dead stack below the caller's `ESP`, outside the arena. `0xd6660`'s hooks do not see effect parts once the damage arm answers (the one hook there, `h1-projectiles`, acts only on the projectile's call). The object and sound arms' Rust float operations leave MXCSR's sticky flags as they were, where retail's `addss`, `subss` and `mulss` may set them; nothing in the sim reads them. The point sound's answer does not call `0x188dd0`. A `coln` answer leaves the x87 state exactly as retail's; a decal answer's draws run on a copy, so the guest's x87 status word and freed registers stay as the leaves left them, where retail's draws set the precision flag and leave their values there. The return through the chain's shadow keeps the part switch off the pipelined render thread.
+- **The per-effect bodies** answer with retail's registers, flags, x87 and XMM state at each transfer and retail's stores; the proof is the guest's segments compared byte for byte, not a model of the callees.
 - **The walk** leaves the phase's own frame (saved registers, the tick length) unwritten below the driver's stack, and the callees' return addresses are the driver's.
 - **The proof is per map.** A map load resets the arms and empties the scene queue.
 
 ## Evidence
 
 - The switch's arms, the record layout and the frame offsets: disassembly of `0x17a8a0`, `0xd6660`, `0x188dd0`, `0x259a0`, `0x259d0`, `0x1ca290` and `0x176e40` (`h2 disasm`).
+- The per-effect bodies: disassembly of `0x1794e0`, `0x179730`, `0x1774f0` and `0x1792b0` (`h2 disasm`).
 - `damage_parts_match_lifted` runs the lifted `0x17a8a0` on the interpreter over 64 seeded parts and compares the record it passes to `0xd6c80`, its place in the frame and the call's depth.
 
 ## Not verified
 
 - Whole-run parity: `h2 sim run docs/runtime/sim-examples/lockout-2v2.toml` with `H2_FEATURES=-impl.sim.effects-parts` and without, then `h2 sim diff` of the two reports.
-- That each arm reaches 4096 matched parts on a real match, and its timing.
+- That each arm reaches 4096 matched parts on a real match, and its timing; likewise each per-effect body's 4096 matched segments (`sim.arms` `effects.body.*`).
 - The object, sound, character, decal and light answers run against the lifted leaves: the bridge tests drive them on a fake guest only. The `coln` answer's x87 state against the lifted `0x259d0`'s.
 
 ## Related
