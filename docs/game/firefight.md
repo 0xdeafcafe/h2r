@@ -239,7 +239,8 @@ waves (`flood_combat_human`, `flood_combat_elite`, `flood_carrier`), each
 closed by a boss wave of the authored Elite with a Flood Elite, with two to
 three Marine allies a round. A set names the classes it needs
 (`builtin::required_classes`) and a kit that lacks one cannot play it
-(`builtin::missing_classes`).
+(`builtin::missing_classes`); `outbreak_validates_on_a_full_kit` and
+`every_new_class_has_a_score` in `crates/formats/firefight/tests/definition.rs` hold both.
 They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
 (`firefight::builtin::SETS` embeds them), and the package lists each as a
 `rules` item: `h2 package check` reads it as a `Def`, builds the director
