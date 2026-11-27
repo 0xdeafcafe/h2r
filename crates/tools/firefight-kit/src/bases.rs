@@ -46,7 +46,7 @@ impl Team {
 }
 
 /// What the kit builder is asked for besides the base map.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Config {
     /// Which map team's base becomes the home base, base 0. A layout names
     /// its own.
@@ -63,6 +63,10 @@ pub struct Config {
     /// shader is a sky (`crate::sky::sky_materials`); empty on the retail
     /// maps, where no shader is.
     pub sky_materials: &'static [u16],
+    /// How high the retail campaign holds each kind of ship over the floor
+    /// (`crate::ship::HoverSurvey`): the median is the ship's hover. None
+    /// keeps the hover the ship's own tag gives.
+    pub ship_hovers: Option<&'static crate::ship::HoverSurvey>,
 }
 
 /// Where the two base points came from.

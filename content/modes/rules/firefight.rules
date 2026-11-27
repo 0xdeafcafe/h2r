@@ -27,8 +27,9 @@ const intermission = 4
 const done = 5
 const bonus_round = 6
 
-// The drop ship's state: away (or none), flying a squad in, unloading it
-// over the zone, flying out. Its flights take fly_time, which is the host's
+// The drop ships' state, one ship out at a time (`ship_kind`: 0 the Phantom,
+// 1 the Pelican): away (or none), flying a squad in, unloading it over the
+// zone, flying out. Its flights take fly_time, which is the host's
 // `ship::FLY_TICKS`.
 const ship_parked = 0
 const ship_inbound = 1
@@ -83,6 +84,7 @@ global var extra: int = 0
 global var ship_state: int = ship_parked
 global var ship_tick: int = 0
 global var ship_zone: int = 0
+global var ship_kind: int = 0
 // Pods this tick's placements have taken, past the free ones the host saw.
 global var pods_taken: int = 0
 global var flood_taken: int = 0
@@ -658,15 +660,15 @@ fn pick_zone(preferred: int, role: int, target: team, other: team) {
 
 fn ship_step(tick: int) {
     if ship_state == ship_inbound and tick >= ship_tick + ticks(fly_time) {
-        ff_ship_unload()
+        ff_ship_unload(ship_kind)
         ship_state = ship_unloading
         ship_tick = tick
     } else if ship_state == ship_unloading and tick >= ship_tick + ticks(unload_time) {
-        ff_ship_leave(ship_zone)
+        ff_ship_leave(ship_kind, ship_zone)
         ship_state = ship_outbound
         ship_tick = tick
     } else if ship_state == ship_outbound and tick >= ship_tick + ticks(fly_time) {
-        ff_ship_hover(false)
+        ff_ship_hover(ship_kind, false)
         ship_state = ship_parked
     }
 }
@@ -708,11 +710,12 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     s.squad_ally = 0
                     // A pod squad (a Flood or human class on auto, or a set's
                     // `pod`) falls to a zone with a fall while a pod is free,
-                    // else it is on foot. A free ship takes any other
-                    // squad that may fly to a zone it can fly to; every
-                    // other squad, and a wave's others while the ship is
-                    // out, arrive on foot.
+                    // else it is on foot. The ship of any other squad's
+                    // faction, when no ship is out, takes it to a zone that
+                    // ship can fly to; every other squad, and a wave's
+                    // others while a ship is out, arrive on foot.
                     let by_pod = entry.arrival == arrive_pod or (entry.arrival == arrive_auto and pod_class(entry.kind))
+                    let kind = squad_ship(entry.kind)
                     if by_pod {
                         pod_ok = false
                         if zone_fall(chosen_zone) {
@@ -728,16 +731,17 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                         }
                         if pod_ok {
                             s.squad_tick = tick + ticks(fall_time)
-                            ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier, arrive_pod)
+                            ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier, arrive_pod, 0)
                         } else {
                             place_squad_at(id, entry.kind, size, chosen_zone, entry.tier)
                         }
-                    } else if entry.arrival != arrive_foot and ship_state == ship_parked and ship_ready() and zone_path(chosen_zone) {
+                    } else if entry.arrival != arrive_foot and kind >= 0 and ship_state == ship_parked and ship_ready(kind) and zone_path(chosen_zone, kind) {
                         ship_state = ship_inbound
                         ship_tick = tick
                         ship_zone = chosen_zone
-                        ff_ship_hover(true)
-                        ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier, arrive_ship)
+                        ship_kind = kind
+                        ff_ship_hover(kind, true)
+                        ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier, arrive_ship, kind)
                     } else {
                         place_squad_at(id, entry.kind, size, chosen_zone, entry.tier)
                     }
