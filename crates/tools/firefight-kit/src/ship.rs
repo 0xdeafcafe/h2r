@@ -185,6 +185,8 @@ pub struct ShipReport {
     pub why: Option<String>,
     /// The size the kit planned its paths for, when kept.
     pub dims: Option<Dims>,
+    /// Where the hover came from when it is the retail campaign's.
+    pub hover_source: Option<String>,
 }
 
 impl ShipReport {
@@ -202,6 +204,7 @@ impl ShipReport {
             paths: 0,
             why: Some(why.into()),
             dims: None,
+            hover_source: None,
         }
     }
 }
@@ -215,11 +218,18 @@ impl std::fmt::Display for ShipReport {
         if self.kept {
             write!(
                 f,
-                "{label}: kept ({}, {} tags, {} bytes, {} zone paths{})",
+                "{label}: kept ({}, {} tags, {} bytes, {} zone paths{}{})",
                 self.tag,
                 self.tags,
                 self.bytes,
                 self.paths,
+                match self.hover_source.as_deref() {
+                    Some(source) => format!(
+                        "; hover {} ({source})",
+                        self.dims.map_or(0.0, |d| d.hover)
+                    ),
+                    None => String::new(),
+                },
                 match self.dims {
                     Some(d) if d.from_tag => format!(
                         "; from the tag: reach {}, {} seats, hover {}",
@@ -514,6 +524,126 @@ pub(crate) fn author<R: Read + Seek>(
         .context("no scripting data authored for the point sets")?;
     fields.push((at as usize, count, block));
     Ok(Some(Authored { fields, paths }))
+}
+
+/// How high the retail campaign flies each kind of ship over the floor when
+/// it holds a drop: the heights of the ships' `_facing` waypoints (the
+/// points a command script flies to and holds at, `cs_fly_to_and_face`) in
+/// the scenarios' point sets named for the ship, over the collision floor
+/// straight below each point. Each sample says where it came from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct HoverSurvey {
+    pub phantom: Vec<HoverSample>,
+    pub pelican: Vec<HoverSample>,
+}
+
+/// One waypoint the survey measured.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HoverSample {
+    pub map: String,
+    pub set: String,
+    pub point: String,
+    /// The point's height over the floor below it.
+    pub height: f32,
+}
+
+/// A ray goes this far down looking for the floor.
+const FLOOR_REACH: f32 = 60.0;
+
+impl HoverSurvey {
+    /// The median height of a kind's samples, and how many there are.
+    pub fn median(&self, kind: ShipKind) -> Option<(f32, usize)> {
+        let samples = match kind {
+            ShipKind::Phantom => &self.phantom,
+            ShipKind::Pelican => &self.pelican,
+        };
+        let mut heights: Vec<f32> = samples.iter().map(|s| s.height).collect();
+        heights.sort_by(f32::total_cmp);
+        let n = heights.len();
+        (n > 0).then(|| {
+            let mid = if n % 2 == 1 { heights[n / 2] } else { (heights[n / 2 - 1] + heights[n / 2]) / 2.0 };
+            (mid, n)
+        })
+    }
+
+    /// The maps the samples came from, for the report.
+    pub fn maps(&self, kind: ShipKind) -> String {
+        let samples = match kind {
+            ShipKind::Phantom => &self.phantom,
+            ShipKind::Pelican => &self.pelican,
+        };
+        let mut by_map: Vec<(&str, usize)> = Vec::new();
+        for s in samples {
+            match by_map.iter_mut().find(|(m, _)| *m == s.map) {
+                Some((_, n)) => *n += 1,
+                None => by_map.push((&s.map, 1)),
+            }
+        }
+        by_map.iter().map(|(m, n)| format!("{m} {n}")).collect::<Vec<_>>().join(", ")
+    }
+
+    /// Add the ships' waypoints of a campaign map's scenario.
+    pub fn add_map<R: Read + Seek>(&mut self, name: &str, map: &mut Map<R>) -> Result<()> {
+        use h1campaign::scenario::{BSP, BSPS};
+        use tags::{collision::Bsp, geometry::TagView};
+        let sets = ScenarioAi::read_map(map)
+            .map_err(|e| anyhow::anyhow!("{name}: reading the point sets: {e}"))?
+            .point_sets;
+        let named = |set: &PointSet| {
+            [ShipKind::Phantom, ShipKind::Pelican]
+                .into_iter()
+                .find(|k| set.name.contains(k.name()))
+        };
+        if !sets.iter().any(|s| named(s).is_some()) {
+            return Ok(());
+        }
+        let scenario = map.scenario().context("map has no scenario")?.id;
+        let scnr = map.read_tag_bytes(scenario)?;
+        let mut floors: Vec<Option<Walls>> = Vec::new();
+        for row in metadata_block(map, &scnr, BSPS as usize, BSP)? {
+            let id = TagId(u32::from_le_bytes(row[0x14..0x18].try_into().unwrap()));
+            let loc = map.tag(id)?.location.context("BSP missing its payload")?;
+            let bytes = map.read_tag_bytes(id)?;
+            let v = TagView::new(&bytes, loc.address);
+            let root = v.at(0, 0x148)?;
+            let coll = v.block(root, tags::pathfinding::SBSP_COLLISION_FIELD, Bsp::STRUCTURE_SIZE)?;
+            floors.push(match coll.as_slice() {
+                [record] => {
+                    let at = record.as_ptr() as usize - bytes.as_ptr() as usize;
+                    Some(bots::cache::walls_without_sky(&Bsp::decode_structure(&bytes, loc.address, at)?))
+                }
+                _ => None,
+            });
+        }
+        for set in &sets {
+            let Some(kind) = named(set) else { continue };
+            let Some(Some(walls)) = usize::try_from(set.bsp).ok().and_then(|b| floors.get(b)) else {
+                continue;
+            };
+            for point in &set.points {
+                // The waypoints a ship holds at are the ones with a
+                // `<name>_facing` partner.
+                let facing = format!("{}_facing", point.name);
+                if point.name.ends_with("_facing") || !set.points.iter().any(|p| p.name == facing) {
+                    continue;
+                }
+                let at = point.position;
+                if let Some((t, _)) = walls.hit(at, [at[0], at[1], at[2] - FLOOR_REACH]) {
+                    let sample = HoverSample {
+                        map: name.to_owned(),
+                        set: set.name.clone(),
+                        point: point.name.clone(),
+                        height: t * FLOOR_REACH,
+                    };
+                    match kind {
+                        ShipKind::Phantom => self.phantom.push(sample),
+                        ShipKind::Pelican => self.pelican.push(sample),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

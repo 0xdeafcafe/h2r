@@ -554,6 +554,10 @@ fn assemble(
                 })
             })
             .unwrap_or(ship::Dims::default_for(*kind));
+        let dims = match config.ship_hovers.and_then(|s| s.median(*kind)) {
+            Some((hover, _)) => ship::Dims { hover, ..dims },
+            None => dims,
+        };
         asked.push((*kind, pick, dims));
     }
     let mut picks: Vec<(ShipKind, ship::Pick)> = Vec::new();
@@ -836,6 +840,10 @@ fn assemble(
                 paths,
                 why: None,
                 dims: sized(*kind).map(|(_, d, _)| *d),
+                hover_source: config.ship_hovers.and_then(|s| {
+                    let (_, n) = s.median(*kind)?;
+                    Some(format!("median of {n} retail waypoints: {}", s.maps(*kind)))
+                }),
             };
             match kind {
                 ShipKind::Phantom => ship_report = Some(report),

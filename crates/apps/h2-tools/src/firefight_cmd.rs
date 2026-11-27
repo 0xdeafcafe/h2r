@@ -45,6 +45,13 @@ const USAGE: &str =
 /// The campaign maps the ships are copied from: the Phantom from Outskirts,
 /// the same donor the class table prefers (`firefight_kit::retail`), the
 /// Pelican from Delta Halo's approach.
+/// The campaign maps whose scenarios fly the ships: their waypoints give each
+/// kind's hover (`firefight_kit::ship::HoverSurvey`).
+const CAMPAIGN_MAPS: [&str; 14] = [
+    "01a_tutorial", "01b_spacestation", "03a_oldmombasa", "03b_newmombasa", "04a_gasgiant",
+    "04b_floodlab", "05a_deltaapproach", "05b_deltatowers", "06a_sentinelwalls",
+    "06b_floodzone", "07a_highcharity", "07b_forerunnership", "08a_deltacliffs", "08b_deltacontrol",
+];
 const SHIP_DONORS: [&str; 2] = ["03a_oldmombasa", "05a_deltaapproach"];
 
 struct Args {
@@ -309,6 +316,18 @@ pub fn run(words: Vec<String>) -> Result<()> {
                 donor_names.push(donor.to_owned());
             }
         }
+    }
+    // How high the campaign holds the ships over the floor, when ships are asked.
+    if !args.probe && args.config.dropship != Dropship::None {
+        let mut survey = firefight_kit::ship::HoverSurvey::default();
+        for name in CAMPAIGN_MAPS {
+            let Ok(bytes) = read_disc_map(&disc, name) else { continue };
+            let mut map = map::Map::from_reader(std::io::Cursor::new(bytes))
+                .with_context(|| format!("reading {name}"))?;
+            survey.add_map(name, &mut map).with_context(|| format!("surveying {name}"))?;
+        }
+        // The tool builds once: the survey lives as long as the process.
+        args.config.ship_hovers = Some(Box::leak(Box::new(survey)));
     }
     let donor_bytes = donor_names
         .iter()
