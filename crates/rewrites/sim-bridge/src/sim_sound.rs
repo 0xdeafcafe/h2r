@@ -7,6 +7,7 @@
 //! on a tick computed from its tag, there is no voice state, and the host
 //! mixer is fed from the sim's events. It makes no guest call.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::points;
@@ -15,7 +16,10 @@ use sim_sound::events::{SoundDef, SoundEvent, SoundId, Source};
 use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
+use self::owners::Owned;
+
 pub mod mixer_feed;
+pub mod owners;
 pub mod tag_durations;
 
 pub use tag_durations::GuestDurations;
@@ -81,6 +85,11 @@ pub struct SoundLedger {
     pub tick_steps: u64,
     pub starts: u64,
     pub events: u64,
+    /// Finishes of owned sounds the sim made (`owners::finish`).
+    pub owner_finishes: u64,
+    /// Finishes of owned sounds whose table holds a function the sim does
+    /// not know; none was called.
+    pub unsupported_owners: u64,
 }
 
 /// The sound simulation: the schedule, the events waiting for the host, and
@@ -92,6 +101,21 @@ pub struct SoundSim {
     durations: Arc<dyn Durations>,
     ledger: SoundLedger,
     last_step: Option<u32>,
+    /// The running sounds that have an owner's callback table.
+    owned: BTreeMap<SoundId, Owned>,
+    /// Owned sounds that ended or were stopped, their finish not yet made.
+    finished: Vec<(SoundId, Owned)>,
+    /// The tick the owner callbacks were last delivered for.
+    last_delivery: Option<u32>,
+}
+
+/// The owner callbacks due at the start of a tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Due {
+    /// Sounds that ended since the last delivery, in end order.
+    pub finished: Vec<(SoundId, Owned)>,
+    /// Sounds still running, in start order.
+    pub running: Vec<(SoundId, Owned)>,
 }
 
 impl SoundSim {
@@ -103,7 +127,39 @@ impl SoundSim {
             durations,
             ledger: SoundLedger::default(),
             last_step: None,
+            owned: BTreeMap::new(),
+            finished: Vec::new(),
+            last_delivery: None,
         }
+    }
+
+    /// A start that has an owner: its callbacks are due from the next
+    /// delivery on.
+    pub fn start_owned(&mut self, def: SoundDef, source: Source, tick: u32, owner: Option<Owned>) -> SoundId {
+        let id = self.start_def(def, source, tick);
+        if let Some(o) = owner {
+            self.owned.insert(id, o);
+        }
+        id
+    }
+
+    /// What is due at the start of `tick`: once per tick number, so the tick
+    /// run twice (or entered again after the callbacks) delivers once. None
+    /// when nothing is owned or finished.
+    pub fn due(&mut self, tick: u32) -> Option<Due> {
+        if self.last_delivery == Some(tick) {
+            return None;
+        }
+        self.last_delivery = Some(tick);
+        let due = Due {
+            finished: std::mem::take(&mut self.finished),
+            running: self.owned.iter().map(|(id, o)| (*id, *o)).collect(),
+        };
+        (!due.finished.is_empty() || !due.running.is_empty()).then_some(due)
+    }
+
+    pub fn ledger_mut(&mut self) -> &mut SoundLedger {
+        &mut self.ledger
     }
 
     /// A sound started on `tick` from a tag.
@@ -131,6 +187,13 @@ impl SoundSim {
         self.ledger.tick_steps += 1;
         let events = self.schedule.step(tick);
         self.ledger.events += events.len() as u64;
+        for e in &events {
+            if matches!(e, SoundEvent::Ended { .. } | SoundEvent::Stopped { .. })
+                && let Some(o) = self.owned.remove(&e.id())
+            {
+                self.finished.push((e.id(), o));
+            }
+        }
         self.outbox.extend(events);
     }
 
@@ -168,12 +231,58 @@ impl SoundSim {
         &self.durations
     }
 
+    /// The schedule (length-prefixed), then the owned and the finished
+    /// sounds, then the tick the callbacks were last delivered for.
     fn save(&self) -> Vec<u8> {
-        self.schedule.save()
+        let schedule = self.schedule.save();
+        let mut out = Vec::with_capacity(schedule.len() + 16);
+        out.extend((schedule.len() as u32).to_le_bytes());
+        out.extend(schedule);
+        let owned: Vec<_> = self.owned.iter().map(|(i, o)| (*i, *o)).collect();
+        for list in [&owned, &self.finished] {
+            out.extend((list.len() as u32).to_le_bytes());
+            for (id, o) in list.iter() {
+                out.extend(id.0.to_le_bytes());
+                for w in o.words() {
+                    out.extend(w.to_le_bytes());
+                }
+            }
+        }
+        out.extend(self.last_delivery.unwrap_or(u32::MAX).to_le_bytes());
+        out
     }
 
     fn load(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.schedule = Schedule::restore(bytes).map_err(|e| format!("sound schedule: {e:?}"))?;
+        let mut at = 0usize;
+        let mut take = |n: usize| -> Result<&[u8], String> {
+            let end = at.checked_add(n).filter(|&e| e <= bytes.len()).ok_or("sound save: short")?;
+            let r = &bytes[at..end];
+            at = end;
+            Ok(r)
+        };
+        let len = u32::from_le_bytes(take(4)?.try_into().expect("4 bytes")) as usize;
+        let schedule = Schedule::restore(take(len)?).map_err(|e| format!("sound schedule: {e:?}"))?;
+        let mut lists: [Vec<(SoundId, Owned)>; 2] = [Vec::new(), Vec::new()];
+        for list in &mut lists {
+            let n = u32::from_le_bytes(take(4)?.try_into().expect("4 bytes"));
+            for _ in 0..n {
+                let id = SoundId(u32::from_le_bytes(take(4)?.try_into().expect("4 bytes")));
+                let mut w = [0u32; Owned::WORDS];
+                for x in &mut w {
+                    *x = u32::from_le_bytes(take(4)?.try_into().expect("4 bytes"));
+                }
+                list.push((id, Owned::from_words(w)));
+            }
+        }
+        let last = u32::from_le_bytes(take(4)?.try_into().expect("4 bytes"));
+        if at != bytes.len() {
+            return Err("sound save: trailing bytes".into());
+        }
+        self.schedule = schedule;
+        let [owned, finished] = lists;
+        self.owned = owned.into_iter().collect();
+        self.finished = finished;
+        self.last_delivery = (last != u32::MAX).then_some(last);
         self.outbox.clear();
         self.last_step = None;
         Ok(())
@@ -182,6 +291,16 @@ impl SoundSim {
 
 fn lock(m: &Mutex<SoundSim>) -> MutexGuard<'_, SoundSim> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The lip-sync updates of one tick, then the tick itself: the hook's chain
+/// runs again for it, finds nothing due, and continues into the body.
+pub async fn deliver(cx: hooks::Cx, calls: Vec<(u32, [u32; 6])>) -> hooks::EntryResult {
+    for (function, args) in calls {
+        cx.call(engine::entry::GuestCall::new(function).args(args)).await?;
+    }
+    cx.call(engine::entry::GuestCall::new(points::GAME_TICK.base)).await?;
+    Ok(hooks::Ret::new(0, 0))
 }
 
 fn game_tick(g: &runtime::Guest) -> Result<u32, runtime::GuestFault> {
@@ -253,7 +372,8 @@ impl Feature for SimSoundEvents {
             let tick = game_tick(&mem)?;
             let durations = Arc::clone(lock(&sim).durations());
             let def = durations.guest_def(&mem, tag);
-            cpu.eax = handle(lock(&sim).start_def(def, Source(source), tick));
+            let owner = owners::read_request(&*mem, source, tag, tick);
+            cpu.eax = handle(lock(&sim).start_owned(def, Source(source), tick, owner));
             mem.ret(cpu, 16)
         });
         let sim = Arc::clone(&self.sim);
@@ -264,9 +384,42 @@ impl Feature for SimSoundEvents {
             let durations = Arc::clone(lock(&sim).durations());
             let tag = durations.marker_tag(&mem, params).unwrap_or(0);
             let def = durations.guest_def(&mem, tag);
-            cpu.eax = handle(lock(&sim).start_def(def, Source(cpu.esi), tick));
+            let owner = owners::marker(&*mem, cpu.esi, tag, tick);
+            cpu.eax = handle(lock(&sim).start_owned(def, Source(cpu.esi), tick, Some(owner)));
             mem.ret(cpu, 4)
         });
+        // The owner callbacks, at the start of the tick after a sound's end
+        // event and once a tick for each running owned sound. The hook runs
+        // first, so the callbacks come before the rest of the tick's hooks.
+        let sim = Arc::clone(&self.sim);
+        b.raw()
+            .before(&points::GAME_TICK, "sound owner callbacks", move |call| {
+                let rt = Arc::clone(call.ctx.runtime());
+                let tick = game_tick(&rt.memory())?;
+                let Some(due) = lock(&sim).due(tick) else {
+                    return Ok(hooks::Flow::Continue);
+                };
+                let calls = {
+                    let mut g = rt.memory();
+                    let mut s = lock(&sim);
+                    for (id, o) in &due.finished {
+                        match owners::finish(&mut *g, o, handle(*id)) {
+                            owners::Finish::Made => s.ledger_mut().owner_finishes += 1,
+                            owners::Finish::Unsupported => s.ledger_mut().unsupported_owners += 1,
+                            owners::Finish::None => {}
+                        }
+                    }
+                    let calls: Vec<_> =
+                        due.running.iter().filter_map(|(_, o)| owners::update_call(&*g, o, tick)).collect();
+                    s.ledger_mut().guest_calls += calls.len() as u64;
+                    calls
+                };
+                if calls.is_empty() {
+                    return Ok(hooks::Flow::Continue);
+                }
+                call.answer_async(move |cx| Box::pin(deliver(cx, calls)))
+            })
+            .first();
         // A stop by instance handle: a sim handle ends its sound on the
         // schedule and the guest's stop (a pool lookup that would find
         // nothing) is skipped; a guest instance runs the guest's own stop.
