@@ -5,14 +5,18 @@
 
 pub mod ambience;
 pub mod channel;
+pub mod chooser;
 pub mod environment;
 pub mod events;
 pub mod feed;
 pub mod impulse;
+pub mod instances;
 pub mod listener;
+pub mod looping;
 pub mod loops;
 pub mod mix;
 pub mod objects;
+pub mod owners;
 pub mod schedule;
 pub mod scheduling;
 pub mod segments;

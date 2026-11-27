@@ -6768,6 +6768,7 @@ dependencies = [
 name = "sim-sound"
 version = "0.1.0"
 dependencies = [
+ "sim-world",
  "simd",
  "x87",
 ]

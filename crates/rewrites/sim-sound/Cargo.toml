@@ -7,10 +7,11 @@ description = "Sound source, scheduling and environment kernels for the native s
 
 [package.metadata.h2]
 status = "in progress"
-doc = ["engine/sim-rewrite.md", "audio/dsound.md"]
+doc = ["engine/sim-rewrite.md", "engine/sound-instances.md", "audio/dsound.md"]
 
 [dependencies]
 simd.workspace = true
+sim-world.workspace = true
 x87.workspace = true
 
 [lints]

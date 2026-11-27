@@ -214,6 +214,8 @@ mod spatial;
 mod stream;
 #[path = "sim_sound_differential/streammix.rs"]
 mod streammix;
+#[path = "sim_sound_differential/table.rs"]
+mod table;
 
 fn cases(entry: u32) -> Vec<Case> {
     let providers: &[fn(u32) -> Vec<Case>] = &[
