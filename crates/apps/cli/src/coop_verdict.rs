@@ -8,6 +8,7 @@
 //! guest that joins once the host is in the level (`--late`), then one line
 //! per game line: `[+SECONDS] GAMERTAG | TEXT`.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 /// Whether a game's stderr line goes into the merged log: the co-op
@@ -16,11 +17,16 @@ use std::fmt::Write as _;
 pub fn wanted(line: &str) -> bool {
     const DROP: [&str; 3] = ["feature plan:", "feature: ", "health: "];
     const DROP_ANY: [&str; 1] = ["hooks installed via feature plan"];
-    const KEEP: [&str; 17] = [
+    const KEEP: [&str; 20] = [
         "coop-live",
         "coop-jip",
         "coop-probe",
         "coop-auto",
+        // The players 3 to 16 placed (or REFUSED), the checkpoint each
+        // game saves, and the engine's own desync latch.
+        "coop-players",
+        "checkpoint save",
+        "OUT OF SYNC",
         "skulls",
         "session",
         "game start: options",
@@ -95,16 +101,39 @@ impl Roles {
 enum Who {
     Host,
     Guests,
+    /// The host and the guests who joined in the lobby.
+    Lobby,
     Everyone,
 }
 
+/// What a step counts, beyond a game printing a line holding all of `all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rule {
+    /// Each game it is for printed such a line.
+    Line,
+    /// The host invited every guest: one `coop-auto: invited <tag>` per guest.
+    Invited,
+    /// The line's `for K consoles` is the run's N.
+    Consoles,
+    /// The line's `campaign with K peers` is the run's N.
+    Peers,
+    /// Each game's first `checkpoint save at tick T` has the same T.
+    Checkpoint,
+    /// The host placed players 3 to N (`coop-players: player I placed`) and
+    /// no game had one REFUSED.
+    Placed,
+    /// No game printed `all`; a game that did is missing.
+    Never,
+}
+
 /// A checklist step: seen when every game it is for printed a line holding
-/// all of `all`. `auto` steps only print with `--auto`.
+/// all of `all` (and `rule` holds). `auto` steps only print with `--auto`.
 struct Step {
     what: &'static str,
     who: Who,
     all: &'static [&'static str],
     auto: bool,
+    rule: Rule,
 }
 
 /// docs/live/live-coop.md sections 11.3 and 9.2, in the order a run passes
@@ -115,24 +144,28 @@ const STEPS: &[Step] = &[
         who: Who::Everyone,
         all: &["live: playing as "],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "the disc's campaign levels read",
         who: Who::Everyone,
         all: &["coop-live: ", " campaign levels ("],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "Co-op Campaign opens the game's own lobby",
         who: Who::Host,
         all: &["coop-live: Live menu row ", "in co-op mode"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "hosting a co-op campaign in that lobby",
         who: Who::Host,
         all: &["coop-live: hosting a co-op campaign in the game's own lobby"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "the lobby is in co-op mode",
@@ -142,71 +175,104 @@ const STEPS: &[Step] = &[
             "(co-op campaign)",
         ],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "level and difficulty advertised",
         who: Who::Host,
         all: &["coop-live: the lobby holds ", "; advertised"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
-        what: "the host invited the guest",
+        what: "the host invited every guest",
         who: Who::Host,
         all: &["coop-auto: invited "],
         auto: true,
+        rule: Rule::Invited,
     },
     Step {
         what: "the guest accepted",
         who: Who::Guests,
         all: &["coop-auto: accepting "],
         auto: true,
+        rule: Rule::Line,
     },
     Step {
         what: "the guest is in the host's co-op session",
         who: Who::Guests,
         all: &["coop-live: guest: joined "],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "ping between the two",
         who: Who::Everyone,
         all: &["coop-live: ping ", " ms"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
-        what: "Start Game: the co-op check passed for two consoles",
+        what: "Start Game: the co-op check passed for every console",
         who: Who::Host,
         all: &["coop-live: lobby start state 7 ", " answered "],
         auto: false,
+        rule: Rule::Consoles,
     },
     Step {
         what: "the session start counted the peers",
         who: Who::Host,
         all: &["session start: campaign with "],
         auto: false,
+        rule: Rule::Peers,
     },
     Step {
         what: "the session started",
-        who: Who::Host,
+        who: Who::Lobby,
         all: &["session start returned 1"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "the host simulates (sync-server)",
         who: Who::Host,
         all: &["simulation mode sync-server"],
         auto: false,
+        rule: Rule::Line,
     },
     Step {
         what: "the guest follows (sync-client)",
         who: Who::Guests,
         all: &["simulation mode sync-client"],
         auto: false,
+        rule: Rule::Line,
+    },
+    Step {
+        what: "every game saved its checkpoint at the same tick",
+        who: Who::Lobby,
+        all: &["checkpoint save at tick "],
+        auto: false,
+        rule: Rule::Checkpoint,
+    },
+    Step {
+        what: "players 3 to N placed, none refused",
+        who: Who::Host,
+        all: &["coop-players: player "],
+        auto: false,
+        rule: Rule::Placed,
+    },
+    Step {
+        what: "no game went out of sync",
+        who: Who::Everyone,
+        all: &["OUT OF SYNC"],
+        auto: false,
+        rule: Rule::Never,
     },
 ];
 
 /// Lines that mean something went wrong, whatever the step.
-const TROUBLE: [&str; 9] = [
+const TROUBLE: [&str; 10] = [
+    "OUT OF SYNC",
     "coop-jip: back to the lobby",
     "coop-live: ping: no answer",
     "returned 0 (refused)",
@@ -257,22 +323,99 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         let games: Vec<&str> = match step.who {
             Who::Host => vec![roles.host.as_str()],
             Who::Guests => roles.guests.iter().map(String::as_str).collect(),
+            Who::Lobby => std::iter::once(roles.host.as_str())
+                .chain(roles.guests.iter().map(String::as_str))
+                .collect(),
             Who::Everyone => std::iter::once(roles.host.as_str())
                 .chain(roles.guests.iter().map(String::as_str))
                 .chain(roles.late.iter().map(String::as_str))
                 .collect(),
         };
-        let missing: Vec<String> = games
-            .into_iter()
-            .filter(|g| {
-                !lines.iter().any(|(tag, text)| {
-                    tag == g
-                        && step.all.iter().all(|p| text.contains(p))
-                        && !text.contains("ping: no answer")
-                })
+        // N: the games in the lobby, host included.
+        let n = 1 + roles.guests.len();
+        let has = |g: &str| {
+            lines.iter().any(|(tag, text)| {
+                *tag == g
+                    && step.all.iter().all(|p| text.contains(p))
+                    && !text.contains("ping: no answer")
             })
-            .map(String::from)
-            .collect();
+        };
+        let missing: Vec<String> = match step.rule {
+            Rule::Line => games
+                .into_iter()
+                .filter(|g| !has(g))
+                .map(String::from)
+                .collect(),
+            Rule::Never => games
+                .into_iter()
+                .filter(|g| has(g))
+                .map(|g| format!("{g} (OUT OF SYNC)"))
+                .collect(),
+            Rule::Invited => {
+                let invited: BTreeSet<&str> = lines
+                    .iter()
+                    .filter(|(tag, _)| *tag == roles.host)
+                    .filter_map(|(_, t)| t.split_once("coop-auto: invited "))
+                    .filter_map(|(_, rest)| rest.split_whitespace().next())
+                    .collect();
+                let missing = roles
+                    .guests
+                    .iter()
+                    .filter(|g| !invited.contains(g.as_str()))
+                    .cloned()
+                    .collect();
+                tally(missing, invited.len(), n - 1, "invitations")
+            }
+            Rule::Consoles => counted(&lines, &roles.host, step.all, " consoles", " for ", n),
+            Rule::Peers => counted(&lines, &roles.host, step.all, " peers", "campaign with ", n),
+            Rule::Checkpoint => {
+                let ticks: Vec<(&str, Option<&str>)> = games
+                    .iter()
+                    .map(|g| {
+                        let t = lines
+                            .iter()
+                            .filter(|(tag, _)| tag == g)
+                            .find_map(|(_, t)| t.split_once("checkpoint save at tick "))
+                            .and_then(|(_, rest)| rest.split_whitespace().next());
+                        (*g, t)
+                    })
+                    .collect();
+                let first = ticks.iter().find_map(|(_, t)| *t);
+                ticks
+                    .into_iter()
+                    .filter(|(_, t)| t.is_none() || *t != first)
+                    .map(|(g, t)| match t {
+                        Some(t) => format!("{g} (tick {t}, not {})", first.unwrap_or("?")),
+                        None => g.to_string(),
+                    })
+                    .collect()
+            }
+            Rule::Placed => {
+                let mut out = Vec::new();
+                for (tag, text) in &lines {
+                    if text.contains("coop-players: ") && text.contains("REFUSED") {
+                        out.push(format!("{tag} (REFUSED)"));
+                    }
+                }
+                let placed: BTreeSet<&str> = lines
+                    .iter()
+                    .filter(|(tag, _)| *tag == roles.host)
+                    .filter_map(|(_, t)| t.split_once("coop-players: player "))
+                    .filter(|(_, rest)| rest.contains(" placed") && !rest.contains("REFUSED"))
+                    .filter_map(|(_, rest)| rest.split_whitespace().next())
+                    .collect();
+                // Players of index 2 and up are the ones placed.
+                let want = n.saturating_sub(2);
+                if out.is_empty() && placed.len() < want {
+                    out.push(format!(
+                        "{} ({} of {want} placed)",
+                        roles.host,
+                        placed.len()
+                    ));
+                }
+                out
+            }
+        };
         let seen = if missing.is_empty() {
             Seen::Yes
         } else if step.auto && !auto {
@@ -302,6 +445,47 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         joins,
         trouble,
     })
+}
+
+/// `missing` guests, or a count note when the count is short but no guest
+/// can be named.
+fn tally(missing: Vec<String>, got: usize, want: usize, what: &str) -> Vec<String> {
+    if missing.is_empty() && got < want {
+        vec![format!("{got} of {want} {what}")]
+    } else {
+        missing
+    }
+}
+
+/// The host's lines holding all of `all`: each has a number between `before`
+/// and `after`, and some line's number is `n`. Otherwise the host is missing,
+/// with the numbers it logged.
+fn counted(
+    lines: &[(&str, &str)],
+    host: &str,
+    all: &[&str],
+    after: &str,
+    before: &str,
+    n: usize,
+) -> Vec<String> {
+    let counts: Vec<usize> = lines
+        .iter()
+        .filter(|(tag, text)| *tag == host && all.iter().all(|p| text.contains(p)))
+        .filter_map(|(_, text)| {
+            let head = text.rsplit_once(before)?.1;
+            head.split_once(after.trim_end())?.0.trim().parse().ok()
+        })
+        .collect();
+    if counts.contains(&n) {
+        return Vec::new();
+    }
+    let said = if counts.is_empty() {
+        host.to_string()
+    } else {
+        let c: Vec<String> = counts.iter().map(usize::to_string).collect();
+        format!("{host} (said {}, wanted {n})", c.join(", "))
+    };
+    vec![said]
 }
 
 /// A late guest's join in progress, as its lines and the host's show it.
@@ -484,6 +668,9 @@ fn why(
         )),
         9 => Some(format!(
             "{first} never joined: accept {host}'s invitation in {first}'s friends list (Y in the Xbox Live menu)"
+        )),
+        11 | 12 if first.contains("said ") => Some(format!(
+            "{first}: the run has every console in the lobby, so the host counted the wrong number"
         )),
         11 if !said(lines, host, "coop-live: lobby start state") => {
             Some(format!("nobody pressed Start Game in {host}'s lobby"))
@@ -711,13 +898,14 @@ mod tests {
             ("Bravo", "coop-live: ping 3 ms"),
             (
                 "Alpha",
-                "coop-live: lobby start state 7 (co-op wants one console) answered 9 for two consoles",
+                "coop-live: lobby start state 7 (co-op wants one console) answered 9 for 2 consoles",
             ),
             (
                 "Alpha",
                 "coop-probe: session start: campaign with 2 peers: showing the start 1 peer until OPTIONS_NEW",
             ),
             ("Alpha", "coop-probe: session start returned 1"),
+            ("Bravo", "coop-probe: session start returned 1"),
             (
                 "Alpha",
                 "coop-probe: game start: options mode 1, simulation mode sync-server (2), x",
@@ -726,6 +914,8 @@ mod tests {
                 "Bravo",
                 "coop-probe: game start: options mode 1, simulation mode sync-client (3), x",
             ),
+            ("Alpha", "coop-probe: checkpoint save at tick 90"),
+            ("Bravo", "coop-probe: checkpoint save at tick 90"),
         ]);
         let v = verdict(&l, true).unwrap();
         assert!(
@@ -1070,5 +1260,213 @@ mod tests {
                 .render()
                 .contains("join in progress")
         );
+    }
+
+    /// A full run of `n` games: game 0 hosts, the rest are guests. Every
+    /// line a passing run prints, in order; each test then spoils one.
+    fn run_of(n: usize) -> (Roles, Vec<(String, String)>) {
+        let tags: Vec<String> = (0..n).map(|i| format!("G{i:02}")).collect();
+        let roles = Roles {
+            host: tags[0].clone(),
+            guests: tags[1..].to_vec(),
+            late: vec![],
+        };
+        let host = tags[0].clone();
+        let mut l: Vec<(String, String)> = Vec::new();
+        let mut add = |t: &str, s: String| l.push((t.to_string(), s));
+        for t in &tags {
+            add(t, format!("live: playing as {t} (1) on x"));
+            add(t, "coop-live: 15 campaign levels (15 named)".into());
+        }
+        add(&host, "coop-live: Live menu row 5 in co-op mode".into());
+        add(
+            &host,
+            "coop-live: hosting a co-op campaign in the game's own lobby".into(),
+        );
+        add(
+            &host,
+            "coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)"
+                .into(),
+        );
+        add(
+            &host,
+            "coop-live: the lobby holds Outskirts on Heroic; advertised".into(),
+        );
+        for g in &tags[1..] {
+            add(&host, format!("coop-auto: invited {g} to session 80"));
+            add(g, "coop-auto: accepting G00's invitation to session 80".into());
+            add(g, "coop-live: guest: joined G00's co-op session 80: x".into());
+        }
+        for t in &tags {
+            add(t, "coop-live: ping 3 ms".into());
+        }
+        add(
+            &host,
+            format!("coop-live: lobby start state 7 (co-op wants one console) answered 9 for {n} consoles"),
+        );
+        add(
+            &host,
+            format!("coop-probe: session start: campaign with {n} peers: showing the start 1 peer until OPTIONS_NEW"),
+        );
+        for t in &tags {
+            add(t, "coop-probe: session start returned 1".into());
+        }
+        add(&host, "coop-probe: simulation mode sync-server (2) at tick 0".into());
+        for g in &tags[1..] {
+            add(g, "coop-probe: simulation mode sync-client (3) at tick 0".into());
+        }
+        for t in &tags {
+            add(t, "coop-probe: checkpoint save at tick 90".into());
+        }
+        for i in 2..n {
+            add(
+                &host,
+                format!("coop-players: player {i} placed next to the anchor"),
+            );
+        }
+        (roles, l)
+    }
+
+    fn text_of(roles: &Roles, lines: &[(String, String)]) -> String {
+        let mut s = roles.header();
+        for (i, (t, x)) in lines.iter().enumerate() {
+            s.push_str(&format_line(i as f64, t, x));
+            s.push('\n');
+        }
+        s
+    }
+
+    fn failing(roles: &Roles, lines: &[(String, String)]) -> Vec<usize> {
+        let v = verdict(&text_of(roles, lines), true).unwrap();
+        v.steps
+            .iter()
+            .filter(|s| s.seen != Seen::Yes)
+            .map(|s| s.n)
+            .collect()
+    }
+
+    #[test]
+    fn full_runs_of_2_and_16_pass_every_step() {
+        for n in [2, 16] {
+            let (roles, l) = run_of(n);
+            assert_eq!(failing(&roles, &l), Vec::<usize>::new(), "n = {n}");
+        }
+    }
+
+    #[test]
+    fn step_7_wants_an_invitation_per_guest() {
+        let (roles, mut l) = run_of(16);
+        // One invitation survives: the old check passed on it.
+        let keep = l
+            .iter()
+            .position(|(_, x)| x.starts_with("coop-auto: invited "))
+            .unwrap();
+        let mut i = 0;
+        l.retain(|(_, x)| {
+            let drop = x.starts_with("coop-auto: invited ") && i != keep;
+            i += 1;
+            !drop
+        });
+        assert_eq!(failing(&roles, &l), vec![7]);
+        let (roles, mut l) = run_of(2);
+        l.retain(|(_, x)| !x.starts_with("coop-auto: invited "));
+        assert_eq!(failing(&roles, &l), vec![7]);
+    }
+
+    #[test]
+    fn steps_11_and_12_want_the_consoles_and_peers_to_be_n() {
+        let (roles, mut l) = run_of(16);
+        for (_, x) in l.iter_mut() {
+            *x = x.replace("for 16 consoles", "for 2 consoles");
+        }
+        assert_eq!(failing(&roles, &l), vec![11]);
+        let (roles, mut l) = run_of(16);
+        for (_, x) in l.iter_mut() {
+            *x = x.replace("campaign with 16 peers", "campaign with 9 peers");
+        }
+        assert_eq!(failing(&roles, &l), vec![12]);
+        let (roles, mut l) = run_of(2);
+        for (_, x) in l.iter_mut() {
+            *x = x.replace("for 2 consoles", "for 1 consoles");
+        }
+        assert_eq!(failing(&roles, &l), vec![11]);
+    }
+
+    #[test]
+    fn step_13_wants_every_game_to_start_the_session() {
+        let (roles, mut l) = run_of(16);
+        let at = l
+            .iter()
+            .rposition(|(_, x)| x == "coop-probe: session start returned 1")
+            .unwrap();
+        l.remove(at);
+        assert_eq!(failing(&roles, &l), vec![13]);
+    }
+
+    #[test]
+    fn step_16_wants_one_checkpoint_tick() {
+        let (roles, mut l) = run_of(16);
+        let at = l
+            .iter()
+            .rposition(|(_, x)| x.contains("checkpoint save"))
+            .unwrap();
+        l[at].1 = "coop-probe: checkpoint save at tick 91".into();
+        let v = verdict(&text_of(&roles, &l), true).unwrap();
+        assert_eq!(
+            v.steps[15].seen,
+            Seen::No {
+                missing: vec!["G15 (tick 91, not 90)".into()]
+            }
+        );
+        l.remove(at);
+        assert_eq!(failing(&roles, &l), vec![16]);
+    }
+
+    #[test]
+    fn step_17_wants_players_3_to_n_placed_and_none_refused() {
+        let (roles, mut l) = run_of(16);
+        let at = l
+            .iter()
+            .position(|(_, x)| x.starts_with("coop-players: player 7 "))
+            .unwrap();
+        l.remove(at);
+        assert_eq!(failing(&roles, &l), vec![17]);
+        l.insert(
+            at,
+            (
+                "G00".into(),
+                "coop-players: player 7 placed next to the anchor: REFUSED (it stays where it spawned)"
+                    .into(),
+            ),
+        );
+        assert_eq!(failing(&roles, &l), vec![17]);
+        let (roles, mut l) = run_of(2);
+        assert_eq!(failing(&roles, &l), Vec::<usize>::new());
+        l.push((
+            "G01".into(),
+            "coop-players: player 2 placed next to the anchor: REFUSED (it stays where it spawned)"
+                .into(),
+        ));
+        assert_eq!(failing(&roles, &l), vec![17]);
+    }
+
+    #[test]
+    fn out_of_sync_fails_the_run_and_the_filter_keeps_the_new_lines() {
+        let (roles, mut l) = run_of(2);
+        l.push((
+            "G01".into(),
+            "OUT OF SYNC: the retail latch (simulation globals +0x2c) is set at tick 12, update 77"
+                .into(),
+        ));
+        assert_eq!(failing(&roles, &l), vec![18]);
+        let v = verdict(&text_of(&roles, &l), true).unwrap();
+        assert_eq!(v.trouble.len(), 1);
+        for line in [
+            "coop-players: player 3 placed next to the anchor",
+            "coop-probe: checkpoint save at tick 90",
+            "OUT OF SYNC: the retail latch (simulation globals +0x2c) is set",
+        ] {
+            assert!(wanted(line), "{line}");
+        }
     }
 }

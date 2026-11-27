@@ -679,3 +679,11 @@ fn a_press_is_a_short_pad_step() {
     assert!(p.steps[0].check().is_ok());
     assert_eq!(p.steps[0].ms, Some(150));
 }
+
+#[test]
+fn the_step_timeout_scales_with_the_games_on_the_mac() {
+    assert_eq!(step_ms(2), STEP_MS);
+    assert_eq!(step_ms(3), STEP_MS);
+    assert_eq!(step_ms(16), 8 * STEP_MS);
+    assert_eq!(Driver::new("Bravo", Role::Guest).for_games(16).step_ms, 120_000);
+}
