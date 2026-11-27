@@ -33,7 +33,7 @@ impl Host for Scaled {
     }
 }
 
-fn group(layer: u32, size: [u32; 2]) -> SceneGroup {
+fn group(layer: u8, size: [u32; 2]) -> SceneGroup {
     SceneGroup {
         group: LightGroup {
             light: 0,
@@ -67,10 +67,10 @@ fn a_scaled_view_draws_its_shadow_layers() {
     let host = Arc::new(Scaled(Mutex::default()));
     native_shadows::set_host(host.clone());
     // Render scale 1 and 2: the size is the host's business, not a refusal.
-    for (layer, size) in [(10, [256, 256]), (11, [2560, 1440]), (14, [2560, 1440])] {
-        let before = native_shadows::drawn_alone(layer);
-        assert!(native_shadows::draw_alone(&mut mem, layer, &group(layer, size)));
-        assert_eq!(native_shadows::drawn_alone(layer), before + 1, "layer {layer}");
+    for (layer, size) in [(10u8, [256, 256]), (11, [2560, 1440]), (14, [2560, 1440])] {
+        let before = native_shadows::drawn_alone(u32::from(layer));
+        assert!(native_shadows::draw_alone(&mut mem, u32::from(layer), &group(layer, size)));
+        assert_eq!(native_shadows::drawn_alone(u32::from(layer)), before + 1, "layer {layer}");
     }
     assert_eq!(host.0.lock().unwrap().iter().filter(|(_, s)| s[0] == 2560).count(), 2);
     // A host that cannot draw a group drops it under its cause: the guest's
