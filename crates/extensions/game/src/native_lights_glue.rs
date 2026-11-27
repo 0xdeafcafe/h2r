@@ -666,7 +666,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("shadow entry selects a nonzero material LOD or pass"));
         }
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
-        let projection = group.group.projection;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
         let expected = if layer == RECEIVER_LAYER {
             None

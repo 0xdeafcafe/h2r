@@ -104,10 +104,12 @@ impl d3d::ExternalPass for ClearDepth {
             draws: 0,
             passes: 1,
             commands: Box::new(move |encoder| {
-                let clear = |v| wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(v),
-                    store: wgpu::StoreOp::Store,
-                };
+                fn clear<V>(v: V) -> wgpu::Operations<V> {
+                    wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(v),
+                        store: wgpu::StoreOp::Store,
+                    }
+                }
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("scene light shadow clear"),
                     color_attachments: &[],
