@@ -142,6 +142,7 @@ fn islands_method(v: Value) -> Result<Value, RpcError> {
         deactivation: takeover_arm(&engine::sim_physics::parity::DEACTIVATION, &sim_havok::deactivation::fallbacks()),
         phase: takeover_arm(&engine::sim_physics::parity::INTEGRATE_PHASE, &sim_havok::integrate_phase::fallbacks()),
         polygon: takeover_arm(&engine::sim_physics::parity::STRUCTURE_POLYGON, &sim_havok::structure::fallbacks()),
+        convex: takeover_arm(&engine::sim_physics::parity::CONVEX_AGENT, &sim_havok::convex::fallbacks()),
     };
     Ok(serde_json::to_value(islands).expect("islands serialise"))
 }
@@ -370,6 +371,8 @@ mod tests {
         assert_eq!(reasons, ["memory", "pending", "deactivate", "listener", "split", "island", "float", "monitor", "unobserved"]);
         let reasons: Vec<_> = after.polygon.fallbacks.iter().map(|f| f.reason.as_str()).collect();
         assert_eq!(reasons, ["memory", "ring", "float", "unobserved"]);
+        let reasons: Vec<_> = after.convex.fallbacks.iter().map(|f| f.reason.as_str()).collect();
+        assert_eq!(reasons, ["memory", "closest", "points", "float", "monitor", "unobserved"]);
         sim_havok::integrate_phase::count(sim_havok::integrate_phase::Fallback::Listener);
         assert!(read().phase.fallbacks[3].count > after.phase.fallbacks[3].count);
         assert_eq!(islands_method(json!({"reset": true})).unwrap_err().code, code::INVALID_PARAMS);

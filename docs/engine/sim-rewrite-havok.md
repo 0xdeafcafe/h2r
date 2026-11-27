@@ -14,14 +14,17 @@ guest-authoritative candidates; the broadphase batch update's, the
 island integrate's, the deactivation test's and the integrate phase's
 take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the
 structure polygon builder's take-over (slice 4,
-[havok-structure.md](havok-structure.md)); the island
+[havok-structure.md](havok-structure.md)); the convex agent's
+separated-pair take-over (slice 5, [havok-convex.md](havok-convex.md));
+the island
 solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
 switches are retired; their bodies are differential oracles. The ladder
 beyond the differential tests (disc sweep, run parity, the behaviour
 suites) and the timing gate are open: the collide phase `30fcb0`, the
 integrate phase's declined paths (pending work, listeners, splits, island
-deactivation) and the agent/narrowphase leaves still run lifted, and
+deactivation), the convex agent's closest-feature query, manifold and
+contact commit and the other agent/narrowphase leaves still run lifted, and
 slice 3's runs, lanes and worker solves are not built (each island reads
 the solver buffer bytes the island before it left, so a run's islands
 are not independent without a read check).
@@ -627,7 +630,7 @@ memory.
 | 3 | `0x00316b30` | thiscall (island; out byte, step), `ret 8` | plain `fn` |
 | 3 | `0x0030fef0` | thiscall (world; step), `ret 4` | async |
 | 4 | `0x001edd00`, the polygon builder under the collection's `vt[+0x34]` `0x001ee4d0` (vtable `0x00456194`) and its two other callers | thiscall-like (shape ecx, transform edi; five stack words), `ret 0x14` | plain `fn` |
-| 5 | `vt[+0x10]` of `0x00412c48` and `0x00412290` | slice 5, step 0 | async (contact callback) |
+| 5 | `0x002eeb40`, the convex process call under `vt[+0x10]` of `0x00412c48` and `0x00412290` | thiscall (agent; A, B, input, collector), `ret 0x10` | async (contact callback) |
 | 6 | `vt[+0x10]` of `0x00412a98`, `0x00412adc`, `0x00412f5c`, `0x00412f7c`, `0x00412fb0`, `0x00412fd0` | slice 6, step 0 | async |
 | 7 | `0x00317d30` | thiscall (island; broadphase, input), `ret 8` | async |
 | 7 | `0x0030fcb0` | thiscall (world; step), `ret 4` | async |
@@ -801,6 +804,7 @@ since start and whether the arm is proven or ended since the map load.
 | `physics.island.deactivation` | `316b30`, `ret 8` | take-over |
 | `physics.integrate` | `30fef0`, `ret 4` | take-over |
 | `physics.structure.polygon` | `1edd00`, `ret 0x14` | take-over |
+| `physics.agent.convex` | `2eeb40`, `ret 0x10` | take-over |
 
 - **Take-over.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
@@ -843,6 +847,12 @@ since start and whether the arm is proven or ended since the map load.
   shape's words with eax and ecx the shape, edx the tail, ebx, ebp, esi
   and edi and esp; declines `memory`, `ring`, `float`, `unobserved`
   (`havok.islands`'s `polygon`).
+- **Convex agent.** The same at `2eeb40`, the convex agent's process
+  call ([havok-convex.md](havok-convex.md)), on the separated-pair path
+  only: the bound's store with eax the point-count address, ecx the
+  monitor head, edx the manager word, ebx, ebp, esi, edi and esp;
+  declines `memory`, `closest` (the query path), `points`, `float`,
+  `monitor`, `unobserved` (`havok.islands`'s `convex`).
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node), an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the

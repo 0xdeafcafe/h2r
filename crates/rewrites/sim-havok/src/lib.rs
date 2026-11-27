@@ -3,6 +3,7 @@
 
 pub mod array;
 pub mod broadphase;
+pub mod convex;
 pub mod deactivation;
 pub mod fp;
 pub mod integrate_phase;
