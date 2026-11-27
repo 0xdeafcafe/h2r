@@ -659,8 +659,8 @@ like the rest. `sim.arms` reports it as `seats.device`.
 puts the applied answer against the lifted original with its real `24590`
 and `pow`; `bound_control_audits_through_the_guest` runs the audit path.
 
-*The leaf callees.* Five guest functions the seat bodies call, which call
-nothing and read only what their registers name, are kernels in
+*The leaf callees.* Seven guest functions the seat bodies call, which read
+only what their registers name, are kernels in
 `engine/src/sim_seats/leaf.rs`, each behind its own arm:
 
 | Leaf | Guest | Returns to | Answer |
@@ -670,15 +670,23 @@ nothing and read only what their registers name, are kernels in
 | `direction` | `11df30` | `0x1863f7`, `0x186403` | a vector's yaw and pitch (`fpatan`, `fsqrt` on the x87 model) |
 | `user_test` | `14ddc0` | the HUD update's `USER_TESTED` | the user slot has a player |
 | `user_player` | `14de70` | the HUD update's `PLAYER_FOUND` | the user slot's player |
+| `submit` | `187b30` | `0x186a94` | the input record's flags into the control globals' held word, the latches and the record's latch bits, the yaw's sign (x87) and the axis clamps |
+| `weapon_ready` | `100f70` | `0x1866b3` | the weapon can be readied; its callee `100880` stays a guest call |
 
 At the call the kernel predicts `eax`, `ecx`, `edx`, `xmm0`, the x87 stack
 and the leaf's stores. Unproven, the guest's leaf runs and the body compares
 at the return site; after 4096 matches the kernel answers in place and the
 body goes on at the site in the same segment, one call in 64 still the
 guest's. A mismatch returns that leaf to the guest until the next map.
-`sim.arms` reports `seats.leaf.<name>`; `seat_leaves_match_lifted` puts
-each applied answer against the lifted leaf. The bodies' other callees
-(the look curve and the bodies that are seats themselves aside) call further
+`weapon_ready` has two halves around its guest call of `100880`: the frame
+and saved registers at the call, compared at `0x100fab` (a site of the
+control update's body), and the return, compared at `0x1866b3`. Answered,
+the body lays the frame down, calls `100880` from it, and finishes `100f70`
+at `0x100fab`; another caller's `100f70` reaching `0x100fab` is left to the
+generated code. `sim.arms` reports `seats.leaf.<name>`;
+`seat_leaves_match_lifted` and `weapon_ready_matches_lifted` put each
+applied answer against the lifted function. The bodies' other callees (the
+look curve and the bodies that are seats themselves aside) call further
 guest code and stay guest calls.
 
 `observer-resources` (the trim that spares the headless host most of the

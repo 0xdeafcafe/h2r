@@ -1018,6 +1018,31 @@ fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, ca
             word(m, LEAF_BODY + 0x14, if case == 3 { 0x8300_0003 } else { u32::MAX });
             c.gpr[0] = 0x8200_0002;
         }
+        Leaf::Submit => {
+            let (rec, block, ctrl) = (RECORDS + 0x400, RECORDS + 0x480, RECORDS + 0x500);
+            word(m, 0x004e_d284, ctrl);
+            let seed = case.wrapping_mul(0x9e37_79b9).rotate_left(case);
+            word(m, ctrl + 4, seed & 0x0003_0000);
+            word(m, ctrl + 8, [0u32, 1, 4, 8, 0xd][case as usize % 5]);
+            word(m, ctrl + 0xc, [0x3c0du32, 0x2405, 0x1801, 0x0c0c, 0x380f, 0, 0xffff][case as usize % 7]);
+            word(m, rec + 0x18, seed & 0x0400_0026);
+            word(m, rec + 0x1c, (seed >> 7) & 0x37);
+            word(m, rec + 0x20, 0xa5c0_0000 | (seed >> 3) & 0xffff);
+            let f: [[f32; 6]; 4] = [
+                [0.5, -0.25, 1.0, 0.0, -0.5, 0.3],
+                [-1.0, 0.75, -0.0, 2.0, 0.25, -0.1],
+                [0.0, 0.0, -2.0, -0.5, 0.0, 0.0],
+                [0.2, -0.2, 0.4, -0.4, 0.6, -0.6],
+            ];
+            for (o, v) in [0u32, 4, 8, 0x10, 0x14, 0x24].into_iter().zip(f[case as usize % 4]) {
+                float(m, rec + o, v);
+            }
+            m.bytes[(block + 8) as usize] = (case % 3) as u8;
+            m.bytes[(block + 9) as usize] = (case % 2) as u8 * 0x80;
+            c.gpr[1] = rec;
+            c.gpr[0] = block;
+        }
+        Leaf::WeaponReady => {}
         Leaf::Direction => {
             let v: [[f32; 3]; 4] = [[1.0, 0.5, -0.25], [-3.0, 0.0, 2.0], [0.0, 0.0, 0.0], [0.1, -0.7, 0.3]];
             for (i, x) in v[case as usize % 4].into_iter().enumerate() {
@@ -1033,7 +1058,7 @@ fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, ca
 fn seat_leaves_match_lifted() {
     use sim_seats::leaf::{self, Leaf};
     let Some((image, ram)) = image() else { return };
-    for l in Leaf::ALL {
+    for l in Leaf::ALL.into_iter().filter(|&l| l != Leaf::WeaponReady) {
         let mut code = image.original();
         code.prime(l.target());
         for case in 0..7 {
@@ -1082,5 +1107,79 @@ fn seat_leaves_match_lifted() {
                 assert_eq!(first, None, "{why}: first differing byte (original, port)");
             }
         }
+    }
+}
+
+/// `100f70` through its two halves, with its guest callee `100880` run
+/// for real between them, against the lifted `100f70` whole.
+#[test]
+fn weapon_ready_matches_lifted() {
+    use sim_seats::leaf::{self, Leaf};
+    let Some((image, ram)) = image() else { return };
+    const SITE: u32 = 0x0018_66b3;
+    let (object, def) = (RECORDS + 0x600, RECORDS + 0x800);
+    for case in 0..6u32 {
+        let mut mem = ram.clone();
+        word(&mut mem, 0x004e_0300, HEADER);
+        word(&mut mem, HEADER + 0x44, DATA);
+        word(&mut mem, points::TAG_ENTRIES.base, RECORDS + 0x700);
+        word(&mut mem, DATA + 3 * 12 + 8, object);
+        word(&mut mem, object, 5);
+        word(&mut mem, RECORDS + 0x700 + 5 * 16 + 8, def);
+        word(&mut mem, def + 0x2c0, case % 3);
+        for i in 0..2u32 {
+            let rounds = [0u16, 3, 9][((case + i) % 3) as usize];
+            mem.bytes[(object + 0x224 + 16 * i) as usize..][..2].copy_from_slice(&rounds.to_le_bytes());
+        }
+        let levels = [1i16, 0, 2][(case / 2) as usize % 3];
+        mem.bytes[(def + 0x1fe) as usize..][..2].copy_from_slice(&levels.to_le_bytes());
+        // The caller's frame: the body's `esp` before the call.
+        let esp = STACK;
+        let mut cpu = Cpu {
+            gpr: [0x8300_0003, 0x9876_5432, 0x00fe_3420, 0x7b1c, esp, 0x00aa_bbcc, 0x5151, 0x0e37],
+            eflags: 0x2,
+            mxcsr: 0x1fa0,
+            ..Default::default()
+        };
+        let why = format!("case {case}");
+        // Rust: the call half, the real `100880`, the return half.
+        let mut rmem = mem.clone();
+        let mut regs = abi_cpu(&cpu);
+        let mut native = Guest::new();
+        native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+        native.write_bytes(0, &rmem.bytes, 1).unwrap();
+        let call = leaf::ready_call(&regs, &native, SITE).unwrap_or_else(|d| panic!("{why}: {d:?}"));
+        for (a, v) in call.writes.iter().flatten() {
+            word(&mut rmem, *a, *v);
+        }
+        let mut child = cpu.clone();
+        child.gpr = [regs.eax, call.ecx, call.edx, call.ebx, esp - 20, regs.ebp, call.esi, call.edi];
+        word(&mut rmem, esp - 20, leaf::READY_RESUME);
+        child.eip = leaf::READY_CHILD;
+        let mut code = image.original();
+        code.prime(leaf::READY_CHILD);
+        lifted::code::run_until(&mut code, &mut child, &mut rmem, 100_000, |c| c.eip == leaf::READY_RESUME)
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+        let mut native = Guest::new();
+        native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+        native.write_bytes(0, &rmem.bytes, 1).unwrap();
+        regs = abi_cpu(&child);
+        let (back, after, target) = leaf::ready_return(&regs, &native).unwrap_or_else(|d| panic!("{why}: {d:?}"));
+        assert_eq!(target, SITE, "{why}");
+        leaf::apply(&mut regs, &mut native, &back).unwrap();
+        regs.esp = after;
+        // The guest: `100f70` whole, called from the site.
+        let mut code = image.original();
+        code.prime(Leaf::WeaponReady.target());
+        word(&mut mem, esp - 4, SITE);
+        cpu.gpr[4] = esp - 4;
+        cpu.eip = Leaf::WeaponReady.target();
+        lifted::code::run_until(&mut code, &mut cpu, &mut mem, 100_000, |c| c.eip == SITE)
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+        let want = abi_cpu(&cpu);
+        let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi];
+        assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx esp ebp esi edi");
+        let start = native.mappings()[0].physical_start as usize;
+        assert_eq!(&native.physical_ram()[start..start + RAM], &mem.bytes[..], "{why}: memory");
     }
 }
