@@ -472,6 +472,20 @@ fn overlay_pipeline(
     })
 }
 
+/// One batch of an overlay plan as recorded: its pipeline, bindings,
+/// scissor, index range and the colour target state the pipeline has.
+struct BatchDraw {
+    batch: usize,
+    stages: Option<wgpu::BindGroup>,
+    pipeline: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    scissor: crate::overlay::Scissor,
+    indices: std::ops::Range<u32>,
+    blend_constant: wgpu::Color,
+    blend: Option<wgpu::BlendState>,
+    write_mask: wgpu::ColorWrites,
+}
+
 /// The overlay stage's programs, pipelines and samplers on one device.
 pub struct OverlayGpu {
     module: wgpu::ShaderModule,
@@ -756,28 +770,19 @@ impl OverlayGpu {
     /// scissor; over a target that cannot be copied or sampled every blur
     /// is dropped and counted in `refused_blur`. The plan's own counts are
     /// carried over.
-    pub fn prepare(
+    /// Each batch of `plan` as a draw on a `format` colour target: its
+    /// pipeline, bindings, scissor and index range. A batch whose texture
+    /// is not resident, whose blend is not a D3D blend or whose program
+    /// does not translate is left out and counted in `stats`; `batches`
+    /// counts the draws kept.
+    fn batch_draws(
         &mut self,
         device: &wgpu::Device,
-        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
         plan: &crate::overlay::OverlayPlan,
         textures: &dyn OverlayTextures,
-    ) -> Result<(ExternalEncoded, crate::overlay::OverlayStats), &'static str> {
-        let size = target.texture().size();
-        if [size.width, size.height] != plan.target {
-            return Err("overlay target size changed");
-        }
-        let format = target.texture().format();
-        let mut stats = plan.stats;
-        struct Draw {
-            batch: usize,
-            stages: Option<wgpu::BindGroup>,
-            pipeline: wgpu::RenderPipeline,
-            group: wgpu::BindGroup,
-            scissor: crate::overlay::Scissor,
-            indices: std::ops::Range<u32>,
-            blend_constant: wgpu::Color,
-        }
+        stats: &mut crate::overlay::OverlayStats,
+    ) -> Vec<BatchDraw> {
         let mut draws = Vec::with_capacity(plan.batches.len());
         for (index, batch) in plan.batches.iter().enumerate() {
             let Ok(blend) = overlay_blend(batch.material.blend) else {
@@ -846,15 +851,104 @@ impl OverlayGpu {
                     (program.pipeline.clone(), group, Some(stages))
                 }
             };
-            draws.push(Draw {
+            draws.push(BatchDraw {
                 batch: index,
                 pipeline, group, stages,
                 scissor: batch.scissor,
                 indices: batch.first_index..batch.first_index + batch.index_count,
                 blend_constant: blend_color(batch.blend_constant),
+                blend,
+                write_mask: gfx::translate::color_writes(gfx::state::ColorWriteMask::from_xbox(batch.color_write)),
             });
         }
         stats.batches = draws.len() as u32;
+        draws
+    }
+
+    /// `plan`'s batches as packets for the frame's open render pass over a
+    /// `format` colour target of `size` texels with no depth attachment:
+    /// the vertices and indices staged once in `uploads`, one packet a
+    /// batch, in order. Adjacent packets on one target share a render
+    /// pass, so a run of widget quads costs one pass, not one each
+    /// (docs/graphics/native-post-hud.md, "The HUD on the overlay"). A
+    /// plan with a blur needs passes of its own and is refused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packets(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        format: wgpu::TextureFormat,
+        size: (u32, u32),
+        plan: &crate::overlay::OverlayPlan,
+        textures: &dyn OverlayTextures,
+    ) -> Result<(Vec<RecordedDraw>, crate::overlay::OverlayStats), &'static str> {
+        if [size.0, size.1] != plan.target {
+            return Err("overlay target size changed");
+        }
+        if !plan.blurs.is_empty() {
+            return Err("overlay blur needs its own passes");
+        }
+        let mut stats = plan.stats;
+        let draws = self.batch_draws(device, format, plan, textures, &mut stats);
+        if draws.is_empty() {
+            return Ok((Vec::new(), stats));
+        }
+        let (vertices, vertex_offset) = uploads.stage(device, queue, bytemuck::cast_slice(&plan.vertices));
+        let vertex_len = std::mem::size_of_val(plan.vertices.as_slice()) as u64;
+        let (indices, index_offset) = uploads.stage(device, queue, bytemuck::cast_slice(&plan.indices));
+        let render = gfx::state::RenderState::default();
+        let packets = draws
+            .into_iter()
+            .map(|d| {
+                let key = PipelineKey {
+                    shader: ShaderId(0),
+                    vertex_buffers: Vec::new(),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    color_target: wgpu::ColorTargetState {
+                        format,
+                        blend: d.blend,
+                        write_mask: d.write_mask,
+                    },
+                    samples: 1,
+                };
+                let mut groups = vec![BoundGroup::new(0, d.group)];
+                groups.extend(d.stages.map(|stages| BoundGroup::new(1, stages)));
+                let first = u64::from(d.indices.start) * 4;
+                let count = d.indices.end - d.indices.start;
+                let s = d.scissor;
+                RecordedDraw::prepared_indexed(
+                    &key,
+                    Pending::ready(Some(d.pipeline)),
+                    [(vertices.clone(), vertex_offset, vertex_len)],
+                    (indices.clone(), index_offset + first, u64::from(count) * 4),
+                    count,
+                    groups,
+                    &render,
+                    size,
+                    gfx::ScissorRect { x: s.x, y: s.y, width: s.width, height: s.height },
+                )
+                .with_blend_constant(d.blend_constant)
+            })
+            .collect();
+        Ok((packets, stats))
+    }
+
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        target: &wgpu::TextureView,
+        plan: &crate::overlay::OverlayPlan,
+        textures: &dyn OverlayTextures,
+    ) -> Result<(ExternalEncoded, crate::overlay::OverlayStats), &'static str> {
+        let size = target.texture().size();
+        if [size.width, size.height] != plan.target {
+            return Err("overlay target size changed");
+        }
+        let format = target.texture().format();
+        let mut stats = plan.stats;
+        let draws = self.batch_draws(device, format, plan, textures, &mut stats);
         let blurs = if plan.blurs.is_empty() {
             None
         } else {
