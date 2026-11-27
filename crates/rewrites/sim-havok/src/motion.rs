@@ -232,34 +232,56 @@ pub fn apply_forces(input: ForceInput, one: f32, zero: f32, control: u16) -> Opt
 
 /// The solver-side virtuals of a motion (docs/engine/havok-step.md,
 /// "Motions"): `vt[+0x0c]` builds its accumulator in the solver buffer,
-/// `vt[+0x10]` integrates from it after the solve. Classes are told apart
-/// by those two slots' targets, so a copied vtable is still recognised.
+/// `vt[+0x10]` integrates from it after the solve
+/// ([`crate::motion_solve`]). Classes are told apart by those two slots'
+/// targets, so a copied vtable is still recognised.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SolverClass {
+    /// Type 2: scalar inertia, world-frame accumulator; the export
+    /// restores the solved velocities.
+    Sphere,
+    /// Type 3: as type 2, the export keeps the masked iteration sums.
+    StabilizedSphere,
+    /// Type 4: inertia per body axis, body-frame accumulator; the export
+    /// restores the solved velocities.
+    Box,
+    /// Type 5: as type 4, the export keeps the masked iteration sums.
+    StabilizedBox,
+    /// Type 6: velocities copied in, the pose integrated, no mass.
+    Keyframed,
     /// Type 7, the level's: `0x0031a770` zeroes the accumulator,
     /// `0x0031a6a0` writes nothing.
     Fixed,
 }
 
-pub const FIXED_ACCUMULATE: u32 = 0x0031_a770;
-pub const FIXED_EXPORT: u32 = 0x0031_a6a0;
-/// Type 6. The accumulator is ported; the export (`0x00319490`, the pose
-/// integration through `0x00319300`, `0x001d8d60`, `0x00372500` and
-/// `0x002db7a0`) is not, so the class is not covered yet.
+pub const SPHERE_ACCUMULATE: u32 = 0x0031_9df0;
+pub const SPHERE_EXPORT: u32 = 0x0031_a0d0;
+pub const STABILIZED_SPHERE_EXPORT: u32 = 0x0031_a500;
+pub const BOX_ACCUMULATE: u32 = 0x0031_b300;
+pub const BOX_EXPORT: u32 = 0x0031_b4c0;
+pub const STABILIZED_BOX_EXPORT: u32 = 0x0031_a8c0;
 pub const KEYFRAMED_ACCUMULATE: u32 = 0x0031_9430;
 pub const KEYFRAMED_EXPORT: u32 = 0x0031_9490;
+pub const FIXED_ACCUMULATE: u32 = 0x0031_a770;
+pub const FIXED_EXPORT: u32 = 0x0031_a6a0;
 
 impl SolverClass {
+    pub const ALL: [Self; 6] =
+        [Self::Sphere, Self::StabilizedSphere, Self::Box, Self::StabilizedBox, Self::Keyframed, Self::Fixed];
+
     pub fn of(accumulate: u32, export: u32) -> Option<Self> {
-        match (accumulate, export) {
-            (FIXED_ACCUMULATE, FIXED_EXPORT) => Some(Self::Fixed),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|c| c.slots() == (accumulate, export))
     }
 
-    pub fn accumulator(self) -> Accumulator {
+    /// The `vt[+0x0c]` and `vt[+0x10]` targets.
+    pub fn slots(self) -> (u32, u32) {
         match self {
-            Self::Fixed => fixed_accumulator(),
+            Self::Sphere => (SPHERE_ACCUMULATE, SPHERE_EXPORT),
+            Self::StabilizedSphere => (SPHERE_ACCUMULATE, STABILIZED_SPHERE_EXPORT),
+            Self::Box => (BOX_ACCUMULATE, BOX_EXPORT),
+            Self::StabilizedBox => (BOX_ACCUMULATE, STABILIZED_BOX_EXPORT),
+            Self::Keyframed => (KEYFRAMED_ACCUMULATE, KEYFRAMED_EXPORT),
+            Self::Fixed => (FIXED_ACCUMULATE, FIXED_EXPORT),
         }
     }
 }
@@ -330,10 +352,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_fixed_pair_of_slots_is_a_covered_class() {
-        assert_eq!(SolverClass::of(FIXED_ACCUMULATE, FIXED_EXPORT), Some(SolverClass::Fixed));
-        assert_eq!(SolverClass::of(KEYFRAMED_ACCUMULATE, KEYFRAMED_EXPORT), None);
+    fn each_pair_of_slots_names_one_class() {
+        for c in SolverClass::ALL {
+            let (a, e) = c.slots();
+            assert_eq!(SolverClass::of(a, e), Some(c));
+        }
         assert_eq!(SolverClass::of(FIXED_ACCUMULATE, KEYFRAMED_EXPORT), None);
+        assert_eq!(SolverClass::of(BOX_ACCUMULATE, SPHERE_EXPORT), None);
     }
 
     #[test]
