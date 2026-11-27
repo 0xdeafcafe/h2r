@@ -104,6 +104,9 @@ pub enum OverlayTexture {
     Bound { header: u32 },
     /// The renderer's glyph atlas of engine font `font`.
     Glyphs { font: u16 },
+    /// Movie `movie`'s current frame, as the host uploads it (a
+    /// [`OverlayKind::MovieFrame`]'s texture).
+    Movie { movie: u32 },
 }
 
 /// How the texture is sampled.
@@ -556,7 +559,8 @@ impl Overlay {
 
     /// The current frame of `movie` over the four `corners` of `clip`'s
     /// quad: the corners' uv and colour are the producer's, the material
-    /// is the blend and sampler it wants.
+    /// is the program, blend and sampler it wants; its texture is the
+    /// movie's ([`OverlayTexture::Movie`]), whatever `material` names.
     pub fn push_movie_frame(
         &mut self,
         material: OverlayMaterial,
@@ -564,6 +568,7 @@ impl Overlay {
         corners: [OverlayVertex; 4],
         movie: OverlayMovie,
     ) -> Result<u32, OverlayError> {
+        let material = OverlayMaterial { texture: OverlayTexture::Movie { movie: movie.movie }, ..material };
         let n = self.push_corners(OverlayKind::MovieFrame, material, clip, corners)?;
         self.movies.push(movie);
         self.items[n as usize].detail = Some(self.movies.len() as u32 - 1);
@@ -657,7 +662,10 @@ impl Overlay {
             g = r.1.end;
             let (corners, glyphs) = (r.0.len(), r.1.len());
             let fits = match item.kind {
-                OverlayKind::Quad | OverlayKind::MovieFrame => corners == 4 && glyphs == 0,
+                OverlayKind::Quad => corners == 4 && glyphs == 0,
+                OverlayKind::MovieFrame => {
+                    corners == 4 && glyphs == 0 && matches!(item.material.texture, OverlayTexture::Movie { .. })
+                }
                 OverlayKind::Fill => corners == 4 && glyphs == 0 && !item.material.sampled(),
                 OverlayKind::TextRun => {
                     corners == 0 && glyphs > 0 && matches!(item.material.texture, OverlayTexture::Glyphs { .. })
@@ -724,6 +732,10 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             OverlayTexture::Glyphs { font } => {
                 word(2);
                 word(u32::from(font));
+            }
+            OverlayTexture::Movie { movie } => {
+                word(4);
+                word(movie);
             }
         }
     }
@@ -1056,8 +1068,13 @@ mod tests {
             ]
         );
         assert_eq!(o.movie_of(&o.items[0]), Some(&OverlayMovie { movie: 9, frame: 4 }));
+        assert_eq!(o.items[0].material.texture, OverlayTexture::Movie { movie: 9 });
         assert_eq!(o.counts().movie_frames, 1);
         assert_eq!(o.check(), Ok(()));
+        // A movie frame samples its movie and nothing else.
+        let mut bad = o.clone();
+        bad.items[0].material.texture = OverlayTexture::None;
+        assert!(bad.check().is_err());
         // Joined after another list, the movie keeps its own entry.
         let mut a = Overlay::new([640, 480]);
         a.push_movie_frame(sprite(), all, quad(0.0, 0.0), OverlayMovie { movie: 1, frame: 0 }).unwrap();

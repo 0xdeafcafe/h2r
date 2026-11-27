@@ -796,6 +796,10 @@ impl OverlayGpu {
                         match textures.view(batch.material.texture) {
                             Some(view) if view.texture().dimension() == wgpu::TextureDimension::D2
                                 && filterable(view.texture().format(), device.features()) => view.clone(),
+                            _ if matches!(batch.material.texture, frame_scene::OverlayTexture::Movie { .. }) => {
+                                stats.refused_movie += batch.items;
+                                continue;
+                            }
                             _ => {
                                 stats.refused_texture += batch.items;
                                 continue;
@@ -1089,7 +1093,9 @@ impl OverlayGpu {
 /// The textures an overlay names, resident on one device: each bitmap
 /// image uploaded once, each font's glyph page uploaded when it first
 /// appears and, as it grows, each glyph added since the version it holds
-/// written once, by its rectangle ([`crate::overlay::GlyphPages`]).
+/// written once, by its rectangle ([`crate::overlay::GlyphPages`]); and
+/// each movie's current frame, written when the frame moves
+/// ([`OverlayResidency::sync_movie`]).
 #[derive(Default)]
 pub struct OverlayResidency {
     /// The assets' generation what it holds came from.
@@ -1097,6 +1103,9 @@ pub struct OverlayResidency {
     images: HashMap<(u32, u16), wgpu::TextureView>,
     /// Each font's page: the version it holds, its texture and view.
     glyphs: HashMap<u16, (u64, wgpu::Texture, wgpu::TextureView)>,
+    /// Each movie's frame: the frame it holds, its texture and view. Not
+    /// a map's: another generation keeps them.
+    movies: HashMap<u32, (u32, wgpu::Texture, wgpu::TextureView)>,
 }
 
 fn overlay_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Texture {
@@ -1216,12 +1225,59 @@ impl OverlayResidency {
     }
 }
 
+impl OverlayResidency {
+    /// Writes `movie`'s frame when it is not the one held: a texture of
+    /// the frame's size (`Bgra8Unorm`, the decoder's byte order), made
+    /// again when the size changes. False, and nothing held for the
+    /// movie, when the frame has no texels, fewer than its size needs, or
+    /// is past the device's largest texture: its items are refused
+    /// (`refused_movie`).
+    pub fn sync_movie(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        movie: &crate::overlay::MovieImage,
+    ) -> bool {
+        let (w, h) = (movie.width, movie.height);
+        let largest = device.limits().max_texture_dimension_2d;
+        if w == 0 || h == 0 || w > largest || h > largest || movie.bgra.len() < (w * h * 4) as usize {
+            self.movies.remove(&movie.movie);
+            return false;
+        }
+        if let Some((frame, texture, _)) = self.movies.get_mut(&movie.movie)
+            && texture.size().width == w
+            && texture.size().height == h
+        {
+            if *frame != movie.frame {
+                write_rgba(queue, texture, &movie.bgra[..(w * h * 4) as usize]);
+                *frame = movie.frame;
+            }
+            return true;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native overlay movie"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        write_rgba(queue, &texture, &movie.bgra[..(w * h * 4) as usize]);
+        let view = texture.create_view(&Default::default());
+        self.movies.insert(movie.movie, (movie.frame, texture, view));
+        true
+    }
+}
+
 impl OverlayTextures for OverlayResidency {
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
         match texture {
             frame_scene::OverlayTexture::None | frame_scene::OverlayTexture::Bound { .. } => None,
             frame_scene::OverlayTexture::Bitmap { tag, image } => self.images.get(&(tag, image)),
             frame_scene::OverlayTexture::Glyphs { font } => self.glyphs.get(&font).map(|(_, _, view)| view),
+            frame_scene::OverlayTexture::Movie { movie } => self.movies.get(&movie).map(|(_, _, view)| view),
         }
     }
 }
@@ -1245,6 +1301,8 @@ pub fn count_overlay(stats: &crate::overlay::OverlayStats) {
         (Ui::OverlayModelViews, stats.model_views),
         (Ui::OverlayRefusedModelView, stats.refused_model_view),
         (Ui::OverlayRefusedBlur, stats.refused_blur),
+        (Ui::OverlayMovieFrames, stats.movie_frames),
+        (Ui::OverlayRefusedMovie, stats.refused_movie),
     ] {
         if n != 0 {
             counter.count_n(u64::from(n));
@@ -1469,6 +1527,74 @@ mod tests {
         let next = OverlayAssets { generation: 1, ..OverlayAssets::default() };
         assert_eq!(residency.sync(&ctx.device, &ctx.queue, &next), 0);
         assert!(residency.view(OverlayTexture::Bitmap { tag: 7, image: 1 }).is_none());
+    }
+
+    /// A movie frame draws its decoder's B, G, R, A texels as colour, is
+    /// written again only when its frame moves, and keeps across a map
+    /// change; a movie with no upload is refused by name.
+    #[test]
+    fn a_movie_frame_draws_its_upload_and_follows_its_frame() {
+        use frame_scene::{ClipRect, Combiner, Overlay, OverlayBlend, OverlayMaterial, OverlayMovie, OverlayTexture, OverlayVertex, Program, Sampler};
+        use crate::overlay::{MovieImage, OverlayAssets, OverlayPlan};
+
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test movie overlay"),
+            size: wgpu::Extent3d { width: 2, height: 2, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let material = OverlayMaterial {
+            program: Program::Fixed(Combiner::Texture),
+            texture: OverlayTexture::None,
+            sampler: Sampler { wrap: false, point: true },
+            blend: OverlayBlend::Off,
+        };
+        let corner = |x, y, u, v| OverlayVertex { position: [x, y], uv: [u, v], color: [1.0; 4] };
+        let all = [corner(0.0, 0.0, 0.0, 0.0), corner(2.0, 0.0, 1.0, 0.0), corner(2.0, 2.0, 1.0, 1.0), corner(0.0, 2.0, 0.0, 1.0)];
+        let mut overlay = Overlay::new([2, 2]);
+        overlay.push_movie_frame(material, ClipRect::full([2, 2]), all, OverlayMovie { movie: 5, frame: 1 }).unwrap();
+        let plan = OverlayPlan::new(&overlay, [2, 2], &crate::overlay::NoGlyphs);
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let mut residency = OverlayResidency::default();
+        let (_, stats) = gpu.prepare(&ctx.device, &view, &plan, &residency).unwrap();
+        assert_eq!((stats.batches, stats.refused_movie, stats.refused_texture), (0, 1, 0), "no upload: refused as a movie");
+        // Two texels a row: blue then red, as B, G, R, A.
+        let frame = |n: u32, left: [u8; 4], right: [u8; 4]| MovieImage {
+            movie: 5, frame: n, width: 2, height: 1,
+            bgra: [left, right].concat().into(),
+        };
+        let draw = |gpu: &mut OverlayGpu, residency: &OverlayResidency| {
+            let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, residency).unwrap();
+            assert_eq!((stats.batches, stats.refused_movie, stats.movie_frames), (1, 0, 1));
+            let mut encoder = ctx.device.create_command_encoder(&Default::default());
+            (encoded.commands)(&mut encoder);
+            ctx.queue.submit([encoder.finish()]);
+            let pixels = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (2, 2));
+            [[pixels[0], pixels[1], pixels[2]], [pixels[4], pixels[5], pixels[6]]]
+        };
+        assert!(residency.sync_movie(&ctx.device, &ctx.queue, &frame(1, [255, 0, 0, 255], [0, 0, 255, 255])));
+        assert_eq!(draw(&mut gpu, &residency), [[0, 0, 255], [255, 0, 0]]);
+        // The same frame number is not written again; the next one is.
+        assert!(residency.sync_movie(&ctx.device, &ctx.queue, &frame(1, [0, 255, 0, 255], [0, 255, 0, 255])));
+        assert_eq!(draw(&mut gpu, &residency), [[0, 0, 255], [255, 0, 0]]);
+        assert!(residency.sync_movie(&ctx.device, &ctx.queue, &frame(2, [0, 255, 0, 255], [0, 255, 0, 255])));
+        assert_eq!(draw(&mut gpu, &residency), [[0, 255, 0], [0, 255, 0]]);
+        // Movies are not a map's: another generation keeps them.
+        let next = OverlayAssets { generation: 3, ..OverlayAssets::default() };
+        residency.sync(&ctx.device, &ctx.queue, &next);
+        assert!(residency.view(OverlayTexture::Movie { movie: 5 }).is_some());
+        // Too few texels drop the movie.
+        let short = MovieImage { bgra: vec![0; 4].into(), ..frame(3, [0; 4], [0; 4]) };
+        assert!(!residency.sync_movie(&ctx.device, &ctx.queue, &short));
+        assert!(residency.view(OverlayTexture::Movie { movie: 5 }).is_none());
     }
 
     /// A 4 by 4 overlay: white on the left half, black on the right, a

@@ -662,7 +662,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::MovieRefusedPass as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -742,6 +742,14 @@ const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
     "overlay_modal_blur_refused_steps",
     "overlay_modal_blur_refused_combiner",
     "overlay_modal_blur_refused_targets",
+    "overlay_movie_frames",
+    "overlay_refused_movie",
+    "movie_placed",
+    "movie_refused_record",
+    "movie_refused_frame",
+    "movie_refused_picture",
+    "movie_refused_host",
+    "movie_refused_pass",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -900,6 +908,23 @@ pub enum Ui {
     OverlayModalBlurRefusedSteps,
     OverlayModalBlurRefusedCombiner,
     OverlayModalBlurRefusedTargets,
+    /// Movie frames (docs/graphics/retire-d3d-display.md, "Movies"): items
+    /// the overlay drew over their movie's upload, and those it refused
+    /// for want of one.
+    OverlayMovieFrames,
+    OverlayRefusedMovie,
+    /// Movie draws `0x00156960` placed on the overlay in place of the
+    /// game's quad; those refused, by reason: the movie's record or
+    /// rectangle does not read as the overlay draws it, the screen quads'
+    /// viewport is not the full screen, no decoded picture, no host to
+    /// place it, the host did not place the pass. A refused draw shows
+    /// nothing: the game's texture is never filled.
+    MoviePlaced,
+    MovieRefusedRecord,
+    MovieRefusedFrame,
+    MovieRefusedPicture,
+    MovieRefusedHost,
+    MovieRefusedPass,
 }
 
 impl Ui {
@@ -1196,6 +1221,8 @@ mod tests {
         assert_eq!(columns[ui + Ui::OverlayRefusedTexture as usize].1, "native_ui_overlay_refused_texture");
         assert_eq!(columns[ui + Ui::OverlayModelViews as usize].1, "native_ui_overlay_model_views");
         assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");
+        assert_eq!(columns[ui + Ui::OverlayMovieFrames as usize].1, "native_ui_overlay_movie_frames");
+        assert_eq!(columns[ui + Ui::MovieRefusedPass as usize].1, "native_ui_movie_refused_pass");
         assert_eq!(columns[ui + Ui::OverlayHudTagQuads as usize].1, "native_ui_overlay_hud_tag_quads");
         assert_eq!(
             columns[ui + Ui::OutlineReservation as usize].1,

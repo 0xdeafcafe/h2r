@@ -65,6 +65,9 @@ struct Slot {
     sound: Option<Sound>,
     /// One destination row, reused by CopyToBuffer when it must convert.
     row: Vec<u8>,
+    /// The decoded picture as the native display last took it: its frame
+    /// and texels, shared until the next frame is decoded.
+    shown: Option<(u32, Arc<[u8]>)>,
 }
 
 impl Slot {
@@ -148,6 +151,8 @@ pub struct BinkHle {
     /// The page we mapped, once we have.
     arena: Mutex<Option<u32>>,
     inner: Mutex<Inner>,
+    /// Decode and draw for the native display (`crate::display`).
+    pub(crate) native_display: std::sync::atomic::AtomicBool,
 }
 
 impl BinkHle {
@@ -189,6 +194,7 @@ impl BinkHle {
                 slots: (0..SLOTS).map(|_| None).collect(),
                 requests: Vec::new(),
             }),
+            native_display: std::sync::atomic::AtomicBool::new(false),
         })
     }
     /// Play movie sound here (the game's mixer, [`crate::MixerAudio`]).
@@ -375,6 +381,7 @@ impl BinkHle {
             decoded: first_frame.as_ref().map(|_| 0),
             frame: first_frame.unwrap_or_else(|| vec![0; frame_size(info)]),
             frame_visible: false,
+            shown: None,
             anchor_ms: now,
             sound,
             row: Vec::new(),
@@ -440,6 +447,13 @@ impl BinkHle {
     pub(crate) fn do_frame(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
+        self.do_frame_at(&mem, h)?;
+        cpu.eax = 0;
+        mem.ret(cpu, 4)
+    }
+
+    /// `BinkDoFrame`'s body for handle `h`.
+    pub(crate) fn do_frame_at(&self, mem: &runtime::Guest, h: u32) -> Result<(), GuestFault> {
         if let Some(i) = self.slot_index(h) {
             let n = mem.u32(h + F_FRAME_NUM)?;
             let mut inner = self.lock();
@@ -455,8 +469,7 @@ impl BinkHle {
                 s.feed();
             }
         }
-        cpu.eax = 0;
-        mem.ret(cpu, 4)
+        Ok(())
     }
 
     /// `BinkNextFrame(bnk)`: advance one frame, or, when the clock has run
@@ -465,6 +478,13 @@ impl BinkHle {
     pub(crate) fn next_frame(&self, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> R {
         let mut mem = ctx.memory();
         let h = mem.u32(cpu.esp.wrapping_add(4))?;
+        self.next_frame_at(&mut mem, h)?;
+        cpu.eax = 0;
+        mem.ret(cpu, 4)
+    }
+
+    /// `BinkNextFrame`'s body for handle `h`.
+    pub(crate) fn next_frame_at(&self, mem: &mut runtime::Guest, h: u32) -> Result<(), GuestFault> {
         if let Some(i) = self.slot_index(h) {
             let n = mem.u32(h + F_FRAME_NUM)?;
             let mut inner = self.lock();
@@ -487,8 +507,30 @@ impl BinkHle {
                 }
             }
         }
-        cpu.eax = 0;
-        mem.ret(cpu, 4)
+        Ok(())
+    }
+
+    /// The picture movie `h` shows: what `BinkCopyToBuffer` would copy,
+    /// once a frame is decoded for showing. Shared until the next frame.
+    pub fn picture(&self, h: u32) -> Option<crate::display::MoviePicture> {
+        let i = self.slot_index(h)?;
+        let mut inner = self.lock();
+        let s = inner.slots[i].as_mut().filter(|s| s.frame_visible)?;
+        let frame = s.decoded?;
+        let (w, hh) = (s.info.width, s.info.height);
+        let bytes = (w * hh * 4) as usize;
+        if s.frame.len() < bytes {
+            return None;
+        }
+        let bgra = match &s.shown {
+            Some((f, b)) if *f == frame => Arc::clone(b),
+            _ => {
+                let b: Arc<[u8]> = s.frame[..bytes].into();
+                s.shown = Some((frame, Arc::clone(&b)));
+                b
+            }
+        };
+        Some(crate::display::MoviePicture { movie: h, frame, width: w, height: hh, bgra })
     }
 
     /// `BinkCopyToBuffer(bnk, dst, pitch, height, x, y, flags)`. Returns 0
