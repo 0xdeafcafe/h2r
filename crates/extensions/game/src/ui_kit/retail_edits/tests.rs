@@ -261,6 +261,10 @@ fn a_bad_file_is_refused_with_its_name_and_the_edit() {
             "next text.5",
         ),
         ("  - op: set_string\n    block: bitmap.0\n    name: a\n", "no string ID"),
+        ("  - op: set_list_rows\n    block: text.0\n    rows: 10\n", "not the list"),
+        ("  - op: set_list_rows\n    block: list\n    rows: 0\n", "1 to 12"),
+        ("  - op: set_list_rows\n    block: list\n    rows: 13\n", "1 to 12"),
+        ("  - op: hide\n    block: list\n", "only set_list_rows"),
         ("  - op: set_string\n    block: text.0\n    name: Lobby Mode\n", "string ID's name"),
     ];
     for (edits, want) in cases {
@@ -307,6 +311,10 @@ fn a_file_written_as_yaml_reads_back() {
             Edit::SetString {
                 block: b("title"),
                 name: "lobby_title".into(),
+            },
+            Edit::SetListRows {
+                block: b("list"),
+                rows: 10,
             },
         ],
     );
@@ -509,6 +517,33 @@ fn the_edited_map_round_trips() {
     assert_eq!(twice.map, edited.map);
 }
 
+/// A list's row count is the screen's: every pane with a list takes it,
+/// a pane without one is left alone, and nothing else of the list moves.
+#[test]
+fn a_lists_rows_are_set_in_every_pane_that_has_one() {
+    let original = menu();
+    let before = decoded(&original, LOBBY);
+    assert_eq!(before.panes[0].lists[0].visible_items, 6);
+    assert!(before.panes[1].lists.is_empty());
+    let rows = Edit::SetListRows {
+        block: b("list"),
+        rows: 10,
+    };
+    // The file's pane does not choose the list: pane 1 has none.
+    let edited = apply_one(&original, file(LOBBY, 1, vec![rows]));
+    assert_eq!(edited.failed, vec![]);
+    assert_eq!(edited.applied[0].lines, vec!["list shows 10 rows (pane 0)".to_owned()]);
+    let after = decoded(&edited.map, LOBBY);
+    let mut want = before.clone();
+    want.panes[0].lists[0].visible_items = 10;
+    assert_eq!(after.panes, want.panes);
+    let mut m = Map::from_reader(Cursor::new(edited.map.clone())).unwrap();
+    m.validate_checksum().unwrap();
+    assert_eq!(check_map(&mut m).failures, Vec::<String>::new());
+    // Another screen's list is as it was.
+    assert_eq!(decoded(&edited.map, OTHER), decoded(&original, OTHER));
+}
+
 #[test]
 fn a_file_that_does_not_fit_the_map_is_named_and_leaves_its_screen() {
     let original = menu();
@@ -648,12 +683,59 @@ fn what_a_file_cannot_say_is_listed_not_dropped() {
 }
 
 fn shipped_edits() -> Vec<(String, EditFile)> {
-    let name = "pregame_lobby";
-    let text = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../content/ui/retail-edits/pregame_lobby.yaml"
-    ));
-    vec![(name.into(), parse(name, text).unwrap())]
+    [
+        (
+            "pregame_lobby",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../content/ui/retail-edits/pregame_lobby.yaml"
+            )),
+        ),
+        (
+            "game_engine_category_listing",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../content/ui/retail-edits/game_engine_category_listing.yaml"
+            )),
+        ),
+        (
+            "game_engine_category_listing_lobby",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../content/ui/retail-edits/game_engine_category_listing_lobby.yaml"
+            )),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, text)| (name.to_owned(), parse(name, text).unwrap()))
+    .collect()
+}
+
+/// Choose Rules shows every game type row at once: retail's seven and
+/// each of ours (`community_variants::Row::ALL`), so no row is off the
+/// bottom of the list.
+#[test]
+fn the_choose_rules_lists_show_every_row() {
+    let rows = (crate::tweakers::GAME_TYPE_WORDS.len() + crate::community_variants::Row::ALL.len()) as i16;
+    let files = shipped_edits();
+    let lists: Vec<&EditFile> = files
+        .iter()
+        .filter(|(n, _)| n.starts_with("game_engine_category_listing"))
+        .map(|(_, f)| f)
+        .collect();
+    assert_eq!(lists.len(), crate::tweakers::CATEGORY_SCREENS.len());
+    for f in lists {
+        assert_eq!(f.map, "mainmenu");
+        assert_eq!(
+            f.edits,
+            vec![Edit::SetListRows {
+                block: BlockName::List,
+                rows,
+            }],
+            "{}",
+            f.screen
+        );
+    }
 }
 
 /// The shipped files on the user's own `mainmenu.map`: the lobby gains
@@ -702,6 +784,20 @@ fn the_shipped_edits_apply_to_the_disc_mainmenu() {
     let s = decoded(&edited.map, PREGAME);
     assert_eq!(s.panes[0].text_blocks.len(), 49);
     assert_eq!(s.panes[1..], before.panes[1..], "the other panes as they were");
+    // Choose Rules: every list of both screens shows all the rows.
+    let rows = (crate::tweakers::GAME_TYPE_WORDS.len() + crate::community_variants::Row::ALL.len()) as i16;
+    for (name, lists) in [
+        (r"ui\screens\game_shell\mp_game_select\game_engine_category_listing", 7),
+        (r"ui\screens\game_shell\mp_game_select\game_engine_category_listing_lobby", 1),
+    ] {
+        let was = decoded(&original, name);
+        let is = decoded(&edited.map, name);
+        let shown = |s: &Screen| -> Vec<i16> {
+            s.panes.iter().flat_map(|p| p.lists.iter().map(|l| l.visible_items)).collect()
+        };
+        assert_eq!(shown(&was), vec![9; lists], "{name}");
+        assert_eq!(shown(&is), vec![rows; lists], "{name}");
+    }
     let mut m = Map::from_reader(Cursor::new(edited.map.clone())).unwrap();
     m.validate_checksum().unwrap();
     assert_eq!(check_map(&mut m).failures, Vec::<String>::new());

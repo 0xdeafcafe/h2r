@@ -1,7 +1,7 @@
 // Superbounce: the superbounce mode's guide (the HUD, the marks over the
 // map, priming and the medals), which the host turns on for `requires
-// hud.superbounce`, and scoring by bounces alone. `type research` files
-// its variants under Research and Devolution. Its settings block (no score
+// hud.superbounce`, and scoring by bounces alone. `type party` files
+// its variants under Party Games. Its settings block (no score
 // or time limit, 3 s respawn, overshields, a magnum, nothing on the map)
 // is what a new variant of the script starts with. A kill scores nothing. A bounce
 // scores `bounce_points` times its place in its chain, capped at 6
@@ -17,7 +17,7 @@
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Superbounce" 1
-type research
+type party
 requires hud.superbounce
 about "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you."
 quick respawn_time, starting_weapon, shields, bounce_points, suicide_costs

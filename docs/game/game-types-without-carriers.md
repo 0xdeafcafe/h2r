@@ -63,7 +63,7 @@ teams 2
   | `type` | Menu row | Start line | Points are |
   |---|---|---|---|
   | `slayer`, `ctf`, `assault`, `oddball`, `koth`, `juggernaut`, `territories` | the retail row | the retail line, played from the disc | Kills, Captures, Detonations, Time, Time, Kills, Time |
-  | `research`, `party` | our rows after Territories | none | Points |
+  | `party` | our row after Territories | none | Points |
   | `firefight`, `siege` | rows of ours | a clip of ours (`art/announcer/`) | Points |
 
   A new type is a row of the table with a string and a clip from a
@@ -179,7 +179,7 @@ A script whose options do not fit is refused.
   supplies another type's rules. Once the round's seated players are ready,
   the host posts the type's index-zero retail event to the simulation
   (`GAME_EVENT_POST`) or queues a Firefight or Siege clip locally and sends
-  a `StartClip` cue to viewers. Research and Party Games are silent.
+  a `StartClip` cue to viewers. Party Games is silent.
   The Firefight director also speaks its type at the start of each director
   round. The game's announcer queue shares playback with the custom clips.
   See [the clip sources](../../art/announcer/README.md).

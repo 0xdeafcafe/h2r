@@ -10,6 +10,16 @@ source = "retail-edits/pregame_lobby.yaml"
 maps = ["mainmenu"]
 
 [[item]]
+kind = "screen-edits"
+source = "retail-edits/game_engine_category_listing.yaml"
+maps = ["mainmenu"]
+
+[[item]]
+kind = "screen-edits"
+source = "retail-edits/game_engine_category_listing_lobby.yaml"
+maps = ["mainmenu"]
+
+[[item]]
 kind = "screens"
 source = "design.yaml"
 maps = ["mainmenu", "shared", "single_player_shared"]
@@ -84,6 +94,7 @@ inputs = [
     "screens/layout.list.yaml",
     "screens/layout.picker.yaml",
     "screens/map.picker.firefight.yaml",
+    "screens/map.picker.groups.yaml",
     "screens/map.picker.siege.yaml",
     "screens/map.picker.slayer.yaml",
     "screens/map.picker.variants.yaml",

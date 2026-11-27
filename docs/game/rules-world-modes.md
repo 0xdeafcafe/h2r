@@ -69,7 +69,7 @@ below is the step after it, which judges a landing in the script from
 
 ```text
 rules "Superbounce" 1
-type research
+type party
 requires hud.superbounce, hud.widgets, hud.waypoints
 
 label strip: zones = "sb_strip"

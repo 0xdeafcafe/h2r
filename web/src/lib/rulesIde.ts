@@ -733,7 +733,7 @@ export const DECLARATIONS: readonly InsertItem[] = [
   { label: "settings", detail: "settings { name = value }", words: "the record settings the script sets, one a line", snippet: `settings {\n\t${ph(1, "score_limit")} = ${ph(2, "50")}\n}` },
   { label: "requires", detail: "requires cap, cap", words: "the capabilities the script asks for", snippet: `requires ${ph(1, "player.weapons")}` },
   { label: "teams", detail: "teams n", words: "how many teams the game type has", snippet: `teams ${ph(1, "2")}` },
-  { label: "list", detail: "list research | party", words: "the game type list row its variants are filed under", snippet: `list ${ph(1, "research")}` },
+  { label: "list", detail: "list party", words: "the game type list row its variants are filed under", snippet: `list ${ph(1, "party")}` },
   { label: "option", detail: "option name: int lo..hi = default \"Label\" \"Description\"", words: "a row the variant editor shows", snippet: `option ${ph(1, "name")}: ${ph(2, "int")} ${ph(3, "1..5")} = ${ph(4, "1")} "${ph(5, "Label")}" "${ph(6, "Description")}"` },
   { label: "option (on or off)", detail: "option name: bool = true \"Label\" \"Description\"", words: "a switch the variant editor shows", snippet: `option ${ph(1, "name")}: bool = ${ph(2, "true")} "${ph(3, "Label")}" "${ph(4, "Description")}"` },
   { label: "global var", detail: "global var name: type = init", words: "one value for the whole game (64 slots)", snippet: `global var ${ph(1, "name")}: ${ph(2, "int")} = ${ph(3, "0")}` },

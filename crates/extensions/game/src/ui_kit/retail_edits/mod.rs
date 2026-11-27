@@ -23,7 +23,8 @@
 //! ```
 //!
 //! Blocks are named as `h2 ui` and the editor name them ([`BlockName`]:
-//! `text.10`, `button.1`, `bitmap.3`, `title`). A rect is `[top, left,
+//! `text.10`, `button.1`, `bitmap.3`, `title`, and `list` for the screen's
+//! list in whichever panes have one). A rect is `[top, left,
 //! bottom, right]` in UI units, Y up. Nothing of the disc is in a file:
 //! numbers we chose and names of our own.
 //!
@@ -58,6 +59,10 @@ pub const DEFAULT_MAP: &str = "mainmenu";
 /// The longest string name a file may give: the map's fixed string slot
 /// (`map::build::FIXED_STRING_SLOT`) less its NUL.
 pub const MAX_NAME: usize = map::build::FIXED_STRING_SLOT - 1;
+
+/// The most rows `set_list_rows` gives a list: more do not fit between a
+/// retail header and footer at a list skin's row height.
+pub const MAX_ROWS: i16 = 12;
 
 /// `[top, left, bottom, right]` in UI units, Y up.
 pub type Rect = [i16; 4];
@@ -145,11 +150,13 @@ impl fmt::Display for BlockKind {
     }
 }
 
-/// A block of a pane, or the screen's title (its header string ID).
+/// A block of a pane, the screen's title (its header string ID), or its
+/// list (the one list block of each pane that has one).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum BlockName {
     Title,
+    List,
     Block(BlockKind, usize),
 }
 
@@ -159,8 +166,11 @@ impl FromStr for BlockName {
         if s == "title" {
             return Ok(BlockName::Title);
         }
+        if s == "list" {
+            return Ok(BlockName::List);
+        }
         let bad = || {
-            format!("{s:?} is not a block name (text.<n>, button.<n>, bitmap.<n> or title)")
+            format!("{s:?} is not a block name (text.<n>, button.<n>, bitmap.<n>, title or list)")
         };
         let (k, i) = s.split_once('.').ok_or_else(bad)?;
         let kind = BlockKind::named(k).ok_or_else(bad)?;
@@ -189,6 +199,7 @@ impl fmt::Display for BlockName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BlockName::Title => f.write_str("title"),
+            BlockName::List => f.write_str("list"),
             BlockName::Block(k, i) => write!(f, "{k}.{i}"),
         }
     }
@@ -216,6 +227,10 @@ pub enum Edit {
     /// Set the title's, a text's or a button's string ID to the string
     /// `name`, added to the map's string table when it lacks it.
     SetString { block: BlockName, name: String },
+    /// Set how many rows the screen's list shows at once ([`MAX_ROWS`] at
+    /// most), in every pane that has a list: the panes of a screen share
+    /// one list, so a row count is the screen's, not the file's pane's.
+    SetListRows { block: BlockName, rows: i16 },
 }
 
 impl Edit {
@@ -226,6 +241,7 @@ impl Edit {
             Edit::Hide { .. } => "hide",
             Edit::Duplicate { .. } => "duplicate",
             Edit::SetString { .. } => "set_string",
+            Edit::SetListRows { .. } => "set_list_rows",
         }
     }
 
@@ -235,7 +251,8 @@ impl Edit {
             Edit::SetRect { block, .. }
             | Edit::Hide { block }
             | Edit::Duplicate { block, .. }
-            | Edit::SetString { block, .. } => *block,
+            | Edit::SetString { block, .. }
+            | Edit::SetListRows { block, .. } => *block,
         }
     }
 }
@@ -302,9 +319,24 @@ impl EditFile {
         for (i, e) in self.edits.iter().enumerate() {
             let at = |what: String| format!("edits[{i}] ({}): {what}", e.op());
             let block = e.block();
+            match (e, block) {
+                (Edit::SetListRows { rows, .. }, BlockName::List) => {
+                    if !(1..=MAX_ROWS).contains(rows) {
+                        return Err(at(format!("rows: {rows} is not 1 to {MAX_ROWS}")));
+                    }
+                    continue;
+                }
+                (Edit::SetListRows { .. }, _) => {
+                    return Err(at(format!("{block} is not the list")));
+                }
+                (_, BlockName::List) => {
+                    return Err(at("the list takes only set_list_rows".into()));
+                }
+                _ => {}
+            }
             let kind = match block {
                 BlockName::Block(k, _) => Some(k),
-                BlockName::Title => None,
+                BlockName::Title | BlockName::List => None,
             };
             match e {
                 Edit::SetRect { rect, .. } => {
@@ -363,6 +395,7 @@ impl EditFile {
                         )));
                     }
                 }
+                Edit::SetListRows { .. } => {}
             }
         }
         Ok(())
@@ -409,6 +442,7 @@ pub fn to_yaml(file: &EditFile, comment: &str) -> String {
                 out.push_str(&format!("    as: {copy}\n"));
             }
             Edit::SetString { name, .. } => out.push_str(&format!("    name: {name}\n")),
+            Edit::SetListRows { rows, .. } => out.push_str(&format!("    rows: {rows}\n")),
         }
     }
     out

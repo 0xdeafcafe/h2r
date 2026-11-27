@@ -26,7 +26,7 @@ pub enum Group {
 }
 
 /// The game type list's order (`tweakers::GAME_TYPE_WORDS`), then ours.
-pub const ORDER: [Group; 11] = [
+pub const ORDER: [Group; 10] = [
     Group::Type(GameType::Slayer),
     Group::Type(GameType::King),
     Group::Type(GameType::Oddball),
@@ -34,7 +34,6 @@ pub const ORDER: [Group; 11] = [
     Group::Type(GameType::Ctf),
     Group::Type(GameType::Assault),
     Group::Type(GameType::Territories),
-    Group::Row(Row::Research),
     Group::Row(Row::PartyGames),
     Group::Row(Row::Firefight),
     Group::Row(Row::Siege),

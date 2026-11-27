@@ -16,7 +16,6 @@ pub enum Type {
     Koth,
     Juggernaut,
     Territories,
-    Research,
     Party,
     Firefight,
     Siege,
@@ -110,14 +109,6 @@ pub const TABLE: &[Row] = &[
         8,
     ),
     row(
-        Type::Research,
-        "research",
-        "Research and Devolution",
-        "Points",
-        StartLine::None,
-        2,
-    ),
-    row(
         Type::Party,
         "party",
         "Party Games",
@@ -200,10 +191,9 @@ impl Type {
             Type::Koth => 4,
             Type::Juggernaut => 5,
             Type::Territories => 6,
-            Type::Research => 7,
-            Type::Party => 8,
-            Type::Firefight => 9,
-            Type::Siege => 10,
+            Type::Party => 7,
+            Type::Firefight => 8,
+            Type::Siege => 9,
         }
     }
 

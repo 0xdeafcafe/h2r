@@ -175,7 +175,7 @@ MENU. **Game Setup** opens a list of ours with the lobby's own rows:
   maps directly. The maps are a value picker; picking one closes the
   picker and the categories.
 - **Change Rules** offers the game types and their variants the lobby's
-  Change Rules lists, including Research and Devolution, Party Games, Firefight, Siege,
+  Change Rules lists, including Party Games, Firefight, Siege,
   the community variants and the game-variant store's (Live, imported
   and ported variants, rules-script variants among them). A Firefight
   lobby has no Change Rules, as in the lobby. Select Game (the game

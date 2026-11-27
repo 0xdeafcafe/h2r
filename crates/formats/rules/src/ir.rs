@@ -1827,7 +1827,7 @@ pub(crate) mod tests {
                 api_version: crate::caps::API_VERSION,
                 name: "Sample".into(),
                 version: 1,
-                game_type: Type::Research,
+                game_type: Type::Party,
                 uses: None,
                 teams: 0,
                 points: "Points".into(),
@@ -1943,7 +1943,7 @@ pub(crate) mod tests {
             assert_eq!((back.header.game_type, back.header.uses), (row.ty, Some(row.ty)));
         }
         let mut other = sample();
-        other.header.game_type = Type::Party;
+        other.header.game_type = Type::Firefight;
         assert_ne!(sample().id(), other.id(), "the type is part of the hash");
         let mut other = sample();
         other.header.uses = Some(Type::Slayer);
@@ -1954,7 +1954,7 @@ pub(crate) mod tests {
         // The type byte follows the name and version, then the uses byte.
         let at = 4 + 2 + 2 + 2 + "Sample".len() + 2;
         let mut bytes = sample().encode();
-        assert_eq!((bytes[at], bytes[at + 1]), (Type::Research.code(), NO_USES));
+        assert_eq!((bytes[at], bytes[at + 1]), (Type::Party.code(), NO_USES));
         bytes[at] = 11;
         assert_eq!(
             Ir::decode(&bytes),

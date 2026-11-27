@@ -97,16 +97,15 @@ pub const ICON: char = '\u{e006}';
 /// Our game type rows after Territories, in list order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Row {
-    /// Research and Devolution: practice and the maps' tricks.
-    Research,
-    /// Party Games: the community's party modes.
+    /// Party Games: the community's party modes, practice and the maps'
+    /// tricks.
     PartyGames,
     Firefight,
     Siege,
 }
 
 impl Row {
-    pub const ALL: [Row; 4] = [Row::Research, Row::PartyGames, Row::Firefight, Row::Siege];
+    pub const ALL: [Row; 3] = [Row::PartyGames, Row::Firefight, Row::Siege];
 
     /// The custom row of this script type. Retail types use the existing rows.
     pub fn of_type(ty: Type) -> Option<Row> {
@@ -115,7 +114,6 @@ impl Row {
 
     pub fn game_type(self) -> Type {
         match self {
-            Row::Research => Type::Research,
             Row::PartyGames => Type::Party,
             Row::Firefight => Type::Firefight,
             Row::Siege => Type::Siege,
@@ -125,10 +123,9 @@ impl Row {
     /// The row's number in a variant list screen's mark (0 is none).
     pub fn mark(self) -> u8 {
         match self {
-            Row::Research => 1,
-            Row::PartyGames => 2,
-            Row::Firefight => 3,
-            Row::Siege => 4,
+            Row::PartyGames => 1,
+            Row::Firefight => 2,
+            Row::Siege => 3,
         }
     }
 
@@ -145,7 +142,6 @@ impl Row {
     /// as SLAYER is Slayer's.
     pub fn title(self) -> &'static str {
         match self {
-            Row::Research => "RESEARCH AND DEVOLUTION",
             Row::PartyGames => "PARTY GAMES",
             Row::Firefight => "FIREFIGHT",
             Row::Siege => "SIEGE",
@@ -154,20 +150,16 @@ impl Row {
 
     pub fn description(self) -> &'static str {
         match self {
-            Row::Research => {
-                "Practice the tricks and find the glitches: superbounces, crouch jumps and the maps' secrets."
-            }
             Row::Firefight => "Fight waves of AI enemies.",
             Row::Siege => "Capture the sites and break through the defenders' line.",
             Row::PartyGames => {
-                "Zombies, jousting, cops and robbers: the party games the community made up for custom games."
+                "Zombies, jousting, superbounce practice: the party games and tricks the community made up for custom games."
             }
         }
     }
 
     fn ids_at(self) -> u32 {
         match self {
-            Row::Research => 0x7a,
             Row::PartyGames => 0x7d,
             Row::Firefight => 0x74,
             Row::Siege => 0x77,

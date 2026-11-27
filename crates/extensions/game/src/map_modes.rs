@@ -445,21 +445,32 @@ fn sample_view(played: Played) -> Catalogue {
 /// game).
 const SAMPLE_DESCRIPTION: &str = "Some believe this remote facility was once used to study the Flood.";
 
-/// The maps the picker's sample lists (`ui_kit::screens`, the
-/// `map.picker.*` screens): the picker's rows for `played`, each with
-/// its name, whether it is refused, and what the pane says for it.
-pub fn sample(played: Played) -> Vec<(String, bool, String)> {
+/// The groups the picker opens on (the `map.picker.groups` screen): the
+/// rows of [`crate::map_select::Mode::Categories`] for a catalogue with
+/// maps in every group ([`crate::map_select::sample`]).
+pub fn sample_groups() -> Vec<String> {
+    let cat = crate::map_select::sample();
+    cat.categories().into_iter().map(|c| c.label().to_owned()).collect()
+}
+
+/// The maps the picker's sample lists inside a group (`ui_kit::screens`,
+/// the `map.picker.slayer`, `.firefight` and `.siege` screens): the
+/// group's name, then its rows for `played`
+/// ([`crate::map_select::Mode::Maps`]), each with its name, whether it is
+/// refused, and what the pane says for it.
+pub fn sample(played: Played) -> (String, Vec<(String, bool, String)>) {
     let cat = sample_view(played);
     let view = cat.modes();
-    cat.categories()
+    let group = crate::map_select::Category::Halo2;
+    let rows = crate::map_select::list_for(&cat, crate::map_select::Mode::Maps(group), &|_| 0)
         .into_iter()
-        .flat_map(|c| crate::map_select::list_for(&cat, crate::map_select::Mode::Maps(c), &|_| 0))
         .filter_map(|(id, _)| {
             let named = cat.all().find(|m| view.row_id(m.id) == id)?;
             let pane = described(SAMPLE_DESCRIPTION, view.pane(id).as_deref());
             Some((named.name.clone(), view.refusal(id).is_some(), pane))
         })
-        .collect()
+        .collect();
+    (group.label().to_owned(), rows)
 }
 
 /// The page of the sample's Lockout for `played` (the

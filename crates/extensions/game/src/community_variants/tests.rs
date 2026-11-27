@@ -296,14 +296,14 @@ fn bumper_cars_needs_our_none_and_bounce_practice_has_a_magnum() {
 }
 
 #[test]
-fn superbounce_is_filed_under_research_by_its_script() {
+fn superbounce_is_filed_under_party_games_by_its_script() {
     let sb = listed_named("Superbounce").unwrap();
     assert_eq!(
         sb.record.game_type(),
         GameType::Script,
-        "the record is independent of the Research row"
+        "the record is independent of the Party Games row"
     );
-    assert_eq!(Row::of_type(sb.game_type), Some(Row::Research));
+    assert_eq!(Row::of_type(sb.game_type), Some(Row::PartyGames));
     let ext = sb.ext();
     assert!(ext.out_of_range().is_none());
     assert_eq!(Ext::decode(&sb.block()), variants::ext::Block::Ext(ext));
@@ -316,11 +316,11 @@ fn superbounce_is_filed_under_research_by_its_script() {
     let found = crate::rules::runtime::compiled_in(ext.script.prefix).unwrap();
     assert_eq!(found.id, ir.id());
     assert!(crate::rules::header::script_asks_superbounce(ext.script));
-    // Its block files a renamed copy under Research through the script's
+    // Its block files a renamed copy under Party Games through the script's
     // header, and its list name files the built-in before its block.
     let none = [0; ext::LEN];
-    assert_eq!(row_of("My Bounce", &sb.block()), Some(Row::Research));
-    assert_eq!(row_of(&sb.display_name(), &none), Some(Row::Research));
+    assert_eq!(row_of("My Bounce", &sb.block()), Some(Row::PartyGames));
+    assert_eq!(row_of(&sb.display_name(), &none), Some(Row::PartyGames));
     assert_eq!(row_of("My Bounce", &none), None);
 }
 
@@ -363,7 +363,7 @@ fn a_copy_lists_under_its_scripts_row() {
 }
 
 #[test]
-fn the_party_and_research_rows_hold_their_scripts() {
+fn the_party_games_row_holds_the_party_and_practice_scripts() {
     let under = |r: Row| -> Vec<&str> {
         all_listed()
             .into_iter()
@@ -378,17 +378,16 @@ fn the_party_and_research_rows_hold_their_scripts() {
             "Hide and Seek",
             "Jousting",
             "Cops and Robbers",
+            "Bounce Practice",
+            "Glitch Hunt",
             "Bumper Cars",
+            "Superbounce",
             "Gun Game",
             "Race",
             "VIP"
         ]
     );
     assert_eq!(under(Row::Siege), ["Siege"]);
-    assert_eq!(
-        under(Row::Research),
-        ["Bounce Practice", "Glitch Hunt", "Superbounce"]
-    );
 }
 
 /// A built-in variant record at `at` named `name`, of type `ty`, with no

@@ -53,7 +53,7 @@ edits:
     name: lobby_mode_change
 ```
 
-Blocks are named as `h2 ui` and the editor name them: `text.<n>`, `button.<n>`, `bitmap.<n>` (the index in the pane's block) and `title` (the screen's header string ID). A rect is `[top, left, bottom, right]` in UI units, Y up.
+Blocks are named as `h2 ui` and the editor name them: `text.<n>`, `button.<n>`, `bitmap.<n>` (the index in the pane's block), `title` (the screen's header string ID) and `list` (the screen's list, in every pane that has one). A rect is `[top, left, bottom, right]` in UI units, Y up.
 
 | Edit | Fields | Blocks | What it writes |
 |---|---|---|---|
@@ -61,6 +61,7 @@ Blocks are named as `h2 ui` and the editor name them: `text.<n>`, `button.<n>`, 
 | `hide` | `block` | text, bitmap | parks the block off screen at 9999 (`retail_edits::PARKED`), where the disc keeps its spare blocks: a text keeps its left and right, a bitmap goes to (9999, 9999). A button keeps its place in the focus order wherever its rect is, and is refused |
 | `duplicate` | `block`, `rect`, `as` | text, button, bitmap | a byte copy of the block appended to the end of its block, at `rect`; `as` is the copy's name, checked against the block's count, so no block before it changes index |
 | `set_string` | `block`, `name` | title, text, button | the string ID of `name` (lowercase letters, digits and `_`), added to the map's string table when it lacks it |
+| `set_list_rows` | `block`, `rows` | list | how many rows the list shows at once (1 to 12, `retail_edits::MAX_ROWS`), in every pane of the screen that has a list, whatever the file's `pane` |
 
 **Checks** (`EditFile::check`, at parse, before any map): the fields are known, every block name parses, each edit's block kind is one it takes, rects have top at or above bottom and right at or right of left, names are string ID names, and successive copies of one kind count up by one. `h2 package check` names a malformed file and its error. What only the map can say (the screen exists, the pane exists, the block index is in range, `as` is the next index) is checked when the file is applied.
 
@@ -72,6 +73,8 @@ the package build with the file and operation named. Arrays another
 tag points into stay at their old addresses in unowned metadata.
 The builder interns string names through `FixupKind::StringId` and
 preserves the map's existing string indices.
+
+**Choose Rules** (`game_engine_category_listing.yaml`, `game_engine_category_listing_lobby.yaml`). The game type lists of Settings, Game Variants (screen 60) and Game Setup's Change Rules (screen 207) show ten rows, not the disc's nine: retail's seven game types and ours ([community-gametypes.md](community-gametypes.md#tweakers)), so none is off the bottom.
 
 **The lobby's mode prompt** (`pregame_lobby.yaml`). On pane 0 of the pregame lobby, a copy of text block 10 becomes block 48 at `[95, -260, 75, 70]`, block 0 moves to `[135, -258, 95, 45]`, and block 48's string is `lobby_mode_change`. The lobby code finds block 48 by its place and index and fills it with the X glyph and "Change Game Mode" for the party leader ([party-lobby.md](party-lobby.md)).
 

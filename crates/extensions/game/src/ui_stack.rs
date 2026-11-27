@@ -282,7 +282,7 @@ mod tests {
 
         let nav = Navigation::default();
         let (mut m, _) = focused(3, 208);
-        for row in [Row::Siege, Row::Research, Row::Firefight, Row::PartyGames] {
+        for row in [Row::Siege, Row::Firefight, Row::PartyGames] {
             m.put_u32(SCREEN + SCREEN_ID, 208)
                 .put_u8(SCREEN + crate::tweakers::SCREEN_MARK, row.mark());
             assert_eq!(inspect(&m, &nav)["channels"][0]["active"]["variant_category"], row.label());

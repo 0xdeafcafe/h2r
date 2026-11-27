@@ -334,7 +334,7 @@ mod tests {
         }
         let ty = |src: &str| crate::lang::compile(src).unwrap().header.game_type;
         assert_eq!(ty(SIEGE), Type::Siege);
-        assert_eq!(ty(SUPERBOUNCE), Type::Research);
+        assert_eq!(ty(SUPERBOUNCE), Type::Party);
         assert_eq!(ty(ZOMBIES), Type::Party);
         assert_eq!(ty(SWAT), Type::Slayer);
         let race = crate::lang::compile(RACE).unwrap();

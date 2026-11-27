@@ -61,11 +61,11 @@ fn block_of(name: &str) -> [u8; ext::LEN] {
 #[test]
 fn our_rows_are_last_after_territories() {
     let words = with_row(&GAME_TYPE_WORDS);
-    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, RESEARCH_WORD, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
-    assert_eq!(words[words.len() - 5], 8, "Territories just above them");
+    assert_eq!(words, [0, 1, 3, 4, 6, 7, 8, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
+    assert_eq!(words[words.len() - 4], 8, "Territories just above them");
     assert_eq!(with_row(&words), words, "added once");
     // Two retail rows are left out of some lists; ours are still last.
-    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, RESEARCH_WORD, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
+    assert_eq!(with_row(&[0, 1, 3, 6, 7]), [0, 1, 3, 6, 7, PARTY_WORD, FIREFIGHT_WORD, SIEGE_WORD]);
     for r in Row::ALL {
         assert!(!GAME_TYPE_WORDS.contains(&word_of_row(r)));
         assert_eq!(row_of_word(word_of_row(r)), Some(r));
@@ -104,13 +104,13 @@ fn the_script_type_on_a_renamed_save_does_not_depend_on_the_engine() {
 }
 
 #[test]
-fn a_saved_copy_with_the_block_stays_under_research() {
+fn a_saved_copy_with_the_block_stays_under_party_games() {
     let flag = block_of("Superbounce");
-    let research = Some(Row::Research);
-    assert_eq!(community::row_of("My Bounce", &flag), research, "renamed copy");
+    let party = Some(Row::PartyGames);
+    assert_eq!(community::row_of("My Bounce", &flag), party, "renamed copy");
     assert_eq!(
         community::row_of("Superbounce \u{e006}", &[0; ext::LEN]),
-        research,
+        party,
         "the built-in before its block"
     );
     assert_eq!(community::row_of("Superbounce", &[0; ext::LEN]), None, "a player's own");
@@ -233,26 +233,24 @@ fn slayers_list_keeps_everything_but_our_rows() {
 
 #[test]
 fn a_rows_list_keeps_its_own_and_drops_create_new() {
-    let (run, rows) = run_fill(Some(Row::Research), true);
+    let (run, rows) = run_fill(Some(Row::PartyGames), true);
     let g = &run.guest;
     assert_eq!(
         read_handles(g, COUNT, HANDLES),
-        Ok(vec![0xe020_0002, 0xe000_0003]),
-        "the built-in and its renamed copy"
+        Ok(vec![0xe020_0002, 0xe000_0003, 0xe020_0004, 0xe020_0005, 0xe000_0007]),
+        "Superbounce and its renamed copy, Zombies, then Hide and Seek and its saved copy from Juggernaut's category"
     );
     let create = DatumArray::at(ARRAY).try_get(g, rows[0]).unwrap();
     assert!(
         create.is_none(),
         "a new variant here would be a plain Slayer"
     );
-    let (run, _) = run_fill(Some(Row::PartyGames), true);
-    assert_eq!(
-        read_handles(&run.guest, COUNT, HANDLES),
-        Ok(vec![0xe020_0004, 0xe020_0005, 0xe000_0007]),
-        "Zombies, then Hide and Seek and its saved copy from Juggernaut's category"
-    );
+    // Another row's list holds none of them.
+    let (run, _) = run_fill(Some(Row::Siege), true);
+    let kept = read_handles(&run.guest, COUNT, HANDLES).unwrap();
+    assert!(!kept.contains(&0xe020_0002) && !kept.contains(&0xe020_0004), "{kept:x?}");
     // The lobby's list has no Create New and keeps its rows.
-    let (run, rows) = run_fill(Some(Row::Research), false);
+    let (run, rows) = run_fill(Some(Row::PartyGames), false);
     assert!(
         DatumArray::at(ARRAY)
             .try_get(&run.guest, rows[0])
@@ -279,8 +277,8 @@ fn hide_and_seek_lists_under_party_games() {
     assert!(!kept.contains(&0xe020_0006), "Clint Eastwood lists under no row");
     let create = DatumArray::at(ARRAY).try_get(&run.guest, rows[0]).unwrap();
     assert!(create.is_none(), "Create New stays dropped on a row's list");
-    // Research does not hold it.
-    let (run, _) = run_fill(Some(Row::Research), true);
+    // Another row does not hold it.
+    let (run, _) = run_fill(Some(Row::Firefight), true);
     let kept = read_handles(&run.guest, COUNT, HANDLES).unwrap();
     assert!(!kept.contains(&0xe020_0005) && !kept.contains(&0xe000_0007));
 }
@@ -401,13 +399,12 @@ fn our_pane_is_the_row_with_our_word() {
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000);
     rows_with(&mut g, HANDLER, &with_row(&GAME_TYPE_WORDS), 4);
-    assert_eq!(our_pane(&g, SCREEN, 0xcf, 7), Some(Row::Research));
-    assert_eq!(our_pane(&g, SCREEN, 0x3c, 7), Some(Row::Research));
-    assert_eq!(our_pane(&g, SCREEN, 0xcf, 8), Some(Row::PartyGames));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 7), Some(Row::PartyGames));
+    assert_eq!(our_pane(&g, SCREEN, 0x3c, 7), Some(Row::PartyGames));
     assert_eq!(our_pane(&g, SCREEN, 0xcf, 6), None, "Territories has its pane");
     assert_eq!(our_pane(&g, SCREEN, 0xd0, 7), None, "another screen");
-    assert_eq!(our_pane(&g, SCREEN, 0xcf, 9), Some(Row::Firefight));
-    assert_eq!(our_pane(&g, SCREEN, 0xcf, 10), Some(Row::Siege));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 8), Some(Row::Firefight));
+    assert_eq!(our_pane(&g, SCREEN, 0xcf, 9), Some(Row::Siege));
     assert_eq!(our_pane(&g, SCREEN, 0xcf, 11), None);
 }
 
@@ -510,10 +507,6 @@ fn the_mark_is_the_screens_spare_byte() {
 #[test]
 fn the_rows_read_in_the_games_words() {
     assert_eq!(
-        community::text(Row::Research.label_id()).as_deref(),
-        Some("Research and Devolution")
-    );
-    assert_eq!(
         community::text(Row::PartyGames.label_id()).as_deref(),
         Some("Party Games")
     );
@@ -563,7 +556,7 @@ fn the_hooks_are_on_the_plan() {
 }
 
 #[test]
-fn the_category_constructor_reserves_room_for_all_four_custom_rows() {
+fn the_category_constructor_reserves_room_for_all_our_rows() {
     let mut g = FakeGuest::new();
     g.map(SCREEN, 0x5000);
     let list = HANDLER;
@@ -572,7 +565,7 @@ fn the_category_constructor_reserves_room_for_all_four_custom_rows() {
     let capacity = list_capacity(9);
     assert_eq!(list_capacity(16), 16);
     BUILDING_CATEGORY.set(false);
-    assert_eq!(capacity, 11);
+    assert_eq!(capacity, 10);
     rows_with(&mut g, list, &GAME_TYPE_WORDS, 4);
     let n = h1_options_row::insert_row_ordered(&mut g, list, with_row).unwrap();
     assert_eq!(n, capacity as usize);
@@ -585,7 +578,7 @@ fn the_category_constructor_reserves_room_for_all_four_custom_rows() {
         w
     })
     .is_err());
-    assert_eq!(word_at(&g, list, 8), Some(PARTY_WORD));
-    assert_eq!(word_at(&g, list, 10), Some(SIEGE_WORD));
-    assert_eq!(word_at(&g, list, 11), None);
+    assert_eq!(word_at(&g, list, 7), Some(PARTY_WORD));
+    assert_eq!(word_at(&g, list, 9), Some(SIEGE_WORD));
+    assert_eq!(word_at(&g, list, 10), None);
 }

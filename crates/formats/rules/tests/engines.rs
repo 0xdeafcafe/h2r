@@ -780,7 +780,7 @@ fn superbounce_scores_bounces_only_by_the_chain_it_keeps() {
     assert!(report.fits());
     assert_eq!(ir.header.name, "Superbounce");
     assert_eq!(ir.header.engine(), 2);
-    assert_eq!(ir.header.game_type, rules::types::Type::Research);
+    assert_eq!(ir.header.game_type, rules::types::Type::Party);
     assert_eq!(ir.header.requires, ["hud.superbounce"]);
     // The options in the order the record packs them: the suicide penalty
     // (bit 0), bounce points raw 1 (bits 1 to 3), the Bounced penalty
