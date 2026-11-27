@@ -1,6 +1,6 @@
 # Native light tiles: a run of lights' layers 12 and 13 in one pass
 
-Status: Partly built. The admission, the binning pass, the instanced draw and the host's held run are built; the host bins over whole-target volumes (no culling yet) and a compare arm checks tiled runs against their per-light passes.
+Status: Partly built. The admission, the binning pass, the instanced draw and the host's held run are built; the host bins each light over its structure parts' projected box, and a compare arm checks tiled runs against their per-light passes.
 Code: `crates/rewrites/native-render/src/light_tiles.rs` (planner, volumes, counters), `light_tiles_gpu.rs` (admission, the binning pass, the tiled program and its draws). Tests: in both files.
 Switch: none.
 
@@ -32,7 +32,13 @@ A light pass is a translated NV2A program pair (`light_look::compile_light`). It
 
 ### The volume
 
-A light's tile volume is the screen rectangle and nearest stored depth of the geometry its groups draw (`TileVolume`), not its sphere. No scissor holds layers 12 and 13 to the light's sphere ("What a native light draws", "Shading"), so a pass can add light to a pixel of its geometry outside the sphere; only the geometry bounds what it touches. `TileVolume::from_window` takes the geometry's corners in the target's window coordinates and W-buffer depth; the host projects each entry's resident bounds with the view's rows as the world program does.
+A light's tile volume is the screen rectangle and nearest stored depth of the geometry its groups draw (`TileVolume`), not its sphere. No scissor holds layers 12 and 13 to the light's sphere ("What a native light draws", "Shading"), so a pass can add light to a pixel of its geometry outside the sphere; only the geometry bounds what it touches. `TileVolume::from_window` takes the geometry's corners in the target's window coordinates and W-buffer depth; `TileVolume::from_bounds` projects a world-space box's corners through the copy's view constants as the world program does: clip `x`, `y`, `w` from `c[0]`, `c[1]`, `c[3]`, then over `w` through the viewport scale `c[10]` and offset `c[11]`.
+
+| Light's layer 12 and 13 entries | Volume |
+|---|---|
+| structure parts only (clusters, placements) | their `WorldDraw::bounds` (world space, placements placed), projected at issue |
+| any object entry | the whole target from depth 0 (no resident box for a posed model) |
+| a box across the eye (a corner at `w <= 0`) | the whole target from depth 0 |
 
 A tile lists a light when the rectangle overlaps the tile and the light's nearest depth is at or before the tile's farthest scene depth. The near side of the tile is not used: layers 12 and 13 test `LessEqual` without writing depth, and a transparent part in front of the tile's nearest surface still draws.
 
@@ -51,7 +57,7 @@ Additions in another order round differently: the tolerance is the target's roun
 
 - **In:** per light, its view slot (4 or 10), its steps (`light_scene::PER_LIGHT_LAYERS`, `FIRST_PERSON_LAYERS`), its layer 12 and 13 `LightDraw`s, whether its gel is the shader-driven target 13, and its `TileVolume`. The first-person lights (slot 10) form runs of their own, binned over the depth the first-person view draws on.
 - **Out:** `LightTiles::bin` records a compute pass into the caller's encoder; `TiledPass::encode` records the run's draws into an open render pass on the view's target, with the scene depth loaded.
-- **Host:** `render_bridge::native_lights` asks `Host::hold_scene_light` at each slot 4 light; the game's `native_lights_glue/tiles.rs` holds an admitted light's prepared layers 12 and 13. `Host::flush_light_run` draws the run before any light drawn on its own, when the view target changes, at `MAX_RUN`, and at the light frame's end. The run is one external step (`TiledRun`): the binning dispatch, then a render pass of instanced draws (`gfx::RecordedDraw::instances`). Slot 10 lights are not held.
+- **Host:** `render_bridge::native_lights` asks `Host::hold_scene_light` at each slot 4 light; the game's `native_lights_glue/tiles.rs` holds an admitted light's prepared layers 12 and 13 and its box. `Host::flush_light_run` draws the run before any light drawn on its own, when the view target changes, at `MAX_RUN`, and at the light frame's end. The run is one external step (`TiledRun`): the binning dispatch, then a render pass of instanced draws (`gfx::RecordedDraw::instances`). Slot 10 lights are not held.
 - **Fallback:** a run that does not prepare draws each light on its per-light sequence (`scene_light_tiles_fallback`); a light that fails that too is `scene_light_tiles_lost`.
 
 ### The compare arm
@@ -68,7 +74,7 @@ Additions in another order round differently: the tolerance is the target's roun
 
 | Counter (`render.scene`) | The light keeps its per-light pass because |
 |---|---|
-| `scene_light_tiles_refused_shadow` | its steps draw layer 10 or 11 (layer 11 writes the destination alpha its layers 12 and 13 read), or a lit pass samples a shadow map |
+| `scene_light_tiles_refused_shadow` | its steps draw layer 10 or 11 (layer 11 writes the destination alpha its layers 12 and 13 read, or multiplies the destination's colour), or a lit pass samples a shadow map |
 | `scene_light_tiles_refused_opaque` | its steps draw layer 14 (opaque, depth write, target 1) |
 | `scene_light_tiles_refused_gel_target` | its gel is drawn into target 13 per light (`Op::Gel`), which the next light overwrites |
 | `scene_light_tiles_refused_blend` | a pass replaces, or its blend reads the destination, or its operation is not an add with destination factor one |
@@ -76,17 +82,19 @@ Additions in another order round differently: the tolerance is the target's roun
 | `scene_light_tiles_refused_bounds` | its geometry's volume is not known |
 | `scene_light_tiles_refused_program` | a pass's translated module lacks the shape the instancing rewrite needs |
 
+A native caster map does not lift the shadow refusal on its own: layer 11 marks the target's alpha, or multiplies its colour ([native-shadows.md](native-shadows.md), the receiver table), once per light and between lights. Taking a shadowed light needs each one's receivers drawn into a mask of its own (a layer of an array, indexed by the light's bit) and its lit passes reading that mask in place of the destination alpha. Not built.
+
 `scene_light_tiles_runs` and `scene_light_tiles_lights` count the runs and the lights drawn tiled; `scene_light_tiles_single` counts admitted lights drawn alone, a run of one. A static bitmap gel is allowed: lights sharing a gel datum share a draw, and a light with its own gel is a draw of its own within the run.
 
 ## Evidence
 
-Tests: `a_tiles_list_holds_exactly_the_lights_whose_volume_touches_it` (the GPU masks against `light_tiles::bin_cpu` and by hand), `tiled_shading_equals_the_per_light_passes` (three overlapping lights, one with a gel, and a shadowed one, against `LightSet::draws` per light on an `Rgba16Float` target), `a_refused_light_draws_on_its_per_light_pass_and_is_counted` (`light_tiles`), `the_tiled_rewrite_indexes_uniforms_by_instance` (`light_tiles_gpu`).
+Tests: `a_tiles_list_holds_exactly_the_lights_whose_volume_touches_it` (the GPU masks against `light_tiles::bin_cpu` and by hand), `tiled_shading_equals_the_per_light_passes` (three overlapping lights, one with a gel, and a shadowed one, against `LightSet::draws` per light on an `Rgba16Float` target), `a_refused_light_draws_on_its_per_light_pass_and_is_counted` and `a_boxs_volume_is_its_corners_projected_through_the_views_rows` (`light_tiles`), `the_tiled_rewrite_indexes_uniforms_by_instance` (`light_tiles_gpu`).
 
 ## Not verified
 
 - Coverage on real maps: how many lights each refusal takes (layer 11 for specular lights, layer 14, target-13 gels).
 - The frame time of a tiled run against its per-light sequences on the laptop, with the binning pass included.
-- That the host's projection of resident bounds into `TileVolume` holds every pixel the world and model programs draw; the host uses whole-target volumes until it does.
+- That `TileVolume::from_bounds` holds every pixel a lit program draws: a vertex program that moves positions past the part's box would be culled. The compare arm would see it.
 - The glue's held run, `TiledRun` and the compare readback on a running game: no live run yet.
 
 ## Related
