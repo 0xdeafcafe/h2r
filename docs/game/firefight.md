@@ -821,9 +821,11 @@ default, `firefight_kit::Config::dropship`):
   `ff_path_NN` in the scenario's scripting data with the points `run_in`,
   a `hover_<kind>` for each kind kept and `run_out`, in flying order. A kind's
   size is read from its own `vehi` tag (`ship::dims_in`): its reach is the
-  object's bounding radius, its hover the radius less the bounding sphere centre's height over
-  the root (so the sphere clears the ground), over the zone's first area's mean, and its seats the seat block's
-  count (`ship::tag_seats` reads it again in the game). The path is one per
+  object's bounding radius, its hover the height of its render model's lowest position under the
+  root (so the hull clears the ground; the dropship tags have no lift points or
+  flight settings that say), over the zone's first area's mean, and its seats the seat block's
+  count (`ship::tag_seats` reads it again in the game; it counts every seat, the driver,
+  gunners and cargo included, so it caps a load and the engine seats fewer). The path is one per
   zone, cleared for the widest ship kept: each ray is also cast the kind's
   reach to each side, and the Pelican is kept only when some zone has a path
   at its width. The
