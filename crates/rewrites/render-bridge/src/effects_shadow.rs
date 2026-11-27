@@ -13,6 +13,9 @@
 //! - **Emission.** Each particle's emission ([`emission`]): the
 //!   callback `0x00224550`'s words, vectors and input cache, made by
 //!   `engine::particle_emission`, against the guest's at its emitter call.
+//! - **Ribbon.** Each contrail's vertices ([`ribbon`]): the builder
+//!   `0x00042cf0`'s vertices, AL and writes, made by
+//!   `engine::contrail_ribbon`, against the guest's at its return.
 //! - **Effects seed.** No path under either reads the shared random seeds
 //!   (`[0x004e7408]`): both predict that the seeds do not move.
 //!
@@ -29,6 +32,7 @@
 pub mod dispatch;
 mod emission;
 mod overlay;
+mod ribbon;
 pub mod view_update;
 
 use std::cell::RefCell;
@@ -537,6 +541,7 @@ pub fn forget() {
     UPDATE.with(|u| u.borrow_mut().take());
     DISPATCH.with(|d| d.borrow_mut().take());
     emission::forget();
+    ribbon::forget();
 }
 
 /// Installs the arm's observers (the frame step's build, unless [`ID`] is
@@ -575,6 +580,20 @@ pub fn install(b: &mut Builder) {
         .observe_before(&points::PARTICLE_EMIT, "effects_shadow_emission_emit", |o| {
             let g = o.guest();
             emission::emit(&*g, o.cpu.esp, o.cpu.ebx);
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_before(&points::CONTRAIL_RIBBON, "effects_shadow_ribbon", |o| {
+            let g = o.guest();
+            ribbon::begin(&*g, o.cpu.esp, o.cpu.mxcsr, o.cpu.x87.control);
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_after(&points::CONTRAIL_RIBBON, "effects_shadow_ribbon_end", |o| {
+            let g = o.guest();
+            ribbon::end(&*g, o.cpu.esp, o.cpu.eax);
         })
         .context_only()
         .optional();

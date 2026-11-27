@@ -112,9 +112,9 @@ pub fn refusal(e: Error) -> &'static str {
 }
 
 /// Guest memory under the model's writes; the guest is never written.
-struct Overlay<'a> {
-    base: &'a dyn GuestMemory,
-    writes: BTreeMap<u32, u8>,
+pub(crate) struct Overlay<'a> {
+    pub(crate) base: &'a dyn GuestMemory,
+    pub(crate) writes: BTreeMap<u32, u8>,
 }
 
 impl GuestMemory for Overlay<'_> {
