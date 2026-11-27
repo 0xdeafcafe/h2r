@@ -170,7 +170,7 @@ fn forge_input_closes_four_points_in_one_op_and_cancel_keeps_the_last_area() {
     // The first X aims at the flag and opens its Properties. Select the
     // screen's actual Edit area row, then send the world input over RPC.
     script.press(&mut e, "properties").unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let sheet = screens::screen(Kind::Properties).sheet();
     let row = sheet
         .rows
@@ -468,7 +468,7 @@ fn a_flag_return_edits_its_capture_plate() {
     let ops = e.session.document().ops.len();
     // Its Properties offer Edit area, which starts from the capture plate.
     script.press(&mut e, "properties").unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let sheet = screens::screen(Kind::Properties).sheet();
     let row = sheet
         .rows
@@ -503,7 +503,7 @@ fn a_flags_properties_offer_show_in_play_and_on_writes_one_show_op() {
     let mut script = Script::new();
     e.tool.aimed_thing = Some(id);
     script.press(&mut e, "properties").unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let sheet = screens::screen(Kind::Properties).sheet();
     let row = sheet
         .rows

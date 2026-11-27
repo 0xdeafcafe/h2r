@@ -355,13 +355,15 @@ fn no_free_spot_on_any_ring_is_a_named_refusal_and_the_spawn_waits() {
         Regs::default()
     });
     assert_eq!(r.result, Ok(Ret::new(0x7700_ffff, 12)), "retail's 0xffff");
-    // Both passes over every clear spot (95: one has player 2 on it).
+    // Every clear spot (95: one has player 2 on it) is asked three times:
+    // the ground pass asks below it (not free, so ground), then at it, and
+    // the second pass asks at it again.
     let tests = r
         .calls
         .iter()
         .filter(|c| c.target == points::SPAWN_LOCATION_FREE.base)
         .count();
-    assert_eq!(tests, 2 * 95);
+    assert_eq!(tests, 3 * 95);
     assert_eq!(start_at(&r.guest, 0), [0.0; 3]);
     assert_eq!(start_at(&r.guest, 1), [10.0, 0.0, 0.0]);
     let s = lock(&st);
