@@ -57,6 +57,7 @@ pub mod cut;
 pub mod frame_step;
 pub mod game_random;
 pub mod render_census;
+pub mod render_frame;
 pub mod residual_census;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
