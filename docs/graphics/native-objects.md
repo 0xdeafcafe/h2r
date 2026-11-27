@@ -795,7 +795,24 @@ bindings use the same values, including the view's disabled-fog defaults.
 - **The program** (`object_look`, `compile_object`): the implementation's
   look with its engine constants allowed, translated as the world's are;
   every constant read directly must be one of the above, and a read
-  relative to `a0.x` must start in the node rows.
+  relative to `a0.x` must start in the node rows. A read of a constant
+  the pass does not set counts only where its value can reach a live
+  output (`program::live_source_read`): one that reaches only the
+  coordinate of a stage the pixel shader neither fetches nor reads
+  (`program::dead_texcoords`) is not a read, as on the world path. The
+  stencil programs (`stencil_texture`, `stencil_emissive`) write every
+  stage's coordinate from `c[19 + n]` (`c[20]` for stages 2 and 3 in
+  `stencil_texture`), and their layer 1 and 7 passes bind only the rows
+  of the stages they sample: the unbound rows hold what an earlier
+  upload left on the device (`0x00018e80` writes only a pass's dirty
+  rows), which those coordinates carry unused. The device's `c[18]` and
+  the structure rows `c[21..25]` are taken only for live reads, so such
+  a pass records no structure read for the `c[21]` of an unsampled
+  `oT2`. A vertex register the object streams do not supply is read
+  only where it reaches a live output (`program::translate_object_pass`,
+  `only_dead_outputs`): those programs copy the vertex colours `v10`
+  and `v11` into `oD0`, which a pixel shader with its own final
+  combiner, plain fetches and no `v0` input leaves unread.
 
 - **The vertex streams** (`object_streams`, Code). The draw sets its
   streams through `0x0001caa0`: the section's `vrtx` classification

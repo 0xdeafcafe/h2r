@@ -42,7 +42,7 @@ pub use crate::object_nodes::{
 };
 use crate::program::{
     MODEL_ROWS, MaterialProgram, PassParts, TEXCOORD_DECOMPRESSION, VIEW_CONSTANTS,
-    translate_pass_with_pixel,
+    translate_object_pass,
 };
 
 /// The scalar inputs every draw of a shader holds the same
@@ -587,30 +587,51 @@ fn compile_with_layer_constants(
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
         for s in i.sources() {
-            if let vsh::SrcReg::Const { index, relative } = s.reg {
+            if let vsh::SrcReg::Const { index, relative: true } = s.reg {
                 let c = usize::from(index);
-                if relative && !(MODEL_ROWS..POSITION_DECOMPRESSION).contains(&c) {
+                if !(MODEL_ROWS..POSITION_DECOMPRESSION).contains(&c) {
                     return Err(format!(
                         "vertex program reads c[a0.x + {c}], outside the node rows"
-                    ));
-                }
-                if !relative && !object_sets(look, c) {
-                    if c == 18 && inherits_material_constants {
-                        inherits_c18 = true;
-                        continue;
-                    }
-                    if structure_constants && (STRUCTURE..STRUCTURE + 5).contains(&c) {
-                        structure_reads |= 1 << (c - STRUCTURE);
-                        continue;
-                    }
-                    return Err(format!(
-                        "vertex program reads c[{c}], which the object pass does not set"
                     ));
                 }
             }
         }
     }
-    let t = translate_pass_with_pixel(
+    // A constant the pass does not set is read only where its value can
+    // reach a live output: one reaching only a coordinate the pixel shader
+    // ignores is not (as on the world path, `crate::program::dead_texcoords`).
+    // The stencil programs write `oT1..oT3` from `c[20..22]` for every
+    // stage, sampled or not. Each live read is the device's `c[18]`, a
+    // structure row, or a refusal, in program order.
+    let dead = crate::program::dead_texcoords(look);
+    let mut taken = [false; vsh::CONSTANT_COUNT];
+    loop {
+        let missing = |reg: vsh::SrcReg| match reg {
+            vsh::SrcReg::Const { index, relative: false }
+                if !object_sets(look, usize::from(index)) && !taken.get(usize::from(index)).copied().unwrap_or(true) =>
+            {
+                Some(index)
+            }
+            _ => None,
+        };
+        let Some(index) = crate::program::live_source_read(&program, missing, |out| {
+            matches!(out, vsh::OutReg::T(k) if dead.get(usize::from(k)) == Some(&true))
+        }) else {
+            break;
+        };
+        let c = usize::from(index);
+        if c == 18 && inherits_material_constants {
+            inherits_c18 = true;
+        } else if structure_constants && (STRUCTURE..STRUCTURE + 5).contains(&c) {
+            structure_reads |= 1 << (c - STRUCTURE);
+        } else {
+            return Err(format!(
+                "vertex program reads c[{c}], which the object pass does not set"
+            ));
+        }
+        taken[c] = true;
+    }
+    let t = translate_object_pass(
         &PassParts {
             microcode,
             pixel_shader: &look.pixel_shader,
@@ -1496,6 +1517,105 @@ pub(crate) mod tests {
             e,
             "vertex program reads c[a0.x + 18], outside the node rows"
         );
+    }
+
+    /// The stencil programs (`stencil_emissive`, `stencil_texture`) write
+    /// every stage's coordinate, `oTn = v1 · c[19 + n].xy + c[19 + n].zw`,
+    /// whether or not the pass samples the stage, and a pass binding only
+    /// the rows of its sampled stages leaves the others unset. A row whose
+    /// value reaches only a coordinate the pixel shader ignores is not a
+    /// read; one reaching a sampled stage, or the position, is.
+    #[test]
+    fn an_unset_constant_that_only_feeds_an_unsampled_coordinate_is_not_a_read() {
+        let coordinates = |also_pos: bool| {
+            let mut v = vec![
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 0xf),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(19)), Some(O::c(19))).to_out(false, OutReg::T(0), 3),
+                // Through a temporary, as the skinned classifications do.
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(21)), Some(O::c(21))).to_temp(9, 3),
+                Inst::mac(MacOp::Mov, Some(O::r(9)), None, None).to_out(false, OutReg::T(1), 3),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(22)), Some(O::c(22))).to_out(false, OutReg::T(2), 3),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(23)), Some(O::c(23))).to_out(false, OutReg::T(3), 3),
+            ];
+            if also_pos {
+                v.push(Inst::mac(MacOp::Mov, Some(O::c(22)), None, None).to_out(false, OutReg::Pos, 4));
+            }
+            program(&v)
+        };
+        let unset = |c: usize| format!("vertex program reads c[{c}], which the object pass does not set");
+        // No stage fetches (the default definition): every coordinate is dead.
+        let look = object_look(map::TagId(0xe000_0001), &lit()).unwrap();
+        let p = compile_object(&look, &coordinates(false), None, WORLD).unwrap();
+        shaders::validate(&p.wgsl).unwrap();
+        // The value also reaching the position is a live read.
+        assert_eq!(compile_object(&look, &coordinates(true), None, WORLD).unwrap_err(), unset(22));
+        // Stage 1 fetching (2D projective): its coordinate is live, the
+        // others stay dead.
+        let mut def = shaders::PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        def.texture_modes = 0x01 << 5;
+        let live = PassLook { pixel_shader: def.to_bytes(), ..look.clone() };
+        assert_eq!(compile_object(&live, &coordinates(false), None, WORLD).unwrap_err(), unset(21));
+        // Stage 0's coordinate reads c[19], which the pass sets: the
+        // constants pass, and the compile goes on to the stage (bound
+        // nothing in this look).
+        def.texture_modes = 0x01;
+        let first = PassLook { pixel_shader: def.to_bytes(), ..look };
+        assert_eq!(
+            compile_object(&first, &coordinates(false), None, WORLD).unwrap_err(),
+            "stage 0 is sampled with nothing bound"
+        );
+    }
+
+    /// The stencil and transparent programs copy the vertex colour `v10`
+    /// into `oD0` whatever the pass reads, and the object streams do not
+    /// supply it. A pass whose pixel shader leaves the diffuse colour
+    /// unread compiles; one whose combiners read `v0` does not.
+    #[test]
+    fn an_unsupplied_colour_that_reaches_only_an_unread_diffuse_is_not_a_read() {
+        let code = program(&[
+            Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(10)), None, None).to_out(false, OutReg::D0, 0xf),
+        ]);
+        let look = object_look(map::TagId(0xe000_0001), &lit()).unwrap();
+        let mut def = shaders::PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        (def.final_inputs_abcd, def.final_inputs_efg) = shaders::psh::d3d_default_final_combiner(false, false);
+        let unread = PassLook { pixel_shader: def.to_bytes(), ..look.clone() };
+        let p = compile_object(&unread, &code, None, WORLD).unwrap();
+        shaders::validate(&p.wgsl).unwrap();
+        def.combiner_count = 1;
+        def.rgb_inputs[0] = 0x4; // v0
+        let read = PassLook { pixel_shader: def.to_bytes(), ..look.clone() };
+        assert_eq!(
+            compile_object(&read, &code, None, WORLD).unwrap_err(),
+            "vertex program reads registers we do not supply (0x0400)"
+        );
+        // Without a final combiner the object draw supplies the default
+        // one, which is not read here: refused as before.
+        assert_eq!(
+            compile_object(&look, &code, None, WORLD).unwrap_err(),
+            "vertex program reads registers we do not supply (0x0400)"
+        );
+    }
+
+    /// A structure row that reaches only an unsampled stage's coordinate is
+    /// not one of [`ObjectPass::structure_reads`]: `stencil_emissive`
+    /// writes `oT2` from `c[21]` for a pass sampling stage 0 alone, and
+    /// the item then needs no upload of the structure's parameter block.
+    #[test]
+    fn a_structure_row_that_reaches_only_an_unsampled_coordinate_is_not_recorded() {
+        let code = |live: bool| {
+            let out = if live { OutReg::Pos } else { OutReg::T(2) };
+            program(&[
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 0xf),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(21)), Some(O::c(21))).to_out(false, out, 3),
+            ])
+        };
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        let pass = |microcode: &[u8]| {
+            object_pass(map::TagId(0xe000_0001), &lit(), &[], microcode, WORLD, fetch, true)
+        };
+        assert_eq!(pass(&code(false)).unwrap().structure_reads, 0);
+        assert_eq!(pass(&code(true)).unwrap().structure_reads, 1);
     }
 
     /// An object pass's program may read the rows of `c[21..25]` the pass
