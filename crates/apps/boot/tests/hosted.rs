@@ -93,6 +93,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         debug_menu: None,
         perf_overlay: None,
         cheat_line: None,
+        readout: None,
         game_code: None,
         discoverable_agent: false,
         settings: None,
