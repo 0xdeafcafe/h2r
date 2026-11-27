@@ -684,6 +684,13 @@ impl<B: Backend> Device<B> {
             indexed_admission: _,
             // A per-draw reading of the last refusal, made again on use.
             native_refusal: _,
+            // A cache of the last inline draw's resolution, keyed on the
+            // live state; a load drops it.
+            inline_run: _,
+            inline_capture: _,
+            api_calls: _,
+            // Switch.
+            inline_runs: _,
             translator: _,
             backend: _,
             created: _,
@@ -1012,6 +1019,7 @@ impl<B: Backend> Device<B> {
         self.immediate = crate::pushbuf::Immediate::with_registers(s.immediate);
         self.consumed = s.consumed;
         self.pushed = s.pushed.map(Arc::new);
+        self.inline_run = None;
         self.fault = None;
         self.swap_count = s.swap_count;
         self.fence = s.fence;
