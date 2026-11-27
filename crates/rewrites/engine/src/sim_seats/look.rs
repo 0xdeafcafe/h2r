@@ -644,7 +644,8 @@ fn after_visibility(c: &mut CpuAbi, m: &mut impl Memory, visible: bool) -> Resul
     // dead-man bytes are quiet; the unit's second weapon must aim.
     let seat_weapon = u32::from(m.u16(at(c.ebp, 0x2e))?);
     alu::cmp16(c, seat_weapon, u32::from(u16::MAX));
-    if seat_weapon == u32::from(u16::MAX) {
+    if seat_weapon != u32::from(u16::MAX) {
+        // `jne 0x1866e4`: a held weapon skips the dual-wield check.
         return zoom_bits(c, m, true);
     }
     let device = m.u32(m.u32(at(sp, 0x100))?)?;
