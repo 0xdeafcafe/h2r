@@ -1238,6 +1238,14 @@ impl LitObjects {
         self.snapshots.take(device, color, guest, copy)
     }
 
+    /// The frame's structure target copy (`0x0003bea0`'s `0x000352e0`
+    /// into the refraction target `0x16`): `color` downsampled into the
+    /// target's own colour `to` ([`crate::snapshot_gpu::Snapshots::into_target`]),
+    /// to record before the first draw that would make it.
+    pub fn structure_copy(&self, color: &wgpu::TextureView, to: &wgpu::TextureView, format: wgpu::TextureFormat) -> SceneCopy {
+        self.snapshots.into_target(color, to, format)
+    }
+
     /// Uploads the normalization cube the programs' normalization stages
     /// sample, once.
     pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &StaticLightTexture) {
@@ -2239,10 +2247,10 @@ impl<'a> PartInputs<'a> {
 /// ([`PartFlags::TARGET_UNCOPIED`]) calls `0x0003bea0` for a program with
 /// flag bit 20 ([`tags::material::ResolvedImplementation::copies_target`]),
 /// which clears the shader cache and, with a structure parameter block,
-/// copies and binds the structure's target. No native stage copies it, so
-/// with a block such an item keeps its guest draw
-/// (`object_shader_flag_target`; without one the world layers' glue
-/// draws it ahead of every kept item and sets the frame's flag); one
+/// copies and binds the structure's target. The world layers' glue draws
+/// such an item ahead of every kept item and sets the frame's flag, with a
+/// block making the copy before its draws ([`LitObjects::structure_copy`]);
+/// one
 /// whose programs lack the bit makes no call, and skipping its draw skips
 /// nothing else (docs/graphics/native-objects.md, "Fade, the shader flag
 /// and the item's argument").

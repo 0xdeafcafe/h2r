@@ -291,9 +291,9 @@ impl PartFlags {
     /// (`0x00509430` clear). The draw of a pass whose program has flag bit
     /// 20 then calls `0x0003bea0`, which clears the shader cache and, with
     /// a structure parameter block, copies and binds the structure's
-    /// target, and sets the flag; so the host keeps such an
-    /// item's guest draw (`object_shader_flag_target`); a part whose passes'
-    /// programs lack the bit makes no call and draws.
+    /// target, and sets the flag; the world layers' host draws such an
+    /// item ahead of every kept item, making the flag and the copy; a part
+    /// whose passes' programs lack the bit makes no call and draws.
     pub const TARGET_UNCOPIED: PartFlags = PartFlags(1 << 7);
     const NAMES: [(PartFlags, &'static str); 8] = [
         (PartFlags::STENCIL_MARK, "stencil_mark"),
