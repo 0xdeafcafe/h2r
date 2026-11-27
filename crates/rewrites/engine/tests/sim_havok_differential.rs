@@ -32,6 +32,10 @@ const STACK: u32 = 0x007f_0000;
 const EXIT: u32 = 0xffff_fffc;
 /// A constraint builder the harness answers: `ret 8`, nothing written.
 const BUILD_STUB: u32 = 0x0060_0f00;
+/// A contact manager's removal the harness answers: `ret 4`, the manager
+/// and the ID appended to `REMOVE_LOG` (a count, then pairs).
+const REMOVE_STUB: u32 = 0x0060_0f40;
+const REMOVE_LOG: u32 = 0x0078_f000;
 const BUFFER_OBJECT: u32 = 0x0060_0000;
 const BUFFER: u32 = 0x0062_0000;
 const BUFFER_BYTES: u32 = 0x8000;
@@ -77,7 +81,8 @@ fn original(image: &Image) -> lifted::Original {
 }
 
 /// Run the lifted original from `cpu.eip` until it returns to `EXIT`.
-/// A call to `BUILD_STUB` is answered as `ret 8`.
+/// A call to `BUILD_STUB` is answered as `ret 8`, one to `REMOVE_STUB`
+/// as `ret 4`.
 fn run(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory) {
     for _ in 0..2_000_000 {
         if cpu.eip == EXIT {
@@ -87,6 +92,16 @@ fn run(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory) {
             let sp = cpu.gpr[4];
             cpu.eip = mem.read_u32(sp).unwrap();
             cpu.gpr[4] = sp + 12;
+            continue;
+        }
+        if cpu.eip == REMOVE_STUB {
+            let sp = cpu.gpr[4];
+            let n = mem.read_u32(REMOVE_LOG).unwrap();
+            word(mem, REMOVE_LOG + 4 + 8 * n, cpu.gpr[1]);
+            word(mem, REMOVE_LOG + 8 + 8 * n, mem.read_u32(sp + 4).unwrap());
+            word(mem, REMOVE_LOG, n + 1);
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 8;
             continue;
         }
         lifted::code::step(code, cpu, mem).unwrap_or_else(|e| panic!("{e}"));
@@ -3038,4 +3053,130 @@ fn the_query_matches_the_lifted_query() {
         *answers.entry(answer.eax).or_insert(0) += 1;
     }
     assert!(sizes.len() >= 4 && answers.len() >= 2 && declined < 128, "{sizes:?} {answers:?}, {declined} declined");
+}
+
+// The manifold refresh `0x00302eb0` (sim_havok::manifold,
+// docs/engine/havok-convex.md, "The manifold") against the lifted
+// function: points kept and dropped, the manager's removals logged by
+// `REMOVE_STUB`.
+
+use sim_havok::manifold;
+
+const MANIFOLD_A: u32 = 0x0078_0000;
+const MANIFOLD_B: u32 = 0x0078_0100;
+const MANIFOLD_MOTION_A: u32 = 0x0078_1000;
+const MANIFOLD_MOTION_B: u32 = 0x0078_1100;
+const MANIFOLD_INPUT: u32 = 0x0078_2000;
+const MANIFOLD_TOLERANCES: u32 = 0x0078_2100;
+const MANIFOLD_SLOTS: u32 = 0x0078_3000;
+const MANIFOLD_COUNT: u32 = 0x0078_3200;
+const MANIFOLD_COLLECTOR: u32 = 0x0078_3300;
+const MANIFOLD_ARRAY: u32 = 0x0078_3400;
+const MANIFOLD_DATA: u32 = 0x0078_4000;
+const MANIFOLD_MANAGER: u32 = 0x0078_5000;
+const MANIFOLD_VTABLE: u32 = 0x0078_5100;
+
+fn manifold_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    code.prime(0x302eb0);
+    code
+}
+
+struct ManifoldCalls;
+
+impl manifold::Calls for ManifoldCalls {
+    fn reserve(&mut self, _: &mut Journal, _: u32, _: u32, _: u32) -> Result<(), sim_havok::convex::Fallback> {
+        // The seeds leave room; the lifted reserve calls the system allocator.
+        Err(sim_havok::convex::Fallback::Memory)
+    }
+    fn remove(&mut self, j: &mut Journal, manager: u32, id: u32, _: u32) -> Result<(), sim_havok::convex::Fallback> {
+        let n = j.get(REMOVE_LOG).unwrap();
+        j.put(REMOVE_LOG + 4 + 8 * n, manager).unwrap();
+        j.put(REMOVE_LOG + 8 + 8 * n, id).unwrap();
+        j.put(REMOVE_LOG, n + 1).unwrap();
+        Ok(())
+    }
+}
+
+/// Seeded manifolds of zero to four points, B's points near A's so some
+/// hold: the contacts, slots, count, array size and the removals equal
+/// the lifted function's, byte for byte, under every rounding mode.
+#[test]
+fn the_manifold_refresh_matches_the_lifted_refresh() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = manifold_code(image);
+    let (mut kept, mut dropped) = (0u32, 0u32);
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x302e_0000 + seed);
+        let mut mem = base.clone();
+        word(&mut mem, MANIFOLD_A + manifold::COLLIDABLE_MOTION, MANIFOLD_MOTION_A);
+        word(&mut mem, MANIFOLD_B + manifold::COLLIDABLE_MOTION, MANIFOLD_MOTION_B);
+        let ta = MANIFOLD_MOTION_A + manifold::MOTION_TRANSFORM;
+        let tb = MANIFOLD_MOTION_B + manifold::MOTION_TRANSFORM;
+        // B shares A's rotation; its translation is A's on even seeds, near
+        // it on most odd ones, anywhere on the rest.
+        let shift = if seed % 2 == 0 { 0.0 } else { 0.25 };
+        for i in 0..4 {
+            let column = seed_vector(&mut r, &mut mem, ta + 16 * i);
+            let near = if i == 3 { column.map(|x| x + float(&mut r, -shift, shift)) } else { column };
+            put_lanes(&mut mem, tb + 16 * i, if seed % 8 == 5 { [coord(&mut r), coord(&mut r), coord(&mut r), 0.0] } else { near });
+        }
+        let count = r.below(5);
+        word(&mut mem, MANIFOLD_COUNT, count);
+        for i in 0..4 {
+            let s = MANIFOLD_SLOTS + manifold::slot::BYTES * i;
+            let mut pa = seed_vector(&mut r, &mut mem, s);
+            pa[3] = [0.0, 1.0, 0.5, float(&mut r, 0.0, 1.0)][r.below(4) as usize];
+            put_lanes(&mut mem, s, pa);
+            // Half the points have B's where A's is.
+            let jitter = if r.below(2) == 0 { 0.0 } else { 0.25 };
+            let pb = pa.map(|x| x + float(&mut r, -jitter, jitter));
+            put_lanes(&mut mem, s + manifold::slot::POINT_B, pb);
+            word(&mut mem, s + manifold::slot::ID, r.u32());
+            seed_vector(&mut r, &mut mem, s + manifold::slot::NORMAL);
+        }
+        word(&mut mem, MANIFOLD_INPUT + manifold::INPUT_KEEP, bits(&mut r, 0.0, 1.0));
+        word(&mut mem, MANIFOLD_INPUT + manifold::INPUT_TOLERANCES, MANIFOLD_TOLERANCES);
+        word(&mut mem, MANIFOLD_TOLERANCES + manifold::TOLERANCE_DRIFT, bits(&mut r, 0.0, 1.0));
+        let size = r.below(3);
+        let owned = if seed % 3 == 0 { 0x8000_0000 } else { 0 };
+        word(&mut mem, MANIFOLD_COLLECTOR, MANIFOLD_ARRAY);
+        word(&mut mem, MANIFOLD_ARRAY + manifold::ARRAY_DATA, MANIFOLD_DATA);
+        word(&mut mem, MANIFOLD_ARRAY + manifold::ARRAY_SIZE, size);
+        word(&mut mem, MANIFOLD_ARRAY + manifold::ARRAY_CAPACITY, owned | (size + count + r.below(3)));
+        random_bytes(&mut r, &mut mem, MANIFOLD_DATA, manifold::slot::BYTES * 9);
+        word(&mut mem, MANIFOLD_MANAGER, MANIFOLD_VTABLE);
+        word(&mut mem, MANIFOLD_VTABLE + 8, REMOVE_STUB);
+        word(&mut mem, REMOVE_LOG, 0);
+        let floor = bits(&mut r, -1.0, 0.0);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} count {count} {fpu:x?}");
+        let args = manifold::Args {
+            a: MANIFOLD_A,
+            b: MANIFOLD_B,
+            input: MANIFOLD_INPUT,
+            floor,
+            slots: MANIFOLD_SLOTS,
+            count: MANIFOLD_COUNT,
+            collector: MANIFOLD_COLLECTOR,
+            manager: MANIFOLD_MANAGER,
+            esp: STACK,
+        };
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let exit = manifold::refresh(&mut j, &args, fpu, &mut ManifoldCalls).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let stack = [MANIFOLD_A, MANIFOLD_B, MANIFOLD_INPUT, floor, MANIFOLD_SLOTS, MANIFOLD_COUNT, MANIFOLD_COLLECTOR, MANIFOLD_MANAGER];
+        let after = run_this(&mut code, &mut mem, 0x302eb0, 0, &stack, fpu);
+        assert_eq!((after.eax, after.ecx, after.edx, after.esp), (exit.eax, exit.ecx, exit.edx, STACK + 4), "{why}: eax, ecx, edx, ret");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}: kept");
+        clear_frame([&mut mem, &mut expected], 4 * stack.len() as u32);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        let removed = mem.read_u32(REMOVE_LOG).unwrap();
+        dropped += removed;
+        kept += count - removed;
+    }
+    assert!(kept > 128 && dropped > 128, "{kept} kept, {dropped} dropped");
 }
