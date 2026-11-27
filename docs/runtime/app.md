@@ -307,6 +307,28 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   with `..`.
 - On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
   toggles it while playing (F3 then never reaches the guest).
+- `H2_WATERMARK=full` adds the game's readout above the live numbers, in
+  the same panel, grouped as the player (`pos x y z`, `vel x y z (speed/s)`
+  in world units a second, `yaw` and `pitch` in degrees), the level (`bsp`
+  index of the map, and the `cluster` the player stands in), the world
+  (`bipeds` as players plus AI actors, `veh`, `obj`, then `ai`, `decals`,
+  `particles`) and the picture (`draws native N d3d K`: the last native
+  frame's backend draws against the guest draws the scene sink carried on
+  D3D, then `kept <layer>_<kind>_<cause> N`, the `scene_kept_*` counter
+  with the most draws). `-` is a value the game has not answered. Without
+  `full` nothing is read and the panel is as above.
+- The readout is the game's, not the window's:
+  `game::debug_readout` asks the agent API in-process every 100 ms while
+  the level is on (`sim.view` roots `at`, `player` and `count`,
+  `world.pools`, `collision.trace` at the player's position for the
+  cluster, and `render.scene`) and leaves the lines in the watermark's
+  shared list (`Watermark::readout_handles`), refreshed with the timing
+  numbers. It reads no guest memory of its own; the API has no BSP name,
+  so the index and the map's name stand for it, and `world.pools` is the
+  API method added for the decal and particle counts
+  ([agent-api.md](agent-api.md#worldpools)). The cluster is the player's
+  position, not the camera's, and reads `-` until the native collision
+  world answers.
 - The superbounce game type's HUD is not the window's: the game's own
   HUD draws it, through the HUD kit
   ([hud-kit.md](../game/hud-kit.md),

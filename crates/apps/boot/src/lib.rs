@@ -1516,6 +1516,9 @@ fn run_configured(
             host.perf_overlay.clone(),
             host.cheat_line.clone(),
         );
+        if let Some(link) = &host.readout {
+            game::debug_readout::install(&a.agent, link.clone());
+        }
         if let Some(code) = &host.game_code {
             game::game_code::install(&a.agent, Arc::clone(code));
         }

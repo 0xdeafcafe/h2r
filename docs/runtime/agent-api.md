@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `world.pools` | read | [`world.pools`](#worldpools) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `actors.net` | read | [`actors.net`](#actorsnet) |
@@ -676,6 +677,15 @@ break step reads the same state (`bots::guest::breakable`;
 ```sh
 h2 agent world.breakable '{}'
 ```
+
+## `world.pools`
+
+`h2 agent world.pools` returns `{at, actors, decals, particles}`: the live
+count in each data array's header (`crates/extensions/agent/src/pools.rs`).
+It takes no parameters and reads three headers, so it is cheap to poll. A
+pool that is not allocated, or whose header fails its signature or capacity
+check, is `null`. The watermark's `full` level reads it for its AI, decal and
+particle counts ([app.md](app.md#watermark)).
 
 ## `world.ai`
 
