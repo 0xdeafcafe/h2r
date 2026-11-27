@@ -327,7 +327,17 @@ fn siege_holds_each_death_for_its_sides_wave() {
         assert!(p.alive);
         assert_eq!(p.lives, 1, "the wave gave the life back");
     }
-    assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
+    // Each death was told its side's wave: the first of a side the whole
+    // 10 s, the next the part of a second short.
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            "Reinforcements in 10 seconds",
+            "Reinforcements in 9 seconds",
+            "Reinforcements in 10 seconds",
+        ]
+    );
 }
 
 /// A map with no territory starts at the final assault: the attackers
@@ -1075,6 +1085,65 @@ fn siege_lets_a_player_pick_a_loadout_row_of_their_tier() {
             kit(601, 1, BEAM_RIFLE, PLASMA_PISTOL),
         ]
     );
+}
+
+/// A pick made while the player is alive, with no spawn after it, is the
+/// kit the next tick gives (the dialog opens at the spawn, the press comes
+/// after): each side's offer is its own picker, and its row sets its own
+/// table's kit.
+#[test]
+fn siege_equips_a_row_picked_after_the_spawn() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(6);
+    // The spawns at tick 0 only; the picks at tick 1 are the rows 1 of each side.
+    for t in [2, 4] {
+        ticks[t] = serde_json::json!({});
+    }
+    ticks[1] = serde_json::json!({"events": [
+        {"choose": {"slot": 0, "row": 1}},
+        {"choose": {"slot": 1, "row": 1}},
+        {"choose": {"slot": 0, "row": 2}},
+        {"choose": {"slot": 1, "row": 2}},
+    ]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Each side's offer is two rows in the first tier: the third is refused.
+    assert_eq!(r.refused_choices, [(1, 0, 2), (1, 1, 2)]);
+    let kits: Vec<(u32, Vec<Arg>)> =
+        calls(&r, "set_loadout").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let kit = |t: u32, p: u8, a: &str, b: &str| (t, vec![Arg::Player(Some(p)), tag(a), tag(b)]);
+    const BRUTE: &str = "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle";
+    const NEEDLER: &str = "objects/weapons/pistol/needler/needler";
+    assert_eq!(
+        kits,
+        [
+            kit(0, 0, BR, MAGNUM),
+            kit(0, 1, CARBINE, PLASMA_RIFLE),
+            kit(2, 0, SHOTGUN, MAGNUM),
+            kit(2, 1, BRUTE, NEEDLER),
+        ]
+    );
+}
+
+/// A death tells the player when their side's wave lands: the whole wave
+/// for the first of a side to die, the seconds left for the next.
+#[test]
+fn siege_tells_the_dead_when_their_wave_lands() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(120);
+    ticks[1] = serde_json::json!({"events": [{"death": 0}]});
+    ticks[60] = serde_json::json!({"events": [{"death": 1}]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let told: Vec<&str> = lines(&r).into_iter().filter(|l| l.starts_with("Reinforcements")).collect();
+    // The attackers' wave began at tick 1 (10 s); the defenders' at tick 60.
+    assert_eq!(told, ["Reinforcements in 10 seconds", "Reinforcements in 10 seconds"], "{:?}", lines(&r));
 }
 
 /// A phase-1 site held through phase 0 does nothing: no site is taken, no

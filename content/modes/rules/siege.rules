@@ -132,6 +132,8 @@ table tier_rows: (attack: int, defend: int) = [
 
 // The phases taken so far, and how many sites come before the final one.
 global var phase: int = 0
+// The row of its side's table each player's kit was last set from.
+player var kit: int = -1
 // The loadout tier the phase opens: 0 on a map with no numbered sites.
 global var tier: int = 0
 global var advanced: bool = false
@@ -335,6 +337,15 @@ fn fall_back() {
 fn hold(p: player) {
     if p.team == team 0 and wave0 == 0t { wave0 = wave_time }
     if p.team == team 1 and wave1 == 0t { wave1 = wave_time }
+    // The dead are told when their side's wave lands: the seconds left of
+    // the wave already running, or the whole of the one this death began.
+    if p.team == team 0 {
+        let secs = whole_seconds(wave0)
+        if secs > 0 { message(p, "Reinforcements in {secs} seconds") }
+    } else {
+        let secs = whole_seconds(wave1)
+        if secs > 0 { message(p, "Reinforcements in {secs} seconds") }
+    }
 }
 
 // The side's dead come back together.
@@ -357,10 +368,10 @@ on round_start {
     pick_row(0, "ENERGY SWORD + CARBINE")
     offer_pick(1, "DEFENDER LOADOUT")
     pick_row(1, "CARBINE + PLASMA RIFLE")
-    pick_row(1, "BRUTE RIFLE + NEEDLER")
+    pick_row(1, "BRUTE PLASMA + NEEDLER")
     pick_row(1, "SNIPER RIFLE + MAGNUM")
     pick_row(1, "BEAM RIFLE + PLASMA PISTOL")
-    pick_row(1, "ROCKET LAUNCHER + BATTLE RIFLE")
+    pick_row(1, "ROCKETS + BATTLE RIFLE")
     pushers = 0
     banner_left = 0
     hud_show(banner_row, false)
@@ -415,6 +426,7 @@ on round_start {
 }
 
 on tick {
+    for each players p where p.alive and p.kit != choice(p) { equip(p, choice(p)) }
     if not over and phase < needed {
         for each site s where not s.taken {
             // A layout's site counts in its own phase only: a later
@@ -515,9 +527,9 @@ on timer(wave1) {
     release(team 1)
 }
 
-on spawn(p) {
-    offer_to(p)
-    let row = choice(p)
+// The player's side's kit for a row, set now.
+fn equip(p: player, row: int) {
+    p.kit = row
     if p.team == team 0 {
         let kit = attack_rows[row]
         set_loadout(p, kit.primary, kit.secondary)
@@ -525,4 +537,12 @@ on spawn(p) {
         let kit = defend_rows[row]
         set_loadout(p, kit.primary, kit.secondary)
     }
+}
+
+// A spawn gives the row the player last picked, and the host opens the
+// side's loadout dialog over the new body; a row picked there is
+// equipped by the tick that hears it.
+on spawn(p) {
+    offer_to(p)
+    equip(p, choice(p))
 }
