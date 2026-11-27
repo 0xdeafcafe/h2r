@@ -103,11 +103,30 @@ The guest takes two bulk reads for the index and vertex data. A single utility w
 
 ### The recording
 
-`native_render::decorators_gpu::encode` stages the plan's instances once per copy (80 bytes each). They bind as the last vertex buffer with instance step (`instance_layout`, locations 11 to 15), and one `draw_indexed` per batch runs over the set's u16 indices.
+`native_render::decorators_gpu::encode` stages the plan's instances once per copy (80 bytes each). They bind as the last vertex buffer with instance step (`instance_layout`, locations 11 to 15), and each batch is one draw over the set's u16 indices: an indirect one of the kept instances once the cull has run ("Cull" below).
 
 The program is the material's pass translated with `decorators::PROVIDED_INPUTS` (`v11..v15`) supplied. The batch's bindings (`Bound`) carry its uniforms with `c[53]`. The pass asks the pipeline compiler for each copy's target formats during reservation, and a pending compile keeps the slots on D3D through the next swap.
 
 The load retains the uploaded material and the compiled pipelines. The viewport is the whole target and the view's rectangle the scissor.
+
+### Cull
+
+A view's instances are culled on the GPU before they draw (`GpuWorld::culled_decorators`, `cull_gpu::DecoratorCull`, `cull_decorators.wgsl`). Each instance is bounded by its placement group's sphere (`DecoratorDraw::sphere`): the centre and radius the producer tests against the portal windows and the detail distance (`placements::model_items`), read again for each draw (`read_placement`). The guest culls a whole group by that sphere, so it holds every vertex the group's instances place, whatever the program does to them.
+
+| Step | What |
+|---|---|
+| Inputs | The view, each batch's range, index range and whether it is occludable, each instance's sphere and `v11..v15`, staged and copied in draw order |
+| Frustum | `Frustum::sides` of the lens layer 3's admission takes (the union of both copies'): a sphere outside a side plane is culled |
+| Pyramid | For a batch whose pipeline draws nothing where hidden (`gpu::depth_hides`: a `Less`, `LessEqual` or `Equal` test, no stencil write on depth fail), the sphere's box against the pyramid this view's layer 3 built on the target, read under the same token rule as the later world layers ([native-world.md](native-world.md), "Cull") |
+| Compaction | One thread per batch walks its instances in the guest's order and copies the kept ones to the front of the batch's range, so the draw keeps the guest's order |
+| Draw | Per batch, the compacted range as the instance buffer and one `draw_indexed_indirect` of its slot |
+
+| Counter (`GpuWorld::decorator_skips`) | When |
+|---|---|
+| `no_pyramid` | The view found no pyramid of its layer 3 on the target: the frustum alone culls |
+| `unbounded` | An instance's group sphere did not read: it bounds nothing and the instance draws |
+
+A plan with no camera, or a load with no GPU world, draws every instance.
 
 ### The glue
 

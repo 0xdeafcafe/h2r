@@ -64,6 +64,8 @@ pub const BLOCK_PLACEMENTS: u32 = 0x1c;
 pub const GEOMETRY_SIZE: u32 = 0x2c;
 pub const GEOMETRY_INSTANCES: u32 = 0x28;
 pub const PLACEMENT_SIZE: u32 = 0x18;
+/// The group radius byte's scale (`placement +3` times it).
+pub(crate) const RADIUS_SCALE: u32 = 0x0045_e4d0;
 /// Placement: `+0` palette index (i8), `+6` geometry record (i16), `+8`
 /// first instance (i16), `+0xa` instances (i16).
 pub const PLACEMENT_GEOMETRY: u32 = 6;
@@ -727,7 +729,15 @@ pub(crate) fn read_placement(
             });
         }
     }
-    let draw = DecoratorDraw { slot, layer, set, shader, variant, pass, argument, lod_constant, instances: 0..0 };
+    // The group's sphere, as the producer culls it (`placements::model_items`);
+    // one that does not read bounds nothing (the stage draws every instance).
+    let sphere = (|| {
+        let local = position(k, word(mem, placement, 0x14).ok()?);
+        let radius = f32::from(byte(mem, placement, 3).ok()?) * float(mem, RADIUS_SCALE, 0).ok()?;
+        radius.is_finite().then_some([origin[0] + local[0], origin[1] + local[1], origin[2] + local[2], radius])
+    })()
+    .unwrap_or([0.0, 0.0, 0.0, f32::INFINITY]);
+    let draw = DecoratorDraw { slot, layer, set, shader, variant, pass, argument, lod_constant, sphere, instances: 0..0 };
     Ok(Some((draw, out)))
 }
 

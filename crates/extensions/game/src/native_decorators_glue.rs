@@ -51,7 +51,8 @@ use native_render::decorators_load::{
     DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
     skip_holds, stage_images,
 };
-use native_render::gpu::Image;
+use native_render::camera::RenderCamera;
+use native_render::gpu::{Image, PassViewport};
 use native_render::look::{self, Stage};
 use native_render::object_streams::{StreamElement, StreamFormats};
 use native_render::program::ViewInputs;
@@ -632,7 +633,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let external = d3d::ExternalPlan { stage: Stage::World, view, ranges, slots: Vec::new() };
-        let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth, draw });
+        // The GPU cull's lens, as layer 3's admission takes it (the union
+        // of both copies'), and this view's token for its pyramid.
+        let cull = match (plan.camera, d.external_ready(&ReadMemory(mem), false)) {
+            (Some(camera), Ok(target)) => Some((
+                camera,
+                native_render::camera::display_camera(camera, d.projection_factor_for_target(target.surface_size)),
+            )),
+            _ => None,
+        };
+        let token = crate::native_world_glue::view_token(u64::from(d.swap_count()).wrapping_add(1), view);
+        let pass = Box::new(DecoratorPass {
+            plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth, draw, cull, token,
+        });
         drop(planning);
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), external, pass, Vec::new())
@@ -676,6 +689,11 @@ struct DecoratorPass {
     writes_depth: bool,
     /// The device's stencil and cull at the layer-3 call.
     draw: DrawKey,
+    /// The view's camera and the lens the GPU culls its instances by
+    /// (`GpuWorld::culled_decorators`); without them every instance draws.
+    cull: Option<(RenderCamera, RenderCamera)>,
+    /// This view in this frame (`native_world_glue::view_token`).
+    token: u64,
 }
 
 impl DecoratorPass {
@@ -686,6 +704,19 @@ impl DecoratorPass {
         let mut gpu = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
         let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format, self.draw)?;
         drop(gpu);
+        // Each instance by its group's sphere, on the GPU; with no GPU
+        // world (none uploaded, so no pyramid either) every one draws.
+        let culled = self.cull.and_then(|(camera, cull_camera)| {
+            let mut world = self.ready.gpu();
+            let world = world.as_mut()?;
+            let lens = native_render::camera::display_camera(camera, t.projection_factor());
+            let [x, y, width, height] = t.viewport;
+            let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
+            let occludable: Vec<bool> = bound.iter().map(|b| b.occludable).collect();
+            Some(world.culled_decorators(
+                t.device, t.queue, t.uploads, &self.plan, &occludable, &cull_camera, view, t.size, occlusion,
+            ))
+        });
         let target = DecoratorTarget {
             color: t.color,
             depth: t.depth,
@@ -694,7 +725,7 @@ impl DecoratorPass {
             size: t.size,
             viewport: t.viewport,
         };
-        encode(t.device, t.queue, t.uploads, &mut *t.encoder, &target, &self.plan, &bound)
+        encode(t.device, t.queue, t.uploads, &mut *t.encoder, &target, &self.plan, &bound, culled.as_ref())
     }
 }
 
