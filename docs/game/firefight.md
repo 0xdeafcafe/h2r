@@ -1101,9 +1101,12 @@ insertion pod. Its model has a `shell` node and four `petal` nodes hinged
 on it (`flood_pod_kit::RIG` gives each hinge's axis and the open angle),
 an `impact` marker at the tip and `squad_exit_0` to `squad_exit_3` on the
 ground beside it. `h2 flood-pod kit MAP --out FILE` puts it into a disc
-multiplayer map to look at in Studio. `firefight-kit` does not add it to a
-kit map and no arrival uses it; the engine has not loaded the vehicle
-(**S**).
+multiplayer map to look at in Studio. A kit with a Flood class and a zone fall builds it in
+(`flood_pod_kit::kit::install`, in `assemble` after the classes) and parks it
+as the squad pool `ff_pod_NN`; the players' pool stays the `insertion_pod`.
+Its tags count in the pods' bytes and `PodReport::tags`. A build that cannot
+install it is a `PodRefused` and goes without pods. The engine has not loaded
+the vehicle (**S**).
 
 ### Scoring and stats
 
