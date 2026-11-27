@@ -29,6 +29,8 @@ use timeline::native::{Metric, ObjectWalk, ReservationCause, Stage, Timer};
 use crate::native_world::Mem;
 use hooks::{BuildError, Builder, Feature, Manifest};
 
+pub mod before;
+
 pub const ID: &str = "native-objects";
 
 /// The view slot the layer-3 objects draw in: slot 1, with the opaque base.
@@ -147,6 +149,33 @@ pub trait Host: Send + Sync {
         Stage::Objects.reservation_cause(ReservationCause::Declined);
         Err(ObjectWalk::Reservation)
     }
+
+    /// [`Host::draw_walk`] before the layer draw, from the Rust-built
+    /// list ([`before`]): the layer begin's `ZENABLE` applied and the
+    /// shader cache the cleared one the layer setup leaves. `consume`
+    /// clears the run's items' bit 3.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_before(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _view: Option<(&FrameScene, &View)>,
+        _slot: ViewSlot,
+        _first: usize,
+        _run: &[Entry],
+        _display_lod: Option<LodDetail>,
+        _consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
+    ) -> Result<(), ObjectWalk> {
+        Stage::Objects.reservation_cause(ReservationCause::Declined);
+        Err(ObjectWalk::Reservation)
+    }
+
+    /// What a run's plan reads of the device and the engine, by field
+    /// ([`before::Field`]): as the device holds it now, or `predict`ed for
+    /// the layer's first geometry handler from the device before the call.
+    /// `None` without a device.
+    fn entry_state(&self, _mem: &dyn GuestMemory, _predict: bool) -> Option<Vec<before::Field>> {
+        None
+    }
 }
 
 struct WalkLayer {
@@ -170,6 +199,7 @@ fn host() -> Option<Arc<dyn Host>> {
 
 fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
+    before::restore_pending(mem);
     let kind = match layer_site(3, ret) {
         Site::Scene => ViewKind::Game,
         Site::AlternateView => ViewKind::Alternate,
@@ -194,8 +224,13 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
         leave(&Mem(mem), lightmap, Keep::Object, "walk_list");
         return;
     };
-    // The walk draws or counts each object item at its handler.
+    // The walk draws or counts each object item at its handler, or the
+    // draw before the call did.
     in_body(&Mem(mem), lightmap, Keep::Object);
+    let display_lod = lod.filter(|lod| lod.read(mem) != display).map(|_| display);
+    if before::at_layer(mem, &*host, kind, list, display_lod) {
+        return;
+    }
     WALK_LAYER.with(|state| {
         *state.borrow_mut() = Some(WalkLayer {
             kind,
@@ -215,12 +250,16 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
     layer.initialized = true;
     let site = kept_site(layer.kind);
     let Some(SortedObjects { base, current, counter, entries, causes }) = object_walk::read(&Mem(mem), layer.list, esp, esi) else {
+        before::end_layer();
         // The sorted entries do not read: every object keeps its handler's
         // draw, one count for the list as `native_layers::count_kept`'s.
         ObjectWalk::Unreadable.count(1);
         crate::native_layers::count_kept_as(site, 3, "unreadable", "list", 1);
         return;
     };
+    if let Some(host) = host() {
+        before::compare(&*mem, &*host, &entries, current);
+    }
     ObjectWalk::PartAuxState.count(causes.aux_state);
     ObjectWalk::PartSubparts.count(causes.subparts);
     ObjectWalk::PartShaderFlag.count(causes.shader_flag);
@@ -375,6 +414,7 @@ pub fn set_host(host: Arc<dyn Host>) {
 /// render's, built again each frame.
 pub fn forget_pending() {
     WALK_LAYER.with(|state| *state.borrow_mut() = None);
+    before::forget();
 }
 
 pub(crate) fn retire_map() {
@@ -448,6 +488,7 @@ impl Feature for SceneObjects {
         b.raw()
             .observe_before(&points::LAYER_END, "native_object_walk_end", |_| {
                 WALK_LAYER.with(|state| *state.borrow_mut() = None);
+                before::end_layer();
             })
             .context_only();
         Ok(())

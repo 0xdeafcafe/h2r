@@ -127,7 +127,7 @@ mod opaque_material_states;
 mod opaque_material_textures;
 #[cfg(test)]
 mod opaque_interleave_tests;
-mod scene_build;
+pub(crate) mod scene_build;
 mod scene_walk;
 mod section;
 pub(crate) use section::display_cluster_transparents;

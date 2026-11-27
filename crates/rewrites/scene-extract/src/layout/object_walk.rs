@@ -339,6 +339,49 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
     if distance % ITEM_SIZE != 0 || remaining == 0 || count > MAX_LAYER_ENTRIES {
         return None;
     }
+    let (entries, causes) = entries_at(mem, list, base, count)?;
+    Some(SortedObjects { base, current: current as usize, counter, entries, causes })
+}
+
+/// Where [`read_slots`] places the slots it is given: no guest memory.
+pub const SLOTS_BASE: u32 = 0xf000_0000;
+
+/// The entries of sort slots `slots` the Rust build made for `list`'s
+/// layer 3 (`native_world::scene_build`, ordered by
+/// `layer_sort::geometry`), as [`read`] reads the guest's at the handler:
+/// each slot read where [`SLOTS_BASE`] places it, the rest from `mem`.
+pub fn read_slots(mem: &dyn GuestRead, list: u32, slots: &[[u8; 24]]) -> Option<(Vec<Entry>, Causes)> {
+    let bytes = slots.as_flattened();
+    let over = Overlay { mem, base: SLOTS_BASE, bytes };
+    entries_at(&over, list, SLOTS_BASE, u32::try_from(slots.len()).ok()?)
+}
+
+/// `mem` with `bytes` at `base`.
+struct Overlay<'a> {
+    mem: &'a dyn GuestRead,
+    base: u32,
+    bytes: &'a [u8],
+}
+
+impl GuestRead for Overlay<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        match addr.checked_sub(self.base) {
+            Some(at) if (at as usize) < self.bytes.len() => {
+                let at = at as usize;
+                let word = self.bytes.get(at..at + 4)?;
+                Some(u32::from_le_bytes(word.try_into().ok()?))
+            }
+            _ => self.mem.read_u32(addr),
+        }
+    }
+}
+
+/// The `count` entries of 0x18 bytes at `base` of a layer-3 walk over
+/// `list`.
+fn entries_at(mem: &dyn GuestRead, list: u32, base: u32, count: u32) -> Option<(Vec<Entry>, Causes)> {
+    if count > MAX_LAYER_ENTRIES {
+        return None;
+    }
     let first = word(mem, list, LIST_FIRST)?;
     let end = word(mem, list, LIST_END)?;
     let table = word(mem, list, LIST_ITEMS)?;
@@ -393,7 +436,7 @@ pub fn read(mem: &dyn GuestRead, list: u32, esp: u32, esi: u32) -> Option<Sorted
         };
         entries.push(Entry::Object { handle, part });
     }
-    Some(SortedObjects { base, current: current as usize, counter, entries, causes })
+    Some((entries, causes))
 }
 
 fn read_part(
