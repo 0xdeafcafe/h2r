@@ -249,16 +249,18 @@ fn walk_view(
 }
 
 /// Main-view sets and clipping volumes from the input frustum used by
-/// the traversal. A display factor changes the root tangent polygon.
+/// the traversal, walked from `origin`. A display factor changes the root
+/// tangent polygon.
 pub fn scene_visibility(
     mem: &dyn GuestRead,
     cache: &mut GraphCache,
     epoch: u64,
     factor: f32,
+    origin: super::Origin,
 ) -> Result<(super::VisibilitySets, super::frusta::WindowFrusta), Decline> {
     use super::{frusta, objects, window_record::WindowInputs};
     use engine::render_loop::occlusion::guest::MAIN_VIS;
-    let view = guest::view(mem)?;
+    let view = guest::view(mem)?.from_origin(origin);
     if view.mode != 0 {
         return Err(Decline::Mode);
     }

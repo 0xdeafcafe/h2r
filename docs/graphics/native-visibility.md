@@ -1,6 +1,6 @@
 # Visibility in Rust
 
-Status: Built, not verified. Every game view's visible clusters and objects (modes 0, 1 and 2), the run-time-computed visible sets, the window frusta objects are tested against, the main view's records and the sphere-mode and frustum-mode light views are computed in Rust and compared with the guest's. The main view's cluster set, window frusta and object set run as shadow arms: 1 frame in 64 is compared, and each arm answers after 16 clean samples and falls back to the guest on any difference. The native scene-list hooks publish single-frustum portal walks, window merges, sphere regions and PVS regions after comparing the original producer's output. The view projection builder `0x0002fb70` runs in Rust at every call it accepts. The rest of the guest's view setup and any call the hooks decline run in the guest and are the fallback a decline takes.
+Status: Built, not verified. The main view's records (camera, projection, start cluster, mode) are built in Rust, and its cluster set, window frusta and object set are walked from them. Shadow arms audit each set: 1 frame in 64 is compared, an arm answers after 16 clean samples and falls back to the guest for the map on a difference. A refusal is counted by name and the guest answers that frame. The light views are computed and compared only. The native scene-list hooks publish portal walks, window merges, sphere regions and PVS regions after comparing the guest producer's output, and the projection builder `0x0002fb70` runs in Rust at every call it accepts.
 Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `answer`, `shadow`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `scene_step`'s `the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`, `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`.
 Switch: `impl.render.native.visibility` (on, with `impl.render.native`). Off, the guest's `0x0002fb70` and its portal, window, sphere and PVS producers run, and the shadow arms compare their samples and never answer. Both are listed in [switches.md](../runtime/switches.md).
 
@@ -75,7 +75,7 @@ When the set's byte size (`+0x54`) is above one table, a second table of the sam
 
 The x scale is `one / ((xr · aspect) · t)` and the y scale `one / (yr · t)`. The two offsets are `0 - (e1 + e0) / xr · s` and `0 - (e2 + e3) / yr · s` (`s` from `0x0045dbc4`), as `0x0002fd90` stores them at `0x004b9e14 + 0x78`, `+0x8c`, `+0x98` and `+0x9c`.
 
-`view::compare` compares the record with the render camera (`0x004b9da0`), the visibility struct's start cluster (`+8`) and mode (`+0x2a7c`) field by field, bit for bit. `scene_step::view_record_arm` counts each view and keeps the first difference. The main portal comparison uses the input frustum copied at gather time, including its actual tangent extents.
+The main view's sets are walked from the Rust record (`visibility::Origin`): its start cluster and mode, and its camera in modes 1 and 2. Mode 0 walks the input frustum copied at gather time, including its actual tangent extents. `view::compare` audits the record against the render camera (`0x004b9da0`), the visibility struct's start cluster (`+8`) and mode (`+0x2a7c`), bit for bit. `scene_step::view_record_arm` counts each view and keeps the first difference. A record that declines (`scene_view_record_declined_*`) leaves that frame's visibility to the guest (`scene_visibility_declined_record`).
 
 ### The projection builder
 
@@ -229,7 +229,7 @@ A light's comparison is counted only: no light list is carried into the scene.
 
 ### The shadow arms
 
-`scene_step::visibility_arm` runs three arms for the main view (`visibility::shadow`): the cluster set (the portal traversal, mode 0; the sphere and PVS floods in modes 1 and 2), the window frusta (mode 0 only) and the object set.
+`scene_step::visibility_arm` walks the main view from its Rust record and runs three audit arms (`visibility::shadow`): the cluster set (the portal traversal, mode 0; the sphere and PVS floods in modes 1 and 2), the window frusta (mode 0 only) and the object set.
 
 | Arm state | Sampled frame (`FRAME % 64 == 0`) | Other frames |
 |---|---|---|
@@ -239,10 +239,10 @@ A light's comparison is counted only: no light list is carried into the scene.
 
 - A difference falls the arm back for the rest of the map. A map load (`scene_step::map_changed`) or snapshot restore (`scene_step::forget`) sets every arm to learning; the counts stay.
 - With `impl.render.native.visibility=off` (`scene_step::set_native_visibility`, from the scene-list feature's install) the arms compare their samples and never answer.
-- `visibility::answer` puts the answering arms' sets in the gather. The source is `rust` only when both the cluster and object arms answer, so a gather marked `rust` holds ascending sets.
+- `visibility::answer` puts the answering arms' sets in the gather, and the record's mode with the clusters. The source is `rust` only when both the cluster and object arms answer, so a gather marked `rust` holds ascending sets.
 - The frusta handed to the decorators and the light clip are the Rust ones when that arm answers, else the guest's from `guest::window_frusta`.
 - A frame no arm needs computes nothing, unless the display supplement wants the retail sets.
-- A decline (the computation's, or the guest's lists or windows not reading) keeps the guest's result and is counted.
+- A refusal (no record, the computation's decline, or the guest's lists or windows not reading) keeps the guest's result for that frame only and is counted. It is not a difference: the arm's state stays.
 
 | Counter (`render.scene`), per arm `clusters`, `frusta`, `objects` | Counts |
 |---|---|
@@ -265,8 +265,8 @@ A light's comparison is counted only: no light list is carried into the scene.
 ## Rules and limits
 
 - **Membership and draw order.** The region records retain their production order. The comparator at `0x00134950` sorts a separate array of region ordinals. The scene's Rust membership sets are ascending, and a consumer that needs the guest's order reads it from a `guest` view. The native publication hooks compare the ordered records at their consumer.
-- **The guest is the fallback.** A view for which the computation declines keeps the guest's gather. A difference falls its arm back to the guest for the map, counted and named; the render records are built from the guest's lists either way. A view whose lists do not read carries no gather. The camera records and the first-person light handles stay taken only on equality.
-- **Not ported.** The overlap records for light windows against source-view windows (`0x00132900`, a merge over both region lists calling `0x00132780` and `0x001648d0`); cinematic and override cameras; the render camera `0x00223080` and `0x0002f800` write. The scene step's `view::build` reconstructs only the default extents; the builder at the guest call takes any.
+- **The guest is the fallback.** A view whose record or computation refuses keeps the guest's gather for that frame. A difference falls its arm back to the guest for the map, counted and named; the render records are built from the guest's lists either way. A view whose lists do not read carries no gather. The first-person light handles stay taken only on equality.
+- **Not ported.** The overlap records for light windows against source-view windows (`0x00132900`, a merge over both region lists calling `0x00132780` and `0x001648d0`); cinematic and override cameras; the guest's own writes: the render camera (`0x00223080`, `0x0002f800`), the light frusta (`0x000c1d90`), the struct's lists and the item lists (`0x00040e90`) still run, since guest code reads them. The scene step's `view::build` reconstructs only the default extents; the builder at the guest call takes any.
 - **Shared stamps.** The sphere gather checks the active collision BSP before taking over shared visit stamps. A light's reconstructed lens can still differ from its source frusta. The light differential reports those differences.
 
 | Decline | Cases |
@@ -278,7 +278,7 @@ A light's comparison is counted only: no light list is carried into the scene.
 | `overflow` | a limit where the guest drops by its own order (256 nodes, 255 queued, the corner pools, 128 regions, 512 windows, a full object list) |
 | `camera` | a camera that makes no lens |
 | `not_main` | a struct other than the one the arm is for (also for a light) |
-| `cinematic`, `no_observer`, `override` | the view records only |
+| `cinematic`, `no_observer`, `override` | the view records; the visibility counts them as `record` |
 
 ## Evidence
 
@@ -289,7 +289,8 @@ A light's comparison is counted only: no light list is carried into the scene.
 - That `0x0002fb70` has one caller (`0x0002fd99`): **Code**, a scan of `.text` for calls and jumps to it.
 - `0x0002fb70`'s buffer and registers equal the lifted original's over seeded cameras, extents, override and display states: **Test** (`view_projection_differential`, needs the XBE).
 - Every behaviour above on invented fixtures: **Test** (`visibility::tests`, and the `flood`, `frusta`, `sphere`, `pvs`, `objects`, `view`, `light`, `parity`, `shadow` and `graph` tests).
-- The arms' sampling, proof, fall-back, switch and declines over the scene step: **Test** (`scene_step::tests::the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`).
+- The arms' sampling, proof, fall-back, switch and declines over the scene step: **Test** (`scene_step::tests::the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`, `a_refused_view_counts_and_the_guest_answers_that_frame`).
+- The sets walked from the record, not the guest's struct: **Test** (`visibility::tests::the_rust_cluster_set_from_the_view_record_equals_the_guests`).
 
 ## Not verified
 

@@ -2,32 +2,31 @@
 //! docs/graphics/retire-d3d.md): the main view's and the lights' visible
 //! clusters and object lists, and the main view's records, computed from
 //! the structure's portal graph, the observer camera and the sim's object
-//! references, beside the guest's.
+//! references.
 //!
 //! - [`graph`] decodes the structure's clusters, portals and potentially
 //!   visible set once into Rust-owned arrays ([`GraphCache`]).
+//! - [`view`] builds the main view's render camera, projection, start
+//!   cluster and mode: the [`Origin`] the main view's sets are walked from.
 //! - [`flood`] is the portal flood (mode 0) and the visible-set row
 //!   (mode 2), [`pvs`] a row computed at run time, [`sphere`] the sphere
 //!   mode (1).
 //! - [`frusta`] builds the windows' frusta mode 0 tests objects against.
 //! - [`objects`] is the object set over [`objects::ObjectWorld`], the
 //!   references and spheres [`guest`] reads.
-//! - [`view`] builds the main view's render camera, projection, start
-//!   cluster and mode, and compares them with the guest's.
 //! - [`light`] is a light view's sets against its struct's lists.
 //! - [`parity`] compares sets with the guest's lists, and
 //!   [`frusta::compare`] the window frusta with the guest's
 //!   ([`guest::window_frusta`]).
-//! - [`shadow`] is the three shadow arms (clusters, frusta, objects): a
+//! - [`shadow`] is the three audit arms (clusters, frusta, objects): a
 //!   sampled frame compares, an arm answers after its clean matches and
 //!   falls back to the guest on any difference.
 //!
-//! The scene step runs [`compute`] for a game view when an arm needs it,
-//! after the guest's gather, and [`answer`] puts the answering arms' sets
-//! in the view's `ClusterGather`. A view whose computation declined keeps
-//! the guest's lists, and a view whose lists did not read carries no
-//! gather; nothing here writes guest memory, so the sim's hashes cannot
-//! move.
+//! The scene step runs [`compute`] for a game view from the Rust view
+//! record, and [`answer`] puts the answering arms' sets in the view's
+//! `ClusterGather`. A view whose record or computation refused keeps the
+//! guest's lists for that frame; nothing here writes guest memory, so the
+//! sim's hashes cannot move.
 
 pub mod flood;
 pub mod frusta;
@@ -101,6 +100,23 @@ impl Decline {
     }
 }
 
+/// Where the main view's sets are walked from: the start cluster and mode
+/// of the Rust view record ([`view::build`]), not the ones the guest's
+/// `0x00132b80` stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Origin {
+    /// `u16::MAX` outside the structure.
+    pub start: u16,
+    /// 0 portal flood, 1 sphere, 2 the potentially visible set.
+    pub mode: u32,
+}
+
+impl Origin {
+    pub fn of(record: &view::ViewRecord) -> Self {
+        Self { start: record.start, mode: record.mode }
+    }
+}
+
 /// The graph of the structure last decoded. A new map (`epoch`), another
 /// structure, or a structure whose cluster or portal count changed decodes
 /// again; a structure that declined for its layout is not decoded again.
@@ -158,21 +174,22 @@ impl GraphCache {
     }
 }
 
-/// The main view's Rust visibility. `epoch` names the loaded map, for the
-/// cache.
+/// The main view's Rust visibility, walked from `origin` with `camera`'s
+/// lens. `epoch` names the loaded map, for the cache.
 pub fn compute(
     mem: &dyn GuestRead,
     camera: &RenderCamera,
+    origin: Origin,
     cache: &mut GraphCache,
     epoch: u64,
 ) -> Result<VisibilitySets, Decline> {
-    compute_with_windows(mem, camera, cache, epoch).map(|(sets, _)| sets)
+    compute_with_windows(mem, camera, origin, cache, epoch).map(|(sets, _)| sets)
 }
 
 pub fn compute_with_windows(
-    mem: &dyn GuestRead, camera: &RenderCamera, cache: &mut GraphCache, epoch: u64,
+    mem: &dyn GuestRead, camera: &RenderCamera, origin: Origin, cache: &mut GraphCache, epoch: u64,
 ) -> Result<(VisibilitySets, Option<frusta::WindowFrusta>), Decline> {
-    let view = guest::view(mem)?;
+    let view = guest::view(mem)?.from_origin(origin);
     let graph = cache.graph(mem, epoch, view.structure)?;
     let lens = flood::Lens::new(camera).ok_or(Decline::Camera)?;
     let none = view.start == u16::MAX;
@@ -228,18 +245,21 @@ pub fn compute_with_windows(
 }
 
 /// The view's gather with the shadow arms' answers ([`shadow`]): the Rust
-/// clusters in place of the guest's when `clusters`, the Rust objects when
-/// `objects`. The source is Rust only when both answer, so a gather marked
-/// Rust holds ascending sets. The structure list stays the guest's, and
-/// the guest's lists remain what the render records were built from.
+/// clusters, and the mode they were walked in, in place of the guest's
+/// when `clusters`, the Rust objects when `objects`. The source is Rust
+/// only when both answer, so a gather marked Rust holds ascending sets.
+/// The structure list stays the guest's, and the guest's lists remain
+/// what the render records were built from.
 pub fn answer(
     mut gather: frame_scene::scene::ClusterGather,
     rust: VisibilitySets,
+    mode: u32,
     clusters: bool,
     objects: bool,
 ) -> frame_scene::scene::ClusterGather {
     if clusters {
         gather.visible = rust.clusters;
+        gather.mode = mode;
     }
     if objects {
         gather.objects = rust.objects;
