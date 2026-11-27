@@ -28,13 +28,13 @@ use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
 use sim_sound::events::TableEvent;
-use sim_sound::instances::{
-    Handle, Levels, Permutation, PitchRange, Rejected, Rng, SoundTag, SoundTags, Sounds, SourceParams, TagIndex,
-    TagTable,
-};
+use sim_sound::impulse::Selection;
+use sim_sound::instances::{Handle, Levels, Rejected, Request, Rng, SoundTag, SoundTags, Sounds, TagIndex};
 use sim_sound::owners::Reason;
 use sim_sound::schedule::duration_ticks;
 
+use super::guest_tags::{self, Snapshot};
+use super::levels::GuestLevels;
 use super::owner_host::{GuestUnits, OwnerCounters, UnitCall};
 use super::request::{self, RequestError};
 
@@ -58,6 +58,9 @@ pub const DIALOGUE_ON: u32 = 0x29;
 pub const OBJECT_IS: u32 = 0x000b_adc0;
 /// `0xd0dc0(eax = unit, tag)`: the unit's line ended.
 pub const UNIT_LINE_ENDED: u32 = 0x000d_0dc0;
+/// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
+/// mouth (`ret 0x18`). It tests the unit itself and reads no payload.
+pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
 /// `0x126c30(eax = record, tag, &channel, _) -> al`: the start gate. It
 /// reads the class state and no pool (`h2 disasm 0x126c30`).
 pub const START_GATE: u32 = 0x0012_6c30;
@@ -83,10 +86,7 @@ mod sg {
     pub const ENV_NEXT: u32 = 0x200;
     pub const ENV_BLEND: u32 = 0x204;
 }
-/// `[0x51ebd4]`: the sound gestalt. Ranges at `+0x24` (12 bytes: first
-/// permutation `+8`, count `+0xa`), permutations at `+0x2c` (16 bytes:
-/// skip `+2`), promotion banks at `+0x34` (`0x34` bytes).
-pub const GESTALT: u32 = 0x0051_ebd4;
+use guest_tags::GESTALT;
 
 /// What one body does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +127,8 @@ pub enum Body {
     Choose,
     /// `0x219110`: [`chooser::pick`] over the gestalt's rows.
     Pick,
+    /// `0x219430`: the range row's word `+6` when the tag's class sets
+    /// flag bit 5, else -1: tag data, no history.
     HistoryLast,
     /// `0x2194a0`: the tag's promotion bank row.
     PromotionBank,
@@ -141,7 +143,6 @@ impl Body {
             }
             Body::Ambience => Some("the background ambience (sound globals +0x1ac) is not in the table"),
             Body::LoopUpdate | Body::LoopSource => Some("the looping-sound entries' arguments are not read"),
-            Body::HistoryLast => Some("the range word +6 it returns is not read"),
             _ => None,
         }
     }
@@ -194,20 +195,6 @@ pub fn body(addr: u32) -> Option<Body> {
     ENTRIES.iter().find(|e| e.point.base == addr).map(|e| e.body)
 }
 
-/// Levels before the guest port lands: every start is refused by the
-/// function the levels come from.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UnportedLevels;
-
-impl Levels for UnportedLevels {
-    fn level(&self, _: TagIndex, _: &SourceParams) -> f32 {
-        f32::NAN
-    }
-    fn refused(&self) -> Option<&'static str> {
-        Some("0x1251e0")
-    }
-}
-
 /// The doc's counters (`sound.*`), read by `sim.ledger`. Not saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SoundLedger {
@@ -224,6 +211,8 @@ pub struct SoundLedger {
     pub refused_unreadable: u64,
     /// A start refused because [`Levels::refused`] names its source.
     pub refused_no_level: u64,
+    /// Levels a guest read fault left at the floor (`GuestLevels::faults`).
+    pub level_faults: u64,
     /// The admission refused past the slot (`NoScale`, `NoPromotion`,
     /// `Choose`), or a chooser entry could not choose.
     pub refused_choose: u64,
@@ -232,9 +221,8 @@ pub struct SoundLedger {
     /// Guest calls the bodies make: the original create, dispose and
     /// listener math, the start gate and rule, the pause time.
     pub entry_guest_calls: u64,
-    /// Mouth calls queued by the step and not made: the owner payload's
-    /// layout is not read.
-    pub mouth_unported: u64,
+    /// Mouth calls made (`0x18c6a0`), one a tick per running owned sound.
+    pub mouth_calls: u64,
     /// Events handed to the host by the service.
     pub service_events: u64,
     /// Runs of the sound phase, and their time on the monotonic clock.
@@ -246,8 +234,10 @@ pub struct SoundLedger {
 /// waiting for the host.
 pub struct Table {
     pub sounds: Sounds,
-    tags: Arc<dyn SoundTags + Send + Sync>,
-    levels: Arc<dyn Levels + Send + Sync>,
+    /// Fixed tag data and levels (tests); `None` reads them from the map
+    /// in guest memory at each call ([`Snapshot`], [`GuestLevels`]).
+    tags: Option<Arc<dyn SoundTags + Send + Sync>>,
+    levels: Option<Arc<dyn Levels + Send + Sync>>,
     pub ledger: SoundLedger,
     outbox: Vec<TableEvent>,
     last_phase: Option<u32>,
@@ -257,13 +247,13 @@ pub type Shared = Arc<Mutex<Table>>;
 
 impl Table {
     pub fn new(tags: Arc<dyn SoundTags + Send + Sync>, levels: Arc<dyn Levels + Send + Sync>) -> Self {
-        Self { sounds: Sounds::new(), tags, levels, ledger: SoundLedger::default(), outbox: Vec::new(), last_phase: None }
+        Self { tags: Some(tags), levels: Some(levels), ..Self::guest() }
     }
 
-    /// No tag data and no levels: every start refuses by name until the
-    /// map's tags and the guest levels are wired.
-    pub fn headless() -> Self {
-        Self::new(Arc::new(TagTable::default()), Arc::new(UnportedLevels))
+    /// The map's tags and the guest levels, read from guest memory: the
+    /// table boot installs.
+    pub fn guest() -> Self {
+        Self { sounds: Sounds::new(), tags: None, levels: None, ledger: SoundLedger::default(), outbox: Vec::new(), last_phase: None }
     }
 
     fn reset(&mut self) {
@@ -297,7 +287,8 @@ impl Table {
             ("sound.refused_choose", l.refused_choose),
             ("sound.refused_entry", l.refused_entry.values().sum()),
             ("sound.entry_guest_calls", l.entry_guest_calls),
-            ("sound.mouth_unported", l.mouth_unported),
+            ("sound.mouth_calls", l.mouth_calls),
+            ("sound.level_faults", l.level_faults),
             ("sound.service_events", l.service_events),
             ("sound.phase_runs", l.phase_runs),
             ("sound.phase_ns", l.phase_ns),
@@ -316,7 +307,7 @@ impl Table {
 }
 
 /// The process's table: the one the hooks and the tick's phase share.
-pub static SHARED: LazyLock<Shared> = LazyLock::new(|| Arc::new(Mutex::new(Table::headless())));
+pub static SHARED: LazyLock<Shared> = LazyLock::new(|| Arc::new(Mutex::new(Table::guest())));
 
 pub fn lock(t: &Mutex<Table>) -> MutexGuard<'_, Table> {
     t.lock().unwrap_or_else(|e| e.into_inner())
@@ -376,8 +367,18 @@ fn object_gone(m: &dyn GuestMemory, datum: u32) -> bool {
     !live().unwrap_or(false)
 }
 
+/// The permutation row a selection names (`0x18c6a0`'s fifth argument).
+fn permutation_at(m: &dyn GuestMemory, tag: TagIndex, selection: Selection) -> Result<u32, MemFault> {
+    let def = guest_tags::definition(m, tag.0)?;
+    let gestalt = m.u32(GESTALT)?;
+    let range = i32::from(m.u16(def.wrapping_add(8))? as i16) + i32::from(selection.range);
+    let row = m.u32(gestalt.wrapping_add(0x24))?.wrapping_add(12u32.wrapping_mul(range as u32));
+    let permutation = i32::from(m.u16(row.wrapping_add(8))? as i16) + i32::from(selection.permutation);
+    Ok(m.u32(gestalt.wrapping_add(0x2c))?.wrapping_add(16u32.wrapping_mul(permutation as u32)))
+}
+
 /// Make the unit calls the step queued: a line's end through `0x18c8c0`'s
-/// gate and unit test; a mouth is counted and not made.
+/// gate and unit test, a mouth through `0x18c6a0`.
 async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), engine::entry::EntryError> {
     for call in calls {
         match call {
@@ -390,8 +391,15 @@ async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(),
                     cx.call(GuestCall::new(UNIT_LINE_ENDED).eax(object).args([tag.0])).await?;
                 }
             }
-            UnitCall::Mouth { .. } => {
-                lock(table).ledger.mouth_unported += 1;
+            UnitCall::Mouth { object, tag, selection, ticks } => {
+                let Ok(permutation) = cx.read(|m| permutation_at(m, tag, selection)) else {
+                    lock(table).ledger.refused_unreadable += 1;
+                    continue;
+                };
+                let seconds = super::owners::seconds(ticks).to_bits();
+                let range = i32::from(selection.range) as u32;
+                cx.call(GuestCall::new(UNIT_MOUTH).args([object, 0, tag.0, range, permutation, seconds])).await?;
+                lock(table).ledger.mouth_calls += 1;
             }
         }
     }
@@ -450,16 +458,29 @@ pub async fn phase(cx: &Cx, table: &Shared) -> EntryResult {
 impl Table {
     /// `step_loops`, then `step`, with the guest's seed word as the RNG.
     fn step_phase(&mut self, host: &mut GuestUnits<'_>, tick: u32) {
-        let seed = seed_at(host.memory()).and_then(|at| Ok((at, host.memory().u32(at)?)));
-        let Ok((at, before)) = seed else {
+        let mem: &dyn GuestMemory = host.memory();
+        let Ok((at, before)) = seed_at(mem).and_then(|at| Ok((at, mem.u32(at)?))) else {
             self.ledger.refused_unreadable += 1;
             return;
         };
         let mut rng = Rng::new(before);
-        let (tags, levels) = (Arc::clone(&self.tags), Arc::clone(&self.levels));
-        if levels.refused().is_none() || self.sounds.loops().is_empty() {
-            self.sounds.step_loops(&mut rng, &*tags, &*levels, tick);
+        // The loops' tags come with the loop entries; until then a guest
+        // table has no loop to step.
+        let empty = Snapshot::default();
+        let (fixed_tags, fixed_levels) = (self.tags.clone(), self.levels.clone());
+        let tags: &dyn SoundTags = match &fixed_tags {
+            Some(t) => &**t,
+            None => &empty,
+        };
+        let guest_levels = GuestLevels::new(mem);
+        let levels: &dyn Levels = match &fixed_levels {
+            Some(l) => &**l,
+            None => &guest_levels,
+        };
+        if levels.refused().is_none() {
+            self.sounds.step_loops(&mut rng, tags, levels, tick);
         }
+        self.ledger.level_faults += guest_levels.faults.get();
         let events = self.sounds.step(tick, host);
         self.outbox.extend(events);
         if rng.state() != before {
@@ -469,7 +490,7 @@ impl Table {
     }
 
     /// Admit a read request on `tick` with the guest's seed.
-    fn admit(&mut self, m: &mut dyn GuestMemory, request: Result<sim_sound::instances::Request, RequestError>, tick: u32) -> u32 {
+    fn admit(&mut self, m: &mut dyn GuestMemory, request: Result<Request, RequestError>, tick: u32) -> u32 {
         let mut request = match request {
             Ok(r) => r,
             Err(RequestError::UnknownOwner { .. }) => {
@@ -481,11 +502,39 @@ impl Table {
                 return NONE;
             }
         };
-        if self.levels.refused().is_some() {
-            self.ledger.refused_no_level += 1;
+        let snapshot = match &self.tags {
+            Some(_) => None,
+            None => match Snapshot::of_tag(&*m, request.tag, request.rule) {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    self.ledger.refused_unreadable += 1;
+                    return NONE;
+                }
+            },
+        };
+        let fixed = self.tags.clone();
+        let tags: &dyn SoundTags = match (&fixed, &snapshot) {
+            (Some(t), _) => &**t,
+            (None, Some(s)) => s,
+            (None, None) => unreachable!("read above"),
+        };
+        if tags.sound(request.tag).is_none() {
+            self.ledger.refused_unknown_tag += 1;
             return NONE;
         }
-        request.level = self.levels.level(request.tag, &request.source);
+        request.level = match &self.levels {
+            Some(l) if l.refused().is_some() => {
+                self.ledger.refused_no_level += 1;
+                return NONE;
+            }
+            Some(l) => l.level(request.tag, &request.source),
+            None => {
+                let l = GuestLevels::new(&*m);
+                let level = l.level(request.tag, &request.source);
+                self.ledger.level_faults += l.faults.get();
+                level
+            }
+        };
         let Ok(at) = seed_at(m) else {
             self.ledger.refused_unreadable += 1;
             return NONE;
@@ -495,8 +544,7 @@ impl Table {
             return NONE;
         };
         let mut rng = Rng::new(before);
-        let tags = Arc::clone(&self.tags);
-        let result = self.sounds.admit(&mut rng, &*tags, request, tick);
+        let result = self.sounds.admit(&mut rng, tags, request, tick);
         self.ledger.draws += draws_between(before, rng.state());
         let _ = m.set_u32(at, rng.state());
         match result {
@@ -514,64 +562,6 @@ impl Table {
     }
 }
 
-/// A gestalt pitch range and its permutations, read for one chooser call.
-struct Rows {
-    absolute: u16,
-    range: PitchRange,
-    permutations: BTreeMap<u16, Permutation>,
-}
-
-impl SoundTags for Rows {
-    fn sound(&self, _: TagIndex) -> Option<&SoundTag> {
-        None
-    }
-    fn range(&self, index: u16) -> Option<&PitchRange> {
-        (index == self.absolute).then_some(&self.range)
-    }
-    fn permutation(&self, index: u16) -> Option<&Permutation> {
-        self.permutations.get(&index)
-    }
-    fn scale(&self, _: i8) -> Option<&sim_sound::instances::Scale> {
-        None
-    }
-    fn promotion(&self, _: u8, _: u16) -> Option<u16> {
-        None
-    }
-}
-
-/// The rows of `absolute` from the gestalt, the reads `0x219110` makes.
-fn rows(m: &dyn GuestMemory, absolute: i32) -> Result<Rows, MemFault> {
-    let gestalt = m.u32(GESTALT)?;
-    let at = m.u32(gestalt.wrapping_add(0x24))?.wrapping_add(12u32.wrapping_mul(absolute as u32));
-    let first = m.u16(at.wrapping_add(8))? as i16;
-    let count = m.u16(at.wrapping_add(0xa))? as i16;
-    let perms = m.u32(gestalt.wrapping_add(0x2c))?;
-    let mut permutations = BTreeMap::new();
-    for i in 0..count.max(0) {
-        let index = (i32::from(first) + i32::from(i)) as u16;
-        let skip = m.u16(perms.wrapping_add(16 * u32::from(index)).wrapping_add(2))?;
-        permutations.insert(index, Permutation { skip, length_ms: None });
-    }
-    Ok(Rows {
-        absolute: absolute as u16,
-        range: PitchRange { first_permutation: first, count, ..PitchRange::default() },
-        permutations,
-    })
-}
-
-/// The tag's class flags, as `0x219430` reads them: the sound globals
-/// tag's class rows (`0x5c` bytes, flags `+0xa`), the class at tag `+2`.
-fn class_flags(m: &dyn GuestMemory, tag: u32) -> Result<u8, MemFault> {
-    let globals = m.u32(points::GLOBALS_TAG.base)?;
-    let block = if m.u32(globals.wrapping_add(0xc0))? != 0 { m.u32(globals.wrapping_add(0xc4))? } else { 0 };
-    let datum = m.u32(block.wrapping_add(4))?;
-    let entries = m.u32(points::TAG_ENTRIES.base)?;
-    let data = m.u32(entries.wrapping_add((datum & 0xffff) * 16 + 8))?;
-    let classes = m.u32(data.wrapping_add(4))?;
-    let class = m.u8(tag.wrapping_add(2))? as i8 as i32;
-    m.u8(classes.wrapping_add((class * 0x5c) as u32).wrapping_add(0xa))
-}
-
 async fn choose(cx: &Cx, table: &Shared) -> EntryResult {
     let entry = cx.entry();
     let tag = entry.edi;
@@ -580,10 +570,11 @@ async fn choose(cx: &Cx, table: &Shared) -> EntryResult {
         let sound = SoundTag {
             first_range: m.u16(tag.wrapping_add(8))? as i16,
             range_count: m.u8(tag.wrapping_add(0xa))? as i8,
-            class_flags: class_flags(m, tag)?,
+            class_flags: guest_tags::class_flags(m, tag)?,
             ..SoundTag::default()
         };
-        let rows = rows(m, i32::from(sound.first_range) + i32::from(range))?;
+        let mut rows = Snapshot::default();
+        rows.read_range(m, i32::from(sound.first_range) + i32::from(range))?;
         let at = seed_at(m)?;
         let before = m.u32(at)?;
         let mut rng = Rng::new(before);
@@ -609,11 +600,13 @@ async fn pick(cx: &Cx, table: &Shared) -> EntryResult {
     let [last, seed, exhausted, invert] = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?];
     let r = cx.write(|m| -> Result<Result<chooser::Pick, ()>, MemFault> {
         let absolute = i32::from(m.u16(tag.wrapping_add(8))? as i16) + i32::from(range);
-        let rows = rows(m, absolute)?;
+        let mut rows = Snapshot::default();
+        rows.read_range(m, absolute)?;
+        let row = rows.ranges[&(absolute as u16)];
         let used = m.u32(used_at)?;
         let before = m.u32(seed)?;
         let mut rng = Rng::new(before);
-        let picked = chooser::pick(&mut rng, &rows, &rows.range, absolute, i32::from(last as u16 as i16), used, invert as u8 != 0);
+        let picked = chooser::pick(&mut rng, &rows, &row, absolute, i32::from(last as u16 as i16), used, invert as u8 != 0);
         lock(table).ledger.draws += draws_between(before, rng.state());
         m.set_u32(seed, rng.state())?;
         if let Ok(p) = picked {
@@ -742,6 +735,18 @@ async fn paused(cx: &Cx, table: &Shared) -> EntryResult {
     Ok(Ret::new(0, 0))
 }
 
+/// `0x219430`: with the tag's class flag bit 5, the range row's `u16` at
+/// `+6` (`0xffff` as -1); else -1.
+fn range_word(m: &dyn GuestMemory, range: u32, tag: u32) -> Result<u32, MemFault> {
+    if guest_tags::class_flags(m, tag)? & (1 << 5) == 0 {
+        return Ok(NONE);
+    }
+    Ok(match m.u16(range.wrapping_add(6))? {
+        0xffff => NONE,
+        w => u32::from(w),
+    })
+}
+
 /// `0x2194a0`: tag `+0xd` is the bank, `0xff` for none.
 fn promotion_bank(m: &dyn GuestMemory, tag: u32) -> Result<u32, MemFault> {
     let bank = m.u8(tag.wrapping_add(0xd))?;
@@ -827,14 +832,17 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             let tag = cx.entry().eax;
             Ok(Ret::new(cx.read(|m| promotion_bank(m, tag))?, 0))
         }
+        Body::HistoryLast => {
+            let (range, tag) = (cx.arg(0)?, cx.arg(1)?);
+            Ok(Ret::new(cx.read(|m| range_word(m, range, tag))?, 8))
+        }
         Body::StartsUpdate
         | Body::StartLayerNew
         | Body::StartLayerPlay
         | Body::StartLayerRun
         | Body::Ambience
         | Body::LoopUpdate
-        | Body::LoopSource
-        | Body::HistoryLast => unreachable!("refused above"),
+        | Body::LoopSource => unreachable!("refused above"),
     }
 }
 
