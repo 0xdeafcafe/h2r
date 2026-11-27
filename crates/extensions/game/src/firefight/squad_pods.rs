@@ -66,6 +66,8 @@ pub struct Counts {
     pub drops: u32,
     /// Squads placed on foot instead, by reason.
     pub fallbacks: BTreeMap<Fallback, u32>,
+    /// Wrecks parked again.
+    pub reparks: u32,
 }
 
 /// The squad pods of one match.
@@ -182,6 +184,7 @@ impl SquadPods {
                     out.push(*object);
                 }
                 *slot = Slot::Free;
+                self.counts.reparks += 1;
             }
         }
         out

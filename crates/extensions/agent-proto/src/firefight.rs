@@ -106,6 +106,16 @@ pub struct Pods {
     /// `never_landed`, `gone`).
     #[serde(default)]
     pub pod_fallbacks: std::collections::BTreeMap<String, u32>,
+    /// Squads that fell in a pod.
+    #[serde(default)]
+    pub squad_falls: u32,
+    /// Squads placed on foot instead of by pod, by reason (`no_fall`,
+    /// `no_free_pod`).
+    #[serde(default)]
+    pub squad_fallbacks: std::collections::BTreeMap<String, u32>,
+    /// Squad pods parked again after their wreck.
+    #[serde(default)]
+    pub squad_reparks: u32,
 }
 
 /// The director's mode blob, summarised.

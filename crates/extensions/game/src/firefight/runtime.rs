@@ -1760,6 +1760,7 @@ fn phase_name(phase: ::firefight::director::Phase) -> (&'static str, Option<u32>
 
 fn pods_state(game: &Match) -> wire::Pods {
     let counts = game.pods.counts();
+    let squad = game.host.squad_pod_counts();
     wire::Pods {
         on: game.pods.enabled(),
         hidden: match super::pods::row(Some(&game.kit)) {
@@ -1773,6 +1774,13 @@ fn pods_state(game: &Match) -> wire::Pods {
             .iter()
             .map(|(r, n)| (r.name().to_owned(), *n))
             .collect(),
+        squad_falls: squad.drops,
+        squad_fallbacks: squad
+            .fallbacks
+            .iter()
+            .map(|(r, n)| (r.name().to_owned(), *n))
+            .collect(),
+        squad_reparks: squad.reparks,
     }
 }
 

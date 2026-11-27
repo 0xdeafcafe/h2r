@@ -36,6 +36,8 @@ pub const POD: &str = r"objects\vehicles\insertion_pod\insertion_pod";
 /// Parked squad pods, `ff_pod_NN`.
 pub const POD_PREFIX: &str = "ff_pod_";
 /// Parked player pods, `ff_ppod_NN`.
+/// Parked Flood squad pods, `ff_fpod_NN`: the human squads fall in `ff_pod_NN`.
+pub const FLOOD_POD_PREFIX: &str = "ff_fpod_";
 pub const PLAYER_POD_PREFIX: &str = "ff_ppod_";
 /// A zone's fall, the point set `ff_fall_NN` for `ff_drop_NN`.
 pub const FALL_PREFIX: &str = "ff_fall_";
@@ -296,6 +298,7 @@ fn current<R: Read + Seek>(
 pub(crate) fn author<R: Read + Seek>(
     map: &mut Map<R>,
     pod: TagId,
+    flood_pod: Option<TagId>,
     falls: &Falls,
     bsp: i16,
     fields: &mut Vec<(usize, u32, Block)>,
@@ -315,7 +318,7 @@ pub(crate) fn author<R: Read + Seek>(
     let (name_count, mut names) = current(map, &root, fields, OBJECT_NAMES as usize, OBJECT_NAME)?;
     ensure!(
         !names.bytes.chunks(OBJECT_NAME).any(|n| {
-            [POD_PREFIX, PLAYER_POD_PREFIX]
+            [POD_PREFIX, FLOOD_POD_PREFIX, PLAYER_POD_PREFIX]
                 .iter()
                 .any(|p| n.starts_with(p.as_bytes()))
         }),
@@ -323,19 +326,24 @@ pub(crate) fn author<R: Read + Seek>(
     );
     let (place_count, mut placements) = current(map, &root, fields, placements_at, stride)?;
     let (palette_count, mut palette) = current(map, &root, fields, palette_at, PALETTE)?;
-    let row = match palette
+    let mut row_of = |tag: TagId| match palette
         .bytes
         .chunks(PALETTE)
-        .position(|r| r[4..8] == pod.0.to_le_bytes())
+        .position(|r| r[4..8] == tag.0.to_le_bytes())
     {
         Some(row) => row,
         None => {
             let at = palette.bytes.len();
             palette.bytes.extend(std::iter::repeat_n(0, PALETTE));
-            palette.tag_ref(at as u32, pod);
-            palette_count
+            palette.tag_ref(at as u32, tag);
+            at / PALETTE
         }
     };
+    // The human squads and the players fall in the insertion pod, the Flood
+    // squads in the Flood pod when the kit has one.
+    let player_row = row_of(pod);
+    let squad_row = player_row;
+    let flood_row = flood_pod.map(&mut row_of);
     let palette_len = palette.bytes.len() / PALETTE;
     let index = |len: usize, what: &str| {
         i16::try_from(len).map_err(|_| anyhow::anyhow!("{what} index overflow"))
@@ -344,7 +352,7 @@ pub(crate) fn author<R: Read + Seek>(
     let mut added = 0;
     let mut next_name = name_count;
     let mut next_place = place_count;
-    let mut pool = |prefix: &str, count: usize, at: V3| -> Result<()> {
+    let mut pool = |prefix: &str, count: usize, at: V3, row: usize| -> Result<()> {
         for n in 0..count {
             let mut name = name32(&format!("{prefix}{n:02}"));
             name.put_u16(0x20, 1);
@@ -370,10 +378,13 @@ pub(crate) fn author<R: Read + Seek>(
         Ok(())
     };
     if let Some(first) = squad_first {
-        pool(POD_PREFIX, SQUAD_PODS, first.top)?;
+        pool(POD_PREFIX, SQUAD_PODS, first.top, squad_row)?;
+        if let Some(row) = flood_row {
+            pool(FLOOD_POD_PREFIX, SQUAD_PODS, first.top, row)?;
+        }
     }
     if let Some(first) = player_first {
-        pool(PLAYER_POD_PREFIX, PLAYER_PODS, first.top)?;
+        pool(PLAYER_POD_PREFIX, PLAYER_PODS, first.top, player_row)?;
     }
     fields.push((OBJECT_NAMES as usize, next_name as u32, names));
     fields.push((placements_at, next_place as u32, placements));

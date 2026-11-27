@@ -629,6 +629,25 @@ fn assemble(
             }
         }
     }
+    // A kit with Flood classes and falls over its zones drops its squads in
+    // the Flood pod: a tag of our own, built into the map.
+    let flood_pod = if copy_pod.is_some() || pod_pick.is_some() {
+        let flood = added.factions.contains(&firefight::Faction::Flood)
+            && falls.zone_count() > 0;
+        if flood {
+            let refused = |e: anyhow::Error| {
+                anyhow::Error::from(transplant::PodRefused(format!("Flood pod: {e:#}")))
+            };
+            let facts = flood_pod_kit::kit::Facts::read(&mut map).map_err(refused)?;
+            let tags = flood_pod_kit::kit::install(&mut set, &facts).map_err(refused)?;
+            set.intern(&flood_pod_kit::inject::marker_string())?;
+            Some(tags)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let pod_tag = match &pod_pick {
         Some(sky::Pick::Have(id, name)) => Some((*id, name.clone())),
         Some(sky::Pick::Copy(path)) => added.pod.as_ref().map(|(id, _)| (*id, (*path).to_owned())),
@@ -671,6 +690,7 @@ fn assemble(
         Some((tag, _)) => sky::author(
             &mut map,
             *tag,
+            flood_pod.as_ref().map(|t| t.vehicle),
             &falls,
             ship_bsp,
             &mut ship_fields,
@@ -761,6 +781,12 @@ fn assemble(
     set.check_tag_memory = false;
     let (bytes, layout) = set.build()?;
     costs.characters += layout.tags[elite.index()].1 as usize;
+    if let Some(t) = &flood_pod {
+        costs.pods += [t.vehicle, t.model, t.render, t.physics, t.shader, t.bitmap]
+            .iter()
+            .map(|id| layout.tags[id.index()].1 as usize)
+            .sum::<usize>();
+    }
     costs.index = layout.index_in_metadata as usize;
     costs.tag_growth = layout
         .memory_size
@@ -821,7 +847,7 @@ fn assemble(
         pod_report = Some(PodReport {
             kept: true,
             tag,
-            tags: added.pod.as_ref().map_or(0, |(_, c)| c.tags),
+            tags: added.pod.as_ref().map_or(0, |(_, c)| c.tags) + flood_pod.as_ref().map_or(0, |_| 6),
             bytes: costs.pods,
             zone_falls: falls.zone_count(),
             open_starts: falls.start_count(),

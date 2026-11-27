@@ -517,6 +517,11 @@ impl Host {
         Ok(true)
     }
 
+    /// The squads' pods: the counters `firefight.state` reports.
+    pub fn squad_pod_counts(&self) -> &super::squad_pods::Counts {
+        self.pods.counts()
+    }
+
     pub fn kit(&self) -> &Kit {
         &self.kit
     }
