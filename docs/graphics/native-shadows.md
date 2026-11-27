@@ -4,7 +4,17 @@ Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 at an
 Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `native_lights_glue.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`, `shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`, `shadow_chain.rs`, `crates/extensions/game/src/native_shadow_chain.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `light_gpu`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The shadow draw stage consumes the gathered lists from [native-light-gather.md](native-light-gather.md). It keeps template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map. An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The guest's target begin, clear and end still run. The object shadow list `0x000335e0` is a cut producer (`render_bridge::cut`, row `object_shadows`): the Rust list answers every call, its layers draw in slot 3 before layer 7, and a list, row gather or caster it cannot take is `scene_dropped_object_shadows`, never a guest body or a D3D draw. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
+| Layer | Target | What it draws |
+|---|---|---|
+| 10 | 9 (depth map) or 10 (object mask) | casters, from list 2 (`0x004c1a78`) |
+| 11 | the view's target | receivers, from list 1 (`0x004c1a60`) |
+| 14 | target 1 and the shared depth surface | receivers when list bit 14 asks |
+
+The shadow draw stage consumes the gathered lists from [native-light-gather.md](native-light-gather.md). It keeps template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
+
+At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map. The guest's target begin, clear and end still run.
+
+An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The object shadow list `0x000335e0` is a cut producer (`render_bridge::cut`, row `object_shadows`): the Rust list answers every call and its layers draw in slot 3 before layer 7. A list, row gather or caster it cannot take is `scene_dropped_object_shadows`, never a guest body or a D3D draw.
 
 ## How it works
 
@@ -74,7 +84,7 @@ sample at the default record's +0x1c for body +7 bit 0. Otherwise it
 follows an attachment to its root and returns render-cache entry +0x54
 when the entry is valid (byte +3 set). The mask branch requires a
 sample. Its +0x0c vector becomes the projection's **forward**, along
-the cast shadow: `0x00032493` copies it, `0x000324b1` normalizes it,
+the cast shadow: `0x00032493` copies it, `0x000324b1` normalises it,
 and `0x00032905` passes that frame to the shadow setup. The receiver's
 hardware `c[41].xyz` is the opposite, toward the light
 (`0x00048f85`, `engine::shadow_constants`).
@@ -95,22 +105,15 @@ The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `
 
 ### The object shadows from the scene
 
-`render_bridge::native_lights::object_shadow_scene` gathers the open
-view's object shadows (each `0x00032350`: its layer 10 and 11 groups and
-the filter between them) and hands them to the host in slot 3, ahead of
-layer 7's draw (`native_layers::before_layer`). The game host
-(`native_lights_glue`'s `draw_object_shadows`,
-`native_lights_glue/scene.rs`, `object_ops`) makes each shadow one
-external sequence, committed whole or not at all:
+`render_bridge::native_lights::object_shadow_scene` gathers the open view's object shadows (each `0x00032350`: its layer 10 and 11 groups and the filter between them) and hands them to the host in slot 3, ahead of layer 7's draw (`native_layers::before_layer`). The game host (`native_lights_glue`'s `draw_object_shadows`, `native_lights_glue/scene.rs`, `object_ops`) makes each shadow one external sequence, committed whole or not at all:
 
-- target 10 cleared to white with zero alpha;
-- the caster group drawn into it, colour only;
-- the filter quads over targets 10 and 11 (`native_shadows_glue`'s
-  `ShadowFilterPass` with `FilterDrawer::Scene`, one quad drawer per
-  device);
-- target 10's colour copied into a map on each target copy at its own
-  texels;
-- the layer 11 receivers on the view's target, sampling that copy's map.
+```mermaid
+flowchart LR
+  C[clear target 10: white, zero alpha] --> K[caster group into it, colour only]
+  K --> F[filter quads over targets 10 and 11: ShadowFilterPass, FilterDrawer::Scene]
+  F --> M[copy target 10 colour into a map on each target copy at its own texels]
+  M --> R[layer 11 receivers on the view's target sample that copy's map]
+```
 
 Under the scene path (`native_lights::scene_path_ready`) the caster body
 `0x00032350` (`engine::render::light_gather::object_shadows::caster`,

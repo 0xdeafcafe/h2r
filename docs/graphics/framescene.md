@@ -351,7 +351,7 @@ thread before the publish.
 
 ### 5.2 Writes the tick reads
 
-The render census ([notes/pipelined-render.md](notes/pipelined-render.md), "Every
+The render census ([notes/pipelined-render-census.md](notes/pipelined-render-census.md), "Every
 dependency line" and "The new dependency sites") and sim mode
 ([sim.md](../runtime/sim.md), "What the render writes that the sim
 reads") list them. The frame step must leave each one as the guest
