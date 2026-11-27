@@ -29,7 +29,7 @@ states:
 widgets:
   title:
     component: title
-    text: "Mods"
+    text: "Mod Downloader"
   description:
     component: description
     at: [39, -30]

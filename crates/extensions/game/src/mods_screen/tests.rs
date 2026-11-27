@@ -116,11 +116,11 @@ fn the_live_menu_row_counts_what_is_new_until_the_screen_opens() {
     let dir = temp("seen");
     let file = dir.join(SEEN_FILE);
     let (_, repo) = listed(three(), Some(file.clone()));
-    assert_eq!(repo.menu_text(), "Mods (3 new)", "never opened: all new");
-    assert_eq!(repo.texts.get(MENU_SLOT).as_deref(), Some("Mods (3 new)"));
+    assert_eq!(repo.menu_text(), "Mod Downloader (3 new)", "never opened: all new");
+    assert_eq!(repo.texts.get(MENU_SLOT).as_deref(), Some("Mod Downloader (3 new)"));
     repo.opened();
-    assert_eq!(repo.menu_text(), "Mods");
-    assert_eq!(repo.texts.get(MENU_SLOT).as_deref(), Some("Mods"));
+    assert_eq!(repo.menu_text(), "Mod Downloader");
+    assert_eq!(repo.texts.get(MENU_SLOT).as_deref(), Some("Mod Downloader"));
     assert_eq!(read_seen(&file), 30, "kept on disk");
     // This visit still shows them as new.
     assert_eq!(repo.list_row(0).unwrap().1, "New");
@@ -128,7 +128,7 @@ fn the_live_menu_row_counts_what_is_new_until_the_screen_opens() {
     let mut four = three();
     four.insert(0, entry(4, "Lockout Lasers", Some(41)));
     let (_, again) = listed(four, Some(file.clone()));
-    assert_eq!(again.menu_text(), "Mods (1 new)");
+    assert_eq!(again.menu_text(), "Mod Downloader (1 new)");
     again.opened();
     assert_eq!(
         again.list_row(0).unwrap(),
@@ -145,9 +145,9 @@ fn the_live_menu_row_counts_what_is_new_until_the_screen_opens() {
 
 #[test]
 fn menu_text_reads_short() {
-    assert_eq!(menu_text(0), "Mods");
-    assert_eq!(menu_text(3), "Mods (3 new)");
-    assert_eq!(menu_text(150), "Mods (99+ new)");
+    assert_eq!(menu_text(0), "Mod Downloader");
+    assert_eq!(menu_text(3), "Mod Downloader (3 new)");
+    assert_eq!(menu_text(150), "Mod Downloader (99+ new)");
     assert!(menu_text(99).len() <= crate::custom_games::TEXT.len());
 }
 
@@ -172,7 +172,7 @@ fn the_list_says_why_it_is_empty() {
         Some("Sign in to Live first. A reads the list again.")
     );
     assert_eq!(repo.list_description(1), None);
-    assert_eq!(repo.menu_text(), "Mods");
+    assert_eq!(repo.menu_text(), "Mod Downloader");
     // A press asks again.
     assert!(matches!(repo.press_list(0), Chosen::Stepped(_)));
     assert!(repo.wanted.load(Ordering::SeqCst));
@@ -231,12 +231,12 @@ fn the_reader_waits_for_live_sign_in_then_fetches_without_a_retry_delay() {
         items: three(),
         ..Default::default()
     }));
-    assert_eq!(repo.menu_text(), "Mods (3 new)");
+    assert_eq!(repo.menu_text(), "Mod Downloader (3 new)");
 
     fake.signed_out.store(true, Ordering::SeqCst);
     repo.read_if_due(sign_in + Duration::from_secs(2));
     assert!(fake.lists.lock().unwrap().is_empty());
-    assert_eq!(repo.menu_text(), "Mods (3 new)");
+    assert_eq!(repo.menu_text(), "Mod Downloader (3 new)");
 
     fake.signed_out.store(false, Ordering::SeqCst);
     repo.read_if_due(sign_in + Duration::from_secs(3));
@@ -672,7 +672,7 @@ fn every_text_fits_and_has_an_id_of_the_family() {
     assert!(rows
         .describe(3)
         .unwrap()
-        .starts_with("title \"Mods\"; rows: [0]"));
+        .starts_with("title \"Mod Downloader\"; rows: [0]"));
     // The most facts a page can have fit its table.
     let mut most = entry(1, "M", None);
     most.features = vec!["ai".into()];
@@ -686,7 +686,7 @@ fn every_text_fits_and_has_an_id_of_the_family() {
 #[test]
 fn slots_are_served_once_placed() {
     let s = Slots::default();
-    let id = s.set(LIST_TITLE, "Mods");
+    let id = s.set(LIST_TITLE, "Mod Downloader");
     assert_eq!(s.address(id), None, "no memory yet");
     s.base.store(0x0080_0000, Ordering::SeqCst);
     assert_eq!(s.address(id), Some(0x0080_0000 + LIST_TITLE * SLOT_LEN));
@@ -1048,10 +1048,10 @@ fn a_cold_visit_can_retry_and_browse_every_row_without_changing_focus_on_refresh
     assert_eq!(rows.growing_capacity(), Some(MAX_ROWS));
     repo.listed(Ok(three()));
     assert_eq!(rows.count(), 3);
-    assert_eq!(repo.menu_text(), "Mods");
+    assert_eq!(repo.menu_text(), "Mod Downloader");
     assert_eq!(rows.press(2), Chosen::Open(DETAIL));
     repo.listed(Ok(vec![entry(4, "New arrival", Some(40))]));
-    assert_eq!(repo.menu_text(), "Mods (1 new)");
+    assert_eq!(repo.menu_text(), "Mod Downloader (1 new)");
     assert_eq!(rows.count(), 3);
     assert_eq!(repo.selected().unwrap().id, id(1));
     repo.closed();
@@ -1073,7 +1073,7 @@ fn bulk_download_requires_focus_on_download_all_in_a_listed_pack() {
     assert_eq!(repo.pack_line(0).as_deref(), Some("Pack unavailable"));
     assert_eq!(
         repo.pack_description(0).as_deref(),
-        Some("This pack is no longer listed. Press B to return to Mods.")
+        Some("This pack is no longer listed. Press B to return to Mod Downloader.")
     );
     assert_eq!(repo.press_pack(0), Chosen::Nothing);
     repo.x_pack(Some(0));

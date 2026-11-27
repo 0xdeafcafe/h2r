@@ -73,15 +73,15 @@ The category follows the slot's load path. The DVD's
 `D:\maps\<name>.map` has its original Halo 2 slot. Map Pack maps keep their
 imported `T:\$c\<offer>\<name>.map` slots. Each mod uses a separate content
 offer, a separate list ID, and a free multiplayer slot. A mod based on
-Lockout is listed by its own name under **Mods** while **Lockout** remains
+Lockout is listed by its own name under **Mod Downloader** while **Lockout** remains
 under **Halo 2**. The same rule applies to mods based on Map Pack maps.
 
-A fully installed Live pack appears as a folder under **Mods**. The
+A fully installed Live pack appears as a folder under **Mod Downloader**. The
 folder lists its base maps. Pick one to play that member and use the
 pack for later map choices. In **Halo 2** and **Map Pack**, a covered
 base shows its name followed by the pack name. Its row selects the
 member's exact offer. Uncovered maps
-keep their original slots. Choose **Mods** → **Use original maps**
+keep their original slots. Choose **Mod Downloader** → **Use original maps**
 to clear the pack for subsequent selections. A member can still be
 played individually when only part of its pack is installed.
 

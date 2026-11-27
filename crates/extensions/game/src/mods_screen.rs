@@ -1,6 +1,6 @@
 //! The mod repository in game (docs/game/maps.md §5, "Mod downloads"): the
 //! Xbox Live menu's last row, where retail had Content Download, says
-//! "Mods" (or "Mods (3 new)") and opens a list of the maps the Live server
+//! "Mod Downloader" (or "Mod Downloader (3 new)") and opens a list of the maps the Live server
 //! publishes, newest first; each has a page of its own.
 //!
 //! **The list** is laid out as the level select is: the maps on the left,
@@ -527,7 +527,7 @@ impl Repo {
             wanted: AtomicBool::new(true),
             changed: AtomicU64::new(1),
         });
-        repo.texts.set(LIST_TITLE, "Mods");
+        repo.texts.set(LIST_TITLE, "Mod Downloader");
         repo.footer(SCREEN, Some(0));
         repo.footer(DETAIL, Some(0));
         repo.footer(PACK, Some(0));
@@ -548,7 +548,7 @@ impl Repo {
         Slots::id(MENU_SLOT)
     }
 
-    /// The Live menu row's text: "Mods", or "Mods (N new)".
+    /// The Live menu row's text: "Mod Downloader", or "Mod Downloader (N new)".
     pub fn menu_text(&self) -> String {
         let g = self.lock();
         if let Some(items) = &g.next_list {
@@ -1214,7 +1214,7 @@ impl Repo {
             let Some((_, maps)) = self.pack() else {
                 return Some(join_sentences([
                     "This pack is no longer listed.",
-                    "Press B to return to Mods.",
+                    "Press B to return to Mod Downloader.",
                 ]));
             };
             let g = self.lock();
@@ -1684,9 +1684,9 @@ pub fn marked_line(name: &str, status: &str) -> String {
 /// The Live menu row's text for `new` new mods.
 pub fn menu_text(new: usize) -> String {
     match new {
-        0 => "Mods".into(),
-        n if n > 99 => "Mods (99+ new)".into(),
-        n => format!("Mods ({n} new)"),
+        0 => "Mod Downloader".into(),
+        n if n > 99 => "Mod Downloader (99+ new)".into(),
+        n => format!("Mod Downloader ({n} new)"),
     }
 }
 
@@ -1921,7 +1921,7 @@ impl Rows for ListRows {
         self.0.texts.write(m)
     }
     fn describe(&self, count: usize) -> Option<String> {
-        Some(describe("Mods", count, |r| self.0.list_line(r)))
+        Some(describe("Mod Downloader", count, |r| self.0.list_line(r)))
     }
 }
 

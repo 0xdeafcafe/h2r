@@ -66,10 +66,10 @@ two published maps, one on a disc map the player has and one that must
 fail, such as a base whose hash differs from the disc's):
 
 - The Xbox Live menu shows six rows with no scroll bar, the last reading
-  "Mods (N new)" with its help text, and the console logs
+  "Mod Downloader (N new)" with its help text, and the console logs
   `mods: N on the server, M new`.
 - A on Mods opens the screen, newest first, a star on each new map; B
-  returns to the Live menu, whose row now reads "Mods", and
+  returns to the Live menu, whose row now reads "Mod Downloader", and
   `<data>/live-mods.toml` holds the newest position.
 - The Mods list sits in the level select's bracket (up to 13 rows before
   it scrolls) with the focused map's picture at the box's size and four

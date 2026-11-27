@@ -181,7 +181,7 @@ impl Opener {
             "Custom Games",
             "Forge",
             "Custom Game Browser",
-            "Mods",
+            "Mod Downloader",
         ],
         focus: 0,
     };

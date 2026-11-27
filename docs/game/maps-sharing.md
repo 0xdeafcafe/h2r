@@ -433,10 +433,10 @@ level's `LevelId` nor its image.
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content
-  Download, reads **Mods**, or **Mods (3 new)** when releases were published
+  Download, reads **Mod Downloader**, or **Mod Downloader (3 new)** when releases were published
   since the player last opened the screen. Its pane's help text says what
   it is (`custom_games::MODS_HELP`). Without Live or the map gate the row
-  reads **Mods** and opens the Map Pack dialog, its help
+  reads **Mod Downloader** and opens the Map Pack dialog, its help
   `custom_games::MAPPACK_HELP` ([live-custom-games.md](../live/live-custom-games.md) §5).
 - **New.** An entry is new when its `position` (the event-log position it
   was published at) is above the last-seen position, kept in
@@ -454,7 +454,7 @@ level's `LevelId` nor its image.
   failure; the game thread never waits on it.
 - **The screens** (`boot::mods_screen`, our list class, laid out as the
   level select is: list on the left with its bracket, picture top right,
-  description under it, as the campaign picker). **Mods**: one row per
+  description under it, as the campaign picker). **Mod Downloader**: one row per
   release (at most 40, newest first), its name and its state as a mark after
   it: a star (U+2605) when new, a tick (U+2713) when installed, a down
   arrow (U+2193) and the percentage while downloading; nothing when it is
