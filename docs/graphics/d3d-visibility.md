@@ -110,8 +110,9 @@ Tests: `scene-extract` `a_flare_fades_from_its_query_result` and `a_quad_is_the_
 ```mermaid
 flowchart LR
   L["late list 0x4c19c4 (0x2f260, at most 4)"] --> G["glow: fade by view angle, project, round, cull to the viewport"]
-  G --> S["down-sample: the rectangle's colour where the masked fan passes LESSEQUAL"]
-  S --> B["four blurs, two squares"]
+  G --> M["mask: the view's alpha 0, then min(1, 4a) of the bitmap where the fan passes LESSEQUAL"]
+  M --> S["down-sample into both squares: the mask as colour, the bitmap's alpha"]
+  S --> B["four blurs, weighted by the square's alpha"]
   B --> C["sixteen rings, additive over the view's colour"]
 ```
 
@@ -119,11 +120,25 @@ flowchart LR
 |---|---|
 | `0x46ea0`'s numbers: the direction to the glow over its length (`0x30bf0`), the fade `(cos - [0x45e22c]) * [0x45e4b0]` held to `[0, 1]`, the point at the far distance projected (`0x48b00`), rounded, `[0x45e42c]` pixels each side, culled outside the viewport | `scene_extract::flares::glow` |
 | the composite's weight: the fade times `1 - [0x4857b4]` held to `[0, 1]`; ring `i` grown by `i * [0x45df78] * [0x45e310] - [0x45dc10]`, weight over `i + 1` | `Glow::rings` |
-| the mask fan, the masked sample, `0x46230` into targets `0x10` and `0x11`, `0x467c0(0x10, 0x11, 4)`, the sixteen composite fans (`SRCALPHA`, `ONE`, colour only) | `native_render::flare_draw_gpu`: one down-sample of the rectangle into a square of the guest's size times the render scale, masked by the stored depth against the masked fan's (`z = w = 16777215` under the W clip), four blurs, sixteen instances over the view's colour |
+| the fans, each with the combiner block it writes at `0x484f68` | `native_render::flare_draw_gpu`: the same blocks (`CLEAR`, `MASKED`, `DOWN`, `blur`, `COMPOSITE`), each fan a quad through `glow::QuadDrawer` |
+| the bitmap `[[0x485a80] + 0x34]` (`rasterizer\glow`, 64 by 64 `A8Y8`), image 0 | decoded from the guest texture `0x143c0` binds (`effect_material::texture_header`), level 0, kept until its header or bytes change |
 
+The fans, in order:
+
+| Fan | Target | Stages | Block's output | Raster |
+|---|---|---|---|---|
+| mask (`0x470b2`) | view, over the rectangle | none | alpha 0 (the final constant) | alpha only, depth `ALWAYS` |
+| masked sample (`0x47331`) | view, over the rectangle | 0: the bitmap over `[0, 1]` | alpha `min(1, 4 t0.a)` | alpha only, `LESSEQUAL` at `z = w = 16777215` under the W clip, W-buffered |
+| down-sample `0x46230`, into `0x10` then `0x11` | a 64 by 64 square (times the render scale) | 0: the view over the rectangle; 1: the bitmap over the square | colour `t0.a` (the mask), alpha `min(1, 2 t1.a * 192/255)` | all channels, no blend, no depth |
+| blur `0x467c0(0x10, 0x11, 4)`, pass `k` from square `k % 2` | the other square | 0..3: the source, offset `(-, -)`, `(+, +)`, `(-, +)`, `(+, -)` by 1/128 (`[0x45e488]`, `[0x45df64]`) | `c0.a ((t0.b + t1.b) / 2 + (t2 + t3) / 2)`, `c0.a` 1 on pass 0 and 127/255 after | colour only, `DSTALPHA`, `ZERO`: times the square's alpha |
+| composite, 16 rings (`0x47740`) | view, over ring `i` | 0: square `0x10` over `[0, 1]` | `lerp(c0, white, 2 t0.b - 1) * t0`, alpha `v0.a` the ring's weight (`c0` `0x00b0b080`) | colour only, `SRCALPHA`, `ONE` |
+
+- The view's alpha over the rectangle is the masked sample's: 0 where the fan fails the depth, else `min(1, 4a)` of the bitmap. The down-sample reads it, as the guest's does.
+- `glow::QuadDrawer` draws each fan with its block through the stage 3 compiler. A tested fan's depth is its quad's `dest` z (`QuadDepth`); `v0.a` is its `dest` w.
+- Kept across frames: the quads' programs and pipelines (`QuadDrawer`), the two squares (per side) and the bitmap's texture (per key). Uniforms go in the submission's arena.
 - The arm: one call in 64 runs the guest body instead and reads its rectangle and weight from its frame after it returns (`0x54` below the entry ESP; the ring count at `+0x20` is 0 only when every ring was drawn). A difference from Rust's sends every later call to the guest for the session.
-- A call from anywhere but the late loop runs the guest body.
-- Limits: the masked sample's texture (`[[0x485a80] + 0x34]`), the combiner blocks written at `0x484f68` for each fan and the blur's texture-matrix offsets are not read. Rust's down-sample takes the colour as it is, its blur taps are a diagonal half texel plus the pass, and its composite adds the blurred colour times the ring's weight. The view's alpha keeps its value.
+- A call from anywhere but the late loop runs the guest body, as does one whose bitmap does not decode.
+- Limits: engine vertex shader 10 (`lens_flare`, the view's fans) is read as passing the pixel position through, `v3` to `oT0` and `v9` to `oD0`, and vertex shader 1 as applying the two-row texture matrices the down-sample and the blur load at hardware slot `0x12`; neither program is run. The blur's stages address `BORDER` with a colour the glow does not set; Rust's clamp to the edge, which differs only in the square's outer texels, where the bitmap's alpha is at most 3/255.
 - Counters in `render.scene`: `flare_glow_{calls,cut,checked}`, `scene_kept_flare_glow_<cause>` (a call the guest body ran) and `scene_dropped_flare_glow_<cause>` (a placed glow that did not draw; also `Stage::Flares`'s `scene_dropped`).
 
-Tests: `scene-extract` `a_flare_glow_fades_with_view_angle`, `the_composite_rings_grow_and_dim`; `render-bridge` `the_flare_draw_is_the_last_post_pass`, `an_undrawn_glow_counts_scene_dropped_flare_glow`, `a_checked_glow_reads_the_bodys_frame`; `native-render` `a_glow_half_off_the_target_copies_what_is_inside`.
+Tests: `scene-extract` `a_flare_glow_fades_with_view_angle`, `the_composite_rings_grow_and_dim`; `render-bridge` `the_flare_draw_is_the_last_post_pass`, `an_undrawn_glow_counts_scene_dropped_flare_glow`, `a_checked_glow_reads_the_bodys_frame`; `native-render` `the_glow_combiners_give_the_hand_worked_values`, `the_quads_place_the_stages_as_the_guest_matrices`, `the_down_sample_is_the_guest_square_times_the_render_scale`.

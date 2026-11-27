@@ -204,7 +204,10 @@ pub fn read_window(mem: &dyn GuestRead) -> Option<([f32; 4], [f32; 2])> {
 pub struct Quad {
     /// The corners `(x0, y0, x1, y1)` in the target's pixels.
     pub corners: [f32; 4],
-    /// `2 / width`, `2 / height` of the target (guest pixels).
+    /// `2 / width`, `2 / height` of the target (guest pixels), then the
+    /// quad's depth (`[0, 1]`, what a [`QuadDepth`] test compares) and the
+    /// alpha of `v0` (the quad's diffuse; its colour is 0). The glow's
+    /// quads leave both 0.
     pub dest: [f32; 4],
     /// Per stage: the tap's offset in the target's pixels (xy) and the
     /// scale to the source's texels (zw).
@@ -275,8 +278,8 @@ fn vs_main(@builtin(vertex_index) i: u32) -> XboxVaryings {
     let k = vec2f(f32(i & 1u), f32(1u - (i >> 1u)));
     let p = mix(glow.corners.xy, glow.corners.zw, k);
     var o: XboxVaryings;
-    o.position = vec4f(p.x * glow.dest.x - 1.0, 1.0 - p.y * glow.dest.y, 0.0, 1.0);
-    o.d0 = vec4f(0.0);
+    o.position = vec4f(p.x * glow.dest.x - 1.0, 1.0 - p.y * glow.dest.y, glow.dest.z, 1.0);
+    o.d0 = vec4f(0.0, 0.0, 0.0, glow.dest.w);
     o.d1 = vec4f(0.0);
     o.b0 = vec4f(0.0);
     o.b1 = vec4f(0.0);
@@ -440,7 +443,20 @@ struct Compiled {
     uniforms_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
-    pipelines: HashMap<RasterPipeline, wgpu::RenderPipeline>,
+    pipelines: HashMap<(RasterPipeline, Option<DepthKey>), wgpu::RenderPipeline>,
+}
+
+/// A tested quad's depth format and comparison.
+type DepthKey = (wgpu::TextureFormat, wgpu::CompareFunction);
+
+/// A depth test for one quad (`QuadDrawer::prepare_tested`): `view` the
+/// depth attachment, loaded and kept, never written; the quad's
+/// fragments at its depth ([`Quad::dest`]'s z) pass where `compare`
+/// holds against the stored depth.
+#[derive(Clone, Copy)]
+pub struct QuadDepth<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub compare: wgpu::CompareFunction,
 }
 
 /// One attachment of a post pass. Fixed-size blur levels may have a
@@ -570,19 +586,49 @@ impl QuadDrawer {
 
     pub(crate) fn prepare(
         &mut self,
+        gpu: (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),
+        program: &Program,
+        vertex_uniform: &[u8],
+        strips: Option<&[Vec<StripVertex>]>,
+        target: (PostSurface<'_>, wgpu::TextureFormat, PostRaster),
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<Option<QuadCommand>, &'static str> {
+        self.prepare_tested(gpu, program, vertex_uniform, strips, target, None, stages)
+    }
+
+    /// [`Self::prepare`] with the quad's fragments tested against `depth`
+    /// (`None`: untested, as `prepare`). A [`Quad`] gives the depth in
+    /// its `dest` z. Refused when the depth attachment's size is not the
+    /// colour's or its format holds no depth.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_tested(
+        &mut self,
         (device, queue, uploads): (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),
         program: &Program,
         vertex_uniform: &[u8],
         strips: Option<&[Vec<StripVertex>]>,
         (dest, format, raster): (PostSurface<'_>, wgpu::TextureFormat, PostRaster),
+        depth: Option<QuadDepth<'_>>,
         stages: [Option<&wgpu::TextureView>; 4],
     ) -> Result<Option<QuadCommand>, &'static str> {
+        let depth_key = match depth {
+            None => None,
+            Some(d) => {
+                let (t, c) = (d.view.texture(), dest.view.texture());
+                if t.size() != c.size() || t.sample_count() != c.sample_count() || !t.format().has_depth_aspect()
+                    || !t.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+                {
+                    return Err("quad depth attachment");
+                }
+                Some((t.format(), d.compare))
+            }
+        };
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
         if self.compiled.len() == Self::PROGRAMS && !self.compiled.contains_key(&program.wgsl) {
             self.compiled.clear();
         }
         let c = self.compiled.entry(Arc::clone(&program.wgsl)).or_insert_with(|| compile(device, program));
-        let pipeline_key = raster.pipeline(format, device.features());
+        let pipeline_key = (raster.pipeline(format, device.features()), depth_key);
         let texture = dest.view.texture();
         let scissor = raster.scissor(dest.guest_size, (texture.width(), texture.height()))
             .map_err(|_| "invalid post quad scissor")?;
@@ -600,8 +646,14 @@ impl QuadDrawer {
                     compilation_options: Default::default(),
                     buffers: if program.grid { &STRIP_LAYOUT[..] } else { &[] },
                 },
-                primitive: pipeline_key.primitive(),
-                depth_stencil: None,
+                primitive: pipeline_key.0.primitive(),
+                depth_stencil: depth_key.map(|(format, compare)| wgpu::DepthStencilState {
+                    format,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(compare),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module,
@@ -659,6 +711,7 @@ impl QuadDrawer {
             blend_constant: raster.blend_constant,
             scissor,
             dest: dest.view.clone(),
+            depth: depth.map(|d| d.view.clone()),
             pipeline,
             uniforms: run.group.clone(),
             offsets: run.offsets(0),
@@ -678,6 +731,8 @@ pub struct QuadCommand {
     blend_constant: wgpu::Color,
     scissor: [u32; 4],
     dest: wgpu::TextureView,
+    /// A tested quad's depth attachment, loaded and kept.
+    depth: Option<wgpu::TextureView>,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
     offsets: [u32; 2],
@@ -688,7 +743,8 @@ pub struct QuadCommand {
 }
 
 impl QuadCommand {
-    /// Records the pass into `encoder`, loading `dest`'s pixels.
+    /// Records the pass into `encoder`, loading `dest`'s pixels (and a
+    /// tested quad's depth and stencil, kept as they were).
     pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native glow"),
@@ -696,12 +752,16 @@ impl QuadCommand {
                 view: &self.dest,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations {
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: self.depth.as_ref().map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: view.texture().format().has_stencil_aspect().then_some(wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
+                }),
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,

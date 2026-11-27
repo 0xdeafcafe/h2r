@@ -1,20 +1,29 @@
 //! The flare glow `0x00046ea0` drawn by the native renderer
 //! (docs/graphics/d3d-visibility.md, "The glow in Rust"). The glow's
-//! numbers are `scene_extract::flares::glow`'s; this draws them.
+//! numbers are `scene_extract::flares::glow`'s; this draws its fans with
+//! the guest's own combiner blocks, each a quad through
+//! [`crate::glow::QuadDrawer`].
 //!
 //! | Guest | Here |
 //! |---|---|
-//! | the mask fan and the masked sample (`0x00047306`, `0x00047512`): the view's alpha over the rectangle, set where a fan at `z = w = 16777215` passes `LESSEQUAL` | the down-sample's test of the depth at each texel, against that fan's stored depth ([`MASK_DEPTH`], `flare_gpu::reference`) |
-//! | `0x00046230` into targets `0x10` and `0x11` | one down-sample of the rectangle into a square of [`side`] texels |
-//! | `0x000467c0(0x10, 0x11, 4)` | four four-tap blurs, ping-ponging two squares |
-//! | the composite's sixteen fans (`0x00047854`), additive (`SRCALPHA`, `ONE`), colour only | sixteen instances over the view's colour, ring `i`'s weight its alpha |
+//! | the mask fan (`0x000470b2`..`0x00047306`): alpha only, depth `ALWAYS`, block [`CLEAR`] | the view's alpha over the rectangle set to 0 |
+//! | the masked sample (`0x00047331`..`0x00047512`): the bitmap `[[0x00485a80] + 0x34]` image 0 on stage 0, alpha only, `LESSEQUAL` at `z = w = 16777215` under the W clip, block [`MASKED`] | the view's alpha `min(1, 4 a)` where the fan passes the stored depth ([`MASK_DEPTH`], `flare_gpu::reference`) |
+//! | `0x00046230` into targets `0x10` and `0x11`: the view on stage 0 over the rectangle, the bitmap on stage 1, block [`DOWN`] | both squares of [`side`] texels: the view's alpha as colour, `min(1, 2 a * 192/255)` of the bitmap as alpha |
+//! | `0x000467c0(0x10, 0x11, 4)`: four taps half a texel apart on the diagonals ([`BLUR_TAP`]), block [`blur`], blended `DSTALPHA`, `ZERO`, colour only | four passes ping-ponging the squares, ending in the first |
+//! | the composite's sixteen fans (`0x00047740`..`0x0004785d`): the result on stage 0, `v0.a` the ring's weight, block [`COMPOSITE`], `SRCALPHA`, `ONE`, colour only | sixteen quads over the view's colour |
 //!
-//! Limits: the masked sample's texture (`[[0x00485a80] + 0x34]`), the
-//! combiner blocks the guest writes at `0x00484f68` for each fan, and the
-//! blur's texture-matrix offsets are not read: the down-sample takes the
-//! colour as it is, the blur's taps are a diagonal half texel plus the
-//! pass, and the composite adds the blurred colour times the ring's
-//! weight. The view's alpha is left as it was.
+//! The view's alpha over the rectangle is what the masked sample leaves;
+//! the composite writes colour only.
+//!
+//! Read, not run: engine vertex shader 10 (`lens_flare`, the view's fans)
+//! is taken to pass the position in pixels through, `v3` (the 0/1
+//! shorts) to `oT0` and `v9` (the weight in w) to `oD0`; vertex shader 1
+//! (the down-sample and the blur) to apply the two-row texture matrices
+//! the calls load at hardware slot `0x12`. The blur's stages address
+//! `BORDER` (4) with a border colour the glow does not set; here they
+//! clamp to the edge, which differs only in the square's outer texel
+//! ring, where `rasterizer\glow`'s alpha (the blend's factor) is at most
+//! 3/255.
 
 use scene_extract::flares::{Glow, RINGS, Ring};
 
@@ -29,41 +38,16 @@ pub struct GlowDraw {
     pub source: [f32; 2],
 }
 
-/// The host texels a glow's rectangle covers: `origin` and `size` the
-/// whole rectangle's, `inside` (`x0, y0, x1, y1`) its part inside the
-/// target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Region {
-    pub origin: [i32; 2],
-    pub size: [u32; 2],
-    pub inside: [u32; 4],
-}
-
-/// The largest side a region may have (the half size is a few pixels; a
-/// larger one is not the guest's glow).
-pub const MAX_REGION: u32 = 4096;
-
-/// `rect` (guest pixels of a target of `guest`) in the host's `host`
-/// texels; `None` when no texel of it is inside the target.
-pub fn region(rect: [f32; 4], guest: (u32, u32), host: (u32, u32)) -> Option<Region> {
-    if guest.0 == 0 || guest.1 == 0 || rect.iter().any(|v| !v.is_finite()) {
-        return None;
-    }
-    let (sx, sy) = (host.0 as f32 / guest.0 as f32, host.1 as f32 / guest.1 as f32);
-    let x0 = (rect[0] * sx).floor() as i64;
-    let y0 = (rect[1] * sy).floor() as i64;
-    let x1 = (rect[2] * sx).ceil() as i64;
-    let y1 = (rect[3] * sy).ceil() as i64;
-    let (w, h) = (x1 - x0, y1 - y0);
-    if w <= 0 || h <= 0 || w > i64::from(MAX_REGION) || h > i64::from(MAX_REGION) {
-        return None;
-    }
-    let clip = |v: i64, hi: u32| v.clamp(0, i64::from(hi)) as u32;
-    let inside = [clip(x0, host.0), clip(y0, host.1), clip(x1, host.0), clip(y1, host.1)];
-    if inside[2] <= inside[0] || inside[3] <= inside[1] {
-        return None;
-    }
-    Some(Region { origin: [x0 as i32, y0 as i32], size: [w as u32, h as u32], inside })
+/// The masked sample's bitmap, decoded from the texture the guest binds
+/// (`[[0x00485a80] + 0x34]`, image 0): RGBA8, rows tight. `key` names
+/// the guest texture (a hash of its header, the header's identity words
+/// and its bytes), so a texture made once serves every frame until it
+/// changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bitmap {
+    pub key: u64,
+    pub size: (u32, u32),
+    pub rgba: Vec<u8>,
 }
 
 /// The down-sample's side in host texels: the guest square's, times the
@@ -80,186 +64,158 @@ pub const MASK_DEPTH: f32 = 16_777_215.0;
 /// The blur passes `0x000467c0` makes.
 pub const BLURS: u32 = 4;
 
+/// The blur's texture-matrix offsets, in the square's normalised
+/// coordinates (`[0x0045e488]`, `[0x0045df64]`): stage 0 takes the first
+/// on both axes, stage 1 the second, stage 2 `(first, second)`, stage 3
+/// `(second, first)`.
+pub const BLUR_TAP: [f32; 2] = [-0.0078125, 0.0078125];
+
+/// Words of a combiner block (`D3DPIXELSHADERDEF`).
+pub const WORDS: usize = 60;
+
+const fn block(writes: &[(usize, u32)]) -> [u32; WORDS] {
+    let mut w = [0; WORDS];
+    let mut i = 0;
+    while i < writes.len() {
+        w[writes[i].0] = writes[i].1;
+        i += 1;
+    }
+    w
+}
+
+/// The mask fan's block (`0x00047154`..`0x00047177`): one combiner, the
+/// final combiner's alpha `G` the final constant 0's alpha
+/// (`PSFinalCombinerConstant0`, written 0): alpha 0.
+pub const CLEAR: [u32; WORDS] = block(&[(53, 1), (43, 0), (9, 0x1100)]);
+
+/// The masked sample's block (`0x00047435`..`0x00047475`): `r0.a = t0.a`
+/// shifted left 2, the output `r0.a`.
+pub const MASKED: [u32; WORDS] = block(&[(54, 1), (53, 1), (0, 0x1820_0000), (26, 0x0002_00c0), (8, 0x1c), (9, 0x1c00)]);
+
+/// The down-sample's block (`0x00046547`..`0x00046597`): `r0.a = t1.a *
+/// c0.a` shifted left 1 (`c0` `0xc0000000`), the output `t0.a` as colour
+/// and `r0.a` as alpha.
+pub const DOWN: [u32; WORDS] = block(&[
+    (54, 0x21),
+    (53, 1),
+    (10, 0xc000_0000),
+    (0, 0x1911_0000),
+    (26, 0x0001_00c0),
+    (8, 0x18),
+    (9, 0x1c00),
+]);
+
+/// Blur pass `pass`'s block (`0x00046a55`..`0x00046ab9`, `c0` rewritten
+/// per pass at `0x00046bd7`): `r0.a = (t0.b + t1.b) / 2`, `r0.rgb = (t2 +
+/// t3) / 2`, then `r0.rgb = c0.a (r0.a + r0.rgb)`, `c0.a` 1 on the first
+/// pass and `0x7f / 255` after; the output `r0.rgb`.
+pub const fn blur(pass: u32) -> [u32; WORDS] {
+    let c0 = if pass == 0 { 0xff00_0000 } else { 0x7f00_0000 };
+    block(&[
+        (26, 0xc00),
+        (45, 0xc00),
+        (46, 0xc00),
+        (54, 0x8421),
+        (53, 2),
+        (10, c0),
+        (0, 0x08a0_09a0),
+        (34, 0x0aa0_0ba0),
+        (35, 0x1c11_0c11),
+        (8, 0x0c),
+    ])
+}
+
+/// The composite's block (`0x00047682`..`0x000476ea`): `r0.a = 2 t0.b -
+/// 1`, `r0.rgb = (1 - r0.a) c0 + r0.a c1` (`c0` `0x00b0b080`, `c1`
+/// white), the output `r0.rgb * t0.rgb` with `v0.a` as alpha.
+pub const COMPOSITE: [u32; WORDS] = block(&[
+    (54, 1),
+    (53, 2),
+    (10, 0x00b0_b080),
+    (18, 0x00ff_ffff),
+    (0, 0x4820_0000),
+    (26, 0xc0),
+    (35, 0x3c01_1c02),
+    (46, 0xc00),
+    (8, 0x0c08_0000),
+    (9, 0x1400),
+]);
+
 #[cfg(feature = "gpu")]
-pub use gpu::FlareDrawGpu;
+pub use gpu::{FlareDrawGpu, FlareTarget};
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use std::collections::HashMap;
+    use super::{BLUR_TAP, BLURS, Bitmap, COMPOSITE, CLEAR, DOWN, GlowDraw, MASKED, WORDS, blur, side};
+    use crate::glow::{PostSurface, Quad, QuadCommand, QuadDepth, QuadDrawer};
+    use crate::screen_gpu::{FragmentRaster, PostRaster};
 
-    use super::{BLURS, GlowDraw, RINGS, region, side};
+    /// The squares' format: targets `0x10` and `0x11` are A8R8G8B8.
+    const SQUARE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    const SQUARE: &str = r#"
-struct Params { copy: vec4<i32>, depth: vec4<i32>, tap: vec4f };
-@group(0) @binding(0) var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var depth_tex: texture_depth_2d;
-@group(0) @binding(2) var smp: sampler;
-@group(0) @binding(3) var<uniform> params: Params;
+    /// Every sampled stage is addressed in normalised coordinates by the
+    /// quads' taps, so the programs see stages of size 1.
+    const UNIT: Option<(u32, u32)> = Some((1, 1));
 
-struct Screen { @builtin(position) position: vec4f, @location(0) uv: vec2f };
-
-@vertex
-fn vs_screen(@builtin(vertex_index) i: u32) -> Screen {
-    let uv = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
-    var o: Screen;
-    o.position = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
-    o.uv = uv;
-    return o;
-}
-
-// The rectangle's colour where the masked sample's depth (tap.w) passes
-// LESSEQUAL against the stored depth, else nothing.
-@fragment
-fn fs_source(i: Screen) -> @location(0) vec4f {
-    let c = textureSampleLevel(src_tex, smp, i.uv, 0.0);
-    let p = params.copy.xy + vec2<i32>(i.uv * vec2f(params.copy.zw));
-    var seen = 0.0;
-    if (all(p >= vec2<i32>(0)) && all(p < params.depth.xy)) {
-        seen = select(0.0, 1.0, params.tap.w <= textureLoad(depth_tex, p, 0));
-    }
-    return vec4f(c.rgb * seen, seen);
-}
-
-@fragment
-fn fs_blur(i: Screen) -> @location(0) vec4f {
-    let o = params.tap.xy * params.tap.z;
-    let s = textureSampleLevel(src_tex, smp, i.uv + vec2f(o.x, o.y), 0.0)
-        + textureSampleLevel(src_tex, smp, i.uv + vec2f(-o.x, o.y), 0.0)
-        + textureSampleLevel(src_tex, smp, i.uv + vec2f(o.x, -o.y), 0.0)
-        + textureSampleLevel(src_tex, smp, i.uv - o, 0.0);
-    return s * 0.25;
-}
-"#;
-
-    const COMPOSITE: &str = r#"
-struct Rings { rects: array<vec4f, 16>, weights: array<vec4f, 4>, guest: vec4f };
-@group(0) @binding(0) var glow_tex: texture_2d<f32>;
-@group(0) @binding(1) var smp: sampler;
-@group(0) @binding(2) var<uniform> rings: Rings;
-
-struct Fan { @builtin(position) position: vec4f, @location(0) uv: vec2f, @location(1) weight: f32 };
-
-// Corner v of ring i: a four-vertex strip over the ring's rectangle.
-@vertex
-fn vs_ring(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Fan {
-    let c = vec2f(f32(v & 1u), f32(v >> 1u));
-    let r = rings.rects[i];
-    let p = mix(r.xy, r.zw, c);
-    var o: Fan;
-    o.position = vec4f(p.x * rings.guest.x - 1.0, 1.0 - p.y * rings.guest.y, 0.0, 1.0);
-    o.uv = c;
-    o.weight = rings.weights[i / 4u][i % 4u];
-    return o;
-}
-
-@fragment
-fn fs_ring(f: Fan) -> @location(0) vec4f {
-    let t = textureSampleLevel(glow_tex, smp, f.uv, 0.0);
-    return vec4f(t.rgb, f.weight);
-}
-"#;
-
-    #[repr(C)]
-    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-    struct Params {
-        copy: [i32; 4],
-        depth: [i32; 4],
-        tap: [f32; 4],
+    /// A quad over `rect` (guest pixels of a `guest` target) whose stage 0
+    /// covers `[0, 1]` across it, at depth `z` with `v0.a` `weight`.
+    pub(super) fn over(rect: [f32; 4], guest: (u32, u32), z: f32, weight: f32) -> Quad {
+        let [x0, y0, x1, y1] = rect;
+        let (w, h) = (x1 - x0, y1 - y0);
+        let stage = [-x0, -y0, 1.0 / w, 1.0 / h];
+        Quad {
+            corners: rect,
+            dest: [2.0 / guest.0 as f32, 2.0 / guest.1 as f32, z, weight],
+            taps: [stage, [0.0; 4], [0.0; 4], [0.0; 4]],
+        }
     }
 
-    #[repr(C)]
-    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-    struct Rings {
-        rects: [[f32; 4]; RINGS],
-        weights: [[f32; 4]; RINGS / 4],
-        guest: [f32; 4],
+    /// The down-sample's quad over a square of `side` texels: stage 0
+    /// the view (`guest` pixels) over `rect`, stage 1 the bitmap over the
+    /// square, as `0x00046230`'s texture matrices place them.
+    pub(super) fn down(rect: [f32; 4], guest: (u32, u32), side: u32) -> Quad {
+        let [x0, y0, x1, y1] = rect;
+        let s = side as f32;
+        let (sx, sy) = ((x1 - x0) / s, (y1 - y0) / s);
+        Quad {
+            corners: [0.0, 0.0, s, s],
+            dest: [2.0 / s, 2.0 / s, 0.0, 0.0],
+            taps: [
+                [x0 / sx, y0 / sy, sx / guest.0 as f32, sy / guest.1 as f32],
+                [0.0, 0.0, 1.0 / s, 1.0 / s],
+                [0.0; 4],
+                [0.0; 4],
+            ],
+        }
     }
 
-    /// The squares' format: filterable and renderable everywhere.
-    const SQUARE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+    /// A blur pass's quad over a square of `side` texels: stage `k` the
+    /// square offset by [`BLUR_TAP`] as `0x000467c0` loads them.
+    pub(super) fn blurred(side: u32) -> Quad {
+        let s = side as f32;
+        let [a, b] = BLUR_TAP;
+        let tap = |u: f32, v: f32| [u * s, v * s, 1.0 / s, 1.0 / s];
+        Quad { corners: [0.0, 0.0, s, s], dest: [2.0 / s, 2.0 / s, 0.0, 0.0], taps: [tap(a, a), tap(b, b), tap(a, b), tap(b, a)] }
+    }
 
-    /// The glow's pipelines on one device.
+    /// The same blend on colour and alpha (the NV2A blends alpha with the
+    /// colour's factors).
+    fn blend(src: wgpu::BlendFactor, dst: wgpu::BlendFactor) -> Option<wgpu::BlendState> {
+        let c = wgpu::BlendComponent { src_factor: src, dst_factor: dst, operation: wgpu::BlendOperation::Add };
+        Some(wgpu::BlendState { color: c, alpha: c })
+    }
+
+    /// The glow's quads, the two squares and the bitmap on one device,
+    /// kept across frames.
+    #[derive(Default)]
     pub struct FlareDrawGpu {
-        sampler: wgpu::Sampler,
-        square_layout: wgpu::BindGroupLayout,
-        ring_layout: wgpu::BindGroupLayout,
-        ring_module: wgpu::ShaderModule,
-        ring_pipeline_layout: wgpu::PipelineLayout,
-        source: wgpu::RenderPipeline,
-        blur: wgpu::RenderPipeline,
-        composite: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+        quads: QuadDrawer,
+        /// Targets `0x10` and `0x11` at their side.
+        squares: Option<(u32, [wgpu::TextureView; 2])>,
+        bitmap: Option<(u64, wgpu::TextureView)>,
     }
 
-    fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-        wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-            count: None,
-        }
-    }
-
-    fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-        wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            count: None,
-        }
-    }
-
-    fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-        wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-            count: None,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn pipeline(
-        device: &wgpu::Device,
-        label: &str,
-        layout: &wgpu::PipelineLayout,
-        module: &wgpu::ShaderModule,
-        vertex: &str,
-        fragment: &str,
-        format: wgpu::TextureFormat,
-        topology: wgpu::PrimitiveTopology,
-        blend: Option<wgpu::BlendState>,
-        write_mask: wgpu::ColorWrites,
-    ) -> wgpu::RenderPipeline {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            vertex: wgpu::VertexState { module, entry_point: Some(vertex), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(fragment),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        })
-    }
-
-    /// The composite's blend: `SRCALPHA`, `ONE`, `ADD` on the colour; the
-    /// alpha is not written.
-    fn additive() -> wgpu::BlendState {
-        let colour = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::SrcAlpha,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        wgpu::BlendState { color: colour, alpha: wgpu::BlendComponent::REPLACE }
-    }
-
-    fn square_texture(device: &wgpu::Device, side: u32) -> wgpu::TextureView {
+    fn square(device: &wgpu::Device, side: u32) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("native flare glow square"),
@@ -274,240 +230,296 @@ fn fs_ring(f: Fan) -> @location(0) vec4f {
             .create_view(&Default::default())
     }
 
-    fn screen_pass<'e>(
-        encoder: &'e mut wgpu::CommandEncoder,
-        label: &str,
-        target: &wgpu::TextureView,
-        load: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPass<'e> {
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(label),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        })
+    /// Where a glow draws: the view's colour (`guest` pixels) and depth,
+    /// the submission's arena its uniforms go in.
+    pub struct FlareTarget<'a> {
+        pub device: &'a wgpu::Device,
+        pub queue: &'a wgpu::Queue,
+        pub uploads: &'a gfx::ring::SubmissionUploads,
+        pub color: &'a wgpu::TextureView,
+        pub depth: &'a wgpu::TextureView,
+        pub guest: (u32, u32),
+    }
+
+    type Gpu<'a> = (&'a wgpu::Device, &'a wgpu::Queue, &'a gfx::ring::SubmissionUploads);
+
+    /// One fan: `combiner` with `sampled` stages bound, `quad`'s corners
+    /// and taps, into `target`, tested against `depth`, its stages
+    /// reading `stages`.
+    fn prepare(
+        quads: &mut QuadDrawer,
+        gpu: Gpu<'_>,
+        (combiner, sampled): (&[u32; WORDS], [Option<(u32, u32)>; 4]),
+        quad: Quad,
+        target: (PostSurface<'_>, wgpu::TextureFormat, PostRaster),
+        depth: Option<QuadDepth<'_>>,
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<QuadCommand, &'static str> {
+        let program = quads.cached(combiner, sampled, false, FragmentRaster::default()).map_err(|_| "combiner")?;
+        quads.prepare_tested(gpu, &program, bytemuck::bytes_of(&quad), None, target, depth, stages)?.ok_or("empty")
     }
 
     impl FlareDrawGpu {
-        pub fn new(device: &wgpu::Device) -> Self {
-            let fragment = wgpu::ShaderStages::FRAGMENT;
-            let float = wgpu::TextureSampleType::Float { filterable: true };
-            let square_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("native flare glow square"),
-                entries: &[
-                    texture_entry(0, float, fragment),
-                    texture_entry(1, wgpu::TextureSampleType::Depth, fragment),
-                    sampler_entry(2),
-                    uniform_entry(3, fragment),
-                ],
-            });
-            let ring_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("native flare glow rings"),
-                entries: &[texture_entry(0, float, fragment), sampler_entry(1), uniform_entry(2, wgpu::ShaderStages::VERTEX)],
-            });
-            let square_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("native flare glow square"),
-                source: wgpu::ShaderSource::Wgsl(SQUARE.into()),
-            });
-            let ring_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("native flare glow rings"),
-                source: wgpu::ShaderSource::Wgsl(COMPOSITE.into()),
-            });
-            let square_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("native flare glow square"),
-                bind_group_layouts: &[Some(&square_layout)],
-                immediate_size: 0,
-            });
-            let ring_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("native flare glow rings"),
-                bind_group_layouts: &[Some(&ring_layout)],
-                immediate_size: 0,
-            });
-            let list = wgpu::PrimitiveTopology::TriangleList;
-            let all = wgpu::ColorWrites::ALL;
-            let source = pipeline(device, "native flare glow source", &square_pipeline_layout, &square_module, "vs_screen", "fs_source", SQUARE_FORMAT, list, None, all);
-            let blur = pipeline(device, "native flare glow blur", &square_pipeline_layout, &square_module, "vs_screen", "fs_blur", SQUARE_FORMAT, list, None, all);
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("native flare glow"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
-            Self { sampler, square_layout, ring_layout, ring_module, ring_pipeline_layout, source, blur, composite: HashMap::new() }
+        pub fn new() -> Self {
+            Self::default()
         }
 
-        /// Records `draw` over `color` (a target of `guest` pixels) into
-        /// `encoder`: the down-sample of its rectangle where `depth` holds
-        /// at least `reference` (the masked sample's stored depth,
-        /// [`crate::flare_gpu::reference`]; above 1 nothing passes), the
-        /// blurs and the composite. `Err` names why nothing was recorded.
-        pub fn record(
-            &mut self,
-            device: &wgpu::Device,
-            encoder: &mut wgpu::CommandEncoder,
-            color: &wgpu::TextureView,
-            depth: &wgpu::TextureView,
-            guest: (u32, u32),
-            reference: f32,
-            draw: &GlowDraw,
-        ) -> Result<(), &'static str> {
-            use wgpu::TextureFormat as F;
-            let ct = color.texture();
-            let dt = depth.texture();
-            let format = ct.format();
-            if !crate::glow::live_colour(color)
-                || !ct.usage().contains(wgpu::TextureUsages::COPY_SRC)
-                || !gfx::program::filterable(format, device.features())
+        fn bitmap(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, b: &Bitmap) -> Result<wgpu::TextureView, &'static str> {
+            if let Some((key, view)) = &self.bitmap
+                && *key == b.key
             {
-                return Err("colour");
+                return Ok(view.clone());
             }
-            if !dt.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
-                || dt.sample_count() != 1
-                || !matches!(dt.format(), F::Depth16Unorm | F::Depth24Plus | F::Depth24PlusStencil8 | F::Depth32Float | F::Depth32FloatStencil8)
-            {
-                return Err("depth");
+            let (w, h) = b.size;
+            if w == 0 || h == 0 || b.rgba.len() != 4 * w as usize * h as usize {
+                return Err("bitmap");
             }
-            let host = (ct.width(), ct.height());
-            let r = region(draw.glow.rect, guest, host).ok_or("outside")?;
-            let side = side(draw.source, guest, host);
-
-            // The rectangle's colour, as the pass found it (an attachment
-            // cannot be sampled as it is drawn into).
-            let copy = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("native flare glow rectangle"),
-                size: wgpu::Extent3d { width: r.size[0], height: r.size[1], depth_or_array_layers: 1 },
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("native flare glow bitmap"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let [ix0, iy0, ix1, iy1] = r.inside;
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo { texture: ct, mip_level: 0, origin: wgpu::Origin3d { x: ix0, y: iy0, z: 0 }, aspect: wgpu::TextureAspect::All },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &copy,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: (ix0 as i32 - r.origin[0]) as u32, y: (iy0 as i32 - r.origin[1]) as u32, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d { width: ix1 - ix0, height: iy1 - iy0, depth_or_array_layers: 1 },
+            queue.write_texture(
+                texture.as_image_copy(),
+                &b.rgba,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                texture.size(),
             );
-            let copy_view = copy.create_view(&Default::default());
-            let depth_view = dt.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
-            let squares = [square_texture(device, side), square_texture(device, side)];
+            let view = texture.create_view(&Default::default());
+            self.bitmap = Some((b.key, view.clone()));
+            Ok(view)
+        }
 
-            use wgpu::util::DeviceExt;
-            let uniform = |label, contents: &[u8]| {
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage: wgpu::BufferUsages::UNIFORM })
-            };
-            let texel = 1.0 / side as f32;
-            let params = |tap: [f32; 4]| Params {
-                copy: [r.origin[0], r.origin[1], r.size[0] as i32, r.size[1] as i32],
-                depth: [dt.width() as i32, dt.height() as i32, 0, 0],
-                tap,
-            };
-            let square_group = |from: &wgpu::TextureView, buffer: &wgpu::Buffer| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("native flare glow square"),
-                    layout: &self.square_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(from) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth_view) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                        wgpu::BindGroupEntry { binding: 3, resource: buffer.as_entire_binding() },
-                    ],
-                })
-            };
-            let source_params = uniform("native flare glow source", bytemuck::bytes_of(&params([texel, texel, 0.0, reference])));
-            let source_group = square_group(&copy_view, &source_params);
-            {
-                let mut pass = screen_pass(encoder, "native flare glow source", &squares[0], wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-                pass.set_pipeline(&self.source);
-                pass.set_bind_group(0, &source_group, &[]);
-                pass.draw(0..3, 0..1);
+        fn squares(&mut self, device: &wgpu::Device, side: u32) -> [wgpu::TextureView; 2] {
+            match &self.squares {
+                Some((s, views)) if *s == side => views.clone(),
+                _ => {
+                    let views = [square(device, side), square(device, side)];
+                    self.squares = Some((side, views.clone()));
+                    views
+                }
             }
+        }
+
+        /// Records `draw` into `encoder` over `t`: the mask's two fans
+        /// into the view's alpha (the masked one where the depth holds at
+        /// least `reference`, the masked sample's stored depth,
+        /// [`crate::flare_gpu::reference`]; above 1 nothing passes), the
+        /// down-sample into both squares, the blurs and the composite.
+        /// Every pass is prepared before any is recorded; `Err` names why
+        /// nothing was.
+        pub fn record(
+            &mut self,
+            t: FlareTarget<'_>,
+            encoder: &mut wgpu::CommandEncoder,
+            reference: f32,
+            draw: &GlowDraw,
+            bitmap: &Bitmap,
+        ) -> Result<(), &'static str> {
+            let ct = t.color.texture();
+            let format = ct.format();
+            if !crate::glow::live_colour(t.color) || !crate::glow::sampleable(t.device, t.color) {
+                return Err("colour");
+            }
+            let dt = t.depth.texture();
+            if !dt.format().has_depth_aspect() || dt.size() != ct.size() || dt.sample_count() != 1 {
+                return Err("depth");
+            }
+            let [x0, y0, x1, y1] = draw.glow.rect;
+            if draw.glow.rect.iter().any(|v| !v.is_finite()) || x1 <= x0 || y1 <= y0 || t.guest.0 == 0 || t.guest.1 == 0 {
+                return Err("outside");
+            }
+            let side = side(draw.source, t.guest, (ct.width(), ct.height()));
+            let bitmap = self.bitmap(t.device, t.queue, bitmap)?;
+            let squares = self.squares(t.device, side);
+
+            let view = PostSurface { view: t.color, guest_size: t.guest };
+            let on_square = |n: usize| PostSurface { view: &squares[n], guest_size: (side, side) };
+            let raster = |blend, writes| PostRaster { blend, writes, ..PostRaster::default() };
+            let alpha = raster(None, wgpu::ColorWrites::ALPHA);
+            let gpu = (t.device, t.queue, t.uploads);
+            let quads = &mut self.quads;
+            let mut pass = |combiner: &[u32; WORDS], sampled, quad, target, depth, stages| {
+                prepare(quads, gpu, (combiner, sampled), quad, target, depth, stages)
+            };
+
+            let mut commands = Vec::with_capacity(4 + BLURS as usize + draw.rings.len());
+            let rect = draw.glow.rect;
+            commands.push(pass(&CLEAR, [None; 4], over(rect, t.guest, 0.0, 0.0), (view, format, alpha), None, [None; 4])?);
+            let tested = QuadDepth { view: t.depth, compare: wgpu::CompareFunction::LessEqual };
+            commands.push(pass(
+                &MASKED,
+                [UNIT, None, None, None],
+                over(rect, t.guest, reference, 0.0),
+                (view, format, alpha),
+                Some(tested),
+                [Some(&bitmap), None, None, None],
+            )?);
+            let copy = raster(None, wgpu::ColorWrites::ALL);
+            for n in 0..2 {
+                commands.push(pass(
+                    &DOWN,
+                    [UNIT, UNIT, None, None],
+                    down(rect, t.guest, side),
+                    (on_square(n), SQUARE_FORMAT, copy),
+                    None,
+                    [Some(t.color), Some(&bitmap), None, None],
+                )?);
+            }
+            let by_dest_alpha = raster(blend(wgpu::BlendFactor::DstAlpha, wgpu::BlendFactor::Zero), wgpu::ColorWrites::COLOR);
             for k in 0..BLURS as usize {
-                let (from, to) = (&squares[k % 2], &squares[(k + 1) % 2]);
-                let buffer = uniform("native flare glow blur", bytemuck::bytes_of(&params([texel, texel, k as f32 + 0.5, reference])));
-                let group = square_group(from, &buffer);
-                let mut pass = screen_pass(encoder, "native flare glow blur", to, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT));
-                pass.set_pipeline(&self.blur);
-                pass.set_bind_group(0, &group, &[]);
-                pass.draw(0..3, 0..1);
+                let from = &squares[k % 2];
+                commands.push(pass(
+                    &blur(k as u32),
+                    [UNIT; 4],
+                    blurred(side),
+                    (on_square((k + 1) % 2), SQUARE_FORMAT, by_dest_alpha),
+                    None,
+                    [Some(from); 4],
+                )?);
             }
             let result = &squares[BLURS as usize % 2];
-
-            let mut rings = Rings { rects: [[0.0; 4]; RINGS], weights: [[0.0; 4]; RINGS / 4], guest: [2.0 / guest.0 as f32, 2.0 / guest.1 as f32, 0.0, 0.0] };
-            for (i, ring) in draw.rings.iter().enumerate() {
-                rings.rects[i] = ring.rect;
-                rings.weights[i / 4][i % 4] = ring.weight;
+            let additive = raster(blend(wgpu::BlendFactor::SrcAlpha, wgpu::BlendFactor::One), wgpu::ColorWrites::COLOR);
+            for ring in &draw.rings {
+                commands.push(pass(
+                    &COMPOSITE,
+                    [UNIT, None, None, None],
+                    over(ring.rect, t.guest, 0.0, ring.weight),
+                    (view, format, additive),
+                    None,
+                    [Some(result), None, None, None],
+                )?);
             }
-            let ring_buffer = uniform("native flare glow rings", bytemuck::bytes_of(&rings));
-            let ring_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("native flare glow rings"),
-                layout: &self.ring_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(result) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: ring_buffer.as_entire_binding() },
-                ],
-            });
-            let (module, layout) = (&self.ring_module, &self.ring_pipeline_layout);
-            let composite = self.composite.entry(format).or_insert_with(|| {
-                pipeline(
-                    device,
-                    "native flare glow composite",
-                    layout,
-                    module,
-                    "vs_ring",
-                    "fs_ring",
-                    format,
-                    wgpu::PrimitiveTopology::TriangleStrip,
-                    Some(additive()),
-                    wgpu::ColorWrites::COLOR,
-                )
-            });
-            let mut pass = screen_pass(encoder, "native flare glow composite", color, wgpu::LoadOp::Load);
-            pass.set_pipeline(composite);
-            pass.set_bind_group(0, &ring_group, &[]);
-            pass.draw(0..4, 0..RINGS as u32);
+            for c in &commands {
+                c.record(encoder);
+            }
             Ok(())
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
-
-    /// At render scale 2 a rectangle half off the right edge covers twice
-    /// its texels, and only its inside part is copied; one wholly outside
-    /// is not drawn.
-    #[test]
-    fn a_glow_half_off_the_target_copies_what_is_inside() {
-        let r = region([632.0, 232.0, 648.0, 248.0], (640, 480), (1280, 960)).unwrap();
-        assert_eq!(r.origin, [1264, 464]);
-        assert_eq!(r.size, [32, 32]);
-        assert_eq!(r.inside, [1264, 464, 1280, 496]);
-        assert_eq!(region([700.0, 0.0, 716.0, 16.0], (640, 480), (640, 480)), None);
-        assert_eq!(region([0.0, 0.0, f32::NAN, 1.0], (640, 480), (640, 480)), None);
-    }
+    use shaders::psh::interp::{self, Inputs, Sampler, Vec4};
+    use shaders::psh::{PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 
     #[test]
     fn the_down_sample_is_the_guest_square_times_the_render_scale() {
         assert_eq!(side([0.0, 64.0], (640, 480), (640, 480)), 64);
-        assert_eq!(side([0.0, 64.0], (640, 480), (1920, 1440)), 192);
+        assert_eq!(side([0.53125, 64.53125], (640, 480), (1920, 1440)), 192);
         assert_eq!(side([0.0, 0.0], (640, 480), (640, 480)), 1);
+    }
+
+    /// Each stage returns one texel wherever it is sampled.
+    struct Texels([Vec4; 4]);
+
+    impl Sampler for Texels {
+        fn sample(&self, stage: usize, _: TextureDim, _: [f32; 3]) -> Vec4 {
+            self.0[stage]
+        }
+    }
+
+    /// The block run on one fragment, its stages reading `texels` and
+    /// `v0` the diffuse, as the generated program runs it.
+    fn run(block: &[u32; WORDS], texels: [Vec4; 4], v0: Vec4) -> Vec4 {
+        let def = PixelShaderDef::from_words(block);
+        let sampled = |n: u32| (def.texture_modes >> (5 * n)) & 0x1f != 0;
+        let options = PixelOptions {
+            texture_dims: std::array::from_fn(|n| sampled(n as u32).then_some(TextureDim::D2)),
+            ..Default::default()
+        };
+        let (c0, c1) = def.embedded_constants();
+        let u = PixelUniforms { c0, c1, fog: shaders::psh::fog::Fog::OFF.uniform(), ..Default::default() };
+        let inputs = Inputs { d0: v0, front: true, ..Default::default() };
+        interp::run(&def, &options, &inputs, &u, &Texels(texels)).expect("not killed")
+    }
+
+    fn close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() < 1e-5, "{actual:?}, expected {expected:?}");
+        }
+    }
+
+    fn grey(v: f32) -> Vec4 {
+        [v, v, v, 1.0]
+    }
+
+    /// The guest's blocks against the combiner worked by hand (the NV2A's
+    /// register combiners: inputs clamped by their mapping, outputs to
+    /// `[-1, 1]`, the final combiner's to `[0, 1]`).
+    #[test]
+    fn the_glow_combiners_give_the_hand_worked_values() {
+        let none = [[0.0; 4]; 4];
+        // The mask fan: alpha 0 (its colour is masked off).
+        assert_eq!(run(&CLEAR, none, [0.0; 4])[3], 0.0);
+        // The masked sample: 4 a, held at 1.
+        let bitmap = |a: f32| [[0.3, 0.6, 0.9, a], [0.0; 4], [0.0; 4], [0.0; 4]];
+        close(&run(&MASKED, bitmap(0.1), [0.0; 4]), &[0.4; 4]);
+        assert_eq!(run(&MASKED, bitmap(0.3), [0.0; 4])[3], 1.0);
+        // The down-sample: the view's alpha (the mask) as colour, the
+        // bitmap's alpha times 2 * 192/255 as alpha.
+        let view = [0.2, 0.4, 0.6, 0.75];
+        let out = run(&DOWN, [view, [0.0, 0.0, 0.0, 0.5], [0.0; 4], [0.0; 4]], [0.0; 4]);
+        close(&out, &[0.75, 0.75, 0.75, 192.0 / 255.0]);
+        let out = run(&DOWN, [view, [0.0, 0.0, 0.0, 0.9], [0.0; 4], [0.0; 4]], [0.0; 4]);
+        assert_eq!(out[3], 1.0, "held at 1");
+        // The blur: r0.a = (0.2 + 0.4) / 2 from the first two taps' blue,
+        // r0.rgb = (0.1 + 0.3) / 2, their sum times c0.a: 1 on the first
+        // pass, 127/255 after. Its alpha is not written.
+        let taps = [grey(0.2), grey(0.4), grey(0.1), grey(0.3)];
+        close(&run(&blur(0), taps, [0.0; 4])[..3], &[0.5; 3]);
+        close(&run(&blur(1), taps, [0.0; 4])[..3], &[0.5 * 127.0 / 255.0; 3]);
+        close(&run(&blur(3), taps, [0.0; 4])[..3], &[0.5 * 127.0 / 255.0; 3]);
+        assert_eq!(run(&blur(0), [grey(0.9); 4], [0.0; 4])[..3], [1.0; 3], "held at 1");
+        // The composite at a mask of 0.75: r0.a = 0.5, half c0 and half
+        // white, times the mask; alpha the ring's weight.
+        let c0 = [176.0 / 255.0, 176.0 / 255.0, 128.0 / 255.0];
+        let lerp = c0.map(|c| (0.5 * c + 0.5) * 0.75);
+        close(&run(&COMPOSITE, [grey(0.75), [0.0; 4], [0.0; 4], [0.0; 4]], [0.0, 0.0, 0.0, 0.25]), &[lerp[0], lerp[1], lerp[2], 0.25]);
+        // Below half the mask r0.a is negative: c0 alone, times the mask.
+        let dim = c0.map(|c| c * 0.25);
+        close(&run(&COMPOSITE, [grey(0.25), [0.0; 4], [0.0; 4], [0.0; 4]], [0.0, 0.0, 0.0, 1.0]), &[dim[0], dim[1], dim[2], 1.0]);
+    }
+
+    /// The quads put each stage where the guest's texture matrices do: the
+    /// view's fans over `[0, 1]` of the rectangle, the down-sample's view
+    /// stage over the rectangle in the view's normalised coordinates, the
+    /// blur's taps half a texel of 64 off on the diagonals.
+    #[test]
+    fn the_quads_place_the_stages_as_the_guest_matrices() {
+        let coord = |q: &crate::glow::Quad, n: usize, p: [f32; 2]| {
+            let t = q.taps[n];
+            [(p[0] + t[0]) * t[2], (p[1] + t[1]) * t[3]]
+        };
+        let rect = [288.0, 208.0, 352.0, 272.0];
+        let fan = gpu::over(rect, (640, 480), 0.5, 0.25);
+        assert_eq!(fan.dest, [2.0 / 640.0, 2.0 / 480.0, 0.5, 0.25]);
+        assert_eq!(coord(&fan, 0, [288.0, 208.0]), [0.0, 0.0]);
+        assert_eq!(coord(&fan, 0, [352.0, 272.0]), [1.0, 1.0]);
+        // At render scale 3 the square is 192 texels; its texel centres
+        // land on the view's guest pixel thirds.
+        let down = gpu::down(rect, (640, 480), 192);
+        assert_eq!(down.corners, [0.0, 0.0, 192.0, 192.0]);
+        let at = coord(&down, 0, [0.0, 0.0]);
+        assert!((at[0] - 288.0 / 640.0).abs() < 1e-6 && (at[1] - 208.0 / 480.0).abs() < 1e-6, "{at:?}");
+        let at = coord(&down, 0, [192.0, 192.0]);
+        assert!((at[0] - 352.0 / 640.0).abs() < 1e-6 && (at[1] - 272.0 / 480.0).abs() < 1e-6, "{at:?}");
+        let at = coord(&down, 1, [96.0, 192.0]);
+        assert!((at[0] - 0.5).abs() < 1e-6 && (at[1] - 1.0).abs() < 1e-6, "{at:?}");
+        let blur = gpu::blurred(64);
+        let centre = [32.5, 32.5];
+        let base = 32.5 / 64.0;
+        let h = 1.0 / 128.0;
+        assert_eq!(coord(&blur, 0, centre), [base - h, base - h]);
+        assert_eq!(coord(&blur, 1, centre), [base + h, base + h]);
+        assert_eq!(coord(&blur, 2, centre), [base - h, base + h]);
+        assert_eq!(coord(&blur, 3, centre), [base + h, base - h]);
     }
 }
