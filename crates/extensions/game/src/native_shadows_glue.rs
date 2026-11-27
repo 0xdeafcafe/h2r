@@ -131,7 +131,7 @@ pub(crate) fn expected_targets(mem: &dyn GuestMemory, target: u32) -> Option<[u3
     match target {
         1 => Some([surface, mem.u32(0x0050_9364).ok()?]),
         9 => Some([mem.u32(0x0050_9384).ok()?, surface]),
-        10 => Some([surface, 0]),
+        10 | 13 => Some([surface, 0]),
         _ => None,
     }
 }

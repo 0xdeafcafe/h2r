@@ -356,9 +356,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         ready: &Ready,
         group: &render_bridge::native_lights::SceneGroup,
         c: &LightConstants,
+        produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         self.gathered_draws(
-            d, mem, ready, usize::from(group.group.layer), c, false,
+            d, mem, ready, usize::from(group.group.layer), c, produced_gel,
             group.entries.iter().enumerate().map(|(i, e)| {
                 (e, group.rows.get(i).map_or(&[][..], Vec::as_slice))
             }),
@@ -453,7 +454,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("light group names another layer"));
         }
         let layer = a.layer as usize;
-        let draws = self.scene_light_draws(&d, mem, &ready, a.group, &c)?;
+        let draws = self.scene_light_draws(&d, mem, &ready, a.group, &c, false)?;
         let prepared =
             self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false, None)?;
         use native_render::light_passes;
@@ -518,6 +519,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         light: Option<LightConstants>,
         map: ShadowMap,
         typed_rect: Option<[u32; 4]>,
+        gel: Option<Binding>,
     ) -> Result<PreparedLight, Keep> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
@@ -635,7 +637,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             Arc::clone(&ready),
             constants,
             draws,
-            None,
+            gel,
             colour_mask,
             typed_rect,
         )?;
@@ -702,6 +704,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             group,
             a.light,
             ShadowMap::Latest,
+            None,
             None,
         )?;
         let plan = d3d::ExternalPlan {
@@ -1709,6 +1712,9 @@ pub struct LightsWorld {
     palettes: StagePalettes,
     /// Gel bitmaps' image 0 by datum.
     gels: HashMap<u32, Image>,
+    /// The gel shaders a scene light draws into target 13
+    /// ([`crate::native_gels_scene`]).
+    scene_gels: Arc<crate::native_gels_scene::Gels>,
     normalization: Option<Arc<StaticLightTexture>>,
     attenuation: Option<Arc<StaticLightTexture>>,
 }
@@ -2297,6 +2303,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let (clusters, unread) = residency::structure_parts(world, &lit_shaders, &materials);
     let (normalization, attenuation) = light_textures(map, lib.metadata(), files);
     let gels = gels(map, &lib, files);
+    let scene_gels = Arc::new(crate::native_gels_scene::load(map, &mut lib, files));
     eprintln!(
         "native-lights: {} resident lit structure parts, {unread} structure parts with unread materials, {} vertex programs, {} stage images, {} gels",
         clusters.len(),
@@ -2314,6 +2321,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         palettized,
         palettes: palettes.clone(),
         gels,
+        scene_gels,
         normalization,
         attenuation,
     })

@@ -45,6 +45,9 @@ pub(super) enum Op {
     /// Freeze a shadow map target for the receivers after it: target 9's
     /// depth bits, target 10's colour.
     Freeze(u32),
+    /// The light's shader gel into target 13's level 0, before the layers
+    /// that sample it (`crate::native_gels_scene`).
+    Gel,
 }
 
 /// The map target of a caster's pass: 9 for the depth map, 10 for the
@@ -72,6 +75,16 @@ pub(super) fn ops(layers: &[(u8, Option<ShadowPass>)]) -> Result<Vec<Op>, Keep> 
             14 => out.push(Op::Draw(n, Attach::Target(1))),
             _ => return Err(Keep::Unsupported("a scene light layer the passes do not draw")),
         }
+    }
+    Ok(out)
+}
+
+/// [`ops`] for a light with a shader gel: the gel into target 13 first,
+/// as the constants' producer `0x0003a5ab` draws it before any layer.
+pub(super) fn gel_ops(layers: &[(u8, Option<ShadowPass>)], gel: bool) -> Result<Vec<Op>, Keep> {
+    let mut out = ops(layers)?;
+    if gel {
+        out.insert(0, Op::Gel);
     }
     Ok(out)
 }
@@ -337,6 +350,8 @@ struct Sequence<'a> {
     groups: Vec<&'a SceneGroup>,
     light: Option<LightConstants>,
     filter: Option<frame_scene::ShadowFilter>,
+    /// The light's shader gel and target 13's binding for its layers.
+    gel: Option<(u32, Binding)>,
     ops: Vec<Op>,
 }
 
@@ -354,16 +369,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("a first-person scene light (slot 10)"));
         }
         let (light, gel) = scene_light(&first.light).ok_or(Keep::NoConstants)?;
-        if gel.is_some() {
-            return Err(Keep::Unsupported("a shader gel draws through its handler"));
-        }
+        let gel = match gel {
+            Some((_, shader)) => Some((shader, self.scene_gel(mem, shader)?)),
+            None => None,
+        };
         let c = constants(&light)?;
         let layers: Vec<_> = passes.iter().map(|p| (p.group.group.layer, p.group.group.pass)).collect();
         let sequence = Sequence {
             groups: passes.iter().map(|p| &p.group).collect(),
             light: Some(c),
             filter: None,
-            ops: ops(&layers)?,
+            ops: gel_ops(&layers, gel.is_some())?,
+            gel,
         };
         self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Lights)
     }
@@ -384,6 +401,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             groups: pass.groups.iter().collect(),
             light: None,
             filter: pass.filter.clone(),
+            gel: None,
             ops: object_ops(&layers, pass.filter.is_some())?,
         };
         self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Shadows)
@@ -400,6 +418,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             groups,
             light,
             filter,
+            gel,
             ops,
         } = sequence;
         let mut d = self
@@ -470,6 +489,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                         kind: if n == 10 { MapKind::ColourMask } else { MapKind::Depth },
                     }),
                 },
+                Op::Gel => {
+                    let (shader, binding) = gel.ok_or(Keep::Unsupported("a gel step with no gel"))?;
+                    let ready_gels = ready.lights.get().ok_or(Keep::NoWorld)?;
+                    let depth = native_render::gels::quad_depth_of(&ReadMemory(&*mem))
+                        .ok_or(Keep::Unsupported("the gel quad's depth does not read"))?;
+                    d3d::ExternalStep {
+                        targets: targets(native_render::gels::TARGET)?,
+                        plan: plan(1, Vec::new()),
+                        pass: Box::new(GelPass {
+                            gels: Arc::clone(&ready_gels.scene_gels),
+                            shader,
+                            depth,
+                            guest_size: binding.guest_size,
+                        }),
+                    }
+                }
                 Op::Filter => {
                     let filter = filter.clone().ok_or(Keep::Shadow("state"))?;
                     let slot = |n| {
@@ -500,11 +535,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     let (tx, ty, tw, th) = targets.rect;
                     let rect = Some([tx, ty, tw, th]);
                     let colour_only = group.group.layer == 10 && group.group.pass.is_some_and(|p| p.colour_mask());
+                    // A gel light's layers sample target 13 as its gel step
+                    // left it, through a read-only slot of their own.
+                    let binding = gel.map(|(_, b)| b);
                     let prepared = match group.group.layer {
                         12 | 13 => {
                             let c = light.ok_or(Keep::NoConstants)?;
-                            let draws = self.scene_light_draws(&d, &*mem, &ready, group, &c)?;
-                            self.prepare_planned(&d, &*mem, Arc::clone(&ready), c, draws, None, false, rect)?
+                            let draws = self.scene_light_draws(&d, &*mem, &ready, group, &c, binding.is_some())?;
+                            self.prepare_planned(&d, &*mem, Arc::clone(&ready), c, draws, binding, false, rect)?
                         }
                         _ => self.shadow_prepared(
                             &d,
@@ -514,20 +552,23 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             light,
                             ShadowMap::Frozen(frozen.clone()),
                             rect,
+                            binding,
                         )?,
                     };
                     let retained = RetainedLight::of(&ready, &prepared)?;
                     let ranges = prepared.draws.iter().map(|draw| draw.ranges.len()).sum();
+                    let slots: Vec<_> = prepared.binding.map(|b| Some(b.slot())).into_iter().collect();
+                    let gel_slot = (!slots.is_empty()).then_some(0);
                     drawn += 1;
                     d3d::ExternalStep {
                         targets,
-                        plan: plan(ranges, Vec::new()),
+                        plan: plan(ranges, slots),
                         pass: Box::new(RunPass {
                             retained: Some(retained),
                             light: prepared,
                             view: None,
                             clip: None,
-                            gel_slot: None,
+                            gel_slot,
                             fallback: None,
                             colour_only,
                             lighting_only: None,
@@ -549,6 +590,89 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .ok_or(Keep::Unsupported("the scene light is not ready on a target copy"))?
             .commit();
         Ok(drawn)
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Target 13's binding for a scene light's gel `shader`, when the map
+    /// load translated it ([`crate::native_gels_scene`]) and the target is
+    /// enabled: the read-only slot its layers sample, at level 0.
+    fn scene_gel(&self, mem: &dyn GuestMemory, shader: u32) -> Result<Binding, Keep> {
+        let ready = self.ready(mem)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
+        if let Some(why) = crate::native_gels_scene::refusal(&world.scene_gels, shader) {
+            return Err(Keep::Unsupported(why));
+        }
+        let target = native_render::gels::Target::read(&ReadMemory(mem))
+            .ok_or(Keep::Unsupported("unavailable gel target 13"))?;
+        let level = target.level(0).ok_or(Keep::Unsupported("unavailable gel target 13"))?;
+        let definition = mem.u32(native_render::gels::DEFINITION).unwrap_or(0);
+        Ok(Binding {
+            key: native_render::gels::Key { sequence: 0, definition, shader, surface: level.surface },
+            guest_size: level.size,
+        })
+    }
+}
+
+/// A scene light's shader gel drawn into target 13's level 0 on each copy
+/// ([`Op::Gel`]): its layer-1 passes over the quad helper's strip.
+struct GelPass {
+    gels: Arc<crate::native_gels_scene::Gels>,
+    shader: u32,
+    depth: (f32, f32),
+    guest_size: (u32, u32),
+}
+
+impl d3d::ExternalPass for GelPass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn uses_validated_resources(&self) -> bool {
+        true
+    }
+
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: true,
+            depth_stencil: false,
+        }
+    }
+
+    fn record_encoded(
+        &mut self,
+        t: &d3d::backend::ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if request.surface_size != self.guest_size {
+            return Some(Err("target 13 is not the gel's size"));
+        }
+        let target = native_render::screen_gpu::ScreenTarget {
+            device: &t.device,
+            queue: &t.queue,
+            uploads: &t.uploads,
+            color: Some(native_render::glow::PostSurface {
+                view: &t.color,
+                guest_size: self.guest_size,
+            }),
+            target1: None,
+            convolutions: [None; 3],
+            z_scale: request.z_scale,
+        };
+        let commands = match self.gels.prepare(target, self.shader, self.depth) {
+            Ok(c) => c,
+            Err(_) => return Some(Err("the gel's passes do not prepare")),
+        };
+        Some(Ok(d3d::backend::ExternalEncoded {
+            ranges: commands.ranges(),
+            draws: commands.draws(),
+            passes: commands.passes(),
+            commands: Box::new(move |encoder| commands.record(encoder)),
+        }))
     }
 }
 
@@ -586,6 +710,15 @@ mod tests {
                 Op::Draw(4, Attach::View),
             ]
         );
+    }
+
+    #[test]
+    fn a_gel_light_draws_its_gel_into_target_13_before_any_layer() {
+        let layers = [(10, caster(9, 4)), (11, caster(2, 4)), (12, None)];
+        let ops = gel_ops(&layers, true).unwrap();
+        assert_eq!(ops[0], Op::Gel);
+        assert_eq!(ops[1..], super::ops(&layers).unwrap()[..]);
+        assert_eq!(gel_ops(&layers, false).unwrap(), super::ops(&layers).unwrap());
     }
 
     #[test]
