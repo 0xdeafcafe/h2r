@@ -36,7 +36,7 @@ fn default_budget() -> u32 {
 }
 
 /// A match's `[train]` table: this run is one shard of a training batch
-/// (`superbounce = true` is required, as a `[drill]` requires it).
+/// (`[rules] script = "superbounce"` is required, as a `[drill]` requires it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrainConfig {
@@ -71,7 +71,7 @@ impl TrainConfig {
     pub fn problems(&self, superbounce: bool, drill: bool) -> Vec<String> {
         let mut p = Vec::new();
         if !superbounce {
-            p.push("train: needs superbounce = true".to_string());
+            p.push("train: needs [rules] script = \"superbounce\"".to_string());
         }
         if drill {
             p.push("train: a drill and a training run are two ways to fly a site; use one".into());
@@ -198,7 +198,7 @@ pub fn plan(
         seed: file.seed,
     };
     let drill = base_match.drill.is_some();
-    let superbounce = base_match.superbounce == Some(true);
+    let superbounce = base_match.plays_superbounce();
     problems.extend(template.problems(superbounce, drill));
     if !over.maps.is_empty() && over.maps.iter().any(|m| m.trim().is_empty()) {
         problems.push("--map: empty name".into());

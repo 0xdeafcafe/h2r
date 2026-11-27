@@ -66,7 +66,7 @@ pub struct SweepConfig {
     /// The results directory, relative to the sweep file.
     pub out: PathBuf,
     /// The batch each candidate plays, relative to the sweep file: its
-    /// match (with `superbounce = true`), maps, seeds and parallelism.
+    /// match (with `[rules] script = "superbounce"`), maps, seeds and parallelism.
     /// Its arm A is the candidate (its tuning kept, the candidate's bounce
     /// over it); arm B is left out.
     pub batch: PathBuf,

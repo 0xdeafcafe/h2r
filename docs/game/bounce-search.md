@@ -368,7 +368,7 @@ h2 sim train <file> --reopen                       # dead and blocked back to op
 
 ```toml
 out = "results/bounce-train"       # relative to this file
-match = "superbounce-train.toml"   # superbounce = true and the bots
+match = "superbounce-train.toml"   # `[rules] script = "superbounce"` and the bots
 maps = ["ascension"]
 seed = 1
 shards = 4      # runs a map; fixed here, not by --parallel

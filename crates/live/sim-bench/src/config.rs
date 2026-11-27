@@ -766,13 +766,6 @@ pub struct MatchConfig {
     /// `unpaced`, `realtime` or `x<factor>`.
     #[serde(default = "default_pace")]
     pub pace: String,
-    /// The superbounce practice: the superbounce mode on for the match,
-    /// so every bot practises bounces instead of fighting
-    /// (docs/runtime/sim.md, "Bounce practice"), and the report carries
-    /// the bounce tally. (Before the tables: TOML
-    /// writes plain values first.)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub superbounce: Option<bool>,
     /// `false` leaves `state_components_v1` out of the report, for timing
     /// arms; the per-tick gameplay digests stay. Unset: recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -797,7 +790,12 @@ pub struct MatchConfig {
     /// More variant settings, by id (`"83" = 1`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, i32>,
-    /// The bounce drill: with `superbounce = true`, the bots try one site
+    /// The rules script the match plays, as a lobby choosing that game
+    /// type would (docs/runtime/sim.md, "Rules scripts"). `script =
+    /// "superbounce"` is the bounce practice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<RulesConfig>,
+    /// The bounce drill: with `[rules] script = "superbounce"`, the bots try one site
     /// only, each try from a start near it with the word already at -3
     /// (docs/runtime/sim.md, "The bounce drill").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -820,6 +818,50 @@ pub struct MatchConfig {
     pub firefight: Option<crate::firefight::FirefightConfig>,
     #[serde(default, rename = "bot")]
     pub bots: Vec<BotSpec>,
+}
+
+impl MatchConfig {
+    /// The match plays the bounce practice (`[rules] script =
+    /// "superbounce"`).
+    pub fn plays_superbounce(&self) -> bool {
+        self.rules.as_ref().is_some_and(RulesConfig::is_superbounce)
+    }
+}
+
+/// A match's `[rules]` table: the script its game plays and the options
+/// it plays with.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RulesConfig {
+    /// A built-in script by key or name (`siege`, `Gun Game`; any case),
+    /// or the path of a `.rules` file, read relative to the match file.
+    pub script: String,
+    /// Options by name: a number, a bool, or an enum value's name. One
+    /// the script does not declare, or a value out of range, refuses
+    /// the match at its start.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, RuleOption>,
+}
+
+/// One option's value in a `[rules]` table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RuleOption {
+    Bool(bool),
+    Int(i64),
+    Name(String),
+}
+
+impl RulesConfig {
+    /// The script is a file, not a built-in's name.
+    pub fn is_path(&self) -> bool {
+        self.script.ends_with(".rules")
+    }
+
+    /// The bounce practice: the Superbounce script plays.
+    pub fn is_superbounce(&self) -> bool {
+        self.script.eq_ignore_ascii_case("superbounce")
+    }
 }
 
 /// A match's `[drill]`.
@@ -860,7 +902,7 @@ pub struct Match {
     /// score limit and team play first, then `settings`.
     pub variant: Vec<(u32, i32)>,
     pub team_play: bool,
-    /// The bots practise superbounces ([`MatchConfig::superbounce`]).
+    /// The bots practise superbounces (`[rules] script = "superbounce"`).
     pub superbounce: bool,
     /// A Firefight match (`game_type = "firefight"`): a Slayer game with
     /// team play on, the bots on the player teams.
@@ -947,8 +989,12 @@ pub fn parse_match(text: &str, json: bool) -> Result<MatchConfig, String> {
 
 /// Reads and checks a match file; tuning files are read relative to it.
 pub fn load_match(path: &Path) -> Result<Match, String> {
-    let config: MatchConfig = parse_file(path)?;
+    let mut config: MatchConfig = parse_file(path)?;
     let base = path.parent().unwrap_or(Path::new("."));
+    if let Some(r) = config.rules.as_mut().filter(|r| r.is_path()) {
+        // A script file is read relative to the match file, as tuning is.
+        r.script = base.join(&r.script).to_string_lossy().into_owned();
+    }
     resolve(config, &|p: &Path| BotParams::load(&base.join(p)))
 }
 
@@ -1008,6 +1054,15 @@ pub fn resolve(
     // Firefight is a Slayer game with team play on and no time limit
     // unless the file sets one (docs/runtime/sim.md, "Firefight").
     let is_firefight = crate::firefight::is_game_type(&config.game_type);
+    if let Some(r) = &config.rules {
+        if r.script.trim().is_empty() {
+            problems.push("rules: script is empty".into());
+        }
+        if is_firefight {
+            problems.push("rules: not in a Firefight match (it plays its own script)".into());
+        }
+    }
+    let superbounce = config.plays_superbounce();
     let firefight = if is_firefight {
         if config.team_play == Some(false) {
             problems.push(
@@ -1019,7 +1074,7 @@ pub fn resolve(
             config.time_limit_s = Some(0);
         }
         let others = [
-            ("superbounce", config.superbounce == Some(true)),
+            ("superbounce", superbounce),
             ("drill", config.drill.is_some()),
             ("train", config.train.is_some()),
             ("drops", config.drops.is_some()),
@@ -1191,10 +1246,9 @@ pub fn resolve(
     if !problems.is_empty() {
         return Err(problems.join("\n"));
     }
-    let superbounce = config.superbounce.unwrap_or(false);
     if let Some(d) = &config.drill {
         if !superbounce {
-            problems.push("drill: needs superbounce = true".into());
+            problems.push("drill: needs [rules] script = \"superbounce\"".into());
         }
         let finite = |p: &[f32; 3]| p.iter().all(|c| c.is_finite());
         if !finite(&d.site) || d.start.is_some_and(|s| !finite(&s)) {

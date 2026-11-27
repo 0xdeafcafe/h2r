@@ -80,7 +80,7 @@ at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
 --provider cloud runs unpaced on dedicated hosts through Live.
 --dry-run lists the runs.
-A run whose match has superbounce = true plays on its own copy of each map's
+A run whose match has `[rules] script = "superbounce"` plays on its own copy of each map's
 verified and ghosts files, kept in <out>/runs/<id>/harvest/{start,end}
 (docs/runtime/sim.md, \"Bounce practice\").
 
@@ -1067,7 +1067,7 @@ fn play_runs(
                     let Some(r) = b.runs.get(n) else { break };
                     let rd = RunDir::new(&b.out, &r.id);
                     let bounce =
-                        r.config.superbounce == Some(true)
+                        r.config.plays_superbounce()
                             || r.config.drops.is_some()
                             || r.config.bounces.is_some();
                     let data = if bounce {
@@ -1148,8 +1148,8 @@ fn sweep(args: Vec<String>) -> Result<()> {
             && checked
                 .runs
                 .iter()
-                .all(|r| r.config.superbounce == Some(true)),
-        "{}: a sweep's batch plays the bounce practice: its match needs superbounce = true",
+                .all(|r| r.config.plays_superbounce()),
+        "{}: a sweep's batch plays the bounce practice: its match needs [rules] script = \"superbounce\"",
         s.batch.display()
     );
     let orig = sw::read_batch_config(&s.batch).map_err(anyhow::Error::msg)?;
