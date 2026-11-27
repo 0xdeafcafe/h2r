@@ -13,7 +13,8 @@
 //! loses to a clear one.
 //!
 //! [`TABLE`] holds the weight by starting location index for the loaded
-//! map. A Forge session's `ForgeStep::SpawnWeight` sets it; the game's
+//! map. A Forge session's `ForgeStep::SpawnWeight` or a built map's Forge
+//! record (`game::forge_record`) sets it; the game's
 //! `forge_spawn_weight` feature adds the bias after each weighing and
 //! empties the table at `GAME_ACTIVATE`.
 use std::collections::BTreeMap;

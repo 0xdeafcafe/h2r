@@ -3,8 +3,9 @@
 //! docs/engine/notes/2026-11-27-forge-spawner-rows.md).
 //!
 //! The clips are host state, by netgame item entry, in
-//! `agent::forge::spare_clips::TABLE`, which the Forge session's world sets
-//! (`ForgeStep::SpareClips`). This feature fills each weapon the spawner
+//! `agent::forge::spare_clips::TABLE`, which the Forge session's world
+//! (`ForgeStep::SpareClips`) or the built map's Forge record
+//! (`crate::forge_record`) sets. This feature fills each weapon the spawner
 //! makes: an observer after `NETGAME_ITEM_SPAWN` (`0x15aad0`, `ret 8`)
 //! reads the state array and the entry's index from the arguments the
 //! callee popped, and writes the weapon's reserve. Before `GAME_ACTIVATE`

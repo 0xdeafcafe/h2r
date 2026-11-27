@@ -423,6 +423,13 @@ pub fn build_with(
         });
         output = built.bytes;
     }
+    // The spawners' and starting points' properties with no retail field,
+    // in the Forge record at the map's tail (`forge_doc::record`), before
+    // the areas record. A document with none builds the bytes it did.
+    let forge = forge_doc::record::ForgeRecord::of(&for_game, &limits.base_counts)?;
+    if !forge.is_empty() {
+        output.extend_from_slice(&forge.encode());
+    }
     // The areas and the shown flags the document gives its flags, in the
     // areas record at the map's tail.
     let record = areas::record(

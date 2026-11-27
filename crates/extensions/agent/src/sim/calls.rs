@@ -231,6 +231,10 @@ pub enum ForgeStep {
         index: u32,
         weight: Option<forge_doc::SpawnWeight>,
     },
+    /// Hold netgame item entry `index` back at a round's start, or place
+    /// it: the game's table (`forge::place_at_start`), which the next round
+    /// reset follows.
+    PlaceAtStart { index: u32, held: bool },
     /// An edit of one of the map's own scenario entries (`forge::base`),
     /// after the other steps: checked with the batch, then done.
     Base(crate::forge::base::BaseStep),
@@ -1128,7 +1132,7 @@ async fn run_forge(
                 }
                 (None, None)
             }
-            ForgeStep::SpareClips { index, .. } => {
+            ForgeStep::SpareClips { index, .. } | ForgeStep::PlaceAtStart { index, .. } => {
                 if let Err(e) = cx.read(|m| item_entry(m, guard.scenario, *index)) {
                     return Ok(Err(super::invalid(e)));
                 }
@@ -1237,6 +1241,9 @@ async fn run_forge(
     for step in steps {
         if let ForgeStep::SpawnWeight { index, weight } = *step {
             crate::forge::spawn_weight::set(index, weight);
+        }
+        if let ForgeStep::PlaceAtStart { index, held } = *step {
+            crate::forge::place_at_start::set(index, held);
         }
         if let ForgeStep::SpareClips { index, clips } = *step {
             crate::forge::spare_clips::set(index, clips);

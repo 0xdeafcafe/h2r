@@ -279,28 +279,82 @@ pub fn decode(record: &[u8]) -> Result<Vec<Row>, RecordError> {
     Ok(rows)
 }
 
-/// The rows of the record at the end of `file`, or none when the file has
-/// no trailer: read from the end, so a map of any size costs two reads.
-pub fn read_tail<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<Row>>, RecordError> {
+/// The trailer ends of the records a map's tail carries: the areas'
+/// ([`END`]) and the Forge record's (`forge_doc::record`, `H2FE`). Each
+/// record is followed by its trailer, so a reader walks back from the end
+/// over the ones it does not want.
+pub const TAIL_ENDS: [[u8; 4]; 2] = [END, *b"H2FE"];
+
+/// The most records a tail walk passes before it gives up.
+const TAIL_DEPTH: usize = 16;
+
+/// The bytes of the last record whose trailer ends in `end` among the
+/// records at the end of `file` (without its trailer), or none when the
+/// tail has none: the walk stops at the first trailer that is none of
+/// [`TAIL_ENDS`].
+pub fn tail_record<R: Read + Seek>(file: &mut R, end: [u8; 4]) -> Result<Option<Vec<u8>>, RecordError> {
     let io = |_| RecordError::Truncated;
-    let len = file.seek(SeekFrom::End(0)).map_err(io)?;
-    if len < TRAILER as u64 {
-        return Ok(None);
+    let mut at = file.seek(SeekFrom::End(0)).map_err(io)?;
+    for _ in 0..TAIL_DEPTH {
+        if at < TRAILER as u64 {
+            return Ok(None);
+        }
+        file.seek(SeekFrom::Start(at - TRAILER as u64)).map_err(io)?;
+        let mut t = [0u8; TRAILER];
+        file.read_exact(&mut t).map_err(io)?;
+        let found: [u8; 4] = [t[4], t[5], t[6], t[7]];
+        if !TAIL_ENDS.contains(&found) {
+            return Ok(None);
+        }
+        let n = u64::from(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
+        if n + TRAILER as u64 > at {
+            return Err(RecordError::Truncated);
+        }
+        let start = at - TRAILER as u64 - n;
+        if found == end {
+            file.seek(SeekFrom::Start(start)).map_err(io)?;
+            let mut record = vec![0u8; n as usize];
+            file.read_exact(&mut record).map_err(io)?;
+            return Ok(Some(record));
+        }
+        at = start;
     }
-    file.seek(SeekFrom::Start(len - TRAILER as u64)).map_err(io)?;
-    let mut t = [0u8; TRAILER];
-    file.read_exact(&mut t).map_err(io)?;
-    if t[4..] != END {
-        return Ok(None);
+    Ok(None)
+}
+
+/// The bytes the records of [`TAIL_ENDS`] take at the end of `file`, with
+/// their trailers: what a map is without them.
+pub fn tail_len<R: Read + Seek>(file: &mut R, len: u64) -> u64 {
+    let mut at = len;
+    for _ in 0..TAIL_DEPTH {
+        if at < TRAILER as u64 {
+            break;
+        }
+        let mut t = [0u8; TRAILER];
+        if file
+            .seek(SeekFrom::Start(at - TRAILER as u64))
+            .and_then(|_| file.read_exact(&mut t))
+            .is_err()
+        {
+            break;
+        }
+        if !TAIL_ENDS.contains(&[t[4], t[5], t[6], t[7]]) {
+            break;
+        }
+        let n = u64::from(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
+        if n + TRAILER as u64 > at {
+            break;
+        }
+        at -= n + TRAILER as u64;
     }
-    let n = u64::from(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
-    if n + TRAILER as u64 > len {
-        return Err(RecordError::Truncated);
-    }
-    file.seek(SeekFrom::Start(len - TRAILER as u64 - n)).map_err(io)?;
-    let mut record = vec![0u8; n as usize];
-    file.read_exact(&mut record).map_err(io)?;
-    decode(&record).map(Some)
+    len - at
+}
+
+/// The rows of the last areas record at the end of `file`, or none when
+/// the tail has none: read from the end, so a map of any size costs a few
+/// reads.
+pub fn read_tail<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<Row>>, RecordError> {
+    tail_record(file, END)?.map(|r| decode(&r)).transpose()
 }
 
 /// Which flag each row belongs to, by flag index: a row finds the flag at
@@ -435,6 +489,29 @@ mod tests {
         let n = bad.len();
         bad[n - 8..n - 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(read_tail(&mut Cursor::new(bad)), Err(RecordError::Truncated));
+    }
+
+    #[test]
+    fn a_walk_passes_another_records_trailer_and_stops_at_a_strange_one() {
+        // An areas record, then a record of another kind of the tail.
+        let mut file = vec![7u8; 40];
+        file.extend(encode(&rows()));
+        let other = [1u8, 2, 3];
+        file.extend_from_slice(&other);
+        file.extend_from_slice(&3u32.to_le_bytes());
+        file.extend_from_slice(&TAIL_ENDS[1]);
+        assert_eq!(read_tail(&mut Cursor::new(file.clone())).unwrap().unwrap(), rows());
+        assert_eq!(
+            tail_record(&mut Cursor::new(file.clone()), TAIL_ENDS[1]).unwrap(),
+            Some(other.to_vec())
+        );
+        let len = file.len() as u64;
+        assert_eq!(tail_len(&mut Cursor::new(file.clone()), len), len - 40);
+        // A trailer of no record of the tail ends the walk.
+        file.extend_from_slice(&0u32.to_le_bytes());
+        file.extend_from_slice(b"ZZZZ");
+        assert_eq!(read_tail(&mut Cursor::new(file.clone())).unwrap(), None);
+        assert_eq!(tail_len(&mut Cursor::new(file), len + 8), 0);
     }
 
     #[test]

@@ -638,3 +638,29 @@ fn a_starting_points_weight_is_a_property_op_the_world_follows_by_row() {
     assert!(s.set_spawn_weight(&mut refusing, 1, start, Some(Low)).is_err());
     assert_eq!(s.spawn_weight(start), None);
 }
+
+#[test]
+fn a_spawners_place_at_start_is_a_property_op_the_world_follows_by_row() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert!(s.place_at_start(spawner), "Yes by default");
+    s.set_place_at_start(&mut w, 1, spawner, false).unwrap();
+    assert!(!s.place_at_start(spawner));
+    assert_eq!(w.calls, [Call::PlaceAtStart(0, true)]);
+    s.set_place_at_start(&mut w, 2, spawner, false).unwrap();
+    assert_eq!(w.calls.len(), 1, "the same answer writes nothing");
+    // Yes is a clear: the world places the item again.
+    s.set_place_at_start(&mut w, 3, spawner, true).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::PlaceAtStart(0, false)));
+    assert!(s.document().ops.iter().any(|op| matches!(
+        op.edit,
+        Edit::Entry(EntryOp::Property { property: forge_doc::Property::PlaceAtStart(None), .. })
+    )));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::PlaceAtStart(0, true)));
+    assert_eq!(
+        s.set_place_at_start(&mut w, 5, weapon(0), false).unwrap_err(),
+        "This object has no place at start."
+    );
+}

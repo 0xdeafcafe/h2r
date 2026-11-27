@@ -25,6 +25,7 @@ pub(crate) enum Call {
     KitDrop(BlockKind, u32),
     SpareClips(u32, Option<u8>),
     SpawnWeight(u32, Option<forge_doc::SpawnWeight>),
+    PlaceAtStart(u32, bool),
 }
 
 /// A world that records each call. `refuse_at` refuses the call at that
@@ -106,6 +107,9 @@ impl World for Fake {
         weight: Option<forge_doc::SpawnWeight>,
     ) -> Result<(), String> {
         self.call(Call::SpawnWeight(index, weight))
+    }
+    fn place_at_start(&mut self, index: u32, held: bool) -> Result<(), String> {
+        self.call(Call::PlaceAtStart(index, held))
     }
 }
 
