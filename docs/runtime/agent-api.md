@@ -2537,6 +2537,7 @@ and `d3d_glue`. Registered with the frame methods; answers
 h2 agent residual 600                          # arm, wait, print with per_frame
 h2 agent render.residual '{"arm": {"frames": 900}}'
 h2 agent render.residual '{"top": 500}'        # the last finished window
+h2 render gate                                 # the census corpus; exits 1 while d3d work is left
 ```
 
 | Method | Access | Params | Result |
