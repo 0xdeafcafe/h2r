@@ -106,3 +106,50 @@ fn each_rounds_start_logs_the_scores_the_game_holds_for_the_sim_report() {
     assert_eq!(log[0].teams.iter().map(|t| t.0).collect::<Vec<_>>(), [0, 1]);
     assert!(log.iter().all(|s| s.players.len() == 2), "{log:?}");
 }
+
+/// The engine's round reset zeroes each statborg row's round score and adds
+/// it into the row's earlier rounds' score (`0x1e97b0`), and the game's end
+/// adds it in and keeps it. `player_score` and team score are the game's:
+/// a two-round Siege whose defenders hold both reads 1 each, through the
+/// reset and after the end, not the round's 0.
+#[test]
+fn player_and_team_scores_are_the_games_across_the_round_reset() {
+    const ROW: u32 = ENGINE + 0x308;
+    const TEAM: u32 = ENGINE + 0x4c8;
+    let (mut m, _) = guest([0; LEN], SLAYER);
+    let read = |m: &FakeGuest| {
+        (
+            guest::player_score(m, 0).unwrap(),
+            guest::player_score(m, 1).unwrap(),
+            guest::team_score(m, 0).unwrap(),
+            guest::team_score(m, 1).unwrap(),
+        )
+    };
+    // Round 1: team 1 (player 1) held; `SCORE_ADD` wrote the round's rows.
+    m.put_u16(ROW + 0x1c, 1).put_u16(TEAM + 0x12, 1);
+    assert_eq!(read(&m), (0, 1, 0, 1));
+    // The round reset: the round's score moved into the earlier rounds'.
+    m.put_u16(ROW + 0x1c, 0).put_u16(ROW + 0x1c + 2, 1);
+    m.put_u16(TEAM + 0x12, 0).put_u16(TEAM + 0x12 + 2, 1);
+    assert_eq!(read(&m), (0, 1, 0, 1), "the reset keeps the game's score");
+    // Round 2: team 0 (player 0) held.
+    m.put_u16(ROW, 1).put_u16(TEAM, 1);
+    assert_eq!(read(&m), (1, 1, 1, 1), "one round each: a draw");
+    // The game's end: the round's score added in and kept, counted once.
+    m.put_u16(ROW + 2, 1).put_u16(TEAM + 2, 1);
+    m.put_u8(ENGINE + 0xc08, 1);
+    assert_eq!(read(&m), (1, 1, 1, 1));
+}
+
+/// The same team winning both rounds leads by two.
+#[test]
+fn a_team_that_wins_both_rounds_leads_the_game() {
+    const TEAM: u32 = ENGINE + 0x4c8;
+    let (mut m, _) = guest([0; LEN], SLAYER);
+    m.put_u16(TEAM, 1);
+    // The reset, then the second round's point.
+    m.put_u16(TEAM, 0).put_u16(TEAM + 2, 1);
+    m.put_u16(TEAM, 1);
+    assert_eq!(guest::team_score(&m, 0).unwrap(), 2);
+    assert_eq!(guest::team_score(&m, 1).unwrap(), 0);
+}

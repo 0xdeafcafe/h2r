@@ -4,7 +4,9 @@
 # the clock in minutes, and the sides swap for the second. The report's
 # `rounds` holds every player's `player_score` and each team's score as
 # each round began: read `rounds[1]` to see what the second round started
-# with (a `player_score` that reset reads 0 there).
+# with (the game's scores so far: the first round's winners read 1 each).
+# Build Zanzibar's nav mesh first (`h2 bots nav zanzibar`): without it the
+# bots see nobody and roam the whole game.
 map = "zanzibar"
 game_type = "slayer"
 time_limit_s = 3600   # longer than max_ticks: the script or the tick limit ends it
