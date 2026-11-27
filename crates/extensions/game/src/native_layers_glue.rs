@@ -1269,11 +1269,12 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             if !viewport_clip(&d, &read) {
                 return Err("viewport");
             }
-            let device_stencil = d.stencil_state(&read).ok_or("stencil")?;
             let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
-            if restore_moves_outside(&restore, &|slot| d.render_state(&read, slot)) {
-                return Err("object_restore");
-            }
+            // The stencil as the restore leaves it, as `plan_objects` reads
+            // the rest.
+            let device = |slot: u32| d.render_state(&read, slot);
+            let after = native_render::sorted_entries::after_restore(&restore, &device);
+            let device_stencil = crate::native_objects_glue::stencil_with(&after).ok_or("stencil")?;
             (device_stencil, restore)
         };
         let unmarked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil;
@@ -1291,7 +1292,7 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         // (`layer_pass::item_stencil`).
         let stencil = if planned.marked {
             let marked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, true);
-            if marked.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1(&d, &*mem) {
+            if marked.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1_with(&*mem, Some(device_stencil)) {
                 return Err("object_stencil");
             }
             marked.stencil
@@ -1310,10 +1311,6 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         let mut copy_at = None;
         let open = if planned.sets_copied { render_bridge::open_shader::read(&*mem).map_err(|_| "cached_state")? } else { None };
         if planned.copies {
-            let colour = planned.draws.iter().any(|(_, draw)| draw.view || draw.scene_copy);
-            if let Some(why) = copy_beside(false, colour) {
-                return Err(why);
-            }
             let header = crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET).ok_or("object_shader_flag_target")?;
             slots.push(Some(d3d::ExternalSlot { header, written: true }));
             copy_at = Some(0);
