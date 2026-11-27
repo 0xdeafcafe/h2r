@@ -1082,6 +1082,54 @@ fn the_banner_is_the_first_shown_in_its_mode() {
     assert_eq!(banner_of(&hud, &values, Mode::Full), None);
 }
 
+/// Each local user's banner is the banner of the values its HUD draws: a
+/// user with its own values has its own line (a split-screen player's last
+/// life), every other the shared one, and each user's line is written on
+/// its own change of text.
+#[test]
+fn a_local_users_banner_is_its_own_values() {
+    let mut banner = Element::channel("b", Kind::Banner { longest: "LAST LIFE" });
+    banner.at = Place::GAME.split((0, 0), (0, 0));
+    let hud = Hud {
+        name: "b",
+        elements: vec![banner],
+    };
+    let text = |t: Option<&str>| {
+        let mut v = Values::default();
+        v.set("b", t.map_or_else(Value::hidden, Value::text));
+        v
+    };
+    let (shared, stamps) = (text(Some("WAVE 3")), Stamps::new());
+    let own = [
+        Own {
+            user: 1,
+            values: text(Some("LAST LIFE")),
+            stamps: Stamps::new(),
+        },
+        Own {
+            user: 2,
+            values: text(None),
+            stamps: Stamps::new(),
+        },
+    ];
+    let at = |user| banner_for(&hud, (&shared, &stamps), &own, user, Mode::Half);
+    assert_eq!(at(0).as_deref(), Some("WAVE 3"));
+    assert_eq!(at(1).as_deref(), Some("LAST LIFE"));
+    assert_eq!(at(2), None, "its own values show none");
+    assert_eq!(at(3).as_deref(), Some("WAVE 3"));
+    // One user's change writes that user's line alone.
+    let mut last: [Option<String>; USERS as usize] = [None, None, None, None];
+    let due: Vec<_> = (0..USERS)
+        .map(|u| banner_due(&mut last[u as usize], at(u)))
+        .collect();
+    assert_eq!(due[1].as_deref(), Some("LAST LIFE"));
+    assert_eq!(due[2], None);
+    let again: Vec<_> = (0..USERS)
+        .map(|u| banner_due(&mut last[u as usize], at(u)))
+        .collect();
+    assert!(again.iter().all(Option::is_none), "{again:?}");
+}
+
 /// The local users the banner goes to: the local views, one to four.
 #[test]
 fn the_local_users_are_the_views_one_to_four() {

@@ -81,6 +81,22 @@ pub const GROUPS: [(u32, Point); 6] = [
     ),
 ];
 
+/// The end of the message group ([`GROUPS`]): the HUD's prompt line,
+/// notification list and centred lines (`0x0024cf66`).
+pub const MESSAGE_END: u32 = 0x0024_d6c4;
+// Where the message group turns from its top-left column (the prompt
+// line and the notification list, laid out from the top-left anchor the
+// call at 0x0024cfda returns) to its two centred lines: the user's timed
+// line and, 18 pixels under it, the game engine's own line (the respawn
+// timer, 0x0015f120). Both are drawn centred (justification 2) in a rect
+// as wide as the safe frame, 40 above its bottom (0x0024d52a..0x0024d59b,
+// 0x0024d637..0x0024d6bb). The notification loop falls out through
+// 0x0024d51c (`mov edi, [ebp-64h]`) and a list with no lines jumps here
+// from 0x0024d351, so both paths reach this `mov eax, [0x005023f4]`; the
+// hook reads no register.
+pub const MESSAGE_CENTRED: Point =
+    Point::new("HUD_MESSAGE_CENTRED_LINES", 0x0024_d51f, Sig::Site, DOC);
+
 /// Function and interior instruction entries used by the aspect hooks.
 /// A host module can be built on a different machine from its GPU host,
 /// so these entry boundaries are independent of the builder's features.
@@ -97,6 +113,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         OCEAN_GRID_ASPECT.base,
         ANCHOR.base,
         ANCHOR_READY.base,
+        MESSAGE_CENTRED.base,
         MENU_FILL.base,
         MENU_FILL_END.base,
         FLARE_QUERY.base,

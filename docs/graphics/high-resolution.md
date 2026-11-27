@@ -271,14 +271,30 @@ Because the guest keeps its 640x480 back buffer, the game's own arithmetic stays
 
 ### HUD and UI
 
-Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)). One rule places every draw: `render_bridge::ui_layout` fits the canvas uniformly, `min(w/640, h/480)` display pixels per guest pixel (`uniform_scale`), in a centred safe area, and anchors the HUD's corner groups on top of it. The same module answers whether a window has the canvas's shape and how far it stretches it (`is_canvas_shape`, `stretch_ratio`); the projection fit and the glyph pages' density take their aspect from it.
+Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)). One rule places every draw: `canvas_fit::anchor_fit`. A group of draws is held at an anchor of its view (`canvas_fit::Anchor`), its artwork is scaled uniformly, `min(w/640, h/480)` display pixels per guest pixel (`uniform_scale`), about that anchor, and the anchor lands the same way everywhere:
 
-| HUD layout setting | Corner groups |
+| Anchor | On each axis it lands |
 |---|---|
-| `Centered` | on the safe area's edges |
-| `Pinned` | the retail corner-anchored groups translate to their own viewport edges and keep their physical scale |
+| a corner or an edge's middle, at a view edge | on the window's edge when the HUD layout is `Pinned`; on the edge of the safe area, the centred 4:3 box, when it is `Centered` |
+| an edge's middle or the centre, at the view's middle | on the window's middle |
+| a point the game projected (the crosshair, a tracked mark) | where it is, moved with the widened lens |
 
-Centre and world-tracked indicators use their own anchor. At 21:9 and 32:9 the menu is the centred 4:3 box at the window's full height, a pinned group keeps its window corner at that scale, and the crosshair stays on the centre (test `ultrawide_windows_keep_the_uniform_scale_and_the_corners`).
+```
+ 4:3                     16:9, pinned                    16:9, centred
++-TL----T----TR-+   +-TL---------T---------TR-+   +----TL----T----TR----+
+|               |   |                         |   |    :           :    |
+L       C       R   L            C            R   |    L     C     R    |
+|               |   |                         |   |    :           :    |
++-BL----B----BR-+   +-BL---------B---------BR-+   +----BL----B----BR----+
+```
+
+| Draws | Anchor | Code |
+|---|---|---|
+| menus and screens | the centre | `ui_layout::menu_fit` |
+| a HUD group, and so each widget of ours the game's HUD draws (the HUD kit's) | the game's own id for the group: 0 to 3 the corners clockwise from the top right, 4 and up a projected point (`Anchor::hud`) | `ui_layout::hud_fit`, at `HUD_LAYOUT_ANCHOR_READY` |
+| the message group's centred lines: the timed line and the respawn timer (`0x0024d51f` to the group's end) | the bottom's middle. The group is laid out from the top-left anchor for its prompt line and notification list, and draws these two centred in a rect as wide as the frame, 40 above its bottom | `ui_layout::group_fit`, at `HUD_MESSAGE_CENTRED_LINES` |
+
+No widget or group has an aspect offset of its own. The same module answers whether a window has the canvas's shape and how far it stretches it (`is_canvas_shape`, `stretch_ratio`); the projection fit and the glyph pages' density take their aspect from it. At 4:3 every fit is the identity. Tests: `every_anchor_keeps_its_place_and_the_uniform_scale_at_every_aspect` (`canvas-fit`: every anchor at 4:3, 16:9, 21:9 and 9:16), `every_hud_anchor_lands_where_retail_holds_it_at_every_aspect` and `a_line_centred_on_the_frame_stays_on_the_windows_centre_line` (`render-bridge`), `the_message_groups_centred_lines_stay_on_the_windows_centre_line` (`game::render_aspect`). At 21:9 and 32:9 the menu is the centred 4:3 box at the window's full height, a pinned group keeps its window corner at that scale, and the crosshair stays on the centre (test `ultrawide_windows_keep_the_uniform_scale_and_the_corners`).
 
 Each draw records the fit before it moves to the GPU thread. A fit change first drains the push buffer under the old fit (`Device::set_ui_fit`). When an undelivered guest callback stops that drain, the change is queued at the push-buffer address that was PUT when it was asked for, and the drain switches there once the callback has run. Commands written before the change keep the old fit and later draws take the new one (test `a_fit_change_held_back_by_a_callback_starts_after_the_commands_before_it`).
 

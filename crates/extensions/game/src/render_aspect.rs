@@ -9,7 +9,7 @@ use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
     FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_FILL,
-    MENU_FILL_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
+    MENU_FILL_END, MESSAGE_CENTRED, MESSAGE_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
 };
 use render_bridge::ui_layout;
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
@@ -376,6 +376,21 @@ impl Canvas {
         };
         layout.map(UiFit::from_transform)
     }
+
+    /// The fit of a HUD group held at `anchor` of this view
+    /// ([`ui_layout::group_fit`]), for a part of a group that is not laid
+    /// out from the group's own anchor.
+    fn fit_at(self, anchor: ui_layout::Anchor) -> Option<UiFit> {
+        ui_layout::group_fit(
+            self.output,
+            (self.rect.x, self.rect.y, self.rect.width, self.rect.height),
+            self.pinned,
+            self.projection_factor,
+            self.projected_points_fitted,
+            anchor,
+        )
+        .map(UiFit::from_transform)
+    }
 }
 
 /// The HUD's bottom-left corner group (anchor 2: the motion tracker and
@@ -624,6 +639,18 @@ impl Layout {
         }
         self.groups.pop();
         Some(self.current())
+    }
+
+    /// The message group reaches its centred lines (the timed line and
+    /// the respawn timer, [`MESSAGE_CENTRED`]): the rest of the group is
+    /// held at the middle of the view's bottom, not at the top-left anchor
+    /// its prompt line and notification list are laid out from. The fit to
+    /// set, when the message group is the one open in a HUD scope.
+    fn centre_message_lines(&mut self) -> Option<Option<UiFit>> {
+        let canvas = self.active.filter(|canvas| canvas.hud)?;
+        let group = self.groups.last_mut().filter(|g| g.0 == MESSAGE_END)?;
+        group.1 = canvas.fit_at(ui_layout::Anchor::Bottom);
+        Some(group.1)
     }
 
     fn current(&self) -> Option<UiFit> {
@@ -890,6 +917,17 @@ impl Feature for RenderAspect {
                     let fit = canvas.fit(Some((id, point)));
                     l.groups.push((end, fit));
                     sink.set_fit(&mut mem, fit);
+                }
+                Ok(Flow::Continue)
+            })
+            .context_only()
+            .optional();
+        let (on_lines, sink) = (layout.clone(), self.sink.clone());
+        b.raw()
+            .before(&MESSAGE_CENTRED, "hold the HUD's centred lines at the bottom's middle", move |c| {
+                let mut l = on_lines.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(fit) = l.centre_message_lines() {
+                    sink.set_fit(&mut c.ctx.memory(), fit);
                 }
                 Ok(Flow::Continue)
             })
@@ -1451,6 +1489,59 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// The message group's centred lines (the timed line and the respawn
+    /// timer) leave the group's top-left fit for the bottom's middle, so a
+    /// line centred on the frame is on the window's centre line at 4:3,
+    /// 16:9 and 21:9; the group's end restores the enclosing fit, and no
+    /// other group, and no menu, is split.
+    #[test]
+    fn the_message_groups_centred_lines_stay_on_the_windows_centre_line() {
+        let line = [320.0, 404.0];
+        for output in [(1440, 1080), (1920, 1080), (2520, 1080)] {
+            let canvas = Canvas {
+                output,
+                rect: FULL,
+                hud: true,
+                pinned: true,
+                projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
+            };
+            let mut l = Layout {
+                active: Some(canvas),
+                ..Default::default()
+            };
+            // No group open: nothing to split.
+            assert_eq!(l.centre_message_lines(), None);
+            // The message group, laid out from the top-left anchor.
+            let top_left = canvas.fit(Some((1, [48.0, 36.0])));
+            l.groups.push((MESSAGE_END, top_left));
+            let unit = (output.0 as f32 / 640.0).min(output.1 as f32 / 480.0);
+            let wide = output != (1440, 1080);
+            let before = physical(l.current(), output, line)[0];
+            assert_eq!(before < output.0 as f32 / 2.0 - 1.0, wide, "{output:?}: {before}");
+            let fit = l.centre_message_lines().expect("the message group is open");
+            assert_eq!(l.current(), fit);
+            let xy = physical(fit, output, line);
+            close(xy[0], output.0 as f32 / 2.0);
+            close(output.1 as f32 - xy[1], 76.0 * unit);
+            // The prompt line's own fit is not what the lines keep.
+            assert_eq!(fit == top_left, !wide);
+            assert!(l.end_group(MESSAGE_END));
+            assert!(l.groups.is_empty());
+            // Another group stays whole.
+            let other = GROUPS.iter().map(|(_, end)| end.base).find(|end| *end != MESSAGE_END);
+            l.groups.push((other.unwrap(), top_left));
+            assert_eq!(l.centre_message_lines(), None);
+            assert_eq!(l.current(), top_left);
+            // A menu scope has no message group.
+            let mut m = menu(output, FULL);
+            m.groups.push((MESSAGE_END, None));
+            assert_eq!(m.centre_message_lines(), None);
+        }
+        // The message group's end is the one the split looks for.
+        assert!(GROUPS.iter().any(|(caller, end)| *caller == 0x0024_cfdf && end.base == MESSAGE_END));
     }
 
     #[test]

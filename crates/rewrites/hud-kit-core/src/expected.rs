@@ -321,8 +321,10 @@ pub mod firefight {
     use super::*;
     use crate::views::firefight::{
         BANNER, BANNER_LONGEST, ENEMIES, LIVES, LIVES_LONGEST, NAME, PROGRESS, PROGRESS_LONGEST,
-        SCORE, SCORE_LONGEST, SKULLS, skull_glyphs,
+        ROUND_PIPS, ROUNDS, SCORE, SCORE_LONGEST, SET, SET_LONGEST, SKULLS, WAVE_PIPS, WAVES,
+        pip_glyphs, skull_glyphs,
     };
+    use font::skulls::Pip;
 
     /// A place with the offsets it has in each mode: none where it is
     /// not drawn.
@@ -367,16 +369,23 @@ pub mod firefight {
             elements.push(Element::gauge(
                 id,
                 skull_glyphs(i as usize),
-                corner((-(18 * i + 15), -113), Some((-(14 * i + 14), -110)), None),
+                corner((-(18 * i + 15), -125), Some((-(14 * i + 14), -124)), None),
             ));
         }
-        elements.push(Element::text(
-            BANNER,
-            Font::Hud,
-            Justify::Centre,
-            BANNER_LONGEST,
-            place(Anchor::TopLeft, (272, 60), Some((272, 48)), None),
-        ));
+        let mut banner = Element::channel(BANNER, Kind::Banner { longest: BANNER_LONGEST });
+        banner.at = place(Anchor::TopLeft, (0, 0), Some((0, 0)), None);
+        elements.push(banner);
+        // The pips' row: one line lower in a quarter.
+        let row = |x: i16, up: i16| corner((x, -up), Some((x, -up)), Some((x, 24 - up)));
+        elements.push(Element::text(SET, Font::Hud, Justify::End, SET_LONGEST, row(-72, 110)));
+        for (i, id) in ROUNDS.into_iter().enumerate() {
+            let x = -(48 + 9 * (ROUND_PIPS - 1 - i) as i16);
+            elements.push(Element::gauge(id, pip_glyphs(Pip::Round), row(x, 108)));
+        }
+        for (i, id) in WAVES.into_iter().enumerate() {
+            let x = -(6 + 7 * (WAVE_PIPS - 1 - i) as i16);
+            elements.push(Element::gauge(id, pip_glyphs(Pip::Wave), row(x, 108)));
+        }
         Hud {
             name: NAME,
             elements,
