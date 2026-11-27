@@ -1,7 +1,6 @@
 # Object update bodies: units, weapons, vehicles and bipeds
 
-Status: Built (behind `impl.sim.native.objects`). The bodies of slices 6a, 6b, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped.
-Contract page for phase 3 of the [simulation rewrite](sim-rewrite-objects.md); entries and conventions are in [object-update.md](object-update.md).
+Status: Built (behind `impl.sim.native.objects`). The bodies of slices 6a, 6b, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. Contract page for [sim-rewrite-objects.md](sim-rewrite-objects.md) phase 3; entries are in [object-update.md](object-update.md).
 
 ## Slice 6a bodies
 
@@ -600,9 +599,3 @@ read.
   exception, as in slice 7a.
 - Callee `ret` sizes are read from each callee's last `ret` before its
   padding.
-
-
-## Related
-
-- [object-update.md](object-update.md): entries, callouts and code paths.
-- [sim-rewrite-objects.md](sim-rewrite-objects.md): the design and slices.
