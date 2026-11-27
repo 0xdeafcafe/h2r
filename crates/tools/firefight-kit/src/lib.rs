@@ -358,6 +358,18 @@ fn build_with_classes(
 /// retail multiplayer map, which Zanzibar sits 132 KiB under.
 const KIT_METADATA_BUDGET: CacheType = CacheType::Campaign;
 
+/// The one run a zone has: the widest kept ship's where it has one, else the
+/// next widest's. A kind the run does not clear at its own hover and reach
+/// is left off that zone's path ([`ship::recheck`]).
+fn shared_runs(ship_runs: &[(ShipKind, ship::Dims, Vec<Option<ship::Run>>)]) -> Vec<Option<ship::Run>> {
+    let mut order: Vec<_> = ship_runs.iter().collect();
+    order.sort_by(|a, b| b.1.radius.total_cmp(&a.1.radius));
+    let zones = order.first().map_or(0, |o| o.2.len());
+    (0..zones)
+        .map(|z| order.iter().find_map(|o| o.2.get(z).copied().flatten()))
+        .collect()
+}
+
 /// The tag memory `base` has left: [`KIT_METADATA_BUDGET`] less its `+0x1c`.
 fn headroom(base: &[u8]) -> Result<u32> {
     let map = Map::from_reader(Cursor::new(base))?;
@@ -585,11 +597,8 @@ fn assemble(
     // The one path a zone is the widest kept ship's; every kind is checked
     // on it at its own hover and reach, and a kind it blocks everywhere is cut.
     let mut valid: Vec<(ShipKind, Vec<bool>)> = Vec::new();
-    while let (Some(walls), Some(wide)) = (
-        &nav.ship_walls,
-        ship_runs.iter().max_by(|a, b| a.1.radius.total_cmp(&b.1.radius)),
-    ) {
-        let shared = wide.2.clone();
+    while let (Some(walls), false) = (&nav.ship_walls, ship_runs.is_empty()) {
+        let shared = shared_runs(&ship_runs);
         valid = ship_runs
             .iter()
             .map(|(k, d, _)| (*k, ship::recheck(walls, &shared, d)))
@@ -698,11 +707,7 @@ fn assemble(
     .map_err(anyhow::Error::msg)?;
     // One path a zone, cleared for the widest ship kept.
     let sized = |kind: ShipKind| ship_runs.iter().find(|(k, _, _)| *k == kind);
-    let widest = ship_runs
-        .iter()
-        .max_by(|a, b| a.1.radius.total_cmp(&b.1.radius))
-        .map(|(_, _, runs)| runs.clone());
-    let shared_runs = widest.unwrap_or_default();
+    let shared_runs = shared_runs(&ship_runs);
     let kept_sizes: Vec<(ShipKind, ship::Dims, Vec<bool>)> = ship_tags
         .iter()
         .filter_map(|(k, _, _)| {

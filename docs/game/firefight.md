@@ -838,11 +838,14 @@ default, `firefight_kit::Config::dropship`):
   (`bots::cache::walls_without_sky`: the lid and walls that reach the
   highest surface close the world and are no roof) (`bots::los::Walls::clear`):
   from just above the zone's floor to the sky (a roof over the zone
-  fails it), and, for the first of eight compass directions (starting
+  fails it), and, for the first of 24 compass directions, every 15 degrees (starting
   away from the map's middle) where both clear, from the run-in down to
   the hover and from the hover up to the run-out, which lie on opposite sides.
-  A zone with no clear long run is tried again with runs 80, 50 and 30 units
-  long, steeper dives for a canyon.
+  A zone with no clear long run is tried again with runs 80, 50, 30, 15 and 5 units
+  long, steeper dives for a canyon, the last nearly vertical over the column.
+  A zone's run is the widest kept ship's where it has one, else the next
+  widest's; a kind the run does not clear at its own hover is left off that
+  zone's path.
   A zone with no such direction gets no point set, and its squads spawn on foot.
   The paths are not placed by hand; a map keeps what the rays find.
 - **Fit.** The ship is cut before any class: with a map short of headroom
