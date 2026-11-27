@@ -21,6 +21,20 @@ opened, and none may be for this work. Evidence labels are those of
 [dynamic-lighting.md](dynamic-lighting.md) ("Evidence labels"), with one
 more: **Guess**, a cost with no measurement of anyone's behind it.
 
+```mermaid
+flowchart LR
+  subgraph Offline["Offline, once per BSP"]
+    T[CPU BVH trace] --> C[(transport cache: links, surfels, receivers, probes)]
+    T --> F[fit to retail lightmap, fill]
+  end
+  subgraph Tick["Every scene"]
+    L[live sun, sky, lights, glow] --> R[relight, bounce, receive, probes]
+    C --> R
+    R --> P[live lightmap pages]
+  end
+  P --> W[layer 3 samples the page]
+```
+
 ## Summary
 
 - **Technique: relit transport.** A level's geometry never changes, so
@@ -44,92 +58,49 @@ more: **Guess**, a cost with no measurement of anyone's behind it.
 
 ## Technique choice
 
-Costs are per display frame on a base M3 at render scale 4 (2560x1920,
-4.92 M pixels) and 60 fps. None is measured on an M3. The bases:
+| Technique | GPU ms at 4x and 60 fps | Verdict |
+|---|---|---|
+| DDGI probes (ray queries or a compute BVH) | 5 to 10 with lookup | No. Over budget before the sun; probes interpolate across Halo's thin walls (dynamic-lighting.md, approach b2) |
+| Distance fields or voxels, in software | 8 to 20 | No. Final gather grows with the pixels |
+| Surfel GI from the screen | 3 to 8 | No. Needs ray queries each frame and a temporal filter |
+| Radiance cascades | 4 to 10 | No. The screen-space form loses light from behind the camera |
+| Screen-space GI | 1.5 to 4 | Not as the base. The renderer has no motion vectors |
+| Light propagation volumes | 0.3 to 1 | No. Nothing occludes inside the volume |
+| **Relit transport** (this page) | **0.6 to 1.3**, no added per-pixel work | **Yes** |
 
-- **A texture tap over the whole frame costs about 0.44 ms**
-  (**Estimate**): shadowlab on an M1 Max at 4x took 2.67 ms with nine
-  shadow taps and 1.13 ms with one ([notes/e3-lighting.md](notes/e3-lighting.md)),
-  so 0.19 ms a tap, times the 2.3 dynamic-lighting.md takes for an M3.
-  That is 0.09 ms per million taps. A comparison tap into an 8192 map is
-  dearer than most, so it is an upper figure.
-- **DDGI** as published: 100 to 300 rays a probe, 4,096 probes in a
-  cascade, 16 bilinear fetches per shaded sample, 1 to 2 ms on an RTX
-  2080 Ti at 1920x1080, 97% hysteresis and about 100 ms of lag (**P**,
-  McGuire); 6 ms in the paper's worst case (**P\***, Majercik).
-- **Hardware rays on the M3:** one ray per pixel against 262,267
-  triangles took 12.66 ms of fragment time (**P**, nelari.us). The post
-  does not give its resolution, so no ray rate follows from it.
-
-| Technique | GPU ms at 4x and 60 fps | Basis | Verdict |
-|---|---|---|---|
-| DDGI probes, hardware ray queries | trace, shade and blend 2 to 5; lookup 3 to 7 at full resolution, or about 1.3 resolved at 1x and upsampled | trace: **Guess**. Lookup: **Estimate**, 16 taps at the tap cost, or under half of it if a small atlas is that much cheaper to tap | No. Over budget before the sun, on an experimental API (below), and probes interpolate across Halo's thin walls (dynamic-lighting.md, approach b2) |
-| DDGI probes, a BVH walked in a compute shader | as above with the trace two to three times dearer | **Guess** | No. Same lookup, slower rays |
-| Distance fields or voxels, traced in software (Lumen-like) | 8 to 20 | **Guess**; no public figure was read for this page | No. Its final gather works per screen probe, so it grows with the pixels |
-| Surfel GI spawned from the screen | 3 to 8 | **Guess** | No. Needs ray queries each frame and a temporal filter |
-| Radiance cascades | screen space: about 3 ms on a GTX 1050 at an unstated size (**P\***, Sannikov), so 4 to 10 here; world space: about 5 ms on an unstated GPU (**P\***) | **Guess** from those | No. The screen-space form loses light from behind the camera, which is most of an interior's fill |
-| Screen-space GI | 1.5 to 4 at half resolution | **Guess** | Not as the base. It needs a temporal filter, and the renderer has no motion vectors |
-| Light propagation volumes | 0.3 to 1 | **Guess** | No. Nothing occludes inside the volume |
-| **Relit transport** (this page) | **0.6 to 1.3**, no added per-pixel work | **Estimate**, link reads at the tap cost ("Budget") | **Yes** |
-
-Combinations: probes are kept, for objects only, and are relit by the
-same solve instead of traced. A screen-space pass is left as an option
-for contact shade under objects ("Risks and open choices") and is not
-part of the base.
+All figures are **Estimate** or **Guess**, priced at 0.09 ms per million
+texture taps on a base M3; the bases, the published numbers and the
+sources are in [notes/live-gi-technique.md](notes/live-gi-technique.md).
+Probes are kept for objects only, relit by the same solve. A
+screen-space pass stays an option for contact shade under objects
+("Risks and open choices").
 
 Why relit transport fits this game:
 
 - **The level is small and static.** Zanzibar's BSP is 12,462 cluster
   triangles and 3,727 in instance definitions (**V**,
   [notes/e3-lighting.md](notes/e3-lighting.md)). Tracing it once is
-  cheap, and the level BVH is the tool for it: a CPU BVH of the
-  structure geometry with a ray query and sun visibility, which this
-  design depends on and does not build.
+  cheap, with a CPU BVH of the structure geometry that this design
+  depends on and does not build.
 - **4x pixels are the scarce thing.** Every per-pixel technique pays
   4.92 M times. This one pays per surface sample and per lightmap texel,
   and the frame samples the result as retail samples its lightmap.
 - **Nothing is stochastic at run time**, so there is no noise to filter,
-  no hysteresis and no flicker. Published probe systems trade exactly
-  that for their rays.
+  no hysteresis and no flicker.
 - **No interpolation across walls for the world.** Each texel's links
   were traced from that texel against the real triangles.
-- It is the method of shipped precomputed-transfer systems: lightmap
-  pixels with stored sample points and weights, relit by a runtime solve
-  (**P\***, Enlighten), and probes that hold a small G-buffer of surfels
-  relit each frame, about 56 a probe, with the further bounces taken
-  from the last result (**P**, Sprentall on The Division), in real time
-  on that generation's consoles (**P\***, the session's listing).
+- Shipped precomputed-transfer systems work this way: lightmap pixels
+  with stored sample points and weights relit by a runtime solve
+  (Enlighten), and probes holding a small G-buffer of surfels relit each
+  frame (The Division).
 
-### wgpu's ray queries on Metal
-
-Read in the registry sources of `wgpu` 30.0.2 (**Code**):
-
-- `wgpu-hal` `src/metal/adapter.rs` sets `EXPERIMENTAL_RAY_QUERY` when
-  the OS is macOS 15 or later and the device answers `supportsRaytracing`
-  and `supportsRaytracingFromRender`. The feature's own doc comment in
-  `wgpu-types` `src/features.rs` still lists Vulkan only.
-- Inline queries work from compute and fragment stages
-  (`src/metal/command.rs` binds acceleration structures for both). Ray
-  tracing pipelines are `unimplemented!` (`src/metal/device.rs`).
-- `naga` `src/back/msl/ray.rs` lowers queries to
-  `metal::raytracing::intersection_query` and needs MSL 2.4. It carries a
-  `TODO` on triangle winding.
-- **No refit.** The Metal backend implements it
-  (`refitAccelerationStructure...` in `src/metal/command.rs`), but
-  `wgpu-core` `src/command/ray_tracing.rs` always passes
-  `AccelerationStructureBuildMode::Build` and logs "only rebuild is
-  implemented". A skinned caster would be rebuilt whole every frame.
-- The hit's vertices are not returned on Metal
-  (`EXPERIMENTAL_RAY_HIT_VERTEX_RETURN` is Vulkan only), so hit shading
-  needs the index and vertex data bound again as storage buffers.
-- The device must be made with `ExperimentalFeatures::enabled()`, which
-  is `unsafe` (`wgpu-types` `src/tokens.rs`). `gfx` asks for no such
-  feature (`Capabilities::wanted_features`, `crates/platform/gfx/src/translate.rs`).
-
-So ray queries are usable for an experiment and are not a dependency of
-this design. Everything it runs is core WebGPU: compute passes over
-storage buffers and buffer-to-texture copies. Slice G0 times ray queries
-on the M3 anyway, in a lab tool, so the "No" above rests on a number.
+Ray queries on Metal are usable for an experiment and are not a
+dependency: `wgpu` 30.0.2 gates them behind macOS 15 and an `unsafe`
+experimental-features device, rebuilds an acceleration structure whole
+every frame, and returns no hit vertices. Everything the design runs is
+core WebGPU: compute passes over storage buffers and buffer-to-texture
+copies. Slice G0 times ray queries on the M3 in a lab tool, so the "No"
+above rests on a number.
 
 ## How it works
 
@@ -160,6 +131,14 @@ Tracing is about 170 M rays for a BSP at the caps: a minute or two on
 the owner's machine (**Guess**; G1 measures it).
 
 ### The solve, once per scene
+
+| Pass | Reads | Writes |
+|---|---|---|
+| 1 Relight | sun map, light footprints and cubes, last indirect | radiance out per surfel |
+| 2 Bounce | links | indirect per surfel |
+| 3 Receive | links of visible receivers | colour and dominant direction |
+| 4 Probes | probe links | nine SH terms per probe |
+| 5 Commit | receivers, probes | page copies, vertex streams |
 
 The solve advances when the render thread takes a new scene, on that
 scene's lights, and never per display frame. Its passes, all compute:
@@ -238,7 +217,7 @@ retail lightmap, texel for texel in its own units (base times lightmap
 times two, no gamma step; dynamic-lighting.md, "The split"):
 
 1. **Fit.** Non-negative least squares per colour channel over texels
-   away from chart edges, with robust weights and with light over
+   away from chart edges, with outlier-resistant weights and with light over
    retail's costing four times light under it (**Design**). Two more
    parameters by search: one gain on every albedo, and the transfer
    between the solve's linear light and the lightmap's stored value
@@ -382,11 +361,13 @@ storage buffer costs that is the first thing G0 measures.
 | Sun cascades and their lookup (dynamic-lighting.md) | | 2 to 3.5 |
 
 At 120 fps the same work spreads over four frames: 0.3 to 0.65 ms. At
-30 it is all in one. Memory is the 64 MB of links, about 24 MB of pages
-(**S**; G0 counts the texels) and the cubes. On disk, the caches of the
-disc's 78 lightmap groups (**V**, [lighting.md](../formats/lighting.md))
-come to about 5 GB at the cap. The render thread's own time is the
-uploads of lights and gates.
+30 it is all in one. The render thread's own time is the uploads of
+lights and gates.
+
+Memory is the 64 MB of links, about 24 MB of pages (**S**; G0 counts the
+texels) and the cubes. On disk, the caches of the disc's 78 lightmap
+groups (**V**, [lighting.md](../formats/lighting.md)) come to about 5 GB
+at the cap.
 
 The retail frame's GPU time at 4x on the M3 is not known; the last
 whole-frame figure there is 32 fps ([notes/native-ab.md](notes/native-ab.md)).
@@ -498,34 +479,6 @@ Risks, largest first:
 - The lightmap's cycling coefficients ([lighting.md](../formats/lighting.md),
   `ltmp+34`) and what they do to a page.
 - Halo 1 maps converted by `h1convert`.
-
-## Sources
-
-Read 2026-11-20, all public, nothing copied, no leaked file opened.
-
-- Morgan McGuire, "Dynamic Diffuse Global Illumination", overview, 2019:
-  <https://morgan3d.github.io/articles/2019-04-01-ddgi/overview.html>
-- Majercik and others, "Dynamic Diffuse Global Illumination with
-  Ray-Traced Irradiance Fields", JCGT 8(2), 2019 (through a search
-  excerpt): <https://www.jcgt.org/published/0008/02/01/>
-- Bob Sprentall, notes on Nikolay Stefanov's "Global Illumination in Tom
-  Clancy's The Division", GDC 2016:
-  <https://insomniacgames.github.io/0x00/bsprentall/GI%20-%20The%20Division.html>;
-  the session's listing (through a search excerpt):
-  <https://gdcvault.com/play/1023273/Global-Illumination-in-Tom-Clancy>
-- Enlighten SDK documentation, "How Enlighten works" and "Runtime
-  radiosity updates", and the GDC 2011 Battlefield 3 radiosity session
-  as summarised by Wolfire (through search excerpts):
-  <https://documentation.enlighten.siliconstudio.co.jp/wiki/spaces/SDK402/pages/2485157936>,
-  <http://blog.wolfire.com/2011/03/GDC-session-summary-Battlefield-3-Radiosity>
-- Alexander Sannikov, "Radiance Cascades" (through a search excerpt):
-  <https://github.com/Raikiri/RadianceCascadesPaper>
-- nelari.us, "A quick look at Apple Silicon's hardware accelerated ray
-  tracing performance", 2024:
-  <https://nelari.us/post/metal-raytracing-performance/>
-- c20, Halo 2 materials (lightmap only, sky and sun quads, power,
-  half-life and diffuse scales):
-  <https://c20.reclaimers.net/h2/source-data/h2-materials>
 
 ## Related
 
