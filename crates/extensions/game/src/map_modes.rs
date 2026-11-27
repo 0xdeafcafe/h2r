@@ -109,13 +109,17 @@ pub fn analyse(
             firefight: firefight_support(cat, map, !is_kit && ground(map), wave),
             siege: siege(map),
         };
-        view.support.insert(map.id, support);
+        // A kit package with its original map takes the original's support,
+        // whichever of the two the catalogue lists first.
+        if !has_base {
+            view.support.insert(map.id, support);
+        }
         if has_base {
             view.hidden.insert(map.id);
         }
         if let Some(kit) = kit_package_of(cat, map) {
             view.kits.insert(map.id, kit.id);
-            view.support.entry(kit.id).or_insert(support);
+            view.support.insert(kit.id, support);
         }
     }
     view
