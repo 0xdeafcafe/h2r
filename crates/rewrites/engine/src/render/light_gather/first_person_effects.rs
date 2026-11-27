@@ -6,10 +6,10 @@
 //! of `0x54`-byte systems) in index order and, for each one it selects,
 //! calls the per-view particle update `0x00174420` with the system's
 //! handle, the selection's two bytes and 0. That update stays the
-//! guest's (docs/graphics/framescene.md, the state table: its stamps and
-//! its particle draws are not described by any code in the tree), so the
-//! port is the walk and the selection, and each selected system's update
-//! is a guest call ([`run`]).
+//! guest's: its stamps are modelled only in R2's shadow arm
+//! (`render_bridge::effects_shadow::view_update`, docs/graphics/retire-d3d.md),
+//! and its particle draws are the guest's, so the port is the walk and the
+//! selection, and each selected system's update is a guest call ([`run`]).
 //!
 //! The selection is read again after every update, as the guest's loop
 //! reads the array again after each call: an update can change a later
