@@ -408,7 +408,7 @@ falls under **Other maps** otherwise. `app::map_cards::MapEntry` supplies
 the display name and case-insensitive ordering to Maps, Tags, HUD and
 `source.maps`. The **Shared and menu** rows use a layers icon and the
 subtitle “Shared resources and menu screens”. The Playlists picker uses
-the multiplayer catalog with the same name sort.
+the multiplayer catalogue with the same name sort.
 
 Where each group's cards come from (`app::map_cards`; nothing of them is
 in the repository, all are read from the user's files):
@@ -421,7 +421,7 @@ in the repository, all are read from the user's files):
 | Halo 1 (an open Halo 1 disc or folder) | `ui.map`'s map and level lists (`h1convert::ui::mp_card`, `campaign_card`) | the same lists' bitmaps, the picture's corner of each |
 
 `tags::ui_levels` is the one reader of the main menu's lists: the boot's
-map select (`map_select::map_of_slot`) and the Live catalog
+map select (`map_select::map_of_slot`) and the Live catalogue
 (`cli::live_catalog::levels`, `campaign_levels`) read through it too.
 
 The cards are read off the UI thread (`map_cards::CardSet`, one thread
@@ -1729,7 +1729,7 @@ studio crate only draws them and turns input into actions.
   tables, placement, the preview, checks, `HudSession`;
   [hud-editor.md](hud-editor.md)).
 - `crates/tools/hopper-edit`: the playlist editor's logic (working copy,
-  validation, presets, catalog, the variant picker's sources) and
+  validation, presets, catalogue, the variant picker's sources) and
   `HopperSession` (file handling, undo).
 - `crates/apps/studio`:
   - `app.rs`: `App`, the state (each tool's session) and `Action`s

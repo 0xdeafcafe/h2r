@@ -508,7 +508,7 @@ code (`syntax.open`, `def.kind`, `call.arity`, `type.cast`,
 | Part | How |
 |---|---|
 | Parser | the working copy's tree (`ide::syntax`), with byte spans for messages; several body expressions are joined by the map's `begin` |
-| Function names | the names the map's own calls spell, then `hs::Naming` (or the catalog's). A builtin nothing names is called as `(#builtin:<index> ...)`; nothing guesses a name |
+| Function names | the names the map's own calls spell, then `hs::Naming` (or the catalogue's). A builtin nothing names is called as `(#builtin:<index> ...)`; nothing guesses a name |
 | Game globals | names only as the map's scripts already use them |
 | Types and casts | a node takes its parent's type: a fixed builtin's parameter, a script's return type, a global's type. Arguments of a builtin that reads its own (flags bit 1) take the types this map's calls of it give that position, else their own. A value of another type needs `cast::castable` |
 | Literals | numbers, booleans, `none`, strings and `#real-bits:` by their form; a script by its index; other names (objects, volumes, AI, enums, tags) as this map's scripts already use them, then through the caller's `Options::resolve`; otherwise an error naming the type |
@@ -537,7 +537,7 @@ objects, and it writes nothing back
 
 **Write** (`crates/apps/studio/src/app/script_edit.rs`,
 `crates/formats/hs/src/table_writes.rs`). `App::script_compile(source,
-only, apply)` hands the source to `hs::compile` with the tool's catalog
+only, apply)` hands the source to `hs::compile` with the tool's catalogue
 and builtin names, so a map with one changed script differs only in that
 script's nodes. The tables it returns go to `hs::table_writes::writes`,
 which says how the save writes each of the five the scenario header
@@ -972,7 +972,7 @@ the first one whose needs are met.
 | C2 (built for `obje`, `deca`, `lens`, `sky `; repeatable) | **Colour forms for a group** (repeatable): `view=` on a group's colour fields with evidence | S each | X1 | the group's colour rows in `tag.colours` rise; each line cites its source |
 | A1 | **Sound audition**: decode, the host output, waveform, play and scrub, `sound.read`, `sound.play` | M | X1 | an invented ADPCM sound plays through the headless sink to its sample count; a WMA sound without the executable is refused by name |
 | F1 | **Curve editor, same length**: typed payload accessors, the plot, handles, `function.*` | M | X1 | `function.sample` equals `Function::evaluate` for every type on invented blobs; an edit round-trips through `to_bytes`; types 6 and 8 are read-only |
-| H1 | **Scripts, read**: the Scripts tool, the catalog from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |
+| H1 | **Scripts, read**: the Scripts tool, the catalogue from the source's executable, source with links, `script.list`, `script.source`, `script.uses` | M | P4 | an invented scenario's scripts list and decompile; a link to an object name selects the placement; without the executable the tool refuses by name |
 | M1 (built) | **Model poses**: `anim.list`, `anim.pose`, an animation picker and scrub on a model in the native view | M | P14 | an invented two-bone model posed at a frame differs from the rest pose where the clip moves it and nowhere else |
 | S1 (built) | **Shader tab**: slots with `Used by`, bitmap thumbnails in rows and in the picker, the preview on sphere, quad and object, refusals listed, `shader.read`, `shader.set`, `shader.preview` | L | C1, P15 | on an invented material: `shader.set` equals the `tag.set` it stands for; a changed colour changes `shader.preview` pixels; a refused pass is counted and absent |
 | S2 (built) | **Shader animation**: animated properties as curves, the preview clock | S | S1, F1 | a periodic property changes the preview between two clock times; a refused animation kind is named |
