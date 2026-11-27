@@ -582,9 +582,7 @@ keeps a guest draw, by the counter that names it (**Code**):
   (`0x0003c650`, `0x0003d000`) does not compute or the device and the
   engine do not already hold it, since skipping the draw then leaves
   them unset, or in layer 3 a structure lightmap index the guest's draw
-  leaves unbound; `object_argument`: another
-  part in the item's argument's low byte than its key's (its `+0x14`
-  and `+0x15`, the pass and shader level, are the item's to draw); `object_layer5_stream`, `object_subparts`,
+  leaves unbound; `object_layer5_stream`, `object_subparts`,
   `object_aux_state`, `object_unread`), then
   `object_models`, `object_w_buffer`, `object_model`, `object_plan`,
   `object_shader_flag_target` (the shader's flag bit 0 before the

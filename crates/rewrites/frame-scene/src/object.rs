@@ -59,7 +59,9 @@ pub struct Defaults {
 /// the shader the item names (`+8`), the record key's section (bits 9..17)
 /// and part (bits 0..3, the index into the section's parts), and the
 /// layer-3 implementation the record's `+0` picks
-/// (`scene_extract::layout::object_nodes::record_implementation`). The
+/// (`scene_extract::layout::object_nodes::record_implementation`). A
+/// world layer's item ([`crate::LayerItem`]) takes its part from its
+/// argument's low byte instead, the index its draw takes. The
 /// native pass draws exactly this part with exactly this implementation,
 /// or the item keeps its D3D draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
