@@ -1426,6 +1426,12 @@ fn every_method_in_methods_has_a_test() {
                 ) && e.code == code::REFUSED => {}
             // No edit target is set here; app/ground_tests.rs sets one.
             (None, Err(e)) if d.name == m::GROUND_SAVE && e.code == code::NO_TARGET => {}
+            // No tag tree under the test's data root: the build and the
+            // edit check name it (api/projects.rs's own tests make one).
+            (None, Err(e))
+                if matches!(d.name, m::PROJECT_BUILD | m::EDITS_CHECK)
+                    && e.code == code::FAILED
+                    && e.message.contains("no tag tree") => {}
             // The invented map has no hill with corners to convert
             // (markers_tests.rs makes one).
             (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
@@ -5921,6 +5927,89 @@ fn the_workspace_reports_the_start_page_and_extracts_an_invented_disc() {
     assert_eq!(pruned["raw_removed"], json!(0));
     assert_eq!(pruned["bytes"], json!(0));
     assert_eq!(pruned["outputs_removed"], json!([]));
+}
+
+/// `project.*` and `edits.*` over an invented tree (docs/editor/agent-api.md,
+/// "Projects and edit files"): a local project onto the invented map, an
+/// edit written by the API and the check that names the tag no layer holds.
+#[test]
+fn projects_and_edit_files_resolve_over_an_invented_tree() {
+    let t = Temp::new("projects");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::WORKSPACE_EXTRACT,
+        json!({"disc": disc.display().to_string()}),
+    );
+    app.wait_workspace();
+    let projects = t.path("data/workspace/projects");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join("mine.toml"),
+        "name = \"mine\"\nmode = \"onto\"\nbase = \"example\"\noutput = \"package\"\n",
+    )
+    .unwrap();
+
+    let listed = call(&mut api, &mut app, m::PROJECT_LIST, json!({}));
+    let mine = listed["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "mine")
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(mine["origin"], "local");
+    assert_eq!(mine["mode"], "onto");
+
+    let read = call(&mut api, &mut app, m::PROJECT_READ, json!({"project": "mine"}));
+    assert_eq!(read["problems"], json!([]), "{read}");
+    assert_eq!(read["layers"][0]["kind"], "tree");
+
+    let set = call(
+        &mut api,
+        &mut app,
+        m::EDITS_SET,
+        json!({"file": "mine", "tag": "jpt!:invented\\nowhere", "path": "damage_lower_bound", "value": 2.0}),
+    );
+    assert_eq!(set["line"], 1, "{set}");
+    let files = call(&mut api, &mut app, m::EDITS_LIST, json!({}));
+    assert!(
+        files["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "mine" && f["origin"] == "local"),
+        "{files}"
+    );
+    // The project's own local file applies: its tag is in no layer.
+    let checked = call(&mut api, &mut app, m::EDITS_CHECK, json!({"project": "mine"}));
+    assert_eq!(checked["files"], json!(["mine"]), "{checked}");
+    let problems = checked["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{checked}");
+    assert_eq!(problems[0]["line"], 1);
+    assert!(
+        problems[0]["why"].as_str().unwrap().contains("no layer holds this tag"),
+        "{checked}"
+    );
+    // The build stops on it, with the same words.
+    let e = api
+        .call(&mut app, m::PROJECT_BUILD, json!({"project": "mine"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::FAILED);
+    assert!(e.message.contains("no layer holds this tag"), "{}", e.message);
+    let e = api
+        .call(&mut app, m::PROJECT_READ, json!({"project": "nobody"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
 }
 
 #[test]

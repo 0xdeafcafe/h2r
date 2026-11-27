@@ -322,6 +322,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](#the-tag-workspace)); `import {map \| path, name}` (planned) |
+| `project` | `list`, `read {project, closure?}`, `build {project}`: projects over the tree ([Projects and edit files](#projects-and-edit-files)) |
+| `edits` | `list`, `check {project}`, `set {file, tag, path, value, project?}`: edit files over the tree ([Projects and edit files](#projects-and-edit-files)) |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
 | `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
@@ -1753,6 +1755,48 @@ background plan extracting a changed disc, the sizes walked, prune
 keeping what a tag file or a manifest names); the API's tests
 (`api/tests.rs`) do the same through the dispatcher, and every method's
 example runs in `every_method_in_methods_has_a_test`.
+
+### Projects and edit files
+
+A project names one map to build from the tree, its import layers, its
+edit files and its kits (docs/editor/tag-workspace.md, "Projects"; code
+`workspace::project`, `workspace::project_build`, `api/projects.rs`).
+Each call reads the files again. The roots are the `tags_root` setting,
+the data root and the checkout Studio was built from.
+
+| Method | Does | Answers |
+|---|---|---|
+| `project.list` | every `art/*/project.toml`, then `<data>/workspace/projects/*.toml` | `{projects: [{name, path, origin, mode, base, error}]}` |
+| `project.read {project, closure?}` | resolves a project (a name, or a path to its `.toml`) without building it | `{project, file, origin, layers, edit_files, edited, kits, scenario_from, lossy, problems}` |
+| `project.build {project}` | builds and writes `<data>/maps/<name>/` with `receipt.json` | `{dir, map_id, file, took_ms, receipt}` |
+| `edits.list` | every `assets/tag-edits/*.yaml`, then `<data>/workspace/edits/*.yaml` | `{files: [{name, origin, path, entries, tags, problems}]}` |
+| `edits.check {project}` | applies every edit of the project once over its layers | `{project, files, edited, problems: [{file, line, tag, why}], overrides}` |
+| `edits.set {file, tag, path, value, project?}` | writes one `set` line into local file `file`; `project` records the tag's hash as `was` | `{file, path, line, replaced, was}` |
+
+`problems` in `project.read` are what would stop the build: a missing
+tree, base map, import layer or edit file, an edit that does not apply, a
+kit this build lacks. `lossy` (with `closure`, a fresh project whose
+scenario is in the layers) lists the closure's tags the tree does not
+hold exactly. `project.build` fails (`FAILED`) with the same words; an
+unknown project is `INVALID_PARAMS`; `edits.set` refuses (`REFUSED`) a
+dead path, a value the field does not take and an entry made on another
+hash.
+
+```sh
+h2 studio project.list
+h2 studio project.read '{"project":"stage","closure":true}'
+h2 studio edits.set '{"file":"tuning","tag":"jpt!:objects\\weapons\\rifle\\damage","path":"damage_lower_bound","value":12.5,"project":"stage"}'
+h2 studio edits.check '{"project":"stage"}'
+h2 studio project.build '{"project":"stage"}'
+```
+
+The same calls are `h2 tags project list|show|build` and `h2 tags edits
+list|check|set`. Tests: `workspace`'s `edits_tests.rs` and
+`project_tests.rs` (invented trees), and
+`projects_and_edit_files_resolve_over_an_invented_tree` in
+`api/tests.rs`; every example runs in
+`every_method_in_methods_has_a_test`, where `project.build` and
+`edits.check` answer that there is no tree.
 
 ### The browser
 

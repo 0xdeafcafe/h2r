@@ -295,7 +295,11 @@ fn check_froms(
 /// A line's `from` against `base`: `Err` when its path does not resolve (as
 /// its `value` would not), `Ok(Some(why))` when the field does not hold the
 /// value it names, `Ok(None)` when it does or names none.
-fn from_mismatch(def: &StructDef, base: &Record, s: &SetLine) -> Result<Option<String>, String> {
+pub(crate) fn from_mismatch(
+    def: &StructDef,
+    base: &Record,
+    s: &SetLine,
+) -> Result<Option<String>, String> {
     let Some(from) = &s.from else {
         return Ok(None);
     };
