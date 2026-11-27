@@ -597,18 +597,34 @@ fn compile_with_layer_constants(
                 if !relative && !object_sets(look, c) {
                     if c == 18 && inherits_material_constants {
                         inherits_c18 = true;
-                        continue;
-                    }
-                    if structure_constants && (STRUCTURE..STRUCTURE + 5).contains(&c) {
+                    } else if structure_constants && (STRUCTURE..STRUCTURE + 5).contains(&c) {
                         structure_reads |= 1 << (c - STRUCTURE);
-                        continue;
                     }
-                    return Err(format!(
-                        "vertex program reads c[{c}], which the object pass does not set"
-                    ));
                 }
             }
         }
+    }
+    // A constant the pass does not set may still be read where its value
+    // reaches only a coordinate the pixel shader ignores (as the world
+    // path, `crate::program::dead_texcoords`): the stencil programs write
+    // `oT1..oT3` from `c[20..22]` for every stage, sampled or not.
+    let missing = |reg: vsh::SrcReg| match reg {
+        vsh::SrcReg::Const { index, relative: false } => {
+            let c = usize::from(index);
+            let given = object_sets(look, c)
+                || (c == 18 && inherits_c18)
+                || ((STRUCTURE..STRUCTURE + 5).contains(&c) && structure_reads >> (c - STRUCTURE) & 1 != 0);
+            (!given).then_some(index)
+        }
+        _ => None,
+    };
+    let dead = crate::program::dead_texcoords(look);
+    if let Some(c) = crate::program::live_source_read(&program, missing, |out| {
+        matches!(out, vsh::OutReg::T(k) if dead.get(usize::from(k)) == Some(&true))
+    }) {
+        return Err(format!(
+            "vertex program reads c[{c}], which the object pass does not set"
+        ));
     }
     let t = translate_pass_with_pixel(
         &PassParts {
@@ -1496,6 +1512,48 @@ pub(crate) mod tests {
             e,
             "vertex program reads c[a0.x + 18], outside the node rows"
         );
+    }
+
+    /// The stencil programs (`stencil_emissive`, `stencil_texture`) write
+    /// every stage's coordinate, `oTn = v1 · c[19 + n].xy + c[19 + n].zw`,
+    /// whether or not the pass samples the stage, and a pass binding only
+    /// the rows of its sampled stages leaves the others unset. A row whose
+    /// value reaches only a coordinate the pixel shader ignores is not a
+    /// read; one reaching a sampled stage, or the position, is.
+    #[test]
+    fn an_unset_constant_that_only_feeds_an_unsampled_coordinate_is_not_a_read() {
+        let coordinates = |also_pos: bool| {
+            let mut v = vec![
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(0)), None).to_out(false, OutReg::Pos, 0xf),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(19)), Some(O::c(19))).to_out(false, OutReg::T(0), 3),
+                // Through a temporary, as the skinned classifications do.
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(21)), Some(O::c(21))).to_temp(9, 3),
+                Inst::mac(MacOp::Mov, Some(O::r(9)), None, None).to_out(false, OutReg::T(1), 3),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(22)), Some(O::c(22))).to_out(false, OutReg::T(2), 3),
+                Inst::mac(MacOp::Mad, Some(O::v(1)), Some(O::c(23)), Some(O::c(23))).to_out(false, OutReg::T(3), 3),
+            ];
+            if also_pos {
+                v.push(Inst::mac(MacOp::Mov, Some(O::c(22)), None, None).to_out(false, OutReg::Pos, 4));
+            }
+            program(&v)
+        };
+        let unset = |c: usize| format!("vertex program reads c[{c}], which the object pass does not set");
+        // No stage fetches (the default definition): every coordinate is dead.
+        let look = object_look(map::TagId(0xe000_0001), &lit()).unwrap();
+        let p = compile_object(&look, &coordinates(false), None, WORLD).unwrap();
+        shaders::validate(&p.wgsl).unwrap();
+        // The value also reaching the position is a live read.
+        assert_eq!(compile_object(&look, &coordinates(true), None, WORLD).unwrap_err(), unset(22));
+        // Stage 1 fetching (2D projective): its coordinate is live, the
+        // others stay dead.
+        let mut def = shaders::PixelShaderDef::from_bytes(&look.pixel_shader).unwrap();
+        def.texture_modes = 0x01 << 5;
+        let live = PassLook { pixel_shader: def.to_bytes(), ..look.clone() };
+        assert_eq!(compile_object(&live, &coordinates(false), None, WORLD).unwrap_err(), unset(21));
+        // Stage 0's coordinate reads c[19], which the pass sets.
+        def.texture_modes = 0x01;
+        let first = PassLook { pixel_shader: def.to_bytes(), ..look };
+        assert!(compile_object(&first, &coordinates(false), None, WORLD).is_ok());
     }
 
     /// An object pass's program may read the rows of `c[21..25]` the pass
