@@ -30,7 +30,7 @@ free slots, the way the multiplayer list has 38 for downloaded maps
 A free slot has campaign id and map id `-1`. The `+0x178` element's block
 `+0x10` is the multiplayer list. Campaign 1's map ids are `100 * chapter
 + n`: `0x1` The Heretic, `0x65` Armory, `0x69` Cairo Station, `0x12d`
-Outskirts, ... `0x325` The Great Journey. Ids don't follow play order
+Outskirts, ... `0x325` `The Great Journey`. Ids don't follow play order
 everywhere: High Charity is `0x321` and Uprising `0x2c1`.
 
 ### The code (E)
@@ -87,7 +87,7 @@ profiles (`-1` none); `0x1a06f0` the same for one profile, counting only
 ids the level select has a record for. The difficulty isn't stored (only
 the selection `0x54e7c8`). **No campaign id is stored anywhere**: progress
 is a bare map id compared with `>`, so a second campaign's levels, whose
-ids must sit above Halo 2's, would unlock every Halo 2 level the moment
+ids must sit above Halo 2's, would open every Halo 2 level the moment
 one is finished. Per-campaign progress therefore can't live in the
 profile.
 
@@ -159,7 +159,7 @@ level's picture, else its free slot's own, else the list's first. It runs
 before each hooked reader, so it follows map loads (each load brings the
 tag back from the file); it does nothing when the lists already hold our
 first campaign, and nothing when the loaded map has no list. A campaign
-level's own globals have a start list too, which the next-level lookup
+level's own globals have a start list too, which the next level lookup
 reads after a level is won; the hook there extends it the same way.
 
 ### Pictures (`campaign_cards`)
@@ -224,7 +224,7 @@ Halo 2's own. The import never rewrites a `campaign.toml` it finds, so
 built-in one (`CampaignManifest::fill_from`); a description the user
 wrote is kept.
 
-**Only the first level listed.** This is retail's unlock rule, working
+**Only the first level listed.** This is retail's level-opening rule, working
 per campaign, not a bug. The level select's constructor (`0x2c4ea0`) adds
 the levels in id order up to and including the first one above the
 progress it is given. For one of our campaigns `PROGRESS_MAX` answers our
@@ -288,11 +288,11 @@ child and send it to the recursive player-mask setter (`0x22ee92`).
 Retail scrolling (`0x24c515`) compares the full datum count with the
 linked child count, so the fourth action remains reachable.
 
-| Action | Behavior and XBE evidence |
+| Action | Behaviour and XBE evidence |
 |---|---|
 | Resume | Halo 2 offers the native checkpoint action exactly when its constructor does. For Halo 1 a saved checkpoint uses that same action. Without a checkpoint, a previous launch restarts the recorded level at its saved difficulty. A new game/profile has no Resume row. |
 | New Game | Select the first installed mission of this game (The Heretic for Halo 2). Preload its scenario like `0x2c514d`, then open the native difficulty loader `0x2bb3ed`. |
-| Select Level | Open `0x2b130a` with this game's level array. The level-select constructor and per-difficulty unlock rules still apply. |
+| Select Level | Open `0x2b130a` with this game's level array. The level-select constructor and per-difficulty level-opening rules still apply. |
 | Co-op | The retail action at `0x2b16a1` opens player selection. Lobby Continue at `0x199a92` uses this game's last or first level. The session map setter at `0x19a6f2` receives that level's campaign. |
 
 ### The picker's detail pane (`campaign_info`)
@@ -351,7 +351,7 @@ checkpoint = true               # this profile saved a checkpoint for this game
 Written whole through a rename when it changes; an unreadable file is
 reported and never overwritten.
 
-**Built — independent saves.** Halo 2's native Resume reads its profile's
+**Built - independent saves.** Halo 2's native Resume reads its profile's
 checkpoint flag (`0x1904cb`), loads and validates the header
 (`0x2b170f`), then starts with its saved map and difficulty and sets the
 restore flag (`0x2b17c3`). Retail's profile and `auxilary.bin` keep
@@ -380,7 +380,7 @@ profile devices use the same per-game guest filename routing.
 
 ### The lookups by `(campaign, map)`
 
-Every 1.0 caller of the start-record lookup `0x19c270` and the next-level
+Every 1.0 caller of the start-record lookup `0x19c270` and the next level
 lookup `0x19c440` (found by scanning the XBE for calls to them):
 
 | Call | Campaign passed | Map |

@@ -285,9 +285,9 @@ The survey has 35,510 rows. Each gives the map, group, source path, parent or BS
 - **Built.** One unit can select among all of its authored voices. Halo 1
   `0x468d0` defines selector matching and alternative selection. Halo 2
   `0x114ec0` binds a model variant's dialogue to the individual unit.
-  The rebuilt table uses the native vocalization indices, and explicit
+  The rebuilt table uses the native vocalisation indices, and explicit
   vocalize commands resolve source slots on that unit.
-  See [ai.md](ai.md#command-execution).
+  See [ai.md](ai-conversion.md#command-execution).
 - **Built.** Every authored `udlg` slot has an automatic event. The
   authored biped voice inventory across all 23 Xbox retail maps has zero
   unbound rows. Source-only automatic lines use Halo 2's native
@@ -305,7 +305,7 @@ in [campaign.md](campaign.md#script-sound-capacity). The converter builds a
 player-emblem instance from the Halo 2 `shad` definition. Halo 1's part
 shader selection (`0xa2449..0xa246d`) uses the model's authored slots, and
 the cyborg lacks an emblem slot. The appended part uses Halo 2's named
-emblem inputs at `0x22ace7`. See [models.md](models.md#the-emblem-built).
+emblem inputs at `0x22ace7`. See [models.md](models-animation.md#the-emblem-built).
 
 **Built. Impulse promotion and fixture lighting.** Halo 1's `0x24ea0`
 compares decaying mixer credit against the authored count and duration.
@@ -331,8 +331,8 @@ gestalt and native scenario infrastructure. The H1 conversion writes source
 entries into these containers. Material and HUD rendering require native
 shader programs, vertex shaders and default inputs. The H1 Xbox engine has
 no equivalent tags for those programs. The HUD's optional H2 view and the
-multiplayer player emblem are explicit features. The generic AI behavior
-parent and Sentinel behavior style supply H2 engine behavior. H1 actor
+multiplayer player emblem are explicit features. The generic AI behaviour
+parent and Sentinel behaviour style supply H2 engine behaviour. H1 actor
 variants provide the concrete character. H2 asset mode retains its selected
 native units, weapons and vehicles, including assets from donor maps.
 

@@ -153,7 +153,7 @@ The original UI wrapper converts into 256 units, copies at most 255 and writes
 a terminating zero at unit 255. The native API returns full text without a
 terminator or UI truncation. A guest UI adapter must cap at 255 units and append
 NUL; font/glyph interpretation belongs to the renderer. Supplementary-character
-behavior is code-derived and synthetic-tested, not exercised by this disc.
+behaviour is code-derived and synthetic-tested, not exercised by this disc.
 
 ## API and CLI
 
@@ -173,12 +173,12 @@ because IDs repeat with different text. Both items carry this warning.
 `text_in`/`utf16_in` return `Result<Option<_>>`: `Err` identifies a corrupt
 selected range, `Ok(None)` is a miss, and `Ok(Some(empty))` is an existing
 empty translation. `unic` reads a tag and checks all nine ranges in one call;
-supply the same map used to load the localization. Scoped lookups still check
+supply the same map used to load the localisation. Scoped lookups still check
 their range, so later edits to a `Unic` cannot turn corruption into a miss.
 
 `table`, `entries_for`, `bytes`, `text_at`, and `utf16_at` support inspection.
 `StringId::resolve(map.strings())` returns the identifier name, not UI text.
-Name resolution is not a prerequisite for loading or looking up localization:
+Name resolution is not a prerequisite for loading or looking up localisation:
 only the complete 32-bit key matters, even for a modded row whose key cannot
 resolve to a name (including the name-table null sentinel). The normal strings
 command displays `<unresolved name>` for such a key and still prints its text.
@@ -214,7 +214,7 @@ empty/missing/null distinctions, each language slot including a populated
 ninth slot, malformed record sizes/guards/signed ranges, byte offsets and
 terminators, bad name lengths/indices, data extents even with zero rows,
 bounded ISO-region reads, oversized counts, and the engine conversion rules.
-The review regressions additionally cover invalid range versus miss, the
+The review regressions also cover invalid range versus miss, the
 read-and-validate helper, unresolved names accepted by lookup but rejected by
 validation, duplicate IDs within a range, flag values consuming `--all`/help,
 short `matg`, the exact encoded-byte limit, and a one-MiB string aliased 65

@@ -10,10 +10,10 @@ hexadecimal.
 
 Evidence labels, as in map-format.md:
 
-- **V — verified-on-disc:** checked on every map of the owner's Halo 1 disc
+- **V - verified-on-disc:** checked on every map of the owner's Halo 1 disc
   by the `#[ignore]`d tests below (24 maps, 9,327 `bitm` tags, 14,815
   images).
-- **S — unverified:** the reader relies on the field but the disc can't
+- **S - unverified:** the reader relies on the field but the disc can't
   confirm its meaning.
 - **Design:** an implementation choice.
 
@@ -138,7 +138,7 @@ with no page (`-1`). The other 2,199 use 2,198 distinct images: one BSP
 (c10's `c10_exteriora`) has two lightmaps on one page and one page no
 lightmap names. So the structure writer can't assume one lightmap per page. Every lightmap page is **R5G6B5 2D, swizzled,
 no mips**, flags `0x89`. Bit `0x80` is set on other images too (the
-rasterizer's normalization cube map has it); its meaning is unknown, Halo
+rasterizer's normalisation cube map has it); its meaning is unknown, Halo
 2's decoder ignores it and the conversion keeps it. The census above counts
 flags masked to the low five bits.
 

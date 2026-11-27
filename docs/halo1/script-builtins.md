@@ -2,7 +2,7 @@
 
 The converter resolves retail equivalents in `h1scripts::unit_builtins`
 and `h1scripts::identified`. The runtime feature in
-`boot::h1_script_builtins` adds behavior on converted campaign maps.
+`boot::h1_script_builtins` adds behaviour on converted campaign maps.
 Addresses below are from the owner's retail Xbox executables.
 
 ## Retail equivalents
@@ -22,7 +22,7 @@ Addresses below are from the owner's retail Xbox executables.
 | Built | `unit_solo_player_integrated_night_vision_is_active` | In converted campaign the tutorial queries that player's flashlight, using slot 476. The Halo 1 and Halo 2 evaluators delegate to the local player flag tests at `0x3c030` and `0x14ed80` respectively. |
 | Built | `cinematic_suppress_bsp_object_creation`, `cinematic_set_near_clip_distance` | Slots 562 and 710. The switch at `0x2a9910` sets the spawn-suppression flag checked at `0xd4e4a`. The clip evaluator at `0x2ab3b0` stores the real clip distance in the active rasterizer state. |
 | Built | `game_safe_to_speak`, `game_all_quiet` | Slots 586 and 587. Player state and nearby enemy threat tests at `0x2a9bd0` and `0x225fe0` correspond to Halo 1's dialogue-safety and danger queries at `0x108880` and `0x108b50`. |
-| Built | `inspect`, `cls` | Slot 23 at `0x208e10` is the console expression printer. The debug clear at slot 644 returns void immediately, matching its behavior in the retail Halo 1 console executable at `0xec730`. |
+| Built | `inspect`, `cls` | Slot 23 at `0x208e10` is the console expression printer. The debug clear at slot 644 returns void immediately, matching its behaviour in the retail Halo 1 console executable at `0xec730`. |
 | Built | `player_add_equipment` | Slot 250 (`unit_add_equipment`). Every surveyed Halo 2 call appends `true` as its fourth argument. The equipment path reads that flag and indexes the scenario profile block at `0xcce00`. The converter resolves each profile name to its rebuilt block index and retains Halo 1's reset argument. |
 
 Names supplied by the unit and object descriptor table use slots 23, 54,
@@ -45,7 +45,7 @@ is the table shared by the converter and the boot feature. The converter checks 
 and signature before naming a descriptor. The boot feature checks the
 called index and the loaded campaign map.
 
-| Status | Builtin | Slot | Behavior and evidence |
+| Status | Builtin | Slot | Behaviour and evidence |
 |---|---|---:|---|
 | Built | `numeric_countdown_timer_stop`, `_restart` | 68, 169 | Toggle the running flag without changing the stored duration, as at Halo 1 `0xecbc0` and `0xecba0`. |
 | Built | `game_speed` | 170 | Sets the simulation rate read by the native tick-budget routine at `0x1467b3`. Halo 1 uses the same clock multiplier. |
@@ -76,12 +76,12 @@ state and travel with the simulation snapshot.
 
 ## Cinematic renderer and light caches
 
-| Status | Builtin | Behavior and evidence |
+| Status | Builtin | Behaviour and evidence |
 |---|---|---|
 | Built | `cinematic_screen_effect_set_convolution` | H1's blur code at `0x6c4c4`, `0x6b9ff` and `0x6bac0` selects the sample kernel and repeats it. The renderer samples the current viewport and alternates two render targets. a30's opening runs this pass. |
 | Built | `cinematic_screen_effect_set_filter`, `_set_filter_desaturation_tint` | The postprocess applies brightness and tinted desaturation ramps, including the additive filter and the green default at `*0x232f7c`, with H1's filter math at `0x6cc64`–`0x6cde8`. Durations use simulation time so a restored checkpoint restores the ramp. |
 | Built | `cinematic_screen_effect_set_video` | The writer rebuilds the mask and noise bitmaps from the H1 globals rasterizer block, read by the original effect at `0x61990`. The video pass combines them with the scene and the authored noise and overbright parameters. The noise offset uses H1's two random samples (`0x6bc52`, `0x11910`) indexed by simulation tick. |
-| Built | `rasterizer_model_ambient_reflection_tint` | H1 at `0x70986`–`0x70a2f` overrides the model reflection ramp. Rebuilt environment-mapped model shaders retain their original facing and grazing colors and strengths so the draw hook can restore them when the override clears. |
+| Built | `rasterizer_model_ambient_reflection_tint` | H1 at `0x70986`–`0x70a2f` overrides the model reflection ramp. Rebuilt environment-mapped model shaders retain their original facing and grazing colours and strengths so the draw hook can restore them when the override clears. |
 | Built | `rasterizer_lights_reset_for_new_map` | Converted-campaign slot 687 (`0x2ab130`). H1 invalidates lighting work at `0xec680`. The hook clears the validity byte and previous frame on occupied H2 object render states used by `0x3dfe0`, preserving the owner and live light links. The H2 map reset at `0xc0040` would release registrations. |
 
 The screen setters compile to typed scenario globals, ordinary retail HS

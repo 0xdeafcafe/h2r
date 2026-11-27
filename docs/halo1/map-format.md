@@ -10,11 +10,11 @@ says otherwise, they are offsets into the **decompressed** file: the
 
 Evidence labels, as in map-format.md:
 
-- **V — verified-on-disc:** checked against the owner's retail Halo 1 maps
+- **V - verified-on-disc:** checked against the owner's retail Halo 1 maps
   by the ignored tests `real_maps_read_and_their_multiplayer_parts_and_collision_check_out`
   (maps as stored, from `$H1_MAP_DIR`) and `real_disc_every_map_reads` (the
   whole disc, `$H1_ISO`).
-- **S — unverified:** the reader relies on this, but it is not
+- **S - unverified:** the reader relies on this, but it is not
   checked on the disc.
 - **Design:** an implementation choice, not a format fact.
 
