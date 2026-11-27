@@ -232,7 +232,7 @@ under a second. Keys and emblem colouring are in
   sizes of the same set exist, the largest wins. A map preview is the one
   single-image UI picture a multiplayer map has that the shared map does
   not. A campaign level's preview is the picture the main menu's level
-  select names for it ([live-admin.md](live-admin.md#the-catalog)). Maps
+  select names for it ([live-admin.md](live-admin.md#the-catalogue)). Maps
   are told apart by the cache type in their header. Medals and
   the palette are icon glyphs in the fonts' private-use range
   ([fonts.md](../formats/fonts.md)): the medals are the 24-pixel-tall icons and the

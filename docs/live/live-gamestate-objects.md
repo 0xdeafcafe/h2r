@@ -41,7 +41,7 @@ Do not cache body pointers between snapshots: the object memory pool can compact
 |---|---:|---|---|---|---|
 | definition tag datum | `+0x00` | `u32` | confirmed | Object creation and tag consumers |
 | parent object datum | `+0x14` | `u32` | confirmed | Transform composition and parent walks |
-| bounding center | `+0x30` | `f32[3]` | confirmed | Not the scoreboard origin |
+| bounding centre | `+0x30` | `f32[3]` | confirmed | Not the scoreboard origin |
 | object origin | `+0x64` | `f32[3]` | confirmed | Written by transform setter `0x000b7430` |
 | forward/facing vector | `+0x70` | `f32[3]` | confirmed | Written by `0x000b7430`; used by `0x000ba160` |
 | up vector | `+0x7c` | `f32[3]` | confirmed | Written by `0x000b7430` |
@@ -54,7 +54,7 @@ Do not cache body pointers between snapshots: the object memory pool can compact
 | previous player datum | `+0x140` | `u32` | confirmed | Unlink path `0x0014cad0` |
 | vehicle seat index | `+0x1fc` | `i16` | confirmed | `unit_new` sets -1 (`0x000c44c1`); the enter-vehicle routine `0x000ea1f0` indexes the vehicle's seats block (stride `0xb0`) with it and stores it (`0x000ea405`); leaving stores -1 (`0x000ea995`) |
 
-For an unparented unit, marker position is `body+0x64`, and heading is `atan2(forward.y, forward.x)`; the world is Z-up. `0x000ba160` shows that parented objects compose their local transform with a parent node matrix. Therefore, for a player in a vehicle, the cheap robust path is:
+For an unparented unit, marker position is `body+0x64`, and heading is `atan2(forward.y, forward.x)`; the world is Z-up. `0x000ba160` shows that parented objects compose their local transform with a parent node matrix. Therefore, for a player in a vehicle, the cheap, reliable path is:
 
 1. Read the unit's parent datum at `+0x14`.
 2. Salt-check that object and require concrete type `1` (vehicle).

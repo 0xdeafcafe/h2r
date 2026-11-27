@@ -26,7 +26,7 @@ flowchart LR
 | Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
 - [settings-menu-screens.md](game/settings-menu-screens.md): The pause menu, voice, profile and field-of-view screens, and settings as a schema.
 | Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
-| Xbox Live | `live/` | 34 | [live.md](live/live.md) |
+| Xbox Live | `live/` | 69 | [live.md](live/live.md) |
 | Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
 | Development | `dev/` | 5 | [crate-structure.md](dev/crate-structure.md) |
 
@@ -414,14 +414,28 @@ Reading and converting Halo 1 data:
 ## Xbox Live (`live/`)
 
 - [live.md](live/live.md) (**start here**): the Xbox Live replacement: overview, CLI, service and every client HLE section
+- [live-pieces.md](live/live-pieces.md): the pieces: the server, protocol and client parts and where each lives
+- [live-client-hle.md](live/live-client-hle.md): client HLE: sign-in, sockets, System Link, service logon
+- [live-client-hle-services.md](live/live-client-hle-services.md): client HLE: feedback, mute list, bans, storage, stats, messages
+- [live-client-hle-offline.md](live/live-client-hle-offline.md): client HLE: Live not set up, invitations, sessions, teams
 - [live-api.md](live/live-api.md): the service's HTTP and WebSocket contract
+- [live-api-events.md](live/live-api-events.md): events and read endpoints
+- [live-api-theater-stats.md](live/live-api-theater-stats.md): theater, stats, medals and clanker training
+- [live-api-sessions.md](live/live-api-sessions.md): sessions, invites, sign-ins and hosts
+- [live-api-social.md](live/live-api-social.md): friends, teams, moderation, saves and the co-op relay
+- [live-api-content.md](live/live-api-content.md): custom maps, rules scripts and game variants
+- [live-api-details.md](live/live-api-details.md): game art, clarifications, account details, ranks and arbitration
 - [live-security.md](live/live-security.md): identity, signing, token checks, recovery, rate limits and the federation design
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
+- [live-admin-api.md](live/live-admin-api.md): the admin API
+- [live-admin-moderation.md](live/live-admin-moderation.md): custom content moderation, reports and bans
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [web-app.md](live/web-app.md): the Live web app: its pages, the mock server and its `H2_MOCK_*` knobs, derived stats, sign-up, social features, link previews and the state architecture
+- [web-app-pages.md](live/web-app-pages.md): the web app's pages, one by one
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
 - [viewer-overlay.md](live/viewer-overlay.md): the 3D view's opening camera, Halo 2-style overlay, name tags and progressive reveal (design only, not built)
+- [viewer-overlay-layers.md](live/viewer-overlay-layers.md): the overlay, name tags and progressive reveal
 - [viewer-effects.md](live/viewer-effects.md): how damage reads in the viewer, and its combat effects: shields, explosions, impacts, melee, teleporters and deaths, what each derives from and the new telemetry two need (design only, not built)
 - [Telemetry cost](live/notes/2026-11-19-telemetry-cost.md): frame sizes and CPU per version, with the benchmark commands.
 - [Replay: the original 1 Hz recording](live/notes/2026-11-18-replay-original-1hz.md): stage rates, fields and sizes of the first recording.
@@ -433,20 +447,40 @@ Reading and converting Halo 1 data:
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
+- [live-worker-deploy.md](live/live-worker-deploy.md): deploy, cutover runbook and rollback
+- [live-worker-slices.md](live/live-worker-slices.md): build slices and how to build and run the Worker locally
 - [dedicated-host.md](live/dedicated-host.md): native game hosting, zero-local trial, light host, cloud choices and Ranked telemetry design
+- [dedicated-host-light.md](live/dedicated-host-light.md): the light host
+- [dedicated-host-ops.md](live/dedicated-host-ops.md): game data bundle, routing, tunnel, playerless lobby and the Fly provider
 - [dedicated-host-build.md](live/dedicated-host-build.md): the shared contract of the parallel dedicated-host build: the slim host, contracts and file ownership
 - [host-halving.md](live/host-halving.md): dedicated host resource profiles, pack admission and fleet sizing, measurement gates and the proposed template start
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
+- [live-matchmaking-hoppers.md](live/live-matchmaking-hoppers.md): the hopper file, field by field
+- [live-matchmaking-search.md](live/live-matchmaking-search.md): OptiMatch search and ping-aware assignments
+- [live-matchmaking-ranks.md](live/live-matchmaking-ranks.md): ranks: what the game does and what the server does
 - [live-custom-games.md](live/live-custom-games.md): the custom games browser, filters, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
+- [live-coop-lockstep.md](live/live-coop-lockstep.md): the retail engine, lockstep below the game and the settings layer
+- [live-coop-crate.md](live/live-coop-crate.md): the coop crate, the probe and the retail lobby
+- [live-coop-test.md](live/live-coop-test.md): `h2 coop test`, one command on one Mac
+- [live-coop-join.md](live/live-coop-join.md): more than two players and join in progress
+- [live-coop-live.md](live/live-coop-live.md): co-op over Live, latency and prediction
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
+- [live-voice-host.md](live/live-voice-host.md): voice host design
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
+- [live-gamestate-objects.md](live/live-gamestate-objects.md): objects, positions, hooks and the structure map
 - [live-telemetry.md](live/live-telemetry.md): capture hooks, events, machine travel, negotiated v8 live frames and the archive handoff
+- [live-telemetry-frames.md](live/live-telemetry-frames.md): frame species, cinematics, velocity and appearance
+- [live-telemetry-packed.md](live/live-telemetry-packed.md): packed frames
 - [replay-fidelity.md](live/replay-fidelity.md): current recording and playback, the original 1 Hz measurements and the spectator track design
+- [replay-fidelity-spectator.md](live/replay-fidelity-spectator.md): the spectator track proposal
 - [replay-migration.md](live/replay-migration.md): migrate, verify and roll back finished-game archives in both homes
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
+- [live-art-viewer-packs.md](live/live-art-viewer-packs.md): the 3D viewer, map packs and mods
+- [live-art-pipeline.md](live/live-art-pipeline.md): packing, pipeline and limits
+- [live-art-models.md](live/live-art-models.md): player and weapon models
 
 ## Editor (`editor/`)
 
@@ -494,4 +528,3 @@ hold what was done about their findings.
 ## About these docs (`meta/`)
 
 - [docs-style.md](meta/docs-style.md): how docs here are written, where each kind goes, the evidence labels and the checker
-

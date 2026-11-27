@@ -194,7 +194,7 @@ including immutable index nodes.
 The local Worker smoke exercised game close, automatic publication, R2
 reads and admin verification with a two-frame recording. Closing the game
 and observing publication took 622.7 ms. Fetching and decoding each of its
-two segments took 13.8 ms. [Worker smoke measurements](../live-worker-slices.md#finished-replay-archive-smoke)
+two segments took 13.8 ms. [Worker smoke measurements](2026-11-18-worker-slice-results.md#replay-archive-smoke-f99b31357-2026-11-19)
 
 The following compressor comparison used identical inflated H2AR bodies from
 revision `65b71186`. Each segment was independently compressed. These are

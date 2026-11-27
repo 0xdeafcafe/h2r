@@ -102,26 +102,6 @@ Moved to [Live Worker: build slices and results](live-worker-slices.md#what-chan
 
 ### Building and running on this machine
 
-## Finished replay archive smoke
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#finished-replay-archive-smoke).
-
-## Slice 2 results
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#slice-2-results).
-
-## Slice 3 results
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#slice-3-results).
-
-## Slice 4 results
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#slice-4-results).
-
-## Slice 5 results
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#slice-5-results).
-
 ## The stream on the hub
 
 The hub and native server advertise the same v8 ingest support in
@@ -148,7 +128,7 @@ Two drivers run the session:
     is level with the log whenever the hub is idle, the only time it
     hibernates, so a session rebuilt after a wake starts at the log's head.
     Writing it per event cost about 3 ms an append at p50 and 12 ms at p90
-    with 100 sockets ([Slice 5 results](live-worker-slices.md#slice-5-results)).
+    with 100 sockets ([measurements](notes/2026-11-18-worker-slice-results.md#slice-5-commit-725ba630d-2026-11-18)).
   - One pump task fans the hub's feeds out to every session. Expired tokens,
     and readers that sent no auth message within 10 s, are closed from the
     hub's alarm ([Timers and hibernation](#timers-and-hibernation)).

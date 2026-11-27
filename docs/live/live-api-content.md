@@ -241,8 +241,8 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   `position` is the package's own, so a republish by its author (same
   `MapId`) does not move it; a package an admin deleted and its author
   published again is new again.
-- **Downloads.** `GET /v1/maps/{map_id}` with `Authorization: Bearer
-  <token>` (an account's `read` token; tokens are single use, so a fresh
+- **Downloads.** `GET /v1/maps/{map_id}` with an `Authorization: Bearer <token>`
+  header (an account's `read` token; tokens are single use, so a fresh
   one per request) counts that account once per package: the first time,
   the server appends a server-signed `MapDownloaded` event (stream
   `package-<map_id>`, data `{map_id, by}`) and answers with the new count.

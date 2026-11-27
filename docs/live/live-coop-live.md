@@ -86,7 +86,7 @@ variants answer index `0xffe0xx` whatever the top byte, so the co-op screen
 showed their names (a test now checks every id against every private range).
 
 **Skulls.** The host's own campaign selection (collected and on, for the
-signed-in profiles: the Skulls page's rule, so the host has them unlocked)
+signed-in profiles: the Skulls page's rule, so the host has them available)
 is advertised on the co-op session in place of the multiplayer set, and the
 host's campaign start applies it as for any campaign. A co-op guest's
 campaign start applies exactly the host's skulls instead of its own
