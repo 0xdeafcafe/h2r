@@ -247,3 +247,23 @@ fn without_a_replay_a_carried_post_pass_still_commits_once() {
     let intermediate = m.read_vec(0x8000_0000 | DATA_A, LEVEL_BYTES as usize).unwrap();
     assert_eq!(&intermediate[..4], [0, 255, 0, 255], "the carried commit wrote the intermediate");
 }
+
+/// Behind a render thread that takes scene stages the carried post stage
+/// is queued in order, as the world's are: the game thread does not wait
+/// for that thread to drain, and the sink still keeps the one stage.
+#[test]
+fn behind_a_render_thread_a_carried_post_pass_is_queued_not_waited_on() {
+    let Some(ctx) = context() else { return };
+    let queued = || {
+        d3d::scene_stage::counters().into_iter().find(|(n, _)| n == "scene_stages_post").map_or(0, |(_, v)| v)
+    };
+    let before = queued();
+    let threaded = d3d::ThreadedBackend::new(GfxBackend::new(ctx)).unwrap();
+    let (sink, frames) = replaying(threaded, false);
+    let (stats, _, frame) = run(sink, &frames, true);
+    assert_eq!(stats.swallow_commits, 1);
+    assert_eq!(stats.swallow_draws_replayed, 0);
+    assert!(queued() > before, "the stage went to the render thread's queue");
+    assert_eq!(stages(&frame).len(), 1, "{:?}", frame.ops);
+    assert_eq!(draws(&frame), 0);
+}
