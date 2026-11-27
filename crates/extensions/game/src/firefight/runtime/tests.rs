@@ -550,7 +550,7 @@ fn every_wire_command_is_the_directors_own() {
             },
         ),
         (
-            json!({"drop_squad": {"slot": 1, "class": "elite", "count": 3, "zone": 0, "weapon_tier": 2}}),
+            json!({"drop_squad": {"slot": 1, "class": "elite", "count": 3, "zone": 0, "weapon_tier": 2, "ship": "pelican"}}),
             Command::DropSquad {
                 slot: 1,
                 class: "elite".into(),
@@ -558,11 +558,21 @@ fn every_wire_command_is_the_directors_own() {
                 zone: 0,
                 weapon_tier: 2,
                 arrival: ::firefight::Arrival::Auto,
+                ship: ::firefight::ShipKind::Pelican,
             },
         ),
-        (json!({"ship_hover": {"on": true}}), Command::ShipHover { on: true }),
-        (json!("ship_unload"), Command::ShipUnload),
-        (json!({"ship_leave": {"zone": 1}}), Command::ShipLeave { zone: 1 }),
+        (
+            json!({"ship_hover": {"ship": "phantom", "on": true}}),
+            Command::ShipHover { ship: ::firefight::ShipKind::Phantom, on: true },
+        ),
+        (
+            json!({"ship_unload": {"ship": "pelican"}}),
+            Command::ShipUnload { ship: ::firefight::ShipKind::Pelican },
+        ),
+        (
+            json!({"ship_leave": {"ship": "phantom", "zone": 1}}),
+            Command::ShipLeave { ship: ::firefight::ShipKind::Phantom, zone: 1 },
+        ),
         (
             json!({"target": {"slot": 2, "team": 1}}),
             Command::Target { slot: 2, team: 1 },

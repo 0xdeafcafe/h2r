@@ -27,6 +27,7 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use engine::light_constants::{Call, Fpu};
 use engine::memory::GuestMemory;
@@ -118,6 +119,27 @@ pub(super) fn install(b: &mut Builder) {
                         return original(cpu, ctx, addr);
                     }
                 };
+                // Under the scene path each slot stops after its records
+                // and goes into the scene; the loop's exit draws them.
+                if super::scene_path_ready() {
+                    return hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
+                        Box::pin(async move {
+                            let (ret, slots) = first_person::run_scene(
+                                &cx,
+                                plan,
+                                &mut |m, p, call| scene_slot(m, p, call),
+                                &mut |m, cut| {
+                                    let passes = crate::scene_step::open_first_person_passes(cut);
+                                    super::draw_first_person_scene(m, &passes);
+                                },
+                            )
+                            .await?;
+                            SCENE_SLOTS.fetch_add(slots.cut.len() as u64, Ordering::Relaxed);
+                            SceneList::FirstPersonLights.count(SceneListResult::Native);
+                            Ok::<_, engine::entry::EntryError>(ret)
+                        })
+                    });
+                }
                 if walk {
                     // The guest body whole. Typed slots only when a
                     // renderer takes them under this float state.
@@ -300,7 +322,80 @@ fn final_slot(
     Some(TransferAbi::ret(pending.ret))
 }
 
+static SCENE_SLOTS: AtomicU64 = AtomicU64::new(0);
+
+/// First-person slots the scene path took (`render.scene`'s
+/// `scene_first_person_cut_slots`).
+pub fn scene_slots() -> u64 {
+    SCENE_SLOTS.load(Ordering::Relaxed)
+}
+
+/// The scene's candidate for a first-person slot's light: its record,
+/// its constants as [`Slot::read`] computed them (no shadow, so both
+/// variants are the same), and its definition's gels.
+fn first_person_candidate(
+    mem: &dyn GuestMemory,
+    light: &super::Light,
+    definition: u32,
+    constants: frame_scene::LightConstants,
+) -> frame_scene::LightCandidate {
+    let word = |offset: u32| {
+        mem.u32(definition.wrapping_add(offset))
+            .ok()
+            .filter(|&w| w != u32::MAX)
+    };
+    frame_scene::LightCandidate {
+        position: light.position,
+        forward: light.forward,
+        up: light.up,
+        colour_a: light.colour_a,
+        colour_b: light.colour_b,
+        intensity: light.intensity,
+        bounds: light.bounds,
+        owner: None,
+        definition_kind: mem.u16(definition.wrapping_add(4)).unwrap_or(0),
+        volume: None,
+        view_eligible: Some(true),
+        priority: None,
+        weight: light.weight,
+        gel_bitmap: word(engine::light_passes::DEFINITION_GEL),
+        gel_shader: word(engine::light_passes::DEFINITION_GEL_SHADER),
+        constants: Some(frame_scene::LightVariants {
+            unshadowed: constants,
+            shadowed: constants,
+            projection: None,
+        }),
+    }
+}
+
+/// A first-person slot under the scene path, its records replayed: the
+/// slot planned as [`Slot::read`] plans it, its light (with its
+/// constants) and groups into the first person's view. False leaves the
+/// slot to the guest's steps.
+fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call) -> bool {
+    let slot = match Slot::read(&*mem, call, plan.fpu) {
+        Ok(slot) => slot,
+        Err(why) => {
+            refused(SceneList::FirstPersonLights, why);
+            return false;
+        }
+    };
+    super::finish_candidate();
+    super::FIRST_PERSON.set(None);
+    if slot.steps.drawn() == 0 {
+        return true;
+    }
+    let mut light = slot.scene_light;
+    light.candidate = Some(first_person_candidate(&*mem, &slot.light, call.definition, slot.constants));
+    if !crate::scene_step::first_person_light(&*mem, light, slot.steps.as_slice()) {
+        return false;
+    }
+    crate::scene_step::typed_light_groups(slot.groups);
+    true
+}
+
 struct Slot {
+    light: super::Light,
     globals: typed::Globals,
     constants: frame_scene::LightConstants,
     steps: Steps,
@@ -343,6 +438,7 @@ impl Slot {
             .ok_or(Refusal::Layout)?;
         let scene_light = super::scene_light(&light, &inputs);
         Ok(Self {
+            light,
             globals,
             constants,
             steps,
@@ -410,5 +506,53 @@ fn count(records: &SlotRecords) {
             Made::Rust => SceneList::FirstPersonRecords.count(SceneListResult::Native),
             Made::Guest(why) => refused(SceneList::FirstPersonRecords, why),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::FlatMemory;
+
+    #[test]
+    fn a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels() {
+        let mut m = FlatMemory::new(0, 0x10000);
+        let definition = 0x1000;
+        m.set_u16(definition + 4, 3).unwrap();
+        m.set_u32(definition + engine::light_passes::DEFINITION_GEL, u32::MAX).unwrap();
+        m.set_u32(definition + engine::light_passes::DEFINITION_GEL_SHADER, 0x00e1_0007).unwrap();
+        let light = super::super::Light {
+            handle: 5,
+            definition: 6,
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            colour_a: [0.5; 3],
+            colour_b: [0.25; 3],
+            intensity: 2.0,
+            bounds: ([1.0, 2.0, 3.0], 4.0),
+            shadow: false,
+            weight: 1.0,
+            constants: None,
+        };
+        let constants = frame_scene::LightConstants {
+            frame: [0; 36],
+            flags: 3,
+            colour_a: [0; 3],
+            colour_b: [0; 3],
+            mode: 0,
+            definition_flags: 0,
+            definition_8a: 0,
+            definition_80: 0,
+            falloff_0: 0,
+            gel: None,
+            animated_gel: true,
+        };
+        let c = first_person_candidate(&m, &light, definition, constants);
+        assert_eq!((c.position, c.weight, c.definition_kind), ([1.0, 2.0, 3.0], 1.0, 3));
+        assert_eq!((c.gel_bitmap, c.gel_shader), (None, Some(0x00e1_0007)));
+        let v = c.constants.unwrap();
+        assert_eq!((v.unshadowed, v.shadowed), (constants, constants), "a first-person light casts no shadow");
+        assert!(v.projection.is_none());
     }
 }

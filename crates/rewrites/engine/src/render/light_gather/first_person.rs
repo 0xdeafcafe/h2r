@@ -381,6 +381,82 @@ pub async fn run_with(
     Ok((Ret::new((entry & !0xff) | 1, 4), out))
 }
 
+/// Called under the scene path after a slot's records are replayed, with
+/// the call its constants would take: true when the slot went into the
+/// scene, so its constants, flags, layers and tail do not run; false
+/// leaves the whole slot to this body.
+pub type AtSlot<'a> = dyn FnMut(&mut dyn GuestMemory, &Plan, &Call) -> bool + Send + 'a;
+
+/// The flags word of a slot [`run_scene`]'s `at_slot` took; the flag code
+/// never sets every bit.
+const TAKEN: u32 = u32::MAX;
+
+/// What [`run_scene`] did: the slots that went into the scene.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneSlots {
+    pub count: i32,
+    /// The light datums of the slots the scene took, in order.
+    pub cut: Vec<u32>,
+    /// The slots the guest's steps made.
+    pub guest: Vec<u32>,
+}
+
+/// [`run`] under the scene path (docs/graphics/native-lights.md, "First-
+/// person lights from the scene"): each slot's volume and records as the
+/// guest makes them, then `at_slot`. A slot it takes stops there; a slot
+/// it refuses makes the rest of its steps. At the loop's exit, when any
+/// slot was taken, `at_exit` draws them from the scene, and then the tail
+/// runs once for the last one taken: the state it restores is the same
+/// for every slot, and the draws see it as the guest's layers would.
+pub async fn run_scene(
+    cx: &Cx,
+    plan: Plan,
+    at_slot: &mut AtSlot<'_>,
+    at_exit: &mut (dyn FnMut(&mut dyn GuestMemory, &[u32]) + Send),
+) -> Result<(Ret, SceneSlots), EntryError> {
+    let p = &plan;
+    cx.write(|m| m.set_u32(p.at(slot::INDEX), 0))?;
+    let n = cx.read(|m| m.i32(FIRST_PERSON_COUNT))?;
+    let mut out = SceneSlots { count: n, ..SceneSlots::default() };
+    if n <= 0 {
+        return Ok((Ret::new((n as u32 & !0xff) | 1, 4), out));
+    }
+    let mut index = 0u32;
+    let mut entry = slot_base(0).wrapping_add(SLOT_LIGHT);
+    let mut last = None;
+    cx.write(|m| m.set_u32(p.at(slot::ENTRY), entry))?;
+    loop {
+        if cx.read(|m| m.u16(entry.wrapping_add(4)))? as i16 > 0 {
+            // A taken slot's result carries [`TAKEN`] as its flags.
+            let mut offer = |m: &mut dyn GuestMemory, p: &Plan, c: &Call| -> Result<Option<SlotPasses>, EntryError> {
+                Ok(at_slot(m, p, c).then_some(SlotPasses { flags: TAKEN, reached: 0, drawn: 0 }))
+            };
+            let done = light(cx, p, index, entry, &mut offer).await?;
+            if done.flags == TAKEN {
+                out.cut.push(done.light);
+                last = Some(entry);
+            } else {
+                out.guest.push(done.light);
+            }
+        }
+        index = index.wrapping_add(1);
+        entry = entry.wrapping_add(FIRST_PERSON_SLOT);
+        cx.write(|m| -> Result<(), MemFault> {
+            m.set_u32(p.at(slot::INDEX), index)?;
+            m.set_u32(p.at(slot::ENTRY), entry)
+        })?;
+        if index as i32 >= cx.read(|m| m.i32(FIRST_PERSON_COUNT))? {
+            break;
+        }
+    }
+    if let Some(at) = last {
+        cx.write(|m| at_exit(m, &out.cut));
+        let l = cx.read(|m| Light::read(m, at))?;
+        tail(cx, p, &l).await?;
+    }
+    Ok((Ret::new((entry & !0xff) | 1, 4), out))
+}
+
 /// Steps 1 to 6 for the slot `index`, its light datum at `entry`.
 async fn light(
     cx: &Cx,
@@ -485,13 +561,22 @@ async fn light(
     }
 
     // 6: the tail.
+    tail(cx, p, &l).await?;
+    Ok(done)
+}
+
+/// Step 6, the tail, for the light `l`: two zeroes, the stencil off, the
+/// scissor cleared, the depth range inline, the view's target, and both
+/// flag words zeroed.
+async fn tail(cx: &Cx, p: &Plan, l: &Light) -> Result<(), EntryError> {
+    let e = p.entry_esp;
     cx.write(|m| -> Result<(), MemFault> {
         m.set_u8(LIGHT_ACTIVE, 0)?;
         m.set_u32(STENCIL_STATE, 0)
     })?;
-    let request = regs(call::STENCIL_ENABLE, &l, 0).args([0]);
+    let request = regs(call::STENCIL_ENABLE, l, 0).args([0]);
     passes::named(cx, e, FRAME, site::STENCIL_ENABLE, request).await?;
-    let request = regs(call::SCISSORS, &l, 0).args([0, 0, 0]);
+    let request = regs(call::SCISSORS, l, 0).args([0, 0, 0]);
     passes::named(cx, e, FRAME, site::SCISSORS, request).await?;
     // 0x000407bd: the depth range, as 0x00015720 makes it.
     let (device, put, end) = cx.write(|m| -> Result<_, MemFault> {
@@ -528,7 +613,7 @@ async fn light(
         m.set_u8(lp::PASSES, 0)?;
         m.set_u32(lp::PASS_FLAGS, 0)
     })?;
-    Ok(done)
+    Ok(())
 }
 
 /// One of layers 11 to 14: the draw byte from the light's list's mask,

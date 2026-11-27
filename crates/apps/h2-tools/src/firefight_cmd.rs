@@ -42,9 +42,17 @@ const USAGE: &str =
   --cut drops classes from the end of the list until the build fits, instead
     of refusing it.";
 
-/// The campaign map the Phantom is copied from: the same donor the class
-/// table prefers (`firefight_kit::retail`).
-const SHIP_DONOR: &str = "03a_oldmombasa";
+/// The campaign maps the ships are copied from: the Phantom from Outskirts,
+/// the same donor the class table prefers (`firefight_kit::retail`), the
+/// Pelican from Delta Halo's approach.
+/// The campaign maps whose scenarios fly the ships: their waypoints give each
+/// kind's hover (`firefight_kit::ship::HoverSurvey`).
+const CAMPAIGN_MAPS: [&str; 14] = [
+    "01a_tutorial", "01b_spacestation", "03a_oldmombasa", "03b_newmombasa", "04a_gasgiant",
+    "04b_floodlab", "05a_deltaapproach", "05b_deltatowers", "06a_sentinelwalls",
+    "06b_floodzone", "07a_highcharity", "07b_forerunnership", "08a_deltacliffs", "08b_deltacontrol",
+];
+const SHIP_DONORS: [&str; 2] = ["03a_oldmombasa", "05a_deltaapproach"];
 
 struct Args {
     base: String,
@@ -264,7 +272,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
 }
 
 pub fn run(words: Vec<String>) -> Result<()> {
-    let Some(args) = parse(words)? else {
+    let Some(mut args) = parse(words)? else {
         println!("{USAGE}");
         return Ok(());
     };
@@ -296,17 +304,30 @@ pub fn run(words: Vec<String>) -> Result<()> {
     }
     wanted.extend(args.classes);
     let (mut donor_names, specs) = plan(&wanted)?;
-    // The Phantom comes from a campaign map: Outskirts, when the disc has
-    // it and no class already named it.
-    if !args.probe
-        && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom)
-        && !donor_names.iter().any(|d| d == SHIP_DONOR)
-        && vfs::open_disc(&disc)
-            .with_context(|| format!("opening the disc {}", disc.display()))?
-            .host_file(&format!("maps\\{SHIP_DONOR}.map"))
-            .is_some()
-    {
-        donor_names.push(SHIP_DONOR.to_owned());
+    // The ships come from campaign maps, when the disc has them and no
+    // class already named them.
+    if !args.probe && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom) {
+        let mut files = vfs::open_disc(&disc)
+            .with_context(|| format!("opening the disc {}", disc.display()))?;
+        for donor in SHIP_DONORS {
+            if !donor_names.iter().any(|d| d == donor)
+                && files.host_file(&format!("maps\\{donor}.map")).is_some()
+            {
+                donor_names.push(donor.to_owned());
+            }
+        }
+    }
+    // How high the campaign holds the ships over the floor, when ships are asked.
+    if !args.probe && args.config.dropship != Dropship::None {
+        let mut survey = firefight_kit::ship::HoverSurvey::default();
+        for name in CAMPAIGN_MAPS {
+            let Ok(bytes) = read_disc_map(&disc, name) else { continue };
+            let mut map = map::Map::from_reader(std::io::Cursor::new(bytes))
+                .with_context(|| format!("reading {name}"))?;
+            survey.add_map(name, &mut map).with_context(|| format!("surveying {name}"))?;
+        }
+        // The tool builds once: the survey lives as long as the process.
+        args.config.ship_hovers = Some(Box::leak(Box::new(survey)));
     }
     let donor_bytes = donor_names
         .iter()
@@ -341,7 +362,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
             c.name, c.tags, c.sounds, c.bytes
         );
     }
-    if let Some(ship) = &saved.ship {
+    for ship in [&saved.ship, &saved.pelican].into_iter().flatten() {
         println!("{ship}");
     }
     if let Some(pods) = &saved.pods {

@@ -76,6 +76,61 @@ impl Target {
     }
 }
 
+/// The implementation `0x0003a5ab` draws each layer-1 pass with
+/// (`0x00016610`'s fourth argument).
+pub const IMPLEMENTATION: usize = 0;
+
+/// The four call values `0x0002d140` copies here (`screen_look`'s
+/// `SCREEN_SCALARS` read the first two). `0x00016610` from the gel
+/// producer leaves them as the last screen effect left them, so a gel
+/// pass reading them reads these words at its draw.
+pub const CALL_VALUES: u32 = 0x004c_19b0;
+
+/// The near and far words the quad helper `0x00015ec0` takes its depth
+/// from, and the device's depth scale and the image's 1.0 it uses.
+pub const NEAR: u32 = 0x0048_5ad4;
+pub const FAR: u32 = 0x0048_5ad8;
+pub const Z_SCALE: u32 = 0x0045_dd40;
+pub const ONE: u32 = 0x0045_dbc0;
+
+/// The position's z and w every vertex of the quad helper's strip takes
+/// (`0x00015f30..0x00015fc7`): z is `far / (far - near) * (1 - near)`
+/// (as `f/(f-n) - n*f/(f-n)`), w `one / far`, each times the depth scale
+/// and clamped to `[0, scale]`, in single precision.
+pub fn quad_depth(near: f32, far: f32, scale: f32, one: f32) -> (f32, f32) {
+    let clamp = |x: f32| {
+        if 0.0 > x {
+            0.0
+        } else if x > scale {
+            scale
+        } else {
+            x
+        }
+    };
+    let q = far / (far - near);
+    let z = (q - near * q) * scale;
+    let w = one / far * scale;
+    (clamp(z), clamp(w))
+}
+
+/// [`quad_depth`] from the guest's words; `None` when one does not read.
+pub fn quad_depth_of(mem: &dyn GuestRead) -> Option<(f32, f32)> {
+    let f = |at| mem.read_u32(at).map(f32::from_bits);
+    Some(quad_depth(f(NEAR)?, f(FAR)?, f(Z_SCALE)?, f(ONE)?))
+}
+
+/// The quad helper's strip for one level of `size` guest pixels, as it
+/// pushes it (`0x0001603a..0x000165a3`): four vertices in strip order,
+/// attribute 0 `(x, y, z, w)` at the level's corners, attributes 1..4
+/// the same two-component coordinate (`(u, v, 0, 1)`), from `(0, 0)` to
+/// `(1, 1)`.
+pub fn quad(size: (u32, u32), depth: (f32, f32)) -> [([f32; 4], [f32; 4]); 4] {
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let (z, q) = depth;
+    [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+        .map(|(u, v)| ([u * w, v * h, z, q], [u, v, 0.0, 1.0]))
+}
+
 /// Identity is per invocation, never just the reused target's address or
 /// the shader datum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -167,6 +222,20 @@ mod tests {
         assert!(Target::read(&mem).is_none());
         mem.0.remove(&(at + 0x88));
         assert!(Target::read(&mem).is_none());
+    }
+
+    #[test]
+    fn the_gel_quad_covers_its_level_in_strip_order_at_the_helpers_depth() {
+        let (z, w) = quad_depth(0.5, 2.0, 4.0, 1.0);
+        // f/(f-n) = 4/3; 4/3 - 0.5 * 4/3 = 2/3; times 4.
+        assert!((z - 8.0 / 3.0).abs() < 1e-6);
+        assert_eq!(w, 2.0);
+        assert_eq!(quad_depth(0.5, 2.0, 1.0, 1.0), (1.0, 0.5), "z clamps to the scale");
+        assert_eq!(quad_depth(2.0, 1.0, 1.0, -1.0).1, 0.0, "w clamps to zero");
+        let q = quad((64, 32), (z, w));
+        assert_eq!(q.map(|(p, _)| [p[0], p[1]]), [[0.0, 0.0], [64.0, 0.0], [0.0, 32.0], [64.0, 32.0]]);
+        assert_eq!(q.map(|(_, t)| t), [[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0]]);
+        assert!(q.iter().all(|(p, _)| p[2] == z && p[3] == w));
     }
 
     #[test]

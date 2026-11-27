@@ -22,6 +22,8 @@ use engine::entry::{Cx, GuestCall};
 use engine::view::{Datums, objects};
 use engine::{DatumHandle, GuestMemory, points};
 
+use ::firefight::ShipKind;
+
 use super::guest::{self, KitLayout, call, scenario};
 use crate::actor_net::squads::Placement;
 
@@ -47,12 +49,6 @@ pub struct ShipPut {
 /// (`fly_time`).
 pub const FLY_TICKS: u32 = 240;
 
-/// Seats the host counts on a ship. The kit does not read the vehicle tag's
-/// seat blocks, so this is the Phantom's nine passenger seats less one:
-/// an engine load that seats fewer leaves the surplus on foot
-/// ([`place_squad_in`]).
-pub const SEATS: u8 = 8;
-
 /// A kit's ship in the world: its datum and how many seats it has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ship {
@@ -65,20 +61,46 @@ pub struct Ship {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShipPath {
     pub run_in: [f32; 3],
-    pub hover: [f32; 3],
+    /// Each kind's hover point, the point set's `hover_<kind>` key
+    /// ([`ShipKind::index`]); none for a kind the path is not cleared for.
+    pub hovers: [Option<[f32; 3]>; ShipKind::ALL.len()],
     pub run_out: [f32; 3],
 }
 
 impl ShipPath {
-    /// The points of the flight in.
-    pub fn fly_in(&self) -> Vec<[f32; 3]> {
-        vec![self.run_in, self.hover]
+    /// The points of `kind`'s flight in, none when the path has no hover
+    /// key for it.
+    pub fn fly_in(&self, kind: ShipKind) -> Option<Vec<[f32; 3]>> {
+        Some(vec![self.run_in, self.hovers[kind.index()]?])
     }
 
-    /// The points of the flight out.
-    pub fn fly_out(&self) -> Vec<[f32; 3]> {
-        vec![self.hover, self.run_out]
+    /// The points of `kind`'s flight out.
+    pub fn fly_out(&self, kind: ShipKind) -> Option<Vec<[f32; 3]>> {
+        Some(vec![self.hovers[kind.index()]?, self.run_out])
     }
+}
+
+/// The tag table global (`[4e3b44]`: 16-byte entries, the definition at
+/// `+8`) and a vehicle definition's seats block count.
+const TAG_TABLE: u32 = 0x004e_3b44;
+const VEHICLE_SEATS: u32 = 0x1c8;
+
+/// The seats the ship's own `vehi` tag lists, which the host counts on: an
+/// engine load that seats fewer leaves the surplus on foot
+/// ([`place_squad_in`]). None when the object is no live vehicle or its
+/// tag is not in memory.
+pub fn tag_seats(m: &dyn GuestMemory, ship: u32) -> Option<u8> {
+    let (kind, body) = objects::get(m, DatumHandle::from_raw(ship)?).ok()??;
+    if kind != objects::VEHICLE {
+        return None;
+    }
+    let definition = body.definition(m).ok()??;
+    let table = m.u32(TAG_TABLE).ok()?;
+    let tag = m.u32(table.checked_add((definition.index() as u32) * 16 + 8)?).ok()?;
+    if tag == 0 {
+        return None;
+    }
+    u8::try_from(m.u32(tag + VEHICLE_SEATS).ok()?).ok().filter(|&n| n > 0)
 }
 
 /// The live vehicle placed at `placement` in the scenario's vehicle

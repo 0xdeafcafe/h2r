@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::scoring::ScoreReason;
-use crate::{Arrival, Difficulty, MAX_TEAMS, Skull};
+use crate::{Arrival, Difficulty, MAX_TEAMS, ShipKind, Skull};
 
 /// Squad slots the kit provides on every map.
 pub const SQUAD_SLOTS: usize = 16;
@@ -65,14 +65,51 @@ pub struct PodsSeen {
     pub flood_classes: BTreeSet<String>,
 }
 
-/// The drop ship as the kit has it (docs/game/firefight.md, "The drop
-/// ship"). A map without a ship reads as the default: not ready, no path.
+/// The drop ships as the kit has them (docs/game/firefight.md, "The drop
+/// ship"). A map without a ship reads as the default: none ready, no path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShipSeen {
-    /// The kit's ship is a live vehicle in the world.
+    /// Each kind by [`ShipKind::index`]; a kind past the end is not there.
+    pub kinds: Vec<KindSeen>,
+    /// The kind each kit class arrives by: none for a class whose faction
+    /// has no ship. A class not listed arrives by the Phantom.
+    pub class_ships: BTreeMap<String, Option<ShipKind>>,
+}
+
+/// One kind of drop ship as the kit has it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KindSeen {
+    /// The kit's ship of the kind is a live vehicle in the world.
     pub ready: bool,
-    /// Each kit zone, in kit order, has a flight path.
+    /// Each kit zone, in kit order, has a flight path for the kind.
     pub paths: Vec<bool>,
+}
+
+impl ShipSeen {
+    /// Only the Phantom, ready or not, with its zones' paths.
+    pub fn phantom(ready: bool, paths: Vec<bool>) -> Self {
+        Self::default().with(ShipKind::Phantom, ready, paths)
+    }
+
+    /// The kind set, the kinds before it left as they are.
+    pub fn with(mut self, kind: ShipKind, ready: bool, paths: Vec<bool>) -> Self {
+        if self.kinds.len() <= kind.index() {
+            self.kinds.resize(kind.index() + 1, KindSeen::default());
+        }
+        self.kinds[kind.index()] = KindSeen { ready, paths };
+        self
+    }
+
+    /// `class` arrives by `kind` (none: on foot).
+    pub fn class(mut self, class: &str, kind: Option<ShipKind>) -> Self {
+        self.class_ships.insert(class.to_owned(), kind);
+        self
+    }
+
+    /// The ship `class` arrives by.
+    pub fn ship_of(&self, class: &str) -> Option<ShipKind> {
+        self.class_ships.get(class).copied().unwrap_or(Some(ShipKind::Phantom))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,15 +180,21 @@ pub enum Command {
         /// drop ship's.
         #[serde(default, skip_serializing_if = "Arrival::is_auto")]
         arrival: Arrival,
+        /// The kind of ship that flies it in (`Ship` and `Auto`).
+        ship: ShipKind,
     },
     /// The ship's hover hold (`VEHICLE_HOVER`), on while it flies a drop.
     ShipHover {
+        ship: ShipKind,
         on: bool,
     },
     /// Everyone aboard leaves (`VEHICLE_UNLOAD`).
-    ShipUnload,
+    ShipUnload {
+        ship: ShipKind,
+    },
     /// The ship flies from the zone's hover point out along its run-out.
     ShipLeave {
+        ship: ShipKind,
         zone: u8,
     },
     /// With two teams, right after a `PlaceSquad`: the Firefight team the

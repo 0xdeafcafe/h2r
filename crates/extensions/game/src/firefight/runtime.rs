@@ -502,13 +502,27 @@ impl Game for GuestGame<'_> {
     fn drop_squad(&mut self, boarding: super::ship::Boarding) -> anyhow::Result<()> {
         self.defer(Call::Drop(boarding))
     }
-    fn ship(&self) -> Option<super::ship::Ship> {
-        let placement = self.kit?.ship?;
+    fn ship(&self, kind: ::firefight::ShipKind) -> Option<super::ship::Ship> {
+        let placement = self.kit?.ships[kind.index()]?;
         let object = super::ship::placed_ship(&*self.m, placement)?;
-        Some(super::ship::Ship {
-            object,
-            capacity: super::ship::SEATS,
-        })
+        let capacity = super::ship::tag_seats(&*self.m, object)?;
+        Some(super::ship::Ship { object, capacity })
+    }
+    fn class_ships(&self) -> BTreeMap<String, Option<::firefight::ShipKind>> {
+        let Some(kit) = self.kit else {
+            return BTreeMap::new();
+        };
+        kit.classes
+            .iter()
+            .map(|(name, row)| {
+                let kind = kit
+                    .factions
+                    .get(row)
+                    .copied()
+                    .and_then(::firefight::ShipKind::for_faction);
+                (name.clone(), kind)
+            })
+            .collect()
     }
     fn paths(&self) -> Vec<Option<super::ship::ShipPath>> {
         self.kit.map_or_else(Vec::new, |kit| kit.paths.clone())

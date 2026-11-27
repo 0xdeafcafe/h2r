@@ -356,9 +356,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         ready: &Ready,
         group: &render_bridge::native_lights::SceneGroup,
         c: &LightConstants,
+        produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         self.gathered_draws(
-            d, mem, ready, usize::from(group.group.layer), c, false,
+            d, mem, ready, usize::from(group.group.layer), c, produced_gel,
             group.entries.iter().enumerate().map(|(i, e)| {
                 (e, group.rows.get(i).map_or(&[][..], Vec::as_slice))
             }),
@@ -453,7 +454,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("light group names another layer"));
         }
         let layer = a.layer as usize;
-        let draws = self.scene_light_draws(&d, mem, &ready, a.group, &c)?;
+        let draws = self.scene_light_draws(&d, mem, &ready, a.group, &c, false)?;
         let prepared =
             self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false, None)?;
         use native_render::light_passes;
@@ -518,6 +519,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         light: Option<LightConstants>,
         map: ShadowMap,
         typed_rect: Option<[u32; 4]>,
+        gel: Option<Binding>,
     ) -> Result<PreparedLight, Keep> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
@@ -556,7 +558,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 if layer == CASTER_LAYER {
                     draws.extend(world.resolve_shadow_parts(std::mem::take(&mut run))?);
                 } else {
-                    draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run))?);
+                    draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run), gel.is_some())?);
                 }
             }
             let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
@@ -565,18 +567,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             if layer == CASTER_LAYER {
                 draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
             } else {
-                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer)?);
+                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
             }
         }
         if !run.is_empty() {
             if layer == CASTER_LAYER {
                 draws.extend(world.resolve_shadow_parts(run)?);
             } else {
-                draws.extend(world.resolve_receiver_parts(layer, run)?);
+                draws.extend(world.resolve_receiver_parts(layer, run, gel.is_some())?);
             }
         }
         let constants = match light {
-            Some(constants) if constants.animated_gel => {
+            // A scene light's gel is drawn into target 13 ahead of its
+            // layers (`scene::Op::Gel`): its receivers sample it.
+            Some(constants) if constants.animated_gel && gel.is_none() => {
                 return Err(Keep::Unsupported(
                     "an animated gel keeps the receiver on D3D",
                 ));
@@ -635,7 +639,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             Arc::clone(&ready),
             constants,
             draws,
-            None,
+            gel,
             colour_mask,
             typed_rect,
         )?;
@@ -702,6 +706,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             group,
             a.light,
             ShadowMap::Latest,
+            None,
             None,
         )?;
         let plan = d3d::ExternalPlan {
@@ -1709,6 +1714,9 @@ pub struct LightsWorld {
     palettes: StagePalettes,
     /// Gel bitmaps' image 0 by datum.
     gels: HashMap<u32, Image>,
+    /// The gel shaders a scene light draws into target 13
+    /// ([`crate::native_gels_scene`]).
+    scene_gels: Arc<crate::native_gels_scene::Gels>,
     normalization: Option<Arc<StaticLightTexture>>,
     attenuation: Option<Arc<StaticLightTexture>>,
 }
@@ -2060,6 +2068,7 @@ impl LightsWorld {
         &self,
         layer: usize,
         parts: Vec<(usize, WorldDraw)>,
+        produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
@@ -2086,7 +2095,7 @@ impl LightsWorld {
                     "cluster lacks a vertex stream read by its receiver program",
                 ));
             }
-            self.binds(&compiled.program, None, false, &self.images)?;
+            self.binds(&compiled.program, None, produced_gel, &self.images)?;
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
@@ -2119,6 +2128,7 @@ impl LightsWorld {
         entry: &LightEntry,
         rows: &[Row],
         layer: usize,
+        produced_gel: bool,
     ) -> Result<Planned, Keep> {
         let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
             "scene receiver entry has no native stream",
@@ -2148,7 +2158,7 @@ impl LightsWorld {
                 "receiver entry's node rows do not fit the palette",
             ));
         }
-        self.binds(&compiled.program, None, false, &lights.images)?;
+        self.binds(&compiled.program, None, produced_gel, &lights.images)?;
         Ok(Planned {
             material: MODEL_MATERIAL,
             layer,
@@ -2297,6 +2307,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let (clusters, unread) = residency::structure_parts(world, &lit_shaders, &materials);
     let (normalization, attenuation) = light_textures(map, lib.metadata(), files);
     let gels = gels(map, &lib, files);
+    let scene_gels = Arc::new(crate::native_gels_scene::load(map, &mut lib, files));
     eprintln!(
         "native-lights: {} resident lit structure parts, {unread} structure parts with unread materials, {} vertex programs, {} stage images, {} gels",
         clusters.len(),
@@ -2314,6 +2325,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         palettized,
         palettes: palettes.clone(),
         gels,
+        scene_gels,
         normalization,
         attenuation,
     })

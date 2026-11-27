@@ -338,10 +338,23 @@ pub fn screen_look(
     implementation: usize,
     externals: &[EngineVertexConstant],
 ) -> Result<ScreenLook, ScreenRefusal> {
+    template_look(material, TEMPLATE_LAYER, layer_pass, implementation, externals)
+}
+
+/// [`screen_look`] over template layer `layer` (first level of detail):
+/// any full-target pass `0x00016610` draws with hand-pushed strips, such
+/// as a light's gel into target 13 (layer 1, `crate::gels`).
+pub fn template_look(
+    material: &Material,
+    layer: usize,
+    layer_pass: usize,
+    implementation: usize,
+    externals: &[EngineVertexConstant],
+) -> Result<ScreenLook, ScreenRefusal> {
     let l = material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
+        .find(|l| l.lod == 0 && l.layer == layer)
         .filter(|l| !l.passes.is_empty())
         .ok_or(ScreenRefusal::NoLayer)?;
     let pass = l

@@ -653,7 +653,7 @@ that id, and each machine loads its own build.
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
-| Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
+| Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship_phantom` placement and, when a donor has it, a `ff_ship_pelican` one, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Drop pods | Halo 2's `insertion_pod` by stage-2 transplant when the map lacks it, pools `ff_pod_00..03` (squads) and `ff_ppod_00..07` (players), a point set `ff_fall_NN` per drop zone and `ff_pfall_NN` per starting location with an open column ("Drop pods", below) | cut after the ship, before any class |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
@@ -802,15 +802,36 @@ default, `firefight_kit::Config::dropship`):
   Spirit, then a Phantom the map holds, then a donor's; with none to be had it
   builds the kit as before and says why. `phantom` and `spirit`
   fail when their ship cannot be had; `none` writes nothing.
-- **The placement.** One vehicle placement named `ff_ship` (an object name),
+- **Ship kinds.** A kind is `firefight::ShipKind`: the Phantom (the Spirit
+  on a Halo 1 map) for Covenant squads and the Pelican,
+  `objects\vehicles\pelican\pelican` (the map's own, else a donor's,
+  `05a_deltaapproach` on the command line), for human squads
+  (`ShipKind::for_faction`; the Flood have none and arrive on foot). The kit
+  parks one of each kind it keeps. A Pelican no donor has, or one no zone is
+  wide enough for, is cut (`Package::pelican` says `pelican: cut (reason)`)
+  and the Phantom is kept; the Pelican is cut before the Phantom when
+  headroom is short.
+- **The placement.** One vehicle placement per kind kept, named
+  `ff_ship_<kind>` (an object name),
   on a new vehicle palette row for the ship, placed at the start (not
   "not at start") at the first path's run-in, with that path's yaw. The base's
   own vehicles, names and palette rows keep their indices; the new ones
   follow them (`ship::author`).
 - **The paths.** For each drop zone `NN` with a clear column, a point set
-  `ff_path_NN` in the scenario's scripting data with three points,
-  `run_in`, `hover` and `run_out`, in flying order. `hover` is
-  `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
+  `ff_path_NN` in the scenario's scripting data with the points `run_in`,
+  a `hover_<kind>` for each kind kept and `run_out`, in flying order. A kind's
+  size is read from its own `vehi` tag (`ship::dims_in`): its reach is the
+  object's bounding radius, its hover, when the command line has surveyed the campaign, the median height
+  over the collision floor of the ship's held waypoints in the retail scenarios
+  (`ship::HoverSurvey`: the points with a `_facing` partner in point sets whose
+  name holds `phantom` or `pelican`, on all fourteen campaign maps; the report
+  names the maps and counts), else the height of its render model's lowest position
+  under the root (the dropship tags have no lift points or flight settings), over the zone's first area's mean, and its seats the seat block's
+  count (`ship::tag_seats` reads it again in the game; it counts every seat, the driver,
+  gunners and cargo included, so it caps a load and the engine seats fewer). The path is one per
+  zone, cleared for the widest ship kept: each ray is also cast the kind's
+  reach to each side, and the Pelican is kept only when some zone has a path
+  at its width. The
   runs are at the sky height, 10 units over the tallest collision, and
   outside the collision's horizontal bounds by at least 20. `ship::plan`
   casts rays on the arena BSP's collision without its sky shell
@@ -918,23 +939,26 @@ placement carries no hover flag: the director turns the hold on
 below).
 
 **The drop ship.** The guest reads the kit's ship and paths with the rest
-of the kit (`guest::read_kit`): `KitLayout::ship` is the vehicle placement
-the object name `ff_ship` points at, and `KitLayout::paths` holds, for
+of the kit (`guest::read_kit`): `KitLayout::ships` is, by kind, the vehicle placement
+the object name `ff_ship_<kind>` points at, and `KitLayout::paths` holds, for
 each drop zone in kit order, its `ff_path_NN` point set's `run_in`,
-`hover` and `run_out` (`ship::ShipPath`), or none when the zone has no
-set or the set misses a point. A game reports the ship as live when
+`run_out` and a hover for each `hover_<kind>` key (`ship::ShipPath`), or none
+when the zone has no set or the set misses its run points or every hover. A game reports the ship as live when
 exactly one vehicle of that placement is in the world
-(`ship::placed_ship`); its seats are `ship::SEATS`, since the kit does
-not read the vehicle tag's seat blocks.
+(`ship::placed_ship`); its seats are the vehicle tag's seat count (`ship::tag_seats`).
 
 The director (`content/modes/rules/firefight.rules`) holds the ship's state
 in three globals, `ship_state` (parked, inbound, unloading, outbound),
 `ship_tick` and `ship_zone`. Each tick the host tells it whether the ship
-is in the world (`Observed::ship.ready`, read `ship_ready()`) and which zones
-have a path (`zone_path(zone)`).
+of each kind is in the world (`Observed::ship.kinds[k].ready`, read
+`ship_ready(kind)`), which zones have a path for it (`zone_path(zone, kind)`),
+and by which kind each class arrives (`squad_ship(class)`: 0 Phantom, 1
+Pelican, -1 none; the class's faction, `ShipSeen::class_ships`). `ship_kind`
+names the ship out; one ship is out at a time.
 
-- A squad whose chosen zone has a path, with the ship parked and in the
-  world, is placed by `ff_ship_hover(true)` and `ff_drop_squad(...)`
+- A squad whose chosen zone has a path for its kind, with no ship out and
+  that ship in the world, is placed by `ff_ship_hover(kind, true)` and
+  `ff_drop_squad(..., kind)`
   (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
   Every other squad, including each squad of a wave while the ship is
   out, is placed on foot by `place_squad_at` as before, so a wave
@@ -946,10 +970,10 @@ have a path (`zone_path(zone)`).
   ship's free seats ride, the rest of the squad spawns on foot at the
   zone. A `DropSquad` for a zone the host finds no ship or path for
   places on foot, as `PlaceSquad`.
-- 240 ticks after the drop the script calls `ff_ship_unload()`
+- 240 ticks after the drop the script calls `ff_ship_unload(kind)`
   (`ShipUnload`: `VEHICLE_UNLOAD`, every seat); 60 ticks later
-  `ff_ship_leave(zone)` (`ShipLeave`: a flight from the hover point to the
-  run-out in `FLY_TICKS`); 240 ticks after that `ff_ship_hover(false)` and the
+  `ff_ship_leave(kind, zone)` (`ShipLeave`: a flight from the hover point to the
+  run-out in `FLY_TICKS`); 240 ticks after that `ff_ship_hover(kind, false)` and the
   ship is parked again. The ship's puts come before the tick's other
   calls so a squad placed into a ship that begins its flight finds it
   at the run-in.

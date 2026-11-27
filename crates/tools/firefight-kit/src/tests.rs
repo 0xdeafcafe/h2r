@@ -249,7 +249,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         &Labels::default(),
         None,
         0,
-        false,
+        0,
         false,
         fit,
         u32::MAX,
@@ -513,8 +513,10 @@ fn the_built_in_layouts_keep_their_drops_and_a_zone_has_a_column_for_the_ship() 
             .unwrap_or_else(|e| panic!("{name}: {e:#}"));
         assert!(nav.refused.is_empty(), "{name}: {:?}", nav.refused);
         assert_eq!(nav.snapped.len(), drops, "{name}: every drop snapped");
+        let walls = nav.ship_walls.as_ref().expect("the arena's walls");
+        let phantom = crate::ship::Dims::default_for(firefight::ShipKind::Phantom);
         assert!(
-            nav.ship_runs.iter().any(Option::is_some),
+            crate::ship::plan(walls, &nav.zones, phantom.radius, phantom.hover).iter().any(Option::is_some),
             "{name}: no zone has a clear column for the ship"
         );
     }

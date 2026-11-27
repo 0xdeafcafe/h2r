@@ -21,13 +21,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{
-    Kill, Phase, PlayerSeen, PodsSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
+    Kill, KindSeen, Phase, PlayerSeen, PodsSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
     Arrival, Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
     Settings, Skull,
 };
 use host_log::{Entry, Log, LogHead, Sha256};
+
+use ::firefight::ShipKind;
 
 use super::guest::PodFall;
 use super::pods::FALL_TICKS;
@@ -160,9 +162,14 @@ pub trait Game: SquadEntry {
     fn drop_squad(&mut self, _boarding: Boarding) -> anyhow::Result<()> {
         anyhow::bail!("this game has no ships to place a squad in")
     }
-    /// The kit's ship, when it is a live vehicle in the world.
-    fn ship(&self) -> Option<Ship> {
+    /// The kit's ship of `kind`, when it is a live vehicle in the world.
+    fn ship(&self, _kind: ShipKind) -> Option<Ship> {
         None
+    }
+    /// The kind of ship each kit class arrives by: none for a class whose
+    /// faction has no ship ([`ShipKind::for_faction`]).
+    fn class_ships(&self) -> BTreeMap<String, Option<ShipKind>> {
+        BTreeMap::new()
     }
     /// Each kit zone's flight path, in kit order; none for a zone the ship
     /// cannot fly to.
@@ -770,9 +777,9 @@ impl Host {
         })
     }
 
-    fn ship_of(game: &impl Game) -> anyhow::Result<Ship> {
-        game.ship()
-            .ok_or_else(|| anyhow::anyhow!("the kit's ship is not in the world"))
+    fn ship_of(game: &impl Game, kind: ShipKind) -> anyhow::Result<Ship> {
+        game.ship(kind)
+            .ok_or_else(|| anyhow::anyhow!("the kit's {} is not in the world", kind.name()))
     }
 
     fn apply(&mut self, op: &Command, tick: u32, game: &mut impl Game) -> anyhow::Result<()> {
@@ -812,6 +819,7 @@ impl Host {
                 zone,
                 weapon_tier,
                 arrival,
+                ship: kind,
             } => {
                 let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
                 if *arrival == Arrival::Foot {
@@ -845,12 +853,15 @@ impl Host {
                     };
                 }
                 let path = game.paths().get(usize::from(*zone)).copied().flatten();
-                let Some((ship, path)) = game.ship().zip(path) else {
+                let Some((ship, flight)) = game
+                    .ship(*kind)
+                    .zip(path.and_then(|path| path.fly_in(*kind)))
+                else {
                     return squad(game, SquadOp::Place(placement));
                 };
                 game.fly(Launch {
                     ship: ship.object,
-                    path: path.fly_in(),
+                    path: flight,
                     ticks: FLY_TICKS,
                 })?;
                 game.drop_squad(Boarding {
@@ -859,25 +870,28 @@ impl Host {
                     capacity: ship.capacity,
                 })
             }
-            Command::ShipHover { on } => {
-                let ship = Self::ship_of(&*game)?;
+            Command::ShipHover { ship: kind, on } => {
+                let ship = Self::ship_of(&*game, *kind)?;
                 game.hover(ship.object, *on)
             }
-            Command::ShipUnload => {
-                let ship = Self::ship_of(&*game)?;
+            Command::ShipUnload { ship: kind } => {
+                let ship = Self::ship_of(&*game, *kind)?;
                 game.unload(ship.object)
             }
-            Command::ShipLeave { zone } => {
-                let ship = Self::ship_of(&*game)?;
-                let path = game
+            Command::ShipLeave { ship: kind, zone } => {
+                let ship = Self::ship_of(&*game, *kind)?;
+                let flight = game
                     .paths()
                     .get(usize::from(*zone))
                     .copied()
                     .flatten()
-                    .ok_or_else(|| anyhow::anyhow!("the kit has no ship path for zone {zone}"))?;
+                    .and_then(|path| path.fly_out(*kind))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("the kit has no {} path for zone {zone}", kind.name())
+                    })?;
                 game.fly(Launch {
                     ship: ship.object,
-                    path: path.fly_out(),
+                    path: flight,
                     ticks: FLY_TICKS,
                 })
             }
@@ -1194,14 +1208,26 @@ fn observe(
             classes: kit.pod_classes.clone(),
             flood_classes: kit.flood_classes.clone(),
         },
-        ship: ShipSeen {
-            ready: game.ship().is_some(),
-            paths: {
-                let paths = game.paths();
-                (0..kit.zones.len())
-                    .map(|zone| paths.get(zone).is_some_and(Option::is_some))
-                    .collect()
-            },
+        ship: {
+            let paths = game.paths();
+            ShipSeen {
+                kinds: ShipKind::ALL
+                    .into_iter()
+                    .map(|kind| KindSeen {
+                        ready: game.ship(kind).is_some(),
+                        paths: (0..kit.zones.len())
+                            .map(|zone| {
+                                paths
+                                    .get(zone)
+                                    .copied()
+                                    .flatten()
+                                    .is_some_and(|path| path.hovers[kind.index()].is_some())
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                class_ships: game.class_ships(),
+            }
         },
     }
 }
