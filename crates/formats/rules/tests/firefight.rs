@@ -25,6 +25,10 @@ const set_rounds = 1
 table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int, arrival: int) = [
     ("fixture", 0, 1, 1, 1, 2, 0, 0),
 ]
+table ally_squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int, arrival: int) = [
+    ("fixture", 0, 1, 1, -1, 0, 0, 1),
+]
+table ally_rounds: (first: int, count: int) = [(0, 0)]
 table waves: (first: int, count: int, gap: int) = [
     (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1),
 ]
