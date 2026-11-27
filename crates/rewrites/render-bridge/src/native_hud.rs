@@ -12,6 +12,7 @@ mod model;
 mod outline;
 mod ui;
 pub mod ui_overlay;
+pub mod walk;
 
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +29,7 @@ pub use hud_overlay::HudTagQuad;
 pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
 pub use ui_overlay::MenuRefusal;
+pub use walk::{WalkQuad, WalkWidget};
 
 /// Whether the native UI and HUD are on.
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -43,6 +45,17 @@ pub const RUST_HUD: &str = "impl.render.native-hud";
 /// Whether the Rust HUD material ([`RUST_HUD`]) is on.
 pub fn rust_hud_on(switches: &hooks::Switches) -> bool {
     on(switches) && switches.feature("impl.render.native-hud", true)
+}
+
+/// The HUD's bitmap widgets laid out in Rust and drawn with no guest
+/// draw once proven (docs/graphics/native-hud-overlay.md, "The walk in
+/// Rust"): on with the Rust HUD material, `impl.render.native-hud-walk=off`
+/// turns it off.
+pub const HUD_WALK: &str = "impl.render.native-hud-walk";
+
+/// Whether the Rust HUD walk ([`HUD_WALK`]) is on.
+pub fn hud_walk_on(switches: &hooks::Switches) -> bool {
+    rust_hud_on(switches) && switches.feature("impl.render.native-hud-walk", true)
 }
 
 static RUST_HUD_PLACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -147,6 +160,8 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
 /// The shader quad at [`HUD_QUAD_SETUP`]: a HUD widget's quad the host
 /// draws from its Rust material, its setup and draw left out.
 fn setup_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
+    // A shadowed widget's quad is checked against Rust's layout first.
+    walk::observe(mem, frame);
     let Some(at) = hud_overlay::tag_quad(mem, frame) else { return false };
     let Some(vertices) = vertices(mem, frame, colour) else { return false };
     let drawn = host().is_some_and(|host| host.rust_hud_quad(mem, &at, &vertices));
@@ -169,6 +184,15 @@ pub trait Host: Send + Sync {
     /// setup and the draw are left out. A shader not yet proven against
     /// the guest's own setup is not drawn here.
     fn rust_hud_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    /// A proven bitmap widget laid out in Rust ([`walk`]): true when the
+    /// host drew every quad of it from the shader's Rust material at the
+    /// widget's anchor, so the guest's draw is left out. The host writes
+    /// each quad's globals before it reads the quad's material. False:
+    /// nothing was drawn, and the guest draws the widget.
+    fn rust_hud_widget(&self, _mem: &mut dyn GuestMemory, _widget: &WalkWidget) -> bool {
         false
     }
 
@@ -368,6 +392,91 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
     Some(TransferAbi::resume(ITEM_CONTINUATION))
 }
 
+/// The stack argument `n` of a call at its entry.
+fn argument(mem: &dyn GuestMemory, esp: u32, n: u32) -> Option<u32> {
+    mem.u32(esp.checked_add(4 + 4 * n)?).ok()
+}
+
+/// A proven widget's draw: the host's quads, then the globals the
+/// guest's draw would leave.
+fn own_widget(mem: &mut dyn GuestMemory, widget: &WalkWidget, last: &[(u32, u32)]) -> bool {
+    let drawn = host().is_some_and(|host| host.rust_hud_widget(mem, widget));
+    walk::owned(drawn);
+    if !drawn {
+        return false;
+    }
+    for &(at, word) in last {
+        if mem.write(at, &word.to_le_bytes()).is_err() {
+            eprintln!("hud walk: a widget's global at {at:#x} did not take its word");
+        }
+    }
+    Ui::OverlayHudRustDrawn.count_n(widget.quads.len() as u64);
+    Stage::Ui.count(Metric::BuildsSkipped, widget.quads.len() as u64);
+    ui::record(true);
+    true
+}
+
+/// The walk's hooks ([`walk`]): Rust's selection at the walk's entry,
+/// the guest's widget calls for its check, and the bitmap widget's draw.
+fn place_walk(b: &mut Builder) {
+    use scene_extract::hud::walk::Kind;
+    b.raw().before(&points::HUD_WALK, "native_hud_walk_enter", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let mem = rt.memory();
+        let esp = c.cpu.esp;
+        if let (Some(player), Some(record), Some(slot)) = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2)) {
+            walk::enter(&*mem, c.cpu.eax, player, record, slot);
+        }
+        Ok(Flow::Continue)
+    }).context_only().optional();
+    b.raw().after(&points::HUD_WALK, "native_hud_walk_leave", |_| {
+        walk::leave();
+        Ok(())
+    }).optional();
+    b.raw().before(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let mem = rt.memory();
+        if let Some(inputs) = argument(&*mem, c.cpu.esp, 1) {
+            walk::called(&*mem, Kind::Screen, c.cpu.eax, inputs);
+        }
+        Ok(Flow::Continue)
+    }).context_only().optional();
+    b.raw().before(&points::HUD_TEXT_WIDGET, "native_hud_walk_text", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let mem = rt.memory();
+        if let (Some(widget), Some(inputs)) = (argument(&*mem, c.cpu.esp, 2), argument(&*mem, c.cpu.esp, 3)) {
+            walk::called(&*mem, Kind::Text, widget, inputs);
+        }
+        Ok(Flow::Continue)
+    }).context_only().optional();
+    b.raw().before(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let owned = {
+            let mut mem = rt.memory();
+            let esp = c.cpu.esp;
+            let arguments = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2), argument(&*mem, esp, 3));
+            let (Some(player), Some(record), Some(widget), Some(inputs)) = arguments else {
+                return Ok(Flow::Continue);
+            };
+            walk::called(&*mem, Kind::Bitmap, widget, inputs);
+            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+            match walk::plan(&*mem, fp, player, record, widget, inputs) {
+                walk::Plan::Guest => false,
+                walk::Plan::Own(laid, last) => own_widget(&mut *mem, &laid, &last),
+            }
+        };
+        if !owned {
+            return Ok(Flow::Continue);
+        }
+        c.ret(16).map(Flow::Return)
+    }).context_only().optional();
+    b.raw().after(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap_done", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        walk::finish(&*rt.memory());
+        Ok(())
+    }).optional();
+}
+
 pub struct NativeHud;
 
 impl Feature for NativeHud {
@@ -421,6 +530,9 @@ impl Feature for NativeHud {
                 }
                 Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
             }).context_only().optional();
+        }
+        if hud_walk_on(b.switches()) {
+            place_walk(b);
         }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());

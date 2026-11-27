@@ -23,7 +23,7 @@ use engine::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
 use map::TagId;
 use native_render::hud_material::{HudRefusal, HudShader, HudState};
-use render_bridge::native_hud::{HudTagQuad, HudVertices, hud_inputs};
+use render_bridge::native_hud::{HudTagQuad, HudVertices, WalkWidget, hud_inputs};
 use tags::material::ShaderLibrary;
 use timeline::native::Ui;
 
@@ -323,6 +323,66 @@ pub fn draw<B: d3d::Backend + Send + 'static>(
     let Ok(p) = predict(mem, at, vertices) else { return false };
     let Some(overlay) = build(&p, at, size, clip) else { return false };
     crate::hud_overlay::place_hud(device, mem, overlay)
+}
+
+/// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),
+/// all of it or none: each quad's globals written, its material read as
+/// [`draw`] reads it, and the quads placed as one pass under the fit of
+/// the widget's anchor group. Its shader must be proven; a quad that
+/// does not predict or a pass that is not placed leaves the widget to
+/// the guest, which writes the same globals again.
+pub fn draw_widget<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    widget: &WalkWidget,
+) -> bool {
+    let placed = {
+        let s = state();
+        let Some(proof) = s.proofs.get(&widget.shader) else { return false };
+        if proof.failed || proof.matched < PROOF_DRAWS {
+            return false;
+        }
+        proof.placed
+    };
+    let Some((size, clip)) = placed else { return false };
+    let mut all = Overlay::new(size);
+    for quad in &widget.quads {
+        for &(at, word) in &quad.writes {
+            if mem.write(at, &word.to_le_bytes()).is_err() {
+                return false;
+            }
+        }
+        let Some(hud_input) = render_bridge::native_hud::hud_overlay::inputs(mem) else { return false };
+        let at = HudTagQuad { bitmap: widget.bitmap, image: quad.image, shader: widget.shader, hud_input, widget: true };
+        let Ok(p) = predict(mem, &at, &quad.vertices) else { return false };
+        let Some(one) = build(&p, &at, size, clip) else { return false };
+        if all.append(&one).is_err() {
+            return false;
+        }
+    }
+    if all.is_empty() {
+        return true;
+    }
+    // The group's fit, as the guest's anchor call sets it for its quads
+    // (`render_aspect`), and the enclosing one back after them.
+    let group = crate::render_aspect::hud_group_fit(widget.anchor, widget.point);
+    let set = |mem: &mut dyn GuestMemory, fit| {
+        device.lock().ok().is_some_and(|mut d| {
+            d.set_ui_fit(&mut crate::native_lights_glue::DeviceMemory(mem), fit).is_ok() && d.ui_fit() == fit
+        })
+    };
+    let Some(enclosing) = device.lock().ok().map(|d| d.ui_fit()) else { return false };
+    if let Some(fit) = group
+        && !set(mem, fit)
+    {
+        set(mem, enclosing);
+        return false;
+    }
+    let drawn = crate::hud_overlay::place_hud(device, mem, all);
+    if group.is_some() && !set(mem, enclosing) {
+        eprintln!("hud walk: the enclosing HUD fit was not restored after a widget");
+    }
+    drawn
 }
 
 #[cfg(test)]
