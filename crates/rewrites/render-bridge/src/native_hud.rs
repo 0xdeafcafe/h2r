@@ -4,6 +4,7 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
+pub mod definitions;
 pub mod hud_inputs;
 pub mod hud_overlay;
 pub mod kept;
@@ -19,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use runtime::abi::TransferAbi;
+use scene_extract::hud;
 use scene_extract::hud::walk::Kind;
 use timeline::native::{Metric, Stage, Ui};
 
@@ -468,6 +470,102 @@ fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, player: u32, record: u32, s
     true
 }
 
+/// The definitions' walks in Rust ([`definitions`]), at `HUD_DEFINITIONS`:
+/// each definition the record names, in the guest's order, by Rust's own
+/// loop. `Ok` when every one was Rust's; otherwise `Err` with the step the
+/// guest resumes at, its walk handed over.
+fn own_definitions(mem: &mut dyn GuestMemory, fp: walk::Fp, user: u32, record: u32, walks: &[hud::walk::DefinitionWalk]) -> Result<(), usize> {
+    for w in walks {
+        walk::enter(&*mem, w.datum, user, record, w.slot);
+        let owned = match walk::plan_loop() {
+            walk::LoopPlan::Guest => false,
+            walk::LoopPlan::Own(shown) => own_loop(mem, fp, user, record, &shown),
+        };
+        if !owned {
+            definitions::hand_off(w.datum, w.slot);
+            return Err(w.step);
+        }
+        walk::leave();
+    }
+    Ok(())
+}
+
+/// `HUD_DEFINITIONS`' hooks: the order's check at the return, and Rust's
+/// walks once the order is proven.
+fn place_definitions(b: &mut Builder) {
+    b.raw().before(&points::HUD_DEFINITIONS, "native_hud_definitions", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let (user, record) = (c.cpu.edi, c.cpu.esi);
+        let walks = {
+            let mem = rt.memory();
+            hud::record(&*mem, record).and_then(|r| hud::walk::definitions(&r))
+        };
+        let definitions::Plan::Own(walks) = definitions::enter(user, record, walks) else {
+            return Ok(Flow::Continue);
+        };
+        // A walk handed back resumes the body at its step: each step the
+        // record names past the first needs its resume site.
+        let resumable = walks.iter().skip(1).all(|w| {
+            definitions::RESUME[w.step].is_some_and(|(pc, _)| rt.read_dispatch(|d| d.has_resume(pc)))
+        });
+        if !resumable {
+            walk::count("definitions_resume");
+            definitions::leave();
+            return Ok(Flow::Continue);
+        }
+        let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+        // The body's frame for a resume: the caller's EBX pushed
+        // (`0x001394be`), written before anything is drawn.
+        let Some(frame) = c.cpu.esp.checked_sub(4) else { return Ok(Flow::Continue) };
+        let caller_ebx = c.cpu.ebx.to_le_bytes();
+        let step = {
+            let mut mem = rt.memory();
+            if mem.write(frame, &caller_ebx).is_err() {
+                walk::count("definitions_frame");
+                definitions::leave();
+                return Ok(Flow::Continue);
+            }
+            // The body's first write (`0x001394bf`).
+            let ui = mem.u32(definitions::UI).ok().filter(|&ui| ui != 0);
+            let Some(at) = ui.and_then(|ui| ui.checked_add(definitions::UI_RECORD)) else {
+                walk::count("definitions_read");
+                definitions::leave();
+                return Ok(Flow::Continue);
+            };
+            if mem.write(at, &record.to_le_bytes()).is_err() {
+                walk::count("definitions_read");
+                definitions::leave();
+                return Ok(Flow::Continue);
+            }
+            own_definitions(&mut *mem, fp, user, record, &walks)
+        };
+        let step = match step {
+            Ok(()) => {
+                definitions::owned();
+                return c.ret(0).map(Flow::Return);
+            }
+            Err(step) => step,
+        };
+        // The first walk the record names: the body runs from its entry,
+        // and walks nothing before it.
+        if Some(step) == walks.first().map(|w| w.step) {
+            return Ok(Flow::Continue);
+        }
+        // Every step past the first has its site (`resumable`); the frame
+        // holds the caller's EBX, and EBX is what the step's code expects.
+        let Some((pc, ebx)) = definitions::RESUME[step] else { unreachable!("step {step} past the first has a resume site") };
+        c.cpu.esp = frame;
+        if let Some(ebx) = ebx {
+            c.cpu.ebx = ebx;
+        }
+        Ok(Flow::Return(TransferAbi::resume(pc)))
+    }).context_only().optional();
+    b.raw().after(&points::HUD_DEFINITIONS, "native_hud_definitions_leave", |_| {
+        definitions::leave();
+        Ok(())
+    }).optional();
+}
+
 /// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
 /// loop at the walk's entry; the guest's widget calls for the check; and
 /// each widget's draw.
@@ -480,6 +578,12 @@ fn place_walk(b: &mut Builder) {
             let (Some(player), Some(record), Some(slot)) = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2)) else {
                 return Ok(Flow::Continue);
             };
+            definitions::walked(record, c.cpu.eax, slot);
+            // Rust's walk of the definitions handed this one over: its
+            // entry ran there, and the guest walks it.
+            if definitions::take_hand_off(record, c.cpu.eax, slot) {
+                return Ok(Flow::Continue);
+            }
             walk::enter(&*mem, c.cpu.eax, player, record, slot);
             let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
             match walk::plan_loop() {
@@ -641,6 +745,7 @@ impl Feature for NativeHud {
         }
         if hud_walk_on(b.switches()) {
             place_walk(b);
+            place_definitions(b);
         }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());

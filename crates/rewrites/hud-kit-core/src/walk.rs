@@ -24,6 +24,7 @@
 //! | [`screen_widget`] | `0x0022b8e2` |
 //! | [`text_widget`] | `0x0022aa16`, up to its string |
 //! | [`shown`] | `0x0013a532` |
+//! | [`definitions`] | `0x001394b9` |
 //!
 //! Guest-free: the caller reads the record, the definition and the
 //! bitmap tag (`scene_extract::hud`) and applies the writes a draw lists.
@@ -948,4 +949,37 @@ pub fn shown(definition: &Definition<'_>, words: &Words, record: &[u8], session:
         }
     }
     out
+}
+
+/// One walk `0x001394b9` makes: the record word that names the
+/// definition, the definition's datum and the walk's slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DefinitionWalk {
+    /// Its place in [`DEFINITION_ORDER`].
+    pub step: usize,
+    /// The record's word: the datum is at `4 * word`.
+    pub word: usize,
+    pub datum: u32,
+    pub slot: u32,
+}
+
+/// `0x001394b9`'s walks in its order, as (record word, slot): word 5 with
+/// slot 3, word 2 with 4, 3 with 1, 4 with 2, word 5 with slot 3 again,
+/// then words 6, 0 and 1 with slot 0 (Code, `h2 disasm 0x001394b9`).
+pub const DEFINITION_ORDER: [(usize, u32); 8] = [(5, 3), (2, 4), (3, 1), (4, 2), (5, 3), (6, 0), (0, 0), (1, 0)];
+
+/// `0x001394b9`: the definitions the HUD `record` names, in the order the
+/// guest walks them; a word of `-1` names none and is skipped.
+pub fn definitions(record: &[u8]) -> Option<Vec<DefinitionWalk>> {
+    if record.len() < 7 * 4 {
+        return None;
+    }
+    Some(
+        DEFINITION_ORDER
+            .iter()
+            .enumerate()
+            .map(|(step, &(word, slot))| DefinitionWalk { step, word, datum: u32_at(record, 4 * word), slot })
+            .filter(|w| w.datum != u32::MAX)
+            .collect(),
+    )
 }

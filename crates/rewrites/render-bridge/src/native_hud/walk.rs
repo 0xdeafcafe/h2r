@@ -99,7 +99,7 @@ pub enum Arm {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Proof {
+pub(super) struct Proof {
     clean: u32,
     failed: bool,
     /// Draws since it was proven, for the recheck.
@@ -107,7 +107,7 @@ struct Proof {
 }
 
 impl Proof {
-    fn arm(&mut self) -> Arm {
+    pub(super) fn arm(&mut self) -> Arm {
         if self.failed {
             return Arm::Guest;
         }
@@ -119,12 +119,12 @@ impl Proof {
     }
 
     /// Whether Rust draws it, asked without counting a draw.
-    fn proven(&self) -> bool {
+    pub(super) fn proven(&self) -> bool {
         !self.failed && self.clean >= PROOF_DRAWS
     }
 
     /// A shadowed draw's answer. True when this one proved the widget.
-    fn checked(&mut self, matched: bool) -> bool {
+    pub(super) fn checked(&mut self, matched: bool) -> bool {
         if !matched {
             self.failed = true;
             return false;
@@ -141,6 +141,9 @@ struct State {
     proofs: HashMap<u32, Proof>,
     /// The loop's, by the definition's datum.
     walks: HashMap<u32, Proof>,
+    /// The order of the definitions' walks (`super::definitions`), by
+    /// the local user.
+    definitions: HashMap<u32, Proof>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
@@ -160,6 +163,12 @@ fn proof<T>(widget: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
 
 fn walk_proof<T>(definition: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
     state(|s| f(s.walks.entry(definition).or_default()))
+}
+
+/// The proof of local user `user`'s definitions' order, kept with the
+/// walk's for the map.
+pub(super) fn definitions_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+    state(|s| f(s.definitions.entry(user).or_default()))
 }
 
 /// The loop's side of the walk the guest is in.
@@ -188,7 +197,7 @@ fn arm(widget: u32) -> Arm {
 
 static COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
 
-fn count(what: &'static str) {
+pub(super) fn count(what: &'static str) {
     *COUNTS.lock().unwrap_or_else(|e| e.into_inner()).entry(what).or_default() += 1;
 }
 
@@ -343,7 +352,12 @@ pub fn plan_loop() -> LoopPlan {
         return refused("loop_feature");
     }
     let definition = LOOP.with(|l| l.borrow().definition);
-    match walk_proof(definition, Proof::arm) {
+    // The definitions' recheck checks every walk of it again.
+    let arm = match walk_proof(definition, Proof::arm) {
+        Arm::Own if super::definitions::rechecking() => Arm::Shadow,
+        arm => arm,
+    };
+    match arm {
         Arm::Guest => return refused("loop_differed"),
         Arm::Shadow => {
             LOOP.with(|l| l.borrow_mut().shadow = true);

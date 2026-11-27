@@ -1,7 +1,7 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `scene-extract`'s `hud.rs` and `native_hud/walk.rs`, and `hud-kit-core/src/walk_tests.rs`.
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `definitions.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs` and `native_hud/definitions.rs`, and `hud-kit-core/src/walk_tests.rs`.
 Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust). All in [switches.md](../runtime/switches.md).
 
 The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
@@ -107,7 +107,9 @@ Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `
 
 ## The walk in Rust
 
-The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A proven bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A proven screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone. A proven definition's loop is Rust's: the walk is left out and its widgets are drawn in order.
+The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A proven bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A proven screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone.
+
+A proven definition's loop is Rust's: the walk is left out and its widgets are drawn in order. Once the order of the definitions is proven too, Rust walks every definition the record names and the guest's walk of them is left out ([the definitions in Rust](#the-definitions-in-rust)).
 
 ```mermaid
 flowchart LR
@@ -193,7 +195,35 @@ Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK`
 
 Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `loop_owned` and the loop's above; `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above; the same with `text_` and `screen_` before them (`screen_called` for `drawn`; `text_refused` and `screen_refused` beside a layout refusal's cause); and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
 
-Not built: the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
+### The definitions in Rust
+
+The HUD render (`0x0013954b`) fills the player's HUD record and calls `0x001394b9` (`points::HUD_DEFINITIONS`, ESI the record, EDI the user), which writes the record to `[0x00510c4c] + 0x1bc` and walks each definition the record names through `HUD_WALK` (Code, `h2 disasm 0x001394b9`). `hud_kit_core::walk::definitions` gives the same walks in the same order; `native_hud::definitions` keeps the proof.
+
+| Step | Record word | Slot | Resume site |
+|---|---|---|---|
+| 0 | 5 | 3 | the entry |
+| 1 | 2 | 4 | `0x001394d8` |
+| 2 | 3 | 1 | `0x001394e8` |
+| 3 | 4 | 2 | `0x001394f8` |
+| 4 | 5 | 3 | `0x00139508` |
+| 5 | 6 | 0 | `0x00139518` |
+| 6 | 0 | 0 | `0x0013952a` |
+| 7 | 1 | 0 | `0x00139539` |
+
+A word of -1 names no definition and is skipped.
+
+| Rule | Why |
+|---|---|
+| The order is proven by 8 calls whose guest walks of the record were Rust's list: datum and slot, in order (`definitions_proven`), kept per local user for the map | Rust walks the definitions only where its order has been the guest's |
+| One proven call in 64 is the guest's, and every walk of it is checked as a loop's recheck is (`definitions::rechecking`) | a later difference is caught, and the walks' rechecks hold without the guest's calls |
+| A call whose walks differ keeps the order on the guest for the map (`definitions_differed`) | as a loop's walk |
+| Rust writes the record to `[0x00510c4c] + 0x1bc`, then walks each definition with its own loop (`plan_loop`, `own_loop`); with every one Rust's, the body is left out (`definitions_owned`) | the walks read nothing else the body sets |
+| A walk that is not Rust's or gives its loop back is handed to the guest (`definitions_gave_back`): the body resumes at that step's site, the caller's EBX pushed and EBX as the step's code has it, and the walk's entry keeps what Rust did of it (`definitions::take_hand_off`) | no walk is run twice or dropped |
+| With a step past the first whose site is not a resume (`definitions_resume`), a record or the UI globals that do not read (`definitions_read`), or a stack that does not take the frame (`definitions_frame`), the guest walks them | Rust starts only what it can hand back |
+
+Hooks (`native_hud::place_definitions`, with `place_walk`): `HUD_DEFINITIONS` before and after. Counters as the walk's (`native_ui_overlay_hud_walk_definitions_*`): `owned`, `matched`, `proven`, `differed`, `guest` (a call after one differed), `gave_back` and the refusals above.
+
+Not built: the HUD render `0x0013954b` itself (the record's fill `0x0013992a`, the motion sensor, the messages and training), and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
 
 ## What is kept
 
@@ -221,6 +251,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That an overlay pass (`OverlayPass`) places a quad on the same pixels as the widget pass: it does not snap positions to sixteenths (`raster_position`).
 
 - That any retail widget's Rust layout proves (`shadow_differed`, `text_shadow_differed` and `screen_shadow_differed` count one that does not), and that `selection_differed` stays at zero on retail definitions.
+- That the image has `HUD_DEFINITIONS`' resume sites (`definitions_resume` counts a call without them), and that the HUD render reads nothing `0x001394b9` leaves in EAX or the walks leave in memory beyond their widgets' globals (**S**: `0x001395fa` pushes `[ebp-4]` next).
 - That the walk's caller reads nothing the walk leaves in a register (**S**: `0x001394b9` loads EAX after each call), and that a widget drawing nothing writes no global (the loop gives such a widget back to the guest).
 - That a button glyph proves: a coloured glyph magnified in its page takes each pixel's colour unfiltered, and `text_layout::lines` breaks where `0x0013fd20` does for the characters `shape` takes.
 - That the clock `[0x0054d5b8]` does not move between the walk's entry and a widget's draw (a stick's frame is read at the layout).
