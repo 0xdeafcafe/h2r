@@ -786,7 +786,7 @@ impl RulesExt {
             w.extend_from_slice(&[l.picker, l.count, l.row]);
         }
         for o in &self.objectives {
-            w.extend_from_slice(&o.text.map_or(u16::MAX, |t| t).to_le_bytes());
+            w.extend_from_slice(&o.text.unwrap_or(u16::MAX).to_le_bytes());
             for m in &o.marks {
                 match m {
                     None => w.push(0),

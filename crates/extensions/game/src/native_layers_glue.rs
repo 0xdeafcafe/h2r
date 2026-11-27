@@ -1215,7 +1215,7 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
             if !imps.iter().all(|i| layer_pass::skip_holds(i, &device_state)) {
                 return Err("state");
             }
-            let words = device_fog_words(&d, &read);
+            let words = device_fog_words(&d, &*mem);
             let fog = data.words.get(&material).and_then(|w| w.resolve(&words)).map(|w| fog_of(&w)).ok_or("fog")?;
             (layer_pass::item_stencil(L, false, device_stencil, false).stencil, fog)
         };
@@ -1367,7 +1367,7 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         let draws = planned.draws;
         // Bound only when a surrendered draw samples it.
         let texaccum = texaccum.filter(|_| draws.iter().any(|(_, draw)| draw.texaccum));
-        let warm = d.external_pipeline_target(&*mem).is_some_and(|(device, color, depth)| {
+        let warm = d.external_pipeline_target(&ReadMemory(&*mem)).is_some_and(|(device, color, depth)| {
             models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &draws))) == Some(true)
         });
         if !warm {
