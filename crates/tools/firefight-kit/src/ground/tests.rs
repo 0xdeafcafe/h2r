@@ -321,6 +321,7 @@ fn ground_with_classes_equals_the_kits_stage_two_build() {
         Mode::Kit,
         &Config::default(),
         Some(&with),
+        None,
         &dir,
         "kit",
         false,

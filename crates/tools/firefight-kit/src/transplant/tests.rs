@@ -185,6 +185,7 @@ fn two_machines_build_equal_ids() {
             Mode::Kit,
             &Config::default(),
             Some(&with),
+            None,
             &dir,
             dir_name,
             false,
