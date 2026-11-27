@@ -738,19 +738,7 @@ impl GpuCull {
     /// The view a dispatch tests against, with the pyramid's depth and
     /// screen when it reads one.
     fn dispatch_view(&self, view_proj: &Mat4, frustum: &Frustum, occlusion: Option<(&DepthModel, &ScreenMap)>) -> CullView {
-        let (depth, w_row) = occlusion.map_or(([1.0, 0.0, 0.0, 0.0], [0.0; 4]), |(m, _)| m.uniform());
-        let map = occlusion.map(|(_, map)| *map);
-        CullView {
-            planes: frustum.planes,
-            view_proj: *view_proj,
-            depth,
-            w_row,
-            occlusion: map.map_or([[0.0; 4]; 4], |m| m.clip),
-            screen: map.map_or([0.0; 4], |m| m.screen),
-            clamp_px: map.map_or([0.0; 4], |m| m.clamp),
-            margin: [map.map_or(0.0, |m| m.margin), 0.0, 0.0, 0.0],
-            counts: [self.count, 0, 0, 0],
-        }
+        cull_view(view_proj, frustum, occlusion, self.count)
     }
 
     /// `view` and `start` staged for [`GuestDispatch::record`].
@@ -846,6 +834,24 @@ impl GpuCull {
             .take(self.count as usize)
             .map(|(e, l)| e.instance_count != 0 || l.instance_count != 0)
             .collect()
+    }
+}
+
+/// The view a dispatch of `count` items tests against, with the
+/// pyramid's depth and screen when it reads one.
+fn cull_view(view_proj: &Mat4, frustum: &Frustum, occlusion: Option<(&DepthModel, &ScreenMap)>, count: u32) -> CullView {
+    let (depth, w_row) = occlusion.map_or(([1.0, 0.0, 0.0, 0.0], [0.0; 4]), |(m, _)| m.uniform());
+    let map = occlusion.map(|(_, map)| *map);
+    CullView {
+        planes: frustum.planes,
+        view_proj: *view_proj,
+        depth,
+        w_row,
+        occlusion: map.map_or([[0.0; 4]; 4], |m| m.clip),
+        screen: map.map_or([0.0; 4], |m| m.screen),
+        clamp_px: map.map_or([0.0; 4], |m| m.clamp),
+        margin: [map.map_or(0.0, |m| m.margin), 0.0, 0.0, 0.0],
+        counts: [count, 0, 0, 0],
     }
 }
 
@@ -947,6 +953,274 @@ fn read_back<T: Pod>(device: &wgpu::Device, queue: &wgpu::Queue, src: &wgpu::Buf
     buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map the cull read back"));
     device.poll(wgpu::PollType::wait_indefinitely()).expect("poll the cull read back");
     bytemuck::pod_collect_to_vec(&buffer.slice(..).get_mapped_range().expect("mapped"))
+}
+
+/// One batch of a decorator plan as `cull_decorators.wgsl` reads it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+struct DecoratorBatch {
+    first: u32,
+    count: u32,
+    index_count: u32,
+    first_index: u32,
+    occludable: u32,
+    pad: [u32; 3],
+}
+
+/// The decorators' cull on the GPU (docs/graphics/native-decorators.md,
+/// "Cull"): per batch of a view's plan, the instances whose placement
+/// group's sphere the frustum keeps (and, with this view's pyramid, that
+/// it does not hide) compacted in the guest's order into `dst`, and one
+/// indirect slot per batch drawing them. Its buffers grow to the largest
+/// plan; each dispatch copies its inputs in draw order.
+pub struct DecoratorCull {
+    view: wgpu::Buffer,
+    batches: wgpu::Buffer,
+    spheres: wgpu::Buffer,
+    src: wgpu::Buffer,
+    dst: wgpu::Buffer,
+    slots: wgpu::Buffer,
+    /// Instances and batches the buffers hold.
+    capacity: (u64, u64),
+    view_group: wgpu::BindGroup,
+    buffers_group: wgpu::BindGroup,
+    buffers_layout: wgpu::BindGroupLayout,
+    pyramid_layout: wgpu::BindGroupLayout,
+    frustum: wgpu::ComputePipeline,
+    occlusion: wgpu::ComputePipeline,
+    /// Views culled without this view's pyramid, and instances whose group
+    /// sphere did not read (drawn, never culled).
+    pub skips: DecoratorSkips,
+}
+
+/// What [`DecoratorCull`] could not test, counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DecoratorSkips {
+    /// Views with no pyramid of their layer 3 on the target
+    /// ([`GpuCull::served_pyramid`]): the frustum alone culls.
+    pub no_pyramid: u64,
+    /// Instances whose placement group's sphere did not read: drawn.
+    pub unbounded: u64,
+}
+
+const DECORATOR_SHADER: &str = include_str!("cull_decorators.wgsl");
+
+impl DecoratorCull {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let uniform = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native decorator cull view"),
+            entries: &[uniform],
+        });
+        let pyramid_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native decorator cull pyramid"),
+            entries: &[texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }), storage(1, true)],
+        });
+        let buffers_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native decorator cull buffers"),
+            entries: &[storage(0, true), storage(1, true), storage(2, true), storage(3, false), storage(4, false)],
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native decorator cull"),
+            source: wgpu::ShaderSource::Wgsl(format!("{SHADER}\n{DECORATOR_SHADER}").into()),
+        });
+        let layout = |groups: &[Option<&wgpu::BindGroupLayout>]| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("native decorator cull"),
+                bind_group_layouts: groups,
+                immediate_size: 0,
+            })
+        };
+        let compute = |layout: &wgpu::PipelineLayout, entry: &str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(layout),
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let frustum = compute(&layout(&[Some(&view_layout), None, Some(&buffers_layout)]), "decorators_frustum");
+        let occlusion =
+            compute(&layout(&[Some(&view_layout), Some(&pyramid_layout), Some(&buffers_layout)]), "decorators_occlusion");
+        let view = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
+            label: Some("native decorator cull view"),
+            size: size_of::<CullView>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let view_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native decorator cull view"),
+            layout: &view_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: view.as_entire_binding() }],
+        });
+        let (batches, spheres, src, dst, slots, buffers_group) = Self::buffers(device, &buffers_layout, (64, 16));
+        Self {
+            view,
+            batches,
+            spheres,
+            src,
+            dst,
+            slots,
+            capacity: (64, 16),
+            view_group,
+            buffers_group,
+            buffers_layout,
+            pyramid_layout,
+            frustum,
+            occlusion,
+            skips: DecoratorSkips::default(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn buffers(
+        device: &wgpu::Device, layout: &wgpu::BindGroupLayout, (instances, batches): (u64, u64),
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
+        use wgpu::BufferUsages as U;
+        let buffer = |label, size: u64, usage| {
+            gfx::churn::create_buffer(device, &wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
+        };
+        let stride = crate::decorators::INSTANCE_STRIDE;
+        let batch = buffer("native decorator cull batches", batches * size_of::<DecoratorBatch>() as u64, U::STORAGE | U::COPY_DST);
+        let spheres = buffer("native decorator cull spheres", instances * 16, U::STORAGE | U::COPY_DST);
+        let src = buffer("native decorator cull instances", instances * stride, U::STORAGE | U::COPY_DST);
+        let dst = buffer("native decorator culled instances", instances * stride, U::STORAGE | U::VERTEX);
+        let slots = buffer("native decorator cull slots", batches * SLOT_SIZE, U::STORAGE | U::INDIRECT);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native decorator cull buffers"),
+            layout,
+            entries: &[&batch, &spheres, &src, &dst, &slots]
+                .iter()
+                .enumerate()
+                .map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() })
+                .collect::<Vec<_>>(),
+        });
+        (batch, spheres, src, dst, slots, group)
+    }
+
+    /// `plan`'s cull, staged now and recorded in draw order
+    /// ([`DecoratorDispatch::record`]). `occludable` is per batch
+    /// (`gpu::depth_hides` of its pipeline); `occlusion` the view's depth
+    /// model and screen and its layer 3's pyramid
+    /// ([`GpuCull::served_pyramid`]), without which the frustum alone
+    /// culls.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn dispatch(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads,
+        plan: &crate::decorators::Plan, occludable: &[bool], view_proj: &Mat4, frustum: &Frustum,
+        occlusion: Option<(DepthModel, ScreenMap, ServedPyramid)>,
+    ) -> DecoratorDispatch {
+        let (instances, batches) = (plan.instances.len() as u64, plan.batches.len() as u64);
+        if instances > self.capacity.0 || batches > self.capacity.1 {
+            let capacity = (instances.max(self.capacity.0).next_power_of_two(), batches.max(self.capacity.1).next_power_of_two());
+            (self.batches, self.spheres, self.src, self.dst, self.slots, self.buffers_group) =
+                Self::buffers(device, &self.buffers_layout, capacity);
+            self.capacity = capacity;
+        }
+        if occlusion.is_none() {
+            self.skips.no_pyramid += 1;
+        }
+        self.skips.unbounded += plan.spheres.iter().filter(|s| !s[3].is_finite()).count() as u64;
+        let mut view = cull_view(view_proj, frustum, occlusion.as_ref().map(|(m, map, _)| (m, map)), batches as u32);
+        let pyramid = occlusion.map(|(_, _, pyramid)| {
+            let words = token_words(pyramid.token);
+            view.counts[1] = words[0];
+            view.counts[2] = words[1];
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("native decorator cull pyramid"),
+                layout: &self.pyramid_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&pyramid.view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: pyramid.stamp.as_entire_binding() },
+                ],
+            })
+        });
+        let rows: Vec<DecoratorBatch> = plan
+            .batches
+            .iter()
+            .zip(occludable.iter().copied().chain(std::iter::repeat(false)))
+            .map(|(b, occludable)| DecoratorBatch {
+                first: b.instances.start,
+                count: b.instances.end - b.instances.start,
+                index_count: b.index_count,
+                first_index: b.first_index,
+                occludable: u32::from(occludable),
+                pad: [0; 3],
+            })
+            .collect();
+        let mut copies = Vec::new();
+        let mut stage = |bytes: &[u8], dst: &wgpu::Buffer| {
+            if !bytes.is_empty() {
+                copies.push((uploads.stage(device, queue, bytes), dst.clone(), bytes.len() as u64));
+            }
+        };
+        stage(bytemuck::bytes_of(&view), &self.view);
+        stage(bytemuck::cast_slice(&rows), &self.batches);
+        stage(bytemuck::cast_slice(&plan.spheres), &self.spheres);
+        stage(plan.instance_bytes(), &self.src);
+        DecoratorDispatch {
+            copies,
+            pipeline: if pyramid.is_some() { self.occlusion.clone() } else { self.frustum.clone() },
+            view_group: self.view_group.clone(),
+            pyramid,
+            buffers_group: self.buffers_group.clone(),
+            batches: batches as u32,
+            instances: self.dst.clone(),
+            slots: self.slots.clone(),
+        }
+    }
+}
+
+/// One view's decorator cull, recorded in draw order
+/// ([`DecoratorCull::dispatch`]): the instances to draw are `instances`
+/// from each batch's first, as many as its slot in `slots` says.
+#[derive(Clone)]
+pub struct DecoratorDispatch {
+    copies: Vec<((wgpu::Buffer, u64), wgpu::Buffer, u64)>,
+    pipeline: wgpu::ComputePipeline,
+    view_group: wgpu::BindGroup,
+    pyramid: Option<wgpu::BindGroup>,
+    buffers_group: wgpu::BindGroup,
+    batches: u32,
+    /// The compacted `v11..v15`, at each batch's instance range.
+    pub instances: wgpu::Buffer,
+    /// One indexed indirect slot per batch.
+    pub slots: wgpu::Buffer,
+}
+
+impl DecoratorDispatch {
+    /// Copies the staged inputs and writes the compacted instances and the
+    /// batches' slots.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        for ((src, at), dst, len) in &self.copies {
+            encoder.copy_buffer_to_buffer(src, *at, dst, 0, *len);
+        }
+        if self.batches == 0 {
+            return;
+        }
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("native decorator cull"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.view_group, &[]);
+        if let Some(pyramid) = &self.pyramid {
+            pass.set_bind_group(1, pyramid, &[]);
+        }
+        pass.set_bind_group(2, &self.buffers_group, &[]);
+        pass.dispatch_workgroups(self.batches.div_ceil(GROUP), 1, 1);
+    }
 }
 
 #[cfg(test)]

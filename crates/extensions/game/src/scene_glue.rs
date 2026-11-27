@@ -534,7 +534,8 @@ mod tests {
         b.push_layer_item(LayerItem { slot: 1, ..world }, &[]).unwrap();
         b.add_layer_remainder(1).unwrap();
         let decorator = frame_scene::DecoratorDraw {
-            slot: 6, layer: 3, set: 1, shader: 2, variant: 0, pass: 0, argument: 0, lod_constant: [0.0; 4], instances: 0..0,
+            slot: 6, layer: 3, set: 1, shader: 2, variant: 0, pass: 0, argument: 0, lod_constant: [0.0; 4],
+            sphere: [0.0, 0.0, 0.0, f32::INFINITY], instances: 0..0,
         };
         let instance = frame_scene::DecoratorInstance { index: 0, model: 0, first_index: 0, index_count: 3, registers: [[0.0; 4]; 5] };
         b.push_decorator(decorator, &[instance, instance]).unwrap();

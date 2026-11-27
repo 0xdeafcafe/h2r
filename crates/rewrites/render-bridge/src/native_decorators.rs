@@ -275,6 +275,7 @@ mod tests {
             pass: 0,
             argument: slot << 8,
             lod_constant: [1.0, 1.0, 0.0, 1.0],
+            sphere: [0.0, 0.0, 0.0, f32::INFINITY],
             instances: 0..0,
         }
     }

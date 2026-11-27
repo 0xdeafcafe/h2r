@@ -337,6 +337,9 @@ pub struct GpuWorld {
     /// The later world layers' cull of their structure items
     /// ([`GpuWorld::culled_layer_draws`]).
     layer_cull: GpuCull,
+    /// The decorators' cull ([`GpuWorld::culled_decorators`]), made on
+    /// first use.
+    decorator_cull: Option<crate::cull_gpu::DecoratorCull>,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
@@ -782,6 +785,7 @@ impl GpuWorld {
             cull,
             guest_cull,
             layer_cull,
+            decorator_cull: None,
             frame,
             frame_group,
             batch_groups,
@@ -1798,6 +1802,38 @@ impl GpuWorld {
         self.guest_cull.skips()
     }
 
+    /// A view's decorators culled on the GPU (docs/graphics/
+    /// native-decorators.md, "Cull"): each instance by its placement
+    /// group's sphere against `Frustum::sides` of `camera` and, for a
+    /// batch whose pipeline draws nothing where hidden (`occludable`,
+    /// [`depth_hides`]), against the pyramid this view's layer 3 built on
+    /// the target (`occlusion`: the depth target, the copy's lens and
+    /// rectangle and the view's token, as [`GpuWorld::culled_layer_draws`]
+    /// reads it). The caller records the dispatch, then draws each batch
+    /// from its slot over the compacted instances.
+    #[allow(clippy::too_many_arguments)]
+    pub fn culled_decorators(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads,
+        plan: &crate::decorators::Plan, occludable: &[bool], camera: &RenderCamera, view: &ViewInputs,
+        target_size: (u32, u32), occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport, u64)>,
+    ) -> crate::cull_gpu::DecoratorDispatch {
+        let scale = target_size.0 as f32 / view.guest_size.0.max(1) as f32;
+        let occlusion = occlusion.and_then(|(depth, lens, viewport, token)| {
+            let map = ScreenMap::viewport(&lens.view_projection(), viewport).with_margin(2.0 + scale);
+            let model = DepthModel::program(view);
+            let served = self.guest_cull.served_pyramid(depth, token, &map, &model)?;
+            Some((model, map, served))
+        });
+        let vp = camera.view_projection();
+        let cull = self.decorator_cull.get_or_insert_with(|| crate::cull_gpu::DecoratorCull::new(device));
+        cull.dispatch(device, queue, uploads, plan, occludable, &vp, &Frustum::sides(&vp), occlusion)
+    }
+
+    /// What the decorators' cull could not test, counted.
+    pub fn decorator_skips(&self) -> crate::cull_gpu::DecoratorSkips {
+        self.decorator_cull.as_ref().map(|c| c.skips).unwrap_or_default()
+    }
+
     /// Later layers' views culled without a game view's pyramid
     /// (`layer_view`).
     pub fn layer_occlusion_skips(&self) -> OcclusionSkips {
@@ -2233,10 +2269,15 @@ pub fn keeps_order(key: &gfx::pipeline::PipelineKey) -> bool {
 /// every pass of which holds this may be culled by a game view's pyramid
 /// ([`GpuWorld::culled_layer_draws`]).
 pub fn hidden_draws_nothing(key: &gfx::pipeline::PipelineKey) -> bool {
-    use wgpu::{CompareFunction as C, StencilOperation as S};
     let Some(ds) = &key.depth_stencil else { return false };
-    matches!(ds.depth_compare, Some(C::Less | C::LessEqual | C::Equal))
-        && !(ds.stencil.write_mask != 0 && [ds.stencil.front, ds.stencil.back].iter().any(|f| f.depth_fail_op != S::Keep))
+    ds.depth_compare.is_some_and(|compare| depth_hides(compare, &ds.stencil))
+}
+
+/// [`hidden_draws_nothing`] of a depth test and stencil state.
+pub fn depth_hides(compare: wgpu::CompareFunction, stencil: &wgpu::StencilState) -> bool {
+    use wgpu::{CompareFunction as C, StencilOperation as S};
+    matches!(compare, C::Less | C::LessEqual | C::Equal)
+        && !(stencil.write_mask != 0 && [stencil.front, stencil.back].iter().any(|f| f.depth_fail_op != S::Keep))
 }
 
 /// [`append_triangles`] for runs of slots: `next` joins a run it follows.

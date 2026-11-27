@@ -73,6 +73,12 @@ pub struct DecoratorDraw {
     pub argument: u32,
     /// `c[53]`: the detail level's two factors, 0, 1.
     pub lod_constant: Row,
+    /// The placement group's world bounding sphere, as the guest's
+    /// producer tests it against the portal windows and the detail
+    /// distance (`0x00041640`): centre, radius. It holds every instance
+    /// the draw places, wherever its program moves the vertices; an
+    /// infinite radius bounds nothing.
+    pub sphere: [f32; 4],
     /// Into [`FrameScene::decorator_instances`], in the guest's order.
     pub instances: Range<u32>,
 }
@@ -215,6 +221,7 @@ mod tests {
             pass: 0,
             argument: 7 << 8 | 2 | 1 << 30,
             lod_constant: [0.5, 2.0, 0.0, 1.0],
+            sphere: [0.0, 0.0, 0.0, f32::INFINITY],
             instances: 0..0,
         }
     }

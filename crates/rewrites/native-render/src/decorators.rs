@@ -70,12 +70,18 @@ pub struct Plan {
     pub batches: Vec<Batch>,
     /// `v11..v15` of every instance drawn, in batch order.
     pub instances: Vec<[Row; REGISTERS]>,
+    /// Each instance's bound for the GPU cull: its placement group's
+    /// sphere ([`DecoratorDraw::sphere`]), centre and radius.
+    pub spheres: Vec<[f32; 4]>,
     /// The list slots of the draws the plan replaces, in the list's order:
     /// what the guest skips.
     pub slots: Vec<u32>,
     /// Draws the plan leaves to the guest: their material is not one the
     /// stage has.
     pub refused: u32,
+    /// The view's camera, which the GPU cull's frustum and screen are
+    /// made from (`GpuWorld::culled_decorators`).
+    pub camera: Option<frame_scene::RenderCamera>,
 }
 
 impl Plan {
@@ -93,7 +99,7 @@ impl Plan {
 /// The view's decorators whose material `has` accepts, as instanced
 /// draws; the others are the guest's (counted in [`Plan::refused`]).
 pub fn plan(scene: &FrameScene, view: &View, has: impl Fn(&Material) -> bool) -> Plan {
-    let mut out = Plan::default();
+    let mut out = Plan { camera: Some(view.camera), ..Plan::default() };
     for draw in scene.decorators_of(view) {
         let material = Material::of(draw);
         if !has(&material) {
@@ -104,6 +110,7 @@ pub fn plan(scene: &FrameScene, view: &View, has: impl Fn(&Material) -> bool) ->
         for i in scene.decorator_instances_of(draw) {
             let n = out.instances.len() as u32;
             out.instances.push(i.registers);
+            out.spheres.push(draw.sphere);
             let joins = out.batches.last().is_some_and(|b| {
                 b.material == material
                     && b.lod_constant.map(f32::to_bits) == draw.lod_constant.map(f32::to_bits)
@@ -155,6 +162,7 @@ mod tests {
             pass: 0,
             argument: slot << 8,
             lod_constant: [lod, 1.0, 0.0, 1.0],
+            sphere: [0.0, 0.0, 0.0, f32::INFINITY],
             instances: 0..0,
         }
     }

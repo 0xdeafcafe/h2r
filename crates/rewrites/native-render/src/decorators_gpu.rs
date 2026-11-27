@@ -61,6 +61,9 @@ pub struct Bound {
     pub indices: wgpu::Buffer,
     /// The pass's blend constant.
     pub blend_constant: wgpu::Color,
+    /// Its fragments draw nothing where the depth hides them
+    /// (`gpu::depth_hides`): the cull may test it against the pyramid.
+    pub occludable: bool,
 }
 
 /// The device's state at the layer-3 call that a material's pipeline
@@ -95,11 +98,14 @@ pub struct DecoratorTarget<'a> {
 }
 
 /// Records `plan` with `bound` (one per batch) into its own render pass on
-/// `target`, loading and keeping what is there. The number of guest draws
-/// (placements) recorded, or why nothing was.
+/// `target`, loading and keeping what is there. With `culled` (the view's
+/// cull, `GpuWorld::culled_decorators`) its dispatch first, then each
+/// batch one indirect draw of its slot over the compacted instances. The
+/// number of guest draws (placements) recorded, or why nothing was.
+#[allow(clippy::too_many_arguments)]
 pub fn encode(
     device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, encoder: &mut wgpu::CommandEncoder,
-    target: &DecoratorTarget<'_>, plan: &Plan, bound: &[Bound],
+    target: &DecoratorTarget<'_>, plan: &Plan, bound: &[Bound], culled: Option<&crate::cull_gpu::DecoratorDispatch>,
 ) -> Result<usize, &'static str> {
     if bound.len() != plan.batches.len() {
         return Err("a decorator batch has no pipeline");
@@ -110,7 +116,13 @@ pub fn encode(
     let Some([sx, sy, sw, sh]) = crate::gpu::viewport_scissor(target.viewport, target.size) else {
         return Err("the view's rectangle is empty");
     };
-    let (instances, offset) = uploads.stage(device, queue, plan.instance_bytes());
+    let (instances, offset) = match culled {
+        Some(c) => {
+            c.record(encoder);
+            (c.instances.clone(), 0)
+        }
+        None => uploads.stage(device, queue, plan.instance_bytes()),
+    };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("native decorators"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -134,7 +146,7 @@ pub fn encode(
         pass.set_stencil_reference(target.stencil_reference);
     }
     let span = plan.instance_bytes().len() as u64;
-    for (batch, b) in plan.batches.iter().zip(bound) {
+    for (k, (batch, b)) in plan.batches.iter().zip(bound).enumerate() {
         pass.set_pipeline(&b.pipeline);
         pass.set_blend_constant(b.blend_constant);
         for (group, g) in b.bind_groups.iter().enumerate() {
@@ -143,9 +155,20 @@ pub fn encode(
         for (slot, (buffer, at)) in b.streams.iter().enumerate() {
             pass.set_vertex_buffer(slot as u32, buffer.slice(*at..));
         }
-        pass.set_vertex_buffer(b.streams.len() as u32, instances.slice(offset..offset + span));
         pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(batch.first_index..batch.first_index + batch.index_count, 0, batch.instances.clone());
+        match culled {
+            // The batch's kept instances from its first, drawn from 0.
+            Some(c) => {
+                let from = u64::from(batch.instances.start) * INSTANCE_STRIDE;
+                let to = u64::from(batch.instances.end) * INSTANCE_STRIDE;
+                pass.set_vertex_buffer(b.streams.len() as u32, instances.slice(from..to));
+                pass.draw_indexed_indirect(&c.slots, k as u64 * crate::cull_gpu::SLOT_SIZE);
+            }
+            None => {
+                pass.set_vertex_buffer(b.streams.len() as u32, instances.slice(offset..offset + span));
+                pass.draw_indexed(batch.first_index..batch.first_index + batch.index_count, 0, batch.instances.clone());
+            }
+        }
     }
     Ok(plan.slots.len())
 }
@@ -329,6 +352,14 @@ impl MaterialGpu {
     pub fn writes_depth(&self) -> bool {
         self.program.state.depth_write
     }
+
+    /// Whether the pass's fragments draw nothing where the depth hides
+    /// them under `draw`'s stencil (`gpu::depth_hides`).
+    pub fn hidden_draws_nothing(&self, depth: wgpu::TextureFormat, draw: DrawKey) -> bool {
+        let Some(stencil) = crate::fog_gpu::layer_stencil(&draw.stencil, depth) else { return false };
+        let (_, (_, compare)) = pipeline_state(Some(&self.program.state), None);
+        crate::gpu::depth_hides(compare, &stencil)
+    }
 }
 
 /// Each batch of `plan` bound with its material from `materials`: its
@@ -381,12 +412,14 @@ pub fn bind(
                 wgpu::BindGroupEntry { binding: 1, resource: binding(at + pixel_at, pixel_size) },
             ],
         });
+        let occludable = m.hidden_draws_nothing(depth, draw);
         out.push(Bound {
             pipeline,
             bind_groups: vec![group, m.textures.clone()],
             streams: vec![(m.vertices.clone(), 0)],
             indices: m.indices.clone(),
             blend_constant: m.program.state.blend_constant,
+            occludable,
         });
     }
     Ok(out)
@@ -439,7 +472,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera).unwrap();
         let draw = DecoratorDraw {
             slot: 0, layer: 3, set: 1, shader: 2, variant: 0, pass: 0, argument: 0, lod_constant: [0.0, 0.0, 0.0, 1.0],
-            instances: 0..0,
+            sphere: [0.0, 0.0, 0.0, f32::INFINITY], instances: 0..0,
         };
         // Two instances of model 0 (indices 3..9 of the buffer): one at
         // x −0.5 red, one at x 0.5 green.
@@ -535,13 +568,16 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
             timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
         }));
         let arena = gfx::ring::UploadPool::default().begin();
-        let bound = [Bound { pipeline, bind_groups: Vec::new(), streams: vec![(vertices, 0)], indices, blend_constant: wgpu::Color::BLACK }];
+        let bound = [Bound {
+            pipeline, bind_groups: Vec::new(), streams: vec![(vertices, 0)], indices, blend_constant: wgpu::Color::BLACK,
+            occludable: false,
+        }];
         let target = DecoratorTarget {
             color: &cv, depth: &dv, stencil: false, stencil_reference: 0, size: (SIZE, SIZE),
             viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
         };
-        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound), Ok(1));
-        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &[]), Err("a decorator batch has no pipeline"));
+        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound, None), Ok(1));
+        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &[], None), Err("a decorator batch has no pipeline"));
         let front = arena.upload_commands(&ctx.queue);
         ctx.queue.submit(front.into_iter().chain([enc.finish()]));
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
@@ -553,6 +589,49 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         assert_eq!(at(4, 8), [255, 0, 0, 255], "the first instance");
         assert_eq!(at(12, 8), [0, 255, 0, 255], "the second");
         assert_eq!(at(8, 8), [0, 0, 0, 0], "between them, nothing");
+
+        // Culled on the GPU: the first instance's group sphere lies behind
+        // the camera, the second's bounds nothing. The second is
+        // compacted to the batch's front and drawn where its rows place it.
+        let mut culled_plan = plan.clone();
+        culled_plan.spheres = vec![[-10.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, f32::INFINITY]];
+        let camera = crate::camera::RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 1.0,
+            projection_xy: None,
+            viewport: [0, 0, SIZE as i16, SIZE as i16],
+            near: 0.1,
+            far: 100.0,
+        };
+        let vp = camera.view_projection();
+        let mut cull = crate::cull_gpu::DecoratorCull::new(device);
+        let arena = gfx::ring::UploadPool::default().begin();
+        let dispatch = cull.dispatch(device, &ctx.queue, &arena, &culled_plan, &[false], &vp,
+            &crate::cull::Frustum::sides(&vp), None);
+        assert_eq!((cull.skips.no_pyramid, cull.skips.unbounded), (1, 1));
+        let mut enc = device.create_command_encoder(&Default::default());
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &cv, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        }));
+        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &culled_plan, &bound, Some(&dispatch)), Ok(1));
+        let front = arena.upload_commands(&ctx.queue);
+        ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let texels = gfx::readback::read_texture(&ctx, &color, wgpu::TextureAspect::All, 4, (SIZE, SIZE));
+        let at = |x: u32, y: u32| {
+            let i = 4 * (y * SIZE + x) as usize;
+            [texels[i], texels[i + 1], texels[i + 2], texels[i + 3]]
+        };
+        assert_eq!(at(4, 8), [0, 0, 0, 0], "the first instance is culled");
+        assert_eq!(at(12, 8), [0, 255, 0, 255], "the second is drawn from the batch's front");
     }
 
     /// The loader's path end to end: a translated program (the model
@@ -634,7 +713,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
             color: &cv, depth: &dv, stencil: false, stencil_reference: 0, size: (SIZE, SIZE),
             viewport: [0.0, 0.0, SIZE as f32, SIZE as f32],
         };
-        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound), Ok(1));
+        assert_eq!(encode(device, &ctx.queue, &arena, &mut enc, &target, &plan, &bound, None), Ok(1));
         let front = arena.upload_commands(&ctx.queue);
         ctx.queue.submit(front.into_iter().chain([enc.finish()]));
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();

@@ -7,7 +7,6 @@ use crate::layout::skip::MAX_ITEMS;
 use crate::visibility::frusta::WindowFrusta;
 
 const ENABLED: u32 = 0x004b_a025;
-const RADIUS_SCALE: u32 = 0x0045_e4d0;
 const LOD_DISTANCES: u32 = 0x0052_5980;
 // The projected size argument of the decorator shader selection call.
 const PROJECTED_SIZE: u32 = 0x0004_1925;
