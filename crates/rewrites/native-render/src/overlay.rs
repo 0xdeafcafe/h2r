@@ -62,8 +62,9 @@ pub struct GlyphRect {
 }
 
 /// The renderer's glyph atlas: one square page per engine font, each glyph
-/// rasterised into it once (white, its coverage in alpha, what
-/// `Combiner::TextureAlpha` samples), packed in shelves left to right and
+/// rasterised into it once (its coverage in alpha, what
+/// `Combiner::TextureAlpha` samples, under white or, for a glyph with
+/// colours of its own, its texels' colours), packed in shelves left to right and
 /// top to bottom with a texel of space around it. Pages only grow: a glyph
 /// keeps its place, so a list planned before a glyph was added still
 /// draws. [`GlyphPages::page`]'s version says when a page's texels changed
@@ -114,9 +115,20 @@ impl GlyphPages {
     /// the page, as it already was or now; false when the coverage is not
     /// `width * height` bytes or the page has no room left.
     pub fn insert(&mut self, font: u16, index: u32, width: u16, height: u16, alpha: &[u8]) -> bool {
+        if alpha.len() != usize::from(width) * usize::from(height) {
+            return false;
+        }
+        let rgba: Vec<u8> = alpha.iter().flat_map(|&a| [255, 255, 255, a]).collect();
+        self.insert_rgba(font, index, width, height, &rgba)
+    }
+
+    /// As [`GlyphPages::insert`] for a glyph with colours of its own (a
+    /// button, a medal): four bytes per texel, red, green, blue and its
+    /// coverage. False when `rgba` is not `width * height * 4` bytes.
+    pub fn insert_rgba(&mut self, font: u16, index: u32, width: u16, height: u16, rgba: &[u8]) -> bool {
         let size = self.size;
         let (w, h) = (u32::from(width), u32::from(height));
-        if alpha.len() != (w * h) as usize {
+        if rgba.len() != (w * h * 4) as usize {
             return false;
         }
         let page = self.pages.entry(font).or_insert_with(|| GlyphPage {
@@ -152,8 +164,8 @@ impl GlyphPages {
         for row in 0..h {
             for col in 0..w {
                 let at = (((y0 + row) * size + x0 + col) * 4) as usize;
-                page.rgba[at..at + 3].fill(255);
-                page.rgba[at + 3] = alpha[(row * w + col) as usize];
+                let from = ((row * w + col) * 4) as usize;
+                page.rgba[at..at + 4].copy_from_slice(&rgba[from..from + 4]);
             }
         }
         let s = size as f32;
@@ -618,6 +630,20 @@ mod tests {
         assert_eq!(p.vertices[6].uv, [1.0, 1.0]);
         assert!(p.vertices.iter().all(|v| v.color == [1.0, 0.0, 0.0, 0.5]));
         assert_eq!(p.stats.glyphs, 2);
+    }
+
+    #[test]
+    fn a_glyph_with_colours_of_its_own_keeps_them_in_its_page() {
+        let mut pages = GlyphPages::new(8);
+        // A green texel and a half-covered red one.
+        assert!(pages.insert_rgba(3, 0xe100, 2, 1, &[0, 255, 0, 255, 255, 0, 0, 119]));
+        let (_, rgba, version) = pages.page(3).unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(&rgba[(8 + 1) * 4..(8 + 3) * 4], [0, 255, 0, 255, 255, 0, 0, 119]);
+        assert!(!pages.insert_rgba(3, 0xe101, 2, 1, &[0; 7]), "texels of the wrong size");
+        // A plain glyph beside it is white under its coverage.
+        assert!(pages.insert(3, 65, 1, 1, &[9]));
+        assert_eq!(&pages.page(3).unwrap().1[(8 + 5) * 4..(8 + 6) * 4], [255, 255, 255, 9]);
     }
 
     /// Glyphs pack in shelves with a texel around each, keep their place

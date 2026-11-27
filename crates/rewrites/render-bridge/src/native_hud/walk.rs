@@ -696,7 +696,9 @@ fn lay_out_text(mem: &dyn GuestMemory, fp: Fp, fonts: &dyn UiText, record: u32, 
     } else {
         super::hud_overlay::localized(mem, place.string).ok_or("string")?.encode_utf16().collect()
     };
-    let shape = |rect: [f32; 4]| fonts.shape(font, &units, rect, Justify::Left).ok_or("shape");
+    // A button glyph is laid out as a character: the guest's glyph quads
+    // are what proves it.
+    let shape = |rect: [f32; 4]| fonts.shape_buttons(font, &units, rect, Justify::Left).ok_or("shape");
     let measured: Vec<[f32; 4]> = shape(MEASURE)?.iter().map(|g| g.rect).collect();
     let Some(bounds) = walk::text_bounds(&measured) else { return Ok(None) };
     let [top, left, bottom, right] = walk::text_rect(place.justification, place.basis.origin, &screen.window, &bounds).map(f32::from);

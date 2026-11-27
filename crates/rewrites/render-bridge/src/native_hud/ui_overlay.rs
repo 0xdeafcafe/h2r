@@ -27,7 +27,7 @@ mod list;
 mod model;
 mod text;
 
-pub use scene_extract::ui::{Justify, UiText};
+pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, UiText};
 use std::cell::RefCell;
 use std::collections::HashSet;
 

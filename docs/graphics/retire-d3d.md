@@ -468,11 +468,16 @@ Not built:
 
 - **The rest of the walk.** The loop is the guest's until the
   definition's selection and every widget it shows are proven, and
-  whenever a screen effect is shown; a string with a button glyph is the
+  whenever a screen effect is shown; a string with a control's glyph (a handler's) is the
   guest's ([the walk in Rust](native-hud-overlay.md#the-walk-in-rust)).
 - **Screen effects from the scene.** A HUD screen effect is drawn by the
   post's transaction at its call, as `render_screen_effects`' are; a
   proven widget's call is Rust's, on a frame Rust fills.
+  The transaction is what gives the pass its raster: each strip's blend,
+  masks, viewport and bound sources come from the guest's resolved
+  packets (`ScreenPass::validate`), slot 0 is the target the guest binds
+  inside the call, and the guest's setters and tail run either way. A
+  draw from the scene has to predict those per pass and prove them.
 - **The carried grade.** An item the overlay refuses is drawn from its
   resolved packet (`packet`), which `d3d` still resolves.
 
