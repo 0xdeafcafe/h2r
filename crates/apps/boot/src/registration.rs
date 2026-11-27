@@ -814,6 +814,11 @@ pub(crate) fn register_late_for_profile(
         features.add(&sim_bridge::sim_sound::SimSound)
             .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
     }
+    // The effect part split (docs/engine/effects-parts.md).
+    if features.switches().implementation(sim_bridge::sim_effects_parts::PARTS, false) {
+        features.add(&sim_bridge::sim_effects_parts::SimEffectsParts::new())
+            .map_err(|e| anyhow::anyhow!("effect parts: {e}"))?;
+    }
     // The tick itself, from Rust; every hook on GAME_TICK stays around it.
     features
         .add(&sim_bridge::tick::TickDriver)
