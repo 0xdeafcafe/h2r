@@ -388,7 +388,7 @@ mod tests {
                 part,
                 implementation: 0,
             },
-            owner,
+            level: 0, pass: 0, owner,
             model: 0x00f0_0001,
             rows: 0..0,
             lighting: None,

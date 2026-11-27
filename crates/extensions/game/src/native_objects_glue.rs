@@ -1264,8 +1264,9 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
 const SHAD: map::FourCC = map::FourCC(*b"shad");
 
 /// The shaders the game may put on an object's record in place of its
-/// part's material: every shader of the map with passes (first level of
-/// detail) in the sorted handlers' layers (`OVERRIDE_LAYERS`), the
+/// part's material: every shader of the map with passes (at every level:
+/// an item names its own) in the sorted handlers' layers
+/// (`OVERRIDE_LAYERS`), the
 /// camouflage's. The record producer takes the shader from the object's
 /// render state at run time (`object_program_gpu::override_sections`), so
 /// each model compiles their passes over all of its parts; a record names
@@ -1282,7 +1283,7 @@ fn override_materials(o: &mut Opened) -> Vec<HashMap<u16, LitMaterial>> {
         let Ok(mut m) = o.lib.material(id, None) else { continue };
         // The shader is substituted only by these sorted handlers. Its
         // other layers can still compile when it is a part's own material.
-        m.layers.retain(|l| l.lod == 0 && !l.passes.is_empty()
+        m.layers.retain(|l| !l.passes.is_empty()
             && OVERRIDE_LAYERS.iter().any(|&x| usize::from(x) == l.layer));
         if m.layers.is_empty() { continue; }
         match lit_material(o, m) {
@@ -1504,7 +1505,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && (l.layer == look::LIGHTMAP_LAYER || drawn_layer(l.layer)))
+            .filter(|l| (l.lod == 0 && l.layer == look::LIGHTMAP_LAYER) || drawn_layer(l.layer))
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);

@@ -29,6 +29,16 @@ pub struct LayerItem {
     /// The item's index in the list.
     pub slot: u32,
     pub key: ItemKey,
+    /// The item's byte `+0x15`: the shader level of detail its draw sets
+    /// up. The sorted dispatch passes it with `+0x14` to the item's draw
+    /// (`0x0003bc7b`..`0x0003bc8d`), and the shader begin `0x00016b90`
+    /// takes it as the template's level (`[template+0x5c]+4`, 10 bytes a
+    /// level).
+    pub level: u8,
+    /// The item's byte `+0x14`: the pass within the layer the draw sets
+    /// up (`0x00016b90` adds it to the level's first pass of the layer).
+    /// Each item draws exactly this one pass at [`Self::level`].
+    pub pass: u8,
     pub owner: LayerOwner,
     /// The render record's model (`+4`; for a first-person item its
     /// first-person mode); `u32::MAX` for the structure's.
@@ -95,11 +105,10 @@ pub enum LayerObjectRefusal {
     /// a flagged record with a structure lightmap index, which the draw
     /// does not bind for the shader.
     ShaderFlag,
-    /// The item's `+0x14` or `+0x15` byte is set, or its argument's low
-    /// byte is not its key's part: the draw would set up another pass of
-    /// the layer or another level of the shader (`+0x14` and `+0x15` go
-    /// to the shader begin `0x00016b90` through `0x0004d9c0` as the pass
-    /// and level), which the scene's passes are not.
+    /// The item's argument's low byte is not its key's part: the draw
+    /// would set up another part of the section than the one the scene
+    /// draws. (Its `+0x14` and `+0x15`, the pass and level, are the
+    /// item's [`LayerItem::pass`] and [`LayerItem::level`].)
     Argument,
     /// Layer 5: the stream and constants the draw adds for an object's
     /// record whose model has a PRT block (`0x00024040`, `0x00024490`)
