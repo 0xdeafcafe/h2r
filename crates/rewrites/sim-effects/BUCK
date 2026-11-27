@@ -32,24 +32,30 @@ workspace_library(
     name = "sim-effects",
     crate = "sim_effects",
     crate_root = "crates/rewrites/sim-effects/src/lib.rs",
-    description = "The effects phase of the native simulation: the effect walk, the damage part arm and the renderer's part events",
+    description = "The effects phase of the native simulation: the effect walk, the damage, object and sound part arms and the renderer's part events",
     features = [],
     manifest = "crates/rewrites/sim-effects",
     package = "sim-effects",
     tree = ":lib-tree",
     version = "0.1.0",
-    deps = [],
+    deps = [
+        "//crates/recompiler/simd:simd",
+        "//crates/recompiler/x87:x87",
+    ],
 )
 
 workspace_test(
     name = "unit-tests",
     crate = "sim_effects",
     crate_root = "crates/rewrites/sim-effects/src/lib.rs",
-    description = "The effects phase of the native simulation: the effect walk, the damage part arm and the renderer's part events",
+    description = "The effects phase of the native simulation: the effect walk, the damage, object and sound part arms and the renderer's part events",
     features = [],
     manifest = "crates/rewrites/sim-effects",
     package = "sim-effects",
     tree = ":test-tree",
     version = "0.1.0",
-    deps = [],
+    deps = [
+        "//crates/recompiler/simd:simd",
+        "//crates/recompiler/x87:x87",
+    ],
 )

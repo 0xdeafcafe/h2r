@@ -687,6 +687,20 @@ points! { ALL;
     /// object it excepts (`-1` for none). The effect part switch's `jpt!`
     /// arm calls it from `0x17aa4f` (docs/engine/effects-parts.md).
     DAMAGE_AREA_APPLY @ 0x000d_6c80: [fn(record: stack 0, except: stack 1) ret 8], Optional; "docs/engine/effects-parts.md";
+    /// The effect part switch's `obje` arm places its object (`0x17abe2`):
+    /// the shared random stream, the direction, two outputs and five part
+    /// words. It draws from the stream.
+    EFFECT_PART_PLACE @ 0x0017_7d10: [fn(effect: eax, rng: stack 0, direction: stack 1, out: stack 2, placed: stack 3, a: stack 4, b: stack 5, c: stack 6, d: stack 7, e: stack 8) ret 36], Optional; "docs/engine/effects-parts.md";
+    /// The `obje` arm's velocity (`0x17ac3a`): the stream, the output and
+    /// two part words. It draws from the stream.
+    EFFECT_PART_VELOCITY @ 0x0017_7f60: [fn(rng: stack 0, out: stack 1, a: stack 2, b: stack 3) ret 16], Optional; "docs/engine/effects-parts.md";
+    /// The `snd!` arm's sound on an object (`0x17ad24`): EAX and ECX the
+    /// location's `+0xc` and `+0x30`, EBX the sound tag, the object, its
+    /// node and the scale on the stack.
+    SOUND_START_ON_OBJECT @ 0x0018_9060: [fn(at: eax, axes: ecx, tag: ebx, object: stack 0, node: stack 1, scale: stack 2) ret 12], Optional; "docs/engine/effects-parts.md";
+    /// The `snd!` arm's sound at a point (`0x17ad9a`): EDX a `0x24`-byte
+    /// record, XMM0 the scale, the tag on the stack.
+    SOUND_START_AT_POINT @ 0x0018_95f0: [fn(record: edx, scale: xmm0, tag: stack 0) ret 4], Optional; "docs/engine/effects-parts.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
     /// `animation_resource_get`: EAX a graph's resource record; loads it
     /// through the animation cache when needed and stamps the cache entry's

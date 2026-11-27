@@ -3,11 +3,16 @@ name = "sim-effects"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "The effects phase of the native simulation: the effect walk, the damage part arm and the renderer's part events"
+description = "The effects phase of the native simulation: the effect walk, the damage, object and sound part arms and the renderer's part events"
 
 [package.metadata.h2]
 status = "in progress"
 doc = ["engine/effects-parts.md", "engine/sim-rewrite.md"]
+
+[dependencies]
+# The SSE adds and the x87 integer store of the object and sound arms.
+simd.workspace = true
+x87.workspace = true
 
 [lints]
 workspace = true

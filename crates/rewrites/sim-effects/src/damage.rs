@@ -95,6 +95,26 @@ pub const NO_OBJECT: u32 = u32::MAX;
 pub const FRAME: u32 = 0x110;
 pub const RECORD_BELOW_ENTRY: u32 = FRAME - 0x34;
 
+/// What the arm passes to `0xd6c80`: the record and the excepted object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call {
+    pub record: Record,
+    pub except: u32,
+}
+
+impl Call {
+    pub fn predict(i: &Inputs) -> Call {
+        Call { record: record(i), except: NO_OBJECT }
+    }
+}
+
+impl crate::arm::Prediction for Call {
+    /// A byte offset in the record; [`SIZE`] for the second argument.
+    fn first_difference(&self, seen: &Call) -> Option<usize> {
+        first_difference(&self.record, &seen.record).or((self.except != seen.except).then_some(SIZE))
+    }
+}
+
 /// The first byte at which two records differ.
 pub fn first_difference(a: &Record, b: &Record) -> Option<usize> {
     a.iter().zip(b).position(|(x, y)| x != y)
