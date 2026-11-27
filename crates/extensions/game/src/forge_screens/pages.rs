@@ -120,6 +120,36 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                 .expect("rows"),
             ),
             (
+                // An own item spawner the document changes, in a kit
+                // session: its Team, Restore original and Duplicate rows.
+                "spawner",
+                sheet::properties_sheet_with(
+                    "Rifles",
+                    &forge::Thing {
+                        changed: true,
+                        fields: vec![
+                            ("respawn time", forge::Value::Int(30)),
+                            ("abandon limit", forge::Value::Int(120)),
+                            ("game type 1", forge::Value::Int(12)),
+                            ("game type 2", forge::Value::Int(12)),
+                            ("game type 3", forge::Value::Int(12)),
+                            ("game type 4", forge::Value::Int(12)),
+                        ],
+                        ..sample_thing(
+                            forge::BlockKind::NetgameEquipment,
+                            forge::ThingKind::ItemSpawner,
+                        )
+                    },
+                    0.,
+                    &sheet::Extras {
+                        kit: true,
+                        team: Some(1),
+                        ..sheet::Extras::default()
+                    },
+                )
+                .expect("rows"),
+            ),
+            (
                 "gate",
                 sheet::properties_sheet(
                     "Gate",

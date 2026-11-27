@@ -11,6 +11,8 @@ states:
     focus: 0
   beacon:
     focus: 0
+  spawner:
+    focus: 0
   gate:
     focus: 0
 widgets:
