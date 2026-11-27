@@ -3,14 +3,13 @@
 //! guest draw is surrendered. The two model calls remain separate external
 //! passes in guest order; their light and transparent neighbours stay on D3D.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use native_render::object_program_gpu::PlannedDraw;
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
-use native_render::objects::{ClearedObjects, ItemDraw, ObjectFrame};
 use native_render::program::ViewInputs;
 use render_bridge::native_first_person::{Dropped, Host, Outcome};
 use render_bridge::native_objects::NativeSet;
@@ -253,27 +252,124 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    /// The first person draws from the scene in slot 10
-    /// (`render_bridge::native_first_person`), with no guest layer call to
-    /// capture the device's entry states at. The device pass for a scene's
-    /// first-person parts is not built yet, so every offered part is a
-    /// named drop: counted, never drawn through D3D.
+    /// The first person's parts from the scene, drawn in slot 10
+    /// (`render_bridge::native_first_person`) by one external pass, as
+    /// the scene's objects draw theirs (`native_objects_glue::draw_walk`):
+    /// the device's entry state read at the call ([`Host::native`] with
+    /// `prepare_draw`), each part planned from its instance and rows as
+    /// extraction copied them ([`plan_parts`]), the pipelines warmed, the
+    /// pass reserved on the bound attachments and committed while the load
+    /// it was planned against is current. A part the plan refuses is
+    /// `unsupported`; a pass that cannot be reserved drops its parts as
+    /// `reservation`. Nothing is drawn through D3D.
     fn draw(
         &self,
-        _mem: &mut dyn GuestMemory,
-        _scene: &frame_scene::FrameScene,
+        mem: &mut dyn GuestMemory,
+        scene: &frame_scene::FrameScene,
         _view: &frame_scene::View,
         _slot: frame_scene::ViewSlot,
         _mode: u32,
         parts: &[u32],
     ) -> Outcome {
-        let mut out = Outcome::default();
-        out.drop(Dropped::Reservation, parts.len());
-        out
+        let reserved = || {
+            let mut out = Outcome::default();
+            out.drop(Dropped::Reservation, parts.len());
+            out
+        };
+        if crate::h1_cinematics::reflection_active(mem) || self.native(mem, true).is_none() {
+            return reserved();
+        }
+        let Some(entry) = self.entry.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return reserved();
+        };
+        let Some((gpu, generation)) = self.state.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| (Arc::clone(&s.models), s.generation)) else {
+            return reserved();
+        };
+        // An animated pass samples its constants at the render clock.
+        let time = native_render::layer_pass::render_time(&Ro(mem));
+        let plan = plan_parts(&gpu, scene, parts, &entry, time);
+        let committed = !plan.draws.is_empty() && self.commit(mem, &gpu, generation, &entry, &plan.draws);
+        settle(plan.refused, plan.draws.len(), committed)
     }
 }
 
+/// What a call's draw comes to: the parts the plan refused are
+/// `unsupported`; the planned ones are drawn when their pass committed,
+/// else each is a `reservation` drop.
+fn settle(refused: usize, planned: usize, committed: bool) -> Outcome {
+    let mut out = Outcome::default();
+    out.drop(Dropped::Unsupported, refused);
+    if committed {
+        out.drawn = planned;
+    } else {
+        out.drop(Dropped::Reservation, planned);
+    }
+    out
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Reserves one first-person pass of `draws` on the bound attachments
+    /// and commits it, while load `generation` (whose models are `gpu`) is
+    /// the current map's: `false`, and nothing is drawn, when the
+    /// pipelines are still warming or the pass cannot be reserved.
+    fn commit(
+        &self,
+        mem: &mut dyn GuestMemory,
+        gpu: &Arc<Models>,
+        generation: u64,
+        entry: &LayerEntry,
+        draws: &[(u32, PlannedDraw)],
+    ) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let Some((gpu_device, color, depth)) = device.external_pipeline_target(&ReadMemory(mem)) else {
+            return false;
+        };
+        let warmed = gpu
+            .lit
+            .try_lock()
+            .ok()
+            .and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&gpu_device, color, depth, draws)));
+        if warmed != Some(true) {
+            return false;
+        }
+        let texaccum = entry.texaccum.filter(|_| draws.iter().any(|(_, draw)| draw.texaccum));
+        let pass = Box::new(FirstPersonPass {
+            models: Arc::clone(gpu),
+            draws: draws.to_vec(),
+            texaccum,
+            view: Some(entry.view),
+            w_clip: entry.w_clip,
+        });
+        let view = mem
+            .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
+            .unwrap_or(u32::MAX);
+        let promise = d3d::ExternalPlan {
+            stage: timeline::native::Stage::FirstPerson,
+            view,
+            ranges: draws.len(),
+            slots: Vec::new(),
+        };
+        let Ok(Some(ready)) = device.prepare_external_bound(
+            &mut crate::native_lights_glue::DeviceMemory(mem),
+            promise,
+            pass,
+            Vec::new(),
+        ) else {
+            return false;
+        };
+        // The load the pass was planned against, held to the commit.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.as_ref().is_some_and(|state| {
+            state.generation == generation
+                && state.map_generation == render_bridge::native_map_work::generation()
+                && Arc::ptr_eq(&state.models, gpu)
+        }) {
+            return false;
+        }
+        ready.commit();
+        true
+    }
+
     /// Applies the queued live edits to the first-person models
     /// (docs/editor/realtime-edits.md, "The native refresh"): an edited
     /// `mode` that was asked for is asked of the loader again, which
@@ -414,38 +510,43 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
 
 #[derive(Default)]
 struct ViewPlan {
-    /// Places in the input items whose guest draws may be suppressed.
-    drawn: Vec<usize>,
-    /// Exact planned draws, in first-person list order.
+    /// Parts the plan refused, each counted with its reason.
+    refused: usize,
+    /// Exact planned draws, in the view's order.
     draws: Vec<(u32, PlannedDraw)>,
 }
 
-/// Plans every offered item. Only a fully resolved plan is marked drawn;
-/// missing models, programs, constants, entry fields or W mode are refusals
-/// here, before `Host::draw` returns, never silent encode-time omissions.
-fn plan_view(
+/// Plans every offered part (`parts`, indices into `scene.parts`) of the
+/// first person's view from its instance and rows as extraction copied
+/// them (`LitObjects::plan_part_of`, the scene objects' planner). Only a
+/// fully resolved plan is a draw: a missing model, program, constant,
+/// entry field or W mode is a refusal here, before `Host::draw` returns,
+/// never a silent encode-time omission.
+fn plan_parts(
     models: &Models,
-    objects: &[ObjectFrame],
-    items: &[ItemDraw],
-    record_models: &HashMap<u16, u32>,
+    scene: &frame_scene::FrameScene,
+    parts: &[u32],
     entry: &LayerEntry,
     time: Option<f64>,
 ) -> ViewPlan {
     let mut out = ViewPlan::default();
     let Ok(lit) = models.lit.try_lock() else {
+        out.refused = parts.len();
+        count_refusal("the first-person models are being replaced");
         return out;
     };
-    for (index, item) in items.iter().enumerate() {
-        let frame = &objects[item.object];
-        let model = record_models[&item.key.record];
-        let planned = (|| -> Result<PlannedDraw, String> {
+    for &index in parts {
+        let planned = (|| -> Result<(u32, PlannedDraw), String> {
+            let part = scene.parts.get(index as usize).ok_or("the part is not in the scene")?;
+            let instance = scene.instances.get(part.instance as usize).ok_or("the part's instance is not in the scene")?;
+            let model = instance.model;
             if !entry.w_buffered {
                 return Err("the device's draws are not W-buffered".into());
             }
             // A record's fade byte: its prologue sets the stipple pattern
             // the byte picks and its epilogue the solid one
             // (`frame_scene::PartFlags::FADE`).
-            if item.flags.contains(frame_scene::PartFlags::FADE) {
+            if part.flags.contains(frame_scene::PartFlags::FADE) {
                 if !entry.stipple_off {
                     return Err("the record's fade byte, drawn with the polygon stipple on, which the first-person draw does not apply".into());
                 }
@@ -455,15 +556,22 @@ fn plan_view(
             }
             // A shader whose prologue uploads the structure's parameter
             // block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`).
-            if item.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
+            if part.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
                 return Err("the structure's parameter block, whose upload the device and the engine do not hold".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
-            let mut draw = lit.plan_item(model, frame, item, &entry.states, time, entry.aux.as_ref(), entry.structure.as_ref())?;
+            let mut draw = lit.plan_part_of(model, scene, instance, part, &entry.states, time, entry.structure.as_ref())?;
+            // A record toggling the auxiliary state draws with what the
+            // toggle sets for the first person's view.
+            if part.flags.contains(frame_scene::PartFlags::AUX_DEPTH) {
+                draw.aux_depth = Some(
+                    entry.aux.ok_or("the auxiliary depth state, which the device does not hold off")?,
+                );
+            }
             // A flagged shader's item before the frame's structure target
             // copy (`frame_scene::PartFlags::TARGET_UNCOPIED`): drawn unless
             // its program has flag bit 20, whose draw would make the copy.
-            if native_render::object_program_gpu::makes_target_copy(item.flags, [lit.planned_pass(model, &draw)]) {
+            if native_render::object_program_gpu::makes_target_copy(part.flags, [lit.planned_pass(model, &draw)]) {
                 return Err("the shader's flag bit 0 before the frame's structure target copy, with a program of flag bit 20, whose draw would make the copy".into());
             }
             if draw.texaccum && entry.texaccum.is_none() {
@@ -475,14 +583,14 @@ fn plan_view(
             crate::native_objects_glue::layer_draw_fog(
                 lit, model, &mut draw, &entry.fog_words, entry.specular,
             ).ok_or("the first-person fog or final combiner state is unavailable")?;
-            Ok(draw)
+            Ok((model, draw))
         })();
         match planned {
-            Ok(draw) => {
-                out.drawn.push(index);
-                out.draws.push((model, draw));
+            Ok(draw) => out.draws.push(draw),
+            Err(why) => {
+                out.refused += 1;
+                count_refusal(&why);
             }
-            Err(why) => count_refusal(&why),
         }
     }
     out
@@ -497,7 +605,7 @@ fn count_refusal(why: &str) {
     let reasons = reasons.get_or_insert_with(HashSet::new);
     if reasons.len() < 64 && reasons.insert(why.to_owned()) {
         eprintln!(
-            "native-first-person: an item keeps its D3D draw: {why} (each reason logged once)"
+            "native-first-person: a part is not drawn: {why} (each reason logged once)"
         );
     }
 }
@@ -602,6 +710,18 @@ impl d3d::ExternalPass for FirstPersonPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_committed_pass_draws_every_planned_part_and_names_each_drop() {
+        let out = settle(2, 5, true);
+        assert_eq!(out.drawn, 5);
+        assert_eq!(out.dropped, vec![(Dropped::Unsupported, 2)]);
+        let out = settle(1, 4, false);
+        assert_eq!(out.drawn, 0);
+        assert_eq!(out.dropped, vec![(Dropped::Unsupported, 1), (Dropped::Reservation, 4)]);
+        assert_eq!(out.dropped_total(), 5);
+        assert_eq!(settle(0, 3, true), Outcome { drawn: 3, dropped: vec![] });
+    }
 
     #[test]
     fn weapon_view_preserves_retail_size_in_pixels_at_the_same_height() {

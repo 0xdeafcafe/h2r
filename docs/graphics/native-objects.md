@@ -506,8 +506,14 @@ body never runs for either argument.
   storage) and implements `Host::draw` for the offered parts. Record `+4`,
   not the owner definition's third-person model, names the `mode` to load;
   every section of that mode is built because the record key selects the
-  permutation and LOD. The device pass for a scene's first-person parts is
-  not built: `Host::draw` drops every part it is offered as `reservation`.
+  permutation and LOD. `Host::draw` draws the offered parts as one external
+  pass, the way the scene's objects draw theirs: it reads the device's entry
+  state at the call, plans each part from its instance and rows as
+  extraction copied them (`plan_parts`, `LitObjects::plan_part_of`), warms
+  the pipelines, reserves the pass on the bound attachments and commits it
+  while the load it planned against is current. A part the plan refuses is
+  `unsupported` (its reason logged once); a pass that cannot be reserved
+  drops its parts as `reservation`.
 - **Per-part rules** the pass keeps, as for scene objects: the topology and
   subparts the record picks (`part_ranges`), the fade byte and the flagged
   shader ("Fade, the shader flag and the item's argument"), the auxiliary
@@ -518,6 +524,8 @@ Tests: `first_person_draws_after_the_world_transparents`,
 `each_call_draws_its_layers`, `an_unreadable_part_is_a_named_drop`,
 `the_first_persons_view_takes_the_render_camera_the_game_view_drew_with`
 and the cut row's (`render-bridge/tests/native_first_person.rs`);
+`a_committed_pass_draws_every_planned_part_and_names_each_drop`
+(`native_first_person_glue`);
 `first_person_items_match_the_lifted_original`
 (`engine/tests/light_gather_differential.rs`) runs `0x0003fdf0` lifted to
 the end of its record loop against the item build, byte for byte. The first-person
