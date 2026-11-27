@@ -219,6 +219,7 @@ fn equal(c: &Case) {
 
 #[test]
 fn the_body_equals_the_reference() {
+    let _s = serial();
     for count in [1usize, 2, 3, 9, 31, 64, 90, 200] {
         for seed in 1..7u64 {
             equal(&case(count, seed * 0x9e37_79b9 + count as u64));
@@ -228,6 +229,7 @@ fn the_body_equals_the_reference() {
 
 #[test]
 fn an_empty_or_negative_count_saves_two_registers_and_returns() {
+    let _s = serial();
     for count in [0, -1, i32::MIN] {
         let c = Case {
             count,
@@ -270,6 +272,7 @@ fn fixed(seed: u64) -> Case {
 
 #[test]
 fn the_queue_order_and_unvisited_nodes() {
+    let _s = serial();
     let c = fixed(2);
     equal(&c);
     let (cpu, g) = machine(&c);
@@ -293,6 +296,7 @@ fn the_queue_order_and_unvisited_nodes() {
 
 #[test]
 fn a_node_queued_twice_is_walked_twice() {
+    let _s = serial();
     let mut c = case(3, 5);
     c.nodes = vec![
         GraphNode {
@@ -316,6 +320,7 @@ fn a_node_queued_twice_is_walked_twice() {
 
 #[test]
 fn an_uninitialised_cutoff_is_set_by_the_walk() {
+    let _s = serial();
     let mut c = case(12, 4);
     c.initialised = false;
     equal(&c);
@@ -341,6 +346,7 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
 
 #[test]
 fn calls_outside_the_fast_path_decline_untouched() {
+    let _s = serial();
     let c = case(10, 6);
     let def = |i: u32, field: u32| NODE_ARRAY + 0x20 * i + field;
     // PE not yet sticky; rounding toward zero.
@@ -424,6 +430,7 @@ fn calls_outside_the_fast_path_decline_untouched() {
 
 #[test]
 fn a_full_queue_is_taken_and_one_more_declines() {
+    let _s = serial();
     // Node 0 and its children in one sibling chain: one node more is one
     // queue entry more, at a depth the scales keep on the fast path.
     let chain = |count: usize| {
