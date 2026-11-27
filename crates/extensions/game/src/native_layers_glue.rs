@@ -1548,7 +1548,7 @@ impl d3d::ExternalPass for LayerViewPass {
         self.texaccum.iter().map(|target| target.texture).collect()
     }
 
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+    fn prepare_copy(&mut self, _target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("layer view constants or W-buffer clip unavailable");
         }
