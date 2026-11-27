@@ -21,15 +21,22 @@
 //!   the anchor, each its own. A player 3+ past the leash inside a volume
 //!   neither scripts' player is in comes back the same way. Never during a
 //!   cinematic.
+//! * **Join in progress.** A first spawn once the game is under way
+//!   ([`joins_in_progress`]: past [`JOIN_SPAWN_TICKS`], someone alive),
+//!   of any index, is a friend who joined the running game (section 14):
+//!   retail would put them on a level-start location. The pick puts them
+//!   on a grid spot around [`spots::group_anchor`] instead, through the
+//!   same moved starting location as the level-start grid.
 //! * **Respawn.** Retail's co-op respawn places a dead player next to the
 //!   last player in table order; with players 3+ it is placed on a grid
 //!   spot around [`spots::group_anchor`] instead.
 //! * **Checkpoints** ([`save`]): a majority rule over the squad near the
 //!   anchor.
 //!
-//! The hooks act only while co-op over Live is armed ([`Arm`]), and only
-//! when a player of index 2 or more exists, which happens only when the
-//! host's `coop.max_players` let a third console in. They are part of the
+//! The hooks act only while co-op over Live is armed ([`Arm`]), and, but
+//! the join-in-progress spawn, only when a player of index 2 or more
+//! exists, which happens only when the host's `coop.max_players` let a
+//! third console in. They are part of the
 //! simulation, so they must run alike on every console: they never read a
 //! per-console setting, only the game.
 //!
@@ -245,6 +252,30 @@ pub fn takes_spawn(p: &Player) -> bool {
     p.index >= FIRST_EXTRA && p.flags & FIRST_SPAWN != 0
 }
 
+/// Game ticks (30 a second) after which a first spawn is a join in
+/// progress, not the level's start: every player in the lobby spawns on
+/// the first ticks (a third waits for a free spot, retried each tick).
+/// [guess] 5 s covers a level start's waits; a later wait is placed by
+/// the squad, which is where the others are by then anyway.
+pub const JOIN_SPAWN_TICKS: u32 = 150;
+
+/// The game's tick (`[GAME_TIME]+8`, the state every console restores).
+pub fn game_tick<M: GuestMemory + ?Sized>(m: &M) -> Option<u32> {
+    let t = m.u32(points::GAME_TIME.base).ok().filter(|&t| t != 0)?;
+    m.u32(t.wrapping_add(8)).ok()
+}
+
+/// Whether the spawn of `p` is a friend joining the running game
+/// (docs/live/live-coop-join.md 14.9.5): a first spawn at tick
+/// [`JOIN_SPAWN_TICKS`] or later, with another player alive to stand by
+/// ([`spots::group_anchor`]). Any index: a host that started alone has
+/// its first friend at index 1.
+pub fn joins_in_progress<M: GuestMemory + ?Sized>(m: &M, ps: &[Player], p: &Player) -> bool {
+    p.flags & FIRST_SPAWN != 0
+        && game_tick(m).is_some_and(|t| t >= JOIN_SPAWN_TICKS)
+        && spots::group_anchor(m, ps, p.handle).is_some()
+}
+
 /// The scripts' `player0` and `player1`: the first two players with a
 /// unit, in table order (`(list_get (players) n)`).
 pub fn script_players(ps: &[Player]) -> Vec<Player> {
@@ -298,6 +329,9 @@ pub struct State {
     /// Players (bit per index) whose level-start refusal is logged, so a
     /// spawn retried each tick says it once.
     refused: u16,
+    /// The same for a join-in-progress spawn that found no spot by the
+    /// squad.
+    join_refused: u16,
     /// Stragglers are to be brought over at the next player update.
     pending: bool,
     /// Between `cinematic_start` and `cinematic_stop`.
@@ -436,7 +470,9 @@ pub async fn spawn(
     }
     let eax = r?.eax;
     if eax & 0xff != 0 {
-        lock(&state).refused &= !(1 << index_of(player));
+        let mut s = lock(&state);
+        s.refused &= !(1 << index_of(player));
+        s.join_refused &= !(1 << index_of(player));
     }
     Ok(Ret::new(eax, 4))
 }
@@ -492,6 +528,15 @@ pub async fn pick(
     reentry.store(false, Ordering::SeqCst);
     let eax = r?.eax;
     let index = index_of(player);
+    let join = cx.read(|m| {
+        let ps = players(m);
+        ps.iter()
+            .find(|p| p.handle == player)
+            .is_some_and(|p| joins_in_progress(m, &ps, p))
+    });
+    if join && let Some(ret) = join_pick(&cx, &state, player, unit, eax).await? {
+        return Ok(ret);
+    }
     if eax as u16 != NO_LOCATION {
         say(&format!(
             "player {index} placed on starting location {} (free)",
@@ -563,6 +608,80 @@ pub async fn pick(
                 ));
             }
             Ok(Ret::new(eax, 12))
+        }
+    }
+}
+
+/// The pick for a join in progress ([`joins_in_progress`]): the first grid
+/// spot around [`spots::group_anchor`] clear of every player that retail's
+/// free-spot test passes, ground under it first, with starting location 0
+/// moved there for the spawn (put back by [`spawn`]); the answer is
+/// location 0. `None` when no spot passes (starting location 0 back as it
+/// was): the pick goes on as for any spawn, and says so once.
+async fn join_pick(
+    cx: &Cx,
+    state: &Mutex<State>,
+    player: u32,
+    unit: u32,
+    eax: u32,
+) -> Result<Option<Ret>, EntryError> {
+    let (starts, anchor, spots) = cx.read(|m| {
+        let ps = players(m);
+        let a = spots::group_anchor(m, &ps, player).map(|(u, at)| {
+            let i = ps.iter().find(|p| p.unit == u).map_or(0, |p| p.index);
+            (i, at)
+        });
+        let around = a.map_or_else(Vec::new, |(_, at)| {
+            spots::spots_around(at, &spots::unit_positions(m, &ps, player))
+        });
+        (starts(m), a, around)
+    });
+    let (Some(starts), Some((by, _))) = (starts.filter(|s| !s.at.is_empty()), anchor) else {
+        return Ok(None);
+    };
+    let index = index_of(player);
+    let entry = starts.base;
+    let mut found = None;
+    'passes: for ground in [true, false] {
+        for &(ring, at) in &spots {
+            if ground {
+                let below = [at[0], at[1], at[2] - GROUND_PROBE];
+                if spot_free(cx, entry, below, unit, player).await? {
+                    continue;
+                }
+            }
+            if spot_free(cx, entry, at, unit, player).await? {
+                found = Some((ring, at));
+                break 'passes;
+            }
+        }
+    }
+    match found {
+        Some((ring, at)) => {
+            cx.write(|m| set_pos(m, entry, at))?;
+            lock(state).moved_start = Some((entry, starts.at[0]));
+            say(&format!(
+                "player {index} joins in progress: placed next to player {by} (the nearest the squad's middle), ring {ring} ({:.2} {:.2} {:.2})",
+                at[0], at[1], at[2]
+            ));
+            Ok(Some(Ret::new(eax & 0xffff_0000, 12)))
+        }
+        None => {
+            cx.write(|m| set_pos(m, entry, starts.at[0]))?;
+            let first = {
+                let mut s = lock(state);
+                let first = s.join_refused & (1 << index) == 0;
+                s.join_refused |= 1 << index;
+                first
+            };
+            if first {
+                say(&format!(
+                    "player {index} joins in progress: REFUSED: no free spot on rings 1 to {} next to player {by} ({} clear of the others); it spawns where retail puts it",
+                    spots::RINGS,
+                    spots.len()
+                ));
+            }
+            Ok(None)
         }
     }
 }
@@ -715,10 +834,12 @@ impl hooks::Feature for CoopPlayers {
                     let take = {
                         let m = rt.memory();
                         let handle = m.u32(c.cpu.esp.wrapping_add(4))?;
+                        let ps = players(&*m);
                         is_campaign(&*m)
-                            && players(&*m)
-                                .iter()
-                                .any(|p| p.handle == handle && takes_spawn(p))
+                            && ps.iter().any(|p| {
+                                p.handle == handle
+                                    && (takes_spawn(p) || joins_in_progress(&*m, &ps, p))
+                            })
                     };
                     if !take {
                         return Ok(Flow::Continue);

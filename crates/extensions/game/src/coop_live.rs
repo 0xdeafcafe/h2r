@@ -64,10 +64,16 @@ pub const COOP_TAKES_TWO: u32 = 0x0e00_01ec;
 /// What it says in a co-op session over Live, when nothing more is known.
 pub const LOBBY_LINE: &str = "Co-op over Xbox Live: 2 players, one per console.\r\n\
                               Press Y in the lobby to invite a friend.";
-/// The host alone in its lobby: Start Game does nothing until a friend
-/// joins (`0x251050` acts only on start state 9; there is no dialog).
+/// The host alone in its lobby with `coop.join_in_progress` off: Start
+/// Game does nothing until a friend joins (`0x251050` acts only on start
+/// state 9; there is no dialog).
 pub const INVITE_FIRST: &str = "Invite a friend first: co-op over Xbox Live\r\n\
                                 needs at least 2 consoles. Press Y for Friends.";
+/// The host alone in its lobby with join in progress on: Start Game
+/// starts ([`lift_solo_start`]), and friends join the running game
+/// (docs/live/live-coop-join.md 13.4).
+pub const SOLO_LINE: &str = "Start Game to play now; friends join in progress.\r\n\
+                             Press Y in the lobby to invite a friend.";
 /// A guest's lobby: the host starts.
 pub const GUEST_LINE: &str = "Co-op over Xbox Live: one player per console.\r\n\
                               Waiting for the host to start the game.";
@@ -98,6 +104,16 @@ pub fn line_for(role: &Role, s: Option<&coop_probe::Session>, max: u32) -> Strin
         Some(s) if s.players > s.peers => ONE_PER_CONSOLE.into(),
         _ => lobby_line(max),
     }
+}
+
+/// [`line_for`], but a host alone with the solo start on (`solo`,
+/// [`Arm::solo_start`]) reads [`SOLO_LINE`].
+pub fn host_line(role: &Role, s: Option<&coop_probe::Session>, max: u32, solo: bool) -> String {
+    let line = line_for(role, s, max);
+    if solo && line == INVITE_FIRST {
+        return SOLO_LINE.into();
+    }
+    line
 }
 
 /// The lobby line for a co-op limit of `max` players: [`LOBBY_LINE`] for
@@ -963,15 +979,22 @@ impl Lobby {
         let i = self.lock();
         i.role != Role::Idle || (self.live.is_some() && i.session.is_some_and(|s| s.class != 0))
     }
-    /// The lobby line for now ([`line_for`]), into its slot; written to
+    /// The lobby line for now ([`host_line`]), into its slot; written to
     /// the guest at the tick.
     pub fn refresh_line(&self) {
         let (role, s) = {
             let i = self.lock();
             (i.role.clone(), i.session)
         };
-        self.texts
-            .set(LINE_SLOT, &line_for(&role, s.as_ref(), self.max_players()));
+        self.texts.set(
+            LINE_SLOT,
+            &host_line(&role, s.as_ref(), self.max_players(), self.solo_start()),
+        );
+    }
+    /// A host may start alone, friends joining in progress
+    /// ([`Arm::solo_start`]; false without hooks).
+    pub fn solo_start(&self) -> bool {
+        self.arm.as_ref().is_some_and(|a| a.solo_start())
     }
     /// The texts' guest address (the feature's allocation).
     pub fn set_text_base(&self, base: u32) {
@@ -1035,6 +1058,10 @@ impl Lobby {
         }
         Some(if retail == ours {
             format!("coop-live: lobby start state {retail}")
+        } else if consoles == 1 {
+            format!(
+                "coop-live: lobby start state {retail} (co-op wants one console) answered {ours} for 1 console (alone; friends join in progress)"
+            )
         } else {
             format!(
                 "coop-live: lobby start state {retail} (co-op wants one console) answered {ours} for {consoles} consoles"
@@ -1607,6 +1634,18 @@ pub fn lift_coop_check(state: u32, s: Option<&coop_probe::Session>, max: u32) ->
                 && s.peers <= max
         })
 }
+/// Whether a start state of 7 is the co-op check on a Live co-op host
+/// alone: a networked campaign session of one console with one player.
+/// With one present and local player the check (`0x19a3ed`, two wanted)
+/// fails; with `solo` ([`Arm::solo_start`]) the lift lets the host start,
+/// and friends join the running game (docs/live/live-coop-join.md 13.4).
+/// A second local player is retail's split screen and passes by itself.
+pub fn lift_solo_start(state: u32, s: Option<&coop_probe::Session>, solo: bool) -> bool {
+    solo && state == START_COOP_OR_TEAMS
+        && s.is_some_and(|s| {
+            s.is_campaign() && s.class != 0 && s.is_host() && s.peers == 1 && s.players == 1
+        })
+}
 /// The retail tail after a passing co-op check (`0x19a4c5`): a countdown
 /// running gives 10, else everyone loaded 9, else 8.
 pub fn tail_state(countdown: i32, all_ready: bool) -> u32 {
@@ -1726,8 +1765,9 @@ impl hooks::Feature for CoopScreens {
 }
 
 /// `LOBBY_START_STATE` on an armed console: the retail answer, unless it
-/// is the co-op check refusing two consoles ([`lift_coop_check`]), then
-/// the retail tail's ([`tail_state`]). Logs each change of answer.
+/// is the co-op check refusing two to N consoles ([`lift_coop_check`]) or
+/// a host alone ([`lift_solo_start`]), then the retail tail's
+/// ([`tail_state`]). Logs each change of answer.
 async fn start_state(
     cx: Cx,
     lobby: Arc<Lobby>,
@@ -1744,7 +1784,9 @@ async fn start_state(
     let max = session
         .as_ref()
         .map_or(coop_probe::MAX_PLAYERS, |s| lobby.limit_for(s));
-    let out = if lift_coop_check(state, session.as_ref(), max) {
+    let lifted = lift_coop_check(state, session.as_ref(), max)
+        || lift_solo_start(state, session.as_ref(), lobby.solo_start());
+    let out = if lifted {
         let countdown = cx
             .call(GuestCall::new(points::LOBBY_COUNTDOWN.base))
             .await?

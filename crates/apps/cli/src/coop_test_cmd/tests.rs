@@ -593,3 +593,41 @@ fn late_holds_back_the_last_guests_accept_and_names_it_late() {
         assert!(e.contains("--late needs --auto"), "{e}");
     }
 }
+
+#[test]
+fn solo_start_holds_back_every_guest_and_leaves_the_host_alone_in_the_lobby() {
+    let o = opts(&["test", "--players", "3", "--auto", "--solo-start", "--root", "/r"]);
+    assert!(o.solo_start && !o.late);
+    let games = plan(&o, "http://x", Ipv4Addr::new(10, 0, 0, 2), Path::new("/s"));
+    let get = |g: &Game, k: &str| g.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(get(&games[0], "H2_COOP_AUTO_ACCEPT_DELAY"), None);
+    for g in &games[1..] {
+        assert_eq!(
+            get(g, "H2_COOP_AUTO_ACCEPT_DELAY").as_deref(),
+            Some("120"),
+            "{}",
+            g.tag
+        );
+        assert_eq!(get(g, "H2_COOP_AUTO_ACCEPT").as_deref(), Some("Alpha"));
+    }
+    assert_eq!(
+        get(&games[0], "H2_COOP_AUTO_INVITE").unwrap(),
+        "Bravo,Charlie"
+    );
+    let r = solo_roles(&games);
+    assert_eq!(r.host, "Alpha");
+    assert!(r.guests.is_empty());
+    assert_eq!(r.late, ["Bravo", "Charlie"]);
+    let line = next_steps(&r, true);
+    assert!(line.contains("on Bravo and Charlie's windows: Xbox Live"), "{line}");
+    assert!(line.contains("Start Game on Alpha alone"), "{line}");
+    assert!(line.contains("accept 120 s after the invitation"), "{line}");
+    // Two players: the one guest joins late; --late with it is no error.
+    let o = opts(&["test", "--auto", "--solo-start", "--late"]);
+    assert!(o.solo_start && o.players == 2);
+    // It needs the automation.
+    let e = parse(args(&["test", "--solo-start"]), Convention::Xdg, env)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--solo-start needs --auto"), "{e}");
+}

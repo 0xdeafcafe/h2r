@@ -309,6 +309,10 @@ pub struct Verdict {
     /// One line per late guest: whether and when it joined in progress
     /// (docs/live/live-coop.md section 14), then the host's admissions.
     pub joins: Vec<Join>,
+    /// A run whose host started alone (`--solo-start`: no lobby guests,
+    /// every guest late): the solo start's steps
+    /// (docs/live/live-coop-join.md 13.4). Empty otherwise.
+    pub solo: Vec<Join>,
     /// Merged lines that look like trouble, as they are.
     pub trouble: Vec<String>,
 }
@@ -366,8 +370,9 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
                     .collect();
                 tally(missing, invited.len(), n - 1, "invitations")
             }
-            Rule::Consoles => counted(&lines, &roles.host, step.all, " consoles", " for ", n),
-            Rule::Peers => counted(&lines, &roles.host, step.all, " peers", "campaign with ", n),
+            // " console" and " peer" read "1 console" and "3 consoles" alike.
+            Rule::Consoles => counted(&lines, &roles.host, step.all, " console", " for ", n),
+            Rule::Peers => counted(&lines, &roles.host, step.all, " peer", "campaign with ", n),
             Rule::Checkpoint => {
                 let ticks: Vec<(&str, Option<&str>)> = games
                     .iter()
@@ -440,11 +445,114 @@ pub fn verdict(log: &str, auto: bool) -> Option<Verdict> {
         .map(String::from)
         .collect();
     let joins = joins(&lines, &roles);
+    let solo = solo(&lines, &roles);
     Some(Verdict {
         steps,
         joins,
+        solo,
         trouble,
     })
+}
+
+const SOLO_ANSWER: &str = " for 1 console (alone";
+const SOLO_START: &str = "session start: campaign with 1 peer (alone)";
+const JIP_LIFT: &str = "coop-jip: host: a console joins the running game";
+const JOIN_PLACED: &str = " joins in progress: placed next to player ";
+const JOIN_REFUSED: &str = " joins in progress: REFUSED";
+const REVERT: &str = "coop-probe: checkpoint revert";
+
+/// The solo start's steps, for a run with no lobby guests and late ones:
+/// the host started alone, as a co-op game, let each late console into the
+/// running game, placed each newcomer by the squad, and no game reverted
+/// after the first join.
+fn solo(lines: &[(&str, &str)], roles: &Roles) -> Vec<Join> {
+    if !roles.guests.is_empty() || roles.late.is_empty() {
+        return Vec::new();
+    }
+    let host = roles.host.as_str();
+    let want = roles.late.len();
+    let count = |p: &str| {
+        lines
+            .iter()
+            .filter(|(t, text)| *t == host && text.contains(p))
+            .count()
+    };
+    let check = |ok: bool, says: String| Join {
+        tag: host.to_string(),
+        joined: ok,
+        says,
+    };
+    let mut out = vec![
+        check(
+            said(lines, host, SOLO_ANSWER),
+            if said(lines, host, SOLO_ANSWER) {
+                format!("{host} started alone: the lobby's co-op check answered for 1 console")
+            } else if said(lines, host, "coop-live: lobby start state 7") {
+                format!("{host}'s lobby kept the co-op check (is coop.join_in_progress off?)")
+            } else {
+                format!("nobody pressed Start Game in {host}'s lobby")
+            },
+        ),
+        check(
+            said(lines, host, SOLO_START),
+            if said(lines, host, SOLO_START) {
+                format!("{host}'s game is co-op with one player (two shown until OPTIONS_NEW)")
+            } else {
+                format!("{host}'s session start never showed two players: the game may be solo")
+            },
+        ),
+    ];
+    let let_in = count(JIP_LIFT);
+    out.push(check(
+        let_in >= want,
+        format!("{host} stayed joinable: let {let_in} of {want} console(s) into the running game"),
+    ));
+    let placed = count(JOIN_PLACED);
+    let refused = count(JOIN_REFUSED);
+    out.push(check(
+        placed >= want && refused == 0,
+        if refused == 0 {
+            format!("{placed} of {want} newcomer(s) placed next to the squad")
+        } else {
+            format!("{placed} of {want} newcomer(s) placed next to the squad; {refused} REFUSED")
+        },
+    ));
+    let following: Vec<&str> = roles
+        .late
+        .iter()
+        .map(String::as_str)
+        .filter(|g| !said(lines, g, "simulation mode sync-client"))
+        .collect();
+    out.push(check(
+        following.is_empty(),
+        if following.is_empty() {
+            "every newcomer follows the host (sync-client)".into()
+        } else {
+            format!("never a sync-client: {}", following.join(", "))
+        },
+    ));
+    let first_join = lines.iter().position(|(t, text)| *t == host && text.contains(JIP_LIFT));
+    let reverted: Vec<&str> = match first_join {
+        Some(i) => {
+            let mut v: Vec<&str> = lines[i..]
+                .iter()
+                .filter(|(_, text)| text.contains(REVERT))
+                .map(|(t, _)| *t)
+                .collect();
+            v.dedup();
+            v
+        }
+        None => Vec::new(),
+    };
+    out.push(check(
+        first_join.is_some() && reverted.is_empty(),
+        match (first_join, reverted.is_empty()) {
+            (None, _) => "no join to watch for reverts".into(),
+            (Some(_), true) => "no game reverted after the first join".into(),
+            (Some(_), false) => format!("reverted after a join: {}", reverted.join(", ")),
+        },
+    ));
+    out
 }
 
 /// `missing` guests, or a count note when the count is short but no guest
@@ -712,6 +820,12 @@ impl Verdict {
                 }
             }
             None => s.push_str("every step seen\n"),
+        }
+        if !self.solo.is_empty() {
+            s.push_str("solo start (live-coop-join.md 13.4):\n");
+            for j in &self.solo {
+                let _ = writeln!(s, "  [{}] {}", if j.joined { "x" } else { " " }, j.says);
+            }
         }
         if !self.joins.is_empty() {
             s.push_str("join in progress (section 14):\n");
@@ -1448,6 +1562,126 @@ mod tests {
                 .into(),
         ));
         assert_eq!(failing(&roles, &l), vec![17]);
+    }
+
+    /// `--solo-start` with `n` games: G00 starts alone, the rest join in
+    /// progress. Every line a passing run prints.
+    fn solo_run_of(n: usize) -> (Roles, Vec<(String, String)>) {
+        let tags: Vec<String> = (0..n).map(|i| format!("G{i:02}")).collect();
+        let roles = Roles {
+            host: tags[0].clone(),
+            guests: vec![],
+            late: tags[1..].to_vec(),
+        };
+        let host = tags[0].clone();
+        let mut l: Vec<(String, String)> = Vec::new();
+        let mut add = |t: &str, s: String| l.push((t.to_string(), s));
+        for t in &tags {
+            add(t, format!("live: playing as {t} (1) on x"));
+            add(t, "coop-live: 15 campaign levels (15 named)".into());
+        }
+        add(&host, "coop-live: Live menu row 5 in co-op mode".into());
+        add(
+            &host,
+            "coop-live: hosting a co-op campaign in the game's own lobby".into(),
+        );
+        add(
+            &host,
+            "coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)"
+                .into(),
+        );
+        add(
+            &host,
+            "coop-live: the lobby holds Outskirts on Heroic; advertised".into(),
+        );
+        for g in &tags[1..] {
+            add(&host, format!("coop-auto: invited {g} to session 80"));
+        }
+        add(
+            &host,
+            "coop-live: lobby start state 7 (co-op wants one console) answered 9 for 1 console (alone; friends join in progress)".into(),
+        );
+        add(
+            &host,
+            "coop-probe: session start: campaign with 1 peer (alone): showing the start 2 players until OPTIONS_NEW, so the game is co-op; friends join in progress".into(),
+        );
+        add(&host, "coop-probe: session start returned 1".into());
+        add(&host, "coop-probe: simulation mode sync-server (2) at tick 0".into());
+        add(&host, "coop-probe: checkpoint save at tick 90".into());
+        for (i, g) in tags[1..].iter().enumerate() {
+            add(g, "coop-auto: accepting G00's invitation to session 80".into());
+            add(
+                &host,
+                "coop-jip: host: a console joins the running game (session state 7 read as the lobby's for the join check)".into(),
+            );
+            add(g, "coop-probe: simulation mode sync-client (3) at tick 4000".into());
+            add(g, format!("coop-jip: joined in progress at tick 4000 as player {}", i + 2));
+            add(
+                &host,
+                format!("coop-players: player {} joins in progress: placed next to player 0 (the nearest the squad's middle), ring 1 (1 2 3)", i + 1),
+            );
+        }
+        for t in &tags {
+            add(t, "coop-live: ping 3 ms".into());
+        }
+        (roles, l)
+    }
+
+    #[test]
+    fn a_solo_start_passes_its_own_steps_and_the_lobby_steps() {
+        for n in [2, 4] {
+            let (roles, l) = solo_run_of(n);
+            assert_eq!(failing(&roles, &l), Vec::<usize>::new(), "n = {n}");
+            let v = verdict(&text_of(&roles, &l), true).unwrap();
+            assert_eq!(v.solo.len(), 6);
+            assert!(v.solo.iter().all(|j| j.joined), "{:?}", v.solo);
+            assert!(v.joins.iter().filter(|j| j.tag != roles.host).all(|j| j.joined));
+            let out = v.render();
+            assert!(out.contains("solo start (live-coop-join.md 13.4):\n  [x] G00 started alone"), "{out}");
+        }
+        // A lobby run has no solo part.
+        let (roles, l) = run_of(2);
+        assert!(verdict(&text_of(&roles, &l), true).unwrap().solo.is_empty());
+    }
+
+    #[test]
+    fn a_solo_start_fails_on_a_revert_a_misplaced_newcomer_or_a_closed_game() {
+        let solo = |l: &[(String, String)], roles: &Roles| {
+            verdict(&text_of(roles, l), true)
+                .unwrap()
+                .solo
+                .into_iter()
+                .filter(|j| !j.joined)
+                .map(|j| j.says)
+                .collect::<Vec<_>>()
+        };
+        let (roles, mut l) = solo_run_of(3);
+        l.push(("G01".into(), "coop-probe: checkpoint revert at tick 4100".into()));
+        assert_eq!(solo(&l, &roles), ["reverted after a join: G01"]);
+        let (roles, mut l) = solo_run_of(3);
+        l.retain(|(_, x)| !x.contains("player 2 joins in progress"));
+        l.push((
+            "G00".into(),
+            "coop-players: player 2 joins in progress: REFUSED: no free spot".into(),
+        ));
+        assert_eq!(
+            solo(&l, &roles),
+            ["1 of 2 newcomer(s) placed next to the squad; 1 REFUSED"]
+        );
+        let (roles, mut l) = solo_run_of(3);
+        l.retain(|(_, x)| !x.contains("a console joins the running game"));
+        let bad = solo(&l, &roles);
+        assert!(bad.contains(&"G00 stayed joinable: let 0 of 2 console(s) into the running game".to_string()), "{bad:?}");
+        assert!(bad.contains(&"no join to watch for reverts".to_string()), "{bad:?}");
+        // The lobby kept the co-op check: never started alone.
+        let (roles, mut l) = solo_run_of(2);
+        for (_, x) in l.iter_mut() {
+            if x.contains("answered 9 for 1 console") {
+                *x = "coop-live: lobby start state 7".into();
+            }
+        }
+        let bad = solo(&l, &roles);
+        assert!(bad[0].contains("kept the co-op check"), "{bad:?}");
     }
 
     #[test]
