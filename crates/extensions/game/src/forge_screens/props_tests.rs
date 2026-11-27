@@ -504,3 +504,35 @@ fn duplicate_is_an_act_on_a_placed_object_only() {
         "a thing with no palette tag is the ghost of one being placed"
     );
 }
+
+#[test]
+fn delete_is_on_every_kind_and_restore_original_only_on_a_changed_own_thing() {
+    let d = doc();
+    for (block, kind) in [
+        (BlockKind::Scenery, ThingKind::Object),
+        (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
+        (BlockKind::StartingLocations, ThingKind::StartingPoint),
+        (BlockKind::NetgameFlags, ThingKind::Goal),
+        (BlockKind::NetgameFlags, ThingKind::Teleporter),
+    ] {
+        let t = thing(block, kind, &[]);
+        let all = rows(&d, &t, 0.0);
+        let delete = all.iter().find(|r| r.label == "Delete").expect("Delete");
+        assert_eq!(delete.act, Act::Choose(Choice::Delete(t.id)), "{kind:?}");
+        let restore = |own, changed| {
+            let t = Thing {
+                own,
+                changed,
+                ..t.clone()
+            };
+            rows(&d, &t, 0.0)
+                .iter()
+                .find(|r| r.label == "Restore original")
+                .map(|r| (r.act.clone(), t.id))
+        };
+        assert_eq!(restore(false, true), None, "{kind:?}: not the map's own");
+        assert_eq!(restore(true, false), None, "{kind:?}: not changed");
+        let (act, id) = restore(true, true).expect("an own changed thing has it");
+        assert_eq!(act, Act::Choose(Choice::Restore(id)), "{kind:?}");
+    }
+}

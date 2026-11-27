@@ -1539,6 +1539,68 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
     assert_eq!(e.tool.ghost, Some(copy));
 }
 
+/// **Delete** and **Restore original** on the Properties page of a placed
+/// shelf: Delete is one removal; Restore asks first, and No changes
+/// nothing.
+#[test]
+fn delete_and_restore_original_on_the_properties_page() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.choose(1, Choice::Select(0)).unwrap();
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.tool.ghost = Some(frame);
+    e.command(2, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(3);
+    let id = e.session.objects()[0].id;
+    let added = Endpoint::Added(id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(added);
+    e.tool.aimed = Some(id);
+    e.command(4, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let labels: Vec<String> = screens::screen(Kind::Properties)
+        .sheet()
+        .rows
+        .iter()
+        .map(|r| r.label.clone())
+        .collect();
+    assert!(labels.contains(&"Delete".to_string()), "{labels:?}");
+    // An added thing is not the map's own, so it has no original to
+    // restore.
+    assert!(!labels.contains(&"Restore original".to_string()), "{labels:?}");
+    // Restore asks, and No leaves the log as it was.
+    let log = e.session.log().len();
+    e.choose(5, Choice::Restore(added)).unwrap();
+    assert_eq!(e.restore_asked, Some(added));
+    e.choose(
+        6,
+        Choice::Answer {
+            ask: Ask::Restore,
+            yes: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(e.restore_asked, None);
+    assert_eq!(e.session.log().len(), log);
+    // Delete removes the shelf in one step.
+    e.choose(7, Choice::Delete(added)).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), log + 1);
+    assert!(e.session.objects().is_empty());
+}
+
 #[test]
 fn live_forge_row_starts_in_the_monitor_with_the_hud() {
     use crate::{custom_games, lobby_start, lobby_tabs};
