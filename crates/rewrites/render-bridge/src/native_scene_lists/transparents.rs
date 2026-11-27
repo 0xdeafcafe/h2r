@@ -248,11 +248,52 @@ impl Key {
     }
 }
 
+/// `TRANSPARENT_ORDER_BEGIN`: the order Rust makes, unless the arm
+/// checks this call against the guest's sort or has fallen back
+/// ([`crate::native_transparents::sort`]).
 pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Output>) {
-    (SceneList::Transparents, build_order(m, cpu))
+    use crate::native_transparents::sort::{Decision, Pass, SORT};
+    let built = build_order(m, cpu).map(|(output, order)| {
+        if order.is_empty() {
+            return output;
+        }
+        match SORT.begin(Pass::at(m, cpu.esp), order) {
+            Decision::Cut => output,
+            Decision::Guest => Output { guest: true, ..Output::default() },
+        }
+    });
+    (SceneList::Transparents, built)
 }
 
-fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
+/// `TRANSPARENT_ORDER_READY` after a checked call: the guest's order
+/// against the one Rust made.
+pub(super) fn install_check(b: &mut Builder) {
+    use crate::native_transparents::sort::SORT;
+    b.raw()
+        .observe_before(&points::TRANSPARENT_ORDER_READY, "compare the transparent sort", |c| {
+            if !SORT.pending() {
+                return;
+            }
+            let mem = c.guest();
+            SORT.ready(guest_order(&*mem));
+        })
+        .context_only()
+        .optional();
+}
+
+/// The order `[0x004b628c]` holds for the live rows.
+fn guest_order(m: &dyn GuestMemory) -> Option<Vec<u16>> {
+    let end = m.u32(LIST_END).ok()?;
+    let first = m.u32(LIST_FIRST).ok()?;
+    if first > end || end > CAPACITY {
+        return None;
+    }
+    let order = ptr(m, LIST_ORDER).ok()?;
+    (0..end - first).map(|i| m.u16(at(order, 2 * i).ok()?).ok()).collect()
+}
+
+/// The order's writes, and the order, for the live rows.
+fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<(Output, Vec<u16>)> {
     fp_supported(cpu)?;
     let end = m.u32(LIST_END)?;
     let first = m.u32(LIST_FIRST)?;
@@ -264,16 +305,16 @@ fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
         ..Output::default()
     };
     if first == end {
-        return Ok(output);
+        return Ok((output, Vec::new()));
     }
     ptr(m, LIST_ENTRIES)?;
     let order = ptr(m, LIST_ORDER)?;
     let indices = sorted(m, first, end)?;
     output.array(
         order,
-        indices.into_iter().flat_map(u16::to_le_bytes).collect(),
+        indices.iter().copied().flat_map(u16::to_le_bytes).collect(),
     );
-    Ok(output)
+    Ok((output, indices))
 }
 
 /// The live rows `first..end` in the order `TRANSPARENT_SORT` with the
@@ -368,12 +409,70 @@ mod tests {
             m.set_f32(row + 4, depth).unwrap();
             m.set_i32(row + 8, tie).unwrap();
         }
-        let output = build_order(&m, &CpuAbi::default()).unwrap();
+        let (output, _) = build_order(&m, &CpuAbi::default()).unwrap();
         assert_eq!(output.writes[0].addr, order);
         assert_eq!(
             output.writes[0].bytes.slice(),
             &[6, 0, 3, 0, 4, 0, 5, 0, 2, 0]
         );
+    }
+
+    /// A list blending geometry, particle and contrail entries, with ties
+    /// and a plane: the order the cut publishes reads back as the order
+    /// `TRANSPARENT_ORDER_READY` compares, every neighbour pair without a
+    /// plane is in comparator order, and a check of it does not fall back.
+    #[test]
+    fn blended_order_equals_the_guest_sort() {
+        use crate::native_transparents::sort::{Decision, Pass, Sort};
+        let mut m = FlatMemory::new(LIST_END, 0x7000);
+        let entries = 0x004b_a000;
+        let order = 0x004b_b000;
+        m.set_u32(LIST_ENTRIES, entries).unwrap();
+        m.set_u32(LIST_ORDER, order).unwrap();
+        m.set_u32(LIST_FIRST, 1).unwrap();
+        m.set_u32(LIST_END, 9).unwrap();
+        // (class, depth, tie, handler, plane)
+        let rows = [
+            (2, 4.0, 0, points::TRANSPARENT_GEOMETRY.base, false),
+            (2, 4.0, 0, POLYGON_HANDLER, false),
+            (1, 9.0, 3, 0x0003_5b10, false),
+            (2, 1.5, 7, points::TRANSPARENT_GEOMETRY.base, true),
+            (0, 2.0, 0, POLYGON_HANDLER, false),
+            (2, 4.0, 2, 0x0003_5b10, false),
+            (1, 9.0, 1, points::TRANSPARENT_GEOMETRY.base, false),
+            (3, 0.5, 0, POLYGON_HANDLER, false),
+        ];
+        for (i, (class, depth, tie, handler, plane)) in rows.into_iter().enumerate() {
+            let row = entries + (i as u32 + 1) * STRIDE;
+            m.set_i32(row, class).unwrap();
+            m.set_f32(row + 4, depth).unwrap();
+            m.set_i32(row + 8, tie).unwrap();
+            m.set_u8(row + 0xc, u8::from(plane)).unwrap();
+            m.set_f32(row + 0x10, 1.0).unwrap();
+            m.set_f32(row + 0x1c, 3.0).unwrap();
+            m.set_u32(row + 0x20, handler).unwrap();
+            m.set_f32(row + 0x64, i as f32).unwrap();
+        }
+        let (output, indices) = build_order(&m, &CpuAbi::default()).unwrap();
+        for edit in &output.writes {
+            m.write(edit.addr, edit.bytes.slice()).unwrap();
+        }
+        assert_eq!(guest_order(&m).as_deref(), Some(&indices[..]));
+        let mut seen = indices.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (1..9).collect::<Vec<u16>>());
+        let key = |i: u16| Key::read(&m, entries + u32::from(i) * STRIDE).unwrap();
+        let camera = m.vec3(CAMERA).unwrap();
+        for pair in indices.windows(2) {
+            let (a, b) = (key(pair[0]), key(pair[1]));
+            if a.plane.is_none() && b.plane.is_none() {
+                assert!(!a.after(&b, camera), "{pair:?} out of comparator order");
+            }
+        }
+        let sort = Sort::new();
+        assert_eq!(sort.begin(Pass::World, indices.clone()), Decision::Guest);
+        sort.ready(guest_order(&m));
+        assert!(!sort.fallen_back());
     }
 
     #[test]

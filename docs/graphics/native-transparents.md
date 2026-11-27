@@ -74,6 +74,21 @@ The resident opaque world uses a 96-byte vertex. Its layer-3 declaration binds `
 
 The `indexed draws with native bindings` log counts accepted draw bindings since startup and reports every 1,800 acceptances. The `native_transparents_cache_hits` and `native_transparents_cache_misses` frame counters track reuse and packing attempts.
 
+### The sort in Rust
+
+`0x0001e370`'s index fill and sort (`TRANSPARENT_ORDER_BEGIN` to `TRANSPARENT_ORDER_READY`) are cut: `render_bridge::native_scene_lists::transparents` writes the live rows' order to `[0x004b628c]` and jumps to `TRANSPARENT_ORDER_READY`. The arm is `render_bridge::native_transparents::sort`.
+
+| Pass | Caller | Return | Slot |
+|---|---|---|---|
+| `world` | `0x0002c19a` | `0x0002c19f` | 9 |
+| `first_person` | `0x00040870` | `0x00040875` | 10 |
+
+- The return address is at `esp+0x14` at both sites. Another caller runs the guest sort (`caller`).
+- One call of each pass in 64 runs the guest's fill and sort. At `TRANSPARENT_ORDER_READY` its order is compared with Rust's. A difference sends both passes to the guest sort for the session (`mismatch`, then `fallback`).
+- Counters in `render.scene`: `transparent_sort_<pass>_{calls,cut,checked}`, `scene_kept_transparent_sort_<pass>_<cause>` (`caller`, `fallback`, `mismatch`, `unread`). A list the build refuses keeps the scene-list counters (`SceneList::Transparents`).
+
+Tests: `blended_order_equals_the_guest_sort` (`native_scene_lists/transparents.rs`), `the_first_person_sorted_pass_draws_in_slot_10` and the arm's tests (`native_transparents/sort.rs`).
+
 ### The sort on the GPU
 
 `native_render::transparent_sort` sorts the entries' keys in one compute workgroup (`transparent_sort.wgsl`): a stable least-significant-bit radix sort of up to `0x400` items. The key is the guest's, as three unsigned words from the lowest: the tie word (`+8`), the view depth (`+4`, mapped so unsigned order is float `>` order, `-0.0` equal to `0.0`) and the class (`+0`). Only the bits that differ between items become passes.
