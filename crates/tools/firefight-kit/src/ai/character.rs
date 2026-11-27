@@ -18,7 +18,7 @@ pub(crate) const DONOR_ELITE: &str = r"objects\characters\elite\ai\elite";
 /// none (`0x1e4a50`: block count at the property's offset, then the
 /// `parent` reference). Some callers read the row without checking, so an
 /// empty block faults: the movement row at `+0x5c` was the first, read by
-/// `0x1f9119` at an actor's first update (`[0+4]`). The authored Elite has
+/// `0x1f911a` at an actor's first update (`[0+4]`). The authored Elite has
 /// no parent, so it carries the donor Elite's row of each, and a donor
 /// without one refuses the build. Not here: `variants` (the donor's string
 /// ids), `boss` and `boarding` (a row opts the class in), and `patterns`
