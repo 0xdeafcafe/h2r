@@ -65,8 +65,8 @@
 //!   when both are order-free and every kept item before it restores what
 //!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
 //!   D3D draw (`order`). One external pass records them, in the list's
-//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8
-//!   and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
+//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8,
+//!   17 and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
 //!   draw keeps its guest draw, under the same order rule, and its cause
 //!   goes to the bridge's `Left` (by slot, or for the whole layer), which
 //!   counts it `scene_kept_<site><layer>_<kind>_<cause>`. Object items

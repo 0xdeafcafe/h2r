@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
 use render_bridge::native_fog::{self, Host, NativeFog};
+use render_bridge::native_layers::Left;
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
 use native_render::fog::{self, FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
@@ -28,15 +29,19 @@ static LOCK: Mutex<()> = Mutex::new(());
 struct OnePart(bool);
 
 impl Host for OnePart {
-    fn ask(&self, mem: &mut dyn GuestMemory, _display_clusters: &[u16]) -> Option<Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, _display_clusters: &[u16], left: &mut Left) -> Option<Cleared> {
         if !self.0 {
+            left.all("device");
             return None;
         }
         let parts: HashMap<(Owner, u8), u16> = [((Owner::Cluster(37), 1), 0x10)].into_iter().collect();
-        fog::clear_fog(&mut render_bridge::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
+        let (_, cleared, refused) = fog::clear_fog(&mut render_bridge::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
             parts.get(&(item.owner, item.part)) == Some(&(item.shader))
-        })
-        .map(|(_, cleared, _)| cleared)
+        })?;
+        for (slot, why) in refused.kept {
+            left.item(slot, why);
+        }
+        Some(cleared)
     }
 }
 
@@ -197,4 +202,43 @@ fn another_caller_or_a_part_left_to_d3d_keeps_the_layer() {
     m.set_u32(0x0060_0000 + 8, 0xe000_0099).unwrap();
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3, "the shader is not the item's");
+}
+
+fn kept(name: &str) -> u64 {
+    render_bridge::native_layers::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
+}
+
+fn kept_16() -> u64 {
+    render_bridge::native_layers::counters().into_iter().filter(|(k, _)| k.starts_with("scene_kept_16_")).map(|(_, n)| n).sum()
+}
+
+/// What the guest's layer draw still draws is counted
+/// `scene_kept_16_<kind>_<cause>`: another caller's items under `caller`,
+/// an item the walk refuses under its own cause, the host's refusal under
+/// the host's. A record with no layer-16 entry draws nothing and is not
+/// counted, and a layer the host takes keeps nothing.
+#[test]
+fn what_the_guest_still_draws_is_counted_scene_kept_by_cause() {
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install_host(true);
+    let mut m = scene();
+    let (caller, object) = (kept("scene_kept_16_world_caller"), kept("scene_kept_16_object_caller"));
+    native_fog::before_layer(&mut m, 0x0004_0136);
+    assert_eq!(kept("scene_kept_16_world_caller"), caller + 1, "not the late passes' call");
+    assert_eq!(kept("scene_kept_16_object_caller"), object, "the object's record has no layer-16 entry");
+    m.set_u32(0x0060_0000 + 8, 0xe000_0099).unwrap();
+    let material = kept("scene_kept_16_world_material");
+    draw(&mut m);
+    assert_eq!(kept("scene_kept_16_world_material"), material + 1, "the walk's cause for the slot");
+    install_host(false);
+    let device = kept("scene_kept_16_world_device");
+    draw(&mut m);
+    assert_eq!(kept("scene_kept_16_world_device"), device + 1, "the host's cause for the view");
+    install_host(true);
+    m.set_u32(0x0060_0000 + 8, 0xe000_0010).unwrap();
+    let before = kept_16();
+    draw(&mut m);
+    assert_eq!(mask(&m, 0), 1 << 3, "taken");
+    assert_eq!(kept_16(), before, "a taken layer keeps nothing");
+    native_fog::restore_pending(&mut m);
 }

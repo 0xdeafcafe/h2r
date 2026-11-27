@@ -88,7 +88,7 @@ pub const OWN_PRODUCER: &[&str] = &["dynamic_lights", "first_person", "object_sh
 
 /// A world layer draw (`LAYER_DRAW`, `0x00044550`) cut to the scene. The
 /// layer draw serves every layer, so these are cut per layer: its producer
-/// is [`crate::native_layers`] (layers 1, 2, 5, 7, 8 and 20) and
+/// is [`crate::native_layers`] (layers 1, 2, 5, 7, 8, 17 and 20) and
 /// [`crate::native_world`] (layer 3), which clear the layer's bit on every
 /// item the scene draws. An item the scene cannot draw yet keeps its guest
 /// draw and is counted `scene_kept_<layer>_<kind>_<cause>`.
@@ -102,7 +102,7 @@ pub struct LayerCut {
 }
 
 /// The world layers cut: 1, 3, 5, 8 and 20 in slot 1, 7 in slot 3 after the
-/// object shadows, 2 in slot 6.
+/// object shadows, 2 in slot 6, 17 in slot 12.
 #[cfg(feature = "native-render")]
 pub const LAYER_CUTS: &[LayerCut] = &[
     LayerCut { layer: 1, slot: frame_scene::ViewSlot::OpaqueBase },
@@ -112,6 +112,7 @@ pub const LAYER_CUTS: &[LayerCut] = &[
     LayerCut { layer: 20, slot: frame_scene::ViewSlot::OpaqueBase },
     LayerCut { layer: 7, slot: frame_scene::ViewSlot::ShadowsAndLayer7 },
     LayerCut { layer: 2, slot: frame_scene::ViewSlot::Layer2 },
+    LayerCut { layer: 17, slot: frame_scene::ViewSlot::Layer17 },
 ];
 
 /// The cut named `name`.

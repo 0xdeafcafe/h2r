@@ -510,7 +510,12 @@ plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
 outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
 The standard layer-2 geometry the plan leaves at the main-scene and alternate-scene sites is admitted with its resolved inputs.
 The pass records the full range on both live target copies before the device
-drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
+drops the D3D draw.
+
+Other layer-2 and layer-17 callers stay on D3D, each item counted
+`scene_kept_<layer>_<kind>_caller` (`native_layers::UNTAKEN_CALLER`). Layer
+17's items the plan refuses keep their guest draw as layer 2's do, counted
+`scene_kept_17_*`.
 
 **Sky.** At the indexed strip call in the sky model renderer (`0x0004c976`),
 `scene_extract::layout::sky::SkyItem` resolves the scenario sky for this
@@ -521,7 +526,9 @@ model bounds and section flags.
 
 `IndexedPass::for_sky` checks those rows against the draw's vertex constants
 and supplies them to the vertex program. The material uses the program,
-textures and other evaluated constants bound at issue.
+textures and other evaluated constants bound at issue, and the pipeline the
+draw's own cull mode. A strip it refuses keeps its guest draw, counted
+`scene_kept_sky_<cause>`.
 
 The scene sets stencil mode 2 before the sky call at `0x0002c0bc` and
 restores mode 0 afterwards. The native strip requires the mode-2 state and a

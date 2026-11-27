@@ -15,9 +15,10 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | R1, layer 3 object parts | draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included | framescene.md slice 3, "Bit 9" |
 | R1, layer 3 decorators | draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included | native-decorators.md, "The glue" |
 | R1, layers 10, 11 and 14 | whole groups draw from the scene with no geometry handler; the object filter draws natively | native-shadow-layers.md |
-| R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls) | [native-renderer.md](native-renderer.md) |
-| R5, sky | the sky stage draws supported strips with the view's node palette and the material inputs at issue | [native-renderer.md](native-renderer.md) |
+| R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls); both are cut world layers (`cut::LAYER_CUTS`, layer 17 in slot 12) | [native-renderer.md](native-renderer.md) |
+| R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
+| R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | "R5's remainder" |
 
 Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. "R1's remainder" lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 
@@ -88,11 +89,11 @@ these per caller with every stage on: the column "Count" says what exists.
 |---|---|---|---|---|
 | Layer draw `0x00044550`, layer 3, from `0x0002bed0` | indexed lists and strips, world and objects | world and object parts including passes with all colour writes masked and opaque One/Zero/Add blends, object templates with inherited blend and depth-write fields or instance-driven states, model decorators | parts whose material pass does not translate; objects the walk returns (`walk_unsupported`: a bit-11 part whose auxiliary state toggle does not read, a bit-6 part whose visible subparts do not read or number more than 64); decorators with an engine-driven state from a per-draw source or a lightmap stage whose globals bitmap is not uniform, whose skip would leave a render state other than the device holds (one the pass sets and its restore list does not write back, or one the restore list writes another value to: `scene_decorator_draws_state`), or whose layer-3 view's stage palettes, stencil or inherited cull do not read or hold; any view where one copy refuses. Setup (kind 2) for the resolved-draw remainder | 8.26 ms, 1,882 D3D entries a frame on the D3D path [a]; about 14 objects a frame returned [b] |
 | Layer draw, layers 1, 5, 7, 8, 20 | indexed | the structure's static items and the objects' items of layers 1, 5, 7, 8 and 20, layer 5's with the PRT stream the draw adds (the first person's 1, 7, 8 and 20) from the scene's plan (`frame-scene.layers`), under the stencil the geometry draw's prologue sets (`layer_pass::item_stencil`) | layer 5's object items whose PRT stream does not read or supplies incompatible registers or components, items whose pass leaves a render state other than the device holds (one it sets and its restore list does not write back, or one the restore list writes another value to: `layer_pass::skip_holds`), object items extraction names a cause for or whose passes do not plan, animated and per-draw items, every item after the first the plan cannot take, and every item with `frame-scene.layers=off` (kind 2 setup for all of it) | layer 1: 0.32 ms, 56 entries [a]; others under 0.3 ms |
-| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip with per-view node rows, material bindings and the mode-2 stencil state; the remaining standard layer-2 geometry as packets | what layers 1, 5, 7, 8 and 20 refuse; other layer-2 handlers, unknown callers; unresolved sky geometry, transforms, materials or stencil state; guest sky selection and setup | 0.29 ms, 120 entries [a] |
+| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip, culled or not, with per-view node rows, material bindings and the mode-2 stencil state; the remaining standard layer-2 geometry as packets | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_2_*`); other callers (`scene_kept_2_*_caller`); unresolved sky geometry, transforms, materials or stencil state (`scene_kept_sky_*`); guest sky selection and setup | 0.29 ms, 120 entries [a] |
 | Object shadows `0x000335e0`, `0x00032350` (both partial, as are their caster and receiver layers 10 and 11) | indexed into shadow targets, then receivers | object lists, histories and admitted mask caster bodies ([native-light-gather.md](native-light-gather.md), L7), whole groups of layers 10, 11 and 14 from the scene with no geometry handler, the filter's native quads; sorted BSP and model draws of layers 10, 11 and 14, at 1x on one backend | scaled and E3 display copies, interpolated replay, a missing freeze or resource, a pending callback, an animated gel, guest creature shadows, and the mask chain's target and device setup | 1.24 ms, 182 entries [a] |
 | Dynamic lights `0x00031c80`, per light `0x00031170` | indexed, layers 10 to 14; gel quads into target 13 | `dynamic_lights` and `light_passes` are partial. The Rust gather supplies ordered lights. Eligible diffuse and specular groups draw together over structure and models. | A refused gather runs the guest loop. Shadow and opacity targets, shader gels, incomplete groups and unavailable device copies keep their layer handlers | 1.88 ms without the per-light passes [a]; per-light time not broken out |
 | First person `0x0003fdf0(0)`, `(1)` and its lights `0x000404b0` | cut | `0x0003fdf0(0)` and `(1)`: the scene's first-person parts in slot 10, a part that does not draw a named drop ([native-objects.md](native-objects.md), "First person"); its lights' layers 12 and 13 whose groups the scene holds whole, from the scene ([native-lights.md](native-lights.md)) | the lights' list rebuilds, constants and layers 11 and 14, a group the scene does not hold whole, a light with a shader gel | 0.84 ms, 404 entries; lights 0.39 ms, 173 entries [a] |
-| Fog (layer 16), water (layer 6) | indexed, full-screen | planar fog, passes with all colour writes masked, the water edge blend including rigid placements and rasterizer bitmap stages 14 and 15, eligible indexed ranges in mixed lists, and the indexed composite in `0x0003c3c0` | mixed-list sorting and state setup, refused ranges and composite inputs, the conditional alpha clear and resource updates | under 0.3 ms [a] |
+| Fog (layer 16), water (layer 6) | indexed, full-screen | planar fog, passes with all colour writes masked, the water edge blend including rigid placements and rasterizer bitmap stages 14 and 15, eligible indexed ranges in mixed lists, and the indexed composite in `0x0003c3c0` | the whole list when one item refuses (`scene_kept_{6,16}_*_order`), objects' items, other callers, view refusals (`scene_kept_{6,16}_*`); mixed-list sorting and state setup, refused ranges and composite inputs, the conditional alpha clear and resource updates | under 0.3 ms [a] |
 | Camouflage (layers 18, 19, sorted handler `0x00041cc0`), hologram (21, `0x000423c0`) | indexed with a framebuffer snapshot | layers 18, 19 and 21's object items from the scene's plan (`frame-scene.layers`), with the shader the record names over the part's and a copy of the bound colour for the view stages ([native-water-fog.md](native-water-fog.md)) | layers 18, 19 and 21's items extraction names a cause for (the stipple fade among them), whose shader's passes do not compile or plan, and every item after the first refused; the handlers' replays of the scene's layers | not measured |
 | Sorted transparents `0x0001e370` (also `0x00040870`), layer 15 | indexed; per-handler immediate | Rust sort and native indexed draws for the standard layer-15 handler, including individual subranges and resolved object draws without a lighting owner | handler setup and restore, nonstandard emitters, ranges that fail state or attachment validation | 2.58 ms, 1,010 entries [a] |
 | Particles `0x0023ed5c`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
@@ -100,7 +101,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
-| Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
+| Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_17_*`); other callers (`scene_kept_17_*_caller`) | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | tag-shader and supported generic widget quads through the overlay, motion sensor compositing fans | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890` | full-screen overlay | all six fade modes through the native overlay | guest state setup and draws refused by the overlay | not measured |
@@ -641,6 +642,44 @@ edges (`boot`, `game`, `cli`, `h2host`, `uwp-host`, `tools/perf`),
 `impl.render.native`, and [d3d.md](d3d.md)'s device model. The entry
 inventory in d3d.md is a fact about the retail image and stays as a
 reference page.
+
+### R5's remainder
+
+What keeps a guest draw in R5's stages, by counter (**Code**; causes in
+[native-world-walk.md](native-world-walk.md), "What the scene cannot draw
+keeps its guest draw"):
+
+| Stage | Counter | Kept |
+|---|---|---|
+| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20 |
+| Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
+| Layers 2 and 17, other callers | `scene_kept_{2,17}_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
+| Fog, layer 16 | `scene_kept_16_*` | the walk's per-slot causes; one refused item keeps the list (`order`), since the guest sorts it; objects' items; other callers; view refusals. A record with no layer-16 entry draws nothing and is not counted (`fog::guest_items`) |
+| Water, layer 6 | `scene_kept_6_*` | as the fog's, plus `target_view` and `no_parts` |
+| Sky strip | `scene_kept_sky_*` | extraction, view and range refusals, then `IndexedPass::for_sky`'s |
+
+Not built:
+
+- **The sky from the scene.** The strip is still admitted at its resolved
+  draw (`native_residual_glue`), so the guest's sky selection, its node
+  palette upload and the strip's setup run. Drawing it from a
+  `FrameScene` sky item needs the material's evaluated constants in the
+  scene.
+- **Fog and water beside a kept item.** The layer draw sorts its entries
+  and the passes blend, so the native pass cannot draw ahead of one item it
+  leaves without changing the result. An object's fog item keeps the whole
+  layer 16 until objects' fog draws from the scene.
+- **Layer 2's packets.** The standard geometry the plan leaves at the main
+  and alternate calls is admitted at its resolved draw, kind 2 setup
+  included.
+
+Tests: `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
+(`native_layers`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`
+(`tests/native_fog.rs`),
+`each_kept_item_names_its_slot_and_an_entryless_record_is_not_drawn`
+(`native_render::fog`), `a_sky_strip_keeps_its_cull_and_each_refusal_is_named`
+(`tests/world_layers_gpu.rs`), `a_kept_strip_is_counted_scene_kept_by_its_cause`
+(`native_sky`), `the_world_layers_are_cut_in_their_slots` (`tests/cut.rs`).
 
 ## Rules and limits
 

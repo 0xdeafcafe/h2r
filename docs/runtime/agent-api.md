@@ -2317,8 +2317,8 @@ h2 agent render.parity '{"arm": true}'
   with frame statistics and the residual census disabled. The corresponding
   `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
   `sky_plan_admitted` counts strips offered to the device after extraction and
-  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
-  material, transform, view, range, stencil or device. GPU reservation and
+  material checks. `scene_kept_sky_<cause>` counts strips left to their guest
+  draw, by cause ([native-world-walk.md](../graphics/native-world-walk.md)). GPU reservation and
   replay outcomes appear under `native_sky_*` in the frame counters.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
@@ -2331,7 +2331,7 @@ h2 agent render.parity '{"arm": true}'
   named `object_*` (`render_bridge::native_layers`; framescene.md,
   slice 4), and the cut world layers' items left to their guest draw,
   `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
-  `world`, `object` or `unreadable`; causes in
+  `world`, `object` or `unreadable`; layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20; causes in
   [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
