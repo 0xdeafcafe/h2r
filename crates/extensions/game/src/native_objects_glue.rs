@@ -167,6 +167,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             }
         }
         let _dispatch = timeline::setup::dispatch();
+        install_function_tables(mem);
         let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
         let formats = StreamFormats::read(&Ro(mem));
         let mut state = self.state.lock().ok()?;
@@ -957,6 +958,27 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
         return None;
     }
     Some(models)
+}
+
+/// Installs the engine's wave and shape tables from the running image
+/// (`tags::effects::function::Tables::ENGINE_SLAB`) before a map's
+/// materials compile, so a material animation on a wave the tables alone
+/// give (3, 5, 7..=11; the hologram's scan noise is wave 9) samples as the
+/// game's `0x0017c900` does. Once per process: the tables are static data.
+pub(crate) fn install_function_tables(mem: &dyn GuestMemory) {
+    use tags::effects::function::Tables;
+    if Tables::engine_installed() {
+        return;
+    }
+    let slab = Tables::ENGINE_SLAB;
+    match mem.bytes(slab.start, slab.len()) {
+        Ok(bytes) => {
+            if let Err(e) = Tables::install_engine_slab(&bytes) {
+                eprintln!("native-objects: the engine's function tables did not install ({e})");
+            }
+        }
+        Err(e) => eprintln!("native-objects: the engine's function tables do not read ({e:?})"),
+    }
 }
 
 /// The render states an object's draw inherits at a layer call

@@ -735,6 +735,10 @@ pub struct Tables {
     wave: [Option<Box<[u8; TABLE_LEN]>>; WAVE_SLOTS],
     shape: [Option<Box<[u8; TABLE_LEN]>>; SHAPE_SLOTS],
 }
+/// The engine's tables, installed once from a running game
+/// ([`Tables::install_engine_slab`]).
+static ENGINE: OnceLock<Tables> = OnceLock::new();
+
 impl Tables {
     /// The tables that can be generated exactly.
     pub fn procedural() -> &'static Tables {
@@ -807,6 +811,32 @@ impl Tables {
     /// A copy of the procedural tables, to extend with [`Self::with_engine_slab`].
     pub fn procedural_owned() -> Self {
         Self::procedural().clone()
+    }
+    /// The bytes [`Self::with_engine_slab`] takes: the engine's tables at
+    /// `0x00468d48` (12 waves, then 6 shapes at `0x0046bd48`).
+    pub const ENGINE_SLAB: std::ops::Range<u32> =
+        0x0046_8d48..0x0046_8d48 + ((WAVE_SLOTS + SHAPE_SLOTS) * TABLE_LEN) as u32;
+    /// Makes the engine's own tables, read from the running game's image
+    /// ([`Self::ENGINE_SLAB`]), the ones [`Self::engine`] gives for the rest
+    /// of the process. The tables are static data of the executable, the
+    /// same for every map, so the first slab installed stays. Errors on a
+    /// slab of the wrong size.
+    pub fn install_engine_slab(slab: &[u8]) -> Result<()> {
+        if ENGINE.get().is_none() {
+            let _ = ENGINE.set(Self::procedural_owned().with_engine_slab(slab)?);
+        }
+        Ok(())
+    }
+    /// The engine's tables once a game has installed them
+    /// ([`Self::install_engine_slab`]), else [`Self::procedural`]: what a
+    /// native evaluation of a material's animation reads, so a wave that
+    /// cannot be generated (3, 5, 7..=11) has its value where the game runs.
+    pub fn engine() -> &'static Tables {
+        ENGINE.get().unwrap_or_else(|| Self::procedural())
+    }
+    /// Whether [`Self::engine`] holds the engine's own tables.
+    pub fn engine_installed() -> bool {
+        ENGINE.get().is_some()
     }
     /// Wave table `sub` (1..=11), if present.
     pub fn wave_table(&self, sub: u8) -> Option<&[u8; TABLE_LEN]> {
@@ -1162,6 +1192,29 @@ mod tests {
                 .with_engine_slab(&slab[1..])
                 .is_err()
         );
+    }
+
+    /// A running game installs its own tables once
+    /// ([`Tables::install_engine_slab`]); [`Tables::engine`] then gives the
+    /// waves the procedural tables lack, and a second slab changes nothing.
+    #[test]
+    fn the_installed_engine_slab_gives_its_waves_for_the_process() {
+        let words = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+        let f = Function::parse(&blob(3, 0, [9, 0], [0.0; 2], &words)).unwrap();
+        assert!(!Tables::engine_installed());
+        assert!(!Tables::engine().has_wave(9));
+        assert_eq!(Tables::ENGINE_SLAB, 0x0046_8d48..0x0046_d548);
+        let mut slab = vec![0u8; Tables::ENGINE_SLAB.len()];
+        slab[9 * TABLE_LEN..10 * TABLE_LEN].fill(255);
+        assert!(Tables::install_engine_slab(&slab[1..]).is_err());
+        assert!(!Tables::engine_installed());
+        Tables::install_engine_slab(&slab).unwrap();
+        assert!(Tables::engine().has_wave(9));
+        assert_eq!(f.evaluate_with(0.2, 0.0, Tables::engine()), 1.0);
+        // The procedural tables are untouched, and the first slab stays.
+        assert!(!Tables::procedural().has_wave(9));
+        Tables::install_engine_slab(&vec![0u8; Tables::ENGINE_SLAB.len()]).unwrap();
+        assert_eq!(f.evaluate_with(0.2, 0.0, Tables::engine()), 1.0);
     }
 
     #[test]

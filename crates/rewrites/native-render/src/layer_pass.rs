@@ -1066,6 +1066,27 @@ pub(crate) mod tests {
         assert_eq!(property_value(&bad, 2, Some(10.0), false), Err(LayerRefusal::Property { property: 2 }));
     }
 
+    /// A property on a wave the procedural tables lack (the hologram's scan
+    /// noise, wave 9) refuses until a game installs the engine's tables,
+    /// then samples them (`Tables::engine`).
+    #[test]
+    fn an_engine_wave_samples_once_the_game_installs_its_tables() {
+        use tags::effects::function::{TABLE_LEN, Tables};
+        let mut f = vec![3u8, 0, 9, 0];
+        f.extend(0.0f32.to_le_bytes());
+        f.extend(1.0f32.to_le_bytes());
+        f.extend([0u8; 8]);
+        for w in [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0] {
+            f.extend(w.to_le_bytes());
+        }
+        let p = timed(4.0, f);
+        assert_eq!(property_value(&p, 1, Some(1.0), true), Err(LayerRefusal::Wave { property: 1, wave: 9 }));
+        let mut slab = vec![0u8; Tables::ENGINE_SLAB.len()];
+        slab[9 * TABLE_LEN..10 * TABLE_LEN].fill(255);
+        Tables::install_engine_slab(&slab).unwrap();
+        assert_eq!(property_value(&p, 1, Some(1.0), true), Ok(1.0));
+    }
+
     pub(crate) fn animated(kind: AnimationKind, refs: &[(i16, i16)]) -> AnimatedTarget {
         AnimatedTarget {
             kind,

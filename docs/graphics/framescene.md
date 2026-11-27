@@ -1215,7 +1215,10 @@ to the guest's draws (**Code**):
     `object_model` (the item's model is not uploaded), the plan's causes
     `object_plan_<cause>` (`object_program_gpu::LayerPlanRefusal::name`:
     `not_compiled`, the material's passes of the layer did not compile
-    for the model, its first compile error kept per layer and shader;
+    for the model, its first compile error kept per layer and shader,
+    counted again by kind as `object_plan_not_compiled_<kind>`
+    (`LayerPlanRefusal::detail`: `constant`, `input`, `object_function`,
+    `wave`, `cube`, `other`) and logged with the shader's tag;
     `no_part`, `shader`, `level`, `pass`, `pass_empty`,
     `implementation`, `prt`, `aux_depth`, `structure_parameters`,
     `defaults`, `ranges`, `program`, `animation`, `constants`, `state`,

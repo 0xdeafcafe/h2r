@@ -125,9 +125,6 @@ fn frame_images(compiled: &ObjectPass, k: usize, bitmap: map::TagId, image: &mut
     if count == 0 {
         return Err(format!("stage {k}'s animated frame wraps a slot with no instance bitmap"));
     }
-    if compiled.texaccum.contains(&true) || compiled.view.contains(&true) || compiled.scene_copy.contains(&true) {
-        return Err(format!("stage {k}'s animated frame is in a pass that binds an engine target per encode"));
-    }
     if count > MAX_FRAME_IMAGES {
         return Err(format!("stage {k}'s animated frame wraps {count} images, above {MAX_FRAME_IMAGES}"));
     }
@@ -466,6 +463,32 @@ impl LayerPlanRefusal {
     }
 }
 
+impl LayerPlanRefusal {
+    /// For [`Self::NotCompiled`], which kind of compile error it keeps, as
+    /// `render.scene` counts it besides [`Self::name`]
+    /// (`layer_plan_<layer>_refused_object_plan_not_compiled_<kind>`):
+    /// `constant` (a live read of a constant the pass does not set),
+    /// `input` (a vertex register the streams do not supply), `object_function`
+    /// (an animated property an object function drives), `wave` (an engine
+    /// wave table), `cube` (a stage that needs a cube texture), or `other`.
+    pub fn detail(&self) -> Option<&'static str> {
+        let LayerPlanRefusal::NotCompiled(why) = self else { return None };
+        Some(if why.contains("which the object pass does not set") {
+            "object_plan_not_compiled_constant"
+        } else if why.contains("registers we do not supply") {
+            "object_plan_not_compiled_input"
+        } else if why.contains("object_animation") {
+            "object_plan_not_compiled_object_function"
+        } else if why.contains("wave: Wave") {
+            "object_plan_not_compiled_wave"
+        } else if why.contains("needs a Cube texture") {
+            "object_plan_not_compiled_cube"
+        } else {
+            "object_plan_not_compiled_other"
+        })
+    }
+}
+
 impl std::fmt::Display for LayerPlanRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -663,9 +686,10 @@ struct LitProgram {
     samplers: Vec<wgpu::Sampler>,
     /// Its stages' bind group, made once; `None` when a stage samples the
     /// texture accumulation target or the view's copy, whose group is
-    /// cached by the live views it binds (the level's, the copy's).
+    /// cached by the live views it binds (the level's, the copy's) and the
+    /// images its draws' animated frames chose ([`ACCUM_GROUPS`]).
     textures: Option<wgpu::BindGroup>,
-    accum_groups: Vec<(EncodeViews, Option<wgpu::BindGroup>)>,
+    accum_groups: Vec<((EncodeViews, [Option<u32>; 4]), Option<wgpu::BindGroup>)>,
     /// Per attachment formats, buffer layout and state: the pipeline and
     /// the key its ordered packets describe themselves by.
     /// Keyed also by the PRT stream's formats (empty without one).
@@ -710,6 +734,11 @@ fn texture_group(
 
 /// The frame bind groups a program keeps ([`LitProgram::frame_groups`]).
 const FRAME_GROUPS: usize = 8;
+
+/// The bind groups a program sampling an engine target keeps
+/// ([`LitProgram::accum_groups`]): both target copies, each at as many
+/// animated frames as [`FRAME_GROUPS`].
+const ACCUM_GROUPS: usize = 2 * FRAME_GROUPS;
 
 /// `views` with stage `n`'s view replaced by `frame_views[n][i]` where
 /// `frames[n]` is `Some(i)`, or `None` when one is missing.
@@ -1613,7 +1642,7 @@ impl LitObjects {
                 return Err(R::Level);
             }
             if let Some(why) = m.layer_refused.get(&(layer, item.key.shader)) {
-                return Err(R::NotCompiled(why.clone()));
+                return Err(R::NotCompiled(format!("shader {:#010x}: {why}", item.key.shader)));
             }
         }
         let view = scene.view_of_pass(pass);
@@ -1899,11 +1928,18 @@ impl LitObjects {
                     } else {
                         None
                     };
-                    let key: EncodeViews = (accum.cloned(), copy.cloned(), scene.cloned());
+                    let key: (EncodeViews, [Option<u32>; 4]) = ((accum.cloned(), copy.cloned(), scene.cloned()), d.frames);
                     let slot = if let Some(at) = p.accum_groups.iter().position(|(views, _)| *views == key) {
                         at
                     } else {
                         resident[i] = false;
+                        // An animated frame's draw binds the images its
+                        // frames chose beside the engine targets.
+                        let views = if d.frames.iter().any(Option::is_some) {
+                            framed_views(&p.views, &p.frame_views, &d.frames).ok_or("object animated frame image unavailable")?
+                        } else {
+                            p.views.clone()
+                        };
                         let mut extra: Vec<(usize, &wgpu::TextureView)> = Vec::new();
                         for n in 0..4 {
                             if let (true, Some(v)) = (p.pass.texaccum[n], accum) {
@@ -1915,10 +1951,11 @@ impl LitObjects {
                             }
                         }
                         let group = gfx::program::validated_resource(device, || {
-                            texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers)
+                            texture_group(device, &p.textures_layout, &views, &extra, &p.samplers)
                         });
-                        // Keep both target copies hot. A resized target evicts the oldest view.
-                        if p.accum_groups.len() == 2 { p.accum_groups.remove(0); }
+                        // Keep both target copies hot. A resized target or
+                        // the oldest frame evicts the oldest group.
+                        if p.accum_groups.len() == ACCUM_GROUPS { p.accum_groups.remove(0); }
                         p.accum_groups.push((key, group));
                         p.accum_groups.len() - 1
                     };
@@ -3105,6 +3142,24 @@ mod tests {
     use crate::object_lighting::Lighting;
     use gfx::state::RenderStateType;
 
+    /// A kept compile error counts by its kind besides `not_compiled`, so
+    /// one read of `render.scene` splits a layer's refusals by cause.
+    #[test]
+    fn a_kept_compile_error_names_its_kind() {
+        let kind = |why: &str| LayerPlanRefusal::NotCompiled(why.into()).detail();
+        for (why, expected) in [
+            ("pass 0 implementation 0: section 0: vertex program reads c[69], which the object pass does not set", "constant"),
+            ("pass 0 implementation 0: section 1: vertex program reads registers we do not supply (0x0400)", "input"),
+            ("pass 0 implementation 0: section 0: animated constants: object_animation: ObjectAnimation { property: 1 }", "object_function"),
+            ("pass 0 implementation 0: section 0: animated constants: wave: Wave { property: 0, wave: 9 }", "wave"),
+            ("pass 0 implementation 0: section 2: pixel shader: stage 3: dot_rflct_spec needs a Cube texture, bound D2", "cube"),
+            ("no layer 21 at level 0", "other"),
+        ] {
+            assert_eq!(kind(why), Some(format!("object_plan_not_compiled_{expected}")).as_deref(), "{why}");
+        }
+        assert_eq!(LayerPlanRefusal::Shader.detail(), None);
+    }
+
     #[test]
     fn prt_layout_changes_preserve_the_fourth_component() {
         use shaders::vsh::InputFetch as I;
@@ -3486,9 +3541,10 @@ mod tests {
     }
 
     /// A stage an animated frame reaches preloads every image of its
-    /// bitmap in order; the other stages none. No bitmap images, a pass
-    /// binding an engine target per encode or more than
-    /// [`MAX_FRAME_IMAGES`] images refuse.
+    /// bitmap in order; the other stages none, also in a pass binding an
+    /// engine target per encode (the hologram's scan lines beside the
+    /// scene copy), whose groups the draw keys by its frames as well. No
+    /// bitmap images or more than [`MAX_FRAME_IMAGES`] images refuse.
     #[test]
     fn an_animated_frames_stage_preloads_every_image_of_its_bitmap() {
         use crate::object_program::tests::frame_pass;
@@ -3508,9 +3564,11 @@ mod tests {
         let mut source = |_: usize, _: map::TagId, _: u32| Some(Image::solid([0; 4]));
         assert!(frame_images(&frame_pass(0), 0, bitmap, &mut source).unwrap_err().contains("no instance bitmap"));
         assert!(frame_images(&frame_pass(MAX_FRAME_IMAGES + 1), 0, bitmap, &mut source).unwrap_err().contains("above"));
-        let mut accum = frame_pass(3);
-        accum.texaccum[1] = true;
-        assert!(frame_images(&accum, 0, bitmap, &mut source).unwrap_err().contains("per encode"));
+        for engine in 0..3 {
+            let mut bound = frame_pass(3);
+            [&mut bound.texaccum, &mut bound.view, &mut bound.scene_copy][engine][1] = true;
+            assert_eq!(frame_images(&bound, 0, bitmap, &mut source).unwrap().len(), 3, "engine target {engine}");
+        }
         let mut missing = |_: usize, _: map::TagId, i: u32| (i != 1).then(|| Image::solid([0; 4]));
         assert!(frame_images(&p, 0, bitmap, &mut missing).unwrap_err().contains("image 1"));
     }

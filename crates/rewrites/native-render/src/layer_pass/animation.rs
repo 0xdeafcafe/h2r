@@ -31,13 +31,13 @@ impl Sample {
         let mut x = (time / f64::from(period)) as f32;
         if function.kind == FunctionType::Periodic {
             let wave = function.sub_types[0];
-            if !Tables::procedural().has_wave(wave) {
+            if !Tables::engine().has_wave(wave) {
                 return Err(LayerRefusal::Wave { property: index, wave });
             }
         } else {
             x = (f64::from(x) % 1.0) as f32;
         }
-        let raw = function.evaluate(x, 0.0);
+        let raw = function.evaluate_with(x, 0.0, Tables::engine());
         Ok(Self { raw, function })
     }
 
