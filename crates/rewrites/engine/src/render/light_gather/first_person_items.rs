@@ -182,10 +182,12 @@ fn material(m: &dyn GuestMemory, record: u32, definition: u32, part: u32, kind: 
     Ok(Some(Scratch { shader, centre, bias, size }))
 }
 
-/// The sorted entry's class, `0x00040e10` on the shader's flags `+0x16`.
+/// The sorted entry's class, `0x00040e10` on the shader's flags `+0x16`
+/// (DL bit 0, CL bit 1, `0x000413cd`..`0x000413d8`).
 fn sorted_class(flags: u8) -> u32 {
     match (flags & 1 != 0, flags & 2 != 0) {
-        (false, _) => 3,
+        (false, false) => 3,
+        (false, true) => 2,
         (true, false) => 1,
         (true, true) => 0,
     }
@@ -386,7 +388,7 @@ mod tests {
     #[test]
     fn the_sorted_class_is_0x00040e10s() {
         assert_eq!(sorted_class(0), 3);
-        assert_eq!(sorted_class(2), 3);
+        assert_eq!(sorted_class(2), 2);
         assert_eq!(sorted_class(1), 1);
         assert_eq!(sorted_class(3), 0);
     }

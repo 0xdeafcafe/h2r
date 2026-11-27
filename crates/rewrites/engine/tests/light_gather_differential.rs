@@ -4562,6 +4562,10 @@ fn first_person_items_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let label = format!("seed {seed} case {n} (mode {mode}, call {call})");
             let mut c = cpu(&mut r);
             let esp = c.gpr[4] - 8;
+            // The return address and the argument the original is entered
+            // with, in both runs: the port never writes them.
+            put(&mut w.mem, esp, HARNESS_EXIT);
+            put(&mut w.mem, esp + 4, call);
 
             let mut port = Ram(w.mem.clone());
             let made = match fp_items::make(&port, mode) {
