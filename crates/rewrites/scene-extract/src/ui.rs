@@ -83,8 +83,64 @@ pub enum UiContent {
         justify: Justify,
         shadow: bool,
     },
-    /// A model scene (type 7): its view into the widget's rectangle.
-    Model(OverlayModelView),
+    /// A model scene (type 7): its view into the viewport its camera
+    /// call names ([`UiModel`]).
+    Model(UiModel),
+}
+
+/// What a model scene (type 7, `0x002b0baa`) draws: one view of the
+/// scenario objects its names select. The draw builds the camera's axes
+/// (forward +Y, up +Z, normalised by `0x00030bf0`) and calls the view
+/// `0x0002c560` at `0x002b0e12` with the camera's centre, the viewport and
+/// the field of view (`engine::ui_model::camera` makes those words in
+/// Rust). The viewport is the camera's, about the parent view's centre,
+/// not the widget's rectangle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiModel {
+    /// `[left, top, right, bottom]`, canvas pixels, as the camera call
+    /// takes them.
+    pub viewport: [u16; 4],
+    pub view: OverlayModelView,
+}
+
+/// The camera axes the model draw builds before its view call.
+pub const MODEL_FORWARD: [f32; 3] = [0.0, 1.0, 0.0];
+pub const MODEL_UP: [f32; 3] = [0.0, 0.0, 1.0];
+
+impl UiModel {
+    /// The view of `objects` (live handles, in the widget's name order)
+    /// from the camera words of `engine::ui_model::Camera`: the centre and
+    /// field of view as `f32` bits, the viewport.
+    pub fn new(objects: Vec<u32>, center: [u32; 3], viewport: [u16; 4], fov: u32) -> Self {
+        UiModel {
+            viewport,
+            view: OverlayModelView {
+                camera: frame_scene::OverlayCamera {
+                    position: center.map(f32::from_bits),
+                    forward: MODEL_FORWARD,
+                    up: MODEL_UP,
+                    fov_y: f32::from_bits(fov),
+                },
+                objects,
+            },
+        }
+    }
+
+    /// The viewport as the overlay's clip: `None` unless it lies wholly in
+    /// the canvas, since clamping it would change the projection.
+    pub fn clip(&self) -> Option<ClipRect> {
+        let [left, top, right, bottom] = self.viewport.map(|w| i32::from(w as i16));
+        let [w, h] = CANVAS.map(|v| v as i32);
+        if left < 0 || top < 0 || right <= left || bottom <= top || right > w || bottom > h {
+            return None;
+        }
+        Some(ClipRect {
+            x: left as u32,
+            y: top as u32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        })
+    }
 }
 
 /// One widget as the guest holds it (the common header `0x0022e27b`).
@@ -497,7 +553,8 @@ pub enum Unread {
     Shader,
     /// A text widget: the string, its font and the interface's colour.
     Text,
-    /// A model scene: no stage draws a model view.
+    /// A model scene whose view the caller does not read: lights, more
+    /// than 32 names, or no stage to draw the view.
     Model,
     /// Another draw (a list's, a button's, a screen's own): not read.
     Draw,
@@ -709,10 +766,13 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
                 .map(Some)
                 .map_err(refused)
         }
-        UiContent::Model(view) => overlay
-            .push_model_view(clip_of(rect), view.clone())
-            .map(Some)
-            .map_err(refused),
+        UiContent::Model(model) => {
+            let clip = model.clip().ok_or_else(|| refused(OverlayError::Clip))?;
+            overlay
+                .push_model_view(clip, model.view.clone())
+                .map(Some)
+                .map_err(refused)
+        }
     }
 }
 
@@ -1073,9 +1133,12 @@ mod tests {
             up: [0.0, 0.0, 1.0],
             fov_y: 1.0,
         };
-        picture.content = UiContent::Model(OverlayModelView {
-            camera,
-            objects: vec![0xe100_0004],
+        picture.content = UiContent::Model(UiModel {
+            viewport: [310, 230, 330, 250],
+            view: OverlayModelView {
+                camera,
+                objects: vec![0xe100_0004],
+            },
         });
         let mut meter = w(9, 0.3, 0);
         meter.content = UiContent::Shader {
@@ -1187,9 +1250,12 @@ mod tests {
         };
         let mut off = w(8, 0.1, 0);
         off.rect = [10, 400, -10, 420];
-        off.content = UiContent::Model(OverlayModelView {
-            camera: OverlayCamera::default(),
-            objects: vec![],
+        off.content = UiContent::Model(UiModel {
+            viewport: [600, 400, 660, 420],
+            view: OverlayModelView {
+                camera: OverlayCamera::default(),
+                objects: vec![],
+            },
         });
         let frame = UiFrame {
             draws: vec![UiDraw::Screen(UiScreen {
@@ -1212,5 +1278,39 @@ mod tests {
             none[1].item.is_none() && none[1].note.is_some(),
             "no fonts at all refuses the text too"
         );
+    }
+
+    /// A model scene draws one view, into its camera's viewport (not its
+    /// widget's rectangle), of its objects in name order, with the draw's
+    /// own axes; a viewport past the canvas lists nothing.
+    #[test]
+    fn a_model_widget_is_one_model_view_item() {
+        let center = [0.5f32, -2.0, 1.25].map(f32::to_bits);
+        let model = UiModel::new(vec![0xe100_0004, 0xe101_0009], center, [200, 120, 440, 360], 0.75f32.to_bits());
+        let mut picture = w(7, 0.0, 0);
+        picture.rect = [100, -300, -100, 300];
+        picture.content = UiContent::Model(model.clone());
+        let frame = UiFrame {
+            draws: vec![UiDraw::Screen(UiScreen { backdrop: None, widgets: vec![picture.clone()] })],
+        };
+        let mut o = Overlay::default();
+        let listed = draw_list(&frame, &Cells, &mut o);
+        assert_eq!(o.items.len(), 1);
+        assert_eq!((o.items[0].kind, listed[0].item, &listed[0].note), (OverlayKind::ModelView, Some(0), &None));
+        assert_eq!(o.items[0].clip, ClipRect { x: 200, y: 120, width: 240, height: 240 });
+        let view = o.model_view_of(&o.items[0]).unwrap();
+        assert_eq!(view.objects, [0xe100_0004, 0xe101_0009]);
+        assert_eq!(view.camera.position, [0.5, -2.0, 1.25]);
+        assert_eq!((view.camera.forward, view.camera.up, view.camera.fov_y), (MODEL_FORWARD, MODEL_UP, 0.75));
+        assert!(o.vertices_of(&o.items[0]).is_empty() && o.glyphs_of(&o.items[0]).is_empty());
+        assert_eq!(o.check(), Ok(()));
+
+        let mut off = picture;
+        off.content = UiContent::Model(UiModel { viewport: [600, 120, 700, 360], ..model });
+        let frame = UiFrame { draws: vec![UiDraw::Screen(UiScreen { backdrop: None, widgets: vec![off] })] };
+        let mut o = Overlay::default();
+        let listed = draw_list(&frame, &Cells, &mut o);
+        assert!(o.is_empty());
+        assert!(listed[0].note.as_deref().unwrap().contains("Clip"));
     }
 }

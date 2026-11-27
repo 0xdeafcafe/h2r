@@ -662,7 +662,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::MovieRefusedPass as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::ModelViewRustFallback as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -757,6 +757,11 @@ const UI_COLUMNS: [&str; Ui::MovieRefusedPass as usize + 1] = [
     "movie_refused_picture",
     "movie_refused_host",
     "movie_refused_pass",
+    "model_view_rust_matched",
+    "model_view_rust_mismatch_objects",
+    "model_view_rust_mismatch_camera",
+    "model_view_rust_refused",
+    "model_view_rust_fallback",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -947,6 +952,18 @@ pub enum Ui {
     MovieRefusedPicture,
     MovieRefusedHost,
     MovieRefusedPass,
+    /// Active model widgets' views read in Rust at the item call
+    /// (docs/graphics/native-ui-producers.md, "The model view in Rust"), compared
+    /// with the game's at its camera call: views that matched; views that
+    /// differed, by the first part (the objects, the camera and viewport),
+    /// after which the session takes the game's; views the Rust read
+    /// refused (lights, no live object, a camera that does not read);
+    /// views taken from the game's read after a mismatch.
+    ModelViewRustMatched,
+    ModelViewRustMismatchObjects,
+    ModelViewRustMismatchCamera,
+    ModelViewRustRefused,
+    ModelViewRustFallback,
 }
 
 impl Ui {
@@ -1245,6 +1262,7 @@ mod tests {
         assert_eq!(columns[ui + Ui::OverlayRefusedBlur as usize].1, "native_ui_overlay_refused_blur");
         assert_eq!(columns[ui + Ui::OverlayMovieFrames as usize].1, "native_ui_overlay_movie_frames");
         assert_eq!(columns[ui + Ui::MovieRefusedPass as usize].1, "native_ui_movie_refused_pass");
+        assert_eq!(columns[ui + Ui::ModelViewRustMismatchCamera as usize].1, "native_ui_model_view_rust_mismatch_camera");
         assert_eq!(columns[ui + Ui::OverlayHudTagQuads as usize].1, "native_ui_overlay_hud_tag_quads");
         assert_eq!(
             columns[ui + Ui::OutlineReservation as usize].1,

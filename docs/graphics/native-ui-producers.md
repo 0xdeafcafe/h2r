@@ -69,6 +69,19 @@ Separate masked strips and disjoint triangle-list ranges reserve together, in gu
 
 Uncovered HUD and widget helpers still build their draw packets. The scoped recorder can consume these packets with the resolved D3D draw available as ordered fallback. The host debug menu is drawn by the host over the presented frame ([debug-menu.md](../runtime/debug-menu.md)).
 
+### The model view in Rust
+
+An active model widget's view is read in Rust at its item call, before the guest's draw runs (`native_hud::model::predict`), and checked against the view the draw passes its camera call `0x0002c560` at `0x002b0e12` (`native_hud::model::check`).
+
+| Part | Rust read | Code |
+|---|---|---|
+| Objects | each non-empty name's first equal row of the scenario's object names (rows below 640), that row's handle when not the absent datum, in name order | `ui_overlay::model::objects` |
+| Camera | centre, viewport about the parent view (the item call's argument) and field of view | `engine::ui_model::camera` |
+| Axes | forward +Y, up +Z, as the draw builds them | `scene_extract::ui::MODEL_FORWARD`, `MODEL_UP` |
+| Item | one `ModelView` into the camera's viewport, not the widget's rectangle; a viewport past the canvas is not listed | `scene_extract::ui::UiModel` |
+
+A matching view is the one the host and the scene's overlay take. A difference sends every later view to the guest's read for the session. Every call is compared, since the guest's draw still runs whole: no stage draws a `ModelView` item yet (`native_ui_overlay_refused_model_view`), and lights are not read. Tests: `scene_extract::ui::tests::a_model_widget_is_one_model_view_item`, `native_hud::model::tests::the_rust_view_is_the_view_the_game_draws`, `a_view_that_differs_falls_back_for_the_session`, `ui_overlay::model::tests::the_names_select_their_live_handles_in_order`.
+
 ### Draw state
 
 Native packets take their vertex and combiner programs, textures, flat shading, alpha comparison, fog and stipple from the same NV2A inputs as D3D. The GPU pipeline takes depth test/write, stencil operations and reference, fill, winding, clip, colour writes and blend from the live draw. Point or wireframe fill requires the matching device feature. The 1x and display copies have separate clip transforms, and the display uses the existing glyph shader option when enabled.
@@ -101,6 +114,7 @@ Outstanding push callbacks, visibility queries, replay, unavailable resources or
 | `guest_builder_draw`, `model_guest_builder_draw` | draws that still arrive as guest packets, and those inside a model widget |
 | `backdrop_fallback_*`, `outline_fallback_*` | a missing entry, incompatible inputs and failed reservations |
 | `model_fallback_widget`, `model_fallback_*` | widgets with a recorded refusal, and the entry, camera, caller, geometry, range limit, texture commit or reservation reason |
+| `model_view_rust_matched`, `model_view_rust_mismatch_{objects,camera}`, `model_view_rust_refused`, `model_view_rust_fallback` | views whose Rust read matched the guest's; differed, by the first part (then the session takes the guest's); the Rust read refused; taken from the guest's after a mismatch ([The model view in Rust](#the-model-view-in-rust)) |
 | `scene_kept_overlay_<kind>_<cause>` (`render.scene`) | HUD items the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d.md](retire-d3d.md#r6s-remainder)) |
 | `scene_kept_ui_<kind>_<cause>` (`render.scene`) | menu-frame draws the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)) |
 | `native_ui_overlay_*` | the typed overlay stage, which draws from the scene and not from these producers ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats` reports them |
