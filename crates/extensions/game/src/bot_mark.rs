@@ -63,11 +63,6 @@ impl vfs::Rewrite for GearRewrite {
         }
         out
     }
-    fn skipped(&mut self, path: &str) {
-        crate::log::note(&format!(
-            "bot mark: {path} exceeds the rewrite limit; a bot's mark draws as a box there"
-        ));
-    }
 }
 
 #[cfg(test)]

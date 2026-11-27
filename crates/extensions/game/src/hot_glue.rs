@@ -462,6 +462,7 @@ impl RawGlue {
         let len = match &source {
             vfs::FileSource::Host(h) => h.len,
             vfs::FileSource::Memory(b) => b.len() as u64,
+            vfs::FileSource::Spliced(f) => f.len(),
         };
         Ok((source, len))
     }
@@ -509,6 +510,11 @@ impl hot_tags::RawFiles for RawGlue {
             vfs::FileSource::Memory(b) => {
                 let at = offset as usize;
                 buf[..inside].copy_from_slice(&b[at..at + inside]);
+            }
+            vfs::FileSource::Spliced(f) => {
+                let mut source = f.open().map_err(|e| e.to_string())?;
+                content::patch::Source::read_exact_at(&mut source, offset, &mut buf[..inside])
+                    .map_err(|e| e.to_string())?;
             }
         }
         let name = self.name(g, file);

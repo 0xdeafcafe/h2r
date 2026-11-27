@@ -60,9 +60,9 @@ the playlist's player limit.
    (`boot::icons`), unless the font has its own U+2699. The font-slot
    audit is therefore not needed for the mark: whichever slot a field
    uses (keyboard-charset.md, "Which font draws which field", still not
-   traced), its file has the gear. A font the rewrite cannot patch (over
-   the VFS rewrite limit, or one that does not parse) keeps a box there
-   and says so with `H2_BOOT_VERBOSE=1`.
+   traced), its file has the gear. A font the rewrite cannot patch (one
+   that does not parse) keeps a box there and says so with
+   `H2_BOOT_VERBOSE=1`.
 
    The name budget: the configuration name holds 15 UTF-16 units and the
    NUL (`CONFIG_NAME_UNITS` 16). `bots::phantom::session::marked_name`

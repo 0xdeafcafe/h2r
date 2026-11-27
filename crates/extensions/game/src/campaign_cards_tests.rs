@@ -402,7 +402,6 @@ fn the_disc_s_mainmenu_takes_ten_cards() {
         bytes.len(),
         started.elapsed().as_millis()
     );
-    assert!(bytes.len() as u64 <= vfs::MAX_REWRITE_BYTES);
     let mut m = Map::from_reader(Cursor::new(bytes)).unwrap();
     m.validate_checksum().unwrap();
     assert_eq!(m.tags().len(), before.tags().len() + 10);

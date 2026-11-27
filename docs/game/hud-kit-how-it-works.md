@@ -532,7 +532,7 @@ game's own batches, hidden with the HUD.
 
 | | A bitmap of ours in the map | A host mark (`gfx::world_lines::HudMark`) | Glyphs of ours in the fonts |
 |---|---|---|---|
-| Gets into the game by | a new `bitm` in every level's map: the map decomposed and rebuilt at load (`tags::rgba_bitmap`, as mainmenu's level pictures are), and the level maps are over the rewrite's size limit (`vfs::MAX_REWRITE_BYTES`) | the window's own pass | the font rewrite the arrows and the medals use (`bot_mark::GearRewrite`, `font::patch`) |
+| Gets into the game by | a new `bitm` in every level's map: the map decomposed and rebuilt at load (`tags::rgba_bitmap`, as mainmenu's level pictures are) | the window's own pass | the font rewrite the arrows and the medals use (`bot_mark::GearRewrite`, `font::patch`) |
 | Fill | the meter shader, by a blue ramp along the shape | drawn per frame | a picture per step |
 | Colour, hiding with the HUD, films, the headless host | the game's | not the game's ("Where the kit draws") | the game's |
 

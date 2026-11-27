@@ -27,6 +27,9 @@
 //!   refused for the map is off for it whole, with its reason in
 //!   [`Report::refused`], and the rest apply
 //!   (docs/engine/asset-store.md, "Conflicts").
+//! - [`build_map_streamed`]: [`build_map_settled`] on a map read by offset
+//!   ([`base::Base`]), leaving its raw data and BSP regions in the source:
+//!   the game's rewrite of a map of any size.
 //! - [`assets`]: the asset hashes of a base level (`tags::repo::normal`),
 //!   what a mod's `was` and `replaces` name.
 //! - [`cache_key`]: the key of a build's output.
@@ -55,6 +58,7 @@
 //! the rewrite), and the tests build their own.
 mod animation;
 pub mod assets;
+pub mod base;
 mod bitmap;
 mod build;
 mod builders;
@@ -144,9 +148,13 @@ pub use maps::{
     write as write_map_package,
 };
 pub use onto::{
-    BuiltMap, build_map, build_map_laid_out, build_map_settled, scope_of, scope_of_bytes,
+    BuiltMap, StreamedMap, build_map, build_map_laid_out, build_map_settled, build_map_streamed,
+    scope_of, scope_of_bytes,
 };
 pub use recipe::{TestMap, records_edits, scenario_edits, test_map_package};
-pub use rewrite::{FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
+pub use rewrite::{
+    FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, RebuiltOver, Served, ServedMap,
+    stem_of,
+};
 pub use tagitem::group_of_source;
 pub use unpin::MapUnpin;

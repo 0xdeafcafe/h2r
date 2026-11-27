@@ -185,32 +185,26 @@ fn a_map_of_another_class_gets_nothing_and_a_map_that_holds_the_kit_is_left_alon
 
 #[test]
 fn the_rewrite_serves_the_stick_and_says_which_weapons_it_holds() {
-    let seen: Arc<Mutex<Vec<(String, Option<Vec<u8>>)>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::default();
     let log = Arc::clone(&seen);
-    let mut rw = PackageRewrite::new(vec![pogo()]).observed(move |stem, bytes| {
+    let mut rw = PackageRewrite::new(vec![pogo()]).observed(move |stem, map| {
         log.lock()
             .unwrap()
-            .push((stem.to_owned(), bytes.map(<[u8]>::to_vec)))
+            .push((stem.to_owned(), map.read_all().unwrap()))
     });
     let served = rw
         .rewrite(r"maps\court.map", &fixture(0))
         .expect("the stick is added");
-    let (placed, _) = pogo_kit::served::placed_in(&served).expect("all three weapons");
+    let (placed, _) =
+        pogo_kit::served::placed_in(std::io::Cursor::new(&served)).expect("all three weapons");
     assert_eq!(placed, kitted().placed);
     {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, "court");
-        assert_eq!(seen[0].1.as_deref(), Some(served.as_slice()));
+        assert!(seen[0].1 == served, "the observer reads the served map");
     }
-    // A map the set does not change is observed as it is; a skipped one has
-    // no bytes.
-    rw.skipped(r"maps\huge.map");
-    assert_eq!(
-        seen.lock().unwrap().last().unwrap(),
-        &("huge".to_owned(), None)
-    );
-    assert_eq!(pogo_kit::served::placed_in(&fixture(0)), None);
+    assert_eq!(pogo_kit::served::placed_in(std::io::Cursor::new(fixture(0))), None);
 }
 
 #[test]

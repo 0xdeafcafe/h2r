@@ -304,9 +304,6 @@ impl vfs::Rewrite for CardRewrite {
             }
         }
     }
-    fn skipped(&mut self, path: &str) {
-        eprintln!("campaigns: {path} is too large to rewrite; no level pictures");
-    }
 }
 
 #[cfg(test)]

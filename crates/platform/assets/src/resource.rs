@@ -37,6 +37,19 @@ pub trait ResourceOverlay: Send + Sync {
     fn end(&self) -> u64;
 }
 
+/// A selector's bytes read through something other than a host region:
+/// a map the VFS serves as an overlay over its original, say.
+pub trait ResourceSource: Send + Sync {
+    /// The file's length.
+    fn len(&self) -> u64;
+    /// Whether the file is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Exactly `buf.len()` bytes at `offset`.
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()>;
+}
+
 /// The up-to-four files a map's raw pointers may select.
 #[derive(Default)]
 pub struct ResourceFiles {
@@ -44,6 +57,8 @@ pub struct ResourceFiles {
     open: [Option<File>; 4],
     /// Selectors backed by bytes in memory instead ([`Self::set_bytes`]).
     memory: [Option<Arc<[u8]>>; 4],
+    /// Selectors read through a [`ResourceSource`] ([`Self::set_source`]).
+    sources: [Option<Arc<dyn ResourceSource>>; 4],
     /// Served over each selector's bytes ([`Self::set_overlay`]).
     overlays: [Option<Arc<dyn ResourceOverlay>>; 4],
 }
@@ -53,6 +68,7 @@ impl std::fmt::Debug for ResourceFiles {
         f.debug_struct("ResourceFiles")
             .field("regions", &self.regions)
             .field("memory", &self.memory.each_ref().map(|m| m.as_ref().map(|m| m.len())))
+            .field("sources", &self.sources.each_ref().map(|s| s.as_ref().map(|s| s.len())))
             .field("overlays", &self.overlays.each_ref().map(Option::is_some))
             .finish()
     }
@@ -104,6 +120,7 @@ impl ResourceFiles {
         self.regions[slot(file)] = Some(region);
         self.open[slot(file)] = reader;
         self.memory[slot(file)] = None;
+        self.sources[slot(file)] = None;
         Ok(())
     }
 
@@ -114,6 +131,17 @@ impl ResourceFiles {
         self.regions[slot(file)] = None;
         self.open[slot(file)] = None;
         self.memory[slot(file)] = Some(bytes);
+        self.sources[slot(file)] = None;
+    }
+
+    /// Supplies a selector read through `source`: a map served as an
+    /// overlay over its original, whose raw pointers are offsets into the
+    /// served bytes.
+    pub fn set_source(&mut self, file: ResourceFile, source: Arc<dyn ResourceSource>) {
+        self.regions[slot(file)] = None;
+        self.open[slot(file)] = None;
+        self.memory[slot(file)] = None;
+        self.sources[slot(file)] = Some(source);
     }
 
     /// Serves `overlay` over the selector's bytes, for every later read.
@@ -126,6 +154,9 @@ impl ResourceFiles {
     fn own_length(&self, i: usize) -> Option<u64> {
         if let Some(m) = &self.memory[i] {
             return Some(m.len() as u64);
+        }
+        if let Some(s) = &self.sources[i] {
+            return Some(s.len());
         }
         self.regions[i].as_ref().map(|r| r.length)
     }
@@ -176,6 +207,19 @@ impl ResourceFiles {
     }
 
     fn read_own(&mut self, i: usize, file: ResourceFile, offset: u32, size: u32) -> Result<Vec<u8>> {
+        if let Some(s) = &self.sources[i] {
+            if u64::from(offset) + u64::from(size) > s.len() {
+                return Err(Error::Map(map::Error::Bounds {
+                    what: "resource",
+                    offset: offset.into(),
+                    size: size.into(),
+                    limit: s.len(),
+                }));
+            }
+            let mut buf = vec![0u8; size as usize];
+            s.read_exact_at(offset.into(), &mut buf)?;
+            return Ok(buf);
+        }
         if let Some(m) = &self.memory[i] {
             let range = usize::try_from(offset).ok().and_then(|at| {
                 let end = at.checked_add(size as usize)?;
@@ -373,5 +417,27 @@ mod tests {
         .unwrap();
         assert_eq!(f.read(ResourceFile::Local, 0, 2).unwrap(), [9, 9]);
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn a_source_replaces_a_file_region_and_bounds_its_reads() {
+        struct Counting(u64);
+        impl ResourceSource for Counting {
+            fn len(&self) -> u64 {
+                self.0
+            }
+            fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = (offset + i as u64) as u8;
+                }
+                Ok(())
+            }
+        }
+        let mut f = ResourceFiles::new();
+        f.set_bytes(ResourceFile::Local, Arc::from(&[1u8; 4][..]));
+        f.set_source(ResourceFile::Local, Arc::new(Counting(300)));
+        assert_eq!(f.length(ResourceFile::Local), Some(300));
+        assert_eq!(f.read(ResourceFile::Local, 254, 3).unwrap(), [254, 255, 0]);
+        assert!(f.read(ResourceFile::Local, 299, 2).is_err());
     }
 }

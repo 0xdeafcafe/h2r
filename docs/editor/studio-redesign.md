@@ -660,12 +660,22 @@ paths in "What exists":
    reads, it takes the packages with an item whose `maps` matches the
    name or the header's class, leaves out a package whose added tags the
    map already has (a map that holds the content), and runs the rest in
-   order through `workspace::build_map`, the path `h2 package build`
-   takes, so the bytes are the same. The result is served from
-   `<data>/packages/cache/<map sha>-<key>.map` (16 hex digits of each,
-   the key `workspace::cache_key`) with a `.json` receipt holding the
-   full key and the output's hash; a second read is a cache hit, and a
-   changed map, package or builder builds anew. A map that fails to
+   order through `workspace::build_map_streamed`: the build
+   `h2 package build` takes (`workspace::build_map`), with the same
+   bytes, on the map read by offset. The map is decomposed with its file
+   prefix (raw data, BSP regions) left on the disc
+   (`map::build::TagSet::from_map_streamed`); the build holds the
+   header, index, names and metadata, and serves an overlay over the
+   map (`vfs::Rewritten::Over`), so a campaign map of any size takes its
+   packages. A package whose item writes the prefix in memory is refused
+   for that map by name. The overlay is kept in
+   `<data>/packages/cache/<map sha>-<key>.splice` (16 hex digits of
+   each, the key `workspace::cache_key`), its runs' bytes, with a
+   `.json` receipt holding the full key, the splice's hash and where
+   each run goes; a second read is a cache hit, and a changed map,
+   package or builder builds anew. Test:
+   `crates/tools/workspace/tests/streamed_rewrite.rs` (a 200 MiB map,
+   byte-equal to the buffered build, peak memory bounded). A map that fails to
    build is served unchanged and named once on stderr; a package refused
    for the map (a stale `was`, a key it lacks) is off for it with its
    reason in `packages.list`, and the cached map is keyed by what the map
@@ -683,7 +693,7 @@ paths in "What exists":
    rewrite and store level builder share the enabled package payloads.
    `packages.list` keeps the set's summary and reads map results from
    the served-map record. `vfs::RewriteBackend` keeps a 64 MiB cache for
-   idle rewritten level payloads, protecting open levels and retaining
+   idle rewritten level payloads (held bytes), protecting open levels and retaining
    the shared resource maps separately. File metadata and directory
    listings reuse the rewritten sizes after eviction.
    With the maps served from the tag store (`store-maps`), the per-map
