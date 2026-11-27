@@ -37,6 +37,46 @@ pub fn build(
     Some((velocities, accumulator))
 }
 
+/// A constraint class with a ported `vt[+0x24]` (docs/engine/havok-step.md,
+/// "Constraints"), told apart by that slot's target. None is ported yet:
+/// the contact class (`0x0031bdf0`, which calls `0x0031f620`) and the six
+/// joint classes make their island fall back to the guest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {}
+
+/// The contact class's `vt[+0x24]`.
+pub const CONTACT_BUILD: u32 = 0x0031_bdf0;
+
+impl Class {
+    pub fn of(build: u32) -> Option<Self> {
+        let _ = build;
+        None
+    }
+}
+
+/// The Jacobian cursor `0x0031c100` passes to each `vt[+0x24]` (its
+/// frame's `+0x1c..+0x2c`): the next row, the next schema, the row limit
+/// and the overflow block. Before each constraint, a cursor at or past the
+/// limit moves to the overflow block and the limit becomes `u32::MAX`
+/// (`0x0031c36f`). The limit is the end of the row area; when the rows
+/// spill into a LIFO block it is the buffer's end less `I+0x08`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    pub rows: u32,
+    pub schemas: u32,
+    pub limit: u32,
+    pub overflow: u32,
+}
+
+impl Cursor {
+    pub fn before_constraint(&mut self) {
+        if self.rows >= self.limit {
+            self.rows = self.overflow;
+            self.limit = u32::MAX;
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Export {
     /// Integrate the velocities already in the motion.
@@ -152,6 +192,17 @@ pub fn export(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cursor_moves_to_the_overflow_block_at_its_limit() {
+        let mut c = Cursor { rows: 0x100, schemas: 0x800, limit: 0x100, overflow: 0x4000 };
+        c.before_constraint();
+        assert_eq!(c, Cursor { rows: 0x4000, schemas: 0x800, limit: u32::MAX, overflow: 0x4000 });
+        let mut c = Cursor { rows: 0xff, schemas: 0x800, limit: 0x100, overflow: 0x4000 };
+        c.before_constraint();
+        assert_eq!(c.rows, 0xff);
+        assert_eq!(Class::of(CONTACT_BUILD), None);
+    }
 
     #[test]
     fn offset_preserves_the_fourth_lane_before_subtraction() {
