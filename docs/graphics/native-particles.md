@@ -1,6 +1,6 @@
 # Native particles and effect geometry
 
-Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen; R2's mirror holds the guest's particles as their births ([retire-d3d-r2.md](retire-d3d-r2.md), "R2's particle mirror"), and its game host is not built. Pixel parity and timing are not verified.
+Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen, and the frame graph draws a published set of them in slot 9 of each game view; R2's mirror holds the guest's particles as their births ([retire-d3d-r2.md](retire-d3d-r2.md), "R2's particle mirror"), and its game host is not built. Pixel parity and timing are not verified.
 Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `particle_system.rs`, `particle_definition.rs`, `particle_compute.rs` (`particle_common.wgsl`, `particle_compute.wgsl`, `particle_draw.wgsl`), `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `particles_compute_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -515,12 +515,43 @@ Particles are visual only. A system's state is in its own buffers; nothing
 reads or writes the sim arena or enters its hash. The CPU evaluator is a
 test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
 
+#### The frame graph's particle stage
+
+The frame graph draws GPU particle systems in each game view's slot 9
+(`ViewSlot::Transparents`, the transparents and effects), as it draws the
+markers and the Forge bodies: the game publishes a set, the graph plans a
+stage per view (`native_render::particle_set`,
+`frame_graph/particles.rs`). The births come from the game's model of the
+guest walk (`particle_mirror::spawn`); the stage takes them as input.
+
+| Published (`particle_set::System`) | Holds |
+|---|---|
+| `bitmap` | the bitmap tag's datum and decoded image (`SpriteBitmap`), uploaded once a device while published |
+| `definition`, `sprites` | `particle_definition::definition` then `particle_mirror::owned`; the bitmap's sprite table |
+| `blend` | `Blend::Alpha` or `Blend::Additive` |
+| `births` | the frame's particles as `Spawn`s, in the guest's order; past `MAX_CAPACITY` dropped |
+
+| Step | What it does |
+|---|---|
+| place | after the view's last op of carried `Opaque`, `AfterOpaque` or `AfterLights` (`AfterLights` spans slots 5 to 9), so before the sorted transparents `0x0001e370`; after the op's sun stages, before the bodies and markers at the same op |
+| view | `particle_set::view`: clip from the camera's view-projection, the billboard on its right and up, the W-buffer row `w * 16777215 / far`, floored, culled outside `[0, full scale]` |
+| record | per system: `GpuParticles::new` sized to its births, `mirror` (no survivor, each birth at its own age), then one `ParticleDraw::w_buffered` per system into one render pass on the scene's colour and depth, inside the view's viewport, sampling the system's bitmap with a linear sampler |
+| skip | no published set or none with a birth, no D24 depth, an unusable camera, a view with no op before its sorted transparents; a system `GpuParticles::new` refuses (`Capacity`, `Sprites`) is not drawn |
+
+A view's systems are made per recording, so two views never share births
+in one submission. Pipelines, kernels and sprite textures are kept per
+device; a bitmap no longer published is dropped. The stage counts as
+`timeline::native::Stage::Effects`, one range a system with births.
+`frame_scene::effect::ParticleQuad` (an emitter's registers) is not what
+the stage draws.
+
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
 - The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf and visibility hooks and verifies that the particle update and layered handlers have no particle hooks.
 - `crates/rewrites/native-render/tests/particles_compute_gpu.rs` runs an invented system for forty frames on the GPU and on the CPU reference, more than a workgroup of particles dying across blocks, and requires the same particles in the same order within float tolerance (frame windows are skipped within 1e-3 of a frame boundary). It checks that a dead particle is compacted out, that births past the capacity drop, and that the draw's instance count is the GPU's: a stale record past it is not drawn. It skips without a GPU adapter.
 - One `GpuParticles::update` per submission: the step and births go through the queue.
+- `frame_graph/particles.rs` tests: a published system plans one stage a view, after the op that ends in slot 9 and before the next that starts there, holding the system's own bitmap; no system, no birth, no D24 W-buffer or no game view plans none.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified
@@ -530,7 +561,7 @@ test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
-- GPU particle systems: a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
+- GPU particle systems: the frame graph's particle stage on a running game (nothing publishes a set until the walk model lands), a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 
