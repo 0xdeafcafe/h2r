@@ -74,6 +74,24 @@ The resident opaque world uses a 96-byte vertex. Its layer-3 declaration binds `
 
 The `indexed draws with native bindings` log counts accepted draw bindings since startup and reports every 1,800 acceptances. The `native_transparents_cache_hits` and `native_transparents_cache_misses` frame counters track reuse and packing attempts.
 
+### The sort on the GPU
+
+`native_render::transparent_sort` sorts the entries' keys in one compute workgroup (`transparent_sort.wgsl`): a stable least-significant-bit radix sort of up to `0x400` items. The key is the guest's, as three unsigned words from the lowest: the tie word (`+8`), the view depth (`+4`, mapped so unsigned order is float `>` order, `-0.0` equal to `0.0`) and the class (`+0`). Only the bits that differ between items become passes.
+
+The result is the item indices in ascending key order, equal keys in input order, and a flag when two neighbours share a key. The order stays in a GPU buffer for the ordered indirect draws.
+
+The guest's quicksort leaves equal keys in an order of its own, and its plane comparator is not a total order. The CPU sort (`render_bridge::native_scene_lists::transparents`) therefore stays the order of record for any list the GPU cannot reproduce exactly, and the test reference. A list stays on the CPU, counted under `scene_sort_gpu_refused_<cause>`:
+
+| Cause | When |
+|---|---|
+| `plane` | an entry has a plane (`+0xc` set) |
+| `non_finite` | a NaN or infinite depth |
+| `range` | a class or tie whose guest subtraction could wrap |
+| `count` | more than `0x400` items |
+| `ties` | the sort reports two equal keys |
+
+Tests: `crates/rewrites/native-render/tests/transparent_sort_gpu.rs` (10,000 random keys with many ties against the stable CPU order, equal keys in input order, an empty list, one item).
+
 ### GPU submission
 
 The ordered draw path batches uniforms in the renderer's upload arena and reuses texture and sampler groups keyed by the live views and samplers. The packed vertex buffer can stay on the GPU across views. No transparent draw allocates its own pair of uniform buffers and group.
