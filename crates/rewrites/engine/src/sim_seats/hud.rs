@@ -184,6 +184,7 @@ fn weapons(c: &mut CpuAbi, g: &mut impl Memory, first: usize) -> sim_native::Res
 }
 
 fn step(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> sim_native::Result {
+    super::leaf::at_site(c, g, pc);
     match pc {
         ENTRY => {
             push(c, g, c.ebp)?;
@@ -212,13 +213,13 @@ fn step(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> sim_native::Result {
         WIDGETS_UPDATED => {
             update_fade(c, g)?;
             c.ecx = c.esi;
-            g.call(c, 0x14ddc0, USER_TESTED)
+            super::leaf::call(c, g, super::leaf::Leaf::UserTest, USER_TESTED, |c, g| step(c, g, USER_TESTED))
         }
         USER_TESTED => {
             logic(c, c.eax & 0xff, 0x80);
             c.ebx = 0xffff;
             if c.eax as u8 != 0 {
-                return g.call(c, 0x14de70, PLAYER_FOUND);
+                return super::leaf::call(c, g, super::leaf::Leaf::UserPlayer, PLAYER_FOUND, |c, g| step(c, g, PLAYER_FOUND));
             }
             c.eax = NONE;
             weapons(c, g, 0)

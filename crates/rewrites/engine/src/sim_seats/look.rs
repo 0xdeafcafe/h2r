@@ -3,6 +3,7 @@
 //! come from the calling executor.
 use crate::light_constants::X87;
 use super::device::arm;
+use super::leaf::{self, Leaf};
 use crate::sim_native::{Memory, Result, SegmentMemory, plan::segment, sub_flags};
 use crate::sim_objects::alu;
 use crate::sim_objects::sse::{self, Ss, lane0, load, movaps, ss, ss_reg};
@@ -93,12 +94,9 @@ const SETTINGS: u32 = 0x004e_034c;
 const OBJECT_HEADER: u32 = 0x004e_0300;
 const PLAYER_HEADER: u32 = 0x0051_e9b8;
 const CONTROLLER_TABLE: u32 = 0x004e_61cc;
-const VISIBLE: u32 = 0x000e_4050;
 const WEAPON_READY: u32 = 0x0010_0f70;
 const BIPED: u32 = 0x000c_8880;
-const PLAYER_INDEX: u32 = 0x000b_67a0;
 const PLAYER_LOOK: u32 = 0x001d_08e0;
-const DIRECTION: u32 = 0x0011_df30;
 const SUBMIT: u32 = 0x0018_7b30;
 const SIM_GLOBALS: u32 = 0x004e_6948;
 const TICK_GLOBALS: u32 = 0x0051_0c50;
@@ -122,6 +120,7 @@ pub fn update(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checke
 }
 
 fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
+    leaf::at_site(c, m, pc);
     let sp = c.esp;
     match pc {
         UPDATE => enter(c, m),
@@ -507,7 +506,7 @@ fn after_search(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     c.ecx = c.ebx;
     c.eax = owner & 0xffff;
     c.edx = players;
-    m.call(c, PLAYER_INDEX, 0x1863a6)
+    leaf::call(c, m, Leaf::PlayerIndex, 0x1863a6, |c, m| control_step(c, m, 0x1863a6))
 }
 
 /// No tracked unit: nothing to record, straight to the selection tail.
@@ -546,13 +545,13 @@ fn tracked_object(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
             }
             c.ecx = at(sp, 0x38);
             c.eax = at(sp, 0x30);
-            m.call(c, DIRECTION, 0x1863f7)
+            leaf::call(c, m, Leaf::Direction, 0x1863f7, |c, m| control_step(c, m, 0x1863f7))
         }
         0x1863f7 => {
             // 0x1863f7: the seat's own recorded direction.
             c.ecx = at(c.ebp, 0x34);
             c.eax = at(sp, 0x18);
-            m.call(c, DIRECTION, 0x186403)
+            leaf::call(c, m, Leaf::Direction, 0x186403, |c, m| control_step(c, m, 0x186403))
         }
         _ => {
             // 0x186403: turn the look by the difference of the two.
@@ -644,7 +643,7 @@ fn visibility(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
         c.ebx = alu::shl(c, 1, u32::from(kind), 32);
         logic(c, c.ebx & 1, 0x80);
         if c.ebx & 1 != 0 {
-            return m.call(c, VISIBLE, 0x1865c4);
+            return leaf::call(c, m, Leaf::Visible, 0x1865c4, |c, m| control_step(c, m, 0x1865c4));
         }
     }
     after_visibility(c, m, false)

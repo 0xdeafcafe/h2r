@@ -976,3 +976,111 @@ fn bound_control_audits_through_the_guest() {
     let s = arm::status();
     assert_eq!((s.checked, s.matched, s.mismatched, s.dropped), (4, 4, 0, 0), "{s:?}");
 }
+
+// The seat bodies' leaf callees (`engine::sim_seats::leaf`): each kernel's
+// effect, applied, against the lifted leaf run to its return. Every
+// register the leaf leaves, `xmm0`, the x87 stack, and every byte but the
+// dead stack must agree.
+
+const LEAF_USERS: u32 = RECORDS + 0x100;
+const LEAF_PLAYER: u32 = RECORDS + 0x200;
+const LEAF_VECTOR: u32 = RECORDS + 0x300;
+const LEAF_OUT: u32 = RECORDS + 0x320;
+const LEAF_BODY: u32 = RECORDS + 0x1000;
+const LEAF_TICKS: u32 = RECORDS + 0x380;
+
+fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, case: u32) {
+    use sim_seats::leaf::Leaf;
+    match leaf {
+        Leaf::UserTest | Leaf::UserPlayer => {
+            word(m, 0x004e_8c20, LEAF_USERS);
+            for (i, v) in [5u32, u32::MAX, 0x8100_0007, u32::MAX].into_iter().enumerate() {
+                word(m, LEAF_USERS + 0xc + 4 * i as u32, v);
+            }
+            c.gpr[1] = [0, 1, u32::MAX, 2][case as usize % 4];
+        }
+        Leaf::PlayerIndex => {
+            m.bytes[(LEAF_PLAYER + 0x18) as usize] = [2u8, 0xff, 5, 3][case as usize % 4];
+            word(m, LEAF_PLAYER + 0x74, 4);
+            c.gpr[1] = LEAF_PLAYER;
+        }
+        Leaf::Visible => {
+            word(m, 0x004e_0300, HEADER);
+            word(m, HEADER + 0x44, DATA);
+            word(m, DATA + 2 * 12 + 8, LEAF_BODY);
+            word(m, 0x0051_0c54, LEAF_TICKS);
+            let tick = [30u16, 300, 4, 31, 0][case as usize % 5];
+            m.bytes[(LEAF_TICKS + 2) as usize..][..2].copy_from_slice(&tick.to_le_bytes());
+            m.bytes[(LEAF_BODY + 0xc1) as usize] = u8::from(case == 5);
+            m.bytes[(LEAF_BODY + 0x348) as usize] = u8::from(case != 6);
+            m.bytes[(LEAF_BODY + 0x399) as usize] = [3u8, 120, 0x80, 2, 1, 1, 1][case as usize % 7];
+            m.bytes[(LEAF_BODY + 0x3dc) as usize] = [1u8, 3, 1, 2, 3, 1, 1][case as usize % 7];
+            word(m, LEAF_BODY + 0x14, if case == 3 { 0x8300_0003 } else { u32::MAX });
+            c.gpr[0] = 0x8200_0002;
+        }
+        Leaf::Direction => {
+            let v: [[f32; 3]; 4] = [[1.0, 0.5, -0.25], [-3.0, 0.0, 2.0], [0.0, 0.0, 0.0], [0.1, -0.7, 0.3]];
+            for (i, x) in v[case as usize % 4].into_iter().enumerate() {
+                float(m, LEAF_VECTOR + 4 * i as u32, x);
+            }
+            c.gpr[1] = LEAF_VECTOR;
+            c.gpr[0] = LEAF_OUT;
+        }
+    }
+}
+
+#[test]
+fn seat_leaves_match_lifted() {
+    use sim_seats::leaf::{self, Leaf};
+    let Some((image, ram)) = image() else { return };
+    for l in Leaf::ALL {
+        let mut code = image.original();
+        code.prime(l.target());
+        for case in 0..7 {
+            for control in [0x027f_u16, 0x037f, 0x007f] {
+                let mut mem = ram.clone();
+                word(&mut mem, STACK, EXIT);
+                let mut cpu = Cpu {
+                    gpr: [0x1234_5678, 0x9876_5432, 0x00fe_3420, 0x7b1c, STACK, 0x00aa_bbcc, 0x5151, 0x0e37],
+                    eip: l.target(),
+                    eflags: 0x2,
+                    mxcsr: 0x1fa0,
+                    ..Default::default()
+                };
+                for (i, reg) in cpu.xmm.iter_mut().enumerate() {
+                    *reg = (0x1234_u128 + i as u128) << 100 | 0x4000_0000;
+                }
+                cpu.x87.control = control;
+                leaf_fixture(&mut mem, &mut cpu, l, case);
+                let mut native = Guest::new();
+                native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+                native.write_bytes(0, &mem.bytes, 1).unwrap();
+                let mut regs = abi_cpu(&cpu);
+                // The body's view: the call has pushed its return.
+                regs.esp = STACK + 4;
+                let why = format!("{} case {case} control {control:#06x}", l.name());
+                let effect = leaf::kernel(l, &regs, &native).unwrap_or_else(|d| panic!("{why}: declined {d:?}"));
+                leaf::apply(&mut regs, &mut native, &effect).unwrap();
+                lifted::code::run_until(&mut code, &mut cpu, &mut mem, 1_000_000, |c| c.eip == EXIT)
+                    .unwrap_or_else(|e| panic!("{why}: {e}"));
+                let want = abi_cpu(&cpu);
+                let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.ebp, c.esi, c.edi];
+                assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx ebp esi edi");
+                assert_eq!(regs.esp, want.esp, "{why}: esp");
+                assert_eq!(regs.xmm, want.xmm, "{why}: xmm");
+                assert_eq!(
+                    (regs.x87.st, regs.x87.tag, regs.x87.status, regs.x87.control),
+                    (want.x87.st, want.x87.tag, want.x87.status, want.x87.control),
+                    "{why}: x87"
+                );
+                let start = native.mappings()[0].physical_start as usize;
+                let live = &native.physical_ram()[start..start + RAM];
+                let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+                let first = mem.bytes.iter().zip(live).enumerate()
+                    .find(|(i, (a, b))| a != b && !dead.contains(i))
+                    .map(|(i, (a, b))| (i, *a, *b));
+                assert_eq!(first, None, "{why}: first differing byte (original, port)");
+            }
+        }
+    }
+}
