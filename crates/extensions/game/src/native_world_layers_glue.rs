@@ -221,6 +221,8 @@ pub(crate) struct SkyIssue {
     pub constants: Result<native_render::sky_material::SkyConstants, &'static str>,
     /// The pass's program and textures from the material.
     pub look: Result<Arc<native_render::sky_material::SkyLook>, &'static str>,
+    /// The item's section geometry from the load, and its part.
+    pub geometry: Result<(Arc<native_render::sky_material::SkySection>, u32), &'static str>,
 }
 
 impl SkyIssue {
@@ -237,15 +239,16 @@ impl SkyIssue {
             });
             render_bridge::native_sky::rows_outcome(outcome);
         }
-        let (constants, look) = match &item {
+        let (constants, look, geometry) = match &item {
             Ok(item) => (
                 crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
                 crate::native_sky_glue::look_of(guest, item.shader, item.pass),
+                crate::native_sky_glue::section_of(guest, item.model, item.section).map(|s| (s, item.part)),
             ),
             // Not asked: the item's refusal is the strip's cause.
-            Err(_) => (Err("extraction"), Err("extraction")),
+            Err(_) => (Err("extraction"), Err("extraction"), Err("extraction")),
         };
-        Self { item, constants, look }
+        Self { item, constants, look, geometry }
     }
 }
 

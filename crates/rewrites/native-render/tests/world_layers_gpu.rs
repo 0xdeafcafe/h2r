@@ -910,6 +910,43 @@ fn the_sky_look_from_the_material_is_checked_against_the_strip() {
     assert_eq!(look.check(&fixed), "program");
 }
 
+#[test]
+fn the_sky_section_from_the_load_is_checked_against_the_strip() {
+    use d3d::backend::{StreamBytes, StreamData};
+    use native_render::object_state::STENCIL_MARK_REFERENCE;
+    use native_render::sky_material::SkySection;
+
+    let positions: Vec<u8> = (0..6u8 * 4).collect();
+    let colours: Vec<u8> = (100..100 + 6u8 * 8).collect();
+    let section = SkySection {
+        streams: vec![(4, positions.clone()), (8, colours.clone())],
+        parts: vec![vec![0, 1, 2], vec![3, 5, 4], Vec::new()],
+    };
+    let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
+    draw.indices = Some(vec![0u32, 2, 1].into());
+    draw.streams = vec![
+        StreamBytes { data: StreamData::Owned(positions[12..24].to_vec()), stride: 4 },
+        StreamBytes { data: StreamData::Owned(colours[24..48].to_vec()), stride: 8 },
+    ];
+    assert_eq!(section.check(1, &draw), "matched");
+    assert_eq!(section.check(0, &draw), "indices");
+    assert_eq!(section.check(2, &draw), "part");
+    assert_eq!(section.check(9, &draw), "part");
+    let mut absolute = draw.clone();
+    absolute.indices = Some(vec![3u32, 5, 4].into());
+    absolute.streams[0].data = StreamData::Owned(positions.clone());
+    absolute.streams[1].data = StreamData::Owned(colours.clone());
+    assert_eq!(section.check(1, &absolute), "matched");
+    let mut moved = draw.clone();
+    moved.streams[1].data = StreamData::Owned(colours[16..40].to_vec());
+    assert_eq!(section.check(1, &moved), "streams");
+    let mut stride = draw.clone();
+    stride.streams[0].stride = 12;
+    assert_eq!(section.check(1, &stride), "streams");
+    let short = SkySection { streams: vec![(4, positions[..16].to_vec()), (8, colours.clone())], ..section.clone() };
+    assert_eq!(short.check(1, &draw), "window");
+}
+
 /// A pool the native pass can draw: the lens (a frame sample) at stage 0,
 /// the target's size, the depth tested without a write.
 fn pool_triangle() -> ResolvedDraw {

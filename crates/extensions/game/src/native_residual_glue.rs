@@ -73,6 +73,9 @@ impl d3d::DrawAdmission for ResidualDraws {
         // The pass's program and textures from the material beside the
         // strip's, until the cut binds them.
         native_sky::count_plan(issue.look.as_ref().map_or_else(|why| *why, |look| look.check(draw)));
+        // The section's geometry from the load beside the strip's, until
+        // the cut uploads it into `SectionKey::Sky`.
+        native_sky::count_geometry(issue.geometry.as_ref().map_or_else(|why| *why, |(section, part)| section.check(*part, draw)));
         let constants = issue.constants;
         let plan = native_sky::admit(
             issue.item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),

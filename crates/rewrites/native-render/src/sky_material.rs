@@ -161,6 +161,60 @@ impl SkyLook {
     }
 }
 
+/// A sky model section's geometry as the load read it from the map
+/// (`tags::model::RenderModelGeometry`, the section's raw block): each
+/// vertex stream's stride and bytes, in descriptor order, and each part's
+/// index run. The strip's section key (`SectionKey::Sky`) is filled from
+/// the guest's draw until the cut uploads these.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkySection {
+    pub streams: Vec<(u32, Vec<u8>)>,
+    pub parts: Vec<Vec<u16>>,
+}
+
+impl SkySection {
+    pub fn of(section: &tags::geometry::Section) -> Self {
+        let streams = section.vertex_buffers.iter().map(|v| (u32::from(v.stride), section.data(v).to_vec())).collect();
+        let parts = section.parts.iter().map(|p| {
+            let first = usize::from(p.first_index);
+            section.indices.get(first..first + usize::from(p.index_count)).map_or_else(Vec::new, <[u16]>::to_vec)
+        }).collect();
+        Self { streams, parts }
+    }
+
+    /// Whether the guest's draw of part `part` is this section's: its
+    /// index list (absolute, or rebased by the part's smallest index) and
+    /// each of its streams the section stream of its stride over the
+    /// part's vertex window. `matched`, or the first that differs: `part`
+    /// (no such part, or an empty one), `indices`, `window` (the part
+    /// indexes past a stream), `streams`. Counted `sky_geometry_<outcome>`.
+    pub fn check(&self, part: u32, draw: &d3d::ResolvedDraw) -> &'static str {
+        let Some(run) = usize::try_from(part).ok().and_then(|p| self.parts.get(p)).filter(|r| !r.is_empty()) else { return "part" };
+        let lo = run.iter().copied().min().unwrap_or(0);
+        let hi = run.iter().copied().max().unwrap_or(0);
+        let Some(indices) = draw.indices.as_deref() else { return "indices" };
+        let absolute = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r));
+        let rebased = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r - lo));
+        if !absolute && !rebased {
+            return "indices";
+        }
+        let first = if rebased { usize::from(lo) } else { 0 };
+        let count = usize::from(hi) + 1 - first;
+        for stream in &draw.streams {
+            let stride = stream.stride as usize;
+            let windows: Vec<&[u8]> = self.streams.iter().filter(|(s, _)| *s == stream.stride)
+                .filter_map(|(_, bytes)| bytes.get(first * stride..(first + count) * stride)).collect();
+            if windows.is_empty() {
+                return if self.streams.iter().any(|(s, _)| *s == stream.stride) { "window" } else { "streams" };
+            }
+            if !windows.iter().any(|w| stream.data.get(..w.len()) == Some(*w)) {
+                return "streams";
+            }
+        }
+        "matched"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
