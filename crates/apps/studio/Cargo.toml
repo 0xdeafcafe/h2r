@@ -66,6 +66,7 @@ map.workspace = true
 # tables come from the user's own default.xbe.
 audio = { path = "../../platform/audio" }
 wma = { path = "../../platform/wma" }
+sound-clips = { path = "../../platform/sound-clips" }
 # The tag editor's field registry (schema structure + definition names),
 # and the tags tree the workspace keeps (src/app/workspace.rs).
 tags.workspace = true

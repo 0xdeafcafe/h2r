@@ -1,0 +1,16 @@
+[package]
+name = "sound-clips"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The one sound decoder: a snd! permutation to PCM, with a keyed clip cache and chunk streaming"
+
+[dependencies]
+assets.workspace = true
+map.workspace = true
+tags.workspace = true
+audio = { path = "../audio", default-features = false }
+wma = { path = "../wma" }
+
+[lints]
+workspace = true

@@ -1104,6 +1104,7 @@ dependencies = [
  "sha2 0.10.9",
  "shaders",
  "sim-bench",
+ "sound-clips",
  "studio-proto",
  "subtle",
  "symbols",
@@ -6899,6 +6900,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sound-clips"
+version = "0.1.0"
+dependencies = [
+ "assets",
+ "audio",
+ "map",
+ "tags",
+ "wma",
+]
+
+[[package]]
 name = "sound-edit"
 version = "0.1.0"
 dependencies = [
@@ -7301,6 +7313,7 @@ dependencies = [
  "scenario-edit",
  "serde_json",
  "sim-bench",
+ "sound-clips",
  "sound-edit",
  "stage-kit",
  "starter-map",
