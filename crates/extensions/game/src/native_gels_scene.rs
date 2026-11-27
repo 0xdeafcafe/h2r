@@ -136,12 +136,12 @@ fn shader_passes<R: std::io::Read + std::io::Seek>(
 /// `implementation` at its animation's baseline
 /// (`PassAnimation::baseline`), and the animation; `material` as it is
 /// when the pass animates nothing.
-fn baseline(
-    material: &Material,
+fn baseline<'m>(
+    material: &'m Material,
     layer_pass: usize,
     implementation: usize,
-    properties: &[tags::material::AnimatedProperty],
-) -> Result<(std::borrow::Cow<'_, Material>, Option<PassAnimation>), String> {
+    properties: &[tags::shader::AnimatedProperty],
+) -> Result<(std::borrow::Cow<'m, Material>, Option<PassAnimation>), String> {
     let at = |m: &Material| {
         m.layers
             .iter()
