@@ -1,7 +1,7 @@
 //! The pure half of the layer skip (docs/graphics/framescene.md): the
 //! list items a layer draw holds, the world layers' view slots, and the
-//! clear of a scene-only layer's bits. It reads and writes guest memory
-//! through [`crate::camera::GuestWrite`] and needs no GPU, so the feature
+//! read of the items a layer leaves to the guest. It reads guest memory
+//! through [`crate::camera::GuestRead`] and needs no GPU, so the feature
 //! crate's hooks build it without the `gpu` feature; `layer_pass`
 //! re-exports it.
 
@@ -36,11 +36,12 @@ impl ListItem {
     }
 }
 
-/// The world layers that draw only from the scene (native-only design
+/// The world layers cut to the scene (native-only design
 /// section 2): 1, 3, 5, 8 and 20 in slot 1, 7 in slot 3 after the object
-/// shadows, 2 in slot 6. A part of one of them the scene cannot draw is a
-/// named drop, never a guest draw.
-pub const WORLD_LAYERS: [u8; 7] = [1, 2, 3, 5, 7, 8, 20];
+/// shadows, 2 in slot 6, 17 in slot 12. A part of one of them the scene
+/// cannot draw keeps its guest draw, counted by layer, kind and cause
+/// (`scene_kept_*`, [`held_items`]), until the scene draws it.
+pub const WORLD_LAYERS: [u8; 8] = [1, 2, 3, 5, 7, 8, 17, 20];
 
 /// The view slot a world layer draws in; `None` for any other layer.
 pub fn world_slot(layer: u8) -> Option<frame_scene::ViewSlot> {
@@ -49,39 +50,39 @@ pub fn world_slot(layer: u8) -> Option<frame_scene::ViewSlot> {
         1 | 3 | 5 | 8 | 20 => Some(ViewSlot::OpaqueBase),
         7 => Some(ViewSlot::ShadowsAndLayer7),
         2 => Some(ViewSlot::Layer2),
+        17 => Some(ViewSlot::Layer17),
         _ => None,
     }
 }
 
-/// What [`clear_scene_layer`] cleared.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SceneLayerSkip {
-    /// The items the scene draws, in the list's order.
-    pub drawn: Vec<ListItem>,
-    /// Every item whose bit was cleared, drawn or dropped, for the restore.
-    pub cleared: crate::skip::Cleared,
-    /// Items the scene did not draw: their guest draw is gone too.
-    pub refused: usize,
-    /// Items whose render record did not read: dropped, never drawn.
-    pub unreadable: usize,
+/// One geometry item of the current list that holds a layer's bit, as
+/// [`held_items`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    /// Its index in the list.
+    pub slot: u32,
+    /// The item, or `None` when its render record does not read.
+    pub item: Option<ListItem>,
 }
 
-/// `layer_pass::clear_layer_items` for a layer that draws only from the scene: no
-/// kept item keeps a guest draw, so there is no order rule. Each geometry
-/// item of the list holding `layer`'s bit loses it: `take` says the scene
-/// draws it ([`SceneLayerSkip::drawn`]); the rest are counted `refused` (the
-/// scene has no draw for them) or `unreadable` (the item's render record
-/// does not read). `objects` false leaves the object items alone (layer
-/// 3's objects are consumed by the sorted walk). Items that are not a
-/// geometry build, or draw no record, draw nothing and keep their bit.
-/// `None` when the layer is not current or the list does not read; nothing
-/// is written then.
-pub fn clear_scene_layer(
-    mem: &mut dyn crate::camera::GuestWrite,
-    layer: u32,
-    objects: bool,
-    take: &dyn Fn(ListItem) -> bool,
-) -> Option<SceneLayerSkip> {
+impl Held {
+    /// The counter name of its kind: `world`, `object` or `unreadable`.
+    pub fn kind(self) -> &'static str {
+        match self.item {
+            Some(ListItem::World(_)) => "world",
+            Some(ListItem::Object { .. }) => "object",
+            None => "unreadable",
+        }
+    }
+}
+
+/// The geometry items of the current list that still hold `layer`'s bit,
+/// in the list's order: after the native pass cleared the bit on those it
+/// draws, the ones the guest still draws. `objects` false leaves the
+/// object items out (layer 3's are the sorted walk's). Items that are not
+/// a geometry build, or draw no record, are not listed. Reads only.
+/// `None` when the layer is not current or the list does not read.
+pub fn held_items(mem: &dyn crate::camera::GuestRead, layer: u32, objects: bool) -> Option<Vec<Held>> {
     use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, MAX_ITEMS, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use crate::world::Owner;
     if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
@@ -99,13 +100,7 @@ pub fn clear_scene_layer(
     }
     items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
     let bit = 1u32 << layer;
-    let mut out = SceneLayerSkip {
-        drawn: Vec::new(),
-        cleared: crate::skip::Cleared { layer, items: Vec::new() },
-        refused: 0,
-        unreadable: 0,
-    };
-    let mut writes = Vec::new();
+    let mut out = Vec::new();
     for i in first..count {
         let item = items + ITEM_SIZE * i;
         let mask = mem.read_u32(item + 0x10)?;
@@ -132,17 +127,10 @@ pub fn clear_scene_layer(
                 ListItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
             })
         })();
-        match found {
-            Some(ListItem::Object { .. }) if !objects => continue,
-            Some(found) if take(found) => out.drawn.push(found),
-            Some(_) => out.refused += 1,
-            None => out.unreadable += 1,
+        if !objects && matches!(found, Some(ListItem::Object { .. })) {
+            continue;
         }
-        writes.push((item, mask));
-    }
-    for (item, mask) in writes {
-        mem.write_u32(item + 0x10, mask & !bit)?;
-        out.cleared.items.push(item);
+        out.push(Held { slot: i, item: found });
     }
     Some(out)
 }

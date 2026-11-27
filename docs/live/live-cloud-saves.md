@@ -108,7 +108,9 @@ game starts; the tvOS and iOS apps, on Live by default, do the same with
 the account in their data root's `live/accounts.json`. Then
 `cloud_saves::session::start` (shared by both) lists the account's items, scans U: and the profile
 settings, and merges them with the last agreed state (below). Everything
-the merge pulls is written before the game reads U:. Settings values go
+the merge pulls is written before the game reads U:.
+
+Settings values go
 through the settings store, the one writer of `settings.toml`.
 
 The last agreed state (each item's version and hash when both sides last

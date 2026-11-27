@@ -1,10 +1,12 @@
 //! The main menu's Theater library, film lobby and host playback controls.
 
 pub mod adapter;
+pub mod hud;
 mod link;
 mod overlay;
 pub use link::external_link;
 mod pages;
+mod pause_screen;
 mod playback_page;
 pub mod preview;
 mod selector;
@@ -23,6 +25,10 @@ pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
 pub const LOADING: &str = "theater.loading";
 pub const PAUSE_MENU: &str = "theater.pause-menu";
+/// The canvas the game's HUD is laid out on: the rail's hit box
+/// ([`Theater::playback_timeline`]) is in its pixels when the game draws
+/// the bar.
+pub const HUD_CANVAS: (u32, u32) = (640, 480);
 
 /// The main menu's retail list constructor, item text and press, and
 /// THEATER, the one row of ours, after System Link and above Settings
@@ -389,6 +395,7 @@ impl Theater {
             film: film.id.clone(),
             from_tick,
             to_tick,
+            ..Default::default()
         });
         let rpc = adapter::Playback::socket(socket)?;
         Ok(Self(Arc::new(Shared {
@@ -622,6 +629,7 @@ impl Theater {
                     film: film.id.clone(),
                     from_tick: row.clip.from_tick,
                     to_tick: row.clip.to_tick,
+                    ..Default::default()
                 }),
                 archive_clip: Some((row.clip.id, row.clip.title)),
             });
@@ -1049,11 +1057,34 @@ impl Theater {
         self.0.playback.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The playback page as the host's model has it, whoever draws it.
     pub fn playback_page(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
         self.session().view()
     }
 
-    pub fn playback_timeline(&self) -> Option<[u32; 4]> {
+    /// The page the host draws over the picture: `None` for what the game
+    /// draws itself, the bar as its HUD ([`hud`]) and the pause menu as
+    /// its screen (`pause_screen`), docs/game/theater.md "Who draws what".
+    pub fn host_page(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        self.session().host_view()
+    }
+
+    /// The pause menu for the game's screen to show, while the game draws
+    /// it.
+    fn pause_model(&self) -> Option<pause_screen::Model> {
+        self.session().pause_view().map(|spec| pause_screen::model(&spec))
+    }
+
+    /// The viewer last drove the film from the keyboard: the playback
+    /// page's legend shows [`playback_icons`]' keys, else the pad's buttons.
+    pub fn keyboard_in_use(&self) -> bool {
+        self.session().last_device == overlay::Device::Keyboard
+    }
+
+    /// The rail's hit box for a click, and the canvas it is measured on:
+    /// [`HUD_CANVAS`] when the game draws the bar, `None` for the host's
+    /// page (the page's own size).
+    pub fn playback_timeline(&self) -> Option<([u32; 4], Option<(u32, u32)>)> {
         self.session().timeline()
     }
 
@@ -1163,12 +1194,16 @@ impl Theater {
         std::mem::take(&mut self.session().leave_requested)
     }
 
+    /// A screenshot is due now. One asked for while the game draws the
+    /// bar or the menu waits until they are off the picture
+    /// (`overlay::Session::take_screenshot`).
     pub fn screenshot_requested(&self) -> bool {
-        std::mem::take(&mut self.session().screenshot)
+        self.session().take_screenshot(std::time::Instant::now())
     }
 
     pub fn screenshot_answer(&self, answer: Result<PathBuf, String>) {
         let mut session = self.session();
+        session.screenshot_done();
         session.notice = Some(match answer {
             Ok(path) => format!(
                 "Saved {}",
@@ -1195,6 +1230,11 @@ impl Theater {
         let (clip, open_error, failed, save) = {
             let mut session = self.session();
             session.pump();
+            // What the game can draw of the film itself; the host's page
+            // keeps the rest.
+            session.guest_hud = hud::joined();
+            session.guest_menu = pause_screen::installed();
+            hud::publish(session.hud_state(), session.notice.as_deref());
             (
                 session.completed_clip.take(),
                 session.open_error.take(),
@@ -1215,12 +1255,44 @@ impl Theater {
         }
         if let Some(clip) = clip {
             if let Err(error) = self.edit_clips(|clips| {
-                if !clips.contains(&clip) {
-                    clips.push(clip);
+                if !clips.iter().any(|c| c.same_range(&clip)) {
+                    let n = clips.iter().filter(|c| c.film == clip.film).count() + 1;
+                    clips.push(Clip {
+                        title: format!("Clip {n}"),
+                        ..clip
+                    });
                 }
             }) {
                 self.session().notice = Some(error);
             }
         }
     }
+}
+
+/// The keys the playback page's legend shows when the keyboard drives the
+/// film: each pad button's glyph drawn as the key the Theater reads for
+/// the same action (`theater_overlay::desktop::key`).
+pub fn playback_icons() -> crate::icons::Icons {
+    use font::icons::{Button, KeyIcon, KeyLabels, key_label};
+    let keys: KeyLabels = [
+        (Button::A, "space"),
+        (Button::B, "escape"),
+        (Button::X, "x"),
+        (Button::Y, "c"),
+        (Button::White, "arrowup"),
+        (Button::Black, "arrowdown"),
+        (Button::LeftTrigger, "bracketleft"),
+        (Button::RightTrigger, "bracketright"),
+        (Button::DpadUp, "f12"),
+        (Button::DpadDown, "period"),
+        (Button::DpadLeft, "arrowleft"),
+        (Button::DpadRight, "arrowright"),
+        (Button::Start, "escape"),
+        (Button::Back, "h"),
+        (Button::LeftStick, "wasd"),
+    ]
+    .into_iter()
+    .map(|(button, key)| (button, KeyIcon::Key(key_label(key))))
+    .collect();
+    crate::icons::Icons::keyboard(keys)
 }

@@ -20,6 +20,21 @@ pub fn republish(m: &dyn GuestMemory) {
         #[cfg(feature = "gpu")]
         d3d::pipeline_store::set_map(&name);
     }
+    publish_file(m);
+}
+
+/// Publishes the file the loaded map's slot was copied from: every native
+/// reader opens that file rather than a path guessed from the name.
+fn publish_file(m: &dyn GuestMemory) {
+    #[cfg(feature = "gpu")]
+    if let Ok(name) = crate::health::loaded_map_name(m) {
+        crate::native_map::set_loaded_slot(
+            &name,
+            crate::map_slots::active_file(&crate::layout_glue::ReadGm(m)),
+        );
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = m;
 }
 
 type MapChange = Box<dyn Fn(Option<&vfs::HostFile>) + Send + Sync>;
@@ -86,13 +101,16 @@ impl EditorSources {
     }
 }
 
+/// The feature's name, for features that open the map at game start.
+pub const FEATURE: &str = "loaded_map";
+
 /// The game-start observer that publishes the loaded map's name.
 pub struct LoadedMap;
 
 impl Feature for LoadedMap {
     fn manifest(&self) -> Manifest {
         Manifest::new(
-            "loaded_map",
+            FEATURE,
             "Publishes the loaded map's name to the host panel",
         )
         .doc("docs/runtime/level-boot.md")
@@ -105,6 +123,14 @@ impl Feature for LoadedMap {
         });
         // A read-only observer on the game-start point, like `hud`'s and
         // `health`'s; ordered after `hud`'s.
+        // The map's file is published before the start too: the HUD kit
+        // opens the map ahead of the activation's return.
+        b.raw()
+            .before(&hooks::points::GAME_ACTIVATE, "publish the loaded map's file", |c| {
+                let rt = std::sync::Arc::clone(c.ctx.runtime());
+                publish_file(&*rt.memory());
+                Ok(hooks::Flow::Continue)
+            });
         b.game()
             .on_start("publish the loaded map", |o| republish(&*o.guest()))
             .after_feature("hud");

@@ -280,6 +280,7 @@ fn legacy_clip_only_offers_delete_and_explains_playback_once() {
         film: film.id.clone(),
         from_tick: 0,
         to_tick: 120,
+        ..Default::default()
     };
     theater.state().select(Entry {
         film,

@@ -89,7 +89,7 @@ period per client (**E**, notes). The host judges hits.
 
 **2. The actor channel** (`crates/live/actor-net`). A host-to-client
 stream for what layer 1 lacks. It is unreliable and ordered by tick, sent
-on the [Live datagram tunnel](../live/dedicated-host.md#host-tunnel) next
+on the [Live datagram tunnel](../live/dedicated-host-ops.md#host-tunnel) next
 to the game's own packets. The host schedules one budget per negotiated
 tunnel peer and enqueues packets after capture. The client drains a bounded
 inbox before the game tick. A new tunnel peer is owed a key, and repeated

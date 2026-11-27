@@ -13,7 +13,9 @@ mod extrude;
 mod inset;
 mod merge;
 mod quads;
+mod sculpt;
 mod surface;
 mod transform;
 
+pub use sculpt::{Brush, Falloff, MAX_PASSES, MAX_VERTS, Stroke};
 pub use transform::Affine;

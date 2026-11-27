@@ -40,7 +40,7 @@
 //! a bitmap frame, render-state or stage-state animation refuses
 //! ([`LayerRefusal::Animation`]).
 
-pub use crate::layer_items::{ListItem, SceneLayerSkip, SkipItem, WORLD_LAYERS, clear_scene_layer, world_slot};
+pub use crate::layer_items::{Held, ListItem, SkipItem, WORLD_LAYERS, held_items, world_slot};
 
 mod animation;
 mod pixel;
@@ -1081,7 +1081,7 @@ pub(crate) mod tests {
         }
         let p = timed(4.0, f);
         assert_eq!(property_value(&p, 1, Some(1.0), true), Err(LayerRefusal::Wave { property: 1, wave: 9 }));
-        let mut slab = vec![0u8; Tables::ENGINE_SLAB.len()];
+        let mut slab = Tables::procedural_slab();
         slab[9 * TABLE_LEN..10 * TABLE_LEN].fill(255);
         Tables::install_engine_slab(&slab).unwrap();
         assert_eq!(property_value(&p, 1, Some(1.0), true), Ok(1.0));
@@ -1399,40 +1399,46 @@ pub(crate) mod tests {
         }
         assert_eq!(world_slot(7), Some(ViewSlot::ShadowsAndLayer7), "after the object shadows");
         assert_eq!(world_slot(2), Some(ViewSlot::Layer2));
-        assert!(world_slot(7) > world_slot(1) && world_slot(2) > world_slot(7));
-        for layer in [4, 6, 10, 15, 16, 17, 18] {
+        assert_eq!(world_slot(17), Some(ViewSlot::Layer17), "after the flare query, before the post");
+        assert!(world_slot(7) > world_slot(1) && world_slot(2) > world_slot(7) && world_slot(17) > world_slot(2));
+        for layer in [4, 6, 10, 15, 16, 18] {
             assert_eq!(world_slot(layer), None, "layer {layer} is not a world layer");
         }
         assert!(WORLD_LAYERS.iter().all(|&l| world_slot(l).is_some()));
     }
 
-    /// No item keeps its guest draw: what the scene does not draw is
-    /// cleared and counted, in any order, and an unreadable record is a
-    /// drop of its own.
+    /// What a world layer leaves to the guest is read, never cleared: the
+    /// items still holding the bit after the native pass's clear, each with
+    /// its kind, an unreadable record's as `unreadable`, so each is counted
+    /// by name while its guest draw stays.
     #[test]
-    fn an_unreadable_part_is_a_named_drop() {
-        use crate::skip::ITEM_SIZE;
-        // Record 1 cluster 7, record 2 an object's, record 3 placement 9;
-        // item 3's record 9 was never written.
+    fn a_world_layer_keeps_the_guest_draw_of_what_the_pass_refuses() {
+        // Record 1 cluster 7, record 2 an object's, record 3 placement 9.
         let records = [(1, 0, u32::MAX, 7 << 9), (2, 0, 0xe100_0001, 0), (3, 1 << 12, u32::MAX, 9 << 18)];
-        let items = [(1, 1 << 5), (2, 1 << 5), (3, 1 << 5), (9, 1 << 5), (1, 1 << 3)];
+        let items = [(1, 1 << 5), (2, 1 << 5), (3, 1 << 5), (1, 1 << 3)];
         let mut m = layer_list(5, &records, &items);
-        // The scene draws the placement only: the cluster is refused, the
-        // object is left (layer 3's rule), the item of layer 3 is not ours.
-        let skip = clear_scene_layer(&mut m, 5, false, &|i| matches!(i, ListItem::World(SkipItem { owner: crate::world::Owner::Instance(9), .. }))).unwrap();
+        // The pass takes the placement only.
+        let skip = clear_layer_items(&mut m, 5, &|i| match i {
+            ListItem::World(SkipItem { owner: crate::world::Owner::Instance(9), .. }) => TAKE,
+            _ => ItemSkip { take: false, free: true },
+        })
+        .unwrap();
         assert_eq!(skip.drawn.iter().map(|i| i.slot()).collect::<Vec<_>>(), [2]);
-        assert_eq!((skip.refused, skip.unreadable), (1, 1));
-        assert_eq!(skip.cleared.items, [ITEMS, ITEMS + 2 * ITEM_SIZE, ITEMS + 3 * ITEM_SIZE]);
-        assert_eq!(mask_at(&m, 0), Some(0), "the refused part draws nothing");
-        assert_eq!(mask_at(&m, 3), Some(0), "the unreadable part draws nothing");
-        assert_eq!(mask_at(&m, 1), Some(1 << 5), "objects are the walk's when asked");
-        assert_eq!(mask_at(&m, 4), Some(1 << 3), "another layer's bit");
-        // With objects, the refused object is dropped too.
-        let mut m = layer_list(5, &records, &items);
-        let skip = clear_scene_layer(&mut m, 5, true, &|_| false).unwrap();
-        assert_eq!((skip.drawn.len(), skip.refused, skip.unreadable), (0, 3, 1));
-        assert!((0..4).all(|i| mask_at(&m, i) == Some(0)));
-        assert_eq!(clear_scene_layer(&mut m, 7, true, &|_| true), None, "not the current layer");
+        let held = held_items(&m, 5, true).unwrap();
+        assert_eq!(held.iter().map(|h| (h.slot, h.kind())).collect::<Vec<_>>(), [(0, "world"), (1, "object")]);
+        assert_eq!(mask_at(&m, 0), Some(1 << 5), "the refused part keeps its guest draw");
+        assert_eq!(mask_at(&m, 1), Some(1 << 5), "the refused object keeps its guest draw");
+        assert_eq!(mask_at(&m, 2), Some(0), "the drawn part's guest draw is gone");
+        assert_eq!(mask_at(&m, 3), Some(1 << 3), "another layer's bit");
+        let structure = held_items(&m, 5, false).unwrap();
+        assert_eq!(structure.iter().map(|h| h.slot).collect::<Vec<_>>(), [0], "layer 3's objects are the walk's");
+        assert_eq!(held_items(&m, 7, true), None, "not the current layer");
+        // Item 1's record 9 was never written: listed as unreadable, its
+        // bit untouched.
+        let m = layer_list(5, &records, &[(1, 1 << 5), (9, 1 << 5)]);
+        let held = held_items(&m, 5, true).unwrap();
+        assert_eq!(held.iter().map(|h| (h.slot, h.kind())).collect::<Vec<_>>(), [(0, "world"), (1, "unreadable")]);
+        assert_eq!(mask_at(&m, 1), Some(1 << 5));
     }
 
     /// Five structure items; the middle one keeps its guest draw. When it

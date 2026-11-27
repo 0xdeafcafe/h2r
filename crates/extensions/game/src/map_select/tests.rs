@@ -432,9 +432,10 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     for line in [
         "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
-        "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers, map-select:land a Firefight lobby on its kit map] -> original",
+        "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers, map-select:land a Firefight lobby on its kit map, map-select:pick a map the game type supports] -> original",
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
         "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
+        "0x0011cae0 UI_LANGUAGE: before [map-select:a map's pane lists what it supports] -> original",
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
         "0x002bb384 MAP_SCREEN_FREE: observe_before [map-select:forget the freed map list] -> original",
         "0x002300ea SCREEN_BACK_EVENT: before [map-select:return from maps to their folders",
@@ -478,8 +479,10 @@ fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
         [
             calls::FEATURE,
             skulls_custom::FEATURE,
-            // Select Map's two tick hooks: the offers' refresh, and the
-            // Firefight lobby's landing on its kit map.
+            // Select Map's three tick hooks: the offers' refresh, the
+            // Firefight lobby's landing on its kit map, and the pick of a
+            // map the game type supports.
+            FEATURE,
             FEATURE,
             FEATURE,
             coop_probe::LIVE_ID,
@@ -791,4 +794,114 @@ fn a_firefight_variant_keeps_every_map_in_the_one_list() {
     assert_eq!(selection.picker_catalogue().all().count(), 4, "unsupported maps stay visible");
     assert_eq!(selection.picker_catalogue().modes().played, crate::map_modes::Played::Firefight);
     assert_eq!(selection.begin_picker(Mode::Forge, Some(holdout)).mode, super::Mode::Categories);
+}
+
+/// Lockout with a Siege variant and an AI ground variant, Midship with
+/// Siege's sites, Ascension with neither, for a lobby playing `played`.
+fn with_variants(played: crate::map_modes::Played) -> Catalogue {
+    use crate::map_modes::{Support, Variant, analyse};
+    let cat = Catalogue::new([
+        map(1, "Lockout", 1, r"d:\maps\lockout"),
+        map(2, "Midship", 2, r"d:\maps\midship"),
+        map(3, "Ascension", 3, r"d:\maps\ascension"),
+    ]);
+    let variant = |file: &str, name: &str, firefight, siege| Variant {
+        file: file.into(),
+        name: name.into(),
+        support: Support { firefight, siege },
+    };
+    let view = analyse(&cat, played, None, &|m| m.name == "Midship", &|m| {
+        if m.name == "Lockout" {
+            vec![variant("towers", "Lockout Towers", true, false), variant("keep", "Castle Keep", false, true)]
+        } else {
+            Vec::new()
+        }
+    });
+    cat.with_modes(view)
+}
+
+#[test]
+fn a_map_row_reads_its_name_only() {
+    use crate::map_modes::Played;
+    for played in [Played::Other, Played::Firefight, Played::Siege] {
+        let cat = with_variants(played);
+        for (id, _) in list_for(&cat, Mode::Maps(Category::Halo2), &|_| 0) {
+            assert_eq!(row_label(&cat, Mode::Maps(Category::Halo2), id), None, "the slot's own name, {played:?}");
+        }
+    }
+}
+
+#[test]
+fn the_pane_lists_what_the_focused_map_supports() {
+    use crate::map_modes::Played;
+    let cat = with_variants(Played::Other);
+    let maps = Mode::Maps(Category::Halo2);
+    assert_eq!(pane_text(&cat, maps, 1, 0).as_deref(), Some("Supports\nFirefight on Lockout Towers\nSiege on Castle Keep"));
+    assert_eq!(pane_text(&cat, maps, 2, 0).as_deref(), Some("Supports\nSiege"));
+    assert_eq!(pane_text(&cat, maps, 3, 0), None);
+    assert_eq!(pane_text(&cat, Mode::Categories, 1, 0), None, "a category row is not a map");
+    let siege = with_variants(Played::Siege);
+    assert_eq!(pane_text(&siege, maps, 3, 0).as_deref(), Some("No Siege sites or flag stand"));
+}
+
+#[test]
+fn a_map_with_variants_opens_its_page_and_a_map_without_picks() {
+    use crate::map_modes::Played;
+    let cat = with_variants(Played::Siege);
+    // Siege lists Lockout (through Castle Keep) with Midship, first.
+    assert_eq!(list_for(&cat, Mode::Maps(Category::Halo2), &|_| 0), [(1, 0), (2, 0), (3, 0)]);
+    assert!(opens_page(&cat, 1));
+    assert!(!opens_page(&cat, 2), "no variants: A picks it");
+    assert!(!opens_page(&cat, 3), "refused, not opened");
+    let page = Mode::Variants { map: 1, from: Category::Halo2 };
+    // Every row carries the map's id, so each shows its picture.
+    assert_eq!(list_for(&cat, page, &|_| 0), [(1, 0), (1, 0), (1, 0)]);
+    let names: Vec<String> = (0..3).map(|row| page_label(&cat, 1, row).unwrap().1).collect();
+    assert_eq!(names, ["Lockout", "Castle Keep", "Lockout Towers"]);
+    assert_eq!(page_label(&cat, 1, 3), None);
+    let slots: Vec<u32> = (0..3).map(|row| page_label(&cat, 1, row).unwrap().0).collect();
+    assert!(slots.iter().all(|&n| n >= (Category::ALL.len() + MAX_MAPS) as u32), "past the maps' labels");
+    // Each row has its own list; the map itself cannot play Siege.
+    assert_eq!(pane_text(&cat, page, 1, 0).as_deref(), Some("No Siege sites or flag stand"));
+    assert_eq!(pane_text(&cat, page, 1, 1).as_deref(), Some("Supports\nSiege"));
+    assert_eq!(pane_text(&cat, page, 1, 2).as_deref(), Some("No Siege sites or flag stand\nSupports\nFirefight"));
+    let rows = page_of(&cat, 1);
+    assert_eq!(crate::map_modes::refusal(rows[0].support, Played::Siege), Some(crate::lobby_tabs::Reason::MapNoSiege));
+    assert_eq!(crate::map_modes::refusal(rows[1].support, Played::Siege), None);
+    assert_eq!(rows[1].file.as_deref(), Some("keep"));
+    // A map without variants has no page.
+    assert!(list_for(&cat, Mode::Variants { map: 2, from: Category::Halo2 }, &|_| 0).is_empty());
+}
+
+#[test]
+fn back_from_a_page_reopens_its_maps_on_the_map() {
+    let f = Flow::default();
+    f.maps_on(Category::Halo2, 7);
+    let open = f.opening().unwrap();
+    assert_eq!(open.mode, Mode::Maps(Category::Halo2));
+    assert_eq!((open.focus, open.focus_map), (None, Some(7)));
+}
+
+#[test]
+fn the_pane_is_placed_where_the_handler_reads_a_description() {
+    // The handler shows `slot + MP_DESC + (language << 8)` in 32 bits.
+    let read = |slot: u32, language: u32| slot.wrapping_add(SLOT_DESC).wrapping_add(language << 8);
+    for (region, slot) in [(0x0100_0000u32, 0x8012_3464u32), (0x9000_0010, 0x0034_5678), (0x0200_0abc, 0x0200_0000)] {
+        let panes = [
+            Mode::Categories,
+            Mode::Maps(Category::Halo2),
+            Mode::Pack(4),
+            Mode::Variants { map: 1, from: Category::Mods },
+        ];
+        let mut placed = Vec::new();
+        for mode in panes {
+            let at = pane_at(region, mode, slot);
+            assert_eq!(read(slot, pane_language(at, slot)), at, "{region:#x} {slot:#x} {mode:?}");
+            assert!(at >= region + PANES_AT && at + PANE_UNITS as u32 * 2 <= region + REGION);
+            placed.push(at);
+        }
+        assert!(placed.windows(2).all(|w| w[1] - w[0] >= PANE_UNITS as u32 * 2), "the panes do not overlap");
+    }
+    assert_eq!(pane_bytes(&"x".repeat(1000)).len(), PANE_UNITS * 2);
+    assert_eq!(pane_bytes("ab"), [b'a', 0, b'b', 0, 0, 0]);
 }

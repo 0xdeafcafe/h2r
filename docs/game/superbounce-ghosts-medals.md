@@ -379,10 +379,10 @@ they are shown, as kill medals are worked out from kills.
   is released before the consoles that send them. A game's snapshot
   serves its last 100 `bounces` (each with `monster` when true) and `bounced` beside its `kills`; the
   stats summary counts `bounces` and `bounced` in the totals and in an
-  account's row ([live-api.md](../live/live-api.md#stats-summary)). Live
+  account's row ([live-api.md](../live/live-api-theater-stats.md#stats-summary)). Live
   projects the medals from them at ingest with the Tracker's projection
   (`film::events::medals::Projection`) and serves them in the game's and
-  the account's `medals` ([live-api.md](../live/live-api.md#medals)). The
+  the account's `medals` ([live-api.md](../live/live-api-theater-stats.md#medals)). The
   site reads those for the carnage report, a game's preview, the medal
   chest and the service record; it does not count medals itself. A bot's
   bounces are in the game's record and the summary's totals, and in no
@@ -449,6 +449,11 @@ Lab runs through the agent API at 30 frames a second, as
   with `render.frame`, against `h2 hud preview superbounce`'s `bounced`
   and `medal-` states: the glyph in its own colours, the line's place
   and fade.
+
+[superbounce-medals.toml](../runtime/sim-examples/superbounce-medals.toml)
+answers the second bounce, what ends a chain, Bounced and the launch
+against 16 off the lab, from the sim's `bounce` block. The airborne bit,
+host and guest and the HUD line still need the lab.
 
 No game was run for this section.
 

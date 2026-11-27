@@ -29,11 +29,12 @@ use hud_kit_core::views::superbounce::{MEDALS, Medal};
 /// The feature's id.
 pub const FEATURE: &str = "medal-announcer";
 
-/// Our medals and game types, by id: the file `art/announcer/<id>.wav`.
+/// Our medals, game types and Firefight's lines (docs/game/firefight.md,
+/// "The announcer"), by id: the file `art/announcer/<id>.wav`.
 /// Bounced has none, so it is silent. `incel.wav` is not embedded: no line
 /// in the game shows the Incel medal (docs/game/teabag.md), so nothing
 /// would speak it.
-pub const CLIPS: [(&str, &[u8]); 9] = [
+pub const CLIPS: [(&str, &[u8]); 41] = [
     ("superbounce", include_bytes!("../../../../art/announcer/superbounce.wav")),
     ("double-bounce", include_bytes!("../../../../art/announcer/double-bounce.wav")),
     ("triple-bounce", include_bytes!("../../../../art/announcer/triple-bounce.wav")),
@@ -43,6 +44,38 @@ pub const CLIPS: [(&str, &[u8]); 9] = [
     ("monster-bounce", include_bytes!("../../../../art/announcer/monster-bounce.wav")),
     ("firefight", include_bytes!(concat!(env!("OUT_DIR"), "/firefight.wav"))),
     ("siege", include_bytes!(concat!(env!("OUT_DIR"), "/siege.wav"))),
+    ("new-wave", include_bytes!("../../../../art/announcer/new-wave.wav")),
+    ("wave-complete", include_bytes!("../../../../art/announcer/wave-complete.wav")),
+    ("all-skulls-on", include_bytes!("../../../../art/announcer/all-skulls-on.wav")),
+    ("envy-on", include_bytes!("../../../../art/announcer/envy-on.wav")),
+    ("grunt-birthday-party-on", include_bytes!("../../../../art/announcer/grunt-birthday-party-on.wav")),
+    ("assassins-on", include_bytes!("../../../../art/announcer/assassins-on.wav")),
+    ("thunderstorm-on", include_bytes!("../../../../art/announcer/thunderstorm-on.wav")),
+    ("famine-on", include_bytes!("../../../../art/announcer/famine-on.wav")),
+    ("iwhbyd-on", include_bytes!("../../../../art/announcer/iwhbyd-on.wav")),
+    ("blind-on", include_bytes!("../../../../art/announcer/blind-on.wav")),
+    ("ghost-on", include_bytes!("../../../../art/announcer/ghost-on.wav")),
+    ("black-eye-on", include_bytes!("../../../../art/announcer/black-eye-on.wav")),
+    ("catch-on", include_bytes!("../../../../art/announcer/catch-on.wav")),
+    ("sputnik-on", include_bytes!("../../../../art/announcer/sputnik-on.wav")),
+    ("iron-on", include_bytes!("../../../../art/announcer/iron-on.wav")),
+    ("mythic-on", include_bytes!("../../../../art/announcer/mythic-on.wav")),
+    ("angry-on", include_bytes!("../../../../art/announcer/angry-on.wav")),
+    ("bandana-on", include_bytes!("../../../../art/announcer/bandana-on.wav")),
+    ("round-complete", include_bytes!("../../../../art/announcer/round-complete.wav")),
+    ("set-complete", include_bytes!("../../../../art/announcer/set-complete.wav")),
+    ("bonus-round", include_bytes!("../../../../art/announcer/bonus-round.wav")),
+    ("bonus-round-complete", include_bytes!("../../../../art/announcer/bonus-round-complete.wav")),
+    ("lives-added", include_bytes!("../../../../art/announcer/lives-added.wav")),
+    ("last-life", include_bytes!("../../../../art/announcer/last-life.wav")),
+    ("game-over", include_bytes!("../../../../art/announcer/game-over.wav")),
+    ("skulls-off", include_bytes!("../../../../art/announcer/skulls-off.wav")),
+    ("attack", include_bytes!("../../../../art/announcer/attack.wav")),
+    ("defend", include_bytes!("../../../../art/announcer/defend.wav")),
+    ("final-round", include_bytes!("../../../../art/announcer/final-round.wav")),
+    ("site-captured", include_bytes!("../../../../art/announcer/site-captured.wav")),
+    ("reinforcements", include_bytes!("../../../../art/announcer/reinforcements.wav")),
+    ("round-over", include_bytes!("../../../../art/announcer/round-over.wav")),
 ];
 
 /// The clip id of `medal`, when it has a clip.
@@ -462,3 +495,24 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
 #[cfg(test)]
 #[path = "medal_announcer_tests.rs"]
 mod tests;
+
+/// Queue clip `id` as an announcer line, when the announcer is on and
+/// the clip exists. The Firefight HUD's lines come here
+/// (`firefight::hud::banners::lines`).
+pub fn announce_id(id: &str) {
+    if let Some(id) = CLIPS.iter().map(|(i, _)| *i).find(|i| *i == id) {
+        announce_clip(id);
+    }
+}
+
+/// The lines waiting in the process's announcer, oldest first, with the
+/// announcer on; they are taken. A test that uses it holds
+/// `rules::world::audio::SERIAL`.
+#[cfg(test)]
+pub(crate) fn take_waiting() -> Vec<&'static str> {
+    let mut a = lock(&ANNOUNCER);
+    a.on = true;
+    let out: Vec<_> = a.queue.waiting().collect();
+    a.queue.clear_waiting();
+    out
+}

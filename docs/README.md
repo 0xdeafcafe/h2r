@@ -26,7 +26,7 @@ flowchart LR
 | Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
 - [settings-menu-screens.md](game/settings-menu-screens.md): The pause menu, voice, profile and field-of-view screens, and settings as a schema.
 | Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
-| Xbox Live | `live/` | 34 | [live.md](live/live.md) |
+| Xbox Live | `live/` | 70 | [live.md](live/live.md) |
 | Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
 | Development | `dev/` | 5 | [crate-structure.md](dev/crate-structure.md) |
 
@@ -63,21 +63,37 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [cli-tools.md](runtime/cli-tools.md): `h2-tools`, the offline map, tag and script tools in a binary without the game; `h2 <tool>` runs it, `cargo h2-tools` builds only it
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play`, `h2 play --follow` and `h2 play --watch` (`crates/apps/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
+- [app-overlays.md](runtime/app-overlays.md): app: the `--frame-stats` overlay and the watermark
+- [app-follow.md](runtime/app-follow.md): app: `h2 play --follow` and `--watch`
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/platform/xapi`) and which stay generated, native saves included
+- [xapi-saves.md](runtime/xapi-saves.md): XAPI: generated and native saves, the N: volume
+- [xapi-inventory.md](runtime/xapi-inventory.md): XAPI: runtime registration and the inventory of matched and inferred entries
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/runtime/vfs`): volumes, FATX names, file semantics, map overrides
+- [storage-writes.md](runtime/storage-writes.md): xbox storage: write metadata and write-behind
+- [storage-nt.md](runtime/storage-nt.md): xbox storage: file objects, NT behaviour and kernel integration
 - [background-work.md](runtime/background-work.md): work nothing on the frame waits for (nav meshes, film hashes, uploads) on threads below the game's priority, and the worker cap (`crates/runtime/background`, `H2_BACKGROUND_THREADS`)
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
+- [contract-thin-transfers-flat-ram-target.md](runtime/contract-thin-transfers-flat-ram-target.md): spec section 4: the flat memory model and the thin transfers
 - [block-clock-imprecise-faults.md](runtime/block-clock-imprecise-faults.md): the fault census (`profile.faults`: which guest memory faults need a precise exit), the block clock (the default; the scheduler counts planned block costs, not accesses) and imprecise memory faults (the default)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over the LAN, build branches there, replay input recordings, fetch frame stats, profiles and logs
+- [lab-consent.md](runtime/lab-consent.md): the lab: player consent before a job, what happens when the player opens a game, memory limits
+- [lab-runs.md](runtime/lab-runs.md): the lab: the agent API on a run, own-data play, the dedicated System Link host, sim benchmarks, Theater runs, recordings
 - The [agent API skill](../.claude/skills/h2-agent-api/SKILL.md) and [lab skill](../.claude/skills/h2-lab/SKILL.md) guide coding agents through live checks and remote runs.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
+- [sim-match-setup.md](runtime/sim-match-setup.md): sim mode: the playerless host and start, the match file, rules scripts, Firefight, bot parameters
+- [sim-metrics.md](runtime/sim-metrics.md): sim mode: the tally and report, the spatial trace, sim stores, shared guest RAM
+- [sim-parallel.md](runtime/sim-parallel.md): sim mode: batches, arm swaps, Uplink watching, batches on hosts
+- [sim-bounce.md](runtime/sim-bounce.md): sim mode: bounce practice, the drill, sweeps, site training, seam drops
+- [sim-determinism.md](runtime/sim-determinism.md): sim mode: post-tick state hashes, finding the first differing state, bot navigation cost, host audit corpus
 - [bounce-search.md](runtime/bounce-search.md): the forked bounce search: superbounce trials from a saved machine, the region that bounces on each seam and the seams ranked by ease
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, the quiescence rule
+- [snapshots-state.md](runtime/snapshots-state.md): machine snapshots: kernel and machine state, devices, the `state.*` wiring
+- [snapshots-quiescence.md](runtime/snapshots-quiescence.md): machine snapshots: the quiescence probe
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
 - [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)
@@ -85,6 +101,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [steamos.md](runtime/steamos.md): playing on Linux and on a Steam Machine in Developer Mode through Buck (`//platform/linux:play`, `//platform/steamos:run`), the disc from `.buckconfig.local`
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
+- [title-updates-design.md](runtime/title-updates-design.md): title updates: version detection, the per-version address map, hook translation, testing
 - [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the phantoms' action build runs on
 - [ios.md](runtime/ios.md): the iOS app: building, deploying and the touch controls (`platform/ios`, `input::touch`)
 - Notes: [boot-log.md](runtime/notes/boot-log.md) (the boot milestone log), [sim.md](runtime/notes/sim.md) (sim mode's speed-up estimate and per-process memory), [snapshots.md](runtime/notes/snapshots.md) (snapshot quiescence probe runs), [steamos-boot.md](runtime/notes/steamos-boot.md) (the first Steam Machine boot)
@@ -243,6 +260,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 ## Engine (`engine/`)
 
 - [engine-map.md](engine/engine-map.md) (**start here**): survey of the retail engine's subsystems and where to start overriding
+- [engine-map-formats.md](engine/engine-map-formats.md): the engine map's data layouts: collision and physics models, UI tags, animation graphs, effects, objects and shaders
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
@@ -254,6 +272,10 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [first-person-filters.md](engine/first-person-filters.md): the first-person seat and weapon-slot update `166d75`, including the inline axis filter `11eed0`
 - [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports behind `impl.sim.native.effects`, and their parity arm
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
+- [object-update-bodies-core.md](engine/object-update-bodies-core.md): the object update bodies of slices 0, 1, 3 and 4 (walks, function values, post-update shell)
+- [object-update-bodies-types.md](engine/object-update-bodies-types.md): the bodies of slices 8, 11, 5 and 6b (damage, small types, lights, unit state)
+- [object-update-bodies-units.md](engine/object-update-bodies-units.md): the bodies of the unit, weapon, vehicle and biped updates
+- [object-update-liveness.md](engine/object-update-liveness.md): register liveness over every object update entry and call site
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports
 - [sim-tier-writes.md](engine/sim-tier-writes.md): a static census of every store the game tick can make
@@ -261,7 +283,10 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
+- [collision-queries-entries.md](engine/collision-queries-entries.md): the per-entry contracts of the collision queries (E, F, G, H, I, J) and the sphere pretest
 - [asset-store.md](engine/asset-store.md): the asset store (slices AS1 to AS5 built, not run on the disc): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; assets by hash; mods as packages of patches and new assets; `LevelId`
+- [asset-store-packages.md](engine/asset-store-packages.md): how packages lay over the asset store, conflicts, and level identity on the network and in films
+- [asset-store-plan.md](engine/asset-store-plan.md): the asset store's risks, build slices, decisions and evidence
 - [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4), whose contract page is [havok-step.md](engine/havok-step.md)
 - [sim-world.md](engine/sim-world.md): the native simulation's `World`: salted slot pools, canonical save and restore, the incremental hash and the shared RNG (`sim-world`)
 - [effects-parts.md](engine/effects-parts.md): the effect part split behind `impl.sim.effects-parts`: damage parts as sim state in the hash, decal, light and lens flare parts as events for the renderer (`sim-effects`, `sim-bridge`)
@@ -414,18 +439,33 @@ Reading and converting Halo 1 data:
 ## Xbox Live (`live/`)
 
 - [live.md](live/live.md) (**start here**): the Xbox Live replacement: overview, CLI, service and every client HLE section
+- [live-pieces.md](live/live-pieces.md): the pieces: the server, protocol and client parts and where each lives
+- [live-client-hle.md](live/live-client-hle.md): client HLE: sign-in, sockets, System Link, service logon
+- [live-client-hle-services.md](live/live-client-hle-services.md): client HLE: feedback, mute list, bans, storage, stats, messages
+- [live-client-hle-offline.md](live/live-client-hle-offline.md): client HLE: Live not set up, invitations, sessions, teams
 - [live-api.md](live/live-api.md): the service's HTTP and WebSocket contract
+- [live-api-events.md](live/live-api-events.md): events and read endpoints
+- [live-api-theater-stats.md](live/live-api-theater-stats.md): theater, stats, medals and clanker training
+- [live-api-sessions.md](live/live-api-sessions.md): sessions, invites, sign-ins and hosts
+- [live-api-social.md](live/live-api-social.md): friends, teams, moderation, saves and the co-op relay
+- [live-api-content.md](live/live-api-content.md): custom maps, rules scripts and game variants
+- [live-api-details.md](live/live-api-details.md): game art, clarifications, account details, ranks and arbitration
 - [live-security.md](live/live-security.md): identity, signing, token checks, recovery, rate limits and the federation design
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
+- [live-admin-api.md](live/live-admin-api.md): the admin API
+- [live-admin-moderation.md](live/live-admin-moderation.md): custom content moderation, reports and bans
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [web-app.md](live/web-app.md): the Live web app: its pages, the mock server and its `H2_MOCK_*` knobs, derived stats, sign-up, social features, link previews and the state architecture
+- [web-app-pages.md](live/web-app-pages.md): the web app's pages, one by one
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
 - [viewer-overlay.md](live/viewer-overlay.md): the 3D view's opening camera, Halo 2-style overlay, name tags and progressive reveal (design only, not built)
+- [viewer-overlay-layers.md](live/viewer-overlay-layers.md): the overlay, name tags and progressive reveal
 - [viewer-effects.md](live/viewer-effects.md): how damage reads in the viewer, and its combat effects: shields, explosions, impacts, melee, teleporters and deaths, what each derives from and the new telemetry two need (design only, not built)
 - [Telemetry cost](live/notes/2026-11-19-telemetry-cost.md): frame sizes and CPU per version, with the benchmark commands.
 - [Replay: the original 1 Hz recording](live/notes/2026-11-18-replay-original-1hz.md): stage rates, fields and sizes of the first recording.
 - [Live Worker rehearsal](live/notes/2026-11-18-worker-rehearsal.md): the migration rehearsal on a copy of the real log.
+- [Live Worker slice measurements](live/notes/2026-11-18-worker-slice-results.md): cold start, stream, ingest, upload and relay timings under local `wrangler dev`.
 - [MOTD first reading](live/notes/2026-11-16-motd-first-reading.md): the superseded XONLINE call-chain reading, kept for its addresses.
 - [Dedicated host measurements](live/notes/host-halving.md): the evidence for halving the dedicated host.
 - [Telemetry precision and replay measurements](live/notes/2026-11-19-telemetry-precision.md) for the Live v8 stream: the workload, byte counts per player and the finished-archive limits.
@@ -433,20 +473,40 @@ Reading and converting Halo 1 data:
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
+- [live-worker-deploy.md](live/live-worker-deploy.md): deploy, cutover runbook and rollback
+- [live-worker-slices.md](live/live-worker-slices.md): build slices and how to build and run the Worker locally
 - [dedicated-host.md](live/dedicated-host.md): native game hosting, zero-local trial, light host, cloud choices and Ranked telemetry design
+- [dedicated-host-light.md](live/dedicated-host-light.md): the light host
+- [dedicated-host-ops.md](live/dedicated-host-ops.md): game data bundle, routing, tunnel, playerless lobby and the Fly provider
 - [dedicated-host-build.md](live/dedicated-host-build.md): the shared contract of the parallel dedicated-host build: the slim host, contracts and file ownership
 - [host-halving.md](live/host-halving.md): dedicated host resource profiles, pack admission and fleet sizing, measurement gates and the proposed template start
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
+- [live-matchmaking-hoppers.md](live/live-matchmaking-hoppers.md): the hopper file, field by field
+- [live-matchmaking-search.md](live/live-matchmaking-search.md): OptiMatch search and ping-aware assignments
+- [live-matchmaking-ranks.md](live/live-matchmaking-ranks.md): ranks: what the game does and what the server does
 - [live-custom-games.md](live/live-custom-games.md): the custom games browser, filters, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
+- [live-coop-lockstep.md](live/live-coop-lockstep.md): the retail engine, lockstep below the game and the settings layer
+- [live-coop-crate.md](live/live-coop-crate.md): the coop crate, the probe and the retail lobby
+- [live-coop-test.md](live/live-coop-test.md): `h2 coop test`, one command on one Mac
+- [live-coop-join.md](live/live-coop-join.md): more than two players and join in progress
+- [live-coop-live.md](live/live-coop-live.md): co-op over Live, latency and prediction
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
+- [live-voice-host.md](live/live-voice-host.md): voice host design
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
+- [live-gamestate-objects.md](live/live-gamestate-objects.md): objects, positions, hooks and the structure map
 - [live-telemetry.md](live/live-telemetry.md): capture hooks, events, machine travel, negotiated v8 live frames and the archive handoff
+- [live-telemetry-frames.md](live/live-telemetry-frames.md): frame species, cinematics, velocity and appearance
+- [live-telemetry-packed.md](live/live-telemetry-packed.md): packed frames
 - [replay-fidelity.md](live/replay-fidelity.md): current recording and playback, the original 1 Hz measurements and the spectator track design
+- [replay-fidelity-spectator.md](live/replay-fidelity-spectator.md): the spectator track proposal
 - [replay-migration.md](live/replay-migration.md): migrate, verify and roll back finished-game archives in both homes
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
+- [live-art-viewer-packs.md](live/live-art-viewer-packs.md): the 3D viewer, map packs and mods
+- [live-art-pipeline.md](live/live-art-pipeline.md): packing, pipeline and limits
+- [live-art-models.md](live/live-art-models.md): player and weapon models
 
 ## Editor (`editor/`)
 
@@ -494,4 +554,3 @@ hold what was done about their findings.
 ## About these docs (`meta/`)
 
 - [docs-style.md](meta/docs-style.md): how docs here are written, where each kind goes, the evidence labels and the checker
-

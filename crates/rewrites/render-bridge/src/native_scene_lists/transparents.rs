@@ -266,10 +266,22 @@ fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     if first == end {
         return Ok(output);
     }
-    let entries = ptr(m, LIST_ENTRIES)?;
+    ptr(m, LIST_ENTRIES)?;
     let order = ptr(m, LIST_ORDER)?;
+    let indices = sorted(m, first, end)?;
+    output.array(
+        order,
+        indices.into_iter().flat_map(u16::to_le_bytes).collect(),
+    );
+    Ok(output)
+}
+
+/// The live rows `first..end` in the order `TRANSPARENT_SORT` with the
+/// comparator `0x0001e700` leaves them.
+fn sorted(m: &dyn GuestMemory, first: u32, end: u32) -> Result<Vec<u16>> {
     let mut indices: Vec<_> = (first as u16..end as u16).collect();
     if indices.len() > 1 {
+        let entries = ptr(m, LIST_ENTRIES)?;
         let keys = (first..end)
             .map(|i| Key::read(m, at(entries, i * STRIDE)?))
             .collect::<Result<Vec<_>>>()?;
@@ -278,11 +290,19 @@ fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
             keys[a as usize - first as usize].after(&keys[b as usize - first as usize], camera)
         });
     }
-    output.array(
-        order,
-        indices.into_iter().flat_map(u16::to_le_bytes).collect(),
-    );
-    Ok(output)
+    Ok(indices)
+}
+
+/// The order the guest's sort gives the live list now, as `build`
+/// publishes it; `None` when the list does not read. The caller
+/// checks the SSE state (`fp_supported`).
+pub(crate) fn order(m: &dyn GuestMemory) -> Option<Vec<u16>> {
+    let end = m.u32(LIST_END).ok()?;
+    let first = m.u32(LIST_FIRST).ok()?;
+    if first > end || end > CAPACITY {
+        return None;
+    }
+    sorted(m, first, end).ok()
 }
 
 #[cfg(test)]

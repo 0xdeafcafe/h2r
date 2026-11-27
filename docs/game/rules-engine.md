@@ -159,7 +159,7 @@ the record's prefix, that `rules::verify::load` takes the IR and that
 the record uses the script index or the script's retail settings layout
 (`Header::engine`). A record with mode 2 and no script
 is refused. So a variant file plays with no server, and Live keeps game
-variants as these files ([live-api.md](../live/live-api.md#game-variants)).
+variants as these files ([live-api.md](../live/live-api-content.md#game-variants)).
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -415,7 +415,7 @@ keeps the flags' built-in labels. A label op on an entry the map lacks is
 skipped (`census::layout_doc`), so a layout never blocks a map it does
 not fit. Zanzibar's layout names the map's own flags and starts: the
 territory flags 17 and 15 are the phase 0 sites and 19 and 13 the phase 1
-sites (the final stand is the defenders' flag stand), and the starting
+sites (the final stand is blue's flag stand, flag 3, a `siege_goal`), and the starting
 locations are numbered by phase for each side, the attackers' from the
 south stand northward and the defenders' from mid-map northward. Readers that
 need only the flags' places (`world/walls.rs` on a client, the HUD
@@ -1280,18 +1280,17 @@ phase (its number is the phase, its team the side: 0 the attackers and
 `label placed_line: zones at most 16 = "siege_line"`) replaces the
 phase's line for that side. A line the map lacks (no flag stand) leaves
 that side the engine's own spawns. The attackers spawn as Spartans and the defenders
-as Elites (`set_body`), whatever each player chose. The HUD is the King of
-the Hill kit's ("The HUDs a script feeds" in
-[rules-world-api.md](rules-world-api.md#the-huds-a-script-feeds)): the
-mark and the row (`koth.hill`) stay on the current untaken site while
+as Elites (`set_body`), whatever each player chose. The HUD is the Siege
+kit's ("The Siege HUD" below): the
+mark and the front row (`siege.front`) stay on the current untaken site while
 any living player occupies it. When that site empties or is taken, the
 mark moves to the first untaken site with living attackers, including a
 contested site. With no attackers on a site it marks the first untaken
 site, and in the final phase it marks the stand. The row reads open,
-held by a side or contested. The banner (`koth.banner`) says a site
+a side on it or contested. The banner (`siege.banner`) says a site
 taken, the final assault, an overtime, and the last 30 and 10 seconds of a
-phase; the phase's seconds left are the kit's `koth.phase` row ("Phase
-2:59"). A phase whose clock runs out with an attacker on its front goes
+phase; the phase's seconds left are beside the viewer's side (`siege.clock`,
+"ATTACK 2:59"). A phase whose clock runs out with an attacker on its front goes
 into overtime (`overtime_time`, 30 s by default): the defenders win when
 the attackers leave the front, or when the overtime runs out (a contested
 front does not hold it open past that), and a capture that completes
@@ -1317,6 +1316,85 @@ the next tick (`on tick` in `siege.rules` sets the kit of a player whose
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
+#### The Siege HUD
+
+The layout is that of Halo: Reach's Invasion HUD (the side, the clock and
+the objective's state in one block by the score, a mark over the
+objective), drawn as Halo 2 draws a HUD: lines of the HUD font above the
+score plate, as the Firefight block is, with no art of its own
+(`content/modes/huds/siege.hud.yaml`, `hud_kit_core::views::objective::siege`).
+
+```text
+                                 ROUND 1 OF 2 PHASE 2 OF 3   -100
+                                              SITES 1 OF 2    -86
+                                         SITE UNDER ATTACK    -72
+                                               DEFEND 2:59    -58
+                                        [ score plate ]   bottom right
+```
+
+| Element | Shows | The script's widget (`siege.rules`) |
+|---|---|---|
+| `siege.clock` | `ATTACK 2:59` or `DEFEND 2:59`: the viewer's side and the phase's seconds left | `phase_row` (the seconds); `side_row` at `siege.side` (the attacking team) |
+| `siege.front` | the front's state, worded for the viewer's side: `SITE OPEN`, `TAKING SITE` or `SITE UNDER ATTACK`, `SITE DEFENDED` or `HOLDING SITE`, `SITE CONTESTED`; `STAND` in the final assault | `front_row`: style 0 open, 1 the side in the value on it alone, 2 contested |
+| `siege.sites` | `SITES 1 OF 2`, then `FINAL ASSAULT` once every site needed is taken | `sites_row`: the sites taken, of the style |
+| `siege.round` | `ROUND 1 OF 2 PHASE 2 OF 3`; a game of one round shows the phase alone | `round_row` and `stage_row` (at `siege.phase`): a number, of the style |
+| `siege.mark` | a navpoint over the front, with the distance | `front_mark` |
+| `siege.banner` | the timed centred line: the round, a site taken, the final assault, overtime, 30 and 10 seconds | `banner_row` |
+
+The script sets the counts at the round's start and as each phase begins
+(`begin`), so a tick pays nothing for them. Half screen draws the four
+lines; a quarter draws the clock and the sites. The capture gauge, each
+side's objective line and the second clock are the scripted objective
+HUD's (`meter`, `objective`, `countdown`).
+
+Tests: `hud-kit-core/src/views/objective.rs`
+(`the_siege_hud_reads_the_side_the_front_and_the_counts`),
+`game/src/rules/world/hud.rs`
+(`the_built_in_siege_feeds_the_siege_hud_for_each_side`),
+`rules/tests/hud_marks.rs` (`the_siege_counts_*`, `the_siege_mark_*`).
+Not run in a game.
+
+#### Siege options in the lobby
+
+Game Setup's **Quick Options...** is Siege's options page
+(`variant_quick::dialog_rows_with`, [rules-variants.md](rules-variants.md#quick-options-in-the-lobby)):
+the five marked rows, then the two options the script leaves unmarked.
+A opens a row's value picker; a wide range is a ladder
+(`variant_quick::ladder`).
+
+| Row | Values the picker lists |
+|---|---|
+| Respawn Time | the editor's |
+| Respawn wave (seconds) | 3, 5, 10, 15, 20, 25, 30 |
+| Phase time (seconds) | 60 to 600, a minute apart |
+| Capture time (seconds) | 5 to 60, five apart |
+| Sites | 1 to 4 |
+| Overtime (seconds) | 5 to 60, five apart |
+| Rounds | 1 to 8 |
+
+The lobby's panel shows the five marked rows. Tests:
+`variant_quick.rs` (`the_dialog_lists_every_option_of_a_script_whose_options_fit`,
+`a_wide_range_is_offered_as_a_ladder`), `variant_quick/page/tests.rs`
+(`sieges_page_changes_every_option_through_a_picker`).
+
+#### Siege announcer lines
+
+`siege.rules` requires `audio.play` and plays the announcer's clips
+(`art/announcer/<clip>.wav`) with `sound_to`, `sound_to_team` and
+`sound_to_all`, naming a clip as the sound `"announcer/<clip>"`
+([rules-world-api.md](rules-world-api.md#audio)).
+
+| Event | Line | Audience |
+|---|---|---|
+| The game starts | Siege (`siege`, the type's start line, [audio.md](../audio/audio.md#our-medals-announcer-lines)) | all |
+| A round starts | Attack (`attack`) / Defend (`defend`) | the attackers / the defenders |
+| The last round starts | Final Round (`final-round`) | all |
+| A site falls (each, the last before the final assault too) | Site Captured (`site-captured`) | all |
+| A side's respawn wave lands, with dead to bring back | Reinforcements (`reinforcements`) | that side |
+| A round ends | Round Over (`round-over`) | all |
+
+Tests: `crates/formats/rules/tests/hud_marks.rs` (`siege_says_*`).
+
 #### Siege layouts
 
 A map plays ordered phases when its layout numbers its sites, names its
@@ -1326,15 +1404,15 @@ above). These maps have a built-in layout
 
 | Map | Layout source | Sites (phase 0, phase 1) | Final stand | Barriers |
 |---|---|---|---|---|
-| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | the defenders' CTF stand (`base[defenders]`) | none |
+| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | blue's stand, flag 3 (`siege_goal`) | none |
 | Coagulation | `h2 siege layout coagulation`, red attacks | territory flags 20, 19; 21, 53 | blue's stand, flag 6 (`siege_goal`) | none: the map has no loose solid object across a way |
 | Headlong | `h2 siege layout headlong --barrier crates:17=2 --barrier crates:70=2`, red attacks | territory flags 51; 62 | blue's stand, flag 0 (`siege_goal`) | two giant tech crates by blue's base, open in the final assault |
 | Waterworks | `h2 siege layout waterworks --barrier crates:41=2 --barrier crates:42=2`, red attacks | territory flags 26, 23; 17 | blue's stand, flag 4 (`siege_goal`) | two giant packing crates by blue's base, open in the final assault |
 
-A recipe layout labels the defenders' stand `siege_goal`, so the final
-stand stays at one end of the map when the sides swap; Zanzibar's reads
-`base[defenders]` and so moves to the other stand in the second round.
-Each recipe layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
+Each layout labels the defenders' stand `siege_goal`, so the final
+stand stays at one end of the map when the sides swap (a map with no
+`siege_goal` falls back to `base[defenders]`, which moves to the other
+stand in the second round). Each layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
 written by `--scenario`) that `rules/tests/modes.rs`
 (`siege_plays_each_recipe_layouts_phases`) runs: the scenario's labels are
 the layout's, an attacker standing on one site of each phase in turn takes
@@ -1999,7 +2077,7 @@ Tooling:
 its pure half in `web/src/lib/rules.ts`) is where a script is written,
 checked, tested and saved on the web (Studio's Game type script window
 is the desktop editor, over the same `rules::ide` and workbench). The browser runs
-no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
+no compiler: Live's [Rules scripts](../live/live-api-content.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
@@ -2007,7 +2085,7 @@ check beside it (Problems, What a map needs, Budget, Capabilities); under them t
 (generated matches and their summary) sits beside one match's results.
 Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
-[web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
+[web-app.md, "Game type scripts"](../live/web-app-pages.md#game-type-scripts).
 
 - **Check.** `workbench::check` compiles, verifies and measures source:
   the IR hash, errors with line and column (0 for a verifier refusal or
@@ -2152,7 +2230,7 @@ Game Types**. The layout, its states and its copy are described in
   (`game_variants::pack_options`). **Download** asks Live's
   `POST /v1/variants/bundle` for the `.h2variant` file and works signed
   out; **Publish** posts it to the account's game variants
-  ([live-api.md](../live/live-api.md#game-variants)). The **My Game
+  ([live-api.md](../live/live-api-content.md#game-variants)). The **My Game
   Types** tab lists them beside My Scripts, and a player's page lists
   their public ones; each has a page (`statsPath("/variants/:id")`) with
   its settings, its script (opened read-only here) and the file.
@@ -2436,7 +2514,7 @@ The phased mode is the check that the API is wide enough:
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
 | bots that attack and defend | `bot_goal_attack` and `bot_goal_defend` on the front the HUD marks, set again as it moves | named; the built-in Siege |
-| the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock is the kit's `koth.phase` row |
+| the objective and its state on the HUD | the Siege kit's mark, rows and banner (`hud_style`, `hud_value`, `mark`, `hud_text`; "The Siege HUD") | named; the built-in Siege; the phase clock is the kit's `siege.clock` row |
 
 ## Forge labels
 

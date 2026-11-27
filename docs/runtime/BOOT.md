@@ -96,7 +96,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
   re-exports `game` (`crates/extensions/game`: every module below that is
   not `recomp`'s, and `RunOpts` and `Host`), which re-exports `recomp`
   (`boot::build`, `boot::tier`).
-  - `build` runs analyze, lifts each function, then `emit::plan` writes
+  - `build` runs the analysis, lifts each function, then `emit::plan` writes
     C11 shards and `h2gen.h`.
   - clang builds the shards for the host architecture, and they are linked
     with `c/boot_bridge.c` into `libh2game.dylib`.

@@ -18,12 +18,12 @@ flowchart LR
   R --> W[native scene walk: runs of layer-3 items]
   W --> H[Host: plan every item, reserve on every copy]
   H -- all ok --> D[native indexed draws + masks applied]
-  H -- refused --> G[guest handler draws, or a named drop]
+  H -- refused --> G[guest handler draws: scene_kept_3_object_cause]
 ```
 
 Stage 2 of [native-renderer.md](native-renderer.md). It covers bipeds, vehicles, weapons, equipment, scenery, machines and crates: every object whose render model the game queues in the scene list. Geometry is resident per render-model tag, loaded once per map. Each frame the CPU hands over only the drawn objects' node matrices, read from the game's own computed transforms in guest memory, and skinning runs in the vertex shader.
 
-The rule that must hold: an object draws natively only when its material, state and inputs can be reproduced exactly. Otherwise it is a named drop, and no D3D draw stands in for it.
+The rule that must hold: an object draws natively only when its material, state and inputs can be reproduced exactly. Otherwise its guest handler draws it, counted by cause. No object goes undrawn.
 
 ## Stage 2: objects and skinning
 
@@ -110,7 +110,7 @@ A staging set (`LitObjects::empty_with_layout`) starts with nothing shared, so a
 
 The palette status (`scene_palette_*` in `render.scene`) distinguishes pending definitions, explicit null model references, failures, partial native coverage and resident definitions. A resident definition has a published model and a layer-3 material program for every drawn part and declared implementation across the model's sections.
 
-Material LODs with different base passes and parts outside the native object renderer's coverage keep the definition partial. Extraction checks the model's published upload as well as the selected part's native coverage. A failed GPU lookup for a covered part is a named drop (`native_objects_walk_unresident`).
+Material LODs with different base passes and parts outside the native object renderer's coverage keep the definition partial. Extraction checks the model's published upload as well as the selected part's native coverage. A failed GPU lookup for a covered part keeps the run's guest draws (`native_objects_walk_unresident`).
 
 #### Object setup
 
@@ -140,12 +140,16 @@ A residency request that needs a new queue entry, a priority raise or a wait (`r
 | `native_objects_walk_native` | objects drawn per view |
 | `walk_unsupported`, `walk_order` | objects of a span the walk did not admit |
 | `walk_reservation`, `walk_model`, `walk_inputs`, `walk_state`, `walk_unresident` | objects of a run the host did not take |
-| `walk_unreadable` | views whose sorted list or ownership could not be established (unknown object count: the one place the guest's layer-3 draws remain) |
+| `walk_unreadable` | views whose sorted list or ownership could not be established (unknown object count) |
 | `walk_part_*` | parts (not objects) behind `walk_unsupported`, by cause (below) |
+| `walk_fallback` | every object above but `walk_native` and `walk_unreadable`: its guest handler draws |
+| `scene_kept_<site>3_object_<cause>` (`render.scene`) | the same objects by view (`""` the scene, `alt` the alternate view) and cause (`unsupported`, `order`, `state`, `reservation`, `unresident`, ...) |
 
-All the drop counters are drops: the walk consumes the handlers of those objects (`native_objects::walk_geometry`) and counts `native_objects_scene_dropped` with them. The run draws in `native_objects::SLOT` (`ViewSlot::OpaqueBase`, slot 1), and the pass carries the slot. `walk_unresident` counts the objects in a run whose requested model agrees with the loader's part coverage but has no uploaded geometry and materials. `walk_model` includes unresolved definitions, mismatched models and loader lock contention.
+The walk takes only the first slot of its next admitted run (`native_objects::handler_at`). Every other handler call draws as the guest's: an object of a span the walk did not admit, the slots of a run the host refused, a call outside the list (`native_objects::keep`). A Grunt, a Phantom or a door whose part the walk cannot read is drawn by its handler, not dropped (tests `a_handler_the_walk_does_not_take_draws_as_the_guests`, `objects_the_walk_keeps_are_counted_by_cause`).
 
-The `walk_part_*` causes are `scene_extract::layout::object_walk::Refusal` ([framescene.md](framescene.md), "Slice 3"). Every refused part is in exactly one, so their sum is what the walk drops.
+Once a guest handler has drawn, the layer's state is the guest's, so later runs refuse with `walk_state` and keep their guest draws too. The run draws in `native_objects::SLOT` (`ViewSlot::OpaqueBase`, slot 1), and the pass carries the slot. `walk_unresident` counts the objects in a run whose requested model agrees with the loader's part coverage but has no uploaded geometry and materials. `walk_model` includes unresolved definitions, mismatched models and loader lock contention.
+
+The `walk_part_*` causes are `scene_extract::layout::object_walk::Refusal` ([framescene.md](framescene.md), "Slice 3"). Every refused part is in exactly one, so their sum is what the walk leaves to the guest.
 
 | Counter | Cause |
 |---|---|
@@ -199,6 +203,23 @@ What the native pass draws is exactly the set of objects whose layer-3 items it 
 ### Fade, the shader flag and the item's argument
 
 An object item's draw reads three things beyond its material: the fade byte, the shader's flag bit 0 (with the structure's parameter block) and the item's argument. The native draw takes the item only where skipping the guest's draw leaves the device's state as drawing it would. The cases and the names of what declines (`object_fade`, `object_stipple`, `object_shader_flag`, `object_shader_flag_target`) are in [native-objects-fade.md](native-objects-fade.md).
+
+### Depth mode at the layer call
+
+A layer's object items are planned at the layer call, before its first shader begin (`0x0001bbf0`) sets `ZENABLE` to `D3DZB_USEW` (`push 2` at `0x0001bc11`). The device at the call holds what the work before left: before layer 1 that is the last view's screen passes, drawn unbuffered.
+
+| Step | Where |
+|---|---|
+| Set the begin's `ZENABLE` through D3D when the device holds another | `native_objects_glue::apply_layer_begin_zenable`, before the boundary's drain |
+| The drain consumes the pushed `SET_CONTROL0`, viewport and W clip | `Device::begin_external_boundary` |
+| The W check reads the drained device | `entry_states`; refused: `object_w_buffer` |
+| A D3D error setting it | every item kept, `object_layer_begin` |
+
+The guest's begin sets the same value again, so its kept draws are unchanged.
+
+### Texture accumulation order
+
+Layer 1 draws each object's albedo into the texture accumulation target; layer 3 samples it. Both run in stream order: a native pass is issued at the drain after the D3D work pushed before it, and binds the target's level in place (`rtt_direct.rs`, `an_external_pass_samples_a_level_after_the_work_drawn_into_it_before_the_drain`). A layer-3 pass never reads the level ahead of its layer-1 items, native or kept.
 
 ### Transform source
 

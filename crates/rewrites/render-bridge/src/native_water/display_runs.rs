@@ -183,7 +183,7 @@ mod tests {
     }
 
     impl Host for Recorder {
-        fn ask(&self, _: &mut dyn GuestMemory, _: &[u16]) -> Option<native_render::skip::Cleared> {
+        fn ask(&self, _: &mut dyn GuestMemory, _: &[u16], _: &mut crate::native_layers::Left) -> Option<native_render::skip::Cleared> {
             None
         }
         fn draws_display_part(&self, _: &dyn GuestMemory, part: &DisplayTransparentPart) -> bool {

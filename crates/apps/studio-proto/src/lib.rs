@@ -151,6 +151,7 @@ pub mod method {
     pub const FUNCTION_READ: &str = "function.read";
     pub const FUNCTION_SET: &str = "function.set";
     pub const FUNCTION_SAMPLE: &str = "function.sample";
+    pub const FUNCTION_COLOURS: &str = "function.colours";
 
     // Colour fields of a tag (api/colours.rs).
     pub const TAG_COLOURS: &str = "tag.colours";
@@ -343,6 +344,7 @@ pub mod method {
     pub const MESH_TRANSFORM: &str = "mesh.transform";
     pub const MESH_OPS: &str = "mesh.ops";
     pub const MESH_APPLY: &str = "mesh.apply";
+    pub const MESH_SCULPT: &str = "mesh.sculpt";
 
     // The Textures tool (docs/editor/modeling.md, "Texture editing").
     pub const BITMAP_LIST: &str = "bitmap.list";

@@ -1,36 +1,34 @@
-//! Forge uses the same private world view used by the director camera. The
-//! parked biped's flags and render-list exit are named in skulls_custom and
-//! docs/graphics/occlusion-culling.md (“Where to skip”).
+//! The Forge body's park (docs/game/forge-design-slices.md, "The monitor
+//! body"). While the player flies a body, their own biped stays in the
+//! world: undamageable, and left out of the render list by the "not drawn"
+//! exit (skulls_custom's flags, docs/graphics/occlusion-culling.md, "Where
+//! to skip"). The body is undamageable too. The player's view is their
+//! own: the game draws it from their unit, the body, so this module only
+//! reads it back for the tool (`eye`).
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use engine::{
-    GuestMemory,
-    handle::DatumHandle,
-    points,
-    render_loop::{occlusion::guest as vis, views::VIEW_STRIDE},
-    view::objects,
-};
+use engine::{GuestMemory, handle::DatumHandle, points, render_loop::occlusion::guest as vis, view::objects};
 use forge::camera::Camera;
 use hooks::{BuildError, Builder, Flow};
 
 use super::lock;
-use crate::skulls_custom::{BODY_DAMAGE_FLAGS, CANNOT_TAKE_DAMAGE, local_units};
-use crate::spectator_view::{Pose, draw_world_view, retail_view};
+use crate::skulls_custom::{BODY_DAMAGE_FLAGS, CANNOT_TAKE_DAMAGE};
 
 static HIDDEN: AtomicU32 = AtomicU32::new(u32::MAX);
 
+/// A unit the park made undamageable, and whether the bit was its to clear.
 #[derive(Clone, Copy)]
-struct Parked {
+struct Kept {
     scenario: u32,
     unit: u32,
     body: u32,
     protected: bool,
 }
-static PARKED: Mutex<Option<Parked>> = Mutex::new(None);
+static KEPT: Mutex<Vec<Kept>> = Mutex::new(Vec::new());
 
-/// The unit the monitor parks and hides, while one is: `forge.status`'s
-/// `parked`, so a check can tell a hidden biped from a missed park.
+/// The biped the park hides, while one is: `forge.status`'s `parked`, so a
+/// check can tell a hidden biped from a missed park.
 pub fn parked() -> Option<u32> {
     Some(HIDDEN.load(Ordering::Relaxed)).filter(|&unit| unit != u32::MAX)
 }
@@ -39,58 +37,70 @@ pub fn parked() -> Option<u32> {
 /// bookkeeping without touching the new map.
 pub fn forget_park() {
     HIDDEN.store(u32::MAX, Ordering::Relaxed);
-    *PARKED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    KEPT.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-/// Called by the admitted local session at a game boundary.
-fn park(m: &mut dyn GuestMemory, monitor: bool) {
-    let mut state = PARKED.lock().unwrap_or_else(|e| e.into_inner());
-    if !monitor && state.is_none() {
-        return;
-    }
+/// The body of `unit` when it still names the same object.
+fn same(m: &dyn GuestMemory, k: &Kept, scenario: Option<u32>) -> bool {
+    Some(k.scenario) == scenario
+        && DatumHandle::from_raw(k.unit)
+            .and_then(|h| objects::get(m, h).ok().flatten())
+            .is_some_and(|(_, body)| body.addr == k.body)
+}
+
+/// Called by the admitted local session at a game boundary: `biped` is the
+/// player's kept biped, hidden and undamageable; `body` the unit they fly,
+/// undamageable. A unit no longer named gets back only the bit the park
+/// added, and only while it is the same object.
+fn park(m: &mut dyn GuestMemory, biped: Option<u32>, body: Option<u32>) {
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     let scenario = m.u32(points::SCENARIO.base).ok();
-    let current = monitor
-        .then(|| {
-            local_units(m)
-                .ok()?
-                .into_iter()
-                .find(|u| u.user == 0 && u.kind == objects::BIPED)
-        })
-        .flatten();
-    let same = state.is_some_and(|p| {
-        Some(p.scenario) == scenario
-            && current.is_some_and(|u| u.unit == p.unit && u.body == p.body)
-    });
-    if !same {
-        HIDDEN.store(u32::MAX, Ordering::Relaxed);
-        if let Some(old) = state.take()
-            && old.protected
-            && Some(old.scenario) == scenario
-            && let Some(h) = DatumHandle::from_raw(old.unit)
-            && let Ok(Some((kind, body))) = objects::get(m, h)
-            && kind == objects::BIPED
-            && body.addr == old.body
-            && let Some(at) = body.addr.checked_add(BODY_DAMAGE_FLAGS)
+    let want: Vec<u32> = [biped, body].into_iter().flatten().collect();
+    kept.retain(|k| {
+        let alive = same(&*m, k, scenario);
+        if want.contains(&k.unit) && alive {
+            return true;
+        }
+        if k.protected
+            && alive
+            && let Some(at) = k.body.checked_add(BODY_DAMAGE_FLAGS)
             && let Ok(flags) = m.u16(at)
         {
             let _ = m.set_u16(at, flags & !CANNOT_TAKE_DAMAGE);
         }
-    }
-    if let (Some(scenario), Some(u)) = (scenario, current)
-        && let Some(at) = u.body.checked_add(BODY_DAMAGE_FLAGS)
-        && let Ok(flags) = m.u16(at)
-    {
-        let p = state.get_or_insert(Parked {
-            scenario,
-            unit: u.unit,
-            body: u.body,
-            protected: false,
-        });
-        if flags & CANNOT_TAKE_DAMAGE == 0 && m.set_u16(at, flags | CANNOT_TAKE_DAMAGE).is_ok() {
-            p.protected = true;
+        false
+    });
+    HIDDEN.store(u32::MAX, Ordering::Relaxed);
+    let Some(scenario) = scenario else { return };
+    for unit in want {
+        let found = DatumHandle::from_raw(unit).and_then(|h| objects::get(&*m, h).ok().flatten());
+        let Some((_, object)) = found else { continue };
+        if !kept.iter().any(|k| k.unit == unit) {
+            let Some(at) = object.addr.checked_add(BODY_DAMAGE_FLAGS) else { continue };
+            let Ok(flags) = m.u16(at) else { continue };
+            let protected =
+                flags & CANNOT_TAKE_DAMAGE == 0 && m.set_u16(at, flags | CANNOT_TAKE_DAMAGE).is_ok();
+            kept.push(Kept {
+                scenario,
+                unit,
+                body: object.addr,
+                protected,
+            });
         }
-        HIDDEN.store(u.unit, Ordering::Relaxed);
+        if Some(unit) == biped {
+            HIDDEN.store(unit, Ordering::Relaxed);
+        }
     }
+}
+
+/// The view the game draws for local seat 0, as the tool's camera.
+fn drawn_eye(m: &dyn GuestMemory) -> Option<Camera> {
+    let v = crate::spectator_view::drawn_view(m, 0)?;
+    Some(Camera {
+        position: v.eye,
+        yaw: v.yaw,
+        pitch: v.pitch,
+    })
 }
 
 fn hidden_flags(m: &dyn GuestMemory, index: u16, hidden: u32) -> Option<(u32, u32, u8)> {
@@ -114,64 +124,36 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
     b.raw()
         .before(
             &points::GAME_TICK,
-            "park the Forge monitor's biped",
+            "park the Forge body's biped",
             |call| {
-                let monitor = lock().state.monitor;
-                if monitor || HIDDEN.load(Ordering::Relaxed) != u32::MAX {
-                    let mut m = call.ctx.memory();
-                    let admitted = monitor && crate::forge_map::admitted(&*m);
-                    park(&mut *m, admitted);
+                let state = lock().state;
+                if !state.active && HIDDEN.load(Ordering::Relaxed) == u32::MAX {
+                    return Ok(Flow::Continue);
+                }
+                let mut m = call.ctx.memory();
+                if state.active {
+                    lock().eye = drawn_eye(&*m);
+                }
+                let admitted = crate::forge_map::admitted(&*m);
+                let (biped, body) = if admitted { (state.parked, state.body) } else { (None, None) };
+                if biped.is_some()
+                    || body.is_some()
+                    || !KEPT.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+                {
+                    park(&mut *m, biped, body);
                 }
                 Ok(Flow::Continue)
             },
         )
         .last()
         .after_feature("sim-metrics");
-    let scratch = b.guest_alloc(VIEW_STRIDE, runtime::guest::Permissions::RW)?;
-    b.raw()
-        .before(&points::RENDER_VIEWS, "draw Forge monitor", move |call| {
-            let active = lock().state.active;
-            if active {
-                draw_world_view(call, scratch, |guest, views| {
-                    let mut state = lock();
-                    if !state.state.active {
-                        return None;
-                    }
-                    let retail =
-                        views
-                            .first()
-                            .and_then(|&v| retail_view(guest, v))
-                            .map(|(p, _)| Camera {
-                                position: p.position,
-                                yaw: p.yaw,
-                                pitch: p.pitch,
-                            });
-                    state.eye = retail;
-                    if !state.state.monitor {
-                        return None;
-                    }
-                    let c = state.state.camera.or(retail)?;
-                    Some((
-                        Pose {
-                            position: c.position,
-                            yaw: c.yaw,
-                            pitch: c.pitch,
-                        },
-                        None,
-                    ))
-                });
-            }
-            Ok(Flow::Continue)
-        })
-        .first()
-        .context_only();
     b.raw()
         .before(
             &points::OBJECT_RENDER_SETUP,
             "hide parked Forge biped",
             |call| {
                 let hidden = HIDDEN.load(Ordering::Relaxed);
-                if hidden == u32::MAX || call.cpu.esi != vis::MAIN_VIS || !lock().state.monitor {
+                if hidden == u32::MAX || call.cpu.esi != vis::MAIN_VIS {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = call.ctx.memory();
@@ -200,52 +182,47 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        testing::FakeGuest,
-        view::{fake, players},
-    };
-    use guest_layout::{ObjectHeader, player::Player};
+    use engine::{testing::FakeGuest, view::fake};
+    use guest_layout::ObjectHeader;
 
     #[test]
-    fn a_park_restores_only_the_bit_it_added_to_the_same_biped() {
+    fn a_park_restores_only_the_bit_it_added_to_the_same_unit() {
         let mut m = FakeGuest::new();
-        let (player_pool, object_pool, body) = (0x3000, 0x5000, 0x7000);
-        let players = fake::datums::<players::Player>(&mut m, player_pool, 1);
-        let objects = fake::datums::<objects::Header>(&mut m, object_pool, 1);
-        let (_, player) = fake::push(&mut m, &players);
-        let (unit, object) = fake::push(&mut m, &objects);
-        m.put_u32(points::PLAYERS.base, player_pool)
-            .put_u32(points::OBJECTS.base, object_pool)
+        let (object_pool, biped_body, flying_body) = (0x5000, 0x7000, 0x7400);
+        let objects = fake::datums::<objects::Header>(&mut m, object_pool, 2);
+        let (biped, b) = fake::push(&mut m, &objects);
+        let (flying, f) = fake::push(&mut m, &objects);
+        m.put_u32(points::OBJECTS.base, object_pool)
             .put_u32(points::SCENARIO.base, 0x9000)
-            .put_u16(player.addr + Player::LOCAL_USER.offset, 0)
-            .put_u16(player.addr + Player::FLAGS.offset, 0)
-            .put_u32(player.addr + Player::UNIT.offset, unit.raw())
-            .put_u8(object.addr + ObjectHeader::KIND.offset, objects::BIPED)
-            .put_u32(object.addr + ObjectHeader::BODY.offset, body)
-            .put_u16(body + BODY_DAMAGE_FLAGS, 1);
+            .put_u8(b.addr + ObjectHeader::KIND.offset, objects::BIPED)
+            .put_u32(b.addr + ObjectHeader::BODY.offset, biped_body)
+            .put_u16(biped_body + BODY_DAMAGE_FLAGS, 1)
+            .put_u8(f.addr + ObjectHeader::KIND.offset, objects::BIPED)
+            .put_u32(f.addr + ObjectHeader::BODY.offset, flying_body)
+            .put_u16(flying_body + BODY_DAMAGE_FLAGS, 0);
         forget_park();
         assert_eq!(parked(), None);
-        park(&mut m, true);
-        assert_eq!(HIDDEN.load(Ordering::Relaxed), unit.raw());
-        assert_eq!(parked(), Some(unit.raw()));
-        assert_eq!(
-            m.u16(body + BODY_DAMAGE_FLAGS).unwrap(),
-            1 | CANNOT_TAKE_DAMAGE
-        );
-        park(&mut m, false);
-        assert_eq!(HIDDEN.load(Ordering::Relaxed), u32::MAX);
-        assert_eq!(m.u16(body + BODY_DAMAGE_FLAGS).unwrap(), 1);
+        park(&mut m, Some(biped.raw()), Some(flying.raw()));
+        assert_eq!(parked(), Some(biped.raw()), "the biped is hidden, the body is not");
+        assert_eq!(m.u16(biped_body + BODY_DAMAGE_FLAGS).unwrap(), 1 | CANNOT_TAKE_DAMAGE);
+        assert_eq!(m.u16(flying_body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
+        park(&mut m, None, None);
+        assert_eq!(parked(), None);
+        assert_eq!(m.u16(biped_body + BODY_DAMAGE_FLAGS).unwrap(), 1);
+        assert_eq!(m.u16(flying_body + BODY_DAMAGE_FLAGS).unwrap(), 0);
 
-        m.put_u16(body + BODY_DAMAGE_FLAGS, CANNOT_TAKE_DAMAGE);
-        park(&mut m, true);
-        park(&mut m, false);
-        assert_eq!(m.u16(body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
+        // A bit the unit had before the park stays.
+        m.put_u16(biped_body + BODY_DAMAGE_FLAGS, CANNOT_TAKE_DAMAGE);
+        park(&mut m, Some(biped.raw()), None);
+        park(&mut m, None, None);
+        assert_eq!(m.u16(biped_body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
 
-        m.put_u16(body + BODY_DAMAGE_FLAGS, 0);
-        park(&mut m, true);
-        m.put_u16(object.addr + ObjectHeader::SALT.offset, 0x751);
-        park(&mut m, false);
-        assert_eq!(m.u16(body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
+        // Another object in the slot (a new salt) is left alone.
+        m.put_u16(biped_body + BODY_DAMAGE_FLAGS, 0);
+        park(&mut m, Some(biped.raw()), None);
+        m.put_u16(b.addr + ObjectHeader::SALT.offset, 0x751);
+        park(&mut m, None, None);
+        assert_eq!(m.u16(biped_body + BODY_DAMAGE_FLAGS).unwrap(), CANNOT_TAKE_DAMAGE);
     }
 
     #[test]

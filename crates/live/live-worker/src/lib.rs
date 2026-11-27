@@ -19,6 +19,9 @@ mod film_library_parity;
 #[cfg(test)]
 #[path = "../../live-server/tests/support/variant_scripts.rs"]
 mod variant_scripts_parity;
+#[cfg(test)]
+#[path = "../../live-server/tests/support/packages.rs"]
+mod packages_parity;
 pub mod settings;
 pub mod site;
 pub mod sqlstore;

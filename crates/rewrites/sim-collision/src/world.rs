@@ -148,7 +148,22 @@ pub struct VectorParity {
     pub mismatched: u64,
     pub unverified: [u64; BAILS],
     pub first_mismatch: Option<String>,
+    /// Matches that also covered every register and frame byte of a
+    /// crossing exit (C and D only).
+    pub exits_matched: u64,
+    /// Crossing exits answered natively after a clean shadow run.
+    pub answered: u64,
+    /// Calls left to the guest for a shadow sample while answering.
+    pub sampled: u64,
+    /// A difference was seen: the lifted body answers from then on.
+    pub fell_back: bool,
 }
+
+/// Clean whole-exit comparisons before C or D answers a crossing exit.
+pub const CROSSING_CLEAN_RUN: u64 = 1024;
+/// While answering, one admitted crossing call in this many still runs
+/// lifted and is compared.
+pub const CROSSING_SAMPLE_EVERY: u64 = 64;
 
 /// A snapshot of the world's counters. Diagnostic only: no kernel reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -702,6 +717,48 @@ impl CollisionWorld {
         Self::record_parity(&self.counters.context, result);
     }
 
+    fn crossing(&self, entry: Entry) -> &Mutex<VectorParity> {
+        match entry {
+            Entry::VectorTest => &self.counters.vector,
+            Entry::VectorContext => &self.counters.context,
+            _ => unreachable!("crossing exits are defined only for C and D"),
+        }
+    }
+
+    /// Shadow, then answer: true when this admitted crossing call of C or
+    /// D should be answered natively. That needs [`CROSSING_CLEAN_RUN`] clean
+    /// whole-exit comparisons and no difference at all on the entry; one
+    /// call in [`CROSSING_SAMPLE_EVERY`] is still left to the guest and compared.
+    pub fn answer_crossing(&self, entry: Entry) -> bool {
+        let mut v = self.crossing(entry).lock().unwrap_or_else(|e| e.into_inner());
+        if v.fell_back || v.mismatched != 0 || v.exits_matched < CROSSING_CLEAN_RUN {
+            return false;
+        }
+        if (v.answered + v.sampled) % CROSSING_SAMPLE_EVERY == CROSSING_SAMPLE_EVERY - 1 {
+            v.sampled += 1;
+            false
+        } else {
+            v.answered += 1;
+            true
+        }
+    }
+
+    /// Record a lifted return's comparison for C or D. `exit` when it
+    /// covered the whole exit state. Any difference closes the gate.
+    pub fn record_crossing(&self, entry: Entry, result: Result<Option<String>, Bail>, exit: bool) {
+        let counter = self.crossing(entry);
+        let clean = exit && matches!(result, Ok(None));
+        let differed = matches!(result, Ok(Some(_)));
+        Self::record_parity(counter, result);
+        let mut v = counter.lock().unwrap_or_else(|e| e.into_inner());
+        if clean {
+            v.exits_matched += 1;
+        }
+        if differed {
+            v.fell_back = true;
+        }
+    }
+
     pub fn record_instance(&self, result: Result<Option<String>, Bail>) {
         Self::record_parity(&self.counters.instance, result);
     }
@@ -799,5 +856,47 @@ impl CollisionWorld {
             cluster_budget_reads: inner.cluster_budget_reads,
             precision,
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use sim_core::Epoch;
+
+    #[test]
+    fn crossing_answers_after_a_clean_run_and_falls_back_on_a_difference() {
+        static EPOCH: Epoch = Epoch::new();
+        let world = CollisionWorld::new(&EPOCH);
+        let (c, d) = (Entry::VectorTest, Entry::VectorContext);
+        // Record-only matches and declines do not open the gate.
+        for _ in 0..2 * CROSSING_CLEAN_RUN {
+            world.record_crossing(c, Ok(None), false);
+            world.record_crossing(c, Err(Bail::Float), true);
+        }
+        assert!(!world.answer_crossing(c));
+        for _ in 1..CROSSING_CLEAN_RUN {
+            world.record_crossing(c, Ok(None), true);
+        }
+        assert!(!world.answer_crossing(c));
+        world.record_crossing(c, Ok(None), true);
+        let answered = (0..4 * CROSSING_SAMPLE_EVERY)
+            .filter(|_| world.answer_crossing(c))
+            .count() as u64;
+        let v = world.stats().vector;
+        assert_eq!((v.answered, v.sampled), (answered, 4));
+        assert_eq!(answered, 4 * (CROSSING_SAMPLE_EVERY - 1));
+        // D keeps its own count.
+        assert!(!world.answer_crossing(d));
+        world.record_crossing(c, Ok(Some("ECX".into())), true);
+        assert!(!world.answer_crossing(c));
+        let v = world.stats().vector;
+        assert!(v.fell_back);
+        assert_eq!(v.first_mismatch.as_deref(), Some("ECX"));
+        // More clean runs never reopen it.
+        for _ in 0..CROSSING_CLEAN_RUN {
+            world.record_crossing(c, Ok(None), true);
+        }
+        assert!(!world.answer_crossing(c));
     }
 }

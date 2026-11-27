@@ -12,6 +12,8 @@ guest-file-reads = ["dep:vfs"]
 vfs = { workspace = true, optional = true }
 thiserror.workspace = true
 xbe.workspace = true
+# The tag arena's layout and guest RAM size (map::arena), dependency-light.
+map.workspace = true
 x87.workspace = true
 # Interrupt and HLE-call events (docs/perf/profiling.md); dependency-free.
 timeline = { path = "../timeline" }

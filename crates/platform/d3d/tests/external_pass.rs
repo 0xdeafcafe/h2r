@@ -325,6 +325,34 @@ fn the_pass_gets_the_depth_clip_at_issue() {
     assert!(!d3d::nv2a::clamps_depth(0x01) && d3d::nv2a::clamps_depth(0x11));
 }
 
+/// A layer's object items are planned at the layer call, before the
+/// layer's first shader begin sets `ZENABLE` to `D3DZB_USEW`
+/// (`0x0001bbf0`). Over a device the work before left unbuffered (here
+/// `set_states`' `ZEnable(FALSE)`), a pass issued then is not W-buffered;
+/// with the begin's value set first, as the layer glue does
+/// (`native_objects_glue::apply_layer_begin_zenable`), the drain gives the
+/// pass the W-buffered device its items' guest draws would run on.
+#[test]
+fn the_layer_begins_zenable_before_the_drain_gives_the_pass_a_w_buffered_device() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let issue = |d: &mut Device<RecordingBackend>, m: &mut SparseMemory| {
+        let got = Arc::default();
+        d.request_external_pass(Box::new(Clip(Arc::clone(&got))));
+        d.drain_until_callback(m).unwrap();
+        let clip: Option<d3d::DepthClip> = *got.lock().unwrap();
+        clip.expect("given at issue")
+    };
+    let z_perspective = |d: &Device<RecordingBackend>| d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0);
+    let before = issue(&mut d, &mut m);
+    assert_ne!(before.w_buffered, Some(true), "left unbuffered: {before:?}");
+    assert!(!z_perspective(&d));
+    d.set_render_state(&mut m, d3d::state::slot::ZENABLE, 2).unwrap();
+    let after = issue(&mut d, &mut m);
+    assert_eq!(after.w_buffered, Some(true), "the begin's ZENABLE pushes SET_CONTROL0's z-perspective");
+    assert!(z_perspective(&d));
+}
+
 #[test]
 fn a_backend_that_cannot_drops_it() {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);

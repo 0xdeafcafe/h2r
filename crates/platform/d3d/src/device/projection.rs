@@ -71,8 +71,9 @@ fn is_perspective(rows: &[[f32; 4]]) -> bool {
     crate::clip_space::camera::Persp::split(&m).is_some()
 }
 
-/// Widen the horizontal row of a captured perspective matrix, leaving
-/// orthographic matrices and the remaining three rows intact.
+/// Widen the lens of a captured perspective matrix, leaving orthographic
+/// matrices intact: a `factor` below 1 scales the horizontal row, one above
+/// 1 scales the vertical row by its inverse (`canvas_fit::Lens`).
 #[cfg(feature = "gpu")]
 pub fn widen_projection_rows(rows: &mut [[f32; 4]], factor: f32) -> bool {
     if factor == 1.0
@@ -83,7 +84,9 @@ pub fn widen_projection_rows(rows: &mut [[f32; 4]], factor: f32) -> bool {
     {
         return false;
     }
-    rows[0] = rows[0].map(|x| x * factor);
+    let (x, y) = (canvas_fit::horizontal_term(factor), canvas_fit::vertical_term(factor));
+    rows[0] = rows[0].map(|v| v * x);
+    rows[1] = rows[1].map(|v| v * y);
     true
 }
 
@@ -116,8 +119,11 @@ impl DisplayProjection {
             return;
         }
         for stage in extras.iter_mut().filter(|stage| stage.samples_frame) {
-            stage.bump_env_mat[0] *= self.camera_factor;
-            stage.bump_env_mat[2] *= self.camera_factor;
+            let (x, y) = (canvas_fit::horizontal_term(self.camera_factor), canvas_fit::vertical_term(self.camera_factor));
+            stage.bump_env_mat[0] *= x;
+            stage.bump_env_mat[2] *= x;
+            stage.bump_env_mat[1] *= y;
+            stage.bump_env_mat[3] *= y;
         }
     }
 
@@ -251,6 +257,16 @@ mod tests {
         assert!(widen_projection_rows(&mut wide, 0.5));
         assert_eq!(wide[0], view[0].map(|v| v * 0.5));
         assert_eq!(wide[1..], view[1..]);
+        // A portrait window grows the vertical lens and leaves the row of
+        // the horizontal one alone.
+        for output in [(960, 1280), (720, 1280)] {
+            let lens = canvas_fit::Lens::for_window(output);
+            let mut tall = view;
+            assert!(widen_projection_rows(&mut tall, lens.factor()));
+            assert_eq!(tall[0], view[0], "{output:?}");
+            assert_eq!(tall[1], view[1].map(|v| v * lens.y), "{output:?}");
+            assert_eq!(tall[2..], view[2..]);
+        }
         let mut ortho = view;
         ortho[3] = [0., 0., 0., 1.];
         assert!(!is_perspective(&ortho));

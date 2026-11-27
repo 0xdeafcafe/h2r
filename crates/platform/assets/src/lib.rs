@@ -17,7 +17,7 @@ pub mod write;
 pub mod xpr;
 
 pub use bitmap::{BlockLevels, DecodedImage, Level, d3d_format, decode_image, decode_image_blocks, texture_desc};
-pub use resource::{Region, ResourceFiles};
+pub use resource::{Region, ResourceFiles, ResourceSource};
 
 /// Why a bitmap image could not be decoded.
 #[derive(Debug, thiserror::Error)]

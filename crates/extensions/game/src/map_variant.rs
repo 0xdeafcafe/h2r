@@ -32,6 +32,14 @@
 //!
 //! **At load.** [`package`] is the built package the session selects for
 //! the lobby's map; it is `None` for Original.
+//!
+//! **Other machines.** A member that joins on a variant builds it from the
+//! document Live names, ground and all ([`build_document`], which
+//! `live_hle::maps::MapGate` calls) and keeps the id it loaded
+//! ([`set_loaded`]). A replica and a film's playback have no pick: their
+//! running pick is made from that package's own document
+//! ([`begin_run_replica`]), so Map Waves plays the set the host's document
+//! holds and the log's genesis is the host's.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -161,10 +169,21 @@ fn with_pick<T>(f: impl FnOnce(&mut Option<Picked>) -> T) -> T {
     f(&mut cell().lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+#[cfg(not(test))]
 static MAPS: Mutex<Option<SharedMaps>> = Mutex::new(None);
 
+#[cfg(not(test))]
 fn with_maps<T>(f: impl FnOnce(&mut Option<SharedMaps>) -> T) -> T {
     f(&mut MAPS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Each test thread has its own maps, as it has its own lobby.
+#[cfg(test)]
+fn with_maps<T>(f: impl FnOnce(&mut Option<SharedMaps>) -> T) -> T {
+    thread_local! {
+        static MAPS: std::cell::RefCell<Option<SharedMaps>> = const { std::cell::RefCell::new(None) };
+    }
+    MAPS.with(|m| f(&mut m.borrow_mut()))
 }
 
 /// The maps and package library the builds use, from the composition root.
@@ -230,6 +249,93 @@ pub fn waves_on(lobby_map: Option<u32>) -> bool {
 pub fn begin_run() {
     let built = picked().filter(|p| matches!(p.prep, Prep::Ready(_)));
     *run_cell().lock().unwrap_or_else(|e| e.into_inner()) = built;
+}
+
+/// The id of the package this machine loaded for a game it did not pick:
+/// a member's join, a film's header.
+#[cfg(not(test))]
+fn loaded_cell() -> Arc<Mutex<Option<MapId>>> {
+    static LOADED: std::sync::OnceLock<Arc<Mutex<Option<MapId>>>> = std::sync::OnceLock::new();
+    LOADED.get_or_init(Default::default).clone()
+}
+
+#[cfg(test)]
+fn loaded_cell() -> Arc<Mutex<Option<MapId>>> {
+    thread_local! {
+        static LOADED: Arc<Mutex<Option<MapId>>> = Arc::default();
+    }
+    LOADED.with(Arc::clone)
+}
+
+/// This machine loads the package `id` for a game it did not pick: a
+/// member's join, or a film's playback. `None` when it loads none.
+pub fn set_loaded(id: Option<MapId>) {
+    *loaded_cell().lock().unwrap_or_else(|e| e.into_inner()) = id;
+}
+
+/// The package [`set_loaded`] named.
+pub fn loaded() -> Option<MapId> {
+    *loaded_cell().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A replica or a film's playback starts: the running pick is the document
+/// of the package this machine loaded ([`loaded`]), as the host's was its
+/// pick's. No loaded package, or one whose document cannot be read, leaves
+/// no running pick, and the refusal says why.
+pub fn begin_run_replica() -> Result<(), Refusal> {
+    let made = match (loaded(), with_maps(|m| m.clone())) {
+        (Some(id), Some(maps)) => run_from(&maps, id),
+        (Some(_), None) => Err(Refusal::new(
+            "variant_build",
+            "This game cannot read a map variant's document.",
+        )),
+        (None, _) => Ok(None),
+    };
+    let (picked, result) = match made {
+        Ok(picked) => (picked, Ok(())),
+        Err(refusal) => (None, Err(refusal)),
+    };
+    *run_cell().lock().unwrap_or_else(|e| e.into_inner()) = picked;
+    result
+}
+
+/// The running pick of the package `id`: its manifest's one Forge layer
+/// names the document the package was built from.
+fn run_from(maps: &SharedMaps, id: MapId) -> Result<Option<Picked>, Refusal> {
+    let Some(dir) = maps.lock().unwrap_or_else(|e| e.into_inner()).cached(&id) else {
+        return Ok(None);
+    };
+    let unreadable = |why: String| Refusal::new("variant_unreadable", format!("The map's document cannot be read ({why})."));
+    let text = std::fs::read_to_string(dir.join(content::manifest::MANIFEST_FILE))
+        .map_err(|e| unreadable(e.to_string()))?;
+    let manifest = content::Manifest::from_toml(&text).map_err(|e| unreadable(e.to_string()))?;
+    let Some(layer) = manifest.forge.first() else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(dir.join(&layer.document_file)).map_err(|e| unreadable(e.to_string()))?;
+    let doc = ForgeDoc::from_bytes(&bytes, &forge_doc::Limits::default())
+        .map_err(|e| unreadable(e.to_string()))?;
+    Ok(Some(Picked {
+        map: doc.base.map.clone(),
+        lobby_map: None,
+        file: String::new(),
+        name: doc.title.clone(),
+        id: Some(id),
+        prep: Prep::Ready(dir),
+        kit: false,
+        ground: matches!(doc.ground_recipe(), Ok(Some(_))),
+        waves: doc.waves.clone(),
+    }))
+}
+
+/// Build the package of the document `bytes` with the installed [`Maps`]
+/// (`live_hle::maps::MapGate::on_build`): a member's own build of the
+/// variant a host named. The package's directory.
+pub fn build_document(bytes: &[u8]) -> Result<PathBuf, String> {
+    let maps = with_maps(|m| m.clone()).ok_or("this game cannot build a map variant")?;
+    let doc = ForgeDoc::from_bytes(bytes, &forge_doc::Limits::default()).map_err(|e| e.to_string())?;
+    let built = maps.lock().unwrap_or_else(|e| e.into_inner()).build(&doc);
+    built.map_err(|r| r.sentence)
 }
 
 /// The pick the running game was built from ([`begin_run`]); `None` for

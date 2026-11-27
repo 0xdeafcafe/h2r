@@ -221,10 +221,11 @@ impl Session {
             })
             .collect();
         self.own_live = own;
-        // The copy's game starts with no spare clips or weights (the game
+        // The copy's game starts with no spare clips, weights or held spawners (the game
         // empties its tables at activation): the next settle writes them.
         self.clips_live.clear();
         self.weights_live.clear();
+        self.held_live.clear();
         if let Some(kit) = &mut self.kit {
             // The kit's room is what the copy has past its rows, and the
             // rows the document adds are in it already.

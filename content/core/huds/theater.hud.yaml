@@ -1,0 +1,38 @@
+# The Theater's playback HUD (docs/game/theater.md, "The playback HUD"): a
+# block centred at the top of the frame, clear of the grenade row, the
+# weapon panel, the prompt line under it and the mode HUDs' blocks at the
+# bottom. The status line, the rail under it and the view line are widgets;
+# the button hints are the game's prompt line and a notice is a line of its
+# notification list. Offsets are from the frame's centre (272, 204 from its
+# top left corner), so the block stays centred in a wide window. Fullscreen
+# only. Elements in draw order.
+name: theater
+elements:
+  - id: theater.hints
+    kind: prompt
+    longest: "Space Play / Pause  Esc Menu  H Hide"
+  - id: theater.notice
+    kind: message
+    longest: "Saved theater-1764201600000000000.png"
+  - id: theater.status
+    kind: text
+    font: hud
+    justify: centre
+    longest: "JUMPING 59:59 / 59:59 0.25x"
+    at: {anchor: centre, full: [0, -204]}
+  # The rail: two of the battery strip (92 by 8), 4 apart, the first half of
+  # the film and the second.
+  - id: theater.rail.0
+    kind: meter
+    art: {type: strip-meter}
+    at: {anchor: centre, full: [-94, -179]}
+  - id: theater.rail.1
+    kind: meter
+    art: {type: strip-meter}
+    at: {anchor: centre, full: [2, -179]}
+  - id: theater.view
+    kind: text
+    font: hud
+    justify: centre
+    longest: "First person / Marathon Man 15"
+    at: {anchor: centre, full: [0, -168]}

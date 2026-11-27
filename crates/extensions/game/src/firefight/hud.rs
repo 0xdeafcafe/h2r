@@ -123,14 +123,19 @@ pub struct Mode {
 pub mod banners;
 pub mod layout;
 
-/// Every skull Firefight turns on, by its session skull index.
-pub const FIREFIGHT_SKULLS: [Skull; 9] = [
+/// Every skull Firefight turns on, by its session skull index: nine with an
+/// engine effect, and Iron, the bonus round's director rule. Envy, Grunt
+/// Birthday Party, IWHBYD, Blind, Sputnik and Bandana have no Halo 2 effect
+/// a Firefight match can apply (docs/game/skulls-modes.md, "In Firefight"),
+/// so none is in the set.
+pub const FIREFIGHT_SKULLS: [Skull; 10] = [
     Skull::Assassins,
     Skull::Thunderstorm,
     Skull::Famine,
     Skull::BlackEye,
     Skull::Ghost,
     Skull::Catch,
+    Skull::Iron,
     Skull::Mythic,
     Skull::Angry,
     Skull::LowGravity,
@@ -146,6 +151,11 @@ pub const SKULL_BITS: u32 = {
     }
     m
 };
+
+/// The bits of the skulls with an engine effect: [`SKULL_BITS`] without
+/// Iron, which only the bonus round turns on. All of these on is "all
+/// skulls on" (`banners::lines`).
+pub const ENGINE_SKULL_BITS: u32 = SKULL_BITS & !(1 << Skull::Iron as u8);
 
 /// The skulls in `on` as the blob's bits.
 pub fn skull_mask<'a>(on: impl IntoIterator<Item = &'a Skull>) -> u32 {
@@ -605,7 +615,8 @@ fn lives_of(m: &Mode, local: u8) -> Option<u16> {
 }
 
 /// The kit's state for the elements [`layout::layout`] made: each line's
-/// words, the meter's fill, the skulls on, the banner's words.
+/// words, the meter's fill, the skulls on, the banner's words, the set's
+/// numeral and which round and wave pips show and are lit.
 pub fn state_of(elements: &[layout::Element]) -> State {
     let mut out = State::default();
     for e in elements.iter().filter(|e| e.shown) {
@@ -630,9 +641,15 @@ pub fn state_of(elements: &[layout::Element]) -> State {
                 });
             }
             layout::BANNER => out.banner = words(),
+            layout::SET => out.set = words(),
             id => {
-                if let Some(i) = layout::SKULL_IDS.iter().position(|s| *s == id) {
+                let at = |ids: &[&str]| ids.iter().position(|s| *s == id);
+                if let Some(i) = at(&layout::SKULL_IDS) {
                     out.skulls[i] = true;
+                } else if let Some(i) = at(&layout::ROUND_IDS) {
+                    out.rounds[i] = Some(e.fill.0 > 0);
+                } else if let Some(i) = at(&layout::WAVE_IDS) {
+                    out.waves[i] = Some(e.fill.0 > 0);
                 }
             }
         }
@@ -675,6 +692,9 @@ pub struct Feed {
     last: Option<Mode>,
     banners: banners::Banners,
     error: Option<String>,
+    /// The announcer's clips the last tick began ([`banners::lines`]),
+    /// until [`Feed::take_lines`].
+    lines: Vec<&'static str>,
 }
 
 impl Feed {
@@ -709,17 +729,39 @@ impl Feed {
         let Some(mode) = mode else {
             self.last = None;
             self.banners.clear();
+            self.lines.clear();
             return kit::hidden();
         };
         let mut events = banners::events(self.last.as_ref(), &mode, local, skull_name);
         if scope != Scope::Match {
             events.retain(|b| *b != banners::Banner::LastLife);
         }
+        self.lines = banners::lines(self.last.as_ref(), &mode, local, &events);
         let shown = self.banners.tick(events);
         let words = shown.map(|s| s.banner.text());
         let values = view_on(&mode, local, scope, screen, words.as_deref());
         self.last = Some(mode);
         values
+    }
+}
+
+impl Feed {
+    /// The announcer's clips the last tick began, once.
+    pub fn take_lines(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.lines)
+    }
+}
+
+/// Say the announcer's lines this tick began: one local user's, since
+/// every user's feed reads the same blob.
+pub fn announce(feeds: &mut Feeds) {
+    let mut said = false;
+    for feed in feeds.iter_mut() {
+        let lines = feed.take_lines();
+        if !said && !lines.is_empty() {
+            said = true;
+            lines.into_iter().for_each(crate::medal_announcer::announce_id);
+        }
     }
 }
 
@@ -812,13 +854,10 @@ impl hooks::Feature for FeedFeature {
             let mem: &dyn GuestMemory = &*guest;
             let slots = local_slots(mem).unwrap_or_default();
             let screen = layout::Screen::for_users(hud_kit::local_users(mem).unwrap_or(1));
-            let all = tick_all(
-                &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
-                &slots,
-                &scopes_now(),
-                screen,
-                &current(),
-            );
+            let mut feeds = feeds.lock().unwrap_or_else(|e| e.into_inner());
+            let all = tick_all(&mut feeds, &slots, &scopes_now(), screen, &current());
+            announce(&mut feeds);
+            drop(feeds);
             for (user, values) in all.into_iter().enumerate() {
                 let user = user as u32;
                 if user == 0 {

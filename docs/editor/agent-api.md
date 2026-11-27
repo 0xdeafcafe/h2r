@@ -653,7 +653,13 @@ Notes on some:
   evaluator) at each input, `range_input` blending the two sets of a
   ranged function (default 0, set 0); types the engine does not
   evaluate give 0. A path that is not a function curve field is
-  `REFUSED`.
+  `REFUSED`. `function.colours {tag, path, samples?}` reads the blob as a
+  shader colour property (the engine's reader at `0x0013bc00`,
+  `Function::output_colour` and `colour_stops`): `mode` (`grey`,
+  `single`, `two`, `three`, `four`, `white`, from the flags' high
+  nibble), `stops` as `#aarrggbb`, and `gradient`, `samples` (2 to 256,
+  default 16) rows of `{at, colour}` over the input 0 to 1. The blob
+  does not say it is a colour, so the caller picks the field.
 - **The field panel.** `tag.view {tag?, path?, field?, search?,
   changed?, unnamed?, show_as?}` drives the Tags tool's panel and
   returns what it shows. `tag` selects a tag in the Tags tool. `path`,
@@ -2422,7 +2428,8 @@ the window and the API stay one path.
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
 - **Curves (rich editors F1).** `api/curves.rs` registers `Curves` for
-  `function.read`, `function.set` and `function.sample`, over
+  `function.read`, `function.set`, `function.sample` and
+  `function.colours`, over
   `tags::effects::function` (`Set`, `Function::set_values`,
   `Function::write_set`) and the curve editor's own helpers
   (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the
@@ -2508,7 +2515,14 @@ the window and the API stay one path.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
   step each (`mesh.transform` with a `merge` key joins a drag), and
-  `mesh.apply` replays a `mesh.ops` log as one step. While a target is in
+  `mesh.apply` replays a `mesh.ops` log as one step. `mesh.sculpt
+  {brush, centre | points, radius, strength?, falloff?, height?, axis?,
+  detail?}` is one brush stroke (`raise`, `lower`, `smooth`, `flatten`,
+  `cut`) as one step and one `sculpt` op: it subdivides where the brush
+  needs vertices, goes through the collision compiler, and answers
+  `class`, `moved`, `verts` and `faces`; a stroke the kernel or the
+  compiler refuses is `REFUSED` with the reason, and nothing is kept
+  (docs/editor/modeling.md, "Sculpting"). While a target is in
   edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry

@@ -19,6 +19,7 @@ use crate::ui_kit::{
 
 const BAR: [i16; 4] = [-105, -272, -208, 272];
 const RAIL: [i16; 4] = [-144, -252, -154, 252];
+const CLIP_BAND: [u8; 4] = [124, 104, 52, 255];
 const PANEL: [u8; 4] = [12, 23, 39, 238];
 // The design system's white and hint blue (content/ui/design.yaml).
 const BODY: [f32; 3] = [1.0, 1.0, 1.0];
@@ -68,15 +69,25 @@ fn fill(s: &mut ScreenSpec, rect: [i16; 4], rgba: [u8; 4]) {
     }
 }
 
-fn transparent_page(name: &str, title: &str, rows: i16) -> ScreenSpec {
-    let mut spec = ScreenSpec::new(name, title);
-    spec.transparent = true;
-    spec.list = ListPlace::from(Some(ListLayout {
+/// The pause menu's list, for the host's page and the game's screen
+/// (`pause_screen`) alike.
+pub(super) fn menu_layout() -> ListLayout {
+    page_layout(Row::ALL.len() as i16)
+}
+
+fn page_layout(rows: i16) -> ListLayout {
+    ListLayout {
         skin: 0,
         anchor: [-262, 135],
         bitmaps_left_of: i16::MIN,
         visible: rows,
-    }));
+    }
+}
+
+fn transparent_page(name: &str, title: &str, rows: i16) -> ScreenSpec {
+    let mut spec = ScreenSpec::new(name, title);
+    spec.transparent = true;
+    spec.list = ListPlace::from(Some(page_layout(rows)));
     spec.style = ValueStyle::Inline;
     spec
 }
@@ -315,6 +326,18 @@ fn timeline(spec: &mut ScreenSpec, t: &Track) {
             .collect::<BTreeSet<_>>();
         for at in positions {
             fill(spec, [y1, at, y2, at + 1], colour);
+        }
+    }
+    // The range being marked: in to out, or in to the playhead until the
+    // out is set, shaded under the mark lines.
+    if let Some(from) = t.marks.0 {
+        let to = t.marks.1.unwrap_or(t.tick);
+        if from < to && to >= start && from <= end {
+            fill(
+                spec,
+                [top - 1, x(from), bottom + 1, x(to) + 1],
+                CLIP_BAND,
+            );
         }
     }
     for mark in [t.marks.0, t.marks.1]

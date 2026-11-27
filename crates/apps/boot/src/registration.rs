@@ -209,6 +209,11 @@ pub(crate) fn register_core_film(
     // default recording, and its replay, keep them on
     // (theater::autorecord, docs/game/film-format.md "Recording every game").
     let features_off = film.as_ref().is_some_and(|f| !f.player_features());
+    // The grown tag arena (docs/formats/map-format.md, "The tag arena"):
+    // every boot, since maps built for it may need its room.
+    features
+        .add(&crate::tag_arena::TagArena)
+        .map_err(|e| anyhow::anyhow!("tag-arena: {e}"))?;
     let creature_probe = features
         .add(&crate::actor_net::creature::CreatureProbe)
         .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;
@@ -605,6 +610,18 @@ pub(crate) fn register_core_film(
     features
         .add(&game::forge_spawn_weight::SpawnWeight)
         .map_err(|e| anyhow::anyhow!("forge spawn weight: {e}"))?;
+    // A Forge spawner's place at start: a held-back item waits its respawn
+    // time after each round reset.
+    features
+        .add(&game::forge_place_at_start::PlaceAtStart)
+        .map_err(|e| anyhow::anyhow!("forge place at start: {e}"))?;
+    // A built Forge map's record of the three, read at activation, so a
+    // match on the variant has them with no session.
+    if let Some(vfs) = i.vfs.clone() {
+        features
+            .add(&game::forge_record::Record { vfs })
+            .map_err(|e| anyhow::anyhow!("forge record: {e}"))?;
+    }
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
@@ -635,6 +652,9 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
+    // The Theater's playback HUD on the kit, fed from the host's transport
+    // (docs/game/theater.md, "The playback HUD"); hidden outside a film.
+    crate::theater_ui::hud::register();
     // The Firefight HUD on the kit, fed from the mode blob
     // (docs/game/firefight.md, "The HUD").
     if firefight_on {

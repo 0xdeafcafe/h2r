@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `world.pools` | read | [`world.pools`](#worldpools) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `actors.net` | read | [`actors.net`](#actorsnet) |
@@ -676,6 +677,15 @@ break step reads the same state (`bots::guest::breakable`;
 ```sh
 h2 agent world.breakable '{}'
 ```
+
+## `world.pools`
+
+`h2 agent world.pools` returns `{at, actors, decals, particles}`: the live
+count in each data array's header (`crates/extensions/agent/src/pools.rs`).
+It takes no parameters and reads three headers, so it is cheap to poll. A
+pool that is not allocated, or whose header fails its signature or capacity
+check, is `null`. The watermark's `full` level reads it for its AI, decal and
+particle counts ([app.md](app.md#watermark)).
 
 ## `world.ai`
 
@@ -2309,8 +2319,8 @@ h2 agent render.parity '{"arm": true}'
   with frame statistics and the residual census disabled. The corresponding
   `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
   `sky_plan_admitted` counts strips offered to the device after extraction and
-  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
-  material, transform, view, range, stencil or device. GPU reservation and
+  material checks. `scene_kept_sky_<cause>` counts strips left to their guest
+  draw, by cause ([native-world-walk.md](../graphics/native-world-walk.md)). GPU reservation and
   replay outcomes appear under `native_sky_*` in the frame counters.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
@@ -2321,7 +2331,10 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
   the alternate view's as `layer_plan_alt<layer>_*`, the first person's as `layer_plan_fp<layer>_*`, object items' causes
   named `object_*` (`render_bridge::native_layers`; framescene.md,
-  slice 4); a later slice adds
+  slice 4), and the cut world layers' items left to their guest draw,
+  `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
+  `world`, `object` or `unreadable`; layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20; causes in
+  [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
@@ -3037,7 +3050,7 @@ reports `"players":[]` and `"ready":false`. Readiness needs a remote
 player, party leadership, the requested map and limit, loaded maps on every
 peer, and retail's ready-to-start result. Any connection may read state;
 mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
-[Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby).
+[Playerless lobby and the two-console check](../live/dedicated-host-ops.md#playerless-lobby).
 
 ## `ui`: what the menus show
 
@@ -3092,8 +3105,8 @@ or the game's UI state without UI watch. All are read-only except
   (`history`, nearest parent first). Each screen has `id`, `instance`
   (a guest address valid for that screen's lifetime), and `parent` where
   a return is known. The map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`, `pack`), with the open
-  category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
+  distinct `mode` values (`folders`, `maps`, `pack`, `variants`), with the open
+  category, pack or map named in `folder`. A map's page of variants has its category's maps as its parent. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). Game-type and variant lists also expose their focused row.
   A custom variant list identifies its group in `variant_category` and a kit
   screen identifies its class in `class`. Both fields are null elsewhere.
@@ -3142,7 +3155,7 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.browser.filters`** (`h2 agent ui.browser.filters`, no parameters):
   reads the active Custom Game Browser preferences, even when the browser
   is closed. The result is `{"filters":{...}}` with the same field names
-  and values as the [Live session query](../live/live-api.md#browser-filters).
+  and values as the [Live session query](../live/live-api-sessions.md#browser-filters).
   Unset fields are omitted. With the default choices, it returns
   `{"filters":{}}`. After opening Game Filters with Y and choosing a row
   value with A, read this method to verify the selection.
@@ -5098,7 +5111,7 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`, `blockout`) to whether it is on. Block-out: `block_grid` (units), `dev_view`, and `resize` (`{target, def, size}` while a Resize draft is in hand, else `null`). Links fields: `tool` (`objects`, `links` or `nav`), `aimed_link` and `link_from` (`{teleporter: flag}`, `{flag: id}` for a teleporter the session added, or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `added_teleporters` (`{id, sender, channel, position}`, the teleporter flags the session added, with the channel a link gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty, waves}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, `dirty` edits since the last save or load, and `waves` the name of the session's own wave set, or `null` when it has none and a save writes none (`forge.waves` has the rest). `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`, `blockout`) to whether it is on. Block-out: `block_grid` (units), `dev_view`, and `resize` (`{target, def, size}` while a Resize draft is in hand, else `null`). Links fields: `tool` (`objects`, `links` or `nav`), `aimed_link` and `link_from` (`{teleporter: flag}`, `{flag: id}` for a teleporter the session added, or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `added_teleporters` (`{id, sender, channel, position}`, the teleporter flags the session added, with the channel a link gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped kept while the player is in a Forge body, undamageable and hidden, or `null` while none is. Body fields: `body` (`{kind, unit}` while the player is in one: `kind` the body's key, `monitor`, `sentinel` or `prophet`, and `unit` its hex handle; else `null`), `body_choice` (the profile's `forge.body` key) and `bodies` (`{kind, name, refused}` for each body, `refused` the sentence that names why the kit left it out, or `null`). Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty, waves}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, `dirty` edits since the last save or load, and `waves` the name of the session's own wave set, or `null` when it has none and a save writes none (`forge.waves` has the rest). `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
 | `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the running map was reloaded onto a build of the ground the document asks for now (false after an edit makes it stale, and while the game cannot reload the map). `recipe` is `{kit_version, home, probe, classes}` or null before the first build, with `classes` the enemy classes past the Elite as `{name, donor, sha256}`, each donor the campaign map the class is copied from (docs/game/forge-firefight.md, "Enemy classes"). `classes` (top level) is the class names the session asks for, in keep order: the recipe's, or a list `forge.ground.build {classes}` gave that the next build gives donors. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to how many are placed (a `siege_barrier` is a label on a placed object, not a flag, so it is counted and is not in `markers`), and `markers` lists the flags as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt, classes, cut, costs}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers, `classes` the classes the ground has in palette order (the Elite first), `cut` the classes cut to fit the map's tag headroom (first cut first) and `costs` each kept class past the Elite as `{name, tags, bytes}` |
 | `forge.ground.build` (act) | `{if_stale?, classes?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when the ground is stale or was never built). `classes` asks for those enemy classes past the Elite first (`grunt`, `jackal`, `drone`, `brute`, `hunter`, in any order; `[]` for none): a list other than the recipe's marks the ground stale, and the build takes each class's donor from this game's disc and cuts classes from the end of the list when the map is short of headroom. Answers when the build has ended with `forge.ground`'s reply plus `built`, whether it built. The build runs off the game thread over a copy of the session, and edits wait meanwhile. Refused as `forge_refused` when this game has no builder (`This game cannot build AI ground.`), in a shared session, while another edit or file job waits, with the build's own sentence when it fails (a map with no room for the ground names its cost and its biggest part; a class no donor on the disc carries, or a donor of another hash, is named), and for a class name the table lacks; a failed build changes nothing |
 | `forge.waves.test` (act) | `{stop?}` or omitted | **Test waves**, or with `stop: true` **Stop waves** ([forge-firefight.md](../game/forge-firefight.md), "Test waves"), at a local multiplayer tick; registered in `crates/extensions/agent/src/forge/test.rs`. A start whose ground the running map holds answers once the Firefight runtime has taken it, `{testing: true, set, id}` with the set's name and `Def::id` (the session's set, else Holdout's built-in set). A start whose ground is stale or not loaded builds it and answers at once with `{testing: false, building: true}`; the test starts after the reload, and `firefight.state`'s `test` says when. A stop answers `{testing: false, stopped}`, the test's squads erased. Refused as `forge_refused` with the row's sentence: while another edit or file job waits, while a test runs (`A wave test is running.`), with no test to stop (`No wave test is running.`), when this game cannot run Firefight, when the build leaves the ground unloaded, and with the runtime's refusal (a match running, a seat other than the host's, a map with no AI ground, a film's playback) |
@@ -5811,7 +5824,8 @@ small against `checked`.
 after a call. For each observed function, `matched` and `differed` count
 completed comparisons. `declined` counts segments the Rust arm could
 not predict. `interrupted` counts predictions for which the guest exited
-before a comparison boundary. The first difference for each function is
+before a comparison boundary. `answered` counts segments the Rust body
+answered without the guest under `impl.sim.native.anim.manager`. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
 (`what`), and both values (`plan` and `guest`). An entry with `first` set
 to `null` has no recorded difference. Compare counts before and after
@@ -5832,21 +5846,25 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, in that order. |
 
 Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
 `declined` (calls left to the guest unchecked, summed over reasons). The
-sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
+sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
+(`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
+whose `declined` adds its `dropped` audits),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
-`sim.effects` groups. A source without a counter reports 0 for that
+`sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
+`sim.effects` groups, and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
-`mismatched`) and no `answered`; `anim.manager` has no `answered` and its
-`differed` is `mismatched`; shadow ports have no `answered` and their
-`skipped` is `declined`. A subsystem with its switch off reads zeros, so
+`mismatched`) and no `answered`; `anim.manager`'s `differed` is
+`mismatched`; shadow ports have no `answered` and their
+`skipped` is `declined`; `sound.voices` counts ticks for `checked`
+(sampled ticks with voices), `matched` and `mismatched`, and voices for
+`answered`. A subsystem with its switch off reads zeros, so
 `clean` is false.
 
 ```sh
@@ -5908,6 +5926,16 @@ a scenario and subtract the counters to isolate that run.
 first differing byte offset in the result record, with expected and guest values.
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
+
+`vector` and `context` also carry the crossing-exit gate
+([collision-queries.md, "Crossing exits"](../engine/collision-queries.md#crossing-exits)):
+
+| Field | Meaning |
+|---|---|
+| `exits_matched` | matches that also covered every register and frame byte of a crossing exit |
+| `answered` | crossing exits answered natively once the gate opened |
+| `sampled` | crossing calls left to the guest for a comparison while answering |
+| `fell_back` | a difference was seen; the lifted body answers from then on |
 
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
 An admitted native exit counts under `entries[].native`. A comparison

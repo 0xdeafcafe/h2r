@@ -127,11 +127,11 @@ fn an_item_is_accepted_only_for_the_part_and_implementation_its_record_picked() 
     assert!(!set.accepts(DEF_B, &key(4, 0, 0xe000_0010, 0)), "B's model refused the material");
 }
 
-/// Objects draw only from the scene, in the opaque base's slot; a host that
-/// takes nothing says so by a named cause, and the walk drops the run
-/// (consumed, `scene_dropped`) rather than leave it to the guest's draws.
+/// Objects draw from the scene in the opaque base's slot. A host that
+/// takes nothing says so by a named cause, and consumes nothing: the run
+/// keeps its guest handlers' draws.
 #[test]
-fn objects_draw_in_the_opaque_base_slot_and_a_refusal_is_a_drop() {
+fn objects_draw_in_the_opaque_base_slot_and_a_declined_run_consumes_nothing() {
     use engine::memory::FlatMemory;
     use frame_scene::ViewSlot;
     use native_objects::Host;
@@ -147,8 +147,54 @@ fn objects_draw_in_the_opaque_base_slot_and_a_refusal_is_a_drop() {
         true
     });
     assert!(matches!(out, Err(ObjectWalk::Reservation)), "the default host declines by name");
-    assert!(!consumed, "a declined run is consumed by the walk, not the host");
-    let walk = include_str!("../src/native_objects.rs");
-    assert!(!walk.contains("reason.fallback("), "no refused run goes back to the guest's draws");
-    assert!(walk.contains("reason.dropped(run.objects)"));
+    assert!(!consumed, "a declined run is not consumed");
+}
+
+/// Only the first slot of the next admitted run goes to the host. Every
+/// other handler call draws as the guest's: an object of a span the walk
+/// did not admit (an unreadable part, an interleaved span), the later
+/// slots of a run the host refused, and calls outside the list. A Grunt
+/// whose part the walk cannot read is drawn by its handler, not dropped.
+#[test]
+fn a_handler_the_walk_does_not_take_draws_as_the_guests() {
+    use native_objects::{HandlerAt, handler_at};
+    use native_render::object_walk::Run;
+
+    let run = Run { slots: 3..5, objects: 1 };
+    assert_eq!(handler_at(6, Some(&run), Some(3)), HandlerAt::Run);
+    for slot in [0, 1, 2, 4, 5] {
+        assert_eq!(handler_at(6, Some(&run), Some(slot)), HandlerAt::Guest, "slot {slot}");
+    }
+    assert_eq!(handler_at(6, None, Some(3)), HandlerAt::Guest, "no run left: the refused run's later slots");
+    assert_eq!(handler_at(6, Some(&run), None), HandlerAt::Guest, "outside the list");
+    assert_eq!(handler_at(3, Some(&run), Some(3)), HandlerAt::Guest, "past the walk's entries");
+}
+
+/// Objects the walk does not draw are counted kept, by cause and view,
+/// in `render.scene`'s `scene_kept_<site>3_object_<cause>` rows.
+#[test]
+fn objects_the_walk_keeps_are_counted_by_cause() {
+    use frame_scene::ViewKind;
+    use native_objects::{keep, kept_site};
+    use timeline::native::ObjectWalk;
+
+    let kept = |name: &str| {
+        render_bridge::native_layers::counters()
+            .into_iter()
+            .find(|(k, _)| k == name)
+            .map_or(0, |(_, v)| v)
+    };
+    let (part, order, alt) = (
+        kept("scene_kept_3_object_unsupported"),
+        kept("scene_kept_3_object_order"),
+        kept("scene_kept_alt3_object_reservation"),
+    );
+    keep(kept_site(ViewKind::Game), ObjectWalk::Unsupported, 2);
+    keep(kept_site(ViewKind::Game), ObjectWalk::Order, 1);
+    keep(kept_site(ViewKind::Alternate), ObjectWalk::Reservation, 3);
+    keep(kept_site(ViewKind::Game), ObjectWalk::State, 0);
+    assert!(kept("scene_kept_3_object_unsupported") >= part + 2);
+    assert!(kept("scene_kept_3_object_order") >= order + 1);
+    assert!(kept("scene_kept_alt3_object_reservation") >= alt + 3);
+    assert_eq!(ObjectWalk::PartLayout.name(), "part_layout");
 }

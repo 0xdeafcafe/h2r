@@ -138,12 +138,12 @@ fn a_headroom_refusal_reads_in_kilobytes_and_the_biggest_part() {
 }
 
 #[test]
-fn the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for() {
+fn the_builtin_list_is_the_eleven_maps_the_builder_makes_a_kit_for() {
     assert_eq!(
         MAPS,
         [
             "coagulation", "zanzibar", "ascension", "beavercreek", "burial_mounds",
-            "colossus", "foundation", "headlong", "lockout", "midship",
+            "colossus", "foundation", "headlong", "lockout", "midship", "waterworks",
         ]
     );
     let targets = targets();
@@ -161,19 +161,58 @@ fn the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for() {
 #[test]
 fn a_refused_retail_map_is_named_with_its_reason_and_never_read() {
     assert_eq!(refusal("Cyclotron"), Some("no six drop zones: the bases' area has room for 5"));
-    assert_eq!(refusal("waterworks"), Some("164 KB over the tag headroom, sectors"));
+    assert_eq!(refusal("waterworks"), None);
     assert_eq!(refusal("midship"), None);
     let dir = scratch("retail-refused");
     let _ = std::fs::remove_dir_all(&dir);
     let disc = Disc::new(&[]);
     let reports = ensure(&disc, &dir);
     let lines: Vec<_> = reports.iter().filter_map(Report::line).collect();
-    // Every built-in is refused here (the disc is empty); the two refused
-    // maps come last and say why, in the panel's form.
+    // Every built-in is refused here (the disc is empty); the refused map
+    // comes last and says why, in the panel's form.
     assert!(lines.contains(&"Cyclotron: no six drop zones: the bases' area has room for 5".to_owned()), "{lines:?}");
-    assert!(lines.contains(&"Waterworks: 164 KB over the tag headroom, sectors".to_owned()), "{lines:?}");
     assert!(!disc.reads.borrow().iter().any(|m| refusal(m).is_some()), "refused maps are not read");
     let order: Vec<_> = reports.iter().map(|r| r.map.as_str()).collect();
     assert_eq!(&order[..MAPS.len()], MAPS);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The disc's maps, read from the image at `H2_DISC` (`disc/halo2.iso`).
+struct RetailDisc(RefCell<vfs::AnyDisc>);
+
+impl DiscMaps for RetailDisc {
+    fn read_map(&self, name: &str) -> Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut disc = self.0.borrow_mut();
+        let file = vfs::Backend::host_file(&mut *disc, &format!("maps\\{name}.map"))
+            .ok_or_else(|| anyhow::anyhow!("the disc has no {name}.map"))?;
+        let mut reader = std::fs::File::open(&file.path)?;
+        reader.seek(SeekFrom::Start(file.offset))?;
+        let mut bytes = vec![0; usize::try_from(file.len)?];
+        reader.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+/// The disc-tier check: Waterworks, 164 KB over a retail arena's bound,
+/// builds its kit within the grown one (`map::arena::GROWTH`). Run with
+/// `cargo xtask test -p firefight-kit -- --ignored waterworks_fits`.
+#[test]
+#[ignore = "needs the Halo 2 disc (H2_DISC)"]
+fn waterworks_fits_the_grown_tag_arena() {
+    let path = std::env::var("H2_DISC").unwrap_or_else(|_| "disc/halo2.iso".into());
+    let disc = RetailDisc(RefCell::new(
+        vfs::open_disc(std::path::Path::new(&path)).expect("the disc opens"),
+    ));
+    let dir = scratch("waterworks-fits");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = target("waterworks").expect("waterworks is built in");
+    let reports = ensure_with(&[target], &disc, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        matches!(reports[0].outcome, Outcome::Built { .. }),
+        "{:?}",
+        reports[0]
+    );
 }

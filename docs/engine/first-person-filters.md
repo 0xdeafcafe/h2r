@@ -26,8 +26,8 @@ animation switch off.
 ## How it works
 
 1. **The call.** `run(c, g, site)` is entered where the port would make
-   the call: the five stack arguments pushed at `esp` — the target, the
-   tick length, the acceleration bound, `lo` and `hi` — `esi` the
+   the call: the five stack arguments pushed at `esp` - the target, the
+   tick length, the acceleration bound, `lo` and `hi` - `esi` the
    velocity, `edi` the position, the speed bound in `xmm5`'s low lane
    and the wrap flag in `dl`. The port's four filter calls (`166d75`,
    returning to `166edb`, `166f1e`, `166fcf` and `16700c`) and the
@@ -83,7 +83,7 @@ when:
 
 - a guest read faults (`Fault`);
 - an instruction would deliver an unmasked SSE or x87 exception
-  (`Float`) — the port's `supported` check keeps both masked, so this
+  (`Float`) - the port's `supported` check keeps both masked, so this
   does not happen under the port;
 - a position or velocity overlaps the stack, a stack write aliases a
   gathered constant, or a write overlaps the function's instructions
@@ -95,9 +95,9 @@ so there is no fast-path range and no precision or rounding decline.
 ## Evidence
 
 - `filter/tests.rs` (engine, no image): hand-worked calls down every
-  path — snap and the clamped snap, the acceleration bound with either
+  path - snap and the clamped snap, the acceleration bound with either
   sign, the speed bound, the wrap before the reach test and the wrap of
-  the new position — with the stack, register, flag and x87 shape each
+  the new position - with the stack, register, flag and x87 shape each
   leaves; every decline leaving RAM and the CPU untouched; the switch;
   `step` against `run`.
 - `first_person_filter_body` compares the body with lifted `166d75`

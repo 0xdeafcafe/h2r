@@ -266,6 +266,9 @@ pub enum Prop {
     /// A starting point's weight, a property of the document: Low,
     /// Normal, High.
     SpawnWeight,
+    /// An item spawner's place at start, a property of the document: Yes,
+    /// No.
+    PlaceAtStart,
     /// A goal's netgame flag type.
     Role,
     /// A goal's identifier.
@@ -1273,6 +1276,9 @@ pub struct Extras {
     /// A starting point's weight, from the document's property: none for
     /// a thing with no such row, `Some(None)` for Normal.
     pub weight: Option<Option<forge_doc::SpawnWeight>>,
+    /// An item spawner's place at start, from the document's property:
+    /// none for a thing with no such row.
+    pub place_at_start: Option<bool>,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in

@@ -143,8 +143,12 @@ impl Feature for SimNative {
                     self.missing_hs_entries.join(", "));
             }
         }
+        let answer = anim_manager_on(b.switches());
         if anim {
-            install_anim(b, &self.exported_anim);
+            install_anim(b, &self.exported_anim, answer);
+        } else if answer {
+            install_anim_bodies(b, &manager_arms(&self.exported_anim), true);
+            observe_anim_invalidate(b);
         }
         if collision {
             install_collision(b);
@@ -160,9 +164,10 @@ impl Feature for SimNative {
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.
-        b.snapshot(if anim || collision {
+        let anim_state = anim || answer;
+        b.snapshot(if anim_state || collision {
             SnapshotPolicy::section(Vec::new, move |_, _| {
-                if anim {
+                if anim_state {
                     engine::sim_anim::invalidate();
                 }
                 if collision {
@@ -200,6 +205,24 @@ pub const ANIM: &str = "sim.native.anim";
 
 pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(ANIM, false)
+}
+
+/// `impl.sim.native.anim.manager`: phase 1d's six manager and graph
+/// entries (`manager::arm::ENTRIES`) answer from the Rust body once each is
+/// proven, with the guest answering and compared on one segment in
+/// `manager::arm::AUDIT_EVERY` (docs/engine/animation-manager.md). It
+/// installs those entries on its own when `impl.sim.native.anim` is off;
+/// off, under the animation group, they only compare. Unset, it follows
+/// `impl.sim.native.anim`.
+pub(crate) const ANIM_MANAGER: &str = "sim.native.anim.manager";
+
+pub(crate) fn anim_manager_on(switches: &hooks::Switches) -> bool {
+    switches.implementation(ANIM_MANAGER, true)
+}
+
+/// The phase 1d rows of `exports`.
+fn manager_arms(exports: &[AnimBody]) -> Vec<AnimBody> {
+    exports.iter().copied().filter(|b| matches!(b.run, AnimRun::ManagerArm)).collect()
 }
 
 /// `impl.sim.native.anim.skeleton`: the skeleton walk of `bd090` as one
@@ -275,7 +298,15 @@ pub(crate) fn owns_anim(switches: &hooks::Switches, addr: u32) -> bool {
         || ANIM_BODIES.iter().any(|body| body.point.base == addr))
 }
 
-fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
+fn install_anim(b: &mut Builder, exports: &[AnimBody], answer: bool) {
+    install_anim_bodies(b, exports, answer);
+    install_anim_points(b);
+    observe_anim_invalidate(b);
+}
+
+/// The pose bodies and manager rows in `exports`. `answer` lets the phase
+/// 1d rows answer ([`ANIM_MANAGER`]).
+fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody], answer: bool) {
     let fusion = Arc::new(manager_fusion::Fusion::new(exports));
     for &body in exports {
         let run_fusion = Arc::clone(&fusion);
@@ -284,7 +315,7 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
                 let transfer = match body.run {
                     AnimRun::Pose(run) => run(cpu, &mut ctx.memory(), pc)?,
                     AnimRun::ManagerArm => {
-                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
+                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base, answer);
                     }
                     AnimRun::Manager => {
                         let available = run_fusion.available(ctx.runtime());
@@ -305,6 +336,10 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
             hook.optional();
         }
     }
+}
+
+/// The stream, marker and graph walk points of the animation group.
+fn install_anim_points(b: &mut Builder) {
     let point = &points::SIM_ANIMATION_STREAM;
     b.raw()
         .implement(point, ANIM, move |cpu, ctx, addr| {
@@ -363,11 +398,16 @@ fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
         })
         .context_only()
         .optional();
+}
+
+/// Drop the derived animation state and restart the arms' audit slots.
+fn observe_anim_invalidate(b: &mut Builder) {
     for (point, label) in ANIM_INVALIDATE {
         b.raw()
             .observe_before(point, label, |_| {
                 engine::sim_anim::invalidate();
                 engine::sim_anim::graph_walk::arm_new_run();
+                manager::arm::new_run();
             });
     }
 }
@@ -520,10 +560,7 @@ fn install_collision(b: &mut Builder) {
                         let g = ctx.runtime().memory();
                         let g = &*g;
                         match pending {
-                            Pending::Vector(p) if entry == Entry::VectorTest => {
-                                WORLD.record_vector(p.compare(c.eax as u8, g))
-                            }
-                            Pending::Vector(p) => WORLD.record_context(p.compare(c.eax as u8, g)),
+                            Pending::Vector(p) => p.settle(c, g, &WORLD),
                             Pending::Spatial(p) => WORLD.record_spatial(entry, p.compare(c, g)),
                         }
                     });
@@ -589,6 +626,12 @@ mod tests {
 
     #[test]
     fn switches_install_only_the_requested_body() {
+        // The default-on animation manager installs its own chains.
+        let baseline = {
+            let mut registry = Registry::new(Switches::defaults());
+            registry.add(&SimNative::for_tests()).unwrap();
+            registry.build(&Base).unwrap().chains.len()
+        };
         for enabled in std::iter::once(None).chain(ENTRIES.iter().map(Some)) {
             let mut switches = Switches::defaults();
             if let Some((_, key, _)) = enabled {
@@ -601,7 +644,7 @@ mod tests {
             let sharing: Vec<_> = enabled
                 .map(|(_, key, _)| ENTRIES.iter().filter(|e| e.1 == *key).collect())
                 .unwrap_or_default();
-            assert_eq!(plan.chains.len(), sharing.len());
+            assert_eq!(plan.chains.len(), baseline + sharing.len());
             for (point, key, _) in sharing {
                 assert_eq!(
                     plan.chains[&point.base].implement.as_ref().unwrap().label,
@@ -635,7 +678,10 @@ mod tests {
         }
         let mut incomplete = SimNative::for_tests();
         incomplete.missing_hs_entries.push(points::HS_THREAD_EXECUTE.name);
-        assert!(plan_for("impl.sim.native.hs", incomplete).chains.is_empty());
+        let plan = plan_for("impl.sim.native.hs", incomplete);
+        for point in HS_POINTS {
+            assert!(!plan.chains.contains_key(&point.base), "{}", point.name);
+        }
     }
 
     #[test]
@@ -841,7 +887,9 @@ mod tests {
         for (point, label) in COLLISION_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
-            assert_eq!(chain.observe_before.len(), 1, "{label}");
+            // The map load is also observed by the default-on animation manager.
+            let shared = if point.base == points::CACHE_TAGS_LOAD.base { 2 } else { 1 };
+            assert_eq!(chain.observe_before.len(), shared, "{label}");
         }
         for (point, entry, _) in COLLISION_OBSERVED {
             let chain = &plan.chains[&point.base];
@@ -867,9 +915,15 @@ mod tests {
             assert_eq!(chain.observe_before.len(), 1, "{label}");
             assert!(chain.observe_before[0].optional, "{label}");
         }
+        // The default-on animation manager adds its own chains, one of
+        // which (the map load) the collision invalidation shares.
+        let mut base = Registry::new(Switches::defaults());
+        base.add(&SimNative::for_tests()).unwrap();
+        let manager_chains = base.build(&Base).unwrap().chains.len();
         assert_eq!(
             plan.chains.len(),
-            COLLISION_ENTRIES.len()
+            manager_chains - 1
+                + COLLISION_ENTRIES.len()
                 + COLLISION_INVALIDATE.len()
                 + COLLISION_PARTIAL.len()
                 + COLLISION_OBSERVED.len()
@@ -877,10 +931,14 @@ mod tests {
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
-        // Off by default.
+        // Off by default: only the animation manager's chains install.
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
-        assert!(registry.build(&Base).unwrap().chains.is_empty());
+        let plan = registry.build(&Base).unwrap();
+        assert_eq!(plan.chains.len(), manager_chains);
+        for (point, entry, _) in COLLISION_ENTRIES {
+            assert!(!plan.chains.contains_key(&point.base), "{:#x}", entry.addr());
+        }
     }
 
     #[test]

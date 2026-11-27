@@ -326,6 +326,15 @@ impl Driver {
         self.draft = take_draft().or_else(crate::lobby_start::forge_map);
         let mut editor = Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
         editor.set_map_name(loaded.name.clone());
+        // The body D-pad Up swaps into: the profile's choice
+        // (docs/game/forge-design-slices.md, "The monitor body").
+        if let Some(store) = self.store.as_deref() {
+            let (body, problem) = forge::body::load(store, &who_of(Some(m)).profile);
+            editor.set_body(body);
+            if let Some(problem) = problem {
+                eprintln!("forge: {problem}");
+            }
+        }
         if let Some(why) = why {
             editor.say(why, tick);
         }

@@ -82,6 +82,79 @@ pub struct HostFile {
 pub enum FileSource {
     Host(HostFile),
     Memory(std::sync::Arc<[u8]>),
+    /// A host region with an overlay over it: a map a rewrite streamed
+    /// (`docs/runtime/storage.md`, "Filesystem implementations"), whose
+    /// unchanged bytes stay in the base.
+    Spliced(SplicedFile),
+}
+
+/// A file served as a host region (the original) with an overlay over it:
+/// the ranges the overlay does not hold are read from the base by offset.
+#[derive(Debug, Clone)]
+pub struct SplicedFile {
+    pub base: HostFile,
+    pub overlay: std::sync::Arc<content::patch::Overlay>,
+}
+
+impl SplicedFile {
+    /// The served length.
+    pub fn len(&self) -> u64 {
+        self.overlay.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.overlay.is_empty()
+    }
+    /// The served bytes, opening the base.
+    pub fn open(&self) -> std::io::Result<SplicedSource> {
+        Ok(SplicedSource {
+            file: std::fs::File::open(&self.base.path)?,
+            base: self.base.clone(),
+            overlay: std::sync::Arc::clone(&self.overlay),
+        })
+    }
+    /// The served bytes as a seekable stream (a map parsed from them).
+    pub fn reader(&self) -> std::io::Result<content::patch::Reader<SplicedSource>> {
+        Ok(content::patch::Reader::new(self.open()?))
+    }
+    /// All of the served bytes, in memory.
+    pub fn read_all(&self) -> std::io::Result<Vec<u8>> {
+        content::patch::Source::read_all(&mut self.open()?)
+    }
+}
+
+/// An open [`SplicedFile`].
+pub struct SplicedSource {
+    file: std::fs::File,
+    base: HostFile,
+    overlay: std::sync::Arc<content::patch::Overlay>,
+}
+
+/// The base region of a [`SplicedSource`].
+struct BaseRegion<'a>(&'a mut std::fs::File, &'a HostFile);
+
+impl content::patch::Source for BaseRegion<'_> {
+    fn size(&self) -> u64 {
+        self.1.len
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Read, Seek, SeekFrom};
+        let n = self.1.len.saturating_sub(offset).min(buf.len() as u64) as usize;
+        if n == 0 {
+            return Ok(0);
+        }
+        self.0.seek(SeekFrom::Start(self.1.offset + offset))?;
+        self.0.read(&mut buf[..n])
+    }
+}
+
+impl content::patch::Source for SplicedSource {
+    fn size(&self) -> u64 {
+        self.overlay.len()
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.overlay
+            .read_at(&mut BaseRegion(&mut self.file, &self.base), offset, buf)
+    }
 }
 
 /// A file the VFS just opened, as [`crate::Vfs::set_open_observer`] reports it.

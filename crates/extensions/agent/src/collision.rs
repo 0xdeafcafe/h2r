@@ -21,6 +21,10 @@ fn parity(stats: &world::VectorParity) -> agent_proto::collision::VectorParity {
         mismatched: stats.mismatched,
         unverified: Bail::ALL.iter().map(|&b| (b.name().to_owned(), stats.unverified[b as usize])).collect(),
         first_mismatch: stats.first_mismatch.clone(),
+        exits_matched: stats.exits_matched,
+        answered: stats.answered,
+        sampled: stats.sampled,
+        fell_back: stats.fell_back,
     }
 }
 

@@ -113,7 +113,7 @@ with the same strings, and the focused row's help goes through
 `Rows::description`.
 
 **The pages.** `clankers`, `firefight`, `h1-options`, `browser.filters`,
-`variant-quick` (Quick Options for a script variant, five slot rows and a
+`variant-quick` (Quick Options for a script variant, eight slot rows and a
 bound name; [rules-variants.md](rules-variants.md#quick-options-in-the-lobby))
 and the kit's `kit.dialog`, with the specimens `layout.dialog.settings`
 and `design.row.setting`. `settings::NOT_SHARED` lists the screens with

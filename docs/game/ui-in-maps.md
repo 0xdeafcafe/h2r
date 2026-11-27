@@ -92,7 +92,7 @@ preserves the map's existing string indices.
 - A screen's id is `ID_BASE + its index in NAMES`; adding a screen changes later ids and the plan, so the cache rebuilds. Ids are never saved.
 - A tag has no text of its own yet. The tag's text blocks and header keep the template's string ids, and the strings our screens show are served by id from the kit's locale source as before.
 - A screen is injected only where its template is: the list classes in `mainmenu` (Controls) and the shared maps (in-game Controller Settings). `Entry::templates` orders them.
-- The rewrite runs only on files the VFS rewrites (at most `vfs::MAX_REWRITE_BYTES`); a larger map is served as it is and the classes use the copy path.
+- The rewrite runs on every map the VFS rewrites, of any size: a map is built streamed, its raw data and BSP regions left on the disc ([storage.md](../runtime/storage.md), "Filesystem implementations").
 
 ## What is not in the tag
 

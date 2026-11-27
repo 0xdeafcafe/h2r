@@ -51,7 +51,7 @@ The 3D viewer draws an installed mod from its own art when the server
 has it: `h2 live assets extract` (and `h2 play --live-local`) resolves
 every package under `<data>/maps/` to the patched map the game loads and
 extracts it like a disc map, keyed by its `MapId`, never by its base
-map's name ([live-art.md](../live/live-art.md#mods)). That covers
+map's name ([live-art.md](../live/live-art-viewer-packs.md#mods)). That covers
 everything the mod's scenario holds: moved or extra vehicles, weapons,
 scenery, machines and spawns, new tag references, objects its scripts
 create, effects its scripts play on a loop, and its own or changed
@@ -128,7 +128,7 @@ base map's geometry, unless `[result] geometry` differs from the base's.
 - **Pictures and viewer** (web): a cleared gallery or package preview
   (served at `/v1/maps/{id}/image`), then the base map's art. A signed
   manifest alone does not clear its preview for public display.
-  [Live screenshot rules](../live/live-api.md#verified-screenshot-uploads)
+  [Live screenshot rules](../live/live-api-content.md#verified-screenshot-uploads)
   The 3D viewer first
   looks for the mod's own art by `map_id` (the server's art has it when
   the mod is installed where the art was extracted: an entry
@@ -433,10 +433,10 @@ level's `LevelId` nor its image.
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content
-  Download, reads **Mods**, or **Mods (3 new)** when releases were published
+  Download, reads **Mod Downloader**, or **Mod Downloader (3 new)** when releases were published
   since the player last opened the screen. Its pane's help text says what
   it is (`custom_games::MODS_HELP`). Without Live or the map gate the row
-  reads **Mods** and opens the Map Pack dialog, its help
+  reads **Mod Downloader** and opens the Map Pack dialog, its help
   `custom_games::MAPPACK_HELP` ([live-custom-games.md](../live/live-custom-games.md) §5).
 - **New.** An entry is new when its `position` (the event-log position it
   was published at) is above the last-seen position, kept in
@@ -454,7 +454,7 @@ level's `LevelId` nor its image.
   failure; the game thread never waits on it.
 - **The screens** (`boot::mods_screen`, our list class, laid out as the
   level select is: list on the left with its bracket, picture top right,
-  description under it, as the campaign picker). **Mods**: one row per
+  description under it, as the campaign picker). **Mod Downloader**: one row per
   release (at most 40, newest first), its name and its state as a mark after
   it: a star (U+2605) when new, a tick (U+2713) when installed, a down
   arrow (U+2193) and the percentage while downloading; nothing when it is

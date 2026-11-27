@@ -255,7 +255,7 @@ each action field. The
 At match end the host uploads the sealed recording under the lease's
 canonical game ID. Live checks `telemetry.ingest` and lease ownership.
 Small uploads fit in one request. Larger films use numbered parts and
-continuations, up to 2 GiB per film. [Upload protocol](../live/live-api.md#theater)
+continuations, up to 2 GiB per film. [Upload protocol](../live/live-api-theater-stats.md#theater)
 The supervisor gives the child time to finish uploading before reporting
 the lease ended. The upload and both hash experiments still need a real
 dedicated match.
@@ -268,14 +268,24 @@ the same library for the controller that selects it. Left and Right switch betwe
 the **Recent**, **Saved** and **Clips** tabs from any row. The active tab
 and its film count sit above the list and the details pane.
 
-**Sort**, **Map** and **Game type** show their current values at the top of
-the list. Press A to open a picker over the library. A on an entry applies
-the choice and returns to the option. B closes the picker and keeps the
-current value. Choose **All** in a filter to clear it.
+**Sort**, **Map** and **Game type** are the first rows of the list, each
+with its current value. A opens a picker dialog over the library; Left and
+Right never change a value. A on an entry applies the choice and returns
+to the option. B closes the picker and keeps the current value. Choose
+**All** in a filter to clear it.
 
-Film rows show the map and game type or the clip's title. Highlight a row
-to see its map picture, recording date, running time and match information
-in the details pane on the right. Empty libraries use that pane to explain
+The list is 13 rows tall. Up and Down move through every row, the window
+following the focus, and stop at Sort and at the last film: neither end
+wraps. The library opens before its films are read, so the list grows in
+place; `list_class::bind_rows` gives the rows it gains to the item widgets
+that had none, and `Rows::wraps` clears the list's wrap flag (`+0x7c`).
+
+Film rows show the level's name as the game shows it ("Regret" for
+`05b_deltatowers`, "Ivory Tower" for `cyclotron`) and the game type, or
+the clip's title. Highlight a row to see its map picture, recording date,
+running time and match information in the details pane on the right. The
+details start at the picture's left edge, and a mode and variant with the
+same name show once. Empty libraries use that pane to explain
 how to record a film, save one or mark a clip. An empty filtered list keeps
 its options in reach. The browser geometry lives in
 `crates/extensions/game/src/theater_ui/pages.rs`. Its preview includes an
@@ -331,42 +341,105 @@ cycle round the available players. The **Default** camera restores the
 full local frame or selects the first available player in a version 3 host film.
 The camera, its field of view and HUD visibility carry across a seek.
 
-| Action | Controller | Keyboard and mouse |
-|---|---|---|
-| Play or pause | A | Space |
-| Advance one tick while paused | D-pad Down | `.` |
-| Speed (0.25×, 0.5×, 1×, 2×, 4×) | LT / RT | `[` / `]` |
-| Seek backwards or forwards | D-pad Left / Right. Tap for 5 s, hold for 30 s | Left / Right, with the same timing, or click the timeline |
-| Cycle camera | Y | C |
-| Cycle player | LB / RB | Up / Down |
-| Fly horizontally | Left stick | W / A / S / D |
-| Fly down / up | L3 / R3 | Q / E |
-| Look in Fly or Orbit | Right stick | Hold right mouse button and drag |
-| Change orbit radius | Left stick forward / back | Mouse wheel |
-| Mark clip in, then out | X | X |
-| Toggle transport and scoreboard | Back | H |
-| Toggle game HUD | L3 + R3 | J |
-| Save a screenshot | D-pad Up | F12 |
-| Step one tick while paused | D-pad Down | `.` |
-| Open the pause menu | Start | Escape |
-| Cancel an active jump | B | Escape |
-| Choose a pause menu item | D-pad Up/Down, A | Up/Down, Enter |
+Every pad drives the film, including the desktop's player one: the first
+physical pad merged with the keyboard, which reports its face buttons and
+bumpers as pressures (`theater_ui::overlay::Gate`). The layout is Halo 3's
+Theater. The guest sees neutral pads while a film plays.
 
-The playback bar shows the current and total time, requested and achieved
+| Pad button | Action | Keyboard and mouse |
+|---|---|---|
+| A | Play or pause | Space |
+| B | Cancel an active jump | Escape |
+| X | Mark clip in, then out | X |
+| Y | Cycle camera | C |
+| LB / RB | Previous / next player | Up / Down |
+| LT / RT | Slower / faster (0.25×, 0.5×, 1×, 2×, 4×) | `[` / `]` |
+| D-pad Left / Right | Seek back / forward: tap 5 s, hold 30 s | Left / Right, or click the timeline |
+| D-pad Down | Step one tick while paused | `.` |
+| D-pad Up | Save a screenshot | F12 |
+| Back | Toggle transport and scoreboard | H |
+| Start | Open the pause menu | Escape |
+| Left stick | Fly; forward / back changes orbit radius | W / A / S / D, mouse wheel |
+| Right stick | Look in Fly or Orbit | Hold right mouse button and drag |
+| L3 / R3 | Fly down / up | Q / E |
+| L3 + R3 | Toggle game HUD | J |
+| D-pad Up / Down, A, B | Pause menu: move, choose, back | Up / Down, Enter, Escape |
+
+The bar's legend follows the last device used: a key press shows the
+keys above as keycaps (`theater_ui::playback_icons`), a pad press the pad's
+buttons.
+
+#### Who draws what
+
+The host owns the film's controls (`theater_ui::overlay::Session`); what
+shows them depends on whose picture the film is.
+
+| Screen | Film with the guest's picture (recorded with a player) | Dedicated host's film, `h2 theater play` |
+|---|---|---|
+| Film library, film page | Game list classes on the `theater.films` and `theater.film` tags (`theater_ui::pages`) | Same |
+| Playback bar | The game's HUD: HUD kit HUD `theater` (`content/core/huds/theater.hud.yaml`) | Host page (`playback_page::bar`) |
+| Pause menu | Game list class on the `theater.pause-menu` tag (`theater_ui::pause_screen`) | Host page (`playback_page::Menu::spec`) |
+| Pause menu pickers | The kit's picker dialog (`kit.picker.game`) over the menu | Host page |
+| Loading panel | Host page (`playback_page::loading`) | Host page |
+
+The host page is a `ScreenSpec` drawn over the picture by the window
+(`Theater::host_page`, `app::theater_overlay`). It stays where the game
+has nothing to draw with: a dedicated host's film is drawn by the host's
+view with no game HUD or screen, a film player process installs no
+Theater screens, and a map whose player HUD takes no kit widgets (a
+campaign map) has no `theater` HUD. `ui.screen` reports the host's model
+in every case (`Theater::playback_page`).
+
+#### The playback HUD
+
+The game's HUD code draws the bar with the disc's HUD font and its
+battery strip (`hud_kit_core::views::theater`, fed by
+`theater_ui::hud::publish` from the host's pump, so a paused film's HUD
+still follows the viewer).
+
+| Element | Kit kind | Shows |
+|---|---|---|
+| `theater.status` | text | `PLAYING 2:26 / 8:26`, the speed when it is not 1x |
+| `theater.rail.0`, `theater.rail.1` | meter | The film's two halves; the gap is its middle |
+| `theater.view` | text | Camera and subject; a jump's target, the marked range, a divergence or the reason a film cannot play |
+| `theater.hints` | prompt | The pad's buttons, or the keys after a key press |
+| `theater.notice` | message | A notice (a saved screenshot, a saved film) in the game's notification list |
+
+Limits of the kit's fixed elements: the rail has no kill or bookmark
+marks and no shaded clip range (the view line reads `Clip 2:26 - 2:34`),
+and the bar is hidden with the player's HUD (L3 + R3, a dead player). A
+click on the rail seeks through its two strips (`hud::rail_fraction`). A
+screenshot holds the bar and the menu off the picture for 400 ms first
+(`Session::take_screenshot`).
+
+The host's bar shows the current and total time, requested and achieved
 speed, camera and subject. Its timeline uses the adjacent stats file for
 kills.
 When the stats file is missing, playback still works and the pause menu
 shows that no match stats are available. During a jump the rail highlights
-progress toward the target. Completed clip ranges appear in Clips and loop
-when watched.
+progress toward the target. The marked range is shaded on the rail, from the in mark to
+the out mark, or to the playhead until the out is set. A completed range
+is saved to Clips as "Clip N" (N counts the film's clips) and loops when
+watched; the Clips row and the film page's Clip fact show that name
+(`adapter::Clip::title`).
+
+#### The pause menu
 
 The pause menu offers **Resume**, **Restart Film**, **Change Player**,
 **Camera**, **Take Screenshot**, **Mark Clip**, **Export Clip**, **Save
 Film**, **Share** and **End Film**. Press A or Enter on a choice row to open
 its picker. B or Escape dismisses a picker and returns to the same row.
 The playback window captures these inputs before the replayed guest sees
-them. Screenshots omit the host pages and are written under
-`<data>/films/screenshots`.
+them. Screenshots omit the bar, the menu and the host pages and are
+written under `<data>/films/screenshots`.
+
+The game's menu is a mirror of the host's (`playback_page::Menu`): the
+guest reads neutral pads, so no press reaches its screen. Each UI update
+the driver (`theater-pause-driver`) takes one step toward the host's
+model: open the screen, move its cursor (`LIST_SET_ROW`), open the kit's
+picker over it, move the picker's cursor, or close either
+(`pause_screen::Mirror::step`). The game's menu lists the rows; the
+scoreboard beside them is on the host's page only.
 
 Skip taps that arrive within 250 ms of one another accumulate into one
 jump. Cancelling a jump returns to its departure tick and holds there.

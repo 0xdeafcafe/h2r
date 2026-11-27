@@ -32,6 +32,7 @@ mod typed_groups;
 pub mod walk;
 
 pub use handoff::Source;
+pub use typed_groups::GroupRefusal;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;

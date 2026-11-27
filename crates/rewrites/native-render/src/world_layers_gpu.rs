@@ -397,7 +397,7 @@ impl SkyRows {
             return Err("transform");
         }
         if !same(compression, &self.decompression) {
-            return Err("material");
+            return Err("decompression");
         }
         Ok(())
     }
@@ -525,24 +525,32 @@ impl IndexedPass {
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, generation: u64,
         item: scene_extract::layout::sky::SkyItem,
     ) -> Result<Self, &'static str> {
-        if draw.primitive != PrimitiveType::TriangleStrip
-            || draw.indices.as_ref().is_none_or(|indices| indices.iter().any(|&i| i >= draw.vertex_count))
-        {
-            return Err("geometry");
+        // Each refusal is the strip's `scene_kept_sky_<cause>`
+        // (`render_bridge::native_sky`). The cull mode is the draw's own:
+        // the pipeline takes it from the resolved state and the strip's
+        // winding from its index order, as the guest's draw does.
+        if draw.primitive != PrimitiveType::TriangleStrip {
+            return Err("topology");
+        }
+        if draw.indices.as_ref().is_none_or(|indices| indices.iter().any(|&i| i >= draw.vertex_count)) {
+            return Err("index_range");
         }
         let mark = crate::object_state::structure_stencil(crate::object_state::STENCIL_MARK_REFERENCE);
-        if draw.state.render.stencil != mark
-            || !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
-                .is_some_and(|format| format.has_stencil_aspect())
-        {
+        if draw.state.render.stencil != mark {
             return Err("stencil");
         }
-        if !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { .. })
-            || draw.state.render.cull_mode != gfx::state::CullMode::None
-            || draw.sampled_texture_stages().iter().enumerate().any(|(n, &reads)|
-                reads && (draw.textures[n].is_none() || draw.texture_info[n].is_none()))
+        if !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
+            .is_some_and(|format| format.has_stencil_aspect())
         {
-            return Err("material");
+            return Err("stencil_target");
+        }
+        if !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { .. }) {
+            return Err("program");
+        }
+        if draw.sampled_texture_stages().iter().enumerate().any(|(n, &reads)|
+            reads && (draw.textures[n].is_none() || draw.texture_info[n].is_none()))
+        {
+            return Err("texture");
         }
         let sky = SkyRows { nodes: item.rows.into(), decompression: item.decompression };
         sky.check(&draw.shader.constants[..])?;
@@ -554,7 +562,7 @@ impl IndexedPass {
             shader: item.shader, pass: item.pass,
         };
         let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)), false)
-            .ok_or("geometry")?;
+            .ok_or("candidate")?;
         candidate.sky = Some(sky);
         Ok(candidate)
     }
@@ -1217,7 +1225,7 @@ mod tests {
         assert_eq!(v.constants[start - 1], [7.0; 4]);
         assert_eq!(v.constants[start + 6], [7.0; 4]);
         v.constants[crate::program::TEXCOORD_DECOMPRESSION] = [0.0; 4];
-        assert_eq!(second.check(&v.constants), Err("material"));
+        assert_eq!(second.check(&v.constants), Err("decompression"));
     }
 
     #[test]

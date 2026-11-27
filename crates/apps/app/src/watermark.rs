@@ -177,6 +177,9 @@ pub struct Watermark {
     map: Option<MapFn>,
     /// The cheats that are on, as the cheat line lists them.
     cheats: Arc<Mutex<Vec<String>>>,
+    /// The `full` level: on, and the lines the game fills for it.
+    full: Arc<AtomicBool>,
+    readout: Arc<Mutex<Vec<String>>>,
 }
 
 impl std::fmt::Debug for Watermark {
@@ -204,7 +207,22 @@ impl Watermark {
             note: String::new(),
             map: None,
             cheats: Arc::default(),
+            full: Arc::default(),
+            readout: Arc::default(),
         }
+    }
+
+    /// Turns the `full` level on or off: the player, level, world and
+    /// render-picture lines of the game's readout above the live numbers.
+    pub fn with_full(self, on: bool) -> Self {
+        self.full.store(on, Ordering::Relaxed);
+        self
+    }
+
+    /// The `full` level's switch and its lines, shared with the game side
+    /// (`boot::debug_readout`), which asks for nothing while it is off.
+    pub fn readout_handles(&self) -> (Arc<AtomicBool>, Arc<Mutex<Vec<String>>>) {
+        (Arc::clone(&self.full), Arc::clone(&self.readout))
     }
 
     pub fn with_build(mut self, build: BuildInfo) -> Self {
@@ -274,9 +292,15 @@ impl Watermark {
             (false, true) => backend.into(),
             (true, _) => self.note.clone(),
         };
+        let mut live = if self.full.load(Ordering::Relaxed) {
+            self.readout.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        } else {
+            Vec::new()
+        };
+        live.extend(stats_lines(stats, map.as_deref(), &renderer));
         Panels {
             label: self.build.label(),
-            live: stats_lines(stats, map.as_deref(), &renderer),
+            live,
             cheats: self.cheat_panel(),
         }
     }

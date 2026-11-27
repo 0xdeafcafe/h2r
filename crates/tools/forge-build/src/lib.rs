@@ -6,6 +6,7 @@
 
 mod areas;
 pub mod blockout;
+pub mod bodies;
 mod entry;
 mod ground;
 mod kit;
@@ -128,6 +129,9 @@ pub struct Built {
     /// Every base entry the document names with a print, each compared
     /// with the disc's row and found equal, by block then index.
     pub prints: Vec<Printed>,
+    /// The Forge bodies the kit carries and those it left out, for a kit
+    /// build ([`bodies`]).
+    pub bodies: Option<bodies::Report>,
 }
 
 impl Built {
@@ -237,7 +241,7 @@ pub fn build_with(
         lookup(&doc.base.map).ok_or_else(|| Error::MissingMap(doc.base.map.clone()))?;
     source.bytes = Some(check_map(&doc.base, &source, true)?);
     let mut map = source.open()?;
-    let base_source = source.clone();
+    let mut base_source = source.clone();
     if map.header().cache_type != CacheType::Multiplayer {
         return Err(Error::BaseType(doc.base.map.clone()));
     }
@@ -301,6 +305,27 @@ pub fn build_with(
         )?),
         None => std::borrow::Cow::Borrowed(doc),
     };
+
+    // The Forge bodies are tags of the kit map, copied from the disc's
+    // campaign maps before the block-out set, which is cut to fit after
+    // them (`bodies`). The scenario is opened again on the map they give.
+    let mut bodies_report = None;
+    if needs_kit {
+        let base = base_source
+            .bytes
+            .clone()
+            .ok_or(scenario_edit::Error::Invalid("the base map is not in memory"))?;
+        let mut copier = bodies::Disc::new(tags::schema::Schema::builtin(), &mut lookup);
+        let (bytes, report) = bodies::install(&base, blockout::headroom(&base)?, &mut copier)?;
+        if let Some(bytes) = bytes {
+            base_source.bytes = Some(bytes.into());
+            map = base_source.clone().open()?;
+            session = Session::new();
+            session.build_scenes = false;
+            session.open_named(base_source.clone(), &doc.base.map)?;
+        }
+        bodies_report = Some(report);
+    }
 
     // Block-out definitions are tags of the map: they are installed on the
     // base, with their crate palette rows, and the scenario is opened again
@@ -423,6 +448,16 @@ pub fn build_with(
         });
         output = built.bytes;
     }
+    // The spawners' and starting points' properties with no retail field,
+    // in the Forge record at the map's tail (`forge_doc::record`), before
+    // the areas record. A document with none builds the bytes it did.
+    let mut forge = forge_doc::record::ForgeRecord::of(&for_game, &limits.base_counts)?;
+    if let Some(report) = &bodies_report {
+        forge.bodies_refused = report.refused();
+    }
+    if !forge.is_empty() {
+        output.extend_from_slice(&forge.encode());
+    }
     // The areas and the shown flags the document gives its flags, in the
     // areas record at the map's tail.
     let record = areas::record(
@@ -468,6 +503,7 @@ pub fn build_with(
         ground: report,
         blockout: blockout_report,
         prints,
+        bodies: bodies_report,
     })
 }
 
@@ -527,33 +563,38 @@ fn requests_kit(recipes: &[Recipe]) -> Result<bool, Error> {
     Ok(requested)
 }
 
-// Snapshot the checked bytes before opening an editing session. Both the
-// available region and memory input have the largest supported cache bound.
-fn check_map(reference: &MapRef, source: &MapSource, base: bool) -> Result<Arc<[u8]>, Error> {
+/// The bytes of map `name` from `source`, within the largest cache of its
+/// kind (a multiplayer base, any other a donor).
+pub(crate) fn source_bytes(name: &str, source: &MapSource, base: bool) -> Result<Arc<[u8]>, Error> {
     let cap = map::writer::cache_size_limit(if base {
         CacheType::Multiplayer
     } else {
         CacheType::SinglePlayerShared
     })?;
-    let bytes: Arc<[u8]> = if let Some(bytes) = &source.bytes {
+    if let Some(bytes) = &source.bytes {
         if bytes.len() as u64 > cap {
-            return Err(Error::SourceSize(reference.map.clone()));
+            return Err(Error::SourceSize(name.to_owned()));
         }
-        bytes.clone()
-    } else {
-        let mut file = File::open(&source.path)?;
-        let (start, len) = match source.region {
-            Some(region) => region,
-            None => (0, file.metadata()?.len()),
-        };
-        if len > cap {
-            return Err(Error::SourceSize(reference.map.clone()));
-        }
-        file.seek(SeekFrom::Start(start))?;
-        let mut bytes = vec![0; len as usize];
-        file.read_exact(&mut bytes)?;
-        bytes.into()
+        return Ok(bytes.clone());
+    }
+    let mut file = File::open(&source.path)?;
+    let (start, len) = match source.region {
+        Some(region) => region,
+        None => (0, file.metadata()?.len()),
     };
+    if len > cap {
+        return Err(Error::SourceSize(name.to_owned()));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; len as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes.into())
+}
+
+// Snapshot the checked bytes before opening an editing session. Both the
+// available region and memory input have the largest supported cache bound.
+fn check_map(reference: &MapRef, source: &MapSource, base: bool) -> Result<Arc<[u8]>, Error> {
+    let bytes = source_bytes(&reference.map, source, base)?;
     let actual = Sha256::of(&bytes);
     if actual != reference.sha256 {
         return Err(if base {

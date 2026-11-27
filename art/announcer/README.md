@@ -23,6 +23,18 @@ loudness-levelled sources.
 
 Stored in Git LFS (`.gitattributes`).
 
+## Firefight and Siege lines
+
+The owner's own recordings, split at silences (ffmpeg `silencedetect`,
+-30 dB, 0.35 s), trimmed, mono 44.1 kHz 16-bit, -14.5 LUFS and peaks under
+-0.5 dBTP: `new-wave`, `wave-complete`, `round-complete`, `set-complete`,
+`bonus-round`, `bonus-round-complete`, `lives-added`, `last-life`,
+`game-over`, `skulls-off`, `all-skulls-on`, `<skull>-on` for each skull,
+`attack`, `defend`, `final-round`, `site-captured`, `reinforcements` and
+`round-over`. `firefight.wav` and `siege.wav` are the start lines below.
+docs/game/firefight.md, "The announcer", and docs/game/rules-engine.md,
+"Siege announcer lines", say when each plays.
+
 ## Game types
 
 Firefight and Siege each have a spoken round-start cue. The build renders

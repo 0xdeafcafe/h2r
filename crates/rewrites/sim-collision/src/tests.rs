@@ -725,3 +725,44 @@ fn straight_walk_requires_a_single_leaf_and_no_surface_lookup() {
     assert!(lookup.hit.is_none());
     assert!(lookup.straight.is_none());
 }
+
+#[test]
+fn steps_follow_the_guest_frames_in_order() {
+    use crate::bsp::segment::{PlaneDistances, Step};
+    // x = 0, then x = 1 in front of it: three empty leaves.
+    let mut b = Builder::default();
+    b.planes.extend([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 1.0]]);
+    b.nodes.extend([(0, leaf(0), node(1)), (1, leaf(1), leaf(2))]);
+    b.leaves.extend([(0, 0, 0), (0, 0, 0), (0, 0, 0)]);
+    let img = image(&b);
+    let bsp = decode(&img);
+    let f = |x: f32| x.to_bits();
+    let out = run(&img, &bsp, &query([-0.5, 0.0, 0.0], [2.0, 0.0, 0.0], 0)).unwrap();
+    let d = |distance: f32, start: f32, end: f32| PlaneDistances {
+        distance: f(distance),
+        delta: f(2.0),
+        start: f(start),
+        end: f(end),
+    };
+    assert_eq!(
+        out.steps,
+        [
+            Step::Plane { node: 0, plane: 0, d: d(-0.5, -0.5, 1.5), front: [false, true], next: NONE },
+            Step::Cross { split: f(0.25), increasing: true, near: leaf(0) | 0xff00_0000 },
+            Step::Leaf { child: leaf(0) | 0xff00_0000, kind: 1, lookup: false },
+            Step::Far { far: 1 },
+            Step::Plane { node: 1, plane: 1, d: d(-1.5, -1.0, 0.5), front: [false, true], next: NONE },
+            Step::Cross { split: f(0.75), increasing: true, near: leaf(1) | 0xff00_0000 },
+            Step::Leaf { child: leaf(1) | 0xff00_0000, kind: 1, lookup: false },
+            Step::Far { far: leaf(2) | 0xff00_0000 },
+            Step::Leaf { child: leaf(2) | 0xff00_0000, kind: 1, lookup: false },
+        ]
+    );
+    assert_eq!(out.leaves, [0, 1, 2]);
+    // A split not below R's fraction stops the frame before the far side.
+    let mut q = query([-0.5, 0.0, 0.0], [2.0, 0.0, 0.0], 0);
+    q.fraction = f(0.25);
+    let out = run(&img, &bsp, &q).unwrap();
+    assert_eq!(out.steps.len(), 4);
+    assert_eq!(out.steps[3], Step::Stop);
+}

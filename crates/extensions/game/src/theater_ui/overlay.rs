@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::adapter::{Clip, Playback, Player, Source};
-use super::{Entry, Theater, playback_page::{self, Command, Divergence, Jump, Menu}};
+use super::{Entry, Theater, hud, playback_page::{self, Command, Divergence, Jump, Menu}};
 use crate::ui_kit::{input::Input, spec::ScreenSpec};
 use crate::theater::SeekTaps;
 
@@ -21,6 +21,9 @@ const REFRESH: Duration = Duration::from_millis(150);
 /// is given the film page back (`Session::stall`).
 const START_WAIT: Duration = Duration::from_secs(60);
 const LONG_PRESS: Duration = Duration::from_millis(500);
+/// How long the game's bar and menu are off the picture before a
+/// screenshot is taken: the HUD's next draw and the menu's closing.
+const SHOT_HOLD: Duration = Duration::from_millis(400);
 /// Ticks the bar keeps a monitor look sentence: six seconds of film.
 const MONITOR_NOTICE_TICKS: u64 = 180;
 pub(super) const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
@@ -271,7 +274,7 @@ impl Track {
     fn mark_out(&mut self) -> Option<Clip> {
         let from = self.marks.0.filter(|&from| from < self.tick)?;
         self.marks.1 = Some(self.tick);
-        Some(Clip { film: self.film.clone(), from_tick: from, to_tick: self.tick })
+        Some(Clip { film: self.film.clone(), from_tick: from, to_tick: self.tick, ..Default::default() })
     }
 
     fn mark(&mut self) -> Option<Clip> {
@@ -479,6 +482,25 @@ pub(super) struct Session {
     pad_motion: Drive,
     mouse_look: [f32; 2],
     mouse_zoom: f32,
+    /// What the viewer last drove the film with: the page's legend shows
+    /// its buttons.
+    pub last_device: Device,
+    /// The loaded map's HUD has the Theater's widgets (`hud::joined`):
+    /// the game draws the bar of a film whose picture is its own.
+    pub guest_hud: bool,
+    /// The game has the pause menu's screen (`pause_screen::installed`).
+    pub guest_menu: bool,
+    /// Since when the game's bar and menu are held off the picture for a
+    /// screenshot.
+    shot_hide: Option<Instant>,
+}
+
+/// The kind of input the playback page's legend shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Device {
+    #[default]
+    Pad,
+    Keyboard,
 }
 
 impl Session {
@@ -814,10 +836,89 @@ impl Session {
         })
     }
 
-    pub(super) fn timeline(&self) -> Option<[u32; 4]> {
+    /// The film's picture is the guest's own render (a film recorded on a
+    /// machine with a player), so the game's HUD and screens draw over it.
+    /// A dedicated host's film is drawn by the host's view
+    /// (`theater::host_view`), with no game HUD or screen to carry ours.
+    fn guest_picture(&self) -> bool {
+        self.track.as_ref().is_some_and(|track| track.source == Source::Local)
+    }
+
+    fn guest_bar(&self) -> bool {
+        self.guest_hud && self.guest_picture()
+    }
+
+    fn guest_pause(&self) -> bool {
+        self.guest_menu && self.guest_picture()
+    }
+
+    /// The bar for the game's HUD (`hud::publish`), when the game draws
+    /// it: hidden under the pause menu and for a screenshot.
+    pub(super) fn hud_state(&self) -> Option<hud_kit_core::views::theater::State> {
+        let track = self.track.as_ref().filter(|_| self.guest_bar())?;
+        let mut state =
+            hud::state(track, self.ready, self.last_device == Device::Keyboard, self.menu.is_some());
+        state.shown &= self.shot_hide.is_none();
+        Some(state)
+    }
+
+    /// What the host draws over the picture: the loading panel, and the
+    /// bar or the pause menu the game does not draw itself.
+    pub fn host_view(&self) -> Option<ScreenSpec> {
+        let track = self.track.as_ref()?;
+        if let Some(loading) = self.loading.as_ref().filter(|_| !self.ready) {
+            return Some(playback_page::loading(loading, Instant::now()));
+        }
+        match &self.menu {
+            Some(_) if self.guest_pause() => None,
+            Some(menu) => Some(menu.spec(track, self.notice.as_deref())),
+            None if self.guest_bar() => None,
+            None => Some(playback_page::bar(track, self.ready, self.notice.as_deref())),
+        }
+    }
+
+    /// The pause menu for the game's screen, while the game draws it:
+    /// none during a screenshot's hold, so the screen closes for it.
+    pub(super) fn pause_view(&self) -> Option<ScreenSpec> {
+        let track = self.track.as_ref()?;
+        let menu = self.menu.as_ref().filter(|_| {
+            self.guest_pause() && self.shot_hide.is_none() && (self.ready || self.loading.is_none())
+        })?;
+        Some(menu.spec(track, self.notice.as_deref()))
+    }
+
+    /// Whether the screenshot asked for is due at `now`. With the game
+    /// drawing the bar or the menu, they come off the picture first and
+    /// the shot waits [`SHOT_HOLD`]; the host's page is never in a shot.
+    pub(super) fn take_screenshot(&mut self, now: Instant) -> bool {
+        if !self.screenshot {
+            return false;
+        }
+        if self.guest_bar() || self.guest_pause() {
+            let since = *self.shot_hide.get_or_insert(now);
+            if now.saturating_duration_since(since) < SHOT_HOLD {
+                return false;
+            }
+        }
+        self.screenshot = false;
+        true
+    }
+
+    /// The screenshot was taken or failed: the bar and the menu come back.
+    pub(super) fn screenshot_done(&mut self) {
+        self.shot_hide = None;
+    }
+
+    /// The rail's hit box and, when the game draws the bar, the canvas it
+    /// is on (the host page's is the page).
+    pub(super) fn timeline(&self) -> Option<([u32; 4], Option<(u32, u32)>)> {
         (self.ready && self.menu.is_none() && self.track.as_ref().is_some_and(|track|
             track.visible && track.compatibility == api::CompatibilityState::Playable))
-            .then_some(playback_page::TIMELINE)
+            .then(|| if self.guest_bar() {
+                (hud::TIMELINE, Some(super::HUD_CANVAS))
+            } else {
+                (playback_page::TIMELINE, None)
+            })
     }
 
     pub(super) fn press(&mut self, input: Input) {
@@ -1052,6 +1153,9 @@ impl Session {
         if self.track.is_none() {
             return false;
         }
+        if down {
+            self.last_device = Device::Keyboard;
+        }
         if !down || repeat || !self.held_keys.insert(key) {
             return true;
         }
@@ -1119,6 +1223,8 @@ impl Session {
             && track.compatibility == api::CompatibilityState::Playable
             && fraction.is_finite()
         {
+            // The game's rail is two strips with a gap at the film's middle.
+            let fraction = if self.guest_bar() { hud::rail_fraction(fraction) } else { fraction };
             let (start, end) = track.bounds();
             let offset = (f64::from(fraction.clamp(0.0, 1.0)) * (end - start) as f64).round();
             self.control(Control::Seek(start.saturating_add(offset as u64).min(end)));
@@ -1288,6 +1394,13 @@ struct Drive {
 }
 
 impl Drive {
+    fn moving(&self) -> bool {
+        self.strafe != 0.0
+            || self.forward != 0.0
+            || self.rise != 0.0
+            || self.look != [0.0; 2]
+    }
+
     fn pad(state: &HostPadState) -> Self {
         let axis = |v: f32| {
             if v.is_finite() && v.abs() > 0.18 {
@@ -1341,17 +1454,24 @@ impl PadGate for Gate {
         let leaving = self.active && !active;
         self.active = active;
         self.pads.retain(|k, _| pads.iter().any(|p| p.key == *k));
+        // Every pad drives the film, the desktop's player one too: it is the
+        // first physical pad merged with the keyboard, reported as a pad
+        // that is not physical, and the Theater's own keys never reach it.
         session.pad_motion = if active && !entering && session.menu.is_none() {
             pads.iter()
-                .find(|p| p.pad.physical)
-                .map_or_else(Drive::default, |p| Drive::pad(&p.pad.state))
+                .map(|p| Drive::pad(&p.pad.state))
+                .find(|d| d.moving())
+                .unwrap_or_default()
         } else {
             Drive::default()
         };
-        for pad in pads.iter_mut().filter(|p| p.pad.physical) {
+        for pad in pads.iter_mut() {
             let track = self.pads.entry(pad.key).or_default();
             let state = &mut pad.pad.state;
-            let buttons = state.buttons;
+            let buttons = pressed(state);
+            if active && (buttons.bits() & !track.buttons.bits() != 0 || Drive::pad(state).moving()) {
+                session.last_device = Device::Pad;
+            }
             let triggers = (state.left_trigger >= 0.35, state.right_trigger >= 0.35);
             if active && !entering && session.menu.is_some() {
                 for button in [
@@ -1422,6 +1542,31 @@ impl PadGate for Gate {
             next.filter(pads);
         }
     }
+}
+
+/// The buttons down on `state`: its digital ones and the face buttons and
+/// bumpers a pad reports as pressures (the desktop's merged player one
+/// reports those only as pressures).
+fn pressed(state: &HostPadState) -> HostButtons {
+    let mut buttons = state.buttons;
+    if let Some(pressures) = state.analog_buttons {
+        for (button, pressure) in [
+            HostButton::South,
+            HostButton::East,
+            HostButton::West,
+            HostButton::North,
+            HostButton::RightBumper,
+            HostButton::LeftBumper,
+        ]
+        .into_iter()
+        .zip(pressures)
+        {
+            if pressure >= 0.25 {
+                buttons.set(button, true);
+            }
+        }
+    }
+    buttons
 }
 
 fn neutral(state: &mut HostPadState) {
@@ -1497,7 +1642,8 @@ mod tests {
             Some(Clip {
                 film: "test".into(),
                 from_tick: 450,
-                to_tick: 930
+                to_tick: 930,
+                title: String::new(),
             })
         );
         assert_eq!(track.clip_range(), Some([450, 930]));
@@ -1674,6 +1820,79 @@ mod tests {
         }
     }
 
+    /// The desktop's player one is the first pad merged with the keyboard,
+    /// reported as a pad that is not physical, with A/B/X/Y and the bumpers
+    /// as pressures: its presses drive the film, the guest sees it neutral,
+    /// and the legend follows it.
+    #[test]
+    fn the_merged_player_one_pad_drives_the_film() {
+        use input::host::HostPad;
+        let theater = super::super::Theater::default();
+        {
+            let mut session = theater.session();
+            let mut track = sample_track();
+            track.players = ["A", "B"]
+                .map(|name| Player {
+                    name: name.into(),
+                    ..Player::default()
+                })
+                .to_vec();
+            session.track = Some(track);
+            session.ready = true;
+            session.last_device = Device::Keyboard;
+        }
+        let mut gate = Gate::new(theater.clone(), None);
+        let pad = |pressures: [f32; 6], buttons: &[HostButton]| {
+            let mut state = HostPadState {
+                analog_buttons: Some(pressures),
+                ..HostPadState::default()
+            };
+            for button in buttons {
+                state.buttons.set(*button, true);
+            }
+            vec![GatedPad {
+                key: (0, HostPadId(0)),
+                pad: HostPad {
+                    id: HostPadId(0),
+                    name: "Player one (pad + keyboard/mouse)".into(),
+                    state,
+                    physical: false,
+                    supports_rumble: true,
+                },
+            }]
+        };
+        let idle = [0.0; 6];
+        // The first sync takes the pads; nothing fires on it.
+        gate.filter(&mut pad(idle, &[]));
+        assert_eq!(theater.session().last_device, Device::Keyboard);
+
+        // RB (the sixth pressure is LB, the fifth RB): the next player.
+        let mut pads = pad([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[]);
+        gate.filter(&mut pads);
+        assert_eq!(pads[0].pad.state.analog_buttons, None, "the guest sees a neutral pad");
+        {
+            let session = theater.session();
+            assert_eq!(session.track.as_ref().unwrap().selected_player, 1);
+            assert_eq!(session.last_device, Device::Pad);
+        }
+        // Held, it does not fire again; LB goes back.
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[]));
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], &[]));
+        assert_eq!(theater.session().track.as_ref().unwrap().selected_player, 0);
+
+        // Y: the next camera.
+        let camera = theater.session().track.as_ref().unwrap().camera;
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], &[]));
+        assert_ne!(theater.session().track.as_ref().unwrap().camera, camera);
+
+        // A key moves the legend back to the keyboard; Start opens the menu.
+        theater.session().key(Key::Camera, true, false);
+        assert_eq!(theater.session().last_device, Device::Keyboard);
+        gate.filter(&mut pad(idle, &[HostButton::Start]));
+        assert!(theater.session().menu.is_some());
+        assert_eq!(theater.session().last_device, Device::Pad);
+    }
+
     #[test]
     fn skip_hold_sends_one_short_or_long_request() {
         let now = Instant::now();
@@ -1794,5 +2013,98 @@ mod tests {
         session.answer(Request::State, Ok(json!({"id": "test", "tick": 5, "length_ticks": 100})));
         assert!(session.loaded() && session.owns_pads());
         assert_eq!(session.track.as_ref().unwrap().tick, 5);
+    }
+
+    /// A playing film whose picture is the guest's, as a film recorded on
+    /// a machine with a player is.
+    fn local_session() -> Session {
+        let mut track = sample_track();
+        track.source = Source::Local;
+        track.visible = true;
+        Session { track: Some(track), ready: true, ..Session::default() }
+    }
+
+    #[test]
+    fn the_game_draws_the_bar_and_the_menu_of_a_film_with_its_own_picture() {
+        let mut session = local_session();
+        // No HUD of ours on the map and no screen: the host draws both.
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        assert!(session.hud_state().is_none() && session.pause_view().is_none());
+        assert_eq!(session.timeline(), Some((playback_page::TIMELINE, None)));
+
+        session.guest_hud = true;
+        session.guest_menu = true;
+        assert!(session.host_view().is_none(), "the bar is the game's HUD");
+        assert!(session.hud_state().unwrap().shown);
+        assert_eq!(session.timeline(), Some((hud::TIMELINE, Some(crate::theater_ui::HUD_CANVAS))));
+        assert!(session.view().is_some(), "the model still answers ui.screen");
+
+        session.menu = Some(Menu::default());
+        assert!(session.host_view().is_none(), "the menu is the game's screen");
+        assert_eq!(session.pause_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(!session.hud_state().unwrap().shown, "the bar gives way to the menu");
+        assert!(session.timeline().is_none());
+
+        // With the HUD alone (a map whose player HUD took no widgets of
+        // ours) the host keeps the bar and the game the menu, and the
+        // other way round.
+        session.guest_hud = false;
+        session.menu = None;
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        session.guest_hud = true;
+        session.guest_menu = false;
+        session.menu = Some(Menu::default());
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(session.pause_view().is_none());
+    }
+
+    #[test]
+    fn a_dedicated_host_s_film_keeps_the_host_s_page() {
+        let mut session = local_session();
+        session.track.as_mut().unwrap().source = Source::Host;
+        session.guest_hud = true;
+        session.guest_menu = true;
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        assert!(session.hud_state().is_none(), "no game HUD is drawn over the host's view");
+        assert_eq!(session.timeline(), Some((playback_page::TIMELINE, None)));
+        session.menu = Some(Menu::default());
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(session.pause_view().is_none());
+    }
+
+    #[test]
+    fn a_screenshot_waits_for_the_game_s_bar_and_menu_to_leave_the_picture() {
+        let now = Instant::now();
+        // The host's page is never in the shot: no wait.
+        let mut session = local_session();
+        assert!(!session.take_screenshot(now), "none asked for");
+        session.screenshot = true;
+        assert!(session.take_screenshot(now));
+        assert!(!session.take_screenshot(now), "taken once");
+
+        session.guest_hud = true;
+        session.guest_menu = true;
+        session.menu = Some(Menu::default());
+        session.screenshot = true;
+        assert!(!session.take_screenshot(now), "the hold starts");
+        assert!(!session.hud_state().unwrap().shown);
+        assert!(session.pause_view().is_none(), "the menu's screen closes for the shot");
+        assert!(!session.take_screenshot(now + SHOT_HOLD / 2));
+        assert!(session.take_screenshot(now + SHOT_HOLD));
+        assert!(session.pause_view().is_none(), "held until the shot is saved");
+        session.screenshot_done();
+        assert!(session.pause_view().is_some(), "the menu comes back");
+        session.menu = None;
+        assert!(session.hud_state().unwrap().shown, "and the bar");
+    }
+
+    #[test]
+    fn a_click_on_the_game_s_rail_seeks_through_its_two_strips() {
+        let mut session = local_session();
+        session.guest_hud = true;
+        assert!(session.scrub(0.5));
+        assert!(session.scrub(1.0));
+        session.track.as_mut().unwrap().visible = false;
+        assert!(!session.scrub(0.5), "Back hid the bar");
     }
 }

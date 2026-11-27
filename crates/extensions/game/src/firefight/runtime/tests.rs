@@ -922,15 +922,15 @@ fn two_teams_turn_team_play_on_before_the_game_starts() {
     let (mut m, _) = guest(true, 1);
     two_team_map(&mut m, false);
     options_block(&mut m, MODE_MULTIPLAYER, 0x40);
+    let lines = it.lock().activate(&mut m, OPTIONS, false);
     assert_eq!(
-        it.lock().activate(&mut m, OPTIONS, false).as_deref(),
+        lines.last().map(String::as_str),
         Some("firefight: two teams: Team Play is on for this game")
     );
     let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
     assert_eq!(flags, 0x41);
-    assert_eq!(
-        it.lock().activate(&mut m, OPTIONS, false),
-        None,
+    assert!(
+        it.lock().activate(&mut m, OPTIONS, false).is_empty(),
         "already on"
     );
     // The game copies the options into its globals; the match runs.
@@ -943,6 +943,59 @@ fn two_teams_turn_team_play_on_before_the_game_starts() {
     assert_eq!(it.lock().state().director.unwrap().teams, 2);
 }
 
+/// A map that carries the kit initialises its AI past retail's
+/// multiplayer return, so the engine can place a squad; any other
+/// multiplayer map keeps retail's uninitialised AI.
+#[test]
+fn only_a_kit_map_initialises_its_ai() {
+    let (m, _) = guest(true, 1);
+    assert!(initialises_ai(&m));
+    let (m, _) = guest(false, 1);
+    assert!(!initialises_ai(&m));
+}
+
+/// Firefight on a kit map sets the variant's lives to 1 before the game
+/// copies its options: with unlimited lives (0) the engine respawned every
+/// player itself, so a player out of the director's lives came back. A
+/// variant at 1 is left alone; Firefight off, a map without the kit, another
+/// mode and a film leave the lives as the variant has them.
+#[test]
+fn firefight_on_a_kit_map_holds_every_respawn_for_the_director() {
+    let lives_after = |options: Options, kit: bool, mode: u32, film: bool, lives: i32| {
+        let (it, _) = shared(false);
+        it.lock().set_options(Box::new(move || Ok(options.clone())));
+        let (mut m, _) = guest(kit, 1);
+        options_block(&mut m, mode, 0);
+        m.put_u32(OPTIONS + OPTIONS_VARIANT_LIVES, lives as u32);
+        let lines = it.lock().activate(&mut m, OPTIONS, film);
+        (m.i32(OPTIONS + OPTIONS_VARIANT_LIVES).unwrap(), lines)
+    };
+    let mp = MODE_MULTIPLAYER;
+    let (lives, lines) = lives_after(Options::default(), true, mp, false, 0);
+    assert_eq!(lives, 1, "unlimited lives are held at 1");
+    assert_eq!(
+        lines,
+        vec![
+            "firefight: lives: the variant's unlimited lives set to 1, so the director's lives decide every respawn"
+                .to_string()
+        ]
+    );
+    assert_eq!(lives_after(Options::default(), true, mp, false, 5).0, 1, "five lives too");
+    let (lives, lines) = lives_after(Options::default(), true, mp, false, 1);
+    assert_eq!((lives, lines.len()), (1, 0), "already held");
+    let off = Options {
+        enabled: false,
+        ..Options::default()
+    };
+    assert_eq!(lives_after(off, true, mp, false, 0).0, 0, "Firefight off");
+    assert_eq!(lives_after(Options::default(), false, mp, false, 0).0, 0, "no kit");
+    assert_eq!(lives_after(Options::default(), true, 1, false, 0).0, 0, "a campaign game");
+    assert_eq!(lives_after(Options::default(), true, mp, true, 0).0, 0, "a film");
+    assert_eq!(with_held_respawns(0), Some(1));
+    assert_eq!(with_held_respawns(3), Some(1));
+    assert_eq!(with_held_respawns(1), None);
+}
+
 /// One team, Firefight off, a map without the kit, another mode and a
 /// film's playback leave team play as the variant has it; Teams set to two
 /// on a one-team wave set turns it on.
@@ -953,9 +1006,10 @@ fn only_two_firefight_teams_on_a_kit_map_turn_team_play_on() {
         it.lock().set_options(Box::new(move || Ok(options.clone())));
         let (mut m, _) = guest(kit, 1);
         options_block(&mut m, mode, 0);
-        let line = it.lock().activate(&mut m, OPTIONS, film);
+        let lines = it.lock().activate(&mut m, OPTIONS, film);
         let flags = m.u32(OPTIONS + OPTIONS_VARIANT_FLAGS).unwrap();
-        assert_eq!(line.is_none(), flags == 0, "{line:?}");
+        let said = lines.iter().any(|l| l.contains("Team Play"));
+        assert_eq!(said, flags != 0, "{lines:?}");
         flags == 0
     };
     let two = Options {
@@ -1292,6 +1346,106 @@ fn a_game_start_keeps_the_pick_it_was_built_from() {
     assert!(crate::map_variant::running().is_some(), "a film leaves it");
     it.lock().activate(&mut m, OPTIONS, false);
     assert_eq!(crate::map_variant::running(), None, "no pick, no running pick");
+}
+
+/// A game whose chosen entry is Map Waves, as the options block the start
+/// reads it from.
+fn map_waves_game(world: u32) -> FakeGuest {
+    use variants::ext::{Ext, Mode, Script};
+    let (mut m, _) = guest(true, world);
+    let ext = Ext {
+        script: Script { mode: Mode::Firefight, prefix: ::firefight::builtin::MAP_WAVES, options: 0 },
+        ..Ext::RETAIL
+    };
+    let at = GAME_GLOBALS + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT;
+    m.put(at + variants::ext::AT as u32, &ext.encode());
+    m
+}
+
+/// The log's starting hash of a game that has started.
+fn genesis_of(shared: &Shared) -> String {
+    shared.lock().state().log.expect("a match runs").hash
+}
+
+/// A film (and a replica) of a Map Waves match makes the genesis from the
+/// document its map was built from: the host's, which played the pick's
+/// set. A film whose package is not found has no set to play and refuses by
+/// name. (docs/game/forge-firefight.md, "Playing it".)
+#[test]
+fn a_film_of_map_waves_replays_from_its_document() {
+    use crate::map_variant::{self, Maps, Refusal};
+    struct Package(Option<(content::MapId, std::path::PathBuf)>);
+    impl Maps for Package {
+        fn installed(&self, _: &str) -> Option<content::Sha256> {
+            None
+        }
+        fn cached(&self, id: &content::MapId) -> Option<std::path::PathBuf> {
+            self.0.clone().filter(|(have, _)| have == id).map(|(_, dir)| dir)
+        }
+        fn build(&mut self, _: &forge_doc::ForgeDoc) -> Result<std::path::PathBuf, Refusal> {
+            Err(Refusal::new("variant_build", "not here"))
+        }
+    }
+    // The host's game: its pick's document holds the set.
+    let own = own_set();
+    map_variant::set_running(Some(running_pick(Some(own.clone()))));
+    let (host, _) = shared(false);
+    let mut m = map_waves_game(1);
+    host.lock().start(&mut m, false);
+    assert_eq!(host.lock().state().role, Some(wire::Role::Host));
+    let host_genesis = genesis_of(&host);
+
+    // The film's machine has no pick; its package holds the document.
+    let dir = std::env::temp_dir().join(format!("h2-film-waves-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = forge_doc::ForgeDoc {
+        format: forge_doc::FORMAT_WAVES,
+        builder: forge_doc::BuilderVersions::CURRENT,
+        base: forge_doc::MapRef { map: "firefight-probe".into(), sha256: content::Sha256::of(b"base") },
+        sources: vec![],
+        title: "Invented Basin".into(),
+        author: "Editor".into(),
+        description: String::new(),
+        recipes: vec![],
+        imports: vec![],
+        ops: vec![],
+        expect: None,
+        waves: Some(own.clone()),
+    };
+    let mut manifest = content::Manifest::retail("firefight-probe", doc.base.sha256);
+    manifest.package.format = content::manifest::FORGE_FORMAT;
+    manifest.package.name = doc.title.clone();
+    manifest.forge.push(content::manifest::ForgeLayer {
+        document: doc.id().unwrap(),
+        document_file: "document.h2forge".into(),
+        file: "materialised.map".into(),
+        sha256: content::Sha256::of(b"map"),
+        game: None,
+    });
+    std::fs::write(dir.join("document.h2forge"), doc.canonical_json().unwrap()).unwrap();
+    std::fs::write(dir.join(content::manifest::MANIFEST_FILE), manifest.to_toml()).unwrap();
+    let id = manifest.map_id();
+    map_variant::install(Box::new(Package(Some((id, dir.clone())))));
+    map_variant::set_running(None);
+    map_variant::set_loaded(Some(id));
+    for (film, world) in [(true, 1), (false, WORLD_SYNC_CLIENT)] {
+        let (replica, _) = shared(film);
+        let mut m = map_waves_game(world);
+        replica.lock().start(&mut m, film);
+        let state = replica.lock().state();
+        assert_eq!(state.role, Some(wire::Role::Replica), "{state:?}");
+        assert_eq!(genesis_of(&replica), host_genesis, "film {film}");
+    }
+    // The package is not here: the same game refuses by the runtime's sentence.
+    map_variant::install(Box::new(Package(None)));
+    let (replica, _) = shared(true);
+    let mut m = map_waves_game(1);
+    replica.lock().start(&mut m, true);
+    let state = replica.lock().state();
+    assert!(!state.running);
+    assert!(state.refused.unwrap().contains("This map has no waves of its own."));
+    map_variant::set_loaded(None);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- wave tests (docs/game/forge-firefight.md, "Test waves") ----

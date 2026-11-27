@@ -44,4 +44,7 @@ pub use memory::{
 pub use pipeline::Pipeline;
 pub use session::{Bots, Playlist};
 pub use sink::{JsonlSink, Sink};
-pub use tags::{BotsLocator, HostedSessionLocator, MapFile, MapIdLocator, MapLocator, PlaylistLocator, TagNames};
+pub use tags::{
+    BotsLocator, HostedSessionLocator, MapFile, MapIdLocator, MapLocator, MapRead, OpenMap,
+    PlaylistLocator, TagNames,
+};

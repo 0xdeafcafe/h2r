@@ -19,6 +19,7 @@ The first image predates the phantom alias (`a7d0010a6`), so every tick
 copied the 64 MiB of guest RAM a phantom build reads (Linux has no remap).
 The second builds on live RAM through the alias. Both matches ended
 `match_over` with the same kills, and both reports have `nav: "loaded"`.
+
 An earlier run on a bundle without nav meshes had no kills.
 
 `wall.ms_per_tick` is the sim's whole tick, not the light host's

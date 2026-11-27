@@ -802,3 +802,37 @@ fn an_external_pass_samples_a_drawn_level_in_place() {
     assert_eq!(sampled[0][1], None);
     assert_eq!(d.stats().rtt_writebacks, 0, "sampled in place");
 }
+
+/// Layer 3's native objects sample the texture accumulation target after
+/// the D3D work drawn into it before the walk (layer 1's kept items) and
+/// before the work drawn into it after: the pass is issued at the drain,
+/// in stream order, so it never reads the level ahead of its albedo.
+#[test]
+fn an_external_pass_samples_a_level_after_the_work_drawn_into_it_before_the_drain() {
+    let (mut d, mut m, surf) = recorded();
+    d.backend.external_passes = true;
+    d.request_external_pass(Box::new(Samples(vec![TEX_HEADER])));
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(d.stats().external_passes, 1, "refusals {:?}", d.stats().external_refusals);
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let level = d.backend.external_sampled[0][0].expect("the drawn level");
+    let at = d.backend.external_at[0];
+    let into_level: Vec<usize> = d
+        .backend
+        .calls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, call)| match call {
+            d3d::Recorded::Clear { color, .. } | d3d::Recorded::ClearRects { color, .. } if *color == level => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(into_level.len(), 2, "the clear before the pass and the one after: {into_level:?}");
+    assert!(into_level[0] < at, "the work before the drain is recorded first ({into_level:?}, pass at {at})");
+    assert!(into_level[1] >= at, "the work after it follows the pass ({into_level:?}, pass at {at})");
+}

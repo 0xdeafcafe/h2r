@@ -77,7 +77,12 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        assert!(plan.chains.is_empty(), "off: nothing installs");
+        // The default-on animation manager arms install their own entries;
+        // none of them is an effect port.
+        for port in ports() {
+            let chain = plan.chains.get(&port.point.base);
+            assert!(chain.is_none_or(|c| c.implement.is_none()), "off: {}", port.point.name);
+        }
 
         let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{EFFECTS}"), true));
         registry.add(&SimNative::for_tests()).unwrap();

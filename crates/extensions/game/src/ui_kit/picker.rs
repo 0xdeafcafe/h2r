@@ -242,6 +242,12 @@ pub(crate) fn offer_list(p: Pick) -> Option<&'static str> {
     Some(NAME)
 }
 
+/// The picker's screen, from its pane being built to its free: for a
+/// caller that opened it and closes it or moves its cursor itself.
+pub(crate) fn screen() -> Option<u32> {
+    with_offer(|offer| offer.screen)
+}
+
 /// The pick showing now.
 pub fn current() -> Option<Pick> {
     with_pick(|p| p.clone())

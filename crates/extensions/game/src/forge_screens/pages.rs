@@ -121,7 +121,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ),
             (
                 // An own item spawner of a collection the document changes,
-                // in a kit session: its Team, Spare clips, Restore original
+                // in a kit session: its Team, Spare clips, Place at start, Restore original
                 // and Duplicate rows.
                 "spawner",
                 sheet::properties_sheet_with(
@@ -146,6 +146,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                         kit: true,
                         team: Some(1),
                         spare_clips: Some(Some(2)),
+                        place_at_start: Some(false),
                         ..sheet::Extras::default()
                     },
                 )

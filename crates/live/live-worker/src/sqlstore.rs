@@ -682,6 +682,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// The package routes on the Worker's own composition (the parity
+    /// suite's package cases).
+    #[tokio::test]
+    async fn worker_packages() {
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::Timers,
+            blobs::{BlobStore, Blobs},
+            titleblobs::BlobsElsewhere,
+        };
+        let path = temp_db("packages");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let private = BlobStore::memory();
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let policy = Policy {
+            write_rate: (1000., 1000),
+            ..Policy::default()
+        };
+        let live = Live::start_with(Arc::new(store), identity, policy, Timers::Driven)
+            .await
+            .unwrap();
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
+        crate::packages_parity::exercise(live).await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[tokio::test]
     async fn worker_film_library() {
         use live_server::{
@@ -2043,6 +2073,126 @@ mod tests {
         let (status, roster) = ask(2).await;
         assert_eq!(status, 201, "{roster}");
         assert_eq!(teams(&roster), [Value::Null, Value::Null]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A map variant's own wave set on the Worker's composition, as on a
+    /// machine (live-server's `a_session_takes_a_custom_sets_id_in_both_homes`,
+    /// docs/game/forge-firefight.md, "Playing it"): a session's
+    /// `firefight` whose set name and id no built-in has is kept and read
+    /// back, and one update replaces it with another.
+    #[tokio::test]
+    async fn a_session_takes_a_custom_sets_id_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::lxm;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("firefight-custom");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, content: &'static str, body: Vec<u8>| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri).header("content-type", content);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            "application/json",
+            AccountRequest::sign(&key, "Host", None, "live.test", now()).into_bytes(),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = |m: &str| issue_token(&key, &author, "live.test", m, now());
+        // Names and ids no built-in has (a built-in's id is a hash of its
+        // definition, which these are not).
+        let basin = live_proto::session::Firefight {
+            set: "Invented Basin".into(),
+            id: "5e".repeat(32),
+            teams: 1,
+            difficulty: 2,
+            kit: 2,
+        };
+        let lobby = live_proto::session::NewSession {
+            addr: Some("192.168.2.4".parse().unwrap()),
+            port: 3074,
+            host_address: vec![0; 36],
+            slots: live_proto::session::Slots { public_filled: 1, public_open: 7, ..Default::default() },
+            attributes: Default::default(),
+            flags: "custom".into(),
+            hopper_id: None,
+            map: Some("beavercreek".into()),
+            name: Some("Firefight".into()),
+            language: None,
+            visibility: Default::default(),
+            map_id: None,
+            skulls: None,
+            campaign: None,
+            ping_ms: None,
+            variant_ext: None,
+            rules: None,
+            firefight: Some(basin.clone()),
+            browser: None,
+        };
+        let (status, session) = call(
+            "POST",
+            "/v1/sessions".into(),
+            Some(token(lxm::SESSIONS_WRITE)),
+            "application/json",
+            serde_json::to_vec(&lobby).unwrap(),
+        )
+        .await;
+        assert_eq!(status, 201, "{session}");
+        let session_id = session["session_id"].as_str().unwrap().to_string();
+        let read = || call("GET", format!("/v1/sessions/{session_id}"), None, "application/json", Vec::new());
+        let (status, got) = read().await;
+        assert_eq!(status, 200, "{got}");
+        assert_eq!(got["session"]["advertisement"]["firefight"], serde_json::to_value(&basin).unwrap());
+        let other = live_proto::session::Firefight {
+            set: "Another Invented".into(),
+            id: "7a".repeat(32),
+            ..basin
+        };
+        let update = live_proto::sign::EventBody::at_unix(
+            &key,
+            &author,
+            &live_proto::session::stream(&session_id),
+            live_proto::session::UPDATED,
+            serde_json::json!({ "firefight": other }),
+            now(),
+        );
+        let (status, _) = call(
+            "POST",
+            format!("/v1/sessions/{session_id}/events"),
+            Some(token(lxm::SESSIONS_WRITE)),
+            "application/jose",
+            live_proto::sign::sign_batch(&key, &[update]).into_bytes(),
+        )
+        .await;
+        assert_eq!(status, 201);
+        let (_, got) = read().await;
+        assert_eq!(got["session"]["advertisement"]["firefight"], serde_json::to_value(&other).unwrap());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

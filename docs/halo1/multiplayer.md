@@ -1266,7 +1266,7 @@ one map to the directory chosen with `--out`.
 map, multiplayer and campaign, like a Halo 2 map: geometry, sky, the five
 views and a preview, keyed by the name the game reports (`h1_<map>`, or
 the campaign level's), so live games and recordings on them plot on their
-map ([live-art.md](../live/live-art.md#halo-1-maps)). The manifest marks
+map ([live-art.md](../live/live-art-viewer-packs.md#halo-1-maps)). The manifest marks
 them `"game": "halo1"`; the site labels them Halo 1, names them from the
 manifest, and does not call a converted map "modded" or its geometry
 changed.

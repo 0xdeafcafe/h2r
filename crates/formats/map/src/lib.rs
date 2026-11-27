@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 /// Whole-cache builder: write a complete map from a set of tags.
+pub mod arena;
 pub mod build;
 /// Engine checksum and streaming checksum state.
 pub mod checksum;

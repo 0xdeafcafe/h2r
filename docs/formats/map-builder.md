@@ -198,6 +198,28 @@ move retail tags away from their old addresses while reusing freed space).
 offline sizing or round trips. Firefight uses the final layout to report
 per-part costs and refuses to publish a package over the bound.
 
+`TagSet::from_map_streamed` decomposes the same way but leaves the
+prefix in the source: `PinnedImage::file` is empty and
+`PinnedImage::file_in_source` is its length. `TagSet::build_streamed`
+then lays the file out as `TagSet::build` does and returns a
+`StreamedBuild` instead of bytes:
+
+| Part of the output | Where it comes from |
+|---|---|
+| `0..0x800` | a run: the header |
+| `0x800..base` | the source at the same offsets, under runs for the tables rewritten in their old place |
+| `base..len` | a run: raw data and BSP regions the build added, grown tables, the index, the metadata |
+
+`base` is the source's index offset. Nothing in the prefix moves, so
+every raw pointer and BSP offset in it stays right. The checksum is read
+through the source a megabyte at a time.
+
+`TagSet::build` refuses a streamed set. A streamed set whose `file` was
+written in memory is refused too; `workspace` names the package whose
+item did it. Test:
+`a_streamed_build_is_the_buffered_build_with_its_prefix_left_in_the_source`
+(`crates/formats/map/src/build_tests.rs`).
+
 `TagSet::append_pinned_blocks` lays out new block trees at the end of
 ordinary metadata. It returns each root's address and allocated byte count,
 including alignment and children. The Firefight kit writes those addresses

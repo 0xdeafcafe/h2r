@@ -284,17 +284,26 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
         .collect())
 }
 
-/// Whether the installed original map `map` has a saved map variant with
-/// AI ground that passes the store's checks: Change Map lists it in a
-/// Firefight lobby.
-pub fn has_ground_variant(data: &Path, map: &crate::map_select::Map) -> bool {
+/// The saved map variants of the installed original map `map` that pass
+/// the store's checks: what Change Map lists under the map
+/// (docs/game/map-select.md, "A map with variants"). One with AI ground
+/// (`ground`) plays Firefight.
+pub fn usable_variants(
+    data: &Path,
+    map: &crate::map_select::Map,
+) -> Vec<::forge::files::variants::Listed> {
     let base = map.short_name();
     let installed = crate::map_variant::installed(&base);
-    ::forge::files::variants::list(data, &base, installed.as_ref()).is_ok_and(|listed| {
-        listed.iter().any(|l| {
-            l.source == ::forge::files::variants::Source::Saved && l.ground && l.problem.is_none()
+    ::forge::files::variants::list(data, &base, installed.as_ref())
+        .map(|listed| {
+            listed
+                .into_iter()
+                .filter(|l| {
+                    l.source == ::forge::files::variants::Source::Saved && l.problem.is_none()
+                })
+                .collect()
         })
-    })
+        .unwrap_or_default()
 }
 
 /// [`map_variant_list`] with the suggestions of `game`, the lobby's game

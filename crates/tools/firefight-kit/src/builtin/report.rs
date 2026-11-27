@@ -18,7 +18,12 @@ use crate::{Config, Mode, bases, nav};
 /// sector it snapped to and its distance to each base; each refusal by
 /// name; and the cost table of the build. The numbers settle the layout's
 /// `V` constants.
-pub fn layout_report(base: &[u8], base_name: &str, config: &Config) -> Result<String> {
+pub fn layout_report(
+    base: &[u8],
+    base_name: &str,
+    config: &Config,
+    elite: Option<&crate::Donor<'_>>,
+) -> Result<String> {
     let mut map = Map::from_reader(Cursor::new(base))?;
     ensure!(
         map.header().name.eq_ignore_ascii_case(base_name),
@@ -100,8 +105,15 @@ pub fn layout_report(base: &[u8], base_name: &str, config: &Config) -> Result<St
             }
         }
     }
-    match crate::build_with_classes(base, base_name, Mode::Kit, &config, &Labels::default(), None)
-    {
+    match crate::build_with_elite(
+        base,
+        base_name,
+        Mode::Kit,
+        &config,
+        &Labels::default(),
+        None,
+        elite,
+    ) {
         Ok(built) => {
             let _ = writeln!(out, "costs: {}", built.costs);
             if !built.fitted.is_empty() {

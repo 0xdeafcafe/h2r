@@ -1,4 +1,4 @@
-//! Checked virtual mappings over one 64 MB physical store. Physical offsets
+//! Checked virtual mappings over one physical store ([`RAM_SIZE`]). Physical offsets
 //! identify aliases; high virtual addresses are never masked into RAM.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -13,7 +13,9 @@ pub use writeback::{Writeback, WritebackView};
 pub use state::{ClaimRecord, GuestLayout, ReservationRecord, RestoreError};
 pub use view::{FrozenRam, HandBack, LINE_SIZE, WrittenPage};
 
-pub const RAM_SIZE: usize = 64 * 1024 * 1024;
+/// Guest RAM: a retail Xbox's 64 MiB plus the tag arena's growth
+/// (`map::arena::RAM`, docs/formats/map-format.md "The tag arena").
+pub const RAM_SIZE: usize = map::arena::RAM as usize;
 pub const PAGE_SIZE: u32 = 4096;
 const MMIO_START: u64 = 0xfd00_0000;
 const MMIO_END: u64 = 0xfe00_0000;

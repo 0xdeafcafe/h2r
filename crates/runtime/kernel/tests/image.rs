@@ -151,8 +151,9 @@ fn conflicting_data_is_copied_and_only_its_thunk_is_relocated() {
 
 /// `load_xbe_with(.., &LoadOptions::halo2())` reserves the title arena; the
 /// kernel's own placements avoid it, and the game's XPhysicalAlloc
-/// (0x12b43e: MmAllocateContiguousMemoryEx(0x30e4000, 0x61000, 0x3144fff, 0,
-/// PAGE_READWRITE)) gets exactly the arena at 0x80061000.
+/// (0x12b43e: retail's MmAllocateContiguousMemoryEx(0x30e4000, 0x61000,
+/// 0x3144fff, 0, PAGE_READWRITE), grown by the `tag-arena` feature to the
+/// whole reservation) gets exactly the arena at 0x80061000.
 #[test]
 #[ignore = "requires the user-supplied retail XBE"]
 fn retail_title_arena_is_kept_free_and_handed_to_xphysicalalloc() {
@@ -165,7 +166,7 @@ fn retail_title_arena_is_kept_free_and_handed_to_xphysicalalloc() {
     {
         let m = loaded.runtime.memory();
         for x in m.mappings() {
-            if (0x8006_1000..0x8314_5000).contains(&x.virtual_start) {
+            if (0x8000_0000 + window.start..0x8000_0000 + window.end).contains(&x.virtual_start) {
                 continue;
             }
             assert!(
@@ -206,12 +207,14 @@ fn retail_title_arena_is_kept_free_and_handed_to_xphysicalalloc() {
         );
         cpu.eax
     };
-    let arena = call(166, &[0x30e_4000, 0x6_1000, 0x314_4fff, 0, 4]);
+    let len = window.end - window.start;
+    let arena = call(166, &[len, window.start, window.end - 1, 0, 4]);
     assert_eq!(arena, 0x8006_1000);
     assert_eq!(call(173, &[arena + 0x123]), 0x6_1123);
-    // A carver's XPhysicalProtect(.., 0x404) on part of the arena.
-    call(182, &[0x8300_0000, 0x10_0000, 0x404]);
-    assert_eq!(call(179, &[0x8300_0000]), 0x404);
+    // A carver's XPhysicalProtect(.., 0x404) on part of the arena, past
+    // retail's end.
+    call(182, &[0x8330_0000, 0x10_0000, 0x404]);
+    assert_eq!(call(179, &[0x8330_0000]), 0x404);
     assert_eq!(call(179, &[0x8006_1000]), 4);
-    loaded.runtime.memory().set_u32(0x8314_4ffc, 1).unwrap();
+    loaded.runtime.memory().set_u32(0x8000_0000 + window.end - 4, 1).unwrap();
 }

@@ -419,7 +419,7 @@ fn siege_with_no_flag_stand_wins_at_the_last_site() {
     assert_eq!(r.game.players[&1].score, 0);
 }
 
-/// The phase's clock reads on the HUD: `koth.phase`, the third widget,
+/// The phase's clock reads on the HUD: `siege.clock`, the third widget,
 /// set to the seconds left, once for each second that passes.
 #[test]
 fn siege_shows_the_phase_clock_a_second_at_a_time() {
@@ -1276,6 +1276,20 @@ fn siege_plays_its_rounds_with_the_sides_swapped() {
         banners,
         [(0, Arg::Text("ROUND 1".into())), (1352, Arg::Text("FINAL ROUND".into()))]
     );
+    // The HUD's round (the sixth widget) and attacking side (the seventh)
+    // are said at each round's start: round 1 with team 0 attacking, then
+    // round 2 with team 1.
+    let said = |widget: i32| -> Vec<(u32, i32)> {
+        calls(&r, "hud_value")
+            .into_iter()
+            .filter_map(|(t, a)| match a {
+                [Arg::Int(w), Arg::Int(v)] if *w == widget => Some((t, *v)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(said(5), [(0, 1), (1352, 2)]);
+    assert_eq!(said(6), [(0, 0), (1352, 1)]);
     // Round 2's sides: the bodies and the attackers' first line swap.
     let bodies: Vec<(u32, &[Arg])> = calls(&r, "set_body").into_iter().filter(|(t, _)| *t == 1352).collect();
     assert_eq!(
@@ -1422,6 +1436,7 @@ fn siege_sends_the_attackers_bots_at_the_site_and_the_defenders_to_hold_it() {
 /// docs/game/rules-engine.md, "Siege layouts"), each with the scenario
 /// `--scenario` wrote for it.
 const RECIPE_LAYOUTS: &[(&str, &str)] = &[
+    ("zanzibar", include_str!("scenarios/siege_zanzibar.json")),
     ("coagulation", include_str!("scenarios/siege_coagulation.json")),
     ("headlong", include_str!("scenarios/siege_headlong.json")),
     ("waterworks", include_str!("scenarios/siege_waterworks.json")),

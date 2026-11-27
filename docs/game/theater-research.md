@@ -300,7 +300,7 @@ What works without touching the guest:
 
 **In-memory machine forks** (later, optional). Rewind within a session by
 keeping copies of the whole machine every N seconds while playing: guest
-RAM (64 MiB), each thread's CPU state, the kernel's scheduler, timers and
+RAM (72 MiB), each thread's CPU state, the kernel's scheduler, timers and
 objects, VFS handles, the D3D device model, audio voices and the clock
 (`Clock::resume` exists). The runner keeps host stacks bounded and guest
 stacks in guest RAM (LIFTER.md), so a fork at a scheduler boundary is

@@ -11,20 +11,48 @@ The world's other layers draw natively, and the guest's BSP scene walk and sorte
 | 7 | 3, after the object shadows (`ShadowsAndLayer7`) | `native_layers` |
 | 2 | 6 (`Layer2`), with its stencil bracket and non-standard handlers | `native_layers` |
 
-## The world draws only from the scene
+## What the scene cannot draw keeps its guest draw
 
-The world layers are cut per layer (`render_bridge::cut::LAYER_CUTS`), because the layer draw `0x00044550` serves every layer and no whole-function hook applies. Each draws only from the scene, in the slot the traced order gives it (`native_render::layer_items::world_slot`).
+The world layers are cut per layer (`render_bridge::cut::LAYER_CUTS`), because the layer draw `0x00044550` serves every layer and no whole-function hook applies. Each draws from the scene in the slot the traced order gives it (`native_render::layer_items::world_slot`).
 
-The observer before the layer draw clears the layer's bit on every geometry item the native pass does not draw, as well as on those it does (`layer_items::clear_scene_layer`). The guest builds no entry for any of them and none reaches the device. There is no order rule: the pass draws its items in the list's order and no kept guest draw is left to precede or follow them.
+The observer before the layer draw clears the layer's bit on each item the native pass draws (`layer_pass::clear_layer_items`, with its order rule). An item the pass does not draw keeps its bit and its guest draw, and is counted by layer, kind and cause. No item is dropped: a refused wall, crate or Elite still draws.
 
 | Counter | Counts |
 |---|---|
-| `scene_dropped_world_refused` | a structure item the pass does not draw (a named drop) |
-| `scene_dropped_world_unreadable` | an item whose render record or list does not read |
-| `scene_dropped` | both of the above, on the world stage |
-| `layer_plan_<layer>_refused_*` | the plan's per-layer causes |
+| `scene_kept_<site><layer>_<kind>_<cause>` | an item left to its guest draw. `site` is empty for the scene, `alt` for the alternate view. `kind` is `world`, `object` or `unreadable`. Layers 6 and 16 count the same way (`native_fog::count_late_kept`) |
+| `scene_kept_sky_<cause>` | a sky strip left to its guest draw (`native_sky::counter_name`) |
+| `layer_plan_<layer>_refused_*` | the plan's per-layer causes, summed |
 
-Layer 3's objects stay the sorted walk's (`native_objects`), and the bits go back at the next layer draw. The first person's layers and the sorted handlers' 18, 19 and 21 keep their own refusals until their cuts. The resolved-scene arm (`Host::use_resolved_scene`) draws from inside the guest's entries, so it still reaches the opaque handler hooks' own refusals.
+Read after the host's clear (`layer_items::held_items`, `native_layers::count_kept`). The cause is the one the host names for the item's slot (`native_layers::Left`), else the one it names for the whole layer, else:
+
+| Cause | Meaning |
+|---|---|
+| `record` | the item's render record does not read |
+| `remainder` | extraction left the item out of the layer's scene |
+| `list` | the list does not read (one count) |
+| `unread` | the layer's view does not extract (no camera) |
+| `caller` | a layer 2, 6, 16 or 17 draw from a caller no stage takes (`native_layers::UNTAKEN_CALLER`) |
+| `unnamed` | the host stopped without a cause: a gap to name |
+
+Host causes by stage:
+
+| Stage | Causes |
+|---|---|
+| Layer 3 (`native_world_glue::Glue::ask`) | `world_pending`, `device`, `viewport`, `w_buffer`, `palettes`, `stencil`, `stencil_plan`, `target`, `gpu_busy`, `gpu_pending`, `selection`, `texaccum`, `animation`, `warming`, `masks`, `reservation`, `view`, `part` (outside the drawn set) |
+| Layers 6 and 16 (`native_{water,fog}_glue::Glue::ask`) | per slot, the walk's `build`, `handler`, `record`, `object`, `subparts`, `material`, `order` (`fog::LateRefusals::kept`); per view, `unloaded`, `no_parts`, `device`, `stencil_view`, `palette_view`, `target_view`, `fog_words_view`, `planar_inputs_view`, `gate`, `list`, `pipeline`, `scene`, `reservation`; from the hook, `gate`, `object` (a list with object items only), `host` |
+| Sky strips (`native_residual_glue`, `IndexedPass::for_sky`) | extraction's `site`, `geometry`, `material`, `transform`; `view`, `range`; `topology`, `index_range`, `stencil`, `stencil_target`, `program`, `texture`, `transform`, `decompression`, `candidate`; `device` (the strip never reached the admission) |
+| Layers 1, 2, 5, 7, 8, 17, 20 (`native_layers_glue::Glue::ask`) | the plan's refusals by name, the object causes (`object_*`), `world_pending`, `program`, `palettes`, `state`, `warming`, `stencil`, `device`, `viewport`, `set`, `order`, `masks`, `reservation`, `world_changed` |
+
+Object items plan without the world: a BSP still loading leaves only the structure items to the guest (`world_pending`). Layer 3's objects stay the sorted walk's (`native_objects`), and the bits go back at the next layer draw.
+
+| Not counted here | Why |
+|---|---|
+| The first person's layers, the sorted handlers' 18, 19 and 21 | they keep their own refusals (`layer_plan_*`) |
+| The resolved-scene arm (`Host::use_resolved_scene`) | it draws from inside the guest's entries, so the opaque handler hooks count their own refusals |
+
+A layer becomes scene-only, with a named drop in place of the guest draw, when its `scene_kept_*` rows are zero over the census corpus ([framescene.md](framescene.md), section 8.2).
+
+`h2 agent render.scene` lists the rows under `counters`.
 
 ## Native opaque layers
 

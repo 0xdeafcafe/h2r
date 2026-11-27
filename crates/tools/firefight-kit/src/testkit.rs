@@ -19,8 +19,12 @@ pub const NAME: &str = "court";
 /// middle.
 pub const STARTS: [(f32, f32, i16); 3] = [(3., 13., 0), (25., 15., 1), (14., 14., 8)];
 
+/// The parent of `court`'s campaign Elite.
+pub const ELITE_PARENT: &str = r"invented\characters\elite_parent";
+
 /// `court`: two structure BSPs over the same 7x7 floor, three starts, a
-/// CTF flag stand at each end, and the Elite biped the kit needs.
+/// CTF flag stand at each end, the Elite biped the kit needs and the
+/// campaign Elite it takes its Elite's behaviour from.
 pub fn court() -> Vec<u8> {
     court_with(false)
 }
@@ -33,7 +37,7 @@ pub fn court_with_spirit() -> Vec<u8> {
 
 fn court_with(spirit: bool) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, "court", r"invented\court");
-    for group in [b"scnr", b"bipd", b"weap", b"sbsp"] {
+    for group in [b"scnr", b"bipd", b"weap", b"sbsp", b"char"] {
         set.add_group(FourCC(*group), None, None);
     }
     if spirit {
@@ -57,6 +61,22 @@ fn court_with(spirit: bool) -> Vec<u8> {
         set.add_tag(FourCC(*group), path, TagPayload::Built(Block::zeroed(16)))
             .unwrap();
     }
+    // The campaign Elite the kit's Elite takes its behaviour rows from
+    // (`ai::character::DONOR_ELITE`), invented, in two tags: its movement
+    // row is its parent's, as the engine would find it.
+    let parent = set
+        .add_tag(
+            FourCC(*b"char"),
+            ELITE_PARENT,
+            TagPayload::Built(crate::ai::character::invented_character(&["movement"], &[], TagId::NULL)),
+        )
+        .unwrap();
+    set.add_tag(
+        FourCC(*b"char"),
+        crate::ai::character::DONOR_ELITE,
+        TagPayload::Built(crate::ai::character::invented_character(&[], &["movement"], parent)),
+    )
+    .unwrap();
 
     let mut descriptors = Block::zeroed(2 * 0x44);
     for i in 0..2u32 {

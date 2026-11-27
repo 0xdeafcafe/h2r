@@ -18,7 +18,7 @@ mod regions;
 mod sphere_regions;
 mod transparents;
 mod window;
-pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key};
+pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key, order as transparent_order};
 
 use std::collections::HashMap;
 use std::sync::Arc;

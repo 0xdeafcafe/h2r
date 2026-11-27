@@ -977,6 +977,9 @@ pub static ALL: &[&Def] = &[
     &forge::look::saved::DEFS[2],
     &forge::look::saved::DEFS[3],
     &forge::look::saved::DEFS[4],
+    // The Forge body D-pad Up swaps into, kept per profile (forge::body,
+    // docs/game/forge-design-slices.md, "The monitor body").
+    &forge::body::DEF,
     // The Forge monitor's block-out grid and dev view (forge::piece,
     // docs/game/forge-blockout.md).
     &forge::piece::GRID,

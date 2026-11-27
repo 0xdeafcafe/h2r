@@ -1450,6 +1450,7 @@ pub fn forget() {
     *LIGHT_VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     crate::entry_census::forget();
+    crate::effects_shadow::forget();
     crate::residual_census::forget();
     crate::carried_slots::forget();
     crate::native_hud::ui_overlay::forget();
@@ -1841,7 +1842,12 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLe
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
     if let VisibilityLens::Guest { projection: factor, .. } = lens {
         if let (Some(retail), Some(guest)) = (rust.camera.projection_xy, guest.camera.projection_xy) {
-            let state = GuestLensState::of(retail[0], guest[0], factor);
+            // The term the factor scaled: X below 1, Y above.
+            let state = if factor > 1.0 {
+                GuestLensState::of(retail[1], guest[1], canvas_fit::vertical_term(factor))
+            } else {
+                GuestLensState::of(retail[0], guest[0], factor)
+            };
             VIEW_RECORD_GUEST_LENS[state as usize].fetch_add(1, Ordering::Relaxed);
         }
         rust.camera = native_render::camera::display_camera(rust.camera, factor);
@@ -2344,6 +2350,12 @@ impl Feature for FrameSceneStep {
             // render.residual's producers ride the same option
             // (docs/graphics/retire-d3d.md, "New method: render.residual").
             crate::residual_census::install(b);
+        }
+        // R2's shadow arm: the sorted dispatch's state made in Rust and
+        // compared with the guest's (docs/graphics/retire-d3d.md, "R2's
+        // shadow arm"); on unless `frame-scene.effects-shadow=off`.
+        if b.switches().feature(crate::effects_shadow::ID, true) {
+            crate::effects_shadow::install(b);
         }
         // The slot of the frame the guest's D3D work is in, for the
         // device's scene sink (slice 6): on unless `frame-scene.sink=off`,

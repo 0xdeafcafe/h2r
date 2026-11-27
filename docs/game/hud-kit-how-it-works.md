@@ -29,7 +29,8 @@ keys and what each kind needs are in `hud-kit-core/src/data.rs`, which
 reads one into a `Hud` and refuses an unknown key or an incomplete element
 by name. The first-party HUDs are in `content/superbounce/huds/`
 (`superbounce`, `superbounce-readout`, `pill-block`), `content/forge/huds/`
-(`forge`, `forge-readout`) and `content/modes/huds/` (`firefight`); `data::BUILTIN`
+(`forge`, `forge-readout`), `content/modes/huds/` (`firefight`) and
+`content/core/huds/` (`theater`, [the playback HUD](theater.md#the-playback-hud)); `data::BUILTIN`
 embeds them and each `views::*::hud()` reads its own, so the preview, the
 checks and the runtime all see the YAML. The `hud` builder
 (`crates/tools/workspace/src/hud.rs`) refuses a source that is not a HUD
@@ -214,7 +215,7 @@ world mark, drawn by the window ("World marks"):
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
-| `Banner` | one line centred above the frame's bottom, for three seconds, fading | each local user's timed centred text (`+0x454`, `+0x4d8`, `+0x4dc`), when the text changes |
+| `Banner` | one line centred above the frame's bottom, over the respawn timer, for three seconds, fading | each local user's timed centred text (`+0x454`, `+0x4d8`, `+0x4dc`), when the text that user's values show changes |
 | `Navpoint` | the game's arrow pointing down at a point of the world and its waypoint marker above | the navpoint list (`0x0024da7d`, below in "The navpoint") |
 | `WorldMark` | lines lying on the level's geometry, a label over them | the window's world-line pass (`hud_kit_world`, below in "World marks") |
 
@@ -457,11 +458,13 @@ does the rest:
      skipped (kind 15): the draw does not check a kind-0 slot's index
      against the block's count. The game draws its own arrow and marker
      there; no number is drawn with it.
-   - `Banner`: the first shown banner of the registered HUDs whose place
-     has the screen mode (`hud_kit::banner_of`), compared with the last
-     tick's (`hud_kit::banner_due`): a new text is written into each
-     local user's timed line (users 0 to the local view count less one,
-     `hud_kit::local_users`) with the fields as `0x0024cc73` leaves them
+   - `Banner`: for each local user (users 0 to the local view count
+     less one, `hud_kit::local_users`), the first shown banner of the
+     registered HUDs whose place has the screen mode, read from the
+     values that user's HUD draws, its own (`Handle::publish_for`) or
+     the shared ones (`hud_kit::banner_for`), compared with that user's
+     last tick's (`hud_kit::banner_due`): a new text is written into the
+     user's timed line with the fields as `0x0024cc73` leaves them
      and a duration of `BANNER_TICKS` (`hud_kit::write_banner`). With no
      game time (`[0x00510c54]`) or no HUD state yet nothing is written.
    - `Message`: `Handle::notify(user, text)` queues the line (a user
@@ -529,7 +532,7 @@ game's own batches, hidden with the HUD.
 
 | | A bitmap of ours in the map | A host mark (`gfx::world_lines::HudMark`) | Glyphs of ours in the fonts |
 |---|---|---|---|
-| Gets into the game by | a new `bitm` in every level's map: the map decomposed and rebuilt at load (`tags::rgba_bitmap`, as mainmenu's level pictures are), and the level maps are over the rewrite's size limit (`vfs::MAX_REWRITE_BYTES`) | the window's own pass | the font rewrite the arrows and the medals use (`bot_mark::GearRewrite`, `font::patch`) |
+| Gets into the game by | a new `bitm` in every level's map: the map decomposed and rebuilt at load (`tags::rgba_bitmap`, as mainmenu's level pictures are) | the window's own pass | the font rewrite the arrows and the medals use (`bot_mark::GearRewrite`, `font::patch`) |
 | Fill | the meter shader, by a blue ramp along the shape | drawn per frame | a picture per step |
 | Colour, hiding with the HUD, films, the headless host | the game's | not the game's ("Where the kit draws") | the game's |
 
@@ -556,26 +559,32 @@ asks the ring first and the skulls after.
 ### The Firefight HUD
 
 `views::firefight` (`content/modes/huds/firefight.hud.yaml`,
-[firefight.md](firefight.md), "The HUD") is one layout of twelve elements
-at the frame's bottom right, above the retail score plate, in the HUD font,
-offsets from anchor 3 (bottom right) in 14 pixel lines:
+[firefight.md](firefight.md), "The HUD") is one layout of twenty-one
+elements at the frame's bottom right, above the retail score plate, in the
+HUD font, offsets from anchor 3 (bottom right) in 14 pixel lines. What it
+shows follows Halo 3: ODST's Firefight HUD; the pieces are Halo 2's and
+pictures of ours.
 
 | Element | Kind | Place (full) | Screens |
 |---|---|---|---|
 | `ff.score`, `ff.lives`, `ff.progress` | text, right-justified | (0, -58), (0, -72), (0, -86) | score not in a quarter; lives and progress one line lower there |
 | `ff.enemies` | meter, `Art::StripMeter` (92 by 8), registered at its right edge | (0, -94) | not in a quarter |
-| `ff.skull.0` to `ff.skull.6` | gauge of `font::skulls`, two steps | (-(18 i + 15), -113); half (-(14 i + 14), -110) | not in a quarter |
-| `ff.banner` | text, centred, from the frame's top left | (272, 60); half (272, 48) | not in a quarter |
+| `ff.set` | text, right-justified | (-72, -110) | one line lower in a quarter |
+| `ff.round.0` to `ff.round.2` | gauge of `font::skulls::Pip::Round` (8 by 10), two steps | (-(66 - 9 i), -108) | one line lower in a quarter |
+| `ff.wave.0` to `ff.wave.4` | gauge of `font::skulls::Pip::Wave` (6 by 10), two steps | (-(34 - 7 i), -108) | one line lower in a quarter |
+| `ff.skull.0` to `ff.skull.6` | gauge of `font::skulls`, two steps | (-(18 i + 15), -125); half (-(14 i + 14), -124) | not in a quarter |
+| `ff.banner` | `Banner`, the game's timed centred line | the game's | not in a quarter |
 
 A skull on is `Value::fill(1.0)` with `Motion::Arrive`, so it blinks three
 times when it first shows and stays lit; off is hidden, so a slot never
-moves. The last life's line has `Motion::Arrive` too, no lives left is
-`Style::Flash(TimeWarning)`, and the meter eases. The banner's ease in and
-out is not drawn: it needs the colour hook, so the banner is at full
-strength while it is up. `State` is what the game gives one local user
-(`game::firefight::hud::state_of`, from the layout for that user's screen:
-full for one local user, half for two, quarter for three or four);
-`values` turns it into the kit's `Values`.
+moves. A pip is `Value::fill(1.0)` with `Motion::Arrive` when lit,
+`Value::fill(0.0)` (the faint picture) for a round or wave to come, and
+hidden where the definition has none. The last life's line has
+`Motion::Arrive` too, no lives left is `Style::Flash(TimeWarning)`, and the
+meter eases. The banner is the game's line, so the game fades it. `State` is
+what the game gives one local user (`game::firefight::hud::state_of`, from
+the layout for that user's screen: full for one local user, half for two,
+quarter for three or four); `values` turns it into the kit's `Values`.
 
 ### Cost
 

@@ -368,6 +368,8 @@ impl LiveHub {
             private,
             public: None,
         });
+        // The operator's retail list, the R2 object `retail-maps.sha256`.
+        live.load_retail().await;
         if let Ok(ai) = self.env.ai(SCREENSHOT_AI) {
             live.set_screenshot_classifier(Arc::new(crate::screenshot_ai::WorkersClassifier(ai)));
         }

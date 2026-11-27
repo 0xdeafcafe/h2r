@@ -1,5 +1,7 @@
-//! Compare the outgoing frame while the original handler still owns the answer.
-use engine::sim_anim::manager::arm;
+//! A phase 1d segment: the Rust body answers on its turn (`answer`, the
+//! `impl.sim.native.anim.manager` switch); otherwise the original handler
+//! answers and its outgoing frame is compared with the prediction.
+use engine::sim_anim::manager::{self, arm};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 pub(super) fn run(
@@ -7,7 +9,16 @@ pub(super) fn run(
     ctx: &mut ExecCtx,
     pc: u32,
     resume: bool,
+    answer: bool,
 ) -> Result<TransferAbi, GuestFault> {
+    if answer && arm::turn(pc) == Some(arm::Turn::Answer) {
+        // A declined segment leaves the frame intact; the guest takes it
+        // below and the prediction declines again, counted.
+        if let Some(transfer) = manager::run(cpu, &mut ctx.memory(), pc)? {
+            arm::answered(pc);
+            return Ok(transfer);
+        }
+    }
     let prediction = arm::predict(cpu, &mut ctx.memory(), pc);
     // A direct-call image can execute a callee inside the caller's handler.
     // Stop the original at the same transfer as the prediction. Dispatch
@@ -29,6 +40,7 @@ mod tests {
     use engine::{points, sim_anim::manager};
     use hooks::{Base, Registry, Switches};
     use runtime::{Dispatch, Guest, Runtime, guest::Permissions};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const FIND_CLIP: u32 = 0x1c6440;
     const GRAPH: u32 = 0x1daea0;
@@ -143,10 +155,93 @@ mod tests {
         };
         let before = matched();
         assert_eq!(
-            run(&mut cpu, &mut ctx, RETURN_FROM_PRELOAD, true).unwrap(),
+            run(&mut cpu, &mut ctx, RETURN_FROM_PRELOAD, true, false).unwrap(),
             TransferAbi::ret(RETURN_FROM_GRAPH)
         );
         assert_eq!((cpu.eax, cpu.esi, cpu.ebx, cpu.esp), (7, 3, 5, SP + 16));
         assert!(matched() > before);
+    }
+
+    #[test]
+    fn a_proven_entry_answers_from_rust_and_the_guest_takes_each_audit_slot() {
+        // The graph view just after its graph-element callback: save the
+        // argument and return PC, then enter the resource lookup with the
+        // callback's answer in ESI. No other test here records this entry.
+        const VIEW: u32 = 0x1ddb40;
+        const AFTER_CALLBACK: u32 = 0x1ddb60;
+        const RESOURCE: u32 = 0x1dd7c0;
+        const RETURN_TO: u32 = 0x1ddb6a;
+        static GUEST: AtomicU64 = AtomicU64::new(0);
+        let mut d = Dispatch::default();
+        d.register_generated_rust(VIEW, |cpu, ctx, selector| {
+            assert_eq!(selector, AFTER_CALLBACK);
+            GUEST.fetch_add(1, Ordering::Relaxed);
+            let mut ram = ctx.memory();
+            ram.set_u32(cpu.esp - 4, cpu.ebx)?;
+            ram.set_u32(cpu.esp - 8, RETURN_TO)?;
+            cpu.esp -= 8;
+            cpu.ecx = cpu.ebp;
+            cpu.esi = cpu.eax;
+            cpu.eip = RESOURCE;
+            Ok(TransferAbi::call(RESOURCE, RETURN_TO))
+        })
+        .unwrap();
+        d.register_resume(AFTER_CALLBACK, VIEW, AFTER_CALLBACK).unwrap();
+        let body = manager::bodies().find(|b| b.entry == VIEW).unwrap();
+        let mut g = Guest::new();
+        g.map_zeroed(VIEW, body.end - VIEW, Permissions::RX).unwrap();
+        g.map_zeroed(DATA, 0x1000, Permissions::RW).unwrap();
+        let mut ctx = ExecCtx::new(Runtime::new(g, d), 1);
+        let entry = CpuAbi {
+            eip: AFTER_CALLBACK,
+            esp: SP,
+            eax: 0x123456,
+            ebx: 0xabcdef01,
+            ebp: 0x35,
+            ..Default::default()
+        };
+        let counts = || {
+            arm::stats()
+                .into_iter()
+                .find(|(pc, _)| *pc == VIEW)
+                .map(|(_, s)| s)
+                .unwrap_or_default()
+        };
+        let mut step = || {
+            let mut cpu = entry;
+            let t = run(&mut cpu, &mut ctx, AFTER_CALLBACK, true, true).unwrap();
+            assert_eq!(t, TransferAbi::call(RESOURCE, RETURN_TO));
+            assert_eq!((cpu.esp, cpu.ecx, cpu.esi), (SP - 8, 0x35, 0x123456));
+            assert_eq!(ctx.memory().u32(SP - 8).unwrap(), RETURN_TO);
+            assert_eq!(ctx.memory().u32(SP - 4).unwrap(), 0xabcdef01);
+        };
+        while counts().matched < arm::PROVEN_AFTER {
+            step();
+        }
+        assert_eq!(counts().answered, 0);
+        let guest = GUEST.load(Ordering::Relaxed);
+        let n = arm::AUDIT_EVERY * 4;
+        for _ in 0..n {
+            step();
+        }
+        let after = counts();
+        assert_eq!(GUEST.load(Ordering::Relaxed) - guest, 4);
+        assert_eq!((after.answered, after.differed), (n - 4, 0));
+    }
+
+    #[test]
+    fn the_manager_switch_alone_installs_the_phase_1d_entries() {
+        let switches = Switches::defaults().with("impl.sim.native.anim.manager", true);
+        let mut registry = Registry::new(switches);
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for entry in arm::ENTRIES {
+            let hook = plan.chains[&entry].implement.as_ref().unwrap();
+            assert_eq!(hook.label, crate::sim_native::ANIM, "{entry:#x}");
+        }
+        for (point, _) in ANIM_INVALIDATE {
+            assert!(plan.chains.contains_key(&point.base));
+        }
+        assert_eq!(plan.chains.len(), arm::ENTRIES.len() + ANIM_INVALIDATE.len());
     }
 }

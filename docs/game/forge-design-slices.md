@@ -18,7 +18,7 @@ and the game. Sizes as under Features.
 | **F7** | `ForgeExt`: volumes, the graph, emitters. Not needed for a Firefight map | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit; a graph's squad sink makes the director's `SquadOp` |
 | **F8** | Barriers and block-out: pieces from a definition in the document, the natural set, the dev textures, sizing on a grid, slots, the Structure and Natural groups. Its slices are BO1 to BO12 of [forge-blockout.md](forge-blockout.md) | L | F2, modeling slice 8; BO12's enable input needs F7 | each generated `coll` passes `collision_build::verify::check` and random segment tests against brute force; the same definition gives the same bytes twice; a barrier's enable input switches it over a fake game; the rest in that page's slice table |
 | **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported. **Built**: the Nav tool draws the sectors and links in the game, and the bots take the generated mesh in a match ([forge-nav.md](forge-nav.md)) |
-| **F10** | Transplant recipes and monitor bodies. Enemy classes do not wait for it: they are the AI ground's (FA6) | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
+| **F10** | Transplant recipes and monitor bodies (the bodies are built: "The monitor body"). Enemy classes do not wait for it: they are the AI ground's (FA6) | L | F2, F3's headroom | on invented maps, a transplanted closure reads back and references resolve; a recipe over the headroom is refused with its cost; the census and the body runs go in notes |
 | **F11** | AI: Firefight maps. Markers and the ground build are **built**; the rest is slices FA1 to FA8 of [forge-firefight.md](forge-firefight.md): the lobby's pick of a map variant with ground, the wave set in the document, a wave test in the session, Map Waves, the Waves screens, enemy classes, the AI tool, other machines | L | F4; `firefight-kit`, the Firefight runtime | a variant with markers and a recipe materialises to the kit's build of the same labels (`crates/tools/forge-build/src/ground.rs`); each FA slice's named tests |
 | **F12** | `asset-import`: glTF props, then skins on a chassis, then FBX | L | modeling slices 2, 6, 8 | invented glTF files in, tags out that `tags` decodes to the same mesh within quantisation; a mapping that drops a chassis node is refused; a missing bundle materialises with aliases and equal tag indices |
 | **F13** | Shape and Paint in game: instance moves, face push and pull, strokes, previews | L | F4, modeling slices 1 to 3, 5 to 7, 11 | a face pull over a fake game is one Mesh op and one preview; replaying the document gives the editor's bytes for the same ops |
@@ -123,30 +123,87 @@ the object in the world moves only when the player confirms. A drop that
 changes position and rotation is one undo step. Properties exposes
 heading and the rotation increment.
 
-The monitor parks the local biped at the game tick
-(`forge_controls::render::park`: invulnerable while parked) and hides it
-from the main view by the "not drawn" exit at `OBJECT_RENDER_SETUP`
-([occlusion-culling.md](../graphics/occlusion-culling.md), "Where to
-skip"). The hook is ordered first, ahead of the native scene lists'
-setup, so the biped has no layer-3 items and the native objects stage,
-which draws only the walk of those items, never meets it. The biped stays
-in the visibility list, so its shadow is still chosen as a caster.
-The monitor's view is a playerless world view
-(`spectator_view::replace_world_view` puts none in its player word, so
-`VIEW_PLAYER` `0x004b9ed8` is none while it draws). The HUD draw calls the
-game engine's black overlay (`HUD_BLACK_OVERLAY` `0x00159880`, from
-`0x001396a0`), which draws a local user's spawn fade
-(`[GAME_ENGINE] + 0xe4 + 4 * user`) and a view with no user at 1.0, opaque
-black. The monitor keeps the HUD for its own, so the `private-view-overlay`
-feature returns from the overlay while a private view draws and the view
-has no user (`spectator_view::skips_black_overlay`). Every view drawn
-through `spectator_view::replace_world_view` is one: the monitor, the
-agent camera, the Pogo chase camera and Theater's cameras. A player's
-own view keeps its index in `VIEW_PLAYER`, so the retail fade for a dead
-or respawning player stays.
-`forge.status` gives the parked unit as `parked`. Start Game in a Forge lobby opens the monitor with its HUD and tools.
-A local level boot starts in the biped. D-pad Up or Tab switches between
-the biped and the monitor.
+### The monitor body
+
+The monitor is a unit, as in Halo 3. D-pad Up or Tab swaps the local
+player's unit for their chosen Forge body, and back. The player keeps
+their own view, HUD and seat; only the unit changes, so the game draws
+the view from the body and no private view or black-overlay skip is
+involved.
+
+| Body | Unit tag | Chair | Donor maps, in order |
+|---|---|---|---|
+| Monitor | `bipd objects\characters\monitor\monitor` | none | 06b_floodzone, 08b_deltacontrol, 06a_sentinelwalls |
+| Sentinel | `bipd objects\characters\sentinel_aggressor\sentinel_aggressor` | none | 06a_sentinelwalls, 06b_floodzone, 08b_deltacontrol |
+| Prophet in chair | `bipd objects\characters\prophet\prophet_regret` | `vehi objects\vehicles\gravity_throne\gravity_throne` | 05b_deltatowers, 07a_highcharity |
+
+The table is `forge_doc::bodies::SPECS`. Its paths and donors come from
+the campaign's tag names, not a census of the disc.
+
+**The kit.** A Forge kit build copies each body from the first donor on
+the player's disc that holds its tags (`forge_build::bodies::install`,
+`firefight_kit::copy_unit`: the closure, with sounds merged into the
+gestalt). Bodies go in before the block-out set, so the starter set is
+what the cut order drops for them. Each body goes into a copy of the
+set, so a refused one leaves nothing behind.
+
+| Refusal | Code | Sentence ends |
+|---|---|---|
+| `NoDonor` | 0 | no campaign map on this machine holds it |
+| `CannotCopy` | 1 | its tags cannot be copied yet |
+| `NoRoom` | 2 | the map has no room for it |
+
+The Forge record keeps each refusal (field 3,
+[forge-map-variants.md](forge-map-variants.md)). The game reads it back
+(`forge_map::kit_bodies`) and refuses that body by name. A kit with no
+Monitor refuses Forge: "Forge needs the Monitor, and this map's kit has
+none: ...". No body stands in for another.
+
+**The swap.** Each step is a `Call::ForgeBody` on the calls queue,
+checked against the session guard at the next tick
+(`agent::sim::calls`, `forge_glue::editing::body`).
+
+| Step | What the call does |
+|---|---|
+| Enter | Refused in a vehicle. Makes the body at the player's eye (`PLACEMENT_NEW` `0xb7930`, `OBJECT_NEW` `0xb7b40`) and gives it to the player (`player_set_unit_index` `0x0014cad0`). Answers `{body, biped}` |
+| Fly | Moves the body to the Objects tool's camera (`OBJECT_SET_POSITION` `0xb75a0`) and sets its facing. One at a time, only when the camera moved |
+| Leave | Gives the biped back, places it near the body (`PLAYER_PLACE_NEAR` `0x14e970`, level facing) and deletes the body. Answers `{biped, placed}`; with no room the biped stands where it was left, and the player is told |
+
+`player_set_unit_index` takes the player on the stack (stdcall, `ret 4`)
+and the unit in EBX, -1 for none. It clears the old unit's player word
+(`+0x13c`), sets the new one's and sets the player's unit (`+0x2c`).
+
+**The park.** While the player is in a body, `forge_controls::render::park`
+runs at each game tick of an admitted session:
+
+| Unit | Undamageable | Drawn |
+|---|---|---|
+| Kept biped | yes (`CANNOT_TAKE_DAMAGE` `0x80` at body `+0x10a`) | no |
+| Body | yes | yes |
+
+The park clears the bit only where it set it, and only on the same object.
+The biped is left out of the main view by the "not drawn" exit at
+`OBJECT_RENDER_SETUP` ([occlusion-culling.md](../graphics/occlusion-culling.md),
+"Where to skip"). The hook runs first, ahead of the native scene lists'
+setup, so the biped has no layer-3 items. It stays in the visibility
+list, so its shadow is still chosen as a caster. The tool's camera is the
+drawn view of seat 0 (`spectator_view::drawn_view`).
+
+Start Game in a Forge lobby swaps into the body as soon as the player has
+a unit. A local level boot starts in the biped. `forge.status` gives
+`body`, `body_choice`, `bodies` and `parked`
+([agent-api.md](../runtime/agent-api.md)).
+
+The `private-view-overlay` skip (`spectator_view::skips_black_overlay`)
+is for the agent camera, the Pogo chase camera and Theater's cameras,
+which draw through `spectator_view::replace_world_view`.
+
+| Not built | |
+|---|---|
+| Prophet seating | the chair is in the kit, but Enter makes only the Prophet; no vehicle-seat entry call is known |
+| Network | the swap runs on the local machine's calls queue. F5 is to carry it as a stream item applied at its tick on every machine and recorded in the film; that needs a seat-to-player map |
+| Appearance row | the "Forge body" setting (`forge.body`) is in the profile, but the retail Appearance list has no hook for a picker row yet |
+| Biped collision | the kept biped still collides while parked |
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a
@@ -331,7 +388,8 @@ the ground.
 **F10 in detail.** A `transplant` recipe copies a tag and its closure
 from a source map on the player's disc (`tags::schema::transplant`,
 `TagSet::add_tag`), names the source by hash, and is refused with its
-cost when the map has no room. Its first users are monitor bodies. The
+cost when the map has no room. The monitor bodies ("The monitor
+body") use `firefight_kit::copy_unit`, not the recipe. The
 one transplant a Firefight map needs is narrower and does not use the
 recipe: the AI ground's class list
 ([forge-firefight.md](forge-firefight.md), "Enemy classes") goes

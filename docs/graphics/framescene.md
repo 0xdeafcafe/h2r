@@ -228,7 +228,7 @@ The render census ([notes/pipelined-render.md](notes/pipelined-render.md), "Ever
 |---|---|---|
 | The shared random seed `[0x004e7408]` | object code the render reaches (`0x001032a0`) | **Blocking.** A replaced entry makes the same draws from the seed in the same order, or it still calls the guest function that makes them. A sim-mode run already differs from a rendered run here |
 | The effects random word | particle draws | the particle producers keep running and keep drawing from the word; the typed effect list (`frame_scene::effect`, in the guest's visit order) carries what they produce, not the draws |
-| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the guest keeps calling `0x00174420`: its writes (flag `+0x0d`, `+0x10`, `+0x30`, `+0x44`) are not described by any code in the tree, so a Rust effect pass cannot make them yet |
+| Particle system visibility and location stamps | the per-view update `0x00174420`, reached from the object and effect draw paths `0x0003fdf0` and `0x00040e90` | the guest keeps calling `0x00174420`; its writes (system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30`, the particle-model singletons, the rows it queues) are made in Rust beside it and compared (`effects_shadow::view_update`, retire-d3d.md "R2's shadow arm") |
 | Animation cache use stamps (`+0x14` per entry) | `animation_resource_get` `0x001237e0` | replayed in visit order, as the pipelined prototype does |
 | Present counter `0x00485aa0`, frame timing `0x004e63a8` | `0x00013f10`, the frame wait `0x0012b2e0` | guest code keeps running |
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
@@ -351,6 +351,14 @@ A stage's guest entry is replaced only when all four hold:
 4. **Pixel parity.** Section 9.2.
 
 After a replacement, content the stage cannot draw is a named error: a counter (`scene_dropped_<stage>`), one log line per cause, and a row in `render.scene`. It is not sent to D3D.
+
+The world layers (`cut::LAYER_CUTS`) do not meet rule 1 yet. An item their pass cannot draw keeps its guest draw and is counted by layer, kind and cause:
+
+| Counter | Becomes a named drop when |
+|---|---|
+| `scene_kept_<site><layer>_<kind>_<cause>` | every row is zero over the census corpus |
+
+Causes: [native-world-walk.md](native-world-walk.md), "What the scene cannot draw keeps its guest draw".
 
 A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its `residual_census::REGISTRY` row name and entry, and its hook returns the entry's ABI result to the caller without running the guest body. No switch brings the body back; it survives only as a test oracle.
 

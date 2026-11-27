@@ -22,6 +22,7 @@ delete it: it asks first (A again to delete, B to keep), then deletes the
 container's files one by one against the versions listed, its
 `SaveMeta.xbx` last and only when the rest are gone, so a file another
 machine changed in the meantime is kept (409) and the save keeps its name.
+
 A machine that has the save deletes it at its next sign-in and keeps a
 copy under `deleted-elsewhere` ([live-cloud-saves.md](live-cloud-saves.md#conflicts)); one where it
 changed since keeps it. The list and

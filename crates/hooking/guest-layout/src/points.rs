@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+pub mod ai_gates;
 pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;
@@ -553,6 +554,12 @@ points! { ALL;
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Reserve the physical arena the tag cache loads into and set its
+    /// cursors (once, at startup); the `tag-arena` feature grows it.
+    PHYSICAL_ARENA_INITIALIZE @ 0x0012_b400: [opaque]; "docs/formats/map-format.md";
+    /// XAPI `XPhysicalAlloc`: MmAllocateContiguousMemoryEx over
+    /// `[address, address + size)`, or anywhere for address -1.
+    XPHYSICAL_ALLOC @ 0x002d_156a: [fn(size: stack 0, address: stack 1, alignment: stack 2, protect: stack 3) -> eax ret 16]; "docs/formats/map-format.md";
     CACHE_BSP_FIXUP @ 0x0012_2b40: [opaque], Optional; "docs/engine/engine-map.md";
     TAG_LOOKUP @ 0x0012_2c10: [opaque], Optional; "docs/engine/tag_get_checked.md";
     OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1368,6 +1375,11 @@ points! { ALL;
     /// `slot + 0xc + 0x40 * language`). The Select Map row text calls it at
     /// `0x2c9afc`.
     MP_LEVEL_NAME @ 0x002a_fd70: [fn(slot: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// The current language's index (cached at `0x47ff38`). The Select Map's
+    /// focus handler (`0x2c9b7c`, its screen in EDI and the focused row's
+    /// slot in EBP) calls it at `0x2c9be6` and shows
+    /// `slot + 0x24c + 0x100 * language`, the slot's description.
+    UI_LANGUAGE @ 0x0011_cae0: [fn() -> eax ret 0]; "docs/game/map-select.md";
     /// The Select Map list's row text (list handler in ECX): the row's map
     /// id, its slot, then [`MP_LEVEL_NAME`] for the text.
     MAP_LIST_ROW_TEXT @ 0x002c_9ac4: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/map-select.md";

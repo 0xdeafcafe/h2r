@@ -1,0 +1,41 @@
+# The lab session's medal checks, off the lab (docs/game/superbounce-ghosts-medals.md,
+# "Checking the medals"): `h2 sim run` this file. Two bots on Ascension
+# run the bounce drill at the measured spot (as superbounce-ground-truth.toml
+# does), so the report's `bounce` block carries what the lab list asks:
+#  - a second bounce: `totals.chains` has a "2" or more, `best_chain`;
+#  - what ends a chain: `chains` against `chain_bounces`, `bounced_deaths`;
+#  - the launch the Monster test reads: `launch.best` against 16
+#    (superbounce_chain::MONSTER_VZ);
+#  - the awards themselves: the log's `bounce` and `bounced` lines.
+# Not answered here (they need the airborne bit, host and guest, or the HUD
+# line): the rest of that lab list.
+map = "ascension"
+game_type = "slayer"
+time_limit_s = 1800   # longer than max_ticks: the tick limit ends it
+score_limit = 50      # nobody scores: a practising bot never fights
+team_play = true      # free-for-all sims end at tick 0 (a sim bug)
+seed = 1
+max_ticks = 18000     # 10 minutes at 30 ticks a second
+max_wall_s = 1800
+render_every = 0
+pace = "unpaced"
+
+[rules]
+script = "superbounce"
+
+[drill]
+site = [-10.62, 3.88, -3.19]   # glitches::SPOTS[0], the measured patch
+
+[[bot]]
+name = "Bouncer 1"
+team = 0
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 2"
+team = 1
+kind = "phantom"
+skill = "legendary"
+params = "tuning/bounce-base.toml"

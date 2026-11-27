@@ -946,3 +946,90 @@ fn only_a_recorded_source_conversion_can_satisfy_a_source_reference() {
     set.slots[source.index()].name = Some("replacement".into());
     assert_eq!(set.converted(g, "shared"), None);
 }
+
+/// A streamed build's runs over its source, as one file.
+fn lay_streamed(source: &[u8], built: &StreamedBuild) -> Vec<u8> {
+    let mut out = source[..built.base as usize].to_vec();
+    out.resize(built.len as usize, 0);
+    for (at, bytes) in &built.runs {
+        out[*at as usize..*at as usize + bytes.len()].copy_from_slice(bytes);
+    }
+    out
+}
+
+/// The tiny map decomposed `streamed` or not. `grow`: forty tags, a raw
+/// resource and new strings, so every table grows past its old place;
+/// else a shorter name, so every table is rewritten where it was.
+fn changed_set(map: &mut Map<Cursor<Vec<u8>>>, streamed: bool, grow: bool) -> TagSet {
+    let mut set = if streamed {
+        TagSet::from_map_streamed(map).unwrap()
+    } else {
+        TagSet::from_map(map).unwrap()
+    };
+    if !grow {
+        set.slots[0].name = Some("x".into());
+        return set;
+    }
+    set.pinned.as_mut().unwrap().clear_index_tail();
+    for i in 0..40 {
+        let mut b = Block::zeroed(16);
+        b.put_u32(8, i);
+        b.string_id(12, &format!("invented_{i}"));
+        if i == 0 {
+            let raw = set.add_raw(vec![0x5c; 0x900], 0x200);
+            b.raw(4, RawRef::Local(raw));
+        }
+        set.add_tag(cc(b"thng"), &format!("invented\\streamed\\{i}"), TagPayload::Built(b))
+            .unwrap();
+    }
+    set
+}
+
+#[test]
+fn a_streamed_build_is_the_buffered_build_with_its_prefix_left_in_the_source() {
+    let source = tiny().set.build().unwrap().0;
+    let index_offset = u64::from(read(source.clone()).header().index_offset);
+    for grow in [false, true] {
+        let (buffered, layout) = changed_set(&mut read(source.clone()), false, grow)
+            .build()
+            .unwrap();
+        let streamed = changed_set(&mut read(source.clone()), true, grow);
+        let prefix = streamed.pinned.as_ref().unwrap();
+        assert!(prefix.file.is_empty());
+        assert_eq!(prefix.file_in_source, index_offset - 0x800);
+        assert!(streamed.build().is_err(), "a streamed set builds only streamed");
+        let (built, streamed_layout) = streamed
+            .build_streamed(&mut Cursor::new(source.as_slice()))
+            .unwrap();
+        assert_eq!(streamed_layout, layout);
+        assert_eq!(built.len, buffered.len() as u64);
+        assert_eq!(built.base, index_offset);
+        assert!(lay_streamed(&source, &built) == buffered, "grow {grow}: streamed bytes differ");
+        // The header, the tables rewritten in place (inside the prefix),
+        // then the tail from `base`.
+        let (first, last) = (&built.runs[0], built.runs.last().unwrap());
+        assert_eq!((first.0, first.1.len()), (0, 0x800));
+        assert_eq!(last.0, built.base);
+        let middle = &built.runs[1..built.runs.len() - 1];
+        assert!(middle.iter().all(|(at, b)| *at >= 0x800 && at + b.len() as u64 <= built.base));
+        assert_eq!(middle.is_empty(), grow, "tables in place only when nothing grew");
+        // Held: the header, the tables, and what follows the prefix.
+        let tables: u64 = built.runs[1..built.runs.len() - 1].iter().map(|r| r.1.len() as u64).sum();
+        assert_eq!(built.held(), 0x800 + tables + (built.len - built.base));
+        read(buffered).validate_checksum().unwrap();
+    }
+}
+
+#[test]
+fn a_streamed_set_whose_prefix_was_written_in_memory_is_refused() {
+    let source = tiny().set.build().unwrap().0;
+    let mut set = TagSet::from_map_streamed(&mut read(source.clone())).unwrap();
+    set.pinned.as_mut().unwrap().file.push(1);
+    assert!(matches!(
+        set.build_streamed(&mut Cursor::new(source.as_slice())),
+        Err(Error::Invalid(m)) if m.contains("written to it in memory")
+    ));
+    // A source shorter than the prefix is refused too.
+    let set = TagSet::from_map_streamed(&mut read(source.clone())).unwrap();
+    assert!(set.build_streamed(&mut Cursor::new(&source[..0x900])).is_err());
+}

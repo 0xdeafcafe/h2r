@@ -7,6 +7,7 @@
 //! comparison at the lifted return. J uses the same read-only trace for
 //! its return comparison and the agent API.
 mod cluster;
+pub mod crossing;
 mod flood;
 pub use flood::spatial_parity;
 pub mod instance;
@@ -96,6 +97,12 @@ struct Plan {
     listed: u32,
     /// Entry D's context, whose leaf, state and plane words it updates.
     context: Option<u32>,
+    /// The BSP, the start and delta pointers and the query bits, as the
+    /// walk loads them into registers.
+    bsp: u32,
+    start_at: u32,
+    delta_at: u32,
+    flags: u32,
     outcome: Outcome,
 }
 
@@ -186,6 +193,10 @@ fn plan_vector(
         init: Some(fraction),
         listed: 0,
         context: None,
+        bsp: bsp_addr,
+        start_at,
+        delta_at,
+        flags,
         outcome,
     })
 }
@@ -248,6 +259,10 @@ fn plan_context(
         init: None,
         listed,
         context: Some(context),
+        bsp: bsp_addr,
+        start_at,
+        delta_at,
+        flags: w(ctx::FLAGS),
         outcome,
     })
 }

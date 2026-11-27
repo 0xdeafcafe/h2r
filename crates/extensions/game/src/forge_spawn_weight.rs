@@ -4,7 +4,8 @@
 //!
 //! The weights are host state, by starting location index, in
 //! `agent::forge::spawn_weight::TABLE`, which the Forge session's world
-//! sets (`ForgeStep::SpawnWeight`). `SPAWN_LOCATION_WEIGHT` (`0x23ba90`)
+//! (`ForgeStep::SpawnWeight`) or the built map's Forge record
+//! (`crate::forge_record`) sets. `SPAWN_LOCATION_WEIGHT` (`0x23ba90`)
 //! takes the location in EAX, which its return no longer holds: an
 //! observer before keeps it, and a hook after adds the location's bias to
 //! the weight in XMM0 that the chooser compares (`0x14efb6`). Before

@@ -4,15 +4,18 @@
 //!
 //! [`build_map_settled`] is the same build for the game
 //! (docs/engine/asset-store.md, "Conflicts"): a package refused for this map
-//! is off for it, whole, and the rest still apply.
+//! is off for it, whole, and the rest still apply. [`build_map_streamed`]
+//! is that build on a map read by offset, whose raw data and BSP regions
+//! stay in the source.
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
 use content::package::{MapScope, Refusal};
-use map::build::{BuildLayout, TagSet};
+use map::build::{BuildLayout, StreamedBuild, TagSet};
 use map::{CacheType, Map};
 
 use crate::assets::Assets;
+use crate::base::Base;
 use crate::build::{
     Loaded, Report, Shading, Target, Unpin, build_refusing, build_with, wants_shading,
 };
@@ -67,12 +70,8 @@ pub fn build_map_laid_out(
     packages: &[Loaded],
     target: &Target<'_>,
 ) -> Result<BuiltMap, String> {
-    match attempt(base, packages, target, None, None) {
-        Ok(built) => Ok(built),
-        Err(Broke::Failed(why)) => Err(why),
-        // Nothing is refused here: every refusal is a failure.
-        Err(Broke::Again { package, why }) => unreachable!("{package}: {why}"),
-    }
+    let (set, report) = settle(base.into(), packages, target, None, None, false)?;
+    finish(set, report)
 }
 
 /// [`build_map_laid_out`] with the conflict table
@@ -91,13 +90,91 @@ pub fn build_map_laid_out(
 /// names ([`crate::assets`]); with `None` a tag's own hash stands for its
 /// asset's, so `h2 package build`'s checks and a build on an invented map
 /// run with no store.
-pub fn build_map_settled(
-    base: &[u8],
+pub fn build_map_settled<'a>(
+    base: impl Into<Base<'a>>,
     packages: &[Loaded],
     target: &Target<'_>,
     strict: &BTreeSet<String>,
-    mut assets: Option<&mut dyn Assets>,
+    assets: Option<&mut dyn Assets>,
 ) -> Result<BuiltMap, String> {
+    let (set, report) = settle(base.into(), packages, target, Some(strict), assets, false)?;
+    finish(set, report)
+}
+
+/// A map [`build_map_streamed`] built: the base's bytes up to
+/// `build.base` with `build.runs` over them, the rest the runs alone.
+#[derive(Debug)]
+pub struct StreamedMap {
+    pub build: StreamedBuild,
+    pub report: Report,
+    pub layout: BuildLayout,
+}
+
+/// The game's build of a map of any size: [`build_map_settled`] (with
+/// `strict`; or, with `None`, every refusal a failure as in
+/// [`build_map`]) on a map read by offset, decomposed with its file prefix
+/// left in the source (`TagSet::from_map_streamed`). Only the header, the
+/// index, the names and the metadata are read into memory; the raw data
+/// and BSP regions stay in `base`, which the build reads once more, a
+/// megabyte at a time, for the checksum. The output is the buffered
+/// build's bytes. A package whose item writes the file prefix in memory is
+/// refused for the map by name ([`crate::build`]'s `STREAMED_PREFIX`).
+pub fn build_map_streamed(
+    base: Base<'_>,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    strict: Option<&BTreeSet<String>>,
+    assets: Option<&mut dyn Assets>,
+) -> Result<StreamedMap, String> {
+    let (set, report) = settle(base, packages, target, strict, assets, true)?;
+    let (build, layout) = set
+        .build_streamed(&mut base.reader())
+        .map_err(|e| format!("building the map: {e}"))?;
+    Ok(StreamedMap {
+        build,
+        report,
+        layout,
+    })
+}
+
+/// Lay the set out in memory.
+fn finish(set: TagSet, report: Report) -> Result<BuiltMap, String> {
+    let (bytes, layout) = set
+        .build()
+        .map_err(|e| format!("building the map: {e}"))?;
+    let raw = layout
+        .raw
+        .iter()
+        .zip(&set.raw)
+        .map(|(&at, r)| (u64::from(at), r.bytes.len() as u64))
+        .collect();
+    Ok(BuiltMap {
+        bytes,
+        report,
+        layout,
+        raw,
+    })
+}
+
+/// Decompose `base` and apply `packages`. With `strict`, refusals leave
+/// packages off ([`build_map_settled`]), building again without one
+/// refused after its items ran; without, they stop the build.
+fn settle(
+    base: Base<'_>,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    strict: Option<&BTreeSet<String>>,
+    mut assets: Option<&mut dyn Assets>,
+    streamed: bool,
+) -> Result<(TagSet, Report), String> {
+    let Some(strict) = strict else {
+        return match attempt(base, packages, target, None, None, streamed) {
+            Ok(built) => Ok(built),
+            Err(Broke::Failed(why)) => Err(why),
+            // Nothing is refused here: every refusal is a failure.
+            Err(Broke::Again { package, why }) => unreachable!("{package}: {why}"),
+        };
+    };
     let mut left: Vec<Loaded> = packages.to_vec();
     let mut refused: Vec<Refusal> = Vec::new();
     loop {
@@ -107,10 +184,11 @@ pub fn build_map_settled(
             target,
             Some((strict, &mut refused)),
             crate::assets::lend(&mut assets),
+            streamed,
         ) {
-            Ok(mut built) => {
-                built.report.refused = refused;
-                return Ok(built);
+            Ok((set, mut report)) => {
+                report.refused = refused;
+                return Ok((set, report));
             }
             Err(Broke::Failed(why)) => return Err(why),
             Err(Broke::Again { package, why }) => {
@@ -131,17 +209,23 @@ enum Broke {
 /// Decompose `base` once and apply `packages`. With `off`, refusals leave
 /// packages off ([`build_map_settled`]); without, they stop the build.
 fn attempt(
-    base: &[u8],
+    base: Base<'_>,
     packages: &[Loaded],
     target: &Target<'_>,
     off: Option<(&BTreeSet<String>, &mut Vec<Refusal>)>,
     mut assets: Option<&mut dyn Assets>,
-) -> Result<BuiltMap, Broke> {
-    let mut map = Map::from_reader(Cursor::new(base))
-        .map_err(|e| Broke::Failed(format!("not a map: {e}")))?;
+    streamed: bool,
+) -> Result<(TagSet, Report), Broke> {
+    let mut map =
+        Map::from_reader(base.reader()).map_err(|e| Broke::Failed(format!("not a map: {e}")))?;
     let unpin = MapUnpin::new(&mut map);
-    let mut set = TagSet::from_map(&mut map)
-        .map_err(|e| Broke::Failed(format!("decomposing the map: {e}")))?;
+    let decomposed = if streamed {
+        TagSet::from_map_streamed(&mut map)
+    } else {
+        TagSet::from_map(&mut map)
+    };
+    let mut set =
+        decomposed.map_err(|e| Broke::Failed(format!("decomposing the map: {e}")))?;
     // A tag laid out anew can land past the old metadata's end; the same
     // lift `ui_kit::retail_edits` makes, and the build's size check still
     // runs.
@@ -177,19 +261,5 @@ fn attempt(
             build_with(&mut set, packages, target, reader, shading.as_ref()).map_err(stopped)?
         }
     };
-    let (bytes, layout) = set
-        .build()
-        .map_err(|e| Broke::Failed(format!("building the map: {e}")))?;
-    let raw = layout
-        .raw
-        .iter()
-        .zip(&set.raw)
-        .map(|(&at, r)| (u64::from(at), r.bytes.len() as u64))
-        .collect();
-    Ok(BuiltMap {
-        bytes,
-        report,
-        layout,
-        raw,
-    })
+    Ok((set, report))
 }

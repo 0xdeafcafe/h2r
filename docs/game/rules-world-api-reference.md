@@ -397,6 +397,15 @@ start, by the sound's path. A sound of a shared map (`shared.map`) is not
 in the loaded map's file and is refused the same way. A host that runs a
 film makes the same sounds.
 
+A sound whose path starts `announcer/` is one of the announcer's clips
+(`art/announcer/<clip>.wav`, [audio.md](../audio/audio.md#our-medals-announcer-lines)),
+not a tag of the map. The start gate's census skips it
+(`rules::labels::ANNOUNCER`), and each machine with a local player in the
+audience, dead or alive, joins it to the announcer's queue
+(`world::audio::say`), so it needs no sound lookup. A clip that is not one
+of ours refuses the script at the start, by its path (`audio::refusal`).
+The cue is the same sound cue, so a viewer and a film say it too.
+
 A script that names `say`, `sound_at`, `music`, `music_stop` or `announce`
 is refused at the start by the entry's name: R4 and R5 have not settled
 what each does on the host. `sound_at` waits on R4: the body of
@@ -460,7 +469,7 @@ Scoreboard labels and the post-game report's columns stay the carrier's
 #### The HUDs a script feeds
 
 The first word of a slot names a HUD of the kit's: `ctf`, `assault`,
-`oddball`, `koth` or `territories`
+`oddball`, `koth`, `territories` or `siege`
 (`hud_kit_core::views::objective`, `content/modes/huds/`). The rules
 feature registers them hidden when it installs
 (`crates/extensions/game/src/rules/world/hud.rs`, `register`), and after
@@ -476,6 +485,7 @@ HUD's contract with the script:
 | HUD | Widget (slot) | Reads |
 |---|---|---|
 | `koth` | `koth.hill`; `koth.time`; `koth.banner`; waypoint `koth.mark` | style 0 open, 1 held by the side in the value, 2 contested; the seconds in the value; the banner's text; the navpoint over a zone, with the distance |
+| `siege` | `siege.front`; `siege.clock`; `siege.side`; `siege.sites`, `siege.round`, `siege.phase`; `siege.banner`; waypoint `siege.mark` | style 0 open, 1 the side in the value on the front alone, 2 contested; the phase's seconds left in the value; the attacking side in the value (the viewer attacks when on it); each a count in the value of the total in the style; the banner's text; the navpoint over a zone, with the distance ([rules-engine.md](rules-engine.md#the-siege-hud)) |
 | `territories` | `ter.owned`; `ter.banner`; waypoint `ter.mark` | the count in the value and the total in the style (the viewer's own, by `hud_value_for`: the territories its side holds, a team's in a game with teams and the player's own without); the banner's text; a navpoint over a zone |
 | `oddball` | `odd.holder`; `odd.time`; `odd.banner` | style 0 loose, 1 carried, the value 16 and the carrier's slot (`slot_of`), worded with the player's name; the seconds in the value; the banner's text; the navpoint (`odd.mark`) over the ball a player holds, else the first one lying, with the distance |
 | `ctf` | `ctf.flag0`, `ctf.flag1`; `ctf.banner` | each team's flag: style 0 at home, 1 carried (the value 16 and the carrier's slot), 2 dropped; the viewer's team's is "your flag"; the navpoint (`ctf.mark`) over the first flag away from its spawn |

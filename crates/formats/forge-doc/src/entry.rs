@@ -167,6 +167,12 @@ pub enum Property {
     /// bias to the weight the spawn chooser gives the location
     /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
     Weight(Option<SpawnWeight>),
+    /// Whether an item spawner places its item at a round's start: `false`
+    /// holds it back for its respawn time, none is the retail Yes. `true`
+    /// is no property: clear it. The game zeroes a held-back entry's
+    /// countdown after the round reset
+    /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
+    PlaceAtStart(Option<bool>),
     /// The game types an object is in ([`OBJECT_BLOCKS`]), or none for
     /// every game type. A retail object has no game-type field: the
     /// materialiser leaves the placement out of a map built for an engine
@@ -303,6 +309,15 @@ fn check_property(block: BlockKind, property: Property, what: &'static str) -> R
         Property::Weight(_) => {
             if block != BlockKind::StartingLocations {
                 return Err(Refusal::invalid(what, "a weight is a starting point's"));
+            }
+            Ok(())
+        }
+        Property::PlaceAtStart(at_start) => {
+            if block != BlockKind::NetgameEquipment {
+                return Err(Refusal::invalid(what, "place at start is an item spawner's"));
+            }
+            if at_start == Some(true) {
+                return Err(Refusal::invalid(what, "place at start is the default: clear it"));
             }
             Ok(())
         }
@@ -450,6 +465,18 @@ pub fn spawn_weights(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, SpawnWe
         Property::Weight(weight) => Some(*weight),
         _ => None,
     })
+}
+
+/// The item spawners that hold their item back at a round's start, by
+/// identity, as [`teams`] reads teams.
+pub fn held_at_start(ops: &[Op]) -> BTreeSet<Endpoint> {
+    last_property(ops, |p| match p {
+        Property::PlaceAtStart(at_start) => Some(*at_start),
+        _ => None,
+    })
+    .into_iter()
+    .filter_map(|(end, at_start)| (!at_start).then_some(end))
+    .collect()
 }
 
 /// The value of one property each entry has: the last op `pick` reads (a

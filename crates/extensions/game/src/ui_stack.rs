@@ -137,6 +137,8 @@ fn screen_view(
     let parent = match mode {
         Some(Mode::Pack(_)) => json!({"id": SELECT_MAP_ID, "mode":"maps", "folder":"Mods",
             "parent":{"id": SELECT_MAP_ID, "mode":"folders", "parent":setup}}),
+        Some(Mode::Variants { from, .. }) => json!({"id": SELECT_MAP_ID, "mode":"maps", "folder": from.label(),
+            "parent":{"id": SELECT_MAP_ID, "mode":"folders", "parent":setup}}),
         Some(Mode::Maps(_)) if nav.maps.maps_from_setup(list) => setup.unwrap_or(Value::Null),
         Some(Mode::Maps(_)) => json!({"id": SELECT_MAP_ID, "mode": "folders", "parent": setup}),
         _ if value_picker(class) && ch.window == crate::ui_kit::dialog_tag::DIALOG_WINDOW && ch.active == screen => {
@@ -148,12 +150,14 @@ fn screen_view(
     };
     let pack_name = mode.and_then(|mode| match mode {
         Mode::Pack(id) => crate::map_select::opened_pack_name(id),
+        Mode::Variants { map, .. } => crate::map_select::opened_map_name(map),
         _ => None,
     });
     let (mode, folder) = match mode {
         Some(Mode::Categories) => (Some("folders"), None),
         Some(Mode::Maps(category)) => (Some("maps"), Some(category.label())),
         Some(Mode::Pack(_)) => (Some("pack"), pack_name.as_deref()),
+        Some(Mode::Variants { .. }) => (Some("variants"), pack_name.as_deref()),
         None => (None, None),
     };
     let variant_list = matches!(id, Some(15 | 208));

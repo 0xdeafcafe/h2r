@@ -4,13 +4,14 @@
 //! directly from the geometry handler after GPU reservation. It uses the
 //! render context's snapshot of guest memory.
 //!
-//! Objects draw only from the scene, in [`SLOT`]. An object the walk cannot
-//! take (an unreadable part, an interleaved span, a refused reservation) is
-//! consumed and counted as a named drop (`native_objects_scene_dropped` and
-//! its cause's `walk_*` column); its guest handler never runs and issues no
-//! D3D draw. Their setup (`OBJECT_RENDER_SETUP`) is Rust's where it can
-//! build the call and the guest's where it cannot
-//! (docs/graphics/native-objects.md, "Object setup").
+//! Objects draw from the scene, in [`SLOT`]. An object the walk cannot
+//! take (an unreadable part, an interleaved span, a refused reservation)
+//! keeps its guest handler's draw ([`keep`]): it is counted
+//! `native_objects_walk_fallback` with its cause's `walk_*` column, and
+//! `scene_kept_3_object_<cause>` in `render.scene`. Nothing is dropped.
+//! Their setup (`OBJECT_RENDER_SETUP`) is Rust's where it can build the
+//! call and the guest's where it cannot (docs/graphics/native-objects.md,
+//! "Object setup").
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -218,10 +219,11 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
         return;
     }
     let decision = object_walk::decide(&entries, current);
-    // Neither span is handed to the guest: each of its objects is dropped,
-    // by name, as its handler comes up (`walk_geometry`).
-    ObjectWalk::Unsupported.dropped(decision.unsupported);
-    ObjectWalk::Order.dropped(decision.interleaved);
+    // Neither span is a run: each of its objects keeps its guest handler's
+    // draw as the handler comes up (`walk_geometry`, [`HandlerAt::Guest`]).
+    let site = kept_site(layer.kind);
+    keep(site, ObjectWalk::Unsupported, decision.unsupported);
+    keep(site, ObjectWalk::Order, decision.interleaved);
     layer.base = base;
     layer.counter = counter;
     layer.entries = entries;
@@ -252,53 +254,37 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
     let mut consumed = false;
     let stride = native_render::skip::ITEM_SIZE;
     let counter = layer.counter;
-    let remaining_at = |layer: &WalkLayer, first: usize| (layer.entries.len() - first) as u32;
     // The slot the handler is at, when it is one of the walk's entries.
     let slot = esi.checked_sub(layer.base).filter(|d| d % stride == 0).map(|d| (d / stride) as usize);
-    if let Some(slot) = slot.filter(|&s| s < layer.entries.len()) {
-        if layer.runs.front().is_some_and(|run| run.slots.start == slot) {
-            let run = layer.runs.pop_front().expect("matched the front");
-            let skipped = (run.slots.len() - 1) as u32;
-            let remaining = remaining_at(&layer, run.slots.start);
-            let last = esi + skipped * stride;
-            let mut consume = |mem: &mut dyn GuestMemory| {
-                mem.u32(counter) == Ok(remaining)
-                    && mem.u32(esp) == Ok(caller)
-                    && mem.set_u32(counter, remaining - skipped).is_ok()
-            };
-            let first = run.slots.start;
-            let result = host().ok_or_else(|| {
-                // No host installed: nothing took the run.
-                Stage::Objects.reservation_cause(ReservationCause::Declined);
-                ObjectWalk::Reservation
-            }).and_then(|host| {
-                crate::scene_step::with_open(|view| {
-                    host.draw_walk(&mut *mem, view, SLOT, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
-                })
-            });
-            match result {
-                Ok(()) => {
-                    c.cpu.esi = last;
-                    ObjectWalk::Native.count(run.objects);
-                    consumed = true;
-                }
-                Err(reason) => {
-                    // The host took nothing. The run's handlers do not run:
-                    // it is consumed and dropped under the cause it gave.
-                    reason.dropped(run.objects);
-                    if consume(&mut *mem) {
-                        c.cpu.esi = last;
-                        consumed = true;
-                    }
-                }
-            }
-        } else if matches!(layer.entries[slot], Entry::Object { .. }) {
-            // An object of a span the walk did not admit: consumed alone,
-            // counted when its span was decided.
-            let remaining = remaining_at(&layer, slot);
-            if mem.u32(counter) == Ok(remaining) && mem.u32(esp) == Ok(caller) {
+    if handler_at(layer.entries.len(), layer.runs.front(), slot) == HandlerAt::Run {
+        let run = layer.runs.pop_front().expect("matched the front");
+        let skipped = (run.slots.len() - 1) as u32;
+        let remaining = (layer.entries.len() - run.slots.start) as u32;
+        let last = esi + skipped * stride;
+        let mut consume = |mem: &mut dyn GuestMemory| {
+            mem.u32(counter) == Ok(remaining)
+                && mem.u32(esp) == Ok(caller)
+                && mem.set_u32(counter, remaining - skipped).is_ok()
+        };
+        let first = run.slots.start;
+        let result = host().ok_or_else(|| {
+            // No host installed: nothing took the run.
+            Stage::Objects.reservation_cause(ReservationCause::Declined);
+            ObjectWalk::Reservation
+        }).and_then(|host| {
+            crate::scene_step::with_open(|view| {
+                host.draw_walk(&mut *mem, view, SLOT, first, &layer.entries[run.slots], layer.display_lod, &mut consume)
+            })
+        });
+        match result {
+            Ok(()) => {
+                c.cpu.esi = last;
+                ObjectWalk::Native.count(run.objects);
                 consumed = true;
             }
+            // The host took nothing: the run's handlers draw it, from this
+            // one on (each later slot is [`HandlerAt::Guest`]).
+            Err(reason) => keep(kept_site(layer.kind), reason, run.objects),
         }
     }
     WALK_LAYER.with(|state| *state.borrow_mut() = Some(layer));
@@ -307,6 +293,48 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
         c.ret(engine::render_loop::layer::HANDLER_CLEANUP).map(Flow::Return)
     } else {
         Ok(Flow::Continue)
+    }
+}
+
+/// What the walk does at a geometry handler call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandlerAt {
+    /// The first slot of the next admitted run: the host is asked to draw
+    /// the run whole.
+    Run,
+    /// Any other call: an object of a span the walk did not admit or of a
+    /// run the host refused, an entry that is not an object, or a call
+    /// outside the walk's entries. Its guest handler draws.
+    Guest,
+}
+
+/// The handler call at `slot` (`None` outside the list) of a walk of
+/// `entries` entries whose next admitted run is `next`.
+pub fn handler_at(entries: usize, next: Option<&Run>, slot: Option<usize>) -> HandlerAt {
+    match (slot, next) {
+        (Some(slot), Some(run)) if slot < entries && run.slots.start == slot => HandlerAt::Run,
+        _ => HandlerAt::Guest,
+    }
+}
+
+/// `objects` the walk does not draw, under `reason`: they keep their
+/// guest handlers' draws. Counted `native_objects_walk_fallback` and the
+/// cause's `walk_*` column, and `scene_kept_<site>3_object_<cause>` in
+/// `render.scene` (`site` from [`kept_site`]).
+pub fn keep(site: &str, reason: ObjectWalk, objects: usize) {
+    if objects == 0 {
+        return;
+    }
+    reason.fallback(objects);
+    crate::native_layers::count_kept_as(site, 3, "object", reason.name(), objects as u64);
+}
+
+/// The `scene_kept_*` site of a walk's view: `""` for the scene, `alt`
+/// for the alternate view.
+pub fn kept_site(kind: ViewKind) -> &'static str {
+    match kind {
+        ViewKind::Alternate => "alt",
+        _ => "",
     }
 }
 

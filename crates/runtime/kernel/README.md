@@ -16,7 +16,7 @@ lanes. No runtime, XBE, VFS or other lane's source was edited here.
 ## Attach to a loaded image
 
 ```rust,ignore
-// Halo 2: reserve its title arena (physical 0x61000..0x3145000, alias
+// Halo 2: reserve its title arena (physical 0x61000..0x3945000, alias
 // 0x80061000) before anything else gets backing.
 let mut loaded = runtime::load_xbe_with(
     &user_supplied_xbe,

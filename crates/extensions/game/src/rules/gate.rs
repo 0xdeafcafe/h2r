@@ -230,10 +230,39 @@ pub fn siege_objectives(census: &Census) -> bool {
 }
 
 static SIEGE_MAPS: Mutex<std::collections::BTreeMap<u32, bool>> = Mutex::new(std::collections::BTreeMap::new());
+/// By map, variant file and the revision its caller names (the document's
+/// id): a saved variant changes under its file name.
+static SIEGE_VARIANTS: Mutex<std::collections::BTreeMap<(u32, String, String), bool>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 /// Forgets which maps have Siege's objectives: the catalogue changed.
 pub fn forget_siege_maps() {
     SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Whether the map `map` with the edits of its saved variant `file` has
+/// Siege's objectives. `None` when it cannot be told.
+fn siege_census(map: u32, file: Option<&str>) -> Option<bool> {
+    let sources = SOURCES.get()?.as_ref();
+    let prefix = crate::community_variants::listed_named("Siege")?.ext().script.prefix;
+    let (ir, _) = ::rules::verify::load(&sources.blob(prefix)?).ok()?;
+    let census = sources.census(map, file, super::census::layout_script(&ir)).ok()?;
+    Some(siege_objectives(&census))
+}
+
+/// Whether the map `map` (a list id) played as its saved variant `file`
+/// has Siege's objectives ([`siege_objectives`] over the census of the map
+/// with the variant's edits). `None` when it cannot be told. The answer is
+/// kept per map, file and `revision` until [`forget_siege_maps`].
+pub fn siege_supports_variant(map: u32, file: &str, revision: &str) -> Option<bool> {
+    let key = (map, file.to_owned(), revision.to_owned());
+    if let Some(known) = SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(*known);
+    }
+    let has = siege_census(map, Some(file))?;
+    SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).insert(key, has);
+    Some(has)
 }
 
 /// Whether the map `map` (a list id) has Siege's objectives
@@ -245,11 +274,7 @@ pub fn siege_supports(map: u32) -> Option<bool> {
     if let Some(known) = SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).get(&map) {
         return Some(*known);
     }
-    let sources = SOURCES.get()?.as_ref();
-    let prefix = crate::community_variants::listed_named("Siege")?.ext().script.prefix;
-    let (ir, _) = ::rules::verify::load(&sources.blob(prefix)?).ok()?;
-    let census = sources.census(map, None, super::census::layout_script(&ir)).ok()?;
-    let has = siege_objectives(&census);
+    let has = siege_census(map, None)?;
     SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).insert(map, has);
     Some(has)
 }

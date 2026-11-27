@@ -181,11 +181,39 @@ impl OptionRow {
     }
 }
 
+/// Halo 2 levels whose shown name is not their file's stem title-cased:
+/// the campaign's chapters and two multiplayer maps.
+const LEVEL_NAMES: [(&str, &str); 17] = [
+    ("00a_introduction", "The Heretic"),
+    ("01a_tutorial", "The Armory"),
+    ("01b_spacestation", "Cairo Station"),
+    ("03a_oldmombasa", "Outskirts"),
+    ("03b_newmombasa", "Metropolis"),
+    ("04a_gasgiant", "The Arbiter"),
+    ("04b_floodlab", "The Oracle"),
+    ("05a_deltaapproach", "Delta Halo"),
+    ("05b_deltatowers", "Regret"),
+    ("06a_sentinelwalls", "Sacred Icon"),
+    ("06b_floodzone", "Quarantine Zone"),
+    ("07a_highcharity", "Gravemind"),
+    ("07b_forerunnership", "High Charity"),
+    ("08a_deltacliffs", "Uprising"),
+    ("08b_deltacontrol", "The Great Journey"),
+    ("beavercreek", "Beaver Creek"),
+    ("cyclotron", "Ivory Tower"),
+];
+
+/// The level's name as the game shows it: "Regret" for
+/// `05b_deltatowers`, "Ivory Tower" for `cyclotron`.
 pub(super) fn map_title(map: &str) -> String {
     if map.trim().is_empty() {
         return "Unknown map".into();
     }
-    live_hle::mods::base_title(&crate::ui_kit::level_art::stem(map))
+    let stem = crate::ui_kit::level_art::stem(map);
+    LEVEL_NAMES
+        .iter()
+        .find(|(level, _)| level.eq_ignore_ascii_case(&stem))
+        .map_or_else(|| live_hle::mods::base_title(&stem), |(_, name)| (*name).to_owned())
 }
 
 pub(super) fn clock(ticks: u64, rate: u64) -> String {
@@ -193,12 +221,22 @@ pub(super) fn clock(ticks: u64, rate: u64) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// The library's details start at the map picture's left edge and end at
+/// the panel's (`pages::LIST_STATUS`, 246 units), with the coarse
+/// metric's margin.
+pub(super) const DETAIL_WIDTH: i32 = 240;
+
 impl Entry {
     pub fn row_title(&self) -> String {
         if let Some((_, title)) = &self.archive_clip
             && !title.trim().is_empty()
         {
             return text_fit::line(title, text_fit::ROW);
+        }
+        if let Some(clip) = &self.clip
+            && !clip.title.trim().is_empty()
+        {
+            return text_fit::line(clip.title.trim(), text_fit::ROW);
         }
         let map = map_title(&self.film.map);
         let title = match self.film.game_type().filter(|s| !s.trim().is_empty()) {
@@ -260,14 +298,19 @@ impl Entry {
     pub fn browse_description(&self, player: Option<&str>) -> String {
         let mut lines = Vec::new();
         if self.archive_clip.is_some() {
-            lines.push(text_fit::line(&map_title(&self.film.map), 280));
+            lines.push(text_fit::line(&map_title(&self.film.map), DETAIL_WIDTH));
         }
+        // A campaign film's mode and variant are both "Campaign": each
+        // name is shown once.
+        let mut named: Vec<&str> = Vec::new();
         for value in [self.film.mode(), Some(self.film.variant_name())]
             .into_iter()
             .flatten()
+            .map(str::trim)
         {
-            if !value.trim().is_empty() {
-                lines.push(text_fit::line(value, 280));
+            if !value.is_empty() && !named.iter().any(|n| n.eq_ignore_ascii_case(value)) {
+                named.push(value);
+                lines.push(text_fit::line(value, DETAIL_WIDTH));
             }
         }
         let count = self.film.players().len();
@@ -280,11 +323,11 @@ impl Entry {
         }
         match_info.extend(self.result(player));
         if !match_info.is_empty() {
-            lines.push(text_fit::line(&match_info.join(" / "), 280));
+            lines.push(text_fit::line(&match_info.join(" / "), DETAIL_WIDTH));
         }
         lines.push(self.film.source_badge().to_owned());
         if let Some(note) = self.film.monitor_note() {
-            lines.push(text_fit::line(&note, 280));
+            lines.push(text_fit::line(&note, DETAIL_WIDTH));
         }
         lines.join("\n")
     }

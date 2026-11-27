@@ -9,7 +9,7 @@ use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
     FLARE_QUERY_END, FLARE_REFLECTION, FLARE_REFLECTION_END, GROUPS, MENU_FILL,
-    MENU_FILL_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
+    MENU_FILL_END, MESSAGE_CENTRED, MESSAGE_END, VOLUME_DEPTH, VOLUME_END, VOLUME_SPRITE,
 };
 use render_bridge::ui_layout;
 use points::scene_effects::{EFFECT_QUAD_READY, HUD_QUAD_READY};
@@ -103,10 +103,14 @@ fn retail_lens(mem: &impl GuestMemory) -> f32 {
 // The horizontal clip scale that shows the guest's lens on `output` with
 // square pixels. The display lens changes only X.
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
-    // The projection carries a horizontal factor only, so a window narrower
-    // than 4:3 takes its vertical lens as the equivalent horizontal one
-    // (`Lens::horizontal_only`) until the pipeline has a vertical term.
-    retail_lens(mem) * canvas_fit::Lens::for_window(output).horizontal_only()
+    // Below 1 the factor widens the horizontal lens; above 1 it grows the
+    // vertical one (`canvas_fit::Lens::factor`).
+    // A window of the canvas's own 4:3 leaves the guest's lens as the game
+    // chose it, whatever its anamorphic term.
+    if canvas_fit::stretch_ratio(output).is_none() {
+        return 1.0;
+    }
+    retail_lens(mem) * canvas_fit::Lens::for_window(output).factor()
 }
 
 /// The aspect of the lens a fitted guest camera gathers through, whatever
@@ -194,12 +198,35 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
     let (bias, scale, left, right) = (get(0), get(8), get(16), get(20));
     let centre = (left + right) * 0.5;
     let half = (right - left) * 0.5 / frustum;
-    let terms = [bias * factor, scale * factor, centre - half, centre + half];
+    let horizontal = canvas_fit::horizontal_term(factor);
+    let terms = [bias * horizontal, scale * horizontal, centre - half, centre + half];
     if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
         return None;
     }
     for (i, value) in [0, 8, 16, 20].into_iter().zip(terms) {
         words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    // A window narrower than 4:3 grows the vertical lens: the Y bias and
+    // scale (words 1 and 3) and the vertical tangent bounds (words 6 and 7)
+    // take the vertical term, the horizontal ones stay retail.
+    let vertical = canvas_fit::vertical_term(factor);
+    if vertical < 1.0 {
+        let mut extra = [0u8; 8];
+        mem.read(at + 24, &mut extra).ok()?;
+        let get = |b: &[u8], i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let (top, bottom) = (get(&extra, 0), get(&extra, 4));
+        let centre = (top + bottom) * 0.5;
+        let half = (bottom - top) * 0.5 / vertical;
+        let terms = [get(&words, 4) * vertical, get(&words, 12) * vertical, centre - half, centre + half];
+        if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
+            return None;
+        }
+        for (i, value) in [4, 12].into_iter().zip(terms) {
+            words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        extra[0..4].copy_from_slice(&terms[2].to_le_bytes());
+        extra[4..8].copy_from_slice(&terms[3].to_le_bytes());
+        mem.write(at + 24, &extra).ok()?;
     }
     mem.write(at, &words).ok()
 }
@@ -295,8 +322,9 @@ fn projected_effect_fit(
     output: (u32, u32),
     query_stack: Option<u32>,
 ) -> Option<UiFit> {
+    // The sprite fit moves along X only; a vertical lens leaves it retail.
     let factor = projection_factor(mem, output);
-    if factor == 1.0 {
+    if factor >= 1.0 {
         return None;
     }
     let bounds = viewport(mem, 0x0048_5648)?;
@@ -347,6 +375,21 @@ impl Canvas {
             )
         };
         layout.map(UiFit::from_transform)
+    }
+
+    /// The fit of a HUD group held at `anchor` of this view
+    /// ([`ui_layout::group_fit`]), for a part of a group that is not laid
+    /// out from the group's own anchor.
+    fn fit_at(self, anchor: ui_layout::Anchor) -> Option<UiFit> {
+        ui_layout::group_fit(
+            self.output,
+            (self.rect.x, self.rect.y, self.rect.width, self.rect.height),
+            self.pinned,
+            self.projection_factor,
+            self.projected_points_fitted,
+            anchor,
+        )
+        .map(UiFit::from_transform)
     }
 }
 
@@ -596,6 +639,18 @@ impl Layout {
         }
         self.groups.pop();
         Some(self.current())
+    }
+
+    /// The message group reaches its centred lines (the timed line and
+    /// the respawn timer, [`MESSAGE_CENTRED`]): the rest of the group is
+    /// held at the middle of the view's bottom, not at the top-left anchor
+    /// its prompt line and notification list are laid out from. The fit to
+    /// set, when the message group is the one open in a HUD scope.
+    fn centre_message_lines(&mut self) -> Option<Option<UiFit>> {
+        let canvas = self.active.filter(|canvas| canvas.hud)?;
+        let group = self.groups.last_mut().filter(|g| g.0 == MESSAGE_END)?;
+        group.1 = canvas.fit_at(ui_layout::Anchor::Bottom);
+        Some(group.1)
     }
 
     fn current(&self) -> Option<UiFit> {
@@ -862,6 +917,17 @@ impl Feature for RenderAspect {
                     let fit = canvas.fit(Some((id, point)));
                     l.groups.push((end, fit));
                     sink.set_fit(&mut mem, fit);
+                }
+                Ok(Flow::Continue)
+            })
+            .context_only()
+            .optional();
+        let (on_lines, sink) = (layout.clone(), self.sink.clone());
+        b.raw()
+            .before(&MESSAGE_CENTRED, "hold the HUD's centred lines at the bottom's middle", move |c| {
+                let mut l = on_lines.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(fit) = l.centre_message_lines() {
+                    sink.set_fit(&mut c.ctx.memory(), fit);
                 }
                 Ok(Flow::Continue)
             })
@@ -1159,6 +1225,33 @@ mod tests {
     }
 
     #[test]
+    fn a_portrait_window_grows_the_vertical_terms_and_keeps_the_horizontal_ones() {
+        let esp = 0x1000;
+        let mem = FakeGuest::new();
+        let gather = gather_factor(&mem);
+        for (output, y) in [((960, 1280), 0.5625f32), ((720, 1280), 0.421875)] {
+            let factor = projection_factor(&mem, output);
+            close(factor, 1.0 / y);
+            let mut camera = displayed_camera(esp);
+            assert_eq!(fit_view_projection(&mut camera, esp, factor, gather), Fit::Applied, "{output:?}");
+            let at = esp + 0x54;
+            let word = |m: &FakeGuest, i: u32| m.f32(at + 4 * i).unwrap();
+            let retail = displayed_camera(esp);
+            // Horizontal bias and scale stand; the vertical ones take the lens.
+            close(word(&camera, 0), word(&retail, 0));
+            close(word(&camera, 2), word(&retail, 2));
+            close(word(&camera, 1), word(&retail, 1) * y);
+            close(word(&camera, 3), word(&retail, 3) * y);
+            // The vertical tangent bounds grow by the lens, about their centre.
+            close(word(&camera, 6), word(&retail, 6) / y);
+            close(word(&camera, 7), word(&retail, 7) / y);
+            // The vertical edge rays still reach clip 1 on the grown lens.
+            let (scale, bias) = (word(&camera, 3), word(&camera, 1));
+            close((word(&camera, 7) * scale + bias).abs(), (word(&retail, 7) * word(&retail, 3) + word(&retail, 1)).abs());
+        }
+    }
+
+    #[test]
     fn a_window_wider_than_the_gather_lens_gathers_through_its_own() {
         let esp = 0x1000;
         let mem = FakeGuest::new();
@@ -1396,6 +1489,59 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// The message group's centred lines (the timed line and the respawn
+    /// timer) leave the group's top-left fit for the bottom's middle, so a
+    /// line centred on the frame is on the window's centre line at 4:3,
+    /// 16:9 and 21:9; the group's end restores the enclosing fit, and no
+    /// other group, and no menu, is split.
+    #[test]
+    fn the_message_groups_centred_lines_stay_on_the_windows_centre_line() {
+        let line = [320.0, 404.0];
+        for output in [(1440, 1080), (1920, 1080), (2520, 1080)] {
+            let canvas = Canvas {
+                output,
+                rect: FULL,
+                hud: true,
+                pinned: true,
+                projection_factor: projection_factor(&FakeGuest::new(), output),
+                projected_points_fitted: false,
+            };
+            let mut l = Layout {
+                active: Some(canvas),
+                ..Default::default()
+            };
+            // No group open: nothing to split.
+            assert_eq!(l.centre_message_lines(), None);
+            // The message group, laid out from the top-left anchor.
+            let top_left = canvas.fit(Some((1, [48.0, 36.0])));
+            l.groups.push((MESSAGE_END, top_left));
+            let unit = (output.0 as f32 / 640.0).min(output.1 as f32 / 480.0);
+            let wide = output != (1440, 1080);
+            let before = physical(l.current(), output, line)[0];
+            assert_eq!(before < output.0 as f32 / 2.0 - 1.0, wide, "{output:?}: {before}");
+            let fit = l.centre_message_lines().expect("the message group is open");
+            assert_eq!(l.current(), fit);
+            let xy = physical(fit, output, line);
+            close(xy[0], output.0 as f32 / 2.0);
+            close(output.1 as f32 - xy[1], 76.0 * unit);
+            // The prompt line's own fit is not what the lines keep.
+            assert_eq!(fit == top_left, !wide);
+            assert!(l.end_group(MESSAGE_END));
+            assert!(l.groups.is_empty());
+            // Another group stays whole.
+            let other = GROUPS.iter().map(|(_, end)| end.base).find(|end| *end != MESSAGE_END);
+            l.groups.push((other.unwrap(), top_left));
+            assert_eq!(l.centre_message_lines(), None);
+            assert_eq!(l.current(), top_left);
+            // A menu scope has no message group.
+            let mut m = menu(output, FULL);
+            m.groups.push((MESSAGE_END, None));
+            assert_eq!(m.centre_message_lines(), None);
+        }
+        // The message group's end is the one the split looks for.
+        assert!(GROUPS.iter().any(|(caller, end)| *caller == 0x0024_cfdf && end.base == MESSAGE_END));
     }
 
     #[test]
@@ -1701,7 +1847,10 @@ mod tests {
         for (i, edge) in [0, 0, 480, 640].into_iter().enumerate() {
             mem.put_u16(0x0048_5648 + i as u32 * 2, edge);
         }
-        for size in [(5120, 2880), (3440, 1440), (1200, 1600), (640, 480)] {
+        // A portrait window grows the guest's vertical lens, so the guest
+        // draws the sprite at the window's shape already: no fit.
+        assert_eq!(projected_effect_fit(&mem, (1200, 1600), None), None);
+        for size in [(5120, 2880), (3440, 1440), (640, 480)] {
             let fit = projected_effect_fit(&mem, size, None);
             let [x, y] = physical(fit, size, [416., 176.]);
             let end = physical(fit, size, [440., 200.]);
