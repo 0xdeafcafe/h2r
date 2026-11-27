@@ -121,6 +121,43 @@ fn emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) -> bool {
     false
 }
 
+/// Why a particle made in Rust is not drawn (`scene_dropped_particle_<cause>`).
+fn refused_name(r: particles::Refused) -> &'static str {
+    match r {
+        particles::Refused::Unreadable => "unreadable",
+        particles::Refused::AddressOverflow => "address",
+        particles::Refused::Disabled => "disabled",
+        particles::Refused::AttributeRegister => "register",
+        particles::Refused::Declaration => "declaration",
+        particles::Refused::Geometry => "geometry",
+        particles::Refused::Identity => "identity",
+    }
+}
+
+/// Draws the emitter call laid out at `esp` (its return address, then the
+/// eight words) with EBX `ebx`, made in Rust, through the host's direct
+/// path: the guest's emitter never runs, so there is no capture to arm.
+/// `Err` names why nothing drew; the emitter's own gate (`0x00470a38`)
+/// off is `Ok(false)`, as the guest draws nothing then either.
+pub(crate) fn draw_emission(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) -> Result<bool, &'static str> {
+    CALLS.fetch_add(1, Ordering::Relaxed);
+    let emission = match particles::read_emission(&Read(mem), esp, ebx) {
+        Ok(e) => e,
+        Err(particles::Refused::Disabled) => return Ok(false),
+        Err(r) => return Err(refused_name(r)),
+    };
+    let return_address = mem.u32(esp).map_err(|_| "unreadable")?;
+    DECODED.fetch_add(1, Ordering::Relaxed);
+    let call = Call { esp, return_address, emission };
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("no_host")?;
+    if host.try_emit(mem, &call) {
+        Stage::Particles.count(Metric::WalkSuppressed, 1);
+        Ok(true)
+    } else {
+        Err("refused")
+    }
+}
+
 pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
     let call = match effect_geometry::read_call(&Read(mem), esp, stride) {
         Ok(call) => call,

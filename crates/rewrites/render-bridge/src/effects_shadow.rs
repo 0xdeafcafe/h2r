@@ -29,6 +29,7 @@
 //! On with the native renderer; `frame-scene.effects-shadow=off` leaves
 //! only the guest.
 
+mod answer;
 pub mod dispatch;
 mod emission;
 mod overlay;
@@ -41,7 +42,12 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
-use hooks::Builder;
+use hooks::{Builder, Flow};
+
+/// The argument bytes `0x00224550` pops (`ret 0x1c`).
+fn pe_pop() -> u32 {
+    engine::particle_emission::POP - 4
+}
 
 use dispatch::{Kind, Plan};
 use view_update::{
@@ -422,7 +428,11 @@ fn dispatch_begin(m: &dyn GuestMemory, esp: u32, mxcsr: u32) {
     }
     // A difference in the sample just now stops the gate for these runs.
     let runs = if answering() {
-        let runs = plan.runs();
+        // Particles are the answer's, drawn at their callbacks
+        // ([`answer`]); the decal runs are the seam for a host that draws
+        // the decal lists' replays from the scene.
+        let mut runs = plan.runs();
+        runs.retain(|r| r.kind == Kind::Decal);
         for run in &runs {
             count(&format!("entry_runs_planned_{}", run.kind.name()), 1);
         }
@@ -525,6 +535,8 @@ fn draw_run(mem: &mut dyn GuestMemory, run: &dispatch::Run) {
     let host = RUN_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some(host) = host else {
         count(&format!("entry_runs_no_host_{kind}"), 1);
+        // Their guest replays draw them.
+        crate::native_layers::count_kept_as("", 15, kind, "replay", run.ordinals.len() as u64);
         return;
     };
     match host.draw_display_entries(mem, run.kind, &run.ordinals) {
@@ -569,10 +581,17 @@ pub fn install(b: &mut Builder) {
         )
         .context_only()
         .optional();
+    // R2's answer: the callback's body does not run when the answer
+    // takes it; on a sampled frame or a closed gate the arm opens.
     b.raw()
-        .observe_before(&points::PARTICLE_EVALUATE, "effects_shadow_emission", |o| {
-            let g = o.guest();
-            emission::begin(&*g, o.cpu.esp, o.cpu.mxcsr, o.cpu.x87.control);
+        .before(&points::PARTICLE_EVALUATE, "effects_shadow_emission", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let cut = answer::particle(&mut *rt.memory(), c.cpu.esp, c.cpu.mxcsr, c.cpu.x87.control);
+            if cut {
+                c.ret(pe_pop()).map(Flow::Return)
+            } else {
+                Ok(Flow::Continue)
+            }
         })
         .context_only()
         .optional();
@@ -584,9 +603,16 @@ pub fn install(b: &mut Builder) {
         .context_only()
         .optional();
     b.raw()
-        .observe_before(&points::CONTRAIL_RIBBON, "effects_shadow_ribbon", |o| {
-            let g = o.guest();
-            ribbon::begin(&*g, o.cpu.esp, o.cpu.mxcsr, o.cpu.x87.control);
+        .before(&points::CONTRAIL_RIBBON, "effects_shadow_ribbon", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let al = answer::contrail(&mut *rt.memory(), c.cpu.esp, c.cpu.mxcsr, c.cpu.x87.control);
+            match al {
+                Some(al) => {
+                    c.cpu.eax = (c.cpu.eax & !0xff) | u32::from(al);
+                    c.ret(engine::contrail_ribbon::POP - 4).map(Flow::Return)
+                }
+                None => Ok(Flow::Continue),
+            }
         })
         .context_only()
         .optional();
@@ -777,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answering_gate_draws_each_run_after_its_last_entry() {
+    fn an_answering_gate_draws_each_decal_run_after_its_last_entry() {
         let mut m = FlatMemory::new(0x004b_0000, 0x0003_0000);
         let rows = 0x004c_0000;
         let order = 0x004d_0000;
@@ -807,7 +833,8 @@ mod tests {
         dispatch_end(&m);
         assert_eq!(
             *host.0.lock().unwrap(),
-            [(Kind::Particle, vec![0, 1]), (Kind::Decal, vec![2])]
+            [(Kind::Decal, vec![2])],
+            "the particles are the answer's" 
         );
         with_gate(|g| g.answering = false);
     }

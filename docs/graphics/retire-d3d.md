@@ -410,7 +410,7 @@ D3D entry calls.
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
 | R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer and the layer draw's return when every item is native (`frame_step::layer`), each layer `kept`, every item a guest body draws a `scene_kept_*` count, layer 3's objects before the call behind a 1-in-64 comparison; not built: the drop ([R1's remainder](retire-d3d-remainders.md#r1s-remainder)) | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
-| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
+| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs, the stamps, emission, ribbon and dispatch arms, and the answer: particle callbacks and contrail builds made in Rust while the arms answer ([retire-d3d-r2.md](retire-d3d-r2.md)); not built: the handlers' materials, the decal replays | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels. Built: the cut light frame, each light drawn at its passes and a light the scene or the host refuses on its guest passes, the entry state (the fade byte, the auxiliary toggle, the shader's flag bit 0) and visible subparts, odd strip starts included, in layers 12 and 13, a lit pass's material animation sampled per draw, and the light layers' draw returning ([native-lights.md](native-lights.md), "Entry state", "Visible subparts", "What a native light draws", "The layer draw's return"); kept: a flagged shader's entry whose structure upload the device does not hold (`scene_kept_light_group_entry_state`) or whose layer has a flag bit 20 pass before the frame's copy, a sampler refusal, a shadow layer's animated or flagged pass (`scene_kept_light_host`), and a light layer with items (`layer_return_<site><layer>_guest_<cause>`) | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
@@ -427,8 +427,8 @@ The display queue's runs: [retire-d3d-r2.md](retire-d3d-r2.md), "R2's first slic
 
 ### R2's shadow arm
 
-The stamps, the effects seed and the dispatch state made in Rust and
-compared: [retire-d3d-r2.md](retire-d3d-r2.md), "R2's shadow arm".
+The stamps, emission, ribbon and dispatch arms, and the answer they gate:
+[retire-d3d-r2.md](retire-d3d-r2.md), "R2's shadow arm" and "R2's answer".
 
 What R10 and R11 delete is listed in [retire-d3d-remainders.md](retire-d3d-remainders.md#what-r10-and-r11-delete).
 
