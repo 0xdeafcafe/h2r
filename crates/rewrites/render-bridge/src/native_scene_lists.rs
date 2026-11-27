@@ -265,6 +265,7 @@ impl Feature for ScaledSceneLists {
             ),
             transparents::build,
         );
+        transparents::install_check(b);
         Ok(())
     }
 }
@@ -401,6 +402,9 @@ struct Output {
     edx: Option<u32>,
     al: Option<u8>,
     pop: u32,
+    /// Run the guest body this call, writing nothing: an arm's checked
+    /// call ([`crate::native_transparents::sort`]).
+    guest: bool,
 }
 
 impl Output {
@@ -532,6 +536,9 @@ fn install(
             }
             let mut mem = runtime.memory();
             let (stage, output) = build(&*mem, c.cpu);
+            if matches!(&output, Ok(o) if o.guest) {
+                return Ok(Flow::Continue);
+            }
             let output = match output.and_then(|output| output.check_write(&mem).map(|()| output)) {
                 Ok(output) => output,
                 Err(reason) => {

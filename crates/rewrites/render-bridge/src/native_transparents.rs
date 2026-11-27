@@ -16,6 +16,9 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::abi::TransferAbi;
 use timeline::native::{Metric, ReservationCause, Stage};
 
+/// The list's order in Rust and its arm (`nor-7a`).
+pub mod sort;
+
 /// The first-person list the guest built at `0x004c8740` (the transparent
 /// stage still tells it apart from the world's).
 pub const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
