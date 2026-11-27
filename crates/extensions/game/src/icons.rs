@@ -187,6 +187,19 @@ impl Icons {
         }
     }
 
+    /// The keyboard set with `keys` on its caps, whatever device is in use:
+    /// for a page that reads keys of its own (the Theater's playback page,
+    /// `theater_ui::playback_icons`).
+    pub fn keyboard(keys: KeyLabels) -> Self {
+        Icons {
+            choice: IconChoice::Set(IconSet::Keyboard),
+            initial: IconSet::Keyboard,
+            active: None,
+            keys,
+            available: Arc::new(Available::all()),
+        }
+    }
+
     /// False when the retail glyphs are all that can ever show, so nothing
     /// needs installing.
     pub fn enabled(&self) -> bool {
