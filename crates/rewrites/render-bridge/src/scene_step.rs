@@ -808,6 +808,18 @@ fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
     })
 }
 
+/// The open game view's object shadows, owned, outside the step's lock
+/// ([`crate::native_lights::object_shadow_scene::gather`]).
+pub(crate) fn open_object_shadow_passes() -> Vec<crate::native_lights::object_shadow_scene::ObjectShadowPass> {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
+        if view.key.kind != ViewKind::Game {
+            return Vec::new();
+        }
+        crate::native_lights::object_shadow_scene::gather(scene, view)
+    })
+}
+
 /// The clip the light gather takes for the guest's visibility `mode`: the
 /// window frusta of the mode 0 flood (when the Rust visibility held), the
 /// view's sphere (mode 1), none (mode 2). `None` when the mode's inputs
