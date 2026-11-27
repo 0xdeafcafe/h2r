@@ -4278,10 +4278,20 @@ mod windowless_serve {
 
 /// Open the invented textured map's floor cluster through the API.
 fn textured(t: &Temp) -> (Api, App, PathBuf) {
+    textured_from(t, fixture::fixture_with_textured_bsp())
+}
+
+/// [`textured`] on the map whose structure has a level collision and a
+/// portal a stroke rebuilds (`fixture::fixture_with_textured_level`).
+fn textured_level(t: &Temp) -> (Api, App, PathBuf) {
+    textured_from(t, fixture::fixture_with_textured_level())
+}
+
+fn textured_from(t: &Temp, bytes: Vec<u8>) -> (Api, App, PathBuf) {
     let mut app = app(t);
     let mut api = Api::new();
     let map = t.path("textured.map");
-    std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+    std::fs::write(&map, bytes).unwrap();
     call(&mut api, &mut app, m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
     let open = call(&mut api, &mut app, m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));
     assert_eq!((open["verts"].clone(), open["faces"].clone()), (json!(4), json!(2)));
@@ -4328,7 +4338,7 @@ fn geometry_lists_the_floor_cluster_and_an_unedited_target_saves_nothing() {
 #[test]
 fn mesh_sculpt_is_one_logged_undo_step_and_a_bad_stroke_is_refused_by_name() {
     let t = Temp::new("mesh-sculpt");
-    let (mut api, mut app, _) = textured(&t);
+    let (mut api, mut app, _) = textured_level(&t);
     let r = call(
         &mut api,
         &mut app,

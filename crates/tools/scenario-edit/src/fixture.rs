@@ -251,6 +251,98 @@ pub fn fixture_with_textured_bsp_last() -> Vec<u8> {
     metadata_last(fixture_with_textured_bsp())
 }
 
+/// [`fixture_with_textured_level`]'s collision room: open inside
+/// `[0, TEX_FLOOR]` by `[0, TEX_FLOOR]` by `[0, TEX_LEVEL_HEIGHT]`.
+pub const TEX_LEVEL_HEIGHT: f32 = 3.0;
+/// The level's one portal stands in the plane `x = TEX_PORTAL_X`.
+pub const TEX_PORTAL_X: f32 = 2.0;
+/// Metadata [`fixture_with_textured_level`] adds at the end of the map.
+pub const TEX_LEVEL_EXTRA: usize = 0x4000;
+
+/// [`fixture_with_textured_level`]'s collision: the room over the floor,
+/// faces in, collision material 0, its last plane the portal's.
+pub fn textured_level_room() -> tags::collision::Bsp {
+    let (s, h) = (TEX_FLOOR, TEX_LEVEL_HEIGHT);
+    let c = |i: usize| [if i & 1 != 0 { s } else { 0.0 }, if i & 2 != 0 { s } else { 0.0 }, if i & 4 != 0 { h } else { 0.0 }];
+    let q = |is: [usize; 4]| collision_build::Polygon::new(is.iter().rev().map(|&i| c(i)).collect(), 0);
+    let faces = [[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4], [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]];
+    let polygons: Vec<_> = faces.into_iter().map(q).collect();
+    let mut bsp = collision_build::build(&polygons).expect("the room compiles").bsp;
+    bsp.planes.push(tags::collision::Plane([1.0, 0.0, 0.0, TEX_PORTAL_X]));
+    bsp
+}
+
+/// The portal's corners: across the room, floor to ceiling.
+pub fn textured_level_portal() -> Vec<[f32; 3]> {
+    let (s, h, x) = (TEX_FLOOR, TEX_LEVEL_HEIGHT, TEX_PORTAL_X);
+    vec![[x, 0.0, 0.0], [x, s, 0.0], [x, s, h], [x, 0.0, h]]
+}
+
+/// [`fixture_with_textured_bsp_last`] with a level a stroke rebuilds: the
+/// metadata grown by [`TEX_LEVEL_EXTRA`] to hold [`textured_level_room`]
+/// as the structure's collision (one collision material), a per-leaf block
+/// (every leaf cluster 0, then `a0 a1 a2 a3`, the leaf index and `5a`), its
+/// MOPP and one portal ([`textured_level_portal`], clusters 0 and 0) on
+/// the room's last plane. No pathfinding. The cluster element moves out of
+/// the root (`+0x180` overlaps the MOPP pair at `+0x1e0`).
+pub fn fixture_with_textured_level() -> Vec<u8> {
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let mut b = fixture_with_textured_bsp_last();
+    let meta_file = (word(&b, 0x10) + word(&b, 0x14)) as usize;
+    let meta_size = word(&b, 0x18);
+    let declared = word(&b, 0x1c);
+    put(&mut b, 0x18, meta_size + TEX_LEVEL_EXTRA as u32);
+    put(&mut b, 0x1c, declared + TEX_LEVEL_EXTRA as u32);
+    b.resize(b.len() + TEX_LEVEL_EXTRA, 0);
+    let len = b.len() as u32;
+    put(&mut b, 8, len);
+    let base = META + meta_size;
+    let file = |addr: u32| meta_file + (addr - META) as usize;
+    let root = meta_file + TEX_SBSP;
+    let bsp = textured_level_room();
+    let plane = bsp.planes.len() as u32 - 1;
+    let (materials, cluster, element, leaves, mopp_at, portal, portal_vertices) =
+        (base, base + 0x40, base + 0x100, base + 0x1900, base + 0x2000, base + 0x3000, base + 0x3040);
+    let old = root + 0x180;
+    let cluster_bytes = b[old..old + 0xb0].to_vec();
+    b[file(cluster)..file(cluster) + 0xb0].copy_from_slice(&cluster_bytes);
+    b[old..old + 0xb0].fill(0);
+    put(&mut b, root + 0xa0, cluster);
+    put(&mut b, root + 0x0c, 1);
+    put(&mut b, root + 0x10, materials);
+    let encoded = bsp.encode_blocks(element);
+    assert!(0x100 + encoded.len() <= 0x1900, "the room's blocks fit");
+    b[file(element)..file(element) + encoded.len()].copy_from_slice(&encoded);
+    put(&mut b, root + tags::pathfinding::SBSP_COLLISION_FIELD, 1);
+    put(&mut b, root + tags::pathfinding::SBSP_COLLISION_FIELD + 4, element);
+    let leaf_bytes: Vec<u8> = (0..bsp.leaves.len()).flat_map(|k| [0, 0, 0xa0, 0xa1, 0xa2, 0xa3, k as u8, 0x5a]).collect();
+    assert!(leaf_bytes.len() <= 0x700);
+    b[file(leaves)..file(leaves) + leaf_bytes.len()].copy_from_slice(&leaf_bytes);
+    put(&mut b, root + 0x2c, bsp.leaves.len() as u32);
+    put(&mut b, root + 0x30, leaves);
+    let mopp = mopp::build_structure(&bsp);
+    assert!(mopp.len() <= 0x1000);
+    b[file(mopp_at)..file(mopp_at) + mopp.len()].copy_from_slice(&mopp);
+    put(&mut b, root + 0x1e0, mopp.len() as u32);
+    put(&mut b, root + 0x1e4, mopp_at);
+    let points = textured_level_portal();
+    let n = points.len() as f32;
+    let centre = points.iter().fold([0.0f32; 3], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n, a[2] + p[2] / n]);
+    let p = file(portal);
+    put(&mut b, p + 4, plane);
+    for (k, v) in centre.into_iter().chain([2.5]).enumerate() {
+        putf(&mut b, p + 8 + 4 * k, v);
+    }
+    put(&mut b, p + 0x1c, points.len() as u32);
+    put(&mut b, p + 0x20, portal_vertices);
+    for (k, v) in points.iter().flatten().enumerate() {
+        putf(&mut b, file(portal_vertices) + 4 * k, *v);
+    }
+    put(&mut b, root + 0x5c, 1);
+    put(&mut b, root + 0x60, portal);
+    b
+}
+
 fn at_end(mut b: Vec<u8>) -> Vec<u8> {
     let end = META_FILE + 0x2000;
     b.truncate(end);

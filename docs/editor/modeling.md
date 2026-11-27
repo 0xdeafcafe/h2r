@@ -233,11 +233,14 @@ stroke ─► refine ─► raise | lower | smooth | flatten ─► refresh fans
 - **Deform.** Only verts of a face facing along the axis move, and only
   along it, so a terrain's plan and its underside stay. The fans of the
   moved faces are recomputed.
-- **Cut.** Each edge crossing the rim is split on it; each face's run of
-  inside corners between two rim corners becomes its own face; every
-  face with no corner outside goes, with its loose edges and verts. The
-  hole's edge is on the brush circle, and it goes through every layer
-  under the path, whichever way the faces face.
+- **Cut.** Each edge crossing the rim is split on it, and an edge that
+  dips into the circle with both ends outside is split at both
+  crossings. An edge is inside when an end is, or, rim to rim, when its
+  middle is. Each face splits into its inside chains and outside runs:
+  the runs stay as faces, the chains go, and every face with no edge
+  outside goes, with its loose edges and verts. The hole's edge is on
+  the brush circle, and it goes through every layer under the path,
+  whichever way the faces face.
 
 Refused, with `MeshError::Stroke` and the mesh unchanged: no points, a
 point not finite, a radius not above 0, a zero axis, a strength not above
@@ -245,14 +248,47 @@ point not finite, a radius not above 0, a zero axis, a strength not above
 stroke that moves no vertex or a cut that reaches no face, and a stroke
 that would leave more than 65,535 vertices (`MAX_VERTS`).
 
-`GeometrySession::apply` sends a mesh a stroke changed through the
-collision compiler before it keeps it (`stroke_collision`): a `coll` BSP
-compiles as its save compiles it (`CollSource::writes`), and a structure
-cluster or instanced definition compiles as its level collision would
-(`from_render`, `collision_build::build`, `verify::check`). A stroke the
-compiler refuses is refused as `Error::Refused` naming the target and
-the compiler's reason; nothing is logged or stepped. A model section has
-no collision of its own and is not compiled.
+`GeometrySession::apply` rewrites a stroke's collision with it
+(`stroke_collision`), before it keeps the stroke:
+
+| Target | What the stroke rewrites |
+|---|---|
+| `coll` BSP | the BSP, compiled as its save compiles it (`CollSource::writes`) |
+| Structure cluster | the level: collision, per-leaf block, MOPP, portals, pathfinding (`geometry_edit::level_rebuild`) |
+| Instanced definition | refused: sculpt the cluster it stands in |
+| Model section | nothing: it has no collision of its own |
+
+A cluster's level is rebuilt from every edited cluster of its structure
+(`collision_build::rebuild`, `Level::rebuild`), on the stroke and on every
+later edit of that structure:
+
+1. Collision surfaces that are not on the render triangles stay.
+   Surfaces on a changed triangle go; the changed triangles' new faces
+   come in (`from_render`), with the attributes of the old surfaces of
+   the same render material, and the unchanged triangles under a gone
+   surface come back.
+2. The tree is compiled again (`build_with`), each portal's plane kept
+   and renumbered, then checked (`verify::check`, the limits).
+3. Each new leaf takes the per-leaf element of the old leaf its cell's
+   centre stood in, else the nearest edited cluster's. The MOPP is built
+   again (`level::rebuild_mopp`).
+4. A portal whose ground edge (both corners and its middle on the old
+   surface) crosses the change has that edge laid along the new surface:
+   the portal plane's cut through the new triangles, corner to corner,
+   with its centre and radius again (`level_rebuild::follow`).
+5. Pathfinding's sectors, links, refs, 2D nodes and vertices are
+   generated again (`pathfind::generate`).
+
+The save (`StructureLevel::writes`) patches each block whose count
+holds and grows the rest in the ordinary metadata. `GeometrySession::
+level_change` gives the rebuilt level while the undo state holds it.
+
+A stroke is refused as `Error::Refused`, naming the target, and nothing
+is logged or stepped, when the level cannot be read (not one collision
+BSP), the compiler refuses the rebuilt tree, a cut leaves a gap under a
+portal's edge (`portal <k>: ...`), or the pathfinding has hints or object
+references that name sectors. Studio refuses a save of a structure that
+has both added collision boxes (`level_collision`) and a sculpted level.
 
 ### Import and stable export
 
@@ -775,7 +811,7 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.loop_cut {edge, cuts?, factor?}` | returns the new verts |
 | `mesh.fill`, `mesh.flip`, `mesh.recalc_normals`, `mesh.triangulate`, `mesh.tris_to_quads {angle?}` | |
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
-| `mesh.sculpt {brush, centre \| points, radius, strength?, falloff?, height?, axis?, detail?}` | one brush stroke, one undo step, one `sculpt` op; answers class, moved, verts and faces; a stroke the kernel or the collision compiler refuses is `REFUSED` with the reason |
+| `mesh.sculpt {brush, centre \| points, radius, strength?, falloff?, height?, axis?, detail?}` | one brush stroke, one undo step, one `sculpt` op; answers class, moved, verts and faces; a stroke the kernel or the level rebuild refuses is `REFUSED` with the reason |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed, and the way to run any op above (`{"op": "bevel", "width": 0.1}`, `{"op": "inset", "thickness": 0.1}`, `{"op": "tris_to_quads"}`) |
 | `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `new`, `none`), any reshape, and the sequences; `grown` and `movable` say whether a save moves the tag |
@@ -885,8 +921,8 @@ more. Every acceptance test is on invented data; a disc test is
 | 10 | **Converted maps**: the overlay, its application in `h1convert` and `h1-assets`, the editor's save through conversion | M | 2, 8 | an overlay with a stale hash is an error; a converted fixture with an extrude overlay has the extruded faces in its cluster and passes the converter's own checks (`check_visibility`, portal and cluster tests) |
 | 11 | **Level collision, adding solids**: compile, `merge`, the leaf block, MOPP, checksum; grown blocks in ordinary metadata | L | 7, 8 | merged level validates; every old segment query gives its old answer away from the solid, and hits the solid inside it; added leaves have their stand-in's cluster; the MOPP returns every touching surface on sampled boxes |
 | 12 | **Lightmaps**: stale marks are in slice 3; here the `Relighter` trait, chart packing and the sun-plus-ambient implementation | M | 6, 7 | new charts do not overlap used texels (a coverage mask from the page's `1f` triangles); a lit quad facing the sun is brighter than one facing away; the page's other texels are unchanged |
-| 13 | **Level collision, rebuild**, converted maps first | L | 10, 11 | the converter's collision and flood tests on a fixture with a wall moved and a wall deleted; for retail, the disc survey of index holders first |
-| 14 | **Sculpt brushes**: `Sculpt` with refine, raise, lower, smooth, flatten and cut; the collision compile per stroke; the viewport brush; `mesh.sculpt` | M | 1, 2, 8 | in `crates/tools/mesh-edit/tests/sculpt.rs`: each brush's shape on a grid against its falloff, a path swept not summed, refinement to the detail with interpolated corners, a cut whose rim is on the circle and one through a closed slab, the op's JSON replaying to the same mesh, every refusal changing nothing; in `geometry-edit`: a sculpted `coll` BSP saved and read back with `verify::check`, a stroke the compiler refuses not kept, a cluster stroke and cut each one undo step; `mesh.sculpt` through the API with `doc.undo` |
+| 13 | **Level collision, rebuild**: a sculpted cluster's collision, per-leaf block, MOPP, portals and pathfinding rebuilt and saved with the stroke | L | 10, 11, 14 | in `geometry-edit/src/level_rebuild_tests.rs` on `fixture_with_textured_level`: a stroke on the cluster saved and read back with `verify::check`, solid under the bump and open over it, the portal on its kept plane with its ground edge on the new floor; undo drops the rebuild; a cut under the portal refused by name. For retail, the disc survey of index holders still comes before a wall moved or deleted |
+| 14 | **Sculpt brushes**: `Sculpt` with refine, raise, lower, smooth, flatten and cut; the collision rewrite per stroke; the viewport brush; `mesh.sculpt` | M | 1, 2, 8 | in `crates/tools/mesh-edit/tests/sculpt.rs`: each brush's shape on a grid against its falloff, a path swept not summed, refinement to the detail with interpolated corners, a cut whose rim is on the circle and one through a closed slab, the op's JSON replaying to the same mesh, every refusal changing nothing; in `geometry-edit`: a sculpted `coll` BSP saved and read back with `verify::check`, a stroke the compiler refuses not kept, a cluster stroke on a structure with no level collision refused; `mesh.sculpt` through the API with `doc.undo` |
 
 Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
 

@@ -20,6 +20,8 @@ mopp = { path = "../../formats/mopp" }
 editor-core = { path = "../editor-core" }
 # A solid added to a structure's level collision: compile, merge, MOPP.
 collision-build = { path = "../collision-build" }
+# A sculpted structure's pathfinding, generated again from its collision.
+pathfind = { path = "../../formats/pathfind" }
 
 [dev-dependencies]
 # The invented textured map (one cluster, a local raw block).

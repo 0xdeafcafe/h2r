@@ -73,7 +73,7 @@ pub struct LevelStage {
 
 impl Level {
     /// Checks the per-leaf block holds one element per leaf.
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         if self.leaves.len() != self.bsp.leaves.len() * LEAF_SIZE {
             return Err(Error::Invalid(format!(
                 "the per-leaf block holds {} bytes for {} leaves",
