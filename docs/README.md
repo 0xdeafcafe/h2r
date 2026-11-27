@@ -15,7 +15,7 @@ flowchart LR
 
 | Area | Folder | Pages | Start here |
 |---|---|---|---|
-| Lifter | `lifter/` | 19 | [LIFTER.md](lifter/LIFTER.md) |
+| Lifter | `lifter/` | 20 | [LIFTER.md](lifter/LIFTER.md) |
 | Runtime | `runtime/` | 32 | [BOOT.md](runtime/BOOT.md) |
 | Input | `input/` | 6 | [input.md](input/input.md) |
 | Graphics | `graphics/` | 50 | [graphics.md](graphics/graphics.md) |
@@ -53,6 +53,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [dispatch-coverage.md](lifter/dispatch-coverage.md): indirect-dispatch coverage of the campaign's main tables, and how to reproduce it
 - [xdk-libraries.md](lifter/xdk-libraries.md): how `h2 symbols` identifies statically linked XDK library code
 - [BUILD-CACHE.md](lifter/BUILD-CACHE.md): generated-source and object caches, locking, iteration builds, `H2_EMIT_TARGET`; read before changing the build
+- [lift-pruning.md](lifter/lift-pruning.md): design for leaving out guest functions that Rust replaces outright and all that only they reach: the replaced list, reachability, the named stop
 - Notes: [build-perf.md](lifter/notes/build-perf.md) (build-time measurements behind the caches), [fp-census.md](lifter/notes/fp-census.md) (floating-point census of the retail image), [not-adopted.md](lifter/notes/not-adopted.md) (lifter experiments that lost), [precedents.md](lifter/notes/precedents.md) (public lifter projects read), [x87-native.md](lifter/notes/x87-native.md) (guarded native x87 measurements), [x87-transcendentals.md](lifter/notes/x87-transcendentals.md) (guarded transcendental measurements)
 
 ## Runtime: booting and running the game (`runtime/`)
