@@ -327,7 +327,17 @@ fn siege_holds_each_death_for_its_sides_wave() {
         assert!(p.alive);
         assert_eq!(p.lives, 1, "the wave gave the life back");
     }
-    assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
+    // Each death was told its side's wave: the first of a side the whole
+    // 10 s, the next the part of a second short.
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            "Reinforcements in 10 seconds",
+            "Reinforcements in 9 seconds",
+            "Reinforcements in 10 seconds",
+        ]
+    );
 }
 
 /// A map with no territory starts at the final assault: the attackers
@@ -1116,6 +1126,24 @@ fn siege_equips_a_row_picked_after_the_spawn() {
             kit(2, 1, BRUTE, NEEDLER),
         ]
     );
+}
+
+/// A death tells the player when their side's wave lands: the whole wave
+/// for the first of a side to die, the seconds left for the next.
+#[test]
+fn siege_tells_the_dead_when_their_wave_lands() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(120);
+    ticks[1] = serde_json::json!({"events": [{"death": 0}]});
+    ticks[60] = serde_json::json!({"events": [{"death": 1}]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let told: Vec<&str> = lines(&r).into_iter().filter(|l| l.starts_with("Reinforcements")).collect();
+    // The attackers' wave began at tick 1 (10 s); the defenders' at tick 60.
+    assert_eq!(told, ["Reinforcements in 10 seconds", "Reinforcements in 10 seconds"], "{:?}", lines(&r));
 }
 
 /// A phase-1 site held through phase 0 does nothing: no site is taken, no

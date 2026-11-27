@@ -337,6 +337,15 @@ fn fall_back() {
 fn hold(p: player) {
     if p.team == team 0 and wave0 == 0t { wave0 = wave_time }
     if p.team == team 1 and wave1 == 0t { wave1 = wave_time }
+    // The dead are told when their side's wave lands: the seconds left of
+    // the wave already running, or the whole of the one this death began.
+    if p.team == team 0 {
+        let secs = whole_seconds(wave0)
+        if secs > 0 { message(p, "Reinforcements in {secs} seconds") }
+    } else {
+        let secs = whole_seconds(wave1)
+        if secs > 0 { message(p, "Reinforcements in {secs} seconds") }
+    }
 }
 
 // The side's dead come back together.

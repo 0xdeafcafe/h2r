@@ -1246,7 +1246,8 @@ stand taking every site wins it. A run the gate does not guard (a
 scenario) with neither draws the round at its start with a message. The
 variant's `lives = 1` holds each death's respawn (the engine's own
 lives gate), and each side's dead come back together when its wave
-timer (`wave_time`) runs out (`respawn`). Each side spawns near its
+timer (`wave_time`) runs out (`respawn`); a death is told "Reinforcements
+in N seconds" (`hold`), the seconds left of its side's wave. Each side spawns near its
 line (`spawn_near`, the four starting locations nearest it), and the
 lines move with the phases: the attackers start at their own flag stand
 (`base[team 0]`) and spawn at each site they take, and the defenders
