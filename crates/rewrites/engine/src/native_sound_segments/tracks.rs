@@ -179,6 +179,7 @@ pub(super) fn run(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
                 c.esi = frame::slot(c, g, 0x20)?;
                 let voices = g.u8(at(c.esi, 0x51))?;
                 c.eax = byte(c.eax, voices);
+                logic(c, voices.into(), 0x80);
                 if voices == 0 {
                     c.edx = byte(c.edx, g.u8(at(c.esi, 0xc))? >> 3);
                     c.eax = at(c.esi, 0xc);
@@ -188,7 +189,11 @@ pub(super) fn run(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
                     } else {
                         c.ecx = g.u32(at(c.esi, 4))?;
                         c.edx = g.u32(points::TAG_ENTRIES.base)?;
-                        c.ecx = g.u32(at(c.edx, (c.ecx & 0xffff) * 16 + 8))?;
+                        // `and ecx, 0xffff; shl ecx, 4` set the flags the call sees.
+                        c.ecx &= 0xffff;
+                        logic(c, c.ecx, 0x8000_0000);
+                        c.ecx = crate::sim_objects::alu::shl(c, c.ecx, 4, 32);
+                        c.ecx = g.u32(at(c.edx, c.ecx.wrapping_add(8)))?;
                         g.u32(at(c.ecx, 0x10))?
                     };
                     sse::load(c, 0, radius);
