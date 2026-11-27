@@ -76,6 +76,10 @@ pub struct Shot {
 /// The tool's state.
 pub struct UiScreens {
     pub pick: Option<Pick>,
+    /// The title and rows a picker screen is shown with, set just before
+    /// the pick that uses them (`ui.pick`'s `title` and `rows`) and
+    /// consumed by it.
+    pub offer: Option<(String, Vec<String>)>,
     live: Option<Box<dyn Live>>,
     /// The disc the pictures come from, by its path.
     disc: Option<(PathBuf, Disc)>,
@@ -103,6 +107,7 @@ impl Default for UiScreens {
     fn default() -> Self {
         UiScreens {
             pick: None,
+            offer: None,
             live: None,
             disc: None,
             disc_error: None,
@@ -184,8 +189,11 @@ impl UiScreens {
     pub fn select(&mut self, pick: Pick) -> Result<()> {
         match &pick {
             Pick::Native { screen, state } => {
-                let mut live =
-                    screens::live(screen).with_context(|| format!("no screen {screen:?}"))?;
+                let offered = self.offer.take();
+                let mut live = offered
+                    .and_then(|(title, rows)| screens::live_offer(screen, &title, &rows))
+                    .or_else(|| screens::live(screen))
+                    .with_context(|| format!("no screen {screen:?}"))?;
                 if !live.go(state) {
                     bail!("{screen} has no state {state:?}");
                 }

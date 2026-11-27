@@ -50,6 +50,31 @@ fn retail_sample_named(tag: &str, sample: Option<&str>) -> Result<(), agent_prot
     ))
 }
 
+/// `ui.pick`'s `title` and `rows`: the offer a picker screen is shown with.
+/// Both or neither (`title` alone is refused); at least one and at most 16
+/// rows; only on `kit.picker` and `kit.picker.game`.
+fn picker_offer(p: &P) -> Result<Option<(String, Vec<String>)>, agent_proto::RpcError> {
+    let title = p.opt_str("title")?;
+    let Some(rows) = p.0.get("rows") else {
+        return match title {
+            None => Ok(None),
+            Some(_) => Err(err(code::INVALID_PARAMS, "title goes with rows: ui.pick {\"screen\": ..., \"title\": ..., \"rows\": [...]}")),
+        };
+    };
+    let rows: Vec<String> = rows
+        .as_array()
+        .and_then(|a| a.iter().map(|r| r.as_str().map(str::to_owned)).collect())
+        .ok_or_else(|| err(code::INVALID_PARAMS, "rows: an array of strings"))?;
+    if rows.is_empty() || rows.len() > 16 {
+        return Err(err(code::INVALID_PARAMS, "rows: 1 to 16 rows"));
+    }
+    let screen = p.opt_str("screen")?;
+    if !matches!(screen, Some("kit.picker" | "kit.picker.game")) {
+        return Err(err(code::INVALID_PARAMS, "rows and title are for the picker screens: ui.pick {\"screen\": \"kit.picker.game\", ...}"));
+    }
+    Ok(Some((title.unwrap_or("").to_owned(), rows)))
+}
+
 fn need_pick(app: &App) -> Result<(), agent_proto::RpcError> {
     match app.ui_screens.pick {
         Some(_) => Ok(()),
@@ -81,6 +106,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::UI_PICK => {
             let sample = p.opt_str("sample")?;
+            let offer = picker_offer(p)?;
             let pick = match (p.opt_str("screen")?, p.opt_str("retail")?) {
                 (Some(screen), None) => {
                     if sample.is_some() {
@@ -127,7 +153,9 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
             };
             app.perform(Action::SetTool(ToolKind::UiScreens), false)
                 .map_err(refused)?;
+            app.ui_screens.offer = offer;
             app.perform(Action::UiPick(pick), false).map_err(refused)?;
+            app.ui_screens.offer = None;
             Ok(
                 json!({ "pick": pick_json(app.ui_screens.pick.as_ref()), "summary": app.ui_screens.summary() }),
             )
