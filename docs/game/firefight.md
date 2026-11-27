@@ -841,8 +841,11 @@ material is sky when its shader's path has a component `sky`, or ends in
 materials block at `+0xa4`, 0x20 bytes an element with the shader at `+8`),
 and `Config::sky_materials` adds more. The fall is the lower of 40 and the
 way up to the top of the collision, and under 12 is no fall. The retail
-multiplayer maps have no sky material in their collision and no lid: open sky
-is a ray that hits nothing ([note](notes/2026-11-27-firefight-sky-materials.md)). With no open
+multiplayer maps have no sky material in their collision but close their world
+in a lid at the sky height: a map with no sky material tests against the walls
+without that lid (`bots::cache::walls_without_sky`, as the ship's paths do), so
+open sky is a ray that hits nothing else
+([note](notes/2026-11-27-firefight-sky-materials.md)). With no open
 zone or start there are no pods. `Package::pods` (`PodReport`) says `kept
 (tag, tags copied, bytes, zone falls); pod starts: N of M open` or `cut
 (reason)`; `Costs::pods` is the bytes. The game reads them with the kit
