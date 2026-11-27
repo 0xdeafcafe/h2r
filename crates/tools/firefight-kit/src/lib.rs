@@ -590,7 +590,14 @@ fn assemble(
     let added = match classes {
         Some(c) => transplant::add(&mut set, c, keep, &copies, copy_pod)?,
         None if !copies.is_empty() => {
-            return Err(transplant::ShipRefused("no donor maps for the dropship".into()).into());
+            let phantom_copied = picks
+                .iter()
+                .any(|(k, p)| *k == ShipKind::Phantom && matches!(p, ship::Pick::Copy(_)));
+            return Err(if phantom_copied {
+                transplant::ShipRefused("no donor maps for the dropship".into()).into()
+            } else {
+                transplant::PelicanRefused("no donor maps for the pelican".into()).into()
+            });
         }
         None if copy_pod.is_some() => {
             return Err(transplant::PodRefused("no donor maps for the drop pod".into()).into());

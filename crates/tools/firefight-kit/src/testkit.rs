@@ -158,6 +158,14 @@ pub const SHARED_WEAPON: &str = r"objects\weapons\rifle\plasma_rifle\plasma_rifl
 /// hunter 0x10000. Every biped (0x10 bytes) points at one `rail` weapon,
 /// so the second class pays only for its char and biped.
 pub fn donor() -> Vec<u8> {
+    donor_with(false)
+}
+
+/// The size of the donor's Pelican data block.
+pub const PELICAN_BULK: usize = 0x3000;
+
+/// [`donor`], with the Pelican as well when `pelican`.
+pub fn donor_with(pelican: bool) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, DONOR, r"invented\donor");
     for group in [b"matg", b"scnr", b"char", b"bipd", b"weap", b"vehi"] {
         set.add_group(FourCC(*group), None, None);
@@ -195,6 +203,12 @@ pub fn donor() -> Vec<u8> {
         TagPayload::Built(phantom),
     )
     .unwrap();
+    if pelican {
+        let mut ship = Block::zeroed(0x20);
+        ship.data(0x10, Block::new(vec![8; PELICAN_BULK]).aligned(1));
+        set.add_tag(FourCC(*b"vehi"), crate::ship::PELICAN, TagPayload::Built(ship))
+            .unwrap();
+    }
     for (name, bulk) in [("grunt", 0x20usize), ("jackal", 0x20), ("hunter", 0x10000)] {
         let mut unit = Block::zeroed(0x10);
         unit.tag_ref(0, rail);

@@ -1,6 +1,6 @@
 //! The dropship on invented maps: no input files, no game data.
 use super::*;
-use crate::testkit::{self, DONOR, PHANTOM_BULK};
+use crate::testkit::{self, DONOR, PELICAN_BULK, PHANTOM_BULK};
 use crate::{Built, Classes, Config, Donor, Labels, Mode, build_with_classes};
 use h1campaign::ai::h2::Area;
 use tags::schema::Schema;
@@ -46,6 +46,29 @@ fn classes<'a>(
     }
 }
 
+/// Every point set's point names, by set number.
+fn point_names(bytes: &[u8]) -> Vec<Vec<String>> {
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    ScenarioAi::read_map(&mut map)
+        .unwrap()
+        .point_sets
+        .iter()
+        .map(|s| s.points.iter().map(|p| p.name.clone()).collect())
+        .collect()
+}
+
+/// The object names the kit added, without their padding.
+fn object_names(bytes: &[u8]) -> Vec<String> {
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let scenario = map.scenario().unwrap().id;
+    let root = map.read_tag_bytes(scenario).unwrap();
+    metadata_block(&mut map, &root, OBJECT_NAMES as usize, OBJECT_NAME)
+        .unwrap()
+        .iter()
+        .map(|n| String::from_utf8_lossy(&n[..n.iter().position(|b| *b == 0).unwrap_or(32)]).into_owned())
+        .collect()
+}
+
 /// What the guest reads of the ship: the placement `ff_ship` by its object
 /// name, the palette row it names, and the point sets.
 struct Found {
@@ -65,8 +88,8 @@ fn read(bytes: &[u8]) -> Found {
     let names = metadata_block(&mut map, &root, OBJECT_NAMES as usize, OBJECT_NAME).unwrap();
     let ship = names
         .iter()
-        .find(|n| n.starts_with(SHIP_NAME.as_bytes()) && n[SHIP_NAME.len()] == 0)
-        .expect("an object named ff_ship");
+        .find(|n| n.starts_with(b"ff_ship_phantom\0"))
+        .expect("an object named ff_ship_phantom");
     assert_eq!(u16::from_le_bytes([ship[0x20], ship[0x21]]), 1, "a vehicle");
     let at = usize::from(u16::from_le_bytes([ship[0x22], ship[0x23]]));
     let placements = metadata_block(&mut map, &root, placement_at.into(), stride.into()).unwrap();
@@ -112,7 +135,7 @@ fn the_kit_places_one_parked_ship_and_a_path_per_clear_zone() {
         let zone: usize = set.name.strip_prefix(PATH_PREFIX).unwrap().parse().unwrap();
         assert!(zone < built.zones, "{}", set.name);
         let names: Vec<_> = set.points.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, POINTS);
+        assert_eq!(names, ["run_in", "hover_phantom", "run_out"]);
         let [run_in, hover, run_out] = [0, 1, 2].map(|i| set.points[i].position);
         // Hover is the drop height over the zone's mean, the runs are
         // outside the play area and above it.
@@ -184,7 +207,7 @@ fn a_zone_under_a_roof_gets_no_path() {
     let walls = Walls::new(tris);
     let under = zone([10.0, 10.0, 0.0]);
     let open = zone([80.0, 80.0, 0.0]);
-    let runs = plan(&walls, &[under, open]);
+    let runs = plan(&walls, &[under, open], 0.0);
     assert_eq!(runs[0], None, "the roof is over the first zone");
     let run = runs[1].expect("the open zone has a path");
     assert_eq!(run.points[1], [80.0, 80.0, DROP_HEIGHT]);
@@ -194,7 +217,7 @@ fn a_zone_under_a_roof_gets_no_path() {
         assert!(p[..2].iter().any(|c| !(0.0..=100.0).contains(c)), "{p:?}");
     }
     // A zone with no collision at all has none either.
-    assert_eq!(plan(&Walls::new(Vec::new()), &[zone([0.0; 3])]), [None]);
+    assert_eq!(plan(&Walls::new(Vec::new()), &[zone([0.0; 3])], 0.0), [None]);
 }
 
 #[test]
@@ -285,7 +308,7 @@ fn a_column_clear_of_roofs_is_flown_steeply_when_cliffs_block_the_long_run() {
     // Cliffs 25 round, 40 high: the long shallow run from
     // the sky at 50 meets them, a dive from 30 away does not.
     let walls = Walls::new(canyon());
-    let run = plan(&walls, &[zone([0.0, 0.0, 0.0])])[0].expect("a steep run gets in");
+    let run = plan(&walls, &[zone([0.0, 0.0, 0.0])], 0.0)[0].expect("a steep run gets in");
     assert_eq!(run.points[1], [0.0, 0.0, DROP_HEIGHT]);
     let along = libm::hypotf(run.points[0][0], run.points[0][1]);
     assert!(along <= STEEP_REACH[0] + 1e-3, "{along}");
@@ -295,5 +318,46 @@ fn a_column_clear_of_roofs_is_flown_steeply_when_cliffs_block_the_long_run() {
 fn a_zone_boxed_in_by_a_roof_the_height_of_the_cliffs_has_no_path() {
     let mut tris = canyon();
     tris.extend(square(30.0, -30.0, 30.0));
-    assert_eq!(plan(&Walls::new(tris), &[zone([0.0, 0.0, 0.0])]), [None]);
+    assert_eq!(plan(&Walls::new(tris), &[zone([0.0, 0.0, 0.0])], 0.0), [None]);
+}
+
+#[test]
+fn the_kit_parks_one_ship_per_kind_kept() {
+    let (base, donor, schema) = (testkit::court(), testkit::donor_with(true), testkit::donor_schema());
+    let with = classes(&donor, &schema, &[]);
+    let built = kit(&base, Dropship::Auto, Some(&with)).unwrap();
+    let (phantom, pelican) = (built.ship.clone().unwrap(), built.pelican.clone().unwrap());
+    assert!(phantom.kept && pelican.kept, "{phantom}; {pelican}");
+    assert_eq!((phantom.tag.as_str(), pelican.tag.as_str()), (PHANTOM, PELICAN));
+    assert!(pelican.bytes >= PELICAN_BULK, "{pelican}");
+    assert_eq!(built.costs.ship, phantom.bytes + pelican.bytes);
+    assert_eq!(object_names(&built.bytes), ["ff_ship_phantom", "ff_ship_pelican"]);
+    // One path a zone, with a hover key for each kind kept.
+    for names in point_names(&built.bytes) {
+        assert_eq!(names, ["run_in", "hover_phantom", "hover_pelican", "run_out"]);
+    }
+    // A Pelican the donors lack is cut, and the Phantom is kept.
+    let none = classes(&testkit::donor(), &schema, &[]);
+    let built = kit(&base, Dropship::Auto, Some(&none)).unwrap();
+    assert!(built.ship.unwrap().kept);
+    assert!(!built.pelican.clone().unwrap().kept, "{:?}", built.pelican);
+    assert_eq!(object_names(&built.bytes), ["ff_ship_phantom"]);
+}
+
+#[test]
+fn a_path_too_narrow_for_the_pelican_keeps_the_phantom_only() {
+    // The Pelican reaches wider than the Phantom: a small slab 8 to the side
+    // of the zone is out of the Phantom's reach and in the Pelican's.
+    let mut tris: Vec<_> = square(0.0, -100.0, 100.0).into_iter().collect();
+    tris.push([[7.0, -1.0, 20.0], [9.0, -1.0, 20.0], [9.0, 1.0, 20.0]]);
+    tris.push([[7.0, -1.0, 20.0], [9.0, 1.0, 20.0], [7.0, 1.0, 20.0]]);
+    let walls = Walls::new(tris);
+    let at = [0.0, 0.0, 0.0];
+    let phantom = plan(&walls, &[zone(at)], radius(ShipKind::Phantom));
+    let pelican = plan(&walls, &[zone(at)], radius(ShipKind::Pelican));
+    assert!(phantom[0].is_some(), "the Phantom gets in");
+    assert_eq!(pelican, [None], "the Pelican does not");
+    // The kit reads it the same way: no run, the Pelican cut by name.
+    let report = ShipReport::cut_kind(ShipKind::Pelican, "x");
+    assert_eq!(report.to_string(), "pelican: cut (x)");
 }

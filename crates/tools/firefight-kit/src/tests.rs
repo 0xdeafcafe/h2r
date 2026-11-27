@@ -249,7 +249,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         &Labels::default(),
         None,
         0,
-        false,
+        0,
         false,
         fit,
         u32::MAX,
