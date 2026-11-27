@@ -237,10 +237,18 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [superbounce-ghosts-medals.md](game/superbounce-ghosts-medals.md): Ghost runs, the medals, recording and the bounce view.
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
+- [ui-builder-dialogs.md](game/ui-builder-dialogs.md): The modal dialog, panel texts and the Dialog kind.
+- [ui-builder-settings-dialog.md](game/ui-builder-settings-dialog.md): The settings dialog, the value picker, a page header, Game Setup picture and description, Quick Options and behaviour.
+- [ui-builder-yaml-editor.md](game/ui-builder-yaml-editor.md): Screens in YAML, the design system, the layout gallery, editing in the editor and retail-screen fidelity.
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
 - [ui-in-maps.md](game/ui-in-maps.md): our screens as generated `wgit` tags in the mainmenu and shared maps, listed in the `wgtz`, cached by disc map and docs hash
 - [hud-kit.md](game/hud-kit.md): the HUD kit (design): what Halo 2's HUD is made of (widgets, messages, training prompts, colours, fonts, anchors), HUD elements of ours drawn by the game's own HUD code, `h2 hud preview` and its checks, the superbounce HUD rebuilt on it
+- [hud-kit-how-it-works.md](game/hud-kit-how-it-works.md): The mechanism: how the kit builds and draws the HUD.
+- [hud-kit-preview-superbounce.md](game/hud-kit-preview-superbounce.md): The preview and the checks, and the superbounce HUD built on the kit.
+- [hud-kit-readout-interfaces.md](game/hud-kit-readout-interfaces.md): The superbounce readout, the scripted objective HUD, interfaces, rules, evidence and the build plan.
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
+- [skulls-modes.md](game/skulls-modes.md): Where each effect lives, and how skulls work in multiplayer and Firefight.
+- [skulls-ours.md](game/skulls-ours.md): The skulls we add, and what is not verified.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
