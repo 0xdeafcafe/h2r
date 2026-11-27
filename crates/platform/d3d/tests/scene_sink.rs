@@ -978,7 +978,7 @@ mod retained_admission {
         // Post's glow and screen effects are carried as sealed scene
         // stages, not admitted draws; the rest are carried only as the
         // guest's own admitted draws. A transparent range is carried by
-        // `native_carry` (`the_transparents_*`), not by this water draw.
+        // `a_transparent_run_replays_on_the_display_copy`.
         for (stage, reference) in [
             (Stage::Post, false),
             (Stage::Particles, false),
