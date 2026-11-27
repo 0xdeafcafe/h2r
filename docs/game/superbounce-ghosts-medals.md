@@ -450,6 +450,11 @@ Lab runs through the agent API at 30 frames a second, as
   and `medal-` states: the glyph in its own colours, the line's place
   and fade.
 
+[superbounce-medals.toml](../runtime/sim-examples/superbounce-medals.toml)
+answers the second bounce, what ends a chain, Bounced and the launch
+against 16 off the lab, from the sim's `bounce` block. The airborne bit,
+host and guest and the HUD line still need the lab.
+
 No game was run for this section.
 
 ## The bounce view
