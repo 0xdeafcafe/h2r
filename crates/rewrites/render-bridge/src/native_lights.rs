@@ -174,9 +174,53 @@ pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
     drawn
 }
 
+/// Draws one cut light's layers (`passes`, all of one light) now, at its
+/// passes `0x00031170` or its first-person slot, on `view_target`: the
+/// place the guest's own passes would draw them. `false` when the host
+/// refuses or is not there, or the target is unknown: nothing is drawn,
+/// and the caller runs the guest's passes, so a light the host cannot
+/// take is never dropped. A light with no drawn layer draws nothing.
+pub(crate) fn draw_cut_light(
+    mem: &mut dyn GuestMemory,
+    passes: &[ScenePass],
+    view_target: Option<[u32; 8]>,
+) -> bool {
+    if passes.is_empty() {
+        return true;
+    }
+    if Stage::Lights.standing_down() {
+        return false;
+    }
+    let (Some(view_target), Some(host)) = (view_target, HOST.lock().unwrap_or_else(|e| e.into_inner()).clone())
+    else {
+        return false;
+    };
+    let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
+    if !host.draw_scene_light(mem, SceneDraw { passes, view_target, serial }) {
+        return false;
+    }
+    SCENE_DRAWN.fetch_add(passes.len() as u64, Ordering::Relaxed);
+    true
+}
+
+/// The game view's target, read at the view's start.
+pub(crate) fn view_target() -> Option<[u32; 8]> {
+    VIEW_TARGET.get()
+}
+
+/// The target the device has bound now.
+pub(crate) fn bound_target() -> Option<[u32; 8]> {
+    HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?.target()
+}
+
 /// First-person slots the scene path took ([`draw_first_person_scene`]).
 pub fn first_person_scene_slots() -> u64 {
     first_person::scene_slots()
+}
+
+/// First-person slots the host did not draw ([`draw_cut_light`]).
+pub fn first_person_kept_host_slots() -> u64 {
+    first_person::kept_host_slots()
 }
 
 /// Draws the first-person lights' layers the scene path took
@@ -325,6 +369,12 @@ pub trait Host: Send + Sync {
     /// drawn; one it keeps draws nothing.
     fn draw_scene(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> usize {
         0
+    }
+    /// Draw one cut light's layers now, where its passes or its
+    /// first-person slot stand ([`draw_cut_light`]), as one sequence.
+    /// `false` issues nothing, and the guest's passes draw the light.
+    fn draw_scene_light(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> bool {
+        false
     }
     /// Draw the view's object shadows from the scene in slot 3, before
     /// layer 7. Returns the shadows drawn; one it keeps draws nothing.
@@ -1394,6 +1444,65 @@ mod tests {
         let mut m = FlatMemory::new(0, 0x1000);
         assert_eq!(draw_scene(&mut m, &passes), 1);
         assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
+    }
+
+    /// Draws a cut light now when `accept`, counting what it is handed.
+    struct Cut {
+        accept: bool,
+        handed: Mutex<usize>,
+    }
+
+    impl Host for Cut {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
+        fn draw_scene_light(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> bool {
+            *self.handed.lock().unwrap() += draw.passes.len();
+            self.accept
+        }
+    }
+
+    /// A cut light draws at its passes or not at all: a host that refuses
+    /// it, no host and no target all answer `false`, so the caller runs
+    /// the guest's passes; a light with no drawn layer needs no host.
+    #[test]
+    fn a_cut_light_the_host_refuses_is_left_to_the_guests_passes() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let pass = ScenePass {
+            slot: LIGHT_SLOT,
+            light: frame_scene::Light::default(),
+            group: SceneGroup {
+                group: frame_scene::LightGroup {
+                    light: 0,
+                    layer: 12,
+                    site: frame_scene::GroupSite::Light,
+                    projection: None,
+                    pass: None,
+                    entries: 0..0,
+                    remainder: 0,
+                },
+                entries: Vec::new(),
+                rows: Vec::new(),
+            },
+        };
+        let mut m = FlatMemory::new(0, 0x1000);
+        *HOST.lock().unwrap() = None;
+        assert!(!draw_cut_light(&mut m, std::slice::from_ref(&pass), Some([1; 8])), "no host");
+        assert!(draw_cut_light(&mut m, &[], None), "nothing to draw");
+        for accept in [false, true] {
+            let host = Arc::new(Cut { accept, handed: Mutex::new(0) });
+            set_host(host.clone());
+            assert!(!draw_cut_light(&mut m, std::slice::from_ref(&pass), None), "no target");
+            assert_eq!(*host.handed.lock().unwrap(), 0);
+            assert_eq!(draw_cut_light(&mut m, std::slice::from_ref(&pass), Some([1; 8])), accept);
+            assert_eq!(*host.handed.lock().unwrap(), 1);
+        }
+        *HOST.lock().unwrap() = None;
     }
 
     /// The layers a host is handed, with their slots.

@@ -20,7 +20,7 @@ flowchart LR
   G[visible-light gather] --> F[frame body: lists, records]
   F --> P[per light: item lists]
   P --> S[scene_frame: groups into the scene]
-  S --> H[draw_scene: layers 10, 11, 14, 12, 13]
+  S --> H[draw_cut_light: layers 10, 11, 14, 12, 13]
   F -.refused.-> D[guest layers and D3D]
 ```
 
@@ -151,7 +151,7 @@ The light frame is a cut producer (`render_bridge::cut::CUTS`, row
 | 4 | 12 | the view's | diffuse |
 | 5 | 13 | the view's | specular (flag bits 0 and 1) |
 
-The order is per light, in slot 4 and then slot 10 (`native_lights::draw_scene`). A light with a shader gel draws it first.
+Each light draws at its own passes, in the guest's order (`native_lights::draw_cut_light`). A light with a shader gel draws it first.
 
 When the host draws the scene's light layers
 (`render_bridge::native_lights::scene_path_ready`, the host's
@@ -171,6 +171,7 @@ the guest's draw:
 |---|---|
 | the passes' entry plan | the whole original `0x00031170` |
 | `scene_frame::light`, after the item lists | the guest's remaining passes: constants, shadow setup, layers 10 to 14 (`passes::after_lists` returns `None`) |
+| the host's draw of the light (`Host::draw_scene_light` false) | the same: the guest's remaining passes, counted `scene_kept_light_host` |
 
 `native_lights::scene_frame` puts what the remaining steps would draw
 into the scene. The light and its steps come from the hand-off at the
@@ -191,12 +192,14 @@ the cut does not make, is the guest's whole.
 | Counter (`render.scene`) | Counts |
 |---|---|
 | `scene_cut_lights`, `scene_cut_light_groups` | lights and groups the scene took |
-| `scene_kept_light_<cause>` | lights the guest draws: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters` |
+| `scene_kept_light_<cause>` | lights the guest draws: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters`, `host` |
 | `scene_kept_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
 
 Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
 `a_kept_light_is_counted_by_cause_and_group_refusal`
-(`native_lights/passes.rs`).
+(`native_lights/passes.rs`),
+`a_cut_light_the_host_refuses_is_left_to_the_guests_passes`
+(`native_lights.rs`).
 
 ### Entry state
 
@@ -228,14 +231,54 @@ Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_
 `a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip`
 (`native_render::light_gpu`).
 
-Once the view's light pass is over (at the decal mode that follows it),
-`native_lights::draw_scene` hands the open view's light layers to the
-host in the passes' order. The game host (`native_lights_glue/scene.rs`)
-makes each light one external sequence
-(`d3d::Device::prepare_external_sequence`), each step on its own
-attachments with nothing rebound. It commits the sequence whole with no
-light tail (`d3d::PreparedSequence::commit`), or drops the light. The
-guest's layer begin and end do not run; their device work is the steps:
+### Visible subparts
+
+The emitter `0x0004daa0` draws a record's visible subparts, not the
+whole part, when they fall short of it: spans of the part's source
+indices (`scene_extract::layout::world_ranges::emissions`). In strip
+topology each subpart is its own strip; in list topology consecutive
+ones are one list. The entry carries the spans (`LightEntry::subparts`;
+`None` is the whole part).
+
+The native buffers hold each part's triangles in source order, the
+degenerate ones dropped, and for the world those naming a vertex past
+the section's. `native_render::subpart_map::TriangleMap` counts the kept
+triangles before each source position, so each span is one native range:
+
+| Topology | A span maps when | Else |
+|---|---|---|
+| list | it starts and ends on a triangle | no range |
+| strip | it starts at an even position (an odd one winds every triangle the other way) | no range |
+
+- Only layers 12 and 13 take an entry with subparts
+  (`light_groups::taken`); the per-handler path and the shadow layers
+  stay `Subparts`.
+- The host draws a structure entry's spans from
+  `world::light_parts::ResidentRanges::subpart_draws`, an object's from
+  `LightModels::part`. A span with no range refuses the light at its
+  draw, and the guest's passes draw it (`scene_kept_light_host`).
+
+Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular`
+(`scene_extract::light_groups`),
+`a_strip_with_degenerates_maps_each_even_sub_strip_to_its_own_native_triangles`
+(`subpart_map`),
+`visible_subparts_of_a_strip_with_degenerates_draw_their_own_native_triangles`
+(`world/light_parts.rs`),
+`an_object_entrys_visible_subparts_draw_their_own_triangles_of_a_strip_with_degenerates`
+(`light_models.rs`).
+
+### The cut light's draw
+
+At its passes, once its groups plan, the cut light goes to the host
+(`scene_frame::take`, `native_lights::draw_cut_light`) on the view's
+target. Its groups go into the scene only after the host draws it.
+
+The game host (`native_lights_glue/scene.rs`) makes each light one
+external sequence (`d3d::Device::prepare_external_sequence`), each step
+on its own attachments with nothing rebound. It commits the sequence
+whole with no light tail (`d3d::PreparedSequence::commit`), or refuses
+the light. The guest's layer begin and end do not run; their device
+work is the steps:
 
 - layer 10: target 9's depth cleared to 1 and stencil 0, the casters
   drawn into it at the size the shadow setup gives, then the region they
@@ -341,7 +384,7 @@ placement by index, or the object's node rows) and its bindings
 (shader, pass selector, variant, implementation), and for layers 10 and
 11 the shadow projection block. The additional casters' layers are
 groups of their own site. An entry the handler would do more for (the
-auxiliary state toggle, state around one part, visible subparts, a
+state around one part, a
 shader flag, a material animation, a template callback) is the group's
 remainder, counted by cause in `render.scene`
 (`scene_light_entry_remainder_<cause>`). Each object shadow
@@ -428,13 +471,16 @@ slot from its lists as the typed path does (`Slot::read`: the light's
 constants computed as `0x0004a1e0` would leave them, its first-person
 steps and its groups, `GroupSite::FirstPerson`) and puts the light, with
 those constants as its candidate, and its groups into the first person's
-view. A slot it takes makes no constants call, layer or tail; a slot it
-refuses makes the rest of its steps on the guest. At the loop's exit the
-taken slots' layers draw from the scene in slot 10
-(`native_lights::draw_first_person_scene`, on the target then bound, one
-sequence per light as a dynamic light's, its gel first), and then the
-tail runs once, so the draws see the state the guest's layers would.
-`render.scene` counts the slots taken in `scene_first_person_cut_slots`.
+view.
+
+A slot it takes makes no constants call, layer or tail; a slot it
+refuses makes the rest of its steps on the guest. A taken slot draws in
+place (`native_lights::draw_cut_light`), on the target bound when the
+loop began, one sequence per light as a dynamic light's, its gel first.
+A slot the host refuses makes the rest of its steps on the guest. The
+tail runs once at the loop's exit. `render.scene` counts the slots
+taken in `scene_first_person_cut_slots` and those the host refused in
+`scene_first_person_kept_host`.
 `a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels`
 checks the light the scene is handed.
 

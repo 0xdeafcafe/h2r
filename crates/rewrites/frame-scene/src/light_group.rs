@@ -129,6 +129,12 @@ pub struct LightEntry {
     pub binding: LightBinding,
     /// What its prologue sets beyond the bindings.
     pub state: EntryState,
+    /// The record's visible subparts (bit 6 with a mask): the spans of
+    /// the section's source indices the emitter draws, each its own strip
+    /// in strip topology (`scene_extract::layout::world_ranges::emissions`);
+    /// `None` draws the whole part. Only layers 12 and 13 take them
+    /// (docs/graphics/native-lights.md, "Visible subparts").
+    pub subparts: Option<Vec<Range<u32>>>,
 }
 
 /// Registers of the shadow projection, `c[40..48]`.
@@ -429,6 +435,7 @@ mod tests {
                 implementation: 2,
             },
             state: Default::default(),
+            subparts: None,
         }
     }
 

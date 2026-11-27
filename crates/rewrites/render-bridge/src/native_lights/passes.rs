@@ -152,7 +152,7 @@ fn scene_passes(
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
-                Ok(after_lists(super::scene_frame::light(&*mem, p)))
+                Ok(after_lists(super::scene_frame::light(mem, p)))
             })
             .await?;
             SceneList::LightPasses.count(SceneListResult::Native);
@@ -264,6 +264,7 @@ mod tests {
             Kept::Group(GroupRefusal::Entry(Cause::Material)),
             Kept::Light,
             Kept::AdditionalCasters,
+            Kept::Host,
         ] {
             assert!(after_lists(Err(kept)).is_none(), "{kept:?}: the guest's passes go on");
         }

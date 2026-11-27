@@ -440,6 +440,13 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
             if !e.state.plain() {
                 h.word(0x3_0000 | u32::from(e.state.aux_depth) | u32::from(e.state.fade) << 1);
             }
+            if let Some(spans) = &e.subparts {
+                h.word(0x4_0000 | spans.len() as u32);
+                for s in spans {
+                    h.word(s.start);
+                    h.word(s.end);
+                }
+            }
         }
     }
 }
@@ -691,6 +698,7 @@ mod tests {
                 implementation: 2,
             },
             state: Default::default(),
+            subparts: None,
         };
         let group = |light, site| LightGroup {
             light,

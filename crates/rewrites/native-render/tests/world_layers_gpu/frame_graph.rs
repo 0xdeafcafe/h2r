@@ -631,6 +631,7 @@ fn sun_scene_on(epoch: u64, definition: u32, on: frame_scene::LayerOwner) -> Arc
             implementation: 3,
         },
         state: Default::default(),
+        subparts: None,
     };
     let group = LightGroup {
         light: 0,

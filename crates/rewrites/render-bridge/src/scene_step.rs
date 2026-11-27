@@ -797,33 +797,16 @@ fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) ->
     added
 }
 
-/// The open game view's light layers, owned, outside the step's lock
-/// ([`crate::native_lights::gather_scene_passes`]).
-fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
+/// The open view's last light, while it is open: the light whose passes
+/// or first-person slot are running.
+pub(crate) fn current_light() -> Option<frame_scene::Light> {
     with_step(|step| {
-        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
-        if view.key.kind != ViewKind::Game {
-            return Vec::new();
+        let (scene, view) = step.builder.open()?;
+        if !step.light_open {
+            return None;
         }
-        crate::native_lights::gather_scene_passes(scene, view)
-    })
-}
-
-/// The open first-person view's light layers in slot 10, owned, of the
-/// lights `handles` only: the slots the scene path took
-/// (`native_lights::draw_first_person_scene`).
-pub(crate) fn open_first_person_passes(handles: &[u32]) -> Vec<crate::native_lights::ScenePass> {
-    with_step(|step| {
-        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
-        if view.key.kind != ViewKind::FirstPerson {
-            return Vec::new();
-        }
-        crate::native_lights::gather_scene_passes(scene, view)
-            .into_iter()
-            .filter(|p| {
-                p.slot == crate::native_lights::FIRST_PERSON_SLOT && handles.contains(&p.light.handle)
-            })
-            .collect()
+        let at = view.lights.clone().next_back()?;
+        scene.lights.get(at as usize).cloned()
     })
 }
 
@@ -2203,10 +2186,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_lights::scene_frame::counters())
-    .chain(std::iter::once((
-        "scene_first_person_cut_slots",
-        crate::native_lights::first_person_scene_slots(),
-    )))
+    .chain([
+        ("scene_first_person_cut_slots", crate::native_lights::first_person_scene_slots()),
+        ("scene_first_person_kept_host", crate::native_lights::first_person_kept_host_slots()),
+    ])
     .chain(crate::native_shadows::filter_counters())
     .chain(crate::native_shadows::chain_counters())
     .chain(
@@ -2315,10 +2298,8 @@ impl Feature for FrameSceneStep {
                         crate::native_lights::host::draw(mem, &lights.host, fpu);
                     }
                     crate::native_lights::chosen::draw(mem, &lights.chosen, lights.unread);
-                    // The scene's own light layers: the guest's light frame
-                    // is cut, so these are the frame's dynamic lights.
-                    let passes = open_light_passes();
-                    crate::native_lights::draw_scene(mem, &passes);
+                    // The cut frame's dynamic lights drew at their own
+                    // passes (`native_lights::scene_frame`).
                 },
             )
             .after_feature(crate::render_timing::ID)

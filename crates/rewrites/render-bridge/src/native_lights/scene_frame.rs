@@ -15,10 +15,13 @@
 //! run. The setup's shadow-target resize is laid over guest memory for the
 //! groups' read only ([`super::typed::Mirror`]); nothing is written.
 //!
-//! A light this cannot make whole keeps the guest's draw: its passes run
-//! on past the item lists, and it is counted by cause
-//! (`scene_kept_light_<cause>` in `render.scene`; a group's refusal also
-//! `scene_kept_light_group_<refusal>`). Nothing goes undrawn.
+//! A light it takes draws at once, at its passes, from its groups
+//! ([`super::draw_cut_light`]); only then do the groups go into the
+//! scene. A light this cannot make whole, or the host does not draw,
+//! keeps the guest's draw: its passes run on past the item lists, and it
+//! is counted by cause (`scene_kept_light_<cause>` in `render.scene`; a
+//! group's refusal also `scene_kept_light_group_<refusal>`). Nothing goes
+//! undrawn.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -50,10 +53,12 @@ pub enum Kept {
     /// The additional casters' layers (`0x00030ed0`), whose record walk
     /// the cut does not make: the guest draws the whole light.
     AdditionalCasters,
+    /// The host did not draw the light's groups (`Host::draw_scene_light`).
+    Host,
 }
 
 impl Kept {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
 
     fn index(self) -> usize {
         match self {
@@ -63,6 +68,7 @@ impl Kept {
             Kept::Group(_) => 3,
             Kept::Light => 4,
             Kept::AdditionalCasters => 5,
+            Kept::Host => 6,
         }
     }
 
@@ -73,6 +79,7 @@ impl Kept {
         "scene_kept_light_group",
         "scene_kept_light_light",
         "scene_kept_light_additional_casters",
+        "scene_kept_light_host",
     ];
 
     pub fn name(self) -> &'static str {
@@ -139,6 +146,10 @@ pub struct Planned {
     pub groups: Vec<SceneGroup>,
     /// The additional casters would run.
     pub additional_casters: bool,
+    /// The light's record, constants and gels as the host draws it, put
+    /// in the scene's light for the draw at the passes (the view's
+    /// candidates are read only once its light pass is over).
+    pub candidate: frame_scene::LightCandidate,
 }
 
 /// The passes' registers at their entry, as the hand-off reads them.
@@ -178,6 +189,14 @@ pub fn plan(mem: &dyn GuestMemory, e: &Entry) -> Result<Planned, Kept> {
         None
     };
     let groups = groups(mem, &steps, c.flags, c.definition_flags, shadow.as_ref())?;
+    let record = super::read_light(
+        mem,
+        source.call.light,
+        source.call.shadow & 0xff != 0,
+        f32::from_bits(source.call.weight),
+    )
+    .ok_or(Kept::Unread)?;
+    let candidate = super::first_person::candidate(mem, &record, source.call.definition, c);
     Ok(Planned {
         light: SceneLight {
             handle: source.call.light,
@@ -191,6 +210,7 @@ pub fn plan(mem: &dyn GuestMemory, e: &Entry) -> Result<Planned, Kept> {
         steps,
         groups,
         additional_casters: inputs.additional_casters,
+        candidate,
     })
 }
 
@@ -228,6 +248,19 @@ pub fn groups(
     .map_err(Kept::Group)
 }
 
+/// A cut light's layers as the host draws them: one pass per group, in
+/// step order, each with the light.
+pub(super) fn cut_passes(
+    slot: frame_scene::ViewSlot,
+    light: &frame_scene::Light,
+    groups: &[SceneGroup],
+) -> Vec<super::ScenePass> {
+    groups
+        .iter()
+        .map(|group| super::ScenePass { slot, light: light.clone(), group: group.clone() })
+        .collect()
+}
+
 /// The projection block's rows as the scene's groups hold them.
 fn projection_rows(block: &[u32]) -> [[u32; 4]; PROJECTION_ROWS] {
     core::array::from_fn(|row| core::array::from_fn(|col| block.get(4 * row + col).copied().unwrap_or(0)))
@@ -242,12 +275,12 @@ pub(super) fn refused() {
 /// groups into the scene, behind the light the hand-off opened. Returns
 /// the groups put in, or why the guest's remaining passes draw the light
 /// (counted by [`keep_light`]).
-pub(super) fn light(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<usize, Kept> {
+pub(super) fn light(mem: &mut dyn GuestMemory, p: &passes::Plan) -> Result<usize, Kept> {
     let e = entry(p);
     // A light whose lists the guest made was left for the constants call,
     // which does not run here.
     if let Some((deferred, serial)) = super::handoff::take_deferred(e.esp) {
-        super::observe(mem, deferred, serial);
+        super::observe(&*mem, deferred, serial);
     }
     // The scene draws the light or the guest's passes do: no layer of this
     // light is a candidate of the resolved-draw path.
@@ -259,15 +292,21 @@ pub(super) fn light(mem: &dyn GuestMemory, p: &passes::Plan) -> Result<usize, Ke
     taken
 }
 
-/// The light's groups into the scene, or why not. Nothing goes in on a
-/// refusal.
-fn take(mem: &dyn GuestMemory, e: &Entry) -> Result<usize, Kept> {
-    let planned = plan(mem, e)?;
+/// The light drawn and its groups into the scene, or why not. Nothing is
+/// drawn and nothing goes in on a refusal.
+fn take(mem: &mut dyn GuestMemory, e: &Entry) -> Result<usize, Kept> {
+    let planned = plan(&*mem, e)?;
     if !crate::scene_step::current_light_matches(&planned.light, planned.steps.as_slice()) {
         return Err(Kept::Light);
     }
     if planned.additional_casters {
         return Err(Kept::AdditionalCasters);
+    }
+    let mut light = crate::scene_step::current_light().ok_or(Kept::Light)?;
+    light.candidate = Some(planned.candidate.clone());
+    let passes = cut_passes(super::LIGHT_SLOT, &light, &planned.groups);
+    if !super::draw_cut_light(mem, &passes, super::view_target()) {
+        return Err(Kept::Host);
     }
     let n = planned.groups.len();
     crate::scene_step::typed_light_groups(planned.groups);
