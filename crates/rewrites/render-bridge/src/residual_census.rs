@@ -288,6 +288,15 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "opaque",
     },
+    // The cut is held (`native_first_person::HELD`): the guest body
+    // draws the first person (docs/graphics/native-objects.md, "First
+    // person").
+    Row {
+        name: "first_person",
+        entry: 0x0003_fdf0,
+        status: Status::D3d,
+        slot: "transparents",
+    },
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,

@@ -1,6 +1,7 @@
 //! Motion data on the two sides of an island solve. The accumulator's
 //! last three vectors hold the transposed body basis while building the
 //! Jacobians. During the solve that same space holds iteration sums.
+use crate::mem::Journal;
 use crate::motion::{self, ForceInput, Pose, PoseConstants, PoseInput, Vector};
 use sim_core::det::{self, Chain, Checked};
 
@@ -51,6 +52,12 @@ impl Class {
     pub fn of(build: u32) -> Option<Self> {
         let _ = build;
         None
+    }
+
+    /// Append this constraint's rows and schemas at the cursor.
+    pub fn build(self, j: &mut Journal, constraint: u32, cursor: &mut Cursor) -> Option<()> {
+        let _ = (j, constraint, cursor);
+        match self {}
     }
 }
 
