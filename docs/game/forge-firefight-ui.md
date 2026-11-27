@@ -753,9 +753,6 @@ The owner's choices, which the sections above follow.
 
 ## Not verified
 
-- That the game draws its HUD for a user whose view is the monitor's
-  private world view (`spectator_view::draw_world_view`). If it does
-  not, K1 also calls the HUD draw for that view.
 - That a row added to Game Setup shows in every lobby that opens it
   (Split Screen, a hosted System Link game, an Xbox Live custom game).
 - That hiding, adding and reordering Game Setup's rows leaves each row

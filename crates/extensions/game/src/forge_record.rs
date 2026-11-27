@@ -100,6 +100,7 @@ mod tests {
             spare_clips: BTreeMap::from([(91, 2)]),
             weights: BTreeMap::from([(3, SpawnWeight::High)]),
             held_back: BTreeSet::from([92]),
+            bodies_refused: BTreeMap::new(),
         };
         let mut file = vec![0u8; 32];
         file.extend(record.encode());

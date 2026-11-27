@@ -322,6 +322,45 @@ pub(crate) fn add(
     Ok(out)
 }
 
+/// One unit tag (`bipd` or `vehi`) at `path` and its tree copied into
+/// `set` from the first of `donors` that has it, its sounds merged into the
+/// set's gestalt, as a class is: the Forge kit's bodies
+/// (`forge_build`'s `bodies`). `name` names it in errors. Nothing is undone
+/// on an error: the caller copies into a clone and drops it.
+pub fn copy_unit(
+    set: &mut TagSet,
+    schema: &Schema,
+    donors: &[Donor<'_>],
+    name: &str,
+    group: FourCC,
+    path: &str,
+) -> Result<(TagId, ClassCost)> {
+    let all = Classes {
+        schema,
+        donors: donors.to_vec(),
+        specs: Vec::new(),
+        cut_to_fit: false,
+    };
+    let mut copier = Copier {
+        all: &all,
+        reads: all.donors.iter().map(|_| None).collect(),
+        base_gestalt: None,
+        merged: 0,
+    };
+    let donor = copier.donor_of(group, path)?.ok_or_else(|| {
+        let names: Vec<_> = donors.iter().map(|d| d.name).collect();
+        anyhow!("no donor map carries {group} {path} ({})", names.join(", "))
+    })?;
+    let copied = copier.copy(set, name, donor, group, path)?;
+    if copier.merged > 0
+        && let Some(Some(g)) = copier.base_gestalt
+    {
+        g.install(set, gestalt::DEFAULT_NAME)
+            .map_err(|e| anyhow!("sound gestalt: {e}"))?;
+    }
+    Ok(copied)
+}
+
 /// The dropship cannot be copied in: no donor has it, or a donor's copy
 /// is refused. A caller on `auto` builds without the ship; one that asked
 /// for it fails with the reason.

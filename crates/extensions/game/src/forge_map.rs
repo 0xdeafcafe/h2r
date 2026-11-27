@@ -145,6 +145,9 @@ pub(crate) struct Opened {
     /// Every named tag of the map by its salted datum, which
     /// [`rows::read`] resolves the loaded scenario's references through.
     pub names: BTreeMap<u32, TagKey>,
+    /// The Forge bodies the map's kit carries, by unit tag datum, and the
+    /// reasons its Forge record gives for the rest ([`kit_bodies`]).
+    pub bodies: forge::body::Kit,
     /// The paths of the map's item collections (`itmc`) that hold a weapon:
     /// the spawners that show Spare clips ([`armed_collections`]).
     pub armed: std::collections::BTreeSet<String>,
@@ -282,6 +285,7 @@ fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result
             ))
         })
         .collect();
+    let bodies = kit_bodies(&names, bytes);
     let (bounds, walls) = geometry(&mut map, &view)?;
     let armed = armed_collections(&mut map);
     let doc = ForgeDoc {
@@ -323,8 +327,35 @@ fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result
         refused,
         walls,
         names,
+        bodies,
         armed,
     })
+}
+
+/// The Forge bodies of a map (docs/game/forge-design-slices.md, "The
+/// monitor body"): each body whose unit tag (`forge_doc::bodies::SPECS`)
+/// is among `names`, by datum, and the reasons the map's Forge record
+/// gives for those its kit build left out. A map with no record gives no
+/// reasons: its bodies are refused as a map not built with the kit.
+pub(crate) fn kit_bodies(names: &BTreeMap<u32, TagKey>, bytes: &[u8]) -> forge::body::Kit {
+    use forge_doc::bodies::Body;
+    let carried = Body::ALL
+        .into_iter()
+        .filter_map(|body| {
+            let unit = body.spec().unit;
+            let group = String::from_utf8_lossy(&unit.group).into_owned();
+            names
+                .iter()
+                .find(|(_, key)| key.group == group && key.path.eq_ignore_ascii_case(unit.path))
+                .map(|(&datum, _)| (body, datum))
+        })
+        .collect();
+    let refused = forge_doc::record::ForgeRecord::read_tail(&mut Cursor::new(bytes))
+        .ok()
+        .flatten()
+        .map(|r| r.bodies_refused)
+        .unwrap_or_default();
+    forge::body::Kit { carried, refused }
 }
 
 /// An item collection's entries (`itmc+0x00`, a block of `0x10`-byte

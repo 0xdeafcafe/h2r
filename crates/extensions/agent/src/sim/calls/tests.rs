@@ -1826,3 +1826,128 @@ fn a_variant_built_on_a_map_without_the_name_tag_skips_the_lookup() {
     out.unwrap();
     assert_eq!(*seen.lock().unwrap(), Some(0x0300_0000));
 }
+
+/// A world with a second object, the body `OBJECT_NEW` gives a Forge body
+/// swap, in a session the guard admits.
+fn body_world() -> (World, u32, crate::forge::local::Guard) {
+    const BODY: u32 = 0x8030_0000;
+    let scenario = 0x8100_0000;
+    let mut w = world();
+    w.g.put_u32(guest_layout::global::SCENARIO.base, scenario);
+    let objects = engine::view::objects::array(&w.g).unwrap().unwrap();
+    let (body_h, body_hdr) = fake::push(&mut w.g, &objects);
+    w.g.map(BODY, 0x400);
+    body_hdr.set_body(&mut w.g, BODY).unwrap();
+    Body::at(BODY).set_parent(&mut w.g, None).unwrap();
+    let guard = crate::forge::local::Guard {
+        scenario,
+        generation: 0,
+        admitted: |_, _| true,
+    };
+    (w, body_h.raw(), guard)
+}
+
+/// Enter makes the body with the ownerless spawn, gives it to the player
+/// with `player_set_unit_index` and turns it and the view; the biped it
+/// replaced is answered, not deleted.
+#[test]
+fn a_forge_body_is_made_then_given_to_the_player() {
+    let (w, made, guard) = body_world();
+    let (player, biped) = (w.player, w.unit);
+    let (out, calls, _) = one(
+        w,
+        Call::ForgeBody {
+            guard,
+            player,
+            step: BodyStep::Enter {
+                tag: 0xe300_0001,
+                pos: [1.0, 2.0, 3.0],
+                forward: [0.0, 1.0, 0.0],
+            },
+        },
+        |c, _| {
+            if c.target == addr::OBJECT_NEW {
+                return al(made);
+            }
+            Regs::default()
+        },
+    );
+    let out = out.unwrap();
+    assert_eq!(out["body"], hex(made));
+    assert_eq!(out["biped"], hex(biped));
+    let targets: Vec<u32> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(
+        targets,
+        [
+            addr::PLACEMENT_NEW,
+            addr::OBJECT_NEW,
+            addr::PLAYER_SET_UNIT,
+            addr::PLAYER_SET_FACING,
+            addr::OBJECT_SET_POSITION,
+        ]
+    );
+    assert_eq!(calls[2].ebx, Some(made));
+    assert_eq!(calls[2].args, vec![player]);
+    assert!(!targets.contains(&addr::OBJECT_DELETE), "the biped is kept");
+}
+
+/// Leave gives the kept biped back, places it where the body is, level on
+/// the body's heading, then deletes the body. A body the player is not in
+/// is refused before any call.
+#[test]
+fn leaving_a_forge_body_puts_the_biped_where_the_body_is() {
+    const BODY: u32 = 0x8030_0000;
+    let (mut w, made, guard) = body_world();
+    let (player, biped) = (w.player, w.unit);
+    let players = engine::view::players::array(&w.g).unwrap().unwrap();
+    let p = players.get(&w.g, DatumHandle(player)).unwrap().unwrap();
+    p.set_unit(&mut w.g, DatumHandle::from_raw(made)).unwrap();
+    Body::at(BODY).set_position(&mut w.g, [4.0, 5.0, 6.0]).unwrap();
+    Body::at(BODY).set_forward(&mut w.g, [0.6, 0.0, 0.8]).unwrap();
+    let (out, calls, g) = one(
+        w,
+        Call::ForgeBody {
+            guard,
+            player,
+            step: BodyStep::Leave { body: made, biped },
+        },
+        |c, m| {
+            if c.target == addr::PLAYER_PLACE_NEAR {
+                assert_eq!(vec3(m, c.esi.unwrap()), [4.0, 5.0, 6.0]);
+                return al(1);
+            }
+            Regs::default()
+        },
+    );
+    let out = out.unwrap();
+    assert_eq!(out["placed"], true);
+    let targets: Vec<u32> = calls.iter().map(|c| c.target).collect();
+    assert_eq!(
+        targets,
+        [
+            addr::PLAYER_SET_UNIT,
+            addr::PLAYER_PLACE_NEAR,
+            addr::PLAYER_SET_FACING,
+            addr::OBJECT_SET_POSITION,
+            addr::OBJECT_DELETE,
+        ]
+    );
+    assert_eq!(calls[0].ebx, Some(biped));
+    assert_eq!(calls[4].args, vec![made]);
+    assert_eq!(vec3(&g, UNIT_BODY + addr::UNIT_FACINGS[0]), [1.0, 0.0, 0.0]);
+
+    // The player's unit is the biped: a leave of the body is refused.
+    let (w, made, guard) = body_world();
+    let (player, biped) = (w.player, w.unit);
+    let (out, calls, _) = one(
+        w,
+        Call::ForgeBody {
+            guard,
+            player,
+            step: BodyStep::Leave { body: made, biped },
+        },
+        |_, _| Regs::default(),
+    );
+    assert!(out.unwrap_err().message.contains("not in that Forge body"));
+    assert!(calls.is_empty());
+}

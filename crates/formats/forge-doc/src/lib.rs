@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod area;
+pub mod bodies;
 mod document;
 mod entry;
 pub mod games;

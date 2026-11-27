@@ -1,9 +1,8 @@
 # Forge: the features
 
-Status: The local monitor, Objects tool and document files have an
+Status: The monitor body swap, Objects tool and document files have an
 implementation. Its moves, deletes and restores apply to the live objects
-through live-mirror M8's object calls. The other tools and body recipes
-are design.
+through live-mirror M8's object calls. The other tools are design.
 Code: `crates/extensions/forge` owns the local session and tools.
 `crates/formats/forge-doc` defines the portable edits and
 `crates/tools/forge-build` materialises them.
@@ -20,41 +19,37 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## Monitor mode and bodies
 
-The editing player toggles between their own biped and a flying editor
-body. Bodies exist in Forge sessions only: a published map played as a
-match gives every player their own biped, and its package is
-materialised without the body recipes. Two bodies exist in the design:
+The editing player swaps between their own biped and a flying Forge
+body, as in Halo 3. Bodies exist in Forge sessions only: a published map
+played as a match gives every player their own biped.
 
-- **The camera body** (slice F4). The player's biped is parked
-  (invulnerable, hidden, input cut) and their view is the director's
-  flying camera, driven from the pad each frame (theater.md, "Free
-  camera"). No tag is needed and nothing reaches the sim but the park.
-  Other players see a marker drawn in the scene at the camera.
-- **A real body** (slice F10): a Sentinel, 343 Guilty Spark or 2401
-  Penitent Tangent. These are flying bipeds on campaign maps of the
-  user's disc (**S**: that each is a `bipd` and where; the census in
-  F10 finds them by group and shape). A `transplant` recipe brings one
-  into the map, and the player's unit becomes it. Other players see it,
-  it collides, and it can be shot if the host allows.
+| Body | What it is | Chosen by |
+|---|---|---|
+| Monitor | `bipd` transplanted from a campaign map; Forge does not open without it | `forge.body` = `monitor` (default) |
+| Sentinel | `bipd` transplanted from a campaign map | `forge.body` = `sentinel` |
+| Prophet in chair | `bipd` and its gravity throne `vehi` | `forge.body` = `prophet` |
+
+The kit carries all three, each refused by name when it cannot go in.
+D-pad Up makes the chosen body the player's unit and keeps the biped,
+undamageable and not drawn, to come back to where the body is. The
+body takes no damage. The player's view, HUD and seat stay their own.
+The design, the engine calls and what is not built are in
+[forge-design-slices.md](forge-design-slices.md), "The monitor body".
+
+The choice is saved per profile under `[profiles."<name>".forge] body`
+(`forge::body`).
 
 Options from what the disc has (**S** until the census):
 
 | Option | Source | Class |
 |---|---|---|
-| Body | the Sentinel variants and the monitor model on campaign maps | Rebuild (a recipe) |
 | Guilty Spark or Penitent Tangent | the same model; the eye and glow differ by a variant, a permutation or a shader, to be read | a `variant` recipe |
 | Eye and glow colour | the player's own colours, where the model takes change colours | Live |
 | Voice | the lines the campaign maps hold for each character, found by reference from that map's tags; none, Spark, Tangent, Sentinel sounds | Rebuild; played by a button as an emote |
 | Tool beam | the Sentinel's beam effect, drawn from the body to a held object | presentation |
 
-Open engine points: how the player's unit is set to a body the globals
-do not list (the look byte allows four models, **Code**,
-[agent-api.md](../editor/agent-api.md), "What there is to build on";
-routes are another entry in the globals' list or attaching the player to
-a spawned unit); whether pad input drives a flying biped's height (**S**;
-a recipe map in [test-maps.md](test-maps.md) with the swap made is the
-test); the sound gestalt merge a transplanted voice needs
-(tag-repo.md, "Per-map couplings").
+Open engine points: whether pad input drives a flying biped's height
+(**S**); the Prophet's seat entry.
 
 ## Objects
 
