@@ -83,6 +83,7 @@ impl ContentMaps {
 
 struct Region {
     file: File,
+    path: PathBuf,
     offset: u64,
     len: u64,
 }
@@ -91,9 +92,18 @@ impl Region {
     fn open(file: &HostFile) -> io::Result<Self> {
         Ok(Self {
             file: File::open(&file.path)?,
+            path: file.path.clone(),
             offset: file.offset,
             len: file.len,
         })
+    }
+    fn host_file(&self) -> HostFile {
+        HostFile {
+            generation: None,
+            path: self.path.clone(),
+            offset: self.offset,
+            len: self.len,
+        }
     }
 }
 
@@ -150,7 +160,7 @@ impl Served {
             } => {
                 let base = match source {
                     BaseRef::Disc => base.ok_or(Error::FileCorrupt)?,
-                    BaseRef::File { file, .. } => Region { len: file.metadata()?.len(), file, offset: 0 },
+                    BaseRef::File { file, path } => Region { len: file.metadata()?.len(), file, path, offset: 0 },
                 };
                 Reader::Overlay { base, overlay: Arc::new(overlay) }
             }
@@ -204,6 +214,14 @@ impl Served {
         {
             served.alias = None;
         }
+        // An overlaid map carries its alias in the overlay, so readers
+        // outside the VFS (a spliced source) see the bytes the guest does.
+        if let (Some(alias), Reader::Overlay { overlay, .. }) = (served.alias, &mut served.reader) {
+            Arc::get_mut(overlay)
+                .expect("an overlay made above")
+                .write(0x198, &alias);
+            served.alias = None;
+        }
         Ok(served)
     }
 
@@ -228,6 +246,25 @@ impl Served {
         match (&self.reader, self.alias) {
             (Reader::File(_, file) | Reader::Mapped(_, file, _), None) => Some(file.clone()),
             _ => None,
+        }
+    }
+
+    /// The served bytes for readers outside the VFS: the whole file, or
+    /// its base region with the overlay (and the alias) over it.
+    pub(crate) fn file_source(&self) -> crate::FileSource {
+        let spliced = |base: HostFile, overlay| {
+            crate::FileSource::Spliced(crate::SplicedFile { base, overlay })
+        };
+        match (&self.reader, self.alias) {
+            (Reader::Overlay { base, overlay }, _) => spliced(base.host_file(), overlay.clone()),
+            (Reader::File(_, file) | Reader::Mapped(_, file, _), None) => {
+                crate::FileSource::Host(file.clone())
+            }
+            (Reader::File(_, file) | Reader::Mapped(_, file, _), Some(alias)) => {
+                let mut overlay = Overlay::new(file.len);
+                overlay.write(0x198, &alias);
+                spliced(file.clone(), Arc::new(overlay))
+            }
         }
     }
 

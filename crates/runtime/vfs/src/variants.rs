@@ -367,6 +367,21 @@ impl<B: Backend> Backend for VariantFiles<B> {
         let len = self.served(path)?.ok()?.len;
         pair.pick(halo1).file.host_file(len)
     }
+    /// A package map's served bytes, overlaid ones included: the slot
+    /// path the game loaded (`T:\$c\<offer>\<map>.map`) opens outside
+    /// the VFS as the guest reads it.
+    fn file_source(&mut self, path: &str) -> Option<crate::FileSource> {
+        if self.variant(path).is_some() {
+            return self.host_file(path).map(crate::FileSource::Host);
+        }
+        if let Some(p) = self.package(path) {
+            return Some(p.served(path).ok()?.file_source());
+        }
+        if let Some(pack) = self.server_pack(path) {
+            return Some(crate::FileSource::Host(pack.file.clone()));
+        }
+        self.inner.file_source(path)
+    }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         match self.variant(path) {
             Some((_, halo1, pair)) => pair.pick(halo1).id,

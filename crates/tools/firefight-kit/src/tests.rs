@@ -20,6 +20,25 @@ fn fixture() -> Vec<u8> {
     testkit::court()
 }
 
+/// [`KIT_VERSION`] and the digest of the fixture's kit at that version.
+const VERSIONED_BUILD: (u32, &str) = (6, "0dfdd34fdcaf62df16d424879e382885e9a30409bae210f8752970b8af86dee1");
+
+/// Every cache of a built kit keys on [`KIT_VERSION`] (the built-in kits'
+/// stamps, a map item's ground, a Forge ground), so the bytes a build
+/// writes change only with it. An Elite that gained its property rows
+/// under an unchanged version left kits built before it current, and
+/// their Elites faulted at `0x1f911a` on their first update.
+#[test]
+fn the_kit_version_names_the_built_bytes() {
+    let built = build(&fixture(), "court", Mode::Kit, &Config::default()).unwrap();
+    let digest = Sha256::of(&built.bytes).to_string();
+    assert_eq!(
+        (KIT_VERSION, digest.as_str()),
+        VERSIONED_BUILD,
+        "the kit's output changed: raise firefight::KIT_VERSION so every cached kit is rebuilt, then record the version and this digest in VERSIONED_BUILD"
+    );
+}
+
 #[test]
 fn two_builds_of_one_map_are_byte_equal() {
     let base = fixture();

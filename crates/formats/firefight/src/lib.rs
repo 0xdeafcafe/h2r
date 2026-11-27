@@ -25,7 +25,12 @@ pub use validate::{HOST_ACTOR_CAPS, Limits, validate};
 /// The Firefight map kit's version (`firefight_kit` writes it into the map
 /// it builds, so it is part of the package's id). Session data names it
 /// (`live_proto::session::Firefight::kit`) so every machine plays one kit.
-pub const KIT_VERSION: u32 = 5;
+/// It names the kit's output: every cache of a built kit (the built-in
+/// kits' stamps, a map item's ground, a Forge document's ground) keys on
+/// it, so a change to the bytes a build writes raises it
+/// (`firefight_kit`'s `the_kit_version_names_the_built_bytes` holds the
+/// two together).
+pub const KIT_VERSION: u32 = 6;
 
 /// The roles a kit gives a drop zone, in the zone's flags
 /// (`scnr` zone `+0x20`, above the engine's own low bits). The kit writes

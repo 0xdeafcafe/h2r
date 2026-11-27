@@ -70,7 +70,7 @@ enum Base {
     /// The volume's own map at the path (the disc's, or the installed map
     /// pack map), of this length.
     Disc(u64),
-    File(FileSource),
+    File(FileSource, PathBuf),
 }
 
 struct Entry {
@@ -397,8 +397,8 @@ impl<B: Backend> PackageBackend<B> {
                 let runs = overlay.runs().len();
                 let base = match base {
                     BaseRef::Disc => Base::Disc(disc.end_of_file),
-                    BaseRef::File { file, .. } => match FileSource::new(file) {
-                        Ok(f) => Base::File(f),
+                    BaseRef::File { file, path } => match FileSource::new(file) {
+                        Ok(f) => Base::File(f, path),
                         Err(e) => {
                             (self.notice)(&format!("warning: {name}: {e}; using {own}"));
                             return None;
@@ -585,7 +585,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
                     };
                     overlay.read_at(&mut src, offset, buffer)
                 }
-                Base::File(f) => overlay.read_at(f, offset, buffer),
+                Base::File(f, _) => overlay.read_at(f, offset, buffer),
             }
             .map_err(io_error),
         }
@@ -606,7 +606,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
                         let Some(source) = self.inner.film_source(path)? else { return Ok(None) };
                         (source, len)
                     }
-                    Base::File(file) => (crate::FilmMapSource::region(file.file().try_clone()?, 0), file.size()),
+                    Base::File(file, _) => (crate::FilmMapSource::region(file.file().try_clone()?, 0), file.size()),
                 };
                 Ok(Some(crate::FilmMapSource::overlay(base, len, patch, id)))
             }
@@ -627,6 +627,27 @@ impl<B: Backend> Backend for PackageBackend<B> {
             };
         }
         self.inner.host_file(path)
+    }
+    /// A materialised map is its cache file; an overlaid one is its base's
+    /// host region (the volume's map, or the package's map file) with the
+    /// overlay over it.
+    fn file_source(&mut self, path: &str) -> Option<crate::FileSource> {
+        let Some(e) = self.chosen(path) else { return self.inner.file_source(path) };
+        let len = e.len;
+        let (base, overlay) = match &e.served {
+            Served::File { .. } => return self.host_file(path).map(crate::FileSource::Host),
+            Served::Overlay { base: Base::Disc(_), overlay } => (None, overlay.clone()),
+            Served::Overlay { base: Base::File(file, p), overlay } => (
+                Some(HostFile { generation: None, path: p.clone(), offset: 0, len: file.size() }),
+                overlay.clone(),
+            ),
+        };
+        debug_assert_eq!(overlay.len(), len);
+        let base = match base {
+            Some(base) => base,
+            None => self.inner.host_file(path)?,
+        };
+        Some(crate::FileSource::Spliced(crate::SplicedFile { base, overlay }))
     }
     // Writes: a served map is the package's, read-only; everything else
     // (the data partition's saves, content, the map pack's other files)

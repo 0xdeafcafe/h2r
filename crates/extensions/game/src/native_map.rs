@@ -541,6 +541,58 @@ mod tests {
         assert!(e.to_string().contains("ffffffffffffffff"), "{e}");
     }
 
+    /// A Forge or mod map installed from a package (`new_maps`) is served
+    /// at `T:\$c\<offer>\<map>.map` as an overlay over its base, under
+    /// the map's own header name. The slot path the game records, `t:`
+    /// kept verbatim, opens it through the guest's drive link.
+    #[test]
+    fn a_package_map_opens_from_its_t_slot_path() {
+        let t = Temp::new();
+        let name = "m-7f9e2cb1-b02c9cff29e0ece2ed41";
+        let offer = "4d530064ff9e2cb1";
+        let base = named_map("base");
+        let base_path = t.0.join("base.map");
+        std::fs::write(&base_path, &base).unwrap();
+        let mut edited = base.clone();
+        edited[0x7f0] ^= 0xff;
+        let patch = content::patch::diff(&base, &edited, "base");
+        let root = t.0.join("packages");
+        let dir = root.join("forged");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.ppf"), &patch.bytes).unwrap();
+        let mut m = content::Manifest::retail("base", content::Sha256::of(&base));
+        m.patches.push(content::manifest::Layer {
+            file: "a.ppf".into(),
+            sha256: content::Sha256::of(&patch.bytes),
+        });
+        std::fs::write(dir.join("manifest.toml"), m.to_toml()).unwrap();
+        let package = content::Library::open(&root).packages()[0].clone();
+
+        let cfg = vfs::Config::new(t.0.join("data"), crate::new_maps::HALO2_TITLE);
+        let mut v = Vfs::with_storage(cfg.clone()).unwrap();
+        v.create_standard_links(&cfg).unwrap();
+        cfg.content_maps.replace([(
+            format!("TDATA\\{:08X}\\$c\\{offer}\\{name}.map", crate::new_maps::HALO2_TITLE),
+            vfs::ContentMap {
+                package,
+                base: Some(vfs::HostFile {
+                    generation: None,
+                    path: base_path,
+                    offset: 0,
+                    len: base.len() as u64,
+                }),
+                alias: Some(name.into()),
+            },
+        )]);
+        let vfs = Mutex::new(v);
+        let slot = format!("t:\\$c\\{offer}\\{name}.map");
+        let (map, _) = open_resolved(&vfs, name, Some(&slot), None, false).unwrap();
+        assert_eq!(map.header().name, name);
+        let active = ActiveSource { name: name.into(), path: slot, generation: None };
+        let (map, _) = open_resolved(&vfs, name, None, Some(active), true).unwrap();
+        assert_eq!(map.header().name, name);
+    }
+
     /// A guest file's bytes are the VFS's: a file of the disc's directory
     /// read from the host, and a rewritten one as its rewrite serves it.
     #[test]

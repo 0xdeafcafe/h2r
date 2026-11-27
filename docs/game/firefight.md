@@ -688,7 +688,7 @@ that id, and each machine loads its own build.
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
-| Characters, stage 1 | `char` tags we author on bipeds and weapons the multiplayer map already has. With no parent, the Elite carries a row of every property block the engine reads unchecked (`ai/character.rs`, `PROPERTY_ROWS`: an empty movement block faulted at `0x1f9119` on an actor's first update). Each row is the retail campaign Elite's (`objects\characters\elite\ai\elite`, walking its parents), read from the base, the disc map `ELITE_DONOR_MAP` (`03a_oldmombasa`) or a class donor (the built-in kits, `h2 firefight kit`, host data, a Forge document's ground and a `map` item's ground all give the disc's), with our tuning table's fields set over it and the donor's tag references null. No map carrying it, or a row missing, refuses the build by name | Elites only; no tag is copied from another map, only the Elite's rows |
+| Characters, stage 1 | `char` tags we author on bipeds and weapons the multiplayer map already has. With no parent, the Elite carries a row of every property block the engine reads unchecked (`ai/character.rs`, `PROPERTY_ROWS`: an empty movement block faulted at `0x1f911a` (`0x1f90f0`, reading the row `0x1e4a50` returns) on an actor's first update). Each row is the retail campaign Elite's (`objects\characters\elite\ai\elite`, walking its parents), read from the base, the disc map `ELITE_DONOR_MAP` (`03a_oldmombasa`) or a class donor (the built-in kits, `h2 firefight kit`, host data, a Forge document's ground and a `map` item's ground all give the disc's), with our tuning table's fields set over it and the donor's tag references null. No map carrying it, or a row missing, refuses the build by name | Elites only; no tag is copied from another map, only the Elite's rows |
 | Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship_phantom` placement and, when a donor has it, a `ff_ship_pelican` one, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Drop pods | Halo 2's `insertion_pod` by stage-2 transplant when the map lacks it, pools `ff_pod_00..03` (squads) and `ff_ppod_00..07` (players), a point set `ff_fall_NN` per drop zone and `ff_pfall_NN` per starting location with an open column ("Drop pods", below) | cut after the ship, before any class |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
@@ -761,7 +761,13 @@ the campaign allegiance table; the coordinator's run R5 settles it). Enemy
 humans are legal in a custom set; allies are a round's `allies`
 ("The definition"), which the director places but the game does not yet
 put on the home team or give a hold order. The kit version
-(`KIT_VERSION`) is 5, the first whose record carries the faction.
+(`KIT_VERSION`) is 6, the first whose Elite carries every property row
+the engine reads unchecked; 5 was the first whose record carries the
+faction. The version names the kit's output: the built-in kits' stamps,
+a `map` item's ground and a Forge document's ground all key on it, so a
+change to the bytes a build writes raises it, or kits built before the
+change stay current. `the_kit_version_names_the_built_bytes` fails when
+the fixture's build changes under the same version.
 
 The Flood and human classes are named in `retail::FACTION_CLASSES`, with
 their `char` tags and donor maps as constants in `retail::donors`, every one
@@ -1059,7 +1065,7 @@ hunted at team N pushes into base N, then `ff_hold_00` and `ff_hold_01`,
 whose one primary area is the first area of the base's zone: the order an
 allied squad is given, to stay on that ground (`firefight-kit/src/ai.rs`
 `hold_orders`; the engine's reading of the one-area order is not run). The kit refuses maps without six
-suitable drops or without the required local tags. `KIT_VERSION` is 4.
+suitable drops or without the required local tags.
 
 **Built-in layouts.** A map with an authored layout takes its drops from
 it, not from the generator. Layouts are code in
@@ -1085,7 +1091,7 @@ reason (`drop 'west_cave': no usable sector within 4.0`, `... (inside the
 base exclusion)`, `... (no path to both bases)`), and the build fails
 with every refusal; the generator never picks in its place. The package
 label carries the layout's digest (`Layout::digest`), so the package id
-changes with the layout, and `KIT_VERSION` 4 changes it for every kit.
+changes with the layout, and a new `KIT_VERSION` changes it for every kit.
 
 Each drop zone carries its roles in its flags above the engine's bits
 (`firefight::roles`: `LINE`, `FLANK`, `HEAVY`, from bit 8). A kit with no
