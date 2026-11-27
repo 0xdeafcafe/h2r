@@ -303,7 +303,7 @@ fn drop_rest(mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller) {
     if !scene_only(layer, caller) {
         return;
     }
-    let skip = native_render::layer_pass::clear_scene_layer(&mut Mem(&mut *mem), layer, true, &|_| false);
+    let skip = native_render::layer_items::clear_scene_layer(&mut Mem(&mut *mem), layer, true, &|_| false);
     match skip {
         Some(skip) => {
             count_dropped("refused", skip.refused as u64);
