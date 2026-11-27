@@ -1482,9 +1482,10 @@ device's swallow. What is built (**Code**):
   raster (`replays_scene`): their slots and stages come from the copy
   being recorded. At the call's return `Device::swallow_commit` builds a
   `SceneStage` of `Stage::Post` from the call's surfaces and plan and,
-  when the backend can commit one (`can_commit_carried`), seals every
-  copy (`prepare_carried_stage`) and commits them
-  (`commit_carried_stage`); a replaying sink retains the stage as a
+  when the backend can commit one (`can_commit_carried`), queues it to
+  a render thread that takes scene stages (`queue_scene_stage`; a drop
+  stands Post down), or else seals every copy (`prepare_carried_stage`)
+  and commits them (`commit_carried_stage`); a replaying sink retains the stage as a
   `ReplayOp::Stage` in place of the call's packets, so the display copy
   replays the glow and the effects on its own attachments. A stage
   carries no entry textures: the glow takes its down-sample's entry from
