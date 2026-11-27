@@ -113,9 +113,19 @@ impl Switches {
 /// `impl.render` group does not reach it.
 pub const NATIVE: &str = "impl.render.native";
 
-/// Whether the native renderer ([`NATIVE`]) is on.
+/// Whether the native renderer ([`NATIVE`]) is on. Without the
+/// `d3d-reference` cargo feature the switch is not read: the D3D path is not
+/// built by default (docs/graphics/retire-d3d.md, R9), so it is always on.
 pub fn native_render_on(switches: &Switches) -> bool {
-    switches.feature(NATIVE, true)
+    #[cfg(feature = "d3d-reference")]
+    {
+        switches.feature(NATIVE, true)
+    }
+    #[cfg(not(feature = "d3d-reference"))]
+    {
+        let _ = switches;
+        true
+    }
 }
 
 /// The Rust view projection and visibility producers (slice R4 of
@@ -134,6 +144,16 @@ pub fn native_visibility_on(switches: &Switches) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "d3d-reference"))]
+    #[test]
+    fn without_the_d3d_reference_feature_the_native_switch_is_not_read() {
+        let on = |spec| native_render_on(&Switches::parse(spec).unwrap());
+        assert!(on(""));
+        assert!(on("impl.render.native=off"));
+        assert!(native_visibility_on(&Switches::parse("impl.render.native=off").unwrap()));
+    }
+
+    #[cfg(feature = "d3d-reference")]
     #[test]
     fn the_native_master_switch_is_looked_up_exactly() {
         let on = |spec| native_render_on(&Switches::parse(spec).unwrap());
@@ -142,6 +162,7 @@ mod tests {
         assert!(!on("impl.render.native=off"));
     }
 
+    #[cfg(feature = "d3d-reference")]
     #[test]
     fn the_visibility_switch_only_turns_the_rust_producers_off() {
         let on = |spec| native_visibility_on(&Switches::parse(spec).unwrap());

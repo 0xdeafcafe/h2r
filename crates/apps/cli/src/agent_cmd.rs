@@ -303,7 +303,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
-fn connect(socket: Option<PathBuf>, timeout: Option<Duration>) -> Result<Client> {
+pub(crate) fn connect(socket: Option<PathBuf>, timeout: Option<Duration>) -> Result<Client> {
     let path = socket.unwrap_or_else(|| only_game().unwrap_or_else(agent_proto::default_socket));
     let client = Client::connect(&path).with_context(|| {
         format!(

@@ -20,5 +20,12 @@ timeline = { path = "../../runtime/timeline" }
 render-bridge = { path = "../../rewrites/render-bridge" }
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
 
+[features]
+default = ["d3d-reference"]
+# `impl.render.native=off`: the D3D draw path kept as the reference
+# (docs/graphics/retire-d3d.md, R9). Without it the switch is not read and
+# the native renderer is always on. Default until the zero gate passes.
+d3d-reference = []
+
 [lints]
 workspace = true

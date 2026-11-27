@@ -506,7 +506,7 @@ D3D entry calls.
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
 | R7 | Menus, text, loading, fade, bars, model widgets, the backdrop | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; UI order test |
 | R8 | Movies, frames outside a game view, the final display. `0x00223240` is replaced | M | R1 to R7 | the rest of `render` and all of `d3d`, `decode` | from boot to gameplay and back to the menu, `d3d_entries` grows only under `outside_render` |
-| R9 | Zero gate: the census corpus with `render.residual`; `impl.render.native=off` stops being built by default | S | R8 | none | the gate in "Rules and limits" |
+| R9 | Zero gate: `h2 render gate` (`crates/apps/cli/src/render_gate.rs`) runs the census corpus through `render.residual`; `impl.render.native=off` is behind the `d3d-reference` cargo feature of `hooks`, on by default until the gate passes | S | R8 | none | the gate in "Rules and limits"; the command exits 0 |
 | R10 | Delete `d3d`'s draw path and the backends that replay it | M | R9, a soak the owner sets | build time and about 30,000 lines | the tree builds; the gate corpus against `d3d-reference` |
 | R11 | Delete the crate | M | R10; the decision on non-draw entries below | the last guest D3D call | no `d3d` in `cargo metadata`; boot to menu on the laptop |
 
@@ -773,6 +773,13 @@ Tests: `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
   `d3d_entries` zero inside the render frame, every `scene_dropped_*`
   zero, `scene_readback` zero, and hashes equal to `native=off`. R10 does
   not start on a waiver.
+  `h2 render gate` runs it on a serve started with
+  `H2_FEATURES=frame-scene.census`: boot, menu, movie, lobby, loading, a
+  cutscene, then each level over 3,000 presents. It prints one table of the
+  producers and callers with entries, residual draws or push words left,
+  and exits 1 while any producer but `outside_render` has work (or a state
+  cannot be judged). Dropping `d3d-reference` from `hooks`' default
+  features is the flip: the switch is then not read.
 - **Not for the removed path:** no stage is patched to claim more on the
   resolved-draw path unless that work survives into its typed form. The
   per-draw admissions are deleted in R10.
