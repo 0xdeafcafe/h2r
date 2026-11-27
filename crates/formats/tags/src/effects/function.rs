@@ -282,6 +282,26 @@ impl Function {
         self.flags & 0xf0 != 0
     }
 
+    /// The packed ARGB colours `output_colour` blends, in order, and how
+    /// (**E**, the same reader, 0x0013bc00): `grey` (flags high nibble 0,
+    /// no stops, a black to white ramp), `single` (1, the range word `a`),
+    /// `two` (2, `a`, `d`), `three` (3, `a`, `b`, `d`), `four` (4, `a`,
+    /// `b`, `c`, `d`), and `white` (5 and up, no stops). `a` and `b` are
+    /// the range words, `c` and `d` the two words of header `+0xc`.
+    pub fn colour_stops(&self) -> (&'static str, Vec<u32>) {
+        let [a, b] = self.range.map(f32::to_bits);
+        let c = u32::from_le_bytes(self.unknown_0c[..4].try_into().unwrap());
+        let d = u32::from_le_bytes(self.unknown_0c[4..].try_into().unwrap());
+        match self.flags >> 4 {
+            0 => ("grey", vec![]),
+            1 => ("single", vec![a]),
+            2 => ("two", vec![a, d]),
+            3 => ("three", vec![a, b, d]),
+            4 => ("four", vec![a, b, c, d]),
+            _ => ("white", vec![]),
+        }
+    }
+
     /// Packed ARGB from a shader colour property (0x0013bc00). The high
     /// nibble selects how many colours the function header supplies.
     pub fn output_colour(&self, raw: f32) -> u32 {
@@ -1009,6 +1029,27 @@ mod tests {
         assert_eq!(f.output_colour(1.), 0xff00_0000);
         f.flags = 0;
         assert_eq!(f.output_colour(0.5), 0xff80_8080);
+    }
+
+    #[test]
+    fn colour_stops_name_the_words_each_mode_blends() {
+        let mut bytes = blob(0, 0x40, [0; 2], [0.; 2], &[]);
+        for (i, c) in [0xff00_0001u32, 0xff40_8020, 0xff10_2030, 0xff80_8040].into_iter().enumerate() {
+            bytes[4 + 4*i..8 + 4*i].copy_from_slice(&c.to_le_bytes());
+        }
+        let mut f = Function::parse(&bytes).unwrap();
+        let (a, b, c, d) = (0xff00_0001, 0xff40_8020, 0xff10_2030, 0xff80_8040);
+        for (flags, want) in [
+            (0x00, ("grey", vec![])),
+            (0x10, ("single", vec![a])),
+            (0x20, ("two", vec![a, d])),
+            (0x30, ("three", vec![a, b, d])),
+            (0x40, ("four", vec![a, b, c, d])),
+            (0x50, ("white", vec![])),
+        ] {
+            f.flags = flags;
+            assert_eq!(f.colour_stops(), want, "flags {flags:#x}");
+        }
     }
 
     fn pad(words: &mut Vec<f32>, n: usize) {
