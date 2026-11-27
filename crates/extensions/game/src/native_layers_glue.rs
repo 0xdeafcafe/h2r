@@ -60,9 +60,11 @@
 //!   hold it (`native_objects_glue::structure_at_rest`; else
 //!   `object_shader_flag`). A flagged shader's item before the frame's
 //!   structure target copy (`frame_scene::PartFlags::TARGET_UNCOPIED`)
-//!   draws unless a pass's program has flag bit 20, whose draw would make
-//!   the copy (`object_program_gpu::makes_target_copy`; else
-//!   `object_shader_flag_target`).
+//!   draws; where a pass's program has flag bit 20
+//!   (`object_program_gpu::makes_target_copy`) only without a structure
+//!   parameter block (else `object_shader_flag_target`: its draw would
+//!   copy the target) and ahead of every kept item, the commit setting
+//!   the frame's copy flag its call would ([`TARGET_COPIED`]).
 //!   The skip clears the layer's bit on each such item
 //!   (`layer_pass::clear_layer_items`). The external pass draws before the
 //!   guest's layer draw, so an item after one the guest keeps is taken only
@@ -144,8 +146,31 @@ pub(crate) trait LayerModels: Send + Sync {
 struct ObjectItem {
     shader: u32,
     marked: bool,
+    /// Its guest draw would be the frame's first call of `0x0003bea0`
+    /// with no structure parameter block ([`TARGET_COPIED`]).
+    sets_copied: bool,
     draws: Vec<(u32, PlannedDraw)>,
 }
+
+/// An object item's skip: taken when planned for `shader`. An item whose
+/// draw would set the frame's copy flag ([`TARGET_COPIED`]) is never
+/// order-free, so the skip takes it only ahead of every kept item
+/// (`layer_pass::clear_layer_items`), where the cache is cleared.
+fn object_skip(planned: Option<&ObjectItem>, shader: u32, free: bool) -> ItemSkip {
+    let take = planned.is_some_and(|o| o.shader == shader);
+    ItemSkip { take, free: free && !planned.is_some_and(|o| o.sets_copied) }
+}
+
+/// The frame's structure target copy flag (`0x00509430`; `0x0002c0f5`
+/// clears it each frame). The first call of `0x0003bea0` a frame (a
+/// flagged shader's draw whose program has flag bit 20) sets the draw byte
+/// `0x004670bc`, clears the shader cache (`0x00016b10`), with a structure
+/// parameter block copies and binds the structure's target
+/// (`0x000352e0`, `0x00014bc0`), sets this flag and clears the cache
+/// again. Without a block, an item drawn ahead of every kept item of its
+/// layer finds the cache as the body's own `0x00016b10` left it, cleared,
+/// so its call leaves only this flag, which the layer's commit sets.
+pub(crate) const TARGET_COPIED: u32 = 0x0050_9430;
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -527,17 +552,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ListItem::World(item) => ItemSkip { take: take_world(item), free: is_free(item.slot, item.shader) },
             ListItem::Object { slot, shader } => {
                 let planned = object_draws.get(&slot);
-                let take = planned.is_some_and(|o| o.shader == shader);
-                if planned.is_some() && !take {
+                let skip = object_skip(planned, shader, is_free(slot, shader));
+                if planned.is_some() && !skip.take {
                     unset.borrow_mut().push(slot);
                 }
-                ItemSkip { take, free: is_free(slot, shader) }
+                skip
             }
         }) else {
             left.all("list");
             return None;
         };
         let (drawn, cleared, order) = (skip.drawn, skip.cleared, skip.order);
+        let sets_copied = drawn.iter().any(|d| matches!(*d, ListItem::Object { slot, .. } if object_draws.get(&slot).is_some_and(|o| o.sets_copied)));
         for slot in unset.into_inner() {
             left.item(slot, "set");
         }
@@ -617,6 +643,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             }
         }
         if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
+            left.all("masks");
+            return None;
+        }
+        // What the skipped item's `0x0003bea0` leaves: the frame's copy
+        // flag ([`TARGET_COPIED`]).
+        if sets_copied && mem.set_u8(TARGET_COPIED, 1).is_err() {
             left.all("masks");
             return None;
         }
@@ -783,7 +815,8 @@ fn plan_objects<B: d3d::backend::Backend>(
         // (`0x0003bea0`), which no native stage does. Such an item keeps
         // its draw, ahead of `order_free`, so the items after it see one
         // of unknown effect.
-        if object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw))) {
+        let sets_copied = object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw)));
+        if sets_copied && item.flags.contains(PartFlags::STRUCTURE_PARAMETERS) {
             *outcomes.entry("object_shader_flag_target").or_default() += 1;
             left.item(item.slot, "object_shader_flag_target");
             continue;
@@ -893,7 +926,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             left.item(item.slot, "object_fog");
             continue;
         }
-        out.insert(item.slot, ObjectItem { shader: item.key.shader, marked, draws: with_fog });
+        out.insert(item.slot, ObjectItem { shader: item.key.shader, marked, sets_copied, draws: with_fog });
     }
     drop(guard);
     let texaccum = texaccum.flatten().filter(|_| out.values().any(|o| o.draws.iter().any(|(_, draw)| draw.texaccum)));
@@ -1467,5 +1500,26 @@ mod accumulation_tests {
         assert_eq!(got, [(false, 0..2), (true, 2..4), (true, 4..5), (true, 5..7)]);
         assert_eq!(accumulation_segments([true]), [(true, 0..1)]);
         assert!(accumulation_segments([]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod target_copy_tests {
+    use super::*;
+
+    /// An item whose guest draw would set the frame's copy flag is taken
+    /// as planned but never order-free: the skip draws it only ahead of
+    /// every kept item, where its `0x0003bea0` would leave nothing but
+    /// the flag.
+    #[test]
+    fn an_item_setting_the_copy_flag_is_never_order_free() {
+        let item = |sets_copied| ObjectItem { shader: 7, marked: false, sets_copied, draws: Vec::new() };
+        let plain = object_skip(Some(&item(false)), 7, true);
+        assert!(plain.take && plain.free);
+        let copies = object_skip(Some(&item(true)), 7, true);
+        assert!(copies.take && !copies.free);
+        assert!(!object_skip(Some(&item(false)), 8, true).take, "another shader");
+        assert!(!object_skip(None, 7, true).take);
+        assert_eq!(TARGET_COPIED, 0x0050_9430);
     }
 }

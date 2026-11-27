@@ -7,7 +7,7 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | Input | Where | Part flag | Declines as | Native draw takes the part when |
 |---|---|---|---|---|
 | Fade byte | record `+0x1a` | `PartFlags::FADE` | `object_fade`, `object_stipple` | the engine's cached fade and the device's pattern are the rest values, and the byte's pattern is the same in every x87 mode |
-| Shader flag bit 0 | shader `+0x16` | `PartFlags::SHADER_FLAG` | `object_shader_flag`, `object_shader_flag_target` | no flag bit 20 program is in the frame's passes before the target copy is made, and no structure lightmap index in layer 3 |
+| Shader flag bit 0 | shader `+0x16` | `PartFlags::SHADER_FLAG` | `object_shader_flag`, `object_shader_flag_target` | before the frame's target copy, a flag bit 20 program only without a structure parameter block and ahead of every kept item; no structure lightmap index in layer 3 |
 | Structure parameter block | structure `+0x214` | `PartFlags::STRUCTURE_PARAMETERS` | `object_shader_flag` | the device and the engine already hold every word of the upload |
 | Item argument | item `+0xc`, `+0x14`, `+0x15` | none | none for the projected size | always (see below) |
 
@@ -39,7 +39,7 @@ With its program's flag bit 20 (the pass implementation's `+0x118`, `0x0004d561`
 
 - Layer 3's walk reads the entry's program and refuses bit 20 itself.
 - A world layer's or the first person's entry is built under the layer draw. Extraction gives the part `PartFlags::TARGET_UNCOPIED` while the frame's copy is not made.
-- The host knows the programs of the passes it plans (`ResolvedImplementation::copies_target`, the implementation's bit 20) and keeps the item when one of them has the bit (`object_program_gpu::makes_target_copy`). An item whose programs lack it makes no call, so skipping its draw skips nothing else.
+- The host knows the programs of the passes it plans (`ResolvedImplementation::copies_target`, the implementation's bit 20) (`object_program_gpu::makes_target_copy`). An item whose programs lack it makes no call, so skipping its draw skips nothing else. With the bit and a structure parameter block the item keeps its draw, which copies the target. Without a block a world layer's item draws when it comes ahead of every kept item of its layer (it is never order-free, `native_layers_glue::object_skip`): its call then finds the cache as the body's `0x00016b10` cleared it and leaves only the frame's copy flag `0x00509430`, which the layer's commit sets (`native_layers_glue::TARGET_COPIED`). The first person keeps such items.
 - A kept item counts as one of unknown effect for the order of those after it (`layer_pass::clear_layer_items`).
 - A flagged layer-3 record with a structure lightmap index is refused, since the native draw would bind it and the guest's leaves the stage as the device holds it.
 - Extraction reads no PRT stream for a flagged layer-5 item.
@@ -74,6 +74,6 @@ The argument (`+0xc`) and the `+0x14` and `+0x15` bytes. The sorted dispatch pas
 | `object_fade` | the stipple's switch does not read, a display override stands in for its pattern, or the fade's pattern differs between x87 modes |
 | `object_stipple` | the cached fade or the pattern is not what the epilogue leaves |
 | `object_shader_flag` | the structure's parameter block's upload does not compute, or the device and the engine do not hold it, or in layer 3 a structure lightmap index |
-| `object_shader_flag_target` | the target copy is not made yet and a pass's program has flag bit 20 |
+| `object_shader_flag_target` | the target copy is not made yet, a pass's program has flag bit 20 and the structure has a parameter block (or, in the first person, any such item) |
 
 In layer 3's walk these are `walk_unsupported` (extraction) or `State` (the stipple). In the first person's layer 3 they are its log reasons.

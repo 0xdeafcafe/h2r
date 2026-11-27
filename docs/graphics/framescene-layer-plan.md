@@ -105,7 +105,7 @@ Everything else keeps its D3D draws and so the indexed-draw admission: per-draw 
 |---|---|
 | plan causes (`LayerRefusal::name`, `per_draw` for a material resolved per draw) | the plan could not resolve the item |
 | extraction causes (`LayerObjectRefusal::name`) | `object_shader_flag` (also where the device or engine does not hold the structure parameters an item uploads) and the rest |
-| `object_shader_flag_target` | a flagged item before the frame's structure target copy whose pass's program has flag bit 20 (`object_program_gpu::makes_target_copy`) |
+| `object_shader_flag_target` | a flagged item before the frame's structure target copy whose pass's program has flag bit 20 (`object_program_gpu::makes_target_copy`), with a structure parameter block; without one it draws ahead of every kept item and the commit sets the copy flag (`TARGET_COPIED`), else `order` |
 | `object_fade`, `object_stipple` | the stipple's or a fade byte's pattern is not known exactly; the device or engine does not hold what the epilogue leaves |
 | `object_prt` | layer 5's PRT stream does not read or is of a format the variant was not compiled for |
 | `object_layer` | a layer outside `object_program_gpu::OBJECT_LAYERS` |
