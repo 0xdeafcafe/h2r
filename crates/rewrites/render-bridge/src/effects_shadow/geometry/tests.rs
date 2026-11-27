@@ -220,3 +220,31 @@ fn the_arm_answers_after_clean_sampled_frames_and_falls_back_at_a_difference() {
     frame(&mut m, (CLEAN + 1) * SAMPLE + 1);
     assert_eq!(build(&mut m, ESP), None, "the guest builds again");
 }
+
+#[test]
+fn a_sampled_draw_takes_the_pass_its_build_made_once_and_the_material_streak_proves() {
+    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = world();
+    frame(&mut m, SAMPLE * 40);
+    select(&mut m, 1);
+    assert_eq!(build(&mut m, ESP), None);
+    let pass = material_sample(&m).unwrap();
+    assert_eq!((pass.shader, pass.selector, pass.imp), (SHADER, 1, 0));
+    assert_eq!(material_sample(&m), None, "once");
+    // An unsampled frame, or a build of another frame, is nobody's.
+    assert_eq!(build(&mut m, ESP), None);
+    frame(&mut m, SAMPLE * 40 + 1);
+    assert_eq!(material_sample(&m), None);
+
+    material_record(&["render_0x3b".to_owned()], &[]);
+    assert!(!material_proven());
+    for _ in 0..CLEAN {
+        material_record(&[], &["combiner"]);
+    }
+    assert!(material_proven());
+    let proven = counter("geometry_material_proven");
+    material_record(&["stage0_address_u".to_owned()], &[]);
+    assert!(!material_proven(), "a difference ends the streak");
+    assert_eq!(counter("geometry_material_mismatched_stage0_address_u") > 0, true);
+    assert_eq!(counter("geometry_material_proven"), proven);
+}

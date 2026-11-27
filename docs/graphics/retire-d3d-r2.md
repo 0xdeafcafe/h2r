@@ -138,10 +138,37 @@ Refusals, by name, `geometry_refused_<name>`: `fault`, `particle_material`
 `geometry_fallback`, `answer_geometry`, `geometry_{handler,build}_unbalanced`;
 kept builds count `scene_kept_15_geometry_<name>`.
 
-Not built: the draw's state. The shader datum's textures, samplers and
-constants are still made by the guest's `0x0004d0b0`; the native material
-translation (`native_world_materials.md`) is the Rust form to compare them
-with. Tests: `effects_shadow/geometry/tests.rs`.
+### The draw's material
+
+The draw `0x0004d0b0` applies the pass's implementation
+(`ResolvedImplementation`, from the shader's template at layer 15) to the
+device. `native_render::transparent_material::compare` checks a resolved
+draw against it: the bound textures (bound or not), the render words by
+slot (the later value of a state set twice), the stage words of each bound
+stage (address, filters, mip bias and level, anisotropy, border colour),
+the 60-word pixel shader definition and the vertex constants `c[18 + i]`
+(hardware slot register + 96, the written lanes). What an engine input
+drives (`engine_render`, `engine_stage`) and the definition and constants
+of an implementation that reads a per-draw input (`combiner`, `constants`)
+are skipped by name.
+
+On a sampled frame the handler's latest build names the pass (shader,
+selector, the slot's implementation byte). At the indexed call that
+follows, `native_transparents_glue` finds the shader in the world's loaded
+materials (`LayersView.materials`), compares the implementation with the
+draw's snapshot and records the result. Counted
+`layer_plan_15_effects_shadow_geometry_material_<outcome>`: `matched`,
+`mismatched_<field>` (`texture_<n>_unbound`, `render_<slot>`,
+`stage<n>_<field>`, `combiner_w<n>`, `combiner_missing`, `constant_<register>`),
+`skipped_<part>`, `refused_{no_layers,not_a_world_material,no_implementation}`
+and `proven`, which fires once after 16 matches in a row
+(`geometry::material_proven`). A difference ends that streak only; the
+build answer's gate is its own.
+
+Not built: an answer for the material. The draw's state stays the guest's;
+the native pass still takes its pipeline from the device. A shader that is
+not a world material (an object's) is refused `not_a_world_material`.
+Tests: `effects_shadow/geometry/tests.rs`, `transparent_material.rs`.
 
 ## R2's decals and weather
 
