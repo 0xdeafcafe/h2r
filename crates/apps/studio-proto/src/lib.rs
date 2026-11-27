@@ -93,6 +93,12 @@ pub mod method {
     pub const ASSET_WHERE_USED: &str = "asset.where_used";
     pub const ASSET_EDITS: &str = "asset.edits";
     pub const ASSET_FORK: &str = "asset.fork";
+    // Forge map variants and the Forge palette (api/forge_variants.rs).
+    pub const FORGE_VARIANT_LIST: &str = "forge.variant.list";
+    pub const FORGE_VARIANT_READ: &str = "forge.variant.read";
+    pub const FORGE_VARIANT_SET: &str = "forge.variant.set";
+    pub const FORGE_VARIANT_SAVE: &str = "forge.variant.save";
+    pub const FORGE_ITEMS: &str = "forge.items";
     pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";

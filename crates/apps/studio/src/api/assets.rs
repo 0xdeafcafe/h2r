@@ -40,9 +40,10 @@ fn list(app: &mut App, p: &P) -> Reply {
         text: p.opt_str("query")?.unwrap_or("").to_owned(),
         limit: p.opt_usize("limit")?.unwrap_or(DEFAULT_LIMIT),
     };
-    // The Voices kind lists voices, which are read from the data root.
-    if root == Root::Tags && assets::is_voices_kind(q.kind.as_deref()) {
-        return Ok(app.voice_asset_list(&q.text, q.limit));
+    // The Voices, Forge variants and Forge items kinds are read from the
+    // data root.
+    if let Some(listed) = app.kind_list(&q) {
+        return listed.map_err(|e| err(code::REFUSED, e));
     }
     let set = assets::read_set(&app.data_root());
     assets::list(&app.tags_root(), &set, &q).map_err(|e| err(code::REFUSED, e))

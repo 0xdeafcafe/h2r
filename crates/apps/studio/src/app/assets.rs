@@ -17,7 +17,10 @@
 //! `item:<package>:<n>` for the n-th item of a package's manifest, and
 //! `voice:<id>` for a voice (a character of `voice::dataset::CHARACTERS`,
 //! or `announcer`), which the **Voices** kind lists
-//! ([`App::voice_asset_list`]).
+//! ([`App::voice_asset_list`]), and `forge:<map>:<file>` for a Forge map
+//! variant, which the **Forge variants** kind lists
+//! (`app::forge_variants`). The **Forge items** kind lists the Forge
+//! palette as tags (`assets/forge.rs`).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -86,7 +89,12 @@ pub fn kind_names() -> Vec<&'static str> {
     KINDS
         .iter()
         .map(|(k, _)| *k)
-        .chain(["Other", VOICES_KIND])
+        .chain([
+            "Other",
+            VOICES_KIND,
+            super::forge_variants::VARIANTS_KIND,
+            super::forge_variants::ITEMS_KIND,
+        ])
         .collect()
 }
 
@@ -155,13 +163,16 @@ pub enum AssetId {
     Item(String, usize),
     /// A voice: a character id or `announcer`.
     Voice(String),
+    /// A Forge map variant: its base map and its file's stem in the store
+    /// (`app::forge_variants`).
+    Forge(String, String),
 }
 
 impl AssetId {
     pub fn parse(s: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"
+                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n>, voice:<id> or forge:<map>:<file>)"
             )
         };
         let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
@@ -177,6 +188,13 @@ impl AssetId {
             "package" if !rest.is_empty() => Ok(Self::Package(rest.to_owned())),
             "voice" if crate::voice::dataset::character(rest).is_some() || rest == super::voices::ANNOUNCER => {
                 Ok(Self::Voice(rest.to_owned()))
+            }
+            "forge" => {
+                let (map, file) = rest.split_once(':').ok_or_else(bad)?;
+                if map.is_empty() || file.is_empty() {
+                    return Err(bad());
+                }
+                Ok(Self::Forge(map.to_owned(), file.to_owned()))
             }
             "item" => {
                 let (p, n) = rest.rsplit_once(':').ok_or_else(bad)?;
@@ -860,6 +878,7 @@ impl App {
             Ok(AssetId::Tag(key)) => key,
             Ok(AssetId::Item(p, n)) => return self.open_item(asset, &p, n, map),
             Ok(AssetId::Voice(id)) => return self.open_voice(&id),
+            Ok(AssetId::Forge(map, file)) => return self.open_forge_variant(&map, &file),
             Ok(AssetId::Package(id)) => return self.open_package_document(&id),
             Err(e) => return self.error(e),
         };
@@ -1053,6 +1072,8 @@ impl App {
 
 mod browse;
 mod creation;
+mod forge;
+pub use forge::forge_items;
 pub use browse::{Browse, BrowseMode, BrowseRow, BrowseView};
 pub use creation::CreateAsset;
 pub(crate) use creation::{SourceAsset, SourceView};

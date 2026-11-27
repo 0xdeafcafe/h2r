@@ -36,6 +36,7 @@ mod colours;
 mod shader;
 mod curves;
 mod docs;
+mod forge_variants;
 mod game_script;
 mod geometry;
 mod hud;

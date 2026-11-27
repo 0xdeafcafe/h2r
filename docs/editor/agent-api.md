@@ -95,6 +95,7 @@ What goes through actions, from both sides:
 | Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
 | Where used, Show edits | `WhereUsed {asset}`, `ShowEdits {asset}`, `ClearBrowse` | a Browser row's menu, the header's **Links** menu, the Browser view's **Clear** | `asset.where_used`, `asset.edits` |
+| A Forge map variant's field, its save | `Forge(ForgeAction::{Set, Save, Select})`, `UndoDoc(Doc::Forge)`, `RedoDoc(Doc::Forge)` | the Forge variant window's field boxes and rows, the header's Undo, Redo and Save | `forge.variant.set`, `forge.variant.save`, `doc.undo`, `doc.redo` |
 | Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
@@ -1756,7 +1757,8 @@ example runs in `every_method_in_methods_has_a_test`.
 `asset.*` is the browser's data (docs/editor/studio-redesign.md, "The
 browser"; `app/assets.rs`). An asset is named by an id: `tag:<group>:<path>`
 (a tag of the tree, or one a package adds), `package:<id>` or
-`item:<package>:<n>` (the n-th item of a package's manifest).
+`item:<package>:<n>` (the n-th item of a package's manifest), `voice:<id>`
+or `forge:<map>:<file>` (a Forge map variant).
 
 `asset.list {root?, package?, kind?, map?, query?, limit?}` answers
 `{rows, total, limit, truncated, maps, kinds, problems}`. With `root`
@@ -1845,6 +1847,60 @@ h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 h2 studio asset.where_used '{"asset":"tag:hlmt:objects\\weapons\\rifle_model"}'
 h2 studio asset.edits '{"asset":"package:pogo"}'
+```
+
+### Forge variants and items
+
+`forge.*` is the Forge map variants and the Forge palette
+(docs/editor/studio-flow.md, "Forge variants and items";
+`app/forge_variants.rs`, `app/assets/forge.rs`, `api/forge_variants.rs`). A
+variant is the document `forge::files::variants` stores at
+`<data>/map-variants/<map>/<file>.h2mapvariant`; its asset id is
+`forge:<map>:<file>` and `shell.open {asset}` opens it as a tab.
+
+| Method | Does |
+|---|---|
+| `forge.variant.list {query?, limit?}` | the saved and fetched variants of every map, the rows of `asset.list {kind: "Forge variants"}`: `{asset, name, map, file, source, editable, things, id, base}`. Only a `saved` one opens |
+| `forge.variant.read {asset?}` | the variant's things: `{target, block, added, removed, item, piece, notes, fields: [{field, type, value}]}`. With no `asset`, the open one, with its unsaved edits (`dirty`) |
+| `forge.variant.set {asset?, target, field, value}` | sets a field the variant writes; one undo step of the document. `asset` opens that variant first |
+| `forge.variant.save {}` | writes the open variant's file in the store |
+| `forge.items {query?, map?, custom?, limit?}` | the Forge palette, the rows of `asset.list {kind: "Forge items"}`: tag rows with `forge: {menu, custom, source}` |
+
+A thing's `target` is `added:<op>` for an entry the variant adds and
+`base:<block>:<index>` for an entry of the base map it edits or removes.
+`type` is `bool`, `int`, `float`, `vec2`, `vec3`, `vec4`, `text` or `tag`; a
+tag's value is `<group>:<path>`, or null for none. `forge.variant.set`
+replaces the value of the write that gives the field its value, so it adds
+no op; the value keeps the field's type and the document must still pass
+`forge_doc::validate`.
+
+| Refusal | Code |
+|---|---|
+| no variant is open; a field the variant does not write; an entry it does not have; a variant from Live | `REFUSED` |
+| a value of another type; a `target` that is not `added:<op>` or `base:<block>:<index>` | `INVALID_PARAMS` |
+
+A variant with unsaved edits does not close, and another does not open over
+it: save it or undo the edits.
+
+`forge.items` rows by `forge.source`:
+
+| `source` | Rows | `custom` |
+|---|---|---|
+| `disc` | every tag of the tree in a group Forge places: `weap`, `vehi`, `eqip`, `scen`, `bloc`, `mach`, `ctrl`, and the spawner collections `itmc` and `vehc` | false |
+| `package` | the tags the packages that are on add in those groups | true |
+| `blockout` | the kit's block-out set (`forge_shapes::starter`), `bloc` under `forge\blockout\` | true |
+
+`asset.where_used` and `asset.links` on an item's `tag:` id list the
+variants that place it (`role` `Forge variant`, `via` `<n> placed in <name>`);
+`asset.links` on a variant lists the tags it places under `uses`.
+
+```sh
+h2 studio forge.variant.list '{}'
+h2 studio shell.open '{"asset":"forge:lockout:Castle"}'
+h2 studio forge.variant.set '{"target":"added:1","field":"position","value":[1.5,0,2]}'
+h2 studio forge.variant.save '{}'
+h2 studio forge.items '{"custom":true}'
+h2 studio asset.where_used '{"asset":"tag:weap:objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}'
 ```
 
 `asset.fork {tag, map, package?, set?}` is Fork for this map

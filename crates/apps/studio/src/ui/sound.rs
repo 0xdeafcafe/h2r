@@ -140,7 +140,7 @@ pub fn row_text(row: &SoundRow) -> String {
 /// other kind.
 pub fn target(app: &App) -> Option<(TagId, String)> {
     if app.tool != ToolKind::Tags
-        || matches!(app.front_doc(), Some(Doc::Voice | Doc::SourceAsset(_)))
+        || matches!(app.front_doc(), Some(Doc::Voice | Doc::Forge | Doc::SourceAsset(_)))
     {
         return None;
     }

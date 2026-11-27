@@ -9,7 +9,10 @@
 //!
 //! The **Voices** kind lists each character and the announcer with its
 //! dataset state; a double-click opens the voice document
-//! ([`Action::OpenAsset`] on `voice:<id>`).
+//! ([`Action::OpenAsset`] on `voice:<id>`). The **Forge variants** kind
+//! lists the saved map variants, which open as documents
+//! (`forge:<map>:<file>`), and **Forge items** the Forge palette, the
+//! custom items included (`app::assets::forge_items`).
 //!
 //! A double-click on a tag opens it in the editor its group gets, on the
 //! map that holds it ([`Action::OpenAsset`]). A double-click on a package
@@ -127,11 +130,11 @@ fn load(app: &App, st: &BrowserUi) -> Listing {
         limit: LIMIT,
     };
     let mut out = Listing::default();
-    // The Voices kind lists voices, read from the data root.
-    let listed = if tags && assets::is_voices_kind(q.kind.as_deref()) {
-        Ok(app.voice_asset_list(&q.text, q.limit))
-    } else {
-        assets::list(&app.tags_root(), &set, &q)
+    // The Voices, Forge variants and Forge items kinds are read from the
+    // data root (`App::kind_list`).
+    let listed = match app.kind_list(&q) {
+        Some(listed) => listed,
+        None => assets::list(&app.tags_root(), &set, &q),
     };
     match listed {
         Ok(v) => {
@@ -203,6 +206,10 @@ impl BrowserUi {
                 self.package = Some(package);
             }
             Ok(assets::AssetId::Voice(_)) => self.root = Root::Tags,
+            Ok(assets::AssetId::Forge(..)) => {
+                self.root = Root::Tags;
+                self.kind = Some(crate::app::forge_variants::VARIANTS_KIND.to_owned());
+            }
             Err(_) => self.selected = None,
         }
     }
@@ -538,9 +545,9 @@ fn package_row(ui: &Ui, st: &mut BrowserUi, entry: &Value, asset: &str, actions:
 
 fn glyph(row: &Value) -> &'static str {
     match row["kind"].as_str().unwrap_or("") {
-        "Maps" => icon::MAP,
+        "Maps" | "Forge variants" => icon::MAP,
         "Package" => icon::PACKAGE,
-        "Models" | "Objects" => icon::BOX,
+        "Models" | "Objects" | "Forge items" => icon::BOX,
         "Screens" | "HUDs" => icon::LAYERS,
         "Sounds" | "Voices" => icon::SOUND,
         "Game types" => icon::SWORDS,
@@ -600,7 +607,7 @@ fn row(
                 open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
             } else if asset.starts_with("item:") {
                 open(actions, asset, item_map(app, row));
-            } else if row["root"] == "voices" {
+            } else if row["root"] == "voices" || asset.starts_with("forge:") {
                 open(actions, asset, None);
             }
         }
@@ -619,6 +626,10 @@ fn row(
             }
         } else if row["root"] == "voices" {
             if ui.menu_item(format!("{} Open", icon::SOUND)) {
+                open(actions, asset, None);
+            }
+        } else if asset.starts_with("forge:") {
+            if ui.menu_item(format!("{} Open", icon::MAP)) {
                 open(actions, asset, None);
             }
         }

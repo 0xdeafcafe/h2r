@@ -59,6 +59,7 @@ pub mod textures;
 pub mod ui_screens;
 pub mod voice_batch;
 pub mod voices;
+pub mod forge_variants;
 pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
 pub use edit_target::{EditChoice, EditState, Picker};
@@ -355,6 +356,9 @@ pub enum Action {
     ShowEdits { asset: String },
     /// The Browser lists its root again, in place of a link view.
     ClearBrowse,
+    /// A field edit, a save or a selection of the open Forge map variant
+    /// (`app::forge_variants`).
+    Forge(forge_variants::ForgeAction),
     /// Run a package document control through the package API handlers.
     PackageCommand { method: &'static str, params: serde_json::Value },
     /// **Fork for this map**: the asset's edit lines for the open map, in
@@ -569,7 +573,8 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::SourceAsset(_)) => None,
+            // A variant with unsaved edits refuses to close (`App::close_doc`).
+            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::Forge | Doc::SourceAsset(_)) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -646,6 +651,8 @@ pub struct App {
     /// The Browser's link view: Where used or Show edits
     /// (`app::assets::browse`).
     pub browse: assets::Browse,
+    /// The Forge map variant open as a document (`app::forge_variants`).
+    pub forge_variants: forge_variants::ForgeVariants,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -789,6 +796,7 @@ impl App {
             opened_package: None,
             source_assets: Vec::new(),
             browse: assets::Browse::default(),
+            forge_variants: Default::default(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -1240,6 +1248,7 @@ impl App {
             Action::WhereUsed { asset } => self.show_where_used(&asset),
             Action::ShowEdits { asset } => self.show_edits(&asset),
             Action::ClearBrowse => self.clear_browse(),
+            Action::Forge(action) => self.run_forge(action),
             Action::PackageCommand { method, params } => self.package_command(method, params),
             Action::ForkAsset { asset } => self.fork_asset(&asset),
             Action::RevertAsset { asset } => self.revert_asset(&asset),

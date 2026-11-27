@@ -30,6 +30,20 @@ pub(crate) fn crumbs(app: &App, id: &str) -> Option<Crumbs> {
             Some(Crumbs { origin: package.clone(), kind: kind.clone(), leaf: source, badge: format!("{kind}  in {package}") })
         }
         AssetId::Voice(voice) => Some(Crumbs { origin: "Voices".into(), kind: "Voice".into(), leaf: voice.clone(), badge: "voice".into() }),
+        AssetId::Forge(map, file) => {
+            let name = app
+                .forge_variants
+                .open
+                .as_ref()
+                .filter(|open| open.map == map && open.file == file)
+                .map_or(file.clone(), |open| open.doc.title.clone());
+            Some(Crumbs {
+                origin: map.clone(),
+                kind: crate::app::forge_variants::VARIANTS_KIND.into(),
+                leaf: name,
+                badge: format!("map variant of {map}"),
+            })
+        }
         AssetId::Package(package) => Some(Crumbs { origin: package.clone(), kind: "Package".into(), leaf: package.clone(), badge: "package".into() }),
     }
 }
@@ -45,8 +59,9 @@ pub(super) fn button(ui: &Ui, label: &str, enabled: bool, reason: &str) -> bool 
 }
 
 fn load(app: &App, id: &str) -> Result<Links, String> {
-    let id = AssetId::parse(id)?;
-    links::links(&app.tags_root(), &assets::read_set(&app.data_root()), &id)
+    // The app's answer: the link table with what only the app knows (a
+    // voice's lines, the Forge variants under the data root).
+    app.asset_links(&AssetId::parse(id)?)
 }
 
 fn link_role(row: &links::Link) -> &'static str { row.role }
@@ -175,7 +190,7 @@ Some(Ok(l)) => {
     if let Some(_popup) = ui.begin_popup("##doc-open-with") {
         match id.as_deref().map(|id| load(app, id)) {
             Some(Ok(l)) => for e in l.editors {
-                let action = match e.id { "voices" => id.clone().map(|asset| Action::OpenAsset { asset, map: None }), "field_panel" | "modeling" | "audition" | "animation" => Some(Action::Show(Surface::Tags)), "scenario" => Some(Action::Show(Surface::Scene)), "textures" => Some(Action::Show(Surface::Textures)), "hud" => Some(Action::Show(Surface::Hud)), "ui_screens" => Some(Action::Show(Surface::UiScreens)), "scripts" => Some(Action::Show(Surface::Scripts)), "variants" => Some(Action::Show(Surface::Variants)), "playlists" => Some(Action::Show(Surface::Playlists)), _ => None };
+                let action = match e.id { "voices" | "forge_variant" => id.clone().map(|asset| Action::OpenAsset { asset, map: None }), "field_panel" | "modeling" | "audition" | "animation" => Some(Action::Show(Surface::Tags)), "scenario" => Some(Action::Show(Surface::Scene)), "textures" => Some(Action::Show(Surface::Textures)), "hud" => Some(Action::Show(Surface::Hud)), "ui_screens" => Some(Action::Show(Surface::UiScreens)), "scripts" => Some(Action::Show(Surface::Scripts)), "variants" => Some(Action::Show(Surface::Variants)), "playlists" => Some(Action::Show(Surface::Playlists)), _ => None };
                 let available = action.is_some();
                 if ui.menu_item_enabled_selected_no_shortcut(e.label, false, e.why_not.is_none() && available) { actions.extend(action); }
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) { if let Some(why) = e.why_not { ui.tooltip_text(why); } else if !available { ui.tooltip_text("This editor cannot be opened here yet"); } }

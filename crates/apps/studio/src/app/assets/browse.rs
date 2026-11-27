@@ -180,9 +180,9 @@ impl App {
                     });
                 }
             }
-            AssetId::Item(..) | AssetId::Voice(_) => {
+            AssetId::Item(..) | AssetId::Voice(_) | AssetId::Forge(..) => {
                 return Err(format!(
-                    "{asset}: Show edits is for a tag or a package (asset.links lists what an item touches)"
+                    "{asset}: Show edits is for a tag or a package (asset.links lists what any other asset touches)"
                 ));
             }
         }

@@ -4,6 +4,7 @@
 
 mod bar;
 pub mod browser;
+mod forge_variant;
 mod doc_tabs;
 mod doc_header;
 #[cfg(test)]
@@ -121,6 +122,8 @@ pub struct Studio {
     anim: anim::AnimUi,
     /// The voice document (`Doc::Voice`): the announcer and the clones.
     voices: voices::VoicesUi,
+    /// The Forge map variant document (`Doc::Forge`).
+    forge_variant: forge_variant::ForgeVariantUi,
     /// The tag workspace's start page and status-line bar
     /// (`app::workspace`).
     workspace: workspace::WorkspaceUi,
@@ -163,6 +166,7 @@ impl Studio {
             sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
             voices: voices::VoicesUi::default(),
+            forge_variant: Default::default(),
             workspace: workspace::WorkspaceUi::default(),
         }
     }
@@ -282,6 +286,7 @@ impl Studio {
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
         voices::window(ui, app, &mut self.voices, self.dialogs);
+        forge_variant::window(ui, app, &mut self.forge_variant, &mut actions);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
