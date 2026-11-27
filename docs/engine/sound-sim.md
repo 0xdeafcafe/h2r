@@ -67,4 +67,4 @@ Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start
 
 ## Related
 
-[sim-rewrite.md](sim-rewrite.md) (the exact port and the tick driver), [dsound.md](../audio/dsound.md) (the retail sound frame), [switches.md](../runtime/switches.md).
+[sound-instances.md](sound-instances.md) (the design that replaces the guest pool with a Rust table), [sim-rewrite.md](sim-rewrite.md) (the exact port and the tick driver), [dsound.md](../audio/dsound.md) (the retail sound frame), [switches.md](../runtime/switches.md).
