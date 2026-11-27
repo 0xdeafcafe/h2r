@@ -411,7 +411,19 @@ pub fn accounts(client: &Client, games: &[Game], all: &Path) -> Result<Vec<Local
         let account = match found {
             Some(a) => a,
             None => {
-                let (created, key) = client.create_account(&g.tag, None).map_err(|e| {
+                // The server allows a burst of 10 new accounts, then about
+                // one a second: a 16-player run waits for its turn.
+                let mut tries = 0;
+                let made = loop {
+                    match client.create_account(&g.tag, None) {
+                        Err(e) if status_of(&e) == Some(429) && tries < 30 => {
+                            tries += 1;
+                            std::thread::sleep(std::time::Duration::from_millis(1100));
+                        }
+                        other => break other,
+                    }
+                };
+                let (created, key) = made.map_err(|e| {
                     match status_of(&e) {
                         Some(409) => anyhow::anyhow!(
                             "the server has {} but {} has no key for it; run again with --fresh",
