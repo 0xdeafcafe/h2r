@@ -156,7 +156,7 @@ impl Scaled {
     ) -> Option<SceneRefusal> {
         let grid = self.scale;
         let one = grid == RenderScale::ONE;
-        if !grid.replayable(crate::MAX_SCALE) {
+        if !grid.replayable_display(crate::MAX_SCALE) {
             return Some(SceneRefusal::Grid);
         }
         if !self.single_copy {

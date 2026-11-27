@@ -295,7 +295,7 @@ Each slice adds a dated entry to [notes/e3-lighting.md](notes/e3-lighting.md) wi
 | Where the row is read | Effect |
 |---|---|
 | D3D path ([e3-lighting-setting.md](e3-lighting-setting.md)) | the scaled backend keeps a copy of each guest shadow map at the nearest integral vertical render scale (at least 2x, `d3d::scaled::shadow_scale`) and compares it with one nearest tap (`PixelOptions::hard_shadow`): the Hard form of "The edge". The guest sees retail; only the edge of retail's own dynamic-light shadows changes |
-| Native frame graph, at the display frame | the row supplies the mode; a scaled display hands the frame to the graph only at a uniform integer render scale (`RenderScale::uniform_integer`), otherwise the D3D path draws it |
+| Native frame graph, at the display frame | the row supplies the mode; a scaled display hands the frame to the graph on any grid `RenderScale::replayable_display` accepts, whole or fractional, otherwise the D3D path draws it |
 | An explicit private capture | supplies its own mode |
 
 In E3 mode the graph's draws on fresh attachments draw the guest's shadow maps as tiles with the Sharp edge ([e3-lighting-cones.md](e3-lighting-cones.md)).

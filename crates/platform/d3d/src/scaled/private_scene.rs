@@ -56,10 +56,10 @@ impl<'a> MixedPrivatePass<'a> {
         scale: impl Into<RenderScale>,
     ) -> Result<Self, String> {
         let grid = scale.into();
-        if !grid.replayable(crate::MAX_SCALE) {
+        if !grid.replayable_display(crate::MAX_SCALE) {
             return Err(format!(
-                "private scene grid {grid} is outside 1x to {}x",
-                crate::MAX_SCALE
+                "private scene grid {grid} is outside the replayable grids (no minifying axis, up to {}x on one axis)",
+                crate::MAX_SCALE * 2
             ));
         }
         if !frame.refusals.is_empty() {

@@ -95,6 +95,20 @@ impl RenderScale {
         })
     }
 
+    /// The grids a display can have: no axis minifies, no axis magnifies
+    /// past `2 * max`, and the pixel count stays within `max * max` times
+    /// the guest's. A wide window (5120x1440 is 8x across and 3x down) is
+    /// in, where [`Self::replayable`] would refuse its 8x axis.
+    pub fn replayable_display(self, max: u32) -> bool {
+        let axes = (0..2).all(|i| {
+            self.denom[i] <= self.numer[i]
+                && u64::from(self.numer[i]) <= 2 * u64::from(self.denom[i]) * u64::from(max)
+        });
+        let area = u128::from(self.numer[0]) * u128::from(self.numer[1]);
+        let guest = u128::from(self.denom[0]) * u128::from(self.denom[1]);
+        axes && area <= guest * u128::from(max) * u128::from(max)
+    }
+
     /// Shadow maps are square and follow the nearest integral vertical scale.
     pub fn vertical_rounded(self) -> u32 { self.edge(1, 1).max(1) }
 }
@@ -156,6 +170,26 @@ mod tests {
         assert!(!RenderScale::for_output(320, 240).unwrap().replayable(4));
         assert!(!RenderScale::for_output(1280, 400).unwrap().replayable(4));
         assert!(!RenderScale::for_output(2561, 480).unwrap().replayable(4));
+    }
+
+    #[test]
+    fn ultrawide_outputs_are_replayable_displays() {
+        for (w, h) in [(3440, 1440), (5120, 1440), (3840, 1080), (2560, 1440), (1280, 960)] {
+            let grid = RenderScale::for_output(w, h).unwrap();
+            assert!(grid.replayable_display(6), "{w}x{h}");
+        }
+        // 640x480 to 3440x1440 is 43/8 across and 3 down, not a whole scale.
+        let wide = RenderScale::for_output(3440, 1440).unwrap();
+        assert_eq!(wide.uniform_integer(), None);
+        assert_eq!(wide.size(640, 480), (3440, 1440));
+        // 5120x1440 is 8x across: past the 6x axis of `replayable`.
+        let super_wide = RenderScale::for_output(5120, 1440).unwrap();
+        assert!(!super_wide.replayable(6));
+        assert_eq!(super_wide.size(640, 480), (5120, 1440));
+        assert!(!RenderScale::for_output(320, 240).unwrap().replayable_display(6));
+        assert!(!RenderScale::for_output(1280, 400).unwrap().replayable_display(6));
+        assert!(!RenderScale::for_output(7680, 4320).unwrap().replayable_display(6));
+        assert!(!RenderScale::for_output(8960, 480).unwrap().replayable_display(6));
     }
 
     #[test]

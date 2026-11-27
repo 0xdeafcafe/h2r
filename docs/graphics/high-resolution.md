@@ -214,6 +214,10 @@ Snapping to 1/16 of a host pixel instead only narrows the sliver. `crates/platfo
 
 A renderer that owns the world geometry (the native renderer) loads the same welded mesh. It should draw shared edges from one vertex buffer with one position transform for every material, and not snap, so seams match bit for bit.
 
+### Which grids the native frame owner draws
+
+The frame owner draws a sealed scene on the display's own grid when `RenderScale::replayable_display` accepts it (`crates/platform/gfx/src/raster.rs`): no axis minifies, none magnifies past twice `MAX_SCALE` (12x), and the pixel count is at most `MAX_SCALE` squared times the guest's. Whole numbers are not required; the final copy samples the fractional grid. 3440x1440 is 43/8 across and 3 down, and 5120x1440 is 8 across and 3 down. Both are owned; a window under 640x480 on an axis, or 8x8 or beyond, runs the guest's commands. Test: `ultrawide_outputs_are_replayable_displays`.
+
 ### Scissor, clears and viewport
 
 `Draw::scissor`, `ScissorRect` clears and `Draw::viewport` are in pixels of the target. The view maps their endpoints on each axis. For an integer scale this is exact. At a fractional scale each edge rounds with the same function (`floor(edge * s + 0.5)`), so the disjoint pieces of a split scissor stay disjoint and gapless ([d3d.md](d3d.md), `clip_rects`).
