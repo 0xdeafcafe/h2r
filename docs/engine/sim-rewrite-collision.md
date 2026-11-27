@@ -480,7 +480,7 @@ component one `f32` add). For each terminal key, in walk order:
 1. Index the mark with the signed low 16 bits of the key. If that mark
    equals the epoch `[0x4e7c1c]`, skip. Otherwise set it. Placement lookup
    and result +0x3c use the full key. The callback also requires a live
-   code-object reference count to elide its destructor (see [entry E](collision-queries.md#entry-e--instance-trace-of-one-cluster)).
+   code-object reference count to elide its destructor (see [entry E](collision-queries.md#entry-e---instance-trace-of-one-cluster)).
 2. Filter by definition flags (`0x1689b0`), then the sphere pretest against
    the placement sphere.
 3. Transform start and delta by the placement inverse (the scale multiply is
