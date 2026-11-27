@@ -230,6 +230,11 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [teabag.md](game/teabag.md): teabags in every game (two crouches over a fresh body), the `Teabag` event and the Incel medal for a game without one
 - [pogo-stick.md](game/pogo-stick.md): Superbounce's Pogo Stick: a weapon of our own in three looks built from the `pogo` package (`content/pogo/`) into each multiplayer map, the secondary weapon by a script option, carried on the ground and ridden in the air with a trick for each bounce of a chain, the chase camera, `pogo.state` and `pogo.test`
 - [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension; the scan for spots in a map's collision (`h2 superbounce scan`); the bounce medals (design)
+- [superbounce-spots.md](game/superbounce-spots.md): Where bounces and crouch spots are in the map geometry.
+- [superbounce-game-type.md](game/superbounce-game-type.md): The superbounce game type: targets and the second bounce.
+- [superbounce-guide.md](game/superbounce-guide.md): The approach guide, the HUD options, the hold-X fall assist, the flight model and what is open.
+- [superbounce-landings.md](game/superbounce-landings.md): Charge, crouch spots, landings, floor marks, lock-on and how spots are verified.
+- [superbounce-ghosts-medals.md](game/superbounce-ghosts-medals.md): Ghost runs, the medals, recording and the bounce view.
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
