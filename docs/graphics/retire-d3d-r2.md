@@ -206,11 +206,26 @@ the list (`native_layers::extract`), the item found by its owner, record,
 part and shader, and planned by `plan_objects` over the cached restore
 from the object models, which compile layer 15 with the other object
 layers (`OBJECT_LAYERS`). The pass draws the item's passes with its
-lighting and transform. Its refusals are the object plan's (extraction's
-cause, `object_model`, the plan's names) and `object_scene`, `object_item`,
-`object_layer_begin`, `object_restore`, `object_stencil` (the item marks the
-stencil), `object_target` (it copies the structure target) and `object_view`
-(a draw samples the view, the scene copy or the accumulation target).
+lighting and transform.
+
+An item that marks the stencil draws under the mode-1 stencil
+(`layer_pass::item_stencil`) and is refused `object_stencil` only when the
+device does not hold mode 1 where the item would not set it. A draw that
+samples the view or the scene copy is recorded as commands with a copy of
+the bound colour (`snapshot_gpu`), as the layer calls' are. An item whose
+`0x0003bea0` is the frame's first call (`TARGET_COPIED`) is answered only
+with nothing cached (the call's shader-cache clear then writes nothing),
+and with a structure parameter block the pass copies the bound colour into
+the refraction target before its first draw
+(`snapshot_gpu::Snapshots::into_target`); with a cached implementation it
+is refused `object_target`. 
+A copy beside a draw sampling the view is
+refused `object_shader_flag_target_view`.
+
+The other refusals are the
+object plan's (extraction's cause, `object_model`, `object_texaccum`, the
+plan's names) and `object_scene`, `object_item`, `object_layer_begin`,
+`object_restore`, `object_shader_flag_target`.
 
 Not built: the handler's other side effects (the lightmap page `0x15c90`
 sets for a BSP record) are not made, as the layer's other skipped draws do

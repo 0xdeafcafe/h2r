@@ -304,3 +304,46 @@ fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_
     set_answer_host(None);
     material_record(&["render_0x3b".to_owned()], &[]);
 }
+
+#[test]
+fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
+    use std::sync::Arc;
+    use scene_extract::layout::objects::{RECORD_LIGHTING, RECORD_MODEL};
+    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = world();
+    let record = engine::render_loop::opaque_material::RENDER_RECORDS + RECORD_INDEX * 0x20;
+    m.set_u32(DATA - 4, 0x0004_1020).unwrap();
+    // The record is an object's: a model, and the lighting its cache
+    // record gives.
+    let mut obj = scene_extract::testing::Mem::default();
+    let handle = scene_extract::testing::object(&mut obj, 4, 0xe000_0100, 1);
+    for (at, v) in obj.0 {
+        m.set_u32(at, v).unwrap();
+    }
+    m.set_u32(record + RECORD_MODEL, 0xe100_0000 | RECORD_INDEX).unwrap();
+    m.set_u32(record + RECORD_LIGHTING, scene_extract::testing::lighting(4 + 7)).unwrap();
+    let host = Arc::new(Host(Mutex::default(), Ok(())));
+    set_answer_host(Some(host.clone()));
+    for k in 51..51 + CLEAN {
+        frame(&mut m, k * SAMPLE);
+        handler(&mut m);
+    }
+    for _ in 0..CLEAN {
+        material_record(&[], &[]);
+    }
+    frame(&mut m, (51 + CLEAN) * SAMPLE + 1);
+    assert!(proven());
+    assert!(answer_handler(&mut m, HESP));
+    assert_eq!(
+        *host.0.lock().unwrap(),
+        [Request { shader: SHADER, owner: Owner::Object(handle), record: RECORD_INDEX as u16, part: 2, passes: 2 }]
+    );
+    // A host's refusal (the stencil mark, a target copy, a view sample)
+    // leaves the handler to the guest.
+    for why in ["object_stencil", "object_target", "object_view"] {
+        set_answer_host(Some(Arc::new(Host(Mutex::default(), Err(why)))));
+        assert!(!answer_handler(&mut m, HESP), "{why} keeps the guest's handler");
+    }
+    set_answer_host(None);
+    material_record(&["render_0x3b".to_owned()], &[]);
+}
