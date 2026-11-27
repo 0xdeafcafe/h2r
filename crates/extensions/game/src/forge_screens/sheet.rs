@@ -1228,6 +1228,9 @@ pub struct Extras {
     /// selection it is in, or itself; none when one of them is not an
     /// object the session placed.
     pub savable: usize,
+    /// The session runs on a map with the kit, so a spawner, a starting
+    /// point, a goal and a teleporter can be duplicated.
+    pub kit: bool,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in

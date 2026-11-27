@@ -469,3 +469,103 @@ fn deleting_a_linked_added_teleporter_ends_its_link_in_one_undo_step() {
     assert_eq!(s.added_teleporters().len(), 2);
     let _ = receiver;
 }
+
+fn int_field(s: &Session, id: Endpoint, name: &str) -> Option<i64> {
+    s.thing(id)?.fields.iter().find(|(n, _)| *n == name).and_then(|(_, v)| match v {
+        Value::Int(n) => Some(*n),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_duplicated_spawn_keeps_its_team_in_one_add_and_one_undo() {
+    let mut s = kit_session();
+    let mut w = Fake::default();
+    let from = s.place_spawn(&mut w, 1, 3, frame(1., 0.5)).unwrap();
+    let copy = s
+        .duplicate(&mut w, 2, Endpoint::Added(from), frame(4., 1.))
+        .unwrap();
+    let thing = s.thing(Endpoint::Added(copy)).unwrap();
+    assert_eq!(thing.kind, ThingKind::StartingPoint);
+    assert_eq!(thing.frame, frame(4., 1.));
+    assert_eq!(int_field(&s, Endpoint::Added(copy), "team"), Some(3));
+    assert_eq!(s.document().ops.len(), 2);
+    assert_eq!(s.kit_left(BlockKind::StartingLocations), Some(0));
+    s.undo(&mut w, 3).unwrap();
+    assert!(s.thing(Endpoint::Added(copy)).is_none());
+    assert_eq!(s.kit_left(BlockKind::StartingLocations), Some(1));
+}
+
+#[test]
+fn a_duplicated_spawner_keeps_its_item_and_game_types() {
+    let mut s = kit_session();
+    let mut w = Fake::default();
+    let base = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let copy = s.duplicate(&mut w, 1, base, frame(2., 0.)).unwrap();
+    let thing = s.thing(Endpoint::Added(copy)).unwrap();
+    assert_eq!(thing.kind, ThingKind::ItemSpawner);
+    let item = |id| s.thing(id).unwrap().fields.iter().find(|(n, _)| *n == "item").cloned();
+    assert_eq!(item(Endpoint::Added(copy)), item(base));
+    assert_eq!(s.document().ops.len(), 1);
+    // The kit's one spare spawner row is used, so a second copy is refused.
+    assert_eq!(
+        s.duplicate(&mut w, 2, base, frame(3., 0.)).unwrap_err(),
+        kit::full(BlockKind::NetgameEquipment)
+    );
+    assert_eq!(s.document().ops.len(), 1);
+}
+
+#[test]
+fn a_duplicated_teleporter_keeps_its_role_and_takes_a_free_channel() {
+    let mut s = kit_session();
+    let mut w = Fake::default();
+    let a = s.place_teleporter(&mut w, 1, true, frame(1., 0.)).unwrap();
+    let b = s
+        .duplicate(&mut w, 2, Endpoint::Added(a), frame(2., 0.))
+        .unwrap();
+    assert_eq!(s.thing(Endpoint::Added(b)).unwrap().kind, ThingKind::Teleporter);
+    assert_eq!(
+        int_field(&s, Endpoint::Added(b), "type"),
+        int_field(&s, Endpoint::Added(a), "type")
+    );
+    assert_ne!(
+        int_field(&s, Endpoint::Added(b), "identifier"),
+        int_field(&s, Endpoint::Added(a), "identifier")
+    );
+}
+
+#[test]
+fn a_duplicated_goal_keeps_its_team_and_order_and_gets_its_own_area() {
+    let mut s = kit_session();
+    let mut w = Fake::default();
+    let hill = s.place_goal(&mut w, 1, Goal::Hill, frame(1., 0.)).unwrap();
+    let copy = s
+        .duplicate(&mut w, 2, Endpoint::Added(hill), frame(5., 0.))
+        .unwrap();
+    assert_eq!(s.thing(Endpoint::Added(copy)).unwrap().kind, ThingKind::Goal);
+    // A second hill takes the next free hill type, not the first's.
+    assert_ne!(
+        int_field(&s, Endpoint::Added(copy), "type"),
+        int_field(&s, Endpoint::Added(hill), "type")
+    );
+    assert_eq!(int_field(&s, Endpoint::Added(copy), "team"), Some(8));
+    // The add and its area are one step.
+    s.undo(&mut w, 3).unwrap();
+    assert!(s.thing(Endpoint::Added(copy)).is_none());
+    assert!(s.thing(Endpoint::Added(hill)).is_some());
+}
+
+#[test]
+fn a_kit_kind_with_no_kit_row_left_is_refused_by_the_kits_sentence() {
+    let mut s = kit_session();
+    let mut w = Fake::default();
+    let flag = s.place_goal(&mut w, 1, Goal::Territory, frame(1., 0.)).unwrap();
+    s.place_goal(&mut w, 2, Goal::Site, frame(2., 0.)).unwrap();
+    s.place_goal(&mut w, 3, Goal::Site, frame(3., 0.)).unwrap();
+    let ops = s.document().ops.len();
+    assert_eq!(
+        s.duplicate(&mut w, 4, Endpoint::Added(flag), frame(4., 0.)).unwrap_err(),
+        kit::full(BlockKind::NetgameFlags)
+    );
+    assert_eq!(s.document().ops.len(), ops);
+}
