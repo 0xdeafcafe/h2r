@@ -438,7 +438,7 @@ fn sweep(seed: u64, cases: u32, shape: Shape) {
         let mut r = Rng(seed + u64::from(case));
         let plan = plan(&mut r, shape);
         let mxcsr = 0x1f80 | rounding << 13;
-        let Some(kernel) = plan.stream.clone().solve(plan.iterations, plan.bias, zero_bits, mxcsr, CONTROL) else {
+        let Some(kernel) = plan.stream.clone().solve(plan.iterations as usize, plan.bias, zero_bits, mxcsr, CONTROL) else {
             declined += 1;
             continue;
         };
@@ -480,7 +480,7 @@ fn rows_equal_on_non_finite_impulses() {
         plan.stream.rows[row].impulse = specials[case as usize % 4];
         let mxcsr = 0x1f80 | (case % 4) << 13;
         assert!(
-            plan.stream.clone().solve(plan.iterations, plan.bias, zero_bits, mxcsr, CONTROL).is_none(),
+            plan.stream.clone().solve(plan.iterations as usize, plan.bias, zero_bits, mxcsr, CONTROL).is_none(),
             "case {case}: the kernel took a non-finite impulse"
         );
         load(&mut g, ram, &plan);
