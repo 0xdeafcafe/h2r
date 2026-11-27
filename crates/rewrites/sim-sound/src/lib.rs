@@ -23,6 +23,7 @@ pub mod scheduling;
 pub mod segments;
 pub mod sources;
 pub mod spatial;
+pub mod starts;
 pub mod submix;
 pub mod tick;
 pub mod voices;

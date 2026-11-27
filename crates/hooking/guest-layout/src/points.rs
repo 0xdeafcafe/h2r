@@ -1961,7 +1961,7 @@ points! { ALL;
     SOUND_STARTS_UPDATE @ 0x0021_d390: [fn() ret 0]; "docs/engine/sound-instances.md";
     /// Make a start layer record for a tag.
     SOUND_START_LAYER_NEW @ 0x0021_d2c0: [fn(tag: ecx, scale: xmm0, arg: stack 0) -> eax ret 4]; "docs/engine/sound-instances.md";
-    /// Mark a start layer record to play and run it.
+    /// Stop a start layer record: stopping, its stop components run (mode 2), then done.
     SOUND_START_LAYER_PLAY @ 0x0021_d360: [fn(start: ecx) ret 0]; "docs/engine/sound-instances.md";
     /// Run a start layer record: the gate, the admission or the looping sound.
     SOUND_START_LAYER_RUN @ 0x0021_d630: [fn(start: stack 0, mode: stack 1) -> eax ret 8]; "docs/engine/sound-instances.md";

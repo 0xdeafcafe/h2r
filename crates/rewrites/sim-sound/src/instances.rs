@@ -469,6 +469,8 @@ pub struct Sounds {
     pub(crate) instances: Pool<Instance>,
     pub(crate) chooser: Chooser,
     pub(crate) loops: Pool<crate::looping::Looping>,
+    /// The start layer's rows (`[0x51ebe0]`, [`crate::starts`]).
+    pub(crate) starts: Pool<crate::starts::Start>,
     /// Starts and stops since the last step, in call order.
     pub(crate) pending: Vec<TableEvent>,
     pub(crate) counters: Counters,
@@ -489,6 +491,7 @@ impl Sounds {
             instances: Pool::new(CAPACITY, POOL_NAME),
             chooser: Chooser::new(),
             loops: Pool::new(crate::looping::CAPACITY, crate::looping::POOL_NAME),
+            starts: Pool::new(crate::starts::CAPACITY, crate::starts::POOL_NAME),
             pending: Vec::new(),
             counters: Counters::default(),
         }
@@ -718,7 +721,8 @@ impl Sounds {
         out
     }
 
-    /// The canonical bytes: the instance pool, the chooser, the loop pool.
+    /// The canonical bytes: the instance pool, the chooser, the loop pool,
+    /// the start pool.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
         let pool = self.instances.encode();
@@ -728,6 +732,9 @@ impl Sounds {
         let loops = self.loops.encode();
         w.u32(loops.len() as u32);
         w.bytes(&loops);
+        let starts = self.starts.encode();
+        w.u32(starts.len() as u32);
+        w.bytes(&starts);
         w.finish()
     }
 
@@ -745,8 +752,11 @@ impl Sounds {
         let loops = r.take(len)?;
         let loops =
             Pool::decode(kind, crate::looping::CAPACITY, crate::looping::POOL_NAME, 1, loops)?;
+        let len = r.u32()? as usize;
+        let starts = r.take(len)?;
+        let starts = Pool::decode(kind, crate::starts::CAPACITY, crate::starts::POOL_NAME, 1, starts)?;
         r.end(kind)?;
-        Ok(Self { instances, chooser, loops, pending: Vec::new(), counters: Counters::default() })
+        Ok(Self { instances, chooser, loops, starts, pending: Vec::new(), counters: Counters::default() })
     }
 
     pub fn section_hash(&self) -> u64 {
