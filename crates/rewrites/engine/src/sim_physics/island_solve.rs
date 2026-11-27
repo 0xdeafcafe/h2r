@@ -8,7 +8,7 @@
 //! edx and the arithmetic flags are scratch and left undefined.
 use super::*;
 use super::alloc::View;
-use sim_havok::island::{self, Args};
+use sim_havok::island_solve::{self as island, Args};
 use sim_havok::mem::Journal;
 use std::collections::BTreeMap;
 

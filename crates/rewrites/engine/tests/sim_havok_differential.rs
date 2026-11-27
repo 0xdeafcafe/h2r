@@ -19,7 +19,7 @@ use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
 use lifted::image::{Image, Rng};
 use runtime::{Guest, guest::Permissions};
-use sim_havok::island::{self, Args, Body, Fallback, Island, Layout};
+use sim_havok::island_solve::{self as island, Args, Body, Fallback, Island, Layout};
 use sim_havok::mem::{Journal, Words};
 use sim_havok::motion::{self, Accumulator, SolverClass};
 
