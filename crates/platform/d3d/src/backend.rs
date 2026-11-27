@@ -335,7 +335,7 @@ pub trait ExternalPass: Send {
 
     /// The light, by handle, whose cone shadow this pass's layers read
     /// from the destination alpha, drawn by the renderer
-    /// (docs/graphics/e3-lighting.md, "Built: the shadowed cones"): the
+    /// (docs/graphics/e3-lighting-cones.md, "The shadowed cones"): the
     /// frame graph draws the cone's tile and its receivers' term just
     /// before the pass. `None` for a pass that reads no such term.
     fn cone_shadow(&self) -> Option<u32> { None }
