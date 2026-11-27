@@ -250,6 +250,7 @@ fn every_row_of_the_shipped_doc_binds() {
             labellable: true,
             label: Some(("checkpoint".into(), Some(3))),
             savable: 2,
+            kit: true,
         };
         assert_eq!(rows_with(&d, &t, 0.0, &all).len(), wanted, "{kind:?}");
     }
@@ -472,8 +473,8 @@ fn duplicate_is_an_act_on_a_placed_object_only() {
         .find(|r| r.label == "Duplicate")
         .expect("an added object has the row");
     assert_eq!(row.act, Act::Choose(Choice::Duplicate(added.id)));
-    // The kinds that need the kit have none until slice P2, and neither has
-    // the ghost of an object being placed, which names no thing.
+    // The kinds the kit adds have none without a kit session, and neither
+    // has the ghost of an object being placed, which names no thing.
     for (block, kind) in [
         (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
         (BlockKind::StartingLocations, ThingKind::StartingPoint),
@@ -484,6 +485,17 @@ fn duplicate_is_an_act_on_a_placed_object_only() {
             !labels(&thing(block, kind, &[])).contains(&"Duplicate".to_string()),
             "{kind:?}"
         );
+        // In a kit session the same kinds have it, as an act on their id.
+        let t = thing(block, kind, &[]);
+        let kit = Extras {
+            kit: true,
+            ..Extras::default()
+        };
+        let row = rows_with(&d, &t, 0.0, &kit)
+            .into_iter()
+            .find(|r| r.label == "Duplicate")
+            .unwrap_or_else(|| panic!("{kind:?} has the row in a kit session"));
+        assert_eq!(row.act, Act::Choose(Choice::Duplicate(t.id)), "{kind:?}");
     }
     assert!(
         !labels(&thing(BlockKind::Scenery, ThingKind::Object, &[]))

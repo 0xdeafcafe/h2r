@@ -156,11 +156,15 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
         ("act", "reset orientation") => forge::props::prop("rotation")
             .and_then(|d| d.field(thing.block))
             .map(|_| SheetRow::new(&p.text, Act::Choose(Choice::ResetOrientation)).describe(help)),
-        // A copy of an object, held at once: a kind the session can add,
-        // which is an object until slice P2, and a placed thing, not the
-        // ghost of one being placed.
-        ("act", "duplicate") if matches!(thing.kind, ThingKind::Object | ThingKind::Piece) => {
-            let placed = thing.fields.iter().any(|(name, _)| *name == "palette index");
+        // A copy of a thing, held at once: a placed object (not the ghost
+        // of one being placed), or one of the kit's kinds in a kit session.
+        ("act", "duplicate") => {
+            let placed = match thing.kind {
+                ThingKind::Object | ThingKind::Piece => {
+                    thing.fields.iter().any(|(name, _)| *name == "palette index")
+                }
+                _ => extras.kit,
+            };
             placed.then(|| {
                 SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)
             })

@@ -216,6 +216,17 @@ impl Session {
         OpId(self.last_id)
     }
 
+    /// The ID of the newest placement add in the document: the copy a
+    /// Duplicate made, which a goal's area op follows.
+    pub fn last_add_id(&self) -> Option<OpId> {
+        self.doc
+            .ops
+            .iter()
+            .rev()
+            .find(|op| matches!(op.edit, Edit::Placement(Placement::Add { .. })))
+            .map(|op| op.id)
+    }
+
     pub fn log(&self) -> &[Entry] {
         &self.log
     }
