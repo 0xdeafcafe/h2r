@@ -73,16 +73,17 @@ What keeps an item, by stage (**Code**):
   is taken only when both are order-free and every kept item before it
   restores what it sets (`layer_pass::clear_layer_items`, `order_free`).
 - **Layer 3's world**: untranslated passes and missing program inputs ([native-world.md](native-world.md)).
-- **Layer 3's objects** draw inside the body: the walk takes a run at its
-  first geometry handler (`native_objects::walk_geometry`), so the
-  scene's and the alternate view's layer 3 runs the guest body whenever
-  its list holds an object (`layer_return_3_guest_object`). Its refusals:
-  `walk_unsupported` (a bit-11 part whose toggle does not read, a bit-6
-  part with a negative first subpart or a mask that does not read, a
-  flagged shader with the structure's parameter block or a structure
-  lightmap index, an item's `+0x14` or `+0x15`; by part in
-  `walk_part_*`), and a run declined by `Model`, `Inputs`, `State`,
-  `Unresident` or `Reservation` ([native-objects.md](native-objects.md)).
+- **Layer 3's objects** draw before the call where the gate answers
+  ("Layer 3's objects before the call", below), else inside the body: the
+  walk takes a run at its first geometry handler
+  (`native_objects::walk_geometry`), and the layer runs the guest body
+  (`layer_return_3_guest_object`). Their refusals: `walk_unsupported` (a
+  bit-11 part whose toggle does not read, a bit-6 part with a negative
+  first subpart or a mask that does not read, a flagged shader with the
+  structure's parameter block or a structure lightmap index, an item's
+  `+0x14` or `+0x15`; by part in `walk_part_*`), and a run declined by
+  `Model`, `Inputs`, `State`, `Unresident` or `Reservation`
+  ([native-objects.md](native-objects.md)).
 - **Layer 3's decorators**: a material not ready, a pass with an
   engine-driven state from a per-draw source or a lightmap stage whose
   globals bitmap is not uniform, a skip that would change a render
@@ -93,11 +94,33 @@ What keeps an item, by stage (**Code**):
   the guest's. After it no layer draw runs under it, and a part it cannot
   draw is a named drop (`native_first_person::Dropped`).
 
-Not built: layer 3's objects drawn before the call from a Rust-built,
-Rust-sorted list (`native_world::layer_build`, `scene_extract::layer_sort`)
-with the layer's entry state, as layers 1, 5, 7, 8 and 20 draw theirs; and
-each `scene_kept_*` row becoming `scene_dropped_*` once it is zero over the
-census corpus (8.2, rule 1).
+### Layer 3's objects before the call
+
+`render_bridge::native_objects::before`, at the scene's and the alternate
+view's layer 3 (**Code**):
+
+| Step | What |
+|---|---|
+| The list | each item still holding bit 3 built as `0x0004cbf0` builds it (`native_world::scene_build`), the accepted slots sorted as `0x0013da70` (`layer_sort::geometry`) and read as the walk reads the guest's (`object_walk::read_slots`); another build's item refuses (`foreign`) |
+| The entry state | the host's fields (`Host::entry_state`): the entry render states, W buffer, stencil words, stipple, specular, two-sided lighting, shade mode, shader cache, fog words and the auxiliary byte, predicted from the device before the call with the layer begin's `ZENABLE` and the cache `0x00016b10` clears; an open shader refuses |
+| The gate | 1 frame in 64 (`0x004ba034`) runs the body as before and compares, at the walk's first handler, the guest's entries with the Rust list and, where no entry drew first, the fields with the prediction; answers after 16 clean samples, the guest's at any difference |
+| The draw | while answering, on an unsampled frame whose list holds only objects, the leading runs draw (`Host::draw_before`) and their items' bit 3 is cleared until the next layer draw; from the first object they do not take every object keeps its guest draw (its cause, else `order`) and the walk does not run |
+
+`render.scene` carries `layer_plan_3_objects_before_<outcome>`: `drawn`,
+`matched`, `mismatched_<field>` (`entries`, `entry_count`, a render state
+by name, `w_buffered`, `cached_implementation`, ...), `state_not_first`,
+`refused_{open_shader,list,count,foreign,build,entries,state,scene}`,
+`kept_entries` (a structure or other item left: the walk keeps the
+order), `frames_{clean,unclean,empty}`, `opened`, `fallback`. Tests:
+`the_gate_answers_after_clean_samples_and_stops_at_a_difference`,
+`a_prediction_differs_by_field`,
+`a_sampled_layer_3_is_compared_at_its_first_handler_by_field`,
+`the_leading_runs_draw_before_the_call_and_the_rest_keep_their_order`,
+`a_runs_cleared_bits_go_back_at_the_next_layer_draw`,
+`the_rust_list_refuses_another_build` (`native_objects::before`).
+
+Not built: each `scene_kept_*` row becoming `scene_dropped_*` once it is
+zero over the census corpus (8.2, rule 1).
 
 R1, R2 and R6 do not depend on each other and can run as three lanes
 after R0. framescene.md slice 8 (60 and 120 fps from two scenes) is

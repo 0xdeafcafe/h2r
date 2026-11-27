@@ -466,6 +466,35 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         run: &[Entry], display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
     ) -> Result<(), ObjectWalk> {
+        self.draw_run(mem, view, slot, first, run, display_lod, consume, false)
+    }
+
+    fn draw_before(
+        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, slot: ViewSlot, first: usize,
+        run: &[Entry], display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
+        consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool,
+    ) -> Result<(), ObjectWalk> {
+        self.draw_run(mem, view, slot, first, run, display_lod, consume, true)
+    }
+
+    fn entry_state(&self, mem: &dyn GuestMemory, predict: bool) -> Option<Vec<render_bridge::native_objects::before::Field>> {
+        let device = self.device.lock().ok()?;
+        Some(entry_fields(&device, mem, predict))
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// A run of layer 3's objects: at its first geometry handler
+    /// (`before` false, the guest's layer setup run), or before the layer
+    /// draw from the Rust-built list (`before` true): then the layer
+    /// begin's `ZENABLE` is applied first and the shader cache is the
+    /// cleared one `0x00016b10` leaves (`render_bridge::native_objects::before`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_run(
+        &self, mem: &mut dyn GuestMemory, view: Option<(&FrameScene, &View)>, slot: ViewSlot, first: usize,
+        run: &[Entry], display_lod: Option<render_bridge::native_scene_lists::LodDetail>,
+        consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool, before: bool,
+    ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
         // With a render thread that records scene stages, the planning here
         // is extraction: the guest and device reads and every check that
@@ -474,7 +503,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // (docs/graphics/framescene.md, slice 2).
         let staging = self.device.lock().is_ok_and(|d| d.queues_scene_stages(Stage::Objects));
         let planning = Timer::start(Stage::Objects, if staging { Metric::ExtractNs } else { Metric::PrepareNs });
-        if mem.u8(engine::render_loop::layer::DRAW_FLAG) != Ok(0) {
+        if !before && mem.u8(engine::render_loop::layer::DRAW_FLAG) != Ok(0) {
             // The guest's first shader begin initializes the whole layer's
             // state and clears the cached texture-stage bindings.
             return Err(ObjectWalk::State);
@@ -482,6 +511,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
         self.refresh_edits(mem, &models, generation);
         let mut device = self.device.lock().map_err(|_| refused(ReservationCause::Error))?;
+        // Before the layer draw the device holds what the work before it
+        // left: the draws run with the layer begin's `ZENABLE`, set before
+        // the drain as the world layers' objects set it.
+        if before && apply_layer_begin_zenable(&mut device, mem).is_err() {
+            return Err(ObjectWalk::State);
+        }
         if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
             .map_err(|_| refused(ReservationCause::Error))?
         {
@@ -497,7 +532,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !crate::native_layers_glue::viewport_clip(&device, &read) {
             return Err(ObjectWalk::State);
         }
-        let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
+        // Before the call the cache is the one the layer setup clears.
+        let cached = if before { Some(0) } else { None };
+        let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run, cached)?;
         let texaccum = sampled_texaccum(&device, mem, draws.iter().any(|(_, draw)| draw.texaccum))
             .map_err(|()| ObjectWalk::Inputs)?;
         let display_draws = display_lod.and_then(|lod| {
@@ -607,7 +644,7 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 /// them. `first` is the run's first slot.
 fn plan_walk<B: d3d::backend::Backend>(
     models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
-    scene: &FrameScene, view: &View, first: usize, run: &[Entry],
+    scene: &FrameScene, view: &View, first: usize, run: &[Entry], cached: Option<u32>,
 ) -> Result<Vec<(u32, PlannedDraw)>, ObjectWalk> {
     use gfx::state::RenderStateType as R;
     let mut entry = LayerEntry::read(device, mem);
@@ -685,7 +722,10 @@ fn plan_walk<B: d3d::backend::Backend>(
     {
         return Err(ObjectWalk::State);
     }
-    let cached = mem.u32(CACHED_IMPLEMENTATION).map_err(|_| ObjectWalk::State)?;
+    let cached = match cached {
+        Some(cached) => cached,
+        None => mem.u32(CACHED_IMPLEMENTATION).map_err(|_| ObjectWalk::State)?,
+    };
     let mut checked_transition = false;
     // An animated pass samples its constants at the render clock.
     let time = native_render::layer_pass::render_time(&read);
@@ -836,6 +876,46 @@ pub(crate) fn structure_at_rest<B: d3d::backend::Backend>(
     let fog = crate::native_fog_glue::device_fog_words(device, mem)[6] == Some(p.fog_colour);
     let scratch = (0..13u32).all(|n| mem.u32(SCRATCH + 4 * n).ok() == Some(p.scratch[n as usize]));
     stages && constants && fog && scratch
+}
+
+/// What a layer-3 run's plan reads of the device and the engine
+/// ([`plan_walk`], [`Glue::draw_run`]), by field: the entry render states,
+/// the W buffer, the stencil words, the stipple, specular, two-sided
+/// lighting and shade mode, the shader cache, the fog words and the
+/// auxiliary toggle's byte. `predict`: as they will be at the layer's first
+/// geometry handler, from the device before the layer draw: the layer
+/// begin's `ZENABLE` (`D3DZB_USEW`, which W-buffers) and the cache
+/// `0x00016b10` clears (`render_bridge::native_objects::before`).
+fn entry_fields<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, predict: bool,
+) -> Vec<render_bridge::native_objects::before::Field> {
+    use gfx::state::RenderStateType as R;
+    let entry = LayerEntry::read(device, mem);
+    let read = crate::native_world_glue::ReadMemory(mem);
+    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
+    let mut out: Vec<render_bridge::native_objects::before::Field> = Vec::with_capacity(48);
+    for t in native_render::object_state::FIELDS {
+        let value = if predict && t == R::ZEnable { Some(LAYER_BEGIN_ZENABLE) } else { entry.states.get(t) };
+        out.push((format!("{t:?}"), value));
+    }
+    let w = if predict { true } else { entry.w_buffered };
+    out.push(("w_buffered".into(), Some(u32::from(w))));
+    out.push(("stencil_off_flags".into(), mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok()));
+    out.push(("stencil_mode".into(), mem.u16(SCENE_STENCIL_MODE).ok().map(u32::from)));
+    out.push(("stencil_mode_1".into(), Some(u32::from(device.stencil_state(&read) == Some(scene_stencil())))));
+    out.push(("stipple".into(), device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE))));
+    out.push(("stipple_at_rest".into(), Some(u32::from(stipple_at_rest(device, mem)))));
+    out.push(("specular".into(), raw(SPECULAR_ENABLE)));
+    out.push(("two_sided_lighting".into(), raw(TWO_SIDED_LIGHTING)));
+    out.push(("shade_mode".into(), raw(R::ShadeMode.index())));
+    for (name, at) in [("cached_implementation", CACHED_IMPLEMENTATION), ("cached_descriptor", CACHED_PASS_DESCRIPTOR)] {
+        out.push((name.into(), if predict { Some(0) } else { mem.u32(at).ok() }));
+    }
+    for (n, word) in crate::native_fog_glue::device_fog_words(device, mem).into_iter().enumerate() {
+        out.push((format!("fog_{n}"), word));
+    }
+    out.push(("aux_cached".into(), mem.u8(native_render::aux_depth::CACHED).ok().map(u32::from)));
+    out
 }
 
 /// Stencil mode 1, which layer 3's stencil switches leave.
