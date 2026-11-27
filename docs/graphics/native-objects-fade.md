@@ -1,12 +1,12 @@
 # Native objects: fade, the shader flag and the item's argument
 
 Status: Built. Part of stage 2 ([native-objects.md](native-objects.md)); the page holds the guest state an object item's draw touches beyond its material, and when the native draw may take the item.
-Code: `crates/rewrites/scene-extract/src/layout/object_walk.rs` (`read_part`, `layer_part`; its module notes list the addresses), `crates/extensions/game/src/native_objects_glue.rs` (`stipple_off`, `stipple_at_rest`, `structure_at_rest`), `crates/rewrites/native-render/src/object_program_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_objects.rs`.
+Code: `crates/rewrites/scene-extract/src/layout/object_walk.rs` (`read_part`, `layer_part`; its module notes list the addresses), `crates/extensions/game/src/native_objects_glue.rs` (`device_stipple`, `record_stipple`, `stipple_at_rest`, `structure_at_rest`), `crates/rewrites/engine/src/render_loop/opaque_material.rs` (`faded_rows`), `crates/rewrites/native-render/src/object_program_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_objects.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 | Input | Where | Part flag | Declines as | Native draw takes the part when |
 |---|---|---|---|---|
-| Fade byte | record `+0x1a` | `PartFlags::FADE` | `object_fade`, `object_stipple` | the device's stipple is off and the engine's cached fade and the device's pattern are the rest values |
+| Fade byte | record `+0x1a` | `PartFlags::FADE` | `object_fade`, `object_stipple` | the engine's cached fade and the device's pattern are the rest values, and the byte's pattern is the same in every x87 mode |
 | Shader flag bit 0 | shader `+0x16` | `PartFlags::SHADER_FLAG` | `object_shader_flag`, `object_shader_flag_target` | no flag bit 20 program is in the frame's passes before the target copy is made, and no structure lightmap index in layer 3 |
 | Structure parameter block | structure `+0x214` | `PartFlags::STRUCTURE_PARAMETERS` | `object_shader_flag` | the device and the engine already hold every word of the upload |
 | Item argument | item `+0xc`, `+0x14`, `+0x15` | none | none for the projected size | always (see below) |
@@ -19,7 +19,17 @@ Record `+0x1a`. Below `0xff` the prologue `0x0004d640` scales it by `0x0045dbb4`
 
 The pattern masks the draw only while the device's stipple is on. The target mode call `0x00015680` turns it on (mode 1) before layers 1 and 3 outside view kinds 4 to 7, and off (mode 0) before layers 5, 8 and 20 (`0x0002be17`..`0x0002bfef`).
 
-The native draw applies no stipple, so it takes a faded part only where the device's stipple is off (`native_objects_glue::stipple_off`), where the guest's draw is not masked either. It also needs the engine to cache a fade of exactly one and the device to hold the table's pattern for one (`native_objects_glue::stipple_at_rest`, `opaque_material::rest_stipple_table`). From there every faded record's epilogue puts both back, so skipping the draws leaves what drawing them would. Layer 3's walk already requires the stipple off for every run.
+The native draw takes a faded part only where the engine caches a fade of exactly one and the device holds the table's pattern for one (`native_objects_glue::stipple_at_rest`, `opaque_material::rest_stipple_table`). From there every faded record's epilogue puts both back, so skipping the draws leaves what drawing them would.
+
+Under the device's stipple (`native_objects_glue::device_stipple`) every object draw masks as the guest's would (`record_stipple`):
+
+| Record | Rows |
+|---|---|
+| faded | the prologue's pattern from the rest state (`opaque_material::faded_rows`, run under both precisions and the four rounding modes; the rest rows where the fade is within the tolerance of one) |
+| not faded | the device's pattern |
+| either, every row set | none: the draw masks nothing |
+
+A masked draw carries its rows (`PlannedDraw::stipple`) and draws with its program's stipple variant: the same module with the pixel shader translated with `PixelOptions::stipple` (`object_program::stipple_wgsl`), compiled at its first request and keyed apart in the program's pipelines. Layer 3's walk, the world layers' objects and the first person all take it.
 
 ## The shader's flag bit 0
 
@@ -61,7 +71,7 @@ The argument (`+0xc`) and the `+0x14` and `+0x15` bytes. The sorted dispatch pas
 
 | Name | Cause |
 |---|---|
-| `object_fade` | the device's stipple is on: layers 1 and 3 outside view kinds 4 to 7 |
+| `object_fade` | the stipple's switch does not read, a display override stands in for its pattern, or the fade's pattern differs between x87 modes |
 | `object_stipple` | the cached fade or the pattern is not what the epilogue leaves |
 | `object_shader_flag` | the structure's parameter block's upload does not compute, or the device and the engine do not hold it, or in layer 3 a structure lightmap index |
 | `object_shader_flag_target` | the target copy is not made yet and a pass's program has flag bit 20 |

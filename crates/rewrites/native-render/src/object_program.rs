@@ -565,6 +565,22 @@ pub fn compile_object_stages(
         .map(|(program, _, _)| program)
 }
 
+/// `program`'s module with its pixel shader translated again with the
+/// polygon stipple test (`PixelOptions::stipple`): what an item drawn
+/// while the device's stipple is on (a faded record, `0x00013800`) draws
+/// with, its 32 rows in [`PixelUniforms::stipple`]. The vertex half is
+/// the compiled module's own: [`shaders::link`] appends the pixel body.
+pub fn stipple_wgsl(program: &MaterialProgram) -> Result<String, String> {
+    use shaders::psh::{PixelOptions, translate_with_default_final_uniform as translate};
+    let plain = translate(&program.def, &program.pixel_options);
+    let head = program
+        .wgsl
+        .strip_suffix(plain.body.as_str())
+        .ok_or("the module does not end with its pixel shader")?;
+    let stippled = translate(&program.def, &PixelOptions { stipple: true, ..program.pixel_options });
+    Ok(format!("{head}{}", stippled.body))
+}
+
 /// [`compile_object_stages`] for an object pass: with
 /// `inherits_material_constants`, a read of `c[18]` the pass does not set
 /// is the device's (the second value); with `structure_constants`, reads
@@ -1564,6 +1580,21 @@ pub(crate) mod tests {
             compile_object(&first, &coordinates(false), None, WORLD).unwrap_err(),
             "stage 0 is sampled with nothing bound"
         );
+    }
+
+    /// A faded item's variant is the same module but for its pixel
+    /// shader, which tests the polygon stipple rows; it validates.
+    #[test]
+    fn the_stipple_variant_keeps_the_vertex_half_and_tests_the_stipple_rows() {
+        let p = frame_pass(3).program;
+        let stippled = stipple_wgsl(&p).unwrap();
+        shaders::validate(&stippled).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(!p.wgsl.contains("xps.stipple["), "the compiled module has no stipple test");
+        assert!(stippled.contains("xps.stipple["), "the variant reads the rows");
+        let vertex = p.wgsl.find("fn fs_main").unwrap();
+        assert_eq!(stippled[..vertex], p.wgsl[..vertex], "the vertex half is the module's own");
+        let edited = MaterialProgram { wgsl: format!("{}// edited", p.wgsl), ..p };
+        assert!(stipple_wgsl(&edited).is_err(), "a module not ending with its pixel shader is refused");
     }
 
     /// The stencil and transparent programs copy the vertex colour `v10`

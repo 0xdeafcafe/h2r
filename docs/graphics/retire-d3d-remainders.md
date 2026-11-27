@@ -64,9 +64,9 @@ What keeps an item, by stage (**Code**):
   frame's structure target copy with a flag-bit-20 program, whose draw
   makes the copy: `object_program_gpu::makes_target_copy`),
   `object_texaccum` (layer 1, or no target or level), `object_aux_depth`
-  (the device does not hold the toggle off), `object_fade` (a fade byte
-  with the device's polygon stipple on: layers 1 and 3 outside view kinds
-  4 to 7), `object_stipple` (the engine's cached fade or the device's
+  (the device does not hold the toggle off), `object_fade` (the
+  device's stipple or a fade byte's pattern is not known exactly),
+  `object_stipple` (the engine's cached fade or the device's
   pattern is not what the epilogue leaves), `object_state`, `object_prt`,
   `object_fog`, `object_stencil`, `object_warming`. And `order`: the
   native pass draws before the guest's body, so an item after a kept one

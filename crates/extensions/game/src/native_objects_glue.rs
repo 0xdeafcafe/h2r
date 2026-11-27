@@ -688,9 +688,9 @@ fn plan_walk<B: d3d::backend::Backend>(
     if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(device, mem, &a)) {
         return Err(ObjectWalk::State);
     }
-    // A part with a fade byte (`frame_scene::PartFlags::FADE`): with the
-    // device's stipple off, checked below, its pattern masks nothing, and
-    // its epilogue leaves the solid pattern and a cached fade of one.
+    // A part with a fade byte (`frame_scene::PartFlags::FADE`): it draws
+    // with its byte's pattern under the device's stipple ([`draw_stipple`]),
+    // and its epilogue leaves the rest pattern and a cached fade of one.
     // Skipping its handler is state-neutral only if the device already
     // holds them.
     let fades = run.iter().enumerate().any(|(n, e)| {
@@ -716,8 +716,7 @@ fn plan_walk<B: d3d::backend::Backend>(
     let device_state = |slot| device.render_state(&read, slot);
     let raw = |state| table.canonical_to_guest(state).and_then(device_state);
     let specular = raw(SPECULAR_ENABLE);
-    if device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) != Some(0)
-        || raw(TWO_SIDED_LIGHTING) != Some(0)
+    if raw(TWO_SIDED_LIGHTING) != Some(0)
         || raw(R::ShadeMode.index()) != Some(gfx::state::ShadeMode::Gouraud.xbox_value())
     {
         return Err(ObjectWalk::State);
@@ -783,6 +782,11 @@ fn plan_walk<B: d3d::backend::Backend>(
         let fog = native_render::fog_gpu::FogWords::from_states(&pass.implementation.render_states)
             .resolve(&fog_words).ok_or(ObjectWalk::Inputs)?;
         set_fog(&mut draw, fog, specular).ok_or(ObjectWalk::Inputs)?;
+        // Under the device's stipple the draw masks with the pattern its
+        // record draws with: a faded record's, from the rest state
+        // checked above, else the device's.
+        draw.stipple = draw_stipple(device, mem, part.key.record, scene_part.flags.contains(PartFlags::FADE))
+            .map_err(|()| ObjectWalk::State)?;
         draws.push((model, draw));
     }
     let lit = lit.ok_or(ObjectWalk::Model)?;
@@ -825,6 +829,53 @@ pub(crate) fn stipple_off<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem
     let read = crate::native_world_glue::ReadMemory(mem);
     let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
     device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) == Some(0)
+}
+
+/// The device's polygon stipple as an object's draw would take it:
+/// `Ok(None)` off (a record's pattern masks nothing), `Ok(Some(rows))` on
+/// with the pattern it holds; `Err` when its switch does not read or a
+/// display override stands in for the guest's pattern.
+pub(crate) fn device_stipple<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory,
+) -> Result<Option<[u32; 32]>, ()> {
+    let read = crate::native_world_glue::ReadMemory(mem);
+    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
+    match device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) {
+        Some(0) => Ok(None),
+        None => Err(()),
+        Some(_) if device.hw().display_stipple.is_some() => Err(()),
+        Some(_) => Ok(Some(*device.stipple_pattern())),
+    }
+}
+
+/// The rows record `record`'s draw masks with under `device`
+/// ([`device_stipple`]), from the state a record's epilogue leaves
+/// ([`stipple_at_rest`], which a faded record's caller checks): a faded
+/// record's prologue pattern
+/// (`engine::render_loop::opaque_material::faded_rows`), any other's the
+/// device's; `Ok(None)` with the stipple off or every row set (it masks
+/// nothing). `Err` when the device's stipple or the fade's pattern cannot
+/// be known exactly.
+pub(crate) fn record_stipple(
+    mem: &dyn GuestMemory, device: Result<Option<[u32; 32]>, ()>, record: u16, faded: bool,
+) -> Result<Option<[u32; 32]>, ()> {
+    use engine::render_loop::opaque_material::{faded_rows, record_fade};
+    // The guest's MXCSR: nearest, every exception masked.
+    const MXCSR: u32 = 0x1f80;
+    let Some(rest) = device? else { return Ok(None) };
+    let rows = if faded {
+        faded_rows(mem, record_fade(mem, record).ok_or(())?, &rest, MXCSR).ok_or(())?
+    } else {
+        rest
+    };
+    Ok((rows != [u32::MAX; 32]).then_some(rows))
+}
+
+/// [`record_stipple`] under the device's stipple now.
+pub(crate) fn draw_stipple<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, record: u16, faded: bool,
+) -> Result<Option<[u32; 32]>, ()> {
+    record_stipple(mem, device_stipple(device, mem), record, faded)
 }
 
 /// Whether the device and the engine hold what a faded record's epilogue
@@ -1997,6 +2048,49 @@ mod tests {
         mem.set_u32(REST + 4 * 7, 0).unwrap();
         mem.set_u32(TABLE_SCALE, 2.5f32.to_bits()).unwrap();
         assert!(!stipple_at_rest(&device, &mem), "an entry the rounding modes disagree on");
+    }
+
+    /// Under the device's stipple a faded record draws with its byte's
+    /// table pattern and any other with the device's; with the stipple
+    /// off, or a solid pattern, nothing is masked; a byte whose pattern
+    /// the rounding modes disagree on declines.
+    #[test]
+    fn a_draw_under_the_stipple_masks_with_its_records_pattern() {
+        use engine::render_loop::opaque_material::{CACHED_FADE, RECORD_FADE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+        const ONE: u32 = engine::light_constants::constant::ONE;
+        const FADE_SCALE: u32 = 0x0045_dbb4;
+        const EPSILON: u32 = 0x0045_dbdc;
+        const TABLE_SCALE: u32 = 0x0044_541c;
+        const PATTERN_1: u32 = 0x0048_7288 + 0x80;
+        let config = d3d::DeviceConfig::halo2(
+            d3d::GuestRange { addr: 0x0041_0000, len: 0x1_0000 },
+            d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 },
+        );
+        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x20_0000);
+        mem.set_u32(ONE, 1f32.to_bits()).unwrap();
+        mem.set_u32(CACHED_FADE, 1f32.to_bits()).unwrap();
+        mem.set_u32(FADE_SCALE, 0.125f32.to_bits()).unwrap();
+        mem.set_u32(EPSILON, 0.02f32.to_bits()).unwrap();
+        mem.set_u32(TABLE_SCALE, 2f32.to_bits()).unwrap();
+        for row in 0..32 {
+            mem.set_u32(PATTERN_1 + 4 * row, 0x00ff_0000 | row).unwrap();
+        }
+        // Record 3's byte 4: a fade of 0.5, pattern 1.
+        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 4).unwrap();
+        let device = d3d::Device::new(config, d3d::RecordingBackend::default());
+        assert_eq!(draw_stipple(&device, &mem, 3, true), Ok(None), "the stipple off masks nothing");
+        let enable = device.config().layout.render_state_slot(STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).unwrap());
+        mem.set_u32(enable, 1).unwrap();
+        let faded = draw_stipple(&device, &mem, 3, true).unwrap().expect("the byte's pattern");
+        assert_eq!((faded[0], faded[31]), (0x00ff_0000, 0x00ff_001f));
+        assert_eq!(draw_stipple(&device, &mem, 3, false), Ok(Some([0; 32])), "an unfaded record: the device's");
+        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 5).unwrap();
+        assert_eq!(draw_stipple(&device, &mem, 3, true), Err(()), "1.25 rounds to 1 or 2");
+        for row in 0..32 {
+            mem.set_u32(PATTERN_1 + 4 * row, u32::MAX).unwrap();
+        }
+        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 4).unwrap();
+        assert_eq!(draw_stipple(&device, &mem, 3, true), Ok(None), "a solid pattern masks nothing");
     }
 
     /// A live edit's drain names the native models it edited, each once

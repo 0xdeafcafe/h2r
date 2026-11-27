@@ -144,6 +144,43 @@ pub fn rest_stipple_table(m: &dyn GuestMemory, mxcsr: u32) -> Option<u32> {
 
 pub const CACHED_FADE: u32 = 0x004b_8494;
 
+/// The render records (`0x004ba138`, `0x20` bytes each): a record's fade
+/// byte is at `+0x1a`.
+pub const RENDER_RECORDS: u32 = 0x004b_a138;
+pub const RENDER_RECORD_SIZE: u32 = 0x20;
+pub const RECORD_FADE: u32 = 0x1a;
+
+/// Render record `record`'s fade byte (`+0x1a`).
+pub fn record_fade(m: &dyn GuestMemory, record: u16) -> Option<u8> {
+    m.u8(RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record) + RECORD_FADE).ok()
+}
+
+/// The 32 stipple rows a record with fade byte `byte` draws with, from
+/// the state its epilogue (`0x0004d720`) leaves: the device holding
+/// `rest` and the engine's cached fade its one. The prologue
+/// (`0x0004d640`, [`stipple`]) sets the byte's table pattern, or keeps
+/// `rest` when the fade is within the cache's tolerance of one (or the
+/// byte is solid). Run under every x87 control word the guest may hold
+/// (53- and 64-bit precision, the four rounding modes), so the caller
+/// need not know it; `None` when they pick different patterns or the
+/// arithmetic does not run.
+pub fn faded_rows(m: &dyn GuestMemory, byte: u8, rest: &[u32; 32], mxcsr: u32) -> Option<[u32; 32]> {
+    let mut picked = None;
+    for fcw in [0x027f_u16, 0x037f].into_iter().flat_map(|p| (0..4u16).map(move |r| p | r << 10)) {
+        let at = stipple(m, byte, true, fcw, mxcsr).ok()?.map(|(_, at)| at);
+        if picked.is_some_and(|p| p != at) {
+            return None;
+        }
+        picked = Some(at);
+    }
+    let Some(at) = picked? else { return Some(*rest) };
+    let mut rows = [0; 32];
+    for (i, row) in rows.iter_mut().enumerate() {
+        *row = m.u32(at + 4 * i as u32).ok()?;
+    }
+    Some(rows)
+}
+
 #[cfg(test)]
 mod stipple_tests {
     use super::*;
@@ -184,5 +221,29 @@ mod stipple_tests {
         assert_eq!(stipple(&m, 5, false, 0x037f, 0x1f80).unwrap().map(|(_, at)| at), rest);
         m.put_f32(0x0044_541c, 2.5);
         assert_eq!(rest_stipple_table(&m, 0x1f80), None, "2.5 rounds to 2 or 3");
+    }
+
+    /// From the rest state, a faded record draws with its byte's table
+    /// pattern; a fade within the tolerance of one keeps the rest rows;
+    /// a byte the rounding modes disagree on gives none.
+    #[test]
+    fn a_faded_record_draws_with_its_bytes_pattern_from_the_rest_state() {
+        let mut m = FakeGuest::new();
+        m.put_f32(0x0045_dbb4, 0.125).put_f32(0x0045_dbdc, 0.02)
+            .put_f32(0x0044_541c, 2.0).put_f32(CACHED_FADE, 1.0)
+            .put_f32(crate::light_constants::constant::ONE, 1.0);
+        // Byte 4: fade 0.5, scaled 1.0, pattern 1 in every mode.
+        for row in 0..32u32 {
+            m.put_u32(0x0048_7288 + 0x80 + 4 * row, 0x0101_0000 | row);
+        }
+        let rest = [u32::MAX; 32];
+        let rows = faded_rows(&m, 4, &rest, 0x1f80).unwrap();
+        assert_eq!(rows[0], 0x0101_0000);
+        assert_eq!(rows[31], 0x0101_001f);
+        assert_eq!(faded_rows(&m, 8, &rest, 0x1f80), Some(rest), "fade one: the prologue sets nothing");
+        assert_eq!(faded_rows(&m, 0xff, &rest, 0x1f80), Some(rest), "a solid byte");
+        assert_eq!(faded_rows(&m, 5, &rest, 0x1f80), None, "1.25 rounds to 1 or 2");
+        m.put_u32(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 0x1234_5604);
+        assert_eq!(record_fade(&m, 3), Some(4));
     }
 }
