@@ -1794,10 +1794,14 @@ is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `of
 offer is not held. A missing tree is refused with the way to make it
 (`workspace.extract`).
 
-`asset.thumb {asset, out?}` writes a PNG and answers its path: for a
-package's bitmap item with a PNG source. A tag's own picture (a bitmap,
-a model through `model.render`, a waveform, a screen) is not drawn yet
-and answers `not-yet`.
+`asset.thumb {asset, out?}` writes a PNG and answers its path: the
+picture a Browser row draws (`app/assets/thumbs.rs`).
+
+| Asset | PNG | Answer |
+|---|---|---|
+| a package's `bitmap` item with a PNG source | the source as it is | `{asset, path, bytes, source}` |
+| a bitmap tag (`tag:bitm:<path>`) the open map holds | image 0 at its base level, 64 pixels on its longer side | `{asset, path, bytes, width, height, source}`, `source` the map |
+| a bitmap no open map holds; any other tag (a model through `model.render`, a waveform, a screen) | none | `not-yet` |
 
 `asset.copy {asset, package?, to?}` is **New from this...**. It writes
 `tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a

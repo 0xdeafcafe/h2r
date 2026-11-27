@@ -241,7 +241,7 @@ impl Studio {
                 // even behind another tab, hidden, so "shows" is the window's
                 // own Hidden flag, not whether its contents ran.
                 let want = self.want_tab.map(|(tab, _)| tab);
-                self.browser_window(ui, app, want == Some(MapTab::Browser), &mut actions);
+                self.browser_window(ui, app, gpu, want == Some(MapTab::Browser), &mut actions);
                 self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions);
                 self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions);
                 self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions);
@@ -259,7 +259,7 @@ impl Studio {
                 self.inspector_window(ui, app, gpu, &mut actions);
             }
             Surface::Package => {
-                self.browser_window(ui, app, false, &mut actions);
+                self.browser_window(ui, app, gpu, false, &mut actions);
                 package::window(ui, app, &self.keys.package, &mut self.package, &mut self.browser, self.dialogs, &mut actions);
             }
             Surface::Variants => self.variant_windows(ui, app, &mut actions),
@@ -824,8 +824,18 @@ impl Studio {
     /// The browser: every tag of the tree by path, the packages and Live
     /// (`ui/browser.rs`), beside the Open and Folder buttons that choose
     /// the source the tree's maps are read from.
-    fn browser_window(&mut self, ui: &Ui, app: &App, focus: bool, actions: &mut Vec<Action>) {
+    fn browser_window(
+        &mut self,
+        ui: &Ui,
+        app: &App,
+        gpu: &mut Gpu<'_>,
+        focus: bool,
+        actions: &mut Vec<Action>,
+    ) {
         let mut st = std::mem::take(&mut self.browser);
+        // The rows' thumbnails are pictures on the GPU beside the map
+        // grid's (`MapListUi::picture`).
+        let mut pictures = std::mem::take(&mut self.map_list);
         // A new link view (Where used, Show edits) brings the panel forward.
         let focus = st.take_browse(app.browse.serial) || focus;
         ui.window(&self.keys.browser).focused(focus).build(|| {
@@ -845,8 +855,9 @@ impl Studio {
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
             st.import_buttons(ui, self.dialogs);
-            browser::draw(ui, app, &mut st, actions);
+            browser::draw(ui, app, &mut st, gpu, &mut pictures, actions);
         });
+        self.map_list = pictures;
         self.browser = st;
     }
 

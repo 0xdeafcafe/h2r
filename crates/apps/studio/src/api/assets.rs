@@ -59,10 +59,33 @@ fn thumb(app: &mut App, p: &P) -> Reply {
             p.str("asset")?.replace([':', '\\', '/'], "_")
         )),
     };
-    assets::thumb(&set, &id, &out).map_err(|e| match e {
+    let refuse = |e: ThumbRefusal| match e {
         ThumbRefusal::NoPicture(m) => err(code::NOT_YET, m),
         ThumbRefusal::Failed(m) => err(code::FAILED, m),
-    })
+    };
+    // A tag's picture is drawn (a bitmap of the open map), and written as
+    // the PNG of the thumbnail the Browser shows.
+    if let AssetId::Tag(_) = &id {
+        let pic = app.thumb_picture(&id).map_err(refuse)?;
+        let mut bytes = Vec::new();
+        ::assets::png::write_rgba(&mut bytes, pic.width, pic.height, &pic.rgba)
+            .map_err(|e| err(code::FAILED, e.to_string()))?;
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
+        }
+        std::fs::write(&out, &bytes)
+            .map_err(|e| err(code::FAILED, format!("{}: {e}", out.display())))?;
+        return Ok(serde_json::json!({
+            "asset": p.str("asset")?,
+            "path": out.display().to_string(),
+            "bytes": bytes.len(),
+            "width": pic.width,
+            "height": pic.height,
+            "source": app.shown_map_name(),
+        }));
+    }
+    assets::thumb(&set, &id, &out).map_err(refuse)
 }
 
 fn copy(app: &mut App, p: &P) -> Reply {

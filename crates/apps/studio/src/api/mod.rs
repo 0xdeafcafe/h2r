@@ -231,9 +231,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_THUMB,
-        "A thumbnail as a PNG path: for a package's bitmap item (item:<package>:<n>) with a PNG source. A tag's own picture (a bitmap, a model, a waveform, a screen) answers not-yet until the renderer draws it",
+        "A thumbnail as a PNG path, the picture a Browser row draws. A package's bitmap item (item:<package>:<n>) with a PNG source: the PNG as it is. A bitmap tag (tag:bitm:<path>) the open map holds: image 0 at its base level, shrunk to 64 pixels on its longer side (`width`, `height`; `source` is the map). A bitmap no open map holds and every other tag (a model, a waveform, a screen) answer not-yet",
         r#"{"asset":"string","out?":"string"}"#,
-        r#"{"asset":"string","path":"string","bytes":"integer","source":"string"}"#,
+        r#"{"asset":"string","path":"string","bytes":"integer","source":"string|null","width?":"integer","height?":"integer"}"#,
         r#"{"asset":"item:kit-test:2"}"#,
     ),
     def(

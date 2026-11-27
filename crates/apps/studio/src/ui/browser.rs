@@ -25,8 +25,15 @@
 //! (`app::assets::Browse`) in place of the list: one line per asset with
 //! its role and where the link was read, opened by a double-click, until
 //! **Clear** or a root button.
-use dear_imgui_rs::{ListClipper, MouseButton, Ui};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use dear_imgui_rs::{ListClipper, MouseButton, TextureId, Ui};
 use serde_json::Value;
+
+use super::map_list::MapListUi;
+use crate::app::map_pack::Picture;
+use crate::viewport::Gpu;
 
 use crate::app::assets::{self, CreateAsset, Query, Root};
 use crate::app::{Action, App};
@@ -34,6 +41,12 @@ use crate::theme::{self, icon};
 
 /// The most rows one list holds; a longer answer says it was cut.
 const LIMIT: usize = 2000;
+/// The widest a row's thumbnail draws, in thumbnail heights.
+const THUMB_ASPECT: f32 = 2.0;
+/// How many thumbnails are read in one frame; the rest wait for the next.
+const DECODES: u32 = 2;
+/// The key prefix of the thumbnails' pictures on the GPU.
+const THUMB_KEY: &str = "browser-thumb-";
 
 /// What a list was read for: a new key reads it again.
 #[derive(Clone, PartialEq)]
@@ -82,6 +95,14 @@ pub struct BrowserUi {
     linked: Option<Vec<String>>,
     /// The app's link view last brought forward (`Browse::serial`).
     browse_seen: u32,
+    /// The rows' thumbnails by asset id: `None` for an asset with no
+    /// picture, so it is asked once.
+    thumbs: HashMap<String, Option<Arc<Picture>>>,
+    /// What the thumbnails were read for: the shown map, the packages'
+    /// revision and the refresh count. Another reads them again.
+    thumb_key: (Option<String>, u64, u32),
+    /// The thumbnails this frame may still read.
+    decodes: u32,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
     new_package_name: String,
@@ -102,6 +123,9 @@ impl Default for BrowserUi {
             cache: None,
             linked: None,
             browse_seen: 0,
+            thumbs: HashMap::new(),
+            thumb_key: (None, 0, 0),
+            decodes: 0,
             shown: Vec::new(),
             new_package_name: String::new(),
             add_item: Default::default(),
@@ -237,9 +261,64 @@ impl BrowserUi {
     }
 }
 
+/// The size a thumbnail of `w` by `h` pixels draws at in a row: a text
+/// line high, so every row keeps one height for the list's clipper.
+fn thumb_size(w: u32, h: u32, line: f32) -> [f32; 2] {
+    let aspect = (w as f32 / h.max(1) as f32).min(THUMB_ASPECT);
+    [line * aspect, line]
+}
+
+/// A row's thumbnail on the GPU, read the first time the row is drawn
+/// (at most [`DECODES`] a frame): a bitmap tag of the shown map or a
+/// package's PNG bitmap item (`App::thumb_picture`).
+fn thumb_of(
+    app: &App,
+    st: &mut BrowserUi,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
+    row: &Value,
+    asset: &str,
+) -> Option<(TextureId, u32, u32)> {
+    if !assets::has_thumb(row) {
+        return None;
+    }
+    if !st.thumbs.contains_key(asset) {
+        if st.decodes == 0 {
+            return None;
+        }
+        st.decodes -= 1;
+        let pic = assets::AssetId::parse(asset)
+            .ok()
+            .and_then(|id| app.thumb_picture(&id).ok())
+            .map(Arc::new);
+        st.thumbs.insert(asset.to_owned(), pic);
+    }
+    let pic = st.thumbs.get(asset)?.as_ref()?;
+    let tex = pictures.picture(gpu, &format!("{THUMB_KEY}{asset}"), pic)?;
+    Some((tex, pic.width, pic.height))
+}
+
 /// Draw the panel.
-pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
+pub fn draw(
+    ui: &Ui,
+    app: &App,
+    st: &mut BrowserUi,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
+    actions: &mut Vec<Action>,
+) {
     st.shown.clear();
+    st.decodes = DECODES;
+    let thumb_key = (
+        app.shown_map_name().map(str::to_owned),
+        app.package_document.revision,
+        st.refresh,
+    );
+    if st.thumb_key != thumb_key {
+        st.thumbs.clear();
+        pictures.forget(gpu, THUMB_KEY);
+        st.thumb_key = thumb_key;
+    }
     for (root, label) in [(Root::Tags, "Tags"), (Root::Packages, "Packages"), (Root::Live, "Live")] {
         if root != Root::Tags {
             ui.same_line();
@@ -320,7 +399,7 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         })
         .build();
     ui.separator();
-    body(ui, app, st, &list, actions);
+    body(ui, app, st, &list, gpu, pictures, actions);
     st.cache = Some((key, list));
 }
 
@@ -470,7 +549,15 @@ fn pickers(ui: &Ui, st: &mut BrowserUi, list: &Listing) {
     }
 }
 
-fn body(ui: &Ui, app: &App, st: &mut BrowserUi, list: &Listing, actions: &mut Vec<Action>) {
+fn body(
+    ui: &Ui,
+    app: &App,
+    st: &mut BrowserUi,
+    list: &Listing,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
+    actions: &mut Vec<Action>,
+) {
     if let Some(e) = &list.error {
         ui.text_wrapped(e);
         return;
@@ -510,7 +597,7 @@ fn body(ui: &Ui, app: &App, st: &mut BrowserUi, list: &Listing, actions: &mut Ve
                     {
                         package_row(ui, st, entry, asset, actions);
                     } else {
-                        row(ui, app, st, entry, actions);
+                        row(ui, app, st, entry, gpu, pictures, actions);
                     }
                 }
                 Line::Variant(i, v) => variant(ui, app, st, &list.rows[i], v, actions),
@@ -586,6 +673,8 @@ fn row(
     app: &App,
     st: &mut BrowserUi,
     row: &Value,
+    gpu: &mut Gpu<'_>,
+    pictures: &mut MapListUi,
     actions: &mut Vec<Action>,
 ) {
     let Some(asset) = row["asset"].as_str() else {
@@ -593,6 +682,12 @@ fn row(
     };
     st.shown.push(asset.to_owned());
     let tag = row["root"] == "tags";
+    // The thumbnail, a line high, before the row's text.
+    let thumb = thumb_of(app, st, gpu, pictures, row, asset);
+    if let Some((tex, w, h)) = thumb {
+        ui.image(tex, thumb_size(w, h, ui.text_line_height()));
+        ui.same_line();
+    }
     let clicked = ui
         .selectable_config(format!("{}##browser-{asset}", label(row)))
         .selected(st.selected.as_deref() == Some(asset))
@@ -602,6 +697,12 @@ fn row(
     }
     if ui.is_item_hovered() {
         tooltip(ui, row);
+        if let Some((tex, w, h)) = thumb {
+            // The picture at its own size, up to the thumbnail's edge.
+            ui.tooltip(|| {
+                ui.image(tex, [w as f32, h as f32]);
+            });
+        }
         if ui.is_mouse_double_clicked(MouseButton::Left) {
             if tag {
                 open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
@@ -804,6 +905,14 @@ fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
 mod linked_tests {
     use super::*;
     use crate::app::links::Link;
+
+    #[test]
+    fn a_thumbnail_is_a_line_high_and_no_wider_than_twice_that() {
+        assert_eq!(thumb_size(64, 64, 18.0), [18.0, 18.0]);
+        assert_eq!(thumb_size(32, 64, 18.0), [9.0, 18.0]);
+        assert_eq!(thumb_size(640, 64, 18.0), [18.0 * THUMB_ASPECT, 18.0]);
+        assert_eq!(thumb_size(64, 0, 18.0), [18.0 * THUMB_ASPECT, 18.0]);
+    }
 
     #[test]
     fn a_link_view_filters_by_every_word_and_comes_forward_once() {

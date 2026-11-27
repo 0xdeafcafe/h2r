@@ -1104,7 +1104,9 @@ impl App {
 mod browse;
 mod creation;
 mod forge;
+mod thumbs;
 pub use forge::forge_items;
+pub use thumbs::{THUMB_EDGE, has_thumb, shrink};
 pub use browse::{Browse, BrowseMode, BrowseRow, BrowseView};
 pub use creation::CreateAsset;
 pub(crate) use creation::{SourceAsset, SourceView};
