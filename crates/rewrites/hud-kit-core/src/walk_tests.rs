@@ -512,3 +512,19 @@ fn a_text_widget_leaves_its_inputs_and_the_huds_colour() {
     assert_eq!(writes[4], (TEXT_COLOUR, 1.0f32.to_bits()));
     assert_eq!(writes[5], (TEXT_COLOUR + 4, 0.0f32.to_bits()));
 }
+
+#[test]
+fn the_definitions_walk_in_the_records_order() {
+    let mut record = record();
+    for (word, datum) in [0xe000_0001u32, 0xe000_0002, 0xe000_0003, u32::MAX, 0xe000_0005, 0xe000_0006, u32::MAX].into_iter().enumerate() {
+        put_u32(&mut record, 4 * word, datum);
+    }
+    // Word 5 twice with slot 3, the weapons' words 2 and 4, then words 0
+    // and 1 with slot 0; words 3 and 6 name nothing.
+    let order: Vec<(usize, u32, u32)> = definitions(&record).unwrap().iter().map(|w| (w.step, w.datum, w.slot)).collect();
+    assert_eq!(
+        order,
+        [(0, 0xe000_0006, 3), (1, 0xe000_0003, 4), (3, 0xe000_0005, 2), (4, 0xe000_0006, 3), (6, 0xe000_0001, 0), (7, 0xe000_0002, 0)]
+    );
+    assert!(definitions(&record[..20]).is_none());
+}

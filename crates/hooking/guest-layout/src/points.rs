@@ -1496,6 +1496,10 @@ points! { ALL;
     HUD_WIDGET_EFFECTS @ 0x0022_bcaf: [fn(effects: eax, y_basis: ebx, origin: stack 0, x_basis: stack 1) ret 8], Optional; "docs/halo1/hud.md";
     HUD_WIDGET_SPRITE @ 0x0022_ae21: [fn(widget: ecx, bounds: eax, user: stack 0, image: stack 1, width: stack 2, height: stack 3) ret 16], Optional; "docs/halo1/hud.md";
     HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
+    /// The HUD's walks of the definitions its record names (`nhdt`): the
+    /// record's words 5, 2, 3, 4, 5, 6, 0 and 1, each through `HUD_WALK`
+    /// with its slot. It writes the record to `[0x00510c4c] + 0x1bc` first.
+    HUD_DEFINITIONS @ 0x0013_94b9: [fn(record: esi, user: edi) ret 0], Optional; "docs/graphics/native-hud-overlay.md";
     /// The HUD walk of one definition (`nhdt`): its state words
     /// (`0x0013a050`), then each shown screen-effect, bitmap and text
     /// widget's draw, in the definition's order.
