@@ -407,7 +407,7 @@ the mode allows), then engine-level playback from those.
 The guest UI kit builds the film browser and detail page. The desktop
 compositor draws the transport, roster, camera choices and clip marks
 during playback. The host captures playback controls before they reach
-the recorded simulation. See [In-game Theater](#in-game-theater) for the
+the recorded simulation. See [In-game Theater](theater.md#in-game-theater) for the
 controls and current rendering path.
 
 ## 4. Event and spectator view

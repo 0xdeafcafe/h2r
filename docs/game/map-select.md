@@ -88,7 +88,7 @@ The game applies the record to a free slot and uploads the preview to
 that slot's bitmap. Select Map, Game Setup and the lobby use the same
 slot, so all three show the chosen mod's picture. The retail slot
 retains its own name, description and bitmap. See
-[Map Pack §8.1](map-pack.md#81-where-10-reads-patchlvl) and
+[Map Pack §8.1](map-pack-playing.md#81-where-10-reads-patchlvl) and
 [map packages §4](maps.md#4-new-maps-and-the-map-pack).
 
 ## Changes during a session

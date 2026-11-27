@@ -276,6 +276,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [bot-training.md](game/bot-training.md): tuning the Clanker table from sim matches: what is searched, the fitness against people, throughput, the admin's Training views and promoting a table (design)
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
+- [map-pack-playing.md](game/map-pack-playing.md): How the maps play on 1.0, why the game said the content was damaged, and playing the map pack on 1.0.
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness and display frames between two scenes (built, not yet run in game)
 - [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
@@ -290,13 +291,16 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [Forge probes](game/notes/forge-probes.md) records the runtime measurement procedure and results for Forge.
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
 - [forge-monitor-appearance.md](game/forge-monitor-appearance.md): design for what a Forge monitor looks like: its model from the disc, colours, tint and light, the picker and preview, how a session agrees on it, and how Theater shows it (not built)
+- [forge-monitor-appearance-contract.md](game/forge-monitor-appearance-contract.md): Interfaces, rules, slices, decisions, evidence and open items.
 - [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices
 - [ai-networking-budgets.md](game/ai-networking-budgets.md): Budgets, join in progress, Theater, determinism, Forge, interfaces, probes and slices.
 - [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the offline map kit, wave-set definitions and the design for scoring, lives, skulls and Live
 - [forge-nav.md](game/forge-nav.md): Forge's Generate nav: the bots' mesh with the placed objects merged in, its problems and their marks (partly built)
 - [forge-editing.md](game/forge-editing.md): what a Forge monitor can do, after Halo 3, Reach and Infinite: controls, tools, snapping and Coordinates, the object menu, properties by kind, groups and prefabs (partly built)
 - [gametype-markers.md](game/gametype-markers.md): the markers Forge and Studio draw for a game type's parts (spawns, flag and bomb places, hills, territories, teleporters, item spawns, volumes, script labels) from one generated set (`game_markers`), and the area of a hill or a site as a radius or a dropped path that a script's zone reads (design; the set and the area model are built)
+- [gametype-markers-drawing.md](game/gametype-markers-drawing.md): Drawing, editing, the agent API, rules, slices and evidence.
 - [forge-blockout.md](game/forge-blockout.md): design for Forge block-out (slice F8): pieces from a definition in the document (block, ramp, wedge, stairs, cylinder, arch), sizes on a power-of-two grid of units, generated `bloc`, `coll`, `phmo` and `mode` tags, the seeded natural set of rocks textured from the map's own shaders, the code-drawn dev textures with a size label on each face, Dev view, slots and slices BO1 to BO12 (design)
+- [forge-blockout-set.md](game/forge-blockout-set.md): The natural set, the dev textures, the monitor, interfaces, rules, slices and evidence.
 - [gametype-marker-forms.md](game/gametype-marker-forms.md): design for the markers' icons on a plate, the edit form and the play form of each kind (capture plate, plant zone, portal, boundary), box and sphere areas, and what shows in a match, slices MK10 to MK16 (design)
 - [forge-map-variants.md](game/forge-map-variants.md): design for Forge as a scenario editor: edits of the map's own placements named by identity with a print, the fields by kind, game types, the map variant file, how a lobby, a playlist entry and a game variant name one, materialising, Live, the named refusals, slices (design)
 - [forge-map-variants-ui.md](game/forge-map-variants-ui.md): design for that editor's UI on the kits: Properties rows by kind from a YAML doc, the bottom-left readout, world marks, the budget, the map variant save, load and rename screens, previews, slices (design)

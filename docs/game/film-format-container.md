@@ -193,7 +193,7 @@ its first kill and in no teabag (`film::events::medals::Incel`,
 Neither file holds a keyframe or a seek index for the simulation. The
 player reaches a tick by simulating to it, from the game start or from a
 game-state snapshot it took earlier in the same viewing session
-([theater-design.md](theater-design.md#seek)). The stats stream's `scene`
+([theater-design.md](theater-design-recording-playback.md#seek)). The stats stream's `scene`
 checkpoints are for the web viewer's poses and restore nothing in the
 engine.
 

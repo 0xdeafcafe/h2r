@@ -111,7 +111,7 @@ the replicated bodies.
   with a live actor link and no controlling player. The event carries the
   salted unit and character datums, the report's credited player and the
   killing damage source. Live telemetry and the public stats stream
-  record it as `ActorKilled` ([film-format.md](film-format.md#tagged-records)).
+  record it as `ActorKilled` ([film-format.md](film-format-container.md#tagged-records)).
 - **A client's own film** shows what that client saw: puppets.
 
 ## Determinism and digests

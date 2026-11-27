@@ -247,7 +247,7 @@ host runtime's ([rules-engine.md](rules-engine.md#the-host-runtime)).
 | `player_of(o)` | `player_of`, a read | the roster's units (the player datum's unit), so no unit field is read | named | a read |
 | `ticks_held(zone, team)` | `ticks_held`, a VM read | the VM's own counters over `Game::zone_holder`: the one team whose living players alone are inside, `none` when the zone is empty or contested | named | the state blob |
 | `on enter(zone, o)`, `on leave(zone, o)`; `on spawn(p)`, `on death(p)` | VM events | the roster's and the zones' changes since the last tick (`world::zones::events`), in the order the host runtime tells them | named | the state blob |
-| `show_area(zone, team)`, `hide_area(zone)` | `show_area`, `hide_area` | no engine call: the zone is kept in the VM's state (`RulesExt::shown`, at most eight, in the order first shown; a ninth is a script error; `none` for the team is neutral; the round's end clears them), and the runtime hands the zones' shapes to the world-line source after each tick (`world/walls.rs`), which draws each wall alone in the team's colour ([gametype-markers.md](gametype-markers.md), "When a marker shows"). No capability: it is a display | named | the state blob; a machine that runs the VM draws it, a film's re-run included. A client that does not run the script draws it from a walls cue ([the show channel](#the-show-channel)) |
+| `show_area(zone, team)`, `hide_area(zone)` | `show_area`, `hide_area` | no engine call: the zone is kept in the VM's state (`RulesExt::shown`, at most eight, in the order first shown; a ninth is a script error; `none` for the team is neutral; the round's end clears them), and the runtime hands the zones' shapes to the world-line source after each tick (`world/walls.rs`), which draws each wall alone in the team's colour ([gametype-markers.md](gametype-markers.md), "When a marker shows"). No capability: it is a display | named | the state blob; a machine that runs the VM draws it, a film's re-run included. A client that does not run the script draws it from a walls cue ([the show channel](rules-world-api.md#the-show-channel)) |
 
 ### Loadouts
 
@@ -293,7 +293,7 @@ data-driven one, so no screen of its own and no per-script Rust.
 
 A player on another machine is asked the other way. The authority sends
 each picker as an offer cue on the show channel
-([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
+([the show channel](rules-world-api.md#the-show-channel), `rules::show::Cue::Pick`: the
 picker's number, its title and its rows as string-table indexes, at most
 16 bytes) when the offers change - a picker taken away goes as an empty
 one - and again every 90 ticks while any stands. A client holds them
