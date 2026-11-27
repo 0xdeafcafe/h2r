@@ -48,7 +48,7 @@ fn store(memory: &Memory, va: u32, value: u8) -> bool {
         } else {
             let plane = (page as u32 & d.flat.plane_mask) as usize;
             stores
-                .add((plane << 26) + pa as usize)
+                .add(plane * crate::guest::RAM_SIZE + pa as usize)
                 .write_volatile(value);
         }
         assert_eq!(d.ram.add(pa as usize).read_volatile(), value);

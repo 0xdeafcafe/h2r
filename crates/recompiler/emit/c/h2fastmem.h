@@ -716,6 +716,11 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
  * Never read past the v1 prefix without it, including when running a new
  * module against an older runtime. */
 #if H2_FLAT_SPAN && H2_FASTMEM
+/* Guest RAM in bytes, which is also the stride between the watched-store
+ * mirror's planes. Equals runtime::guest::RAM_SIZE (map::arena::RAM). */
+#ifndef H2_RAM_SIZE
+#define H2_RAM_SIZE UINT32_C(0x04800000)
+#endif
 typedef struct H2FlatView {
     uint8_t *base;
     uint8_t *stores;
@@ -742,7 +747,7 @@ static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
     if ((rights & 2u) && (g->data->watching & 1u)) {
         /* The mirror is indexed by physical page. It also covers a full
          * permitted page that could not share a guest VA window. */
-        if (p.physical & ~UINT32_C(0x03fff000)) return NULL;
+        if ((p.physical & 0xfffu) || p.physical >= H2_RAM_SIZE) return NULL;
         uint8_t *stores = v->stores;
         if (!stores) {
             if (!(g->data->watching & UINT32_C(0x40000000))) return NULL;
@@ -753,7 +758,7 @@ static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,
         }
         uint32_t pa = p.physical | (addr & 4095u);
         size_t plane = (pa >> 12) & v->plane_mask;
-        return stores + (plane << 26) + pa;
+        return stores + plane * (size_t)H2_RAM_SIZE + pa;
     }
     if (p.permissions & 8u) return v->base + addr;
     uint32_t window = (p.permissions >> 4) & 3u;

@@ -821,7 +821,11 @@ fn query_statistics_checks_length_and_counts_what_the_allocators_hold() {
     assert_eq!(h.success(181, &[out]), status::SUCCESS);
     let before = stats(&h);
     assert_eq!(before[0], 0x24);
-    assert_eq!(before[1], 64 * 1024 * 1024 / 4096, "64 MB of pages");
+    assert_eq!(
+        before[1] as usize,
+        runtime::guest::RAM_SIZE / 4096,
+        "every page of guest RAM"
+    );
     assert!(before[2] > 0 && before[2] < before[1], "{before:x?}");
 
     // 16 KiB of contiguous memory: four pages fewer available.

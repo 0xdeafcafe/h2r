@@ -188,7 +188,7 @@ fn unwatch_discards_pending_bits_and_unsubscribe_forgets() {
     assert_ne!(fresh, id);
     assert_eq!(g.watch_writes(fresh, PA, 1), Err(WatchError::InvalidRange));
     assert_eq!(
-        g.watch_writes(fresh, 0x83ff_f000, PAGE_SIZE + 1),
+        g.watch_writes(fresh, 0x847f_f000, PAGE_SIZE + 1),
         Err(WatchError::InvalidRange)
     );
 }

@@ -363,7 +363,7 @@ fn reservations_cannot_be_violated_by_any_allocator_or_map() {
 fn map_reserved_rejects_anything_outside_its_window() {
     let (mut g, id) = reserved();
     let other = g
-        .reserve_physical(0x3200000, 2 * P, &[0x9000_0000], "other")
+        .reserve_physical(HALO2_PHYSICAL_ARENA.end.next_multiple_of(0x4000), 2 * P, &[0x9000_0000], "other")
         .unwrap();
     for (rid, va, len, err) in [
         (id, ARENA_VA - P, 2 * P, MapError::Reserved), // straddles window start

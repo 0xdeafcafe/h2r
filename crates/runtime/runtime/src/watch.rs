@@ -439,8 +439,8 @@ mod tests {
     fn folded_ranges_are_bounded_to_ram() {
         assert_eq!(pages(0x8000_0000, 1), Ok((0, 0)));
         assert_eq!(pages(0x8000_0fff, 2), Ok((0, 1)));
-        assert_eq!(pages(0x83ff_f000, 0x1000), Ok((PAGES - 1, PAGES - 1)));
-        assert_eq!(pages(0x83ff_f000, 0x1001), Err(WatchError::InvalidRange));
+        assert_eq!(pages(0x847f_f000, 0x1000), Ok((PAGES - 1, PAGES - 1)));
+        assert_eq!(pages(0x847f_f000, 0x1001), Err(WatchError::InvalidRange));
         assert_eq!(pages(0x7fff_f000, 0x1000), Err(WatchError::InvalidRange));
         assert_eq!(pages(0x8000_0000, 0), Err(WatchError::InvalidRange));
     }
