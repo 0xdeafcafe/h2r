@@ -167,10 +167,34 @@ impl GameEngine {
     }
 }
 
+/// Engine globals: set by the round driver the first tick it sees the
+/// game's end latch (`0x15cad1`); the same tick it rolls each round score
+/// into the game's (`0x15cb12`, `0x1e97b0`) and keeps the round's.
+pub const GAME_END_SEEN: u32 = 0xc08;
+
+/// A statborg row's score for the whole game: the round's score
+/// ([`PlayerStats::SCORE`], [`TeamStats::SCORE`]) and the earlier rounds'
+/// ([`PlayerStats::ROUNDS_SCORE`]). The round reset (`0x1e97b0`, from
+/// `0x157ae0`) adds the round's score into the earlier rounds' and zeroes
+/// it; at the game's end ([`GAME_END_SEEN`]) it adds it in and keeps it,
+/// so from then on the earlier rounds' score is the game's
+/// (docs/engine/notes/2026-11-27-next-round.md, "The scores across a
+/// round reset").
+pub const fn game_score(round: i16, earlier: i16, end_seen: bool) -> i32 {
+    if end_seen {
+        earlier as i32
+    } else {
+        earlier as i32 + round as i32
+    }
+}
+
 crate::layout! {
     /// One player's statistics in the engine globals.
     pub struct PlayerStats: 0x1c {
+        /// This round's score: the round reset zeroes it ([`game_score`]).
         SCORE score @ 0x0: i16,
+        /// The earlier rounds' score ([`game_score`]).
+        ROUNDS_SCORE rounds_score @ 0x2: i16,
         KILLS kills @ 0x4: u16,
         DEATHS deaths @ 0x6: u16,
         SUICIDES suicides @ 0x8: u16,
@@ -183,6 +207,7 @@ crate::layout! {
     /// fields as a player's.
     pub struct TeamStats: 0x12 {
         SCORE score @ 0x0: i16,
+        ROUNDS_SCORE rounds_score @ 0x2: i16,
         KILLS kills @ 0x4: u16,
         DEATHS deaths @ 0x6: u16,
         SUICIDES suicides @ 0x8: u16,

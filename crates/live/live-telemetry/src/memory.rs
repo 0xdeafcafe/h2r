@@ -220,7 +220,7 @@ fn players_into(
         let stats = if has_stats {
             let row = engine + layout::ENGINE_PLAYER_STATS + slot * layout::PLAYER_STAT_SIZE;
             PlayerStats {
-                score: i64::from(i16(guest.u16(row + layout::STAT_SCORE)?)),
+                score: game_score(guest, engine, row)?,
                 kills: u32::from(guest.u16(row + layout::STAT_KILLS)?),
                 deaths: u32::from(guest.u16(row + layout::STAT_DEATHS)?),
                 assists: u32::from(guest.u16(row + layout::STAT_ASSISTS)?),
@@ -300,10 +300,20 @@ fn team_scores_into(
         let row = engine + layout::ENGINE_TEAM_STATS + team as u32 * layout::TEAM_STAT_SIZE;
         out.push(TeamScore {
             team,
-            score: i64::from(i16(guest.u16(row + layout::STAT_SCORE)?)),
+            score: game_score(guest, engine, row)?,
         });
     }
     Ok(())
+}
+
+/// A statborg row's score for the whole game, its earlier rounds' included:
+/// the round reset zeroes the round's (`guest_layout::game::game_score`).
+fn game_score(guest: &Guest, engine: u32, row: u32) -> ReadResult<i64> {
+    Ok(i64::from(guest_layout::game::game_score(
+        i16(guest.u16(row + layout::STAT_SCORE)?),
+        i16(guest.u16(row + layout::STAT_ROUNDS_SCORE)?),
+        guest.u8(engine + layout::ENGINE_GAME_END_SEEN)? != 0,
+    )))
 }
 
 /// Object lookups for one observation: the objects array's data pointer,

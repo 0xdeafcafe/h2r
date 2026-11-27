@@ -1861,9 +1861,17 @@ impl hooks::Feature for SimMetrics {
                 .filter(|p| *p != 0)
                 .and_then(|p| g.u8(p + telemetry::layout::GAME_ENDED).ok())
                 .is_some_and(|b| b != 0);
+            // The calls of the boundary that ended the game (a script's
+            // last round's points, then `end_round`) were made before the
+            // game's end and after the last tick's sample: the result
+            // reads the scores as the game ended.
+            let last = ended.then(|| telemetry::snapshot(&g).ok()).flatten();
             drop(g);
             let mut s = me.lock();
             if ended && s.phase == Phase::Playing {
+                if let Some(snap) = last {
+                    s.tally.tick(&tick_sample(&snap));
+                }
                 me.end(&mut s, End::GameOver);
             }
         });

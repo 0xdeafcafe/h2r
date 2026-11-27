@@ -25,8 +25,10 @@ pub const VARIANT_SCORE_LIMIT: u32 = 0x50;
 pub const VARIANT_TIME_LIMIT: u32 = 0x54;
 /// Variant flags bit 0: team play.
 pub const TEAM_PLAY: u32 = guest_layout::game::TEAM_PLAY;
-/// The statborg rows' score, kills and deaths (`PlayerStats`, `TeamStats`).
+/// The statborg rows' round score, earlier rounds' score, kills and
+/// deaths (`PlayerStats`, `TeamStats`).
 const STATS_SCORE: u32 = 0x0;
+const STATS_ROUNDS_SCORE: u32 = 0x2;
 const STATS_KILLS: u32 = 0x4;
 const STATS_DEATHS: u32 = 0x6;
 /// The engine globals' round start tick (`GameEngine::ROUND_START_TICK`,
@@ -121,9 +123,24 @@ fn player_stat(m: &dyn GuestMemory, slot: u8, field: u32, signed: bool) -> Resul
     Ok(if signed { v as i16 as i32 } else { v as i32 })
 }
 
-/// The player's score (`i16`).
+/// A statborg row's score for the whole game, not the round's: the round
+/// reset zeroes the round's (`guest_layout::game::game_score`). 0 without
+/// the engine.
+fn game_score(m: &dyn GuestMemory, row: u32) -> Result<i32, MemFault> {
+    let Some(e) = engine(m)? else {
+        return Ok(0);
+    };
+    let at = e + row;
+    Ok(guest_layout::game::game_score(
+        m.u16(at + STATS_SCORE)? as i16,
+        m.u16(at + STATS_ROUNDS_SCORE)? as i16,
+        m.u8(e + guest_layout::game::GAME_END_SEEN)? != 0,
+    ))
+}
+
+/// The player's score for the game so far, its earlier rounds' included.
 pub fn player_score(m: &dyn GuestMemory, slot: u8) -> Result<i32, MemFault> {
-    player_stat(m, slot, STATS_SCORE, true)
+    game_score(m, PLAYER_STATS + u32::from(slot) * PLAYER_STATS_STRIDE)
 }
 
 pub fn kills(m: &dyn GuestMemory, slot: u8) -> Result<i32, MemFault> {
@@ -134,13 +151,10 @@ pub fn deaths(m: &dyn GuestMemory, slot: u8) -> Result<i32, MemFault> {
     player_stat(m, slot, STATS_DEATHS, false)
 }
 
-/// The team's score (`i16`); 0 without the engine.
+/// The team's score for the game so far, as [`player_score`]; 0 without
+/// the engine.
 pub fn team_score(m: &dyn GuestMemory, team: u8) -> Result<i32, MemFault> {
-    let Some(e) = engine(m)? else {
-        return Ok(0);
-    };
-    let at = e + TEAM_STATS + u32::from(team) * TEAM_STATS_STRIDE + STATS_SCORE;
-    Ok(m.u16(at)? as i16 as i32)
+    game_score(m, TEAM_STATS + u32::from(team) * TEAM_STATS_STRIDE)
 }
 
 /// The player's lives remaining (`i16`, -1 unlimited); 0 without a player.

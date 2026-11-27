@@ -82,3 +82,31 @@ the post-game's score is **S**.
 - **S**: whether `PLAYER_STATS` `+0x0`, which `player_score` reads, is
   the round's or the game's score after a reset. A run of a two-round
   Siege that logs `player_score` before and after the reset settles it.
+
+## 2026-11-27: the scores at the game's end, and the team rows
+
+Static reading only, the same disassembly; no run. **Reproduce:**
+`rg 'call 001E97B0h' text.asm` (two callers: the round reset at
+`0x157b6b` and `0x15dd33`), `rg 'call 0015DD10h' text.asm`.
+
+`0x1e97b0` (statborg base `E+0x304` on the stack) does for each team row
+(`0x12` bytes from `E+0x4c8`) what it does for the player rows: it adds
+row `+0x00` into `+0x02` and, with the end latch `G+0x1128` clear, zeroes
+`+0x00` (`0x1e9830` to `0x1e984f`) (**E**). On the player rows it also
+zeroes `+0x12`, `+0x14` and the dword at `+0x18`, and leaves kills
+(`+0x04`) and deaths (`+0x06`) alone (**E**). So `+0x00`, which
+`SCORE_ADD` writes and `player_score` read, is the round's score.
+
+The round driver `0x15ca10`, the first time it sees the end latch set,
+stores 1 in `E+0xc08` (`0x15cad1`), resolves the round if it is still in
+play (`0x15b330`, `0x15b3a0`), and calls `0x15dd10` (`0x15cb12`), which
+calls `0x1e97b0` (`0x15dd33`) (**E**). With the latch set the round
+score is added into `+0x02` and kept, so from then on `+0x02` is the
+whole game's and `+0x02` plus `+0x00` would count the last round twice
+(**E**). Before it, the game's score is `+0x02` plus `+0x00`. That the
+post-game shows `+0x02` is **S**.
+
+An `h2 sim run` of the two-round Siege example (commit `afda6fac2`)
+logged every `player_score` 0 at the second round's start: the reset's
+zeroing, read as the round's row.
+
