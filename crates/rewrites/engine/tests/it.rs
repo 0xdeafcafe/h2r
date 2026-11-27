@@ -69,6 +69,8 @@ mod sim_tier_differential;
 mod states_differential;
 #[path = "variant_record_differential.rs"]
 mod variant_record_differential;
+#[path = "view_projection_differential.rs"]
+mod view_projection_differential;
 #[path = "views.rs"]
 mod views;
 

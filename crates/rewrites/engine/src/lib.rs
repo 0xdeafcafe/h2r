@@ -22,6 +22,8 @@
 //!   CRT's `fmod` and `pow`, bit for bit.
 //! - [`map_status`]: the map cache status `0x213f10`, answered from its
 //!   last result while nothing it reads has changed.
+//! - [`view_projection`]: the view projection builder `0x0002fb70`, bit
+//!   for bit.
 //!
 //! Re-exported from `guest_layout` (docs/dev/crate-structure.md, S2):
 //! [`points`], the one table of named guest functions and globals;
@@ -58,6 +60,7 @@ pub mod hs_syntax;
 #[cfg(test)]
 mod squad_pool;
 pub mod ui_backdrop;
+pub mod view_projection;
 pub mod ui_model;
 pub mod ui_sprite;
 

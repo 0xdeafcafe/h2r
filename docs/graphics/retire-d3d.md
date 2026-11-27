@@ -1,8 +1,8 @@
 # Retiring the guest D3D path
 
-Status: Design. R0 is built. R1, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
+Status: Design. R0 is built. R1, R4, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
-Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. R4's producers have `impl.render.native.visibility` (on), which only turns them off.
 
 | Slice | Built | Where it is specified |
 |---|---|---|
@@ -15,6 +15,7 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | R1, layer 3 object parts | draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included | framescene.md slice 3, "Bit 9" |
 | R1, layer 3 decorators | draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included | native-decorators.md, "The glue" |
 | R1, layers 10, 11 and 14 | whole groups draw from the scene with no geometry handler; the object filter draws natively | native-shadow-layers.md |
+| R4 | the view projection builder `0x0002fb70` at every call it accepts; the portal, window, sphere and PVS producers after their comparisons; every view's sets compared with the guest's | [native-visibility.md](native-visibility.md) |
 | R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls) | [native-renderer.md](native-renderer.md) |
 | R5, sky | the sky stage draws supported strips with the view's node palette and the material inputs at issue | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
@@ -399,7 +400,7 @@ classified readers, 73 read run state and 30 start from it.
 
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
-| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field; the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). Cinematic and override cameras remain guest-owned. The comparison writes nothing |
+| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the projection builder `0x0002fb70` runs in Rust at the guest's call ([native-visibility.md](native-visibility.md#the-projection-builder)); the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field, and the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). The render camera write, cinematic and override cameras remain guest-owned |
 | Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view, the default and the guest's lists the fallback a decline takes; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); verified portal, sphere and PVS calls publish from Rust; the guest owns source-window overlap records |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |

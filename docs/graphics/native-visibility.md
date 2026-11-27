@@ -1,8 +1,8 @@
 # Visibility in Rust
 
-Status: Built, not verified. Every game view's visible clusters and objects (modes 0, 1 and 2), the run-time-computed visible sets, the window frusta objects are tested against, the main view's records and the sphere-mode and frustum-mode light views are computed in Rust and compared with the guest's. The native scene-list hooks publish single-frustum portal walks, window merges, sphere regions and PVS regions after comparing the original producer's output. The guest's view setup and any call the hooks decline run in the guest and are the fallback a decline takes.
-Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`, `view`, `light`), the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own).
-Switch: none of its own; it runs with the scene step under `impl.render.native`, listed in [switches.md](../runtime/switches.md).
+Status: Built, not verified. Every game view's visible clusters and objects (modes 0, 1 and 2), the run-time-computed visible sets, the window frusta objects are tested against, the main view's records and the sphere-mode and frustum-mode light views are computed in Rust and compared with the guest's. The native scene-list hooks publish single-frustum portal walks, window merges, sphere regions and PVS regions after comparing the original producer's output. The view projection builder `0x0002fb70` runs in Rust at every call it accepts. The rest of the guest's view setup and any call the hooks decline run in the guest and are the fallback a decline takes.
+Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`.
+Switch: `impl.render.native.visibility` (on, with `impl.render.native`). Off, the guest's `0x0002fb70` and its portal, window, sphere and PVS producers run; the scene step's differential runs either way. Both are listed in [switches.md](../runtime/switches.md).
 
 Slice R4 of [retire-d3d.md](retire-d3d.md). For every game view the scene step builds, beside the guest's, the view's records (its render camera, projection, start cluster and mode), which BSP clusters the view sees and which objects it lists. At each dynamic light's passes it does the same for the light's view. At first-person replay it compares the ordered light slots and their records.
 
@@ -77,6 +77,25 @@ The x scale is `one / ((xr · aspect) · t)` and the y scale `one / (yr · t)`. 
 
 `view::compare` compares the record with the render camera (`0x004b9da0`), the visibility struct's start cluster (`+8`) and mode (`+0x2a7c`) field by field, bit for bit. `scene_step::view_record_arm` counts each view and keeps the first difference. The main portal comparison uses the input frustum copied at gather time, including its actual tangent extents.
 
+### The projection builder
+
+`0x0002fb70` (`VIEW_PROJECTION_BUILD`) takes the render camera in ECX, the tangent extents in EDX (null for `[min, one, min, one]`) and a 0x40-byte buffer in EAX, and returns with `ret`. Its one caller is `0x0002fd90`. `engine::view_projection::build` computes the whole buffer, ECX and EDX, and `native_scene_lists::projection` publishes them at the call.
+
+| Words | Value |
+|---|---|
+| `+0x00`..`+0x0c` | the extents `e0`..`e3`; `e2`, `e3` times `height · [0x0045dd50]` under the display flag off the widescreen branch |
+| `+0x10`, `+0x14` | width and height of the viewport (`+0x30`) |
+| `+0x18`, `+0x1c` | `xr = (e1 − e0) · half`, `yr = (e3 − e2) · half` |
+| `+0x20`, `+0x24` | `ox = (e1 + e0) / xr · s`, `oy = (e2 + e3) / yr · s` |
+| `+0x28`, `+0x2c` | `sx = one / ((xr · aspect) · t)`, `sy = one / (yr · t)` |
+| `+0x30`..`+0x3c` | `0 − (ox + one) · (one / sx)`, `0 − (ox − one) · (one / sx)`, and the same for `oy` with `one / sy` |
+| ECX | `t`, popped from the scratch slot |
+| EDX | the last extent word when given, its low byte the last flag byte read (`[override + 1]`, then `[display + 5]`) |
+
+`half` is `[0x0045dbbc]`, `s` `[0x0045dbc4]` and `one` `[0x0045dbc0]`. `t` is the x87 tangent of `fov · half` (`x87::tan`, double precision, stored to single). The widescreen branch (the widescreen byte set and the override's lens test not holding) multiplies the aspect by `0x0045dfdc`, and `t` by it and `0x0045e108` under the display flag.
+
+The port declines, and the guest's body runs, for an MXCSR other than masked round-to-nearest, an x87 control word other than `0x027f`, a used x87 stack, a NaN among the inputs or results, and a buffer overlapping what the builder reads after writing. The x87 status word and the MXCSR's sticky flags are not modelled. The caller's own code then reaches `VIEW_PROJECTION_TERMS` (`0x0002fda3`), so the display fit ([high-resolution.md](high-resolution.md#widescreen-projection)) widens the Rust terms as it does the guest's.
+
 ### The flood
 
 Mode 0 is `0x00173130`, whose walk is `0x00172840`. `visibility::flood::flood` is breadth first from the view's start cluster (visibility struct `+8`, the location `0x00132b80` stores). A node is a cluster seen through a window: a convex polygon on the screen, its bounding rectangle, and the set of portals its path has crossed. The root is the start cluster with the whole screen.
@@ -102,6 +121,7 @@ The light-view comparison uses the reconstructed lens in `visibility::flood`. Th
 | `window` | `0x00163db0` at the merged node's call | `native_scene_lists_window_record_` | slot and BSP repeat |
 | `sphere_regions` | `0x00132d60` | `native_scene_lists_sphere_regions_*` | BSP generation, start, centre, radius, axis rows and cluster sequence repeat |
 | `regions` | `0x001733e0`, called by `0x00132152` | `native_scene_lists_pvs_regions_` | start, computed row and open-portal bits repeat |
+| `projection` | `0x0002fb70`, called by `0x0002fd90` | `native_scene_lists_view_projection_*` | every call the port accepts (see "The projection builder") |
 
 Each counter family counts comparisons, differences or mismatches, native calls and fallbacks.
 
@@ -220,7 +240,7 @@ The arm runs for every game view, whether or not its lists read. A view whose li
 
 - **Membership and draw order.** The region records retain their production order. The comparator at `0x00134950` sorts a separate array of region ordinals. The scene's Rust membership sets are ascending, and a consumer that needs the guest's order reads it from a `guest` view. The native publication hooks compare the ordered records at their consumer.
 - **The guest is the fallback.** A view for which the computation declines keeps the guest's gather. A difference keeps the Rust sets, the default, and stays counted and named; the render records were still built from the guest's lists. A view whose lists do not read carries no gather. The camera records and the first-person light handles stay taken only on equality.
-- **Not ported.** The overlap records for light windows against source-view windows (`0x00132900`); cinematic and override cameras; off-centre extents passed to `0x0002fb70`.
+- **Not ported.** The overlap records for light windows against source-view windows (`0x00132900`, a merge over both region lists calling `0x00132780` and `0x001648d0`); cinematic and override cameras; the render camera `0x00223080` and `0x0002f800` write. The scene step's `view::build` reconstructs only the default extents; the builder at the guest call takes any.
 - **Shared stamps.** The sphere gather checks the active collision BSP before taking over shared visit stamps. A light's reconstructed lens can still differ from its source frusta. The light differential reports those differences.
 
 | Decline | Cases |
@@ -240,6 +260,8 @@ The arm runs for every game view, whether or not its lists read. A view whose li
 - The open-portal bits are indexed by portal: **Code** (`0x00172927`).
 - `0x004b9ed8` holding the view's local user index, and the unit `0x0002b990` appends: **Code** (`0x0002ba10`, `0x0002bc6b`, `0x0002b990`, `0x00155760`).
 - That the item lists `0x00040e90` leave the light struct's lists alone between a light's gather and its passes: **S**.
+- That `0x0002fb70` has one caller (`0x0002fd99`): **Code**, a scan of `.text` for calls and jumps to it.
+- `0x0002fb70`'s buffer and registers equal the lifted original's over seeded cameras, extents, override and display states: **Test** (`view_projection_differential`, needs the XBE).
 - Every behaviour above on invented fixtures: **Test** (`visibility::tests`, and the `flood`, `frusta`, `sphere`, `pvs`, `objects`, `view`, `light`, `parity` and `graph` tests).
 
 ## Not verified
