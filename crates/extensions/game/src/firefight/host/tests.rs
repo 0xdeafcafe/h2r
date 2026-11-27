@@ -206,7 +206,7 @@ fn player(slot: u8, team: u8) -> PlayerView {
     }
 }
 
-/// Holdout: 600 warmup ticks, a pool of 12, Ghost in round one, 100 points
+/// Holdout: a one-second warmup, a pool of 12, Ghost in round one, 100 points
 /// an Elite and a quarter for an assist.
 fn holdout() -> Def {
     builtin::definitions()[0].clone()
@@ -584,15 +584,15 @@ fn the_ai_switch_waits_for_the_globals_and_writes_only_when_off() {
 /// Elite killed, then the player dies between waves and respawns from the
 /// pool.
 fn scripted_match(game: &mut FakeGame, host: &mut Host) {
-    for tick in 0..=720 {
-        if tick == 601 {
+    for tick in 0..=150 {
+        if tick == 31 {
             // The squad the entry placed this tick is in the game.
             assert!(host.pre_tick(tick, game).is_empty());
             game.actors[0] = 1;
             host.post_tick(tick, &*game).unwrap();
             continue;
         }
-        if tick == 650 {
+        if tick == 80 {
             game.actors[0] = 0;
             game.kills = vec![KillSeen {
                 character: ELITE,
@@ -600,7 +600,7 @@ fn scripted_match(game: &mut FakeGame, host: &mut Host) {
                 assist: None,
             }];
         }
-        if tick == 700 {
+        if tick == 130 {
             game.players[0].alive = false;
             game.players[0].position = None;
         }
@@ -645,7 +645,7 @@ fn a_scripted_match_makes_the_expected_engine_calls_in_order() {
             .iter()
             .map(|entry| entry.tick)
             .collect::<Vec<_>>(),
-        [1, 601, 601, 601, 601, 651, 701, 701]
+        [1, 31, 31, 31, 31, 81, 131, 131]
     );
     host.log().verify(host.head()).unwrap();
 }
@@ -1347,13 +1347,13 @@ fn finish_ends_the_test_and_not_the_game() {
     assert_eq!(host.take_test_end(), None);
 }
 
-/// Holdout's first wave to tick 800 on a game where `shows` actors are in
-/// slot 0 from the tick after the squad was placed (601).
+/// Holdout's first wave to tick 400 on a game where `shows` actors are in
+/// slot 0 from the tick after the squad was placed (31).
 fn first_wave(shows: u16) -> (Host, FakeGame) {
     let mut game = FakeGame::new();
     let mut host = start(Role::Host, &game);
-    for tick in 0..=800 {
-        if tick == 601 {
+    for tick in 0..=400 {
+        if tick == 31 {
             assert!(host.pre_tick(tick, &mut game).is_empty());
             game.actors[0] = shows;
             host.post_tick(tick, &game).unwrap();
@@ -1386,7 +1386,7 @@ fn a_placement_nobody_sees_is_reported_once() {
     assert_eq!(rows[0].seq, None);
     assert_eq!(
         rows[0].error.to_string(),
-        "slot 0: elite placed at tick 601, none seen"
+        "slot 0: elite placed at tick 31, none seen"
     );
     assert!(host.take_unseen_errors().is_empty());
 }
@@ -1962,7 +1962,7 @@ fn a_pod_squad_falls_and_is_placed_on_arrival() {
     let squads: Vec<_> = replica_game
         .calls
         .iter()
-        .filter(|c| matches!(c, Call::Fly(_) | Call::Squad(SquadOp::Place(_))))
+        .filter(|c| matches!(c, Call::Fly(_) | Call::Squad(SquadOp::Place(Placement { slot: 3, .. }))))
         .collect();
     assert_eq!(squads.len(), 2);
     assert!(matches!(squads[1], Call::Squad(SquadOp::Place(p)) if p.slot == 3 && p.count == 2));
