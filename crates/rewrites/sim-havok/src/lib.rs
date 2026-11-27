@@ -6,6 +6,7 @@ pub mod broadphase;
 pub mod fp;
 pub mod island_solve;
 pub mod jacobian;
+pub mod joint;
 pub mod layout;
 pub mod mem;
 pub mod motion;

@@ -68,7 +68,8 @@ fn ram() -> Option<(&'static Image, FlatMemory)> {
 fn original(image: &Image) -> lifted::Original {
     let mut code = image.original();
     let motions = SolverClass::ALL.into_iter().flat_map(|c| <[u32; 2]>::from(c.slots()));
-    for f in [0x31c100, 0x31c940, 0x31bdf0, 0x31f620].into_iter().chain(motions) {
+    let joints = sim_havok::joint::Joint::ALL.into_iter().map(|j| j.build_address());
+    for f in [0x31c100, 0x31c940, 0x31bdf0, 0x31f620].into_iter().chain(motions).chain(joints) {
         code.prime(f);
     }
     code
@@ -791,6 +792,177 @@ fn dynamic_contact_islands_match_the_lifted_entry() {
             m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
         }
         assert_eq!(first_difference(&mem, &expected), None, "seed {seed}: first different byte");
+    }
+    assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
+}
+
+// ---- the joint builders `vt[+0x24]` ---------------------------------------
+
+use sim_havok::joint::Joint;
+
+/// A joint at `c` between entities A and B: random pivots and axes in the
+/// bodies' frames, a rest length at `+0x40`, and each body's transform
+/// (`motion+0x80`).
+fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
+    word(m, c + island::CONSTRAINT_ENTITY_A, ENTITY);
+    word(m, c + island::CONSTRAINT_ENTITY_B, ENTITY + 0x100);
+    for off in (0x20..0x90).step_by(4) {
+        word(m, c + off, bits(r, -1.0, 1.0));
+    }
+    word(m, c + 0x40, bits(r, 0.0, 2.0));
+    for i in 0..2 {
+        let (entity, motion) = (ENTITY + 0x100 * i, MOTION + 0x200 * i);
+        word(m, entity + island::ENTITY_MOTION, motion);
+        for off in (0x80..0xc0).step_by(4) {
+            word(m, motion + off, bits(r, -1.0, 1.0));
+        }
+        put_lanes(m, motion + 0xb0, [float(r, -5.0, 5.0), float(r, -5.0, 5.0), float(r, -5.0, 5.0), 1.0]);
+    }
+}
+
+/// Each joint's `vt[+0x24]`: the header, rows, schemas and cursor equal
+/// the lifted builder's, word for word, under every rounding mode, and
+/// nothing outside the buffer differs.
+#[test]
+fn the_joint_builders_match_the_lifted_builders() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for seed in 0..384u64 {
+        let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
+        let mut r = Rng(0x101e_0000 + seed);
+        let mut mem = base.clone();
+        random_bytes(&mut r, &mut mem, BUFFER, 0x800);
+        let (acc_a, acc_b) = match r.below(6) {
+            0 => (BUFFER + 0x80, BUFFER),
+            _ => (BUFFER + 0x80, BUFFER + 0x100),
+        };
+        for acc in [BUFFER, BUFFER + 0x80, BUFFER + 0x100] {
+            mem.bytes[(acc + 0x0c) as usize] = if r.below(2) == 0 { 0 } else { r.u32() as u8 | 1 };
+            put_lanes(&mut mem, acc + 0x30, [float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 1.0)]);
+            for v in [0x40, 0x50, 0x60, 0x70] {
+                put_lanes(&mut mem, acc + v, [float(&mut r, -2.0, 2.0), float(&mut r, -1.0, 1.0), float(&mut r, -1.0, 1.0), float(&mut r, -1.0, 1.0)]);
+            }
+        }
+        let c = CONSTRAINT;
+        seed_joint(&mut r, &mut mem, c);
+        let pairs = WORLD + 0x190;
+        word(&mut mem, pairs, acc_a);
+        word(&mut mem, pairs + 4, acc_b);
+        pair_scales(&mut r, &mut mem, pairs);
+        let (rows, schemas) = (BUFFER + 0x1000, BUFFER + 0x4000);
+        word(&mut mem, CURSOR, rows);
+        word(&mut mem, CURSOR + 4, schemas);
+        let fpu = fpu(seed / 3);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let mut s = Scratch::new(BUFFER, BUFFER + BUFFER_BYTES).unwrap();
+        for at in (BUFFER..BUFFER + 0x180).step_by(4) {
+            s.put(at, before.read_u32(at).unwrap()).unwrap();
+        }
+        let mut cursor = Cursor { rows, schemas, limit: u32::MAX, overflow: 0 };
+        sim_havok::joint::build(&mut j, &mut s, fpu, joint, c, pairs, &mut cursor)
+            .unwrap_or_else(|f| panic!("seed {seed} {joint:?}: declined {f:?}"));
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        for (i, v) in [EXIT, pairs, CURSOR].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * i as u32, v);
+            word(&mut expected, STACK + 4 * i as u32, v);
+        }
+        let mut cpu = Cpu { gpr: [0, c, 0, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip: joint.build_address(), ..Cpu::default() };
+        cpu.mxcsr = fpu.mxcsr;
+        cpu.x87.control = fpu.control;
+        run(&mut code, &mut cpu, &mut mem);
+        let after = abi_cpu(&cpu);
+        assert_eq!(after.esp, STACK + 12, "seed {seed} {joint:?}: ret 8");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+        assert_eq!((mem.read_u32(CURSOR), mem.read_u32(CURSOR + 4)), (Some(cursor.rows), Some(cursor.schemas)), "seed {seed} {joint:?}: cursor");
+        for (from, to) in [(rows, cursor.rows), (schemas, cursor.schemas)] {
+            for at in (from..to).step_by(4) {
+                assert_eq!(mem.read_u32(at), s.get(at), "seed {seed} {joint:?}: buffer word {at:#x}");
+            }
+        }
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        word(&mut expected, CURSOR, cursor.rows);
+        word(&mut expected, CURSOR + 4, cursor.schemas);
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {joint:?}: first different byte");
+    }
+}
+
+/// Islands of dynamic bodies joined by joints and contacts, run whole:
+/// the solve over the joints' free rows, the write-back to each joint's
+/// outputs and the exports equal the lifted entry's.
+#[test]
+fn joint_islands_match_the_lifted_entry() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    let (mut solved, mut declined) = (0, 0);
+    for seed in 0..192u64 {
+        let mut r = Rng(0x101f_0000 + seed);
+        let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
+        let mut mem = base.clone();
+        random_bytes(&mut r, &mut mem, BUFFER, 0x400);
+        let args = island(&mut r, &mut mem, 2, 1, joint.build_address(), BUFFER_BYTES);
+        seed_world(&mut r, &mut mem);
+        for (k, class) in SolverClass::ALL.into_iter().enumerate() {
+            let vt = VTABLES + 0x200 + 0x40 * k as u32;
+            let (accumulate, export) = class.slots();
+            word(&mut mem, vt + island::MOTION_ACCUMULATE_SLOT, accumulate);
+            word(&mut mem, vt + island::MOTION_EXPORT_SLOT, export);
+        }
+        for i in 0..2 {
+            let at = MOTION + 0x200 * i;
+            let offset = mem.read_u32(at + island::MOTION_ACCUMULATOR).unwrap();
+            seed_motion(&mut r, &mut mem, at);
+            word(&mut mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
+            word(&mut mem, at + island::MOTION_ACCUMULATOR, offset);
+        }
+        let builder = mem.read_u32(CONSTRAINT).unwrap();
+        seed_joint(&mut r, &mut mem, CONSTRAINT);
+        word(&mut mem, CONSTRAINT, builder);
+        let rows = match joint { Joint::BallSocket => 0x90, Joint::Hinge => 0xd0, Joint::StiffSpring => 0x30 };
+        let count = match joint { Joint::BallSocket => 3, Joint::Hinge => 5, Joint::StiffSpring => 1 };
+        for (off, v) in [(0x08u32, rows), (0x0c, rows), (0x10, 0x18 + 4 * count), (0x18, count)] {
+            word(&mut mem, ISLAND + off, v);
+        }
+        pair_scales(&mut r, &mut mem, args.pairs);
+        let info = args.info;
+        for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
+            word(&mut mem, info + off, bits(&mut r, lo, hi));
+        }
+        word(&mut mem, info + 0x1c, 1 + r.below(3));
+        push_args(&mut mem, &args);
+        let fpu = fpu(seed / 3);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let eax = match island::solve(&mut j, &args, fpu) {
+            Ok(eax) => eax,
+            Err(reason) => {
+                assert!(!matches!(reason, Fallback::Motion | Fallback::Constraint | Fallback::Tables), "seed {seed} {joint:?}: {reason:?}");
+                declined += 1;
+                continue;
+            }
+        };
+        solved += 1;
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
+        assert_eq!(after.eax, eax, "seed {seed}: eax");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {joint:?}: first different byte");
     }
     assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
 }
