@@ -152,6 +152,27 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                 .expect("rows"),
             ),
             (
+                // A starting point of the map's own set to High: its Team
+                // and Weight rows.
+                "start",
+                sheet::properties_sheet_with(
+                    "Starting point",
+                    &forge::Thing {
+                        fields: vec![("team", forge::Value::Int(1))],
+                        ..sample_thing(
+                            forge::BlockKind::StartingLocations,
+                            forge::ThingKind::StartingPoint,
+                        )
+                    },
+                    90.,
+                    &sheet::Extras {
+                        weight: Some(Some(forge_doc::SpawnWeight::High)),
+                        ..sheet::Extras::default()
+                    },
+                )
+                .expect("rows"),
+            ),
+            (
                 "gate",
                 sheet::properties_sheet(
                     "Gate",

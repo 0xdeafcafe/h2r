@@ -296,7 +296,7 @@ pub struct PropDoc {
 /// The kinds a [`PropDoc`] may be `on`.
 pub const PROP_KINDS: [&str; 6] = ["any", "object", "spawner", "starting-point", "goal", "teleporter"];
 /// The properties that are not fields of a thing.
-pub const PROP_VIRTUAL: [&str; 13] = [
+pub const PROP_VIRTUAL: [&str; 14] = [
     "coordinates",
     "heading",
     "label",
@@ -310,6 +310,7 @@ pub const PROP_VIRTUAL: [&str; 13] = [
     "restore original",
     "spawner team",
     "spare clips",
+    "weight",
 ];
 
 /// A settings dialog's own: which host it sits on, its static header
