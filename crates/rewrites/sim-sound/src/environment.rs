@@ -4,7 +4,7 @@ use x87::abi::{self, ARITH_POP, X87Abi, arith_op, src_kind, unary_op};
 
 /// Scale factors in the dB-to-linear path, kept separate because each
 /// multiply rounds at the current precision.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GainCurve {
     pub decibel_scale: u32,
     pub exponent_scale: u32,

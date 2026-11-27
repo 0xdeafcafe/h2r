@@ -18,6 +18,7 @@ use sim_sound::events::{SoundDef, SoundEvent, SoundId, Source};
 use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
+pub mod levels;
 pub mod mixer_feed;
 pub mod owner_host;
 pub mod owners;

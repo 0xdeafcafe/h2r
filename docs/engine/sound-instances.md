@@ -1,7 +1,7 @@
 # Sound instances: the Rust table
 
-Status: Design, slices 1 to 3 built, slice 4 begun: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`; the bridge reads request records and hosts owners; nothing is wired at boot. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
-Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,mixer_feed}.rs`, `crates/platform/sound-clips`. Tests: the same files, named in [Slices](#slices).
+Status: Design, slices 1 to 3 built, slice 4 begun: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`; the bridge reads request records, hosts owners and computes levels; nothing is wired at boot. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
+Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping,levels}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,levels,mixer_feed}.rs`, `crates/rewrites/engine/src/sim_sound/levels.rs`, `crates/platform/sound-clips`. Tests: the same files, named in [Slices](#slices).
 Switch: none. The table replaces `impl.sim.sound-events` and `impl.sim.native.sound` ([switches.md](../runtime/switches.md)).
 
 ```mermaid
@@ -87,9 +87,34 @@ Not kept: the chunk (`+0x9E`), the channel (`+0xAC`), the pin flag (`+4` bit 1) 
 
 `SoundTags` is a trait over static data built from the map once (`TagTable` is the plain form): per tag its flags, its class's flags, its playback row, first range, range count, scale and promotion bank; per range its bounds, first permutation and count; per permutation its skip fraction and length; the scale rows and promotion banks. It reads no guest memory.
 
-`Request::level` is `0x1251e0`'s value for the request: the tag's and class's level for its scale. It reads the class's runtime state (`0x127010`), so the bridge computes it and the table takes it as given. It draws nothing (no step of the seed word in it or its callees), so taking it as an input keeps the draw order.
+`Request::level` is `0x1251e0`'s value for the request: the tag's and class's level for its scale ([Levels](#levels)). It reads the class's runtime state (`0x127010`), so the bridge computes it and the table takes it as given. It draws nothing (no step of the seed word in it or its callees), so taking it as an input keeps the draw order.
 
 A refusal after the slot is taken (`Rejected::NoScale`, `NoPromotion`, `Choose`) frees the slot. Retail reads past its tables in those cases, so there is no retail behaviour to keep; the draws already taken stay taken.
+
+### Levels
+
+`sim_sound::levels::level` is `0x1251e0` on inputs; `GuestLevels` (`engine::sim_sound::levels`, re-exported as `sim_bridge::sim_sound::levels`) reads them from guest memory and implements `instances::Levels`. It sits in `engine` so the differential runs it on the same memory as the lifted original.
+
+```text
+lo = scale row +0 + class +0x20        (0x218d70, SSE)
+hi = scale row +4 + class +0x24        (0x218de0, SSE)
+mix = L(lo) + (L(hi) - L(lo)) * scale  (0x2195f0: L = 10^(clamp(dB, -64, 0) / 20), x87)
+level = dB(mix) + (class level + offset)   (0x2197f0, 0x127010, SSE)
+```
+
+| Input | Where `GuestLevels` reads it |
+|---|---|
+| class, scale row | tag `+2`, `+0xB` (`[0x4e3b44] + 16 * (tag & 0xffff) + 8`) |
+| class row | the globals tag's sound globals reference, its tag `+4`, `0x5C` a class (`0x221810`) |
+| scale row | `[0x51ebd4] + 0xC`, 20 bytes a row |
+| class level, flags | `[0x502118] + 16 * class`, `+4` and `+0xC` |
+| duck state | `[0x4e6380] + 0x1f8`: current index and time, previous index and time |
+| duck rows | class `+0x28`, 16 bytes a row: level, rise, hold, fall |
+| scale, offset | source words 1 and 2 (request `+0x10`, `+0x14`) |
+
+`0x127010` adds the class's ducks unless the class's flag bit 0 is set. One duck in both slots fades in over `rise`, holds for `hold`, then follows `fall`; otherwise the previous duck fades out and the current one fades in. Rises and falls under `0x45dc70` (0.001) count as none.
+
+The x87 steps run under `FPU_CONTROL`; the image constants are `Constants::RETAIL`. A read fault plays the sound at -64 dB and counts in `GuestLevels::faults`.
 
 ## RNG order kept
 
@@ -302,7 +327,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 | 1 | `sound-clips` crate | Sonnet | none | built |
 | 2 | Instances, chooser, owners (pure) | Opus | none | built |
 | 3 | Looping sounds on the table (pure) | Opus | 2's types | built; no differential |
-| 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | begun: request reader, `GuestUnits`, `Levels` |
+| 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | begun: request reader, `GuestUnits`, `GuestLevels` |
 | 5 | Mixer feed, boot wiring, deletions | Opus | 1, 4 | |
 
 ### 1. `sound-clips`
@@ -329,9 +354,10 @@ A refusal never plays or admits something else in its place. An unknown owner re
 ### 4. The flip
 
 - Files: `crates/rewrites/sim-bridge/src/sim_sound.rs` (the store, the snapshot section, the phase), `sim_sound/{entries,owner_host,request}.rs` (new), `tick.rs` (phase 30); `crates/apps/boot/src/registration.rs`; `crates/extensions/game/src/{audio_loops.rs,h1_conversation.rs}`; delete `sim_sound/{owners,voice_arm}.rs`, `extensions/game/src/sim_glue/voices.rs`; `crates/hooking/hooks/src/switches/table.rs` (both switches removed); docs: [sound-sim.md](sound-sim.md) rewritten to the table, [switches.md](../runtime/switches.md), [agent-api.md](../runtime/agent-api.md) (`audio.loops`), [sim-determinism.md](../runtime/sim-determinism.md) (`sound.table`).
-- Built: `sim_sound/request.rs` (`read`: the record and arguments into a `Request`, the callback table's finish classified as `Unit` or `ScriptLine`, any other refused), `sim_sound/owner_host.rs` (`GuestUnits`: the line table clear as a counted write at once; the unit's line end and mouth queued as counted `UnitCall`s the phase makes after the step), `instances::Levels`.
-- To build: the guest-reading `Levels` (`0x1251e0`'s math, with `0x127010`'s class state), the entry bodies, phase 30, the readers, the counters ledger, boot wiring, the deletions.
-- Tests: `every_outside_entry_has_a_rust_body`, `a_request_record_reads_into_a_request`, `an_unknown_callback_table_refuses_the_request`, `a_unit_line_end_calls_the_unit_once_with_the_tag`, `a_script_line_end_clears_its_slot`, `the_pool_global_is_zero_after_start`, `the_sound_phase_runs_once_per_tick_number`, `the_hash_is_the_same_with_any_host`, `audio_loops_rows_come_from_the_table`, `a_conversation_poll_sees_an_ended_sound_as_gone`.
+- Built: `sim_sound/request.rs` (`read`: the record and arguments into a `Request`, the callback table's finish classified as `Unit` or `ScriptLine`, any other refused), `sim_sound/owner_host.rs` (`GuestUnits`: the line table clear as a counted write at once; the unit's line end and mouth queued as counted `UnitCall`s the phase makes after the step), `instances::Levels` with `GuestLevels` (`0x1251e0` and its callees on the x87 model, [Levels](#levels)).
+- To build: the entry bodies, phase 30, the readers, the counters ledger, boot wiring, the deletions.
+- Differential: `guest_levels_give_the_lifted_level_bits` runs 8,192 random tags, classes, scale rows, class states and duck states through the lifted `0x1251e0` and through `GuestLevels` on the same memory, and compares the bits.
+- Tests: `scale_zero_and_one_play_the_bounds`, `the_mix_is_linear_in_gain_not_in_decibels`, `a_held_duck_past_its_hold_fades_by_its_time`, `an_outgoing_duck_fades_out_and_an_incoming_one_fades_in`, `a_class_flagged_bit_0_reads_no_ducking`, `an_unmapped_tag_counts_a_fault_and_plays_at_the_floor`, `every_outside_entry_has_a_rust_body`, `a_request_record_reads_into_a_request`, `an_unknown_callback_table_refuses_the_request`, `a_unit_line_end_calls_the_unit_once_with_the_tag`, `a_script_line_end_clears_its_slot`, `the_pool_global_is_zero_after_start`, `the_sound_phase_runs_once_per_tick_number`, `the_hash_is_the_same_with_any_host`, `audio_loops_rows_come_from_the_table`, `a_conversation_poll_sees_an_ended_sound_as_gone`.
 - Exit: `h2 sim diff` of the same match twice is identical with `sound.table` in the series; D1's counters hold on a campaign level and a match through `sim.ledger`.
 
 ### 5. Mixer feed and deletions
