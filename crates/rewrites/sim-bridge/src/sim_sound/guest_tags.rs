@@ -77,13 +77,27 @@ pub fn definition(m: &dyn GuestMemory, tag: u32) -> Result<u32, MemFault> {
     m.u32(entries.wrapping_add((tag & 0xffff) << 4).wrapping_add(8))
 }
 
-/// The tag's class flags (`0x221810`'s row, `+0xa`), from its definition.
-pub fn class_flags(m: &dyn GuestMemory, def: u32) -> Result<u8, MemFault> {
+/// The tag's class row (`0x221810`, `0x5c` bytes a class), from its
+/// definition.
+pub fn class_row(m: &dyn GuestMemory, def: u32) -> Result<u32, MemFault> {
     let globals = m.u32(points::GLOBALS_TAG.base)?;
     let block = if m.u32(globals.wrapping_add(0xc0))? != 0 { m.u32(globals.wrapping_add(0xc4))? } else { 0 };
     let classes = m.u32(definition(m, m.u32(block.wrapping_add(4))?)?.wrapping_add(4))?;
     let class = m.u8(def.wrapping_add(2))? as i8 as i32;
-    m.u8(classes.wrapping_add((class * 0x5c) as u32).wrapping_add(0xa))
+    Ok(classes.wrapping_add((class * 0x5c) as u32))
+}
+
+/// The tag's class flags (`0x221810`'s row, `+0xa`), from its definition.
+pub fn class_flags(m: &dyn GuestMemory, def: u32) -> Result<u8, MemFault> {
+    m.u8(class_row(m, def)?.wrapping_add(0xa))
+}
+
+/// `0x124f90` on the tag's class row: its word `+8` sets bit 1 or 3, or
+/// its word `+0xa` bit 11. A start's sound whose owner is gone keeps its
+/// start from updating then (`0x127f8b`).
+pub fn class_holds(m: &dyn GuestMemory, tag: TagIndex) -> Result<bool, MemFault> {
+    let row = class_row(m, definition(m, tag.0)?)?;
+    Ok(m.u16(row.wrapping_add(8))? & 0b1010 != 0 || m.u16(row.wrapping_add(0xa))? & 0x800 != 0)
 }
 
 /// A block's rows: its count (none below 1) and its first row.

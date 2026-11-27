@@ -473,6 +473,10 @@ pub struct Sounds {
     pub(crate) starts: Pool<crate::starts::Start>,
     /// Starts and stops since the last step, in call order.
     pub(crate) pending: Vec<TableEvent>,
+    /// Starts whose sound ended or was stopped: their stop components wait
+    /// for the bridge ([`Sounds::take_start_stops`]). Not saved: the entry
+    /// that queued them drains them.
+    pub(crate) start_stops: Vec<Handle>,
     pub(crate) counters: Counters,
 }
 
@@ -493,6 +497,7 @@ impl Sounds {
             loops: Pool::new(crate::looping::CAPACITY, crate::looping::POOL_NAME),
             starts: Pool::new(crate::starts::CAPACITY, crate::starts::POOL_NAME),
             pending: Vec::new(),
+            start_stops: Vec::new(),
             counters: Counters::default(),
         }
     }
@@ -656,7 +661,17 @@ impl Sounds {
         if instance.phase != Phase::Playing {
             return false;
         }
-        if instance.owner.has_host() {
+        if let Owner::Start { start, own } = instance.owner {
+            // `0x21db30`: the start's end with reason 1, then the sound is
+            // given back to the owner it kept.
+            if let Some(host) = instance.owner.host() {
+                owners.ended(self, &host, handle, instance.tag, Reason::Stopped);
+            }
+            self.start_ended(start, Reason::Stopped);
+            if let Some(i) = self.instances.get_mut(handle) {
+                i.owner = own.owner();
+            }
+        } else if instance.owner.has_host() {
             owners.stopping(&instance.owner, handle, instance.tag);
         }
         if let Some(i) = self.instances.get_mut(handle) {
@@ -670,8 +685,17 @@ impl Sounds {
     /// (`0x127320`, `0x127390`).
     pub fn finish(&mut self, handle: Handle, reason: Reason, tick: u32, owners: &mut dyn OwnerHost) -> Option<TableEvent> {
         let instance = *self.instances.get(handle)?;
-        if instance.owner.has_host() {
-            owners.ended(self, &instance.owner, handle, instance.tag, reason);
+        match instance.owner {
+            // `0x21da90`: the stop-all tells the start nothing.
+            Owner::Start { .. } if reason == Reason::Cleared => {}
+            Owner::Start { start, .. } => {
+                if let Some(host) = instance.owner.host() {
+                    owners.ended(self, &host, handle, instance.tag, reason);
+                }
+                self.start_ended(start, reason);
+            }
+            _ if instance.owner.has_host() => owners.ended(self, &instance.owner, handle, instance.tag, reason),
+            _ => {}
         }
         if let Owner::Loop { looping, track } = instance.owner {
             self.unlink(looping, track, handle);
@@ -692,7 +716,7 @@ impl Sounds {
             let Some(instance) = self.instances.get(handle).copied() else { continue };
             let reason = if ramp_done(instance.phase, tick) {
                 Some(Reason::Faded)
-            } else if instance.owner.has_host() && !owners.alive(&instance.owner) {
+            } else if !self.owner_alive(handle, instance.owner, owners) {
                 Some(Reason::OwnerGone)
             } else if instance.end.is_some_and(|end| end <= tick) {
                 Some(Reason::PlayedOut)
@@ -704,11 +728,58 @@ impl Sounds {
             }
         }
         for (_, i) in self.instances.iter() {
-            if i.owner.has_host() {
-                owners.mouth(&i.owner, i.tag, i.selection, tick.saturating_sub(i.start));
+            if let Some(host) = i.owner.host() {
+                owners.mouth(&host, i.tag, i.selection, tick.saturating_sub(i.start));
             }
         }
         out
+    }
+
+    /// `0x21da90` for a start's sound that ended or stopped: the start is
+    /// queued for its stop components when [`Sounds::start_sound_ended`]
+    /// begins its stop.
+    fn start_ended(&mut self, start: Handle, reason: Reason) {
+        if self.start_sound_ended(start, reason.code()) {
+            self.start_stops.push(start);
+        }
+    }
+
+    /// The owner's `+0` callback: the host's for its owners, the start
+    /// layer's for a start's sounds.
+    fn owner_alive(&mut self, handle: Handle, owner: Owner, owners: &mut dyn OwnerHost) -> bool {
+        match owner {
+            // `0x21d9f0`: the start is not stopping; the owner it keeps is
+            // not asked.
+            Owner::Start { start, .. } => self.starts.get(start).is_some_and(|s| !s.stopping),
+            Owner::Started(start) => self.started_alive(handle, start),
+            owner => !owner.has_host() || owners.alive(&owner),
+        }
+    }
+
+    /// `0x21d970` for a sound a start admitted: its start is live and not
+    /// done. A running start's sound takes the start's source again
+    /// (`0x21db80`): a sound start's sound's source; a tag start's is the
+    /// one the sound was admitted with.
+    fn started_alive(&mut self, handle: Handle, start: Handle) -> bool {
+        let Some(s) = self.starts.get(start).copied() else { return false };
+        if s.done {
+            return false;
+        }
+        let followed = match (s.stopping, s.of) {
+            (false, crate::starts::StartOf::Sound(sound)) => self.instances.get(sound).map(|i| i.source),
+            _ => None,
+        };
+        if let (Some(source), Some(i)) = (followed, self.instances.get_mut(handle)) {
+            i.source = source;
+        }
+        true
+    }
+
+    /// The starts queued by a sound's end or stop, in order. For each the
+    /// caller runs [`crate::starts::Mode::Stop`], then
+    /// [`Sounds::start_stop_end`].
+    pub fn take_start_stops(&mut self) -> Vec<Handle> {
+        std::mem::take(&mut self.start_stops)
     }
 
     /// Finish every sound in slot order with `reason` (the stop-all walk
@@ -756,7 +827,7 @@ impl Sounds {
         let starts = r.take(len)?;
         let starts = Pool::decode(kind, crate::starts::CAPACITY, crate::starts::POOL_NAME, 1, starts)?;
         r.end(kind)?;
-        Ok(Self { instances, chooser, loops, starts, pending: Vec::new(), counters: Counters::default() })
+        Ok(Self { instances, chooser, loops, starts, pending: Vec::new(), start_stops: Vec::new(), counters: Counters::default() })
     }
 
     pub fn section_hash(&self) -> u64 {

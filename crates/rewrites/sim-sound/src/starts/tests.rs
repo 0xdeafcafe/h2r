@@ -1,4 +1,5 @@
 use super::*;
+use crate::owners::{NullOwners, Own, Owner, OwnerHost, Reason};
 
 const EFFECT: u32 = 0x0080_1000;
 
@@ -348,4 +349,155 @@ fn save_round_trips_the_start_rows() {
     moved.start_stop_end(a);
     assert_ne!(moved.section_hash(), s.section_hash());
     assert!(Sounds::decode(Sounds::VERSION, &bytes[..bytes.len() - 1]).is_err());
+}
+
+const TAG: TagIndex = TagIndex(0xe100_0001);
+
+fn tags() -> crate::instances::TagTable {
+    use crate::instances::{Permutation, PitchRange, SoundTag, TagTable};
+    let mut t = TagTable::default();
+    t.sounds.insert(
+        TAG,
+        SoundTag {
+            range_count: 1,
+            promotion: 0xff,
+            ..SoundTag::default()
+        },
+    );
+    t.ranges.push(PitchRange {
+        natural: [0, 0],
+        playable: [0, 0],
+        first_permutation: 0,
+        count: 1,
+    });
+    t.permutations.push(Permutation {
+        skip: 0,
+        length_ms: Some(100),
+    });
+    t
+}
+
+fn admit(s: &mut Sounds, owner: Owner, source: u32) -> Handle {
+    use crate::instances::{Request, Rng, SourceParams};
+    let mut words = [0; 17];
+    words[3] = source;
+    let request = Request {
+        owner,
+        source: SourceParams(words),
+        selection: Some((0, 0)),
+        level: 10.0,
+        ..Request::new(TAG)
+    };
+    s.admit(&mut Rng::new(1), &tags(), request, 0).unwrap()
+}
+
+/// The owners the host heard, in order.
+#[derive(Default)]
+struct Heard(Vec<(&'static str, Owner, Option<Reason>)>);
+
+impl OwnerHost for Heard {
+    fn alive(&mut self, _: &Owner) -> bool {
+        true
+    }
+    fn mouth(&mut self, owner: &Owner, _: TagIndex, _: crate::impulse::Selection, _: u32) {
+        self.0.push(("mouth", *owner, None));
+    }
+    fn ended(&mut self, _: &Sounds, owner: &Owner, _: Handle, _: TagIndex, reason: Reason) {
+        self.0.push(("ended", *owner, Some(reason)));
+    }
+    fn stopping(&mut self, owner: &Owner, _: Handle, _: TagIndex) {
+        self.0.push(("stopping", *owner, None));
+    }
+}
+
+/// A sound start with its sound admitted under `0x44a1c0`.
+fn sound_start(s: &mut Sounds, own: Own) -> (Handle, Handle) {
+    let start = s.start_new(Start::admitting(EFFECT)).unwrap();
+    let h = admit(s, Owner::Start { start, own }, 0);
+    s.start_attach(start, h, 0);
+    (start, h)
+}
+
+#[test]
+fn a_start_sounds_end_tells_its_own_owner_and_queues_the_stop() {
+    let mut s = Sounds::new();
+    let (start, _) = sound_start(&mut s, Own::Unit(7));
+    let mut heard = Heard::default();
+    // The mouth goes to the owner it kept (`0x21da50`).
+    s.step(1, &mut heard);
+    assert_eq!(heard.0, vec![("mouth", Owner::Unit(7), None)]);
+    assert!(s.take_start_stops().is_empty());
+    // Played out (100 ms is 3 ticks): its owner hears it, the start stops uncut.
+    heard.0.clear();
+    s.step(3, &mut heard);
+    assert_eq!(heard.0, vec![("ended", Owner::Unit(7), Some(Reason::PlayedOut))]);
+    assert_eq!(s.take_start_stops(), vec![start]);
+    assert_eq!(s.starts().get(start).unwrap().flags(), 0x18);
+    assert!(s.take_start_stops().is_empty(), "taken once");
+}
+
+#[test]
+fn the_stop_all_tells_a_start_sounds_owners_nothing() {
+    let mut s = Sounds::new();
+    let (start, _) = sound_start(&mut s, Own::ScriptLine(None));
+    let mut heard = Heard::default();
+    s.finish_all(Reason::Cleared, 1, &mut heard);
+    assert!(heard.0.is_empty());
+    assert!(s.take_start_stops().is_empty());
+    assert_eq!(s.starts().get(start).unwrap().flags(), 0);
+}
+
+#[test]
+fn a_start_sounds_stop_cuts_the_start_and_gives_the_sound_back() {
+    let mut s = Sounds::new();
+    let (start, h) = sound_start(&mut s, Own::Unit(7));
+    let mut heard = Heard::default();
+    assert!(s.stop(h, 1, 9, &mut heard));
+    // `0x21db30`: reason 1 to the kept owner, never its `stopping`.
+    assert_eq!(heard.0, vec![("ended", Owner::Unit(7), Some(Reason::Stopped))]);
+    assert_eq!(s.take_start_stops(), vec![start]);
+    assert_eq!(s.starts().get(start).unwrap().flags(), 0x1a);
+    assert_eq!(s.get(h).unwrap().owner, Owner::Unit(7));
+    // Its fade's end is the kept owner's alone.
+    heard.0.clear();
+    s.step(10, &mut heard);
+    assert_eq!(heard.0, vec![("ended", Owner::Unit(7), Some(Reason::Faded))]);
+    assert!(s.take_start_stops().is_empty());
+}
+
+#[test]
+fn a_start_sound_lives_while_its_start_is_not_stopping() {
+    let mut s = Sounds::new();
+    let (start, h) = sound_start(&mut s, Own::None);
+    s.start_stop_begin(start);
+    let events = s.step(1, &mut NullOwners);
+    assert!(events.iter().any(|e| matches!(e, crate::events::TableEvent::Ended { handle, reason: Reason::OwnerGone, .. } if *handle == h)));
+    // Its end begins the stop again (`0x21da90`), cut.
+    assert_eq!(s.take_start_stops(), vec![start]);
+    assert!(s.starts().get(start).unwrap().cut);
+}
+
+#[test]
+fn a_started_sound_follows_its_start_until_the_start_is_done() {
+    let mut s = Sounds::new();
+    let (start, parent) = sound_start(&mut s, Own::None);
+    let child = admit(&mut s, Owner::Started(start), 0);
+    // The parent moves; the child takes its source at the step (`0x21d970`).
+    s.instances.get_mut(parent).unwrap().source.0[3] = 42;
+    s.step(1, &mut NullOwners);
+    assert_eq!(s.get(child).unwrap().source.0[3], 42);
+    // Stopping, the start still holds it, but no longer moves it.
+    s.start_stop_begin(start);
+    s.instances.get_mut(parent).unwrap().source.0[3] = 43;
+    let tag_start = s.start_new(Start::tag(EFFECT, 1.0, 0)).unwrap();
+    let orphan = admit(&mut s, Owner::Started(tag_start), 5);
+    s.step(1, &mut NullOwners);
+    assert_eq!(s.get(child).unwrap().source.0[3], 42);
+    assert!(s.get(child).is_some());
+    // Done, it ends with reason 3; a tag start's sound keeps its own source.
+    s.start_stop_end(start);
+    s.step(2, &mut NullOwners);
+    assert!(s.get(child).is_none());
+    assert_eq!(s.get(orphan).unwrap().source.0[3], 5);
+    assert_eq!(s.counters().ended(Reason::OwnerGone), 2, "the parent and the child");
 }
