@@ -10,16 +10,19 @@ capture arms under `impl.sim.native.physics`
 installed by `sim-bridge/src/sim_physics.rs`; the heap digest
 (`live-telemetry`'s `havok_agents::digest`, `havok.digest`, the sim
 report's `havok.world` component); the shadow's `compare_only` arm for
-guest-authoritative candidates; the broadphase batch update's and the
-island integrate's take-overs (§9.5); the island solve entry `31c100`
-(slice 2). The per-function `native_havok_solver`,
+guest-authoritative candidates; the broadphase batch update's, the
+island integrate's, the deactivation test's and the integrate phase's
+take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the island
+solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
 switches are retired; their bodies are differential oracles. The ladder
 beyond the differential tests (disc sweep, run parity, the behaviour
-suites) and the timing gate are open: the world step's inner phases
-(`30fcb0`, `30fef0`), the deactivation test (`316b30`) and the
-agent/narrowphase leaves still run lifted, and slice 3's runs, lanes and
-worker solves are not built.
+suites) and the timing gate are open: the collide phase `30fcb0`, the
+integrate phase's declined paths (pending work, listeners, splits, island
+deactivation) and the agent/narrowphase leaves still run lifted, and
+slice 3's runs, lanes and worker solves are not built (each island reads
+the solver buffer bytes the island before it left, so a run's islands
+are not independent without a read check).
 
 This is the phase 5 spec of [sim-rewrite.md](sim-rewrite.md), written
 after the user's decision 8.1: **physics stays bit-exact with retail**
@@ -793,6 +796,8 @@ since start and whether the arm is proven or ended since the map load.
 | `physics.motion.forces` | `31b1c0`, `ret 8` | compare-only |
 | `physics.mopp.box` | `300150` | compare-only |
 | `physics.island.integrate` | `316a20`, `ret 4` | take-over |
+| `physics.island.deactivation` | `316b30`, `ret 8` | take-over |
+| `physics.integrate` | `30fef0`, `ret 4` | take-over |
 
 - **Take-over.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
@@ -808,7 +813,7 @@ since start and whether the arm is proven or ended since the map load.
   `island_integrate::capture` runs the whole entry in Rust on a journal:
   the island solve with the nine arguments the entry pushes, or, with no
   constraint, each entity's forces and pose virtuals last to first
-  ([havok-step.md](havok-step.md#the-island-integrate)). The prediction is
+  ([havok-integrate.md](havok-integrate.md#the-island-integrate)). The prediction is
   every journalled word and ecx, ebx, ebp, esi, edi and esp; eax, edx and
   the arithmetic flags are dead in the one caller (`0x0030fef0`, read at
   `0x0031000b..0x0031000f`). The XMM registers, the x87 condition codes
@@ -818,6 +823,17 @@ since start and whether the arm is proven or ended since the map load.
   runs it, and the solve inside is the island solve's own entry. Its
   declines are counted by reason as well (`memory`, `action`, `motion`,
   `float`, `solve`, `monitor`, `unobserved`; `havok.islands`).
+- **Deactivation test and integrate phase.** The same proof, audit and
+  latch at `316b30` and `30fef0`, each one `implement` whose guest answer
+  is the lifted original ([havok-integrate.md](havok-integrate.md)). The
+  test's prediction is its journal (the timers, the counter, the
+  deactivators' references, the out byte) with eax, ebx, ebp, esi, edi
+  and esp. The phase's is every island's test and integrate on one
+  journal, in the phase's order, with eax and ecx the monitor words, edx
+  `0xffffffff`, ebx, ebp, esi, edi and esp. Their declines are counted by
+  reason (`havok.islands`'s `deactivation` and `phase`). The phase
+  composes the other two models, so a proven phase answers the whole
+  island loop in one call.
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node), an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the
@@ -836,9 +852,10 @@ since start and whether the arm is proven or ended since the map load.
   differential test pins it, so an applied motion could not be shown to
   leave the guest's registers.
 - **Live check.** `impl.sim.native.physics` on against off on Lockout,
-  1,800 ticks: `havok.digest` equal at every tick, `physics.broadphase`
-  and `physics.island.integrate` answered above zero and mismatched zero
-  (`havok.islands` gives the integrate's counts). A take-over drops no
+  1,800 ticks: `havok.digest` equal at every tick, `physics.broadphase`,
+  `physics.island.integrate`, `physics.island.deactivation` and
+  `physics.integrate` answered above zero and mismatched zero
+  (`havok.islands` gives the last three's counts and declines). A take-over drops no
   write only if its spans or words cover every byte retail writes outside
   the stack below `esp`; the comparison
   checks those, and this run checks the rest.

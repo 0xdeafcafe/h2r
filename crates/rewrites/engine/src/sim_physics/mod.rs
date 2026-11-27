@@ -6,9 +6,12 @@ use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 mod alloc;
+mod answer;
 mod colors;
 mod havok;
 mod island_solve;
+pub mod deactivation;
+pub mod integrate_phase;
 pub mod island_integrate;
 mod solver_rows;
 mod solver_pairs;

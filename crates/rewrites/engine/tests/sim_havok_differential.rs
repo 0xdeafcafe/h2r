@@ -1465,3 +1465,516 @@ fn integrates_the_model_does_not_cover_are_declined_and_counted() {
         assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
     }
 }
+
+// ---- the deactivation test `0x00316b30` and the integrate phase `0x0030fef0`
+
+use engine::sim_physics::{deactivation as test_arm, integrate_phase as phase_arm};
+use sim_havok::deactivation::{self as deact, Deactivator, Fallback as TestDecline};
+use sim_havok::integrate_phase::{self as phase, Fallback as PhaseDecline};
+
+const DEACTIVATION: u32 = 0x0031_6b30;
+const PHASE: u32 = 0x0030_fef0;
+/// The out byte's slot, and the step `{dt, 1/dt}` the phase's caller passes.
+const OUT: u32 = 0x0067_0000;
+const STEP_IN: u32 = 0x0067_0010;
+const ISLAND_LIST: u32 = 0x0067_0100;
+/// Deactivator objects, 0x100 apart; their vtables after the motions'.
+const DEACTIVATORS: u32 = 0x0068_0000;
+const DEACTIVATOR_VTABLES: u32 = VTABLES + 0x600;
+/// Halo's object tables behind `0x001d1910`.
+const HALO_HEADERS: u32 = 0x0069_0000;
+const HALO_DEFINITIONS: u32 = 0x0069_0800;
+const HALO_TAGS: u32 = 0x0069_2000;
+const HALO_NODES: u32 = 0x0069_3000;
+const HALO_TAG_DATA: u32 = 0x0069_8000;
+const HALO_OBJECTS: u32 = 0x006a_0000;
+/// Islands past the first, 0x100 apart, with their own arrays.
+const MORE_ISLANDS: u32 = 0x0063_0000;
+
+fn phase_code(image: &Image) -> lifted::Original {
+    let mut code = integrate_code(image);
+    let deactivators = [Deactivator::NEVER, Deactivator::HAVOK_A, Deactivator::HAVOK_B, Deactivator::HALO_A, Deactivator::HALO_B];
+    for f in [DEACTIVATION, PHASE, 0x1d1910, 0xe5240, 0xefb60, 0x175f40, 0x318700, 0x30c180, 0x30e720].into_iter().chain(deactivators) {
+        code.prime(f);
+    }
+    code
+}
+
+fn put_byte(m: &mut FlatMemory, at: u32, v: u8) {
+    m.bytes[at as usize] = v;
+}
+
+/// The deactivator vtables: never, Havok's, Halo's (slots `+0x14` and
+/// `+0x18`), at `DEACTIVATOR_VTABLES + 0x20 k`.
+fn deactivator_vtables(m: &mut FlatMemory) {
+    let pairs = [
+        (Deactivator::NEVER, Deactivator::NEVER),
+        (Deactivator::HAVOK_A, Deactivator::HAVOK_B),
+        (Deactivator::HALO_A, Deactivator::HALO_B),
+    ];
+    for (k, (a, b)) in pairs.into_iter().enumerate() {
+        let vt = DEACTIVATOR_VTABLES + 0x20 * k as u32;
+        word(m, vt + deact::SLOT_A, a);
+        word(m, vt + deact::SLOT_B, b);
+    }
+    word(m, deact::OBJECT_HEADERS, HALO_HEADERS);
+    word(m, HALO_HEADERS + 0x44, HALO_HEADERS + 0x100);
+    word(m, deact::OBJECT_DEFINITIONS, HALO_DEFINITIONS);
+    word(m, HALO_DEFINITIONS + 0x44, HALO_DEFINITIONS + 0x100);
+    word(m, deact::TAG_INSTANCES, HALO_TAGS);
+}
+
+/// A float near `x`: within `near` or past `far`.
+fn nudge(r: &mut Rng, x: f32, near: f32, far: f32) -> f32 {
+    let d = if r.below(2) == 0 { float(r, -near, near) } else { far * if r.below(2) == 0 { 1.0 } else { -1.0 } + float(r, -near, near) };
+    x + d
+}
+
+/// Entity `n`'s deactivator (`kind`: 0 none, 1 never, 2 Havok, 3 Halo),
+/// its references near the motion's state or away from it, and for Halo's
+/// the object, definition, node and tag words `0x001d1910` reads.
+fn seed_deactivator(r: &mut Rng, m: &mut FlatMemory, entity: u32, motion: u32, n: u32, kind: u32) {
+    let d = DEACTIVATORS + 0x100 * n;
+    if kind == 0 {
+        word(m, entity + deact::ENTITY_DEACTIVATOR, 0);
+        return;
+    }
+    word(m, entity + deact::ENTITY_DEACTIVATOR, d);
+    word(m, d, DEACTIVATOR_VTABLES + 0x20 * (kind - 1));
+    word(m, d + deact::DEACTIVATOR_SCALE, bits(r, 0.5, 2.0));
+    let center: [f32; 4] = std::array::from_fn(|i| f32::from_bits(m.read_u32(motion + deact::MOTION_CENTER + 4 * i as u32).unwrap()));
+    let q: [f32; 4] = std::array::from_fn(|i| f32::from_bits(m.read_u32(motion + deact::MOTION_ORIENTATION + 4 * i as u32).unwrap()));
+    for (c, o) in [(0x10, 0x20), (0x30, 0x40)] {
+        let near = if r.below(2) == 0 { 0.01 } else { 0.3 };
+        put_lanes(m, d + c, center.map(|x| nudge(r, x, near, 0.5)));
+        put_lanes(m, d + o, q.map(|x| nudge(r, x, near / 4.0, 0.3)));
+    }
+    for off in [0x50, 0x54, 0x58, 0x5c] {
+        word(m, d + off, bits(r, 0.005, 0.2));
+    }
+    if kind != 3 {
+        return;
+    }
+    let node = r.below(4);
+    word(m, d + 0x60, (r.u32() & 0xffff_0000) | n);
+    word(m, d + 0x64, node);
+    let header = HALO_HEADERS + 0x100 + 12 * n;
+    let object = HALO_OBJECTS + 0x400 * n;
+    put_byte(m, header + 3, r.below(3) as u8);
+    word(m, header + 8, object);
+    word(m, object, (r.u32() & 0xffff_0000) | n);
+    word(m, object + 0xb4, (r.u32() & 0xffff_0000) | n);
+    put_byte(m, object + 0x34b, u8::from(r.below(4) == 0));
+    put_byte(m, object + 0x3dc, 0);
+    put_byte(m, object + 0x38b, if r.below(2) == 0 { 0xff } else { r.below(8) as u8 });
+    for off in [0x354, 0x35c, 0x25c, 0x260, 0x358] {
+        let v = match r.below(4) {
+            0 => bits(r, -1.0, 1.0),
+            1 => 0x8000_0000,
+            2 => 1,
+            _ => 0,
+        };
+        word(m, object + off, v);
+    }
+    let nodes = HALO_NODES + 0x200 * n;
+    word(m, HALO_DEFINITIONS + 0x100 + 0xa0 * n + 0x70, nodes);
+    put_byte(m, nodes + 0x60 * node + 0x44, [0, 1, 2, 1][r.below(4) as usize]);
+    let data = HALO_TAG_DATA + 0x200 * n;
+    word(m, HALO_TAGS + 16 * n + 8, data);
+    word(m, data + 0x1ec, r.u32() & 0x2f);
+}
+
+/// The deactivation words of the island at `at` with `entities` entities
+/// at `entity(i)` and motions at `motion(i)`: timers that make either
+/// period fire, both or neither, a counter on either side of the limit,
+/// and a deactivator of every kind.
+fn seed_deactivation(r: &mut Rng, m: &mut FlatMemory, at: u32, entities: u32, entity: impl Fn(u32) -> u32, motion: impl Fn(u32) -> u32, base: u32) {
+    let dt = f32::from_bits(m.read_u32(STEP_IN).unwrap());
+    let (pa, pb) = (f32::from_bits(m.read_u32(WORLD + deact::WORLD_PERIOD_A).unwrap()), f32::from_bits(m.read_u32(WORLD + deact::WORLD_PERIOD_B).unwrap()));
+    let path = r.below(4);
+    let a = if path & 1 == 1 { pa - dt * float(r, 0.0, 0.9) } else { float(r, 0.0, pa - 2.0 * dt) };
+    let b = if path & 2 == 2 { pb - dt * float(r, 0.0, 0.9) } else { float(r, 0.0, pb - 2.0 * dt) };
+    word(m, at + deact::ISLAND_TIMER_A, a.to_bits());
+    word(m, at + deact::ISLAND_TIMER_B, b.to_bits());
+    put_byte(m, at + deact::ISLAND_COUNTER, [0, 3, 4, 5, 6, 0x80][r.below(6) as usize]);
+    // Most islands rest or keep only by Havok's test; some have an entity
+    // that never rests.
+    let awake = r.below(3) == 0;
+    for i in 0..entities {
+        let kind = if awake { r.below(4) } else { 2 + r.below(2) };
+        seed_deactivator(r, m, entity(i), motion(i), base + i, kind);
+    }
+}
+
+fn seed_periods(r: &mut Rng, m: &mut FlatMemory) {
+    word(m, WORLD + deact::WORLD_PERIOD_A, bits(r, 0.2, 1.0));
+    word(m, WORLD + deact::WORLD_PERIOD_B, bits(r, 1.0, 4.0));
+    word(m, STEP_IN, m.read_u32(STEP).unwrap());
+    word(m, STEP_IN + 4, m.read_u32(STEP + 4).unwrap());
+}
+
+/// The float state of a seed, with the DAZ bit on some, which the
+/// Pentium III ignores.
+fn test_fpu(seed: u64) -> Fpu {
+    let f = fpu(seed);
+    Fpu { mxcsr: f.mxcsr | if seed % 5 == 0 { 0x40 } else { 0 }, ..f }
+}
+
+/// The dead stack and the argument slots, which the entries use as scratch.
+fn clear_frame(ms: [&mut FlatMemory; 2], args: u32) {
+    for m in ms {
+        m.bytes[(STACK - 0x1000) as usize..(STACK + 4 + args) as usize].fill(0);
+    }
+}
+
+fn deactivation_island(r: &mut Rng, mem: &mut FlatMemory) -> u32 {
+    let entities = r.below(5);
+    free_island(r, mem, entities);
+    deactivator_vtables(mem);
+    seed_periods(r, mem);
+    seed_deactivation(r, mem, ISLAND, entities, |i| ENTITY + 0x100 * i, |i| MOTION + 0x200 * i, 0);
+    entities
+}
+
+/// Islands of zero to four entities with deactivators of every kind, each
+/// period firing or not: the timers, the counter, the references and the
+/// out byte equal the lifted entry's, and eax is the out pointer.
+#[test]
+fn the_deactivation_test_matches_the_lifted_test() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = phase_code(image);
+    let (mut deactivated, mut kept) = (0, 0);
+    for seed in 0..512u64 {
+        let mut r = Rng(0x316b_0000 + seed);
+        let mut mem = base.clone();
+        let entities = deactivation_island(&mut r, &mut mem);
+        let fpu = test_fpu(seed);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let out = deact::test(&mut j, ISLAND, Some(OUT), STEP_IN, fpu).unwrap_or_else(|f| panic!("seed {seed}: declined {f:?}"));
+        if out { deactivated += 1 } else { kept += 1 }
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} ({entities} entities) {fpu:x?}");
+        let after = run_this(&mut code, &mut mem, DEACTIVATION, ISLAND, &[OUT, STEP_IN], fpu);
+        assert_eq!((after.eax, after.esp), (OUT, STACK + 12), "{why}: eax and ret 8");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}");
+        assert_eq!(mem.bytes[OUT as usize], u8::from(out), "{why}: the out byte");
+        clear_frame([&mut mem, &mut expected], 8);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+    assert!(deactivated > 32 && kept > 32, "{deactivated} deactivated, {kept} kept");
+}
+
+fn test_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ecx: ISLAND, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+/// The deactivation arm end to end: an audited call's prediction matches
+/// the lifted answer, and an applied prediction leaves memory and the
+/// registers as the lifted entry does.
+#[test]
+fn the_deactivation_arm_answers_as_the_lifted_test() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = phase_code(image);
+    for seed in 0..32u64 {
+        let mut r = Rng(0x316c_0000 + seed);
+        let mut mem = base.clone();
+        deactivation_island(&mut r, &mut mem);
+        for (i, v) in [EXIT, OUT, STEP_IN].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * i as u32, v);
+        }
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f };
+        let cpu = test_cpu(fpu);
+        let prediction = test_arm::capture(&cpu, &guest(&mem)).unwrap_or_else(|f| panic!("seed {seed}: declined {f:?}"));
+        let mut lifted = mem.clone();
+        let after = run_this(&mut code, &mut lifted, DEACTIVATION, ISLAND, &[OUT, STEP_IN], fpu);
+        let mut answered = cpu;
+        (answered.esp, answered.eax) = (after.esp, after.eax);
+        assert!(prediction.matches(&answered, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        assert_eq!((regs.eax, regs.esp, regs.ebx, regs.ebp, regs.esi, regs.edi), (OUT, STACK + 12, 0x1111, 0x2222, 0x3333, 0x4444));
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_frame([&mut lifted, &mut model], 8);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+    }
+}
+
+/// A deactivator slot the model does not know, Halo's object check
+/// reaching `0x000e4050`, and the monitor stream: declined with nothing
+/// written, each reason counted.
+#[test]
+fn deactivation_tests_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(TestDecline, fn(&mut FlatMemory)); 3] = [
+        (TestDecline::Deactivator, |m| word(m, DEACTIVATOR_VTABLES + 0x20 + deact::SLOT_A, 0x0012_3456)),
+        (TestDecline::Object, |m| {
+            let (header, object) = (HALO_HEADERS + 0x100, HALO_OBJECTS);
+            put_byte(m, header + 3, 0);
+            put_byte(m, object + 0x34b, 0);
+            put_byte(m, object + 0x3dc, 1);
+            let nodes = m.read_u32(HALO_DEFINITIONS + 0x100 + 0x70).unwrap();
+            let node = m.read_u32(DEACTIVATORS + 0x64).unwrap();
+            put_byte(m, nodes + 0x60 * node + 0x44, 0);
+        }),
+        (TestDecline::Monitor, |m| word(m, MONITOR_END, 0x0060_0900)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec2_0000 + reason as u64);
+        let mut mem = base.clone();
+        free_island(&mut r, &mut mem, 1);
+        deactivator_vtables(&mut mem);
+        seed_periods(&mut r, &mut mem);
+        // The first period fires on one entity with a Halo deactivator for
+        // the object case and a Havok one otherwise.
+        let period = mem.read_u32(WORLD + deact::WORLD_PERIOD_A).unwrap();
+        word(&mut mem, ISLAND + deact::ISLAND_TIMER_A, period);
+        let kind = if reason == TestDecline::Object { 3 } else { 2 };
+        seed_deactivator(&mut r, &mut mem, ENTITY, MOTION, 0, kind);
+        for (i, v) in [EXIT, OUT, STEP_IN].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * i as u32, v);
+        }
+        spoil(&mut mem);
+        let mut cpu = test_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        let mut g = guest(&mem);
+        let index = TestDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = deact::fallbacks()[index].1;
+        let declined = parity::status()[5].3;
+        assert!(matches!(parity::deactivation_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(deact::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[5].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}
+
+/// Island `k` past the first: its struct, entity array, entities and
+/// motions, none shared with the first island's.
+fn more_island(k: u32) -> (u32, u32, impl Fn(u32) -> u32, impl Fn(u32) -> u32) {
+    let at = MORE_ISLANDS + 0x100 * k;
+    let entities = MORE_ISLANDS + 0x1000 + 0x100 * k;
+    (at, entities, move |i| MORE_ISLANDS + 0x2000 + 0x800 * k + 0x100 * i, move |i| MORE_ISLANDS + 0x8000 + 0x1000 * k + 0x200 * i)
+}
+
+/// A world of one to four active islands in a random list order: the
+/// first a contact or a free island, the rest free; the deactivation test
+/// on or off with timers that never deactivate, and the split pass on or
+/// off over islands with nothing to split.
+fn phase_world(r: &mut Rng, mem: &mut FlatMemory) -> (u32, bool) {
+    let contact = r.below(2) == 0;
+    let first = if contact {
+        let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
+        contact_island(r, mem, entities, constraints);
+        motion_vtables(mem);
+        integrate_words(mem, entities, constraints);
+        entities
+    } else {
+        let entities = 1 + r.below(3);
+        free_island(r, mem, entities);
+        entities
+    };
+    deactivator_vtables(mem);
+    seed_periods(r, mem);
+    let islands = 1 + r.below(4);
+    let mut list = vec![(ISLAND, first, ENTITY, MOTION)];
+    for k in 1..islands {
+        let (at, array, entity, motion) = more_island(k);
+        let n = 1 + r.below(3);
+        for (off, v) in [
+            (sim_havok::island_integrate::ISLAND_WORLD, WORLD),
+            (sim_havok::island_integrate::ISLAND_ENTITIES, array),
+            (sim_havok::island_integrate::ISLAND_ENTITY_COUNT, n),
+            (sim_havok::island_integrate::ISLAND_ACTION_COUNT, 0),
+            (sim_havok::island_integrate::ISLAND_CONSTRAINT_COUNT, 0),
+        ] {
+            word(mem, at + off, v);
+        }
+        for i in 0..n {
+            word(mem, array + 4 * i, entity(i));
+            word(mem, entity(i) + island::ENTITY_MOTION, motion(i));
+            seed_motion(r, mem, motion(i));
+            word(mem, motion(i), VTABLES + 0x200 + 0x40 * r.below(6));
+        }
+        list.push((at, n, entity(0), motion(0)));
+    }
+    let test = r.below(3) != 0;
+    for (k, &(at, n, entity0, motion0)) in list.iter().enumerate() {
+        // Timers that never reach a deactivation: the second period never
+        // fires, and the first finds an entity that never rests or a counter
+        // below the limit.
+        seed_deactivation(r, mem, at, n, |i| entity0 + 0x100 * i, |i| motion0 + 0x200 * i, 8 * k as u32);
+        word(mem, at + deact::ISLAND_TIMER_B, 0);
+        put_byte(mem, at + deact::ISLAND_COUNTER, r.below(5) as u8);
+        put_byte(mem, at + phase::ISLAND_SPLIT, 0);
+        put_byte(mem, at + phase::ISLAND_INTEGRATED, r.u32() as u8);
+    }
+    let mut order: Vec<u32> = list.iter().map(|l| l.0).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, r.below(i as u32 + 1) as usize);
+    }
+    for (i, at) in order.into_iter().enumerate() {
+        word(mem, ISLAND_LIST + 4 * i as u32, at);
+    }
+    for (off, v) in [
+        (phase::WORLD_ISLANDS, ISLAND_LIST),
+        (phase::WORLD_ISLAND_COUNT, islands),
+        (phase::WORLD_PENDING, 0),
+        (phase::WORLD_ISLAND_LISTENERS, 0),
+        (phase::WORLD_STEP_LISTENERS, 0),
+        (phase::WORLD_STEP_LISTENER, 0),
+        (phase::WORLD_MERGES, 0),
+        (phase::WORLD_QUEUE, 0),
+        (phase::WORLD_DEACTIVATE, 0),
+        (phase::WORLD_RELEASES, [0, 0, 0xffff_fff0][r.below(3) as usize]),
+        (phase::WORLD_ITERATIONS, r.below(5)),
+        (phase::WORLD_SCALE, bits(r, 0.5, 1.5)),
+    ] {
+        word(mem, WORLD + off, v);
+    }
+    put_byte(mem, WORLD + phase::WORLD_DEACTIVATION, u8::from(test));
+    put_byte(mem, WORLD + phase::WORLD_SPLIT, r.below(2) as u8);
+    put_byte(mem, WORLD + phase::WORLD_LOCK, r.u32() as u8);
+    (islands, test)
+}
+
+fn run_phase(code: &mut lifted::Original, mem: &mut FlatMemory, fpu: Fpu, why: &str) {
+    let after = run_this(code, mem, PHASE, WORLD, &[STEP_IN], fpu);
+    assert_eq!(after.esp, STACK + 8, "{why}: ret 4");
+    let monitor = (mem.read_u32(MONITOR_END).unwrap(), mem.read_u32(MONITOR_HEAD).unwrap());
+    assert_eq!((after.eax, after.ecx, after.edx), (monitor.0, monitor.1, u32::MAX), "{why}: eax, ecx, edx");
+    assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}");
+}
+
+/// Worlds of one to four islands: the step terms, every island's
+/// deactivation test and integrate in the phase's order, the split pass
+/// and the flags equal the lifted phase's, the solver buffer included.
+#[test]
+fn integrate_phases_match_the_lifted_phase() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = phase_code(image);
+    let (mut run, mut declined, mut tested) = (0, 0, 0);
+    for seed in 0..256u64 {
+        let mut r = Rng(0x30fe_0000 + seed);
+        let mut mem = base.clone();
+        let (islands, test) = phase_world(&mut r, &mut mem);
+        let fpu = test_fpu(seed);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        match phase::phase(&mut j, WORLD, STEP_IN, fpu) {
+            Ok(out) => assert_eq!(out.islands, islands, "seed {seed}"),
+            Err(reason) => {
+                assert_eq!(reason, PhaseDecline::Island, "seed {seed}");
+                declined += 1;
+                continue;
+            }
+        }
+        run += 1;
+        tested += u32::from(test);
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} ({islands} islands, test {test}) {fpu:x?}");
+        run_phase(&mut code, &mut mem, fpu, &why);
+        clear_frame([&mut mem, &mut expected], 4);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+    assert!(declined <= run / 2 && tested > 32, "{run} run, {declined} declined, {tested} tested");
+}
+
+fn phase_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    runtime::CpuAbi { ecx: WORLD, ..test_cpu(fpu) }
+}
+
+/// The phase arm end to end, as the integrate arm's test.
+#[test]
+fn the_phase_arm_answers_as_the_lifted_phase() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = phase_code(image);
+    for seed in 0..32u64 {
+        let mut r = Rng(0x30ff_0000 + seed);
+        let mut mem = base.clone();
+        phase_world(&mut r, &mut mem);
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, STEP_IN);
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f };
+        let cpu = phase_cpu(fpu);
+        let prediction = match phase_arm::capture(&cpu, &guest(&mem)) {
+            Ok(p) => p,
+            Err(reason) => {
+                assert_eq!(reason, PhaseDecline::Island, "seed {seed}");
+                continue;
+            }
+        };
+        let mut lifted = mem.clone();
+        run_phase(&mut code, &mut lifted, fpu, &format!("seed {seed}"));
+        let monitor = (mem.read_u32(MONITOR_END).unwrap(), mem.read_u32(MONITOR_HEAD).unwrap());
+        let mut answered = cpu;
+        (answered.esp, answered.eax, answered.ecx, answered.edx) = (STACK + 8, monitor.0, monitor.1, u32::MAX);
+        assert!(prediction.matches(&answered, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        assert_eq!((regs.eax, regs.ecx, regs.edx, regs.esp), (monitor.0, monitor.1, u32::MAX, STACK + 8));
+        assert_eq!((regs.ebx, regs.ebp, regs.esi, regs.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_frame([&mut lifted, &mut model], 4);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+    }
+}
+
+/// Pending work, a step listener, a deactivating island, an island to
+/// split and the monitor stream: the phase arm declines with nothing
+/// written and counts each reason.
+#[test]
+fn phases_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(PhaseDecline, fn(&mut FlatMemory)); 5] = [
+        (PhaseDecline::Pending, |m| word(m, WORLD + phase::WORLD_PENDING, 1)),
+        (PhaseDecline::Listener, |m| word(m, WORLD + phase::WORLD_STEP_LISTENERS, 1)),
+        (PhaseDecline::Deactivate, |m| {
+            // The second period fires on an island with no entity.
+            put_byte(m, WORLD + phase::WORLD_DEACTIVATION, 1);
+            word(m, ISLAND + deact::ISLAND_ENTITY_COUNT, 0);
+            word(m, ISLAND + sim_havok::island_integrate::ISLAND_ENTITY_COUNT, 0);
+            word(m, ISLAND + deact::ISLAND_TIMER_B, m.read_u32(WORLD + deact::WORLD_PERIOD_B).unwrap());
+        }),
+        (PhaseDecline::Split, |m| {
+            put_byte(m, WORLD + phase::WORLD_SPLIT, 1);
+            put_byte(m, ISLAND + phase::ISLAND_SPLIT, 1);
+        }),
+        (PhaseDecline::Monitor, |m| word(m, MONITOR_END, 0x0060_0900)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec3_0000 + reason as u64);
+        let mut mem = loop {
+            let mut m = base.clone();
+            phase_world(&mut r, &mut m);
+            let view = Flat(&m);
+            if phase::phase(&mut Journal::new(&view), WORLD, STEP_IN, Fpu { mxcsr: 0x1f80, control: 0x027f }).is_ok() {
+                break m;
+            }
+        };
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, STEP_IN);
+        spoil(&mut mem);
+        let mut cpu = phase_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        let mut g = guest(&mem);
+        let index = PhaseDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = phase::fallbacks()[index].1;
+        let declined = parity::status()[6].3;
+        assert!(matches!(parity::phase_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(phase::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[6].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}

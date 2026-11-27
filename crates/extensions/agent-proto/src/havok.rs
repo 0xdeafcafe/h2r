@@ -237,13 +237,18 @@ pub struct Islands {
     /// Declines by reason, every reason listed (`memory`, `overflow`,
     /// `motion`, `constraint`, `tables`, `solver`, `float`), in that order.
     pub fallbacks: Vec<IslandFallback>,
-    pub integrate: IslandIntegrate,
+    /// The island integrate arm (`physics.island.integrate`).
+    pub integrate: TakeoverArm,
+    /// The deactivation test arm (`physics.island.deactivation`).
+    pub deactivation: TakeoverArm,
+    /// The integrate phase arm (`physics.integrate`).
+    pub phase: TakeoverArm,
 }
 
-/// The island integrate arm (`physics.island.integrate`): calls since the
-/// process started, and its take-over state since the map load.
+/// A take-over arm: calls since the process started, and its take-over
+/// state since the map load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IslandIntegrate {
+pub struct TakeoverArm {
     /// Calls the Rust kernels answered.
     pub answered: u64,
     /// Calls the guest answered whose result equalled the prediction.
@@ -251,8 +256,8 @@ pub struct IslandIntegrate {
     pub mismatched: u64,
     /// Calls the guest answered uncompared: the sum of `fallbacks`.
     pub declined: u64,
-    /// Declines by reason, every reason listed (`memory`, `action`,
-    /// `motion`, `float`, `solve`, `monitor`, `unobserved`), in that order.
+    /// Declines by reason, every reason of the arm's model listed in its
+    /// order (docs/runtime/agent-api.md, `havok.islands`).
     pub fallbacks: Vec<IslandFallback>,
     /// Proven since the map load: the kernels answer all but one call in 64.
     pub proven: bool,
@@ -357,10 +362,21 @@ mod tests {
                 "fallbacks": [{"reason": "solve", "count": 2}],
                 "proven": true, "ended": false,
             },
+            "deactivation": {
+                "answered": 0, "matched": 12, "mismatched": 0, "declined": 1,
+                "fallbacks": [{"reason": "object", "count": 1}],
+                "proven": false, "ended": false,
+            },
+            "phase": {
+                "answered": 0, "matched": 3, "mismatched": 0, "declined": 5,
+                "fallbacks": [{"reason": "listener", "count": 5}],
+                "proven": false, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
         assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
+        assert_eq!((i.deactivation.matched, i.phase.declined), (12, 5));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

@@ -576,6 +576,10 @@ points! { ALL;
     HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
     HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
     HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The integrate phase and the island deactivation test it runs per
+    /// island (docs/engine/havok-integrate.md).
+    HAVOK_INTEGRATE_PHASE @ 0x0030_fef0: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/havok-integrate.md";
+    HAVOK_DEACTIVATION_TEST @ 0x0031_6b30: [fn(island: ecx, out: stack 0, step: stack 1) -> eax ret 8], Hot; "docs/engine/havok-integrate.md";
     /// The island solve, cdecl (docs/engine/havok-step.md, "The island solve").
     HAVOK_ISLAND_SOLVE @ 0x0031_c100: [fn(step: stack 0, info: stack 1, pairs: stack 2, gravity: stack 3, island: stack 4, entities: stack 5, entity_count: stack 6, constraints: stack 7, constraint_count: stack 8) -> eax ret 0], Hot; "docs/engine/havok-step.md";
     /// The memory system's virtuals (vtable `0x004576a4`, docs/engine/havok-step.md,

@@ -1,4 +1,4 @@
-//! The island integrate `0x00316a20` (docs/engine/havok-step.md, "The
+//! The island integrate `0x00316a20` (docs/engine/havok-integrate.md, "The
 //! island integrate"): thiscall on the island, one stack argument (the
 //! world's step input `W+0x140`), `ret 4`.
 //!

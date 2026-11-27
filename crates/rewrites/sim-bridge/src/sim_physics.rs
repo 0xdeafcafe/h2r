@@ -12,9 +12,10 @@ pub struct NativePhysics;
 /// sites, the world phases and most leaves between them stay guest code,
 /// and the kernels they absorb run as capture arms
 /// (`engine::sim_physics::parity`): the broadphase batch update and the
-/// island integrate answer calls themselves once proven, with one call in
-/// `AUDIT_EVERY` still compared with the guest (the integrate's guest
-/// answer is its frame replay); the two unconstrained-motion methods and
+/// island integrate, the integrate phase and the deactivation test answer
+/// calls themselves once proven, with one call in `AUDIT_EVERY` still
+/// compared with the guest (the integrate's guest answer is its frame
+/// replay); the two unconstrained-motion methods and
 /// the integer MOPP box query are compared with the guest at every call.
 /// Retires the per-function `native_havok_solver`,
 /// `native_havok_support_vertices`, `native_havok_weld` and
@@ -148,6 +149,63 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
+    // The integrate phase and the deactivation test: their arms decide who
+    // answers, as the integrate's does. Neither has a frame replay, so the
+    // guest's answer is the lifted original, which reaches the integrate
+    // and the test through the dispatcher. Ordered as the other world
+    // entries.
+    let phase = &points::HAVOK_INTEGRATE_PHASE;
+    b.raw()
+        .implement(phase, PHYSICS, move |cpu, ctx, pc| {
+            if pc == phase.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::phase_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::integrate_phase::ARGS, move |c, ctx| {
+                            parity::phase_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::phase_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
+    let test = &points::HAVOK_DEACTIVATION_TEST;
+    b.raw()
+        .implement(test, PHYSICS, move |cpu, ctx, pc| {
+            if pc == test.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::deactivation_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::deactivation::ARGS, move |c, ctx| {
+                            parity::deactivation_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::deactivation_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
     // The broadphase batch update: `parity::broadphase_enter` decides who
     // answers. Until the arm is proven since the map load, and at every
     // audit slot after, the guest answers and the prediction is compared
@@ -276,6 +334,13 @@ mod tests {
             assert_eq!(hook.label, PHYSICS);
             assert_eq!(hook.continuation_sites().0, port.resumes);
         }
+        // The integrate phase and the deactivation test are implementations
+        // with no resume sites.
+        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST] {
+            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
+            assert_eq!(hook.label, PHYSICS);
+            assert!(hook.continuation_sites().0.is_empty(), "{:?}", point.name);
+        }
         // The broadphase batch is one implementation; both motion methods
         // and the MOPP box query keep their observer pairs.
         let chain = &plan.chains[&points::HAVOK_BROADPHASE_BATCH.base];
@@ -297,7 +362,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 6,
+            PHYSICS_PORTS.len() + 8,
             "unexpected extra chains"
         );
     }
