@@ -472,15 +472,17 @@ equipment.
 **Why growth is off by default.** The loader (`0x1228f0`) places the
 metadata at `base + (+0x1c) - (+0x18)`, so growing both by the same amount
 keeps every tag where it was. It allocates `+0x1c` from the low end of the
-physical arena (`0x30e4000` bytes at `0x61000`, `0x12b400`) and fails only
+physical arena (`0x38e4000` bytes at `0x61000`, retail's `0x12b400` arena
+grown by 8 MiB, [map-format.md](../formats/map-format.md#the-tag-arena)) and fails only
 when that crosses the arena's high cursor (`0x12296c`). After the load,
 `0x12c1e0` gives every page still free to one pool (handed to `0x13d8b0`,
 probably the texture and geometry cache, S). So growth comes out of that
 pool, and the real limit is how much headroom the high side leaves. That
 was not measured statically. The writer bounds `+0x1c` by the largest
 value any retail map of the same cache type has (multiplayer `0x62c000`),
-which that pool is known to tolerate; on the owner's disc that leaves
-waterworks no room and the other multiplayer maps about 0.1 to 1.5 MiB. Whether
+which that pool is known to tolerate on a retail arena, plus the 8 MiB the
+arena grows by; on the owner's disc that leaves every multiplayer map at
+least 8 MiB. Whether
 `0x13d8b0` degrades with a smaller pool is open. Measuring
 `[0x4e6440] - [0x4e642c]` after a load in the runtime would settle it.
 

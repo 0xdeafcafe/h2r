@@ -731,7 +731,8 @@ fn real_disc_arena_reservation_and_physical_budget() {
         assert_eq!(i.immediate32(), value, "{ip:#x}");
     };
     mov(0x0012_b411, Register::ECX, ARENA);
-    mov(0x0012_b41d, Register::EAX, HALO2_PHYSICAL_ARENA.end);
+    // Retail's end and size; the tag-arena feature grows both at run time.
+    mov(0x0012_b41d, Register::EAX, runtime::loader::HALO2_RETAIL_ARENA.end);
     // The four pushes, last first: protect, alignment, physical, size.
     let pushes: Vec<_> = decoded
         .iter()
@@ -741,7 +742,10 @@ fn real_disc_arena_reservation_and_physical_budget() {
     assert_eq!(pushes[0].immediate32(), 4); // PAGE_READWRITE
     assert_eq!(pushes[1].immediate32(), 0); // alignment
     assert_eq!(pushes[2].op0_register(), Register::ECX); // physical 0x61000
-    assert_eq!(pushes[3].immediate32(), ARENA_LEN); // size
+    assert_eq!(
+        pushes[3].immediate32(),
+        runtime::loader::HALO2_RETAIL_ARENA.len() as u32
+    ); // size
     let call = at(0x0012_b43e);
     assert_eq!(call.mnemonic(), Mnemonic::Call);
     assert_eq!(call.near_branch_target(), 0x002d_156a);

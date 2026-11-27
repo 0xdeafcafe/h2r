@@ -551,6 +551,12 @@ points! { ALL;
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Reserve the physical arena the tag cache loads into and set its
+    /// cursors (once, at startup); the `tag-arena` feature grows it.
+    PHYSICAL_ARENA_INITIALIZE @ 0x0012_b400: [opaque]; "docs/formats/map-format.md";
+    /// XAPI `XPhysicalAlloc`: MmAllocateContiguousMemoryEx over
+    /// `[address, address + size)`, or anywhere for address -1.
+    XPHYSICAL_ALLOC @ 0x002d_156a: [fn(size: stack 0, address: stack 1, alignment: stack 2, protect: stack 3) -> eax ret 16]; "docs/formats/map-format.md";
     CACHE_BSP_FIXUP @ 0x0012_2b40: [opaque], Optional; "docs/engine/engine-map.md";
     TAG_LOOKUP @ 0x0012_2c10: [opaque], Optional; "docs/engine/tag_get_checked.md";
     OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";

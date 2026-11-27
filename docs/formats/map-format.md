@@ -699,6 +699,49 @@ past the header, and clear of the ordinary metadata, every BSP region, the
 index and the string and name tables. The Modeling tool's in-place writes use
 it (`docs/editor/modeling-targets.md`).
 
+### The tag arena
+
+The loader `0x1228f0` takes a map's `+0x1c` from the low end of one physical
+arena; the game carves its other state down from the high end, and after the
+load `0x12c1e0` gives every page left between the two cursors to one pool
+(`0x13d8b0`, a page cache with no fixed size). So tag growth and that pool
+share the arena, and a bigger arena is more room for both. Our runtime grows
+it by `map::arena::GROWTH` (8 MiB) at the high end, and guest RAM by the
+same, so nothing a map names moves and what lies after the arena keeps
+retail's room (E, `h2 disasm 0x12b400`, `0x12c1e0`, `0x13d8b0`).
+
+| | Retail | Ours |
+|---|---|---|
+| Guest RAM | `0x4000000` (64 MiB) | `0x4800000` (72 MiB), `runtime::guest::RAM_SIZE` |
+| Arena (physical) | `0x61000..0x3145000` | `0x61000..0x3945000`, `map::arena::ARENA` |
+| Arena size | `0x30e4000` | `0x38e4000` |
+| Contiguous window | `0x80061000..0x83145000` | `0x80061000..0x83945000` |
+| Tag cache base | `0x80061000` | `0x80061000` (unchanged) |
+| After the arena (image, stacks, kernel) | `0x3145000..0x4000000` | `0x3945000..0x4800000` |
+| `max_metadata_size` | largest retail `+0x1c` of the type | that plus `0x800000` |
+
+The end and the size occur in the image only as two immediates in
+`0x12b400` (`mov eax,3145000h` at `0x12b41d`, `push 30E4000h` at
+`0x12b423`); no other code names them, and no code masks addresses to
+64 MiB (searched by immediate: no `and` with `0x3ffffff`, no compare with
+`0x84000000`). The `tag-arena` feature (`crates/extensions/game/src/tag_arena.rs`)
+makes the two patches at run time:
+
+| Patch | Hook | Retail | Ours |
+|---|---|---|---|
+| `arena size` | `before` `XPhysicalAlloc` `0x2d156a`, the call with size `0x30e4000` at `0x61000` | `0x30e4000` | `0x38e4000` |
+| `arena cursors` | `after` `0x12b400`: high bound `0x4e6428`, depth-0 high cursor `0x4e6440` | `0x3145000` | `0x3945000` |
+
+The size patch goes through the kernel, so it maps and books every page of
+the grown arena (XPhysicalProtect on a carved piece needs that). 8 MiB is
+the margin: about 50 times what Waterworks' Firefight kit was over, and many
+times the largest DLC map's excess over retail (Turf, about 380 KB), while
+the extra guest RAM stays small for snapshots and forks.
+
+**Test:** `crates/formats/map/src/arena.rs` (layout: page alignment, fixed
+base, room after the arena), `crates/extensions/game/src/tag_arena.rs`
+(only the retail request and cursors are patched).
+
 ### Growing the metadata
 
 `append_metadata(bytes, align)` appends bytes after the last tag and returns
@@ -733,9 +776,11 @@ That last bound is empirical. No constant in the loader limits `+0x1c`; the
 real limit is the arena: after the load `0x12c1e0` gives every free page to
 one pool, so growth shrinks that pool, and how much the high side has used by
 then was not measured. The bound is the largest `+0x1c` of any retail map of
-the same type on the owner's disc (V): campaign `0xc24000`, multiplayer
-`0x62c000`, main menu `0x1d3000`, shared `0x445000`, campaign-shared
-`0x69e000`. [scenario-editor.md](../editor/scenario-editor.md) §6 has the details and
+the same type on the owner's disc (V, `writer::retail_max_metadata_size`):
+campaign `0xc24000`, multiplayer `0x62c000`, main menu `0x1d3000`, shared
+`0x445000`, campaign-shared `0x69e000`, plus the arena's growth
+(`0x800000`, "The tag arena"), so the pool keeps at least retail's worst
+case. [scenario-editor.md](../editor/scenario-editor.md) §6 has the details and
 the open question.
 
 ### Inserting raw data

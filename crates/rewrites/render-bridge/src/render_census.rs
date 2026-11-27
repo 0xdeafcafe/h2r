@@ -431,9 +431,10 @@ impl Regions {
         if let Some((_, _, l)) = self.ranges.iter().find(|(a, b, _)| (*a..*b).contains(&va)) {
             return l;
         }
+        const RAM: u32 = runtime::guest::RAM_SIZE as u32;
         match va {
-            0x8000_0000..0x8400_0000 => "contiguous",
-            0xf000_0000..0xf400_0000 => "write_combined",
+            0x8000_0000..0x8000_0000 + RAM => "contiguous",
+            0xf000_0000..0xf000_0000 + RAM => "write_combined",
             _ => "other",
         }
     }

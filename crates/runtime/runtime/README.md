@@ -75,7 +75,8 @@ and the returned old operand. Bit operations use the decoded effective word
 address. Ordinary accesses allow 1/2/4/8/10/16 bytes and explicit alignment.
 Failure leaves memory and output unchanged and records an access fault.
 
-Memory has 64 MB of physical backing. Sorted mappings preserve aliases and
+Memory has `RAM_SIZE` (72 MiB: a retail Xbox's 64 MiB plus the tag arena's
+8 MiB growth, `map::arena`) of physical backing. Sorted mappings preserve aliases and
 holes; checked accesses use validated mapping-index hints with binary-search
 fallback. Cross-mapping writes
 validate the entire span before changing bytes. NV2A addresses report an
@@ -188,15 +189,18 @@ list, permissions and bytes are exactly as before.
   pages. Kernel allocators must use them instead of scanning `mappings()`.
 
 `load_xbe_with(bytes, &LoadOptions::halo2())` reserves `HALO2_PHYSICAL_ARENA`
-`0x61000..0x3145000` (0x30e4000 bytes) with the window
-`0x80061000..0x83145000`. It does this before headers, sections, the stack or
+`0x61000..0x3945000` (0x38e4000 bytes, retail's arena plus 8 MiB,
+`map::arena::ARENA`) with the window `0x80061000..0x83945000`. It does this before headers, sections, the stack or
 DATA exports get backing. `load_xbe` reserves nothing. From the retail XBE,
 `0x0012b400` stores cursors 0x61000/0x3145000 at `0x004e6424..` and calls
 `XPhysicalAlloc(0x30e4000, 0x61000, 0, PAGE_READWRITE)` at `0x0012b43e`
 (`0x002d156a`, which becomes MmAllocateContiguousMemoryEx with low 0x61000 and
-high 0x3144fff). It drops the result. Carvers such as `0x0001db10` subtract
+high 0x3144fff). It drops the result. The game's `tag-arena` feature grows that
+request and the cursors to the reserved end (docs/formats/map-format.md, "The
+tag arena"). Carvers such as `0x0001db10` subtract
 from the cursor, OR in `0x80000000` and call XPhysicalProtect with 0x404. Budget
-on the retail image: 0xf1c000 bytes lie outside the arena, the loader uses
+on the retail image: 0xf1c000 bytes lie outside the arena (as on a retail
+console: RAM grows with the arena), the loader uses
 0x5c7000 of them (image, stack, DATA), and 0x955000 (about 9.3 MiB) is left for
 the kernel, HLE and the game's other physical allocations.
 
@@ -258,7 +262,7 @@ pub const watch::CONTIGUOUS_BASE: u32 = 0x8000_0000;
 Addresses are in the folded view `0x80000000 | pa`, the one D3D reads
 resource data at (`AddressMap::XboxContiguous`). `fold_address(va)` turns a
 mapped virtual address into it. Ranges are rounded out to 4 KiB pages and
-must lie inside `[0x80000000, 0x84000000)`, otherwise `InvalidRange`.
+must lie inside `[0x80000000, 0x80000000 + RAM_SIZE)`, otherwise `InvalidRange`.
 
 Guarantees:
 

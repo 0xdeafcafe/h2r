@@ -209,6 +209,11 @@ pub(crate) fn register_core_film(
     // default recording, and its replay, keep them on
     // (theater::autorecord, docs/game/film-format.md "Recording every game").
     let features_off = film.as_ref().is_some_and(|f| !f.player_features());
+    // The grown tag arena (docs/formats/map-format.md, "The tag arena"):
+    // every boot, since maps built for it may need its room.
+    features
+        .add(&crate::tag_arena::TagArena)
+        .map_err(|e| anyhow::anyhow!("tag-arena: {e}"))?;
     let creature_probe = features
         .add(&crate::actor_net::creature::CreatureProbe)
         .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;

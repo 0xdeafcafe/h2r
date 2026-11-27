@@ -16,14 +16,18 @@ pub const HEADER_BASE: u32 = 0x10000;
 pub const STACK_TOP: u32 = 0x7000_0000;
 pub const KERNEL_DATA_BASE: u32 = 0x8000_0000;
 
-/// Physical RAM that retail Halo 2 uses by fixed address. `0x0012b400`
-/// stores cursors 0x61000 and 0x3145000 at 0x004e6424.. and then calls
-/// XPhysicalAlloc(0x30e4000, 0x61000, 0, PAGE_READWRITE) at `0x0012b43e`,
-/// ignoring the result. Consumers such as `0x0001db10` carve from those
-/// cursors and use `0x80000000 | physical`.
-pub const HALO2_PHYSICAL_ARENA: std::ops::Range<u32> = 0x0006_1000..0x0314_5000;
+/// Physical RAM that Halo 2 uses by fixed address, grown past retail's
+/// (`map::arena`). Retail `0x0012b400` stores cursors 0x61000 and 0x3145000
+/// at 0x004e6424.. and then calls XPhysicalAlloc(0x30e4000, 0x61000, 0,
+/// PAGE_READWRITE) at `0x0012b43e`, ignoring the result. Consumers such as
+/// `0x0001db10` carve from those cursors and use `0x80000000 | physical`.
+/// The reservation covers the grown arena; the game's `tag-arena` feature
+/// maps the pages past retail's and moves its cursors to the new end.
+pub const HALO2_PHYSICAL_ARENA: std::ops::Range<u32> = map::arena::ARENA;
+/// The arena as retail reserves it.
+pub const HALO2_RETAIL_ARENA: std::ops::Range<u32> = map::arena::RETAIL_ARENA;
 /// Xbox contiguous memory is visible at `CONTIGUOUS_ALIAS_BASE + physical`.
-pub const CONTIGUOUS_ALIAS_BASE: u32 = 0x8000_0000;
+pub const CONTIGUOUS_ALIAS_BASE: u32 = map::arena::ALIAS;
 
 /// One [`Guest::reserve_physical`] call made before the loader places
 /// anything. `physical` is exclusive at its end; `aliases` are window bases.
@@ -43,7 +47,7 @@ pub struct LoadOptions {
 }
 impl LoadOptions {
     /// Reserve [`HALO2_PHYSICAL_ARENA`] with its contiguous alias window
-    /// `0x80061000..0x83145000`.
+    /// `0x80061000..0x83945000`.
     pub fn halo2() -> Self {
         Self {
             physical_reservations: vec![ReservationRequest {

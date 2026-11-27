@@ -16,6 +16,7 @@ pub mod actor_net;
 pub mod agent_frames;
 mod agent_spawn_view;
 pub mod spectator_view;
+pub mod tag_arena;
 pub mod agent_glue;
 pub mod forge_controls;
 pub mod forge_glue;
