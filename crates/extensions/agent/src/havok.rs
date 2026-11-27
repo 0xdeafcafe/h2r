@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use agent_proto::havok::{
-    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, DigestParams, Point,
-    Shape, Side, method,
+    Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, DigestParams,
+    IslandFallback, Islands, IslandsParams, Point, Shape, Side, method,
 };
 use agent_proto::{Kind, Object, ObjectId, RpcError, code};
 use live_telemetry::havok::{self as hk, IslandState};
@@ -25,6 +25,7 @@ pub fn install(agent: &Agent) {
     agent.add_game_method(method::BODIES, Access::Read, bodies_method);
     agent.add_game_method(method::CONTACTS, Access::Read, contacts_method);
     agent.add_game_method(method::DIGEST, Access::Read, digest_method);
+    agent.add_game_method(method::ISLANDS, Access::Read, |v, _| islands_method(v));
 }
 
 /// Registers `havok.pair.set`, using sim's host-write checks.
@@ -128,6 +129,24 @@ fn digest_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
     let DigestParams {} = params(v)?;
     let raw = read(ctx, hk_digest::read)?;
     Ok(serde_json::to_value(answer_digest(&raw)).expect("digest serialises"))
+}
+
+fn islands_method(v: Value) -> Result<Value, RpcError> {
+    let IslandsParams {} = params(v)?;
+    let (by_reason, solved) = sim_havok::island_solve::fallbacks();
+    Ok(serde_json::to_value(answer_islands(&by_reason, solved)).expect("islands serialise"))
+}
+
+/// The wire form of `island_solve::fallbacks()`.
+pub(crate) fn answer_islands(by_reason: &[(&str, u64)], solved: u64) -> Islands {
+    Islands {
+        solved,
+        declined: by_reason.iter().map(|(_, n)| n).sum(),
+        fallbacks: by_reason
+            .iter()
+            .map(|&(reason, count)| IslandFallback { reason: reason.to_owned(), count })
+            .collect(),
+    }
 }
 
 pub(crate) fn answer_digest(raw: &hk_digest::Digest) -> Digest {
@@ -308,6 +327,22 @@ pub(crate) fn answer_contacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn islands_report_the_solve_counters_by_reason() {
+        use sim_havok::island_solve::{self as island, Fallback};
+        let read = || serde_json::from_value::<Islands>(islands_method(Value::Null).unwrap()).unwrap();
+        let before = read();
+        island::count(Fallback::Overflow);
+        island::count_solved();
+        let after = read();
+        let reasons: Vec<_> = after.fallbacks.iter().map(|f| f.reason.as_str()).collect();
+        assert_eq!(reasons, ["memory", "overflow", "motion", "constraint", "tables", "solver", "float"]);
+        assert!(after.fallbacks[1].count > before.fallbacks[1].count);
+        assert!(after.solved > before.solved);
+        assert_eq!(after.declined, after.fallbacks.iter().map(|f| f.count).sum::<u64>());
+        assert_eq!(islands_method(json!({"reset": true})).unwrap_err().code, code::INVALID_PARAMS);
+    }
 
     fn body(entity: u32, state: IslandState, object: Option<u32>, pos: [f64; 3]) -> hk::Body {
         hk::Body {

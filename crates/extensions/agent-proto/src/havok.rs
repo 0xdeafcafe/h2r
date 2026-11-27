@@ -19,8 +19,12 @@ pub mod method {
     /// Overwrite one collision pair's word ([`super::PairSetParams`] →
     /// [`super::PairSet`]). Needs the claim and a session that allows host writes.
     pub const PAIR_SET: &str = "havok.pair.set";
+    /// The island solve's counters ([`super::IslandsParams`] →
+    /// [`super::Islands`]): islands answered natively and islands sent to
+    /// the lifted entry, by reason.
+    pub const ISLANDS: &str = "havok.islands";
 
-    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, DIGEST, PAIR_SET];
+    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, DIGEST, PAIR_SET, ISLANDS];
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -215,6 +219,30 @@ pub struct Digest {
     pub heap_used: u32,
 }
 
+/// `havok.islands` takes no parameters; any field is refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IslandsParams {}
+
+/// `havok.islands`: the island solve's counters since the process started
+/// (docs/engine/havok-step.md, "The island solve").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Islands {
+    /// Islands the native model answered.
+    pub solved: u64,
+    /// Islands sent to the lifted entry: the sum of `fallbacks`.
+    pub declined: u64,
+    /// Declines by reason, every reason listed (`memory`, `overflow`,
+    /// `motion`, `constraint`, `tables`, `solver`, `float`), in that order.
+    pub fallbacks: Vec<IslandFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IslandFallback {
+    pub reason: String,
+    pub count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollisionAgent {
     pub entry: String,
@@ -293,5 +321,19 @@ mod tests {
         let p: DigestParams = serde_json::from_value(json!({})).unwrap();
         assert_eq!(serde_json::to_value(p).unwrap(), json!({}));
         assert!(serde_json::from_value::<DigestParams>(json!({"strict": true})).is_err());
+    }
+
+    #[test]
+    fn islands_wire_round_trips_and_params_take_no_fields() {
+        let wire = json!({
+            "solved": 40,
+            "declined": 3,
+            "fallbacks": [{"reason": "overflow", "count": 1}, {"reason": "float", "count": 2}],
+        });
+        let i: Islands = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
+        assert_eq!(serde_json::to_value(&i).unwrap(), wire);
+        assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
+        assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());
     }
 }
