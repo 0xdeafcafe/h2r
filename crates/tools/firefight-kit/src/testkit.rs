@@ -128,7 +128,7 @@ pub fn tight(base: &[u8], room: u32) -> Vec<u8> {
     let kit = crate::build(base, NAME, Mode::Kit, &Config::default()).unwrap();
     let mut map = Map::from_reader(Cursor::new(base)).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let max = max_metadata_size(crate::KIT_METADATA_BUDGET).unwrap();
     let spare = (max - map.header().meta_size - kit.costs.tag_growth - room) & !0xfff;
     set.pinned.as_mut().unwrap().metadata_size += spare;
     set.add_group(FourCC(*b"fill"), None, None);

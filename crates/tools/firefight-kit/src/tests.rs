@@ -146,7 +146,7 @@ fn a_map_without_headroom_is_refused_with_the_cost() {
     let base = fixture();
     let mut map = Map::from_reader(Cursor::new(&base)).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let max = max_metadata_size(crate::KIT_METADATA_BUDGET).unwrap();
     let pin = set.pinned.as_mut().unwrap();
     pin.metadata_size += max - map.header().meta_size;
     let (full, layout) = set.build().unwrap();

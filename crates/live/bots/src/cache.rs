@@ -206,8 +206,11 @@ pub fn walls_without_sky(bsp: &Bsp) -> Walls {
         .collect();
     let top = rings.iter().flatten().map(|p| p[2]).fold(f32::MIN, f32::max);
     let mut tris = Vec::with_capacity(rings.len());
+    // A level whose every surface is at its top (one flat floor) has no
+    // shell over it: the top is the floor, and it stays.
+    let flat = rings.iter().all(|r| r.iter().any(|p| p[2] >= top - SKY_TOLERANCE));
     for ring in &rings {
-        if !ring.iter().any(|p| p[2] >= top - SKY_TOLERANCE) {
+        if flat || !ring.iter().any(|p| p[2] >= top - SKY_TOLERANCE) {
             Walls::fan_polygon(ring.iter().copied(), &mut tris);
         }
     }
