@@ -32,6 +32,7 @@ pub mod mutes;
 pub mod matchmaking;
 pub mod optimatch;
 pub mod pack;
+pub mod packages;
 pub mod rank;
 pub mod recovery;
 pub mod replication;

@@ -670,6 +670,8 @@ Players share custom and modded maps through the server's content store
 | `POST /v1/admin/maps/{map_id}/{action}` | acts on a package |
 | `POST /v1/admin/content/{sha256}/{action}` | acts on a blob, by hash |
 | `PUT /v1/admin/uploads/{gamertag}` `{allowed}` | switches an account's uploads and publishes off or on |
+| `PUT /v1/admin/model-uploads/{gamertag}` `{approved, note?}` | the account's `model_uploads` flag: a package with a `model` or `animation` item is published only by an approved account whose uploads are on (`ModelUploadsSet` on the account's stream) |
+| `PUT /v1/packages/{id}/credit` `{authors?, release?, released?, source_url?, notes?}` | who made a package, over the publisher's and the manifest's credit; `{}` clears it (`PackageCredited`) |
 | `PUT /v1/hoppers/{hopper_id}/pins` `{map_ids}` | the custom maps a matchmaking hopper allows (empty: retail only) |
 
 The actions, and the `state` they leave:
@@ -743,6 +745,11 @@ The file is absent, so empty, by default: nothing from a disc ships with
 the server. It is read on each upload, so edits apply at once. Whatever
 the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
+
+The Worker has no data directory: it reads the R2 object
+`retail-maps.sha256` at start (`Live::load_retail`), so a replaced object
+applies from the hub's next start. Package locks are checked against the
+same list ([live-api.md](live-api.md), "Packages").
 
 The Halo Admin's **Custom content** tab (`/games/halo2/admin?tab=content`, linked
 from the dashboard's "halo admin" pod) lists packs with expandable member

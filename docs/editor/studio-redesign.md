@@ -809,13 +809,18 @@ A package is published as a mod pack is today: files into the content
 store by SHA-256, and the manifest with its lock as a document signed by
 the author's key (the `MapPublished` flow of `live_proto::maps`).
 
-- **Routes.** `GET /v1/packages` lists, `GET /v1/packages/{id}` gives
-  the signed manifest and lock, blobs come from `/v1/content/{hash}`.
-  The mod pack routes become these; a mod pack is a package whose items
-  are `map-patch`. Both homes implement them over the same store trait
-  and the parity suite runs them.
+- **Routes** ([live-api.md](../live/live-api.md), "Packages"):
+  `PUT /v1/packages` takes the signed document, `GET /v1/packages`
+  lists, `GET /v1/packages/{id}` gives the signed manifest and lock,
+  blobs come from `/v1/content/{hash}`. A mod pack is a package whose
+  items are `map-patch`; the mod pack routes go once `h2 live mods
+  import` writes packages (PK14). Both homes run the same routes, and the
+  upload check is one function (`live_proto::packages::check`) over each
+  home's store (`Holdings`); the parity suite runs them.
 - **Signing.** The server verifies the signature and every hash in the
-  lock on upload. A client verifies both again on install. Baked
+  lock on upload: each must be stored (the store keeps blobs by their
+  checked SHA-256), off the retail list and not taken down, and the lock
+  must name exactly the manifest's files. A client verifies both again on install. Baked
   packages are trusted as part of the binary. A local, unsigned package
   loads in local games only: a Live or System Link session is refused
   while the set holds one with a `sim` item, naming the package
@@ -827,14 +832,16 @@ the author's key (the `MapPublished` flow of `live_proto::maps`).
   is missing from the joiner's disc) fails the join with the reason,
   before any map load. Ranked hoppers pin the set.
 - **Credit.** `[credit]` is `live_proto::maps::Credit`. The order of
-  truth stays: an admin's correction, then the publisher's signed
-  credit, then the manifest. The publisher is shown as "uploaded by",
+  truth stays: an admin's correction (`PUT /v1/packages/{id}/credit`),
+  then the publisher's signed `credit` in the document, then the
+  manifest's. The publisher is shown as "uploaded by",
   never as the author. `docs/game/mod-credits.toml` and
   `mod-details.toml` keep their role for imported community packs.
 - **Models.** A package with a `model` or `animation` item needs the
   uploader's `model_uploads` flag
   ([forge-features.md](../game/forge-features.md), "Custom models on
-  Live").
+  Live"), set by `PUT /v1/admin/model-uploads/{gamertag}` (a
+  `ModelUploadsSet` event). A `kit` item is refused: kits are ours.
 - **In game.** The Mods screens (`mods_screen.rs`) list packages; a
   package's page lists its maps, modes and credit.
 
@@ -1234,7 +1241,7 @@ Rows are in build order.
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 (built: `workspace::convert`, `cli/src/package_prepare.rs`, `content/{halo1,map-pack}/`; the Map Pack's `playlist` item waits for the hopper to read fragments) | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 (built) | **Kits** (built: `workspace::{kits, firefight_sets}`, `content/{core,halo1}/`, `content/modes/firefight/`; `firefight_kit::build_package` stays for `h2 firefight kit` and `host-data`'s bundle until that is moved to `ground::build`): `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
-| PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
+| PK13 (built: `live_proto::packages`, `live-server/src/packages.rs`, the parity cases in `live-server/tests/support/packages.rs`; the mod pack routes stand until PK14's import writes packages) | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
 | PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 (built) | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |

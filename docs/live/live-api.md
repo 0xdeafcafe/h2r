@@ -1386,6 +1386,7 @@ event tail). The stored log is unchanged.
 | `MessageDeleted` | the recipient |
 | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | the two accounts and the current friends of either |
 | `ContentReported` | admins only |
+| `ModelUploadsSet` | admins only ([Packages](#packages)) |
 | `PlayerReported`, `ReportReviewed` | admins only ([Player reports](#player-reports)) |
 | `AccountBanned`, `AccountUnbanned` | the banned account ([Bans](#bans)) |
 | `PlayerMuted`, `PlayerUnmuted` | the muting account ([Mute list](#mute-list)) |
@@ -1955,6 +1956,50 @@ built from it, and a mute holds both ways: neither player hears the other.
 - The dashboard lists the signed-in player's mutes on their own screen
   with Unmute, and offers Mute or Unmute on other players' screens. The
   game reads the list at sign-in, so a change made there reaches it then.
+
+## Packages
+
+A package ([studio-redesign.md, "Packages"](../editor/studio-redesign.md#packages))
+goes up as its files, each as content (`PUT /v1/content/{sha256}`, "Custom
+maps" above), then one document: `{manifest, lock, credit?}`
+(`live_proto::packages::PackageDocument`), signed by the publisher's own
+key as a `PackagePublished` event on `pkg-<PackageId>`. Both homes serve
+these routes (`crates/live/live-server/src/packages.rs`; wire types and the
+upload check in `crates/live/live-proto/src/packages.rs`).
+
+| endpoint | authentication | result |
+|---|---|---|
+| `PUT /v1/packages` | account token, `lxm: content.write`; the signed event (compact JWS) | 201 `{package, manifest, lock, jws, author, position}`; 200 when its publisher sends it again; 409 when another account published it |
+| `GET /v1/packages` | read rule | `{items: [package], position}`, newest first; a package using a taken-down file is left out |
+| `GET /v1/packages/{id}` | read rule | as `PUT`'s answer; 404; 410 when a file it uses is taken down |
+| `PUT /v1/packages/{id}/credit` | admin or operator, `lxm: content.moderate`; a credit | 200 `{ok, position, package}`; `{}` clears the admin's credit |
+| `PUT /v1/admin/model-uploads/{gamertag}` | admin or operator, `lxm: content.moderate`; `{approved, note?}` | 200 `{ok, position}` |
+
+`package` is `{id, slug, name, description?, publisher: {xuid, gamertag},
+credit?, kinds, items, sim, requires?, features?, size, published_at,
+position}`. `jws` is the event as published and `author` the account id
+whose key signed it: a client verifies both again on install
+(`live_proto::packages::verify_answer`), and each downloaded file against
+its lock hash (`verify_file`).
+
+**The upload check** (`live_proto::packages::check`, one function both
+homes call over their store's `Holdings`), after the signature:
+
+| Step | Refused with |
+|---|---|
+| The signature is the token issuer's key's | 401 |
+| The manifest validates (`content::package::Manifest::validate`) | 400 |
+| The lock names exactly the manifest's files, at most 4096 | 400 |
+| `PackageId::of(manifest, lock)` is the stream's | 400 |
+| No `kit` item (first-party packages only) | 403 |
+| A `model` or `animation` item: the uploader's `model_uploads` is on and its uploads are on | 403 `model_uploads_not_approved: ...` |
+| No locked hash is on the retail list | 403 |
+| No locked hash is hidden or blocked | 410 |
+| Every locked hash is stored | 409, naming each missing file |
+
+**Credit**, in order of truth: an admin's (`PackageCredited`), the
+publisher's signed `credit`, the manifest's `[credit]`. The publisher is
+`publisher` ("uploaded by"), never the author.
 
 ## Rules scripts
 

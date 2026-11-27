@@ -229,6 +229,10 @@ pub struct Live {
     pub(crate) variants: Arc<crate::game_variants::Variants>,
     /// Holds a variant's checks and its append together.
     pub(crate) variant_writes: tokio::sync::Mutex<()>,
+    /// Published packages (docs/live/live-api.md, "Packages").
+    pub(crate) packages: Arc<crate::packages::Packages>,
+    /// The retail list read from the blob store ([`Live::load_retail`]).
+    pub(crate) retail_list: std::sync::RwLock<Option<crate::content::Retail>>,
     /// Editor requests (`POST /v1/rules/ide`) per client address, at the
     /// same rate in a bucket of their own.
     pub(crate) rules_ide_rate: RateLimiter,
@@ -310,6 +314,8 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || live_proto::mutes::KINDS.contains(&kind)
         || live_proto::rules::KINDS.contains(&kind)
         || live_proto::game_variants::KINDS.contains(&kind)
+        || stream.starts_with(live_proto::packages::STREAM_PREFIX)
+        || live_proto::packages::KINDS.contains(&kind)
         || matches!(kind, crate::invites::GRANTED | crate::invites::GRANT_REVOKED)
     {
         return false;
@@ -571,6 +577,8 @@ impl Live {
         dispatcher.subscribe(rules.clone());
         let variants = Arc::new(crate::game_variants::Variants::default());
         dispatcher.subscribe(variants.clone());
+        let packages = Arc::new(crate::packages::Packages::default());
+        dispatcher.subscribe(packages.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let usage = Arc::new(match timers {
@@ -637,6 +645,8 @@ impl Live {
             rules_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             variants,
             variant_writes: Default::default(),
+            packages,
+            retail_list: Default::default(),
             rules_ide_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             cloud: Default::default(),
             #[cfg(feature = "native")]

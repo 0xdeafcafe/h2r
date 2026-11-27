@@ -651,7 +651,7 @@ fn mark_redacted(w: &mut live_proto::WireEvent) {
 /// game invitations and text messages to their sender and recipient (a
 /// deletion to the recipient), friend events to the
 /// two accounts and the friends of either, content and player reports and
-/// who downloaded which map to admins only, bans to the banned player,
+/// who downloaded which map, and model-upload approvals, to admins only, bans to the banned player,
 /// mutes to the muting player.
 /// Anonymous readers see none of them, so a public read stays safe to
 /// cache. Admins and the operator see everything.
@@ -669,6 +669,7 @@ pub fn kind_shows_to(s: &State, e: &RecordedEvent, viewer: Viewer) -> bool {
         }
         live_proto::maps::CONTENT_REPORTED
         | live_proto::maps::MAP_DOWNLOADED
+        | live_proto::packages::MODEL_UPLOADS_SET
         | live_proto::reports::PLAYER_REPORTED
         | live_proto::reports::REPORT_REVIEWED => false,
         live_proto::bans::ACCOUNT_BANNED | live_proto::bans::ACCOUNT_UNBANNED => {
