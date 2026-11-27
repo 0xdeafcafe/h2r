@@ -6741,6 +6741,10 @@ dependencies = [
 [[package]]
 name = "sim-effects"
 version = "0.1.0"
+dependencies = [
+ "simd",
+ "x87",
+]
 
 [[package]]
 name = "sim-ext"
