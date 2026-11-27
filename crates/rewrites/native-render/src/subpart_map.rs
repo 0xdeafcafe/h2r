@@ -14,8 +14,9 @@
 //!   A span must start and end on a triangle.
 //! - **Strip.** Position `k` is the window `k..k+3`, wound by `k`'s
 //!   parity. A sub-strip from `s` winds its windows by their parity from
-//!   `s`, so a span starting at an odd position would draw every triangle
-//!   the other way round: it has no range.
+//!   `s`, so a span starting at an odd position draws every triangle the
+//!   other way round: its range is the same native triangles, drawn with
+//!   the winding reversed ([`TriangleMap::wound`]).
 
 use std::ops::Range;
 
@@ -66,27 +67,36 @@ impl TriangleMap {
     /// The native indices, from the part's native start, that draw the
     /// source span `span` (from the part's first index). `None` for a
     /// span past the part, a list span off a triangle, or a strip span
-    /// starting at an odd position. A strip span under three indices
-    /// draws nothing.
+    /// starting at an odd position, whose triangles wind the other way
+    /// ([`Self::wound`]). A strip span under three indices draws nothing.
     pub fn span(&self, span: Range<u32>) -> Option<Range<u32>> {
+        if self.strip && span.start % 2 != 0 {
+            return None;
+        }
+        self.wound(span).map(|(range, _)| range)
+    }
+
+    /// [`Self::span`] with a strip span at an odd start as well: its
+    /// range, and whether its triangles wind the other way round than
+    /// the native buffer holds them (a sub-strip from an odd position
+    /// winds each window by its parity from there).
+    pub fn wound(&self, span: Range<u32>) -> Option<(Range<u32>, bool)> {
         if span.start > span.end || span.end > self.len {
             return None;
         }
         let at = |k: u32| self.kept.get(k as usize).map(|&n| 3 * n);
         if self.strip {
-            if span.start % 2 != 0 {
-                return None;
-            }
+            let reversed = span.start % 2 != 0;
             if span.end - span.start < 3 {
                 let k = at(span.start.min(self.kept.len() as u32 - 1))?;
-                return Some(k..k);
+                return Some((k..k, reversed));
             }
-            Some(at(span.start)?..at(span.end - 2)?)
+            Some((at(span.start)?..at(span.end - 2)?, reversed))
         } else {
             if span.start % 3 != 0 || span.end % 3 != 0 {
                 return None;
             }
-            Some(at(span.start / 3)?..at(span.end / 3)?)
+            Some((at(span.start / 3)?..at(span.end / 3)?, false))
         }
     }
 
@@ -94,14 +104,29 @@ impl TriangleMap {
     /// spans `spans` of a part whose first index is `first`; empty ranges
     /// left out. `None` when one has no range.
     pub fn ranges(&self, first: u32, native_start: u32, spans: &[Range<u32>]) -> Option<Vec<Range<u32>>> {
+        let wound = self.wound_ranges(first, native_start, spans)?;
+        if wound.iter().any(|&(_, reversed)| reversed) {
+            return None;
+        }
+        Some(wound.into_iter().map(|(r, _)| r).collect())
+    }
+
+    /// [`Self::ranges`] with the strip spans at an odd start as well,
+    /// each with whether it winds the other way ([`Self::wound`]).
+    pub fn wound_ranges(
+        &self,
+        first: u32,
+        native_start: u32,
+        spans: &[Range<u32>],
+    ) -> Option<Vec<(Range<u32>, bool)>> {
         let mut out = Vec::with_capacity(spans.len());
         for s in spans {
             let rel = s.start.checked_sub(first)?..s.end.checked_sub(first)?;
-            let r = self.span(rel)?;
+            let (r, reversed) = self.wound(rel)?;
             if r.is_empty() {
                 continue;
             }
-            out.push(native_start + r.start..native_start + r.end);
+            out.push((native_start + r.start..native_start + r.end, reversed));
         }
         Some(out)
     }
@@ -142,6 +167,13 @@ mod tests {
             );
         }
         assert_eq!(map.span(1..6), None, "an odd start winds the other way");
+        let (range, reversed) = map.wound(1..6).unwrap();
+        assert!(reversed && !map.wound(0..6).unwrap().1, "only the odd start is reversed");
+        assert_eq!(
+            all[range.start as usize..range.end as usize],
+            flat(&native(&raw[0..6], true))[3..],
+            "the same native triangles as the windows 1 to 3"
+        );
         assert!(map.span(4..6).unwrap().is_empty(), "under three indices: nothing");
         assert_eq!(map.span(0..15), None, "past the part");
     }

@@ -137,6 +137,7 @@ pub fn receiver_look(
             &imp.render_states,
             gfx::state::RenderStateType::CullMode,
         ),
+        copies_target: imp.copies_target,
         state,
     })
 }
@@ -288,6 +289,8 @@ fn compile(
         pixel_options: t.pixel_options,
         inputs: t.inputs,
         inherits_cull: look.inherits_cull,
+        copies_target: look.copies_target,
+        animation: None,
         wgsl: t.wgsl,
         stages: look.textures,
         samplers: t.samplers,
@@ -368,6 +371,7 @@ mod tests {
                 alpha_test: None,
             },
             inherits_cull: false,
+            copies_target: false,
         }
     }
 

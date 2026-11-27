@@ -106,8 +106,22 @@ impl ResidentRanges {
 
     /// The draws of the visible subpart spans `spans` (absolute source
     /// indices) of this part in the record's topology: one per native
-    /// range, empty ones left out (`crate::subpart_map`).
+    /// range, empty ones left out (`crate::subpart_map`). A strip span at
+    /// an odd start is refused ([`Self::subpart_draws_wound`]).
     pub fn subpart_draws(&self, stream: &LightStream, spans: &[Range<u32>], draw: WorldDraw) -> Result<Vec<WorldDraw>, &'static str> {
+        let wound = self.subpart_draws_wound(stream, spans, draw)?;
+        if wound.iter().any(|&(_, reversed)| reversed) {
+            return Err("a visible subpart span at an odd strip start winds the other way");
+        }
+        Ok(wound.into_iter().map(|(d, _)| d).collect())
+    }
+
+    /// [`Self::subpart_draws`], each with whether its triangles wind the
+    /// other way round than the buffer holds them (a strip span at an
+    /// odd start), which the host draws with the front face reversed.
+    pub fn subpart_draws_wound(
+        &self, stream: &LightStream, spans: &[Range<u32>], draw: WorldDraw,
+    ) -> Result<Vec<(WorldDraw, bool)>, &'static str> {
         let whole = self.draw(stream, draw)?;
         let (map, start) = match stream.topology {
             Topology::List => (self.list_map.as_ref(), self.as_list.start),
@@ -115,9 +129,12 @@ impl ResidentRanges {
         };
         let ranges = map
             .ok_or("structure part's triangles do not map its subparts")?
-            .ranges(u32::from(self.first), start, spans)
-            .ok_or("a visible subpart span off its part's triangles or an odd strip start")?;
-        Ok(ranges.into_iter().map(|r| WorldDraw { first_index: r.start, index_count: r.end - r.start, ..whole }).collect())
+            .wound_ranges(u32::from(self.first), start, spans)
+            .ok_or("a visible subpart span off its part's triangles")?;
+        Ok(ranges
+            .into_iter()
+            .map(|(r, reversed)| (WorldDraw { first_index: r.start, index_count: r.end - r.start, ..whole }, reversed))
+            .collect())
     }
 
     /// A live section edit can keep these ranges if it changes only vertex values.
@@ -255,6 +272,12 @@ mod tests {
         assert_eq!(drawn(&stream, &[46..55]), own(6..15));
         assert_eq!(drawn(&stream, &[40..44, 46..55]), [own(0..4), own(6..15)].concat());
         assert!(ranges.subpart_draws(&stream, &[41..44], draw).is_err(), "an odd start winds the other way");
+        // The odd start is the same native triangles as the part's windows 1 and 2,
+        // drawn reversed; an even one is not.
+        let wound = ranges.subpart_draws_wound(&stream, &[41..45, 40..44], draw).unwrap();
+        assert_eq!(wound.iter().map(|&(_, r)| r).collect::<Vec<_>>(), [true, false]);
+        let indices = |d: &WorldDraw| world.indices[d.first_index as usize..(d.first_index + d.index_count) as usize].to_vec();
+        assert_eq!(indices(&wound[0].0), own(0..4)[3..].to_vec(), "windows 1 and 2 of the strip");
         assert!(ranges.subpart_draws(&stream, &[46..56], draw).is_err(), "past the part");
         // The same spans as a list read the raw triangles 0..6 and 6..15.
         stream.topology = Topology::List;

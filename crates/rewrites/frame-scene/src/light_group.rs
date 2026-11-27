@@ -105,6 +105,20 @@ pub struct EntryState {
     /// stipple pattern it selects, which masks nothing while the
     /// device's stipple is off.
     pub fade: bool,
+    /// The shader's flag bit 0 (`+0x16`): the draw asks for the stage
+    /// bitmaps' residency, which sets no device state. Held where
+    /// [`Self::structure`] is held and, with [`Self::uncopied`], no
+    /// program of the layer has flag bit 20.
+    pub shader_flag: bool,
+    /// With [`Self::shader_flag`]: the active structure has a parameter
+    /// block (`+0x214` above 0), which the prologue uploads
+    /// (`0x0003c650`, `0x0003d000`). The host takes the entry only where
+    /// the device and the engine already hold every word of it.
+    pub structure: bool,
+    /// With [`Self::shader_flag`]: the frame's structure target copy is
+    /// not made yet, so a program with flag bit 20 would make it
+    /// (`0x0003bea0`), which no native stage does.
+    pub uncopied: bool,
 }
 
 impl EntryState {

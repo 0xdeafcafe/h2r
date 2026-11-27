@@ -169,7 +169,8 @@ pub fn before(mem: &mut dyn GuestMemory, name: &str) -> Result<(), MemFault> {
 }
 
 /// The layer draw `0x00044550` returning for the opaque block's layers
-/// (docs/graphics/framescene.md, slice 4; docs/graphics/layer-draw.md).
+/// and the light passes' and shadow layers' (docs/graphics/framescene.md,
+/// slice 4; docs/graphics/layer-draw.md).
 ///
 /// The native stages clear the layer's bit on every item they draw before
 /// the call (`native_layers`, `native_world`, `native_objects`,
@@ -187,6 +188,9 @@ pub mod layer {
 
     /// The layers whose draw can return: the opaque block's.
     pub const LAYERS: [u32; 6] = [1, 3, 5, 7, 8, 20];
+    /// The light passes' and the shadow layers' (`native_lights`,
+    /// `native_shadows`): the same body runs for them.
+    pub const LIGHT_LAYERS: [u32; 5] = [10, 11, 12, 13, 14];
     /// The current layer the draw reads.
     pub const CURRENT_LAYER: u32 = 0x0046_7130;
     /// The current list the draw reads.

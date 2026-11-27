@@ -334,8 +334,21 @@ impl LightModels {
     /// `entry`'s section and part, when the entry is an object's whose
     /// raw range matches, and the triangles for its record's topology:
     /// the part's, or each visible subpart's (`crate::subpart_map`), the
-    /// empty ones left out.
+    /// empty ones left out. A subpart at an odd strip start, whose
+    /// triangles wind the other way, has no range here
+    /// ([`Self::part_wound`]).
     pub fn part(&self, entry: &LightEntry) -> Option<(&LightSection, Vec<Range<u32>>)> {
+        let (section, wound) = self.part_wound(entry)?;
+        if wound.iter().any(|&(_, reversed)| reversed) {
+            return None;
+        }
+        Some((section, wound.into_iter().map(|(r, _)| r).collect()))
+    }
+
+    /// [`Self::part`] with the subparts at an odd strip start as well,
+    /// each range with whether its triangles wind the other way round
+    /// than the buffer holds them: drawn with the front face reversed.
+    pub fn part_wound(&self, entry: &LightEntry) -> Option<(&LightSection, Vec<(Range<u32>, bool)>)> {
         let section = self
             .models
             .get(&entry.model)?
@@ -353,9 +366,9 @@ impl LightModels {
         if indices.is_empty() {
             return None;
         }
-        let Some(spans) = &entry.subparts else { return Some((section, vec![indices.clone()])) };
+        let Some(spans) = &entry.subparts else { return Some((section, vec![(indices.clone(), false)])) };
         let map = map.filter(|m| m.fits(indices))?;
-        let ranges = map.ranges(entry.stream.first_index, indices.start, spans)?;
+        let ranges = map.wound_ranges(entry.stream.first_index, indices.start, spans)?;
         Some((section, ranges))
     }
 
@@ -515,6 +528,10 @@ mod tests {
         assert_eq!(drawn(Topology::Strip, vec![12..19]).unwrap(), own(6..13));
         assert_eq!(drawn(Topology::Strip, vec![6..10, 12..19]).unwrap(), [own(0..4), own(6..13)].concat());
         assert_eq!(drawn(Topology::Strip, vec![7..10]), None, "an odd start winds the other way");
+        let mut odd = entry(1, 6, raw.len() as u32, Topology::Strip);
+        odd.subparts = Some(vec![7..11, 12..19]);
+        let (_, wound) = models.part_wound(&odd).unwrap();
+        assert_eq!(wound.iter().map(|w| w.1).collect::<Vec<_>>(), [true, false], "only the odd start is reversed");
         assert_eq!(drawn(Topology::Strip, vec![6..20]), None, "past the part");
         // As a list: the raw triangles 3..6 and 9..12, the degenerate one gone.
         assert_eq!(drawn(Topology::List, vec![9..18]).unwrap(), [0, 1, 2, 2, 3, 0]);

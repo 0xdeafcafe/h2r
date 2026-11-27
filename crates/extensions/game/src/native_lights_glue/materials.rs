@@ -10,8 +10,8 @@ use map::TagId;
 use native_render::gpu::Image;
 use native_render::light_gpu::{LightGpu, light_gpu_key, same_gpu_pass};
 use native_render::light_look::{
-    InputKey, LightInputs, LightProgram, LightRefusal, LightStage, compile_light,
-    compile_light_model, engine_inputs, selected_light_look,
+    InputKey, LightInputs, LightProgram, LightRefusal, LightStage, animated_light_look, compile_light,
+    compile_light_model, engine_inputs,
 };
 use tags::material::{EngineInputs, ShaderLibrary};
 
@@ -425,6 +425,9 @@ impl Worker {
             .lib
             .material(key.shader, Some(resolved_inputs))
             .map_err(|error| Keep::Refused(format!("material: {error}").into()))?;
+        // A lit pass the instance animates compiles from its baseline and
+        // samples its constants at each draw's clock.
+        let mut animation = None;
         let look = if key.layer == native_render::shadow_look::CASTER_LAYER {
             native_render::shadow_look::shadow_look(&material, key.implementation)
         } else if matches!(
@@ -433,7 +436,12 @@ impl Worker {
         ) {
             native_render::shadow_look::receiver_look(&material, key.layer, key.implementation)
         } else {
-            selected_light_look(&material, key.layer, key.implementation, key.selection)
+            let properties = native_render::layer_pass::instance_properties(&self.lib, key.shader);
+            animated_light_look(&material, key.layer, key.implementation, key.selection, Some(&properties))
+                .map(|(look, sampled)| {
+                    animation = sampled;
+                    look
+                })
         }
         .map_err(|reason| match reason {
             LightRefusal::NoLayer => {
@@ -507,7 +515,9 @@ impl Worker {
             }
             _ => return Err(Keep::Unsupported("light geometry unavailable")),
         };
-        let program = Arc::new(program.map_err(|why| Keep::Refused(why.into()))?);
+        let mut program = program.map_err(|why| Keep::Refused(why.into()))?;
+        program.animation = animation;
+        let program = Arc::new(program);
         let id = resource_key(model, light_gpu_key(&program));
         let gpu = self.uploaded.get(&id).and_then(|(original, gpu)| {
             same_gpu_pass(original.upgrade()?.as_ref(), &program)

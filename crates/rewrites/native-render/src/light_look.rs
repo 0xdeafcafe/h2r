@@ -212,6 +212,9 @@ pub struct LightLook {
     pub vector_bindings: Vec<VectorBinding>,
     pub state: PassState,
     pub inherits_cull: bool,
+    /// The implementation's flag bit 20
+    /// ([`tags::material::ResolvedImplementation::copies_target`]).
+    pub copies_target: bool,
 }
 
 /// Why a light's pass stays on the D3D path.
@@ -226,8 +229,11 @@ pub enum LightRefusal {
     /// The chosen implementation is not in the pass.
     NoImplementation(usize),
     NoVertexShader,
-    /// Something in the pass is animated.
+    /// Something in the pass is animated, and the caller does not sample it.
     Animated,
+    /// An animated pass that does not compile from its baseline or sample
+    /// ([`crate::layer_pass::LayerRefusal::name`]).
+    AnimationSample(&'static str),
     /// It reads engine inputs nobody supplies here.
     Reads(InputReads),
     /// A stage samples another engine texture (13 and 8, the shadow maps,
@@ -256,12 +262,29 @@ pub fn light_look(
 
 /// A gathered entry selects a particular template LOD and pass within the
 /// layer. A host light without that binding can only issue a single pass.
+/// An animated pass is refused; see [`animated_light_look`].
 pub fn selected_light_look(
     material: &Material,
     layer: usize,
     implementation: usize,
     selection: Option<(u8, u8)>,
 ) -> Result<LightLook, LightRefusal> {
+    animated_light_look(material, layer, implementation, selection, None).map(|(look, _)| look)
+}
+
+/// [`selected_light_look`] where a pass the instance animates compiles
+/// from its baseline (clock 0, its animated targets cleared) and comes
+/// with the animation to sample at each draw's clock
+/// ([`crate::layer_pass::PassAnimation`]), as a world layer's or an
+/// object's pass does. Without the instance's `properties` an animated
+/// pass is refused ([`LightRefusal::Animated`]).
+pub fn animated_light_look(
+    material: &Material,
+    layer: usize,
+    implementation: usize,
+    selection: Option<(u8, u8)>,
+    properties: Option<&[tags::shader::AnimatedProperty]>,
+) -> Result<(LightLook, Option<crate::layer_pass::PassAnimation>), LightRefusal> {
     let lod = selection.map_or(0, |(variant, _)| usize::from(variant));
     let l = material
         .layers
@@ -280,15 +303,22 @@ pub fn selected_light_look(
             pass
         }
     };
-    let imp = pass
+    let found = pass
         .implementations
         .iter()
         .find(|i| i.index == implementation)
         .ok_or(LightRefusal::NoImplementation(implementation))?;
+    let (baseline, animation) = match (found.animated.is_empty(), properties) {
+        (true, _) => (None, None),
+        (false, None) => return Err(LightRefusal::Animated),
+        (false, Some(properties)) => {
+            let (base, animation) = crate::layer_pass::PassAnimation::baseline(found, properties, false, pass.index)
+                .map_err(|r| LightRefusal::AnimationSample(r.name()))?;
+            (Some(base), animation)
+        }
+    };
+    let imp = baseline.as_ref().unwrap_or(found);
     let vertex_shader = imp.vertex_shader.ok_or(LightRefusal::NoVertexShader)?;
-    if !imp.animated.is_empty() {
-        return Err(LightRefusal::Animated);
-    }
     let r = imp.input_reads;
     let unsupplied = InputReads {
         scalars: r.scalars & !(LIGHT_SCALARS | INSTANCE_SCALARS),
@@ -318,7 +348,7 @@ pub fn selected_light_look(
         };
     }
     let state = pass_state(&applied.render_states).map_err(LightRefusal::State)?;
-    Ok(LightLook {
+    let look = LightLook {
         layer,
         pass: pass.pass,
         implementation,
@@ -333,8 +363,10 @@ pub fn selected_light_look(
             &imp.render_states,
             gfx::state::RenderStateType::CullMode,
         ),
+        copies_target: imp.copies_target,
         state,
-    })
+    };
+    Ok((look, animation))
 }
 
 /// The light's frame block and the five words after it, as `0x0003a550`
@@ -367,6 +399,15 @@ pub struct LightProgram {
     pub colours: Vec<VectorBinding>,
     pub state: PassState,
     pub inherits_cull: bool,
+    /// The pass's flag bit 20: a flagged shader's draw with it makes the
+    /// frame's structure target copy (`0x0003bea0`).
+    pub copies_target: bool,
+    /// What the instance animates in the pass, sampled at each draw's
+    /// clock over this program's uniforms ([`LightDraw::sample`]);
+    /// `None` when nothing animates.
+    ///
+    /// [`LightDraw::sample`]: crate::light_gpu::LightDraw::sample
+    pub animation: Option<crate::layer_pass::PassAnimation>,
 }
 
 /// Vertex fetch for the world-space light classification.
@@ -494,6 +535,8 @@ fn compile(
         pixel_options: t.pixel_options,
         inputs: t.inputs,
         inherits_cull: look.inherits_cull,
+        copies_target: look.copies_target,
+        animation: None,
         wgsl: t.wgsl,
         stages: look.textures,
         samplers: t.samplers,
@@ -516,8 +559,20 @@ pub fn colour_uniforms(
     colour_a: [f32; 3],
     colour_b: [f32; 3],
 ) -> (VertexUniforms, PixelUniforms) {
-    let mut vertex = p.vertex.clone();
-    let mut pixel = p.pixel;
+    colour_uniforms_over(p, p.vertex.clone(), p.pixel, colour_a, colour_b)
+}
+
+/// [`colour_uniforms`] over `vertex` and `pixel` in place of the
+/// program's own: its animation sampled at a draw's clock
+/// ([`crate::layer_pass::PassAnimation::sample`]), whose combiner
+/// constants the colours then go into.
+pub fn colour_uniforms_over(
+    p: &LightProgram,
+    mut vertex: VertexUniforms,
+    mut pixel: PixelUniforms,
+    colour_a: [f32; 3],
+    colour_b: [f32; 3],
+) -> (VertexUniforms, PixelUniforms) {
     for b in &p.colours {
         let colour = match b.source {
             5 => colour_a,
@@ -728,6 +783,32 @@ mod tests {
             .scalars[16],
             1.0
         );
+    }
+
+    #[test]
+    fn an_animated_pass_is_refused_unless_sampled_and_then_compiles_from_its_baseline() {
+        let (target, props) = crate::layer_pass::tests::animated_z();
+        let mut animated = implementation(3, TextureSource::Engine(10));
+        animated.animated = vec![target];
+        let m = material(DIFFUSE_LAYER, vec![animated]);
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 3).unwrap_err(), LightRefusal::Animated, "nobody samples it");
+        let (look, animation) =
+            animated_light_look(&m, DIFFUSE_LAYER, 3, None, Some(&props)).expect("compiles from its baseline");
+        let animation = animation.expect("the animation to sample");
+        let at = animation.sample(Some(11.0)).unwrap();
+        assert_eq!(
+            at.vertex(&VertexUniforms::default()).constants[18][2],
+            1.5,
+            "the instance's c[18].z at 11 s over its 4 s period"
+        );
+        assert_eq!(look.implementation, 3);
+        assert_eq!(
+            animated_light_look(&m, DIFFUSE_LAYER, 3, None, Some(&[])).unwrap_err(),
+            LightRefusal::AnimationSample("property"),
+            "the instance lacks the property the animation reads"
+        );
+        let still = material(DIFFUSE_LAYER, vec![implementation(3, TextureSource::Engine(10))]);
+        assert!(animated_light_look(&still, DIFFUSE_LAYER, 3, None, Some(&props)).unwrap().1.is_none());
     }
 
     #[test]

@@ -504,7 +504,7 @@ D3D entry calls.
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
 | R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`) and the layer draw's return when every item of a layer is native (`frame_step::layer`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
 | R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
-| R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels. Built: the cut light frame, each light drawn at its passes and a light the scene or the host refuses on its guest passes, the entry state and visible subparts in layers 12 and 13 ([native-lights.md](native-lights.md), "Entry state", "Visible subparts"); not built: a strip subpart at an odd start, material animation, the shader flag | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
+| R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels. Built: the cut light frame, each light drawn at its passes and a light the scene or the host refuses on its guest passes, the entry state (the fade byte, the auxiliary toggle, the shader's flag bit 0) and visible subparts, odd strip starts included, in layers 12 and 13, a lit pass's material animation sampled per draw, and the light layers' draw returning ([native-lights.md](native-lights.md), "Entry state", "Visible subparts", "What a native light draws", "The layer draw's return"); kept: a flagged shader's entry whose structure upload the device does not hold (`scene_kept_light_group_entry_state`) or whose layer has a flag bit 20 pass before the frame's copy, a sampler refusal, a shadow layer's animated or flagged pass (`scene_kept_light_host`), and a light layer with items (`layer_return_<site><layer>_guest_<cause>`) | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
@@ -625,13 +625,16 @@ keeps a guest draw, by the counter that names it (**Code**):
   runs (`tests/frame_step_layer.rs`, against a model of the body). Any
   other call runs the guest body, counted in `render.scene` as
   `layer_return_<site><layer>_guest_<cause>` (`<site>` empty, `alt` or
-  `fp`), each return as `_returned`. The causes: `standing_down`,
+  `fp`; `light`, `extra`, `shadow` or `fplight` for layers 10 to 14,
+  [native-lights.md](native-lights.md), "The layer draw's return"), each
+  return as `_returned`. The causes: `standing_down`,
   `unread`, `open_shader` (the cache holds a shader whose render states
   `0x00018900` restores, a D3D write), and `structure`, `object` or
   `other` for the first item still holding the bit. The mask plans stay
   the mechanism every stage below uses to clear the bits, so 8.2's
-  rule 1 holds for no entry; the light passes' and the shadow layers'
-  draws are not replaced.
+  rule 1 holds for no entry; a light layer's items are skipped by the
+  light stage entry by entry, so its draw returns only for an empty
+  list.
 - **Layers 1, 5, 7, 8 and 20** (the scene's, the alternate view's 1 and
   5, the first person's 1, 7, 8 and 20; `layer_plan_<layer>_refused_*`,
   `_fp<layer>_*`, `_alt<layer>_*`). Structure items: the plan's causes

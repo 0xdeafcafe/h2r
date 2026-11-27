@@ -35,10 +35,12 @@
 //!
 //! The layer draw itself is implemented here for the opaque block's layers
 //! 1, 3, 5, 7, 8 and 20 of the scene, the alternate view and the first
-//! person ([`layer_return`]): after every observer has run, when no item of
-//! the list still holds the layer's bit, the call makes the guest body's
-//! writes (`frame_step::layer`) and returns without running it; otherwise
-//! the guest body runs, counted `layer_return_<site><layer>_guest_<cause>`.
+//! person, and for the light passes' and shadow layers' 10 to 14
+//! ([`layer_return`], [`return_site`]): after every observer has run, when
+//! no item of the list still holds the layer's bit, the call makes the
+//! guest body's writes (`frame_step::layer`) and returns without running
+//! it; otherwise the guest body runs, counted
+//! `layer_return_<site><layer>_guest_<cause>`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -412,10 +414,16 @@ pub(crate) fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
-/// The site prefix of a layer draw of the opaque block: `""` the scene's,
-/// `alt` the alternate view's, `fp` the first person's; `None` for every
+/// The site prefix of a layer draw that can return: `""` the opaque
+/// block's of the scene, `alt` the alternate view's, `fp` the first
+/// person's; `light`, `extra`, `shadow` and `fplight` the light passes'
+/// and shadow layers' of a light, its additional casters, an object
+/// shadow and the first-person lights ([`light_site`]); `None` for every
 /// other call of the layer draw.
 pub fn return_site(layer: u32, ret: u32) -> Option<&'static str> {
+    if crate::frame_step::layer::LIGHT_LAYERS.contains(&layer) {
+        return light_site(layer, ret);
+    }
     if !crate::frame_step::layer::LAYERS.contains(&layer) {
         return None;
     }
@@ -424,6 +432,26 @@ pub fn return_site(layer: u32, ret: u32) -> Option<&'static str> {
         Site::AlternateView => Some("alt"),
         Site::FirstPerson => Some("fp"),
         _ => None,
+    }
+}
+
+/// The site of a light layer's draw returning to `ret` (the guest's site,
+/// `light_gather::passes::caller`).
+pub fn light_site(layer: u32, ret: u32) -> Option<&'static str> {
+    use native_render::shadows::{Site as Shadow, site};
+    match site(layer, ret) {
+        Some(Shadow::Light) => return Some("light"),
+        Some(Shadow::AdditionalCaster) => return Some("extra"),
+        Some(Shadow::Object) => return Some("shadow"),
+        None => {}
+    }
+    let at = |layers: &[(u32, u32)]| layers.contains(&(layer, ret));
+    if at(&crate::native_lights::SPLIT_LAYERS) {
+        Some("light")
+    } else if at(&crate::native_lights::FIRST_PERSON_LAYERS) {
+        Some("fplight")
+    } else {
+        None
     }
 }
 
@@ -500,7 +528,8 @@ impl Feature for NativeLayers {
                 if addr == points::LAYER_DRAW.base {
                     let standing_down = crate::native_map_work::Stage::World.standing_down();
                     let mut g = ctx.memory();
-                    let ret = g.u32(cpu.esp).unwrap_or(0);
+                    // The light passes' body names the guest's site.
+                    let ret = engine::render::light_gather::passes::caller(&*g, cpu.esp).unwrap_or(0);
                     if layer_return(&mut *g, ret, standing_down) {
                         return g.ret(cpu, 0);
                     }
@@ -703,6 +732,51 @@ mod tests {
         before_layer(&mut m, 0x0002_c30b);
         assert_eq!(kept("scene_kept_5_world_caller"), other, "only R5's layers count an untaken caller");
         *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[test]
+    fn the_light_passes_layer_draws_return_or_run_the_guest_counted_by_site_and_cause() {
+        use crate::frame_step::layer as fl;
+        use engine::memory::FlatMemory;
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
+        let (list, items) = (0x004a_0000, 0x004a_0100);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 1).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, 0xe000_0003).unwrap();
+        // A light's layer 12 (`0x0003144f`) with no item holding the bit.
+        mem.set_u32(fl::CURRENT_LAYER, 12).unwrap();
+        let returned = get("layer_return_light12_returned");
+        assert!(layer_return(&mut mem, 0x0003_144f, false));
+        assert_eq!(get("layer_return_light12_returned"), returned + 1);
+        assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), u32::MAX, "the body's writes made");
+        // The first-person lights' layer 14 (`0x000406ab`), an object's item kept.
+        mem.set_u32(fl::CURRENT_LAYER, 14).unwrap();
+        mem.set_u32(items + 0x10, 1 << 14).unwrap();
+        let kept_object = get("layer_return_fplight14_guest_object");
+        assert!(!layer_return(&mut mem, 0x0004_06ab, false));
+        assert_eq!(get("layer_return_fplight14_guest_object"), kept_object + 1);
+        // An object shadow's layer 11 (`0x000329d9`), a structure item kept.
+        mem.set_u32(fl::CURRENT_LAYER, 11).unwrap();
+        mem.set_u32(items + 0x10, 1 << 11).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, u32::MAX).unwrap();
+        let structure = get("layer_return_shadow11_guest_structure");
+        assert!(!layer_return(&mut mem, 0x0003_29d9, false));
+        assert_eq!(get("layer_return_shadow11_guest_structure"), structure + 1);
+        // The additional casters' layer 10 (`0x00031074`) returns once nothing holds its bit.
+        mem.set_u32(fl::CURRENT_LAYER, 10).unwrap();
+        mem.set_u32(items + 0x10, 0).unwrap();
+        assert!(layer_return(&mut mem, 0x0003_1074, false));
+        assert!(get("layer_return_extra10_returned") > 0);
+        // A light layer's draw from another caller is not the frame step's.
+        let returns = || counters().into_iter().filter(|(k, _)| k.starts_with("layer_return_")).map(|(_, v)| v).sum::<u64>();
+        let before = returns();
+        mem.set_u32(fl::CURRENT_LAYER, 12).unwrap();
+        assert!(!layer_return(&mut mem, 0x0004_1ffd, false));
+        assert_eq!(returns(), before);
     }
 
     #[test]

@@ -438,7 +438,14 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
             }
             // A plain entry hashes as it always has.
             if !e.state.plain() {
-                h.word(0x3_0000 | u32::from(e.state.aux_depth) | u32::from(e.state.fade) << 1);
+                h.word(
+                    0x3_0000
+                        | u32::from(e.state.aux_depth)
+                        | u32::from(e.state.fade) << 1
+                        | u32::from(e.state.shader_flag) << 2
+                        | u32::from(e.state.structure) << 3
+                        | u32::from(e.state.uncopied) << 4,
+                );
             }
             if let Some(spans) = &e.subparts {
                 h.word(0x4_0000 | spans.len() as u32);
