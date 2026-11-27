@@ -361,3 +361,20 @@ fn a_path_too_narrow_for_the_pelican_keeps_the_phantom_only() {
     let report = ShipReport::cut_kind(ShipKind::Pelican, "x");
     assert_eq!(report.to_string(), "pelican: cut (x)");
 }
+
+#[test]
+fn a_rise_beside_the_floor_under_open_sky_does_not_cut_the_ship() {
+    // A ledge 5 to the side of the zone, 2 high: inside the Phantom's reach
+    // at the floor, far below its hover. The sky over the zone is open, so
+    // the ship still gets in.
+    let mut tris: Vec<_> = square(0.0, -100.0, 100.0).into_iter().collect();
+    tris.push([[4.0, -1.0, 2.0], [6.0, -1.0, 2.0], [6.0, 1.0, 2.0]]);
+    tris.push([[4.0, -1.0, 2.0], [6.0, 1.0, 2.0], [4.0, 1.0, 2.0]]);
+    // A tall cliff far off sets the map's sky above the hover.
+    tris.push([[90.0, -1.0, 0.0], [90.0, 1.0, 0.0], [90.0, 1.0, 40.0]]);
+    let walls = Walls::new(tris);
+    let phantom = Dims::default_for(ShipKind::Phantom);
+    let runs = plan(&walls, &[zone([0.0, 0.0, 0.0])], phantom.radius, 16.48);
+    assert!(runs[0].is_some(), "open sky over the zone: the ship gets in");
+    assert_eq!(recheck(&walls, &runs, &Dims { hover: 16.48, ..phantom }), [true]);
+}

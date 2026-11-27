@@ -817,7 +817,7 @@ default, `firefight_kit::Config::dropship`):
   "not at start") at the first path's run-in, with that path's yaw. The base's
   own vehicles, names and palette rows keep their indices; the new ones
   follow them (`ship::author`).
-- **The paths.** For each drop zone `NN` with a clear column, a point set
+- **The paths.** For each drop zone `NN` with a clear column (a thin ray from the floor to the sky, and the ship's reach clear from its hover point up, so a rise beside the floor below the hover does not close it), a point set
   `ff_path_NN` in the scenario's scripting data with the points `run_in`,
   a `hover_<kind>` for each kind kept and `run_out`, in flying order. A kind's
   size is read from its own `vehi` tag (`ship::dims_in`): its reach is the

@@ -310,7 +310,8 @@ pub(crate) struct Run {
 /// `lift` above it (a kind's own hover is set when the path is written,
 /// [`path_sets`]). A zone gets a run only when
 /// - a ray from just above its floor to the sky (the tallest collision plus
-///   [`SKY_CLEARANCE`]) is clear, so no roof is over it, and
+///   [`SKY_CLEARANCE`]) is clear, so no roof is over it, the ship's reach
+///   is clear from the hover point up, and
 /// - for one of eight compass directions, the ray from the run-in down to the hover point and the ray from
 ///   the hover point up to the run-out are clear.
 ///
@@ -341,8 +342,12 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32, lift: f32) -> Vec
                 return None;
             }
             let hover = [mean[0], mean[1], mean[2] + lift];
+            // The floor's own column is a thin ray (the squad stands on
+            // ground that may be beside a rise); the ship's body, its full
+            // reach, is checked from the hover point up.
             if hover[2] >= sky
-                || !clear_wide(walls, [mean[0], mean[1], mean[2] + FLOOR_LIFT], [mean[0], mean[1], sky], radius)
+                || !walls.clear([mean[0], mean[1], mean[2] + FLOOR_LIFT], [mean[0], mean[1], sky])
+                || !clear_wide(walls, hover, [hover[0], hover[1], sky], radius)
             {
                 return None;
             }
