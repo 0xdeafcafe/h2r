@@ -24,6 +24,7 @@ mod handoff;
 pub mod host;
 mod items;
 mod object_shadows;
+pub mod object_shadow_scene;
 mod passes;
 pub mod scene_frame;
 mod typed;
@@ -281,6 +282,15 @@ pub trait Host: Send + Sync {
     /// 10's, in the view whose light pass is over. Returns the layers
     /// drawn; one it keeps draws nothing.
     fn draw_scene(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> usize {
+        0
+    }
+    /// Draw the view's object shadows from the scene in slot 3, before
+    /// layer 7. Returns the shadows drawn; one it keeps draws nothing.
+    fn draw_object_shadows(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _draw: object_shadow_scene::ObjectShadowDraw<'_>,
+    ) -> usize {
         0
     }
     /// Draw E3's chosen lights beyond the guest's ([`chosen`]) in the view

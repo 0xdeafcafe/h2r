@@ -244,6 +244,7 @@ fn object_setup_makes_the_guests_residency_requests() {
     let row = residual_census::row("object_setup").expect("a registry row");
     assert_eq!(REGISTRY[row].status, Status::Partial);
     assert!(cut::OWN_PRODUCER.iter().all(|n| CUTS.iter().any(|c| c.name == *n)));
+    assert!(CUTS.iter().any(|c| c.name == "object_shadows" && c.entry == 0x0003_35e0 && c.pop == 4));
 }
 
 /// The world layers cut draw in the slots the design traces, and the

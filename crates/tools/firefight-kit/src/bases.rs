@@ -59,11 +59,9 @@ pub struct Config {
     /// Leave the drop pods out: no pod tag, no pools, no falls
     /// (`crate::sky`).
     pub no_pods: bool,
-    /// The collision material indices that are sky. A ray's first hit on
-    /// one is no roof (`crate::sky::Roof`); empty counts every surface as
-    /// solid, so a start is open only when nothing is over it. Which
-    /// materials mark sky is unverified (docs/game/firefight.md, "Drop
-    /// pods").
+    /// Collision material indices to count as sky besides the ones whose
+    /// shader is a sky (`crate::sky::sky_materials`); empty on the retail
+    /// maps, where no shader is.
     pub sky_materials: &'static [u16],
 }
 
