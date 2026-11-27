@@ -480,3 +480,67 @@ pub(super) fn window_inputs(
         Err(Decline::Layout)
     }
 }
+
+/// The region records the gather leaves behind `[vis]`: the frustum count
+/// (`u16` at `+0`), the region count and rows (`0x1a` bytes: the cluster,
+/// six window counts, six first-window indices), the window count and the
+/// `0x108`-byte windows (box at `+0x60`, planes at `+0x78`).
+pub mod regions {
+    pub const FRUSTA: u32 = 0x0;
+    pub const COUNT: u32 = 0xa6c;
+    pub const ROWS: u32 = 0xa6e;
+    pub const ROW_STRIDE: u32 = 0x1a;
+    pub const ROW_WINDOWS: u32 = 0x2;
+    pub const ROW_FIRST: u32 = 0xe;
+    pub const WINDOW_COUNT: u32 = 0x1970;
+    pub const WINDOWS: u32 = 0x1974;
+    pub const WINDOW_STRIDE: u32 = 0x108;
+    pub const WINDOW_BOUNDS: u32 = 0x60;
+    pub const WINDOW_PLANES: u32 = 0x78;
+}
+
+/// The guest's window frusta of the main view in mode 0, each with its
+/// region's cluster: per region, the windows `first..first + count`, as
+/// the object test `0x00165010` reads them. One view frustum only, as the
+/// Rust flood ([`Decline::Frusta`] otherwise).
+pub fn window_frusta(mem: &dyn GuestRead) -> Result<super::frusta::WindowFrusta, Decline> {
+    use super::flood::{MAX_REGIONS, MAX_WINDOWS};
+    use super::frusta::{Frustum, WindowFrusta};
+    let view = view(mem)?;
+    if view.mode != 0 {
+        return Err(Decline::Mode);
+    }
+    let u = Decline::Unread;
+    let l = Decline::Layout;
+    let base = ptr_at(mem, MAIN_VIS).ok_or(u)?;
+    let field = |offset: u32| at(base, offset).ok_or(l);
+    if u16_at(mem, field(regions::FRUSTA)?).ok_or(u)? != 1 {
+        return Err(Decline::Frusta);
+    }
+    let count = u32::from(u16_at(mem, field(regions::COUNT)?).ok_or(u)?);
+    let windows = u32::from(u16_at(mem, field(regions::WINDOW_COUNT)?).ok_or(u)?);
+    if count as usize > MAX_REGIONS || windows as usize > MAX_WINDOWS {
+        return Err(l);
+    }
+    let mut out = WindowFrusta::default();
+    for i in 0..count {
+        let row = field(regions::ROWS + regions::ROW_STRIDE * i)?;
+        let cluster = u16_at(mem, row).ok_or(u)?;
+        let n = u32::from(u16_at(mem, at(row, regions::ROW_WINDOWS).ok_or(l)?).ok_or(u)?);
+        if n == 0 {
+            continue;
+        }
+        let first = u32::from(u16_at(mem, at(row, regions::ROW_FIRST).ok_or(l)?).ok_or(u)?);
+        if first + n > windows {
+            return Err(l);
+        }
+        for w in first..first + n {
+            let slot = field(regions::WINDOWS + regions::WINDOW_STRIDE * w)?;
+            let bounds = floats(mem, at(slot, regions::WINDOW_BOUNDS).ok_or(l)?)?;
+            let flat: [f32; 24] = floats(mem, at(slot, regions::WINDOW_PLANES).ok_or(l)?)?;
+            let planes = std::array::from_fn(|p| std::array::from_fn(|k| flat[4 * p + k]));
+            out.0.push((cluster, Frustum { bounds, planes }));
+        }
+    }
+    Ok(out)
+}

@@ -15,12 +15,17 @@
 //! - [`view`] builds the main view's render camera, projection, start
 //!   cluster and mode, and compares them with the guest's.
 //! - [`light`] is a light view's sets against its struct's lists.
-//! - [`parity`] compares sets with the guest's lists.
+//! - [`parity`] compares sets with the guest's lists, and
+//!   [`frusta::compare`] the window frusta with the guest's
+//!   ([`guest::window_frusta`]).
+//! - [`shadow`] is the three shadow arms (clusters, frusta, objects): a
+//!   sampled frame compares, an arm answers after its clean matches and
+//!   falls back to the guest on any difference.
 //!
-//! The scene step runs [`compute`] for every game view after the guest's
-//! gather and puts the Rust sets in the view's `ClusterGather` when its
-//! lists read: they are the default. A view whose computation declined
-//! keeps the guest's lists, and a view whose lists did not read carries no
+//! The scene step runs [`compute`] for a game view when an arm needs it,
+//! after the guest's gather, and [`answer`] puts the answering arms' sets
+//! in the view's `ClusterGather`. A view whose computation declined keeps
+//! the guest's lists, and a view whose lists did not read carries no
 //! gather; nothing here writes guest memory, so the sim's hashes cannot
 //! move.
 
@@ -38,6 +43,7 @@ pub mod portal_projection;
 pub mod portal_clip;
 pub mod pvs;
 mod read;
+pub mod shadow;
 pub mod sphere;
 pub mod view;
 pub mod window_record;
@@ -221,20 +227,27 @@ pub fn compute_with_windows(
     Ok((VisibilitySets::new(reached.clusters, objects), windows))
 }
 
-/// The view's gather with the Rust sets in place of the guest's lists, and
-/// the comparison. The Rust sets are the default: the scene step reaches
-/// here only when the computation held, a view it declined keeps the
-/// guest's lists, and a difference keeps the Rust sets, counted and named.
-/// The guest's lists remain what the render records were built from.
-pub fn arm(
+/// The view's gather with the shadow arms' answers ([`shadow`]): the Rust
+/// clusters in place of the guest's when `clusters`, the Rust objects when
+/// `objects`. The source is Rust only when both answer, so a gather marked
+/// Rust holds ascending sets. The structure list stays the guest's, and
+/// the guest's lists remain what the render records were built from.
+pub fn answer(
     mut gather: frame_scene::scene::ClusterGather,
     rust: VisibilitySets,
-) -> (frame_scene::scene::ClusterGather, Parity) {
-    let parity = compare(&rust, &guest::guest_sets(&gather));
-    gather.visible = rust.clusters;
-    gather.objects = rust.objects;
-    gather.source = frame_scene::VisibilitySource::Rust;
-    (gather, parity)
+    clusters: bool,
+    objects: bool,
+) -> frame_scene::scene::ClusterGather {
+    if clusters {
+        gather.visible = rust.clusters;
+    }
+    if objects {
+        gather.objects = rust.objects;
+    }
+    if clusters && objects {
+        gather.source = frame_scene::VisibilitySource::Rust;
+    }
+    gather
 }
 
 #[cfg(test)]

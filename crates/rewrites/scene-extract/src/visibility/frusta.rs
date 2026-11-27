@@ -205,6 +205,88 @@ impl WindowFrusta {
     }
 }
 
+/// How a view's Rust window frusta compare with the guest's, bit for bit,
+/// as a multiset of (cluster, bounds, planes): the guest's order differs
+/// from the merge's by region.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrustaParity {
+    pub guest_only: u32,
+    pub rust_only: u32,
+    /// The cluster of the first frustum only one side has, ascending.
+    pub first: Option<(u16, bool)>,
+}
+
+impl FrustaParity {
+    pub fn holds(&self) -> bool {
+        self.first.is_none()
+    }
+}
+
+impl std::fmt::Display for FrustaParity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.first {
+            None => write!(f, "equal"),
+            Some((c, true)) => write!(f, "a frustum of cluster {c} guest only"),
+            Some((c, false)) => write!(f, "a frustum of cluster {c} rust only"),
+        }
+    }
+}
+
+type FrustumKey = (u16, [u32; 30]);
+
+fn keys(w: &WindowFrusta) -> Vec<FrustumKey> {
+    let mut keys: Vec<FrustumKey> = w
+        .0
+        .iter()
+        .map(|(c, f)| {
+            let mut bits = [0; 30];
+            for (out, v) in bits.iter_mut().zip(f.bounds.iter().chain(f.planes.iter().flatten())) {
+                *out = v.to_bits();
+            }
+            (*c, bits)
+        })
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// The Rust frusta against the guest's ([`super::guest::window_frusta`]).
+pub fn compare(rust: &WindowFrusta, guest: &WindowFrusta) -> FrustaParity {
+    let (r, g) = (keys(rust), keys(guest));
+    let mut p = FrustaParity::default();
+    let (mut i, mut j) = (0, 0);
+    let only = |p: &mut FrustaParity, guest_side: bool, k: &FrustumKey| {
+        if guest_side {
+            p.guest_only += 1;
+        } else {
+            p.rust_only += 1;
+        }
+        p.first.get_or_insert((k.0, guest_side));
+    };
+    while i < r.len() || j < g.len() {
+        match (r.get(i), g.get(j)) {
+            (Some(a), Some(b)) if a == b => {
+                i += 1;
+                j += 1;
+            }
+            (Some(a), Some(b)) if a < b => {
+                only(&mut p, false, a);
+                i += 1;
+            }
+            (_, Some(b)) => {
+                only(&mut p, true, b);
+                j += 1;
+            }
+            (Some(a), None) => {
+                only(&mut p, false, a);
+                i += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    p
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -378,6 +460,25 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn frusta_compare_as_a_multiset_bit_for_bit() {
+        let lens = lens();
+        let a = Frustum::build([0.0, 1.0, -1.0, 1.0], &lens, &INPUTS).unwrap();
+        let b = Frustum::build([-1.0, 0.0, -1.0, 1.0], &lens, &INPUTS).unwrap();
+        let rust = WindowFrusta(vec![(2, a), (3, b), (2, b)]);
+        let guest = WindowFrusta(vec![(2, b), (2, a), (3, b)]);
+        assert!(compare(&rust, &guest).holds(), "the order does not matter");
+        let mut signed = b;
+        signed.planes[0][3] = f32::from_bits(b.planes[0][3].to_bits() ^ 0x8000_0000);
+        let guest = WindowFrusta(vec![(2, signed), (2, a), (3, b)]);
+        let p = compare(&rust, &guest);
+        assert_eq!((p.guest_only, p.rust_only), (1, 1), "a flipped sign bit differs");
+        assert_eq!(p.first.map(|(c, _)| c), Some(2));
+        let p = compare(&rust, &WindowFrusta(vec![(2, a), (3, b)]));
+        assert_eq!((p.guest_only, p.rust_only, p.first), (0, 1, Some((2, false))));
+        assert_eq!(p.to_string(), "a frustum of cluster 2 rust only");
     }
 
     #[test]

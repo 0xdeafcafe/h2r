@@ -381,38 +381,105 @@ fn the_cache_keeps_a_graph_until_the_map_or_its_shape_changes() {
 }
 
 #[test]
-fn the_arm_takes_the_rust_sets_whenever_it_computes_them() {
+fn the_answer_takes_the_rust_sets_of_the_arms_that_answer() {
     let rust = run(&scene()).unwrap();
-    let gather = |visible: Vec<u16>, objects: Vec<u32>| ClusterGather {
+    let gather = || ClusterGather {
         mode: 0,
-        visible,
+        visible: vec![1, 0, 7],
         structure: vec![1],
-        objects,
+        objects: vec![0x0001_0002, 0x0001_0001],
         source: VisibilitySource::Guest,
     };
-    let (taken, p) = arm(
-        gather(vec![1, 0], vec![0x0001_0002, 0x0001_0001]),
-        rust.clone(),
-    );
-    assert!(p.holds());
-    assert_eq!(taken.source, VisibilitySource::Rust);
+    let both = answer(gather(), rust.clone(), true, true);
+    assert_eq!(both.source, VisibilitySource::Rust);
     assert_eq!(
-        (taken.visible, taken.objects),
+        (both.visible, both.objects),
         (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
     );
-    assert_eq!(taken.structure, [1], "the structure list stays the guest's");
-    // A deliberate mismatch: the guest saw a cluster Rust did not. The
-    // Rust sets stand — the default — and the difference stays counted
-    // and named; a view whose computation declined never reaches the arm.
-    let guest_gather = gather(vec![1, 0, 7], vec![0x0001_0002, 0x0001_0001]);
-    let (stood, p) = arm(guest_gather, rust);
-    assert_eq!(p.first, Some(Mismatch::ClusterGuestOnly(7)));
-    assert_eq!(stood.source, VisibilitySource::Rust);
-    assert_eq!(
-        (stood.visible, stood.objects),
-        (vec![0, 1], vec![0x0001_0001, 0x0001_0002])
-    );
-    assert_eq!(stood.structure, [1]);
+    assert_eq!(both.structure, [1], "the structure list stays the guest's");
+    // The clusters answer, the objects fell back: the guest's objects in
+    // its order, and the gather is not marked Rust.
+    let clusters = answer(gather(), rust.clone(), true, false);
+    assert_eq!(clusters.source, VisibilitySource::Guest);
+    assert_eq!(clusters.visible, [0, 1]);
+    assert_eq!(clusters.objects, [0x0001_0002, 0x0001_0001]);
+    assert_eq!(answer(gather(), rust, false, false), gather(), "the guest's, untouched");
+}
+
+/// `v` at the half-word `addr`.
+fn half(m: &mut Mem, addr: u32, v: u16) {
+    let word = m.0.get(&(addr & !3)).copied().unwrap_or(0);
+    let shift = (addr & 2) * 8;
+    m.w(addr & !3, (word & !(0xffff << shift)) | (u32::from(v) << shift));
+}
+
+/// Writes `frusta` as the guest's region records behind `[vis]`: one
+/// region per cluster in first-seen order, its windows consecutive.
+fn guest_regions(m: &mut Mem, frusta: &frusta::WindowFrusta) {
+    use super::guest::regions as r;
+    let base = 0xf000;
+    half(m, base + r::FRUSTA, 1);
+    let mut order: Vec<u16> = Vec::new();
+    for (c, _) in &frusta.0 {
+        if !order.contains(c) {
+            order.push(*c);
+        }
+    }
+    let mut slot = 0u32;
+    for (i, &c) in order.iter().enumerate() {
+        let row = base + r::ROWS + r::ROW_STRIDE * i as u32;
+        let windows: Vec<_> = frusta.0.iter().filter(|(id, _)| *id == c).collect();
+        half(m, row, c);
+        half(m, row + r::ROW_WINDOWS, windows.len() as u16);
+        half(m, row + r::ROW_FIRST, slot as u16);
+        for (_, f) in windows {
+            let at = base + r::WINDOWS + r::WINDOW_STRIDE * slot;
+            for (k, v) in f.bounds.into_iter().enumerate() {
+                m.f(at + r::WINDOW_BOUNDS + 4 * k as u32, v);
+            }
+            for (k, v) in f.planes.iter().flatten().enumerate() {
+                m.f(at + r::WINDOW_PLANES + 4 * k as u32, *v);
+            }
+            slot += 1;
+        }
+    }
+    half(m, base + r::COUNT, order.len() as u16);
+    half(m, base + r::WINDOW_COUNT, slot as u16);
+}
+
+#[test]
+fn the_guest_window_frusta_read_back_equal_to_the_rust_ones() {
+    let mut m = scene();
+    let (_, windows) = compute_with_windows(
+        &m,
+        &camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        &mut GraphCache::default(),
+        1,
+    )
+    .unwrap();
+    let rust = windows.expect("mode 0 has frusta");
+    assert!(!rust.0.is_empty(), "the flood made window frusta");
+    guest_regions(&mut m, &rust);
+    let guest = guest::window_frusta(&m).unwrap();
+    assert!(frusta::compare(&rust, &guest).holds());
+
+    // A deliberate difference: one plane's distance off by one ulp.
+    use super::guest::regions as r;
+    let at = 0xf000 + r::WINDOWS + r::WINDOW_PLANES + 12;
+    let bits = m.0[&at];
+    m.w(at, bits ^ 1);
+    let p = frusta::compare(&rust, &guest::window_frusta(&m).unwrap());
+    assert_eq!((p.guest_only, p.rust_only), (1, 1));
+
+    // A region whose windows run past the window count is the layout's.
+    half(&mut m, 0xf000 + r::WINDOW_COUNT, 0);
+    assert_eq!(guest::window_frusta(&m), Err(Decline::Layout));
+    // Two view frusta: the flood ports one.
+    half(&mut m, 0xf000 + r::FRUSTA, 2);
+    assert_eq!(guest::window_frusta(&m), Err(Decline::Frusta));
+    // Another mode has no window frusta to compare.
+    m.w(MAIN_VIS + vis::MODE, 1);
+    assert_eq!(guest::window_frusta(&m), Err(Decline::Mode));
 }
 
 #[test]

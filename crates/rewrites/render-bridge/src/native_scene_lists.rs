@@ -162,12 +162,14 @@ impl Feature for ScaledSceneLists {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
+        // The guest's view projection and visibility producers, replaced
+        // unless `impl.render.native.visibility=off` (retire-d3d.md R4);
+        // the scene step's shadow arms answer only while it is on.
+        let visibility = hooks::switches::native_visibility_on(b.switches());
+        crate::scene_step::set_native_visibility(visibility);
         if !enabled(b.switches()) {
             return Ok(());
         }
-        // The guest's view projection and visibility producers, replaced
-        // unless `impl.render.native.visibility=off` (retire-d3d.md R4).
-        let visibility = hooks::switches::native_visibility_on(b.switches());
         if visibility {
             portal_walk::install(b);
             install(

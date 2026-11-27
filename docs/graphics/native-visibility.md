@@ -1,8 +1,8 @@
 # Visibility in Rust
 
-Status: Built, not verified. Every game view's visible clusters and objects (modes 0, 1 and 2), the run-time-computed visible sets, the window frusta objects are tested against, the main view's records and the sphere-mode and frustum-mode light views are computed in Rust and compared with the guest's. The native scene-list hooks publish single-frustum portal walks, window merges, sphere regions and PVS regions after comparing the original producer's output. The view projection builder `0x0002fb70` runs in Rust at every call it accepts. The rest of the guest's view setup and any call the hooks decline run in the guest and are the fallback a decline takes.
-Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `arm`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`.
-Switch: `impl.render.native.visibility` (on, with `impl.render.native`). Off, the guest's `0x0002fb70` and its portal, window, sphere and PVS producers run; the scene step's differential runs either way. Both are listed in [switches.md](../runtime/switches.md).
+Status: Built, not verified. Every game view's visible clusters and objects (modes 0, 1 and 2), the run-time-computed visible sets, the window frusta objects are tested against, the main view's records and the sphere-mode and frustum-mode light views are computed in Rust and compared with the guest's. The main view's cluster set, window frusta and object set run as shadow arms: 1 frame in 64 is compared, and each arm answers after 16 clean samples and falls back to the guest on any difference. The native scene-list hooks publish single-frustum portal walks, window merges, sphere regions and PVS regions after comparing the original producer's output. The view projection builder `0x0002fb70` runs in Rust at every call it accepts. The rest of the guest's view setup and any call the hooks decline run in the guest and are the fallback a decline takes.
+Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `answer`, `shadow`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `scene_step`'s `the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`, `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`.
+Switch: `impl.render.native.visibility` (on, with `impl.render.native`). Off, the guest's `0x0002fb70` and its portal, window, sphere and PVS producers run, and the shadow arms compare their samples and never answer. Both are listed in [switches.md](../runtime/switches.md).
 
 Slice R4 of [retire-d3d.md](retire-d3d.md). For every game view the scene step builds, beside the guest's, the view's records (its render camera, projection, start cluster and mode), which BSP clusters the view sees and which objects it lists. At each dynamic light's passes it does the same for the light's view. At first-person replay it compares the ordered light slots and their records.
 
@@ -21,11 +21,11 @@ flowchart LR
   F --> O[object set]
   S --> O
   P --> O
-  O --> C[compare with the guest's lists]
-  C --> G[gather carries the Rust sets, guest lists are the fallback]
+  O --> C[shadow arms: clusters, frusta, objects]
+  C --> G[gather carries what each proven arm answers, the guest's lists the rest]
 ```
 
-Each comparison counts differences and names the first. The scene's gather carries the Rust main-view sets by default, and the guest's lists are the fallback a decline takes. A view whose lists do not read carries no gather; it uses Rust camera records and recorded light handles only on equality. The scene comparison reads guest memory.
+Each comparison counts differences and names the first. The scene's gather carries the main-view parts whose shadow arm answers, and the guest's lists for the rest. A view whose lists do not read carries no gather; it uses Rust camera records and recorded light handles only on equality. The scene comparison reads guest memory.
 
 The scene-list producers also publish the ordered scratch records and visit stamps that their callers consume.
 
@@ -223,23 +223,49 @@ At first-person entry, `first_person::slots` compares the number of slots, light
 
 The guest's sets are its region list (`[vis] + 0xa6e`, `0x1a` apart) and its object list (`[vis + 0x14]`), read by `extract::cluster_gather` at the view's base layer 3 (the main view) or `light::guest_lists` (a light). `parity::compare` walks the two ascending sets and counts what only the guest has and what only Rust has, clusters before objects, naming the first.
 
-`visibility::arm` returns the gather with the Rust sets (ascending, `source: rust`). They are the default, so a difference keeps them and stays counted and named. The scene step keeps the guest's for a view whose computation declined, which never reaches the arm. The guest's lists remain what the render records were built from.
+The guest's window frusta are its region windows, read by `guest::window_frusta` in mode 0: per region, the `0x108`-byte windows `first..first + count` from `[vis] + 0x1974`, as `0x00165010` reads them (row `+2` the count, `+0xe` the first). `frusta::compare` compares the box and six planes bit for bit, as a multiset per cluster, since the merge's order is not the regions'.
 
-The arm runs for every game view, whether or not its lists read. A view whose lists did not read is computed and counted, and carries no gather: the gather's mode and structure list are the guest's, and the comparison has no other side.
+A light's comparison is counted only: no light list is carried into the scene.
 
-`scene_step::visibility_arm` counts each view and keeps the first difference since the map loaded. A light's comparison is counted only: no light list is carried into the scene.
+### The shadow arms
+
+`scene_step::visibility_arm` runs three arms for the main view (`visibility::shadow`): the cluster set (the portal traversal, mode 0; the sphere and PVS floods in modes 1 and 2), the window frusta (mode 0 only) and the object set.
+
+| Arm state | Sampled frame (`FRAME % 64 == 0`) | Other frames |
+|---|---|---|
+| learning | compute and compare; the guest answers | the guest answers; nothing is computed |
+| proven (16 clean samples) | compute and compare; Rust answers when equal | Rust answers, uncompared |
+| fallen (any difference) | compute and compare, counted; the guest answers | the guest answers |
+
+- A difference falls the arm back for the rest of the map. A map load (`scene_step::map_changed`) or snapshot restore (`scene_step::forget`) sets every arm to learning; the counts stay.
+- With `impl.render.native.visibility=off` (`scene_step::set_native_visibility`, from the scene-list feature's install) the arms compare their samples and never answer.
+- `visibility::answer` puts the answering arms' sets in the gather. The source is `rust` only when both the cluster and object arms answer, so a gather marked `rust` holds ascending sets.
+- The frusta handed to the decorators and the light clip are the Rust ones when that arm answers, else the guest's from `guest::window_frusta`.
+- A frame no arm needs computes nothing, unless the display supplement wants the retail sets.
+- A decline (the computation's, or the guest's lists or windows not reading) keeps the guest's result and is counted.
+
+| Counter (`render.scene`), per arm `clusters`, `frusta`, `objects` | Counts |
+|---|---|
+| `scene_visibility_<arm>_matched` | sampled views, equal |
+| `scene_visibility_<arm>_differ` | sampled views, different |
+| `scene_visibility_<arm>_answered` | unsampled views Rust answered |
+| `scene_visibility_<arm>_guest` | unsampled views the guest answered |
+| `scene_visibility_<arm>_declined` | views either side made no result for |
+| `scene_visibility_<arm>_proven`, `_fallen` | 1 while the arm answers, or after it fell back, on this map |
+
+`scene_visibility_checked`, `_equal` and `_differ` count the sampled views; `scene_visibility_rust_taken` the views whose gather is `rust`. `visibility_first_mismatch` names the first sampled difference since the map loaded, clusters and objects before frusta.
 
 ## Interfaces
 
 - Called from `render_bridge::scene_step::open_kind_at_layer` when a game view's base layer 3 is read (`view_record_arm`, then `visibility_arm`), whether or not `extract::cluster_gather`'s lists read: they are the comparison's other side and the fallback. Also from `scene_step::light` at each dynamic light's passes. First-person slot collection runs at the dynamic constants call and compares at replay.
 - Reads, all through `GuestRead`: the visibility structs `0x00547f88` and `0x0054aa68` (`+8` start cluster, `+0x14` object list, `+0x2a60` flags, `+0x2a64` frustum count, `+0x2a68` and `+0x2a74` the sphere, `+0x2a78` view kind, `+0x2a7c` mode), `[0x004c0b80]` (the active struct), the structure tag and its collision BSP, the open-portal bits, the object and reference datum arrays, the light records, the sky globals, the view's local user, the local player map, the users' camera kinds, the players' units, the view records, the observer cameras, the render camera, and the image's values named above.
 - The scene differential reads the lists. The native publication hooks write the scratch records described above.
-- `render.scene` reports it ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)): per game view `visibility_source` and `visibility_objects`; the top level `visibility_first_mismatch`, `light_visibility_first_mismatch`, `first_person_visibility_first_mismatch` and `view_record_first_mismatch`; and the `scene_visibility_*`, `scene_light_visibility_*`, `scene_first_person_visibility_*` and `scene_view_record_*` counters.
+- `render.scene` reports it ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)): per game view `visibility_source` and `visibility_objects`; the top level `visibility_first_mismatch`, `light_visibility_first_mismatch`, `first_person_visibility_first_mismatch` and `view_record_first_mismatch`; and the `scene_visibility_*` (the shadow arms' `scene_visibility_{clusters,frusta,objects}_*` among them), `scene_light_visibility_*`, `scene_first_person_visibility_*` and `scene_view_record_*` counters.
 
 ## Rules and limits
 
 - **Membership and draw order.** The region records retain their production order. The comparator at `0x00134950` sorts a separate array of region ordinals. The scene's Rust membership sets are ascending, and a consumer that needs the guest's order reads it from a `guest` view. The native publication hooks compare the ordered records at their consumer.
-- **The guest is the fallback.** A view for which the computation declines keeps the guest's gather. A difference keeps the Rust sets, the default, and stays counted and named; the render records were still built from the guest's lists. A view whose lists do not read carries no gather. The camera records and the first-person light handles stay taken only on equality.
+- **The guest is the fallback.** A view for which the computation declines keeps the guest's gather. A difference falls its arm back to the guest for the map, counted and named; the render records are built from the guest's lists either way. A view whose lists do not read carries no gather. The camera records and the first-person light handles stay taken only on equality.
 - **Not ported.** The overlap records for light windows against source-view windows (`0x00132900`, a merge over both region lists calling `0x00132780` and `0x001648d0`); cinematic and override cameras; the render camera `0x00223080` and `0x0002f800` write. The scene step's `view::build` reconstructs only the default extents; the builder at the guest call takes any.
 - **Shared stamps.** The sphere gather checks the active collision BSP before taking over shared visit stamps. A light's reconstructed lens can still differ from its source frusta. The light differential reports those differences.
 
@@ -262,11 +288,13 @@ The arm runs for every game view, whether or not its lists read. A view whose li
 - That the item lists `0x00040e90` leave the light struct's lists alone between a light's gather and its passes: **S**.
 - That `0x0002fb70` has one caller (`0x0002fd99`): **Code**, a scan of `.text` for calls and jumps to it.
 - `0x0002fb70`'s buffer and registers equal the lifted original's over seeded cameras, extents, override and display states: **Test** (`view_projection_differential`, needs the XBE).
-- Every behaviour above on invented fixtures: **Test** (`visibility::tests`, and the `flood`, `frusta`, `sphere`, `pvs`, `objects`, `view`, `light`, `parity` and `graph` tests).
+- Every behaviour above on invented fixtures: **Test** (`visibility::tests`, and the `flood`, `frusta`, `sphere`, `pvs`, `objects`, `view`, `light`, `parity`, `shadow` and `graph` tests).
+- The arms' sampling, proof, fall-back, switch and declines over the scene step: **Test** (`scene_step::tests::the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`).
 
 ## Not verified
 
-- That the sets and records equal the guest's on real scenes. The acceptance of R4 is `scene_visibility_differ`, `scene_light_visibility_differ`, `scene_first_person_visibility_differ` and `scene_view_record_differ` at zero, over the gate corpus, with all four `*_first_mismatch` fields absent. `scene_visibility_rust_taken` equals `scene_visibility_checked` by construction: the Rust sets are the default, and the `scene_visibility_declined_*` counters name the views that keep the guest's.
+- That the sets and records equal the guest's on real scenes. The acceptance of R4 is `scene_visibility_differ`, `scene_light_visibility_differ`, `scene_first_person_visibility_differ` and `scene_view_record_differ` at zero, over the gate corpus, with all four `*_first_mismatch` fields absent, and `scene_visibility_{clusters,frusta,objects}_proven` at 1 with `_fallen` at 0. The `scene_visibility_declined_*` counters name the views that keep the guest's.
+- That 16 clean samples (about 17 seconds at 60 frames a second) is enough proof before an arm answers.
 - That the render camera and projection at layer 3 are the lens the gather used: the display copy can change the projection after the gather (occlusion-culling.md).
 - Which maps use modes 1 and 2, how often a start cluster's set is computed, how many lights take mode 0, and whether any view has more than one frustum.
 - The time per view (`scene_visibility_ns` over `scene_visibility_checked` plus the declines) and per light (`scene_light_visibility_ns`).
