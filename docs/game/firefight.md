@@ -321,7 +321,9 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
   each Firefight team's players' centre (`u32::MAX` for a team with no
   unit). A player's `team` is its game team; `player_kills` are the
   tick's players killed by players.
-- States (`Phase`): `Warmup` until the first wave's gap has passed,
+- States (`Phase`): `Warmup` until the first wave's gap has passed, or
+  one second (`first_lead`) if that is sooner: a wave's gap is the
+  breather before it, and the game's start has nothing to breathe from;
   `Spawning` while the wave has squads in the reserve, `Fighting` once
   all are placed, `Cleanup`, `Intermission` for the next wave's gap, and
   `Done`. `Round` (with the round's new `Skull` commands) and `Wave` are
@@ -970,6 +972,10 @@ names the ship out; one ship is out at a time.
   that ship in the world, is placed by `ff_ship_hover(kind, true)` and
   `ff_drop_squad(..., kind)`
   (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
+  When the warmup cut the set's first gap (`opening_cut`), the game's
+  first wave (round 0, wave 0 of the first set) takes no ship: its squads
+  drop by pod or arrive on foot, so the first enemies land within seconds
+  of the start and not after the ship's 10 s run.
   Every other squad, including each squad of a wave while the ship is
   out, is placed on foot by `place_squad_at` as before, so a wave
   never waits on the ship, and a map with no ship or no path has the
