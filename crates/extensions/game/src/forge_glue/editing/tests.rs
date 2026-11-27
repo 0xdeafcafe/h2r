@@ -92,7 +92,8 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         }),
         base_counts: [(item.block, 2)]
             .into_iter()
-            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, 1))))
+            // Each block counts its rows; they come in index order.
+            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, r.index + 1))))
             .collect(),
         ..Limits::default()
     };
