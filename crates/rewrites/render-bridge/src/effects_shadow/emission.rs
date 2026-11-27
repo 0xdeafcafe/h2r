@@ -1,4 +1,4 @@
-//! R2's emission arm (docs/graphics/retire-d3d.md, "R2's emission arm"):
+//! R2's emission arm (docs/graphics/retire-d3d-r2.md, "R2's emission arm"):
 //! each particle's emission, made in Rust by
 //! [`engine::particle_emission::predict`] at the callback `0x00224550`'s
 //! entry and compared at its call of the emitter `0x0023ed30` with what
