@@ -112,13 +112,26 @@ external sequence, committed whole or not at all:
   texels;
 - the layer 11 receivers on the view's target, sampling that copy's map.
 
-A creature's ground shadow, a shadow that is not a mask caster followed
-by its receivers, or a caster region off its target's corner refuses the
-shadow. The hand-off is held (`object_shadow_scene::HELD`): the
-caster body `0x00032350` (`engine::render::light_gather::object_shadows::caster`,
-`layers`) still makes the guest's layer 10 begin, draw and end, the
-filter and layer 11 as it gathers the groups, so the host is not asked
-until that body stops after its item lists.
+Under the scene path (`native_lights::scene_path_ready`) the caster body
+`0x00032350` (`engine::render::light_gather::object_shadows::caster`,
+`run_with`) stops after its item lists `0x00040e90`: its layer 10 begin,
+draw and end, the filter `0x000222a0`, layer 11 and the tail
+`0x0004a780` do not run. The volume, records, constants and shadow
+setup before them still run, so the lists, pass flags, definition and
+projection block are this caster's. `object_shadow_scene::cut` then plans
+the shadow from them as the cut light passes plan theirs
+(`typed_groups::plan` with `GroupSite::ObjectShadow`): layer 10 into
+target 10 and layer 11 on the view's target, when the casters hold layer
+10 and the receivers layer 11, with the published weight and the filter
+`scene_extract::light_groups::shadow_filter` computes. A shadow that does
+not plan is `scene_dropped_object_shadows`. Off the scene path the guest
+body draws its own layers and the host is not asked, so each shadow
+draws once. A creature's ground shadow, a shadow that is not a mask
+caster followed by its receivers, or a caster region off its target's
+corner refuses the shadow.
+`the_cut_casters_object_shadow_groups_equal_the_guests_layer_build`
+(`native_lights/walk.rs`) checks the planned groups against the guest's
+layer build.
 
 ## Interfaces
 

@@ -345,11 +345,33 @@ async fn creature(cx: &Cx, p: &Plan, s: u32, eax: u32) -> Result<Ret, EntryError
     done(p.call(cx, site, draw).await?.eax)
 }
 
+impl Plan {
+    /// The float modes the caster was entered with.
+    pub fn fpu(&self) -> Fpu {
+        self.fpu
+    }
+}
+
 /// Run the admitted caster, returning EAX and popping both stack words.
 /// Record building goes through 0x0002cbc0, and item building through
 /// the installed light-kind body at SCENE_ITEMS. Each call keeps the
 /// return site the layer, filter and gather observers see.
 pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
+    run_with(cx, p, |_, _| false).await
+}
+
+/// [`run`], with `at_items` asked once the mask branch's item lists are
+/// made (after `0x00040e90`, before layer 10 begins). When it answers
+/// true the caster stops there: its layer 10 begin, draw and end, the
+/// filter `0x000222a0`, layer 11 and the tail `0x0004a780` do not run,
+/// and the caster returns as it would after them. The scene draws them
+/// instead (docs/graphics/native-shadows.md, "The object shadows from
+/// the scene").
+pub async fn run_with(
+    cx: &Cx,
+    p: Plan,
+    at_items: impl FnOnce(&mut dyn GuestMemory, &Plan) -> bool,
+) -> Result<Ret, EntryError> {
     let s = p.entry_esp - FRAME;
     let object = p.object;
     let body = p.body;
@@ -606,13 +628,18 @@ pub async fn run(cx: &Cx, p: Plan) -> Result<Ret, EntryError> {
         .await?;
         let weight = cx.read(|m| m.u32(s + 0x14))?;
         cx.write(|m| m.set_u32(LIGHT_WEIGHT, weight))?;
-        p.call(
-            cx,
-            0x0003_291f,
-            shadow(passes::call::ITEMS).eax(0).xmm0(weight.into()),
-        )
-        .await?;
-        layers(cx, &p, s).await?
+        let items = p
+            .call(
+                cx,
+                0x0003_291f,
+                shadow(passes::call::ITEMS).eax(0).xmm0(weight.into()),
+            )
+            .await?;
+        if cx.write(|m| at_items(m, &p)) {
+            items.eax
+        } else {
+            layers(cx, &p, s).await?
+        }
     } else {
         parts.eax
     };

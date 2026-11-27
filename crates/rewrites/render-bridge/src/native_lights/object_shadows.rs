@@ -31,7 +31,9 @@ enum Entry {
 enum Body {
     List(object_shadows::Plan),
     Rows(rows::Plan),
-    Caster(caster::Plan),
+    /// The caster, and whether it stops after its item lists (the scene
+    /// path, [`super::object_shadow_scene::cut`]).
+    Caster(caster::Plan, bool),
 }
 
 impl Entry {
@@ -48,7 +50,8 @@ impl Entry {
         match self {
             Self::List => object_shadows::plan(m, esp).map(Body::List),
             Self::Rows => rows::plan(m, esp, ebx, fpu).map(Body::Rows),
-            Self::Caster => caster::plan(m, esp, fpu).map(Body::Caster),
+            Self::Caster => caster::plan(m, esp, fpu)
+                .map(|p| Body::Caster(p, super::scene_path_ready())),
         }
     }
 }
@@ -58,7 +61,14 @@ impl Body {
         match self {
             Self::List(p) => object_shadows::run(cx, p).await,
             Self::Rows(p) => rows::run(cx, p).await.map(|(ret, _)| ret),
-            Self::Caster(p) => caster::run(cx, p).await,
+            Self::Caster(p, false) => caster::run(cx, p).await,
+            Self::Caster(p, true) => {
+                caster::run_with(cx, p, |m, p| {
+                    super::object_shadow_scene::cut(&*m, p.fpu());
+                    true
+                })
+                .await
+            }
         }
     }
 }
