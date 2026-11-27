@@ -143,7 +143,9 @@ A residency request that needs a new queue entry, a priority raise or a wait (`r
 | `walk_unreadable` | views whose sorted list or ownership could not be established (unknown object count) |
 | `walk_part_*` | parts (not objects) behind `walk_unsupported`, by cause (below) |
 | `walk_fallback` | every object above but `walk_native` and `walk_unreadable`: its guest handler draws |
-| `scene_kept_<site>3_object_<cause>` (`render.scene`) | the same objects by view (`""` the scene, `alt` the alternate view) and cause (`unsupported`, `order`, `state`, `reservation`, `unresident`, ...) |
+| `scene_kept_<site>3_object_<cause>` (`render.scene`) | the same objects by view (`""` the scene, `alt` the alternate view) and cause (`unsupported`, `order`, `state`, `reservation`, `unresident`, ...), and `scene` for the objects of a walk whose extraction the scene step refused |
+| `scene_kept_<site>3_unreadable_list` | walks whose sorted entries do not read |
+| `scene_kept_<site>3_object_walk_{host,list}` | object items of a layer 3 with no walk (no host; the list does not read), counted per item at the layer's return (`native_layers::leave`) |
 
 The walk takes only the first slot of its next admitted run (`native_objects::handler_at`). Every other handler call draws as the guest's: an object of a span the walk did not admit, the slots of a run the host refused, a call outside the list (`native_objects::keep`). A Grunt, a Phantom or a door whose part the walk cannot read is drawn by its handler, not dropped (tests `a_handler_the_walk_does_not_take_draws_as_the_guests`, `objects_the_walk_keeps_are_counted_by_cause`).
 

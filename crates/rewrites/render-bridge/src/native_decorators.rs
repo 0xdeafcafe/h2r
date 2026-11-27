@@ -136,6 +136,15 @@ impl GuestWrite for Mem<'_> {
     }
 }
 
+/// The guest's memory, read only.
+struct Ro<'a>(&'a dyn GuestMemory);
+
+impl GuestRead for Ro<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
+}
+
 /// The open view's decorator materials, each once.
 fn open_materials() -> Vec<Material> {
     crate::scene_step::with_open(|open| {
@@ -154,27 +163,41 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     if layer != LIGHTMAP_LAYER || layer_site(layer, ret) != Site::Scene {
         return;
     }
+    // What the layer's return counts the decorators' items the guest
+    // still draws under (`scene_kept_3_other_<cause>`).
+    let leave = |mem: &dyn GuestMemory, cause| crate::native_layers::leave(&Ro(mem), LIGHTMAP_LAYER, crate::native_layers::Keep::Other, cause);
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        leave(&*mem, "decorator_host");
         return;
     };
     // The scene step's lock is never held while the host runs: the host
     // takes the device's.
     let materials = open_materials();
     if materials.is_empty() {
+        leave(&*mem, "decorator_scene");
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
     let ready = host.prepare(&*mem, &materials);
     let held = host.holds(&*mem, &ready);
     let planned = crate::scene_step::with_open(|open| open.map(|(scene, view)| plan_held(scene, view, &ready, &held)));
-    let Some((planned, state)) = planned else { return };
+    let Some((planned, state)) = planned else {
+        leave(&*mem, "decorator_view");
+        return;
+    };
     REFUSED.fetch_add(u64::from(planned.refused - state), Ordering::Relaxed);
     STATE.fetch_add(u64::from(state), Ordering::Relaxed);
+    if planned.refused > state {
+        leave(&*mem, "decorator_unready");
+    } else if state > 0 {
+        leave(&*mem, "decorator_state");
+    }
     if planned.slots.is_empty() {
         return;
     }
     let Some(cleared) = host.ask(mem, planned) else {
         DECLINED.fetch_add(1, Ordering::Relaxed);
+        leave(&*mem, "decorator_declined");
         return;
     };
     if cleared.items.is_empty() {

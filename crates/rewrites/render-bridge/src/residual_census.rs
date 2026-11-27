@@ -206,6 +206,13 @@ pub enum Status {
     /// producer's own guest code, still run through `d3d`
     /// ([`layer_status`]).
     Partial,
+    /// The opaque block's layer draws (slice R1, [`KEPT_LAYERS`]): a call
+    /// whose items are all native returns without the guest body
+    /// (`frame_step::layer`); a call with an item a stage cannot draw runs
+    /// the body for it, and each such item is a
+    /// `scene_kept_<site><layer>_<kind>_<cause>` count
+    /// (`native_layers::layer_return`). Its work here is only those items'.
+    Kept,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
     /// No registered producer was open.
@@ -217,6 +224,7 @@ impl Status {
         match self {
             Status::Native => "native",
             Status::Partial => "partial",
+            Status::Kept => "kept",
             Status::D3d => "d3d",
             Status::Unknown => "unknown",
         }
@@ -418,28 +426,37 @@ pub const LAYER_SITES: [&str; 6] = [
 ];
 
 /// The layer draws a native stage draws items of from the scene, skipping
-/// those items' guest draws (slice R1, docs/graphics/retire-d3d.md, "By
-/// caller"), by [`LAYER_SITES`] index: the scene's layers 1, 2, 5, 7, 8,
-/// 17 and 20 (`frame-scene.layers`) and 3 (`native_objects`,
-/// `native_world`, the decorators), 6 (water) and 16 (fog), the alternate
-/// view's 1, 2, 3 and 5, and the first person's 1, 2, 7, 8 and 20 (`frame-scene.layers`)
-/// and 3 (`native_first_person`), layer 16 when confirmed at an indexed fog range, the light passes’ 12 and 13, and the
-/// object shadow's caster and receiver layers 10 and 11. Each is
-/// [`Status::Partial`]: what its stages refuse stays the guest's.
+/// those items' guest draws, while the guest body runs for every call
+/// (docs/graphics/retire-d3d.md, "By caller"), by [`LAYER_SITES`] index:
+/// the scene's layers 2 and 17 (`frame-scene.layers`), 6 (water) and 16
+/// (fog), the alternate view's 2, the first person's 2 and 16, the light
+/// passes' 12 and 13, and the object shadow's caster and receiver layers
+/// 10 and 11. Each is [`Status::Partial`]: what its stages refuse stays
+/// the guest's.
 pub const PARTIAL_LAYERS: [(u8, &[u8]); 5] = [
-    (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
-    (1, &[1, 2, 3, 5]),
-    (2, &[1, 2, 3, 7, 8, 16, 20]),
+    (0, &[2, 6, 16, 17]),
+    (1, &[2]),
+    (2, &[2, 16]),
     (3, &[12, 13]),
     (4, &[10, 11]),
 ];
 
+/// The opaque block's layer draws, by [`LAYER_SITES`] index: the scene's
+/// layers 1, 3, 5, 7, 8 and 20, the alternate view's 1, 3 and 5, and the
+/// first person's 1, 3, 7, 8 and 20 (`frame_step::layer::LAYERS` at the
+/// sites `native_layers::return_site` names). Each is [`Status::Kept`].
+pub const KEPT_LAYERS: [(u8, &[u8]); 3] = [
+    (0, &[1, 3, 5, 7, 8, 20]),
+    (1, &[1, 3, 5]),
+    (2, &[1, 3, 7, 8, 20]),
+];
+
 /// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
 pub fn layer_status(at: u8, layer: u8) -> Status {
-    let partial = PARTIAL_LAYERS
-        .iter()
-        .any(|&(site, layers)| site == at && layers.contains(&layer));
-    if partial {
+    let listed = |table: &[(u8, &[u8])]| table.iter().any(|&(site, layers)| site == at && layers.contains(&layer));
+    if listed(&KEPT_LAYERS) {
+        Status::Kept
+    } else if listed(&PARTIAL_LAYERS) {
         Status::Partial
     } else {
         Status::D3d
@@ -1278,7 +1295,7 @@ mod tests {
         assert_eq!(Producer::Layer { at: 0, layer: 3 }.name(), "layer.scene.3");
         assert_eq!(
             Producer::Layer { at: 0, layer: 3 }.status(),
-            Status::Partial
+            Status::Kept
         );
         assert_eq!(r.sites[&0x0004_5000].residual, 1);
     }
@@ -1392,26 +1409,27 @@ mod tests {
     }
 
     #[test]
-    fn the_layer_draws_r1_draws_items_of_are_partial_and_the_rest_d3d() {
+    fn the_opaque_blocks_layer_draws_are_kept_the_others_a_stage_draws_partial_and_the_rest_d3d() {
         let status = |at: u8, layer: u8| Producer::Layer { at, layer }.status().name();
-        for layer in [1, 2, 3, 5, 7, 8, 17, 20] {
+        for layer in [1, 3, 5, 7, 8, 20] {
+            assert_eq!(status(0, layer), "kept", "the scene's layer {layer}");
+        }
+        for layer in [2, 6, 16, 17] {
             assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
         }
-        for layer in [1, 2, 3, 7, 8, 16, 20] {
-            assert_eq!(
-                status(2, layer),
-                "partial",
-                "the first person's layer {layer}"
-            );
+        for layer in [1, 3, 7, 8, 20] {
+            assert_eq!(status(2, layer), "kept", "the first person's layer {layer}");
+        }
+        for layer in [2, 16] {
+            assert_eq!(status(2, layer), "partial", "the first person's layer {layer}");
         }
         assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
         for layer in [6, 16] {
-            assert_eq!(status(0, layer), "partial");
             assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
         }
         assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
         for layer in [1, 3, 5] {
-            assert_eq!(status(1, layer), "partial");
+            assert_eq!(status(1, layer), "kept");
         }
         assert_eq!(status(1, 7), "d3d");
         for layer in [12, 13] {
@@ -1419,6 +1437,9 @@ mod tests {
         }
         assert_eq!(status(4, 10), "partial");
         assert_eq!(status(4, 11), "partial");
+        for &(_, layers) in &KEPT_LAYERS {
+            assert!(layers.iter().all(|l| crate::frame_step::layer::LAYERS.contains(&u32::from(*l))), "a kept layer's draw can return");
+        }
         assert_eq!(status(4, 14), "d3d");
         for r in REGISTRY {
             assert_eq!(

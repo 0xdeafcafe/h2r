@@ -27,8 +27,9 @@
 //! the scene draws it. No item is dropped: an object or a wall the pass
 //! refuses still draws. A layer 2 or 17 draw from a caller this stage does
 //! not take ([`UNTAKEN_CALLER`]) keeps every item, counted under the cause
-//! `caller`. The first person's and the sorted handlers' layers
-//! keep what the host refuses to D3D, counted under `layer_plan_*`.
+//! `caller`. The first person's layers count what they keep the same way
+//! under the site `fp`; the sorted handlers' keep what the host refuses
+//! to D3D, counted under `layer_plan_*`.
 //!
 //! The plan's outcomes are counted by cause for `render.scene`
 //! ([`counters`]).
@@ -38,7 +39,11 @@
 //! person ([`layer_return`]): after every observer has run, when no item of
 //! the list still holds the layer's bit, the call makes the guest body's
 //! writes (`frame_step::layer`) and returns without running it; otherwise
-//! the guest body runs, counted `layer_return_<site><layer>_guest_<cause>`.
+//! the guest body runs, counted `layer_return_<site><layer>_guest_<cause>`,
+//! and every item it draws that no stage counted before the call or owns
+//! inside it ([`in_body`]) is counted then, under the cause a stage left
+//! for its kind ([`leave`]) or `unnamed`: each item the body draws is one
+//! `scene_kept_*` count.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -295,6 +300,7 @@ pub fn count_kept(mem: &dyn GuestRead, layer: u32, site: &str, objects: bool, le
         count_kept_as(site, layer, "unreadable", "list", 1);
         return;
     };
+    let mut counted = Vec::with_capacity(held.len());
     for h in held {
         let cause = match h.item {
             None => "record",
@@ -302,6 +308,120 @@ pub fn count_kept(mem: &dyn GuestRead, layer: u32, site: &str, objects: bool, le
             Some(_) => left.cause(h.slot),
         };
         count_kept_as(site, layer, h.kind(), cause, 1);
+        counted.push(h.slot);
+    }
+    with_tally(mem, layer, |t| t.counted.extend(counted));
+}
+
+/// The kind of an item a layer call's guest body draws
+/// ([`crate::frame_step::layer::held`]): `Structure`, `Object`, `Other`
+/// or `Unread`.
+pub use crate::frame_step::layer::Keep;
+
+/// What the stages of the layer call under way have accounted for, for
+/// [`layer_return`]: the slots [`count_kept`] counted, the kinds a stage
+/// draws or counts inside the guest body ([`in_body`]), and each kind's
+/// cause from a stage that leaves its items without naming them by slot
+/// ([`leave`]). Taken at every layer draw's own turn.
+#[derive(Debug, Default)]
+struct Tally {
+    layer: u32,
+    list: u32,
+    counted: HashSet<u32>,
+    in_body: Vec<Keep>,
+    causes: Vec<(Keep, &'static str)>,
+}
+
+thread_local! {
+    /// The layer draw's observers and its own turn run on the thread that
+    /// makes the call.
+    static TALLY: std::cell::RefCell<Option<Tally>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `f` on the current call's tally: a new one when the last was another
+/// layer's or list's.
+fn with_tally(mem: &dyn GuestRead, layer: u32, f: impl FnOnce(&mut Tally)) {
+    let list = mem.read_u32(skip::CURRENT_LIST).unwrap_or(0);
+    TALLY.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.as_ref().is_none_or(|t| (t.layer, t.list) != (layer, list)) {
+            *t = Some(Tally { layer, list, ..Tally::default() });
+        }
+        f(t.as_mut().expect("set above"));
+    });
+}
+
+/// A stage draws or counts `kind`'s items of `layer`'s current call
+/// inside the guest body (layer 3's sorted walk, the resolved world's
+/// opaque handlers): [`layer_return`] leaves them to it.
+pub fn in_body(mem: &dyn GuestRead, layer: u32, kind: Keep) {
+    with_tally(mem, layer, |t| t.in_body.push(kind));
+}
+
+/// A stage leaves `kind`'s items of `layer`'s current call to the guest
+/// under `cause` without naming them by slot: [`layer_return`] counts
+/// those no stage counted under it. The first cause named holds.
+pub fn leave(mem: &dyn GuestRead, layer: u32, kind: Keep, cause: &'static str) {
+    with_tally(mem, layer, |t| {
+        if !t.causes.iter().any(|&(k, _)| k == kind) {
+            t.causes.push((kind, cause));
+        }
+    });
+}
+
+/// The counter name of a held item's kind.
+fn kind_name(kind: Keep) -> &'static str {
+    match kind {
+        Keep::Structure => "world",
+        Keep::Object => "object",
+        Keep::Unread => "unreadable",
+        _ => "other",
+    }
+}
+
+/// The cause the items of `kind` no stage counted are kept under, at
+/// `site`'s `layer`: a stage's ([`leave`]), else `standing_down` when the
+/// map's stages stood down for the whole call (`call`), else the first person's held
+/// cut for its layer 3 (`native_first_person::held`: its guest body
+/// draws them), else `unnamed`.
+fn unnamed_cause(tally: Option<&Tally>, site: &str, layer: u32, kind: Keep, call: Keep) -> &'static str {
+    if let Some(&(_, cause)) = tally.and_then(|t| t.causes.iter().find(|&&(k, _)| k == kind)) {
+        return cause;
+    }
+    if call == Keep::StandingDown {
+        return "standing_down";
+    }
+    if site == "fp" && layer == 3 {
+        return "first_person_held";
+    }
+    "unnamed"
+}
+
+/// Counts every item a layer call's guest body draws that no stage
+/// counted: each `scene_kept_<site><layer>_<kind>_<cause>` once
+/// ([`unnamed_cause`]). An item whose render record index is negative
+/// builds no entry and is not counted; nor is a kind a stage owns inside
+/// the body ([`in_body`]).
+fn count_unnamed(mem: &dyn GuestMemory, site: &str, layer: u32, tally: Option<&Tally>, call: Keep) {
+    use crate::frame_step::layer as fl;
+    let Ok(held) = fl::held(mem, layer) else {
+        if tally.is_none_or(|t| t.counted.is_empty()) {
+            count_kept_as(site, layer, "unreadable", "list", 1);
+        }
+        return;
+    };
+    let items = mem.u32(fl::CURRENT_LIST).and_then(|l| mem.u32(l.wrapping_add(0x14))).unwrap_or(0);
+    for (slot, kind) in held {
+        if tally.is_some_and(|t| t.counted.contains(&slot) || t.in_body.contains(&kind)) {
+            continue;
+        }
+        let item = items.wrapping_add(slot.wrapping_mul(0x18));
+        if matches!(kind, Keep::Structure | Keep::Object)
+            && mem.i32(item + 0xc).is_ok_and(|arg| ((arg >> 8) as i16) < 0)
+        {
+            continue;
+        }
+        count_kept_as(site, layer, kind_name(kind), unnamed_cause(tally, site, layer, kind, call), 1);
     }
 }
 
@@ -310,6 +430,7 @@ pub fn count_kept(mem: &dyn GuestRead, layer: u32, site: &str, objects: bool, le
 fn site(caller: LayerCaller) -> &'static str {
     match caller {
         LayerCaller::AlternateView => "alt",
+        LayerCaller::FirstPerson => "fp",
         _ => "",
     }
 }
@@ -417,6 +538,10 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         crate::native_lights::object_shadow_scene::draw(mem, &shadows);
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        // No host draws: the layer's return counts every item under `host`.
+        for kind in [Keep::Structure, Keep::Object] {
+            leave(&Ro(&*mem), layer, kind, "host");
+        }
         return;
     };
     ASKED.fetch_add(1, Ordering::Relaxed);
@@ -442,7 +567,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         // Counted when the layer is done (`crate::late_sorted`).
         return;
     }
-    if scene_only(layer, caller) {
+    if scene_only(layer, caller) || caller == LayerCaller::FirstPerson {
         count_kept(&Ro(&*mem), layer, site(caller), true, &left, extracted.as_ref());
     }
 }
@@ -505,11 +630,18 @@ fn count_return(site: &str, layer: u32, outcome: &str) {
 /// one of the opaque block's and every item of it was native, its writes
 /// made (`frame_step::layer::step`), so the caller returns without the
 /// guest body. `ret` is the call's return address.
+///
+/// Every call takes the call's tally ([`Tally`]); a call of the opaque
+/// block that runs the guest body for its items first counts each item no
+/// stage counted ([`count_unnamed`]), so every item the body draws is a
+/// `scene_kept_*` count by cause.
 pub fn layer_return(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) -> bool {
+    let tally = TALLY.with(|t| t.borrow_mut().take());
     let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else { return false };
     let Some(site) = return_site(layer, ret) else { return false };
+    let tally = tally.filter(|t| t.layer == layer);
     let step = if standing_down {
-        Err(crate::frame_step::layer::Keep::StandingDown)
+        Err(Keep::StandingDown)
     } else {
         crate::frame_step::layer::step(mem, layer)
     };
@@ -519,6 +651,7 @@ pub fn layer_return(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) ->
             true
         }
         Err(keep) => {
+            count_unnamed(&*mem, site, layer, tally.as_ref(), keep);
             count_return(site, layer, &format!("guest_{}", keep.name()));
             false
         }
@@ -864,6 +997,70 @@ mod tests {
         mem.set_u32(fl::CURRENT_LAYER, 2).unwrap();
         assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 2 is not the opaque block's");
         assert_eq!(returns(), before);
+    }
+
+    /// Every item a layer call's guest body draws is one `scene_kept_*`
+    /// count: one a stage counted before the call is not counted again,
+    /// the rest take a stage's cause for their kind, else `unnamed`. An
+    /// item with no render record builds no entry, and a kind a stage
+    /// draws inside the body (layer 3's walk) is the stage's to count.
+    #[test]
+    fn every_item_the_guest_body_draws_is_counted_once_under_its_stages_cause() {
+        let mut m = list(3, &[(1, false), (2, true), (4, false)]);
+        // A decorator's item (another build) and an item with no record.
+        m.set_u32(LIST + 4, 5).unwrap();
+        let (other, unrecorded) = (LIST_ITEMS + 0x18 * 3, LIST_ITEMS + 0x18 * 4);
+        m.set_u32(other, 0x0004_e000).unwrap();
+        m.set_u32(other + 0x10, 1 << 3).unwrap();
+        m.set_u32(unrecorded, native_render::skip::GEOMETRY_BUILD).unwrap();
+        m.set_u32(unrecorded + 0xc, 0xffff_ff00).unwrap();
+        m.set_u32(unrecorded + 0x10, 1 << 3).unwrap();
+        let names = ["scene_kept_3_world_device", "scene_kept_3_world_unnamed", "scene_kept_3_object_unnamed", "scene_kept_3_other_decorator_state"];
+        let before: Vec<u64> = names.iter().map(|n| kept(n)).collect();
+        let delta = |b: &[u64]| names.iter().zip(b).map(|(n, b)| kept(n) - b).collect::<Vec<_>>();
+        // The world's stage counts its walls; the decorators name theirs.
+        let left = Left { layer: Some("device"), ..Left::default() };
+        count_kept(&Ro(&m), 3, "", false, &left, None);
+        leave(&Ro(&m), 3, Keep::Other, "decorator_state");
+        assert!(!layer_return(&mut m, 0x0002_bed5, false), "the scene's layer 3 runs the body");
+        assert_eq!(delta(&before), [2, 0, 1, 1]);
+        // The next call: the walk owns the objects, no stage counted the walls.
+        let before: Vec<u64> = names.iter().map(|n| kept(n)).collect();
+        in_body(&Ro(&m), 3, Keep::Object);
+        assert!(!layer_return(&mut m, 0x0002_bed5, false));
+        assert_eq!(delta(&before), [0, 2, 0, 0], "the tally is the call's own");
+    }
+
+    /// The first person's layers count what they keep under `fp`, before
+    /// the call by the host's cause and not again at its return; its layer
+    /// 3, which no stage takes while its cut is held, under
+    /// `first_person_held`.
+    #[test]
+    fn the_first_persons_kept_items_count_under_its_site() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_host(Arc::new(Refuses));
+        let names = ["scene_kept_fp7_world_unread", "scene_kept_fp7_object_unread", "scene_kept_fp3_object_first_person_held"];
+        let before: Vec<u64> = names.iter().map(|n| kept(n)).collect();
+        let mut m = list(7, &[(1, false), (2, true)]);
+        before_layer(&mut m, 0x0004_0271);
+        assert!(!layer_return(&mut m, 0x0004_0271, false));
+        let mut m = list(3, &[(2, true)]);
+        assert!(!layer_return(&mut m, 0x0004_0136, false));
+        let after: Vec<u64> = names.iter().map(|n| kept(n)).collect();
+        assert_eq!(after.iter().zip(&before).map(|(a, b)| a - b).collect::<Vec<_>>(), [1, 1, 1]);
+        *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// With no host the layer's items are counted `host` at the return.
+    #[test]
+    fn a_layer_with_no_host_counts_its_items_under_host() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let (world, object) = (kept("scene_kept_8_world_host"), kept("scene_kept_8_object_host"));
+        let mut m = list(8, &[(1, false), (2, true)]);
+        before_layer(&mut m, 0x0002_bfaa);
+        assert!(!layer_return(&mut m, 0x0002_bfaa, false));
+        assert_eq!((kept("scene_kept_8_world_host"), kept("scene_kept_8_object_host")), (world + 1, object + 1));
     }
 
     #[test]

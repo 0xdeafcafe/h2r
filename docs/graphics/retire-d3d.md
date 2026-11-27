@@ -14,6 +14,7 @@ Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-h
 | R1, object items whose shader has flag bit 0 | draw with the structure's parameter block upload (the bump matrices of stages 1 to 3 and `c[21..25]`) where the device and the engine already hold it, and, before the frame's structure target copy, where no pass's program has flag bit 20 (whose draw would make the copy). An item's projected size changes nothing they draw, in every layer named here and layer 3's walk | [native-objects.md](native-objects.md), "Fade, the shader flag and the item's argument" |
 | R1, layer 3 object parts | draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included | framescene.md slice 3, "Bit 9" |
 | R1, layer 3 decorators | draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included | native-decorators.md, "The glue" |
+| R1, the layer draw | a call of the opaque block's layers returns without the guest body when every item is native (status `kept`); a call that runs it counts each item it draws `scene_kept_<site><layer>_<kind>_<cause>` | "R1's remainder" |
 | R1, layers 10, 11 and 14 | whole groups draw from the scene with no geometry handler; the object filter draws natively | native-shadow-layers.md |
 | R4 | the main view's records, and its cluster set, window frusta and object set walked from them, audited by shadow arms (1 frame in 64, answer after 16 clean samples, guest for the map on a difference, for the frame on a refusal); the projection builder `0x0002fb70`; the portal, window, sphere and PVS producers after their comparisons | [native-visibility.md](native-visibility.md#the-shadow-arms) |
 | R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls); both are cut world layers (`cut::LAYER_CUTS`, layer 17 in slot 12) | [native-renderer.md](native-renderer.md) |
@@ -183,9 +184,10 @@ caller, what the guest front-end still asks `d3d` to do.
   push_words, state_words, clears, binds, native_rect_clears, clear_refused_rect_count,
   native_guest_binds, guest_bind_refused_destroy, copies, uploads, d3d_ms,
   guest_ms}`. `status` is `native`, `d3d` or `unknown` from the registry
-  below. Sky, water teardown, clear, target selection and screen effects
-  are `partial`, as are layer draws where a native stage draws some items
-  from the scene and skips their guest draws. `guest_ms` is the producer's
+  below, or `kept` for the opaque block's layer draws ("R1's remainder").
+  Sky, water teardown, clear, target selection and screen effects
+  are `partial`, as are the other layer draws where a native stage draws
+  some items from the scene and skips their guest draws. `guest_ms` is the producer's
   exclusive guest time and is `null` without `render-timing`. A stage's refusals are not filed by producer;
   the capture's `native_<stage>_refused_*` counters give them by stage.
   The totals and producer rows count committed native rectangle plans
@@ -409,7 +411,7 @@ D3D entry calls.
 | Slice | What | Size | Needs | Payoff (**Estimate**, ceiling) | Proof |
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
-| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`) and the layer draw's return when every item of a layer is native (`frame_step::layer`); not built: [R1's remainder](retire-d3d-remainders.md#r1s-remainder) | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
+| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer and the layer draw's return when every item is native (`frame_step::layer`), each layer `kept`, every item a guest body draws a `scene_kept_*` count; not built: layer 3's objects before the call and the drop ([R1's remainder](retire-d3d-remainders.md#r1s-remainder)) | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
 | R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels. Built: the cut light frame, each light drawn at its passes and a light the scene or the host refuses on its guest passes, the entry state and visible subparts in layers 12 and 13 ([native-lights.md](native-lights.md), "Entry state", "Visible subparts"); not built: a strip subpart at an odd start, material animation, the shader flag | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
@@ -493,7 +495,9 @@ weapon and vehicle, with `scene_kept_overlay_*` read beside each.
   in the slice that replaces it, in the same commit as its test. A layer
   draw some of whose items a stage draws from the scene, skipping their
   guest draws, is `partial` (`residual_census::PARTIAL_LAYERS`) until
-  the slice leaves it nothing.
+  the slice leaves it nothing; one whose call returns when every item is
+  native and counts each item its guest body draws is `kept`
+  (`KEPT_LAYERS`).
   `the_residual_registry_names_every_producer` (new, in `render-bridge`)
   fails when a hook draws for a producer the registry does not list.
 - **A replaced producer cannot fall back.** After its slice, content the

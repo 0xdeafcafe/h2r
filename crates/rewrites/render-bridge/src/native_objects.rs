@@ -175,7 +175,12 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
         Site::AlternateView => ViewKind::Alternate,
         _ => return,
     };
-    let Some(host) = host() else { return };
+    use crate::native_layers::{Keep, in_body, leave};
+    let lightmap = native_render::skip::LIGHTMAP_LAYER;
+    let Some(host) = host() else {
+        leave(&Mem(mem), lightmap, Keep::Object, "walk_host");
+        return;
+    };
     // Use the same map generation check as activation on snapshot loads.
     host.preload(mem);
     let display = lod.map_or(LodDetail::Retail, |lod| lod.display(mem));
@@ -186,8 +191,11 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
         host.draw_display_objects(mem, &view, display);
     }
     let Some(list) = Mem(mem).read_u32(native_render::skip::CURRENT_LIST) else {
+        leave(&Mem(mem), lightmap, Keep::Object, "walk_list");
         return;
     };
+    // The walk draws or counts each object item at its handler.
+    in_body(&Mem(mem), lightmap, Keep::Object);
     WALK_LAYER.with(|state| {
         *state.borrow_mut() = Some(WalkLayer {
             kind,
@@ -205,8 +213,12 @@ fn begin_walk(mem: &mut dyn GuestMemory, ret: u32, lod: Option<ViewLodScale>) {
 fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, esi: u32) {
     let _planning = Timer::start(Stage::Objects, Metric::PrepareNs);
     layer.initialized = true;
+    let site = kept_site(layer.kind);
     let Some(SortedObjects { base, current, counter, entries, causes }) = object_walk::read(&Mem(mem), layer.list, esp, esi) else {
+        // The sorted entries do not read: every object keeps its handler's
+        // draw, one count for the list as `native_layers::count_kept`'s.
         ObjectWalk::Unreadable.count(1);
+        crate::native_layers::count_kept_as(site, 3, "unreadable", "list", 1);
         return;
     };
     ObjectWalk::PartAuxState.count(causes.aux_state);
@@ -216,12 +228,15 @@ fn initialize_walk(layer: &mut WalkLayer, mem: &mut dyn GuestMemory, esp: u32, e
     ObjectWalk::PartProgram.count(causes.program);
     ObjectWalk::PartLayout.count(causes.layout);
     if !crate::scene_step::objects(&*mem, layer.kind, &entries) {
+        // The scene holds none of them: each keeps its handler's draw.
+        let n = scene_refused(&entries[current.min(entries.len())..]);
+        ObjectWalk::Fallback.count(n);
+        crate::native_layers::count_kept_as(site, 3, "object", SCENE_REFUSED, n as u64);
         return;
     }
     let decision = object_walk::decide(&entries, current);
     // Neither span is a run: each of its objects keeps its guest handler's
     // draw as the handler comes up (`walk_geometry`, [`HandlerAt::Guest`]).
-    let site = kept_site(layer.kind);
     keep(site, ObjectWalk::Unsupported, decision.unsupported);
     keep(site, ObjectWalk::Order, decision.interleaved);
     layer.base = base;
@@ -294,6 +309,17 @@ fn walk_geometry(c: &mut hooks::Call) -> Result<hooks::Flow, runtime::GuestFault
     } else {
         Ok(Flow::Continue)
     }
+}
+
+/// The cause of the objects a walk keeps when the scene step refuses
+/// their extraction (`scene_kept_<site>3_object_scene`).
+pub const SCENE_REFUSED: &str = "scene";
+
+/// The objects of `entries` (each once, by handle): what a walk the scene
+/// refused leaves to the guest handlers.
+pub fn scene_refused(entries: &[Entry]) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    entries.iter().filter(|e| matches!(e, Entry::Object { handle, .. } if seen.insert(*handle))).count()
 }
 
 /// What the walk does at a geometry handler call.
