@@ -57,6 +57,42 @@ pub fn start(disc: &Path, data: &Path) {
     }
 }
 
+/// Stages the kit package `map` (`firefight-<base>`) for a run that names
+/// it as its map (`h2 sim run`). A built-in kit (`builtin::MAPS`) that is
+/// missing or stale is built here, in the foreground. Any other kit is made
+/// by `h2 firefight kit <base>` (options of its own), so one that is not in
+/// `<data>/maps` is an error that says so, rather than a level that is
+/// missing later. A built-in kit that cannot be built is named too.
+pub fn ensure_map(disc: &Path, data: &Path, map: &str) -> Result<()> {
+    let Some(base) = map.strip_prefix("firefight-") else {
+        return Ok(());
+    };
+    let maps = content::store::maps_dir(data);
+    if builtin::MAPS.contains(&base) {
+        if builtin::pending(&maps).is_empty() {
+            return Ok(());
+        }
+        eprintln!("firefight: preparing the kits");
+        let reports = builtin::ensure(&Disc(disc.to_owned()), &maps);
+        return named_refusals(&reports);
+    }
+    anyhow::ensure!(
+        maps.join(map).join("manifest.toml").is_file(),
+        "the map {map} is a Firefight kit package that is not in {}; build it with \
+         `h2 firefight kit {base} --data {}`",
+        maps.display(),
+        data.display()
+    );
+    Ok(())
+}
+
+/// The refusals among `reports`, each named, as one error.
+fn named_refusals(reports: &[builtin::Report]) -> Result<()> {
+    let lines: Vec<String> = reports.iter().filter_map(|r| r.line()).collect();
+    anyhow::ensure!(lines.is_empty(), "the Firefight kits did not stage: {}", lines.join("; "));
+    Ok(())
+}
+
 fn work(disc: &Path, maps: &Path) {
     let reports = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         builtin::ensure(&Disc(disc.to_owned()), maps)
@@ -84,4 +120,35 @@ fn work(disc: &Path, maps: &Path) {
     }
     boot::map_select::publish_packages(disc);
     boot::lobby_start::kit_build_finished(failures);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_kit_stops_the_run_with_its_name() {
+        let ok = builtin::Report { map: "coagulation".into(), outcome: Outcome::Current };
+        let bad = builtin::Report { map: "zanzibar".into(), outcome: Outcome::Refused("6 KB over".into()) };
+        assert!(named_refusals(std::slice::from_ref(&ok)).is_ok());
+        let e = named_refusals(&[ok, bad]).unwrap_err().to_string();
+        assert_eq!(e, "the Firefight kits did not stage: Zanzibar: 6 KB over");
+    }
+
+    #[test]
+    fn a_kit_map_that_is_not_in_the_data_dir_is_named() {
+        let data = std::env::temp_dir().join(format!("h2-kit-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let disc = data.join("no-disc");
+        let e = ensure_map(&disc, &data, "firefight-beavercreek").unwrap_err().to_string();
+        assert!(e.contains("firefight-beavercreek") && e.contains("h2 firefight kit beavercreek"), "{e}");
+        // Not a kit map: nothing to stage.
+        assert!(ensure_map(&disc, &data, "beavercreek").is_ok());
+        // Present: fine.
+        let pkg = content::store::maps_dir(&data).join("firefight-beavercreek");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("manifest.toml"), "").unwrap();
+        assert!(ensure_map(&disc, &data, "firefight-beavercreek").is_ok());
+        let _ = std::fs::remove_dir_all(&data);
+    }
 }

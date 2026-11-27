@@ -127,10 +127,24 @@ pub fn write_package(
         std::fs::rename(&tmp, &target)?;
         Ok(target.clone())
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&tmp);
+    match result {
+        Ok(dir) => Ok(dir),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            // Another writer renamed its package into `target` between the
+            // check above and our rename (a rename onto a directory that
+            // holds files is ENOTEMPTY). What is there now is the package
+            // of that writer: updated in place when replacing, refused
+            // otherwise, as if it had been there at the check.
+            if target.exists() {
+                if !replace {
+                    return Err(StoreError::Exists(target));
+                }
+                return replace_in(&target, &text, files);
+            }
+            Err(e)
+        }
     }
-    result
 }
 
 fn replace_in(target: &Path, text: &str, files: &[(&str, &[u8])]) -> Result<PathBuf, StoreError> {
@@ -296,6 +310,44 @@ mod tests {
         img.package.image = Some("p.png".into());
         assert!(write_package(&maps, "broken", &img, files, false).is_err());
         assert!(!maps.join("broken").exists());
+    }
+
+    /// Writers of one package that start together all end with the package
+    /// there: the one whose rename lost the race to the directory updates it
+    /// in place, and none sees ENOTEMPTY. Without `replace`, the losers get
+    /// `Exists`.
+    #[test]
+    fn writers_racing_for_one_directory_all_finish() {
+        for replace in [true, false] {
+            for round in 0..20 {
+                let t = Temp::new();
+                let maps = t.0.join("maps");
+                let files: &[(&str, &[u8])] = &[("a.ppf", b"PPF30one")];
+                let m = manifest(files);
+                let gate = std::sync::Barrier::new(8);
+                let results: Vec<_> = std::thread::scope(|s| {
+                    let handles: Vec<_> = (0..8)
+                        .map(|_| {
+                            s.spawn(|| {
+                                gate.wait();
+                                write_package(&maps, "lockout-race", &m, files, replace)
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+                for r in &results {
+                    match r {
+                        Ok(_) => {}
+                        Err(StoreError::Exists(_)) if !replace => {}
+                        Err(e) => panic!("replace {replace} round {round}: {e}"),
+                    }
+                }
+                assert!(results.iter().any(Result::is_ok));
+                assert_eq!(Library::open(&maps).packages().len(), 1);
+                assert_eq!(std::fs::read(maps.join("lockout-race/a.ppf")).unwrap(), b"PPF30one");
+            }
+        }
     }
 
     /// A written patch, saved as a package, resolves to the edited bytes,

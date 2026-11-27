@@ -391,6 +391,12 @@ h2 sim run docs/runtime/sim-examples/firefight-beavercreek.toml
 h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
 ```
 
+A `firefight-<base>` map that is not in `<data>/maps` stops the run, naming the
+`h2 firefight kit` command that makes it (`firefight_kits::ensure_map`); the
+built-in kits (Coagulation, Zanzibar) are built first. A package that does not
+stage (`packages::staged_or_named`) stops a sim run with its package, item and
+reason.
+
 ### Bot parameters from a file
 
 `sim::config::BotParams` (TOML or JSON) holds what a bot is tuned by:
