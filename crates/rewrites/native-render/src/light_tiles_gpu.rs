@@ -240,6 +240,22 @@ pub struct TileGrid {
     pub size: (u32, u32),
     pub tiles: (u32, u32),
     pub masks: wgpu::Buffer,
+    bin: wgpu::ComputePipeline,
+    group: wgpu::BindGroup,
+}
+
+impl TileGrid {
+    /// Records the binning dispatch that fills [`Self::masks`]: before the
+    /// tiled draws, after the scene depth it reads is final.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("light tiles bin"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.bin);
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.dispatch_workgroups(self.tiles.0, self.tiles.1, 1);
+    }
 }
 
 /// One of the run's geometry ranges in layer 12 or 13 with the lights
@@ -248,6 +264,9 @@ pub struct TileGrid {
 /// draws the range twice is listed twice.
 pub struct TiledDraw<'a> {
     pub layer: u8,
+    /// The light set whose gels and engine textures the draw binds, when
+    /// not [`LightTiles::record`]'s own (a light retains only its gel).
+    pub set: Option<&'a LightSet>,
     pub lights: Vec<(u32, LightDraw<'a>)>,
 }
 
@@ -424,6 +443,20 @@ impl LightTiles {
         size: (u32, u32),
         volumes: &[TileVolume],
     ) -> TileGrid {
+        let grid = self.prepare_bin(device, depth, size, volumes);
+        grid.encode(encoder);
+        grid
+    }
+
+    /// [`Self::bin`]'s buffers and bindings, made now; the dispatch is
+    /// [`TileGrid::encode`], for commands recorded later.
+    pub fn prepare_bin(
+        &self,
+        device: &wgpu::Device,
+        depth: &wgpu::TextureView,
+        size: (u32, u32),
+        volumes: &[TileVolume],
+    ) -> TileGrid {
         let count = volumes.len().min(MAX_RUN) as u32;
         let (tx, ty) = tiles(size);
         let info: Vec<u8> = [size.0, size.1, tx, count]
@@ -483,19 +516,12 @@ impl LightTiles {
                 },
             ],
         });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("light tiles bin"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.bin);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(tx, ty, 1);
-        }
         TileGrid {
             size,
             tiles: (tx, ty),
             masks,
+            bin: self.bin.clone(),
+            group,
         }
     }
 
@@ -634,7 +660,9 @@ impl LightTiles {
                 }
             }
             let mut pass = first.gpu.try_lock().map_err(|_| "light pass busy")?;
-            let (textures, _) = set
+            let (textures, _) = d
+                .set
+                .unwrap_or(set)
                 .texture_group(device, first, &mut pass)
                 .ok_or("incomplete GPU resources")?;
             let pipeline = self.pipeline(device, first, pass.textures_layout(), color, depth)?;
@@ -725,6 +753,128 @@ impl LightTiles {
             items,
         })
     }
+}
+
+const DIFF_WGSL: &str = r#"
+@group(0) @binding(0) var a: texture_2d<f32>;
+@group(0) @binding(1) var b: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read_write> worst: atomic<u32>;
+
+@compute @workgroup_size(8, 8)
+fn diff(@builtin(global_invocation_id) g: vec3u) {
+    let size = textureDimensions(a);
+    if (any(g.xy >= size)) {
+        return;
+    }
+    let d = abs(textureLoad(a, g.xy, 0) - textureLoad(b, g.xy, 0));
+    let m = max(max(d.x, d.y), max(d.z, d.w));
+    // A NaN differs by everything.
+    atomicMax(&worst, bitcast<u32>(select(1e30, m, m == m)));
+}
+"#;
+
+/// The compare arm's GPU side: the largest per-channel difference
+/// between two equal-sized colour targets.
+pub struct Compare {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+}
+
+/// One comparison, made now and recorded later ([`Diff::encode`]); its
+/// result is [`Diff::readback`], four bytes to map after submission.
+pub struct Diff {
+    pipeline: wgpu::ComputePipeline,
+    group: wgpu::BindGroup,
+    size: (u32, u32),
+    worst: wgpu::Buffer,
+    readback: wgpu::Buffer,
+}
+
+impl Compare {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("light tiles compare"),
+            entries: &[texture(0), texture(1), storage(2, wgpu::ShaderStages::COMPUTE, false)],
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("light tiles compare"),
+            source: wgpu::ShaderSource::Wgsl(DIFF_WGSL.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("light tiles compare"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("light tiles compare"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("diff"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        Self { pipeline, layout }
+    }
+
+    pub fn prepare(&self, device: &wgpu::Device, a: &wgpu::TextureView, b: &wgpu::TextureView, size: (u32, u32)) -> Diff {
+        let buffer = |usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("light tiles compare"),
+                size: 4,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        use wgpu::BufferUsages as B;
+        let worst = buffer(B::STORAGE | B::COPY_SRC | B::COPY_DST);
+        let readback = buffer(B::MAP_READ | B::COPY_DST);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("light tiles compare"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b) },
+                wgpu::BindGroupEntry { binding: 2, resource: worst.as_entire_binding() },
+            ],
+        });
+        Diff { pipeline: self.pipeline.clone(), group, size, worst, readback }
+    }
+}
+
+impl Diff {
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.clear_buffer(&self.worst, 0, None);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("light tiles compare"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.dispatch_workgroups(self.size.0.div_ceil(8), self.size.1.div_ceil(8), 1);
+        }
+        encoder.copy_buffer_to_buffer(&self.worst, 0, &self.readback, 0, 4);
+    }
+
+    /// The four bytes [`Self::encode`] leaves: the difference's bits.
+    pub fn readback(&self) -> &wgpu::Buffer {
+        &self.readback
+    }
+}
+
+/// The largest difference [`Diff::readback`] holds.
+pub fn difference(bytes: &[u8]) -> f32 {
+    bytes.get(..4).map_or(f32::INFINITY, |b| f32::from_bits(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
 }
 
 #[cfg(test)]

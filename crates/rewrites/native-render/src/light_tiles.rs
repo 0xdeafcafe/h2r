@@ -256,7 +256,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_light_tiles_runs", RUNS.load(Ordering::Relaxed)),
         ("scene_light_tiles_lights", LIGHTS.load(Ordering::Relaxed)),
         ("scene_light_tiles_single", SINGLE.load(Ordering::Relaxed)),
+        ("scene_light_tiles_fallback", FALLBACK.load(Ordering::Relaxed)),
+        ("scene_light_tiles_lost", LOST.load(Ordering::Relaxed)),
     ];
+    out.extend(ARM.counters());
     out.extend(
         TileRefusal::COUNTERS
             .iter()
@@ -264,6 +267,116 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             .map(|(n, c)| (*n, c.load(Ordering::Relaxed))),
     );
     out
+}
+
+/// Matched compares before the arm draws a run uncompared.
+pub const PROVEN: u64 = 4;
+/// Once proven, one run in this many is still compared.
+pub const COMPARE_EVERY: u64 = 64;
+
+/// What a run of held lights draws (docs/graphics/native-light-tiles.md,
+/// "The compare arm").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    /// A run compared since the map loaded differed: every light draws on
+    /// its per-light pass.
+    Off,
+    /// The per-light passes draw the run, and the tiled pass draws it again
+    /// into a copy of the target that is compared with theirs.
+    Compare,
+    /// The tiled pass alone.
+    Tiled,
+}
+
+/// The tiled path's compare arm: every run compared until [`PROVEN`]
+/// compares match, then one in [`COMPARE_EVERY`]; one difference turns
+/// it off until the map is retired.
+#[derive(Debug, Default)]
+pub struct Arm {
+    runs: AtomicU64,
+    compared: AtomicU64,
+    matched: AtomicU64,
+    mismatched: AtomicU64,
+    off: std::sync::atomic::AtomicBool,
+}
+
+impl Arm {
+    pub const fn new() -> Self {
+        Self {
+            runs: AtomicU64::new(0),
+            compared: AtomicU64::new(0),
+            matched: AtomicU64::new(0),
+            mismatched: AtomicU64::new(0),
+            off: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the arm holds lights at all.
+    pub fn on(&self) -> bool {
+        !self.off.load(Ordering::Relaxed)
+    }
+
+    /// What the next run draws.
+    pub fn decide(&self) -> Decision {
+        if !self.on() {
+            return Decision::Off;
+        }
+        let n = self.runs.fetch_add(1, Ordering::Relaxed);
+        if self.matched.load(Ordering::Relaxed) < PROVEN || n % COMPARE_EVERY == 0 {
+            self.compared.fetch_add(1, Ordering::Relaxed);
+            Decision::Compare
+        } else {
+            Decision::Tiled
+        }
+    }
+
+    /// A compared run's result: a difference turns the arm off.
+    pub fn report(&self, matched: bool) {
+        if matched {
+            self.matched.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.mismatched.fetch_add(1, Ordering::Relaxed);
+            self.off.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// A new map: unproven and on again.
+    pub fn reset(&self) {
+        self.runs.store(0, Ordering::Relaxed);
+        self.matched.store(0, Ordering::Relaxed);
+        self.off.store(false, Ordering::Relaxed);
+    }
+
+    pub fn counters(&self) -> [(&'static str, u64); 4] {
+        [
+            ("scene_light_tiles_compared", self.compared.load(Ordering::Relaxed)),
+            ("scene_light_tiles_matched", self.matched.load(Ordering::Relaxed)),
+            ("scene_light_tiles_mismatched", self.mismatched.load(Ordering::Relaxed)),
+            ("scene_light_tiles_arm_off", u64::from(!self.on())),
+        ]
+    }
+}
+
+/// The game's arm.
+pub static ARM: Arm = Arm::new();
+
+static FALLBACK: AtomicU64 = AtomicU64::new(0);
+static LOST: AtomicU64 = AtomicU64::new(0);
+
+/// A held run whose tiled sequence did not prepare, drawn per light.
+pub fn fell_back() {
+    FALLBACK.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A held light whose per-light fallback also did not prepare: undrawn.
+pub fn lost() {
+    LOST.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The largest per-channel difference two compared targets may show for
+/// a run of `lights`: a unorm step per added light, and a little.
+pub fn tolerance(lights: usize) -> f32 {
+    (lights as f32 + 1.0) / 255.0
 }
 
 #[cfg(test)]
@@ -345,6 +458,25 @@ mod tests {
         assert_eq!(TileRefusal::GelTarget.name(), "gel_target");
         assert!(counter("scene_light_tiles_runs") >= runs + 3);
         assert!(counter("scene_light_tiles_lights") >= tiled + 7);
+    }
+
+    #[test]
+    fn the_arm_compares_every_run_until_proven_then_one_in_64_and_a_difference_turns_it_off() {
+        let arm = Arm::new();
+        let first: Vec<Decision> = (0..PROVEN).map(|_| arm.decide()).collect();
+        assert!(first.iter().all(|d| *d == Decision::Compare), "unproven: all compared");
+        for _ in 0..PROVEN {
+            arm.report(true);
+        }
+        let later: Vec<Decision> = (0..2 * COMPARE_EVERY).map(|_| arm.decide()).collect();
+        let compared = later.iter().filter(|d| **d == Decision::Compare).count();
+        assert_eq!(compared, 2, "one in 64 once proven");
+        arm.report(false);
+        assert_eq!(arm.decide(), Decision::Off);
+        assert!(!arm.on());
+        arm.reset();
+        assert_eq!(arm.decide(), Decision::Compare, "a new map compares again");
+        assert_eq!(arm.counters()[2], ("scene_light_tiles_mismatched", 1));
     }
 
     #[test]

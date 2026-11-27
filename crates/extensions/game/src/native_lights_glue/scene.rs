@@ -346,7 +346,7 @@ impl d3d::ExternalPass for FreezeMap {
 /// What a sequence draws from the scene: the groups its operations index,
 /// the light's constants (none for an object shadow) and an object
 /// shadow's filter.
-struct Sequence<'a> {
+pub(super) struct Sequence<'a> {
     groups: Vec<&'a SceneGroup>,
     light: Option<LightConstants>,
     filter: Option<frame_scene::ShadowFilter>,
@@ -364,6 +364,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         passes: &[ScenePass],
         view_target: [u32; 8],
     ) -> Result<usize, Keep> {
+        let sequence = self.light_sequence(&*mem, passes)?;
+        self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Lights)
+    }
+
+    /// What one light's passes draw as a sequence ([`ops`]).
+    pub(super) fn light_sequence<'a>(
+        &self,
+        mem: &dyn GuestMemory,
+        passes: &'a [ScenePass],
+    ) -> Result<Sequence<'a>, Keep> {
         let first = passes.first().ok_or(Keep::Unsupported("a scene light with no layers"))?;
         if first.slot != render_bridge::native_lights::LIGHT_SLOT
             && first.slot != render_bridge::native_lights::FIRST_PERSON_SLOT
@@ -377,14 +387,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let c = constants(&light)?;
         let layers: Vec<_> = passes.iter().map(|p| (p.group.group.layer, p.group.group.pass)).collect();
-        let sequence = Sequence {
+        Ok(Sequence {
             groups: passes.iter().map(|p| &p.group).collect(),
             light: Some(c),
             filter: None,
             ops: gel_ops(&layers, gel.is_some())?,
             gel,
-        };
-        self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Lights)
+        })
     }
 
     /// Draws one object shadow of the open view from the scene, in slot 3
@@ -416,13 +425,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         sequence: Sequence<'_>,
         stage: timeline::native::Stage,
     ) -> Result<usize, Keep> {
-        let Sequence {
-            groups,
-            light,
-            filter,
-            gel,
-            ops,
-        } = sequence;
         let mut d = self
             .device
             .lock()
@@ -437,6 +439,30 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("light view target changed"));
         }
         let ready = self.ready(mem)?;
+        let (steps, drawn) = self.sequence_steps(&d, &*mem, view_target, &ready, sequence, stage)?;
+        self.commit_steps(&mut d, mem, &ready, steps)?;
+        Ok(drawn)
+    }
+
+    /// The steps of one sequence ([`Self::scene_sequence`]), made under the
+    /// device lock with nothing issued; and the layers they draw.
+    pub(super) fn sequence_steps(
+        &self,
+        d: &d3d::Device<B>,
+        mem: &dyn GuestMemory,
+        view_target: [u32; 8],
+        ready: &Arc<Ready>,
+        sequence: Sequence<'_>,
+        stage: timeline::native::Stage,
+    ) -> Result<(Vec<d3d::ExternalStep>, usize), Keep> {
+        let Sequence {
+            groups,
+            light,
+            filter,
+            gel,
+            ops,
+        } = sequence;
+        let ready = Arc::clone(ready);
         let view = mem
             .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
             .unwrap_or(u32::MAX);
@@ -454,11 +480,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .and_then(|g| g.group.pass);
         let caster_size = caster.map(|s| (s.size[0], s.size[1]));
         let targets = |n: u32| -> Result<d3d::ExternalTargets, Keep> {
-            let [color, depth] = crate::native_shadows_glue::expected_targets(&*mem, n)
+            let [color, depth] = crate::native_shadows_glue::expected_targets(mem, n)
                 .ok_or(Keep::Shadow("target"))?;
             let (w, h) = match (n, caster_size) {
                 (9 | 10, Some(size)) => size,
-                _ => target_size(&*mem, n).ok_or(Keep::Shadow("target"))?,
+                _ => target_size(mem, n).ok_or(Keep::Shadow("target"))?,
             };
             Ok(d3d::ExternalTargets {
                 color,
@@ -494,13 +520,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 Op::Gel => {
                     let (shader, binding) = gel.ok_or(Keep::Unsupported("a gel step with no gel"))?;
                     let ready_gels = ready.lights.get().ok_or(Keep::NoWorld)?;
-                    let depth = native_render::gels::quad_depth_of(&ReadMemory(&*mem))
+                    let depth = native_render::gels::quad_depth_of(&ReadMemory(mem))
                         .ok_or(Keep::Unsupported("the gel quad's depth does not read"))?;
                     // The call values the gel's passes may read, and the
                     // render clock its animated passes sample at.
                     let at = native_render::gels::CALL_VALUES;
                     let values = [0, 4, 8, 12].map(|o| mem.u32(at + o).unwrap_or(0));
-                    let time = native_render::layer_pass::render_time(&ReadMemory(&*mem));
+                    let time = native_render::layer_pass::render_time(&ReadMemory(mem));
                     d3d::ExternalStep {
                         targets: targets(native_render::gels::TARGET)?,
                         plan: plan(1, Vec::new()),
@@ -517,7 +543,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 Op::Filter => {
                     let filter = filter.clone().ok_or(Keep::Shadow("state"))?;
                     let slot = |n| {
-                        crate::native_shadows_glue::target_header(&*mem, n)
+                        crate::native_shadows_glue::target_header(mem, n)
                             .map(|header| Some(d3d::ExternalSlot { header, written: true }))
                             .ok_or(Keep::Shadow("target"))
                     };
@@ -550,12 +576,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     let prepared = match group.group.layer {
                         12 | 13 => {
                             let c = light.ok_or(Keep::NoConstants)?;
-                            let draws = self.scene_light_draws(&d, &*mem, &ready, group, &c, binding.is_some())?;
-                            self.prepare_planned(&d, &*mem, Arc::clone(&ready), c, draws, binding, false, rect)?
+                            let draws = self.scene_light_draws(&d, mem, &ready, group, &c, binding.is_some())?;
+                            self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, binding, false, rect)?
                         }
                         _ => self.shadow_prepared(
                             &d,
-                            &*mem,
+                            mem,
                             view,
                             group,
                             light,
@@ -588,9 +614,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             };
             steps.push(step);
         }
+        Ok((steps, drawn))
+    }
+
+    /// Prepares `steps` on every target copy and commits them as one
+    /// sequence, or issues nothing.
+    pub(super) fn commit_steps(
+        &self,
+        d: &mut d3d::Device<B>,
+        mem: &mut dyn GuestMemory,
+        ready: &Arc<Ready>,
+        steps: Vec<d3d::ExternalStep>,
+    ) -> Result<(), Keep> {
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+            if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready)) {
                 return Err(Keep::Unsupported("world changed during light preparation"));
             }
         }
@@ -598,7 +636,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .map_err(|_| Keep::Unsupported("device error preparing the scene light"))?
             .ok_or(Keep::Unsupported("the scene light is not ready on a target copy"))?
             .commit();
-        Ok(drawn)
+        Ok(())
     }
 }
 

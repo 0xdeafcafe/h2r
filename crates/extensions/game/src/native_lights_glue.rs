@@ -6,6 +6,7 @@ mod materials;
 pub mod models;
 mod residency;
 mod scene;
+mod tiles;
 pub(crate) mod typed;
 pub mod walk;
 
@@ -74,6 +75,8 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// A live edit's image refresh is running ([`Glue::refresh_edits`]);
     /// edits wait in the queue until it ends, so they apply in order.
     refreshing: Arc<std::sync::atomic::AtomicBool>,
+    /// The held run of slot 4's lights ([`tiles`]).
+    run: Mutex<tiles::Run>,
 }
 
 /// Why a native light plan declined a request.
@@ -1020,6 +1023,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn retire_map(&self) {
         self.clear_admission();
         self.models.invalidate();
+        tiles::retire(&self.run);
+    }
+
+    fn hold_scene_light(&self, mem: &mut dyn GuestMemory, draw: &render_bridge::native_lights::SceneDraw<'_>) -> bool {
+        self.hold_light(mem, draw)
+    }
+
+    fn flush_light_run(&self, mem: &mut dyn GuestMemory) -> usize {
+        self.flush_run(mem)
     }
 
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch) -> bool {
@@ -1726,6 +1738,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
         admission,
         models: models::Loader::default(),
         refreshing: Arc::default(),
+        run: Mutex::default(),
     }));
 }
 

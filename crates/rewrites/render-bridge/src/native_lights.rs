@@ -168,6 +168,7 @@ pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return 0;
     };
+    host.flush_light_run(mem);
     let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
     let drawn = host.draw_scene(mem, SceneDraw { passes, view_target, serial });
     SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
@@ -196,11 +197,30 @@ pub(crate) fn draw_cut_light(
         return false;
     };
     let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
-    if !host.draw_scene_light(mem, SceneDraw { passes, view_target, serial }) {
+    // A light of slot 4 the host can draw tiled joins its run, drawn when
+    // the run ends ([`flush_light_run`]); any other draws after the run.
+    let draw = SceneDraw { passes, view_target, serial };
+    if passes[0].slot == LIGHT_SLOT && host.hold_scene_light(mem, &draw) {
+        SCENE_DRAWN.fetch_add(passes.len() as u64, Ordering::Relaxed);
+        return true;
+    }
+    host.flush_light_run(mem);
+    if !host.draw_scene_light(mem, draw) {
         return false;
     }
     SCENE_DRAWN.fetch_add(passes.len() as u64, Ordering::Relaxed);
     true
+}
+
+/// Draws the host's held run of lights ([`Host::hold_scene_light`]) now:
+/// before anything else draws on the view's target (a light the guest or
+/// the host draws per light, the first-person lights) and at the end of
+/// the view's light frame. Returns the lights drawn.
+pub fn flush_light_run(mem: &mut dyn GuestMemory) -> usize {
+    match HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        Some(host) => host.flush_light_run(mem),
+        None => 0,
+    }
 }
 
 /// The game view's target, read at the view's start.
@@ -237,6 +257,7 @@ pub fn draw_first_person_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) 
         refused("first-person light view target unavailable");
         return 0;
     };
+    host.flush_light_run(mem);
     let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
     let drawn = host.draw_scene(mem, SceneDraw { passes, view_target, serial });
     SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
@@ -368,6 +389,18 @@ pub trait Host: Send + Sync {
     /// 10's, in the view whose light pass is over. Returns the layers
     /// drawn; one it keeps draws nothing.
     fn draw_scene(&self, _mem: &mut dyn GuestMemory, _draw: SceneDraw<'_>) -> usize {
+        0
+    }
+    /// Take one cut light of slot 4 into the run of lights drawn tiled
+    /// (docs/graphics/native-light-tiles.md): `true` holds it, and
+    /// [`Self::flush_light_run`] draws it with the run's others or, when
+    /// the run cannot draw tiled, on its per-light pass. `false` holds
+    /// nothing; the caller flushes the run and draws the light per light.
+    fn hold_scene_light(&self, _mem: &mut dyn GuestMemory, _draw: &SceneDraw<'_>) -> bool {
+        false
+    }
+    /// Draws the held run, if any; the lights drawn.
+    fn flush_light_run(&self, _mem: &mut dyn GuestMemory) -> usize {
         0
     }
     /// Draw one cut light's layers now, where its passes or its
@@ -1465,6 +1498,80 @@ mod tests {
             *self.handed.lock().unwrap() += draw.passes.len();
             self.accept
         }
+    }
+
+    /// Holds the lights its `tiled` says, and logs each call in order.
+    struct Runs {
+        tiled: fn(u32) -> bool,
+        log: Mutex<Vec<String>>,
+        held: Mutex<usize>,
+    }
+
+    impl Host for Runs {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
+        fn hold_scene_light(&self, _: &mut dyn GuestMemory, draw: &SceneDraw<'_>) -> bool {
+            let handle = draw.passes[0].light.handle;
+            if !(self.tiled)(handle) {
+                return false;
+            }
+            self.log.lock().unwrap().push(format!("hold {handle}"));
+            *self.held.lock().unwrap() += 1;
+            true
+        }
+        fn flush_light_run(&self, _: &mut dyn GuestMemory) -> usize {
+            let n = std::mem::take(&mut *self.held.lock().unwrap());
+            if n > 0 {
+                self.log.lock().unwrap().push(format!("run of {n}"));
+            }
+            n
+        }
+        fn draw_scene_light(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> bool {
+            self.log.lock().unwrap().push(format!("draw {}", draw.passes[0].light.handle));
+            true
+        }
+    }
+
+    /// A held run draws before any light drawn on its own, and at the
+    /// view's end; first-person lights are never held.
+    #[test]
+    fn a_held_run_draws_before_a_light_drawn_per_light_and_at_the_end() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let pass = |handle, slot| ScenePass {
+            slot,
+            light: frame_scene::Light { handle, ..Default::default() },
+            group: SceneGroup {
+                group: frame_scene::LightGroup {
+                    light: 0,
+                    layer: 12,
+                    site: frame_scene::GroupSite::Light,
+                    projection: None,
+                    pass: None,
+                    entries: 0..0,
+                    remainder: 0,
+                },
+                entries: Vec::new(),
+                rows: Vec::new(),
+            },
+        };
+        let host = Arc::new(Runs { tiled: |h| h % 2 == 0, log: Mutex::new(Vec::new()), held: Mutex::new(0) });
+        set_host(host.clone());
+        let mut m = FlatMemory::new(0, 0x1000);
+        for (handle, slot) in [(2, LIGHT_SLOT), (4, LIGHT_SLOT), (5, LIGHT_SLOT), (6, LIGHT_SLOT), (8, FIRST_PERSON_SLOT)] {
+            assert!(draw_cut_light(&mut m, &[pass(handle, slot)], Some([1; 8])));
+        }
+        flush_light_run(&mut m);
+        assert_eq!(
+            *host.log.lock().unwrap(),
+            ["hold 2", "hold 4", "run of 2", "draw 5", "hold 6", "run of 1", "draw 8"],
+        );
+        *HOST.lock().unwrap() = None;
     }
 
     /// A cut light draws at its passes or not at all: a host that refuses
