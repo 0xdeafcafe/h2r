@@ -432,7 +432,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     for line in [
         "0x00149f49 SCREEN_REQUEST: before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
-        "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers, map-select:land a Firefight lobby on its kit map] -> original",
+        "0x00137fe0 GAME_TICK: before [map-select:refresh installed map offers, map-select:land a Firefight lobby on its kit map, map-select:pick a map the game type supports] -> original",
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category names] -> original",
         "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
@@ -478,8 +478,10 @@ fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
         [
             calls::FEATURE,
             skulls_custom::FEATURE,
-            // Select Map's two tick hooks: the offers' refresh, and the
-            // Firefight lobby's landing on its kit map.
+            // Select Map's three tick hooks: the offers' refresh, the
+            // Firefight lobby's landing on its kit map, and the pick of a
+            // map the game type supports.
+            FEATURE,
             FEATURE,
             FEATURE,
             coop_probe::LIVE_ID,
