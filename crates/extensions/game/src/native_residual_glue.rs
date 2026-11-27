@@ -70,6 +70,9 @@ impl d3d::DrawAdmission for ResidualDraws {
             return None;
         }
         let issue = crate::native_world_layers_glue::take_sky()?;
+        // The pass's program and textures from the material beside the
+        // strip's, until the cut binds them.
+        native_sky::count_plan(issue.look.as_ref().map_or_else(|why| *why, |look| look.check(draw)));
         let constants = issue.constants;
         let plan = native_sky::admit(
             issue.item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),

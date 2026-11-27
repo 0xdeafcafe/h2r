@@ -878,6 +878,38 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
     }
 }
 
+/// The sky pass's program and stages from the material match the strip
+/// the guest draws, or the first that differs is named. No GPU.
+#[test]
+fn the_sky_look_from_the_material_is_checked_against_the_strip() {
+    use native_render::look::Stage;
+    use native_render::object_state::STENCIL_MARK_REFERENCE;
+    use native_render::program::MODEL_ROWS;
+    use native_render::sky_material::SkyLook;
+
+    let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
+    let words = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xf),
+        Inst::mac(MacOp::Mov, Some(Operand::c(MODEL_ROWS as u8)), None, None).to_out(false, OutReg::D0, 0xf).last(),
+    ]);
+    draw.shader.vertex = VertexProcessing::Program {
+        start: 0,
+        microcode: Program::parse(&words).unwrap().instructions.iter().flat_map(|i| i.words).collect::<Vec<_>>().into(),
+    };
+    let stages = draw.sampled_texture_stages().map(|s| if s { Stage::Bitmap { bitmap: map::TagId(7), image: 0 } } else { Stage::Empty });
+    let look = SkyLook::new(&words, stages).unwrap();
+    assert_eq!(look.check(&draw), "matched");
+    let mut other = look.clone();
+    other.stages[3] = if matches!(stages[3], Stage::Empty) { Stage::Bitmap { bitmap: map::TagId(7), image: 1 } } else { Stage::Empty };
+    assert_eq!(other.check(&draw), "textures");
+    let mut wrong = look.clone();
+    wrong.words[0] ^= 1;
+    assert_eq!(wrong.check(&draw), "program");
+    let mut fixed = draw.clone();
+    fixed.shader.vertex = VertexProcessing::FixedFunction { fvf: 0x002 };
+    assert_eq!(look.check(&fixed), "program");
+}
+
 /// A pool the native pass can draw: the lens (a frame sample) at stage 0,
 /// the target's size, the depth tested without a write.
 fn pool_triangle() -> ResolvedDraw {

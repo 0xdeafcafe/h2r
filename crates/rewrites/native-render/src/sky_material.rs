@@ -126,6 +126,41 @@ pub fn evaluate(
     Ok(SkyConstants::of(&sampled))
 }
 
+/// A sky pass's program and textures from the material, as the load made
+/// them (`native_sky_glue::load`, through `decorators_load::decorator_look`
+/// at layer 15): the classification-1 program's instruction words and the
+/// stages the pass samples, each a bitmap image the load decoded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyLook {
+    pub words: Vec<u32>,
+    pub stages: [crate::look::Stage; 4],
+}
+
+impl SkyLook {
+    /// `None` when the program does not parse.
+    pub fn new(microcode: &[u8], stages: [crate::look::Stage; 4]) -> Option<Self> {
+        let program = shaders::vsh::Program::parse(microcode).ok()?;
+        Some(Self { words: program.instructions.iter().flat_map(|i| i.words).collect(), stages })
+    }
+
+    /// Whether the guest's draw runs this program and samples these
+    /// stages: `matched`, or the first that differs, `program` or
+    /// `textures` (the plan's look stands beside the draw's until the cut
+    /// binds it; counted `sky_plan_<outcome>`).
+    pub fn check(&self, draw: &d3d::ResolvedDraw) -> &'static str {
+        let d3d::shader::VertexProcessing::Program { microcode, .. } = &draw.shader.vertex else { return "program" };
+        if microcode[..] != self.words[..] {
+            return "program";
+        }
+        let sampled = draw.sampled_texture_stages();
+        let planned = self.stages.map(|s| !matches!(s, crate::look::Stage::Empty));
+        if sampled != planned {
+            return "textures";
+        }
+        "matched"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

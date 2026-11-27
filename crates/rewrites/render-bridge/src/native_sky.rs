@@ -32,7 +32,7 @@ pub fn counters() -> Vec<(String, u64)> {
 pub fn counter_name(outcome: &str) -> String {
     if outcome == "admitted" {
         "sky_plan_admitted".to_owned()
-    } else if outcome.starts_with("rows_") {
+    } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") {
         format!("sky_{outcome}")
     } else {
         format!("scene_kept_sky_{outcome}")
@@ -128,6 +128,22 @@ fn declined_name(why: &'static str) -> &'static str {
     }
 }
 
+/// Counts one strip's look from the material against the draw:
+/// `sky_plan_<outcome>`, `matched`, `program`, `textures`, or why the
+/// load has no look (`unloaded`, `shader`, `look`, `extraction`).
+pub fn count_plan(outcome: &'static str) {
+    let name = match outcome {
+        "matched" => "plan_matched",
+        "program" => "plan_program",
+        "textures" => "plan_textures",
+        "unloaded" => "plan_unloaded",
+        "shader" => "plan_shader",
+        "extraction" => "plan_extraction",
+        _ => "plan_look",
+    };
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+}
+
 /// The draw has to consume the entire captured strip for this model part.
 fn strip_count(expected: Option<u32>, resolved: Option<usize>) -> Result<(), &'static str> {
     match (expected, resolved) {
@@ -185,7 +201,7 @@ mod tests {
         let before = read("scene_kept_sky_range");
         count("range");
         assert_eq!(read("scene_kept_sky_range"), before + 1);
-        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_")));
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_")));
     }
 
     /// The made rows answer after enough matching strips, are then sampled,

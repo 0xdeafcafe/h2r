@@ -219,6 +219,8 @@ pub(crate) fn with_pool_issue<R>(issue: (u32, u32), f: impl FnOnce() -> R) -> R 
 pub(crate) struct SkyIssue {
     pub item: Result<SkyItem, Refusal>,
     pub constants: Result<native_render::sky_material::SkyConstants, &'static str>,
+    /// The pass's program and textures from the material.
+    pub look: Result<Arc<native_render::sky_material::SkyLook>, &'static str>,
 }
 
 impl SkyIssue {
@@ -235,12 +237,15 @@ impl SkyIssue {
             });
             render_bridge::native_sky::rows_outcome(outcome);
         }
-        let constants = match &item {
-            Ok(item) => crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
+        let (constants, look) = match &item {
+            Ok(item) => (
+                crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
+                crate::native_sky_glue::look_of(guest, item.shader, item.pass),
+            ),
             // Not asked: the item's refusal is the strip's cause.
-            Err(_) => Err("extraction"),
+            Err(_) => (Err("extraction"), Err("extraction")),
         };
-        Self { item, constants }
+        Self { item, constants, look }
     }
 }
 
