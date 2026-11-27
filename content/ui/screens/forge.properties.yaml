@@ -107,3 +107,13 @@ props:
     help: "Make a copy of this and hold it."
     prop: duplicate
     open: act
+  prop.15:
+    text: "Delete"
+    help: "Remove this from the map."
+    prop: delete
+    open: act
+  prop.16:
+    text: "Restore original"
+    help: "Put this back as the map has it."
+    prop: "restore original"
+    open: act

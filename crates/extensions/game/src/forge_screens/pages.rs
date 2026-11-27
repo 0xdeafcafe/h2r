@@ -161,6 +161,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
         ],
         Kind::Question => vec![
             ("delete-linked", sheet::question(Ask::DeleteLinked, "")),
+            ("restore", sheet::question(Ask::Restore, "")),
             ("overwrite", sheet::question(Ask::Overwrite, "Courtyard")),
             ("leave", sheet::question(Ask::Leave, "")),
             ("load", sheet::question(Ask::Load, "")),
