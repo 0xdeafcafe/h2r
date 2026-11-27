@@ -386,6 +386,7 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         labellable: true,
         label: Some(("checkpoint".into(), Some(3))),
         savable: 2,
+        kit: false,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
