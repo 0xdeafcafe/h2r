@@ -20,7 +20,10 @@ keeps its guest draw").
 |---|---|---|
 | Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20, plus `object_sorted`, `set` and `entry` from the sorted runs |
 | Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
-| Layers 2 and 17, other callers | `scene_kept_{2,17}_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
+| Layers 18, 19, 21 (sorted handlers) | `scene_kept_{18,19,21}_*` | as layer 17's (`native_layers::kept_counted`) |
+| Layers 2, 17, 18, 19, 21, other callers | `scene_kept_<layer>_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
+| Colour pass, screen effects | `scene_kept_post_colour_*`, `scene_kept_post_screen_effect_*` | a call the host does not arm (`host`, `args`, `plan`, `arm`, the screen effect's preflight causes); a glow that draws nothing is not counted. A HUD widget's call is R6's |
+| Flare fans | `scene_kept_flare_<site>_<cause>` | a fan left to the device: `boundary`, `entry`, `preparation` or the check's refusal (`flares::Refusal::cause`) |
 | Fog, layer 16 | `scene_kept_16_*` | the walk's per-slot causes, `state` and `entry` from the sorted runs, objects' items, other callers, view refusals. A record with no layer-16 entry draws nothing and is not counted (`fog::guest_items`) |
 | Water, layer 6 | `scene_kept_6_*` | as the fog's, plus `target_view` and `no_parts` |
 | Sky strip | `scene_kept_sky_*` | extraction, view and range refusals, then `IndexedPass::for_sky`'s |
@@ -103,6 +106,11 @@ Counters: `layer_plan_{2,17}_sorted_views`, `_sorted_taken`,
 - **The sky from the scene.** The strip is admitted at its resolved draw
   (`native_residual_glue`), so the guest's sky selection, its node palette
   upload and the strip's setup run.
+- **The flare passes, the post and layers 18, 19 and 21 from the scene.**
+  `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
+  passes draw into the device's live targets at the guest's calls. Cutting
+  them needs the graph to own the view's targets; the snapshot layers' slot
+  also needs research item R-a.
 
 ## Not verified
 
@@ -122,8 +130,11 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 (`layer_pass`), `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,
 `the_cached_restore_list_reads_from_the_descriptor_table` (`sorted_entries`);
-`layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
-(`native_layers`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`
+`layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`,
+`a_camouflage_or_hologram_item_the_host_does_not_draw_counts_scene_kept`
+(`native_layers`), `the_host_gets_the_calls_words` (`tests/native_post.rs`),
+`a_kept_post_call_or_flare_fan_counts_its_cause_and_owes_the_hud_nothing`
+(`native_hud::kept`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`
 (`tests/native_fog.rs`), `a_sky_strip_keeps_its_cull_and_each_refusal_is_named`
 (`tests/world_layers_gpu.rs`), `a_kept_strip_is_counted_scene_kept_by_its_cause`
 (`native_sky`), `the_world_layers_are_cut_in_their_slots` (`tests/cut.rs`).
