@@ -11,16 +11,18 @@ What still reaches the guest's draws in [retire-d3d.md](retire-d3d.md)'s built s
 The opaque block's layer draws are `kept` (`residual_census::KEPT_LAYERS`):
 the scene's layers 1, 3, 5, 7, 8 and 20, the alternate view's 1, 3 and 5,
 the first person's 1, 3, 7, 8 and 20. `frame_step::layer` is
-`LAYER_DRAW`'s implementation (`native_layers::layer_return`): after the
+`LAYER_DRAW`'s implementation (`native_layers::layer_turn`): after the
 stages' observers, a call none of whose items holds the layer's bit makes
 the body's own writes (`0x004858b0` back to -1, the draw byte
 `0x004670bc`, the cache `0x00485b48` cleared as `0x00016b10` clears it)
-and returns, making none of 5.2's rows (`tests/frame_step_layer.rs`). Any other call
-runs the guest body for the items still holding the bit, counted
+and returns, making none of 5.2's rows (`tests/frame_step_layer.rs`); with
+an open shader in the cache it first writes the shader's restore list
+("The open shader", below). Any other call runs the guest body for the
+items still holding the bit, counted
 `layer_return_<site><layer>_guest_<cause>` (`standing_down`, `unread`,
-`open_shader`: the cache's open shader, whose restore `0x00018900` is a D3D
-write; or `structure`, `object`, `other` for the first held item); each
-return is `_returned`.
+`open_shader`: the cache's open shader with an item held or a restore list
+that does not read; or `structure`, `object`, `other` for the first held
+item); each return is `_returned` or `_returned_open_shader`.
 
 Every item such a body draws is one
 `scene_kept_<site><layer>_<kind>_<cause>` count (`<site>` empty, `alt` or
@@ -118,6 +120,37 @@ order), `frames_{clean,unclean,empty}`, `opened`, `fallback`. Tests:
 `the_leading_runs_draw_before_the_call_and_the_rest_keep_their_order`,
 `a_runs_cleared_bits_go_back_at_the_next_layer_draw`,
 `the_rust_list_refuses_another_build` (`native_objects::before`).
+
+### The open shader
+
+`render_bridge::open_shader`, at every call `frame_step::layer` keeps only
+for the cache's open shader (**Code**). The body's `0x00016b10` calls
+`0x00018900` on the implementation's restore range (`+0x11c`: first
+`& 0x1ff`, count `>> 9`, five-byte entries in the cached descriptor's
+`+0x14` table):
+
+| State | `0x00018900` writes | The replay (`native_layers_glue::restore_list`) |
+|---|---|---|
+| below `0x5c` | `SetRenderState_Simple` (header from `0x0043e6f0`), then the shadow `0x00407498` | `Device::set_render_state_simple`, then the shadow |
+| `0x5c..0x87` | the mask (`0x0043e4d0`) into the dirty word `0x00407490`, the shadow | the same words |
+| `0x88` and up | the setter at `0x004038d8 + 4·state` | `Device::set_render_state` on the setter's slot (`d3d::abi::RENDER_STATE_SETTERS`); another setter declines (`declined_setter`) |
+
+Until the gate answers every call is a reference: the layer draw calls the
+guest's `0x00018900` (`call_guest`) and compares each listed state's
+shadow and the dirty word with the prediction (`open_shader::predict`).
+After 16 clean references it answers: one call in 64 stays a reference, the
+rest replay. Either way the body's writes follow and the call returns.
+`render.scene` carries `open_shader_<outcome>`: `referenced`, `replayed`,
+`matched`, `mismatched_<field>` (`state_<hex>`, `dirty`), `opened`,
+`fallback`, `declined_<why>`, `unfinished`. Tests:
+`the_restore_list_is_read_and_classed_as_the_original_applies_it`,
+`the_prediction_is_each_states_last_value_and_the_dirty_masks`,
+`the_gate_answers_after_clean_references_and_stops_at_a_difference`,
+`a_declined_replay_takes_the_reference` (`open_shader`),
+`an_open_shader_with_every_item_native_is_restored_and_returns`
+(`native_layers`),
+`the_open_shaders_restore_writes_each_entry_as_its_call_would`
+(`native_layers_glue`).
 
 Not built: each `scene_kept_*` row becoming `scene_dropped_*` once it is
 zero over the census corpus (8.2, rule 1).

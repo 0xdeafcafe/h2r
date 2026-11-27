@@ -159,6 +159,48 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.ask_at(mem, layer, caller, scene, left, Some(at), &mut run);
         run
     }
+
+    fn restore(&self, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write]) -> Result<(), &'static str> {
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        restore_list(&mut device, mem, writes)
+    }
+}
+
+/// The open shader's restore list (`render_bridge::open_shader`) through
+/// `device`, as `0x00018900`'s calls reach it: a simple state through
+/// `SetRenderState_Simple` and the shadow, a deferred one into the dirty
+/// word and the shadow, any other through its setter (the slot
+/// `d3d::abi::RENDER_STATE_SETTERS` gives it). `Err` before any write when
+/// a setter is not one of them (`setter`).
+pub(crate) fn restore_list<B: d3d::backend::Backend>(
+    device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write],
+) -> Result<(), &'static str> {
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    use render_bridge::open_shader::Write;
+    let slot = |setter: u32| d3d::abi::RENDER_STATE_SETTERS.iter().find(|e| e.0 == setter).map(|e| e.2);
+    if writes.iter().any(|w| matches!(*w, Write::Setter { setter, .. } if slot(setter).is_none())) {
+        return Err("setter");
+    }
+    for w in writes {
+        let done = match *w {
+            Write::Simple { state, header, value } => device
+                .set_render_state_simple(&mut crate::native_lights_glue::DeviceMemory(mem), header, value)
+                .ok()
+                .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value).ok()),
+            Write::Deferred { state, mask, value } => mem
+                .u32(DIRTY)
+                .and_then(|dirty| mem.set_u32(DIRTY, dirty | mask))
+                .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value))
+                .ok(),
+            Write::Setter { setter, value, .. } => slot(setter).and_then(|slot| {
+                device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), slot, value).ok()
+            }),
+        };
+        // A write the device refused after others were made: the
+        // reference then writes the whole list again.
+        done.ok_or("write")?;
+    }
+    Ok(())
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -1204,5 +1246,60 @@ mod viewport_tests {
             assert_eq!(bottom.y + bottom.height, size.1);
             assert_eq!(bottom.width, size.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    use render_bridge::open_shader::Write;
+
+    fn device() -> (d3d::Device<d3d::RecordingBackend>, FlatMemory) {
+        let push = d3d::GuestRange { addr: 0x0041_0000, len: 0x10000 };
+        let scratch = d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 };
+        let config = d3d::DeviceConfig::halo2(push, scratch);
+        let mut device = d3d::Device::new(config, d3d::RecordingBackend::default());
+        let mut m = FlatMemory::new(0x0040_0000, 0x18_0000);
+        for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
+            m.set_u32(config.layout.simple_encode + 4 * slot, (1 << 18) | (4 * (slot + 1))).unwrap();
+        }
+        let params = scratch.addr + scratch.len;
+        let mut dm = crate::native_lights_glue::DeviceMemory(&mut m);
+        d3d::PresentParameters {
+            width: 32, height: 32, back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
+            back_buffer_count: 1, multisample_type: 0, swap_effect: 0,
+            enable_auto_depth_stencil: false, auto_depth_stencil_format: 0,
+            flags: 0, refresh_rate: 0, presentation_interval: 0,
+            buffer_surface: 0, depth_stencil_surface: 0,
+        }.write(&mut dm, params).unwrap();
+        device.create_device(&mut dm, 0, params, 0).unwrap();
+        (device, m)
+    }
+
+    /// The replay writes each entry as `0x00018900`'s call would: the
+    /// simple state's shadow, the deferred state's mask and shadow, the
+    /// setter's slot; a setter the device does not know refuses before
+    /// any write.
+    #[test]
+    fn the_open_shaders_restore_writes_each_entry_as_its_call_would() {
+        const CULL_MODE: u32 = 147;
+        let (mut device, mut m) = device();
+        m.set_u32(DIRTY, 0x1).unwrap();
+        let writes = [
+            Write::Simple { state: 0x10, header: (1 << 18) | (4 * 0x11), value: 1 },
+            Write::Deferred { state: 0x60, mask: 0x20, value: 7 },
+            Write::Setter { state: CULL_MODE as u8, setter: 0x003f_53d0, value: 0x405 },
+        ];
+        restore_list(&mut device, &mut m, &writes).unwrap();
+        assert_eq!(m.u32(SHADOW + 0x40).unwrap(), 1);
+        assert_eq!(m.u32(SHADOW + 0x180).unwrap(), 7);
+        assert_eq!(m.u32(DIRTY).unwrap(), 0x21);
+        assert_eq!(device.render_state(&ReadMemory(&m), CULL_MODE), Some(0x405), "the setter's own slot");
+        let before = m.bytes.clone();
+        let unknown = [writes[1], Write::Setter { state: 0x90, setter: 0x0001_2340, value: 1 }];
+        assert_eq!(restore_list(&mut device, &mut m, &unknown), Err("setter"));
+        assert!(m.bytes == before, "nothing written");
     }
 }

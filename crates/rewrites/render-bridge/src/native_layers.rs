@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use frame_scene::{FrameScene, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 use native_render::camera::{GuestRead, GuestWrite};
@@ -164,6 +164,13 @@ pub trait Host: Send + Sync {
         &self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene,
         at: &crate::late_sorted::RunAt<'_>, left: &mut Left,
     ) -> crate::late_sorted::Run;
+
+    /// The cache's open shader's restore list (`crate::open_shader`),
+    /// written through the device as the guest's `0x00018900` writes it,
+    /// in order; `Err` names why not, before anything is written.
+    fn restore(&self, _mem: &mut dyn GuestMemory, _writes: &[crate::open_shader::Write]) -> Result<(), &'static str> {
+        Err("no_device")
+    }
 }
 
 /// The layers whose items the plan takes but the order rule holds back
@@ -486,6 +493,7 @@ pub fn counters() -> Vec<(String, u64)> {
     out.extend(OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
     out.extend(RETURNS.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
     out.extend(KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (format!("scene_kept_{k}"), v)));
+    out.extend(crate::open_shader::counters());
     out
 }
 
@@ -674,9 +682,32 @@ fn count_return(site: &str, layer: u32, outcome: &str) {
 /// stage counted ([`count_unnamed`]), so every item the body draws is a
 /// `scene_kept_*` count by cause.
 pub fn layer_return(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) -> bool {
+    layer_turn(mem, ret, standing_down) == Turn::Return
+}
+
+/// What a layer draw's own turn does ([`layer_turn`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Turn {
+    /// The body's writes are made: the call returns.
+    Return,
+    /// The guest body runs.
+    Guest,
+    /// Every item is native and the cache holds an open shader: its
+    /// restore list is written (`crate::open_shader`), then the body's
+    /// writes ([`finish_restore`]) and the call returns. `site` and
+    /// `layer` name the call's counter.
+    Restore { restore: crate::open_shader::Restore, site: &'static str, layer: u32 },
+}
+
+/// [`layer_return`], with the open shader's restore: a call that
+/// [`frame_step::layer::keep`](crate::frame_step::layer::keep) keeps only
+/// for the cache's open shader, no item holding the layer's bit, is
+/// [`Turn::Restore`], counted when it returns. A restore list that does
+/// not read runs the guest body (`guest_open_shader`).
+pub fn layer_turn(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) -> Turn {
     let tally = TALLY.with(|t| t.borrow_mut().take());
-    let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else { return false };
-    let Some(site) = return_site(layer, ret) else { return false };
+    let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else { return Turn::Guest };
+    let Some(site) = return_site(layer, ret) else { return Turn::Guest };
     let tally = tally.filter(|t| t.layer == layer);
     let step = if standing_down {
         Err(Keep::StandingDown)
@@ -686,14 +717,56 @@ pub fn layer_return(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) ->
     match step {
         Ok(()) => {
             count_return(site, layer, "returned");
-            true
+            Turn::Return
+        }
+        Err(Keep::OpenShader)
+            if crate::frame_step::layer::held(&*mem, layer).is_ok_and(|held| held.is_empty()) =>
+        {
+            match crate::open_shader::read(&*mem) {
+                Ok(Some(restore)) => Turn::Restore { restore, site, layer },
+                _ => {
+                    count_return(site, layer, "guest_open_shader");
+                    Turn::Guest
+                }
+            }
         }
         Err(keep) => {
             count_unnamed(&*mem, site, layer, tally.as_ref(), keep);
             count_return(site, layer, &format!("guest_{}", keep.name()));
-            false
+            Turn::Guest
         }
     }
+}
+
+/// The open shader's restore, as the body runs it: the drawn layer and
+/// the draw byte the body sets before `0x00016b10`, then the host's
+/// replay or the reference's prediction ([`crate::open_shader::plan`]).
+/// `Err` when neither can be made: the guest body runs, counted
+/// `guest_open_shader`.
+pub fn begin_restore(
+    mem: &mut dyn GuestMemory, restore: &crate::open_shader::Restore, site: &str, layer: u32,
+) -> Result<crate::open_shader::Plan, MemFault> {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let planned = (|| {
+        mem.set_u32(crate::frame_step::layer::DRAWN_LAYER, layer)?;
+        mem.set_u8(crate::frame_step::layer::DRAW_FLAG, 1)?;
+        crate::open_shader::plan(mem, restore, |mem, writes| match &host {
+            Some(host) => host.restore(mem, writes),
+            None => Err("host"),
+        })
+    })();
+    if planned.is_err() {
+        count_return(site, layer, "guest_open_shader");
+    }
+    planned
+}
+
+/// After the restore: the body's remaining writes
+/// (`frame_step::layer::writes`), counted `returned_open_shader`.
+pub fn finish_restore(mem: &mut dyn GuestMemory, site: &str, layer: u32) -> Result<(), MemFault> {
+    crate::frame_step::layer::writes(mem)?;
+    count_return(site, layer, "returned_open_shader");
+    Ok(())
 }
 
 /// The original body at `addr`.
@@ -739,11 +812,51 @@ impl Feature for NativeLayers {
             .implement(&points::LAYER_DRAW, "frame_step_layer_return", |cpu, ctx, addr| {
                 if addr == points::LAYER_DRAW.base {
                     let standing_down = crate::native_map_work::Stage::World.standing_down();
-                    let mut g = ctx.memory();
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut g = rt.memory();
                     // The light passes' body names the guest's site.
                     let ret = engine::render::light_gather::passes::caller(&*g, cpu.esp).unwrap_or(0);
-                    if layer_return(&mut *g, ret, standing_down) {
-                        return g.ret(cpu, 0);
+                    match layer_turn(&mut *g, ret, standing_down) {
+                        Turn::Return => return g.ret(cpu, 0),
+                        Turn::Guest => {}
+                        Turn::Restore { restore, site, layer } => {
+                            match begin_restore(&mut *g, &restore, site, layer) {
+                                Ok(crate::open_shader::Plan::Replayed) => {
+                                    if finish_restore(&mut *g, site, layer).is_ok() {
+                                        return g.ret(cpu, 0);
+                                    }
+                                    crate::open_shader::count("unfinished", 1);
+                                }
+                                Ok(crate::open_shader::Plan::Reference(predicted)) => {
+                                    // `0x00016b10`'s call: the range, then the
+                                    // context, pushed right to left.
+                                    let saved = *cpu;
+                                    let range = restore.implementation.wrapping_add(crate::open_shader::IMPLEMENTATION_RESTORE);
+                                    cpu.esp = cpu.esp.wrapping_sub(4);
+                                    g.set_u32(cpu.esp, range)?;
+                                    cpu.esp = cpu.esp.wrapping_sub(4);
+                                    g.set_u32(cpu.esp, crate::frame_step::layer::SETUP)?;
+                                    return ctx.call_guest_named(
+                                        cpu, &mut g, crate::open_shader::RESTORE, "layer draw: the open shader's restore",
+                                        move |cpu, ctx| {
+                                            *cpu = saved;
+                                            let rt = Arc::clone(ctx.runtime());
+                                            let mut g = rt.memory();
+                                            crate::open_shader::compare(&*g, &predicted);
+                                            if finish_restore(&mut *g, site, layer).is_ok() {
+                                                return g.ret(cpu, 0);
+                                            }
+                                            // The body's writes did not take: it
+                                            // runs, restoring the same list again.
+                                            drop(g);
+                                            crate::open_shader::count("unfinished", 1);
+                                            original(cpu, ctx, points::LAYER_DRAW.base)
+                                        },
+                                    );
+                                }
+                                Err(_) => {}
+                            }
+                        }
                     }
                 }
                 original(cpu, ctx, addr)
@@ -1062,6 +1175,48 @@ mod tests {
         assert_eq!(returns(), before);
     }
 
+    /// A layer draw whose items are all native but whose cache holds an
+    /// open shader restores its list and returns: the guest's restore
+    /// (the reference) until the gate answers, then the body's writes;
+    /// with an item still holding the bit the body runs.
+    #[test]
+    fn an_open_shader_with_every_item_native_is_restored_and_returns() {
+        use crate::frame_step::layer as fl;
+        use crate::open_shader::{IMPLEMENTATION_RESTORE, Plan};
+        use engine::memory::FlatMemory;
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0040_0000, 0x10_0000);
+        let (list, items, implementation) = (0x004a_0000, 0x004a_0100, 0x004a_1000);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 1).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(fl::SETUP + fl::SETUP_OPEN, implementation).unwrap();
+        // No entries: the restore reads, and writes nothing.
+        mem.set_u16(implementation + IMPLEMENTATION_RESTORE, 0).unwrap();
+        mem.set_u32(fl::SETUP + crate::open_shader::SETUP_DESCRIPTOR, 0x004a_2000).unwrap();
+        mem.set_u32(0x004a_2000 + crate::open_shader::DESCRIPTOR_STATES, 0x004a_3000).unwrap();
+        mem.set_u32(fl::CURRENT_LAYER, 1).unwrap();
+        let Turn::Restore { restore, site, layer } = layer_turn(&mut mem, 0x0002_bd5c, false) else {
+            panic!("the open shader alone holds the body");
+        };
+        assert_eq!((restore.implementation, site, layer), (implementation, "alt", 1));
+        assert!(matches!(begin_restore(&mut mem, &restore, site, layer).unwrap(), Plan::Reference(_)), "before the gate answers");
+        assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), 1, "the body's drawn layer during the restore");
+        let returned = get("layer_return_alt1_returned_open_shader");
+        finish_restore(&mut mem, site, layer).unwrap();
+        assert_eq!(get("layer_return_alt1_returned_open_shader"), returned + 1);
+        assert_eq!((mem.u32(fl::DRAWN_LAYER).unwrap(), mem.u32(fl::SETUP + fl::SETUP_OPEN).unwrap()), (u32::MAX, 0), "the body's writes made");
+        // An item holding the bit: the body runs, counted under its kind.
+        mem.set_u32(fl::SETUP + fl::SETUP_OPEN, implementation).unwrap();
+        mem.set_u32(items + 0x10, 1 << 1).unwrap();
+        mem.set_u32(items + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, 0xe000_0003).unwrap();
+        let open = get("layer_return_alt1_guest_open_shader");
+        assert_eq!(layer_turn(&mut mem, 0x0002_bd5c, false), Turn::Guest);
+        assert_eq!(get("layer_return_alt1_guest_open_shader"), open + 1, "the cache's shader is still its first cause");
+    }
+
     #[test]
     fn the_opaque_blocks_layer_draws_return_or_run_the_guest_counted_by_cause() {
         use crate::frame_step::layer as fl;
@@ -1088,7 +1243,8 @@ mod tests {
         let object = get("layer_return_fp20_guest_object");
         assert!(!layer_return(&mut mem, 0x0004_020b, false));
         assert_eq!(get("layer_return_fp20_guest_object"), object + 1);
-        // An open shader, and the map's stages standing down.
+        // An open shader whose restore list does not read, and the map's
+        // stages standing down.
         mem.set_u32(items + 0x18 + 0x10, 0).unwrap();
         mem.set_u32(fl::SETUP + fl::SETUP_OPEN, 1).unwrap();
         let open = get("layer_return_fp20_guest_open_shader");
