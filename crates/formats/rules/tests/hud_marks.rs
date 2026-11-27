@@ -319,7 +319,7 @@ fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
 
 /// The announcer lines (`announcer/<clip>`) the script has played, each
 /// with its audience, in order.
-fn said(g: &FakeGame) -> Vec<(String, u32)> {
+fn said(g: &FakeGame) -> Vec<(String, u16)> {
     g.sounds
         .iter()
         .filter_map(|s| Some((s.path.strip_prefix("announcer/")?.to_string(), s.audience)))
