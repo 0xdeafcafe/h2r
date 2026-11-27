@@ -38,6 +38,7 @@ use std::sync::Arc;
 
 use engine::memory::GuestMemory;
 use render_bridge::native_fog::Host;
+use render_bridge::native_layers::Left;
 use map::{Map, TagId};
 use native_render::fog_gpu::{self, FogProgram, FogWords, FOG_WORD_SLOTS};
 use native_render::gpu::Image;
@@ -305,27 +306,26 @@ pub(super) fn display_late_part(
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut Left) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(current_ready(&state, mem)?)
+            let Some(ready) = current_ready(&state, mem) else { return kept(left, "unloaded") };
+            Arc::clone(ready)
         };
-        let (fog, palettes) = ready.fog.get()?;
-        let Ok(mut d) = self.device.lock() else { return None };
+        let Some((fog, palettes)) = ready.fog.get() else { return kept(left, "unloaded") };
+        let Ok(mut d) = self.device.lock() else { return kept(left, "device") };
         if !d.can_external_pass()
-            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
+            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).unwrap_or(false)
         {
-            return None;
+            return kept(left, "device");
         }
         let read = ReadMemory(mem);
         if !stencil_disabled(|slot| d.render_state(&read, slot)) {
-            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_stencil_view", 1);
-            return None;
+            return refuse_view(left, FOG_LATE_LAYER, "stencil_view");
         }
         if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
-            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_palette_view", 1);
-            return None;
+            return refuse_view(left, FOG_LATE_LAYER, "palette_view");
         }
         // With a render thread that records scene stages, everything here
         // is extraction: the guest reads and the checks that can refuse.
@@ -338,19 +338,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // its fog cannot be established.
         let device_words = device_fog_words(&d, mem);
         let Some(materials) = resolve_materials(&fog.words, &device_words) else {
-            render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_fog_words_view", 1);
             if !FOG_UNREADABLE.swap(true, Ordering::Relaxed) {
                 eprintln!("native-fog: the device's fog state does not read; the D3D path draws the fog");
             }
-            return None;
+            return refuse_view(left, FOG_LATE_LAYER, "fog_words_view");
         };
         let mut samples = fog_gpu::LayerSamples::new();
         let inputs = fog_gpu::PlanarInputs::read(&read);
         for (&material, passes) in &fog.programs {
             if passes.iter().any(|p| p.planar.is_some()) {
                 let Some(inputs) = &inputs else {
-                    render_bridge::native_layers::count(FOG_LATE_LAYER.into(), "refused_planar_inputs_view", 1);
-                    return None;
+                    return refuse_view(left, FOG_LATE_LAYER, "planar_inputs_view");
                 };
                 samples.insert(material, passes.iter().map(|p| {
                     p.planar.as_ref().map(|b| b.sample(&p.program.pixel, inputs))
@@ -381,18 +379,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             })
         };
         if !display_clusters.is_empty() {
-            let planar = native_render::fog::planar_gate(&ReadMemory(mem))?;
+            let Some(planar) = native_render::fog::planar_gate(&ReadMemory(mem)) else { return kept(left, "gate") };
             let selected = display_late_part(mem, display_clusters, &fog.part_set, FOG_LATE_LAYER, |id, shader| {
                 let Some(record) = render_bridge::native_scene_lists::display_cluster_fog_flags(mem, id) else { return false };
                 native_render::fog::layer_implementation(record, planar)
                     .is_some_and(|implementation| fog.chosen.get(&shader).is_none_or(|&loaded| loaded == implementation))
             });
             if let Some(selected) = selected {
-                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                let Ok(target) = d.external_ready(&ReadMemory(mem), false) else { return kept(left, "device") };
                 if d.projection_factor_for_target(target.surface_size) < 1.0 {
-                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                    if ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
                         gpu.prewarm_fog(device, color, depth).then_some(())
-                    })?;
+                    }).is_none() {
+                        return kept(left, "pipeline");
+                    }
                     let display = pass(vec![selected], late_fogs(&materials), true);
                     let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan(1), display);
                 }
@@ -402,33 +402,37 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // reservation has recorded on every copy
         // (`native_render::skip::MaskPreview`).
         let read = ReadMemory(mem);
-        let mut preview = native_render::skip::MaskPreview::new(&read)?;
-        let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
+        let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else { return kept(left, "list") };
+        let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
             let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
             if !accepted {
                 Stage::Fog.count(Metric::Examined, 1);
                 Stage::Fog.count(Metric::RefusedOwnership, 1);
             }
             accepted
-        })?;
-        count_late_refusals(FOG_LATE_LAYER.into(), refused);
-        let masks = preview.finish()?;
+        }) else { return kept(left, "list") };
+        count_late_refusals(FOG_LATE_LAYER.into(), refused, left);
+        let Some(masks) = preview.finish() else { return kept(left, "list") };
         if selected.is_empty() {
             return None;
         }
-        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+        if ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
             gpu.prewarm_fog(device, color, depth).then_some(())
-        })?;
+        }).is_none() {
+            return kept(left, "pipeline");
+        }
         // The view's fog into the frame step's scene; the stage draws the
         // scene's copy. A view the scene cannot take stays on the D3D path.
         let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
-        let late = render_bridge::scene_step::late_layer(&*mem, FOG_LATE_LAYER, true, device_words, &materials, &parts)?;
+        let Some(late) = render_bridge::scene_step::late_layer(&*mem, FOG_LATE_LAYER, true, device_words, &materials, &parts) else {
+            return kept(left, "scene");
+        };
         let fogs = late_fogs(&late.materials);
         let selected = late_selected(&late.parts);
         let ranges = selected.len();
         drop(planning);
         if !commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
-            return None;
+            return kept(left, "reservation");
         }
         render_bridge::scene_step::late_drawn(late.key, FOG_LATE_LAYER);
         Some(cleared)
@@ -461,7 +465,26 @@ pub fn late_selected(parts: &[LatePart]) -> Vec<(Owner, u8)> {
     parts.iter().map(|p| (p.owner, p.part)).collect()
 }
 
-pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateRefusals) {
+/// The view's whole layer keeps its guest draw under `cause`
+/// (`scene_kept_<layer>_<kind>_<cause>`, `render_bridge::native_fog::count_late_kept`).
+pub(super) fn kept(left: &mut Left, cause: &'static str) -> Option<native_render::skip::Cleared> {
+    left.all(cause);
+    None
+}
+
+/// A view refusal: counted `layer_plan_<layer>_refused_<cause>`, and the
+/// view's items kept under `cause`.
+pub(super) fn refuse_view(left: &mut Left, layer: u8, cause: &'static str) -> Option<native_render::skip::Cleared> {
+    render_bridge::native_layers::count(layer.into(), &format!("refused_{cause}"), 1);
+    kept(left, cause)
+}
+
+/// The walk's refusals: counted `layer_plan_<layer>_refused_<cause>`, and
+/// each item's cause named for its slot in `left`.
+pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateRefusals, left: &mut Left) {
+    for &(slot, why) in &refused.kept {
+        left.item(slot, why);
+    }
     for (cause, n) in [
         ("refused_build", refused.build),
         ("refused_handler", refused.handler),
