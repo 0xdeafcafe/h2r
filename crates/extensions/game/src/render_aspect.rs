@@ -240,9 +240,10 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
 /// with 13 % to spare, and uploads the grid's model rows (`c[50..52]`,
 /// `0x004c1b38`) and its visibility quad (`0x004c1b08`) from it. The
 /// aspect is the raster rectangle's (`0x00485648`, 640x480), not the
-/// projection's, so a camera the projection-terms fit widened by `factor`
-/// shows past the grid's sides: in a 21:9 or 32:9 window the ocean ends at
-/// a hard edge on either side and the scene under the water shows there.
+/// projection's, so a view displayed through a lens widened by `factor`
+/// (the fitted guest camera, or the device's per-draw lens on a view that
+/// keeps the retail camera) shows past the grid's sides: the ocean ends at
+/// a curved edge on either side and the scene under the water shows there.
 /// Dividing the aspect by `factor` gives the grid the window's lens and
 /// the same margin retail has at 4:3. A `factor` of 1 or more (a window
 /// no wider than the guest's lens) or one that does not read leaves the
@@ -706,14 +707,16 @@ impl Feature for RenderAspect {
         }
 
         if guest_lens {
-            // The ocean's grid takes the lens the view's projection was
-            // fitted to (`widen_ocean_grid`); a view the fit left retail
-            // (several machines, another caller) keeps the retail grid.
-            let (fitted, lens) = (projected.clone(), view_lens.clone());
+            // The ocean's grid takes the lens the view is displayed through
+            // (`widen_ocean_grid`): the fitted guest camera's, or on a view
+            // the fit left retail (several machines, another caller) the
+            // device's per-draw lens, which widens the grid's draws all the
+            // same. The grid is drawn geometry only; nothing simulated reads it.
+            let lens = view_lens.clone();
             b.raw()
                 .before(&points::render_aspect::OCEAN_GRID_ASPECT, "widen the ocean grid to the displayed lens", move |c| {
-                    let widened = fitted.load(Ordering::Relaxed)
-                        && widen_ocean_grid(&mut *c.ctx.memory(), c.cpu.esp, f32::from_bits(lens.load(Ordering::Relaxed)));
+                    let widened =
+                        widen_ocean_grid(&mut *c.ctx.memory(), c.cpu.esp, f32::from_bits(lens.load(Ordering::Relaxed)));
                     #[cfg(feature = "desktop-runtime")]
                     render_bridge::scene_step::count_ocean_grid(widened);
                     #[cfg(not(feature = "desktop-runtime"))]
@@ -1391,6 +1394,31 @@ mod tests {
                 let window = window_half_tangent(fov, factor);
                 assert!(grid >= window * 1.13 - 1e-3, "{output:?} at {fov}: {grid} < {window}");
             }
+        }
+    }
+
+    /// A game of several machines (a peer, or a bot's phantom machine)
+    /// keeps the retail camera, and the device's per-draw lens widens the
+    /// grid's draws. The grid is widened to that lens too, so at 16:9 and
+    /// 21:9 it reaches past both sides of the window, with retail's margin:
+    /// the retail grid there shows its curved sides inside the window.
+    #[test]
+    fn the_ocean_grid_covers_a_networked_view_drawn_through_the_display_lens() {
+        let esp = 0x1000;
+        let at = esp + 0x10;
+        let globals = 0x0010_0000;
+        let fov = 70f32.to_radians();
+        for output in [(2560, 1440), (3440, 1440)] {
+            let mut mem = FakeGuest::new();
+            mem.put_u32(0x004e_8c20, globals).put_u32(globals + 0x2c, 0b11);
+            assert!(crate::render_rng::networked(&mem));
+            let factor = projection_factor(&mem, output);
+            assert!(factor < 1.0, "{output:?}");
+            mem.put_f32(at, 4.0 / 3.0);
+            assert!(widen_ocean_grid(&mut mem, esp, factor), "{output:?}");
+            let grid = ocean_half_tangent(fov, mem.f32(at).unwrap());
+            let window = window_half_tangent(fov, factor);
+            assert!(grid >= window * 1.13 - 1e-3, "{output:?}: {grid} < {window}");
         }
     }
 

@@ -245,6 +245,79 @@ mod tests {
         assert!(Arc::ptr_eq(&quad.constants, &source));
     }
 
+    /// Halo 2's water and sky programs take the display lens at 16:9 and
+    /// 21:9, as the world's do. The water's clip goes through a temporary
+    /// (`dph r10.xyz`, `dph r10.w` also to `oPos.w`, then the ILU's `mov
+    /// oPos.xyz, r10`); the sky's is clamped to the far plane (its W row
+    /// also written to Z).
+    #[test]
+    fn water_and_sky_programs_take_the_wide_lens() {
+        use shaders::vsh::{
+            IluOp, MacOp, OutReg,
+            encode::{Inst, Operand},
+        };
+        const W: u8 = 1;
+        let row = |i: u8| Some(Operand::c(i));
+        let mut water: Vec<Inst> = (0..3)
+            .map(|i| Inst::mac(MacOp::Dph, Some(Operand::v(0)), row(i), None).to_temp(10, 8 >> i))
+            .collect();
+        water.push(
+            Inst::mac(MacOp::Dph, Some(Operand::v(0)), row(3), None)
+                .to_temp(10, W)
+                .to_out(false, OutReg::Pos, W),
+        );
+        water.push(
+            Inst::mac(MacOp::Dp3, Some(Operand::r(11)), Some(Operand::r(11)), None)
+                .to_temp(11, W)
+                .with_ilu(IluOp::Mov, Operand::r(10))
+                .to_out(true, OutReg::Pos, 0xE)
+                .last(),
+        );
+        let sky: Vec<Inst> = [(0u8, 8u8), (1, 4), (3, 2 | W)]
+            .into_iter()
+            .enumerate()
+            .map(|(n, (i, mask))| {
+                let op = Inst::mac(MacOp::Dp4, Some(Operand::v(0)), row(i), None)
+                    .to_out(false, OutReg::Pos, mask);
+                if n == 2 { op.last() } else { op }
+            })
+            .collect();
+        let mut c = [[0.0; 4]; CONSTANTS];
+        c[..4].copy_from_slice(&[
+            [1.2, 0.0, 0.0, 0.0],
+            [0.0, 1.6, 0.0, 0.0],
+            [0.0, 0.0, 1.01, -0.2],
+            [0.0, 0.0, 1.0, 0.0],
+        ]);
+        let source = Arc::new(c);
+        for (name, program, clip) in [("water", water, "rows(0)"), ("sky", sky, "far(0)")] {
+            let words: Vec<u32> = program.iter().flat_map(|i| i.words()).collect();
+            for output in [(2560, 1440), (3440, 1440)] {
+                let factor = canvas_fit::Lens::for_window(output).factor();
+                assert!(factor < 1.0, "{output:?}");
+                let mut draw = ShaderInputs {
+                    vertex: VertexProcessing::Program { start: 0, microcode: words.clone().into() },
+                    provided_inputs: 1,
+                    vertex_defaults: [[0.; 4]; 16],
+                    constants: source.clone(),
+                    pixel_shader: None,
+                    combiner_state: Arc::new([0; 57]),
+                    final_combiner_latch: false,
+                    affine_projection: false,
+                };
+                if let VertexProcessing::Program { microcode, .. } = &draw.vertex {
+                    assert_eq!(microcode.clip_text(), clip, "{name}");
+                }
+                let mut projection = DisplayProjection { factor, ..Default::default() };
+                let retail = projection.for_draw(&mut draw, true);
+                assert!(retail.is_some_and(|r| Arc::ptr_eq(&r, &source)), "{name} at {output:?} kept the retail lens");
+                let x = canvas_fit::horizontal_term(factor);
+                assert_eq!(draw.constants[0], source[0].map(|v| v * x), "{name} at {output:?}");
+                assert_eq!(draw.constants[1..], source[1..], "{name} at {output:?}");
+            }
+        }
+    }
+
     #[test]
     fn only_the_perspective_lens_accepts_horizontal_projection() {
         let view = [
