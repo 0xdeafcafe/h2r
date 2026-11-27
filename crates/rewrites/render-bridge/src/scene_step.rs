@@ -1359,6 +1359,26 @@ pub fn open_identity() -> Option<(u64, SceneId)> {
     with_step(|step| Some((step.sequence, step.builder.scene()?.id)))
 }
 
+fn part_event(e: sim_effects::scene::PartEvent) -> frame_scene::effect::PartEvent {
+    use frame_scene::effect::PartKind;
+    use sim_effects::scene::Kind;
+    frame_scene::effect::PartEvent {
+        seq: e.seq,
+        tick: e.part.tick,
+        kind: match e.kind {
+            Kind::Decal => PartKind::Decal,
+            Kind::Light => PartKind::Light,
+            Kind::Flare => PartKind::Flare,
+        },
+        tag: e.part.tag,
+        effect: e.part.definition,
+        position: e.part.position,
+        direction: e.part.direction,
+        scale: e.part.scale,
+        guest_made: e.guest_made,
+    }
+}
+
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
     SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
@@ -1371,6 +1391,9 @@ pub fn seal() {
         let ticks_run = step
             .tick
             .map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
+        // The visual effect parts the sim made since the last scene
+        // (docs/engine/effects-parts.md).
+        let _ = step.builder.push_part_events(sim_effects::scene::take().into_iter().map(part_event));
         let scene = step.builder.seal(Stamp {
             published: Some(Instant::now()),
             ticks_run,

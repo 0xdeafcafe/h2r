@@ -12,7 +12,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::entry::{Cx, EntryError, EntryResult, GuestCall, Ret};
+use crate::entry::{Cx, EntryResult, GuestCall, Ret};
 
 /// Who runs a phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,10 @@ const fn guest(entry: u32, name: &'static str) -> Phase {
     Phase { entry, name, owner: Owner::Guest, form: Form::EbxRecord }
 }
 
+const fn rust(entry: u32, name: &'static str) -> Phase {
+    Phase { entry, name, owner: Owner::Rust, form: Form::EbxRecord }
+}
+
 const fn guest_first(entry: u32, name: &'static str) -> Phase {
     Phase { entry, name, owner: Owner::Guest, form: Form::StackRecordEcx }
 }
@@ -75,7 +79,8 @@ pub const PHASES: &[Phase] = &[
     guest(0x000b_7060, "objects_after_physics"),
     guest(0x000b_7150, "objects_final"),
     guest(0x0022_68e0, "unknown_2268e0"),
-    guest(0x0017_6e40, "effects"),
+    // The effect walk, crate::effects_phase (docs/engine/effects-parts.md).
+    rust(0x0017_6e40, "effects"),
     guest(0x000c_1400, "lights"),
     guest(0x0015_ca10, "post_game"),
     guest(0x0014_d8b0, "players_after"),
@@ -264,13 +269,33 @@ pub const CLOCK_COUNTER: u32 = 0x14;
 /// The tick length in the game-time record (f32).
 pub const TIME_LENGTH: u32 = 4;
 
-/// The tick body: what `game_tick` does, with `ledger` counting each guest
-/// phase call. Returns as the original does (no value, no argument bytes).
-/// The record is on the guest stack below the entry `ESP`, and every call
-/// reserves it.
+/// The tick body in the lifted body's form: every phase a guest call,
+/// Rust-owned ones included ([`Bodies::NONE`]), with `ledger` counting each.
+/// Returns as the original does (no value, no argument bytes). The record
+/// is on the guest stack below the entry `ESP`, and every call reserves it.
 pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
-    run_with(cx, ledger, Present::Always).await
+    run_with(cx, ledger, Present::Always, Bodies::NONE).await
 }
+
+/// Which Rust-owned phases run their Rust body. A phase whose body is off
+/// is a guest call, counted in the ledger like any guest phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bodies {
+    /// The effects phase, [`crate::effects_phase`] (`impl.sim.effects-parts`).
+    pub effects: bool,
+}
+
+impl Bodies {
+    pub const NONE: Bodies = Bodies { effects: false };
+    pub const ALL: Bodies = Bodies { effects: true };
+
+    fn runs(self, phase: &Phase) -> bool {
+        phase.owner == Owner::Rust && phase.entry == EFFECTS && self.effects
+    }
+}
+
+/// The effects phase's entry.
+pub const EFFECTS: u32 = 0x0017_6e40;
 
 /// Which seat-presentation phases a tick calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,8 +333,8 @@ pub fn local_users(m: &dyn crate::memory::GuestMemory) -> u32 {
     n
 }
 
-/// [`run`] with a presentation mode.
-pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present) -> EntryResult {
+/// [`run`] with a presentation mode and the Rust phase bodies on.
+pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, bodies: Bodies) -> EntryResult {
     let entered = Instant::now();
     ledger.lock().unwrap_or_else(|e| e.into_inner()).begin_tick(entered);
     let record = cx.entry().esp.wrapping_sub(RECORD_SIZE);
@@ -332,26 +357,26 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present) 
             if views == 0 && is_presentation(i) {
                 continue;
             }
-            match phase.owner {
-                Owner::Guest => {
-                    ledger.lock().unwrap_or_else(|e| e.into_inner()).record(i);
-                    let c = call(phase.entry);
-                    let c = match phase.form {
-                        Form::StackRecordEcx => c.args([record]).ecx(record),
-                        Form::EbxRecord => c.ebx(record),
-                    };
-                    cx.call(c).await?;
-                    let now = Instant::now();
-                    phase_ns[i] = ns_between(mark, now);
-                    mark = now;
-                }
-                Owner::Rust => {
-                    return Err(EntryError::IsolatedCall(format!(
-                        "tick phase {} is Rust-owned and has no body",
-                        phase.name
-                    )));
-                }
+            // A Rust body that refuses before it starts (a named counter)
+            // leaves the phase to the guest.
+            let guest = !bodies.runs(phase)
+                || match phase.entry {
+                    EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
+                        == crate::effects_phase::Walked::Declined,
+                    _ => true,
+                };
+            if guest {
+                ledger.lock().unwrap_or_else(|e| e.into_inner()).record(i);
+                let c = call(phase.entry);
+                let c = match phase.form {
+                    Form::StackRecordEcx => c.args([record]).ecx(record),
+                    Form::EbxRecord => c.ebx(record),
+                };
+                cx.call(c).await?;
             }
+            let now = Instant::now();
+            phase_ns[i] = ns_between(mark, now);
+            mark = now;
         }
         // After the phases, still in the run branch (0x1380b4..0x1380db):
         // the counter falls to zero, the clock gains the tick length.
@@ -397,6 +422,43 @@ mod tests {
         assert!(PHASES.iter().all(|p| seen.insert(p.entry)));
         assert_eq!(PHASES[0].entry, 0x0014_d3a0);
         assert_eq!(PHASES[28].entry, 0x0016_f200);
+    }
+
+    /// With the Rust bodies on, the effects phase makes no guest call of
+    /// its own: the ledger has 0 for it and 1 for every other phase, and
+    /// the walk's callees run where the phase did.
+    #[test]
+    fn effects_phase_ledger_is_zero() {
+        use crate::effects_phase::tests::{STACK, answer, guest};
+        use crate::entry::{self, EntryFuture, Regs};
+        let mut g = guest();
+        let clock = 0x0052_0100;
+        g.map(crate::points::TICK_CLOCK.base & !0xfff, 0x1000);
+        g.put_u32(crate::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
+        let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
+        let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
+        let record = STACK - RECORD_SIZE;
+        let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |c, m| {
+            if c.target == RECORD_BEFORE {
+                m.set_u8(record + RUN_FLAG, 1).unwrap();
+            }
+            answer(c, m)
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        let l = ledger.lock().unwrap();
+        let effects = PHASES.iter().position(|p| p.entry == EFFECTS).unwrap();
+        assert_eq!(PHASES[effects].owner, Owner::Rust);
+        for i in 0..PHASES.len() {
+            assert_eq!(l.calls(i), u32::from(i != effects), "{}", PHASES[i].name);
+        }
+        assert_eq!(l.total_calls(), guest_phases() as u64);
+        let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
+        assert!(!targets.contains(&EFFECTS));
+        // The walk runs between the phases either side of it.
+        let at = targets.iter().position(|&t| t == sim_effects::walk::ALIVE).unwrap();
+        assert_eq!(targets[at - 1], PHASES[effects - 1].entry);
+        let after = targets.iter().position(|&t| t == PHASES[effects + 1].entry).unwrap();
+        assert_eq!(after - at, 9, "the walk's nine callees");
     }
 
     #[test]

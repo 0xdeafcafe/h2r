@@ -131,3 +131,95 @@ fn decal_link_bucket() {
 fn contrail_point_spawn_clock() {
     matches_guest(at(CONTRAIL_CLOCK), clock_fixture);
 }
+
+const PART_SWITCH: u32 = 0x0017_a8a0;
+const AREA_DAMAGE: u32 = 0x000d_6c80;
+const EFFECT: u32 = 0x0064_0000;
+const PART: u32 = 0x0064_1000;
+const POSITION: u32 = 0x0064_2000;
+const DIRECTION: u32 = 0x0064_2100;
+
+fn read32(m: &FlatMemory, a: u32) -> u32 {
+    u32::from_le_bytes(m.bytes[a as usize..a as usize + 4].try_into().unwrap())
+}
+
+/// The part switch's `jpt!` arm on the lifted original, from seeded
+/// effects, parts and locations: the record and the excepted object it
+/// passes to the area damage `0xd6c80` equal `sim_effects::damage::record`
+/// over the inputs the bridge decodes (docs/engine/effects-parts.md).
+#[test]
+fn damage_parts_match_lifted() {
+    use sim_effects::damage::{self, Inputs};
+    use sim_effects::parts::group;
+    let Some(image) = lifted::image::Image::get() else { return };
+    let mut code = image.original();
+    code.prime(PART_SWITCH);
+    code.prime(points::DAMAGE_DATA_INIT.base);
+    let mut rng = lifted::image::Rng(0x5eed_0017_a8a0);
+    for case in 0..64u32 {
+        let mut mem = image.ram.clone();
+        mem.bytes.truncate(RAM);
+        let mut r = || rng.u32();
+        let words = |r: &mut dyn FnMut() -> u32, n: usize| -> Vec<u32> { (0..n).map(|_| r()).collect() };
+        // The effect datum, the part record and the location vectors; the
+        // floats include NaN payloads and signed zeros through raw bits.
+        let effect = words(&mut r, 0x60 / 4);
+        for (n, w) in effect.iter().enumerate() {
+            word(&mut mem, EFFECT + 4 * n as u32, *w);
+        }
+        word(&mut mem, PART + 8, group::DAMAGE);
+        let tag = r();
+        word(&mut mem, PART + 0x10, tag);
+        let position = [r(), r(), if case % 4 == 0 { 0x8000_0000 } else { r() }];
+        let direction = [r(), if case % 8 == 1 { 0x7fc0_1234 } else { r() }, r()];
+        for n in 0..3 {
+            word(&mut mem, POSITION + 4 * n as u32, position[n]);
+            word(&mut mem, DIRECTION + 4 * n as u32, direction[n]);
+        }
+        let scale = r();
+        for (n, w) in [EXIT, EFFECT, PART, POSITION, DIRECTION, scale].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * n as u32, w);
+        }
+        let inputs = Inputs {
+            tag,
+            owner: [effect[0x4c / 4], effect[0x50 / 4], effect[0x54 / 4]],
+            effect_1c: effect[0x1c / 4],
+            effect_20: effect[0x20 / 4],
+            position,
+            direction,
+            scale,
+            word_7c: read32(&mem, damage::INIT_WORD_7C) as u16,
+            word_22: read32(&mem, damage::INIT_WORD_22) as u16,
+            one: read32(&mem, damage::INIT_ONE),
+        };
+        let mut cpu = Cpu {
+            gpr: [r(), r(), r(), r(), STACK, r(), r(), r()],
+            eip: PART_SWITCH,
+            eflags: 0xa93,
+            ..Default::default()
+        };
+        cpu.x87.control = 0x027f;
+        cpu.mxcsr = 0x1f80;
+        let mut reached = false;
+        for _ in 0..10_000 {
+            match lifted::code::step(&mut code, &mut cpu, &mut mem).unwrap_or_else(|e| panic!("case {case}: {e}")) {
+                Flow::Call { target: AREA_DAMAGE, .. } => {
+                    reached = true;
+                    break;
+                }
+                Flow::Return { target } => panic!("case {case}: returned to {target:#x} before the area damage"),
+                _ => {}
+            }
+        }
+        assert!(reached, "case {case}: no area damage call");
+        let esp = cpu.gpr[4];
+        assert_eq!(read32(&mem, esp), 0x0017_aa4f, "case {case}: the arm's call site");
+        let at = read32(&mem, esp + 4);
+        assert_eq!(at, STACK - damage::RECORD_BELOW_ENTRY, "case {case}: the record's place in the frame");
+        assert_eq!(esp, STACK - 0x11c, "case {case}: the arm's depth");
+        let got = &mem.bytes[at as usize..at as usize + damage::SIZE];
+        let want = damage::record(&inputs);
+        assert_eq!(damage::first_difference(&want, got.try_into().unwrap()), None, "case {case}");
+        assert_eq!(read32(&mem, esp + 8), damage::NO_OBJECT, "case {case}");
+    }
+}

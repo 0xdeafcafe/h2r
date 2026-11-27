@@ -25,6 +25,8 @@ use hooks::Switches;
 use hooks::switches::table::{self, Initial};
 use sim_bridge::shadow::{SHADOW, Shadow};
 use sim_bridge::sim_sound::voice_arm as voices;
+use sim_effects::arm::Stats as EffectArm;
+use sim_effects::dispatch::Stats as EffectParts;
 
 /// Registers `sim.arms` on `agent`.
 pub fn install(agent: &Agent) {
@@ -60,6 +62,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             subsystem(switches, "seats", group(sim_bridge::sim_seats::GROUP)),
             subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
             subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
+            effects_parts(switches, sim_bridge::sim_effects_parts::status()),
         ],
     }
 }
@@ -82,6 +85,30 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
         arms,
         clean: checked > 0 && mismatched == 0,
     }
+}
+
+/// The effects phase in Rust (`impl.sim.effects-parts`, on by default):
+/// the damage arm, and the part switch's other parts (`answered` the ones
+/// returned from Rust, `declined` the ones the guest's arm ran).
+fn effects_parts(switches: &Switches, (parts, arm): (EffectParts, EffectArm)) -> Subsystem {
+    let on = sim_bridge::sim_effects_parts::on(switches);
+    let arms = vec![
+        Arm {
+            name: "effects.damage".to_owned(),
+            checked: arm.checked,
+            matched: arm.matched,
+            mismatched: arm.mismatched,
+            answered: arm.answered,
+            declined: arm.declined(),
+        },
+        Arm {
+            name: "effects.parts".to_owned(),
+            answered: parts.returned,
+            declined: parts.refused(),
+            ..Arm::default()
+        },
+    ];
+    verdict("effects-parts", "impl.sim.effects-parts".to_owned(), on, arms)
 }
 
 fn physics_arms() -> Vec<Arm> {
@@ -204,9 +231,13 @@ mod tests {
         shadow.register("sim.seats_a", sim_bridge::sim_seats::GROUP, "A", 0x1000, true);
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound"]);
+        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
+        assert_eq!(r.subsystems[7].switch, "impl.sim.effects-parts");
+        assert!(r.subsystems[7].on, "on by default");
         for s in &r.subsystems {
-            assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
+            if s.name != "effects-parts" {
+                assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
+            }
             assert!(!s.clean, "{}", s.name);
             for a in &s.arms {
                 assert_eq!(
@@ -289,6 +320,16 @@ mod tests {
         let c = collision_arms(&stats);
         assert_eq!(c.len(), 7);
         assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
+        let e = effects_parts(
+            &Switches::default(),
+            (
+                EffectParts { returned: 4, guest_object: 2, declined_fault: 1, ..EffectParts::default() },
+                EffectArm { checked: 6, matched: 5, mismatched: 1, answered: 3, unreached: 2, ..EffectArm::default() },
+            ),
+        );
+        assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (6, 3, 2));
+        assert_eq!((e.arms[1].answered, e.arms[1].declined), (4, 3));
+        assert!(!e.clean);
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
         assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));
     }
@@ -333,6 +374,6 @@ mod tests {
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
         let arms: SimArms = serde_json::from_value(reply["result"].clone()).unwrap();
-        assert_eq!(arms.subsystems.len(), 7);
+        assert_eq!(arms.subsystems.len(), 8);
     }
 }

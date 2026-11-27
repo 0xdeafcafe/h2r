@@ -1,5 +1,5 @@
 # sim-effects
 
-The effect part split of the simulation rewrite. Each part an effect event creates is classified by its tag group. Damage parts are sim state: the order they are applied in is folded into the sim hash. Visual-only parts (decals, lights, lens flares) are events for the renderer and never reach the hash. Nothing in the crate reads guest memory; `sim-bridge` decodes the part and calls in.
+The effects phase of the simulation rewrite, as pure Rust over plain data. `walk` is the effect array walk of `0x176e40`; `parts` names each part's class by its tag group; `damage` builds a damage part's record exactly as `0x17a8a0` does; `arm` is the damage arm's proof (compared with the guest until it has matched 4096 parts, then answering with one audit in 64); `scene` queues the visual parts for the renderer's scene. Nothing here reads guest memory: `engine::sim_effects::phase` and `sim-bridge` decode and call in.
 
-[Effect parts](../../../docs/engine/effects-parts.md) · [Simulation rewrite](../../../docs/engine/sim-rewrite.md)
+[Effects phase](../../../docs/engine/effects-parts.md) · [Simulation rewrite](../../../docs/engine/sim-rewrite.md)

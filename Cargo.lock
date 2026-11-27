@@ -81,6 +81,7 @@ dependencies = [
  "settings",
  "sim-bench",
  "sim-bridge",
+ "sim-effects",
  "sim-havok",
  "sim-state",
  "snapshot",
@@ -2076,6 +2077,7 @@ dependencies = [
  "sim-anim",
  "sim-collision",
  "sim-core",
+ "sim-effects",
  "sim-havok",
  "sim-objects",
  "sim-sound",
@@ -5854,6 +5856,7 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "scene-extract",
+ "sim-effects",
  "tags",
  "timeline",
 ]
@@ -7171,6 +7174,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "starter-map"
+version = "0.1.0"
+dependencies = [
+ "blockout-kit",
+ "content",
+ "forge-build",
+ "forge-doc",
+ "forge-shapes",
+ "map",
+ "scenario-edit",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "stage-kit",
+ "tags",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7283,6 +7305,7 @@ dependencies = [
  "sim-bench",
  "sound-edit",
  "stage-kit",
+ "starter-map",
  "studio-proto",
  "superbounce",
  "tags",

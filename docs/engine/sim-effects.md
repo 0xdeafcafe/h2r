@@ -25,9 +25,11 @@ one step and written back before the next call.
 | `contrails.rs` | `17c040`, `17c880` | the point emission clock; the release of a trail's four point chains |
 | `decals.rs` | `17cc60`, `17ccd0`, `17ce00`, `17d860` | the root clock and fade, bucket link and unlink |
 
-Not ported: the contrail point update `17c540`, the effect part creation
-`17a8a0`, the particle view update (`docs/graphics/native-particles.md`) and
-the render side of decals. They stay guest code and see the same datums.
+Not ported here: the contrail point update `17c540`, the particle view
+update (`docs/graphics/native-particles.md`) and the render side of decals.
+They stay guest code and see the same datums. The phase's effect walk
+`176e40` and the part creation `17a8a0` are
+[effects-parts.md](effects-parts.md)'s.
 
 RNG draws keep retail order: birth draws from the local effects stream in
 program order, and the shared stream `[0x4e7408]` is only touched by the

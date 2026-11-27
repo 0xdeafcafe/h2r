@@ -478,6 +478,9 @@ pub struct FrameScene {
     /// What is drawn over the views, in order: the HUD's and the UI's
     /// quads, text runs and fills (`crate::overlay`).
     pub overlay: Overlay,
+    /// The visual effect parts created since the last scene
+    /// ([`crate::effect::PartEvent`]).
+    pub part_events: Vec<crate::effect::PartEvent>,
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -513,6 +516,7 @@ impl FrameScene {
         self.late_parts.clear();
         self.post_effects.clear();
         self.overlay.clear();
+        self.part_events.clear();
     }
 
     pub fn view(&self, key: ViewKey) -> Option<&View> {

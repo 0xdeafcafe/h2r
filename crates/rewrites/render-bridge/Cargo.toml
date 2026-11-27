@@ -26,6 +26,8 @@ native-render = { path = "../native-render", default-features = false, optional 
 # The frame step's scene (docs/graphics/framescene.md).
 frame-scene = { path = "../frame-scene", optional = true }
 scene-extract = { path = "../scene-extract", optional = true }
+# The sim's visual effect parts, put in each scene (docs/engine/effects-parts.md).
+sim-effects.workspace = true
 
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }

@@ -682,6 +682,10 @@ points! { ALL;
     /// the stack the effect (`+0x48`, `+0x64`), the part record (`+8` its
     /// group, `+0x10` its tag), and three more words (`0x17a91f`, `0x17a9d1`).
     EFFECT_PART_CREATE @ 0x0017_a8a0: [fn(source: eax, location: ecx, effect: stack 0, part: stack 1, a: stack 2, b: stack 3, c: stack 4) ret 20], Optional; "docs/engine/engine-map.md";
+    /// Area damage from a damage record (`0xd6660`'s `0x88` bytes) and an
+    /// object it excepts (`-1` for none). The effect part switch's `jpt!`
+    /// arm calls it from `0x17aa4f` (docs/engine/effects-parts.md).
+    DAMAGE_AREA_APPLY @ 0x000d_6c80: [fn(record: stack 0, except: stack 1) ret 8], Optional; "docs/engine/effects-parts.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
     /// `animation_resource_get`: EAX a graph's resource record; loads it
     /// through the animation cache when needed and stamps the cache entry's
