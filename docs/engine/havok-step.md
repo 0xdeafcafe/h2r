@@ -437,7 +437,7 @@ decode following the rows into the block. Persistent words only are
 journalled; the buffer's and the block's contents stay in Rust. The
 decline is decided before any write, so the guest runs from untouched
 memory. An island falls back to the lifted entry, counted by reason
-(`island_solve::fallbacks`), when its block would come from a route the
+(`island_solve::fallbacks`, read with `havok.islands`), when its block would come from a route the
 allocator model does not cover or its rows run past the buffer or the
 block,
 holds a motion whose two solver slots are not one of the six classes

@@ -81,6 +81,7 @@ dependencies = [
  "settings",
  "sim-bench",
  "sim-bridge",
+ "sim-havok",
  "sim-state",
  "snapshot",
  "tags",
