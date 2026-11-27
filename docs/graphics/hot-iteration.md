@@ -6,13 +6,14 @@ Switch: none.
 
 Nothing here was established by running the game.
 
+| What you edit | Loop | Mechanism |
+|---|---|---|
+| how a translated program shades | save a WGSL file, seen next frame | `render.*` overrides, parameters, toggles |
+| the values a tag feeds the renderer | `edit.set`, seen next frame | `edit.*` writes guest memory under a journal |
+
 ## Why
 
-Changing a rendering detail today means rebuilding the game image (a
-host renderer change) or re-patching a `.map` and restarting (a tag
-change). Both cost minutes per look. The aim is an edit-to-see loop of
-about a frame for the two things iterated most: how a translated program
-shades, and the values tags feed it.
+A rendering change otherwise needs a game image rebuild (host renderer) or a `.map` re-patch and restart (tag), minutes per look. The aim is an edit-to-see loop of about a frame for the two things iterated most: how a translated program shades, and the values tags feed it.
 
 ## Choices
 
@@ -20,8 +21,8 @@ shades, and the values tags feed it.
 seam: every draw that is not the built-in shader runs a translated
 program registered under a shader id, and re-registering an id drops the
 cached pipelines (`gfx::Renderer::register_shader`). An override is a
-WGSL file that replaces one program's module. Compared with reloading
-host render code as a dylib:
+WGSL file that replaces one program's module. Compared with
+reloading host render code as a dylib:
 
 - it is the fastest loop there is: save the file, the next frame draws
   with it (a quarter-second poll, then one pipeline rebuild);

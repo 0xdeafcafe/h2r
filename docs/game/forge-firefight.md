@@ -162,11 +162,13 @@ needs no change. The lobby is what stands between.
   before. The sentences: "Pick a map variant with AI ground, or a
   Firefight map." on a base map with no such pick, and the existing
   line when nothing installed can play.
-- **Change Map** with a Firefight variant selected lists the kit packages
-  and, after them, each installed base map that has at least one saved
-  map variant with a ground recipe (`forge::files::variants::list`, the
-  entry's `ground`; `Catalogue::with_ground_maps`). Choosing a base map
-  sets the lobby's map; the Map Variant row then picks its variant.
+- **Change Map** with a Firefight variant selected lists every map in the
+  one list ([map-select.md](map-select.md#one-list-with-the-modes-each-map-supports)),
+  the maps that play Firefight first. A base map plays it when it has at
+  least one saved map variant with a ground recipe
+  (`forge::files::variants::list`, the entry's `ground`;
+  `map_modes::firefight_support`). Choosing a base map sets the lobby's
+  map; the Map Variant row then picks its variant.
 - **Map Variant** in a Firefight lobby
   (`lobby_mode::map_variant_pick_for`) lists the variants with ground;
   Original and a variant without ground are listed with "No AI ground."

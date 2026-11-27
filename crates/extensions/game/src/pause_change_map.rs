@@ -262,14 +262,10 @@ pub fn categories(cat: &Catalogue) -> Vec<Category> {
         .collect()
 }
 
-/// What Change Map opens for a lobby in `mode`: a Forge or Firefight
-/// lobby's own category ([`map_select::mode_category`]), else the
-/// categories, or the one category's maps when there is one. `None` with
-/// nothing to pick.
-pub fn opening(mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
-    if let Some(c) = map_select::mode_category(mode) {
-        return (!cat.maps(c).is_empty()).then_some(Opening::Maps(c));
-    }
+/// What Change Map opens for a lobby in `mode`: the categories, or the one
+/// category's maps when there is one, in every mode. `None` with nothing to
+/// pick.
+pub fn opening(_mode: lobby_start::Mode, cat: &Catalogue) -> Option<Opening> {
     match categories(cat).as_slice() {
         [] => None,
         [one] => Some(Opening::Maps(*one)),

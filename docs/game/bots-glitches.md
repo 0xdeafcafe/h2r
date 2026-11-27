@@ -49,15 +49,16 @@ noob combo and short pulls on other weapons go through the same pipeline.
 Skill also scales how often it tries. Easy takes 40% of the setting's
 chance, Normal 70%, Heroic 90% and Legendary all of it.
 
-These are timing-window pass rates from 4,000 seeded controller-model
-trials per skill and technique, with the right stick at rest. The
-criterion is that the delivered presses arrive in order and within a
-tick of each nominal gap, keeping required holds such as X at R for BXR.
-A melee cancel or second BR pull can't precede its nominal opening. The
-sword fly needs X one or two ticks after Y. The plasma overcharge row
-checks the nominal 24-tick hold. These rates measure pad timing. Whether
-the retail engine accepts an attempt depends on the weapon, target,
-movement and host behaviour. Super-bounce landings need a physics run.
+These are timing-window pass rates from 4,000 seeded controller-model trials
+per skill and technique, with the right stick at rest. The criterion is that
+the delivered presses arrive in order and within a tick of each nominal gap,
+keeping required holds such as X at R for BXR. A melee cancel or second BR
+pull can't precede its nominal opening. The sword fly needs X one or two
+ticks after Y. The plasma overcharge row checks the nominal 24-tick hold.
+
+These rates measure pad timing. Whether the retail engine accepts an attempt
+depends on the weapon, target, movement and host behaviour. Super-bounce
+landings need a physics run.
 
 | Delivered sequence | Easy | Normal | Heroic | Legendary |
 |---|---:|---:|---:|---:|
@@ -105,42 +106,46 @@ aims at (`Bounce::landing`, the site's `Site::aim`). There is one:
 |---|---|---|---|---|---|
 | `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | (−8.4, 2.5, −0.76) | (−10.45, 3.985, −3.19) | superbounce.md: the crease where the ramp meets the floor; every traced bounce fell onto it at −5.26 to −5.40 from the recipe's running jump off the upper level, a 2.43 drop, landing on x −10.2 to −10.7, y 3.93 to 4.04 (the aim is the middle, which the takeoff heads at along the recipe's (−0.8, 0.6)); the launch is a pinch between faces at y 4.12 and 3.94 |
 
-A bounce needs the player primed first: a forced crouch leaves the
-level pair word at -3 and only a landing with it at -3 bounces
-([superbounce.md](superbounce.md), "The pair word"), and the landing
-must come in fast enough: a standing jump lands at about −3 units/s and
-never bounces on Ascension's patch, which needs −5.4. The measured spot
-is therefore a drop from its takeoff (`spots::Site::measured`: fall 2.43,
-`spots::MEASURED_FALL`), the recipe's running jump (below). The bot
-primes before it goes to a spot (below). On a standing site it walks to
-0.8 units short of the spot, steps onto it, stands still for 4 ticks,
-jumps with the stick let go, and pushes the stick toward the drift in
-the air. Not every landing bounces, so it tries again from a nudged
-place. It knows it bounced when it rises 0.4 units again after starting
-to fall: a plain landing never does. Community
-guides ([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
-give spots on most maps by landmark only. A spot goes in the table only
-once a game run has found and traced it; the scan below finds the rest.
+A bounce needs the player primed first: a forced crouch leaves the level
+pair word at -3 and only a landing with it at -3 bounces
+([superbounce.md](superbounce.md), "The pair word"), and the landing must
+come in fast enough: a standing jump lands at about −3 units/s and never
+bounces on Ascension's patch, which needs −5.4. The measured spot is
+therefore a drop from its takeoff (`spots::Site::measured`: fall 2.43,
+`spots::MEASURED_FALL`), the recipe's running jump (below). The bot primes
+before it goes to a spot (below).
+
+On a standing site it walks to 0.8 units short of the spot, steps onto it,
+stands still for 4 ticks, jumps with the stick let go, and pushes the stick
+toward the drift in the air. Not every landing bounces, so it tries again
+from a nudged place. It knows it bounced when it rises 0.4 units again after
+starting to fall: a plain landing never does.
+
+Community guides ([Halopedia, Super
+bouncing](https://www.halopedia.org/Super_Bouncing)) give spots on most maps
+by landmark only. A spot goes in the table only once a game run has found
+and traced it; the scan below finds the rest.
 
 ### Superbounce routes
 
-`bots::spots` holds what a bot knows of its map's spots: the measured
-ones first, then the scan of the map's collision geometry
-(`crates/live/superbounce`: **bounce** spots, narrow slots a primed
-landing launches out of, and **crouch** spots, where a standing player is
-forced into a crouch). The nav worker scans a map when it builds or
-restores the nav mesh (`autonav::Worker::keep_spots`) and saves the
-result beside it as `<map>.spots` (after the mesh is published and saved,
-and the scan is caught if it panics; a failed scan leaves an empty
-stamped file so it is not repeated every launch), stamped with the nav generator, the
-scan version (`spots::SCAN`) and the map's fingerprint. The worker also
-reads the map's floor polygons and publishes them in memory
-(`spots::read_floors`, `spots::publish_floors`) for the takeoff gate; they
-are not another cache file. A scanned bounce spot becomes a
-`glitches::Bounce` (source `scan`, spread 0.03) with its launch speed
-(`spots::Site`); one at a measured spot's place is dropped.
-A site with no fall (0.5 or less) and no takeoff is jumped onto in place;
-one that needs a fall is dropped onto from its takeoff or a ledge
+`bots::spots` holds what a bot knows of its map's spots: the measured ones
+first, then the scan of the map's collision geometry
+(`crates/live/superbounce`: **bounce** spots, narrow slots a primed landing
+launches out of, and **crouch** spots, where a standing player is forced
+into a crouch). The nav worker scans a map when it builds or restores the
+nav mesh (`autonav::Worker::keep_spots`) and saves the result beside it as
+`<map>.spots` (after the mesh is published and saved, and the scan is caught
+if it panics; a failed scan leaves an empty stamped file so it is not
+repeated every launch), stamped with the nav generator, the scan version
+(`spots::SCAN`) and the map's fingerprint. The worker also reads the map's
+floor polygons and publishes them in memory (`spots::read_floors`,
+`spots::publish_floors`) for the takeoff gate; they are not another cache
+file.
+
+A scanned bounce spot becomes a `glitches::Bounce` (source `scan`, spread
+0.03) with its launch speed (`spots::Site`); one at a measured spot's place
+is dropped. A site with no fall (0.5 or less) and no takeoff is jumped onto
+in place; one that needs a fall is dropped onto from its takeoff or a ledge
 (below).
 
 **Verified spots.** The map's verified file (`<data>/bots/<map>.verified`,
@@ -160,23 +165,24 @@ written by a sim's training run, [bounce-search.md](bounce-search.md)) is
 read from the same directory (`spots::learned_for`, cached;
 `spots::store_learned` replaces a site's line after a training round and
 bumps `spots::generation`). `Known::for_map` gives each site its line's
-knobs (`Site::knobs`, by `Site::learned`: the knobs of an `open`,
-`partial` or `learned` line, `superbounce::learned::knobs_for`) and the
-line's state (`Site::line`). A site whose line is `dead` is left out, as a
-failed one is, unless it is proven (measured, or proven by a verified
-entry); a `blocked` line changes nothing. A knob no line sets is the
-route's own: `bounce_route::flown(site, from, tune)` makes each of a
-site's numbers (`Flown`: the `how`, the target, the heading off the
-launch-to-target line by `yaw`, the run-up `back`, the run's stick, the
-jump's `early`, the air stick's `gain` and let-go distance, a standing
-jump's `drift` and `still`) from the knob, else the expression below, and
-the drop, its air steering and the standing bounce read `Flown` alone for
-them. A line's `fx fy fz` is the launch point ahead of the takeoff and the
-launch floor (`bounce_route::launch_from`), its `ax ay` the target ahead
-of the verified aim and the stand (`Site::target`; `Site::own_target` is
-the target without the line), and its `how` says whether the site is a
-standing jump or a drop (`Site::standing`). A site with no line plays
-exactly as it would without the file.
+knobs (`Site::knobs`, by `Site::learned`: the knobs of an `open`, `partial`
+or `learned` line, `superbounce::learned::knobs_for`) and the line's state
+(`Site::line`). A site whose line is `dead` is left out, as a failed one is,
+unless it is proven (measured, or proven by a verified entry); a `blocked`
+line changes nothing. A knob no line sets is the route's own:
+`bounce_route::flown(site, from, tune)` makes each of a site's numbers
+(`Flown`: the `how`, the target, the heading off the launch-to-target line
+by `yaw`, the run-up `back`, the run's stick, the jump's `early`, the air
+stick's `gain` and let-go distance, a standing jump's `drift` and `still`)
+from the knob, else the expression below, and the drop, its air steering and
+the standing bounce read `Flown` alone for them.
+
+A line's `fx fy fz` is the launch point ahead of the takeoff and the launch
+floor (`bounce_route::launch_from`), its `ax ay` the target ahead of the
+verified aim and the stand (`Site::target`; `Site::own_target` is the target
+without the line), and its `how` says whether the site is a standing jump or
+a drop (`Site::standing`). A site with no line plays exactly as it would
+without the file.
 
 `bounce_route::plan` plans a route from the bot to a point, purely, from
 a walk-length function over the nav mesh:
@@ -282,53 +288,55 @@ qualifies it is the plain walk. A bounce needs a crouch spot to prime at,
 unless the bot's pair word reads -3 already.
 
 **Walks to spots off the mesh.** A scanned stand sits on a seam or an
-edge, so the point a walk goes to (a prime's start, a bounce's
-approach, a drop's launch floor) may be just off the nav mesh, or a
-little under the floor beside it. A walk (`nav::RouteWalk`) first puts
-its goal on the mesh's floor where a polygon under it has one from 0.3
-under it to a standing height (0.725) over it (`nav::floor_goal`): an
-approach 0.8 behind a crease, on the ramp rising from it, keeps the
-crease's height otherwise, under the ramp. It has arrived within its
-tolerance sideways and 0.6 units up or down (`nav::route::ARRIVE_Z`).
-A goal off the mesh within 1.5 units (`nav::TAIL_REACH`) of the
-corridor's end, 0.5 units over it to 0.8 under it, with nothing solid
-between them at knee height and the collision's floor under the line
-every 0.25 units (within 0.3 over it to 0.5 under it, so never off a
-ledge or a sill), is walked to by a **last stretch**: the corridor to
-its end, then straight at the goal, slowing as it nears it. A last
-stretch that gets no 0.05 units nearer in 20 ticks (under the 38 still
-ticks a primed body sleeps after) ends a walk to a prime's start or a
-bounce's approach where the body got to (the prime and the bounce steer
-the rest themselves), and fails a walk to a goal (`tail_stuck`). A goal
-farther off is `goal_off_mesh`. Within 0.5 units of its goal on its
-last leg a walk does not stop for the standing capsule's headroom
-ahead (`nav::route::END_HEADROOM`): the probes reach past the goal, under
-the lip a crouch spot's start stands beside. A walk to a crouch spot's
-start (`RouteWalk::ducking`) does not stop for headroom at all: under a
-ceiling the standing body does not fit it crouches and walks on, since
-the prime crouches next anyway. Other walks stop there, standing.
+edge, so the point a walk goes to (a prime's start, a bounce's approach, a
+drop's launch floor) may be just off the nav mesh, or a little under the
+floor beside it. A walk (`nav::RouteWalk`) first puts its goal on the mesh's
+floor where a polygon under it has one from 0.3 under it to a standing
+height (0.725) over it (`nav::floor_goal`): an approach 0.8 behind a crease,
+on the ramp rising from it, keeps the crease's height otherwise, under the
+ramp. It has arrived within its tolerance sideways and 0.6 units up or down
+(`nav::route::ARRIVE_Z`).
+
+A goal off the mesh within 1.5 units (`nav::TAIL_REACH`) of the corridor's
+end, 0.5 units over it to 0.8 under it, with nothing solid between them at
+knee height and the collision's floor under the line every 0.25 units
+(within 0.3 over it to 0.5 under it, so never off a ledge or a sill), is
+walked to by a **last stretch**: the corridor to its end, then straight at
+the goal, slowing as it nears it. A last stretch that gets no 0.05 units
+nearer in 20 ticks (under the 38 still ticks a primed body sleeps after)
+ends a walk to a prime's start or a bounce's approach where the body got to
+(the prime and the bounce steer the rest themselves), and fails a walk to a
+goal (`tail_stuck`). A goal farther off is `goal_off_mesh`.
+
+Within 0.5 units of its goal on its last leg a walk does not stop for the
+standing capsule's headroom ahead (`nav::route::END_HEADROOM`): the probes
+reach past the goal, under the lip a crouch spot's start stands beside. A
+walk to a crouch spot's start (`RouteWalk::ducking`) does not stop for
+headroom at all: under a ceiling the standing body does not fit it crouches
+and walks on, since the prime crouches next anyway. Other walks stop there,
+standing.
 
 **A lost walk.** When the follower gives a walk up, the route plans the
 walk again from where the bot is, 3 times a step
 (`bounce_route::WALK_REPLANS`, each logged with the check), then fails
 naming the check and the leg (`bounce_route::lost_on`):
-`path_lost_<check>_<leg>`. The check is the follower's: `stuck` (no
-nearer in 30 ticks, a jump, and no nearer in 30 more), `fell` (its
-waypoint above it past 1.2 units plus the distance), `jump` (stuck at a
-jump or drop link), `link` (a lift, teleporter, elevator or crouch jump
-that did not carry it) or `ended` (no waypoint left). A walk lost at a
-jump or drop link (`jump`: a rail or lip the mesh lacks) is planned
-again around it: every later walk of the route skips a jump, drop or
-crouch-jump link within 0.5 units sideways (`nav::route::AVOID_REACH`)
-and 1 unit in height of where it gave up (`RouteWalk::failed_link`,
-`RouteWalk::new_avoiding`), so it takes another way down or fails
-`no_path` rather than pushing at the same link. The leg is
-`crouch` (to a crouch spot's start), `approach` (to a bounce's approach
-or a drop's launch floor) or `nav` (any other walk). The planner measures walks the way a walk is
-taken (`bounce_route::path_length`, `nav::walk_length`): no teleporter
-or crouch-jump link, and a goal off the mesh only within a last
-stretch's reach, so a plan holds no walk that fails `no_path` or
-`goal_off_mesh` when it is walked.
+`path_lost_<check>_<leg>`. The check is the follower's: `stuck` (no nearer
+in 30 ticks, a jump, and no nearer in 30 more), `fell` (its waypoint above
+it past 1.2 units plus the distance), `jump` (stuck at a jump or drop link),
+`link` (a lift, teleporter, elevator or crouch jump that did not carry it)
+or `ended` (no waypoint left). A walk lost at a jump or drop link (`jump`: a
+rail or lip the mesh lacks) is planned again around it: every later walk of
+the route skips a jump, drop or crouch-jump link within 0.5 units sideways
+(`nav::route::AVOID_REACH`) and 1 unit in height of where it gave up
+(`RouteWalk::failed_link`, `RouteWalk::new_avoiding`), so it takes another
+way down or fails `no_path` rather than pushing at the same link.
+
+The leg is `crouch` (to a crouch spot's start), `approach` (to a bounce's
+approach or a drop's launch floor) or `nav` (any other walk). The planner
+measures walks the way a walk is taken (`bounce_route::path_length`,
+`nav::walk_length`): no teleporter or crouch-jump link, and a goal off the
+mesh only within a last stretch's reach, so a plan holds no walk that fails
+`no_path` or `goal_off_mesh` when it is walked.
 
 A map can have hundreds of spots, so a plan is bounded: spots farther
 than the limit in a straight line (the walk it must beat in Help, 60

@@ -1417,3 +1417,120 @@ fn siege_sends_the_attackers_bots_at_the_site_and_the_defenders_to_hold_it() {
     assert!((960..=961).contains(&goals[8].0), "{goals:?}");
     assert!(goals[12].0 > 960, "{goals:?}");
 }
+
+/// The built-in layouts the Siege recipe made (`h2 siege layout`;
+/// docs/game/rules-engine.md, "Siege layouts"), each with the scenario
+/// `--scenario` wrote for it.
+const RECIPE_LAYOUTS: &[(&str, &str)] = &[
+    ("coagulation", include_str!("scenarios/siege_coagulation.json")),
+    ("headlong", include_str!("scenarios/siege_headlong.json")),
+    ("waterworks", include_str!("scenarios/siege_waterworks.json")),
+];
+
+/// The labels of a layout document, as (block, index, text, number).
+fn layout_labels(json: &str) -> Vec<(String, u64, String, Option<i64>)> {
+    let doc: serde_json::Value = serde_json::from_str(json).unwrap();
+    doc["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| {
+            let l = &op["edit"]["forge"]["label"];
+            (
+                l["target"]["base"]["block"].as_str().unwrap().to_string(),
+                l["target"]["base"]["index"].as_u64().unwrap(),
+                l["label"]["text"].as_str().unwrap().to_string(),
+                l["label"]["number"].as_i64(),
+            )
+        })
+        .collect()
+}
+
+/// On each recipe layout, an attacker standing on one site of each phase
+/// in turn takes it: the phases advance in order, each phase opens its
+/// spawns, the bots are sent at each phase's site and then at the stand,
+/// the barriers open in their phase, and the attackers win at the stand.
+/// The scenario's labels are the built-in layout's own.
+#[test]
+fn siege_plays_each_recipe_layouts_phases() {
+    for &(map, scenario_json) in RECIPE_LAYOUTS {
+        let layout = rules::builtin::layout("siege", map).unwrap_or_else(|| panic!("{map} has a layout"));
+        let labels = layout_labels(layout);
+        let s: Scenario = serde_json::from_str(scenario_json).unwrap();
+        // The scenario's map is the layout's: object 1000 + a flag, 2000 + a
+        // start, 3000 + a solid placement.
+        let mut from_scenario: Vec<(u64, String, Option<i64>)> = s
+            .map
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|l| (u64::from(l.object), l.label.clone(), l.number.map(i64::from)))
+            .collect();
+        let mut from_layout: Vec<(u64, String, Option<i64>)> = labels
+            .iter()
+            .map(|(block, i, text, n)| {
+                let base = match block.as_str() {
+                    "netgame_flags" => 1000,
+                    "starting_locations" => 2000,
+                    _ => 3000,
+                };
+                (base + i, text.clone(), *n)
+            })
+            .collect();
+        from_scenario.sort();
+        from_layout.sort();
+        assert_eq!(from_scenario, from_layout, "{map}: the scenario is the layout's");
+
+        let phases = labels.iter().filter(|l| l.2 == "siege_site").filter_map(|l| l.3).max().unwrap() + 1;
+        let (ir, _) = siege(&[]);
+        let r = one_round(ir, &s);
+        assert_eq!(r.script_error, None, "{map}");
+        let mut want = vec![format!("Sites to take: {phases}. Then the defenders' flag")];
+        want.extend((1..phases).map(|_| "The attackers took a site".to_string()));
+        want.push("Final assault: the defenders' flag".into());
+        want.push("The attackers took the flag".into());
+        assert_eq!(lines(&r), want, "{map}");
+        let opened: Vec<i64> = calls(&r, "spawn_areas")
+            .into_iter()
+            .filter_map(|(_, a)| match a {
+                [Arg::Team(Some(0)), Arg::Label(l), Arg::Int(n)] if l == "siege_attack" => Some(i64::from(*n)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, (0..=phases).collect::<Vec<_>>(), "{map}");
+        // The bots go at a site of each phase in turn, then at the stand.
+        let sent: Vec<u32> = calls(&r, "bot_goal_attack")
+            .into_iter()
+            .filter_map(|(_, a)| match a {
+                [Arg::Team(Some(0)), Arg::Object(Some(z))] => Some(*z),
+                _ => None,
+            })
+            .collect();
+        let site_phase = |z: u32| {
+            labels
+                .iter()
+                .find(|l| l.0 == "netgame_flags" && 1000 + l.1 == u64::from(z) && l.2 == "siege_site")
+                .and_then(|l| l.3)
+        };
+        let goal = labels.iter().find(|l| l.2 == "siege_goal").map(|l| 1000 + l.1 as u32).unwrap();
+        assert_eq!(sent.last(), Some(&goal), "{map}: {sent:?}");
+        let mut seen: Vec<i64> = sent[..sent.len() - 1].iter().map(|&z| site_phase(z).unwrap()).collect();
+        seen.dedup();
+        assert_eq!(seen, (0..phases).collect::<Vec<_>>(), "{map}: {sent:?}");
+        // Each barrier is opened from its phase on.
+        for (_, i, _, n) in labels.iter().filter(|l| l.2 == "siege_barrier") {
+            let object = 3000 + *i as u32;
+            let open: Vec<(u32, bool)> = calls(&r, "set_open")
+                .into_iter()
+                .filter_map(|(t, a)| match a {
+                    [Arg::Object(Some(o)), Arg::Bool(b)] if *o == object => Some((t, *b)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(open.first().map(|o| o.1), Some(*n == Some(0)), "{map}: {open:?}");
+            assert!(open.iter().any(|o| o.1), "{map}: barrier {i} opens: {open:?}");
+        }
+        assert_eq!(calls(&r, "end_round").len(), 1, "{map}");
+        assert_eq!(r.game.players[&0].score, 1, "{map}");
+    }
+}

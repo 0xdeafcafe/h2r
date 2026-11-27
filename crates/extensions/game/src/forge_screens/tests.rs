@@ -593,7 +593,7 @@ fn the_ai_and_objectives_page_follows_the_groups_and_places_markers() {
     let labels: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
     assert_eq!(
         labels,
-        ["Scenery", "Crates", "Machines", sheet::AI_PAGE],
+        ["Scenery", "Crates", "Machines", sheet::AI_PAGE, sheet::SIEGE_PAGE],
         "after the map's groups"
     );
     assert_eq!(s.focus, 0, "the last chosen object keeps the focus");
@@ -601,11 +601,9 @@ fn the_ai_and_objectives_page_follows_the_groups_and_places_markers() {
         panic!("the page opens the picker")
     };
     assert!(p.closes, "choosing a label closes both");
-    assert_eq!(p.values.len(), forge::GroundLabel::ALL.len());
-    assert_eq!(p.values[0], "Wave drop");
+    assert_eq!(p.values, ["Wave drop", "Base", "Cover"]);
     assert_eq!(p.details[0], "ff_drop. None placed");
     assert_eq!(p.choices[0], Choice::Marker(forge::GroundLabel::Drop));
-    assert_eq!(p.choices[5], Choice::Marker(forge::GroundLabel::Line));
     // The page is the same one with the counts the session has.
     let s = sheet::objects_with_ai(&items, 1, &ai_items(3)).unwrap();
     let Act::Pick(p) = &s.rows[3].act else {
@@ -614,11 +612,42 @@ fn the_ai_and_objectives_page_follows_the_groups_and_places_markers() {
     assert_eq!(p.details[1], "ff_base. 3 placed");
 }
 
+/// The Siege page is the layout recipe: Site, Flag stand, Spawn line and
+/// Barrier, each writing the label `siege.rules` reads.
+#[test]
+fn the_siege_page_offers_the_layout_recipes_four_labels() {
+    let s = sheet::objects_with_ai(&pages::sample_items(), 1, &ai_items(0)).unwrap();
+    let Act::Pick(p) = &s.rows[4].act else {
+        panic!("the page opens the picker")
+    };
+    assert_eq!(s.rows[4].label, sheet::SIEGE_PAGE);
+    assert!(p.closes);
+    assert_eq!(p.values, ["Site", "Flag stand", "Spawn line", "Barrier"]);
+    assert_eq!(
+        p.details,
+        [
+            "siege_site. None placed",
+            "siege_goal. None placed",
+            "siege_line. None placed",
+            "siege_barrier. None placed"
+        ]
+    );
+    assert_eq!(
+        p.choices,
+        forge::GroundLabel::SIEGE.map(Choice::Marker).to_vec()
+    );
+    // A Siege label alone gives the Siege page alone.
+    let one = [sheet::AiItem { label: forge::GroundLabel::Goal, placed: 1 }];
+    let s = sheet::objects_with_ai(&[], 0, &one).unwrap();
+    let rows: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(rows, [sheet::SIEGE_PAGE]);
+}
+
 #[test]
 fn the_page_is_alone_on_a_map_with_nothing_to_place_and_absent_with_no_labels() {
     let s = sheet::objects_with_ai(&[], 0, &ai_items(0)).unwrap();
-    assert_eq!(s.rows.len(), 1);
-    assert_eq!(s.rows[0].label, sheet::AI_PAGE);
+    let rows: Vec<&str> = s.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(rows, [sheet::AI_PAGE, sheet::SIEGE_PAGE]);
     assert!(sheet::objects_with_ai(&[], 0, &[]).is_none());
     let items = pages::sample_items();
     assert_eq!(

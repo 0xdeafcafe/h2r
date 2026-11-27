@@ -17,6 +17,7 @@ mod log;
 mod piece;
 mod prefab;
 mod resolve;
+pub mod siege_layout;
 mod validate;
 mod variant;
 pub mod waves;

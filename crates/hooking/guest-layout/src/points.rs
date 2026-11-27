@@ -450,11 +450,13 @@ points! { ALL;
     /// vehicle leaves it first (action `0x1e` of `0xe68c0`). Read from the
     /// disassembly of the caller at `0x2a3ad0`, not yet confirmed by a run.
     UNIT_ENTER_VEHICLE @ 0x0011_ade0: [fn(vehicle: ebx, unit: stack 0, label: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
-    /// The HS cast of an AI reference to an object list of its actors; EAX
-    /// the reference (a plain squad's index), the list datum returned in
-    /// EAX. The register convention is read from the cast table
-    /// (docs/engine/hs_vm.md) and not yet confirmed by a run.
-    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: eax) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    /// The HS cast of an AI reference to an object list of its actors: the
+    /// reference (a plain squad's index) on the stack, the list datum
+    /// returned in EAX. The HS caller at `0x2a5b5b` pushes the reference
+    /// and does not pop it; the body reads it at `0x272ea4` and writes the
+    /// new list datum over that same stack slot at `0x272ebf`, so a call
+    /// that passes no stack argument loses its caller's return address.
+    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: stack 0) -> eax ret 4], Optional; "docs/engine/hs_vm.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a

@@ -39,24 +39,29 @@ activation sets it to 1 (`0x1585a4`), and the renderer draws the overlay
 while it is positive (`0x1599b0`). The opening gate clears once all
 those views are clear. Later spawns use each phantom's own clock.
 
-Retail keeps opacity for local users. A phantom uses its own spawn age
-from the player record at `+0x194`, which starts at the guest tick rate
-(`0x14f68e`) and counts down by one per player update (`0x15bb4f`).
-It models the black fade retail starts at 1 on a local spawn
-(`0x1584e6`) and reduces by `3 / tick_rate` per simulation tick, down
-to zero (`0x15c4d6..0x15c4f9`). At 30 Hz this takes ten updates.
-A playerless System Link or dedicated host has no local views. Its
-opening gate applies the retail hold through `round(1.5 * tick_rate)`
-(`0x15c4c6`). Since action gather precedes the update, the gate opens
-at tick 56 at 30 Hz if the phantom's own fade has cleared.
+Retail keeps opacity for local users. A phantom uses its own spawn age from
+the player record at `+0x194`, which starts at the guest tick rate
+(`0x14f68e`) and counts down by one per player update (`0x15bb4f`). It
+models the black fade retail starts at 1 on a local spawn (`0x1584e6`) and
+reduces by `3 / tick_rate` per simulation tick, down to zero
+(`0x15c4d6..0x15c4f9`).
+
+At 30 Hz this takes ten updates. A playerless System Link or dedicated host
+has no local views.
+
+Its opening gate applies the retail hold through `round(1.5 * tick_rate)`
+(`0x15c4c6`). Since action gather precedes the update, the gate opens at
+tick 56 at 30 Hz if the phantom's own fade has cleared.
 
 ### 5.5 Brains off the game thread
 
 `bots::think`. The simulation's gather (`0x84990`) asks for one phantom's
-pad at a time, on the game thread. Read and think used to run whole at
-each slot. In a Clankers sample on Waterworks the brains took about 62% of
-the game thread. Three modes, set with `Phantoms::set_think_mode`, or
-from the environment for the process's phantoms:
+pad at a time, on the game thread. Read and think used to run whole at each
+slot.
+
+In a Clankers sample on Waterworks the brains took about 62% of the game
+thread. Three modes, set with `Phantoms::set_think_mode`, or from the
+environment for the process's phantoms:
 
 | `H2_BOT_THREADS` | `H2_BOT_PIPELINE` | Mode |
 |---|---|---|
@@ -88,43 +93,52 @@ A batched sample has three phases (`PadSource::observe`, `think`,
    its radio calls.
 
 Radio order is kept. Each brain prunes calls with its own deaths, so a
-serial gather could prune a call published by an earlier slot in the
-same tick. A batch records each listener's place and the deaths it pruned
-with (`radio::Seat`, `Radio::publish_seated`). A late publish is then
-pruned only by later slots, and only while the board was on the call's
-tick for that slot. That is what the serial order did. Batched and serial
-give the same pads, minds and radio at any thread count.
+serial gather could prune a call published by an earlier slot in the same
+tick. A batch records each listener's place and the deaths it pruned with
+(`radio::Seat`, `Radio::publish_seated`).
 
-The batch covers the phantoms the gather would sample this tick. These
-are joined phantoms whose own slot is remote mode 4 with a listed player
-of its machine ID and a live unit. An interrupted stream is reset first,
-as at the slot. Slots go in address order. The batch is held per hosted
-game and tick, and later slots take their pad from it. A phantom outside
-it (the checks disagreed) is sampled whole at its slot. Building the
-retail action in a private executor writes nothing a perception read
-looks at. Between two slots, main memory only gets the slot's action
+A late publish is then pruned only by later slots, and only while the board
+was on the call's tick for that slot. That is what the serial order did.
+Batched and serial give the same pads, minds and radio at any thread count.
+
+The batch covers the phantoms the gather would sample this tick. These are
+joined phantoms whose own slot is remote mode 4 with a listed player of its
+machine ID and a live unit. An interrupted stream is reset first, as at the
+slot.
+
+Slots go in address order. The batch is held per hosted game and tick, and
+later slots take their pad from it. A phantom outside it (the checks
+disagreed) is sampled whole at its slot.
+
+Building the retail action in a private executor writes nothing a perception
+read looks at. Between two slots, main memory only gets the slot's action
 record and stamp, the `0x14d0a0` check of `out`, and possibly an
-animation-cache fill. Reading every phantom at the first gather therefore
-reads what each later slot would have read. The sim's state hashes should
-confirm this (§11).
+animation-cache fill.
+
+Reading every phantom at the first gather therefore reads what each later
+slot would have read. The sim's state hashes should confirm this (§11).
 
 **Pipelined**, the thinks staged at tick N run while the guest simulates
 N, and their pads are tick N+1's: the bot acts on what it saw a tick ago.
 Each completed think carries its pad, transport timing and observed target
 range together. Serving later slots can proceed while workers compute the
-following tick’s reports. With immediate
-transport, the pipelined brain's pad reaches the host one tick later than
-the serial brain's. With simulated transport, the uplink credits that
-tick against the requested delay (`Uplink::think_ticks`). A script or
-recording supplies a current pad and gets its full configured delay. A think from before an input reset (generation) or a tick
-gap is dropped, and the seat sends a neutral pad. When the hosted game
-ends, the host discards queued decisions and unpublished reports. Workers can
-finish an old decision while the shell draws. If the next match already needs
-input, the host supplies neutral pads until those workers finish and resets
-each source before sampling it again. During the fade (§5.4), brains observe
-and plan, the uplink sends a
-neutral pad while it is up, and the first clear tick sends the newest
-pad at once.
+following tick’s reports.
+
+With immediate transport, the pipelined brain's pad reaches the host one
+tick later than the serial brain's. With simulated transport, the uplink
+credits that tick against the requested delay (`Uplink::think_ticks`). A
+script or recording supplies a current pad and gets its full configured
+delay.
+
+A think from before an input reset (generation) or a tick gap is dropped,
+and the seat sends a neutral pad. When the hosted game ends, the host
+discards queued decisions and unpublished reports. Workers can finish an old
+decision while the shell draws.
+
+If the next match already needs input, the host supplies neutral pads until
+those workers finish and resets each source before sampling it again. During
+the fade (§5.4), brains observe and plan, the uplink sends a neutral pad
+while it is up, and the first clear tick sends the newest pad at once.
 
 The boot sources (`clankers::Clanker`, `sim_glue::Metered`) forward the
 three phases. `Metered` counts the sim tally at the conclusion, on the
@@ -143,18 +157,20 @@ in the player configuration's name (§8.2). The bots leave when the host
 ends the game.
 
 **Connection bars.** The Live match scoreboard draws the connection
-badge with `0x1634d0`. Retail's `0x68a90` takes the lowest score across
-RTT and three traffic metrics, so a zeroed rate field can give one red
-bar even at low latency. `crates/extensions/game/src/lobby_quality.rs`
-keeps the game's badge visibility and uses the player's session peer for
-its bar count. The local console and phantom machines get six bars.
-Remote peers use the last acknowledged round trip from the game's
-reliable packet queue (`0x96dc7`, timestamp at `+0x95c` and milliseconds
-at `+0x960`). One bar is the fallback while the viewer has no sample for
-that peer. The scale uses retail's latency calculation, interpolating
-from six bars at 60 ms to one at 800 ms with nearest-even rounding.
-The pregame lists show voice activity. The agent reads the same
-connection ratings for their members through
+badge with `0x1634d0`. Retail's `0x68a90` takes the lowest score across RTT
+and three traffic metrics, so a zeroed rate field can give one red bar even
+at low latency. `crates/extensions/game/src/lobby_quality.rs` keeps the
+game's badge visibility and uses the player's session peer for its bar
+count. The local console and phantom machines get six bars.
+
+Remote peers use the last acknowledged round trip from the game's reliable
+packet queue (`0x96dc7`, timestamp at `+0x95c` and milliseconds at
+`+0x960`). One bar is the fallback while the viewer has no sample for that
+peer. The scale uses retail's latency calculation, interpolating from six
+bars at 60 ms to one at 800 ms with nearest-even rounding.
+
+The pregame lists show voice activity. The agent reads the same connection
+ratings for their members through
 [`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
 
 **Scoreboard and stats.** Bots participate in the scoreboard, the
@@ -170,18 +186,20 @@ its player page, BOT mark and all; a host's own Clanker with no xuid links
 nowhere. A bot keeps the name the game sent.
 
 **Bots are game-only.** The game record keeps every bot with its kills,
-deaths and score, and every knockout between a bot and a human. Career
-stats do not: the conservative choice. A human's kill of a bot is not a
-career kill, and a death to a bot is not a career death (nor do they count
-toward sprees, weapons or medals); games, wins and time played still count.
+deaths and score, and every knockout between a bot and a human. Career stats
+do not: the conservative choice. A human's kill of a bot is not a career
+kill, and a death to a bot is not a career death (nor do they count toward
+sprees, weapons or medals); games, wins and time played still count.
+
 This holds in the server's stats summary (`live_server::stats`, both homes;
 the web mock's fold mirrors it) and in the web's derived service record
 (`derive.ts` `careerKills`, `serviceRecord`). Bots get no stats-summary row
-and are nobody's "played with". A bot account's own page (§9.5) is the
-one place its knockouts count: its service record counts all its kills
-and deaths, against humans and bots alike. Ranks are unchanged: a matchmade game ranks
-accounts only, and a rostered persistent bot's own rank is sbmm-ranked's
-(§9.4).
+and are nobody's "played with".
+
+A bot account's own page (§9.5) is the one place its knockouts count: its
+service record counts all its kills and deaths, against humans and bots
+alike. Ranks are unchanged: a matchmade game ranks accounts only, and a
+rostered persistent bot's own rank is sbmm-ranked's (§9.4).
 
 ## 7. Clankers in custom games (the Game Setup page)
 
@@ -209,14 +227,19 @@ layout checks and the `Page` table tests. These are its rows:
 | Glitches | Off, Some, Lots | `clankers.glitches` (§3.8) |
 
 A host can change Aggression and Aim style on an existing custom-game
-roster. The next input sample picks up the edit. Normal aggression uses
-each bot's seeded traits and current mood. Calm subtracts 0.35 from its
-drive to press, Wild adds 0.35, and the difficulty's awareness and the
-fight still decide whether it advances. Steady uses the difficulty's
-usual hand movement. Twitchy raises that hand's stick engagement by 45%
-and the overshoot on a fresh flick by 35%. The bot keeps its skill's
-tracking error and lead. Reaction timing stays within the skill's window.
-Clankermatch uses its roster's difficulty and each gamertag's profile. Simulation scenarios use their declared tuning.
+roster. The next input sample picks up the edit. Normal aggression uses each
+bot's seeded traits and current mood.
+
+Calm subtracts 0.35 from its drive to press, Wild adds 0.35, and the
+difficulty's awareness and the fight still decide whether it advances.
+Steady uses the difficulty's usual hand movement. Twitchy raises that hand's
+stick engagement by 45% and the overshoot on a fresh flick by 35%.
+
+The bot keeps its skill's tracking error and lead. Reaction timing stays
+within the skill's window.
+
+Clankermatch uses its roster's difficulty and each gamertag's profile.
+Simulation scenarios use their declared tuning.
 
 **Mixed** gives each bot a difficulty drawn around Normal. Per-bot
 difficulty can come later, as a sub-page per bot; the first page does not
@@ -224,10 +247,12 @@ have it.
 
 The settings are kept in the settings store through `setting_defs`, like
 `HALO1_SANDBOX`. They persist and appear in `h2 settings`. The page is a
-user of the kit. If it needs anything the kit lacks, that goes to the
-ui-builder agent, which owns `ui_kit`, through the coordinator. As far as
-read, `OptionRow`'s two-choice rows need a many-choice sibling for Count
-and Difficulty; that is the one kit ask expected.
+user of the kit.
+
+If it needs anything the kit lacks, that goes to the ui-builder agent, which
+owns `ui_kit`, through the coordinator. As far as read, `OptionRow`'s
+two-choice rows need a many-choice sibling for Count and Difficulty; that is
+the one kit ask expected.
 
 **Joining the lobby.** When the host's System Link or Xbox Live custom
 game lobby opens with `clankers.enabled`, the driver adds phantoms as
@@ -251,12 +276,13 @@ those checks.
 
 The confirmed leave paths at `0x199e3c` and `0x252150` remove phantom
 players and peers through `bots::phantom::Phantoms::retire_solo_session`.
-The pause and lobby Back calls at `0x232ccc` and `0x25125c` target the
-frame at `0x199e3c`, which follows the tail jump at `0x199e37` from
+The pause and lobby Back calls at `0x232ccc` and `0x25125c` target the frame
+at `0x199e3c`, which follows the tail jump at `0x199e37` from
 `UI_LEAVE_SESSIONS`. The hook verifies the frame prologue at that entry.
+
 Retirement also drops their matchmaking roster entries and holds off new
-seating until the departing session closes. The Clankers page settings
-still apply in the next lobby.
+seating until the departing session closes. The Clankers page settings still
+apply in the next lobby.
 
 Use `h2 agent ui` to check for `dialog.name = party_leader_picker` while
 driving Back through the agent API. A custom lobby with a solo human

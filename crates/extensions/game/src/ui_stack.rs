@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(answer["back"]["parent"]["mode"], "folders");
         assert_eq!(answer["back"]["action"], "reopen");
 
-        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Maps(Category::Firefight), None, true);
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Maps(Category::Halo2), None, true);
         let direct = inspect(&m, &nav);
         assert!(direct["channels"][0]["active"]["parent"].is_null());
         assert_eq!(direct["back"]["action"], "close");

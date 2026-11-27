@@ -835,25 +835,38 @@ pub fn ai_line(item: &AiItem) -> String {
     format!("{}. {placed}", item.label.text())
 }
 
-/// [`objects`] with the AI and objectives page after the map's groups: one
-/// row, opening the value picker on the labels, each choice a
-/// [`Choice::Marker`]. With no labels it is [`objects`], and a map with
-/// nothing to place still has the page.
+/// The name of the object menu's page of the Siege layout recipe: Site,
+/// Flag stand, Spawn line and Barrier (docs/game/rules-engine.md, "Siege
+/// layouts").
+pub const SIEGE_PAGE: &str = "Siege";
+
+/// One page of labels: a row opening the value picker on them, each
+/// choice a [`Choice::Marker`].
+fn label_page(page: &str, items: &[&AiItem], title: fn(forge::GroundLabel) -> &'static str, what: &str) -> SheetRow {
+    let pick = PickSpec {
+        title: page.into(),
+        values: items.iter().map(|a| title(a.label).to_string()).collect(),
+        current: 0,
+        details: items.iter().map(|a| ai_line(a)).collect(),
+        description: String::new(),
+        choices: items.iter().map(|a| Choice::Marker(a.label)).collect(),
+        closes: true,
+    };
+    SheetRow::new(page, Act::Pick(pick)).describe(&format!("{} {what}.", items.len()))
+}
+
+/// [`objects`] with the AI and objectives page and the Siege page after the
+/// map's groups: the Firefight labels on the first, the Siege labels
+/// ([`forge::GroundLabel::SIEGE`]) on the second, each page one row opening
+/// the value picker on its labels. A page with no labels is left out, so
+/// with none it is [`objects`], and a map with nothing to place still has
+/// the pages.
 pub fn objects_with_ai(items: &[Item], selected: usize, ai: &[AiItem]) -> Option<Sheet> {
     let sheet = objects(items, selected);
     if ai.is_empty() {
         return sheet;
     }
-    let pick = PickSpec {
-        title: AI_PAGE.into(),
-        values: ai.iter().map(|a| a.label.title().to_string()).collect(),
-        current: 0,
-        details: ai.iter().map(ai_line).collect(),
-        description: String::new(),
-        choices: ai.iter().map(|a| Choice::Marker(a.label)).collect(),
-        closes: true,
-    };
-    let page = SheetRow::new(AI_PAGE, Act::Pick(pick)).describe(&format!("{} markers.", ai.len()));
+    let (siege, firefight): (Vec<&AiItem>, Vec<&AiItem>) = ai.iter().partition(|a| a.label.is_siege());
     let mut sheet = sheet.unwrap_or(Sheet {
         kind: Kind::Objects,
         title: "OBJECTS".into(),
@@ -861,7 +874,12 @@ pub fn objects_with_ai(items: &[Item], selected: usize, ai: &[AiItem]) -> Option
         rows: Vec::new(),
         focus: 0,
     });
-    sheet.rows.push(page);
+    if !firefight.is_empty() {
+        sheet.rows.push(label_page(AI_PAGE, &firefight, forge::GroundLabel::title, "markers"));
+    }
+    if !siege.is_empty() {
+        sheet.rows.push(label_page(SIEGE_PAGE, &siege, forge::GroundLabel::short_title, "labels"));
+    }
     Some(sheet)
 }
 
@@ -969,7 +987,7 @@ pub fn with_goals_for(s: Option<Sheet>, offered: &[forge::Goal]) -> Sheet {
     if let Some(i) = existing {
         sheet.rows[i] = row;
     } else {
-        let i = sheet.rows.iter().position(|row| row.label == AI_PAGE).unwrap_or(sheet.rows.len());
+        let i = sheet.rows.iter().position(|row| row.label == AI_PAGE || row.label == SIEGE_PAGE).unwrap_or(sheet.rows.len());
         sheet.rows.insert(i, row);
         if sheet.focus >= i && sheet.rows.len() > 1 {
             sheet.focus += 1;
@@ -1113,7 +1131,7 @@ pub(super) fn add_pick_rows(sheet: &mut Sheet, group: Group, rows: Vec<(String, 
             sheet
                 .rows
                 .iter()
-                .position(|r| r.label == AI_PAGE || r.label == PREFABS_PAGE)
+                .position(|r| r.label == AI_PAGE || r.label == SIEGE_PAGE || r.label == PREFABS_PAGE)
         })
         .unwrap_or(sheet.rows.len());
     sheet.rows.insert(at, row);

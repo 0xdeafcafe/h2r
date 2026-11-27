@@ -174,11 +174,12 @@ model, `live_server::bots`):
   human recorded as a bot.
 
 **Where the bots come from.** The driver asks Live for a roster covering
-every requested bot. A matchmade session includes its playlist so the
-server can select persistent bots near the humans' level (§9.4). A
-custom game requests made-up bots at the page's difficulty. Changes in
-count, difficulty or session can fetch a new roster. System Link and
-Live sessions without a roster use host-made phantom identities.
+every requested bot. A matchmade session includes its playlist so the server
+can select persistent bots near the humans' level (§9.4). A custom game
+requests made-up bots at the page's difficulty.
+
+Changes in count, difficulty or session can fetch a new roster. System Link
+and Live sessions without a roster use host-made phantom identities.
 
 **The session's players.** Retail Halo 2 fills no slot counts in its
 advertisement (`XOnlineMatchSessionCreate`/`Update`, `0x8fcc0`/`0x8fe20`,
@@ -186,21 +187,24 @@ slots at ad `+0x3c..+0x48`, filled by a virtual call): run 20261119-005001
 showed 0 filled with six players in the game. So the host says who plays.
 Every second (`clankers::frame`) while a roster is in force, the driver
 hands the HLE the rostered phantoms that have joined the game
-(`Driver::session_bots`). `Hle::set_session_players` tells the session the roster is for
-(`Driver::roster_in_force`) of them, and each session the console hosts of
-its signed-in users, as `PlayerJoined` and `PlayerLeft` on `session-<id>`
-for only what changed (`sessions::session_players`, `players_diff`; zero
-and host-made xuids never). Only that session: a Clankermatch host
-advertises its party's lobby session (made before the search) beside the
-match the search hosted, and the user's run (cm-run2) told both, so every
-`PlayerJoined` and `PlayerLeft` on the party's (`84ad...`) came back 400
-(`unknown player`: the bots are leased to the match alone) while the
-match's were taken. One more call after the roster ends sends the
-bots' leaves. The server takes a `PlayerJoined` for a human account, or
-for a bot of the session's latest roster when its host posts it
-(`bots::leased_to`), and a `PlayerLeft` for anyone in the session, so a
-replaced roster's bots can leave but not join again. The worker shares
-the code (`live-worker` `rostered_bots_read_as_bot_accounts`).
+(`Driver::session_bots`). `Hle::set_session_players` tells the session the
+roster is for (`Driver::roster_in_force`) of them, and each session the
+console hosts of its signed-in users, as `PlayerJoined` and `PlayerLeft` on
+`session-<id>` for only what changed (`sessions::session_players`,
+`players_diff`; zero and host-made xuids never).
+
+Only that session: a Clankermatch host advertises its party's lobby session
+(made before the search) beside the match the search hosted, and the user's
+run (cm-run2) told both, so every `PlayerJoined` and `PlayerLeft` on the
+party's (`84ad...`) came back 400 (`unknown player`: the bots are leased to
+the match alone) while the match's were taken. One more call after the
+roster ends sends the bots' leaves.
+
+The server takes a `PlayerJoined` for a human account, or for a bot of the
+session's latest roster when its host posts it (`bots::leased_to`), and a
+`PlayerLeft` for anyone in the session, so a replaced roster's bots can
+leave but not join again. The worker shares the code (`live-worker`
+`rostered_bots_read_as_bot_accounts`).
 
 **One identity across a session handoff.** Halo 2 hands its lobby to a
 new Live session as a game starts (and again as it ends): the HLE deletes
@@ -271,8 +275,9 @@ sbmm-ranked's.
 web's `test/bots.test.ts`.
 
 **Game run.** Sign into Live and host a custom game with Clankers On
-and Count 3. The lobby should show the three rostered gamertags.
-Sign in a second human on a free controller, start Slayer and check
-the game page for three BOT marks linking to the bot accounts. A
-System Link game uses host-made Clanker names. The Live custom game
-can also be checked with `h2 bots test` (§13).
+and Count 3. The lobby should show the three rostered gamertags. Sign in a
+second human on a free controller, start Slayer and check the game page for
+three BOT marks linking to the bot accounts.
+
+A System Link game uses host-made Clanker names. The Live custom game can
+also be checked with `h2 bots test` (§13).

@@ -231,7 +231,9 @@ view and the fall assist agree):
 
 `superbounce.verify` and the bots still see every spot.
 
-**In the air.** While the player is airborne the screen is the
+#### In the air
+
+While the player is airborne the screen is the
 readout's and the motion tracker's. The
 HUD kit's superbounce elements keep the notification and the
 medal line and drop the arming bar, the prompt line,

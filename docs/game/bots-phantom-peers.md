@@ -426,12 +426,14 @@ no run yet).
   a spawned unit.
 
 **Phantom audio.** `crates/extensions/game/src/bot_glue/audio.rs` uses the
-Phantom machine ID on the player datum to exclude any Phantom entry from the local-user map
-while `SOUND_OWNER_USER`, `SOUND_LISTENERS_UPDATE` and `SOUND_UPDATE`
-run. It restores the map on return. Human slots keep their original user
-indices, including in splitscreen. The listener refresh runs both inside
-the sound frame and from the effect update. Both entry points clear the
-active flag for Phantom and unmapped slots.
+Phantom machine ID on the player datum to exclude any Phantom entry from the
+local-user map while `SOUND_OWNER_USER`, `SOUND_LISTENERS_UPDATE` and
+`SOUND_UPDATE` run. It restores the map on return. Human slots keep their
+original user indices, including in splitscreen.
+
+The listener refresh runs both inside the sound frame and from the effect
+update. Both entry points clear the active flag for Phantom and unmapped
+slots.
 
 The sound owner check leaves a Clanker's attached weapon and unit sounds
 positioned. The retail mixer selects a human listener and handles
@@ -502,17 +504,22 @@ the game).** Read from the log tail and the disassembly; no run yet.
   already, so it has nothing to do: `waits` is every gate line out of a
   lobby. It is no sign they were left out of the game.
 
-**The action from a pad.** The offsets below are relative to one
-`0x5c`-byte action, in little-endian order. The local and remote paths
-can be followed from the generated functions for `0x185be0`, `0x186ab0`
-and `0x84990`. The Default layout initializer (`0x218420`) assigns each
-abstract action slot `k` a physical button. The input pass at
-`0x217e40` copies each button's down count and elapsed milliseconds into
-its slot. The control builder copies those arrays at `0x186570` and tests
-the relevant `k`. Finally `0x187029..0x187083` writes the record that the
-host consumes at `0x14d6d4..0x14d7e7`. The host translates that record
-to unit controls at `0x1505f0`. This is the same Default layout local
-Clanker profiles use. [Controller layout trace](../input/controller-layouts.md)
+#### The action from a pad
+
+The offsets below are relative to one `0x5c`-byte action, in little-endian
+order. The local and remote paths can be followed from the generated
+functions for `0x185be0`, `0x186ab0` and `0x84990`. The Default layout
+initializer (`0x218420`) assigns each abstract action slot `k` a physical
+button.
+
+The input pass at `0x217e40` copies each button's down count and elapsed
+milliseconds into its slot. The control builder copies those arrays at
+`0x186570` and tests the relevant `k`. Finally `0x187029..0x187083` writes
+the record that the host consumes at `0x14d6d4..0x14d7e7`.
+
+The host translates that record to unit controls at `0x1505f0`. This is the
+same Default layout local Clanker profiles use. [Controller layout
+trace](../input/controller-layouts.md)
 
 | Default pad input | Record field and timing | Local evidence |
 |---|---|---|
@@ -529,36 +536,44 @@ Clanker profiles use. [Controller layout trace](../input/controller-layouts.md)
 | D-pad left / right (k12/k13) | Flags `0x80` / `0x100` while down. | `0x186867..0x186895`. |
 
 **Tap and hold timing.** The Default pad conversion preserves face-button
-and trigger pressure. The XInput reader at `0x124c53..0x124cc9` tests
-the last pressure byte against a per-button threshold and uses the new
-byte to update that threshold. A phantom uses the same pressure history
-and publishes the new sample for the current tick. While down, the
-threshold can rise to
-pressure minus 32. While up, it can fall to pressure plus 64. Stick clicks
-and the D-pad are digital. X and Y send their levels on every tick. The host
-compares them to player `+0x3c` and derives the press/release bits in
-`0x14f722..0x14f81a` (X `0x04/0x08`, Y `0x40/0x80`). The threshold comes
-from the active globals' player-control block, `[[0x4e034c]+0xf4]` at
-`+0x7c`, in seconds. The local builder multiplies by 1000, truncates,
-and compares to the pad's accumulated milliseconds. A phantom measures
-the hold in simulation time. Exact agreement at the threshold with an
-asynchronously polled physical controller is **[guess]**. The named button fields above are traced.
+and trigger pressure. The XInput reader at `0x124c53..0x124cc9` tests the
+last pressure byte against a per-button threshold and uses the new byte to
+update that threshold. A phantom uses the same pressure history and
+publishes the new sample for the current tick.
+
+While down, the threshold can rise to pressure minus 32. While up, it can
+fall to pressure plus 64. Stick clicks and the D-pad are digital.
+
+X and Y send their levels on every tick. The host compares them to player
+`+0x3c` and derives the press/release bits in `0x14f722..0x14f81a` (X
+`0x04/0x08`, Y `0x40/0x80`). The threshold comes from the active globals'
+player-control block, `[[0x4e034c]+0xf4]` at `+0x7c`, in seconds.
+
+The local builder multiplies by 1000, truncates, and compares to the pad's
+accumulated milliseconds. A phantom measures the hold in simulation time.
+
+Exact agreement at the threshold with an asynchronously polled physical
+controller is **[guess]**. The named button fields above are traced.
 
 **Selectors, target and motion.** At `0x187036` the local builder packs a
 weapon-set generation into `+0x1e` (u16) and the requested primary and
-secondary indices into `+0x20/+0x21` (i8, −1 or 0–3). Unit `+0x212/213`
-are the actual hands and `+0x216/217` are the requests. At `0xc6e2b`
-the unit accepts the two indices only if the generation matches unit
-`+0x214`. An objective weapon returned by `0xcfe40` can override the
-requested primary (`0x186c0e`). The weapon handles at unit `+0x218`
-also feed the zoom check for a deflected aim stick (`0x100f70`). Player
-flags at `+2` tell Y release whether an interaction consumed the press.
-Weapon, grenade and zoom ranges are checked by `0x14d0a0`.
-The local interaction finder `0x151110(player, result)` returns the
-12 bytes copied at `+0x28`. These include the interaction kind (i16),
-detail at `+0x2a` (seat for a seat interaction), object datum at `+0x2c`
-and melee target at `+0x30` (`0x151d41`, `0x15166c`, `0x14fd37`).
-An empty target has kind zero and both datums −1.
+secondary indices into `+0x20/+0x21` (i8, −1 or 0–3). Unit `+0x212/213` are
+the actual hands and `+0x216/217` are the requests. At `0xc6e2b` the unit
+accepts the two indices only if the generation matches unit `+0x214`.
+
+An objective weapon returned by `0xcfe40` can override the requested primary
+(`0x186c0e`). The weapon handles at unit `+0x218` also feed the zoom check
+for a deflected aim stick (`0x100f70`). Player flags at `+2` tell Y release
+whether an interaction consumed the press.
+
+Weapon, grenade and zoom ranges are checked by `0x14d0a0`. The local
+interaction finder `0x151110(player, result)` returns the 12 bytes copied at
+`+0x28`.
+
+These include the interaction kind (i16), detail at `+0x2a` (seat for a seat
+interaction), object datum at `+0x2c` and melee target at `+0x30`
+(`0x151d41`, `0x15166c`, `0x14fd37`). An empty target has kind zero and both
+datums −1.
 
 The separate shot-assist block starts at `+0x34`. The local action builder
 copies nine dwords there at `0x187074..0x187083`. Previously the phantom
@@ -568,43 +583,53 @@ shot magnetism even when the reticle was close enough for a local player.
 
 Both seats use the retail XInput reader `0x124c00`, profile/layout routines
 `0x190c34` and `0x217c40`, and the full player action builder `0x186ab0`.
-The builder indexes the user's 0x94-byte control history by player +0x28.
-It calls `0x185be0` for look response (including acceleration, slowdown
-and follow) and `0x1a4900` for weapon parameters and target search
-(`0x1a50a0`, `0x1a5370`). It writes yaw/pitch at +4/+8, trigger flags
-at +0 and the selected target and strengths at +0x34..+0x57. The host
-validates the returned record at `0x14d0a0`.
+The builder indexes the user's 0x94-byte control history by player +0x28. It
+calls `0x185be0` for look response (including acceleration, slowdown and
+follow) and `0x1a4900` for weapon parameters and target search (`0x1a50a0`,
+`0x1a5370`).
+
+It writes yaw/pitch at +4/+8, trigger flags at +0 and the selected target
+and strengths at +0x34..+0x57. The host validates the returned record at
+`0x14d0a0`.
 
 The retail tables have four entries. At remote gather, a second executor
-uses a copy-on-write snapshot of the host world. In that view local user
-and controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`,
-and the player's +0x24/+0x28 all refer to the phantom. Its virtual XInput
-handle supplies the arrived pad to `0x409b6c`. The seat brings its own
-raw input, button and control history between ticks. A fresh binding
-clears the previous user's target and strengths before retail binds the
-unit at `0x1872d0`. The private profile slot has the profile bit and
-local-user index zero even if the host has nobody signed in. `0x1557c0`
-supplies the unit or vehicle camera origin for the observer at `0x4e9c8c`.
-Only the validated action crosses back to the host. A repeated gather
-in one tick reuses that action. A phantom samples once per game tick
-and advances the button clock by elapsed simulation milliseconds.
+uses a copy-on-write snapshot of the host world. In that view local user and
+controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`, and the
+player's +0x24/+0x28 all refer to the phantom.
+
+Its virtual XInput handle supplies the arrived pad to `0x409b6c`. The seat
+brings its own raw input, button and control history between ticks. A fresh
+binding clears the previous user's target and strengths before retail binds
+the unit at `0x1872d0`.
+
+The private profile slot has the profile bit and local-user index zero even
+if the host has nobody signed in. `0x1557c0` supplies the unit or vehicle
+camera origin for the observer at `0x4e9c8c`. Only the validated action
+crosses back to the host.
+
+A repeated gather in one tick reuses that action. A phantom samples once per
+game tick and advances the button clock by elapsed simulation milliseconds.
 
 **The facing release.** One write of the builder's must reach the live
-world. When something other than the control turns a biped, such as a
-melee lunge, the biped's facing update `0xe01d0` sets bit 5 (`0x20`) of
-biped flags `+0x348` (`0xe0c47`). For a biped on foot with that bit set,
-the control update in `0x186ab0` reseeds the control yaw and pitch from
-the unit's aim `+0x168` with `fpatan` and then clears the bit
-(`0x186f8b..0x18700b`). The reseed overwrites the look delta that
-`0x187510` added from the right stick. For a local player the clear lands
-in the live unit, so the reseed happens once. The phantom's private build
-discards it. With the bit left set, every later build reseeds the look
-from the aim and drops the right stick, so the bot's aim freezes until it
-dies, while its movement, fire and other buttons still work. After a
-built action, `slot_action` in `crates/live/bots/src/phantom/action.rs`
-therefore clears the bit on the phantom's live biped and counts it in
-`bots.stats` `maintenance.facing_releases`. Film replay takes the same
-path. A missed build leaves the bit set for the next build. The test is
+world. When something other than the control turns a biped, such as a melee
+lunge, the biped's facing update `0xe01d0` sets bit 5 (`0x20`) of biped
+flags `+0x348` (`0xe0c47`). For a biped on foot with that bit set, the
+control update in `0x186ab0` reseeds the control yaw and pitch from the
+unit's aim `+0x168` with `fpatan` and then clears the bit
+(`0x186f8b..0x18700b`).
+
+The reseed overwrites the look delta that `0x187510` added from the right
+stick. For a local player the clear lands in the live unit, so the reseed
+happens once. The phantom's private build discards it.
+
+With the bit left set, every later build reseeds the look from the aim and
+drops the right stick, so the bot's aim freezes until it dies, while its
+movement, fire and other buttons still work. After a built action,
+`slot_action` in `crates/live/bots/src/phantom/action.rs` therefore clears
+the bit on the phantom's live biped and counts it in `bots.stats`
+`maintenance.facing_releases`. Film replay takes the same path.
+
+A missed build leaves the bit set for the next build. The test is
 `a_built_action_releases_the_bipeds_facing_flag`.
 
 In the Clanker Team Slayer game `09af571f9fec7f1a33ed37edb397a140`,
@@ -616,12 +641,13 @@ was 90–115°. Live telemetry shows the release working when no bot's aim
 stays unchanged for more than 60 frames after an action that includes
 `melee`.
 
-The first 12 sims with a phantom seat stopped between ticks 91 and 1945. In the
-Lockout log, `0x2d6307` is the return from kernel ordinal 234 inside
+The first 12 sims with a phantom seat stopped between ticks 91 and 1945. In
+the Lockout log, `0x2d6307` is the return from kernel ordinal 234 inside
 XAPI's `WaitForSingleObjectEx`. Thread 3’s `0x120c4f` is the return from
-waiting on the async I/O work semaphore at `[0x4e0360]`. The two stacks
-identify the same wait wrapper. The log does not identify the object the
-private builder waited on.
+waiting on the async I/O work semaphore at `[0x4e0360]`.
+
+The two stacks identify the same wait wrapper. The log does not identify the
+object the private builder waited on.
 
 The builder’s inventory check (`0xcdeb0`) can look up a weapon animation
 at `0x1cc3f0` and predict its resources at `0x1236f0`. A cold read
@@ -631,15 +657,18 @@ allocates a job under the pool mutex (`0x1208b0`) and queues it
 Which branch triggered the original refusal is **inferred, needs a run**.
 
 The private builder skips animation prefetch. For a demanded resource it
-uses the retail getter if the bytes are resident. On a cache miss or
-pending I/O it checks the animation and resource against their live graph,
-calls the retail getter on the scheduled game thread, then retries the
-same pad once against fresh RAM. The live worker can complete that job.
-A further miss or refused call discards the private build. The hook logs
-the first failure of each kind and revalidates the same unit’s previous
-action for one tick. With no eligible action it returns zero, which leaves
-the player out of the gather mask. Repeated gathers reuse that tick’s
-decision. A later successful build resumes normal input.
+uses the retail getter if the bytes are resident. On a cache miss or pending
+I/O it checks the animation and resource against their live graph, calls the
+retail getter on the scheduled game thread, then retries the same pad once
+against fresh RAM. The live worker can complete that job.
+
+A further miss or refused call discards the private build. The hook logs the
+first failure of each kind and revalidates the same unit’s previous action
+for one tick. With no eligible action it returns zero, which leaves the
+player out of the gather mask.
+
+Repeated gathers reuse that tick’s decision. A later successful build
+resumes normal input.
 
 The image-backed test `retail_pad_sequence_matches_local_angles_target_and_fire`
 uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
@@ -672,29 +701,35 @@ come from the brain (§3.4). Real network clients receive the host's
 normal distributed player updates.
 
 A sim can set `phantom_ping_ms` to model a remote controller. With a
-positive round-trip time, the host samples a one-way delay of half the
-ping plus uniform jitter bounded by `phantom_jitter_ms` (default 4 ms),
-rounded up to simulation ticks. A zero or omitted ping delivers the
-current report immediately. In delayed mode the latest arrival supplies
-the stick position. The host delivers each trigger's pressure changes
-in send order, at most one per tick after arrival. A new unit or a break
-in the stream clears buffered reports. The host always builds and stamps
-the retail action at gather with the current weapon and facing.
+positive round-trip time, the host samples a one-way delay of half the ping
+plus uniform jitter bounded by `phantom_jitter_ms` (default 4 ms), rounded
+up to simulation ticks. A zero or omitted ping delivers the current report
+immediately.
+
+In delayed mode the latest arrival supplies the stick position. The host
+delivers each trigger's pressure changes in send order, at most one per tick
+after arrival.
+
+A new unit or a break in the stream clears buffered reports. The host always
+builds and stamps the retail action at gather with the current weapon and
+facing.
 
 **Midship replay.** In game
-`531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
-attribute 2,231 shots to the four phantoms. Fourteen bullet hits and
-nine melee hits from them dealt positive damage to opposing players.
-The three local bots recorded 1,372 shots and 236 opposing bullet hits.
+`531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames attribute
+2,231 shots to the four phantoms. Fourteen bullet hits and nine melee hits
+from them dealt positive damage to opposing players. The three local bots
+recorded 1,372 shots and 236 opposing bullet hits.
+
 A team with no kills has no assisted kills either. The damage reports
 establish that phantom fire reached the host.
 
-The old phantom adapter treated a half-stick on either axis as about
-54°/s. The local Midship table gives about 9°/s yaw or 5°/s pitch
-for that input before aim assist. One phantom's pitch swept from +34°
-at tick 1284 to −26° at 1300 while the human's bearing stayed within
-6° of level. Using the local response removes this excess gain from the
-delayed control loop. Post-change hit rates require another hosted match.
+The old phantom adapter treated a half-stick on either axis as about 54°/s.
+The local Midship table gives about 9°/s yaw or 5°/s pitch for that input
+before aim assist. One phantom's pitch swept from +34° at tick 1284 to −26°
+at 1300 while the human's bearing stayed within 6° of level.
+
+Using the local response removes this excess gain from the delayed control
+loop. Post-change hit rates require another hosted match.
 
 **Training coverage.** A sim match hosts a private System Link game.
 Each phantom's brain, uplink, remote gather and retail action builder

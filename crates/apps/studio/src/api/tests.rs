@@ -32,6 +32,7 @@ mod sound_edit_tests;
 mod shell_tests;
 mod ui_export_tests;
 mod shader_tests;
+mod siege_tests;
 
 struct Temp(PathBuf);
 impl Temp {

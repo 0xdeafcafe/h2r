@@ -120,6 +120,7 @@ pub mod lockstep_glue;
 pub mod map_bases;
 pub mod map_copy;
 pub mod map_override;
+pub mod map_modes;
 pub mod map_select;
 pub mod map_areas;
 pub mod map_slots;

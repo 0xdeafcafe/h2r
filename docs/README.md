@@ -108,42 +108,86 @@ follow [meta/docs-style.md](meta/docs-style.md).
 ## Graphics (`graphics/`)
 
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/platform/gfx`): batching, merged passes, the pipeline cache
+- [graphics-textures.md](graphics/graphics-textures.md): texture decode and the Xbox D3DFORMAT to wgpu table
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/platform/d3d`): entries, device model, push buffer, render targets, vblank
+- [d3d-entries.md](graphics/d3d-entries.md): the D3D functions game code calls, with address, convention and status
+- [d3d-device.md](graphics/d3d-device.md): guest structures, device fields, state ordering, draws, batching, clears, swap, gamma ramp
+- [d3d-render-targets.md](graphics/d3d-render-targets.md): render-to-texture, write-back, depth levels, the overlapping-levels GPU mirror
+- [d3d-frame-buffers.md](graphics/d3d-frame-buffers.md): textures over the frame buffers and depth buffer, the copy pool, depth aliases
+- [d3d-caches.md](graphics/d3d-caches.md): texture cache, vertex cache and the invalidation contract
+- [d3d-timing.md](graphics/d3d-timing.md): vertical blank, fences, the busy check, push-buffer callbacks
+- [d3d-nv2a.md](graphics/d3d-nv2a.md): NV2A fragments and registers, port-I/O guards, boot path and stops
+- [d3d-visibility.md](graphics/d3d-visibility.md): visibility tests and lens flares
 - [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates
+- [framescene-slices-0-2.md](graphics/framescene-slices-0-2.md): slices 0 to 2: agent methods, crates, scene stages
+- [framescene-slice-3.md](graphics/framescene-slice-3.md): slice 3: the opaque block, objects, lights and layer items in the scene
+- [framescene-layer-plan.md](graphics/framescene-layer-plan.md): slice 4: layer plan, the stage, skip rules, outcome counters
+- [framescene-late-passes.md](graphics/framescene-late-passes.md): slice 5: fog, water and post typed
+- [framescene-owner.md](graphics/framescene-owner.md): slice 6: carried census, sink, private draw, display owner
+- [framescene-display-rate.md](graphics/framescene-display-rate.md): slices 7 to 10: the blend, the loop, fractional grids
+- [framescene-parity.md](graphics/framescene-parity.md): the parity corpus, pixel bar and hash gate
+- [framescene-measure.md](graphics/framescene-measure.md): A/B, counters, pixel and hash run commands
+- [framescene-deletion.md](graphics/framescene-deletion.md): the deletion table and risks
 - [retire-d3d.md](graphics/retire-d3d.md): design for retiring the guest D3D path: what the native stages leave on D3D by caller, the residual census (`render.residual`), what replaces each guest render subsystem, the slices and the zero-residual gate before `crates/platform/d3d` is deleted
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
+- [shaders-pixel.md](graphics/shaders-pixel.md): the pixel side: combiners, final combiner, texture modes, HILO, COLORSIGN
+- [shaders-fog.md](graphics/shaders-fog.md): the NV2A fog unit and how D3D state maps to it
+- [shaders-shadow-maps.md](graphics/shaders-shadow-maps.md): depth-format textures as shadow maps
+- [shaders-testing.md](graphics/shaders-testing.md): the test map, conformance coverage and sources
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe
 - [render-loop.md](graphics/render-loop.md): the view and pass loops of the retail renderer read, and the render-state list ported to Rust
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and the game's W-buffer scale
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
+- [high-resolution-widescreen.md](graphics/high-resolution-widescreen.md): widescreen projection, menu and HUD fit, gather lens, ocean grid
+- [high-resolution-prior-art.md](graphics/high-resolution-prior-art.md): xemu and Halo-2-HD scaling approaches
 - [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
+- [native-renderer-admission.md](graphics/native-renderer-admission.md): the `DrawAdmission` and external-pass contract, refusals
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
 - [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
 - [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and carried by default
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
+- [native-world-materials.md](graphics/native-world-materials.md): how a world material layer-3 pass is translated and refused
+- [native-world-live.md](graphics/native-world-live.md): reconstructed display lightmaps and live editor edits
+- [native-world-walk.md](graphics/native-world-walk.md): stage 1b: other world layers, the BSP scene walk, counters
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
+- [native-objects-fade.md](graphics/native-objects-fade.md): the fade byte, shader flag bit 0 and structure parameters
+- [native-objects-first-person.md](graphics/native-objects-first-person.md): first-person cut, items, effects, drops, tests
+- [native-objects-programs.md](graphics/native-objects-programs.md): object shading, lighting, programs, render state, streams
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced
 - [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
 - [Map-load memory](graphics/notes/2026-11-24-map-load-memory.md): menu and multiplayer load measurements
 - [Campaign frame time and retained render state](graphics/notes/2026-11-24-campaign-frame-time.md): play-run observations and source audit
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
+- [native-lights-constants.md](graphics/native-lights-constants.md): the light constants and lights over the native world
 - [native-light-gather.md](graphics/native-light-gather.md): the light gather, the first-person lights, the object shadows and the light passes as Rust bodies (design, retire-d3d R3): the model, the guest state per step, the slices and their checks
+- [native-light-gather-checks.md](graphics/native-light-gather-checks.md): light gather counters, tests, live checks and refusals
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
 - Retail menu widget reads cover [text](graphics/notes/2026-11-24-menu-text.md), [scroll arrows and buttons](graphics/notes/2026-11-24-menu-list-button.md) and [model selection](graphics/notes/2026-11-24-menu-model-selection.md).
 - [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
+- [native-post-frame.md](graphics/native-post-frame.md): where post and the HUD sit in the frame
+- [native-post.md](graphics/native-post.md): colour pass glow, post admission, hooks, native glow
+- [native-screen-effects.md](graphics/native-screen-effects.md): scenario screen effects: evaluator, plans, convolutions
+- [native-ui-producers.md](graphics/native-ui-producers.md): UI and HUD draw primitives and the producers Rust reads
+- [native-hud-overlay.md](graphics/native-hud-overlay.md): HUD bitmaps, text, shader state and glyph pages
+- [native-menus-overlay.md](graphics/native-menus-overlay.md): menus, bitmap widgets, fade, bars, loading screen, dialog blur
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-shadow-layers.md](graphics/native-shadow-layers.md): shadow layers 10, 11 and 14 drawn from the scene's gathered groups (design): the compiler from tags, the raster state, the guest targets and the object filter, the slices and their checks
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
 - [native-decals-research.md](graphics/native-decals-research.md): native decals: the dynamic decal path read from the guest code and its draw admission
 - [e3-lighting.md](graphics/e3-lighting.md): E3 2003-style lighting on the native renderer over FrameScene (design): sun shadows from objects, the renderer's own choice of lights, shadows from every cone light, the sharp edge, the budget and the slices; retail light-path findings
-- [e3-lighting-setting.md](graphics/e3-lighting-setting.md): the Lighting row as built on the D3D path (`H2_LIGHTING`, scaled one-tap shadow maps in the view)
+- [e3-lighting-target.md](graphics/e3-lighting-target.md): the target look, its sources and evidence labels
+- [e3-lighting-sun.md](graphics/e3-lighting-sun.md): sun shadows from objects
+- [e3-lighting-lights.md](graphics/e3-lighting-lights.md): choice of lights, the flashlight, the first-person pass
+- [e3-lighting-cones.md](graphics/e3-lighting-cones.md): shadows from local lights: guest tiles and renderer cones
+- [e3-lighting-setting.md](graphics/e3-lighting-setting.md): the Lighting row on the D3D path (`H2_LIGHTING`, scaled one-tap shadow maps in the view)
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
 - [pstencil-history.md](graphics/pstencil-history.md): the history of the cut E3 2003 stencil lighting from public sources: how it worked, why it was cut, where to see it, and the look to tune against (§4)
 - Notes: [e3-lighting.md](graphics/notes/e3-lighting.md) (shadow-prototype timings, in-level Lighting runs, the budget arithmetic and the reading of Sev's shaders), [editor-guest-reads.md](graphics/notes/editor-guest-reads.md) (which of the renderer's guest reads are tag data and which are run state), [decorator-stages.md](graphics/notes/decorator-stages.md) (the lightmap page a decorator samples and what engine-driven states need), [native-ab.md](graphics/notes/native-ab.md) (the all-native A/B record behind the native renderer defaults), [not-adopted.md](graphics/notes/not-adopted.md) (removed render switches and experiments that lost), [pipeline-cache.md](graphics/notes/pipeline-cache.md) (the unbounded pipeline-cache prewarm that ran out of memory at boot), [pipelined-render.md](graphics/notes/pipelined-render.md) (pipelined rendering: census, prototype and measurements), [render-thread.md](graphics/notes/render-thread.md) (render thread measurements), [scene-pass-timing.md](graphics/notes/scene-pass-timing.md) (scene pass timing)
+- More notes: [2026-11-pstencil-research](graphics/notes/2026-11-pstencil-research.md) (pstencil research record: library, recovery, sources), [d3d-caches](graphics/notes/d3d-caches.md) (vertex cache measurements and visibility polling), [high-resolution-seams-and-text](graphics/notes/high-resolution-seams-and-text.md) (glyph filter, seam pixels and BSP crack survey), [live-gi-technique](graphics/notes/live-gi-technique.md) (live GI technique costs and ray-query reads), [merged-passes](graphics/notes/merged-passes.md) (merged-pass evidence), [native-objects-resources](graphics/notes/native-objects-resources.md) (shared program resource counts), [pipeline-compile-cost](graphics/notes/pipeline-compile-cost.md) (Metal pipeline compile cost), [pipelined-render-census](graphics/notes/pipelined-render-census.md) (pipelined rendering: census and dependency tables), [pipelined-render-prototype](graphics/notes/pipelined-render-prototype.md) (pipelined rendering: prototype, faults, measurements), [render-state-skip](graphics/notes/render-state-skip.md) (render-state skip rates), [shaders-corpus](graphics/notes/shaders-corpus.md) (retail shader corpus counts)
 - [relighting-review.md](graphics/relighting-review.md): bake one lamp on the owner’s disc and compare three captures from a pinned frame
 - [dynamic-lighting.md](graphics/dynamic-lighting.md): design (investigation) for an opt-in live sun over the baked lightmaps: what lighting data the disc holds, the approaches with costs on an M3 at 4x, the offline lightmap split, what FrameScene carries, and the slices
 - [live-gi.md](graphics/live-gi.md): design for the `dynamic` mode's indirect light computed every sim tick: the technique choice with costs on an M3 at 4x, wgpu's Metal ray queries as built, transport traced offline and relit live, the fit to the retail lightmap and the fill, objects, leaks and caches, the engine shared with E3 lighting, the slices and the go or stop checkpoint
