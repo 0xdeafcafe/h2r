@@ -44,7 +44,9 @@ fn clamp01(x: f32) -> f32 {
     x.clamp(0.0, 1.0)
 }
 
-fn plate(mem: &dyn GuestRead, at: u32, index: u16, player: u8, window: [i16; 4]) -> Option<WeatherPlate> {
+/// The plate of the element at `at` for `player` in `window`
+/// ([`view`]), as `0x00037a60` reads it; `None` when a word does not read.
+pub fn plate(mem: &dyn GuestRead, at: u32, index: u16, player: u8, window: [i16; 4]) -> Option<WeatherPlate> {
     let f = |off: u32| mem.read_f32(at.checked_add(off)?);
     let state = at.checked_add(PLAYER_STRIDE * u32::from(player))?;
     let s = |off: u32| mem.read_f32(state.checked_add(off)?);
@@ -69,6 +71,15 @@ fn plate(mem: &dyn GuestRead, at: u32, index: u16, player: u8, window: [i16; 4])
     })
 }
 
+/// The view's player (`[0x00485600]`) and window (left, top, right,
+/// bottom).
+pub fn view(mem: &dyn GuestRead) -> Option<(u8, [i16; 4])> {
+    let player = mem.read_u32(PLAYER)? as u8;
+    let (top_left, bottom_right) = (mem.read_u32(WINDOW_TOP_LEFT)?, mem.read_u32(WINDOW_BOTTOM_RIGHT)?);
+    // Left and right are the high halves.
+    Some((player, [(top_left >> 16) as i16, top_left as i16, (bottom_right >> 16) as i16, bottom_right as i16]))
+}
+
 /// The plates of the open view, in the guest's order: palette entries in
 /// use ascending, each tag's elements in order. Returns how many were put in
 /// the view, and how many elements did not read. `None` when the view's
@@ -86,15 +97,9 @@ pub fn extract(mem: &dyn GuestRead, builder: &mut SceneBuilder) -> Result<Option
     ) else {
         return Ok(None);
     };
-    let (Some(player), Some(top_left), Some(bottom_right)) = (
-        mem.read_u32(PLAYER).map(|p| p as u8),
-        mem.read_u32(WINDOW_TOP_LEFT),
-        mem.read_u32(WINDOW_BOTTOM_RIGHT),
-    ) else {
+    let Some((player, window)) = view(mem) else {
         return Ok(None);
     };
-    // Left and right are the high halves.
-    let window = [(top_left >> 16) as i16, top_left as i16, (bottom_right >> 16) as i16, bottom_right as i16];
     let mut used = [false; MAX_SYSTEMS as usize];
     for n in 0..count {
         let Some(cluster) = mem.read_u32(values + 4 * n) else { continue };

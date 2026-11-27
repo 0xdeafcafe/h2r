@@ -1816,6 +1816,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
+        crate::native_weather_glue::install(&device);
         crate::native_particles_glue::install(&device);
         crate::native_first_person_glue::install(&device);
         shadows

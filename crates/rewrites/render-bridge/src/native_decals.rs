@@ -354,6 +354,8 @@ impl Feature for NativeDecals {
         b.raw()
             .observe_before(&points::scene_effects::DECAL_RENDER_END, "native_decals_end", |_| end())
             .context_only();
+        // The weather plates' host draws in the same pass (slot 9).
+        crate::native_weather::build(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }

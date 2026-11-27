@@ -296,8 +296,42 @@ in 64 stays the guest's own and is the comparison. The callback `0x00044040`
 is not cut: the host draws the guest's quads from its resolved draws, not
 from the scene's items.
 
-Not built: nothing draws these items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). A plate needs the placement
-test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
+The weather plates' host (**Code**): `render-bridge/src/native_weather.rs`
+observes each call of the plate draw `0x00037a60` (element at `[esp+4]`)
+and makes the plate's draw in Rust (`plan`). The game's admission
+(`game/src/native_weather_glue.rs`) takes the call's resolved quad strip.
+
+| Step | Kernel | Inputs |
+|---|---|---|
+| Placement `0x0003a5c0` | `weather_place::place`, kind 3, flags `(0, 0, 1)` | element `+0x80`, `+0x84`; scale `[0x0048565c]` |
+| Definition, setup skipped, result wanted | `weather_place::kind3` | the colours `0x00037a60` packs (`weather_quad::colours`); limit `[0x00485658]` |
+| Strip, scroll constants, depth | `weather_quad::quad` | the result; the view's near and far `[0x00485ad4]`, `[0x00485ad8]` |
+
+The guest's setup still runs. In a Rust draw the strip's vertices, its
+scroll constants (`c[21..24]`, hardware order) and the definition words
+the placement writes (`Plate::written`, 42 of 60) are Rust's, and the
+strip is recorded as an indexed pass (`IndexedPass`, two triangles in
+`PrimitiveType::to_host`'s corner order).
+
+| Arm | |
+|---|---|
+| Rust draws | every plate draw but the sampled ones; `weather_plate_admitted` |
+| Compared | the first draw, then one in 64: the guest's draw stands and is compared field by field (`vertex<n>_r<register>`, `constant<slot>`, `combiner_w<n>`); `weather_plate_{compared,matched,mismatched}` |
+| Placement | a plate Rust's placement refuses but the guest draws is the mismatch `placement` |
+| Fallback | any mismatch: the guest's draw stands for the rest of the session; `weather_plate_fallback` is 1 |
+| Refused | the guest's draw stands, `weather_plate_refused_<reason>`: `view_unread`, `element_unread`, `globals_unread`, `geometry`, `vertex_streams`, `vertex_bytes`, `vertex_declaration`, `texture_unbound`, `texture_target`, `texture_binding`, `pass`, `second_draw`, and `unseen` (a call Rust expected to draw whose strip no admission saw) |
+
+Tests: `native_weather.rs`
+(`a_plate_is_drawn_at_its_placements_depth_result`,
+`rust_draws_one_draw_in_64_is_compared_and_a_difference_falls_back_for_the_session`,
+`a_call_hands_its_plan_to_its_first_draw_only`), `native_weather_glue.rs`
+(`a_plate_strip_rust_would_draw_compares_clean`,
+`a_plate_strip_that_differs_is_named_by_field`,
+`rusts_strip_writes_its_floats_and_leaves_the_rest`,
+`a_strip_without_the_plates_registers_is_refused_by_name`).
+
+Not built: nothing draws the scene's decal items, and the plates' host
+draws the guest's call, not the scene's `WeatherPlate` items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
 
