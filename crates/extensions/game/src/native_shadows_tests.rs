@@ -217,7 +217,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         let range = Range {
             gpu: gpu.clone(),
             draw: Arc::new(d),
-            map: Some((Arc::new(Mutex::new(Some(map.clone()))), MapKind::Depth, MAP)),
+            map: Some((Arc::new(Mutex::new(crate::native_shadows_draw::Maps::of(Some(map.clone())))), MapKind::Depth, MAP)),
         };
         let target = surface.target();
         let mut enc = ctx.device.create_command_encoder(&Default::default());
@@ -371,7 +371,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                 height: 16,
             });
             if i != 2 && native {
-                let output = Arc::new(Mutex::new((i != 3).then(|| map.clone())));
+                let output = Arc::new(Mutex::new(crate::native_shadows_draw::Maps::of((i != 3).then(|| map.clone()))));
                 let pass = Range {
                     gpu: gpu.clone(),
                     draw: Arc::new(draw.clone()),

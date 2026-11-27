@@ -2255,11 +2255,12 @@ h2 agent render.parity '{"arm": true}'
   `scene_shadow_groups_<layer>` and `scene_shadow_groups_whole_<layer>`
   for 10, 11 and 14, `scene_shadow_layers_alone_10`, `_11` and `_14`
   (caster, receiver and opacity groups drawn from the scene with no
-  handler), `scene_shadow_alone_refused_<cause>` (`remainder`, `stream`,
+  handler), `scene_dropped_shadow_layers_<cause>` (`remainder`, `stream`,
   `pose`, `program`, `state`, `target`, `callback`, `device`),
-  `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
+  `scene_dropped_shadow_layers`, `scene_dropped_object_shadows` (an
+  object shadow list, row gather or caster the Rust body could not take), `scene_shadow_filters_native` (object
   filters replaced by native quads) and
-  `scene_shadow_filter_refused_<cause>` (`program`, `state`, `target`,
+  `scene_dropped_shadow_filter_<cause>` (`program`, `state`, `target`,
   `callback`, `device`), `scene_shadow_chains_private` (object masks
   drawn into a private chain) and `scene_shadow_chains_spilled` (of
   those, chains copied back to target 10 for the guest's filter)
