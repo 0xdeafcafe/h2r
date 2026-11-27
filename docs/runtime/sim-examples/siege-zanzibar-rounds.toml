@@ -1,0 +1,45 @@
+# A two-round Siege on Zanzibar (docs/runtime/sim.md, "Rules scripts" and
+# "Rounds"): `h2 sim run` this file. Two phantoms a side play the Siege
+# script with a minute for each phase, so a round ends on the objective or
+# the clock in minutes, and the sides swap for the second. The report's
+# `rounds` holds every player's `player_score` and each team's score as
+# each round began: read `rounds[1]` to see what the second round started
+# with (a `player_score` that reset reads 0 there).
+map = "zanzibar"
+game_type = "slayer"
+time_limit_s = 3600   # longer than max_ticks: the script or the tick limit ends it
+score_limit = 50      # a round's winners score one each; nobody gets near it
+team_play = true
+seed = 1
+max_ticks = 36000     # 20 minutes at 30 ticks a second
+max_wall_s = 3600
+render_every = 0
+pace = "unpaced"
+
+[rules]
+script = "siege"
+options = { round_count = 2, phase_time = 60 }
+
+[[bot]]
+name = "Red 1"
+team = 0
+kind = "phantom"
+skill = "legendary"
+
+[[bot]]
+name = "Red 2"
+team = 0
+kind = "phantom"
+skill = "legendary"
+
+[[bot]]
+name = "Blue 1"
+team = 1
+kind = "phantom"
+skill = "legendary"
+
+[[bot]]
+name = "Blue 2"
+team = 1
+kind = "phantom"
+skill = "legendary"

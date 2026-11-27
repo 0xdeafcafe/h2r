@@ -87,3 +87,22 @@ fn the_round_reset_ends_the_vms_round_then_starts_the_next() {
     assert_eq!(s.lock().running().unwrap().vm.global("starts"), Some(2));
     assert_eq!(line_of(&s), None, "the round's end took the first round's line");
 }
+
+#[test]
+fn each_rounds_start_logs_the_scores_the_game_holds_for_the_sim_report() {
+    let store = Local::default();
+    let (s, mut m) = rounds(&store, 1, 1);
+    // Player 1's statborg score, as the game reads it for `player_score`.
+    m.put_u16(ENGINE + 0x308 + 0x1c, (-4i16) as u16);
+    s.lock().round_start(&m);
+    m.put_u16(ENGINE + 0x308 + 0x1c, 7);
+    s.lock().round_start(&m);
+    let log = crate::sim_rounds::take();
+    // `start` took the first round's (all zero, before the edit), then the
+    // two later rounds' as the game held them.
+    assert_eq!(log.len(), 3, "{log:?}");
+    let score_of = |i: usize| log[i].players.iter().find(|p| p.0 == 1).map(|p| p.2);
+    assert_eq!([score_of(0), score_of(1), score_of(2)], [Some(0), Some(-4), Some(7)]);
+    assert_eq!(log[0].teams.iter().map(|t| t.0).collect::<Vec<_>>(), [0, 1]);
+    assert!(log.iter().all(|s| s.players.len() == 2), "{log:?}");
+}

@@ -638,6 +638,7 @@ mod tests {
             drops: None,
             bounces: None,
             firefight: None,
+            rounds: Vec::new(),
             flat: None,
             guest_census: None,
             tick_phases: None,

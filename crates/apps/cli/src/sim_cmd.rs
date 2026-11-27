@@ -2236,6 +2236,7 @@ mod tests {
             drops: None,
             bounces: None,
             firefight: None,
+            rounds: vec![],
         }
     }
 

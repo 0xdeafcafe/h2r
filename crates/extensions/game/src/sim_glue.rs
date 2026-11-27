@@ -1285,6 +1285,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     let mut lean = s.lean.clone();
     lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
     report.set_lean(lean);
+    report.rounds = round_scores(&bots);
     if let Some(f) = &inner.matched.firefight {
         use sim_bench::firefight::FirefightReport;
         report.firefight = Some(match lock_ended().as_ref() {
@@ -1293,6 +1294,31 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         });
     }
     report
+}
+
+/// The report's `rounds`: the rules runtime's score log, a bot's name on
+/// the slot it holds (docs/runtime/sim.md, "Rounds").
+fn round_scores(bots: &[BotInfo]) -> Vec<sim_bench::metrics::RoundScores> {
+    use sim_bench::metrics::{RoundPlayer, RoundScores, RoundTeam};
+    crate::sim_rounds::take()
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| RoundScores {
+            round: i as u32 + 1,
+            tick: s.tick,
+            players: s
+                .players
+                .into_iter()
+                .map(|(slot, team, player_score)| RoundPlayer {
+                    slot,
+                    name: bots.iter().find(|b| b.player == Some(slot)).map(|b| b.name.clone()),
+                    team,
+                    player_score,
+                })
+                .collect(),
+            teams: s.teams.into_iter().map(|(team, score)| RoundTeam { team, score }).collect(),
+        })
+        .collect()
 }
 
 // ---- Firefight (docs/runtime/sim.md, "Firefight") ----

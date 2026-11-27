@@ -1315,3 +1315,16 @@ fn a_script_file_is_read_relative_to_the_match_file() {
     assert!(r.is_path());
     assert_eq!(Path::new(&r.script), dir.join("mine.rules"));
 }
+
+#[test]
+fn the_siege_rounds_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("siege-zanzibar-rounds.toml")).unwrap();
+    assert!(!m.superbounce);
+    let r = m.config.rules.as_ref().unwrap();
+    assert_eq!(r.script, "siege");
+    assert_eq!(r.options["round_count"], RuleOption::Int(2));
+    assert_eq!(r.options["phase_time"], RuleOption::Int(60));
+    assert_eq!(m.bots.len(), 4);
+    assert_eq!(teams_of(&m), [Some(0), Some(0), Some(1), Some(1)]);
+}

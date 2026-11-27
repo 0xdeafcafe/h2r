@@ -316,16 +316,71 @@ aggression = 0.9
 reaction = 5
 ```
 
-`superbounce = true` (before the tables) makes the match play the
-Superbounce rules script, which turns the superbounce mode on: the bots practise bounces instead of fighting
+A `[rules]` table makes the match play a rules script
+([Rules scripts](#rules-scripts)). `[rules] script = "superbounce"` plays the
+Superbounce script, which turns the superbounce mode on: the bots practise bounces instead of fighting
 ([Bounce practice](#bounce-practice)). A `[drill]` table (with
-`superbounce = true`) makes them try one site only
+`[rules] script = "superbounce"`) makes them try one site only
 ([The bounce drill](#the-bounce-drill)). A `[train]` table (with
-`superbounce = true`, and no `[drill]`) makes the run one shard of a
+the Superbounce script, and no `[drill]`) makes the run one shard of a
 bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)). A
-`[drops]` table (without `superbounce`) drops every seat onto candidate
+`[drops]` table (without the Superbounce script) drops every seat onto candidate
 seams ([Seam drops](#seam-drops)). `game_type = "firefight"` with a
 `[firefight]` table plays Firefight ([Firefight](#firefight)).
+
+### Rules scripts
+
+A `[rules]` table puts a script on the game's record at its start, the
+way a lobby choosing that game type does
+(`sim_rules::block_for`, then `game_variants::inject::set_sim_block`):
+
+```toml
+[rules]
+script = "siege"                           # a built-in's key or name, any case, or "path/to/mode.rules"
+options = { round_count = 2, phase_time = 60 }  # by name: a number, a bool, or an enum value's name
+```
+
+- **The script** is a built-in by key (`siege`, `gun_game`) or by name
+  (`Gun Game`), or a path ending `.rules`, read relative to the match
+  file. A file is compiled and verified as `h2 rules build` does (the
+  tick budget included) and kept in the game-variant store's memory, where
+  the runtime finds it by the record's hash prefix.
+- **The options** pack as `h2 variants port --option` does
+  (`variants::portable::record_for`); one left out takes its default.
+  The match and the script still set the record's other fields
+  (`score_limit`, `time_limit_s`, `team_play`).
+- **Refused, by name, when the sim sets up the game:** a script that is
+  neither built in nor a readable `.rules` file (the message lists the
+  built-ins), one that does not compile or verify, an option the script
+  does not declare (the message lists the declared ones), and a value out
+  of range or an enum value the option does not have. `rules` with an
+  empty `script`, or in a Firefight match, is refused when the file is
+  read.
+- **`script = "superbounce"`** (any case) is the bounce practice, with
+  everything [Bounce practice](#bounce-practice) says.
+- **The scores at each round** are in the report's `rounds`
+  ([Rounds](#rounds)).
+
+[sim-examples/siege-zanzibar-rounds.toml](sim-examples/siege-zanzibar-rounds.toml)
+is two-round Siege on Zanzibar, two phantoms a side and a minute a phase:
+
+```sh
+h2 sim run docs/runtime/sim-examples/siege-zanzibar-rounds.toml
+```
+
+#### Rounds
+
+The report's `rounds` lists the score of every player and every team at
+the start of each round of the script's game, in round order
+(`sim_bench::metrics::RoundScores`; absent without a script). Each entry
+holds `round` (1 for the first), `tick` (the script's tick), `players`
+(`slot`, the bot's `name`, `team`, `player_score`) and `teams` (`team`,
+`score`). The runtime reads them from the game's statborg, the reads a
+script's `player_score` and team score make, at the round reset and before
+the script's own `on round_start` runs (`rules::runtime::Runtime::round_start`,
+`sim_rounds`): the first round's at the script's start. A `player_score`
+that the engine resets with the round reads 0 in the later entries; one
+that carries on reads what it was.
 
 ### Firefight
 
@@ -367,7 +422,7 @@ team = 0
   `firefight.teams`; 0 for lives and teams is the set's own) in a
   settings store of the run's own, and the runtime reads them when the
   game starts, as it reads Game Setup's (`sim_glue::firefight_store`).
-- **Refused with it:** `team_play = false`, `superbounce`, `[drill]`,
+- **Refused with it:** `team_play = false`, `[rules]`, `[drill]`,
   `[train]`, `[drops]` and `[bounces]`; a `[firefight]` table without
   `game_type = "firefight"`.
 - **The report** gains a `firefight` section
@@ -1037,7 +1092,7 @@ host makes the command exit unsuccessfully after it writes the comparison.
 
 ### Bounce practice
 
-A match with `superbounce = true` is a practice: every bot practises
+A match with `[rules] script = "superbounce"` is a practice: every bot practises
 superbounces ([bots.md, "Practising bounces"](../game/bots.md#practising-bounces))
 and nobody fights. `sim_glue::Sim::add_bots` puts the built-in Superbounce script's block
 on the game's record at its start (`game_variants::inject::set_sim_block`),
@@ -1116,7 +1171,7 @@ crouch spot a walk reaches it from, and a walk from the bot to that
 crouch spot), so a site out of reach adds no try and no reason;
 `no_route` is a route that failed to plan from where the bot stood.
 `first_bounce_ticks` counts from the match's start to the bot's first
-chain bounce. The block is absent from a match without `superbounce`.
+chain bounce. The block is absent from a match without the Superbounce script.
 
 `habits` is how the bots practised (`sim_bench::bounce::Habits`, from
 the practice's own events; [bots.md, "How each bot
@@ -1162,14 +1217,16 @@ near it with the word already at −3, so a run shows the final approach
 and the jump alone, apart from priming and the walk there:
 
 ```toml
-superbounce = true
+[rules]
+script = "superbounce"
+
 [drill]
 site = [-10.62, 3.88, -3.19]   # the known site within 0.5 of this
 start = [-8.4, 2.5, -0.76]     # optional; unset: the site's approach
 ```
 
 `sim::config::DrillConfig` (tested) refuses a drill without
-`superbounce = true`. `sim_glue::Sim::add_bots` hands it to the bots
+`[rules] script = "superbounce"`. `sim_glue::Sim::add_bots` hands it to the bots
 (`bots::drill::set`); each practising bot walks to the start, and
 standing there unprimed asks for its word
 ([bots.md, "Practising bounces"](../game/bots.md#practising-bounces),
@@ -1212,7 +1269,7 @@ them:
 
 ```toml
 out = "results/bounce-sweep"      # relative to this file
-batch = "superbounce-batch.toml"  # its match has superbounce = true
+batch = "superbounce-batch.toml"  # its match plays the Superbounce script
 method = "coordinate"             # grid (default), random, coordinate
 samples = 24                      # random: draws
 rounds = 2                        # coordinate: passes over the axes
@@ -1263,7 +1320,7 @@ tested) plans the runs and builds the report; the CLI runs the processes.
 
 ```toml
 out = "results/bounce-train"            # relative to this file
-match = "superbounce-train-match.toml"  # superbounce = true and the bots
+match = "superbounce-train-match.toml"  # the Superbounce script and the bots
 maps = ["ascension"]
 seed = 1        # the match's seed and the search's draws
 shards = 4      # runs a map; fixed here, not by --parallel
@@ -1276,7 +1333,7 @@ budget = 120    # scored tries a site
   A run owns the sites whose spot id modulo `shards` is its `shard`
   (`sim::train::owns`), so the runs of a batch never fly the same site and
   the result does not depend on `--parallel`. `[train]` is refused without
-  `superbounce = true`, with a `[drill]`, with `shard` not under `shards`
+  the Superbounce script, with a `[drill]`, with `shard` not under `shards`
   and with a budget of 0.
 - **The game side.** `Sim::add_bots` hands the table to the bots
   (`bots::learn::set`). The word hook the drill uses (`sim: drill word`) runs
@@ -1367,7 +1424,7 @@ approach = { stick = 0.3, lead = 0.2, from = ["+", "-"] }  # optional
 - **The match.** A drops table fills what the file leaves out: the map
   from `drops.map`, 15 phantom seats named `Dropper 1` and on, no time
   limit, team play (free-for-all sims end at tick 0) and the training
-  report. It is refused with `superbounce = true`, a `[drill]` or a
+  report. It is refused with the Superbounce script, a `[drill]` or a
   `[train]`. The match ends (`stopped`) when every drop is done, or at
   `max_ticks` or `max_wall_s`.
 - **Seats.** A shared queue feeds the seats: an idle seat takes the next

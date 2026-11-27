@@ -1163,6 +1163,10 @@ impl Runtime {
             Ok(vm) => vm,
             Err(e) => return self.refuse(full, format!("the VM refused the blob: {e}")),
         };
+        // The first round's scores for a sim report (docs/runtime/sim.md,
+        // "Rounds"); each later round's is [`Runtime::round_start`]'s.
+        crate::sim_rounds::clear();
+        crate::sim_rounds::push(crate::sim_rounds::read(m, 0));
         let mut pending = Vec::new();
         let (error, start_line) = {
             let mut g = GuestGame::new(m, &mut pending)
@@ -1437,6 +1441,8 @@ impl Runtime {
         let Some(r) = self.running() else { return };
         let ty = r.game_type;
         let projects_role = r.record_engine == super::roles::JUGGERNAUT;
+        // The scores as the new round opens, before the handler's own.
+        crate::sim_rounds::push(crate::sim_rounds::read(m, r.vm.ext().tick));
         self.run(m, |vm, g| {
             let before = vm.ext().role_mask;
             vm.fire(g, Input::RoundEnd);
