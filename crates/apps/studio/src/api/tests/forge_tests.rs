@@ -1,7 +1,8 @@
 //! `forge.*`, the Forge variants and Forge items kinds of `asset.list`,
 //! and a variant's links (docs/editor/studio-flow.md, "Forge variants and
-//! items"), over an invented map variant saved through the game's own
-//! store (`forge::files::variants`) and the invented tree and package of
+//! items"), over an invented map variant that is a `map-variant` item of
+//! an invented package, one more saved through the game's own store
+//! (`forge::files::variants`), and the invented tree and package of
 //! `assets_tests`. No game data.
 
 use super::assets_tests;
@@ -69,13 +70,38 @@ pub(super) fn castle() -> ForgeDoc {
     doc
 }
 
-/// Save `Castle` and open it as a document; its asset id.
+/// The source of the package `mine`'s one item.
+const SOURCE: &str = "map-variants/fixture/castle.h2mapvariant";
+
+/// The local package `mine`, the edit target, whose one item is `Castle`.
+pub(super) fn castle_package(api: &mut Api, app: &mut App) {
+    let dir = app.data_root().join("packages/mine");
+    std::fs::create_dir_all(dir.join("map-variants/fixture")).unwrap();
+    std::fs::write(
+        dir.join("package.toml"),
+        format!(
+            "[package]\nformat = 1\nid = \"mine\"\nname = \"mine\"\n\n[[item]]\nkind = \"map-variant\"\nsource = \"{SOURCE}\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(dir.join(SOURCE), castle().canonical_json().unwrap()).unwrap();
+    call(api, app, m::PACKAGE_TARGET, json!({ "id": "mine" }));
+}
+
+/// Make `mine` and open its `Castle` as a document; the item's asset id.
 pub(super) fn open_castle(api: &mut Api, app: &mut App) -> String {
-    forge::files::variants::save(&app.data_root(), &castle(), false).unwrap();
+    castle_package(api, app);
     let listed = call(api, app, m::FORGE_VARIANT_LIST, json!({}));
     let asset = listed["rows"][0]["asset"].as_str().unwrap().to_owned();
     call(api, app, m::SHELL_OPEN, json!({ "asset": asset }));
     asset
+}
+
+/// The item's file as the package holds it now.
+fn on_disk(app: &App) -> Value {
+    let bytes = std::fs::read(app.data_root().join("packages/mine").join(SOURCE)).unwrap();
+    let doc = ::workspace::read_map_variant(&bytes).unwrap();
+    crate::app::forge_variants::doc_json("item:mine:0", "fixture", "castle", &doc)
 }
 
 fn setup(name: &str) -> (Temp, App, Api) {
@@ -102,12 +128,12 @@ fn field<'a>(v: &'a Value, target: &str, name: &str) -> &'a Value {
 }
 
 #[test]
-fn the_forge_variants_kind_lists_a_saved_variant_and_it_opens_as_a_document() {
+fn the_forge_variants_kind_lists_a_package_item_and_it_opens_as_a_document() {
     let (_t, mut app, mut api) = setup("forge-open");
     let none = call(&mut api, &mut app, m::FORGE_VARIANT_LIST, json!({}));
     assert_eq!(none["rows"], json!([]));
     let asset = open_castle(&mut api, &mut app);
-    assert!(asset.starts_with("forge:fixture:"), "{asset}");
+    assert_eq!(asset, "item:mine:0");
     assert_eq!(app.front_doc(), Some(Doc::Forge));
     assert_eq!(app.doc_id(Doc::Forge), asset);
     assert_eq!(app.doc_title(Doc::Forge), "Castle");
@@ -121,7 +147,27 @@ fn the_forge_variants_kind_lists_a_saved_variant_and_it_opens_as_a_document() {
     );
     assert_eq!(kind["rows"][0]["asset"], asset.as_str());
     assert_eq!(kind["rows"][0]["things"], 2);
-    assert_eq!(kind["rows"][0]["source"], "saved");
+    assert_eq!(kind["rows"][0]["source"], "package");
+    assert_eq!(kind["rows"][0]["package"], "mine");
+    // The Packages root lists the item under the same kind, and Go to
+    // anything finds it.
+    let items = call(
+        &mut api,
+        &mut app,
+        m::ASSET_LIST,
+        json!({ "root": "packages", "package": "mine" }),
+    );
+    assert_eq!(items["rows"][0]["asset"], asset.as_str());
+    assert_eq!(items["rows"][0]["kind"], "Forge variants");
+    assert_eq!(items["rows"][0]["item_kind"], "map-variant");
+    let found = crate::app::commands::palette_assets(&app, "castle");
+    assert!(
+        found.entries.iter().any(|r| matches!(
+            &r.action,
+            Action::OpenAsset { asset: a, .. } if *a == asset
+        )),
+        "Go to anything lists the item"
+    );
     assert!(kind["kinds"].as_array().unwrap().iter().any(|k| k == "Forge items"));
     // The document: the two added weapons, the second where its last
     // write put it.
@@ -129,6 +175,7 @@ fn the_forge_variants_kind_lists_a_saved_variant_and_it_opens_as_a_document() {
     assert_eq!(doc["name"], "Castle");
     assert_eq!(doc["open"], true);
     assert_eq!(doc["dirty"], false);
+    assert_eq!(doc["package"], "mine");
     assert_eq!(doc["things"].as_array().unwrap().len(), 2);
     assert_eq!(doc["things"][0]["item"], RIFLE);
     assert_eq!(field(&doc, "added:2", "position"), &json!([7.0, 8.0, 9.0]));
@@ -136,13 +183,9 @@ fn the_forge_variants_kind_lists_a_saved_variant_and_it_opens_as_a_document() {
 }
 
 #[test]
-fn a_field_edit_is_one_undo_step_and_save_writes_the_stores_file() {
+fn a_field_edit_is_one_undo_step_and_save_writes_the_package_item() {
     let (_t, mut app, mut api) = setup("forge-set");
     let asset = open_castle(&mut api, &mut app);
-    let (map, file) = asset
-        .strip_prefix("forge:")
-        .and_then(|rest| rest.split_once(':'))
-        .unwrap();
     let set = |api: &mut Api, app: &mut App, value: Value| {
         call(
             api,
@@ -162,18 +205,85 @@ fn a_field_edit_is_one_undo_step_and_save_writes_the_stores_file() {
     assert_eq!(app.doc_can(Doc::Forge), (false, true));
     app.dispatch(Action::RedoDoc(Doc::Forge));
     assert!(app.doc_dirty(Doc::Forge));
-    // The file keeps the old value until the save.
-    let on_disk = |app: &App| {
-        let doc = app.forge_variant_doc(map, file).unwrap();
-        crate::app::forge_variants::doc_json(map, file, &doc)
-    };
+    // The item's file keeps the old value until the save.
     assert_eq!(field(&on_disk(&app), "added:2", "position"), &json!([7.0, 8.0, 9.0]));
     assert!(app.doc_save_action(Doc::Forge).is_some());
     let saved = call(&mut api, &mut app, m::FORGE_VARIANT_SAVE, json!({}));
     assert_eq!(saved["dirty"], false);
     assert_eq!(saved["asset"], asset.as_str());
+    assert_eq!(saved["edit_target"], "mine");
     assert_eq!(field(&on_disk(&app), "added:2", "position"), &json!([0.0, 0.0, 1.0]));
     assert!(app.doc_save_action(Doc::Forge).is_none(), "nothing left to save");
+    // The same item was written: the package has one, it checks clean, and
+    // nothing is in the game's store.
+    let dir = app.data_root().join("packages/mine");
+    let loaded = ::workspace::Loaded::from_dir(&dir).unwrap();
+    assert_eq!(loaded.package.manifest.items.len(), 1);
+    assert_eq!(::workspace::check_package(&loaded), vec![]);
+    assert!(!app.data_root().join("map-variants").exists());
+    // The game's store, given the set, lists the edited variant.
+    let packaged = boot::packages::packaged_variants(&[loaded]);
+    let listed = forge::files::variants::list_with(
+        &app.data_root(),
+        "fixture",
+        Some(&castle().base.sha256),
+        &packaged,
+    )
+    .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!((listed[0].file.as_str(), listed[0].problem), ("mine.castle", None));
+}
+
+#[test]
+fn a_variant_saved_in_the_game_saves_as_a_new_item_and_its_file_stays() {
+    let (_t, mut app, mut api) = setup("forge-from-store");
+    let data = app.data_root();
+    let stem = forge::files::variants::save(&data, &castle(), false).unwrap();
+    let file = data.join(format!("map-variants/fixture/{stem}.h2mapvariant"));
+    let before = std::fs::read(&file).unwrap();
+    let asset = format!("forge:fixture:{stem}");
+    let listed = call(&mut api, &mut app, m::FORGE_VARIANT_LIST, json!({}));
+    assert_eq!(listed["rows"][0]["asset"], asset.as_str());
+    assert_eq!(listed["rows"][0]["source"], "saved");
+    call(&mut api, &mut app, m::SHELL_OPEN, json!({ "asset": asset }));
+    assert_eq!(app.doc_id(Doc::Forge), asset);
+    // It is in no package yet, so Save is offered with no edit made, and
+    // with no edit target the call says so.
+    assert!(app.doc_save_action(Doc::Forge).is_some());
+    let e = api.call(&mut app, m::FORGE_VARIANT_SAVE, json!({})).unwrap_err();
+    assert_eq!(e.code, code::NO_TARGET, "{}", e.message);
+    super::import_tests::package(&data.join("packages/mine"), "mine");
+    call(
+        &mut api,
+        &mut app,
+        m::FORGE_VARIANT_SET,
+        json!({ "target": "added:1", "field": "position", "value": [1, 2, 4] }),
+    );
+    let saved = call(&mut api, &mut app, m::FORGE_VARIANT_SAVE, json!({ "package": "mine" }));
+    // The document is the new item; the game's file is as it was.
+    assert_eq!(saved["asset"], "item:mine:0");
+    assert_eq!(app.doc_id(Doc::Forge), "item:mine:0");
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    let loaded = ::workspace::Loaded::from_dir(&data.join("packages/mine")).unwrap();
+    let item = &loaded.package.manifest.items[0];
+    assert_eq!(item.kind, content::package::Kind::MapVariant);
+    assert_eq!(item.source.as_deref(), Some(SOURCE));
+    assert_eq!(::workspace::check_package(&loaded), vec![]);
+    // A second save writes the same item.
+    call(
+        &mut api,
+        &mut app,
+        m::FORGE_VARIANT_SET,
+        json!({ "target": "added:1", "field": "position", "value": [1, 2, 5] }),
+    );
+    call(&mut api, &mut app, m::FORGE_VARIANT_SAVE, json!({ "package": "mine" }));
+    let loaded = ::workspace::Loaded::from_dir(&data.join("packages/mine")).unwrap();
+    assert_eq!(loaded.package.manifest.items.len(), 1);
+    assert_eq!(field(&on_disk(&app), "added:1", "position"), &json!([1.0, 2.0, 5.0]));
+    // Both are listed: the item, then the game's file.
+    let listed = call(&mut api, &mut app, m::FORGE_VARIANT_LIST, json!({}));
+    let sources: Vec<_> = listed["rows"].as_array().unwrap().iter().map(|r| r["source"].clone()).collect();
+    assert_eq!(sources, [json!("package"), json!("saved")]);
 }
 
 #[test]

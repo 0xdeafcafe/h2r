@@ -102,7 +102,8 @@ pub fn kind_names() -> Vec<&'static str> {
 /// `tag`, `bitmap`, `model`, `animation` or `sound` item names its group
 /// in its source or `tag`), the kind of what it edits when it says one,
 /// and the item kinds' own (**Game types** for a `rules` or `variant`
-/// script, **Playlists** for a `playlist`). An item of no other kind is
+/// script, **Playlists** for a `playlist`, **Forge variants** for a
+/// `map-variant`). An item of no other kind is
 /// `Other`.
 pub fn item_kind(item: &Item) -> &'static str {
     match item.kind {
@@ -121,6 +122,7 @@ pub fn item_kind(item: &Item) -> &'static str {
         ItemKind::Strings => "Strings",
         ItemKind::Rules | ItemKind::Variant => "Game types",
         ItemKind::Playlist => "Playlists",
+        ItemKind::MapVariant => super::forge_variants::VARIANTS_KIND,
         _ => "Other",
     }
 }
@@ -961,7 +963,8 @@ impl App {
     /// [`Self::open_asset`] for a package item (`item:<package>:<n>`): the
     /// editor of what the item builds (docs/editor/studio-flow.md,
     /// "Everything is an asset"). A `rules` item opens in the script
-    /// editor, a `variant` in the variant's settings, a `tag`, `bitmap`,
+    /// editor, a `variant` in the variant's settings, a `map-variant` as
+    /// the Forge variant document, a `tag`, `bitmap`,
     /// `model`, `animation` or `sound` item the tag it adds, an `edits`
     /// item the first tag its file names. A `playlist` item's fragment has
     /// no editor (the Playlists tool opens a `multiplayer_hopper.dat`) and
@@ -1049,6 +1052,14 @@ impl App {
                         self.set_tab_item(Doc::Variant, Some(item_id), None);
                     }
                 }
+            }
+            ItemKind::MapVariant => {
+                let Some(source) = item.source.as_deref() else {
+                    return self.error(format!("{asset}: the item names no source file"));
+                };
+                let bytes = entry.loaded.files.get(source).cloned();
+                let path = listed.dir.as_deref().map(|dir| Path::new(dir).join(source));
+                self.open_forge_item(&item_id, source, bytes.as_deref(), path);
             }
             ItemKind::Playlist => {
                 self.error(format!(

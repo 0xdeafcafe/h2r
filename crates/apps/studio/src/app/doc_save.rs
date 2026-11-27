@@ -56,8 +56,9 @@ impl App {
                 Action::SaveVoiceLines(ids)
             }
             Doc::Forge => {
+                // A variant saved in the game has no item yet: Save makes it one.
                 let open = self.forge_variants.open.as_ref()?;
-                if !open.dirty() {
+                if !open.dirty() && open.origin != super::forge_variants::Origin::Store {
                     return None;
                 }
                 Action::Forge(super::forge_variants::ForgeAction::Save)

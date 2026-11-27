@@ -32,7 +32,7 @@ before its slice starts.
 | Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
 | The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item, a bitmap tag of the open map), `asset.copy`, `asset.where_used`, `asset.edits`, `asset.drop` (SH2, FL13, FL16, FL17) | built | `app/assets.rs`, `app/assets/{browse,thumbs,drop}.rs`, `api/assets.rs` |
 | The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **New from this...**, **Open as fields**, the **Where used** and **Show edits** views, bitmap thumbnails, a dropped source file (SH2, FL11, FL13, FL15 to FL17) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CreateAsset`, `Action::OpenFields`, `Action::WhereUsed`, `Action::ShowEdits`, `Action::DropFile` |
-| Forge map variants as documents and the Forge palette as a Browser kind (FL14) | built | `app/forge_variants.rs`, `app/assets/forge.rs`, `ui/forge_variant.rs`, `api/forge_variants.rs` ([studio-flow.md](studio-flow.md), "Forge variants and items") |
+| Forge map variants as documents saved as `map-variant` items, and the Forge palette as a Browser kind (FL14, FL18) | built | `app/forge_variants.rs`, `app/assets/forge.rs`, `ui/forge_variant.rs`, `api/forge_variants.rs` ([studio-flow.md](studio-flow.md), "Forge variants and items") |
 | The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
@@ -45,7 +45,7 @@ before its slice starts.
 | A `jmad` stream encoder (static stream and the 8-byte quantised codec), which the Halo 1 converter calls | built (AN2) | `crates/formats/tags/src/anim_write.rs`; the converter's graph assembly stays in `crates/tools/h1-assets/src/models/jmad.rs` |
 | An Xbox ADPCM encoder; a `snd!` writer with the gestalt merge | built, the second inside the converter | `crates/platform/audio/src/adpcm.rs` (`encode`), `crates/tools/h1-assets/src/sounds/merge.rs` |
 | Packages: `content::package::{Manifest, Lock, PackageId, Set}`, validation, `requires`, `after`, `set.toml`, `core` and `ui` always on, the load order, the content set | built | `crates/formats/content/src/package/` |
-| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`, `rules`, `variant`, `playlist`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
+| The package build: the builder registry (`tag`, `edits`, `bitmap`, `model`, `animation`, `sound`, `data`, `hud`, `screens`, `screen-edits`, `rules`, `variant`, `playlist`, `map-variant`), `build` of ordered packages on a `TagSet`, `build_map` on a map file, conflicts, the cache key, `Layered`, `h2 package check\|build` | built (PK2) | `crates/tools/workspace`, `crates/apps/h2-tools/src/package_cmd.rs` |
 | Mod patches: a `set` line's `from`, `replaces`, the `tag-delta` item, the conflict table (`build_map_settled`), the asset hashes a `was` names (`workspace::assets`), a file that is the store's refused (`h2 package check --store`) | built ([asset-store.md](../engine/asset-store.md), AS6); Studio's side (fork, revert, diff, **Changed by**, conflict rows in Problems) is AS7, built | `crates/tools/workspace/src/{assets,build,delta,edit,load,onto}.rs` |
 | The game's side: the baked set (`content/`), `<data>/packages/`, `set.toml`, features, `PackageRewrite` with its cache, `packages.list` | built (PK3); `content/pogo` and `content/ui` supply per-map items | `crates/tools/workspace/src/{game,rewrite}.rs`, `crates/apps/boot/src/packages.rs`, `crates/apps/boot/build.rs` |
 | Projects, the other kits as build steps | design | [tag-workspace.md](tag-workspace.md) |
@@ -419,6 +419,7 @@ maps = "multiplayer"
 | `strings` | YAML by name and language | `unic` rows | client |
 | `rules` | `.rules`; `inputs` are joined after the source (CTF and Assault are a header then the shared body) | a compiled script in the rules registry (built: checked at build, read by `workspace::script_registry`; a `rules` item of `core` is a retail type's game) | sim |
 | `variant` | a settings or scripted `.rules` file or a portable `.h2variant` record | the boot list reads script-based entries in manifest order | sim |
+| `map-variant` | a `.h2mapvariant` file, a Forge document of the variant tier ([forge-map-variants.md](../game/forge-map-variants.md), "A map variant in a package") | no tag: the game lists it with the map variants saved on the machine (`workspace::map_variants`, `forge::files::variants::install_packaged`) and builds its map when a lobby picks it | sim |
 | `playlist` | a TOML hopper fragment (`content::playlist::Fragment`) or an edited `multiplayer_hopper.dat` | the server reads TOML fragments through `workspace::hopper_fragments` | Live |
 | `map` | `map.toml`: `mode` (`fresh`, `onto`), `base`, the new map's `name`, `scenario` and `kits` (`fresh`), and `ground` when it has AI; the items it takes are those whose `maps` names it | a derived map package under `<data>/maps/`, built at prepare; a `map` with `ground` has the AI ground built over the map it makes (built: `workspace::prepare`, `Fresh::ground`) | sim |
 | `map-patch` | a PPF, IPS or BPS file, and in `inputs` one TOML file with the base's `map` name and `sha256` | a map package with that layer, the one `h2 live maps import` writes for the patch (built) | sim |
@@ -479,8 +480,8 @@ packages, in order, to a map's `map::build::TagSet` for one `Target` (the
 map's name and class). An item runs when its `maps` takes the target;
 its builder comes from the closed registry (`workspace::registry`: `tag`,
 `edits`, `bitmap`, `model`, `sound`, `data`, `hud`, `screens`,
-`screen-edits`, `rules`, `variant`, `playlist`, `map`, `map-patch`,
-`convert`, `kit`, `tag-delta`; the other kinds stop the build with "no
+`screen-edits`, `rules`, `variant`, `playlist`, `map-variant`, `map`,
+`map-patch`, `convert`, `kit`, `tag-delta`; the other kinds stop the build with "no
 builder"). The `map` and
 `map-patch` builders change no map: they build map packages at prepare (below). The
 base is what is built onto: the result differs from it only in the tags

@@ -388,6 +388,24 @@ fn item_links(set: &GameSet, package: &str, n: usize) -> Result<Links, String> {
                 )),
             }
         }
+        ItemKind::MapVariant => {
+            out.editors = vec![EditorRow {
+                id: "forge_variant",
+                label: "Forge variant",
+                why_not: None,
+            }];
+            let source = item.source.as_deref().unwrap_or("(no source)");
+            match entry.loaded.files.get(source) {
+                Some(bytes) => match ::workspace::read_map_variant(bytes) {
+                    Ok(doc) => {
+                        out.uses.extend(super::forge_variants::uses(&doc));
+                        sort(&mut out.uses);
+                    }
+                    Err(e) => out.problems.push(format!("{source}: {e}")),
+                },
+                None => out.problems.push(format!("{source}: not in the package")),
+            }
+        }
         _ => {
             if let Some(key) = ::workspace::added_tag(item) {
                 out.editors = tag_editors(&key);
@@ -488,8 +506,8 @@ pub fn links(tags_root: &Path, set: &GameSet, id: &AssetId) -> Result<Links, Str
         AssetId::Item(package, n) => item_links(set, package, *n)?,
         AssetId::Package(p) => package_links(set, p)?,
         AssetId::Voice(v) => voice_links(tags_root, v),
-        // A variant's file is under the data root: `App::asset_links`
-        // reads what it places.
+        // A variant saved in the game is a file under the data root:
+        // `App::asset_links` reads what it places.
         AssetId::Forge(..) => Links {
             editors: vec![EditorRow {
                 id: "forge_variant",
@@ -523,7 +541,7 @@ pub fn item_id(set: &GameSet, kind: ItemKind, name: &str) -> Option<String> {
 }
 
 /// Identify a saved document by its full package source path.
-fn item_at_path(set: &GameSet, kind: ItemKind, path: &Path) -> Option<String> {
+pub(super) fn item_at_path(set: &GameSet, kind: ItemKind, path: &Path) -> Option<String> {
     for entry in &set.on {
         let id = entry.loaded.package.name();
         let Some(dir) = set.listed.iter().find(|entry| entry.id == id)
@@ -632,13 +650,15 @@ impl super::App {
             }
             sort(&mut out.uses);
         }
-        // The Forge map variants are files under the data root: a tag
-        // lists the variants that place it, a variant the tags it places
-        // (`app::forge_variants`).
+        // A tag lists the Forge map variants that place it, the set's
+        // items and the ones saved in the game; a saved one lists the tags
+        // it places, as an item does (`item_links`).
         match id {
             AssetId::Tag(key) => {
+                let data = self.data_root();
+                let set = super::assets::read_set(&data);
                 out.used_by
-                    .extend(super::forge_variants::users(&self.data_root(), key));
+                    .extend(super::forge_variants::users(&data, &set, key));
                 sort(&mut out.used_by);
             }
             AssetId::Forge(map, file) => {

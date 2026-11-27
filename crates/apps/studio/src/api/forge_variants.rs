@@ -1,9 +1,11 @@
 //! `forge.*`: Forge map variants as documents and the Forge palette
 //! (docs/editor/agent-api.md, "Forge variants and items";
 //! `app/forge_variants.rs`, `app/assets/forge.rs`). A variant opens with
-//! `shell.open {asset: "forge:<map>:<file>"}`; a field edit and a save
-//! run the window's own commands ([`Action::Forge`]), so the document
-//! window and the calls leave the same state.
+//! `shell.open {asset}`, the asset a `map-variant` item's id or a saved
+//! file's `forge:<map>:<file>`; a field edit runs the window's own
+//! command ([`Action::Forge`]) and a save writes the item the window's
+//! Save writes (`App::save_forge_item`), so the document window and the
+//! calls leave the same state.
 
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -25,33 +27,33 @@ const DEFAULT_LIMIT: usize = 200;
 
 const LIST: MethodDef = def(
     m::FORGE_VARIANT_LIST,
-    "The Forge map variants on this machine, of every map: the rows of the Browser's Forge variants kind (asset.list answers the same with that kind). A row's `asset` is `forge:<map>:<file>`; `source` is saved or live, and only a saved one opens (`editable`); `things` is the number of entries it adds or edits. Every word of `query` must match the name, the map or the file",
+    "The Forge map variants, of every map: the rows of the Browser's Forge variants kind (asset.list answers the same with that kind). First the `map-variant` items of the packages that are on (`source` package, `asset` the item's id `item:<package>:<n>`, `package` its package), then the variants a player saved in the game (`source` saved, `asset` `forge:<map>:<file>`) and the ones fetched from Live (`source` live, which do not open: `editable` false). `things` is the number of entries a variant adds or edits. Every word of `query` must match the name, the map, the file or the package",
     r#"{"query?":"string","limit?":"integer"}"#,
-    r#"{"root":"forge","rows":"[{asset,root,kind,name,map,file,source,editable,badge,id,base,things,maps}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
+    r#"{"root":"forge","rows":"[{asset,root,kind,name,map,file,source,package,editable,badge,id,base,things,maps}]","total":"integer","limit":"integer","truncated":"boolean","maps":"[string]","kinds":"[string]","problems":"[string]"}"#,
     r#"{"query":"castle"}"#,
 );
 
 const READ: MethodDef = def(
     m::FORGE_VARIANT_READ,
-    "A Forge map variant's things: each entry it adds (`target` added:<op>) and each entry of the base map it edits or removes (`target` base:<block>:<index>), with the fields the variant writes, each with its `type` (bool, int, float, vec2, vec3, vec4, text, tag) and the value its last write gives it (a tag is <group>:<path>, null for none). `item` is the tag the entry places, `piece` its block-out definition, `notes` what the variant says of it beside its fields (a property, an area, a shown flag). With no `asset`, the open variant; the open document answers with its unsaved edits (`dirty`)",
-    r#"{"asset?":"string (forge:<map>:<file>)"}"#,
-    r#"{"asset":"string","map":"string","file":"string","name":"string","author":"string","description":"string","ops":"integer","things":"[{target,block,added,removed,item,piece,notes,fields:[{field,type,value}]}]","dirty":"boolean","open":"boolean","selected":"string|null"}"#,
+    "A Forge map variant's things: each entry it adds (`target` added:<op>) and each entry of the base map it edits or removes (`target` base:<block>:<index>), with the fields the variant writes, each with its `type` (bool, int, float, vec2, vec3, vec4, text, tag) and the value its last write gives it (a tag is <group>:<path>, null for none). `item` is the tag the entry places, `piece` its block-out definition, `notes` what the variant says of it beside its fields (a property, an area, a shown flag). `package` is the package the variant is an item of, null for one saved in the game. With no `asset`, the open variant; the open document answers with its unsaved edits (`dirty`)",
+    r#"{"asset?":"string (item:<package>:<n> or forge:<map>:<file>)"}"#,
+    r#"{"asset":"string","map":"string","file":"string","name":"string","author":"string","description":"string","ops":"integer","things":"[{target,block,added,removed,item,piece,notes,fields:[{field,type,value}]}]","dirty":"boolean","open":"boolean","package":"string|null","selected":"string|null"}"#,
     "{}",
 );
 
 const SET: MethodDef = def(
     m::FORGE_VARIANT_SET,
     "Set a field the open Forge map variant writes of one entry: the value of the write that gives the field its value is replaced, so the edit adds no op. The value keeps the field's type (a number for an int or a float, a list of numbers for a vector, a string, <group>:<path> or null for a tag) and the document must still validate (`forge_doc::validate`); a field the variant does not write is refused, since Forge sets it. One undo step of the document (doc.undo). `asset` opens that variant first. Answers the document as forge.variant.read does",
-    r#"{"asset?":"string (forge:<map>:<file>)","target":"string (added:<op> or base:<block>:<index>)","field":"string","value":"any"}"#,
+    r#"{"asset?":"string (item:<package>:<n> or forge:<map>:<file>)","target":"string (added:<op> or base:<block>:<index>)","field":"string","value":"any"}"#,
     r#"{"asset":"string","things":"[{target,block,added,removed,item,piece,notes,fields}]","dirty":"boolean","open":"boolean"}"#,
     r#"{"target":"added:1","field":"position","value":[4,5,6]}"#,
 );
 
 const SAVE: MethodDef = def(
     m::FORGE_VARIANT_SAVE,
-    "Save the open Forge map variant to its file in the map variant store (<data>/map-variants/<map>/<file>.h2mapvariant, `forge::files::variants::save` replacing the file of its name). The variant has a new id when its bytes changed, as the store's rename gives one",
-    "{}",
-    r#"{"asset":"string","saved":"boolean","dirty":"boolean","log":"[string]"}"#,
+    "Save the open Forge map variant as a `map-variant` item of a package: `package`, else the edit target (NO_TARGET with neither). The item the variant was opened from is written again when it is that package's; a variant of another package, or one saved in the game, becomes a new item at map-variants/<map>/<name>.h2mapvariant, and the document is that item from then on (`asset`). The game lists a package's variants with the ones saved in it; the store's files under <data>/map-variants are never written",
+    r#"{"package?":"string (a local package's id)"}"#,
+    r#"{"asset":"string","saved":"boolean","dirty":"boolean","edit_target":"string","path":"string","log":"[string]"}"#,
     "{}",
 );
 
@@ -83,7 +85,7 @@ fn open_asset(app: &App) -> Result<String, agent_proto::RpcError> {
     app.forge_variants.open.as_ref().map(|o| o.asset()).ok_or_else(|| {
         err(
             code::REFUSED,
-            "no Forge variant is open: shell.open {asset: forge:<map>:<file>} opens one (forge.variant.list lists them)",
+            "no Forge variant is open: shell.open {asset} opens one (forge.variant.list lists them)",
         )
     })
 }
@@ -93,10 +95,10 @@ fn read(app: &mut App, p: &P) -> Reply {
         Some(asset) => asset.to_owned(),
         None => open_asset(app)?,
     };
-    if !asset.starts_with("forge:") {
+    if !asset.starts_with("forge:") && !asset.starts_with("item:") {
         return Err(err(
             code::INVALID_PARAMS,
-            format!("{asset:?} is not a Forge variant (forge:<map>:<file>)"),
+            format!("{asset:?} is not a Forge variant (item:<package>:<n> or forge:<map>:<file>)"),
         ));
     }
     app.forge_variant_read(&asset).map_err(|e| err(code::REFUSED, e))
@@ -144,15 +146,19 @@ fn set(app: &mut App, p: &P) -> Reply {
     app.forge_variant_read(&asset).map_err(|e| err(code::FAILED, e))
 }
 
-fn save(app: &mut App) -> Reply {
+fn save(app: &mut App, p: &P) -> Reply {
     open_asset(app)?;
-    let log = run(app, Action::Forge(ForgeAction::Save))?;
+    let target = super::packages::save_target(app, p.opt_str("package")?)?;
+    let path = app.save_forge_item(&target).map_err(super::packages::refuse)?;
+    app.sync_tabs();
     let asset = open_asset(app)?;
     Ok(json!({
         "asset": asset,
         "saved": true,
         "dirty": app.doc_dirty(Doc::Forge),
-        "log": log,
+        "edit_target": target,
+        "path": path,
+        "log": [format!("saved {}", path.display())],
     }))
 }
 
@@ -186,7 +192,7 @@ impl Provider for ForgeVariants {
             m::FORGE_VARIANT_LIST => Some(list(app, &p)),
             m::FORGE_VARIANT_READ => Some(read(app, &p)),
             m::FORGE_VARIANT_SET => Some(set(app, &p)),
-            m::FORGE_VARIANT_SAVE => Some(save(app)),
+            m::FORGE_VARIANT_SAVE => Some(save(app, &p)),
             m::FORGE_ITEMS => Some(items(app, &p)),
             _ => None,
         }

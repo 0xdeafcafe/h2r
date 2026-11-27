@@ -1918,18 +1918,29 @@ h2 studio asset.edits '{"asset":"package:pogo"}'
 
 `forge.*` is the Forge map variants and the Forge palette
 (docs/editor/studio-flow.md, "Forge variants and items";
-`app/forge_variants.rs`, `app/assets/forge.rs`, `api/forge_variants.rs`). A
-variant is the document `forge::files::variants` stores at
-`<data>/map-variants/<map>/<file>.h2mapvariant`; its asset id is
-`forge:<map>:<file>` and `shell.open {asset}` opens it as a tab.
+`app/forge_variants.rs`, `app/assets/forge.rs`, `api/forge_variants.rs`).
+
+| A variant | Asset id | `source` |
+|---|---|---|
+| a `map-variant` item of a package that is on | `item:<package>:<n>` | `package` |
+| a file saved in the game, `<data>/map-variants/<map>/<file>.h2mapvariant` | `forge:<map>:<file>` | `saved` |
+| a file fetched from Live; listed, does not open | `forge:<map>:<file>` | `live` |
+
+`shell.open {asset}` opens either as a tab.
 
 | Method | Does |
 |---|---|
-| `forge.variant.list {query?, limit?}` | the saved and fetched variants of every map, the rows of `asset.list {kind: "Forge variants"}`: `{asset, name, map, file, source, editable, things, id, base}`. Only a `saved` one opens |
-| `forge.variant.read {asset?}` | the variant's things: `{target, block, added, removed, item, piece, notes, fields: [{field, type, value}]}`. With no `asset`, the open one, with its unsaved edits (`dirty`) |
+| `forge.variant.list {query?, limit?}` | the variants of every map, the items first: the rows of `asset.list {kind: "Forge variants"}`, `{asset, name, map, file, source, package, editable, things, id, base}` |
+| `forge.variant.read {asset?}` | the variant's things: `{target, block, added, removed, item, piece, notes, fields: [{field, type, value}]}`, with `package`. With no `asset`, the open one, with its unsaved edits (`dirty`) |
 | `forge.variant.set {asset?, target, field, value}` | sets a field the variant writes; one undo step of the document. `asset` opens that variant first |
-| `forge.variant.save {}` | writes the open variant's file in the store |
+| `forge.variant.save {package?}` | writes the open variant as a `map-variant` item of `package`, else of the edit target: `{asset, saved, dirty, edit_target, path, log}` |
 | `forge.items {query?, map?, custom?, limit?}` | the Forge palette, the rows of `asset.list {kind: "Forge items"}`: tag rows with `forge: {menu, custom, source}` |
+
+`forge.variant.save` writes the item the variant was opened from when it
+is the package's. A variant of another package, or one saved in the game,
+becomes a new item at `map-variants/<map>/<name>.h2mapvariant`, and
+`asset` is that item's id from then on. No file under
+`<data>/map-variants/` is written.
 
 A thing's `target` is `added:<op>` for an entry the variant adds and
 `base:<block>:<index>` for an entry of the base map it edits or removes.
@@ -1942,6 +1953,7 @@ no op; the value keeps the field's type and the document must still pass
 | Refusal | Code |
 |---|---|
 | no variant is open; a field the variant does not write; an entry it does not have; a variant from Live | `REFUSED` |
+| `forge.variant.save` with no `package` and no edit target | `NO_TARGET` |
 | a value of another type; a `target` that is not `added:<op>` or `base:<block>:<index>` | `INVALID_PARAMS` |
 
 A variant with unsaved edits does not close, and another does not open over
@@ -1961,7 +1973,7 @@ variants that place it (`role` `Forge variant`, `via` `<n> placed in <name>`);
 
 ```sh
 h2 studio forge.variant.list '{}'
-h2 studio shell.open '{"asset":"forge:lockout:Castle"}'
+h2 studio shell.open '{"asset":"item:my-pack:0"}'
 h2 studio forge.variant.set '{"target":"added:1","field":"position","value":[1.5,0,2]}'
 h2 studio forge.variant.save '{}'
 h2 studio forge.items '{"custom":true}'

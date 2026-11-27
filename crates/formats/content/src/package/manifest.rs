@@ -130,6 +130,9 @@ pub enum Kind {
     Rules,
     Variant,
     Playlist,
+    /// A Forge map variant: a `.h2mapvariant` document the game lists
+    /// with the ones a player saved (docs/game/forge-map-variants.md).
+    MapVariant,
     Map,
     MapPatch,
     Convert,
@@ -155,8 +158,8 @@ impl Kind {
     pub fn scope(self) -> ItemScope {
         use Kind::*;
         match self {
-            Tag | Edits | Model | Animation | Rules | Variant | Map | MapPatch | Convert
-            | TagDelta => ItemScope::Sim,
+            Tag | Edits | Model | Animation | Rules | Variant | MapVariant | Map | MapPatch
+            | Convert | TagDelta => ItemScope::Sim,
             Bitmap | Sound | Screens | ScreenEdits | Hud | Strings => ItemScope::Client,
             Playlist => ItemScope::Live,
             Data | Kit => ItemScope::PerFeature,
