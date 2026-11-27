@@ -39,9 +39,9 @@ Fixed at both ends:
   comes after the last one. Frames, kills, scores and the end all use it.
   Frames stay on even ticks.
 - **The origin.** A player whose unit couldn't be read, and who had no
-  body or last place, used to be sent at (0, 0, 0) (a multiplayer pregame
-  player, or a stale unit datum during a load). That player is now left
-  out. A living player whose unit is unreadable for one tick stays where
+  body or last place (a multiplayer pregame
+  player, or a stale unit datum during a load) is left out, not sent at
+  (0, 0, 0). A living player whose unit is unreadable for one tick stays where
   that same unit was last seen.
 - **Viewer** (`web/src/state/replay.ts`, `GameClock`). Old recordings
   still rewind. The timeline reads frames and events in log order, and
@@ -315,7 +315,7 @@ Each step is test-first and runs in both homes.
 
 1. **Done:** the game clock, the origin fix and the viewer guard.
 2. **Done, viewer on today's data:** frames read once (`/frames` packed,
-   events with `exclude=GameFrame`, so the browser no longer verifies the
+   events with `exclude=GameFrame`, so the browser does not verify the
    server's `GameFrame` signatures; the chunk events will be signed),
    kills, deaths, cuts and zone changes on the scrubber, frame and mark
    stepping (`,` `.` `<` `>`), 0.25×, a first-person camera (`Eyes`, key

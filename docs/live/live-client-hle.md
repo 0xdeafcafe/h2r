@@ -530,7 +530,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 
 These 2 entries still stop by API name because their backend behaviour is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
-storage entries below no longer stop. Prefixes in the table are part of each
+storage entries below do not stop. Prefixes in the table are part of each
 listed API name.
 
 | Prefix | Remaining suffixes |

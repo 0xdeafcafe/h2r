@@ -221,8 +221,7 @@ direction events, kinds 1 to 4, from the d-pad or the left stick, as
 `skulls-arrows` read the controller update), A on the row or Start checks
 it (not X: the class's action buttons are Start alone, so a stray X can't
 send a half-typed code), B or Back backs out and
-closes (Back used to close the screen without cancelling, which left the
-logon pending). An error shows until the code is edited and comes back
+closes (Back cancels the logon first, so none is left pending). An error shows until the code is edited and comes back
 with the next answer.
 
 The prompt becomes a modal dialog over the screen beneath, in the large

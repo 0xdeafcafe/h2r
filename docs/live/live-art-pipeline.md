@@ -208,7 +208,7 @@ step for that and for video memory.
    colour at +4 and maximum density at +0x10) gives the `glow`. That record is the
    light's parameters (Halo 1's sky lights: flags, colour at +8, power at
    +0x14), so the names are the extractor's, not the tag's; the viewer
-   no longer draws it. A sky
+   does not draw it. A sky
    that cannot be read is listed under `skipped` as `map/<stem>/sky`.
    **Weather** (`live_weather.rs`): per BSP, the weather palette at
    `sbsp+0x84` (0x88 bytes: a 32-byte name, the `weat` reference with its

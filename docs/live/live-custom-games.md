@@ -278,7 +278,7 @@ checks it. Friends-only is enforced by the server's lists, not by the host.
 ## 4. Address restriction
 
 A listed session points every browsing console's QoS probes and joins at its
-endpoint. The server previously took any declared IPv4. Now:
+endpoint. The server picks the endpoint as follows:
 
 - **Listed sessions (`public`, `friends`) take the observed address.** When
   the server sees the host from a non-loopback IPv4

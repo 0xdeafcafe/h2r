@@ -200,11 +200,10 @@ at its own address. Peers are now told apart by IP and base port
 `169.254.(base >> 8).(base & 255)` to the others, so `address made`
 lines show those addresses.
 
-After the squad's QoS (the 023244 run: `contacted, 172 bytes of data` on
-both guests), the join stopped with no dialog and no XNetConnect. A peer
-the host first hears on a game channel used to have key id 0, so the
-host's XNetInAddrToXnAddr on the sender could not place it in its session;
-it now carries the session that address last probed (`qos::Asked`). The
+A peer the host first hears on a game channel arrives with key id 0, so the
+host's XNetInAddrToXnAddr on the sender cannot place it in its session. The
+peer carries the session that address last probed (`qos::Asked`) instead;
+without it the join stops with no dialog and no XNetConnect after the squad's QoS. The
 first datagram each way between a game and a peer is logged:
 `live: xnet: first packet to <ina>:<port> (at <ip>:<port>)` and
 `live: xnet: first packet from <ip>:<base> (as <ina>) on port <port>,

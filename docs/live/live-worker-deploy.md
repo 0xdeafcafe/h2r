@@ -210,7 +210,7 @@ The first import holds every write of the server's own, and of its clients,
 until `--release`. Without it, the hub's sweep sees a copied sign-in or game
 gone quiet and appends `PresenceExpired` or `GameEnded` at its head. The
 rehearsal showed this: two such events after the first page, so the next
-page no longer followed.
+page did not follow.
 
 The hold is a checkpoint row, so it survives the
 hub being evicted. It is not part of the log a copy takes. While held,

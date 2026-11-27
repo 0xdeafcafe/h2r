@@ -252,7 +252,7 @@ tool (`hopper_edit::model`) work the same way:
   id, `HopperFile::create_from`) and one entry, the template's first. The
   raw fields cannot build a descriptor the validator takes (the skill
   ceiling and most type parameters are not in them), which is why a title
-  typed into an unused slot used to fail with "type must be 1 to 5" and
+  typed into an unused slot alone fails with "type must be 1 to 5" and
   "1 to 100 entries, got 0". "Change kind" applies another template to a
   playlist, keeping its text and entries. A playlist can be cleared back to
   an unused slot (`HopperFile::clear_hopper`).
