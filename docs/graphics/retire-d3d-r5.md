@@ -93,7 +93,7 @@ ask in four ways.
 |---|---|---|
 | Items | the list, by the order rule (`clear_layer_items`) | the sorted entries from `from`, up to the first kept (`layer_pass::sorted_layer_run`) |
 | Skip check | `skip_holds` against the device | against the device after the cached restore |
-| Objects | planned with the structure | planned with the restore over the device (`sorted_entries::after_restore`): the stencil, entry states, fog, W buffer, stipple switch and skip; the commit sets the copy flag and the pass makes the colour copies the layer call's does |
+| Objects | planned with the structure | planned with the restore over the device (`sorted_entries::after_restore`): the stencil, entry states, fog, W buffer, stipple switch and skip; an item making the frame's first `0x0003bea0` call writes the cache's restore list before the pass, and the commit sets the copy flag and the draw byte and clears the cache (`FirstCopy`, as layer 15's object entry); the pass makes the colour copies the layer call's does |
 | Outcomes | `layer_plan_<layer>_*` | none; the held layer's `scene_kept_*` once, when done (the layer draw's own turn leaves them) |
 
 No layer-2 draw is admitted at its resolved inputs: what no run takes

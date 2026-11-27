@@ -275,6 +275,38 @@ pub(crate) fn restore_list<B: d3d::backend::Backend>(
     Ok(())
 }
 
+/// A skipped item's `0x0003bea0` when it is the frame's first call
+/// ([`TARGET_COPIED`]) and the shader cache may hold an implementation: a
+/// sorted run's item (`Glue::commit_run`) or layer 15's object entry
+/// (`TransparentAnswer::draw_object`). `0x00016b10` writes the cached
+/// implementation's restore list (`0x00018900`, [`restore_list`]) and then
+/// zeroes the cache (`frame_step::layer::clear_cache`); the call sets the
+/// draw byte and the frame's copy flag. Read before anything is written
+/// ([`FirstCopy::read`]), the list written before the pass is prepared
+/// ([`FirstCopy::restore`]), the bytes and the clear with the commit
+/// ([`FirstCopy::finish`]).
+struct FirstCopy(Option<render_bridge::open_shader::Restore>);
+
+impl FirstCopy {
+    /// The cache's open shader, if any; `cached_state` when it does not read.
+    fn read(mem: &dyn GuestMemory) -> Result<Self, &'static str> {
+        render_bridge::open_shader::read(mem).map(Self).map_err(|_| "cached_state")
+    }
+
+    /// The cache's restore list through `device`, as `0x00018900` writes
+    /// it; a list the device does not take refuses ([`restore_list`]).
+    fn restore<B: d3d::backend::Backend>(&self, device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory) -> Result<(), &'static str> {
+        self.0.as_ref().map_or(Ok(()), |open| restore_list(device, mem, &open.writes))
+    }
+
+    /// The copy flag, the draw byte and the cleared cache.
+    fn finish(mem: &mut dyn GuestMemory) -> Result<(), engine::MemFault> {
+        mem.set_u8(TARGET_COPIED, 1)?;
+        mem.set_u8(engine::render_loop::layer::DRAW_FLAG, 1)?;
+        render_bridge::frame_step::layer::clear_cache(mem)
+    }
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// The layer call's ask (`at` `None`): plans the items, clears the bits
     /// of the leading ones the order rule lets the pass draw, and commits.
@@ -759,15 +791,29 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if found.drawn.is_empty() {
             return None;
         }
-        // A drawn item's `0x0003bea0` as the layer call's commit leaves it:
-        // the frame's copy flag, and with a structure parameter block the
-        // copy into the refraction target before its first draw.
+        // A drawn item's `0x0003bea0` as layer 15's object entry leaves it
+        // (`TransparentAnswer::draw_object`): the shader cache's restore
+        // list written before the pass, the cache cleared with the frame's
+        // copy flag ([`FirstCopy`]), and with a structure parameter block
+        // the copy into the refraction target before its first draw.
         let drawn_objects = || found.drawn.iter().filter_map(|i| match *i {
             ListItem::Object { slot, .. } => object_draws.get(&slot),
             ListItem::World(_) => None,
         });
         let sets_copied = drawn_objects().any(|o| o.sets_copied);
         let copy_at = copy_point(drawn_objects().map(|o| (o.copies, o.draws.len())));
+        let first = if sets_copied {
+            match FirstCopy::read(&*mem) {
+                Ok(first) => Some(first),
+                Err(why) => {
+                    left.all(why);
+                    *run = Run::Refused;
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         // One range per structure item, one per object pass draw, as the
         // layer call's.
         let mut runs: Vec<LayerRun> = Vec::new();
@@ -833,6 +879,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             cull_camera: None,
             token: 0,
         });
+        // The cache's restore list, as `0x00018900` writes it; a list the
+        // device does not take leaves the run to the guest.
+        if let Some(first) = &first
+            && let Err(why) = first.restore(d, mem)
+        {
+            left.all(why);
+            *run = Run::Refused;
+            return None;
+        }
         // A pass writing the refraction target binds it as a slot, which
         // no held packet carries.
         let prepared = if copy_at.is_some() {
@@ -853,8 +908,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return None;
             }
         }
-        if sets_copied && mem.set_u8(TARGET_COPIED, 1).is_err() {
-            left.all("masks");
+        if first.is_some() && FirstCopy::finish(mem).is_err() {
+            left.all("object_target");
             *run = Run::Refused;
             return None;
         }
@@ -1299,23 +1354,21 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         } else {
             unmarked
         };
-        // The item's `0x0003bea0` clears the shader cache the first time
-        // the frame calls it (`TARGET_COPIED`): `0x00016b10` writes the
-        // cached implementation's restore list (`0x00018900`, the open
-        // shader's `restore_list`) and then zeroes the cache. Skipping the
-        // call does both, the restore before the pass and the clear with
-        // the flag. With a structure parameter block the call also copies
-        // the bound colour into the refraction target, which the pass does
-        // before its first draw (`snapshot_gpu::Snapshots::into_target`).
+        // The item's `0x0003bea0` the first time the frame calls it
+        // (`TARGET_COPIED`): skipping it writes the cache's restore list
+        // before the pass and clears the cache with the flag
+        // ([`FirstCopy`]). With a structure parameter block the call also
+        // copies the bound colour into the refraction target, which the
+        // pass does before its first draw
+        // (`snapshot_gpu::Snapshots::into_target`).
         let mut slots = Vec::new();
         let mut copy_at = None;
-        let open = if planned.sets_copied { render_bridge::open_shader::read(&*mem).map_err(|_| "cached_state")? } else { None };
+        let first = if planned.sets_copied { Some(FirstCopy::read(&*mem)?) } else { None };
         if planned.copies {
             let header = crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET).ok_or("object_shader_flag_target")?;
             slots.push(Some(d3d::ExternalSlot { header, written: true }));
             copy_at = Some(0);
         }
-        let sets_copied = planned.sets_copied;
         let draws = planned.draws;
         // Bound only when a surrendered draw samples it.
         let texaccum = texaccum.filter(|_| draws.iter().any(|(_, draw)| draw.texaccum));
@@ -1349,8 +1402,8 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         // held packet carries.
         // The cache's restore list, as `0x00018900` writes it; a list the
         // device does not take leaves the guest's handler.
-        if let Some(open) = &open {
-            restore_list(&mut d, mem, &open.writes)?;
+        if let Some(first) = &first {
+            first.restore(&mut d, mem)?;
         }
         let prepared = if copy_at.is_some() {
             d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
@@ -1358,11 +1411,7 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
         };
         let reservation = prepared.ok().flatten().ok_or("reservation")?;
-        if sets_copied
-            && (mem.set_u8(TARGET_COPIED, 1).is_err()
-                || mem.set_u8(engine::render_loop::layer::DRAW_FLAG, 1).is_err()
-                || render_bridge::frame_step::layer::clear_cache(mem).is_err())
-        {
+        if first.is_some() && FirstCopy::finish(mem).is_err() {
             return Err("object_target");
         }
         reservation.commit();
@@ -1925,6 +1974,49 @@ mod restore_tests {
         let unknown = [writes[1], Write::Setter { state: 0x90, setter: 0x0001_2340, value: 1 }];
         assert_eq!(restore_list(&mut device, &mut m, &unknown), Err("setter"));
         assert!(m.bytes == before, "nothing written");
+    }
+
+    /// A sorted run's item making the frame's first `0x0003bea0` call is
+    /// skipped as layer 15's entry is: the cache's restore list written
+    /// through the device before the pass, then with the commit the copy
+    /// flag, the draw byte and the cleared cache, so the next entry's
+    /// shader draw finds no open shader.
+    #[test]
+    fn a_sorted_run_item_making_the_copy_writes_the_restore_list_and_clears_the_cache() {
+        use engine::render_loop::layer::DRAW_FLAG;
+        use engine::render_loop::states::{HEADERS, MASKS};
+        use render_bridge::frame_step::layer::{SETUP, SETUP_FLOAT, SETUP_OPEN};
+        use render_bridge::open_shader::{DESCRIPTOR_STATES, IMPLEMENTATION_RESTORE, SETUP_DESCRIPTOR};
+        let (mut device, mut m) = device();
+        let (implementation, descriptor, table) = (0x0050_0000, 0x0050_1000, 0x0050_2000);
+        m.set_u32(SETUP + SETUP_OPEN, implementation).unwrap();
+        m.set_u32(SETUP + SETUP_DESCRIPTOR, descriptor).unwrap();
+        m.set_u32(descriptor + DESCRIPTOR_STATES, table).unwrap();
+        // Two entries from the table's fourth: a simple state, a deferred one.
+        m.set_u16(implementation + IMPLEMENTATION_RESTORE, (2 << 9) | 3).unwrap();
+        for (i, (state, value)) in [(0x10u8, 1u32), (0x60, 7)].into_iter().enumerate() {
+            let at = table + 5 * (3 + i as u32);
+            m.set_u8(at, state).unwrap();
+            m.set_u32(at + 1, value).unwrap();
+        }
+        m.set_u32(HEADERS + 4 * 0x10, (1 << 18) | (4 * 0x11)).unwrap();
+        m.set_u32(MASKS + 4 * 0x60, 0x20).unwrap();
+        m.set_u32(SETUP_FLOAT, 0x3f80_0000).unwrap();
+
+        let first = FirstCopy::read(&m).unwrap();
+        first.restore(&mut device, &mut m).unwrap();
+        assert_eq!(m.u32(SHADOW + 0x40).unwrap(), 1, "the simple state");
+        assert_eq!(m.u32(SHADOW + 0x180).unwrap(), 7, "the deferred state");
+        assert_eq!(m.u32(DIRTY).unwrap() & 0x20, 0x20, "its mask");
+        assert_eq!(m.u32(SETUP + SETUP_OPEN).unwrap(), implementation, "held until the commit");
+        assert_eq!(m.u8(TARGET_COPIED).unwrap(), 0);
+
+        FirstCopy::finish(&mut m).unwrap();
+        assert_eq!(m.u8(TARGET_COPIED).unwrap(), 1);
+        assert_eq!(m.u8(DRAW_FLAG).unwrap(), 1);
+        assert_eq!(m.u32(SETUP + SETUP_OPEN).unwrap(), 0, "the cache cleared");
+        assert_eq!(m.u32(SETUP + 0x1330).unwrap(), 0x3f80_0000, "as 0x00016b10 clears it");
+        assert!(FirstCopy::read(&m).unwrap().0.is_none(), "no open shader left");
     }
 }
 

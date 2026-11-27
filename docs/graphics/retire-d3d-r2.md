@@ -212,7 +212,11 @@ An item that marks the stencil draws under the mode-1 stencil
 (`layer_pass::item_stencil`) and is refused `object_stencil` only when the
 device does not hold mode 1 where the item would not set it. A draw that
 samples the view or the scene copy is recorded as commands with a copy of
-the bound colour (`snapshot_gpu`), as the layer calls' are. An item whose
+the bound colour (`snapshot_gpu`), as the layer calls' are. The stencil,
+like the plan's states, is read as the cached restore leaves it
+(`native_objects_glue::stencil_with`).
+
+An item whose
 `0x0003bea0` is the frame's first call (`TARGET_COPIED`) is answered only
 after the cached implementation's restore list is written
 (`restore_list`, the open shader's `0x00018900`) and the cache cleared as
@@ -220,9 +224,11 @@ after the cached implementation's restore list is written
 structure parameter block the pass copies the bound colour into
 the refraction target before its first draw
 (`snapshot_gpu::Snapshots::into_target`); a restore list the device does
-not take keeps the guest's handler. The stencil, like the plan's
-states, is read as the cached restore leaves it
-(`native_objects_glue::stencil_with`).
+not take keeps the guest's handler. Layer 2's sorted runs skip such an
+item the same way: both take the step from `FirstCopy`
+(`native_layers_glue.rs`), the list before the pass and the clear with the
+commit
+(`a_sorted_run_item_making_the_copy_writes_the_restore_list_and_clears_the_cache`).
 
 The other refusals are the
 object plan's (extraction's cause, `object_model`, `object_texaccum`, the
