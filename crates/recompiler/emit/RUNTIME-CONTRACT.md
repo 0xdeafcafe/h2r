@@ -79,6 +79,16 @@ memory or block on it, and may run under the gate. A new helper that takes
 the context must be preceded by `H2_GATE_DROP()`, or it deadlocks on its
 first memory guard.
 
+A direct call (section 4) is the one way the hold outlives a handler: the
+caller counts the call as a trip of its hold (`h2_gate_tick`, so a waiting
+Rust guard ends it there) and lends what is left with its view
+(`H2Direct.gate`). The callee adopts it as its own, keeps every rule above,
+and on its way out hands back what it still holds; the caller adopts that.
+A hand-up passes it on up to the next direct caller, or drops it in the
+handler the runner invoked, so the runner never sees the gate held. A hold
+lent to the host-call thunk is released by the runtime before any Rust
+code there runs (`release_lent_gate`, `crates/runtime/runtime/src/ffi/memory.rs`).
+
 The gate word has two bits: 1, held (by C or by a Rust guard), and 2, a
 Rust guard is waiting. C takes the gate only when the word is 0 and releases
 by clearing the held bit alone (`fetch_and(~1)`). A guard that finds it
@@ -95,8 +105,8 @@ Rust memory guards use that same gate and publish pending C dirty pages before
 HLE can inspect Guest. Page pointers and permissions may be read only while
 the gate is held. The C view, RAM addresses and page-table pointers must never
 be retained after the invocation or used as accessor buffers. There is no
-unlocked C RAM access, and no gate is held across an invocation or a
-callback that takes the context.
+unlocked C RAM access, and no gate is held across an invocation by the
+runner or a callback that takes the context.
 
 Each successful fast access increments its context-local count. The access
 that reaches the supplied budget atomically raises SLICE on the existing
@@ -804,7 +814,8 @@ Its semantics:
     return to its continuation with the word still zero, else a hand-up,
     so an HLE function that blocks, calls back into the guest with a
     continuation or raises a preemption reaches the runner as it would
-    have. On entry it settles what the caller lent (the view's count) and gives nothing back. Rust code under
+    have. On entry it settles what the caller lent (the view's count, a
+    lent hold on the RAM gate) and gives nothing back. Rust code under
     it sees the shadow stack the runner would have shown it: the frames
     not yet replayed are replayed on entry. On the way out it makes the
     callers' own test: if one will continue inline, the shadow stack is
