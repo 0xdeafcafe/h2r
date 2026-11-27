@@ -560,10 +560,7 @@ fn install_collision(b: &mut Builder) {
                         let g = ctx.runtime().memory();
                         let g = &*g;
                         match pending {
-                            Pending::Vector(p) if entry == Entry::VectorTest => {
-                                WORLD.record_vector(p.compare(c.eax as u8, g))
-                            }
-                            Pending::Vector(p) => WORLD.record_context(p.compare(c.eax as u8, g)),
+                            Pending::Vector(p) => p.settle(c, g, &WORLD),
                             Pending::Spatial(p) => WORLD.record_spatial(entry, p.compare(c, g)),
                         }
                     });

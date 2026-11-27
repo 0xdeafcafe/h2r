@@ -1,5 +1,6 @@
 //! Compare the result record, hit byte and (D) the walk context against the
-//! lifted entries over the owner's immutable tag payloads.
+//! lifted entries over the owner's immutable tag payloads, and every
+//! register and frame byte of each straight or crossing exit.
 use super::*;
 use adapter::vector_parity::Prediction;
 use layout::context as ctx;
@@ -40,6 +41,7 @@ fn every_disc_bsp_segment_matches_the_guest() {
                 let mut rng = Rng(u64::from(bsp) << 1 | 1);
                 let mut bails = [[0u64; sim_collision::BAILS]; 2];
                 let mut straight = [0u64; 2];
+                let mut crossing = [0u64; 2];
                 let mut counts = [0u64; 2];
                 for n in 0..count {
                     let start = samples.point(&mut rng, n);
@@ -99,6 +101,16 @@ fn every_disc_bsp_segment_matches_the_guest() {
                                     "{label} BSP {i} sample {n} entry {:#x}",
                                     c.eip
                                 );
+                                if predicted.has_exit() {
+                                    let returned = lifted::cpu::from_interp(&cpu);
+                                    assert_eq!(
+                                        predicted.compare_exit(&returned, &guest).unwrap(),
+                                        None,
+                                        "{label} BSP {i} sample {n} entry {:#x}: crossing exit",
+                                        c.eip
+                                    );
+                                    crossing[entry] += 1;
+                                }
                                 let mut native = ram.clone();
                                 let mut candidate = c;
                                 let result = if entry == 0 {
@@ -136,7 +148,7 @@ fn every_disc_bsp_segment_matches_the_guest() {
                     }
                 }
                 eprintln!(
-                    "{label} BSP {i}: C/D records {counts:?}, full CPU and memory {straight:?}"
+                    "{label} BSP {i}: C/D records {counts:?}, full CPU and memory {straight:?}, crossing exits {crossing:?}"
                 );
                 for why in sim_collision::Bail::ALL {
                     let [c, d] = bails.map(|totals| totals[why as usize]);

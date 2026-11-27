@@ -5908,6 +5908,16 @@ first differing byte offset in the result record, with expected and guest values
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
 
+`vector` and `context` also carry the crossing-exit gate
+([collision-queries.md, "Crossing exits"](../engine/collision-queries.md#crossing-exits)):
+
+| Field | Meaning |
+|---|---|
+| `exits_matched` | matches that also covered every register and frame byte of a crossing exit |
+| `answered` | crossing exits answered natively once the gate opened |
+| `sampled` | crossing calls left to the guest for a comparison while answering |
+| `fell_back` | a difference was seen; the lifted body answers from then on |
+
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
 An admitted native exit counts under `entries[].native`. A comparison
 counts only after the guest returns. A declined prediction is
