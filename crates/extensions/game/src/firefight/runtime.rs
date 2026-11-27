@@ -1621,6 +1621,7 @@ fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
         pools: s.pools[..teams].to_vec(),
         scores: s.scores[..teams].to_vec(),
         live_actors: d.live_actors(),
+        live_allies: d.live_allies(),
         cap: d.cap(game.players),
         players: game.players,
         skulls: s

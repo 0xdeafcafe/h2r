@@ -110,9 +110,12 @@ pub struct Director {
     pub pools: Vec<u16>,
     /// Each team's points, by Firefight team.
     pub scores: Vec<u32>,
-    /// Actors the director counts as alive, and the cap at the current
-    /// player count.
+    /// Enemy actors the director counts as alive, and the cap at the
+    /// current player count (allies count toward the cap, not here).
     pub live_actors: u16,
+    /// Ally actors alive, apart from the enemies.
+    #[serde(default)]
+    pub live_allies: u16,
     pub cap: u16,
     /// Players the runtime saw after the last tick.
     pub players: u8,
@@ -201,6 +204,12 @@ pub enum Command {
     /// Two teams, after a `place_squad`: the Firefight team the squad is
     /// sent at; its `hunt` goes to that team's base.
     Target {
+        slot: u8,
+        team: u8,
+    },
+    /// After the `place_squad` of an allied squad: the Firefight team it
+    /// serves; the actors join its players and hold its base.
+    Ally {
         slot: u8,
         team: u8,
     },
@@ -361,6 +370,7 @@ mod tests {
             json!("ship_unload"),
             json!({"ship_leave": {"zone": 1}}),
             json!({"target": {"slot": 0, "team": 1}}),
+            json!({"ally": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),
             json!({"erase_squad": {"slot": 0}}),
             json!({"set": {"index": 2}}),

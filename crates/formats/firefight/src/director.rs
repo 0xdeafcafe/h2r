@@ -136,6 +136,13 @@ pub enum Command {
         slot: u8,
         team: u8,
     },
+    /// Right after the `PlaceSquad` of an allied squad
+    /// ([`crate::Round::allies`]): the Firefight team it serves. The actors
+    /// join that team's players and hold its base.
+    Ally {
+        slot: u8,
+        team: u8,
+    },
     /// Send the squad at the players (cleanup): at its target's base.
     Hunt {
         slot: u8,
