@@ -19,6 +19,7 @@ pub mod local;
 pub mod nav;
 pub mod net;
 pub mod pieces;
+pub mod place_at_start;
 pub mod spare_clips;
 pub mod spawn_weight;
 pub mod test;

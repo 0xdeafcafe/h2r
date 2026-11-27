@@ -22,6 +22,8 @@ pub mod forge_glue;
 pub mod forge_hud;
 pub mod forge_readout;
 pub mod forge_screens;
+pub mod forge_place_at_start;
+pub mod forge_record;
 pub mod forge_spare_clips;
 pub mod forge_spawn_weight;
 mod forge_map;
