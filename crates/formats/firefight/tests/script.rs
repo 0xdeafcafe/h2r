@@ -236,6 +236,7 @@ fn the_built_ins_as_authored_replay_the_same_commands() {
         Difficulty::Legendary,
         Difficulty::Easy,
         Difficulty::Normal,
+        Difficulty::Heroic,
     ];
     for (i, def) in builtin::definitions().into_iter().enumerate() {
         let settings = with(40 + i as u64, difficulties[i], &[]);

@@ -40,7 +40,7 @@ fn golden_hash_for_the_builtin_defs() {
         ),
         (
             "Outbreak",
-            "0000000000000000000000000000000000000000000000000000000000000000",
+            "66c0f1a2fa330c093647e7908bc73a6ad74c625836fc07545a6c814a9c8b44a5",
         ),
     ];
     let limits = full_kit();

@@ -54,7 +54,8 @@ fn a_squad_arrives_by_ship_when_the_zone_has_a_path() {
                     count: 1,
                     zone: 0,
                     weapon_tier: 0,
-                    arrival: Arrival::Auto,
+                    // The command carries the arrival the script resolved.
+                    arrival: Arrival::Ship,
                 }
             ),
             (242, Command::ShipUnload),
