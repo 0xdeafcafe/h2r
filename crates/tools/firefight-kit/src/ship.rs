@@ -132,9 +132,10 @@ const RUN_MARGIN: f32 = 20.0;
 /// The column's ray starts this far above the zone's floor.
 const FLOOR_LIFT: f32 = 0.5;
 /// Horizontal run lengths tried after the full reach, longest first.
-const STEEP_REACH: [f32; 3] = [80.0, 50.0, 30.0];
+/// The last is a near-vertical drop over the column.
+const STEEP_REACH: [f32; 5] = [80.0, 50.0, 30.0, 15.0, 5.0];
 /// Run directions tried for a zone, evenly round the compass.
-const DIRECTIONS: usize = 8;
+const DIRECTIONS: usize = 24;
 /// The placement's unique ID low word: past the converter's running count.
 const UNIQUE_LOW: u32 = 0xff5e;
 // A second ship's is the next (the pods' start at 0xff60).
@@ -312,7 +313,7 @@ pub(crate) struct Run {
 /// - a ray from just above its floor to the sky (the tallest collision plus
 ///   [`SKY_CLEARANCE`]) is clear, so no roof is over it, the ship's reach
 ///   is clear from the hover point up, and
-/// - for one of eight compass directions, the ray from the run-in down to the hover point and the ray from
+/// - for one of 24 compass directions (every 15 degrees), the ray from the run-in down to the hover point and the ray from
 ///   the hover point up to the run-out are clear.
 ///
 /// Run-in and run-out lie on opposite sides at the sky height, outside the
@@ -358,8 +359,8 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32, lift: f32) -> Vec
             let away = libm::atan2f(mean[1] - middle[1], mean[0] - middle[0]);
             // The full reach first, then steeper dives for a zone in a
             // canyon, where a long shallow run meets the cliffs.
-            let reaches = [reach, STEEP_REACH[0], STEEP_REACH[1], STEEP_REACH[2]];
-            reaches.into_iter().find_map(|reach| {
+            let mut reaches = std::iter::once(reach).chain(STEEP_REACH);
+            reaches.find_map(|reach| {
                 (0..DIRECTIONS).find_map(|k| {
                     let angle = away + k as f32 * std::f32::consts::TAU / DIRECTIONS as f32;
                     let (dy, dx) = libm::sincosf(angle);
