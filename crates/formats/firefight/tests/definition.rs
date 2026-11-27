@@ -360,7 +360,7 @@ fn team_counts_and_player_kill_points_are_refused_out_of_range() {
     }
 
     // Two teams admit player kills from nothing to the bound.
-    let [_, _, _, mut doc, _] = builtin::definitions();
+    let [_, _, _, mut doc, _, _] = builtin::definitions();
     assert_eq!((doc.name.as_str(), doc.teams), ("Crossfire", 2));
     for points in [0, 50, 1_000] {
         doc.scoring.player_kill = points;
@@ -370,7 +370,7 @@ fn team_counts_and_player_kill_points_are_refused_out_of_range() {
 
 #[test]
 fn with_teams_sets_the_team_count_and_player_kill_points() {
-    let [holdout, _, _, crossfire, _] = builtin::definitions();
+    let [holdout, _, _, crossfire, _, _] = builtin::definitions();
     let two = builtin::with_teams(holdout.clone(), 2);
     assert_eq!(
         (two.teams, two.scoring.player_kill),
