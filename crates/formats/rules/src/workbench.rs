@@ -1000,6 +1000,7 @@ impl Runner {
             variant: scenario.variant.clone(),
             carrier,
             round_time_left: scenario.round_time.max(0),
+            round_time: scenario.round_time.max(0),
             ..FakeGame::default()
         };
         let things = scenario::resolve_map(vm.ir(), scenario.map.as_deref(), &g.teams)

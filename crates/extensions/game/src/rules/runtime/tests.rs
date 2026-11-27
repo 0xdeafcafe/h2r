@@ -31,6 +31,8 @@ mod script_index;
 /// What each tick costs: the record's copies and writes, the roster's
 /// reads, the show state's encodes.
 mod per_tick;
+/// `next_round` and the round reset.
+mod rounds;
 
 const GAME_GLOBALS: u32 = 0x1000_0000;
 const GAME_TIME: u32 = 0x1000_2000;

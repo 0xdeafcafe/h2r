@@ -428,7 +428,9 @@ fn due_timers(vm: &Vm) -> Vec<String> {
 
 /// One tick of a run over the fake game, as every scenario runner steps
 /// it: the VM's tick begins and the round clock counts down, the queued
-/// calls are made, `init` and `round_start` fire on tick 0 when `start`,
+/// calls are made, a round the script ended with `next_round` last tick
+/// ends (`round_end`) and the next begins ([`FakeGame::next_round`], then
+/// `round_start`), `init` and `round_start` fire on tick 0 when `start`,
 /// each event is applied to the game ([`FakeGame::apply`]) and, when the
 /// game took it, its handler runs ([`FakeGame::after`] then removes a
 /// player who quit; a spawn the engine holds, out of lives, runs
@@ -442,6 +444,16 @@ pub fn step(vm: &mut Vm, game: &mut FakeGame, tick: u32, start: bool, inputs: &[
     }
     vm.flush_queue(game);
     let mut out = Stepped::default();
+    // The engine's round's end and the gap between rounds take six seconds
+    // on a host; the fake makes them at this boundary.
+    if game.take_round_end() {
+        let fired = vm.fire(game, Input::RoundEnd);
+        out.fired.push((Input::RoundEnd.event().name(), fired));
+        game.after(&Input::RoundEnd);
+        game.next_round();
+        let fired = vm.fire(game, Input::RoundStart);
+        out.fired.push((Input::RoundStart.event().name(), fired));
+    }
     if tick == 0 && start {
         for input in [Input::Init, Input::RoundStart] {
             let fired = vm.fire(game, input.clone());
@@ -591,6 +603,7 @@ pub fn game_of(ir: &Ir, scenario: &Scenario) -> Result<FakeGame, RunError> {
         game.teams = teams.clone();
     }
     game.round_time_left = scenario.round_time_left.max(0);
+    game.round_time = game.round_time_left;
     game.variant = scenario.variant.clone();
     let things = resolve_map(ir, scenario.map.as_deref(), &game.teams).map_err(RunError::Map)?;
     label_all(&mut game, &things);
@@ -985,5 +998,55 @@ on kill(victim, killer) {
         let r = run(ir(), &Scenario::default()).unwrap();
         assert_eq!(r.ticks.len(), 1);
         assert_eq!(r.ticks[0].fired[0].0, "init");
+    }
+
+    const ROUNDS: &str = r#"
+rules "Rounds" 1
+type slayer
+requires game.rounds
+global var round: int = 0
+global var starts: int = 0
+on round_start { starts = starts + 1 }
+on kill(victim, killer) {
+    if let k = killer {
+        score(k, 1)
+        round = round + 1
+        if round < 2 { next_round(k.team) } else { end_round(k.team) }
+        next_round(k.team)
+    }
+}
+"#;
+
+    /// `next_round` ends the round at the next boundary: `round_end`, then
+    /// the next round's `round_start` with everyone alive and the clock
+    /// from the start. Scores carry, the script's globals carry, and a
+    /// second call in the same round is refused by name.
+    #[test]
+    fn next_round_starts_the_next_round_at_the_next_tick() {
+        let (ir, _) = crate::build(ROUNDS).unwrap();
+        let s: Scenario = serde_json::from_str(
+            r#"{"round_time_left": 100, "players": [{"slot": 0}, {"slot": 1, "team": 1}],
+                "ticks": [{}, {"events": [{"kill": {"victim": 1, "killer": 0}}]}, {}, {}]}"#,
+        )
+        .unwrap();
+        let r = run(ir, &s).unwrap();
+        assert_eq!(r.script_error, None);
+        let names: Vec<&str> = r.ticks[2].fired.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names[..2], ["round_end", "round_start"]);
+        assert!(r.ticks[1].fired.iter().all(|(n, _)| *n != "round_start"));
+        assert_eq!(r.game.rounds_played, 1);
+        assert_eq!(r.game.round_time_left, 99, "the clock starts again at tick 2");
+        assert!(r.game.players[&1].alive, "the victim is back for the round");
+        assert_eq!(r.game.players[&0].score, 1, "scores carry");
+        assert_eq!(r.game.refused, [("next_round", "the round is already ending".to_string())]);
+        assert_eq!(r.ended_at, None);
+    }
+
+    /// `next_round` needs `game.rounds`.
+    #[test]
+    fn next_round_needs_game_rounds() {
+        let src = ROUNDS.replace("requires game.rounds\n", "");
+        let e = crate::build(&src).unwrap_err().to_string();
+        assert!(e.contains("next_round needs capability game.rounds"), "{e}");
     }
 }

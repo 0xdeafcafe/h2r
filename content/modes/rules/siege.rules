@@ -1,6 +1,12 @@
 // Siege: the phased attack-and-defend mode, with the mechanics of Halo:
-// Reach's Invasion and none of its assets or text. Team 0 attacks, team 1
-// defends. The map's own flags are the objectives, so a map needs no kit:
+// Reach's Invasion and none of its assets or text. A game is `round_count`
+// rounds, and the sides swap at each: team 0 attacks in the first, team 1
+// in the second, and so on. The round's winners score a point each and
+// the scores carry on; the side that won the more rounds wins the game,
+// and an even count draws it. A round ends on the objective or on the
+// clock (`next_round`, `game.rounds`), the last one ends the game
+// (`end_round`), and each opens with its number on the banner. The map's
+// own flags are the objectives, so a map needs no kit:
 // the attackers take `sites` of its territories (any of them, each held
 // alone for the capture time in all), then hold the defenders' CTF flag
 // stand for the capture time to win. A map with no flag stand stops at
@@ -49,7 +55,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move
+requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -70,7 +76,8 @@ settings {
 // `siege_site` flags are the sites (the map's territory flags when none
 // is placed, `rules::labels::reads`), a `siege_goal` is the final stand
 // (each team's CTF flag stand when none is placed), and `siege_line`
-// flags, numbered by phase and given a team, are where a side spawns in
+// flags, numbered by phase and given a team (0 the attackers, 1 the
+// defenders, whichever team that is in the round), are where a side spawns in
 // that phase (the phase's own site or stand when none is placed), and
 // `siege_barrier` objects, numbered by the phase they open in (a barrier
 // numbered 0 is open from the start). The script requires no label of its
@@ -93,6 +100,7 @@ option capture_time: time 5s..60s = 15s "Capture time" "How long the attackers h
 option sites: int 1..4 = 2 "Sites" "How many territories the attackers take before the final assault"
 option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait to come back together"
 option overtime_time: time 5s..60s = 30s "Overtime" "The most a phase runs on past its clock while an attacker is on its objective"
+option round_count: int 1..8 = 2 "Rounds" "How many rounds; the sides swap at each"
 
 // The HUD (docs/game/game-types-without-carriers.md, "The display"): the
 // front's state, a banner, and a mark over the front.
@@ -130,6 +138,13 @@ table tier_rows: (attack: int, defend: int) = [
     (5, 5),
 ]
 
+// The rounds played before this one, and the round's sides. They carry
+// across rounds: `on round_start` sets the sides from the count.
+global var round: int = 0
+global var attackers: team = team 0
+global var defenders: team = team 1
+// The rounds each team has won.
+team var wins: int = 0
 // The phases taken so far, and how many sites come before the final one.
 global var phase: int = 0
 // The row of its side's table each player's kit was last set from.
@@ -174,26 +189,26 @@ global var marked: zone? = none
 // Each side's line for the phase on, and the phase's clock.
 fn brief() {
     if phase < needed {
-        objective(team 0, "Take a site")
-        objective(team 1, "Hold the sites")
+        objective(attackers, "Take a site")
+        objective(defenders, "Hold the sites")
     } else {
-        objective(team 0, "Take the flag stand")
-        objective(team 1, "Defend the flag stand")
+        objective(attackers, "Take the flag stand")
+        objective(defenders, "Defend the flag stand")
     }
-    countdown(team 0, phase_time)
-    countdown(team 1, phase_time)
+    countdown(attackers, phase_time)
+    countdown(defenders, phase_time)
 }
 
 // A layout's spawns: the starts of the phase's number, for each side.
 fn line_up() {
-    spawn_areas(team 0, siege_attack, phase)
-    spawn_areas(team 1, siege_defend, phase)
+    spawn_areas(attackers, siege_attack, phase)
+    spawn_areas(defenders, siege_defend, phase)
 }
 
 // The rows of its side the tier opens to a player.
 fn offer_to(p: player) {
     let rows = tier_rows[tier]
-    if p.team == team 0 {
+    if p.team == attackers {
         offer(p, 0, rows.attack)
     } else {
         offer(p, 1, rows.defend)
@@ -217,6 +232,9 @@ fn begin(n: int) {
 fn open_map() {
     for each barrier b { set_open(b, b.number <= phase) }
 }
+
+// A team's index, the value the front row's colour is read from.
+fn team_index(t: team) -> int = min(count(teams u where u == t and u == team 1), 1)
 
 // The HUD each tick: the mark and the state row follow the site the
 // attackers are on, else the first site still to take, then the final
@@ -256,78 +274,119 @@ fn show_front() {
             // Capture time accumulates even after attackers leave a site.
             // The mark follows living attackers, including on a contested site.
             focus = first(site s where not s.taken and (not ordered or s.number == phase) and
-                count(players p where p.alive and p.team == team 0 and inside(p, s)) > 0)
+                count(players p where p.alive and p.team == attackers and inside(p, s)) > 0)
             if focus == none { focus = first(site s where not s.taken and (not ordered or s.number == phase)) }
         }
     } else {
         focus = last_stand
     }
     if let o = marked {
-        objective_mark(team 0, o, 0)
-        objective_mark(team 1, o, 0)
+        objective_mark(attackers, o, 0)
+        objective_mark(defenders, o, 0)
         marked = none
     }
     if let z = focus {
         mark(front_mark, z)
         marked = z
-        objective_mark(team 0, z, 1)
-        objective_mark(team 1, z, 2)
-        let here = count(players p where p.alive and p.team == team 0 and inside(p, z))
+        objective_mark(attackers, z, 1)
+        objective_mark(defenders, z, 2)
+        let here = count(players p where p.alive and p.team == attackers and inside(p, z))
         pushers = here
         // The capture gauge shows while an attacker is on the front.
         if here > 0 {
-            meter(team 0, ticks(ticks_held(z, team 0)), ticks(capture_time))
-            meter(team 1, ticks(ticks_held(z, team 0)), ticks(capture_time))
+            meter(attackers, ticks(ticks_held(z, attackers)), ticks(capture_time))
+            meter(defenders, ticks(ticks_held(z, attackers)), ticks(capture_time))
         } else {
-            meter(team 0, 0, 0)
-            meter(team 1, 0, 0)
+            meter(attackers, 0, 0)
+            meter(defenders, 0, 0)
         }
-        let rival = count(players q where q.alive and q.team == team 1 and inside(q, z))
+        let rival = count(players q where q.alive and q.team == defenders and inside(q, z))
         if here > 0 and rival > 0 {
             hud_style(front_row, 2)
         } else if here > 0 {
             hud_style(front_row, 1)
-            hud_value(front_row, 0)
+            hud_value(front_row, team_index(attackers))
         } else if rival > 0 {
             hud_style(front_row, 1)
-            hud_value(front_row, 1)
+            hud_value(front_row, team_index(defenders))
         } else {
             hud_style(front_row, 0)
         }
         hud_show(front_row, true)
     } else {
         pushers = 0
-        meter(team 0, 0, 0)
-        meter(team 1, 0, 0)
+        meter(attackers, 0, 0)
+        meter(defenders, 0, 0)
         unmark(front_mark)
         hud_show(front_row, false)
     }
 }
 
-// The round's end: the winners score a point each.
+// The round's end: the winners score a point each and the round counts
+// for their team. The next round starts with the sides swapped; after the
+// last, the team that won the more rounds wins the game.
 fn win(side: team) {
     over = true
     clock = 0t
-    countdown(team 0, 0t)
-    countdown(team 1, 0t)
-    meter(team 0, 0, 0)
-    meter(team 1, 0, 0)
+    countdown(attackers, 0t)
+    countdown(defenders, 0t)
+    meter(attackers, 0, 0)
+    meter(defenders, 0, 0)
     hud_show(phase_row, false)
     for each players p where p.team == side { score(p, 1) }
-    end_round(side)
+    side.wins = side.wins + 1
+    round = round + 1
+    if round < round_count {
+        next_round(side)
+    } else if round_count == 1 {
+        end_round(side)
+    } else {
+        let a = team 0
+        let b = team 1
+        if a.wins > b.wins {
+            end_round(a)
+        } else if b.wins > a.wins {
+            end_round(b)
+        } else {
+            end_round(none)
+        }
+    }
+}
+
+// The round's number on the banner, the last one as the final round.
+fn round_banner() {
+    if round + 1 == round_count {
+        hud_text(banner_row, "FINAL ROUND")
+    } else if round == 0 {
+        hud_text(banner_row, "ROUND 1")
+    } else if round == 1 {
+        hud_text(banner_row, "ROUND 2")
+    } else if round == 2 {
+        hud_text(banner_row, "ROUND 3")
+    } else if round == 3 {
+        hud_text(banner_row, "ROUND 4")
+    } else if round == 4 {
+        hud_text(banner_row, "ROUND 5")
+    } else if round == 5 {
+        hud_text(banner_row, "ROUND 6")
+    } else {
+        hud_text(banner_row, "ROUND 7")
+    }
+    hud_show(banner_row, true)
+    banner_left = 2
 }
 
 // The defenders' line: a site still to take while sites remain, then
 // their flag stand. A map with neither leaves them the engine's spawns.
 fn fall_back() {
     if phase < needed {
-        spawn_near(team 1, first(site where not taken), line)
+        spawn_near(defenders, first(site where not taken), line)
     } else {
-        spawn_near(team 1, last_stand, line)
+        spawn_near(defenders, last_stand, line)
     }
     // A line the author placed for the defenders in this phase wins.
     if let m = first(placed_line q where q.team == team 1 and q.number == phase) {
-        spawn_near(team 1, m, line)
+        spawn_near(defenders, m, line)
     }
 }
 
@@ -356,10 +415,24 @@ fn release(side: team) {
 }
 
 on round_start {
+    // Team 0 attacks in the odd rounds, team 1 in the even ones.
+    if round % 2 == 0 {
+        attackers = team 0
+        defenders = team 1
+    } else {
+        attackers = team 1
+        defenders = team 0
+    }
     over = false
     tier = 0
     focus = none
+    front = none
+    advanced = false
     marked = none
+    wave0 = 0t
+    wave1 = 0t
+    // A side's rows are its own: each kit is set again from the side's table.
+    for each players p { p.kit = -1 }
     offer_pick(0, "ATTACKER LOADOUT")
     pick_row(0, "BATTLE RIFLE + MAGNUM")
     pick_row(0, "SHOTGUN + MAGNUM")
@@ -376,9 +449,16 @@ on round_start {
     banner_left = 0
     hud_show(banner_row, false)
     hud_show(phase_row, false)
+    if round_count > 1 {
+        round_banner()
+        let n = round + 1
+        let total = round_count
+        message(attackers, "Round {n} of {total}: you attack")
+        message(defenders, "Round {n} of {total}: you defend")
+    }
     // Spartans attack, Elites defend.
-    set_body(team 0, "objects/characters/masterchief/masterchief_mp")
-    set_body(team 1, "objects/characters/elite/elite_mp")
+    set_body(attackers, "objects/characters/masterchief/masterchief_mp")
+    set_body(defenders, "objects/characters/elite/elite_mp")
     lights = 0
     ordered = false
     top = 0
@@ -391,15 +471,15 @@ on round_start {
         if lights < 6 {
             s.lit = true
             lights = lights + 1
-            show_area(s, team 1)
+            show_area(s, defenders)
         }
     }
     needed = min(sites, count(site))
     if ordered { needed = min(sites, top) }
-    last_stand = base[team 1]
+    last_stand = base[defenders]
     if let g = goal { last_stand = g }
     assault = last_stand != none
-    if let g = last_stand { show_area(g, team 1) }
+    if let g = last_stand { show_area(g, defenders) }
     if needed > 0 or assault {
         begin(0)
         open_map()
@@ -407,9 +487,9 @@ on round_start {
             line_up()
         } else {
             // The attackers start at their own flag stand, when the map has one.
-            spawn_near(team 0, base[team 0], line)
+            spawn_near(attackers, base[attackers], line)
             if let m = first(placed_line q where q.team == team 0 and q.number == 0) {
-                spawn_near(team 0, m, line)
+                spawn_near(attackers, m, line)
             }
             fall_back()
         }
@@ -432,9 +512,9 @@ on tick {
             // A layout's site counts in its own phase only: a later
             // phase's site is not asked about, so its time starts then.
             if not ordered or s.number == phase {
-                if phase < needed and ticks_held(s, team 0) >= capture_time {
+                if phase < needed and ticks_held(s, attackers) >= capture_time {
                     s.taken = true
-                    if s.lit { show_area(s, team 0) }
+                    if s.lit { show_area(s, attackers) }
                     phase = phase + 1
                     advanced = true
                     front = s
@@ -455,9 +535,9 @@ on tick {
             if ordered {
                 line_up()
             } else {
-                spawn_near(team 0, s, line)
+                spawn_near(attackers, s, line)
                 if let m = first(placed_line q where q.team == team 0 and q.number == phase) {
-                    spawn_near(team 0, m, line)
+                    spawn_near(attackers, m, line)
                 }
                 fall_back()
             }
@@ -473,19 +553,19 @@ on tick {
                 banner_left = 2
             } else {
                 message(all, "The attackers took every site")
-                win(team 0)
+                win(attackers)
             }
         }
     } else if not over and assault {
-        if let g = last_stand and ticks_held(g, team 0) >= capture_time {
+        if let g = last_stand and ticks_held(g, attackers) >= capture_time {
             message(all, "The attackers took the flag")
-            win(team 0)
+            win(attackers)
         }
     }
     // An overtime ends when the attackers are off the objective.
     if not over and overtime and pushers == 0 {
         message(all, "The defenders held")
-        win(team 1)
+        win(defenders)
     }
     if not over { show_front() }
 }
@@ -497,8 +577,8 @@ on timer(clock) {
         if not overtime and pushers > 0 {
             overtime = true
             clock = overtime_time
-            countdown(team 0, overtime_time)
-            countdown(team 1, overtime_time)
+            countdown(attackers, overtime_time)
+            countdown(defenders, overtime_time)
             seen = -1
             message(all, "Overtime: the attackers are still on the objective")
             hud_text(banner_row, "OVERTIME")
@@ -506,7 +586,7 @@ on timer(clock) {
             banner_left = 2
         } else {
             message(all, "The defenders held")
-            win(team 1)
+            win(defenders)
         }
     }
 }
@@ -530,7 +610,7 @@ on timer(wave1) {
 // The player's side's kit for a row, set now.
 fn equip(p: player, row: int) {
     p.kit = row
-    if p.team == team 0 {
+    if p.team == attackers {
         let kit = attack_rows[row]
         set_loadout(p, kit.primary, kit.secondary)
     } else {

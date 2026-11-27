@@ -333,6 +333,8 @@ impl Game for GuestGame<'_> {
             }
             // The winner is not passed: naming one is not traced.
             id::END_ROUND => Some(Call::End),
+            // The engine is not told the winner: the script scores it.
+            id::NEXT_ROUND => Some(Call::NextRound),
             // The VM keeps the rule in its state, which the spawn chooser's
             // hooks read at each spawn (`crate::rules::world::spawns`).
             id::SPAWN_AREAS | id::SPAWN_NEAR => None,

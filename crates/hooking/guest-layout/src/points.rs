@@ -779,6 +779,14 @@ points! { ALL;
     /// the round state machine `0x15c550` as each later round begins
     /// (`0x15c5de`); neither call runs in a distributed client.
     ENGINE_ROUND_RESET @ 0x0015_7ae0: [fn() ret 0], Optional; "docs/engine/notes/2026-11-23-round-start-and-player-quit.md";
+    /// The game engine's round end, the game going on: outside a
+    /// distributed client it asks the round state machine for state 2
+    /// (`E+0xc04`, `0x15b997`), and with the end latch clear and `quiet`
+    /// zero it posts the round-over event (kind `0x1f`). The machine then
+    /// runs the round's end and the gap between rounds and starts the next
+    /// one through [`ENGINE_ROUND_RESET`]. Its one caller is the round
+    /// resolution `0x15b3a0`, when the variant's rounds go on.
+    ROUND_END @ 0x0015_b980: [fn(quiet: stack 0) ret 4], Optional; "docs/engine/notes/2026-11-27-next-round.md";
     /// The game engine's player-left notice: ESI the salted player datum
     /// of a player `0x152df0` has just taken out of the game (its unit
     /// detached, player `+2` bit 1 set, bit 0 cleared). It calls the

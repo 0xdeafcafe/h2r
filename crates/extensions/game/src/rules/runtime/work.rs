@@ -55,6 +55,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
                 }
             }
             Call::End => crate::firefight::guest::end_game(cx).await,
+            Call::NextRound => guest::next_round(cx).await,
             // Messages are made at the boundary by `Runtime::pre_tick`
             // (`crate::rules::world::show::publish`); one reaching this far makes
             // no engine call.

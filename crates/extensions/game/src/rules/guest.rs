@@ -237,6 +237,50 @@ pub async fn set_lives(cx: &Cx, slot: u8, n: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Game engine globals: the round state in force (`i16`; 1 a round in
+/// play), as the round state machine `0x15c550` keeps it
+/// (docs/engine/notes/2026-11-23-round-start-and-player-quit.md).
+const ENGINE_ROUND_STATE: u32 = 0x6c;
+/// A round in play, the state `ENGINE_ROUND_RESET` begins.
+const ROUND_IN_PLAY: i16 = 1;
+
+/// End the round with the game going on, through `ROUND_END` (`0x15b980`,
+/// with 0: the round-over event is posted): the engine's round state
+/// machine runs the round's end and the gap between rounds and begins the
+/// next through `ENGINE_ROUND_RESET`, where `on round_start` runs
+/// (docs/engine/notes/2026-11-27-next-round.md). An error, naming why, when
+/// there is no game engine, on a distributed client, after the game's end,
+/// or when the round is not in play or its end is already asked for: the
+/// engine would do nothing, or end the round twice.
+pub async fn next_round(cx: &Cx) -> anyhow::Result<()> {
+    let (state, asked, ended) = cx
+        .read(|m| {
+            let (Some(g), Some(e)) = (globals(m)?, engine(m)?) else {
+                return Ok(None);
+            };
+            if m.u8(g + ff::GLOBALS_MODE)? == ff::GLOBALS_MODE_NO_END {
+                return Ok(Some(None));
+            }
+            Ok::<_, MemFault>(Some(Some((
+                m.u16(e + ENGINE_ROUND_STATE)? as i16,
+                m.u32(e + ff::ENGINE_STATE)?,
+                m.u8(g + ff::GLOBALS_ENDED)? != 0,
+            ))))
+        })
+        .map_err(guest)?
+        .ok_or_else(|| anyhow::anyhow!("no game engine to end the round of"))?
+        .ok_or_else(|| anyhow::anyhow!("a distributed client does not end rounds"))?;
+    anyhow::ensure!(!ended, "the game has ended");
+    anyhow::ensure!(
+        state == ROUND_IN_PLAY && asked == ROUND_IN_PLAY as u32,
+        "the round is already ending (round state {state}, asked for {asked})"
+    );
+    cx.call(GuestCall::new(points::ROUND_END.base).args([0]))
+        .await
+        .map_err(guest)?;
+    Ok(())
+}
+
 /// Whether this machine's engine keeps scores and lives
 /// (`GAME_ENGINE_AUTHORITATIVE`, `0x15b2f0`; AL).
 pub async fn authoritative(cx: &Cx) -> anyhow::Result<bool> {
