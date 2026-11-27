@@ -397,6 +397,14 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [party-lobby.md](game/party-lobby.md): the party lobby's modes (Multiplayer, Custom Games, Forge, Firefight, Co-op): the header that names the mode, the leader's GAME MODE picker on X, the Xbox Live menu's mode rows, where each mode runs, what a switch does, and its slices
 - [game-types-without-carriers.md](game/game-types-without-carriers.md): design for game types as rules scripts with no retail game type under them: what the `carrier` supplies today and what replaces each part, the `type` line (menu row, start line, what a point is), one scoring model, objectives owned by the script, retail records, an index of ours with the four retail paths answered natively and no retail engine object, Firefight and Siege maps made in Forge or Studio with AI ground built on demand, the engine reads needed and the slices
 - [rules-engine.md](game/rules-engine.md): scripted game types: a typed rules language and Forge's logic graph compiled to one verified IR, a host-only VM over named engine entries, script ports of the seven retail engines (design)
+- [rules-engine-carrying.md](game/rules-engine-carrying.md): rules engine: compiler, verifier, variant record, engine index, blob transport
+- [rules-engine-host.md](game/rules-engine-host.md): rules engine: the host runtime, reload, live variants
+- [rules-engine-language.md](game/rules-engine-language.md): rules engine: the `.rules` language
+- [rules-engine-modes.md](game/rules-engine-modes.md): rules engine: Slayer, Infection, Firefight, phased Siege, Forge graph
+- [rules-engine-ir-api.md](game/rules-engine-ir-api.md): rules engine: IR, VM, engine API, roles and capabilities
+- [rules-engine-security.md](game/rules-engine-security.md): rules engine: VM budgets, threat model, usability
+- [rules-engine-workbench.md](game/rules-engine-workbench.md): rules engine: Studio and web workbench
+- [rules-engine-ports.md](game/rules-engine-ports.md): rules engine: engine ports, Firefight, payoff, Forge labels
 - [rules-language-types.md](game/rules-language-types.md): the rules language with Forge labels as declared, typed names and map requirements; nullable handles with narrowing, `time`, `zone` and `weapon` types, `match`, constants; diagnostics with fixes; the IR's label table; the slices (design)
 - [rules-language-types-tooling.md](game/rules-language-types-tooling.md): Diagnostics and the editor, the workbench, the IR and the implementation plan.
 - [rules-start-gate.md](game/rules-start-gate.md): a map that breaks a script's label requirements blocks the game: the check in the lobby, on the host at game start and on Live's hopper edits (design)
