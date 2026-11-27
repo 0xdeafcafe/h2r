@@ -496,6 +496,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     let ready_gels = ready.lights.get().ok_or(Keep::NoWorld)?;
                     let depth = native_render::gels::quad_depth_of(&ReadMemory(&*mem))
                         .ok_or(Keep::Unsupported("the gel quad's depth does not read"))?;
+                    // The call values the gel's passes may read, and the
+                    // render clock its animated passes sample at.
+                    let at = native_render::gels::CALL_VALUES;
+                    let values = [0, 4, 8, 12].map(|o| mem.u32(at + o).unwrap_or(0));
+                    let time = native_render::layer_pass::render_time(&ReadMemory(&*mem));
                     d3d::ExternalStep {
                         targets: targets(native_render::gels::TARGET)?,
                         plan: plan(1, Vec::new()),
@@ -503,6 +508,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             gels: Arc::clone(&ready_gels.scene_gels),
                             shader,
                             depth,
+                            values,
+                            time,
                             guest_size: binding.guest_size,
                         }),
                     }
@@ -622,6 +629,8 @@ struct GelPass {
     gels: Arc<crate::native_gels_scene::Gels>,
     shader: u32,
     depth: (f32, f32),
+    values: [u32; 4],
+    time: Option<f64>,
     guest_size: (u32, u32),
 }
 
@@ -665,7 +674,7 @@ impl d3d::ExternalPass for GelPass {
             convolutions: [None; 3],
             z_scale: request.z_scale,
         };
-        let commands = match self.gels.prepare(target, self.shader, self.depth) {
+        let commands = match self.gels.prepare(target, self.shader, self.depth, self.values, self.time) {
             Ok(c) => c,
             Err(_) => return Some(Err("the gel's passes do not prepare")),
         };

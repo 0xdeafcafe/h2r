@@ -80,6 +80,12 @@ impl Target {
 /// (`0x00016610`'s fourth argument).
 pub const IMPLEMENTATION: usize = 0;
 
+/// The four call values `0x0002d140` copies here (`screen_look`'s
+/// `SCREEN_SCALARS` read the first two). `0x00016610` from the gel
+/// producer leaves them as the last screen effect left them, so a gel
+/// pass reading them reads these words at its draw.
+pub const CALL_VALUES: u32 = 0x004c_19b0;
+
 /// The near and far words the quad helper `0x00015ec0` takes its depth
 /// from, and the device's depth scale and the image's 1.0 it uses.
 pub const NEAR: u32 = 0x0048_5ad4;

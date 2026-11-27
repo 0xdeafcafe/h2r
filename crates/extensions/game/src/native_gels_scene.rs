@@ -17,16 +17,25 @@ use std::sync::Mutex;
 use map::{Map, TagId};
 use native_render::gels;
 use native_render::gpu::Image;
+use native_render::layer_pass::{PassAnimation, instance_properties};
 use native_render::look;
 use native_render::screen_gpu::{Dest, PostRaster, ScreenDraw, ScreenSet, ScreenTarget, StripVertex};
 use native_render::screen_look::{SCREEN_CLASSIFICATION, ScreenProgram, ScreenStage, compile_screen, template_look};
-use tags::material::ShaderLibrary;
+use tags::material::{Material, ShaderLibrary};
 
 use crate::native_world_glue::decode_image;
 
+/// One layer-1 pass of a gel shader: its layer pass, the translated
+/// program, and its animated constants, sampled at each draw's clock.
+pub struct GelProgram {
+    pub layer_pass: usize,
+    pub program: ScreenProgram,
+    pub animation: Option<PassAnimation>,
+}
+
 /// One gel shader's layer-1 passes, in draw order.
 pub struct GelPrograms {
-    pub passes: Vec<(usize, ScreenProgram)>,
+    pub passes: Vec<GelProgram>,
 }
 
 /// Every gel shader of a map's light definitions.
@@ -83,16 +92,18 @@ fn shader_passes<R: std::io::Read + std::io::Seek>(
         .filter(|l| l.lod == 0 && l.layer == gels::LAYER as usize)
         .flat_map(|l| l.passes.iter().map(|p| p.index))
         .collect();
+    let properties = instance_properties(lib, TagId(shader));
     let mut passes = Vec::with_capacity(layer_passes.len());
     for layer_pass in layer_passes {
         let imp = gels::IMPLEMENTATION;
         let externals = crate::native_post_load::vertex_externals(lib, &material, gels::LAYER as usize, layer_pass, imp)?;
+        // An animated pass compiles from its baseline (clock 0, targets
+        // cleared) and samples its registers at each draw.
+        let (material, animation) = baseline(&material, layer_pass, imp, &properties)
+            .map_err(|r| format!("pass {layer_pass}: {r}"))?;
         let look = template_look(&material, gels::LAYER as usize, layer_pass, imp, &externals)
             .map_err(|r| format!("pass {layer_pass}: {r:?}"))?;
-        // The draw supplies no call values and no engine textures.
-        if !look.constants.vertex.is_empty() || !look.constants.pixel.is_empty() {
-            return Err(format!("pass {layer_pass}: reads a call's values"));
-        }
+        // The draw supplies no engine textures.
         if !look.engine_textures().is_empty() {
             return Err(format!("pass {layer_pass}: samples an engine texture"));
         }
@@ -113,12 +124,46 @@ fn shader_passes<R: std::io::Read + std::io::Seek>(
                 images.insert((bitmap, image), i);
             }
         }
-        passes.push((layer_pass, program));
+        passes.push(GelProgram { layer_pass, program, animation });
     }
     if passes.is_empty() {
         return Err("no layer-1 pass".into());
     }
     Ok(GelPrograms { passes })
+}
+
+/// `material` with layer 1's pass `layer_pass` implementation
+/// `implementation` at its animation's baseline
+/// (`PassAnimation::baseline`), and the animation; `material` as it is
+/// when the pass animates nothing.
+fn baseline(
+    material: &Material,
+    layer_pass: usize,
+    implementation: usize,
+    properties: &[tags::material::AnimatedProperty],
+) -> Result<(std::borrow::Cow<'_, Material>, Option<PassAnimation>), String> {
+    let at = |m: &Material| {
+        m.layers
+            .iter()
+            .position(|l| l.lod == 0 && l.layer == gels::LAYER as usize)
+            .and_then(|l| {
+                let p = m.layers[l].passes.iter().position(|p| p.index == layer_pass)?;
+                let i = m.layers[l].passes[p].implementations.iter().position(|i| i.index == implementation)?;
+                Some((l, p, i))
+            })
+    };
+    let Some((l, p, i)) = at(material) else {
+        return Ok((std::borrow::Cow::Borrowed(material), None));
+    };
+    let imp = &material.layers[l].passes[p].implementations[i];
+    if imp.animated.is_empty() {
+        return Ok((std::borrow::Cow::Borrowed(material), None));
+    }
+    let (base, animation) =
+        PassAnimation::baseline(imp, properties, false, layer_pass).map_err(|r| format!("animation: {r:?}"))?;
+    let mut owned = material.clone();
+    owned.layers[l].passes[p].implementations[i] = base;
+    Ok((std::borrow::Cow::Owned(owned), animation))
 }
 
 /// At map load: every gel shader of `map`'s lights. Says on stderr what
@@ -166,20 +211,39 @@ impl Gels {
         t: ScreenTarget<'_>,
         shader: u32,
         depth: (f32, f32),
+        values: [u32; 4],
+        time: Option<f64>,
     ) -> Result<native_render::screen_gpu::ScreenCommands, String> {
-        let programs = self.shaders.get(&shader).ok_or("no gel programs")?;
+        let gel = self.shaders.get(&shader).ok_or("no gel programs")?;
         let guest = t.color.map(|c| c.guest_size).ok_or("no target 13")?;
         let strips = vec![strip(guest, depth)];
-        let draws: Vec<ScreenDraw<'_>> = programs
+        // Each animated pass's registers at this draw's clock over its
+        // compiled uniforms.
+        let sampled: Vec<std::borrow::Cow<'_, ScreenProgram>> = gel
             .passes
             .iter()
-            .map(|(layer_pass, program)| ScreenDraw {
-                key: (shader, *layer_pass, gels::IMPLEMENTATION),
+            .map(|p| match &p.animation {
+                None => Ok(std::borrow::Cow::Borrowed(&p.program)),
+                Some(a) => {
+                    let at = a.sample(time).map_err(|r| format!("animation: {r:?}"))?;
+                    let mut program = p.program.clone();
+                    program.vertex = at.vertex(&program.vertex);
+                    program.pixel = at.pixel(&program.pixel);
+                    Ok(std::borrow::Cow::Owned(program))
+                }
+            })
+            .collect::<Result<_, String>>()?;
+        let draws: Vec<ScreenDraw<'_>> = gel
+            .passes
+            .iter()
+            .zip(&sampled)
+            .map(|(p, program)| ScreenDraw {
+                key: (shader, p.layer_pass, gels::IMPLEMENTATION),
                 program,
                 strips: &strips,
                 raster: PostRaster::from(program.state),
                 dest: Dest::Bound,
-                values: [0; 4],
+                values,
                 convolutions: &[],
                 convolution_rasters: &[],
             })
