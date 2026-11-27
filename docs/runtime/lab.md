@@ -396,9 +396,17 @@ Before the lab starts a run or an uncached build, it checks the playing Mac for 
 
 The player comes first. Detail: [The lab: player consent, game opens and memory limits](lab-consent.md).
 
+## Memory limits and reports
+
+The host samples the running game's physical footprint at launch and every two seconds. Detail: [The lab: player consent, game opens and memory limits](lab-consent.md#memory-limits-and-reports).
+
 ## Driving a run: the agent API
 
 See [The lab: driving runs, hosts, benchmarks and recordings](lab-runs.md).
+
+### Playing on your own data
+
+A lab run plays on the host's `data/`, not the player's. Detail: [The lab: driving runs, hosts, benchmarks and recordings](lab-runs.md#playing-on-your-own-data).
 
 ## Dedicated System Link host
 

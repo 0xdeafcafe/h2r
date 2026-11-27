@@ -25,6 +25,13 @@ is live, and says when a snapshot can be taken at all. The rule that must
 hold: a snapshot is taken only between two slices with nothing live, and
 loads only into the same build and switches.
 
+## Pages
+
+| Page | Holds |
+|---|---|
+| [Machine snapshots: kernel, devices and wiring](snapshots-state.md) | The kernel and machine state, D3D and audio devices, and the `state.*` wiring. |
+| [Machine snapshots: the quiescence probe](snapshots-quiescence.md) | Running the probe, rebuildable continuations, feature policies and the render features. |
+
 ## Evidence labels
 
 - **Code**: read from this repository; the path is given.
@@ -58,7 +65,6 @@ points.
   machine that is already booted. Boot-time state (dispatch table,
   overrides, reservations, the feature plan) is rebuilt by booting, then
   checked against the snapshot, never restored.
-
 
 ## When a snapshot can be taken
 
@@ -139,7 +145,6 @@ that continuation live, and the quiescence check refuses it on every tick
 `a_slice_asked_before_the_tick_ends_inside_its_after_hooks`). The bounce
 search's fork keeps its ask from its `before` and ends the slice from its
 tick observer ([bounce-search.md, "The fork"](bounce-search.md#the-fork)).
-
 
 ## Inventory
 
@@ -242,7 +247,7 @@ memory, so a load uses the host-only `Device::drop_host_caches` instead.
 
 ### audio (dsound, audio, wma)
 
-Decisions per field are in the `snap` modules ([Devices](#devices-d3d-and-audio)).
+Decisions per field are in the `snap` modules ([Devices](snapshots-state.md#devices-d3d-and-audio)).
 
 | State | Where | Decision | Why |
 |---|---|---|---|
@@ -283,7 +288,6 @@ Nothing is rebuilt by asking the guest to redo work: the game never sees a
 load. "Rebuild" always means a host cache that refills from guest RAM on
 use, or boot state recreated by booting.
 
-
 ## How a load works
 
 In the process that is already running the same image, at a slice
@@ -322,7 +326,6 @@ boundary that passes the quiescence check:
 A fresh-process load (boot, then load before the first slice) is the same
 sequence after the boot reaches its first slice. It costs a boot, but is
 the safe fallback if in-process cache invalidation turns out leaky.
-
 
 ## File format
 
@@ -376,358 +379,21 @@ build key, so a rebuilt image starts with an empty list and old builds'
 directories can be removed whole. Names are `a-z 0-9 . _ -`, at most 64;
 writes are atomic (temporary file, then rename).
 
-
 ## Kernel and machine
 
-Code: `crates/runtime/kernel/src/snapshot.rs`; tests: `crates/runtime/kernel/tests/snapshot.rs`.
-
-- `Machine::save_snapshot` requires a quiescent machine. It writes the
-  sections `kcore` (version 4) and `machine` on the snapshot crate's
-  codec, and `load_snapshot` reads them. The `Persist` trait and
-  `persist_struct!` destructure every saved struct without `..`, and
-  `save_core` destructures `Core` whole, so a new field does not compile
-  until it has a decision. Mounted and storage-free games use the same
-  format. The host checks for editor copies and previews before modifying
-  the machine. Editor observers add no feature section or build-key entry.
-  Recording and playback use the ordinary agent hooks.
-- Saved: every table in the [inventory](#kernel), the clock with its
-  history and charging bit, the periodic schedules (put back onto the
-  booted source of the same id and name, which keeps its Rust handler),
-  the raw disk's sectors (`rawdisk::RawSectors`, shared by `Core::raw_disk`
-  from `set_shared_vfs`), and the machine's scheduling state (`schedule`,
-  `drained`, `dpc_stack_top`, `preemptions`).
-- Checked against the booted machine: KPCR, export bridge, data exports,
-  title id, utility partition. Kept from it: TLS template, console config,
-  image sections, storage handle, diagnostics, and the machine's config
-  fields (`preempt_slice`, `max_transfers_per_slice`, `pacer`). Per-context
-  event logs are not saved.
-- `Rebuilders` maps a continuation origin to a factory; the kernel's thread
-  return is built in ([Rebuildable continuations](#rebuildable-continuations)).
-  `runtime::ContinuationLayout` (`ExecCtx::continuation_layout`,
-  `restore_continuations`) holds the pool as plain data with every slot's
-  generation and the reuse order, so tokens made after a load are the
-  saved run's. A live closure that is not rebuildable refuses the save; a
-  load with no rebuilder for an origin changes nothing.
-- `vfs::Vfs::state` and `restore_state` (`crates/runtime/vfs/src/state.rs`):
-  open objects by device and path with handle numbers, options, position,
-  search cursor (directory entries are read again at load) and changed
-  flag. A file object that can write, or wrote, carries the file's bytes
-  (`SavedFile::contents`, up to `MAX_CARRIED_BYTES`). Refuses an object
-  with delete access or delete-on-close, and a pending delete. A load
-  looks every file up before it closes anything; the apply closes the
-  open objects, writes each carried file back at its saved length
-  (creating it if it is gone, leaving it if it holds them already) and
-  re-opens the objects. A host write that fails there is logged and the
-  object is re-opened on what the file holds. Tests:
-  `crates/runtime/vfs/tests/state.rs`.
-- Larger writable files (`vfs/src/journal.rs`): a map cache slot is
-  180 MB and open for writing all the time the game plays, though the
-  game writes it only while it copies a map in. The save records it as a
-  `SavedFile::reference` (`vfs::FileReference`): the capturing VFS's
-  identity, the file's write generation, its length and a 64-bit content
-  fingerprint. The fingerprint is read once per generation and cached, so
-  a capture of an unchanged slot reads nothing. From the first capture
-  on, every change the VFS makes to the file (`Vfs::write`,
-  `set_end_of_file`, an overwriting open, a delete at close) takes a fresh
-  generation and first saves the bytes it overwrites and the old length
-  (copy-before-write). A restore in the same VFS undoes those changes
-  newest first back to the captured generation, and costs a `stat` when
-  nothing was written. The undo's own changes are journaled too, so a
-  later capture stays reachable after a restore to an earlier one. The
-  journal keeps at most `vfs::MAX_JOURNAL_BYTES` (32 MiB) across files; a
-  change past that drops the file's journal. A restore that the journal
-  no longer reaches, or into another VFS, accepts the file only if its
-  length and fingerprint match, and otherwise refuses with
-  `StateError::Unjournaled` before anything changes. A map copied into
-  the slot after a capture therefore refuses a restore to it, unless the
-  slot holds the captured map again. Formatting or seeding the volume
-  forgets its journals.
-- `xapi::snapshot` (`crates/platform/xapi/src/snapshot.rs`): the `xapi` section.
-  Pad handles (token, port, last state), `next_handle`, the gamepad and
-  communicator change words, each port's published state and polling
-  parameters (`InputManager::port_snapshot`, `restore_port`). A load rebinds
-  each handle with `InputManager::reopen`: on an empty port it reads as
-  unplugged and stays stale after an insertion, and the change words report
-  the difference from the saved ports at the next `XGetDeviceChanges`.
-  Refused while rumble, a launch request or a save search is in flight.
-- The input tap's cursor (`InputTap::cursor` and `seek`, `xapi/src/tap.rs`)
-  is in the `xapi` section: a load seeks the installed recorder or
-  replayer (`Replayer::resume`, `Recorder::resume`) and returns the cursor
-  for a caller that installs one later.
-- Feature sections: `SnapshotPolicy::Section` and `section_forbid_while`
-  carry a feature's bytes and a load function given the runtime.
-  `Plan::save_sections` and `load_sections` collect them;
-  `snapshot::features` stores them as one `features` section; a load
-  refuses a file whose section features differ before it loads any.
-- A load into a running game drops the old contexts' fast-memory views and
-  direct-call blocks with them. Only synthetic machines test that.
-
-Test (`kernel/tests/snapshot.rs`): three guest threads sharing an event,
-sleeping on different periods and reading a read-only VFS file run N slices
-and are saved (RAM, TSC, `kcore`, `machine`); the original runs M more. A
-machine booted the same way loads the file and runs M; every slice's digest
-(mapped RAM, clock, CPUs, scheduled thread) matches, then whole RAM,
-schedule, clock, TSC and VFS state. One created thread returns from its
-start routine after the load, through its rebuilt continuation. A snapshot
-loads twice into one machine; a machine booted with other data exports
-refuses it; a live closure continuation refuses the save.
-
-## Devices (D3D and audio)
-
-### D3D
-
-Code: `crates/platform/d3d/src/device/snap.rs`; tests: `crates/platform/d3d/tests/snapshot.rs`.
-
-- `Device::save_snapshot(mem, out)` adds the `d3d` section. It runs between
-  slices and before guest RAM is saved, since it writes to guest memory: it
-  drains the push buffer, writes dirty render-to-texture levels and the
-  alias mirror back, and reads every visibility count. It returns
-  `SnapshotError::Busy` while `Device::snapshot_blockers` names anything.
-- `saved()` destructures `Device` and `Display` without `..`, each field
-  under its decision.
-- `Device::load_snapshot(snapshot)` decodes and checks first (frame-buffer
-  and depth headers, the ring's buffers, size and flip, the register
-  window), then drops host caches and restores. Nothing changes on a
-  mismatch. Guest RAM must already be loaded.
-- The frame wait (`vblank.rs`, `Wait`) and vblank delivery hold their state
-  only in `call_guest` continuations, which `Machine::quiescent` reports.
-  The device holds no Rust state across yields, so a save is allowed when
-  the machine is quiescent, `snapshot_blockers` is empty and the render
-  thread has been drained.
-- Test (over `RecordingBackend`): a device draws three frames with a
-  transform, a scissor and a visibility test, is saved and draws three
-  more. A second device, created the same way but having drawn other frames
-  with other state, loads the section over the saved guest memory and draws
-  the same three frames. The recorded clears, draws and presents match, as
-  do the ring, the visibility answer and guest memory. A device created
-  with other present parameters refuses the section unchanged; a save
-  inside Begin/End is refused.
-
-### Audio
-
-Code: `crates/platform/audio/src/snap.rs`, `crates/platform/dsound/src/state/snap.rs`,
-`crates/platform/dsound/src/register/snap.rs`, `crates/platform/dsound/src/output.rs`,
-`crates/platform/dsound/src/xwma.rs`, `crates/platform/wma` (`Session::save_state`). Tests:
-`crates/platform/audio/tests/snapshot.rs`, `crates/platform/dsound/tests/snapshot.rs`,
-`crates/platform/dsound/tests/xwma.rs`, `crates/platform/wma/src/boundary.rs`.
-
-- `Mixer::save_snapshot` adds `audio`; `load_snapshot` is `check_snapshot`
-  (decode, check the rate, change nothing) then `apply_snapshot`. Every
-  struct is destructured without `..`.
-- `Hle::save_snapshot` adds `dsound` and `audio`: the `DirectSound` objects
-  and settings, the arena's lists, the pins as (token, object address) and
-  the queued stream callbacks. Refused while event batches are undelivered
-  or a pin cannot name its object (`EventRef::address`). `Hle::load_snapshot`
-  decodes and checks both sections and adopts the pins (`Events::adopt`)
-  before changing anything; the loading run's own pins are dropped with
-  `EventRef::forget`, which takes no count, because the loaded kernel's
-  `references` are the saved run's (`Kernel::adopt_reference`,
-  `DispatcherReference::forget`).
-- `Output::save_snapshot` adds `audioout` (the logical grid's origin and
-  frames rendered); device pacing refuses (`Output::snapshot_blockers`).
-- `WmaHle::save_snapshot` adds `wma`: every codec instance by handle with
-  its callback, context and whole `Session` (decoder overlap, held
-  reservoir packet, exponents, block sizes, partial input, queued PCM), and
-  the next handle. A begin packet pulling input is a guest call
-  continuation, which the machine check refuses, so no
-  refuse-while-decoding policy is needed.
-- Not covered: movie voices in the mixer (Bink refuses while a movie
-  plays), the pad router's labels (a host setting, kept), stream health
-  counters (kept).
-- Tests: a mixer with looping, filtered, enveloped, occluded and 3D
-  buffers, a stream with queued packets and a pitch LFO, a 3D mix-in, a
-  tapped bin and the reverb renders, is saved and renders on; a fresh mixer
-  loads it and renders the same PCM bit for bit (a mixer at another rate
-  refuses unchanged). Through the registered overrides, a world with a
-  packet half played, an event pinned and a callback queued is saved with
-  guest RAM; a second world with other objects and a pin of its own loads
-  it and plays on with the same PCM, statuses, signals, callbacks and arena
-  allocations. A WMA session with a held packet, half a packet of input and
-  an overlap tail decodes on identically.
-
-Frame pixels are not saved; they could go through `Backend::read_surface`
-and `write_surface` if the first frame after a load matters to
-`render.compare`.
-
-## Wiring: `state.*`
-
-Code: `crates/extensions/agent-proto/src/state.rs`, `crates/extensions/agent/src/exec/snap.rs`,
-`crates/extensions/game/src/snapshot_glue.rs`. Tests: `crates/extensions/agent/src/exec/snap/tests.rs`
-(a save waits for a tick; retries per tick then `BUSY`; load, fork, drop;
-name checks; a paused game; exit) and `crates/extensions/game/src/snapshot_glue/tests.rs`
-(through the agent over fake parts: save and load orders, the file in the
-store and its header, a RAM hash mismatch naming the MiB, blockers by owner,
-a blocker that appears during the save, the build key).
-
-- `agent_proto::state` holds the method names, params (`name`, `replace`,
-  `max_ticks`; `from` for a fork), results (`Saved`: path, bytes, section
-  tags, retries, ms; `Loaded`: tick, presents, notes, parts applied, the RAM
-  hash check) and `code::BUSY` (7), whose `data` lists the blockers.
-- `state.list` and `state.drop` are answered at once from the store. A name
-  to load must exist and a name to save must not (unless `replace`),
-  checked before anything waits. A save, load or fork is queued; at the
-  next tick `Agent::on_tick` returns true and the `agent` feature's observer
-  calls `Runtime::request_preempt`, so the slice ends a few transfers after
-  the tick. A paused game lets the job through to that slice end and holds
-  again at the next tick (a load while paused shows the loaded tick plus
-  one). The boot loop calls `Agent::run_snapshots` between slices; a job
-  that finds a blocker waits for the next tick, up to `max_ticks`, then
-  answers `BUSY`. With no ticks (loading, or `-agent`) every slice boundary
-  is a try. The machine is driven without the agent's lock held: the
-  agent's own feature section locks it.
-- `boot::snapshot_glue` owns the parts and their orders. Save: `d3d` (drains
-  the render thread through `Backend::drain`, then `Device::save_snapshot`),
-  `dsound` (and the mixer's `audio`), `audioout`, `wma`, `guest` (layout,
-  RAM, TSC), `kernel` (`kcore`, `machine`), `xapi`, `features`, then
-  `ramhash`, the `lockstep::hash_guest` of the RAM saved. Load: `guest`,
-  `kernel`, `d3d`, `dsound` (after `kcore`: it adopts the saved pins),
-  `audioout`, `wma`, `xapi`, `features`, then the RAM hash compared (the
-  MiBs that differ are named). A load that fails part way says which parts
-  were already loaded.
-- Blockers: `Machine::quiescent`, every feature's policy, each part's own,
-  a Bink stream open, Xbox Live signed in on any controller, a co-op
-  session. The audio output is logical, advanced only by the boot loop, so
-  it stands still while a save runs. Feature policies are asked again after
-  the save: one that went live meanwhile (a co-op thread) throws the file
-  away.
-- The build key is the running tier's stamp (`boot::build_stamp`, or
-  `tier::fast_stamp`), `Switches::spec` (canonical switch text), the
-  installed feature ids and the host parts present, so a run with other
-  switches, features or subsystems has its own store directory.
-- `h2 agent state save NAME [replace]`, `state load NAME`, `state list`,
-  `state drop NAME`, `state fork FROM NAME [replace]`.
+See [Machine snapshots: kernel, devices and wiring](snapshots-state.md).
 
 ## Quiescence probe
 
-Code: `crates/runtime/kernel/src/quiesce.rs`, `crates/extensions/game/src/snapshot_probe.rs`;
-tests: `crates/runtime/kernel/src/quiesce.rs` and `crates/runtime/kernel/tests/quiesce.rs`,
-the latter over guests that really run (threads waiting in the kernel are
-quiescent; a thread blocked inside an override's guest callback is a blocker
-until the callback returns).
-
-- `runtime`: every continuation records an origin and the guest address it
-  called (`ExecCtx::call_guest_named`; plain `call_guest` records the
-  closure's type name). `ExecCtx::live_continuations`,
-  `interrupt_in_service` and `fault_pending` report them.
-- `kernel::quiesce`: `Machine::quiescent()` returns every blocker:
-  continuations per thread (and on the DPC context), an interrupt callback
-  in service, a pending fault, queued interrupts, deferred signals, a
-  periodic handler that is running, a stopped machine. The continuation
-  every created thread holds for its whole life (`THREAD_RETURN`, which only
-  terminates the thread) is listed as rebuildable, not as a blocker.
-  `kernel::quiesce::Tally` counts checks and blockers and makes the
-  rate-limited lines.
-- `feature::Builder::snapshot(SnapshotPolicy)`: `Stateless`,
-  `ForbidWhileLive(fn)` (the function says, between slices, why it is
-  live), `Section` (bytes saved and loaded), or, for a feature that says
-  nothing, `Unaudited`, which blocks every snapshot, so an unaudited feature
-  fails closed. `Plan::snapshot_blockers()` lists them;
-  `Plan::describe_target` names the hooked point behind an after-hook
-  continuation (`feature: after hooks`, called through a chain's shadow
-  entry).
-
-### Running the probe
-
-```sh
-H2_SNAPSHOT_PROBE=1 ...       # check at the end of the slice each game tick ends in
-H2_SNAPSHOT_PROBE=slice ...   # don't end slices early; check at the next boundary
-```
-
-`H2_SNAPSHOT_PROBE=1` installs a `snapshot_probe` feature whose tick observer
-counts ticks and calls `Runtime::request_preempt`, so the slice ends a few
-transfers after the tick, where `state.save` would act. That changes the
-schedule: don't compare a probed run with an unprobed one under lockstep.
-Every line starts with `snapshot-probe:`:
-
-```text
-snapshot-probe: on, checking at the end of the slice each game tick
-snapshot-probe: tick=812 machine=blocked [thread 1: continuation feature: after hooks -> 0x... (after hooks on <point> (0x...) [feature:label])] host_blockers=31
-snapshot-probe: tick=813 machine=quiescent host_blockers=31
-snapshot-probe: progress tick=1800 checked=1800 machine_quiescent=... (..%) fully_quiescent=0 (0.0%)
-snapshot-probe: summary checked=... machine_quiescent=... (..%) fully_quiescent=... (..%)
-snapshot-probe: top machine <count> (<%>) <blocker>
-snapshot-probe: top host <count> (<%>) feature <id>: not audited for snapshots
-```
-
-- A `tick=` line is printed only when the set of machine blockers changes,
-  at most 200 of them; a `progress` line every 1800 checks; the `summary`
-  and up to ten `top machine` and ten `top host` lines at exit.
-- **Machine** blockers are the hard question the probe answers. **Host**
-  blockers are features' live predicates and the host subsystems' own
-  (`snapshot_glue::Host::blockers`: d3d, dsound and its output, XAPI, a Bink
-  movie open, Xbox Live signed in, co-op), each as `host <owner>`.
-
-The result of the first probe run is in
-[notes/snapshots.md](notes/snapshots.md).
+See [Machine snapshots: the quiescence probe](snapshots-quiescence.md).
 
 ### Rebuildable continuations
 
-A continuation made with `ExecCtx::call_guest_rebuildable(.., origin,
-state: [u32; 4], ..)` promises that its closure depends only on `origin`,
-`target`, `state` and the context it runs on. Quiescence lists it as
-rebuildable, with its state, instead of as a blocker. A load makes it
-again: a registry (`Rebuilders`) from `origin` to a factory, and a
-`Continuations` insert at a given token (the token is on the guest stack,
-so it must be the same). Two exist (**Code**):
-
-| Origin | Made by | State | Rebuilt as |
-|---|---|---|---|
-| `kernel: thread return` | `Machine::collect_threads`, every created thread's start routine | none | terminate the thread with success |
-| `trace: kernel call return` | `boot::trace::install_bounded`, every kernel call, through the shadow `0xa0ff0000 + 4 * ordinal` | caller's return address, trace sequence number | return to the caller; the trace record is gone, and `finish` of an unknown one does nothing |
+See [Machine snapshots: the quiescence probe](snapshots-quiescence.md).
 
 ### Feature policies
 
-Every `feature::Feature` declares a `SnapshotPolicy` in its own `build`
-(`rg 'b\.snapshot\(' crates`). A predicate's test sets each live condition
-and checks it is reported, and clear again; a section's test round-trips its
-bytes and checks that damaged bytes change nothing. The kinds, and what
-each one holds:
-
-- **Stateless**: observers, and rewrites whose state is all in guest memory
-  or fixed at build (`engine-leaves`, `ui-strings`, `settings-rows`, and
-  the Halo 1 effects `h1-flag`, `h1-glow`, `h1-lightning` and
-  `h1-sound-promotion`, whose panels, random seeds and promotion credits
-  come from guest memory and tags).
-- **Forbid while live**: host state that is live only between hooks or while
-  a screen is up (`cheats` while a cheat is on, the co-op features while
-  armed, `h1-health` while a damage update is between its hooks,
-  `live-map-pack-rotation` while a hopper block read is between its
-  hooks, `render-timing` while a render stage is open).
-- **Section**: host state a load puts back (`skulls`, `skulls-custom`,
-  `skulls-mp`, `hud`, `h1-hud`, `lockstep`'s counters, `agent`'s view of the
-  game, `loaded_map`, `aim-assist`, `game-variants`' listing of the store
-  variants the guest's variant list names (not the store on disk, and not
-  the sim's script block, which is the run's setting), and `sim-ext`'s extension records with
-  their checkpoint-slot copies, empty when there are none;
-  [sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob").
-
-Open items for list classes and screens are under "Not verified".
-
-### The render features
-
-Boot registers the render features in every run, with their
-`impl.render.*` switches off by default. Each declares its policy before
-any early return for a switch that is off, so a run with all of them off
-is not `Unaudited` and `state.save` is not refused. The other `native-*`
-features (`crates/rewrites/render-bridge/src/native_*.rs`) are `Stateless`.
-
-None of them changes simulation state. A save runs between slices, with
-the D3D render thread drained. Section loads run last, on the
-game thread, over loaded guest RAM and a loaded device; they clear
-Mutex-guarded statics and take no device lock. Their GPU caches are
-keyed by what they read from guest RAM at every ask (the map name, and
-for the world the BSP address and index), so a load that changes map
-re-keys them.
-
-| Feature | Off | On | What a load drops |
-|---|---|---|---|
-| `occlusion` | stateless | section, no bytes | `occlusion::forget`: every view's streaks, last camera and depth, the armed capture, the captures in flight, the published depth frames (`MAILBOX`), the last grid. `Tracker::begin` already reset on a camera cut or when the frame went backwards. A load to a later frame with the camera close by kept streaks keyed by handles that may now name other objects |
-| `native-world` | stateless | section, no bytes | `native_world::forget_pending`: the layer-3 bits waiting to be set back at the next layer draw, without setting them (the loaded item lists are the loaded render's) |
-| `native-objects` | stateless | section, no bytes | `native_objects::forget_pending`: as the world's |
-| `native-lights` | stateless (also when not placed with render-timing on) | section, no bytes | `native_lights::forget_runs`: the open run, the split light and the split layer's pending restore. `VIEW_TARGET` is asked for again at every view |
-| `native-transparents` | stateless | stateless | nothing: the open run and the objects drawn last one view (`new_view` forgets them), and it never writes guest memory |
-| `native-post` | stateless | stateless | nothing: no frame history (no temporal AA, no exposure adaptation); the screen effects are keyed by map, and the proof and fallback sets only ever send an effect back to D3D |
-
+Every `feature::Feature` declares a `SnapshotPolicy` in its own `build` (`rg 'b\.snapshot\(' crates`). Detail: [Machine snapshots: the quiescence probe](snapshots-quiescence.md).
 
 ## Rules and limits
 
