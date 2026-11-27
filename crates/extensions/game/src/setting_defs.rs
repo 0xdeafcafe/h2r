@@ -1012,6 +1012,7 @@ pub static ALL: &[&Def] = &[
     &crate::firefight::options::DIFFICULTY,
     &crate::firefight::options::LIVES,
     &crate::firefight::options::SKULLS,
+    &crate::firefight::options::PODS,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings

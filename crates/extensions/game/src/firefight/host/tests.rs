@@ -1396,6 +1396,10 @@ fn endless() -> Def {
         .into_iter()
         .find(|def| def.set.endless)
         .expect("Endless is a built-in");
+    // The test kit has one class; Endless's Marine allies are for the kit.
+    for round in &mut def.rounds {
+        round.allies.clear();
+    }
     def.bonus = Some(Bonus {
         ticks: 60,
         squad: SquadSpec {

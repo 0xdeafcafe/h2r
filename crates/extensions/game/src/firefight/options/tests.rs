@@ -24,7 +24,7 @@ fn screen(kept: &Arc<Store>) -> Arc<KitScreen> {
 }
 
 fn list(s: &Arc<KitScreen>) -> ListPage {
-    ListPage::new(s.class(), described(s)).with_states(&[0, 2, 3, 5])
+    ListPage::new(s.class(), described(s)).with_states(&[0, 2, 3, 5, 6])
 }
 
 fn stepped(line: &str) -> ListEffect {
@@ -180,8 +180,15 @@ fn the_options_page_steps_and_opens_pickers() {
         case(
             "focus-5",
             &[Down],
+            vec![ListEffect::Focus(6)],
+            "focus 6 Drop pods = On",
+            vec![],
+        ),
+        case(
+            "focus-6",
+            &[Down],
             vec![ListEffect::None],
-            "focus 5 Skulls = On",
+            "focus 6 Drop pods = On",
             vec![],
         ),
         case(
@@ -236,9 +243,9 @@ fn the_options_page_steps_and_opens_pickers() {
 fn a_opens_the_value_picker_on_every_row() {
     use crate::list_class::Rows;
     let s = screen(&store());
-    let expected: [(&str, &[&str]); 6] = [
+    let expected: [(&str, &[&str]); 7] = [
         ("FIREFIGHT", &["Off", "On"]),
-        ("WAVE SET", &["Endless", "Holdout", "Attrition", "Last Stand", "Crossfire"]),
+        ("WAVE SET", &["Endless", "Holdout", "Attrition", "Last Stand", "Crossfire", "Outbreak"]),
         ("TEAMS", &["Default", "One team", "Two teams"]),
         ("DIFFICULTY", &["Easy", "Normal", "Heroic", "Legendary"]),
         (
@@ -246,6 +253,7 @@ fn a_opens_the_value_picker_on_every_row() {
             &["Default", "1", "3", "5", "8", "12", "20", "30"],
         ),
         ("SKULLS", &["Off", "On"]),
+        ("DROP PODS", &["Off", "On"]),
     ];
     for (row, (title, values)) in expected.iter().enumerate() {
         assert_eq!(s.press(row as i16), Chosen::Open(picker::NAME), "{title}");
