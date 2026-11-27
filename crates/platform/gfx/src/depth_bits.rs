@@ -58,7 +58,11 @@ pub struct DepthBits {
 impl DepthBits {
     /// Builds the pipeline.
     pub fn new(ctx: &GfxContext) -> Self {
-        let device = &ctx.device;
+        Self::on_device(&ctx.device)
+    }
+
+    /// Builds the pipeline on `device`.
+    pub fn on_device(device: &wgpu::Device) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gfx depth bits"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -171,8 +175,21 @@ impl DepthBits {
         depth: &wgpu::Texture,
         out: &wgpu::Texture,
     ) {
+        self.convert_region(&ctx.device, &ctx.queue, encoder, depth, out);
+    }
+
+    /// [`Self::convert_into`] of the top-left region of `depth` that `out`
+    /// covers: `out` is an [`Self::output`] no larger than `depth`, both
+    /// on `device`.
+    pub fn convert_region(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::Texture,
+        out: &wgpu::Texture,
+    ) {
         let size = (out.width(), out.height());
-        let device = &ctx.device;
         let (w, h) = (size.0.max(1), size.1.max(1));
         let row_bytes = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let words = crate::churn::create_buffer(
@@ -197,7 +214,7 @@ impl DepthBits {
         );
         let bytes: Vec<u8> = params.iter().flat_map(|v| v.to_le_bytes()).collect();
         crate::churn::queue_write();
-        ctx.queue.write_buffer(&uniform, 0, &bytes);
+        queue.write_buffer(&uniform, 0, &bytes);
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor {
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()

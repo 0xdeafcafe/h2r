@@ -256,3 +256,26 @@ fn depth_bits_into_an_earlier_output_match_convert() {
     let got = gfx::readback::read_texture(&ctx, &out, wgpu::TextureAspect::All, 4, (W, rows));
     assert_eq!(got, want);
 }
+
+/// A smaller output takes the depth's top-left region (a caster map drawn
+/// into part of its target): each row is that row's first texels of the
+/// whole conversion.
+#[test]
+fn depth_bits_into_a_smaller_output_take_the_top_left_region() {
+    let Some(ctx) = ctx() else { return };
+    let rows = 4;
+    let depths: Vec<f32> = (0..W * rows).map(|z| z as f32 / (W * rows) as f32).collect();
+    let t = depth_texture(&ctx, &depths, 0x5a);
+    let whole = gpu_bits(&ctx, &t, rows);
+    let (w, h) = (W / 4, rows / 2);
+    let bits = DepthBits::on_device(&ctx.device);
+    let out = DepthBits::output(&ctx.device, (w, h));
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    bits.convert_region(&ctx.device, &ctx.queue, &mut enc, &t, &out);
+    ctx.queue.submit([enc.finish()]);
+    let got = gfx::readback::read_texture(&ctx, &out, wgpu::TextureAspect::All, 4, (w, h));
+    let want: Vec<u8> = (0..h as usize)
+        .flat_map(|y| whole[y * W as usize * 4..][..w as usize * 4].to_vec())
+        .collect();
+    assert_eq!(got, want);
+}

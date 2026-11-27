@@ -162,24 +162,29 @@ light tail (`d3d::PreparedSequence::commit`), or drops the light. The
 guest's layer begin and end do not run; their device work is the steps:
 
 - layer 10: target 9's depth cleared to 1 and stencil 0, the casters
-  drawn into it at the size the shadow setup gives, then its depth frozen
-  (`native_shadows_draw::Gpu::freeze_depth_into`,
-  `gfx::depth_bits::DepthBits::convert_into`) into a map made before the
-  sequence, which the receivers bind;
+  drawn into it at the size the shadow setup gives, then the region they
+  drew frozen into a map on each target copy at that copy's texels
+  (`native_lights_glue/scene.rs`, `Frozen` and `frozen_size`;
+  `gfx::depth_bits::DepthBits::convert_region`). A scaled backend records
+  the reference and display copies on their own attachments, each its
+  freeze before its receivers, and a receiver binds the map of the copy
+  it records on;
 - layer 11: the receivers on the view's target, sampling that map;
 - layer 14: target 1;
 - layers 12 and 13: the view's target.
 
-A colour-mask caster (target 10), a shader gel, a first-person light
-(slot 10) and a scaled caster map refuse the light. The host's
-`draws_scene` is true where the caster maps can be frozen, the single 1x
-backend the shadow stage runs on (`native_shadows_glue::scene_gpu`);
-elsewhere the guest's light frame runs. The first-person lights
+A colour-mask caster (target 10), a shader gel and a first-person light
+(slot 10) refuse the light, and so does a caster region that does not
+start at its target's corner or runs past it. The host's `draws_scene`
+is true at any render scale and on every backend while the native
+shadows are on (`native_shadows_glue::enabled`); with them off the
+guest's light frame runs. The first-person lights
 (`0x000404b0`) are not cut; they replay the slots the frame body filled
 and draw as before.
 
-`a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`
-and the other tests in `native_lights_glue/scene.rs` check the steps.
+`a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`,
+`each_copy_freezes_the_casters_region_at_its_own_scale`,
+`a_receiver_samples_the_map_frozen_on_its_own_copy` and the other tests in `native_lights_glue/scene.rs` check the steps.
 `the_cut_lights_groups_equal_the_guests_layer_builds`
 (`native_lights/walk.rs`) builds layers 10, 12 and 13 both ways from the
 same lists: as the guest's layer draw builds them, and as the cut frame

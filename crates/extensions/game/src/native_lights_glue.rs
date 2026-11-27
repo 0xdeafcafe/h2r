@@ -338,6 +338,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             constants,
             projection: None,
             shadow_map: None,
+            frozen: None,
             draws,
             cull,
             scissor,
@@ -607,7 +608,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             && dim.is_some()
                     })
             });
-        let shadow_map = if needs_map {
+        let (shadow_map, frozen) = if needs_map {
             let projection = projection.ok_or(Keep::Shadow("state"))?;
             let projection = std::array::from_fn(|n| projection[n / 4][n % 4]);
             let kind = if shadow.colour_mask() {
@@ -615,15 +616,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             } else {
                 native_render::shadow_gpu::MapKind::Depth
             };
-            Some(
-                match &map {
-                    ShadowMap::Latest => crate::native_shadows_glue::latest_receiver(view, projection, kind)
-                        .ok_or(Keep::Shadow("target"))?,
-                    ShadowMap::Given(given) => given.clone().ok_or(Keep::Shadow("target"))?,
-                },
-            )
+            match map {
+                ShadowMap::Latest => (
+                    Some(
+                        crate::native_shadows_glue::latest_receiver(view, projection, kind)
+                            .ok_or(Keep::Shadow("target"))?,
+                    ),
+                    None,
+                ),
+                ShadowMap::Frozen(frozen) => (None, Some(frozen.ok_or(Keep::Shadow("target"))?)),
+            }
         } else {
-            None
+            (None, None)
         };
         let mut prepared = self.prepare_planned(
             &d,
@@ -638,6 +642,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         prepared.projection =
             projection.map(|projection| std::array::from_fn(|n| projection[n / 4][n % 4]));
         prepared.shadow_map = shadow_map;
+        prepared.frozen = frozen;
         if prepared.draws.iter().any(|p| p.layer != layer) {
             return Err(Keep::Unsupported(
                 "another layer's pass is in the shadow run",
@@ -739,9 +744,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 enum ShadowMap {
     /// The receiver boundary that just ran (`native_shadows_glue`).
     Latest,
-    /// The caster of this light drawn from the scene, frozen in the same
-    /// sequence; `None` when the light has no caster.
-    Given(Option<native_render::shadow_gpu::SampledMap>),
+    /// The caster of this light drawn from the scene, frozen on each copy
+    /// in the same sequence ([`scene::Frozen`]); `None` when the light has
+    /// no caster.
+    Frozen(Option<scene::Frozen>),
 }
 
 /// The parts the light passes hold, for [`native_render::light_scene`]:
@@ -983,11 +989,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         ok
     }
 
-    /// The scene draws every layer of the cut light frame
-    /// ([`scene`]) where its caster maps can be frozen: the single 1x
-    /// backend the shadow stage runs on. Elsewhere the guest's frame runs.
+    /// The scene draws every layer of the cut light frame ([`scene`]),
+    /// at any render scale and on every target copy, while the native
+    /// shadows are on: each copy freezes its own caster maps. With them
+    /// off the guest's frame runs.
     fn draws_scene(&self) -> bool {
-        crate::native_shadows_glue::scene_gpu().is_some()
+        crate::native_shadows_glue::enabled()
     }
 
     fn draw_scene(
@@ -2334,6 +2341,9 @@ struct PreparedLight {
     projection: Option<[u32; native_render::shadow_look::PROJECTION_DWORDS]>,
     /// A receiver group's frozen map; lit and caster draws leave it out.
     shadow_map: Option<native_render::shadow_gpu::SampledMap>,
+    /// A scene light's receiver: the map its caster froze on the copy
+    /// being recorded, in place of [`Self::shadow_map`].
+    frozen: Option<scene::Frozen>,
     draws: Vec<Planned>,
     cull: InheritedCull,
     scissor: [u32; 4],
@@ -2636,6 +2646,11 @@ impl RunPass {
             ),
             None => None,
         };
+        // A scene light's receivers sample the map frozen on this copy.
+        let frozen = match &self.light.frozen {
+            Some(frozen) => Some(frozen.on(t.copy).ok_or("no caster map frozen on this copy")?),
+            None => None,
+        };
         let draws: Vec<_> = self
             .light
             .draws
@@ -2643,6 +2658,9 @@ impl RunPass {
             .enumerate()
             .map(|(i, p)| {
                 let mut draw = self.light.draw(p);
+                if let Some(map) = &frozen {
+                    draw.shadow_map = Some(map);
+                }
                 if let Some(held) = &self.retained {
                     draw.gpu = &held.materials[i];
                 }
