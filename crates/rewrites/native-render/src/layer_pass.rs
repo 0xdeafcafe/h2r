@@ -1081,7 +1081,7 @@ pub(crate) mod tests {
         }
         let p = timed(4.0, f);
         assert_eq!(property_value(&p, 1, Some(1.0), true), Err(LayerRefusal::Wave { property: 1, wave: 9 }));
-        let mut slab = vec![0u8; Tables::ENGINE_SLAB.len()];
+        let mut slab = Tables::procedural_slab();
         slab[9 * TABLE_LEN..10 * TABLE_LEN].fill(255);
         Tables::install_engine_slab(&slab).unwrap();
         assert_eq!(property_value(&p, 1, Some(1.0), true), Ok(1.0));

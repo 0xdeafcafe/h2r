@@ -821,11 +821,46 @@ impl Tables {
     /// of the process. The tables are static data of the executable, the
     /// same for every map, so the first slab installed stays. Errors on a
     /// slab of the wrong size.
+    ///
+    /// A slab whose tables the procedural ones generate exactly (waves 2, 4
+    /// and 6, every shape) but which holds something else (zeros read before
+    /// the image has them, the wrong bytes) is refused and nothing installs:
+    /// every animated property would otherwise sample it.
     pub fn install_engine_slab(slab: &[u8]) -> Result<()> {
         if ENGINE.get().is_none() {
-            let _ = ENGINE.set(Self::procedural_owned().with_engine_slab(slab)?);
+            let procedural = Self::procedural();
+            let engine = Self::procedural_owned().with_engine_slab(slab)?;
+            let same = |a: &Option<Box<[u8; TABLE_LEN]>>, b: &Option<Box<[u8; TABLE_LEN]>>| match (a, b) {
+                (Some(a), Some(b)) => a.iter().zip(b.iter()).all(|(x, y)| x.abs_diff(*y) <= 1),
+                _ => true,
+            };
+            if !procedural.wave.iter().zip(&engine.wave).all(|(a, b)| same(a, b))
+                || !procedural.shape.iter().zip(&engine.shape).all(|(a, b)| same(a, b))
+            {
+                return Err(Error::Invalid("the engine slab differs from the tables the procedural ones match exactly"));
+            }
+            let _ = ENGINE.set(engine);
         }
         Ok(())
+    }
+    /// The slab the procedural tables fill, the other tables zero: what a
+    /// run that has the procedural tables right and the baked waves not
+    /// would read. For tests.
+    pub fn procedural_slab() -> Vec<u8> {
+        let t = Self::procedural();
+        let mut slab = vec![0u8; Self::ENGINE_SLAB.len()];
+        for (i, w) in t.wave.iter().enumerate().skip(1) {
+            if let Some(w) = w {
+                slab[i * TABLE_LEN..(i + 1) * TABLE_LEN].copy_from_slice(&w[..]);
+            }
+        }
+        for (i, s) in t.shape.iter().enumerate() {
+            if let Some(s) = s {
+                let at = (WAVE_SLOTS + i) * TABLE_LEN;
+                slab[at..at + TABLE_LEN].copy_from_slice(&s[..]);
+            }
+        }
+        slab
     }
     /// The engine's tables once a game has installed them
     /// ([`Self::install_engine_slab`]), else [`Self::procedural`]: what a
@@ -1204,16 +1239,18 @@ mod tests {
         assert!(!Tables::engine_installed());
         assert!(!Tables::engine().has_wave(9));
         assert_eq!(Tables::ENGINE_SLAB, 0x0046_8d48..0x0046_d548);
-        let mut slab = vec![0u8; Tables::ENGINE_SLAB.len()];
+        let mut slab = Tables::procedural_slab();
         slab[9 * TABLE_LEN..10 * TABLE_LEN].fill(255);
         assert!(Tables::install_engine_slab(&slab[1..]).is_err());
+        // An image that has not got its tables yet reads as zeros: refused.
+        assert!(Tables::install_engine_slab(&vec![0u8; Tables::ENGINE_SLAB.len()]).is_err());
         assert!(!Tables::engine_installed());
         Tables::install_engine_slab(&slab).unwrap();
         assert!(Tables::engine().has_wave(9));
         assert_eq!(f.evaluate_with(0.2, 0.0, Tables::engine()), 1.0);
         // The procedural tables are untouched, and the first slab stays.
         assert!(!Tables::procedural().has_wave(9));
-        Tables::install_engine_slab(&vec![0u8; Tables::ENGINE_SLAB.len()]).unwrap();
+        Tables::install_engine_slab(&Tables::procedural_slab()).unwrap();
         assert_eq!(f.evaluate_with(0.2, 0.0, Tables::engine()), 1.0);
     }
 
