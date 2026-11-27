@@ -75,6 +75,8 @@ pub const TABLE: &[Switch] = &[
         "the guest's view projection and visibility producers replaced (retire-d3d.md R4): delete when R4's differentials hold on the gate corpus"),
     sw("impl.render.native-hud", On, "render", "2026-11-27",
         "HUD widget quads from their Rust material, no guest shader setup (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
+    sw("impl.render.native-hud-walk", On, "render", "2026-11-27",
+        "HUD bitmap widgets laid out in Rust, no guest draw once proven (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),

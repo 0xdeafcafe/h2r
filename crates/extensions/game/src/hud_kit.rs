@@ -1893,6 +1893,9 @@ impl hooks::Feature for HudKit {
         // compiler leaves 0 (the state's pad byte) and which lives in the
         // converted nhdt's own blocks, not ours. Each passes the other's
         // widgets through, so the order between them only has to exist.
+        // A kit widget's draw is changed at these hooks: it stays the
+        // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+        render_bridge::native_hud::walk::add_foreign(|_, widget| in_region(widget));
         b.raw()
             .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {
                 // A retail widget costs two loads and this one while no

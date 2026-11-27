@@ -408,6 +408,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::hud_native::draw(&self.device, mem, at, vertices)
     }
 
+    fn rust_hud_widget(&self, mem: &mut dyn GuestMemory, widget: &render_bridge::native_hud::WalkWidget) -> bool {
+        self.permits_draw() && crate::hud_native::draw_widget(&self.device, mem, widget)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
         let source = SCOPES.with(|s| s.borrow().screen_source(self.admission.owner));
         self.offer(source.unwrap_or(ScreenDraw::Widget), || {

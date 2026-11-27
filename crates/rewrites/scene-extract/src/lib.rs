@@ -18,12 +18,13 @@
 //!
 //! | Entry replaced | Writes reproduced | Test |
 //! |---|---|---|
-//! | (none yet) | | |
+//! | `0x0022aff1`, a proven HUD bitmap widget's draw (`hud`, `render_bridge::native_hud::walk`) | the widget globals `0x004e6978`..`0x004e69b0` (bitmap, image, inputs, colours) | `the_guests_quads_match_rusts_bit_for_bit` (`native_hud::walk`), and the shadow arm on each widget |
 
 pub mod decals;
 pub mod decorators;
 pub mod extract;
 mod guest;
+pub mod hud;
 pub mod late;
 pub mod layer_sort;
 pub mod layout;

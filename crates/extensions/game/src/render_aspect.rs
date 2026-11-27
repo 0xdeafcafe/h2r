@@ -413,6 +413,20 @@ pub const RETICLE_CENTRE: [f32; 2] = [320.0, 240.0];
 static HUD_CENTRE: Mutex<([f32; 2], [f32; 4])> =
     Mutex::new((RETICLE_CENTRE, UiFit::IDENTITY.transform));
 
+/// The HUD view being drawn, while its output is fitted: what a HUD
+/// group's fit is taken in.
+static HUD_VIEW: Mutex<Option<Canvas>> = Mutex::new(None);
+
+/// The fit of a HUD group anchored at `anchor` whose anchor point is
+/// `point`, in the HUD view being drawn: what the anchor hooks set for a
+/// group the guest lays out (`ANCHOR_READY`), for a widget laid out in
+/// Rust (`hud_native::draw_widget`). `None`: no fitted HUD view is open,
+/// and the device's fit stands.
+pub fn hud_group_fit(anchor: u32, point: [f32; 2]) -> Option<Option<UiFit>> {
+    let view = *HUD_VIEW.lock().unwrap_or_else(|e| e.into_inner());
+    view.map(|canvas| canvas.fit(Some((anchor, point))))
+}
+
 /// Keeps the bottom-left fit and the centre of the view at the frame's
 /// top left (the first player's in a split screen; S: that the first
 /// local player is drawn there), for host marks laid over the motion
@@ -802,6 +816,7 @@ impl Feature for RenderAspect {
                         });
                     }
                     if hud {
+                        *HUD_VIEW.lock().unwrap_or_else(|e| e.into_inner()) = layout.active;
                         publish_hud_corner(layout.active);
                         HUD_ANCHOR.store(
                             layout.active.is_some_and(|canvas| canvas.pinned),
@@ -840,6 +855,7 @@ impl Feature for RenderAspect {
                     if layout.active.is_some() {
                         sink.set_fit(&mut c.ctx.memory(), None);
                         *layout = Layout::default();
+                        *HUD_VIEW.lock().unwrap_or_else(|e| e.into_inner()) = None;
                     }
                     Ok(Flow::Continue)
                 })

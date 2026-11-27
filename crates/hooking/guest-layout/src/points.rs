@@ -1438,6 +1438,17 @@ points! { ALL;
     HUD_WIDGET_EFFECTS @ 0x0022_bcaf: [fn(effects: eax, y_basis: ebx, origin: stack 0, x_basis: stack 1) ret 8], Optional; "docs/halo1/hud.md";
     HUD_WIDGET_SPRITE @ 0x0022_ae21: [fn(widget: ecx, bounds: eax, user: stack 0, image: stack 1, width: stack 2, height: stack 3) ret 16], Optional; "docs/halo1/hud.md";
     HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
+    /// The HUD walk of one definition (`nhdt`): its state words
+    /// (`0x0013a050`), then each shown screen-effect, bitmap and text
+    /// widget's draw, in the definition's order.
+    HUD_WALK @ 0x0013_a532: [fn(definition: eax, player: stack 0, record: stack 1, slot: stack 2) ret 12], Optional; "docs/graphics/native-hud-overlay.md";
+    /// A screen-effect widget's draw: one call of `SCREEN_EFFECT`.
+    HUD_SCREEN_WIDGET @ 0x0022_b8e2: [fn(widget: eax, player: stack 0, inputs: stack 1) ret 8], Optional; "docs/graphics/native-hud-overlay.md";
+    /// A bitmap widget's draw: its sprite, its basis, then one
+    /// `HUD_SHADER_QUAD` a quad.
+    HUD_BITMAP_WIDGET @ 0x0022_aff1: [fn(player: stack 0, record: stack 1, widget: stack 2, inputs: stack 3) ret 16], Optional; "docs/graphics/native-hud-overlay.md";
+    /// A text widget's draw: its string, laid out and drawn.
+    HUD_TEXT_WIDGET @ 0x0022_aa16: [fn(player: stack 0, record: stack 1, widget: stack 2, inputs: stack 3) ret 16], Optional; "docs/graphics/native-hud-overlay.md";
     HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
     HUD_TEXT_TAIL @ 0x0015_f120: [fn(player: eax, out: esi, capacity: stack 0, mode: stack 1) -> al ret 8], Optional; "docs/halo1/text.md";
     HUD_TEXT_DRAW @ 0x0001_fa30: [fn(rect: eax, text: ecx) ret 0], Optional; "docs/halo1/text.md";

@@ -663,6 +663,9 @@ pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
         "sample weapon warning conditions",
         move |c| sample(&mut *c.ctx.memory(), rows).map_err(fault),
     );
+    // A marked widget's draw is changed at these hooks: it stays the
+    // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+    render_bridge::native_hud::walk::add_foreign(|mem, widget| marked(mem, widget).unwrap_or(true));
     b.raw()
         .before(
             &points::HUD_WIDGET_GATE,

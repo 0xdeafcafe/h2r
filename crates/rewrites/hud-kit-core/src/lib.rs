@@ -13,7 +13,8 @@
 //! - [`records`]: elements to `nhdt` widget record bytes;
 //! - [`data`]: a HUD read from the YAML of a package's `hud` item;
 //! - [`views`]: the HUDs the kit knows (superbounce, the Forge readout,
-//!   Firefight).
+//!   Firefight);
+//! - [`walk`]: the engine's HUD walk over a definition, in Rust.
 //!
 //! Guest-free: no guest memory, no hook. The game extension reads and
 //! writes the guest; this crate only computes.
@@ -26,6 +27,7 @@ pub mod model;
 pub mod motion;
 pub mod records;
 pub mod templates;
+pub mod walk;
 pub mod world;
 
 pub use model::{
@@ -68,3 +70,5 @@ mod data_tests;
 mod expected;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod walk_tests;

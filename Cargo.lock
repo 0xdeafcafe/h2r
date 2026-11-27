@@ -6371,6 +6371,7 @@ dependencies = [
  "bytemuck",
  "engine",
  "frame-scene",
+ "hud-kit-core",
 ]
 
 [[package]]
