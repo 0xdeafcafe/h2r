@@ -1719,7 +1719,7 @@ fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
     let kit = game.kit().unwrap();
     let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &game);
     assert_eq!(seen.ship, ShipSeen { ready: true, paths: vec![true, false] });
-    let seen = observe(&kit, &BTreeMap::new(), 1, &FakeGame::new());
+    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &FakeGame::new());
     assert_eq!(seen.ship, ShipSeen { ready: false, paths: vec![false, false] });
 }
 
