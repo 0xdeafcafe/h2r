@@ -359,3 +359,12 @@ fn flat_faults_and_exact_watch_epochs() {
         assert_eq!(memory.lock().u8(ALIAS + PAGE).unwrap(), 88);
     }
 }
+
+/// h2fastmem.h strides the store mirror and bounds physical addresses by
+/// its own `H2_RAM_SIZE`; it has to name the guest's RAM size.
+#[test]
+fn the_fast_memory_header_names_the_guest_ram_size() {
+    let header = include_str!("../../../../../recompiler/emit/c/h2fastmem.h");
+    let want = format!("#define H2_RAM_SIZE UINT32_C({:#010x})", crate::guest::RAM_SIZE);
+    assert!(header.contains(&want), "h2fastmem.h lacks `{want}`");
+}
