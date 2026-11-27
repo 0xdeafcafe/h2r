@@ -525,7 +525,10 @@ mod tests {
         ).unwrap();
         vfs.mount(vfs::DATA_DEVICE, vfs::DirDiscBackend::open(&data).unwrap()).unwrap();
         let vfs = Mutex::new(vfs);
-        let slot = crate::map_slots::recorded_file(&format!("t:\\$c\\00112233aabbccdd\\{name}.map"))
+        // `recorded_file` keeps a `t:` path verbatim for the guest's drive
+        // links, which this VFS has none of; `slot_file` is the same file by
+        // its object name on the data partition.
+        let slot = crate::map_slots::slot_file(&format!("t:\\$c\\00112233aabbccdd\\{name}.map"))
             .unwrap();
         // The name alone is the guess that failed.
         assert!(open_resolved(&vfs, name, None, None, false).is_err());
