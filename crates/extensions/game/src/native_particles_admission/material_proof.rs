@@ -72,6 +72,31 @@ pub(super) fn contrail(mem: &dyn GuestMemory, context: u32) -> Option<Expected> 
     made(Kind::Contrail, outcome)
 }
 
+/// Whether the setup of `kind` running now may be cut: its material,
+/// textures and program are made (or the refusal is named), and then
+/// `device_state`: the device resolves a draw's program, vertex format,
+/// combiner, textures and constants from its own state, and no admission
+/// draws from a supplied one, so a cut setup's draw would take the state
+/// the draw before it left. Must not record a proof (the caller holds it).
+pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<(), &'static str> {
+    let material = match kind {
+        Kind::Particle => {
+            let inputs = proof::particle_inputs().ok_or("no_setup")?;
+            particle_material::check(&inputs).map_err(particle_material::Refused::name)?;
+            library_material(mem, &inputs)?
+        }
+        Kind::Contrail => {
+            let inputs = proof::contrail_inputs().ok_or("no_setup")?;
+            let word = |a: u32| mem.u32(a).ok();
+            let shader = effect_material::engine_vertex_shader(&word, contrail_material::VERTEX_SLOT)
+                .ok_or("vertex_program_unread")?;
+            contrail_material::material(&inputs, shader).map_err(contrail_material::Refused::name)?
+        }
+    };
+    resolved(mem, material)?;
+    Err("device_state")
+}
+
 /// Compares `draw` with `e` and records the differing fields.
 pub(super) fn record(e: &Expected, draw: &d3d::ResolvedDraw) {
     let program = match &draw.shader.vertex {

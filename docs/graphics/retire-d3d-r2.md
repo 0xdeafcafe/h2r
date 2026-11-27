@@ -227,10 +227,9 @@ run. A sampled frame runs the guest, so the arms go on comparing.
 A kept body runs as the guest's, with nothing made before it. `render.stats`
 also counts `layer_plan_15_effects_shadow_answer_{particles,contrails,fault}`.
 
-The handlers stay: the native particle draw takes its pipeline from the
-D3D state the guest's material setup leaves (`native_render::particle_gpu`).
-Cutting them needs the materials in Rust, which [R2's materials](#r2s-materials)
-builds and proves.
+The handlers' material setups run unless [R2's materials](#r2s-materials)
+cuts them: the native particle draw takes its pipeline from the D3D state
+the setup leaves (`native_render::particle_gpu`).
 
 Tests: `answer.rs`
 (`an_answered_particle_draws_from_the_rust_emission_and_a_refused_one_keeps_its_guest_body`,
@@ -258,7 +257,7 @@ compared with the draw the native admission takes, one in 64 of each kind
 `compare` names each differing field: `render_<index>`, `stage<n>_<index>`,
 `combiner_w<n>`, `texture<n>`, `constant<register>`, `vertex_program`. A
 state set twice is compared at its last value. `render.scene` carries
-`<kind>_material_{sampled,matched,mismatched}`,
+`<kind>_material_{sampled,matched,mismatched,open,fallback,cut}`,
 `<kind>_material_mismatched_<field>` and `<kind>_material_refused_<reason>`
 for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
 
@@ -279,6 +278,32 @@ Refused, by name, rather than approximated:
 Not compared: the stipple pattern (`0x003f8cc0`), the polygon offsets
 `SetRenderState_ZBias` derives (slots 77 to 81), the vertex declaration
 and the other vertex constants.
+
+### The cut
+
+Built (**Code**): `render-bridge/src/effect_materials.rs`. A gate per kind:
+
+| | |
+|---|---|
+| Opens | 8 matched comparisons in a row |
+| Closes | any mismatch or refusal; closing an open gate counts `<kind>_material_fallback` |
+| Open | at the setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720` returning to `0x00035b23`) one call in 64 runs the guest's setup and its first draw is compared; the others ask the host (`Host::material_cut`) |
+| Cut | the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); its draws are not compared; `<kind>_material_cut` |
+| Kept | the host's refusal, `scene_kept_15_<kind>_material_<cause>`, closes the gate |
+
+Kept on every call, by name:
+
+| Kept | Why |
+|---|---|
+| `0x0002c3b0`, `0x0001bd50` | they write no device state, but later draws read their writes: `0x0001bd50`'s environment cache `[0x00485a58]` and dirty words, and `0x00016b90`'s engine inputs from `0x0055edd8` |
+| `0x00035b00`'s own setup (`0x00016b10`, the declaration from entry `+0x10`, `0x0001c6b0`, `0x0001c710`, `0x0001cf50`) | the declaration is not in the material |
+| `material_device_state` | the game's host refuses every cut after the material, its textures and program are made: the device resolves a draw's program, vertex format, combiner, textures and constants from its own state, and no admission draws from a supplied one, so a cut setup's draw would take the state the draw before it left |
+
+The material's own refusals reach the same counter
+(`scene_kept_15_particle_material_tags`, `..._library_loading`, ...).
+Tests: `effect_materials.rs` (`a_proven_material_cuts_the_handler_setup`,
+`one_draw_in_64_keeps_the_guest_setup_and_compares`,
+`a_refused_material_keeps_the_guest_setup_by_name`).
 
 Tests: `effect_material.rs`
 (`a_resident_image_binds_its_texture_and_others_fall_back_as_the_binder_does`,
