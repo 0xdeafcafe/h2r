@@ -31,16 +31,18 @@ metadata address, `tag_entry_checked`).
 
 **How the bot reads them.** `arms::read` takes the unit's four weapon
 datums, each resolved like any object (salt and type 2, weapon) and its
-definition through the tag entry (datum compared). A weapon whose
-definition ages (`0x101d20`'s test) is a **battery**: `1 - W+0x184`. One
-with magazines and no aging barrel is **rounds**: the first magazine,
-loaded `W+0x22c` of `+0xa`, reserve `W+0x22a` of `+0xc`. The retail
-energy sword has no magazines or barrels and uses battery age. On
+definition through the tag entry (datum compared). A weapon whose definition
+ages (`0x101d20`'s test) is a **battery**: `1 - W+0x184`. One with magazines
+and no aging barrel is **rounds**: the first magazine, loaded `W+0x22c` of
+`+0xa`, reserve `W+0x22a` of `+0xc`.
+
+The retail energy sword has no magazines or barrels and uses battery age. On
 exhaustion `0x101e69..0x101e74` replaces its definition with the tag at
 `D+0x304`, the depleted blade on Zanzibar. The multiplayer weapon type
-excludes the flag, bomb, ball and Juggernaut item from supplies. The two
-hands use slots `U+0x212` and `U+0x213`. The first other occupied slot
-is the stowed weapon.
+excludes the flag, bomb, ball and Juggernaut item from supplies.
+
+The two hands use slots `U+0x212` and `U+0x213`. The first other occupied
+slot is the stowed weapon.
 
 `arms::pickups` walks the objects array (at most 2048) for live weapon
 objects with no parent: placed weapons from the netgame spawns and dropped
@@ -90,16 +92,18 @@ far end (`weapons::FIRE_PAST_BAND`), whatever its class. A person sprays
 a little past where a gun is good and never across the map, so an SMG
 with an 8-unit band fires to 10, a battle rifle with a 20-unit band to
 25. The band comes from the gun's own tag data (`weapons::reach`), and
-the role table above is the fallback when the tag has none. Past the
-band the trigger works in bursts from Normal up (§3.4). A plasma rifle or plasma pistol (by identity), or any
-automatic whose projectile is slower than 150 world units a second,
-keeps its target within 6 and so fires to 7.5 at most
+the role table above is the fallback when the tag has none. Past the band
+the trigger works in bursts from Normal up (§3.4). A plasma rifle or plasma
+pistol (by identity), or any automatic whose projectile is slower than 150
+world units a second, keeps its target within 6 and so fires to 7.5 at most
 (`weapons::SLOW_BOLT_BAND`, `SLOW_BOLT_FIRE`): a strafing target steps out
-of slow bolts ([round 1 on Midship](notes/2026-11-23-bots-natural-round1.md):
-the plasma rifle hit 0.42 of its shots under 3 units, 0.17 from 3 to 12
-and almost none beyond). Beyond that the movement closes distance or the player draws
-another weapon. For a visible approaching enemy, the draw considers half
-a second of observed motion, capped at two units of advance.
+of slow bolts ([round 1 on
+Midship](notes/2026-11-23-bots-natural-round1.md): the plasma rifle hit 0.42
+of its shots under 3 units, 0.17 from 3 to 12 and almost none beyond).
+
+Beyond that the movement closes distance or the player draws another weapon.
+For a visible approaching enemy, the draw considers half a second of
+observed motion, capped at two units of advance.
 
 **The decision** (`arms::plan`, pure, in order):
 
@@ -168,25 +172,30 @@ loaded map, so object handles and tag datums can change between games.
 | Overshield and camouflage | `eqip+0x12c` i16 values 2 and 3; `+0x130` effect seconds | `0x151ef5..0x151f99` converts seconds to ticks and dispatches. Overshield calls `0xd6af0` (unit `+0x10a` bit 4 while charging, shield `+0xf0` above 1 when charged). Camouflage calls `0x152000` with effect index zero, storing ticks at player `+0x198`. |
 
 On Default controls a held Y asks for the secondary interaction at
-`0x14f8ff..0x14f911`. `0x151940` selects weapon actions 5/6 for that
-hand and 3/4 for the primary interaction (hold X). A short Y release
-goes through `0x14f96f` and `0x151aa0` to drop the weapon selected by
-`U+0x213`. The fallback action 19 goes through `0xe8de0`, clearing
-the hand at `0xe84f1` and removing the inventory entry through `0xce920`.
-A consumed hold suppresses that release. Clankers can pair two SMGs,
-a plasma rifle or plasma pistol with an SMG, or two needlers on any
+`0x14f8ff..0x14f911`. `0x151940` selects weapon actions 5/6 for that hand
+and 3/4 for the primary interaction (hold X). A short Y release goes through
+`0x14f96f` and `0x151aa0` to drop the weapon selected by `U+0x213`. The
+fallback action 19 goes through `0xe8de0`, clearing the hand at `0xe84f1`
+and removing the inventory entry through `0xce920`.
+
+A consumed hold suppresses that release. Clankers can pair two SMGs, a
+plasma rifle or plasma pistol with an SMG, or two needlers on any
 difficulty. Each Clanker's name sets its chance of wanting a second gun.
+
 It makes one choice per primary weapon type and compatible ground weapon
-each life. Staying near a declined gun or seeing it again keeps that
-choice. A respawned pickup gets a fresh roll. An active plasma-pistol
-combo or grenade throw keeps priority. In combat they take a pair only
-within pickup distance and inside both guns' effective bands. Either hand can charge the pistol.
-Only against a group (another enemy within 2.5 of the target), or with
-the left gun dry and nothing to load, does the bot trade the left gun for
-a grenade: the thrower first solves a safe grenade arc, taps Y and waits
-for the left slot to clear before using the grenade trigger. A lone enemy
-walking in, out of the left gun's band or lost for a moment keeps both
-guns on it.
+each life. Staying near a declined gun or seeing it again keeps that choice.
+A respawned pickup gets a fresh roll.
+
+An active plasma-pistol combo or grenade throw keeps priority. In combat
+they take a pair only within pickup distance and inside both guns' effective
+bands. Either hand can charge the pistol.
+
+Only against a group (another enemy within 2.5 of the target), or with the
+left gun dry and nothing to load, does the bot trade the left gun for a
+grenade: the thrower first solves a safe grenade arc, taps Y and waits for
+the left slot to clear before using the grenade trigger. A lone enemy
+walking in, out of the left gun's band or lost for a moment keeps both guns
+on it.
 
 The placement table has no last-taken timestamp. The host keeps the last
 successful take per placement, with these two read-only gameplay observers:
@@ -196,25 +205,35 @@ successful take per placement, with these two read-only gameplay observers:
 | Weapon taken | `0x10ca80`, EAX item, first stack argument new unit. The attach branch sets item `+0x12c` bits 0 and 2, stores the unit at `+0x154` and registers carried objectives at `0x10cb8f`. | Ignore detach (unit -1). Match the salted object to the live placement record and its position to the pad. Resolve the biped's `+0x13c` player and verify the player's `+0x2c` unit. Record game tick `[0x510c54]+8`. |
 | Equipment taken | `0x151ea0` dispatches the effect. On success it calls `0xa89c0` with ECX unit and EDX equipment definition, then deletes the item at `0x151fe7`. Rejected pickups skip this call. | At the notification entry verify return PC `0x151fd2`. The pickup function's second stack argument is now at `ESP+0x20`. Resolve the equipment datum and check its definition, placement and player as above. |
 
-Only a bot watching that pad can use the event to date its removal.
-The salted object must match and the event tick must fall between its
-last sighting on the pad and the first empty scan. If the observer is
+Only a bot watching that pad can use the event to date its removal. The
+salted object must match and the event tick must fall between its last
+sighting on the pad and the first empty scan. If the observer is
 unavailable, **[guess]** the first empty scan dates the pickup (up to 30
-ticks late). After a gap in sight the bot leaves the time unknown.
-For a witnessed disturbance or consumed power-up, the bot estimates the
-next eligible service from the event tick, placement index, tick rate
-and learned or public interval. The host's live countdown remains available
-as an offline trace. The bot cannot tell if the engine postpones the spawn.
-The travel policy budgets 12 ticks per world unit
-plus a 20-tick lead at Legendary, scaled down at lower skills. Bots fight from a due pad,
-and yield to objective or retreat orders. Rockets, both sniper-class
-rifles and the live sword qualify by their handling. A visible hand
-holding the same salted weapon object identifies the wielder. For a
-consumed power-up the success event identifies the player and unit. The
-bot remembers a visible recipient. Without an event, a sole visible
+ticks late).
+
+After a gap in sight the bot leaves the time unknown. For a witnessed
+disturbance or consumed power-up, the bot estimates the next eligible
+service from the event tick, placement index, tick rate and learned or
+public interval. The host's live countdown remains available as an offline
+trace.
+
+The bot cannot tell if the engine postpones the spawn. The travel policy
+budgets 12 ticks per world unit plus a 20-tick lead at Legendary, scaled
+down at lower skills. Bots fight from a due pad, and yield to objective or
+retreat orders.
+
+Rockets, both sniper-class rifles and the live sword qualify by their
+handling. A visible hand holding the same salted weapon object identifies
+the wielder. For a consumed power-up the success event identifies the player
+and unit.
+
+The bot remembers a visible recipient. Without an event, a sole visible
 player within one world unit with the matching effect is **[guess]**
-ownership. Ambiguous fallback observations remain unassigned. A later sighting refreshes the memory; death, a new unit,
-a visibly expired effect or ten seconds without confirmation clears it.
+ownership.
+
+Ambiguous fallback observations remain unassigned. A later sighting
+refreshes the memory; death, a new unit, a visibly expired effect or ten
+seconds without confirmation clears it.
 
 ## 3.7 Objectives (traced)
 
@@ -416,34 +435,38 @@ patience and caution from the personality, `plan_with`).
 
 **King of the Hill** (`zones::hill`). Approach the current corners'
 centre. In the hill (the engine's mask, else the corners), **hold** the
-centre within a share of its radius, 0.4 to 0.65 by caution
-(`HILL_KEEP`, `HILL_KEEP_CAUTION`), so the cautious play its edge; where
-the mask counts the bot in but the corners do not, hold the spot. Out of
-it with two teammates already holding it and nobody contesting, a bot of
-caution 0.6 or more (`EDGE_CAUTION`) covers it from just outside, within
-`1 + caution` radii of the centre. Everyone else goes in, and an enemy in
-the hill sends the cautious in too, to clear it; an enemy standing in it
-is the preferred target. Holding the hill, a focused bot stays in a fight
-one enemy longer before backing off. Moving the hill rebuilds its
-corners and the bot follows the next scoring mask.
+centre within a share of its radius, 0.4 to 0.65 by caution (`HILL_KEEP`,
+`HILL_KEEP_CAUTION`), so the cautious play its edge; where the mask counts
+the bot in but the corners do not, hold the spot. Out of it with two
+teammates already holding it and nobody contesting, a bot of caution 0.6 or
+more (`EDGE_CAUTION`) covers it from just outside, within `1 + caution`
+radii of the centre.
+
+Everyone else goes in, and an enemy in the hill sends the cautious in too,
+to clear it; an enemy standing in it is the preferred target. Holding the
+hill, a focused bot stays in a fight one enemy longer before backing off.
+Moving the hill rebuilds its corners and the bot follows the next scoring
+mask.
 
 **Assault.** Take a friendly or neutral bomb to an active enemy plate.
-In one-bomb, only the designated defender's plates score. Carrying the
-bomb on foot inside the arming volume advances the counter toward
-`G+0x244` seconds times tick rate. Outside, it falls by three per tick
-to a floor of -1. Stay on the plate through arming; when armed, close to
-score. The engine releases the planted bomb, records the planter at
-`A+0x17c+4·bombTeam` and sets the planted bit; the team's point comes when
-it goes off, about 3 s later, killing whoever stands near (round 1 on
-Midship: the planter and an escort 3 units away). Escorts cover the
-arming from the plate. A planted bomb is nobody's target: any goal whose
-point lies within `BLAST_CLEAR` (6 world units, XY) of it, or a bot with
-no goal standing there, becomes a **hold** within 1.5 of a spot 7.5 out
-along the line from the bomb to the bot (`objective::clear_of`).
-Defenders guard the plate within the guard radius or intercept the enemy
-carrier. An ordinary dropped friendly bomb can be recovered by the
-nearest teammate; a loose one elsewhere goes to the nearest attacker, the
-escorting names covering it.
+In one-bomb, only the designated defender's plates score. Carrying the bomb
+on foot inside the arming volume advances the counter toward `G+0x244`
+seconds times tick rate. Outside, it falls by three per tick to a floor of
+-1.
+
+Stay on the plate through arming; when armed, close to score. The engine
+releases the planted bomb, records the planter at `A+0x17c+4·bombTeam` and
+sets the planted bit; the team's point comes when it goes off, about 3 s
+later, killing whoever stands near (round 1 on Midship: the planter and an
+escort 3 units away). Escorts cover the arming from the plate.
+
+A planted bomb is nobody's target: any goal whose point lies within
+`BLAST_CLEAR` (6 world units, XY) of it, or a bot with no goal standing
+there, becomes a **hold** within 1.5 of a spot 7.5 out along the line from
+the bomb to the bot (`objective::clear_of`). Defenders guard the plate
+within the guard radius or intercept the enemy carrier. An ordinary dropped
+friendly bomb can be recovered by the nearest teammate; a loose one
+elsewhere goes to the nearest attacker, the escorting names covering it.
 
 **Territories** (`zones::territory`). A team spreads over the sites.
 Every bot ranks each pair of teammate and site the same way: a friendly
@@ -459,27 +482,31 @@ focused bot stays in a fight one enemy longer. FFA ownership follows the
 player slot and every bot plays alone.
 
 **Juggernaut.** Every other player sees the Juggernaut by its waypoint,
-so a hunter's goal is the Juggernaut wherever it is: it walks to it with
-no one in view and fights it on sight. Hunters ignore fellow hunters. The
+so a hunter's goal is the Juggernaut wherever it is: it walks to it with no
+one in view and fights it on sight. Hunters ignore fellow hunters. The
 Juggernaut has no marks on the others: it hunts the nearest hunter in its
 own view, and roams otherwise (`juggernaut_quarry`,
-`crates/live/bots/src/mind/strategy.rs`). It never withdraws, runs at a
-visible hunter while firing, then melees up close. Movement bonuses come
-from the game variant.
+`crates/live/bots/src/mind/strategy.rs`).
+
+It never withdraws, runs at a visible hunter while firing, then melees up
+close. Movement bonuses come from the game variant.
 
 **Picking up.** Approach the chosen item and hold X while it remains
 loose within pickup range: 0.5 world units in XY and 1 in height
-(`TAKE_HEIGHT`), as an item on a step or lip sits off the unit's origin.
-A goal counts as reached in XY within its radius (at least
-`nav::REACHED`) and in height within its radius (at least 1), so a bot
-does not walk on at an item it is standing on. `0x1517ec..0x1518d6` gives a nonzero
-multiplayer weapon type the contextual interaction kind 7. The held-X
-path accepts kinds 1 and 7 at `0x15195c` and requests primary pickup.
-There is also a proximity path (`0x15098f`) whose primary pickup is
-gated by inventory at `0x150dd0`. In Assault the pickup predicate
-`0x2415d3..0x241611` rejects a planted bomb or a non-neutral bomb
-belonging to another team. A bot returning its own CTF flag just
-touches it. Once possession changes the carrier releases X.
+(`TAKE_HEIGHT`), as an item on a step or lip sits off the unit's origin. A
+goal counts as reached in XY within its radius (at least `nav::REACHED`) and
+in height within its radius (at least 1), so a bot does not walk on at an
+item it is standing on. `0x1517ec..0x1518d6` gives a nonzero multiplayer
+weapon type the contextual interaction kind 7. The held-X path accepts kinds
+1 and 7 at `0x15195c` and requests primary pickup.
+
+There is also a proximity path (`0x15098f`) whose primary pickup is gated by
+inventory at `0x150dd0`. In Assault the pickup predicate
+`0x2415d3..0x241611` rejects a planted bomb or a non-neutral bomb belonging
+to another team.
+
+A bot returning its own CTF flag just touches it. Once possession changes
+the carrier releases X.
 
 ### A script's goals
 

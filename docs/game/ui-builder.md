@@ -442,3 +442,7 @@ See [UI builder: screens in YAML, design system and editing](ui-builder-yaml-edi
 ## Not verified
 
 See [UI builder: screens in YAML, design system and editing](ui-builder-yaml-editor.md#not-verified).
+
+#### A dialog is an overlay on its opener
+
+See [ui-builder-dialogs](ui-builder-dialogs.md#a-dialog-is-an-overlay-on-its-opener).

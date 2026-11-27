@@ -167,23 +167,25 @@ The host gives each bot its own view, teammate HUD markers, audible shots,
 its motion tracker, radio calls and public match information.
 
 Each brain keeps a short, tick-stamped history of world samples, vehicle
-sight, nearby grenades, sound, deaths and teammate callouts. It thinks
-from the newest sample at least `perception_ticks` old. A repeated poll
-in the same tick reuses the previous pad. If the host skips a sample, the
-brain can use an older observation. The first live sample after a respawn starts a
-fresh history.
+sight, nearby grenades, sound, deaths and teammate callouts. It thinks from
+the newest sample at least `perception_ticks` old. A repeated poll in the
+same tick reuses the previous pad.
+
+If the host skips a sample, the brain can use an older observation. The
+first live sample after a respawn starts a fresh history.
 
 ### The motion tracker
 
 A phantom has no local-user HUD slot, so `bots::guest::radar` builds the
-dots its own tracker would show. It uses the active variant's motion
-sensor flag (setting 20, or setting 73 on the Juggernaut), the map's
-`hudg +0x290` horizontal range and the player speed threshold read by
-`0x1a1d55`. A hostile player shows when it moves faster than that
-threshold or fired in the last `sound::HEARD_TICKS` (6): the shot sound
-names the shooter's slot (`ShotSound::shooter`, from the players table's
-unit). A player who walks crouched and holds fire does not show, nor do
-allies. A mounted player's movement comes from its vehicle.
+dots its own tracker would show. It uses the active variant's motion sensor
+flag (setting 20, or setting 73 on the Juggernaut), the map's `hudg +0x290`
+horizontal range and the player speed threshold read by `0x1a1d55`. A
+hostile player shows when it moves faster than that threshold or fired in
+the last `sound::HEARD_TICKS` (6): the shot sound names the shooter's slot
+(`ShotSound::shooter`, from the players table's unit).
+
+A player who walks crouched and holds fire does not show, nor do allies. A
+mounted player's movement comes from its vehicle.
 
 The brain gets up to `radar::DOTS` (4) dots, nearest first, each a
 horizontal point rounded to half a world unit at the bot's own height.
@@ -275,15 +277,16 @@ The mesh holds:
 **In the map.** Each polygon is in the map or out of it
 (`nav::NavMesh::mark_out_of_map`, run by `autonav::build_map` after the
 scenario's rides are linked). A polygon is in when a player start or a
-weapon pad reaches it over the mesh's links: the walks, steps, drops,
-jumps, crouch jumps, teleporters, lifts and elevators a player takes
-without a glitch. A superbounce is never a mesh link, so the terrain past
-a map's boundary walls and cliffs (Coagulation's snowfields) is out.
-Reachability is directed: a plateau that drops back into the map is out,
-a pit one drops into and cannot leave is in. A BSP no start or pad is on
-gets no flags. Every polygon is in until a classification marks some
-out. `autonav::mark_in_map` runs the same classification on one BSP's
-mesh for another caller: the Firefight kit keeps only in-map sectors
+weapon pad reaches it over the mesh's links: the walks, steps, drops, jumps,
+crouch jumps, teleporters, lifts and elevators a player takes without a
+glitch. A superbounce is never a mesh link, so the terrain past a map's
+boundary walls and cliffs (Coagulation's snowfields) is out.
+
+Reachability is directed: a plateau that drops back into the map is out, a
+pit one drops into and cannot leave is in. A BSP no start or pad is on gets
+no flags. Every polygon is in until a classification marks some out.
+`autonav::mark_in_map` runs the same classification on one BSP's mesh for
+another caller: the Firefight kit keeps only in-map sectors
 ([firefight.md](firefight.md), "Sectors the AI can use").
 
 Out-of-map polygons are kept, flagged, because a bot can still end up
@@ -323,28 +326,36 @@ local player.
 
 The generator checks headroom at walk-sector centres and portals. The
 steering layer checks the standing capsule ahead on the floor, including
-within a single polygon and when strafing. A jump samples the swept arc
-at the centre and both shoulders for roof and body clearance. Teleporter
-cost includes walking to the sender and walking from the receiver. Lift
-cost includes boarding and travel time plus a 25% allowance for exposure during the ride. On
-graphs with these links the search uses a zero distance heuristic so a
-shortcut remains admissible even when its entrance is away from the goal.
+within a single polygon and when strafing. A jump samples the swept arc at
+the centre and both shoulders for roof and body clearance.
+
+Teleporter cost includes walking to the sender and walking from the
+receiver. Lift cost includes boarding and travel time plus a 25% allowance
+for exposure during the ride. On graphs with these links the search uses a
+zero distance heuristic so a shortcut remains admissible even when its
+entrance is away from the goal.
+
 At six ticks per walking unit, the teleporter transit allowance is six
 ticks. A lift budgets eight ticks to board plus 2.7 ticks per unit of
 travel. A platform elevator budgets 24 ticks to board plus 4.8 ticks per
-unit. The exposure allowance applies to travel. All rates are estimates.
+unit.
+
+The exposure allowance applies to travel. All rates are estimates.
 
 ### Traversal audit by map
 
 Counts are **directed edges**. The source scan used the retail Xbox disc,
-the nine installed Multiplayer Map Pack scenarios and thirteen installed
-H1 conversions. It read scenario flags and automatic scenery, machine and
-crate placements. An independent offline probe checked endpoints against
-fingerprint-matched cached BSP triangles and walk polygons. The counts
-below are the expected output of the new Rust generator. The ignored
-`bots/tests/map_corpus.rs` test rebuilds all 34 from source and checks
-those expectations. A landing that clears the BSP still needs a ride in
-the game to establish which deck the engine actually reaches.
+the nine installed Multiplayer Map Pack scenarios and thirteen installed H1
+conversions. It read scenario flags and automatic scenery, machine and crate
+placements.
+
+An independent offline probe checked endpoints against fingerprint-matched
+cached BSP triangles and walk polygons. The counts below are the expected
+output of the new Rust generator.
+
+The ignored `bots/tests/map_corpus.rs` test rebuilds all 34 from source and
+checks those expectations. A landing that clears the BSP still needs a ride
+in the game to establish which deck the engine actually reaches.
 
 | Retail H2 scenario | Teleporter | Lift | Placement or remaining gap |
 |---|---:|---:|---|
@@ -396,8 +407,9 @@ unverified. See [Title updates and maps](../runtime/title-updates.md).
 The converter writes type 7 senders and type 8 receivers. Matching their
 channel preserves Blood Gulch's two one-way base exits and Sidewinder's
 mixed layout. On Sidewinder, channels 2 and 3 have opposite endpoints.
-The scan found no automatically placed machines or lift-family objects
-on the thirteen conversions. Sidewinder has blast-door collision scenery.
+
+The scan found no automatically placed machines or lift-family objects on
+the thirteen conversions. Sidewinder has blast-door collision scenery.
 Whether any converted scenery moves under a script requires a game run.
 
 Ledges on Lockout (0.40 units), H2 Beaver Creek (0.36), H1 Blood Gulch
@@ -433,61 +445,75 @@ tracker" (§3.1).
 
 A visible power item has probability 1 and a visibly empty pad has
 probability 0 for this tick. Away from the pad, an empty observation
-gradually loses weight. Estimate the return using a witnessed period,
-then a placement override, then the item collection default, with a
-60-second prior if all are unknown. Only a continuously watched pickup
-and return of a new object can teach a period. Last seeing the item
-elsewhere in someone's hands or hearing a teammate call the pad empty
-also changes the estimate. A carried model is attributable only when it
-matches one known pad. A recognizable object in either hand is specific
-to its placement. Indirect reports always retain uncertainty and retain
-the original observation tick through perception and radio delays.
-Distance, recent danger, the strength of the nearby position and past
-visits all affect whether a trip is worthwhile.
+gradually loses weight. Estimate the return using a witnessed period, then a
+placement override, then the item collection default, with a 60-second prior
+if all are unknown.
 
-`h1convert` writes the H1 spawn time to the H2 scenario equipment record
-at `+0x0e` in seconds. The converted Blood Gulch has explicit 120-second
-sniper and 90-second rocket placements. Every inspected Sidewinder
-placement has zero there. Its rocket collection supplies 120 seconds,
-and its sniper collection also has zero. Before inspection the cache gives
-the bot its 60-second prior. Once it inspects the placement, the traced
-engine default of 30 seconds and the public variant setting refine that estimate.
-These values describe the bot's expectation.
+Only a continuously watched pickup and return of a new object can teach a
+period. Last seeing the item elsewhere in someone's hands or hearing a
+teammate call the pad empty also changes the estimate. A carried model is
+attributable only when it matches one known pad.
 
-The cache stores common lanes, sightlines, vantage positions, player
-starts and power pads alongside the mesh and BSP walls. Up to sixteen
-sample origins estimate which sectors lie on many shortest paths. A
-vantage scores sightlines to those lanes, elevation over them, nearby
-solid cover and distinct exits. Spatial sampling and successive spacing
-passes distribute candidates across the map. A replay of the scorer on
-older fingerprint-matched geometry selected 32 positions each on Blood
-Gulch and Sidewinder, spanning about 115 × 134 and 99 × 102 world units
-in plan respectively. The corpus test checks coverage after regeneration.
+A recognizable object in either hand is specific to its placement. Indirect
+reports always retain uncertainty and retain the original observation tick
+through perception and radio delays. Distance, recent danger, the strength
+of the nearby position and past visits all affect whether a trip is
+worthwhile.
 
-A calm sniper or precision gunner can seek a position and face the lane
-it covers. A bot ahead on the scoreboard can hold a nearby vantage.
-Patience extends the wait at a projected return, and a favourite weapon can
-tip the choice between two nearby pads. A patient long-range gunner or one
-carrying its favourite rifle gives a stronger sightline more weight.
-Skill and tuned awareness affect how many places and pad locations it
-recognizes, how far it will go, and how accurately it estimates arrival.
-A once-visible enemy can be chased at its last observed position. When an
-idle bot hears a gunshot, it can turn toward the coarse bearing after a
-5–8 tick reaction delay, then walk a short distance in that direction.
-The sound gives it neither a combat target nor a reason to fire. Hit
-with nobody in view, the bot faces the newest shot that is not its own at
-once, for `HIT_LOOK_TICKS` (45), as a player follows the HUD's damage
-arrow, and its next sighting in that time is an alert one (§3.4). A kill
-announcement retires the old sighting and may prompt a look toward a
+`h1convert` writes the H1 spawn time to the H2 scenario equipment record at
+`+0x0e` in seconds. The converted Blood Gulch has explicit 120-second sniper
+and 90-second rocket placements. Every inspected Sidewinder placement has
+zero there.
+
+Its rocket collection supplies 120 seconds, and its sniper collection also
+has zero. Before inspection the cache gives the bot its 60-second prior.
+
+Once it inspects the placement, the traced engine default of 30 seconds and
+the public variant setting refine that estimate. These values describe the
+bot's expectation.
+
+The cache stores common lanes, sightlines, vantage positions, player starts
+and power pads alongside the mesh and BSP walls. Up to sixteen sample
+origins estimate which sectors lie on many shortest paths. A vantage scores
+sightlines to those lanes, elevation over them, nearby solid cover and
+distinct exits.
+
+Spatial sampling and successive spacing passes distribute candidates across
+the map. A replay of the scorer on older fingerprint-matched geometry
+selected 32 positions each on Blood Gulch and Sidewinder, spanning about 115
+× 134 and 99 × 102 world units in plan respectively. The corpus test checks
+coverage after regeneration.
+
+A calm sniper or precision gunner can seek a position and face the lane it
+covers. A bot ahead on the scoreboard can hold a nearby vantage. Patience
+extends the wait at a projected return, and a favourite weapon can tip the
+choice between two nearby pads.
+
+A patient long-range gunner or one carrying its favourite rifle gives a
+stronger sightline more weight. Skill and tuned awareness affect how many
+places and pad locations it recognizes, how far it will go, and how
+accurately it estimates arrival. A once-visible enemy can be chased at its
+last observed position.
+
+When an idle bot hears a gunshot, it can turn toward the coarse bearing
+after a 5–8 tick reaction delay, then walk a short distance in that
+direction. The sound gives it neither a combat target nor a reason to fire.
+Hit with nobody in view, the bot faces the newest shot that is not its own
+at once, for `HIT_LOOK_TICKS` (45), as a player follows the HUD's damage
+arrow, and its next sighting in that time is an alert one (§3.4).
+
+A kill announcement retires the old sighting and may prompt a look toward a
 plausible out-of-view map start. Search confidence expires on the existing
 enemy-memory clock.
 
-Per-bot experience records verified supply visits and confirmed kills
-from a recent firing position in coarse map regions. A versioned serde
-snapshot can be restored to another brain. A future Live profile adapter
-can store it under the persistent ranked bot's account and map revision
-on the local server and worker. Within this lane the brain owns it in
-memory. It survives match resets for that brain's lifetime.
+Per-bot experience records verified supply visits and confirmed kills from a
+recent firing position in coarse map regions. A versioned serde snapshot can
+be restored to another brain. A future Live profile adapter can store it
+under the persistent ranked bot's account and map revision on the local
+server and worker.
+
+Within this lane the brain owns it in memory. It survives match resets for
+that brain's lifetime.
 
 **Getting unstuck** (`crates/live/bots/src/stuck.rs`, built). A pure state
 machine, run every tick the bot is walking somewhere (chase, roam, going
@@ -533,19 +559,20 @@ the state machine. Both limit recovery hops on walking legs to directions
 with footing out to 1.6 world units.
 
 **Corners and doorways** (`nav::NavMesh::portal`, built). A path never
-aims at a wall corner itself: each portal end that is a corner of the
-mesh (a vertex on a side nobody walks across: a wall or a ledge) is
-pulled 0.3 world units in (`nav::CLEARANCE`), so a bot turns a body's
-width off the corner instead of catching its shoulder on it. A link
-the builder made between surfaces that do not share an edge (a doorway
-off a long wall) spans the near polygon's whole side; the portal is cut
-to the part the far polygon lies along, so the path goes through the
-door and not through the wall beside it. Nearing a corner (0.8) the
-follower bends toward the next leg when both legs are walks and the bend
-has footing. `mind::Mind::go` checks walking and cornering directions up
-to the current waypoint. A step across a planned drop or jump follows
-the route directly. Traversal links with separate entry and landing
-points control the approach and crossing themselves.
+aims at a wall corner itself: each portal end that is a corner of the mesh
+(a vertex on a side nobody walks across: a wall or a ledge) is pulled 0.3
+world units in (`nav::CLEARANCE`), so a bot turns a body's width off the
+corner instead of catching its shoulder on it. A link the builder made
+between surfaces that do not share an edge (a doorway off a long wall) spans
+the near polygon's whole side; the portal is cut to the part the far polygon
+lies along, so the path goes through the door and not through the wall
+beside it. Nearing a corner (0.8) the follower bends toward the next leg
+when both legs are walks and the bend has footing. `mind::Mind::go` checks
+walking and cornering directions up to the current waypoint.
+
+A step across a planned drop or jump follows the route directly. Traversal
+links with separate entry and landing points control the approach and
+crossing themselves.
 
 **Off the mesh** (`nav::NavMesh::nearest`, built). A start or goal no
 polygon is under (a bot on a crate or knocked off an edge, someone seen

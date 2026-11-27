@@ -103,25 +103,26 @@ the mode a row asks for at its first panel update
 ([party-lobby.md](party-lobby.md), "The modes"). `h2 bots test` drives
 Custom Games at row 4.
 
-A moved retail row's press rewrites the press record's row (`[[esp+8]]`)
-to its retail row and runs the original, as the co-op row does; after it
-returns, the cursor row `0x510a18` is set to the row shown (the retail
-press stored the retail row there). The browser's and co-op's presses
-store their rows too (`custom_games::remember_row`, rows 0 to 7; Mods
-opens over the menu and stores none). The menu restores its cursor only
-to rows 0 to 3 (`0x231195`: `cmp eax,4; jge`), so for rows 4 to 7 a
-`before` on the menu's build `0x00231170`
-(`engine::points::LIVE_MENU_CURSOR`, vtable `0x00458b48` slot
-`0x00458bec`, thiscall, no arguments, plain `ret`) does the build itself:
-`[0x54e7bc] = -1`, `byte [0x54e7b8] = 0`, `0x22ee92(screen,
-0x1901fc())`, `0x22f672(screen)`, then `0x24c591` (EAX the list at
-screen `+0x818`, the row on the stack, `ret 4`) with the stored row
-(`custom_games::LiveMenuCursor`, feature `live-menu-cursor`). Rows 0 to 3
-and "none" (-1) go to the retail build. The co-op row's retail-lobby
-press (which runs retail row 2's press, storing 2) now sets its own row
-after it, as the moved rows do. Every Live menu press sets `clankermatch::active` (Clankermatch)
-or clears it (any other row). `h2 bots test` and `h2 coop test --drive`
-navigate by the new rows (`agent_proto::sim::menu`, `bots_drive`).
+A moved retail row's press rewrites the press record's row (`[[esp+8]]`) to
+its retail row and runs the original, as the co-op row does; after it
+returns, the cursor row `0x510a18` is set to the row shown (the retail press
+stored the retail row there). The browser's and co-op's presses store their
+rows too (`custom_games::remember_row`, rows 0 to 7; Mods opens over the
+menu and stores none). The menu restores its cursor only to rows 0 to 3
+(`0x231195`: `cmp eax,4; jge`), so for rows 4 to 7 a `before` on the menu's
+build `0x00231170` (`engine::points::LIVE_MENU_CURSOR`, vtable `0x00458b48`
+slot `0x00458bec`, thiscall, no arguments, plain `ret`) does the build
+itself: `[0x54e7bc] = -1`, `byte [0x54e7b8] = 0`, `0x22ee92(screen,
+0x1901fc())`, `0x22f672(screen)`, then `0x24c591` (EAX the list at screen
+`+0x818`, the row on the stack, `ret 4`) with the stored row
+(`custom_games::LiveMenuCursor`, feature `live-menu-cursor`).
+
+Rows 0 to 3 and "none" (-1) go to the retail build. The co-op row's
+retail-lobby press (which runs retail row 2's press, storing 2) now sets its
+own row after it, as the moved rows do. Every Live menu press sets
+`clankermatch::active` (Clankermatch) or clears it (any other row). `h2 bots
+test` and `h2 coop test --drive` navigate by the new rows
+(`agent_proto::sim::menu`, `bots_drive`).
 
 **The playlists (traced, confirmed from the disassembly).**
 OptiMatch's press (`0x231025`) opens the playlist screen through
@@ -179,36 +180,37 @@ With no marks (an older server) both are retail.
 
 **Switch To: Clankermatch (built).** The
 playlist screen's second opener (`0x002bbf06`, from `0x002bba93`) is the
-lobby's **"Switch To: Matchmaking"**: a Game Setup (squad settings)
-row whose press, `0x002bba8c` (EAX the press's player chain, the list
-handler on the stack, `ret 4`), opens the playlist screen for the
-chain's player and closes the dialog (`0x0022eeee`, `0x0022e957`). The
-list constructor (`0x002bb4d2`) gives it action 8 in lobby kinds 4 (2,
-3, 7, 8) and 5 (Change Map, Change Rules, Quick Options, Switch To:
-Co-Op Game, Switch To: Matchmaking), and action 9 in kind 6 (9, 6); the
-row-chosen jump table (`0x002bb884`) sends 8 and 9 to the same press.
-`clankermatch::SwitchRow` (feature `clankermatch-switch`) adds **"Switch
-To: Clankermatch"** (action 12, `clankermatch::SWITCH_ACTION`, past the
-Halo 1 Options row's 10 and the Clankers row's 11) right under it, while
-the server has clanker hoppers (`clankermatch::wants_switch_row`,
-`switch_placed`), drawn with `custom_games::SWITCH_CLANKERMATCH_TEXT`
-(string id `ID_BASE + 0x3b`, the Live menu rows' family). Its press sets
-`clankermatch::active` and calls `0x002bba8c` itself, so the party goes
-to the clanker playlists and on to the empty search and the fill (§8.4),
-as the Live menu's row does. Retail's Switch To: Matchmaking now clears
-`active` first (`clankermatch::switch_press`), so it always lists the
-human playlists, whatever the Live menu chose last. The log says
-`clankermatch: Game Setup list: Switch To: Clankermatch row added (N
-rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
-opening the clanker playlists` and `clankermatch: the playlists are the
-clanker hoppers` at the press. The party lobby's Game Setup then drops
-every Switch To row, this one with retail's (`lobby_mode::arrange`, the
-constructor's outermost `after`, so it runs once this row is added):
-the GAME MODE picker changes mode, and its MULTIPLAYER mode is the one
-matchmaking lobby. There, action 9 reads Change Playlist... and lists
-the clanker and the human hoppers on one page (`clankermatch::Scope::All`),
-so the playlist picked is the Clanker or non-Clanker choice
-([party-lobby.md](party-lobby.md#the-modes)).
+lobby's **"Switch To: Matchmaking"**: a Game Setup (squad settings) row
+whose press, `0x002bba8c` (EAX the press's player chain, the list handler on
+the stack, `ret 4`), opens the playlist screen for the chain's player and
+closes the dialog (`0x0022eeee`, `0x0022e957`). The list constructor
+(`0x002bb4d2`) gives it action 8 in lobby kinds 4 (2, 3, 7, 8) and 5 (Change
+Map, Change Rules, Quick Options, Switch To: Co-Op Game, Switch To:
+Matchmaking), and action 9 in kind 6 (9, 6); the row-chosen jump table
+(`0x002bb884`) sends 8 and 9 to the same press. `clankermatch::SwitchRow`
+(feature `clankermatch-switch`) adds **"Switch To: Clankermatch"** (action
+12, `clankermatch::SWITCH_ACTION`, past the Halo 1 Options row's 10 and the
+Clankers row's 11) right under it, while the server has clanker hoppers
+(`clankermatch::wants_switch_row`, `switch_placed`), drawn with
+`custom_games::SWITCH_CLANKERMATCH_TEXT` (string id `ID_BASE + 0x3b`, the
+Live menu rows' family). Its press sets `clankermatch::active` and calls
+`0x002bba8c` itself, so the party goes to the clanker playlists and on to
+the empty search and the fill (§8.4), as the Live menu's row does.
+
+Retail's Switch To: Matchmaking now clears `active` first
+(`clankermatch::switch_press`), so it always lists the human playlists,
+whatever the Live menu chose last. The log says `clankermatch: Game Setup
+list: Switch To: Clankermatch row added (N rows)` at each Game Setup, then
+`clankermatch: Switch To: Clankermatch: opening the clanker playlists` and
+`clankermatch: the playlists are the clanker hoppers` at the press.
+
+The party lobby's Game Setup then drops every Switch To row, this one with
+retail's (`lobby_mode::arrange`, the constructor's outermost `after`, so it
+runs once this row is added): the GAME MODE picker changes mode, and its
+MULTIPLAYER mode is the one matchmaking lobby. There, action 9 reads Change
+Playlist... and lists the clanker and the human hoppers on one page
+(`clankermatch::Scope::All`), so the playlist picked is the Clanker or
+non-Clanker choice ([party-lobby.md](party-lobby.md#the-modes)).
 
 ### 8.4 Search and lobby (built: the empty search)
 

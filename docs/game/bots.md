@@ -52,21 +52,24 @@ XUIDs keeps the same look for the same name.
 The profile model still comes from the host. Team games can override the
 visible armour colour.
 
-`live_proto::bots::appearance` lowercases the tag, collapses whitespace
-and hashes its UTF-8 bytes with 32-bit FNV-1a and a fixed final mix. The
-low bits select one of 64 foregrounds and 32 backgrounds. The two
-foreground colours come from one brightness group and the two background
-colours from the other, using four different retail palette indices.
-Rusty Lugnut has foreground 1, background 30 and profile colours
-10, 11, 13, 16. The server recomputes looks when projecting every
-`BotIssued`, including old signed events, so existing accounts migrate
-without rewriting their log or changing their personality. The game and
-both Live homes use the pure Rust implementation. The web mock uses a C
-mirror compiled as inline WebAssembly. Rust and browser tests read the
-same 8,192-name fixture and check its fingerprint. After changing
-`web/src/lib/clanker_appearance.c`, regenerate the browser module
-with `python3 scripts/clanker-web-kernel.py` using LLVM clang and wasm-ld.
-The web tests check the source digest.
+`live_proto::bots::appearance` lowercases the tag, collapses whitespace and
+hashes its UTF-8 bytes with 32-bit FNV-1a and a fixed final mix. The low
+bits select one of 64 foregrounds and 32 backgrounds. The two foreground
+colours come from one brightness group and the two background colours from
+the other, using four different retail palette indices.
+
+Rusty Lugnut has foreground 1, background 30 and profile colours 10, 11, 13,
+16. The server recomputes looks when projecting every `BotIssued`, including
+old signed events, so existing accounts migrate without rewriting their log
+or changing their personality. The game and both Live homes use the pure
+Rust implementation.
+
+The web mock uses a C mirror compiled as inline WebAssembly. Rust and
+browser tests read the same 8,192-name fixture and check its fingerprint.
+
+After changing `web/src/lib/clanker_appearance.c`, regenerate the browser
+module with `python3 scripts/clanker-web-kernel.py` using LLVM clang and
+wasm-ld. The web tests check the source digest.
 
 **Retail trace.** The main-menu tags identify the pregame lobby as
 `0x0e`, the expanded/collapsed Live Y menus as `0x1a/0x1b`, and their
@@ -119,18 +122,21 @@ that tag alone does not establish a loader for it.
   which refuses the entire recipient list if it includes a bot.
 
 **Needs a game run.** The common constructors and record layout are
-confirmed statically. Which handler each retail lobby, in-game, recent
-and friends row exercises still needs input-driven confirmation.
-Select a bot and a human from each available surface, including a
-recent bot that has left the session. Check `h2 agent ui` for
-`dialog.name = clanker_player_options`, the rendered emblem, difficulty
-and style, and return to the invoking list with B or Back. Repeat with a
-remote client and with a human guest signed in on a second controller.
-Check the same name after restart and in a non-team System Link game
-against its Live card and web emblem. Use a legacy friends
-entry if available, since new friend requests to bots cannot create one.
-The menu parity check visits recent entries, verifies the Clanker card
-class and reports missing widget text. [Crawling the menus](../runtime/agent-api.md#crawling-the-menus)
+confirmed statically. Which handler each retail lobby, in-game, recent and
+friends row exercises still needs input-driven confirmation. Select a bot
+and a human from each available surface, including a recent bot that has
+left the session.
+
+Check `h2 agent ui` for `dialog.name = clanker_player_options`, the rendered
+emblem, difficulty and style, and return to the invoking list with B or
+Back. Repeat with a remote client and with a human guest signed in on a
+second controller. Check the same name after restart and in a non-team
+System Link game against its Live card and web emblem.
+
+Use a legacy friends entry if available, since new friend requests to bots
+cannot create one. The menu parity check visits recent entries, verifies the
+Clanker card class and reports missing widget text. [Crawling the
+menus](../runtime/agent-api.md#crawling-the-menus)
 
 ## 1. Decision
 
@@ -252,12 +258,13 @@ player action consumer also honours the shared input-disable byte at
 states are 1 and shared input is enabled. The phantom gather hook
 (`Phantoms::slot_action`) returns no action and clears the seat's input
 queue, uplink and source while it is false, so a delayed action from the
-last round cannot arrive in the next. The opening fade itself stays
-with `guest::match_opening_fading`: the phantom keeps observing and
-sends a neutral pad while the first local view is black, and a respawn
-fade later in the round does not close the round. A dedicated host has
-no local view and uses the engine state and input byte. The gate reads
-the same engine fields on retail and converted maps.
+last round cannot arrive in the next. The opening fade itself stays with
+`guest::match_opening_fading`: the phantom keeps observing and sends a
+neutral pad while the first local view is black, and a respawn fade later in
+the round does not close the round.
+
+A dedicated host has no local view and uses the engine state and input byte.
+The gate reads the same engine fields on retail and converted maps.
 
 ### 2.3 Views (traced)
 
@@ -605,3 +612,11 @@ See [game runs and testing](bots-game-run.md#13-testing-h2-bots-test).
 ### 13.1 Clankermatch (`h2 bots test --clankermatch`)
 
 See [game runs and testing](bots-game-run.md#131-clankermatch-h2-bots-test---clankermatch).
+
+#### Warm-up
+
+See [bots-decision-aim](bots-decision-aim.md#warm-up).
+
+#### The action from a pad
+
+See [bots-phantom-peers](bots-phantom-peers.md#the-action-from-a-pad).

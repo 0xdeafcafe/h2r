@@ -20,44 +20,49 @@ These are the inputs to that design.
 | roam | the default: move toward the likely fight (spawns, weapon spots) |
 
 **In play today.** `Mind::step` chooses an activity per tick. A flag or
-bomb carrier moves toward its scoring point. A ball carrier looks for
-cover and melees anyone in reach. Both suppress weapon switches.
-An armed objective player stays on assignment. A dry player can still
-detour to get a usable weapon. In King, it only collects guns inside the
-active hill.
+bomb carrier moves toward its scoring point. A ball carrier looks for cover
+and melees anyone in reach. Both suppress weapon switches.
 
-A bot can fire at a visible opponent while walking toward the hill,
-guarding its flag or escorting a carrier. Inside a held zone in Oddball,
-King of the Hill and Territories (one of at least `FOOTWORK_ROOM`, 1
-world unit) it keeps its fight footwork; past half the zone's radius the
-step loses the part that leads out (`objective::within`), so it strafes
-in the hill rather than standing still and never fights its way out. Target choice combines the
+An armed objective player stays on assignment. A dry player can still detour
+to get a usable weapon. In King, it only collects guns inside the active
+hill.
+
+A bot can fire at a visible opponent while walking toward the hill, guarding
+its flag or escorting a carrier. Inside a held zone in Oddball, King of the
+Hill and Territories (one of at least `FOOTWORK_ROOM`, 1 world unit) it
+keeps its fight footwork; past half the zone's radius the step loses the
+part that leads out (`objective::within`), so it strafes in the hill rather
+than standing still and never fights its way out. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
-calls, recent kills and visible openings. A bot that loses sight plays its
-objective first. In Slayer (`Mind::between_fights`,
-`crates/live/bots/src/mind/strategy.rs`) it then takes, in order: recover
-shields; regroup with the nearest teammate after withdrawing or while
-afraid; its own lead (hold the angle it lost the target round, then chase
-the last sighting); a teammate's call or a trade; a due supply or loose
-grenades; a heard shot or a guessed respawn; move up with the lower-slot
-teammate when that one is more than 10 to 19 units away; a firing
-position; roam. A teammate's call never pulls a bot off a fresh lead of
-its own, and trailing a teammate comes only once nothing else is left. A
-team call alone never authorizes a shot.
+calls, recent kills and visible openings.
+
+A bot that loses sight plays its objective first. In Slayer
+(`Mind::between_fights`, `crates/live/bots/src/mind/strategy.rs`) it then
+takes, in order: recover shields; regroup with the nearest teammate after
+withdrawing or while afraid; its own lead (hold the angle it lost the target
+round, then chase the last sighting); a teammate's call or a trade; a due
+supply or loose grenades; a heard shot or a guessed respawn; move up with
+the lower-slot teammate when that one is more than 10 to 19 units away; a
+firing position; roam.
+
+A teammate's call never pulls a bot off a fresh lead of its own, and
+trailing a teammate comes only once nothing else is left. A team call alone
+never authorizes a shot.
 
 ### Finishing and breaking off
 
-A target whose shield is down is run down, not strafed at while its
-shield comes back. The bot reads the shield from the visible contact (at
-or under 0.25), or counts it as down after twice the melee finish's pulls
-on target (`weapons::Combo::softened`: 6 at Legendary, about 1.6 s of
-automatic fire). With an automatic, a shotgun or nothing loaded it runs
-straight in from within 6 units; with a rifle only from within 2.5,
-since its headshot finishes further out; never with a sniper, splash gun
-or sword (`tactics::finish_push`). Running in uses the rush footwork and
-the plasma reach for the melee (1.17 units), so the melee lands. It
-does not run in while carrying or withdrawing, and it keeps firing on
-the way.
+A target whose shield is down is run down, not strafed at while its shield
+comes back. The bot reads the shield from the visible contact (at or under
+0.25), or counts it as down after twice the melee finish's pulls on target
+(`weapons::Combo::softened`: 6 at Legendary, about 1.6 s of automatic fire).
+With an automatic, a shotgun or nothing loaded it runs straight in from
+within 6 units; with a rifle only from within 2.5, since its headshot
+finishes further out; never with a sniper, splash gun or sword
+(`tactics::finish_push`).
+
+Running in uses the rush footwork and the plasma reach for the melee (1.17
+units), so the melee lands. It does not run in while carrying or
+withdrawing, and it keeps firing on the way.
 
 The bot withdraws when it sees more enemies within 8 plus 12 times its
 awareness units than it has teammates there with a clear line, plus a
@@ -73,21 +78,24 @@ its shield is under the recovery line (0.9); with a full shield a fearful
 bot regroups with a teammate if there is one, else follows its own lead.
 
 **Full shield.** Every shield line in the brain (the recovery lines,
-the fight's back-off and the decision layer's 0.4 to 0.86) reads the
-shield as a fraction of the bot's full shield. The perception reads that
-full shield as `0x1588b0` computes it for a spawn
-(`guest::full_shield`, `Me::shield_full`): the variant's shields (1, 0,
-or `[0x45dbd4]` for overshields) times the handicap's factor (1, 0.75,
-0.5, 0.25). `mind::relative_shield` divides by it, capped at 1, so an
-overshield still reads above 1. In a variant without shields the body's
-vitality stands in for the shield, so the bot still backs off when hurt
-and comes back when healed. With absolute lines, a bot whose full shield
-was under 0.25 was always "shields down". In game
-`09af571f9fec7f1a33ed37edb397a140` the bots carried a handicap of 3 and
-spent the match recovering. The median angle between their walk and their
-aim while firing was 178–180°, so they backpedalled through every fight.
-In game `c9a3aa1a3f867c298a6ae32b56e50399`, with full shields, it was 90°,
-a strafe. `bots.stats` `combat.standing_decisions.recover` shows the time
+the fight's back-off and the decision layer's 0.4 to 0.86) reads the shield
+as a fraction of the bot's full shield. The perception reads that full
+shield as `0x1588b0` computes it for a spawn (`guest::full_shield`,
+`Me::shield_full`): the variant's shields (1, 0, or `[0x45dbd4]` for
+overshields) times the handicap's factor (1, 0.75, 0.5, 0.25).
+`mind::relative_shield` divides by it, capped at 1, so an overshield still
+reads above 1. In a variant without shields the body's vitality stands in
+for the shield, so the bot still backs off when hurt and comes back when
+healed.
+
+With absolute lines, a bot whose full shield was under 0.25 was always
+"shields down". In game `09af571f9fec7f1a33ed37edb397a140` the bots carried
+a handicap of 3 and spent the match recovering. The median angle between
+their walk and their aim while firing was 178–180°, so they backpedalled
+through every fight.
+
+In game `c9a3aa1a3f867c298a6ae32b56e50399`, with full shields, it was 90°, a
+strafe. `bots.stats` `combat.standing_decisions.recover` shows the time
 spent recovering. The tests are
 `mind::tests::shields_down_is_a_fraction_of_the_full_shield`,
 `without_shields_it_backs_off_on_health_alone` and
@@ -103,29 +111,34 @@ makes the whole pad; on foot, after the order above, boarding a close and
 slow enemy vehicle takes over in a fight or not, and taking a free one
 takes over only when calm and not carrying or rearming.
 
-**Warm-up.** For the first 2 to 4 s of its first life in a match
-(`mind::warmup`: `WARMUP_MIN_TICKS` 60 to `WARMUP_MAX_TICKS` 120) a bot
-picks no target, so it does not shoot, throw or melee; it looks round,
-moves off its spawn and plays the objective as usual. The length is the
-bot's own, from its name's hash (the Clanker personality's
-`NameProfile::seed`; the brain's seed without a name), so it is the same
-every match and differs between bots. Taking damage ends it at once: a
-bot that is shot fights back. A brain makes a fresh mind each match
-(`Brain::reset_mind`), which is when the warm-up is due again; a respawn
-does not start it. A bare `Mind::new` (the tests') has none.
+#### Warm-up
 
-A bot with a known grenade in stock can throw at 3–12 world units. It
-looks for a cluster, an enemy within 6 units walking at it (faster than
-0.8 a second, heading within about 37° of it: `grenades::Mark::closing_on`), or the last position
-where an enemy disappeared within two seconds. Both chasing and holding
-the corner present that opportunity. In these short windows Normal has
-about one chance per second before temperament, collision, aiming and the
-eight-second cooldown. Otherwise a single visible target gets the skill's
-ordinary per-minute rate, tripled on Normal and up when pushing with a
-short gun. The thrower checks the predicted blast and checks the actual
-aim and friendly positions again before pressing LT. A dual-wielding bot
-drops the left gun to open its throwing hand only against a group, or
-when the left gun is dry with nothing to load.
+For the first 2 to 4 s of its first life in a match (`mind::warmup`:
+`WARMUP_MIN_TICKS` 60 to `WARMUP_MAX_TICKS` 120) a bot picks no target, so
+it does not shoot, throw or melee; it looks round, moves off its spawn and
+plays the objective as usual. The length is the bot's own, from its name's
+hash (the Clanker personality's `NameProfile::seed`; the brain's seed
+without a name), so it is the same every match and differs between bots.
+Taking damage ends it at once: a bot that is shot fights back.
+
+A brain makes a fresh mind each match (`Brain::reset_mind`), which is when
+the warm-up is due again; a respawn does not start it. A bare `Mind::new`
+(the tests') has none.
+
+A bot with a known grenade in stock can throw at 3–12 world units. It looks
+for a cluster, an enemy within 6 units walking at it (faster than 0.8 a
+second, heading within about 37° of it: `grenades::Mark::closing_on`), or
+the last position where an enemy disappeared within two seconds. Both
+chasing and holding the corner present that opportunity.
+
+In these short windows Normal has about one chance per second before
+temperament, collision, aiming and the eight-second cooldown. Otherwise a
+single visible target gets the skill's ordinary per-minute rate, tripled on
+Normal and up when pushing with a short gun. The thrower checks the
+predicted blast and checks the actual aim and friendly positions again
+before pressing LT. A dual-wielding bot drops the left gun to open its
+throwing hand only against a group, or when the left gun is dry with nothing
+to load.
 
 ### Personality and temperament
 
@@ -134,22 +147,25 @@ distinct gamertags from the Live name pool and keeps them as seats are
 added and removed. Live games use their rostered names, and simulations
 use their configured names. Each host computes the profile in memory.
 
-`crates/live/bots/src/name_profile.rs` hashes the UTF-8 gamertag with 64-bit FNV-1a, folding ASCII letters
-to lowercase as Live does for account identity. The hash supplies one try-hard score and one
-independent draw per trait. Each row in the trait table blends that score
-(or its inverse) with its own draw, then scales the result into the
-difficulty band. The custom-game style shifts tendencies within the
-band. Changing hosts, seat, match seed or account ID preserves the
-profile. The match seed controls individual choices during play.
+`crates/live/bots/src/name_profile.rs` hashes the UTF-8 gamertag with 64-bit
+FNV-1a, folding ASCII letters to lowercase as Live does for account
+identity. The hash supplies one try-hard score and one independent draw per
+trait. Each row in the trait table blends that score (or its inverse) with
+its own draw, then scales the result into the difficulty band.
+
+The custom-game style shifts tendencies within the band. Changing hosts,
+seat, match seed or account ID preserves the profile. The match seed
+controls individual choices during play.
 
 A keen player tends to check radar more often, attempt the plasma pistol
-overcharge and headshot follow-up, strafe and jump more, and react with
-less delay. A casual player is more likely to take a compatible second
-gun. A weight of 0.3 on the combo means roughly three attempts in ten
-eligible openings. Holding the same opening for ten ticks gives it one
-chance. The card summarizes the most distinctive tendencies.
-`h2 agent bots.stats` shows their numeric weights for the current
-difficulty and style.
+overcharge and headshot follow-up, strafe and jump more, and react with less
+delay. A casual player is more likely to take a compatible second gun. A
+weight of 0.3 on the combo means roughly three attempts in ten eligible
+openings.
+
+Holding the same opening for ten ticks gives it one chance. The card
+summarizes the most distinctive tendencies. `h2 agent bots.stats` shows
+their numeric weights for the current difficulty and style.
 
 | Trait | What changes in play | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|---|
@@ -169,20 +185,25 @@ from automatic guns, precision rifles and pistols, shotguns, snipers, splash
 weapons, and swords. Loyalty biases existing pickup choices and can justify
 a short detour for a visible favourite when the bot is calm and free to rearm.
 
-Confidence, tilt, and fear each run from 0 to 1. Enemy kills build confidence,
-with a larger gain as the streak grows. A death breaks the streak, drops
-confidence, and raises tilt and fear. Betrayals and losing a recent favored
-duel add extra tilt. A duel is favored when the bot sees one opponent with no
-nearby teammate in the fight, holds a weapon ready at that range, and has a
-shield lead of at least 0.30. While dead, the bot can read two crouch requests
-by its killer within 8 m of the body in the first 3 s as a taunt.
+Confidence, tilt, and fear each run from 0 to 1. Enemy kills build
+confidence, with a larger gain as the streak grows. A death breaks the
+streak, drops confidence, and raises tilt and fear.
 
-The three mood values decay with game time, with half-lives of about 8 to
-17 s depending on composure. Confident bots commit to more fights. Tilt
-can make a bot press and throw grenades more often. It remembers the killer
-for up to 10 s and may favor that opponent in view or pursue its last
-sighting. A frightened bot is quicker to withdraw and regroup with a
-teammate. These choices respect combat range, objective and input gates.
+Betrayals and losing a recent favored duel add extra tilt. A duel is favored
+when the bot sees one opponent with no nearby teammate in the fight, holds a
+weapon ready at that range, and has a shield lead of at least 0.30. While
+dead, the bot can read two crouch requests by its killer within 8 m of the
+body in the first 3 s as a taunt.
+
+The three mood values decay with game time, with half-lives of about 8 to 17
+s depending on composure. Confident bots commit to more fights. Tilt can
+make a bot press and throw grenades more often.
+
+It remembers the killer for up to 10 s and may favor that opponent in view
+or pursue its last sighting. A frightened bot is quicker to withdraw and
+regroup with a teammate. These choices respect combat range, objective and
+input gates.
+
 The human-input layer caps extra tracking noise from tilt and fear at 10%.
 Each match pad still passes through the controller's stick slew, button
 timing and thumb coordination limits before reaching the phantom's action
@@ -216,34 +237,37 @@ on a stick.
 | weapon choice by range | clear mismatches | yes | yes | yes |
 
 The continuous delay covers seeing a rendered change and getting a new
-controller report into the game. Easy and Normal share a five-tick budget
-at 30 Hz. Their hesitation and timing precision differ. Heroic sees the
-change one tick sooner, and Legendary also returns a report one tick
-sooner. These are tuning defaults for playtesting.
+controller report into the game. Easy and Normal share a five-tick budget at
+30 Hz. Their hesitation and timing precision differ.
+
+Heroic sees the change one tick sooner, and Legendary also returns a report
+one tick sooner. These are tuning defaults for playtesting.
 
 The first-sight reaction remains the time to notice and commit to a new
-target after its first visible sample reaches the brain. The five-tick
-floor (167 ms) applies to that reaction. The first input arrives after the
-perception delay, one reaction wait and the motor delay, with up to a
-tick of scatter on a button edge. Later decisions on the same target use
-the same continuous pipeline. A brief occlusion keeps the reaction
-clock and clears the velocity sample.
+target after its first visible sample reaches the brain. The five-tick floor
+(167 ms) applies to that reaction. The first input arrives after the
+perception delay, one reaction wait and the motor delay, with up to a tick
+of scatter on a button edge.
 
-Both virtual pads use the game's stick response, look acceleration and
-aim assist at sensitivity 3 (§5.1). The hand steers by a model of that
-response (`mind::look::RESPONSE`): on each axis, stick travel against
-turn rate, piecewise linear from the 0.13 dead zone. Its rows are seeded
-from the one measured point, about 9°/s in yaw and 5°/s in pitch at half
-stick before aim assist (§5.1), and the nominal 3 rad/s at full yaw
-stick, with pitch at 5/9 of yaw throughout. The full-stick ends are a
-guess until a stick sweep on each axis, read from `sim.player.list`'s
-`aim`, replaces the rows. The hand asks for the skill's `gain` × 3 rad/s
-per radian of error and reads the stick for that off the table; under
-0.012 rad/s the thumb rests. The right thumb takes several ticks to cross
-the stick: the skill's travel a tick (0.15 to 0.25 of the stick), and on a
-tracked target more than 0.3 rad off, 0.4 a tick at every skill
-(`mind::look::FLICK_STEP`), under the pad's 0.45, so a large flick is at
-full stick on its third tick.
+Later decisions on the same target use the same continuous pipeline. A brief
+occlusion keeps the reaction clock and clears the velocity sample.
+
+Both virtual pads use the game's stick response, look acceleration and aim
+assist at sensitivity 3 (§5.1). The hand steers by a model of that response
+(`mind::look::RESPONSE`): on each axis, stick travel against turn rate,
+piecewise linear from the 0.13 dead zone. Its rows are seeded from the one
+measured point, about 9°/s in yaw and 5°/s in pitch at half stick before aim
+assist (§5.1), and the nominal 3 rad/s at full yaw stick, with pitch at 5/9
+of yaw throughout.
+
+The full-stick ends are a guess until a stick sweep on each axis, read from
+`sim.player.list`'s `aim`, replaces the rows. The hand asks for the skill's
+`gain` × 3 rad/s per radian of error and reads the stick for that off the
+table; under 0.012 rad/s the thumb rests. The right thumb takes several
+ticks to cross the stick: the skill's travel a tick (0.15 to 0.25 of the
+stick), and on a tracked target more than 0.3 rad off, 0.4 a tick at every
+skill (`mind::look::FLICK_STEP`), under the pad's 0.45, so a large flick is
+at full stick on its third tick.
 
 On a still target the thumb settles instead of correcting every tick
 (`mind::look::rest_band`). Once the error the hand sees is under
@@ -253,17 +277,18 @@ up again only past twice that. A target whose bearing moves faster than
 a shaky one's own error keeps it outside the band and correcting, as a
 player's thumb stays still on a target it is on.
 
-The view is late. The mind sees an observation `perception_ticks` old,
-its own facing included, and a report lands `motor_ticks` later. The hand
-keeps the modelled turn of its last 16 reports and adds the turn of the
-last `perception_ticks + motor_ticks` of them to the facing the view
-shows (`Hand::ahead`) before it measures the error, so it does not swing
-past a target it has already turned to. The same predicted facing turns
-the walk into the left stick and aims a look with no target. A small
-integral term takes off a standing offset that the table's error leaves:
-it gathers the error the hand sees at 1/s while that error is under
-0.1 rad and the thumb is not resting, adds at most 0.05 rad, and clears
-when the target is lost.
+The view is late. The mind sees an observation `perception_ticks` old, its
+own facing included, and a report lands `motor_ticks` later. The hand keeps
+the modelled turn of its last 16 reports and adds the turn of the last
+`perception_ticks + motor_ticks` of them to the facing the view shows
+(`Hand::ahead`) before it measures the error, so it does not swing past a
+target it has already turned to.
+
+The same predicted facing turns the walk into the left stick and aims a look
+with no target. A small integral term takes off a standing offset that the
+table's error leaves: it gathers the error the hand sees at 1/s while that
+error is under 0.1 rad and the thumb is not resting, adds at most 0.05 rad,
+and clears when the target is lost.
 
 Large flicks carry a little past the target before settling. Small
 correlated errors and the occasional larger misread vary by skill.
@@ -306,22 +331,28 @@ tracker") or was just hit from out of view. Tests:
 `a_moment_out_of_view_does_not_freeze_it_again`.
 
 
-At the controller boundary, each stick stays within its unit circle and
-can travel at most 0.45 stick radii per tick. A full reversal takes at
-least five reports. The model uses a standard two-thumb grip. The right
-thumb can press one of A/B/X/Y/Black/White while the right stick is
-centred, or use the stick or its click. It can switch between those jobs
-once per tick (33 ms) by default. A face-button tap waits for the stick
-to return to centre, then occupies at least one controller report. The left thumb can move its stick and click it.
-The index fingers can use the triggers during a face-button press.
+At the controller boundary, each stick stays within its unit circle and can
+travel at most 0.45 stick radii per tick. A full reversal takes at least
+five reports. The model uses a standard two-thumb grip.
+
+The right thumb can press one of A/B/X/Y/Black/White while the right stick
+is centred, or use the stick or its click. It can switch between those jobs
+once per tick (33 ms) by default. A face-button tap waits for the stick to
+return to centre, then occupies at least one controller report.
+
+The left thumb can move its stick and click it. The index fingers can use
+the triggers during a face-button press.
 
 Button and trigger transitions draw independent, centred Gaussian timing
 errors using a per-bot seed. An error of, for example, 6 ms has a 6/33.3
-chance to shift the report by a tick in the direction of the error.
-Reports slip by at most one tick. At zero motor delay an early edge can
-only land on the current tick. Two edges on the same boundary can erase a
-short tap. Sticks use the nominal motor delay. The same seed, samples and
-tuning reproduce the same input.
+chance to shift the report by a tick in the direction of the error. Reports
+slip by at most one tick.
+
+At zero motor delay an early edge can only land on the current tick. Two
+edges on the same boundary can erase a short tap.
+
+Sticks use the nominal motor delay. The same seed, samples and tuning
+reproduce the same input.
 
 A tuning file's `burst_on` and `burst_off` set the bursts past the band;
 `burst = false` holds the trigger at every range, and `burst = true` on
@@ -353,22 +384,25 @@ the same deflection turned about 9°/s in yaw or 5°/s in pitch before assist.
 The old adapter also sent an empty shot-assist block. The contribution
 of each difference to the observed miss rate is still unknown.
 
-Retail builds local actions at `0x186ab0`. The control update at
-`0x185be0` calls `0x1a4900`, which gets the held weapon’s cone from
-`0x1a50a0` and searches for a target at `0x1a5370`. The local builder
-copies nine dwords from the per-user control record into action
-`+0x34..+0x57` at `0x187074..0x187083`. The remote gather at `0x84990`
-expects that search to have run on the sender. An empty record has no
-target and zero strengths for the barrel's magnetism check.
+Retail builds local actions at `0x186ab0`. The control update at `0x185be0`
+calls `0x1a4900`, which gets the held weapon’s cone from `0x1a50a0` and
+searches for a target at `0x1a5370`. The local builder copies nine dwords
+from the per-user control record into action `+0x34..+0x57` at
+`0x187074..0x187083`.
 
-The host now runs the retail local builder on each arrived phantom pad.
-Its private copy of user zero has the phantom's unit, camera origin,
-profile binding and control history, including on a host with no local
-profile. The host validates the full action at `0x14d0a0` (§5.1).
+The remote gather at `0x84990` expects that search to have run on the
+sender. An empty record has no target and zero strengths for the barrel's
+magnetism check.
+
+The host now runs the retail local builder on each arrived phantom pad. Its
+private copy of user zero has the phantom's unit, camera origin, profile
+binding and control history, including on a host with no local profile. The
+host validates the full action at `0x14d0a0` (§5.1).
+
 A historical ten-seed Midship batch measured four players for 9,000 ticks
-per original leg. Red locals averaged 0.165 opposing hits per shot and
-Blue phantoms 0.155. The swapped legs never bound all four players, so
-team and transport were confounded.
+per original leg. Red locals averaged 0.165 opposing hits per shot and Blue
+phantoms 0.155. The swapped legs never bound all four players, so team and
+transport were confounded.
 
 For a phantom in a hosted match, check `sim.player.list` for
 `aim.assist_player` and `aim.assist_strength` as a target enters and
@@ -379,14 +413,16 @@ with the same maps and seeds (§3.4.1).
 
 **Result.** `aim-net-vs-code.toml` ran all 80 matches
 (Midship and Lockout, easy to legendary, 5 seeds, both arm-swap legs,
-5-minute 2 v 2, using the local seats available at the time). The code
-aim won 60% of games to the net's 40%, and the net lost on accuracy (13.1% against 15.8%), damage (9.8
-against 11.8 a game) and grenades (0.3 against 1.1). The net barely
-overshoots (0.03 rad against 0.17), but it settles 1.3 s slower and its
-stick jitters more. It is cautious, and it loses the first shot. The gap
-grows with skill: at heroic the code won 78% of games, at easy 50%. Both
-stay in the tree. `code` remains the default, and the net is a starting
-point if its settle time can be cut without bringing the overshoot back.
+5-minute 2 v 2, using the local seats available at the time). The code aim
+won 60% of games to the net's 40%, and the net lost on accuracy (13.1%
+against 15.8%), damage (9.8 against 11.8 a game) and grenades (0.3 against
+1.1). The net barely overshoots (0.03 rad against 0.17), but it settles 1.3
+s slower and its stick jitters more.
+
+It is cautious, and it loses the first shot. The gap grows with skill: at
+heroic the code won 78% of games, at easy 50%. Both stay in the tree. `code`
+remains the default, and the net is a starting point if its settle time can
+be cut without bringing the overshoot back.
 
 
 The user asked for a small neural net with hand-written weights for aim
@@ -464,14 +500,15 @@ comparison measures aim alone.
 
 A view is `perception_ticks` old and a report lands `motor_ticks` later:
 five ticks at easy and normal, four at heroic, three at legendary. Both
-models count the turn they have asked for that the view does not show
-yet. The net takes 0.9 of it off its error, counted on the nominal radial
-curve its weights were designed against (3 rad/s at full stick, about
-54°/s at half). The code takes all of it off, counted on the response
-table (§3.4). The comparison ran before the code counted it:
-that code steered on the old view as if it were current, and in the test
-plant a 0.95 rad flick swung 37–54% past a still target where the code
-now goes 5–10% past.
+models count the turn they have asked for that the view does not show yet.
+The net takes 0.9 of it off its error, counted on the nominal radial curve
+its weights were designed against (3 rad/s at full stick, about 54°/s at
+half).
+
+The code takes all of it off, counted on the response table (§3.4). The
+comparison ran before the code counted it: that code steered on the old view
+as if it were current, and in the test plant a 0.95 rad flick swung 37–54%
+past a still target where the code now goes 5–10% past.
 
 **Tests.** `cargo test -p bots aim_net` covers the network alone: the
 same bits for the same inputs, no stick for no error or inside the dead
@@ -542,9 +579,10 @@ go. The aim-motion rows and `arm_swap` stay either way.
 
 The user asked: "make them teabag if you do something dumb". The emote is a
 short burst of crouch presses over a body, made with the real crouch input.
-The kill feed supplies the body position and the event. Self-kills (including
-world deaths) and betrayals can prompt a taunt. Showboats can also taunt over
-their own ordinary kills, at a lower rate.
+The kill feed supplies the body position and the event.
+
+Self-kills (including world deaths) and betrayals can prompt a taunt.
+Showboats can also taunt over their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 

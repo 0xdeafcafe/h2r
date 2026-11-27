@@ -66,7 +66,9 @@ are over the main menu; two more (`code-over-live-menu`,
 every check, synthetic and on the disc. Only A
 and Start submit, matching the legend (`signin_screen::ACTION_BUTTONS`).
 
-**A dialog is an overlay on its opener.** A retail dialog sits over whatever was open when
+#### A dialog is an overlay on its opener
+
+A retail dialog sits over whatever was open when
 it opened, drawn as it was: not always the main menu, and with nothing
 hidden. So a `DialogSpec` names its `Opener`: the opener's screen tag,
 the pane shown, its list's rows (the game's code fills them) and the
