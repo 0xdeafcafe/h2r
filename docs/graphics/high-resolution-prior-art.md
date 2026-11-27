@@ -50,7 +50,9 @@ What it changed:
 - Frame buffers moved into tiled memory with matching pitch (a wrong pitch gave striping). Caches were enlarged, and the kernel's allocator limit and the GPU clock were patched.
 - Field of view, split-screen layout and fog options were added.
 
-Its README lists a shrunken HUD at higher resolutions, loading, sign-in and lobby screens at 640x480, and fog that scrolls and bleeds between split-screen views. Those come from changing a size the game can see. We keep the guest's size, so the HUD and menus keep their layout. Xbox performance is GPU-bound: 720p runs about 19 fps stock and 27-28 with triple buffering, tiled texaccum and the overclock, and 1080i is single digits. Fill is the cost here too.
+Its README lists a shrunken HUD at higher resolutions, loading, sign-in and lobby screens at 640x480, and fog that scrolls and bleeds between split-screen views. Those come from changing a size the game can see.
+
+We keep the guest's size, so the HUD and menus keep their layout. Xbox performance is GPU-bound: 720p runs about 19 fps stock and 27-28 with triple buffering, tiled texaccum and the overclock, and 1080i is single digits. Fill is the cost here too.
 
 What carries over to the renderer:
 

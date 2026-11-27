@@ -53,11 +53,15 @@ A state the pass does not set is inherited from the previous draw on the D3D pat
 
 ## Implementation 3 (no lightmap group)
 
-On a BSP without a matching first lightmap group, the record builder selects implementation 3. The worker resolves that implementation and the normalisation cube in the globals tag. The main menu's dynamic detail shader, for example, declares five input registers in both its world and rigid classifications, and the worker checks those inputs. A lighting vector in `v5` belongs to the per-pixel lightmapped variant. Bitmap cube faces and volume slices keep their shape and mip chain through upload.
+On a BSP without a matching first lightmap group, the record builder selects implementation 3. The worker resolves that implementation and the normalisation cube in the globals tag.
+
+The main menu's dynamic detail shader, for example, declares five input registers in both its world and rigid classifications, and the worker checks those inputs. A lighting vector in `v5` belongs to the per-pixel lightmapped variant. Bitmap cube faces and volume slices keep their shape and mip chain through upload.
 
 ## Palettised stage bitmaps
 
-`tex_bump`'s bump stage (stage 2) is `P8Bump`, and `P8` is palettised too. The tag has no palette, and `assets` decodes both as their index in every channel. The D3D path samples them through the device palette bound at their stage, so the native pass expands them through the same one. The load takes the palettes bound at stages 0..3 when it starts (`Device::stage_palette`, read-only). It refuses a palettised bitmap at stage 3 or at a stage with no full 256-entry palette.
+`tex_bump`'s bump stage (stage 2) is `P8Bump`, and `P8` is palettised too. The tag has no palette, and `assets` decodes both as their index in every channel. The D3D path samples them through the device palette bound at their stage, so the native pass expands them through the same one.
+
+The load takes the palettes bound at stages 0..3 when it starts (`Device::stage_palette`, read-only). It refuses a palettised bitmap at stage 3 or at a stage with no full 256-entry palette.
 
 One decoder serves every pass loaded with the world (`native_render::stage_images::StageDecoder`: layer 3 and the transparents' layer-15 passes, which share its images; the objects can take it too).
 
@@ -76,7 +80,9 @@ Research (Code, `h2 disasm`): `SetPalette` (`0x3f84d0`) is called with the defau
 
 ## Texaccum samples
 
-Combined shaders sample the layer-1 accumulation texture in layer 3 (engine texture 3, target 1). The batched pass pins the attachment and resolves the texture header on each target copy. It checks texture identity, dimensions and linear addressing before clearing the guest draw masks. The shader uses the guest dimensions for coordinate normalisation and for the components its size bindings write. The sorted handler resolves the same target through `native_world_materials::Source::Texaccum`.
+Combined shaders sample the layer-1 accumulation texture in layer 3 (engine texture 3, target 1). The batched pass pins the attachment and resolves the texture header on each target copy. It checks texture identity, dimensions and linear addressing before clearing the guest draw masks.
+
+The shader uses the guest dimensions for coordinate normalisation and for the components its size bindings write. The sorted handler resolves the same target through `native_world_materials::Source::Texaccum`.
 
 ## Not verified
 

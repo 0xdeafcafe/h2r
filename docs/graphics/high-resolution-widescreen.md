@@ -2,7 +2,7 @@
 
 Status: Built. The window's aspect drives the projection and the UI fit; the gather lens and display supplement keep every window up to 12:5 (and wider with the supplement) showing the same objects.
 Code: `crates/extensions/game/src/render_aspect.rs`, `crates/platform/d3d/src/device.rs`, `crates/platform/d3d/src/screen_rect.rs`, `crates/rewrites/render-bridge/src/ui_layout.rs`. Tests: named per section.
-Switch: HUD layout (Centered or Pinned), listed in [switches.md](../runtime/switches.md#settings).
+Switch: HUD layout (`Centered` or `Pinned`), listed in [switches.md](../runtime/switches.md#settings).
 
 This page is the detail behind "Widescreen projection" in [high-resolution.md](high-resolution.md). The guest builds its camera for 640x480. The host widens the horizontal terms to the window's aspect, so the picture is Hor+ at any window shape, and fits menus and HUD inside a uniform safe area.
 
@@ -42,9 +42,13 @@ Orthographic menu widgets use a uniform fit inside each player's viewport (see "
 | Long bitmap | it reaches one edge and its whole bitmap at its drawn scale is at least as long as the viewport | the main menu's scrolling strips: 1024-texel bitmaps drawn as two pieces that meet where the texture wraps |
 | Panel or tab | shorter bitmap at an edge | keeps the fit |
 
-Only the UI rectangle site gives the bitmap's texture coordinates. An emblem draws a unit quad through the shader quad site, placed by its transform, so the shader and screen quad sites use the first case alone. The choice is made before the native or guest draw at the shader quad (`HUD_QUAD_READY`), screen quad (`UI_SCREEN_QUAD_READY`) and UI rectangle sites. The screen and rectangle shaders use raster-local coordinates, so their art tests use the width and height of their raster rectangle. The UI rectangle (`0x00052040`) is read at the dynamic upload helper's `EFFECT_QUAD_READY` when it returns to `RECT_SUBMIT_RETURN`. The next quad or widget (`UI_ITEM_CALL`) restores the fit.
+Only the UI rectangle site gives the bitmap's texture coordinates. An emblem draws a unit quad through the shader quad site, placed by its transform, so the shader and screen quad sites use the first case alone. The choice is made before the native or guest draw at the shader quad (`HUD_QUAD_READY`), screen quad (`UI_SCREEN_QUAD_READY`) and UI rectangle sites.
 
-The full-view fades in `UI_RENDER_LAYERS`, the start-screen transition and the window stack's dialog dim all call `UI_MENU_VIEW_FILL`. It subtracts the supplied rectangle's origin and takes its quad's width and height from the same raster rectangle as the rectangle shader (`0x00485648`). The fill uses the full view through submission, then restores the widget fit. The current view can be a split-screen viewport. Tests in `render_aspect.rs`: `menu_view_fades_use_the_rectangle_their_shader_projects_over`, `screen_art_uses_raster_local_bounds_in_the_right_hand_view`, `quads_are_read_at_the_shader_screen_and_rect_sites`.
+The screen and rectangle shaders use raster-local coordinates, so their art tests use the width and height of their raster rectangle. The UI rectangle (`0x00052040`) is read at the dynamic upload helper's `EFFECT_QUAD_READY` when it returns to `RECT_SUBMIT_RETURN`. The next quad or widget (`UI_ITEM_CALL`) restores the fit.
+
+The full-view fades in `UI_RENDER_LAYERS`, the start-screen transition and the window stack's dialog dim all call `UI_MENU_VIEW_FILL`. It subtracts the supplied rectangle's origin and takes its quad's width and height from the same raster rectangle as the rectangle shader (`0x00485648`).
+
+The fill uses the full view through submission, then restores the widget fit. The current view can be a split-screen viewport. Tests in `render_aspect.rs`: `menu_view_fades_use_the_rectangle_their_shader_projects_over`, `screen_art_uses_raster_local_bounds_in_the_right_hand_view`, `quads_are_read_at_the_shader_screen_and_rect_sites`.
 
 The dialog then blurs the screen under it with `SCREEN_CONVOLUTION_BLUR` (called by the modal blur at `0x00235756`), which copies whole 640x480 targets back and forth. The device draws any draw that samples a render target the size of its own 640x480 target without the fit, so a frame copy covers the frame (`crates/platform/d3d/src/device.rs`, test `a_frame_copy_in_a_fitted_ui_scope_keeps_the_whole_frame`). With the fit, each copy would shrink the picture into the centred box and leave stale target contents at the sides.
 
@@ -56,7 +60,9 @@ A vertex program's vertices go through the program, so positions from constant r
 
 A quad that covers the cinema window (full width, letterboxed height) spans the display along the fitted axis and keeps the fit on the other.
 
-A projected-effect fit (the flare, light volume and billboard scopes in `render_aspect.rs`) keeps frame copies and frame-edge strips, since a sprite can be bigger than the view. One draw kind drops the fit inside such a scope: four vertices whose window bounds match the frame's edges to within a guest pixel on both axes, sampling an image the device rendered (a render target, the depth buffer or a frame snapshot). That is a screen pass, not a sprite (the title screen's depth of field, blur composite and frame-snapshot passes). See `lies_over_the_frame` in `device.rs` and test `a_screen_pass_in_a_projected_effect_scope_spans_the_display`. A depth billboard, whose fit also moves its screen-position input, keeps the fit.
+A projected-effect fit (the flare, light volume and billboard scopes in `render_aspect.rs`) keeps frame copies and frame-edge strips, since a sprite can be bigger than the view. One draw kind drops the fit inside such a scope: four vertices whose window bounds match the frame's edges to within a guest pixel on both axes, sampling an image the device rendered (a render target, the depth buffer or a frame snapshot).
+
+That is a screen pass, not a sprite (the title screen's depth of field, blur composite and frame-snapshot passes). See `lies_over_the_frame` in `device.rs` and test `a_screen_pass_in_a_projected_effect_scope_spans_the_display`. A depth billboard, whose fit also moves its screen-position input, keeps the fit.
 
 Corner HUD groups can use the fitted rectangle or the viewport edges. If the game already uses the Xbox widescreen HUD layout, its artwork receives only the remaining aspect correction. At 16:9 the Pinned layout keeps the retail widescreen fit.
 

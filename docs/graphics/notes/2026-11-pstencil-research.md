@@ -127,7 +127,7 @@ albeit missing many work-in-progress files from the earliest development days."
   lights on E3**" - the tagset's lights are, by the crew's own naming, the *not-pstencil* ones, and Sev's
   community shader is what stands in for the engine feature MCC's Halo 2 doesn't have. The same README tells
   you to swap out the **`ghost_lit`** Ghost vehicle tag - the lit variant "spams debug.txt writes in
-  tag_test during the final cutscene entirely killing performance," a fossil of dev-era debug behavior
+  tag_test during the final cutscene entirely killing performance," a fossil of dev-era debug behaviour
   still attached to the lit tag.
 - The restoration has known limits the crew discussed openly in the Workshop threads: gunshot/explosion
   lights "do all exist, but are aggressively culled due to the maximum amount of lights that can ever
@@ -169,7 +169,9 @@ The upshot for this topic: pstencil is no longer known only through trailers, de
 stencil-shadow system's own build and the tools Bungie used to author its lighting are in circulation,
 running on original hardware and emulators (xemu) in community hands. The May 3 build is the *same* build
 whose heavier shadows TCRF compared against the E3 build - so the raw material for a definitive technical
-account of pstencil (its passes, its tags, its tuning) now exists outside Microsoft. No such authoritative
+account of pstencil (its passes, its tags, its tuning) now exists outside Microsoft.
+
+No such authoritative
 analysis has been published yet; what exists so far is community exploration. And to be explicit about
 provenance: these were unauthorized leaks, not Digsite releases - this document links only to news coverage
 and wiki documentation of them, never to the archives.

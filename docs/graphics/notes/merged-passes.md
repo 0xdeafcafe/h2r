@@ -28,7 +28,9 @@ difference, though its `discard` is never taken (no kill source). Re-setting
 every piece of render pass state before each draw changes nothing, so the
 cause is not state left bound in wgpu or wgpu-hal. Both cases have an
 earlier blended draw with the alpha write masked, and implicit-LOD sampling
-at triangle edges shows it. Random synthetic scenes (blended triangles, D16
+at triangle edges shows it.
+
+Random synthetic scenes (blended triangles, D16
 and D24S8 depth-equal tests, MSAA, a discarding textured strip after a
 blended triangle) do not reproduce it, so the regression tests pin the
 rules, not the GPU behaviour. The rules were found on those runs and are not

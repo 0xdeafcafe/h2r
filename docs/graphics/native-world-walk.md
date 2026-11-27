@@ -36,7 +36,9 @@ The main scene draws ordinary BSP clusters and placements in sorted order in lay
 | 1, stencil shader | A shader can move an immediate `v10` (mask `0x0400`) to diffuse colour. For ordinary projected 2D fetches the translator accepts an absent immediate when its only output is diffuse and neither the general nor the final combiner reads it. Position and consumed colour still require a supplied value. |
 | 3 | Uses the texture view from the resolved D3D draw. It pins target 1's colour attachment and resolves the engine texture 3 header through the RTT path. All three views must hold the same GPU texture on each live copy, the guest dimensions must agree and the texture must use linear texel addressing. This works with either owner of layer 1, because both write the same attachment. |
 
-The sorted BSP path prepares the vertex program for each classification and the stage binding recipe for each shader, LOD, layer, pass and implementation when the BSP loads. Section preparation reads the live section's declaration, bitmap residency and palette, index windows and target identities. Render-target samples resolve against their current contents in submission order. The menu's unlightmapped implementation uses its own declaration and program. A part can draw without a lighting vector when its selected implementation has its required inputs.
+The sorted BSP path prepares the vertex program for each classification and the stage binding recipe for each shader, LOD, layer, pass and implementation when the BSP loads. Section preparation reads the live section's declaration, bitmap residency and palette, index windows and target identities.
+
+Render-target samples resolve against their current contents in submission order. The menu's unlightmapped implementation uses its own declaration and program. A part can draw without a lighting vector when its selected implementation has its required inputs.
 
 The ordered indexed cache in `world_layers_gpu.rs` holds up to 4,096 resident section windows and charges their CPU geometry and GPU buffers against a 128 MiB budget. A periodic frame sweep releases inactive windows, and a BSP change clears the section cache. A draw that exceeds the residency budget uses the transient upload path.
 
@@ -54,7 +56,9 @@ The walk goes off with the rest of the native renderer.
 
 ### Sorted handler and device handoff
 
-The sorted hook matches the standard builder and draw callback, the scene layer, the handler arguments and the caller's current sort slot and counter. A native run ends at the first object, custom callback, excluded slot or refused section. Each accepted entry reads its own implementation, classification, record and visible subparts. Triangle lists coalesce contiguous visible index ranges, and a masked strip restarts at each subpart. The native run returns with ESI on the last consumed slot, so the caller performs its normal final increment and can dispatch the next guest draw.
+The sorted hook matches the standard builder and draw callback, the scene layer, the handler arguments and the caller's current sort slot and counter. A native run ends at the first object, custom callback, excluded slot or refused section. Each accepted entry reads its own implementation, classification, record and visible subparts.
+
+Triangle lists coalesce contiguous visible index ranges, and a masked strip restarts at each subpart. The native run returns with ESI on the last consumed slot, so the caller performs its normal final increment and can dispatch the next guest draw.
 
 The run's `handoff` applies material and device transitions in draw order:
 
@@ -67,7 +71,9 @@ The run's `handoff` applies material and device transitions in draw order:
 
 The next native or guest entry therefore starts with the outgoing device and RAM caches already installed. Applying only the last part's bindings would lose writes to earlier descriptors and intermediate resource releases.
 
-The per-range submission uses the prepared geometry and validated texture and program hints. Stale or dynamic resources still use the ordered D3D resolver. A preflight refusal keeps the original sorted handler live. A late refusal before the first range can issue the indexed draws under the state already applied. A device error after emission follows the fault path so a submitted prefix cannot be drawn twice.
+The per-range submission uses the prepared geometry and validated texture and program hints. Stale or dynamic resources still use the ordered D3D resolver. A preflight refusal keeps the original sorted handler live.
+
+A late refusal before the first range can issue the indexed draws under the state already applied. A device error after emission follows the fault path so a submitted prefix cannot be drawn twice.
 
 ### Fade
 

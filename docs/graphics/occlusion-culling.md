@@ -164,6 +164,7 @@ The setting changes only what is drawn, on every path. The record reset at
 `0x0002cb30` samples LOD Distance into the render context's two words: the
 guest word the record walks read, and the display word the substituting
 render paths read. The guest word is always the retail/sim selection.
+
 Whatever the setting, the walk's records, its pose evaluation, the live
 node matrices the marker lookup reads, and the lockstep and film digests
 are the retail ones. The one exception is a legacy film's recorded

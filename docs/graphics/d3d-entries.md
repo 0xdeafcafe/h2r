@@ -77,7 +77,7 @@ overridden; the original runs).
 | `0x3f8cc0` | `D3DDevice_SetStipple` | no | stdcall(pPattern), copies 32 dwords to device+0x197C, pushes method 0x1480; ret 4 | 9 / 9 | yes |
 | `0x3f9d00` | `D3DDevice_Swap` | yes | EAX = Flags (0 = COPY \| FINISH); returns EAX = swap count; ret | 2 / 2 | yes |
 | `0x3f9df0` | `D3DDevice_SetBackBufferScale` | yes | stdcall(x, y); ret 8 | 2 / 1 | yes |
-| `0x3f9fc0` | `D3DDevice_Clear` | yes | stdcall(Count, pRects, Flags, Color, Z, Stencil); ret 0x18 | 7 / 7 | yes |
+| `0x3f9fc0` | `D3DDevice_Clear` | yes | stdcall(Count, pRects, Flags, `Color`, Z, Stencil); ret 0x18 | 7 / 7 | yes |
 | `0x3fa3d0` | `D3DDevice_SetPixelShader` | yes | EAX = Handle; ret | 29 / 25 | yes |
 | `0x3fa680` | `D3D_SetFence` | yes | stdcall(Type); returns EAX = fence; ret 4 | 9 / 9 | yes |
 | `0x3fa970` | `D3D_BlockOnTime` | yes | 2 stack args; ret 8 (no-op: the host GPU is synchronous) | 1 / 1 | yes |

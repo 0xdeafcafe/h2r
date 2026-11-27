@@ -97,7 +97,9 @@ Over the census corpus these are the list section 8.3's table must cover. The si
 
 ## Private draw
 
-`native_render::frame_graph` records the ordered typed stages and carried draws through `d3d::gfx_backend::GuestDrawPass`. The worker shares the display device and uses separate render targets. An intervening copy or sample sees the pixels already drawn. Consecutive slots with the same attachments can share a pass. A private draw reports an error if it cannot reproduce the requested pixels.
+`native_render::frame_graph` records the ordered typed stages and carried draws through `d3d::gfx_backend::GuestDrawPass`. The worker shares the display device and uses separate render targets.
+
+An intervening copy or sample sees the pixels already drawn. Consecutive slots with the same attachments can share a pass. A private draw reports an error if it cannot reproduce the requested pixels.
 
 ## Display ownership
 

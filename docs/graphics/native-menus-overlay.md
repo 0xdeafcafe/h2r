@@ -34,7 +34,9 @@ flowchart TD
 
 At `0x00235428` (`points::ui_render::LIST_READY`, after the window is taken), `render_bridge::native_hud::ui_overlay` asks whether the host draws menus and checks the viewport and screen before it reads the list. The host checks the UI scope's order (`Host::ui_overlay`). The screen quads' viewport (`0x00485648`, top, left, bottom, right) must cover the full canvas, both floating-point units must round to nearest, and the screen must have no earlier mismatch on this map.
 
-Each drawn widget is read (`scene_extract::ui::read_widget`) and listed on its own (`draw_list`). Consecutive drawn entries that list form a run. An entry outside the window leaves the run open and a refused entry ends it. After a guest draw, each run refreshes only its own entries at placement so changes to focus, colours or resource state reach the pass. List planning and run refresh time count toward `native_ui_extract_ns`.
+Each drawn widget is read (`scene_extract::ui::read_widget`) and listed on its own (`draw_list`). Consecutive drawn entries that list form a run. An entry outside the window leaves the run open and a refused entry ends it.
+
+After a guest draw, each run refreshes only its own entries at placement so changes to focus, colours or resource state reach the pass. List planning and run refresh time count toward `native_ui_extract_ns`.
 
 At the sorted call of a run's first entry, the host places one overlay pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`, over the map's overlay assets) and the items join `FrameScene::overlay`. A run with no items needs no pass. Each entry of a placed run resumes at `0x00235448` with its draw skipped, as a host-drawn widget's is. A run whose pass is not placed is the game's.
 
@@ -108,7 +110,9 @@ flowchart LR
 
 The blur reads target 0 and ping-pongs between targets 1 and 0 (`engine::glow::blur`). Each step's spread is its fraction times the scale, and each scale is the last times `1 - growth + growth * [0x0045dc0c]`, the whole spread factor since the growth is 1. An odd count of draws ends in target 1, which `0x000351a0` copies back to 0 with one more quad of `0x00034a90` (one tap, the texture's colour). Each draw is a full-target quad of four bilinear taps, tap `k` moved by the spread times `[0x0045dbbc]` for `k & 1` in x and `k & 2` in y, else `[0x0045dbc4]`, its negative (`native_render::glow::quad`).
 
-The strength selects `0x00020f30`'s eight-stage combiner (`engine::glow::blur_combiner`). Its colour is not the taps' mean. Stage 0 makes `clamp(4 * (t0 - t1))`, stage 1 the weight `(d * c + 1) / 2` with `c` the strength packed to a byte in each stage's first constant, and stage 2 `w * t0 + (1 - w) * t1`. Stages 3 to 5 do the same for `t2` and `t3`; stages 6 and 7 and the final combiner do the same for the two results. Each pair leans to its brighter tap: its weight moves from a half by up to half of `c`. The alpha is the mean of the four. A strength of 0 gives the three-stage plain mean.
+The strength selects `0x00020f30`'s eight-stage combiner (`engine::glow::blur_combiner`). Its colour is not the taps' mean. Stage 0 makes `clamp(4 * (t0 - t1))`, stage 1 the weight `(d * c + 1) / 2` with `c` the strength packed to a byte in each stage's first constant, and stage 2 `w * t0 + (1 - w) * t1`.
+
+Stages 3 to 5 do the same for `t2` and `t3`; stages 6 and 7 and the final combiner do the same for the two results. Each pair leans to its brighter tap: its weight moves from a half by up to half of `c`. The alpha is the mean of the four. A strength of 0 gives the three-stage plain mean.
 
 ### How the overlay takes it
 
@@ -116,7 +120,9 @@ The strength selects `0x00020f30`'s eight-stage combiner (`engine::glow::blur_co
 
 The host arms the device (`Host::modal_blur`, `game::modal_blur_glue`). The game's code runs whole, so its target binds, texture stage writes, combiner block and dirty bits are its own. The device holds back its quads, the copy's included (`Device::swallow`: slot 0 the target bound at the call, the UI's, slot 1 target 1).
 
-At the wrapper's return (`Host::finish_modal_blur`) the quads are checked: unblended, every channel written, each sampling the target the plan names, whole, with targets 0 and 1 the same size. The overlay's blur is then drawn into target 0 by `OverlayGpu` in their place: the copy, the steps in scratch targets, the result written back into every channel. The renderer reuses the scratch pair for each of the two most recent target sizes and formats, so the guest and display copies can alternate each frame. The item joins `FrameScene::overlay`. A quad off the plan, a check that fails or a pass that does not record gives the game's quads back in order (`overlay_modal_blur_replayed`).
+At the wrapper's return (`Host::finish_modal_blur`) the quads are checked: unblended, every channel written, each sampling the target the plan names, whole, with targets 0 and 1 the same size. The overlay's blur is then drawn into target 0 by `OverlayGpu` in their place: the copy, the steps in scratch targets, the result written back into every channel.
+
+The renderer reuses the scratch pair for each of the two most recent target sizes and formats, so the guest and display copies can alternate each frame. The item joins `FrameScene::overlay`. A quad off the plan, a check that fails or a pass that does not record gives the game's quads back in order (`overlay_modal_blur_replayed`).
 
 ### Counters
 

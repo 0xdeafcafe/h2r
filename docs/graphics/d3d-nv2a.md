@@ -170,7 +170,9 @@ flowchart TD
   F --> G["main loop 0x12b690"]
 ```
 
-The original CreateDevice reaches the NV2A through `0x3fbc10 -> 0x3fe005 -> 0x3fe165` (the MMIO read at `0x3fe16b`). With the overrides installed, Halo's boot reaches D3D in the order above (static call graph from the XBE entry; `main` is `0x12190`). CreateDevice is `640x480`, `BehaviorFlags` `0x40`. The inlined Release finds device `+0x938` at 1, so it runs the teardown. Reset (`0x3f77c0`) is called only if the game's device pointer is still set at `0x128c0`, which it is not after the first teardown. Nothing else under `0x12000` reaches a stop.
+The original CreateDevice reaches the NV2A through `0x3fbc10 -> 0x3fe005 -> 0x3fe165` (the MMIO read at `0x3fe16b`). With the overrides installed, Halo's boot reaches D3D in the order above (static call graph from the XBE entry; `main` is `0x12190`).
+
+CreateDevice is `640x480`, `BehaviorFlags` `0x40`. The inlined Release finds device `+0x938` at 1, so it runs the teardown. Reset (`0x3f77c0`) is called only if the game's device pointer is still set at `0x128c0`, which it is not after the first teardown. Nothing else under `0x12000` reaches a stop.
 
 ### Stops on the way to the menu
 

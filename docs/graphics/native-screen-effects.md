@@ -79,7 +79,9 @@ At the end the original sets target `0x19` twice, the second time to `0x1a`'s sa
 
 ## The wide convolution
 
-`0x00021360` (`engine::glow::wide`) is the blur's sibling (Code). EAX is the source, ECX the draw count, XMM0 a scale, then stack words passed to each draw: the two buffers, the last target and a byte that first sets the combiner `0x00020f30` (XMM0 0, XMM3 its eighth word), `ret 0x20`. `s = scale * [0x0045e4e0]`. Per draw (count above 0) the source is bound to stages 0..3 (`0x00014f60`, the blur's sampler states) and `0x00034d90` draws into the destination with EDI pointing at `s`, `s * [0x0045e1f4]`, `s * [0x0045e4dc]` and `0 - s`. The buffers ping-pong as the blur's and `s` grows by `[0x0045dc0c]`. The result and the copy into the last target are the blur's, and `MAX_WIDE_TAPS` (64) bounds it.
+`0x00021360` (`engine::glow::wide`) is the blur's sibling (Code). EAX is the source, ECX the draw count, XMM0 a scale, then stack words passed to each draw: the two buffers, the last target and a byte that first sets the combiner `0x00020f30` (XMM0 0, XMM3 its eighth word), `ret 0x20`. `s = scale * [0x0045e4e0]`.
+
+Per draw (count above 0) the source is bound to stages 0..3 (`0x00014f60`, the blur's sampler states) and `0x00034d90` draws into the destination with EDI pointing at `s`, `s * [0x0045e1f4]`, `s * [0x0045e4dc]` and `0 - s`. The buffers ping-pong as the blur's and `s` grows by `[0x0045dc0c]`. The result and the copy into the last target are the blur's, and `MAX_WIDE_TAPS` (64) bounds it.
 
 `0x00034d90` is `0x00034a90`'s sibling: the target's size (`0x0001dd60`, -1 the bound one `[0x004858b8]`), the target's rectangle or the window by a byte argument, the per-stage size ratios (`0x00485af4`/`0x00485b04` over the target's) and EDI's four floats where `0x00034a90` takes a spread. The grid's strips give the four moves of each tap.
 
@@ -87,7 +89,9 @@ Tests: unit test `the_wide_convolution_ping_pongs_with_a_growing_scale`, and `gl
 
 ### The grid
 
-`engine::screen_grid` makes the grid each step of `0x00021360` draws: 30 strips of 21 x 2 vertices (`0x00034770` with the attribute function `0x00034100`). Each tap is the rectangle at (u, v) pulled toward its centre by its EDI float. It is weighted, when the radii (words 5 and 6) differ, by where the vertex's distance from the centre (x87 `fsqrt`) falls between them, times the stage's bound-over-target ratio, and the position goes through `0x000350e0`. The result is a radial (zoom) blur. `strips()` and `pushed()` give the exact words. Test: `screen_grid_differential::the_grid_matches_the_lifted_original` and unit tests.
+`engine::screen_grid` makes the grid each step of `0x00021360` draws: 30 strips of 21 x 2 vertices (`0x00034770` with the attribute function `0x00034100`). Each tap is the rectangle at (u, v) pulled toward its centre by its EDI float.
+
+It is weighted, when the radii (words 5 and 6) differ, by where the vertex's distance from the centre (x87 `fsqrt`) falls between them, times the stage's bound-over-target ratio, and the position goes through `0x000350e0`. The result is a radial (zoom) blur. `strips()` and `pushed()` give the exact words. Test: `screen_grid_differential::the_grid_matches_the_lifted_original` and unit tests.
 
 ## The look of a template pass
 

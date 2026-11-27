@@ -313,7 +313,9 @@ code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
 blue) into the miniport. `EAX` = the miniport (device `+0x1C28`) and
 `EDX` = the ramp. Halo calls it once, from the brightness update
 (`0x12d08`, an inlined `SetGammaRamp`). The device checks `EAX`, copies the
-ramp (`Device::gamma_ramp`). Each `Swap` passes the current ramp to the
+ramp (`Device::gamma_ramp`).
+
+Each `Swap` passes the current ramp to the
 frame handoff, which applies it per RGB channel when copying the presented
 surface. The unmodified surface remains available for guest reads. The
 ignored `gamma_ramp_conventions_in_the_image` checks the convention.

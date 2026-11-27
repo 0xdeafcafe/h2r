@@ -127,7 +127,9 @@ and indirect arguments. Its upload arena reserves a fresh source range for
 each write and records a copy immediately before the consuming draw. Target
 copies and multiple runs may share a submission, and the queue completion
 callback returns the leased storage to its pool after the last submission
-using it. World placement transforms and layer-3 lighting implementations
+using it.
+
+World placement transforms and layer-3 lighting implementations
 are resolved at map load. The accumulation texture sampled by combined
 materials is resolved on each target copy at the draw
 ([native-world.md](native-world.md)).
@@ -191,7 +193,9 @@ one-shot pass carries no replay command.
 A swallowed post call whose pass records again (the glow and the screen
 effects, once their raster is frozen) commits as a carried scene stage
 (`Device::swallow_commit`, `prepare_carried_stage`, `commit_carried_stage`).
-The sink retains it as a `ReplayOp::Stage`, so it is not declined. A guest
+The sink retains it as a `ReplayOp::Stage`, so it is not declined.
+
+A guest
 reference request, or a backend that cannot seal the stage, sends the call to
 `prepare_external` and the decline, and its packets replay. The sink names
 this case with the producer, so it can be told from a binding failure or a

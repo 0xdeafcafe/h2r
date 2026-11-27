@@ -1,7 +1,7 @@
 # Native objects: fade, the shader flag and the item's argument
 
 Status: Built. Part of stage 2 ([native-objects.md](native-objects.md)); the page holds the guest state an object item's draw touches beyond its material, and when the native draw may take the item.
-Code: `crates/rewrites/scene-extract/src/layout/object_walk.rs` (`read_part`, `layer_part`; its module notes list the addresses), `crates/rewrites/render-bridge/src/native_objects_glue` (`stipple_off`, `stipple_at_rest`, `structure_at_rest`), `crates/rewrites/native-render/src/object_program_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_objects.rs`.
+Code: `crates/rewrites/scene-extract/src/layout/object_walk.rs` (`read_part`, `layer_part`; its module notes list the addresses), `crates/extensions/game/src/native_objects_glue.rs` (`stipple_off`, `stipple_at_rest`, `structure_at_rest`), `crates/rewrites/native-render/src/object_program_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_objects.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 | Input | Where | Part flag | Declines as | Native draw takes the part when |

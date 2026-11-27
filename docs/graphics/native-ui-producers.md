@@ -21,7 +21,9 @@ flowchart TD
 
 `render_view_scene` (`0x0002ba10`) calls `0x001917eb` at `0x0002bc93` when `[0x004b9ed8]` (the view's user) is not -1. It asks `0x0014de70` and `0x00159170` for the user's unit, draws per-user overlays (`0x0019188c`, `0x00192129`, `0x0024da7d`, `0x0024cf66`) and tail-jumps to the HUD render `0x0013954b`. Then come the fade `0x00040890` and `ui_render_layers` `0x00147af1`, which the alternate view `0x0002c790` also calls at `0x0002c884`, as does `0x0002c8a0` at `0x0002c9bc`.
 
-`0x00147af1` takes the user in EAX (-1 every user, the word at `[ebp+8]` when EAX is -1), stores it at `0x0054d598` and returns early when `0x00155f60` says so. For an index 0 to 4 it calls the render slot (`+0x14`) of three layer objects (`0x0054d62c + 0x40 * index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`). Index 4 also draws the screen managers around them (`0x00234f8c` on `0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`, `0x00234f8c` on `0x0054d99c`). These collect and sort the screen's widgets (`0x002353a5`, [native-menus-overlay.md](native-menus-overlay.md#the-menus-on-the-overlay)) and call each widget's draw. Last comes a fade-in by the clock at `0x0054d5b8` against `0x0054d5c0` (3 s and 4 s windows).
+`0x00147af1` takes the user in EAX (-1 every user, the word at `[ebp+8]` when EAX is -1), stores it at `0x0054d598` and returns early when `0x00155f60` says so. For an index 0 to 4 it calls the render slot (`+0x14`) of three layer objects (`0x0054d62c + 0x40 * index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`).
+
+Index 4 also draws the screen managers around them (`0x00234f8c` on `0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`, `0x00234f8c` on `0x0054d99c`). These collect and sort the screen's widgets (`0x002353a5`, [native-menus-overlay.md](native-menus-overlay.md#the-menus-on-the-overlay)) and call each widget's draw. Last comes a fade-in by the clock at `0x0054d5b8` against `0x0054d5c0` (3 s and 4 s windows).
 
 ## The draw primitives
 
@@ -73,7 +75,9 @@ Native packets take their vertex and combiner programs, textures, flat shading, 
 
 Native UI uses the live textures, including the glyph cache. The guest lays out the string before `native_hud::ui::screen_quad` reads the corners, so a leading glyph quad with zero alpha keeps its draw position and the next glyph uses the guest's pen advance and kerning.
 
-Within an eligible HUD, UI layer or widget callback, the overlay also takes generic shader-helper fans and inline screen quads using the sampled textures and combiner at the draw. Tag and glyph captures take precedence. The shader helper observes API Begin state; the inline screen quad requires room in the guest push buffer and observes pushed state. An overlay refusal continues through the native UI packet path, and `native_ui_overlay_widget_quads` counts admitted generic fans. Ordered native packets can join the same GPU pass as adjacent compatible draws.
+Within an eligible HUD, UI layer or widget callback, the overlay also takes generic shader-helper fans and inline screen quads using the sampled textures and combiner at the draw. Tag and glyph captures take precedence.
+
+The shader helper observes API Begin state; the inline screen quad requires room in the guest push buffer and observes pushed state. An overlay refusal continues through the native UI packet path, and `native_ui_overlay_widget_quads` counts admitted generic fans. Ordered native packets can join the same GPU pass as adjacent compatible draws.
 
 ### Fallback
 

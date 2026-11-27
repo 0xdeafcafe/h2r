@@ -54,9 +54,13 @@ A call whose plan needs an unsupported input or an unavailable live target uses 
 | Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`) |
 | `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts |
 
-Post admission uses the packet's decoded raster state. Inherited fog, flat shading and two-sided lighting can be omitted when the planned and live combiners are both independent of their inputs. A combiner with an implicit final stage can depend on inherited fog and specular state. Rejected state words in unused texture stages and fixed-function texture operations do not affect a programmable post draw. A live depth or stencil operation requires the original depth attachment.
+Post admission uses the packet's decoded raster state. Inherited fog, flat shading and two-sided lighting can be omitted when the planned and live combiners are both independent of their inputs. A combiner with an implicit final stage can depend on inherited fog and specular state.
 
-The glow and screen effects share one pipeline translation for colour writes, blending, facing, culling, front fill and depth clamp. A quad strip keeps the guest fan's winding and diagonal. Each scissor is scaled from the destination's guest size to its physical copy, and a convolution grid uses the raster its strips share. The combiner translator generates variants for the live alpha comparison and polygon stipple. The reference byte and mask rows are per-draw uniforms, and stipple uses guest pixel cells on each physical copy. Screen strips also carry the live W clip range and window-depth scale.
+Rejected state words in unused texture stages and fixed-function texture operations do not affect a programmable post draw. A live depth or stencil operation requires the original depth attachment.
+
+The glow and screen effects share one pipeline translation for colour writes, blending, facing, culling, front fill and depth clamp. A quad strip keeps the guest fan's winding and diagonal. Each scissor is scaled from the destination's guest size to its physical copy, and a convolution grid uses the raster its strips share.
+
+The combiner translator generates variants for the live alpha comparison and polygon stipple. The reference byte and mask rows are per-draw uniforms, and stipple uses guest pixel cells on each physical copy. Screen strips also carry the live W clip range and window-depth scale.
 
 ## The post hooks
 

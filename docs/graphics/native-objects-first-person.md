@@ -57,7 +57,9 @@ A record or shader the build does not read (a structure record, a virtual shader
 - it has no parent (`+0x4c`);
 - it is in a visible cluster or has the definition's bit 9.
 
-The per-view update `0x00174420` of each selected system stays the guest's (its stamps and particle draws, [framescene.md](framescene.md)). It is a guest call made at the stack depth the guest makes it (`RESERVE`), with the selection bytes' upper stack bytes as the guest pushes them. The selection is read again after each update. A particle model's definition (`PRTM`, `prt3`) is the guest's `0x001751d0`, called once per system. A system whose definition does not read stops the walk: the drop `effects`.
+The per-view update `0x00174420` of each selected system stays the guest's (its stamps and particle draws, [framescene.md](framescene.md)). It is a guest call made at the stack depth the guest makes it (`RESERVE`), with the selection bytes' upper stack bytes as the guest pushes them.
+
+The selection is read again after each update. A particle model's definition (`PRTM`, `prt3`) is the guest's `0x001751d0`, called once per system. A system whose definition does not read stops the walk: the drop `effects`.
 
 ## Drops
 
