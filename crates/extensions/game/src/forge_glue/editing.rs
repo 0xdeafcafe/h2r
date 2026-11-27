@@ -213,6 +213,9 @@ pub(super) struct Editor {
     /// What the Waves page's Start from offers on this base map
     /// (`forge_screens::waves::presets`), read once as the session opens.
     wave_presets: Arc<[forge_doc::waves::Def]>,
+    /// The monitor has had a camera in this session: the first comes up at
+    /// the map's start ([`monitor_camera`]).
+    monitor_placed: bool,
 }
 
 impl Editor {
@@ -283,6 +286,7 @@ impl Editor {
             test_answer: None,
             test_set: None,
             wave_presets,
+            monitor_placed: false,
         }
     }
 
@@ -1684,7 +1688,8 @@ impl Editor {
         }
         if !self.busy() {
             if self.tool.monitor && self.tool.camera.is_none() {
-                self.tool.camera = controls::eye();
+                self.tool.camera = monitor_camera(memory, !self.monitor_placed, controls::eye());
+                self.monitor_placed |= self.tool.camera.is_some();
             }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
@@ -2890,6 +2895,24 @@ impl Editor {
 fn list_variants(data: &Path, session: &Session) -> Result<Vec<Listed>, String> {
     let base = &session.document().base;
     variants::list(data, &base.map, Some(&base.sha256)).map_err(|e| e.to_string())
+}
+
+/// Where the monitor's camera comes up. The session's first monitor
+/// starts at the map's first player start, a standing eye along its
+/// facing: the view the game draws as a Forge game opens is from before
+/// the biped spawns, not a place in the level, and a camera taken from it
+/// draws nothing of the map. A later toggle takes the player's own view
+/// ([`controls::eye`]). Each falls back to the other.
+fn monitor_camera(m: &dyn engine::GuestMemory, first: bool, eye: Option<Camera>) -> Option<Camera> {
+    let start = || {
+        let pose = crate::agent_spawn_view::Starts::read(m)?.eye(m, 0)?;
+        Some(Camera {
+            position: pose.position,
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+        })
+    };
+    if first { start().or(eye) } else { eye.or_else(start) }
 }
 
 fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {

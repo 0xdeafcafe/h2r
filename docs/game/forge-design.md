@@ -830,6 +830,14 @@ or respawning player stays.
 A local level boot starts in the biped. D-pad Up or Tab switches between
 the biped and the monitor.
 
+The session's first monitor camera stands at
+the map's first player start, 0.64 above it along its facing
+(`agent_spawn_view::Starts`, as `render.spawn_view` places its eye): the
+view the game draws as a Forge game opens is from before the biped
+spawns, and a camera taken from it shows none of the map. Each later
+switch to the monitor takes the player's own view
+(`forge_glue::editing::monitor_camera`).
+
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a
 local object handle. The game adapter (`ForgeWorld` in
