@@ -69,6 +69,12 @@ const USAGE: &str = "usage:
                           until `stop`; --map opens its lobby; XNet base 3174 unless
                           --base-port (never the player's 3074-3080); driven by
                           `agent` like --serve
+    run --name TEXT --bots N --map MAP [--frames F --stats-from S | --serve] [--env KEY=VALUE]...
+        [--branch NAME | --rev REV | --current] [--no-sync] [--note TEXT] [--wait [--to DIR]]
+                          a rendered Clankers custom game on the host: `h2 bots test --count N
+                          --map MAP` there (embedded Live server, scripted menus), with the
+                          run's frames.csv, agent socket and artifacts, plus bots/bots.log
+                          and bots/progress.json; --serve keeps the game after the verdict
     agent <id> <method> [json-params] [--timeout S]
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged

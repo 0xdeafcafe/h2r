@@ -183,7 +183,25 @@ pub struct RunReq {
     /// same bytes an older host expects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dedicated: Option<Dedicated>,
+    /// A rendered Clankers custom game on the host Mac, the flow of
+    /// `h2 bots test` (docs/runtime/lab.md, "Bot games"). Absent is never
+    /// sent, so an ordinary run is the same bytes an older host expects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bots: Option<Bots>,
 }
+
+/// What a `h2 lab run --bots N --map M` job starts with.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Bots {
+    /// Clankers Count, 1 to [`MAX_BOTS`].
+    pub count: u8,
+    /// The map the custom game plays (`h2 bots test --map`).
+    pub map: String,
+}
+
+/// The most Clankers a bot game seats (`h2 bots test --count`).
+pub const MAX_BOTS: u8 = 15;
 
 /// What a dedicated System Link host job starts with
 /// (`h2 lab run --dedicated`).
@@ -644,6 +662,9 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
     if let Some(d) = &r.dedicated {
         validate_dedicated(r, d)?;
     }
+    if let Some(b) = &r.bots {
+        validate_bots(r, b)?;
+    }
     ensure!(
         !(r.serve && r.frames.is_some()),
         "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
@@ -704,6 +725,31 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
         ensure!(n.len() <= 1024, "note over 1024 bytes");
     }
     validate_build(&r.build)
+}
+
+/// A bot game is `h2 bots test` on the host: it picks its own map and
+/// level, so the options that choose or script a level don't apply.
+fn validate_bots(r: &RunReq, b: &Bots) -> Result<()> {
+    ensure!(
+        (1..=MAX_BOTS).contains(&b.count),
+        "--bots is 1 to {MAX_BOTS}"
+    );
+    check_level(&b.map)?;
+    for (set, flag) in [
+        (r.dedicated.is_some(), "--dedicated"),
+        (r.level.is_some(), "--level"),
+        (r.difficulty.is_some(), "--difficulty"),
+        (r.replay.is_some(), "--replay"),
+        (r.record.is_some(), "--record"),
+        (r.film.is_some(), "--film"),
+    ] {
+        ensure!(
+            !set,
+            "a --bots game takes no {flag}: it is `h2 bots test`, which drives the menus to \
+             --map itself"
+        );
+    }
+    Ok(())
 }
 
 /// A dedicated host is `h2 serve`, not `h2 play`: none of a game window's
@@ -1452,6 +1498,53 @@ mod tests {
         })
         .unwrap();
         assert_eq!(v["dedicated"], serde_json::json!({"bots": false}));
+    }
+
+    #[test]
+    fn a_bots_request_round_trips_and_is_validated() {
+        let ok = |extra: &str| {
+            run(&format!(
+                r#"{{"cmd":"run","name":"B","bots":{{"count":7,"map":"lockout"}}{extra}}}"#
+            ))
+        };
+        let Request::Run(r) = ok(r#","frames":900,"stats_from":100"#).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            r.bots,
+            Some(Bots {
+                count: 7,
+                map: "lockout".into()
+            })
+        );
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["bots"], serde_json::json!({"count":7,"map":"lockout"}));
+        let mut wire = v.clone();
+        wire["cmd"] = "run".into();
+        let Request::Run(back) = parse(&wire.to_string()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(back, r);
+        assert!(ok(r#","serve":true"#).is_ok());
+        // Refusals.
+        let bad = |bots: &str, extra: &str| {
+            format!(
+                "{:#}",
+                run(&format!(r#"{{"cmd":"run","name":"B","bots":{bots}{extra}}}"#)).unwrap_err()
+            )
+        };
+        assert!(bad(r#"{"count":0,"map":"lockout"}"#, "").contains("1 to 15"));
+        assert!(bad(r#"{"count":16,"map":"lockout"}"#, "").contains("1 to 15"));
+        assert!(bad(r#"{"count":3,"map":"lock out"}"#, "").contains("map name"));
+        assert!(bad(r#"{"count":3,"map":""}"#, "").contains("map name"));
+        assert!(bad(r#"{"count":3,"map":"lockout"}"#, r#","level":"zanzibar""#).contains("--level"));
+        assert!(
+            bad(r#"{"count":3,"map":"lockout"}"#, r#","dedicated":{}"#).contains("--dedicated")
+        );
+        assert!(bad(r#"{"count":3}"#, "").contains("map"));
+        // An ordinary request omits the field for an older host.
+        let v = serde_json::to_value(RunReq::default()).unwrap();
+        assert!(v.get("bots").is_none());
     }
 
     fn sim_value() -> serde_json::Value {

@@ -34,7 +34,8 @@ use crate::live_cmd::{Client, LIVE_DIR_ENV};
 const USAGE: &str = "usage:
   h2 bots test [--disc ISO] [--count N] [--map NAME] [--keep] [--timeout SECS]
                [--wait-clang] [--settings-from DIR] [--root DIR] [--out DIR]
-               [--server-port N] [--no-drive] [--dry-run]
+               [--server-port N] [--no-drive] [--dry-run] [--agent-socket PATH]
+               [--logs DIR] [--title TEXT]
                [-- <more h2 play arguments>]
   h2 bots test --clankermatch [--playlist slayer|teams|doubles] [the same,
                but --count and --map]
@@ -91,7 +92,9 @@ The merged log (bots.log) and the game's whole stderr (Tester.log) go to
 Live directory and the server's store are under <root>/run-<time>/ and
 are deleted at the end unless --keep, which also leaves the game open
 (and this process with it, for the Live server) until its window closes.
---root defaults to $TMPDIR/h2-bots-test. --dry-run prints the game's
+--root defaults to $TMPDIR/h2-bots-test. --agent-socket, --logs and --title
+set the game's agent socket, the log directory and the window title (`h2 lab
+run --bots` uses them). --dry-run prints the game's
 command line and starts nothing.
 
 --clankermatch (or --playlist NAME, which implies it): Clankermatch
@@ -188,6 +191,14 @@ pub struct Opts {
     pub play_args: Vec<String>,
     /// `--clankermatch`: Clankermatch on this playlist, not a custom game.
     pub clankermatch: Option<CmPlaylist>,
+    /// `--agent-socket`: the game's agent socket (default: one in the temp
+    /// directory). `h2 lab run --bots` fixes it where `h2 lab agent` looks.
+    pub agent: Option<PathBuf>,
+    /// `--logs`: the directory for bots.log, the game's log and progress.json
+    /// (default: `<root>/logs/<time>`).
+    pub logs: Option<PathBuf>,
+    /// `--title`: the game window's title.
+    pub title: Option<String>,
 }
 
 /// Parses `h2 bots test ...` / `h2 bots verdict ...` (the arguments after
@@ -223,6 +234,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     let mut wait_clang = false;
     let mut settings_from = None;
     let mut play_args = Vec::new();
+    let (mut agent, mut logs, mut title) = (None, None, None);
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().with_context(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -273,6 +285,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .filter(|p| *p != 0)
                     .with_context(|| format!("--server-port {v}: a port"))?;
             }
+            "--agent-socket" => agent = Some(PathBuf::from(value("--agent-socket")?)),
+            "--logs" => logs = Some(PathBuf::from(value("--logs")?)),
+            "--title" => title = Some(value("--title")?),
             "--no-drive" => no_drive = true,
             "--dry-run" => dry_run = true,
             "--wait-clang" => wait_clang = true,
@@ -318,6 +333,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         settings_from: settings_from.unwrap_or_else(content::store::default_data_root),
         play_args,
         clankermatch,
+        agent,
+        logs,
+        title,
     }))
 }
 
@@ -411,11 +429,13 @@ pub fn plan(opts: &Opts, server: &str, run: &Path, agent: &Path) -> Game {
         "--gamertag".into(),
         TAG.into(),
         "--title".into(),
-        if opts.clankermatch.is_some() {
-            "Halo 2 — clankermatch test".into()
-        } else {
-            "Halo 2 — bots test".into()
-        },
+        opts.title.clone().unwrap_or_else(|| {
+            if opts.clankermatch.is_some() {
+                "Halo 2 — clankermatch test".into()
+            } else {
+                "Halo 2 — bots test".into()
+            }
+        }),
         "--no-mappack".into(),
         "--no-halo1".into(),
     ];
@@ -489,9 +509,14 @@ fn test(opts: Opts) -> Result<()> {
     let exe = std::env::current_exe().context("finding this h2")?;
     let stamp = coop_test_cmd::stamp(crate::live_cmd::now());
     let run_dir = opts.root.join(format!("run-{stamp}"));
-    let logs = opts.root.join("logs").join(&stamp);
+    let logs = opts
+        .logs
+        .clone()
+        .unwrap_or_else(|| opts.root.join("logs").join(&stamp));
     let server = format!("http://127.0.0.1:{}", opts.server_port);
-    let agent = std::env::temp_dir().join(format!("h2-bots-test-{}.sock", std::process::id()));
+    let agent = opts.agent.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("h2-bots-test-{}.sock", std::process::id()))
+    });
     let game = plan(&opts, &server, &run_dir, &agent);
     let cm = opts.clankermatch.map(|p| cm_plan(p, TAG)).transpose()?;
     let plan = Plan {

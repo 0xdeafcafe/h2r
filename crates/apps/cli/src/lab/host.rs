@@ -819,6 +819,9 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
         if let Some(d) = &r.dedicated {
             level = d.map.clone();
         }
+        if let Some(b) = &r.bots {
+            level = Some(b.map.clone());
+        }
         if let Some(name) = &r.replay {
             let m = read_manifest(&cfg.dir("recordings").join(name))
                 .with_context(|| format!("no recording {name} (h2 lab recordings)"))?;
@@ -1410,7 +1413,10 @@ fn run_job(
     }
     let mut log = File::create(run_dir.join("run.log"))?;
     writeln!(log, "lab job {id} · {}", run.name)?;
-    let cmd = play_command(cfg, id, run, &image, commit)?;
+    let cmd = match &run.bots {
+        Some(b) => bots_command(cfg, id, run, b, &image, commit)?,
+        None => play_command(cfg, id, run, &image, commit)?,
+    };
     let sock = agent_socket_path(cfg, id);
     sh.update(id, |m| {
         m.state = "running".into();
@@ -1702,6 +1708,90 @@ fn lab_xnet_addr() -> SocketAddrV4 {
     )
 }
 
+/// The run's frame statistics (`frames.csv` in its directory), the frame
+/// limit and the first present counted: set on the game's environment, which
+/// `h2 bots test` passes on to its game.
+fn frame_stats_env(cmd: &mut Command, run: &RunReq, run_dir: &Path) {
+    if run.stats != Some(false) {
+        cmd.env("H2_FRAME_STATS", "1")
+            .env("H2_FRAME_STATS_CSV", run_dir.join("frames.csv"));
+    }
+    if let Some(n) = run.frames {
+        cmd.env("H2_BOOT_STOP_AT_PRESENT", n.to_string());
+    }
+    if let Some(n) = run.stats_from {
+        cmd.env("H2_FRAME_STATS_FROM", n.to_string());
+    }
+}
+
+/// `h2 bots test --count N --map M` for a `--bots` run
+/// (docs/runtime/lab.md, "Bot games"): the same flow as on a developer's Mac,
+/// on the lab's image, with the run's frame CSV, agent socket, artifacts
+/// and window title. Its logs and `progress.json` go to `runs/<id>/bots/`.
+/// The game takes the graphics settings of the lab's data root. `--serve`
+/// keeps the game open after the verdict until `h2 lab stop`.
+fn bots_command(
+    cfg: &HostConfig,
+    id: &str,
+    run: &RunReq,
+    bots: &proto::Bots,
+    image: &Image,
+    commit: Option<&str>,
+) -> Result<Command> {
+    let run_dir = cfg.dir("runs").join(id);
+    let logs = run_dir.join("bots");
+    fs::create_dir_all(&logs)?;
+    let revision = commit.unwrap_or(if cfg.explicit_h2 { "unknown" } else { app::BuildInfo::baked().sha });
+    let sock = agent_socket_path(cfg, id);
+    if let Some(dir) = sock.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _ = fs::remove_file(&sock);
+    let mut cmd = Command::new(&image.h2);
+    cmd.arg("bots")
+        .arg("test")
+        .arg("--disc")
+        .arg(&cfg.disc)
+        .args(["--count", bots.count.to_string().as_str(), "--map", bots.map.as_str()])
+        .arg("--root")
+        .arg(cfg.dir("scratch").join(id).join("bots"))
+        .arg("--logs")
+        .arg(&logs)
+        .arg("--agent-socket")
+        .arg(&sock)
+        .arg("--title")
+        .arg(proto::window_title(id, &run.name, revision))
+        .arg("--settings-from")
+        .arg(&cfg.data);
+    if let Some(out) = &image.out {
+        cmd.arg("--out").arg(out);
+    }
+    if run.serve {
+        cmd.arg("--keep");
+    }
+    if !run.args.is_empty() {
+        cmd.arg("--").args(&run.args);
+    }
+    for (k, _) in std::env::vars_os() {
+        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.envs(&image.env);
+    frame_stats_env(&mut cmd, run, &run_dir);
+    if run.perf {
+        cmd.env("H2_PROFILE", run_dir.join("profile"));
+        cmd.env("H2_PERF_FROM", "level");
+    }
+    cmd.envs(&run.env);
+    cmd.env("H2_LAB_JOB_ID", id)
+        .env("H2_LAB_JOB_NAME", &run.name)
+        .env(agent_proto::OUT_ENV, &run_dir)
+        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"));
+    cmd.current_dir(&run_dir);
+    Ok(cmd)
+}
+
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
 /// own `H2_*` variables so a run means the same whatever terminal the host
 /// started in. Writes the recording's manifest when it records.
@@ -1758,16 +1848,7 @@ fn play_command(
         );
         cmd.arg("--film").arg(path);
     }
-    if run.stats != Some(false) {
-        cmd.env("H2_FRAME_STATS", "1")
-            .env("H2_FRAME_STATS_CSV", run_dir.join("frames.csv"));
-    }
-    if let Some(n) = run.frames {
-        cmd.env("H2_BOOT_STOP_AT_PRESENT", n.to_string());
-    }
-    if let Some(n) = run.stats_from {
-        cmd.env("H2_FRAME_STATS_FROM", n.to_string());
-    }
+    frame_stats_env(&mut cmd, run, &run_dir);
     if let Some(name) = &run.replay {
         let dir = cfg.dir("recordings").join(name);
         let m = read_manifest(&dir)?;
@@ -2497,6 +2578,72 @@ mod tests {
         run.fresh_data = false;
         run.own_data = true;
         assert!(!has_data(&args(&run)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bots_run_builds_the_bots_test_command_line() {
+        let root = std::env::temp_dir().join(format!("h2lab-bots-{}", std::process::id()));
+        let cfg = config(&root);
+        let image = Image {
+            h2: "/lab/h2".into(),
+            out: Some("/lab/image".into()),
+            env: BTreeMap::new(),
+        };
+        let bots = proto::Bots { count: 7, map: "lockout".into() };
+        let run = RunReq {
+            name: "Bots".into(),
+            bots: Some(bots.clone()),
+            frames: Some(900),
+            stats_from: Some(100),
+            ..RunReq::default()
+        };
+        let cmd = bots_command(&cfg, "0001", &run, &bots, &image, Some("abcdef1234")).unwrap();
+        assert_eq!(cmd.get_program(), "/lab/h2");
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let run_dir = root.join("runs/0001");
+        let sock = agent_socket_path(&cfg, "0001");
+        let d = |p: &Path| p.display().to_string();
+        let expect: Vec<String> = vec![
+            "bots".into(),
+            "test".into(),
+            "--disc".into(),
+            d(&root.join("halo2.iso")),
+            "--count".into(),
+            "7".into(),
+            "--map".into(),
+            "lockout".into(),
+            "--root".into(),
+            d(&root.join("scratch/0001/bots")),
+            "--logs".into(),
+            d(&run_dir.join("bots")),
+            "--agent-socket".into(),
+            d(&sock),
+            "--title".into(),
+            proto::window_title("0001", "Bots", "abcdef1234"),
+            "--settings-from".into(),
+            d(&root.join("data")),
+            "--out".into(),
+            "/lab/image".into(),
+        ];
+        assert_eq!(args, expect);
+        let env = |k: &str| {
+            cmd.get_envs()
+                .find(|(n, _)| *n == k)
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned())
+        };
+        assert_eq!(env("H2_FRAME_STATS").as_deref(), Some("1"));
+        assert_eq!(
+            env("H2_FRAME_STATS_CSV"),
+            Some(run_dir.join("frames.csv").to_string_lossy().into_owned())
+        );
+        assert_eq!(env("H2_BOOT_STOP_AT_PRESENT").as_deref(), Some("900"));
+        assert_eq!(env("H2_FRAME_STATS_FROM").as_deref(), Some("100"));
+        // --serve keeps the game open.
+        let serve = RunReq { serve: true, frames: None, ..run };
+        let cmd = bots_command(&cfg, "0001", &serve, &bots, &image, Some("abcdef1234")).unwrap();
+        assert!(cmd.get_args().any(|a| a == "--keep"));
         let _ = fs::remove_dir_all(&root);
     }
 

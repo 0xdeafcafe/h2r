@@ -339,6 +339,7 @@ the game has no window. Use `--note` for additional context.
 | (always) | `H2_AGENT=<root>/a/<id>.sock` (see [Driving a run](#driving-a-run-the-agent-api)) |
 | `--serve` | the same run with no frame limit (`--frames` is refused): it runs until `h2 lab stop`, for `lab agent` |
 | `--dedicated` | a headless System Link host instead of a game window (see [Dedicated System Link host](#dedicated-system-link-host)) |
+| `--bots N --map MAP` | a rendered Clankers custom game: `h2 bots test` on the host (see [Bot games](#bot-games)) |
 | `--replay NAME` | `H2_INPUT_REPLAY=recordings/NAME/input.bin`; level and difficulty from its manifest unless given |
 | `--record NAME` | `H2_INPUT_RECORD=recordings/NAME/input.bin` and its manifest |
 | `--film NAME` | `h2 play --film <data root>/films/NAME.h2film`: the run records a film into the film library its game plays from (see [Theater runs](lab-runs.md#theater-runs)) |
@@ -411,6 +412,17 @@ A lab run plays on the host's `data/`, not the player's. Detail: [The lab: drivi
 ## Dedicated System Link host
 
 `h2 lab run --dedicated` starts a dedicated System Link host on the lab Mac. Detail: [The lab: driving runs, hosts, benchmarks and recordings](lab-runs.md).
+
+## Bot games
+
+`h2 lab run --name T --bots N --map M` runs a rendered Clankers custom game on the lab host, so bot games are benchmarked on the quiet Mac. `--level zanzibar` can't do this: it boots a local game that phantoms can't join. The host runs the flow of [`h2 bots test`](../game/bots.md) (`bots_test_cmd.rs`): an embedded Live server, the Tester account, Clankers On with Count N, and the scripted menu drive to the map.
+
+```sh
+h2 lab run --host laptop --name "bots 7" --branch my-work --bots 7 --map lockout \
+  --frames 6000 --stats-from 1500 --build-env H2_OPT=2
+```
+
+The host's command line is `<image h2> bots test --disc D --count N --map M --root <scratch>/<id>/bots --logs runs/<id>/bots --agent-socket <root>/a/<id>.sock --title ... --settings-from <data> [--out IMAGE] [--keep]`, with the run's `frames.csv`, frame limit and `--perf` variables in its environment, which the game inherits. `fetch` brings back `frames.csv`, `bots/bots.log`, `bots/progress.json` and the game's log. `--serve` adds `--keep`: the game stays open after the verdict until `h2 lab stop`, and `h2 lab agent` drives it. `N` is 1 to 15. `--dedicated`, `--level`, `--difficulty`, `--replay`, `--record` and `--film` are refused with `--bots`.
 
 ## Sim benchmarks
 

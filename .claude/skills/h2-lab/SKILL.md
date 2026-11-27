@@ -166,6 +166,19 @@ h2 lab run --name "Join test" --host "$lab_host" --branch my-work --dedicated --
 h2 lab agent --host "$lab_host" "$lab_id" host.lobby.state '{}'
 ```
 
+## Benchmark a bot game
+
+`--bots N --map M` runs `h2 bots test` on the host: a rendered Clankers
+custom game with N bots, frame stats in `frames.csv`, `bots/bots.log` and
+`bots/progress.json` kept. Use it, not `--level`, to time bot games.
+`--serve` keeps the game open after the verdict. See
+[Bot games](../../../docs/runtime/lab.md#bot-games).
+
+```sh
+h2 lab run --name "bots 7" --host "$lab_host" --branch my-work --bots 7 --map lockout \
+  --frames 6000 --stats-from 1500 --build-env H2_OPT=2 --wait
+```
+
 ## Read the results
 
 ```sh

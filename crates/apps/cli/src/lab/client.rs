@@ -351,6 +351,8 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
     let mut wait = false;
     let mut to = None;
     let mut dedicated = false;
+    let mut map = None;
+    let mut bots = None;
     let mut host_opts = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -392,6 +394,14 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
             "--note" => req.note = Some(val()?),
             "--serve" => req.serve = true,
             "--dedicated" => dedicated = true,
+            "--bots" => {
+                bots = Some(
+                    val()?
+                        .parse::<u8>()
+                        .with_context(|| format!("--bots needs a count from 1 to {}", proto::MAX_BOTS))?,
+                )
+            }
+            "--map" => map = Some(val()?),
             "--wait" => wait = true,
             "--to" => to = Some(PathBuf::from(val()?)),
             "--" => req.args.extend(it.by_ref()),
@@ -407,13 +417,20 @@ fn parse_run_args(args: Vec<String>) -> Result<RunArgs> {
         "--serve runs until `h2 lab stop`; --wait would wait forever (h2 lab bench does the whole loop)"
     );
     if dedicated {
-        req.dedicated.get_or_insert_default();
+        req.dedicated.get_or_insert_default().map = map.take();
         ensure!(
             !wait,
             "a --dedicated host runs until `h2 lab stop`; --wait would wait forever"
         );
     } else if let Some(opt) = host_opts.first() {
         bail!("{opt} sets up a --dedicated host; add --dedicated");
+    }
+    if let Some(count) = bots {
+        ensure!(!dedicated, "--bots is a game of its own; --dedicated is a host without one");
+        let map = map.take().context("--bots needs --map MAP")?;
+        req.bots = Some(proto::Bots { count, map });
+    } else if map.is_some() {
+        bail!("--map sets up a --dedicated host or a --bots game; add --dedicated or --bots N");
     }
     Ok((req, src, wait, to))
 }
@@ -427,7 +444,6 @@ fn take_dedicated(
 ) -> Result<Option<&'static str>> {
     let flag = match a {
         "--host-bots" => "--host-bots",
-        "--map" => "--map",
         "--variant" => "--variant",
         "--max-players" => "--max-players",
         "--base-port" => "--base-port",
@@ -437,7 +453,6 @@ fn take_dedicated(
     let mut val = || it.next().with_context(|| format!("{flag} needs a value"));
     match flag {
         "--host-bots" => d.bots = true,
-        "--map" => d.map = Some(val()?),
         "--variant" => d.variant = Some(val()?),
         "--max-players" => {
             d.max_players = Some(
@@ -1284,6 +1299,31 @@ mod tests {
         assert!(err("--name Join --dedicated --max-players many").contains("--max-players"));
         assert!(err("--name Join --dedicated --base-port 70000").contains("--base-port"));
         assert!(err("--name Join --dedicated --map").contains("needs a value"));
+    }
+
+    #[test]
+    fn bots_flags_fill_the_bots_request() {
+        let (req, ..) = parse_run_args(words(
+            "--name T --bots 7 --map lockout --frames 900 --stats-from 100",
+        ))
+        .unwrap();
+        assert_eq!(
+            req.bots,
+            Some(proto::Bots {
+                count: 7,
+                map: "lockout".into()
+            })
+        );
+        assert!(req.dedicated.is_none() && req.level.is_none());
+        assert_eq!((req.frames, req.stats_from), (Some(900), Some(100)));
+        proto::validate_run(&req).unwrap();
+        let err = |s: &str| match parse_run_args(words(s)) {
+            Ok(_) => panic!("{s} parsed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err("--name T --bots 3").contains("--map"));
+        assert!(err("--name T --bots many --map lockout").contains("--bots"));
+        assert!(err("--name T --bots 3 --map lockout --dedicated").contains("--dedicated"));
     }
 
     #[test]
