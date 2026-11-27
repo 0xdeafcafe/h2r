@@ -43,12 +43,14 @@ pub fn build(
 }
 
 /// A constraint class with a ported `vt[+0x24]` (docs/engine/havok-step.md,
-/// "Constraints"), told apart by that slot's target. The six joint classes
-/// are not ported: their islands fall back to the guest.
+/// "Constraints"), told apart by that slot's target: the contact class
+/// and the joint classes [`crate::joint`] covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// `0x0031bdf0`, which calls [`contact`] (`0x0031f620`).
     Contact,
+    /// A joint class ([`crate::joint`]).
+    Joint(crate::joint::Joint),
 }
 
 /// The contact class's `vt[+0x24]`.
@@ -64,7 +66,7 @@ impl Class {
     pub fn of(build: u32) -> Option<Self> {
         match build {
             CONTACT_BUILD => Some(Self::Contact),
-            _ => None,
+            _ => crate::joint::Joint::of(build).map(Self::Joint),
         }
     }
 
@@ -90,6 +92,7 @@ impl Class {
                 };
                 contact(j, s, fpu, &args, cursor)
             }
+            Self::Joint(joint) => crate::joint::build(j, s, fpu, joint, constraint, pairs, cursor),
         }
     }
 }
@@ -239,17 +242,17 @@ pub mod constant {
 
 /// One body's side as the builder reads its accumulator.
 #[derive(Clone, Copy, Debug)]
-struct Side {
+pub(crate) struct Side {
     /// `+0x0c`: nonzero when the basis is the identity.
-    flag: u8,
+    pub(crate) flag: u8,
     /// `+0x30`: inverse inertia, inverse mass in `w`.
-    inertia: u128,
-    center: u128,
-    basis: [u128; 3],
+    pub(crate) inertia: u128,
+    pub(crate) center: u128,
+    pub(crate) basis: [u128; 3],
 }
 
 impl Side {
-    fn read(s: &Scratch, acc: u32) -> Option<Self> {
+    pub(crate) fn read(s: &Scratch, acc: u32) -> Option<Self> {
         Some(Self {
             flag: s.get(acc.checked_add(0x0c)?)? as u8,
             inertia: s.vector(acc + 0x30)?,
@@ -258,18 +261,18 @@ impl Side {
         })
     }
 
-    fn inverse_mass(&self) -> u32 {
+    pub(crate) fn inverse_mass(&self) -> u32 {
         lane(self.inertia, 3)
     }
 
-    fn finite(&self) -> bool {
+    pub(crate) fn finite(&self) -> bool {
         [self.inertia, self.center, self.basis[0], self.basis[1], self.basis[2]]
             .into_iter()
             .all(|v| (0..4).all(|i| finite(lane(v, i))))
     }
 
     /// Into the body's frame unless the flag says it is the world's.
-    fn local(&self, sse: &mut Sse, v: u128) -> u128 {
+    pub(crate) fn local(&self, sse: &mut Sse, v: u128) -> u128 {
         if self.flag == 0 { sse.rotate(&self.basis, v) } else { v }
     }
 }
@@ -356,7 +359,7 @@ impl Sse {
     }
 
     /// `|a|^2 A + |b|^2 B` over the two inverse inertias.
-    fn quad(&mut self, a: &Side, b: &Side, ang_a: u128, ang_b: u128) -> u32 {
+    pub(crate) fn quad(&mut self, a: &Side, b: &Side, ang_a: u128, ang_b: u128) -> u32 {
         let bb = self.mul(ang_b, ang_b);
         let bb = self.mul(bb, b.inertia);
         let aa = self.mul(ang_a, ang_a);
