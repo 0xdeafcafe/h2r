@@ -746,7 +746,12 @@ fn a_firefight_map_initialises_its_ai_unless_firefight_is_off() {
         let plan = plan(&Case::full(switches)).unwrap();
         plan.chains
             .values()
-            .filter(|chain| std::ptr::eq(chain.point, &AI_NEW_MAP_MULTIPLAYER))
+            // The point is a `const`: each use is its own copy, so it is
+            // matched by name and address, not by pointer.
+            .filter(|chain| {
+                chain.point.name == AI_NEW_MAP_MULTIPLAYER.name
+                    && chain.point.base == AI_NEW_MAP_MULTIPLAYER.base
+            })
             .flat_map(|chain| {
                 chain
                     .hooks()
