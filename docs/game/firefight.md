@@ -897,6 +897,21 @@ from the disassembly and are not yet confirmed by a run (R6), and so is
 whether the engine's seat camera reads well in the fall. The drops are engine
 calls, not host log entries, so a film does not replay them.
 
+**Squads fall in them** (`firefight/squad_pods.rs`). A squad's `arrival`
+(`SquadSpec::arrival`: `auto`, `foot`, `ship`, `pod`; `Arrival::number` in the
+director's tables) picks how it reaches its zone. `auto` is a pod for a class
+that is not Covenant (`Kit::pod_classes`) and the ship otherwise. The script
+(`pod_class`, `zone_fall`, `pods_free`) sends a pod squad with
+`ff_drop_squad(..., 3)` (`Command::DropSquad { arrival: Pod }`) when the zone
+has a fall and a squad pod is free, and places it on foot otherwise, so a wave
+never waits. The host (`SquadPods`, stepped by every role that applies
+entries) flies the first free `ff_pod_NN` down the zone's fall in
+`pods::FALL_TICKS`; when the fall is over the host logs a `PlaceSquad` for the
+squad, so a film replays the same arrival at the same tick. The pod is a
+wreck for `pods::WRECK_TICKS` after the squad is placed, then parks. An
+erased squad's pod parks the same way. Fallbacks count as `no_fall` and
+`no_free_pod`.
+
 The kit only places the ship parked and gives it the points to fly. The
 placement carries no hover flag: the director turns the hold on
 (`ShipHover`), and the host flies and loads the ship ("The drop ship",
