@@ -202,6 +202,24 @@ impl SourceParams {
     }
 }
 
+/// `0x1251e0`'s value for a sound the phase admits itself (loop segments,
+/// detail sounds): the tag's and class's level for the source's scale. The
+/// bridge reads the inputs (the tag's curves, the class's runtime state)
+/// inside the phase; it draws nothing.
+pub trait Levels {
+    fn level(&self, tag: TagIndex, source: &SourceParams) -> f32;
+}
+
+/// The same level for every sound: tests, and hosts with no class state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flat(pub f32);
+
+impl Levels for Flat {
+    fn level(&self, _: TagIndex, _: &SourceParams) -> f32 {
+        self.0
+    }
+}
+
 /// The record fields admission copies unread, as retail stores them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Options {
@@ -256,6 +274,9 @@ pub struct Request {
     /// the bridge computes it. Level plus gain at or under [`GAIN_FLOOR`]
     /// is silent.
     pub level: f32,
+    /// A looping sound's detail sound: where it plays is the host's
+    /// (presentation draws from its own seed copy and reads the listener).
+    pub detail: bool,
 }
 
 impl Request {
@@ -276,6 +297,7 @@ impl Request {
             extra_90: None,
             extra_98: None,
             level: 0.0,
+            detail: false,
         }
     }
 }
@@ -531,6 +553,7 @@ impl Sounds {
                     pitch: instance.pitch,
                     source: instance.source,
                     looping: instance.track.is_some(),
+                    detail: request.detail,
                     tick,
                 });
                 Ok(handle)

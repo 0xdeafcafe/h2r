@@ -1,6 +1,6 @@
 use super::*;
 use crate::events::TableEvent;
-use crate::instances::{Permutation, PitchRange, Playback, Scale, SoundTag, TagTable};
+use crate::instances::{Flat, Permutation, PitchRange, Playback, Scale, SoundTag, TagTable};
 use crate::owners::{NullOwners, Reason};
 
 const LOOP_TAG: TagIndex = TagIndex(0xe200_0001);
@@ -56,7 +56,7 @@ fn primary_tag(s: &Sounds, h: Handle, track: usize) -> Option<TagIndex> {
 
 /// One sound phase: loops first, then the table.
 fn tick(s: &mut Sounds, rng: &mut Rng, t: &TagTable, tick: u32) -> Vec<TableEvent> {
-    s.step_loops(rng, t, tick);
+    s.step_loops(rng, t, &Flat(0.0), tick);
     s.step(tick, &mut NullOwners)
 }
 
@@ -65,7 +65,7 @@ fn a_loop_plays_in_then_loop_then_out() {
     let t = tags(0, 1, vec![]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(1);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     assert_eq!(primary_tag(&s, h, 0), Some(IN));
     assert_eq!(s.loops().get(h).unwrap().tracks[0].current, Segment::IN);
     tick(&mut s, &mut rng, &t, 2);
@@ -81,7 +81,7 @@ fn a_loop_plays_in_then_loop_then_out() {
     assert_ne!(first, again);
     assert_eq!(primary_tag(&s, h, 0), Some(LOOP));
     // The stop plays the out and fades the loop; the loop is freed after.
-    assert!(s.loop_stop(&mut rng, &t, h, 10, &mut NullOwners));
+    assert!(s.loop_stop(&mut rng, &t, &Flat(0.0), h, 10, &mut NullOwners));
     assert_eq!(primary_tag(&s, h, 0), Some(OUT));
     assert_eq!(s.loops().get(h).unwrap().tracks[0].current, Segment::OUT);
     for n in 10..=13 {
@@ -96,7 +96,7 @@ fn a_loop_plays_in_then_loop_then_out() {
 fn an_overlay_in_plays_on_top_of_the_loop() {
     let t = tags(1, 1, vec![]);
     let mut s = Sounds::new();
-    let h = s.loop_start(&mut Rng::new(2), &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut Rng::new(2), &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     assert_eq!(tags_of(&s, h), [IN, LOOP]);
     assert_eq!(primary_tag(&s, h, 0), Some(LOOP));
 }
@@ -107,10 +107,10 @@ fn the_alternate_swaps_segments_with_overlap() {
     let t = tags(4, 1, vec![]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(3);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     tick(&mut s, &mut rng, &t, 3);
     let old = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
-    assert!(s.loop_set_alternate(&mut rng, &t, h, true, 4, &mut NullOwners));
+    assert!(s.loop_set_alternate(&mut rng, &t, &Flat(0.0), h, true, 4, &mut NullOwners));
     // The transition plays on top of the alternate loop, while the old loop
     // fades over the crossfade (0.2 s: 6 ticks).
     assert_eq!(tags_of(&s, h), [LOOP, ALT_IN, ALT_LOOP]);
@@ -119,7 +119,7 @@ fn the_alternate_swaps_segments_with_overlap() {
     assert_eq!(s.get(old).unwrap().phase, Phase::Fading { since: 4, until: 10 });
     // Asking again for the sequence it plays does nothing.
     let before = s.instances().len();
-    assert!(s.loop_set_alternate(&mut rng, &t, h, true, 5, &mut NullOwners));
+    assert!(s.loop_set_alternate(&mut rng, &t, &Flat(0.0), h, true, 5, &mut NullOwners));
     assert_eq!(s.instances().len(), before);
 }
 
@@ -129,7 +129,7 @@ fn a_detail_sound_starts_on_its_drawn_deadline() {
     let t = tags(0, 1, vec![detail]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(4);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     // One second from the clock at the start.
     assert_eq!(s.loops().get(h).unwrap().details, [1000]);
     let playing = |s: &Sounds| s.instances().iter().filter(|(_, i)| i.tag == DETAIL).count();
@@ -141,7 +141,7 @@ fn a_detail_sound_starts_on_its_drawn_deadline() {
     // A detail gated to the alternate does not play outside it.
     let gated = tags(0, 1, vec![DetailTag { flags: 2, ..detail }]);
     let mut s = Sounds::new();
-    s.loop_start(&mut rng, &gated, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    s.loop_start(&mut rng, &gated, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     tick(&mut s, &mut rng, &gated, 40);
     assert_eq!(playing(&s), 0);
 }
@@ -164,11 +164,11 @@ fn a_stopped_loop_fades_every_track_instance() {
     }
     let mut s = Sounds::new();
     let mut rng = Rng::new(5);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     let members: Vec<Handle> = s.loops().get(h).unwrap().tracks.iter().flat_map(|t| t.members.clone()).collect();
     assert_eq!(members.len(), 4, "an in and a loop on each of two tracks");
-    assert!(s.loop_stop(&mut rng, &t, h, 1, &mut NullOwners));
-    assert!(!s.loop_stop(&mut rng, &t, h, 1, &mut NullOwners));
+    assert!(s.loop_stop(&mut rng, &t, &Flat(0.0), h, 1, &mut NullOwners));
+    assert!(!s.loop_stop(&mut rng, &t, &Flat(0.0), h, 1, &mut NullOwners));
     for m in &members {
         assert_eq!(s.get(*m).unwrap().phase, Phase::Fading { since: 1, until: 4 });
     }
@@ -190,8 +190,8 @@ fn loops_step_in_slot_order() {
     let t = tags(0, 1, vec![]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(6);
-    let a = s.loop_start(&mut rng, &t, LOOP_TAG, 1, SourceParams::default(), false, 0).unwrap();
-    let b = s.loop_start(&mut rng, &t, LOOP_TAG, 2, SourceParams::default(), false, 0).unwrap();
+    let a = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 1, SourceParams::default(), false, 0).unwrap();
+    let b = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 2, SourceParams::default(), false, 0).unwrap();
     assert_eq!([a.index(), b.index()], [0, 1]);
     s.step(0, &mut NullOwners);
     // Both ins end on tick 3: loop 0's loop is admitted before loop 1's.
@@ -205,12 +205,12 @@ fn loops_step_in_slot_order() {
         .collect();
     assert_eq!(starts, [s.loops().get(a).unwrap().tracks[0].primary.unwrap(), s.loops().get(b).unwrap().tracks[0].primary.unwrap()]);
     // A freed row is taken first by the next loop, and steps first.
-    s.loop_stop(&mut rng, &t, a, 4, &mut NullOwners);
+    s.loop_stop(&mut rng, &t, &Flat(0.0), a, 4, &mut NullOwners);
     for n in 4..12 {
         tick(&mut s, &mut rng, &t, n);
     }
     assert!(s.loops().get(a).is_none());
-    let c = s.loop_start(&mut rng, &t, LOOP_TAG, 3, SourceParams::default(), false, 12).unwrap();
+    let c = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 3, SourceParams::default(), false, 12).unwrap();
     assert_eq!(c.index(), 0);
     assert_eq!(s.loops().handles(), [c, b]);
 }
@@ -220,7 +220,7 @@ fn a_track_drops_an_instance_when_it_ends() {
     let t = tags(1, 1, vec![]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(7);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
     let intro = s.loops().get(h).unwrap().tracks[0].members[0];
     assert_eq!(s.get(intro).unwrap().tag, IN);
     assert_eq!(s.get(intro).unwrap().owner, Owner::Loop { looping: h, track: 0 });
@@ -248,8 +248,8 @@ fn save_round_trips_loops() {
     let t = tags(1, 2, vec![DetailTag { tag: DETAIL, interval: [0.5, 3.0], flags: 0 }]);
     let mut s = Sounds::new();
     let mut rng = Rng::new(8);
-    let h = s.loop_start(&mut rng, &t, LOOP_TAG, 7, SourceParams([3; 17]), true, 0).unwrap();
-    s.loop_stop(&mut rng, &t, h, 1, &mut NullOwners);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams([3; 17]), true, 0).unwrap();
+    s.loop_stop(&mut rng, &t, &Flat(0.0), h, 1, &mut NullOwners);
     let bytes = s.encode();
     let back = Sounds::decode(Sounds::VERSION, &bytes).unwrap();
     assert_eq!(back.encode(), bytes);
@@ -259,6 +259,6 @@ fn save_round_trips_loops() {
 
 impl Sounds {
     fn start_unknown(&mut self, rng: &mut Rng, t: &TagTable) -> Result<Handle, LoopError> {
-        self.loop_start(rng, t, TagIndex(9), 0, SourceParams::default(), false, 0)
+        self.loop_start(rng, t, &Flat(0.0), TagIndex(9), 0, SourceParams::default(), false, 0)
     }
 }

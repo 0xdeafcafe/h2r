@@ -19,7 +19,7 @@
 
 use sim_world::{Handle, Pool, Reader, Record, RestoreError, Rng, Writer};
 
-use crate::instances::{FPU_CONTROL, Request, SoundTags, Sounds, SourceParams, TagIndex};
+use crate::instances::{FPU_CONTROL, Levels, Request, SoundTags, Sounds, SourceParams, TagIndex};
 use crate::owners::{Owner, OwnerHost, Phase};
 use crate::schedule::duration_ticks;
 use crate::segments::playing::{self, Segments};
@@ -193,6 +193,7 @@ impl Sounds {
         &mut self,
         rng: &mut Rng,
         tags: &dyn SoundTags,
+        levels: &dyn Levels,
         tag: TagIndex,
         owner: u32,
         source: SourceParams,
@@ -218,14 +219,14 @@ impl Sounds {
             let overlay = Segments::from_track_flags(track.flags).overlay(0);
             match intro {
                 Some(sound) if !overlay => {
-                    let primary = self.play(rng, tags, handle, i, sound, tick);
+                    let primary = self.play(rng, tags, levels, handle, i, sound, tick);
                     self.set_track(handle, i, Segment::IN, primary);
                 }
                 _ => {
                     if let Some(sound) = intro {
-                        self.play(rng, tags, handle, i, sound, tick);
+                        self.play(rng, tags, levels, handle, i, sound, tick);
                     }
-                    self.advance(rng, tags, handle, i, Segment::IN, tick);
+                    self.advance(rng, tags, levels, handle, i, Segment::IN, tick);
                 }
             }
         }
@@ -248,6 +249,7 @@ impl Sounds {
         &mut self,
         rng: &mut Rng,
         tags: &dyn SoundTags,
+        levels: &dyn Levels,
         handle: Handle,
         alternate: bool,
         tick: u32,
@@ -267,7 +269,7 @@ impl Sounds {
             }
             let old = t.primary;
             let current = t.current;
-            self.advance(rng, tags, handle, i, current, tick);
+            self.advance(rng, tags, levels, handle, i, current, tick);
             if let Some(old) = old
                 && track.flags & 4 != 0
                 && self.loops.get(handle).and_then(|l| l.tracks.get(i)).is_some_and(|t| t.primary != Some(old))
@@ -286,6 +288,7 @@ impl Sounds {
         &mut self,
         rng: &mut Rng,
         tags: &dyn SoundTags,
+        levels: &dyn Levels,
         handle: Handle,
         tick: u32,
         owners: &mut dyn OwnerHost,
@@ -307,7 +310,7 @@ impl Sounds {
                 OutSegment::Alternate => Segment::ALT_OUT,
                 OutSegment::Normal => Segment::OUT,
             };
-            let played = track.sound(out).and_then(|sound| self.play(rng, tags, handle, i, sound, tick));
+            let played = track.sound(out).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick));
             self.set_track(handle, i, out, played);
         }
         true
@@ -318,7 +321,8 @@ impl Sounds {
     /// its next segment (a repeating segment plays again), then plays each
     /// detail sound whose deadline has passed and draws its next one. A
     /// stopped loop with no sounds left is freed.
-    pub fn step_loops(&mut self, rng: &mut Rng, tags: &dyn SoundTags, tick: u32) {
+    pub fn step_loops(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
+        levels: &dyn Levels, tick: u32) {
         for handle in self.loops.handles() {
             let Some(l) = self.loops.get(handle).cloned() else { continue };
             if l.stopping {
@@ -332,7 +336,7 @@ impl Sounds {
                     p.phase == Phase::Playing && p.end.is_some_and(|end| end <= tick)
                 });
                 if due {
-                    self.advance(rng, tags, handle, i, t.current, tick);
+                    self.advance(rng, tags, levels, handle, i, t.current, tick);
                 }
             }
             let Some(def) = tags.looping(l.tag) else { continue };
@@ -343,7 +347,8 @@ impl Sounds {
                 if gated || deadline >= now {
                     continue;
                 }
-                let request = Request { source: l.source, ..Request::new(detail.tag) };
+                let mut request = Request { source: l.source, detail: true, ..Request::new(detail.tag) };
+                request.level = levels.level(detail.tag, &l.source);
                 if self.admit(rng, tags, request, tick).is_ok() {
                     let next = detail_deadline(rng, detail.interval, now);
                     if let Some(l) = self.loops.get_mut(handle) {
@@ -356,7 +361,8 @@ impl Sounds {
 
     /// Move track `i` on from `from`: the chain's overlay, then its primary.
     /// A chain that stays put replays the segment's own sound.
-    fn advance(&mut self, rng: &mut Rng, tags: &dyn SoundTags, handle: Handle, i: usize, from: Segment, tick: u32) {
+    fn advance(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
+        levels: &dyn Levels, handle: Handle, i: usize, from: Segment, tick: u32) {
         let Some(l) = self.loops.get(handle) else { return };
         let alternate = l.alternate;
         let Some(track) = tags.looping(l.tag).and_then(|d| d.tracks.get(i)).copied() else { return };
@@ -371,12 +377,12 @@ impl Sounds {
         .expect("the chain reads no fallible state");
         let segment = Segment(choice.segment as u8);
         if choice.overlay != NONE {
-            self.play(rng, tags, handle, i, TagIndex(choice.overlay), tick);
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.overlay), tick);
         }
         let primary = if choice.primary != NONE {
-            self.play(rng, tags, handle, i, TagIndex(choice.primary), tick)
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.primary), tick)
         } else if segment == from && from.next(alternate) == from {
-            track.sound(from).and_then(|sound| self.play(rng, tags, handle, i, sound, tick))
+            track.sound(from).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick))
         } else {
             None
         };
@@ -392,10 +398,12 @@ impl Sounds {
     }
 
     /// Admit one sound for track `i` and link it to the track.
-    fn play(&mut self, rng: &mut Rng, tags: &dyn SoundTags, handle: Handle, i: usize, sound: TagIndex, tick: u32) -> Option<Handle> {
+    fn play(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
+        levels: &dyn Levels, handle: Handle, i: usize, sound: TagIndex, tick: u32) -> Option<Handle> {
         let source = self.loops.get(handle)?.source;
         let owner = Owner::Loop { looping: handle, track: i as u8 };
-        let request = Request { owner, track: Some((handle, i as u8)), source, ..Request::new(sound) };
+        let level = levels.level(sound, &source);
+        let request = Request { owner, track: Some((handle, i as u8)), source, level, ..Request::new(sound) };
         let played = self.admit(rng, tags, request, tick).ok()?;
         if let Some(t) = self.loops.get_mut(handle).and_then(|l| l.tracks.get_mut(i)) {
             t.members.push(played);

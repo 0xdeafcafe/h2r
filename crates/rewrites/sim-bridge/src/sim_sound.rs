@@ -19,7 +19,9 @@ use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
 pub mod mixer_feed;
+pub mod owner_host;
 pub mod owners;
+pub mod request;
 pub mod voice_arm;
 
 pub const SOUND: &str = "sim.native.sound";
