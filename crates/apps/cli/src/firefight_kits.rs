@@ -79,7 +79,13 @@ fn ensure_map_with(exe: &Path, disc: &Path, data: &Path, map: &str) -> Result<()
         }
         eprintln!("firefight: preparing the kits");
         let reports = builtin::ensure(&Disc(disc.to_owned()), &maps);
-        return named_refusals(&reports);
+        // Only the run's own kit can stop the run; another built-in's
+        // refusal is named and the run goes on.
+        let (own, others): (Vec<_>, Vec<_>) = reports.into_iter().partition(|r| r.map == base);
+        for line in others.iter().filter_map(|r| r.line()) {
+            eprintln!("firefight: kit not built: {line}");
+        }
+        return named_refusals(&own);
     }
     let made = || maps.join(map).join("manifest.toml").is_file();
     if made() {
