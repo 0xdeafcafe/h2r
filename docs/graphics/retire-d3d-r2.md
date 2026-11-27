@@ -141,8 +141,7 @@ carries `decal_material_{sampled,clean,mismatched,proven}` and
 `decal_material_mismatch_<field>` (`combiner_w<n>`, `render_<index>`), and
 `native_decals::material_proven()` holds after 8 clean samples in a row.
 
-Not built: nothing draws these items. The decal vertex program (engine
-slot 3) and the 192 constants are not ported or compared; a plate needs the placement
+Not built: nothing draws these items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field); the 192 constants are not ported or compared; a plate needs the placement
 test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
