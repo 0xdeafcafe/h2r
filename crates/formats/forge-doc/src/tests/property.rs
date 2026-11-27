@@ -546,7 +546,8 @@ fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
         base_counts: BTreeMap::from([(ITEMS, 3), (STARTS, 2)]),
         ..Limits::default()
     };
-    // Item 0 is removed, so item 2 is the built map's item 1.
+    // Item 0 is removed: the build swap-removes (`resolve`), so item 2, the
+    // last, takes its place as the built map's item 0.
     let doc = with(vec![
         clips(1, at(ITEMS, 2), Some(4)),
         clips(2, at(ITEMS, 0), Some(1)),
@@ -562,9 +563,9 @@ fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
     assert_eq!(
         record,
         ForgeRecord {
-            spare_clips: BTreeMap::from([(1, 4)]),
+            spare_clips: BTreeMap::from([(0, 4)]),
             weights: BTreeMap::from([(1, SpawnWeight::Low)]),
-            held_back: BTreeSet::from([1]),
+            held_back: BTreeSet::from([0]),
             bodies_refused: BTreeMap::new(),
         }
     );
