@@ -374,7 +374,17 @@ gone.
   takes either (`Format::Relative32`, `Format::Absolute64`);
   `fixture_builds_for_every_target` prints which one each target took.
 - Tests: `fixup_lands_on_the_slow_label` per width;
-  `unowned_fault_reaches_the_previous_handler`; `table_must_be_sorted`.
+  `unowned_fault_reaches_the_previous_handler`;
+  `linked_rows_out_of_order_and_folded_are_found`;
+  `rows_at_one_instruction_with_different_landings_are_refused`.
+- The linked section is every shard's rows in link order, not address
+  order, and ld64 folds identical functions unless the link is `-O0`
+  (its deduplication pass): a folded copy's rows name the kept copy's
+  instructions, out of place and repeated. `register_table`
+  (`crates/recompiler/hostfault/src/table.rs`) copies the rows, sorts
+  them by instruction and drops repeats; two rows at one instruction
+  with different landings are `hostfault::Error::Conflict`, which names
+  both rows.
 - Exit: the fixture builds for macOS arm64 and x86-64, Linux x86-64,
   tvOS, iOS and Windows, and runs on the first three. If a target cannot
   express self-relative rows across sections, the slice says which
@@ -415,8 +425,8 @@ Runtime only. Old images keep running on the paged path.
 - `crates/recompiler/emit/src/host.rs`: the test host's memory is a window of its
   own with its pages mapped in place.
 - The runtime takes the model at registration: bit 16 needs the entry
-  table and a host with a window; the module's fixup table is checked
-  sorted and registered with `hostfault`. A runtime with such a module
+  table and a host with a window; the module's fixup table is sorted,
+  deduplicated and registered with `hostfault` (F1). A runtime with such a module
   catches window faults, turns parking on and moves guest RAM into an
   aliasable backing, copying what was there. Restores and views: F5.
 - Tests: every existing inline-against-helper test in

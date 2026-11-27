@@ -14,9 +14,11 @@
 //!   rollback) brings its own.
 //! - **Fixup tables**: rows of (access instruction, landing label) that a
 //!   generated module emits beside every inline access
-//!   ([`register_table`]). [`lookup`] finds a faulting PC's landing by
-//!   binary search. A table must be sorted by instruction address; it is
-//!   checked once at registration and never sorted or skipped here.
+//!   ([`register_table`]). Rows arrive in link order, not address order,
+//!   and repeat where the linker folded identical functions: registration
+//!   copies, sorts and deduplicates them, and refuses two rows at one
+//!   instruction with different landings. [`lookup`] finds a faulting
+//!   PC's landing by binary search.
 //!
 //! A fault in no region, or one every callback declines, goes to the
 //! handler that was installed before this one, unchanged: the Rust
@@ -57,8 +59,9 @@ pub enum Error {
     /// A fixup table's bounds are reversed, misaligned or not a whole
     /// number of rows.
     BadTable,
-    /// Row `index` of a fixup table does not come after the row before it.
-    Unsorted { index: usize },
+    /// Rows `first` and `second` of a fixup table (in table order) name one
+    /// instruction with different landings.
+    Conflict { first: usize, second: usize },
 }
 
 impl std::fmt::Display for Error {
@@ -74,9 +77,10 @@ impl std::fmt::Display for Error {
             Error::BadTable => {
                 f.write_str("fixup table bounds are reversed, misaligned or not whole rows")
             }
-            Error::Unsorted { index } => {
-                write!(f, "fixup table row {index} is not after the row before it")
-            }
+            Error::Conflict { first, second } => write!(
+                f,
+                "fixup table rows {first} and {second} name one instruction with different landings"
+            ),
         }
     }
 }

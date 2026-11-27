@@ -4,6 +4,15 @@
 //! `asm` statement as the instruction, into its own section, and exports
 //! the section's bounds. Rows come in one of two encodings, chosen per
 //! target by what its object format can express ([`Format`]).
+//!
+//! The section is the linker's concatenation of every shard's rows, and
+//! the linker may fold identical functions: ld64 deduplicates by default
+//! whenever the link is not `-O0`, and the folded copy's rows then name
+//! the kept copy's instructions, out of place and repeated. So the rows
+//! are neither sorted nor unique as linked. Registration copies them,
+//! sorts them by instruction and drops repeats; two rows at one
+//! instruction with different landings are refused by name
+//! ([`Error::Conflict`]).
 use super::{Error, READERS, quiesce, register_lock};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
@@ -49,25 +58,15 @@ impl Format {
 }
 
 struct TableData {
-    start: usize,
-    rows: usize,
-    format: Format,
-    /// The first and last rows' instruction addresses.
-    lo: usize,
-    hi: usize,
+    /// (instruction, landing), sorted by instruction, one row each.
+    rows: Box<[(usize, usize)]>,
 }
 
-impl TableData {
-    /// Row `i`'s instruction and landing addresses.
-    fn row(&self, i: usize) -> (usize, usize) {
-        decode(self.start, self.format, i)
-    }
-}
-
+/// Row `i`'s instruction and landing addresses.
 fn decode(start: usize, format: Format, i: usize) -> (usize, usize) {
     let at = start + i * format.row_size();
     // SAFETY: `at` is a whole row inside a table its registrant promised
-    // stays mapped and unchanged while registered.
+    // is readable.
     unsafe {
         match format {
             Format::Relative32 => {
@@ -87,6 +86,38 @@ fn decode(start: usize, format: Format, i: usize) -> (usize, usize) {
     }
 }
 
+/// The `rows` rows at `start`, sorted by instruction with repeats
+/// dropped. Of the rows naming one instruction, the first in table order
+/// sets the landing; the first after it with another landing is a
+/// [`Error::Conflict`].
+fn collect(start: usize, format: Format, rows: usize) -> Result<Box<[(usize, usize)]>, Error> {
+    let mut all: Vec<(usize, usize, usize)> = (0..rows)
+        .map(|i| {
+            let (insn, landing) = decode(start, format, i);
+            (insn, i, landing)
+        })
+        .collect();
+    // Indices are unique, so this order is total and the first row of
+    // each instruction comes first.
+    all.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(all.len());
+    let mut first = 0;
+    for &(insn, index, landing) in &all {
+        match out.last() {
+            Some(&(kept, kept_landing)) if kept == insn => {
+                if kept_landing != landing {
+                    return Err(Error::Conflict { first, second: index });
+                }
+            }
+            _ => {
+                out.push((insn, landing));
+                first = index;
+            }
+        }
+    }
+    Ok(out.into_boxed_slice())
+}
+
 static TABLES: [AtomicPtr<TableData>; MAX_TABLES] =
     [const { AtomicPtr::new(ptr::null_mut()) }; MAX_TABLES];
 
@@ -104,13 +135,16 @@ impl Table {
     }
 }
 
-/// Register the rows in `[start, end)`. Fails with [`Error::Unsorted`] at
-/// the first row whose instruction address is not above the one before.
+/// Register the rows in `[start, end)`, in any order: they are copied,
+/// sorted by instruction and repeats dropped. Fails with
+/// [`Error::Conflict`] when two rows name one instruction with different
+/// landings.
 ///
 /// # Safety
-/// `[start, end)` must be readable and unchanged for as long as the
-/// returned [`Table`] lives (a loaded module's section: keep the module
-/// loaded), and the rows must be in `format`.
+/// `[start, end)` must be readable during the call and its rows in
+/// `format`; the instructions and landings they name must stay mapped
+/// for as long as the returned [`Table`] lives (a loaded module: keep it
+/// loaded).
 pub unsafe fn register_table(
     start: *const u8,
     end: *const u8,
@@ -128,21 +162,8 @@ pub unsafe fn register_table(
     if rows == 0 {
         return Ok(Table { slot: None });
     }
-    let mut previous = decode(start, format, 0).0;
-    for index in 1..rows {
-        let insn = decode(start, format, index).0;
-        if insn <= previous {
-            return Err(Error::Unsorted { index });
-        }
-        previous = insn;
-    }
-    let entry = Box::into_raw(Box::new(TableData {
-        start,
-        rows,
-        format,
-        lo: decode(start, format, 0).0,
-        hi: previous,
-    }));
+    let rows = collect(start, format, rows)?;
+    let entry = Box::into_raw(Box::new(TableData { rows }));
     let _guard = register_lock();
     for (slot, s) in TABLES.iter().enumerate() {
         if s.compare_exchange(ptr::null_mut(), entry, SeqCst, SeqCst)
@@ -170,7 +191,8 @@ impl Drop for Table {
 }
 
 /// The landing label for an access instruction at `pc`, from any
-/// registered table. Safe to call in a signal handler.
+/// registered table. Safe to call in a signal handler: it reads the
+/// tables' rows and allocates nothing.
 pub fn lookup(pc: usize) -> Option<usize> {
     READERS.fetch_add(1, SeqCst);
     let found = TABLES.iter().find_map(|slot| {
@@ -179,24 +201,10 @@ pub fn lookup(pc: usize) -> Option<usize> {
             return None;
         }
         // SAFETY: published entries outlive every reader (READERS above).
-        let t = unsafe { &*p };
-        if pc < t.lo || pc > t.hi {
-            return None;
-        }
-        let (mut lo, mut hi) = (0, t.rows);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let (insn, landing) = t.row(mid);
-            if insn == pc {
-                return Some(landing);
-            }
-            if insn < pc {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        None
+        let rows = unsafe { &(*p).rows };
+        rows.binary_search_by_key(&pc, |r| r.0)
+            .ok()
+            .map(|i| rows[i].1)
     });
     READERS.fetch_sub(1, SeqCst);
     found
@@ -222,30 +230,52 @@ mod tests {
         (range.start.cast(), range.end.cast())
     }
 
+    /// Two shards linked out of address order, with a function the linker
+    /// folded into an earlier shard's copy: its rows repeat the kept
+    /// copy's (instruction, landing) pairs after rows above them, as
+    /// ld64's deduplication leaves them. Every row is still found.
     #[test]
-    fn table_must_be_sorted() {
-        let mut buf = vec![0i32; 8];
+    fn linked_rows_out_of_order_and_folded_are_found() {
+        let mut buf = vec![0i32; 2 * 7];
         let base = buf.as_ptr() as usize;
-        let pcs = [base + 0x100, base + 0x200, base + 0x180, base + 0x300];
-        let landings = [base + 0x1000; 4];
+        let at = |o: usize| base + 0x10_0000 + o;
+        let land = |o: usize| base + 0x20_0000 + o;
+        // Shard B's text was placed after shard A's but its rows come
+        // first; the last two rows are A's folded twin of A's first function.
+        let pcs = [at(0x400), at(0x480), at(0x100), at(0x140), at(0x200), at(0x100), at(0x140)];
+        let landings = [land(0x40), land(0x48), land(0x10), land(0x14), land(0x20), land(0x10), land(0x14)];
+        relative(&mut buf, &pcs, &landings);
+        let (start, end) = bounds(&buf);
+        // SAFETY: `buf` outlives the table, which is dropped below.
+        let table = unsafe { register_table(start, end, Format::Relative32) }.unwrap();
+        for (&pc, &landing) in pcs.iter().zip(&landings) {
+            assert_eq!(lookup(pc), Some(landing));
+            assert_eq!(lookup(pc + 4), None);
+        }
+        drop(table);
+        assert_eq!(lookup(pcs[0]), None);
+    }
+
+    /// Two rows at one instruction must agree on its landing; the first
+    /// pair that does not is named in table order.
+    #[test]
+    fn rows_at_one_instruction_with_different_landings_are_refused() {
+        let mut buf = vec![0i32; 2 * 5];
+        let base = buf.as_ptr() as usize;
+        let pcs = [base + 0x300, base + 0x100, base + 0x200, base + 0x100, base + 0x100];
+        let landings = [base + 0x1000, base + 0x1100, base + 0x1200, base + 0x1100, base + 0x1180];
         relative(&mut buf, &pcs, &landings);
         let (start, end) = bounds(&buf);
         // SAFETY: `buf` outlives every use; an error registers nothing.
         let err = unsafe { register_table(start, end, Format::Relative32) }.unwrap_err();
-        assert_eq!(err, Error::Unsorted { index: 2 });
+        assert_eq!(err, Error::Conflict { first: 1, second: 4 });
 
-        // A repeated instruction is not sorted either.
-        let pcs = [base + 0x100, base + 0x200, base + 0x200, base + 0x300];
-        relative(&mut buf, &pcs, &landings);
-        // SAFETY: as above.
-        let err = unsafe { register_table(start, end, Format::Relative32) }.unwrap_err();
-        assert_eq!(err, Error::Unsorted { index: 2 });
-
-        let rows: Vec<u64> = [0x30u64, 1, 0x20, 2].to_vec();
+        let rows: Vec<u64> = [0x30u64, 1, 0x20, 2, 0x30, 3].to_vec();
         let (start, end) = bounds(&rows);
         // SAFETY: as above.
         let err = unsafe { register_table(start, end, Format::Absolute64) }.unwrap_err();
-        assert_eq!(err, Error::Unsorted { index: 1 });
+        assert_eq!(err, Error::Conflict { first: 0, second: 2 });
+        assert_eq!(lookup(0x20), None, "a refused table registers nothing");
     }
 
     #[test]

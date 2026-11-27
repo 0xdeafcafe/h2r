@@ -144,10 +144,10 @@ docs/runtime/contract-thin-transfers-flat-ram.md, section 4.1.
   (`hostfault::Format::Relative32`). A faulting access resumes at the
   label, which calls `h2abi_v1_read`/`write` (or the `_counted` pair with
   accounting) and so faults, logs or reaches MMIO exactly as the paged
-  path's helper call. The rows must be sorted by instruction address, as
-  the compiler emits them; registration refuses a table that is not
-  (`RegistrationError::FixupTable`), which a linker that reorders
-  functions or splits hot and cold code would cause.
+  path's helper call. The rows may be in any order and may repeat (link
+  order across shards, ld64 folding identical functions); registration
+  sorts and deduplicates them and refuses two rows at one instruction
+  with different landings (`RegistrationError::FixupTable`).
 - **The block.** The context's third word (after `preempt` and the
   direct-call block) points at an `H2Mem`
   `{base, cards, accesses, budget, preempt}` (40 bytes). A handler loads

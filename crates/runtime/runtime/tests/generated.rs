@@ -1256,11 +1256,18 @@ use runtime::generated::{FEATURE_FLAT_RAM, H2GenFlatModule};
 /// `insns` bytes past the table's start, each landing on the start
 /// (leaked, as a loaded module's section outlives its registration).
 fn fixup_rows(insns: &[usize]) -> &'static [[i32; 2]] {
+    let rows: Vec<(usize, usize)> = insns.iter().map(|&insn| (insn, 0)).collect();
+    fixup_rows_to(&rows)
+}
+
+/// [`fixup_rows`] with each row's own landing: `(instruction, landing)`,
+/// both in bytes past the table's start.
+fn fixup_rows_to(insns: &[(usize, usize)]) -> &'static [[i32; 2]] {
     let rows: &'static mut [[i32; 2]] = vec![[0i32; 2]; insns.len()].leak();
     let base = rows.as_ptr() as isize;
-    for (i, &insn) in insns.iter().enumerate() {
+    for (i, &(insn, landing)) in insns.iter().enumerate() {
         let at = base + 8 * i as isize;
-        rows[i] = [(base + insn as isize - at) as i32, (base - (at + 4)) as i32];
+        rows[i] = [(base + insn as isize - at) as i32, (base + landing as isize - (at + 4)) as i32];
     }
     rows
 }
@@ -1297,9 +1304,11 @@ fn with_flat(d: &mut Dispatch, features: u32, rows: &'static [[i32; 2]], format:
 }
 
 /// A flat module needs the entry table its fixup bounds follow, a host
-/// with a window, and a sorted table; a refused one registers nothing.
+/// with a window, and a fixup table whose rows agree at each instruction;
+/// a refused one registers nothing. Rows out of address order or repeated
+/// (shards linked out of order, functions the linker folded) register.
 #[test]
-fn flat_ram_needs_an_entry_table_and_a_sorted_fixup_table() {
+fn flat_ram_needs_an_entry_table_and_a_consistent_fixup_table() {
     let mut d = Dispatch::default();
     assert_eq!(
         with_flat(&mut d, FEATURE_FLAT_RAM, fixup_rows(&[8, 16]), 0),
@@ -1317,9 +1326,15 @@ fn flat_ram_needs_an_entry_table_and_a_sorted_fixup_table() {
         r
     };
     assert_eq!(
-        refused(fixup_rows(&[16, 8]), 0),
-        Err(RegistrationError::FixupTable(hostfault::Error::Unsorted { index: 1 }))
+        refused(fixup_rows_to(&[(16, 0), (8, 0), (16, 4)]), 0),
+        Err(RegistrationError::FixupTable(hostfault::Error::Conflict { first: 0, second: 2 }))
     );
+    let mut linked = Dispatch::default();
+    assert_eq!(
+        with_flat(&mut linked, flat, fixup_rows(&[24, 8, 16, 8]), 0),
+        Ok(RegisteredModule { entries: 3, resumes: 0, features: flat })
+    );
+    assert!(linked.flat_ram());
     assert_eq!(refused(fixup_rows(&[8, 16]), 7), Err(RegistrationError::FixupTable(hostfault::Error::BadTable)));
     assert_eq!(
         with_flat(&mut d, flat, fixup_rows(&[8, 16, 24]), 0),

@@ -309,7 +309,7 @@ impl Dispatch {
     /// [`FEATURE_DIRECT_CALLS`] and no entry table, or without
     /// [`FEATURE_HOST_CALLS`], is refused. A module with
     /// [`FEATURE_FLAT_RAM`] needs the entry table and a host with a flat RAM
-    /// window, and its fixup table must be sorted
+    /// window, and its fixup rows must agree at each instruction
     /// ([`RegistrationError::FixupTable`]); it is registered with
     /// `hostfault` for as long as this dispatch (or a fork of it) lives.
     ///
@@ -491,7 +491,7 @@ unsafe fn entry_table(
 }
 
 /// A flat module's fixup table, checked and registered with `hostfault`
-/// (rows sorted by instruction address, never sorted here).
+/// (rows in link order; `hostfault` sorts and deduplicates them).
 ///
 /// # Safety
 /// `ext`'s fixup bounds are null or a readable table in `fix_format` that

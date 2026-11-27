@@ -144,9 +144,8 @@ pub enum RegistrationError {
     /// x86-64 Linux have one). Rebuild the image without `H2_FLAT_RAM=1`.
     #[error("generated module uses flat RAM, which this host has no window for: rebuild the image without H2_FLAT_RAM")]
     FlatRamUnsupported,
-    /// A flat-RAM module's fixup table is malformed or unsorted (a linker
-    /// that reorders functions or splits hot and cold code breaks the
-    /// emit order the table relies on).
+    /// A flat-RAM module's fixup table is malformed, or two of its rows
+    /// name one instruction with different landings.
     #[error("generated module fixup table: {0}")]
     FixupTable(hostfault::Error),
     /// The module's entry table does not match its entry rows.
