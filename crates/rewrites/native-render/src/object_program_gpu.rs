@@ -1467,17 +1467,18 @@ impl LitObjects {
 
     /// The draws of an object item of world layer `layer` (one of
     /// [`OBJECT_LAYERS`]; `pass` its layer draw in `scene`, `item` the
-    /// item) in model `index`: per pass its material draws in the layer,
-    /// in order, the implementation the pass draws for the item (its only
+    /// item) in model `index`: for the one pass of the layer the item
+    /// names (`frame_scene::LayerItem::pass`, at the first level; another
+    /// level refuses), the implementation it draws for the item (its only
     /// one, or the item's), every per-object constant put in from the
     /// item's lighting, the draw's defaults and the item's rows, and its
     /// state resolved over the device at the layer call (`entry`,
     /// [`object_state::resolve_layer`]); a marked item's in stencil mode 2
     /// unless the layer draws with the stencil off; an item toggling the
     /// auxiliary state with the rows and clip its view holds
-    /// (`frame_scene::View::aux_depth`, [`with_aux_depth`]). A pass drawing
-    /// nothing for the item is left out. An error says why the item keeps
-    /// its D3D draw: extraction's cause ([`LayerItem::refusal`]), the
+    /// (`frame_scene::View::aux_depth`, [`with_aux_depth`]). An error says
+    /// why the item keeps its D3D draw: extraction's cause
+    /// ([`LayerItem::refusal`]), a pass that draws nothing for it, the
     /// auxiliary state toggle when its view holds no values, a part or
     /// implementation that is not native, or an input or state that does
     /// not resolve.
@@ -1947,9 +1948,11 @@ fn item_inputs<'a>(frame: &'a ObjectFrame, item: &'a ItemDraw, aux: bool) -> Res
 
 /// [`LitObjects::plan_layer_item`] over a model's world-layer parts
 /// (`layers`, `at` the index of the item's in layer `layer`) and its
-/// programs' passes (`pass_of`), the item's rows `rows`: per pass of the
-/// part, the implementation it draws for the item, its blocks and its
-/// state. In layer 1 with the stencil off the draws take stencil mode 0,
+/// programs' passes (`pass_of`), the item's rows `rows`: for the part's
+/// pass the item names (its `+0x14`; the guest's list holds an item per
+/// pass), the implementation it draws for the item, its blocks and its
+/// state. The parts hold the first level's passes, so an item at another
+/// level (`+0x15`) refuses. In layer 1 with the stencil off the draws take stencil mode 0,
 /// as the prologue sets it (`0x0004d640`); layers 5, 7, 8 and 20 draw
 /// under the device's stencil. An item with a PRT stream (layer 5) draws
 /// each pass's PRT variant ([`LitLayerPass::prt`]) with the stream's
@@ -2011,11 +2014,19 @@ fn plan_layer_part_at_entry<'a>(
     } else {
         entry
     };
-    let mut out = Vec::with_capacity(p.passes.len());
-    for (n, lp) in p.passes.iter().enumerate() {
+    // The item draws one pass at one level, its `+0x14` and `+0x15`
+    // (`0x00016b90`); the list's other items draw the layer's other
+    // passes. The parts' passes are compiled for the first level only.
+    if item.level != 0 {
+        return Err(format!("level {} of layer {layer}, whose passes the object programs do not compile", item.level));
+    }
+    let n = usize::from(item.pass);
+    let lp = p.passes.get(n).ok_or_else(|| format!("pass {n} of layer {layer}, which has {}", p.passes.len()))?;
+    let mut out = Vec::with_capacity(1);
+    {
         let implementation = if lp.count == 1 { 0 } else { key.implementation };
         if implementation < IMPLEMENTATIONS && lp.empty >> implementation & 1 != 0 {
-            continue;
+            return Err(format!("its pass {n} of layer {layer} draws nothing"));
         }
         let slots = if item.prt.is_some() { &lp.prt } else { &lp.implementations };
         let (program, buffer) = slots
@@ -3995,7 +4006,7 @@ mod tests {
         // leave the same raw word as the device already holds.
         let instance = frame_scene::InstanceKey(7);
         let item = LayerItem {
-            slot: 0, key: ItemKey { shader: shader.0, ..key(4, 0, 0) }, owner: LayerOwner::Object(instance),
+            slot: 0, key: ItemKey { shader: shader.0, ..key(4, 0, 0) }, level: 0, pass: 0, owner: LayerOwner::Object(instance),
             model: 1, rows: 0..3, lighting: Some(Lighting { words: [0; 30], root: Some(0.5f32.to_bits()) }),
             flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
         };
@@ -4159,7 +4170,7 @@ mod tests {
         let item = LayerItem {
             slot: 3,
             key: key(4, 0, 0),
-            owner: LayerOwner::Object(InstanceKey(1)),
+            level: 0, pass: 0, owner: LayerOwner::Object(InstanceKey(1)),
             model: 0xe100_0001,
             rows: 0..3,
             lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
@@ -4199,7 +4210,7 @@ mod tests {
         assert!(compiled.inherits_c18);
         let instance = InstanceKey(3);
         let item = LayerItem {
-            slot: 0, key: key(4, 0, 0), owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            slot: 0, key: key(4, 0, 0), level: 0, pass: 0, owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
             lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
         };
         let mut states = entry();
@@ -4282,7 +4293,7 @@ mod tests {
             }],
         }];
         let item = LayerItem {
-            slot: 0, key, owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
+            slot: 0, key, level: 0, pass: 0, owner: LayerOwner::Object(instance), model: 1, rows: 0..3,
             lighting: None, flags: PartFlags::NONE, subparts: None, refusal: None, prt: None,
         };
         let plan = |mem: &Mem| {
@@ -4352,9 +4363,11 @@ mod tests {
             remainder: 0,
             inputs: LayerInputs { defaults: Some(Defaults::default()), ..LayerInputs::default() },
         };
-        let item = |implementation: usize| LayerItem {
+        let at = |pass: u8, implementation: usize| LayerItem {
             slot: 3,
             key: key(4, 0, implementation),
+            level: 0,
+            pass,
             owner: LayerOwner::Object(InstanceKey(1)),
             model: 0xe100_0001,
             rows: 0..3,
@@ -4364,6 +4377,7 @@ mod tests {
             refusal: None,
             prt: None,
         };
+        let item = |implementation: usize| at(0, implementation);
         let rows = [[1.0f32; 4]; 3];
         // The device's blend op reads (the passes inherit it).
         let mut e = entry();
@@ -4373,12 +4387,21 @@ mod tests {
             plan_layer_part(&layers, at, &pass_of, InstanceKey(1), layer, &rows, pass, item, e)
         };
         let seven = layer_pass(7, false);
+        // Each item draws its own pass (`+0x14`) only: the list holds an
+        // item for each, so pass 0's does not draw pass 1 again.
+        let drawn = |d: &[PlannedDraw]| d.iter().map(|d| (d.implementation, d.program)).collect::<Vec<_>>();
         let d = plan(Some(0), 7, &seven, &item(1), &e).unwrap();
-        assert_eq!(d.iter().map(|d| (d.implementation, d.program)).collect::<Vec<_>>(), [(0, 0), (1, 1)], "the only one, then the item's");
+        assert_eq!(drawn(&d), [(0, 0)], "pass 0's only implementation, and not pass 1");
         assert!(d.iter().all(|d| d.state.blend.is_some() && !d.state.depth_write && d.ranges == std::slice::from_ref(&(0..3))));
         assert_eq!(d[0].vertex.constants[50], [1.0; 4], "its record's rows");
-        assert_eq!(plan(Some(0), 7, &seven, &item(2), &e).unwrap().len(), 1, "implementation 2 of the second pass draws nothing");
-        assert!(plan(Some(0), 7, &seven, &item(3), &e).unwrap_err().contains("no native implementation 3"));
+        assert_eq!(drawn(&plan(Some(0), 7, &seven, &at(1, 1), &e).unwrap()), [(1, 1)], "pass 1 alone, the item's implementation");
+        assert_eq!(drawn(&plan(Some(0), 7, &seven, &at(1, 0), &e).unwrap()), [(0, 0)]);
+        assert_eq!(drawn(&plan(Some(0), 7, &seven, &item(2), &e).unwrap()), [(0, 0)], "pass 0 has one implementation");
+        assert!(plan(Some(0), 7, &seven, &at(1, 2), &e).unwrap_err().contains("draws nothing"), "implementation 2 of the second pass");
+        assert!(plan(Some(0), 7, &seven, &at(1, 3), &e).unwrap_err().contains("no native implementation 3"));
+        assert!(plan(Some(0), 7, &seven, &at(2, 0), &e).unwrap_err().contains("pass 2 of layer 7"), "past the layer's passes");
+        let far = LayerItem { level: 1, ..item(0) };
+        assert!(plan(Some(0), 7, &seven, &far, &e).unwrap_err().contains("level 1"), "only the first level compiles");
         assert!(plan(None, 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native in layer 7"));
         assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
         let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };
@@ -4435,8 +4458,8 @@ mod tests {
             plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, item, &e, None, Some(&toggle), None)
         };
         let d = with_view(&aux).unwrap();
-        assert_eq!(d.len(), 2);
-        assert!(d.iter().all(|d| d.aux_depth == Some(toggle)), "each pass toggles");
+        assert_eq!(d.len(), 1);
+        assert!(d.iter().all(|d| d.aux_depth == Some(toggle)), "the pass toggles");
         assert!(with_view(&item(0)).unwrap().iter().all(|d| d.aux_depth.is_none()), "a plain item draws with the device's");
         let no_defaults = LayerPass { inputs: LayerInputs::default(), ..layer_pass(7, false) };
         assert!(plan(Some(0), 7, &no_defaults, &item(0), &e).unwrap_err().contains("defaults"));

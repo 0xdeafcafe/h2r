@@ -240,6 +240,9 @@ pub fn layer(mem: &dyn GuestRead, layer: u8, lighting: bool, builder: &mut Scene
 /// object walk's).
 fn layer_item(mem: &dyn GuestRead, layer: u8, item: u32, slot: u32, lighting: bool) -> Option<(LayerItem, Vec<Row>)> {
     let key = item_key(mem, item)?;
+    // The pass within the layer (`+0x14`) and the shader level (`+0x15`)
+    // the draw sets up (`0x0003bc7b`..`0x0003bc8d` into `0x00016b90`).
+    let [pass, level, ..] = mem.read_u32(item + 0x14)?.to_le_bytes();
     let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(key.record);
     let model = mem.read_u32(at + RECORD_MODEL)?;
     let mut flags = PartFlags::NONE;
@@ -275,7 +278,7 @@ fn layer_item(mem: &dyn GuestRead, layer: u8, item: u32, slot: u32, lighting: bo
         }
         RecordOwner::Unresolved => return None,
     };
-    Some((LayerItem { slot, key, owner, model, rows: 0..0, lighting: lit, flags, subparts, refusal, prt }, rows))
+    Some((LayerItem { slot, key, level, pass, owner, model, rows: 0..0, lighting: lit, flags, subparts, refusal, prt }, rows))
 }
 
 /// What [`objects`] put in the view.

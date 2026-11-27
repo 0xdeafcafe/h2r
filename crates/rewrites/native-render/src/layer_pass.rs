@@ -131,10 +131,11 @@ pub fn instance_properties(lib: &tags::material::ShaderLibrary, shader: map::Tag
         .unwrap_or_default()
 }
 
-/// One pass of an item's draw: its index in the layer and the
-/// implementation drawn.
+/// One pass of an item's draw: the shader level it is of, its index in
+/// the level's layer and the implementation drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassDraw {
+    pub level: usize,
     pub pass: usize,
     pub implementation: usize,
 }
@@ -184,9 +185,11 @@ pub enum LayerRefusal {
     Material(String),
     /// The shader's instance does not read.
     Instance(String),
-    /// The material draws nothing in the layer at the first level of
-    /// detail.
+    /// The material draws nothing in the layer at the item's level, or
+    /// the item's pass has no vertex shader.
     NoPass,
+    /// The item names a pass past the layer's at its level.
+    Pass { pass: usize, count: usize },
     /// The item's implementation is not one of the pass's.
     Implementation { pass: usize, count: usize, wanted: usize },
     /// A pass reads an input the scene does not give.
@@ -237,6 +240,7 @@ impl LayerRefusal {
             LayerRefusal::Material(_) => "material",
             LayerRefusal::Instance(_) => "instance",
             LayerRefusal::NoPass => "no_pass",
+            LayerRefusal::Pass { .. } => "pass",
             LayerRefusal::Implementation { .. } => "implementation",
             LayerRefusal::Input { .. } => "input",
             LayerRefusal::Animation { .. } => "animation",
@@ -303,7 +307,7 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
     let shader = item.key.shader;
     let own = materials.material(shader, None).map_err(LayerRefusal::Material)?;
     let instance = materials.instance(shader).map_err(LayerRefusal::Instance)?;
-    let passes = passes_of(&own, pass.layer, item.key.implementation)?;
+    let passes = passes_of(&own, pass.layer, item.level, item.pass, item.key.implementation)?;
     let lighting = match item.owner {
         LayerOwner::Object(_) => item.lighting.as_ref(),
         LayerOwner::Cluster(_) | LayerOwner::Placement(_) => None,
@@ -319,7 +323,7 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
             .map_err(|input| LayerRefusal::Input { pass: p.pass, input })?;
     }
     let material = if per_draw { materials.material(shader, Some(&inputs)).map_err(LayerRefusal::Material)? } else { own };
-    let passes = passes_of(&material, pass.layer, item.key.implementation)?;
+    let passes = passes_of(&material, pass.layer, item.level, item.pass, item.key.implementation)?;
     let mut sampled = Vec::new();
     for p in &passes {
         let imp = implementation(&material, pass.layer, p).expect("planned from this material");
@@ -354,37 +358,39 @@ pub fn plan_item(pass: &LayerPass, item: &LayerItem, materials: &mut dyn Materia
     })
 }
 
-/// The passes `layer` draws for `material` (first level of detail), each
-/// with its implementation: the only one, or the item's.
-pub fn passes_of(material: &Material, layer: u8, item_implementation: usize) -> Result<Vec<PassDraw>, LayerRefusal> {
+/// The pass an item draws for `material` in `layer`: pass `pass` of the
+/// layer at shader level `level`, the item's `+0x14` and `+0x15`, as the
+/// shader begin `0x00016b90` selects it (`frame_scene::LayerItem::pass`),
+/// with its implementation: the only one, or the item's. The guest's list
+/// holds one item per pass, so an item draws only its own. A pass whose
+/// implementation has no vertex shader draws nothing ([`LayerRefusal::NoPass`]).
+pub fn passes_of(
+    material: &Material, layer: u8, level: u8, pass: u8, item_implementation: usize,
+) -> Result<Vec<PassDraw>, LayerRefusal> {
+    let (level, n) = (usize::from(level), usize::from(pass));
     let layer = material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == usize::from(layer))
+        .find(|l| l.lod == level && l.layer == usize::from(layer))
         .filter(|l| !l.passes.is_empty())
         .ok_or(LayerRefusal::NoPass)?;
-    let mut out = Vec::with_capacity(layer.passes.len());
-    for (n, p) in layer.passes.iter().enumerate() {
-        let count = p.implementations.len();
-        let implementation = if count == 1 { 0 } else { item_implementation };
-        let Some(imp) = p.implementations.get(implementation) else {
-            return Err(LayerRefusal::Implementation { pass: n, count, wanted: implementation });
-        };
-        if imp.vertex_shader.is_some() {
-            out.push(PassDraw { pass: n, implementation });
-        }
-    }
-    if out.is_empty() {
+    let p = layer.passes.get(n).ok_or(LayerRefusal::Pass { pass: n, count: layer.passes.len() })?;
+    let count = p.implementations.len();
+    let implementation = if count == 1 { 0 } else { item_implementation };
+    let Some(imp) = p.implementations.get(implementation) else {
+        return Err(LayerRefusal::Implementation { pass: n, count, wanted: implementation });
+    };
+    if imp.vertex_shader.is_none() {
         return Err(LayerRefusal::NoPass);
     }
-    Ok(out)
+    Ok(vec![PassDraw { level, pass: n, implementation }])
 }
 
 fn implementation<'a>(material: &'a Material, layer: u8, p: &PassDraw) -> Option<&'a ResolvedImplementation> {
     material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == usize::from(layer))?
+        .find(|l| l.lod == p.level && l.layer == usize::from(layer))?
         .passes
         .get(p.pass)?
         .implementations
@@ -1037,7 +1043,7 @@ pub(crate) mod tests {
 
     fn item(owner: LayerOwner, implementation: usize, lighting: Option<Lighting>) -> LayerItem {
         LayerItem {
-            slot: 4, key: key(implementation), owner, model: u32::MAX, rows: 0..0, lighting,
+            slot: 4, key: key(implementation), level: 0, pass: 0, owner, model: u32::MAX, rows: 0..0, lighting,
             flags: frame_scene::PartFlags::NONE, subparts: None, refusal: None, prt: None,
         }
     }
@@ -1047,7 +1053,7 @@ pub(crate) mod tests {
         let m = material(5, vec![vec![implementation(0, InputReads::default(), Vec::new())]], own_inputs());
         let mut lib = library(m);
         let d = plan_item(&pass(5, view_inputs()), &item(LayerOwner::Cluster(3), 0, None), &mut lib).unwrap();
-        assert_eq!(d.passes, [PassDraw { pass: 0, implementation: 0 }]);
+        assert_eq!(d.passes, [PassDraw { level: 0, pass: 0, implementation: 0 }]);
         assert_eq!((d.section, d.part, d.slot), (3, 2, 4));
         assert_eq!(d.inputs, own_inputs());
         assert_eq!(lib.asked, [None], "resolved once, with the instance's own inputs");
@@ -1061,10 +1067,43 @@ pub(crate) mod tests {
         let several = vec![implementation(0, InputReads::default(), Vec::new()), silent];
         let one = vec![implementation(0, InputReads::default(), Vec::new())];
         let m = material(7, vec![several, one], own_inputs());
-        assert_eq!(passes_of(&m, 7, 0).unwrap(), [PassDraw { pass: 0, implementation: 0 }, PassDraw { pass: 1, implementation: 0 }]);
-        assert_eq!(passes_of(&m, 7, 1).unwrap(), [PassDraw { pass: 1, implementation: 0 }], "pass 0's implementation 1 draws nothing");
-        assert_eq!(passes_of(&m, 7, 2).unwrap_err(), LayerRefusal::Implementation { pass: 0, count: 2, wanted: 2 });
-        assert_eq!(passes_of(&m, 8, 0).unwrap_err(), LayerRefusal::NoPass);
+        let draw = |pass, implementation| PassDraw { level: 0, pass, implementation };
+        assert_eq!(passes_of(&m, 7, 0, 0, 0).unwrap(), [draw(0, 0)], "pass 0 alone: the list's next item draws pass 1");
+        assert_eq!(passes_of(&m, 7, 0, 1, 0).unwrap(), [draw(1, 0)]);
+        assert_eq!(passes_of(&m, 7, 0, 1, 1).unwrap(), [draw(1, 0)], "pass 1's only implementation");
+        assert_eq!(passes_of(&m, 7, 0, 0, 1).unwrap_err(), LayerRefusal::NoPass, "pass 0's implementation 1 draws nothing");
+        assert_eq!(passes_of(&m, 7, 0, 0, 2).unwrap_err(), LayerRefusal::Implementation { pass: 0, count: 2, wanted: 2 });
+        assert_eq!(passes_of(&m, 7, 0, 2, 0).unwrap_err(), LayerRefusal::Pass { pass: 2, count: 2 });
+        assert_eq!(passes_of(&m, 7, 1, 0, 0).unwrap_err(), LayerRefusal::NoPass, "no level 1");
+        assert_eq!(passes_of(&m, 8, 0, 0, 0).unwrap_err(), LayerRefusal::NoPass);
+    }
+
+    /// The guest's list holds one item per pass, at the level the item
+    /// names (`+0x14`, `+0x15`): each item plans that one pass of that
+    /// level, so a pass-0 item does not draw the later passes the list's
+    /// own items draw again.
+    #[test]
+    fn an_item_draws_only_its_own_pass_at_its_own_level() {
+        let one = || vec![implementation(0, InputReads::default(), Vec::new())];
+        let mut m = material(5, vec![one(), one()], own_inputs());
+        let mut far = m.layers[0].clone();
+        far.lod = 1;
+        far.passes.truncate(1);
+        far.passes[0].pass = TagId(0xe000_0300);
+        m.layers.push(far);
+        let mut lib = library(m);
+        let five = pass(5, view_inputs());
+        let planned = |lib: &mut Library, level, n| {
+            plan_item(&five, &LayerItem { level, pass: n, ..item(LayerOwner::Cluster(3), 0, None) }, lib)
+        };
+        let zero = planned(&mut lib, 0, 0).unwrap();
+        assert_eq!(zero.passes, [PassDraw { level: 0, pass: 0, implementation: 0 }], "pass 0 only, not pass 1 again");
+        let first = planned(&mut lib, 0, 1).unwrap();
+        assert_eq!(first.passes, [PassDraw { level: 0, pass: 1, implementation: 0 }]);
+        let far = planned(&mut lib, 1, 0).unwrap();
+        assert_eq!(far.passes, [PassDraw { level: 1, pass: 0, implementation: 0 }]);
+        assert!(far.implementation(&far.passes[0]).is_some(), "level 1's pass resolves");
+        assert_eq!(planned(&mut lib, 1, 1).unwrap_err(), LayerRefusal::Pass { pass: 1, count: 1 }, "level 1 has one pass");
     }
 
     #[test]
@@ -1780,7 +1819,7 @@ pub(crate) mod tests {
         let mut lib = library(m);
         let d = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &item(LayerOwner::Cluster(3), 0, None), &mut lib).unwrap();
         assert_eq!(d.layer, OVERLAY_LAYER);
-        assert_eq!(d.passes, [PassDraw { pass: 0, implementation: 0 }]);
+        assert_eq!(d.passes, [PassDraw { level: 0, pass: 0, implementation: 0 }]);
         assert_eq!(d.inputs, own_inputs());
         let other = plan_item(&pass(OVERLAY_LAYER, view_inputs()), &LayerItem { key: ItemKey { shader: 0xe000_0099, ..key(0) }, ..item(LayerOwner::Cluster(3), 0, None) }, &mut lib);
         assert_eq!(other.unwrap_err().name(), "material", "a shader that does not resolve is named");
