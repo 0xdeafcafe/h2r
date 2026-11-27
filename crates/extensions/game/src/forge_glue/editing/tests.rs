@@ -73,6 +73,9 @@ pub(super) fn with_tests(e: &mut Editor) -> Arc<FakeTests> {
 
 /// The test room as the host opens it: a shelf in the palette, two crates
 /// of its own.
+/// The Monitor's unit tag in the test room's kit.
+const MONITOR_TAG: u32 = 0xe100_0007;
+
 fn opened() -> Opened {
     opened_with(None)
 }
@@ -128,6 +131,11 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
         names: Default::default(),
+        // The kit carries the Monitor alone.
+        bodies: forge::body::Kit {
+            carried: [(forge_doc::bodies::Body::Monitor, MONITOR_TAG)].into(),
+            refused: [(forge_doc::bodies::Body::Sentinel, forge_doc::bodies::Refused::NoRoom)].into(),
+        },
         // The rifles hold a weapon; the grenades do not.
         armed: [r"test\rifles".to_string()].into(),
     }
@@ -1754,11 +1762,12 @@ fn live_forge_row_starts_in_the_monitor_with_the_hud() {
     let tab = custom_games::Menu::ALL.row_kind(custom_games::FORGE_ROW).mode().unwrap();
     let plan = lobby_tabs::switch::plan(lobby_tabs::Tab::CustomGames, tab);
     lobby_start::set_mode(plan.mode);
+    // The session swaps into the Monitor once the player has a unit.
     let e = editor();
-    assert!(e.monitor());
-    assert!(e.monitor_hud(0.0).view.monitor);
+    assert!(e.enter_at_start);
+    assert!(!e.monitor(), "in the biped until the swap returns");
     lobby_start::clear();
-    assert!(!editor().monitor());
+    assert!(!editor().enter_at_start);
 }
 
 // ---- Rebuild map and the reload after an AI ground build
@@ -2179,53 +2188,92 @@ fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
     assert_eq!(e.session.spare_clips(id), None);
 }
 
-/// The session's first monitor comes up at the map's first start, a
-/// standing eye along its facing, not at the game's pregame view; a later
-/// toggle takes the player's eye. The pose reaches the private world view
-/// with no player in it, as the render hook draws it every frame.
-#[test]
-fn the_first_monitor_starts_at_the_map_start_with_a_drawn_view() {
-    use crate::coop_players::layout::SCENARIO_STARTS;
-    use crate::spectator_view::{Pose, WORLD_VIEW_RETURN, blank_view, replace_world_view};
-    use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE, testing::FakeGuest};
-    const STACK: u32 = 0x5000;
-    const ORIGINAL: u32 = 0x6000;
-    const SCRATCH: u32 = 0x7000;
-    let mut m = FakeGuest::new();
-    m.put_u32(points::SCENARIO.base, 0x1000)
-        .put_u32(0x1000 + SCENARIO_STARTS, 2)
-        .put_u32(0x1004 + SCENARIO_STARTS, 0x2000)
-        .put_f32(0x2000, 12.0)
-        .put_f32(0x2004, -3.0)
-        .put_f32(0x2008, 1.5)
-        .put_f32(0x200c, 2.0);
-    let pregame = Camera { position: [0.0; 3], yaw: 0.0, pitch: 0.0 };
-    let first = monitor_camera(&m, true, Some(pregame)).unwrap();
-    assert_eq!(first.position, [12.0, -3.0, 1.5 + 0.64]);
-    assert_eq!((first.yaw, first.pitch), (2.0, 0.0));
-    let player = Camera { position: [5.0, 6.0, 7.0], yaw: 1.0, pitch: 0.2 };
-    assert_eq!(monitor_camera(&m, false, Some(player)), Some(player), "a toggle");
-    assert_eq!(monitor_camera(&m, false, None), Some(first), "no eye: the start");
-    assert_eq!(monitor_camera(&FakeGuest::new(), true, Some(player)), Some(player), "no starts");
-    assert_eq!(monitor_camera(&FakeGuest::new(), true, None), None);
+/// A guest with one local player (local user 0) standing at `at` facing
+/// +y in biped `biped`; the player's handle and the biped's.
+fn local_player_guest(at: [f32; 3]) -> (engine::testing::FakeGuest, u32, u32) {
+    use engine::view::{fake, objects, players};
+    const PLAYERS: u32 = 0x8000_0000;
+    const OBJECTS: u32 = 0x8010_0000;
+    const BODY: u32 = 0x8020_0000;
+    let mut g = engine::testing::FakeGuest::new();
+    g.put_u32(engine::points::PLAYERS.base, PLAYERS)
+        .put_u32(engine::points::OBJECTS.base, OBJECTS);
+    let ps = fake::datums::<players::Player>(&mut g, PLAYERS, 16);
+    let os = fake::datums::<objects::Header>(&mut g, OBJECTS, 16);
+    let (unit, header) = fake::push(&mut g, &os);
+    g.map(BODY, 0x400);
+    header.set_body(&mut g, BODY).unwrap();
+    let body = objects::Body::at(BODY);
+    body.set_position(&mut g, at).unwrap();
+    body.set_forward(&mut g, [0., 1., 0.]).unwrap();
+    let (player, p) = fake::push(&mut g, &ps);
+    p.set_unit(&mut g, Some(unit)).unwrap();
+    p.set_local_user(&mut g, 0).unwrap();
+    (g, player.raw(), unit.raw())
+}
 
-    // The render hook's private view: the start's eye, no local player.
-    let mut original = blank_view();
-    original[8..12].copy_from_slice(&0u32.to_le_bytes());
-    m.put_u32(STACK, WORLD_VIEW_RETURN)
-        .put_u32(STACK + 12, ORIGINAL)
-        .put(ORIGINAL, &original)
-        .map(SCRATCH, VIEW_STRIDE);
-    let pose = Pose { position: first.position, yaw: first.yaw, pitch: first.pitch };
-    assert!(replace_world_view(&mut m, STACK, 1, SCRATCH, |_, _| Some((pose, None))));
-    assert_eq!(m.u32(STACK + 12).unwrap(), SCRATCH);
-    assert_eq!(m.u32(SCRATCH + 8).unwrap(), u32::MAX);
-    for camera in [0x0c, 0x80] {
-        assert_eq!(m.vec3(SCRATCH + camera).unwrap(), first.position);
-        assert_eq!(m.vec3(SCRATCH + camera + 0x0c).unwrap(), pose.axes().0);
-        let [near, far] = [m.f32(SCRATCH + camera + 0x40).unwrap(), m.f32(SCRATCH + camera + 0x44).unwrap()];
-        assert!(0.0 < near && near < far, "{near} {far}");
-    }
+/// D-pad Up queues Enter with the kit's Monitor where the player stands;
+/// its answer puts the tool in the monitor with the biped parked, and a
+/// second press queues Leave with that biped. Fly follows a moved camera.
+#[test]
+fn the_body_swap_enters_the_monitor_and_comes_back() {
+    use agent::sim::calls::{BodyStep, Call};
+    let (m, player, biped) = local_player_guest([1., 2., 3.]);
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.toggle_body(&m).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    let Call::ForgeBody { player: p, step: BodyStep::Enter { tag, pos, .. }, .. } = call else {
+        panic!("an Enter: {call:?}");
+    };
+    assert_eq!((p, tag), (player, MONITOR_TAG));
+    assert_eq!(pos, [1., 2., 3. + 0.64], "the standing eye with no drawn view");
+    assert!(!e.monitor(), "nothing changes before the answer");
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"body":"e2000009","biped":format!("{biped:08x}")})));
+    e.poll_body(5);
+    assert!(e.monitor());
+    assert_eq!(e.flying(), Some((forge_doc::bodies::Body::Monitor, 0xe200_0009)));
+    assert_eq!(e.swap.parked(), Some(biped));
+
+    // The camera moves: one Fly to it.
+    e.player = Some(player);
+    let mut camera = e.tool.camera.unwrap();
+    camera.position[0] += 2.;
+    e.tool.camera = Some(camera);
+    e.fly_body();
+    e.fly_body();
+    let flies = calls::lock(&e.calls).drain();
+    assert_eq!(flies.len(), 1, "one at a time");
+    assert!(matches!(flies[0].1, Call::ForgeBody { step: BodyStep::Fly { body: 0xe200_0009, pos, .. }, .. } if pos == camera.position));
+    calls::lock(&e.calls).finish(flies[0].0, Ok(json!({})));
+    e.poll_body(6);
+
+    e.toggle_body(&m).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(matches!(call, Call::ForgeBody { step: BodyStep::Leave { body: 0xe200_0009, biped: b }, .. } if b == biped));
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"biped":format!("{biped:08x}"),"placed":true})));
+    e.poll_body(7);
+    assert!(!e.monitor());
+    assert_eq!(e.swap.parked(), None);
+}
+
+/// A body the kit lacks is refused by name, and nothing is queued; with
+/// no Monitor, Forge itself is.
+#[test]
+fn a_body_the_kit_lacks_is_refused_by_name() {
+    let (m, ..) = local_player_guest([0.; 3]);
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.set_body(forge_doc::bodies::Body::Sentinel);
+    assert_eq!(
+        e.toggle_body(&m),
+        Err("Sentinel is not in this map's kit: the map has no room for it.".into())
+    );
+    e.set_body(forge_doc::bodies::Body::Monitor);
+    e.bodies = forge::body::Kit::default();
+    assert!(e.toggle_body(&m).unwrap_err().starts_with("Forge needs the Monitor"));
+    assert!(calls::lock(&e.calls).drain().is_empty());
+    assert!(!e.monitor());
 }
 
 /// The Spare clips row is a spawner's of a collection that holds a weapon:

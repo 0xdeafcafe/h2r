@@ -326,11 +326,13 @@ trailer = length:u32le "H2FE"
 | 0 spare clips | the item spawner's row in the built map | clips, 0 to 10 | `agent::forge::spare_clips::TABLE` |
 | 1 weight | the starting point's row | 0 Low, 1 High | `agent::forge::spawn_weight::TABLE` |
 | 2 held back | the item spawner's row | 0 | `agent::forge::place_at_start::TABLE` |
+| 3 body refused | the Forge body's code (0 Monitor, 1 Sentinel, 2 Prophet) | why the kit left it out: 0 no donor, 1 cannot copy, 2 no room | `forge_map::kit_bodies` ([forge-design-slices.md](forge-design-slices.md), "The monitor body") |
 
 `crc` is the FNV-1a of the bytes before it. Rows name entries by their
 index in the built map, which `ForgeRecord::of` resolves from the
-document (`forge_doc::resolve`); a removed entry has no row. A document
-with no such property writes no record.
+document (`forge_doc::resolve`); a removed entry has no row. A kit
+build writes a field 3 row for each body it left out. A build with no
+such property and no refused body writes no record.
 
 A reader walks the tail's
 records from the end (`game_markers::record::{tail_record, TAIL_ENDS}`),

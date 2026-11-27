@@ -14,6 +14,8 @@
 //! field   = 0 spare clips  (an item spawner; value the clips, 0..=SPARE_CLIPS_MAX)
 //!           1 weight       (a starting point; value 0 Low, 1 High)
 //!           2 held back    (an item spawner placed at start: No; value 0)
+//!           3 body refused (a Forge body the kit left out, index its
+//!                          `bodies::Body` code; value its `bodies::Refused`)
 //! trailer = length:u32le "H2FE"                ; after the record
 //! ```
 //!
@@ -23,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek};
 
+use crate::bodies::{Body, Refused};
 use crate::{BlockKind, ForgeDoc, Result, SPARE_CLIPS_MAX, SpawnWeight, resolve};
 
 pub const MAGIC: [u8; 4] = *b"H2FR";
@@ -32,6 +35,7 @@ pub const VERSION: u8 = 1;
 pub const SPARE_CLIPS: u8 = 0;
 pub const WEIGHT: u8 = 1;
 pub const HELD_BACK: u8 = 2;
+pub const BODY_REFUSED: u8 = 3;
 /// Bytes per row.
 const ROW: usize = 4;
 
@@ -45,6 +49,9 @@ pub struct ForgeRecord {
     pub weights: BTreeMap<u32, SpawnWeight>,
     /// The item spawners that are not placed at a round's start.
     pub held_back: BTreeSet<u32>,
+    /// The Forge bodies a kit build left out, and why (`forge_build`'s
+    /// `bodies`). A kit map with none here carries all three.
+    pub bodies_refused: BTreeMap<Body, Refused>,
 }
 
 /// A record that does not read.
@@ -72,7 +79,10 @@ fn fnv(bytes: &[u8]) -> u32 {
 
 impl ForgeRecord {
     pub fn is_empty(&self) -> bool {
-        self.spare_clips.is_empty() && self.weights.is_empty() && self.held_back.is_empty()
+        self.spare_clips.is_empty()
+            && self.weights.is_empty()
+            && self.held_back.is_empty()
+            && self.bodies_refused.is_empty()
     }
 
     /// The record of `doc` over the map it builds: each property resolved to
@@ -93,6 +103,7 @@ impl ForgeRecord {
                 .into_iter()
                 .filter_map(at)
                 .collect(),
+            bodies_refused: BTreeMap::new(),
         })
     }
 
@@ -115,6 +126,9 @@ impl ForgeRecord {
         }
         for &i in &self.held_back {
             row(HELD_BACK, i, 0);
+        }
+        for (&body, &why) in &self.bodies_refused {
+            row(BODY_REFUSED, u32::from(body.code()), why.code());
         }
         let mut w = Vec::with_capacity(rows.len() + 15);
         w.extend_from_slice(&MAGIC);
@@ -163,6 +177,15 @@ impl ForgeRecord {
                 }
                 HELD_BACK if value == 0 => {
                     out.held_back.insert(index);
+                }
+                BODY_REFUSED => {
+                    let body = u8::try_from(index).ok().and_then(Body::from_code);
+                    match (body, Refused::from_code(value)) {
+                        (Some(body), Some(why)) => {
+                            out.bodies_refused.insert(body, why);
+                        }
+                        _ => return Err(bad),
+                    }
                 }
                 SPARE_CLIPS | WEIGHT | HELD_BACK => return Err(bad),
                 other => return Err(RecordError::Field(other)),

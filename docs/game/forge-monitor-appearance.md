@@ -22,10 +22,11 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ### What is drawn today
 
-- Entering the monitor parks the local player's biped: it is marked
-  undamageable and left out of the render list, and the view is the
-  private world view the director camera uses (**Code**,
-  `forge_controls/render.rs`: `park`, `HIDDEN`, `draw_world_view`).
+- Entering the monitor makes the player's chosen Forge body their unit
+  and parks their biped, undamageable and left out of the render list.
+  The view is the player's own, drawn from the body (**Code**,
+  `forge_glue/editing/body.rs`, `forge_controls/render.rs`: `park`;
+  [forge-design-slices.md](forge-design-slices.md), "The monitor body").
 - The monitor is a `forge::camera::Camera`: a position, a yaw and a
   pitch. It is published to the input bridge and to `forge.status`
   (**Code**, `forge_controls.rs`: `publish`, `eye`).
@@ -33,11 +34,10 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
   Objects tool's gizmo, three world segments, and the navpoints over the
   thing held or aimed at and over other monitors (**Code**,
   `forge_glue/gizmo.rs`: `Axes::from_frame`, `forge_hud.rs`: `Points`).
-- A session is local. No other machine exists to see a monitor, and no
-  film record holds its pose.
+- The swap runs on the local machine. Other machines and the film do not
+  carry it yet.
 
-So a look has nothing to replace. It adds a drawn body where there is
-only a camera.
+A look dresses the transplanted body.
 
 ### The look
 
@@ -379,12 +379,12 @@ pose:   {seat, position, yaw, pitch, monitor: bool, held: OpId?}
 
 ### A real body
 
-With slice F10 a monitor can be a transplanted biped. Its look is then
+The monitor is a transplanted unit (`forge_doc::bodies`). Its look is
 part of the game:
 
-- The model is the `transplant` recipe and the unit swap. Choosing it is
-  a Rebuild, offered in the same Model picker under a **Bodies** heading
-  with the pending badge.
+- The model is the kit's body and the unit swap. The body is chosen by
+  the `forge.body` setting: Monitor, Sentinel or Prophet in chair. A body
+  the kit left out is shown greyed with its reason (`forge::body::rows`).
 - Its colours are the unit's change colours in guest memory, which the
   object update evaluates (`OBJECT_CHANGE_COLORS`, **Code**,
   `crates/hooking/guest-layout/src/points.rs`). Setting them is a Forge

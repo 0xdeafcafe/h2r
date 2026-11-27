@@ -38,7 +38,7 @@ pub use ship::{Dropship, ShipReport};
 pub use sky::{Fall, PodReport};
 pub use retail::RetailClass;
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
-pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
+pub use transplant::{ClassCost, ClassSpec, Classes, Donor, copy_unit};
 
 /// The kit's version: the `firefight` crate's, which session data names.
 pub const KIT_VERSION: u32 = firefight::KIT_VERSION;

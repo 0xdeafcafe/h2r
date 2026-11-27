@@ -565,6 +565,7 @@ fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
             spare_clips: BTreeMap::from([(1, 4)]),
             weights: BTreeMap::from([(1, SpawnWeight::Low)]),
             held_back: BTreeSet::from([1]),
+            bodies_refused: BTreeMap::new(),
         }
     );
     // At a map's tail, before an areas record, it reads back whole.
@@ -584,4 +585,36 @@ fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
     bytes[body - 5] = 11;
     assert_eq!(ForgeRecord::decode(&bytes[..body]), Err(RecordError::Checksum));
     assert!(ForgeRecord::default().encode().len() == 19);
+}
+
+/// The bodies a kit build left out ride the record by body and reason, and
+/// a row naming no body or no reason is refused.
+#[test]
+fn the_record_carries_the_bodies_a_kit_left_out() {
+    use crate::bodies::{Body, Refused};
+    use crate::record::{ForgeRecord, RecordError};
+    let record = ForgeRecord {
+        bodies_refused: BTreeMap::from([
+            (Body::Sentinel, Refused::CannotCopy),
+            (Body::Prophet, Refused::NoRoom),
+        ]),
+        ..ForgeRecord::default()
+    };
+    assert!(!record.is_empty());
+    let bytes = record.encode();
+    let body = bytes.len() - 8;
+    assert_eq!(ForgeRecord::decode(&bytes[..body]), Ok(record.clone()));
+    // Row 0 is the Sentinel's: field 3, index 1, value 1. A reason past the
+    // table is refused, with its checksum made good.
+    let mut bad = bytes[..body - 4].to_vec();
+    assert_eq!(&bad[7..11], &[3, 1, 0, 1]);
+    bad[10] = 9;
+    let crc = bad
+        .iter()
+        .fold(0x811c_9dc5u32, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    bad.extend_from_slice(&crc.to_le_bytes());
+    assert_eq!(
+        ForgeRecord::decode(&bad),
+        Err(RecordError::Value { field: 3, value: 9 })
+    );
 }

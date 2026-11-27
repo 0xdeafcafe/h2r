@@ -3,6 +3,7 @@
 //! session access.
 #![forbid(unsafe_code)]
 
+pub mod body;
 mod budget;
 pub mod camera;
 pub mod files;

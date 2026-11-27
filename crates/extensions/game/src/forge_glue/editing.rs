@@ -29,6 +29,7 @@ use crate::forge_screens::{
 };
 
 mod area;
+mod body;
 mod net;
 mod resize;
 
@@ -215,9 +216,17 @@ pub(super) struct Editor {
     /// What the Waves page's Start from offers on this base map
     /// (`forge_screens::waves::presets`), read once as the session opens.
     wave_presets: Arc<[forge_doc::waves::Def]>,
-    /// The monitor has had a camera in this session: the first comes up at
-    /// the map's start ([`monitor_camera`]).
-    monitor_placed: bool,
+    /// The Forge bodies the map's kit carries (`forge::body::Kit`).
+    bodies: forge::body::Kit,
+    /// The body D-pad Up swaps into: the profile's choice ([`Editor::set_body`]).
+    body: forge_doc::bodies::Body,
+    /// Where the local player's unit is in the swap ([`body`]).
+    swap: body::Swap,
+    /// Swap into the body as soon as the player has a unit: a Forge
+    /// lobby's start, and a reload of ours from inside the body.
+    enter_at_start: bool,
+    /// The local player's handle, read each tick.
+    player: Option<u32>,
 }
 
 impl Editor {
@@ -225,8 +234,8 @@ impl Editor {
         let saved_head = opened.session.head();
         let map_name = opened.session.document().title.clone();
         let wave_presets = screens::waves::presets(&opened.session.document().base.map);
-        let mut tool = Tool::with_extents(opened.extents.into());
-        tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
+        let tool = Tool::with_extents(opened.extents.into());
+        let enter_at_start = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
@@ -289,8 +298,28 @@ impl Editor {
             test_answer: None,
             test_set: None,
             wave_presets,
-            monitor_placed: false,
+            bodies: opened.bodies,
+            body: forge_doc::bodies::Body::Monitor,
+            swap: body::Swap::Biped,
+            enter_at_start,
+            player: None,
         }
+    }
+
+    /// The body D-pad Up swaps into from now on: the profile's
+    /// (`forge::body::load`).
+    pub fn set_body(&mut self, body: forge_doc::bodies::Body) {
+        self.body = body;
+    }
+
+    /// The body the player flies and its unit, for `forge.status`.
+    pub fn flying(&self) -> Option<(forge_doc::bodies::Body, u32)> {
+        self.swap.flying()
+    }
+
+    /// The body picker's rows on this map (`forge::body::rows`).
+    pub fn body_rows(&self) -> Vec<forge::body::Row> {
+        forge::body::rows(&self.bodies)
     }
 
     /// The running cache's name (`forge_map::Loaded::name`).
@@ -399,6 +428,15 @@ impl Editor {
         }
         self.session = Arc::new(session);
         self.tags = opened.tags.into();
+        self.bodies = opened.bodies;
+        // The reload made a new world with no body in it: the player is
+        // back in a biped, and goes back into the body once spawned.
+        if self.tool.monitor || self.swap.flying().is_some() {
+            self.enter_at_start = true;
+        }
+        self.swap = body::Swap::Biped;
+        self.tool.monitor = false;
+        self.tool.camera = None;
         self.walls = opened.walls;
         self.refused = opened.refused;
         self.armed = Arc::new(opened.armed);
@@ -610,6 +648,9 @@ impl Editor {
             "ground":ground_api::status(&self.session, self.ground_facts()),
             "nav":nav_api::status(&self.session, self.nav_facts()),
             "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
+            "body":self.swap.flying().map(|(body, unit)| json!({"kind":body.key(), "unit":format!("{unit:#010x}")})),
+            "body_choice":self.body.key(),
+            "bodies":self.body_rows().iter().map(|r| json!({"kind":r.body.key(), "name":r.label, "refused":r.refused})).collect::<Vec<_>>(),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
         })
@@ -1701,13 +1742,28 @@ impl Editor {
                 }
             }
         }
+        self.player = body::local_player(memory).map(|p| p.0);
+        self.poll_body(tick);
         if !self.busy() {
-            if self.tool.monitor && self.tool.camera.is_none() {
-                self.tool.camera = monitor_camera(memory, !self.monitor_placed, controls::eye());
-                self.monitor_placed |= self.tool.camera.is_some();
-            }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
+            // D-pad Up is the body swap's, not the tool's
+            // (docs/game/forge-design-slices.md, "The monitor body").
+            let swap = if input.action == Some(Action::Toggle) && !input.dialog {
+                input.action = None;
+                self.area = None;
+                true
+            } else {
+                self.enter_at_start
+                    && self.player.is_some()
+                    && matches!(self.swap, body::Swap::Biped)
+            };
+            if swap {
+                self.enter_at_start = false;
+                if let Err(why) = self.toggle_body(memory) {
+                    self.refuse(why, tick);
+                }
+            }
             self.rotating = input.rotating && !self.ui_up;
             self.take_input(tick, input, bsp);
             let walls = bsp.and_then(|i| self.walls.get(i));
@@ -1720,6 +1776,7 @@ impl Editor {
                 }
                 _ => None,
             };
+            self.fly_body();
             self.poll(tick);
         }
         self.publish(memory);
@@ -1760,6 +1817,8 @@ impl Editor {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
+            parked: self.swap.parked(),
+            body: self.swap.flying().map(|(_, unit)| unit),
             screen: self.ui_up,
             camera: self.tool.camera,
             x_properties: self.x_properties(),
@@ -2923,24 +2982,6 @@ impl Editor {
 fn list_variants(data: &Path, session: &Session) -> Result<Vec<Listed>, String> {
     let base = &session.document().base;
     variants::list(data, &base.map, Some(&base.sha256)).map_err(|e| e.to_string())
-}
-
-/// Where the monitor's camera comes up. The session's first monitor
-/// starts at the map's first player start, a standing eye along its
-/// facing: the view the game draws as a Forge game opens is from before
-/// the biped spawns, not a place in the level, and a camera taken from it
-/// draws nothing of the map. A later toggle takes the player's own view
-/// ([`controls::eye`]). Each falls back to the other.
-fn monitor_camera(m: &dyn engine::GuestMemory, first: bool, eye: Option<Camera>) -> Option<Camera> {
-    let start = || {
-        let pose = crate::agent_spawn_view::Starts::read(m)?.eye(m, 0)?;
-        Some(Camera {
-            position: pose.position,
-            yaw: pose.yaw,
-            pitch: pose.pitch,
-        })
-    };
-    if first { start().or(eye) } else { eye.or_else(start) }
 }
 
 fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {
