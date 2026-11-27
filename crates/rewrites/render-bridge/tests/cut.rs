@@ -255,11 +255,11 @@ fn object_setup_makes_the_guests_residency_requests() {
 fn the_world_layers_are_cut_in_their_slots() {
     use render_bridge::cut::LAYER_CUTS;
     for c in LAYER_CUTS {
-        assert_eq!(native_render::layer_pass::world_slot(c.layer), Some(c.slot), "layer {}", c.layer);
+        assert_eq!(native_render::world_slot(c.layer), Some(c.slot), "layer {}", c.layer);
     }
     let mut layers: Vec<u8> = LAYER_CUTS.iter().map(|c| c.layer).collect();
     layers.sort_unstable();
-    assert_eq!(layers, native_render::layer_pass::WORLD_LAYERS.to_vec(), "one row per world layer");
+    assert_eq!(layers, native_render::WORLD_LAYERS.to_vec(), "one row per world layer");
     for l in render_bridge::native_layers::SCENE_ONLY {
         assert!(layers.contains(&(l as u8)), "layer {l}");
     }
