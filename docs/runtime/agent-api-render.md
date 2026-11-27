@@ -11,7 +11,7 @@ Status: Built. Part of the [agent API](agent-api.md), which holds the wire, the 
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
 | `profile.memory` | none | the flat RAM window's counters (below) |
 | `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
-| `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
+| `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?, symbols?}`, none | the in-process sampler; `symbols` names the frames |
 
 ```sh
 h2 agent counters
@@ -133,7 +133,11 @@ h2 agent faults
   (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
   what `profile.sample.stop` answers: the module-relative dump
   (`profile.h2prof` under `H2_SAMPLE_DIR`, which `h2 profile remote`
-  resolves) and its sample count. Only an h2 built with `--features perf`
+  resolves) and its sample count. With `symbols: true` the stop also
+  answers `symbols` (`module:offset` to `name (file:line)`, from `atos` on
+  macOS with `dladdr` as the fallback) and `top` (`self` and `inclusive`, the
+  30 heaviest names with sample counts, a name counted once per stack), so
+  one call says where the frame goes. Only an h2 built with `--features perf`
   on a host with a sampler has it; otherwise, or while a
   `profile.sample.start` run holds it, the capture still runs and
   `sampling.unavailable` says why ([xbox.md](xbox.md), "Profiling on the

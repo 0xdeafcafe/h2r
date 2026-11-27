@@ -288,9 +288,198 @@ pub fn locate(pc: u64) -> Option<Module> {
     })
 }
 
-#[cfg(not(windows))]
+/// The image an address is in, from `dladdr`: its file name, base and the
+/// extent of its Mach-O segments. Cached per base.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn locate(pc: u64) -> Option<Module> {
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<u64, Module>>> = Mutex::new(None);
+    // SAFETY: Dl_info is plain pointers; zero is a valid empty value.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is ours; dladdr takes any address.
+    if unsafe { libc::dladdr(pc as *const libc::c_void, &mut info) } == 0
+        || info.dli_fbase.is_null()
+        || info.dli_fname.is_null()
+    {
+        return None;
+    }
+    let base = info.dli_fbase as u64;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = cache.get_or_insert_with(HashMap::new);
+    if let Some(m) = map.get(&base) {
+        return Some(m.clone());
+    }
+    // SAFETY: dli_fname is a NUL-terminated path owned by dyld.
+    let path = unsafe { std::ffi::CStr::from_ptr(info.dli_fname) }.to_string_lossy();
+    let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+    // SAFETY: a loaded image's Mach-O header and load commands are mapped.
+    let size = unsafe { macho_extent(base) };
+    let m = Module { name, base, size };
+    map.insert(base, m.clone());
+    Some(m)
+}
+
+/// The span of a loaded 64-bit Mach-O image's segments, from its header,
+/// leaving out `__PAGEZERO`.
+///
+/// # Safety
+/// `base` is the address of a mapped Mach-O header.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+unsafe fn macho_extent(base: u64) -> u64 {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_SEGMENT_64: u32 = 0x19;
+    let p = base as *const u8;
+    // SAFETY: the caller maps the header; reads stay within its commands.
+    unsafe {
+        if (p as *const u32).read_unaligned() != MH_MAGIC_64 {
+            return 0;
+        }
+        let ncmds = (p.add(16) as *const u32).read_unaligned();
+        let mut at = 32usize;
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for _ in 0..ncmds {
+            let cmd = (p.add(at) as *const u32).read_unaligned();
+            let size = (p.add(at + 4) as *const u32).read_unaligned() as usize;
+            if cmd == LC_SEGMENT_64 {
+                let name = std::slice::from_raw_parts(p.add(at + 8), 16);
+                let vmaddr = (p.add(at + 24) as *const u64).read_unaligned();
+                let vmsize = (p.add(at + 32) as *const u64).read_unaligned();
+                if !name.starts_with(b"__PAGEZERO") {
+                    lo = lo.min(vmaddr);
+                    hi = hi.max(vmaddr + vmsize);
+                }
+            }
+            if size == 0 {
+                break;
+            }
+            at += size;
+        }
+        if lo == u64::MAX { 0 } else { hi - lo }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn locate(_pc: u64) -> Option<Module> {
     None
+}
+
+// ---- names and the top table ----
+
+/// A frame's key in a name map: `module:offset` (hex), or `*:addr`.
+pub fn frame_key(d: &Dump, pc: Pc) -> String {
+    match pc {
+        Pc::In { module, offset } => format!("{}:{offset:x}", d.modules[module].name),
+        Pc::Abs(a) => format!("*:{a:x}"),
+    }
+}
+
+/// One row of [`top`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopRow {
+    pub name: String,
+    pub samples: u64,
+}
+
+/// The heaviest names by self samples (the leaf frame) and inclusive
+/// samples (a name counted once per stack). A frame with no entry in
+/// `names` is named by its key. Ties sort by name.
+pub fn top(d: &Dump, names: &HashMap<String, String>, n: usize) -> (Vec<TopRow>, Vec<TopRow>) {
+    let mut selfs: HashMap<String, u64> = HashMap::new();
+    let mut incl: HashMap<String, u64> = HashMap::new();
+    for s in &d.stacks {
+        let named: Vec<String> = s
+            .frames
+            .iter()
+            .map(|&pc| {
+                let k = frame_key(d, pc);
+                names.get(&k).cloned().unwrap_or(k)
+            })
+            .collect();
+        if let Some(leaf) = named.first() {
+            *selfs.entry(leaf.clone()).or_default() += s.count;
+        }
+        let mut seen = std::collections::HashSet::new();
+        for nm in &named {
+            if seen.insert(nm) {
+                *incl.entry(nm.clone()).or_default() += s.count;
+            }
+        }
+    }
+    let rows = |m: HashMap<String, u64>| {
+        let mut v: Vec<TopRow> = m
+            .into_iter()
+            .map(|(name, samples)| TopRow { name, samples })
+            .collect();
+        v.sort_by(|a, b| b.samples.cmp(&a.samples).then_with(|| a.name.cmp(&b.name)));
+        v.truncate(n);
+        v
+    };
+    (rows(selfs), rows(incl))
+}
+
+/// Names every distinct frame of `d` in this process: `atos` over all the
+/// addresses in one run, then `dladdr`'s symbol for what it left bare.
+/// Keys are [`frame_key`]'s; values read `name (file:line)` or `name`.
+/// The addresses must belong to this process.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn resolve_here(d: &Dump) -> HashMap<String, String> {
+    use std::process::{Command, Stdio};
+    let mut keys: Vec<(String, u64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for s in &d.stacks {
+        for &pc in &s.frames {
+            let abs = match pc {
+                Pc::In { module, offset } => d.modules[module].base + offset,
+                Pc::Abs(a) => a,
+            };
+            if seen.insert(abs) {
+                keys.push((frame_key(d, pc), abs));
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    if keys.is_empty() {
+        return out;
+    }
+    let mut cmd = Command::new("/usr/bin/atos");
+    cmd.args(["-p", &std::process::id().to_string()]);
+    cmd.args(keys.iter().map(|(_, a)| format!("{a:#x}")));
+    if let Ok(o) = cmd.stderr(Stdio::null()).output()
+        && o.status.success()
+    {
+        let text = String::from_utf8_lossy(&o.stdout);
+        for ((k, a), line) in keys.iter().zip(text.lines()) {
+            let line = line.trim();
+            // A bare address back means atos had no symbol.
+            if !line.is_empty() && !line.starts_with("0x") && line != format!("{a:#x}") {
+                out.insert(k.clone(), line.to_owned());
+            }
+        }
+    }
+    for (k, a) in &keys {
+        if out.contains_key(k) {
+            continue;
+        }
+        // SAFETY: Dl_info is plain pointers; zero is a valid empty value.
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is ours; dladdr takes any address.
+        if unsafe { libc::dladdr(*a as *const libc::c_void, &mut info) } != 0
+            && !info.dli_sname.is_null()
+        {
+            // SAFETY: dli_sname is a NUL-terminated string owned by dyld.
+            let n = unsafe { std::ffi::CStr::from_ptr(info.dli_sname) };
+            out.insert(k.clone(), n.to_string_lossy().into_owned());
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn resolve_here(_d: &Dump) -> HashMap<String, String> {
+    HashMap::new()
 }
 
 // ---- the Mac side ----
@@ -711,6 +900,42 @@ pub fn name_guest(label: &str, names: &HashMap<u32, String>) -> String {
 mod tests {
     use super::*;
     use crate::sample::RawSample;
+
+    #[test]
+    fn top_counts_self_and_inclusive_once_per_stack() {
+        let at = |offset| Pc::In { module: 0, offset };
+        let stack = |count, frames| DumpStack {
+            count,
+            thread: 0,
+            on_cpu: true,
+            frames,
+        };
+        let d = Dump {
+            modules: vec![Module {
+                name: "g".into(),
+                base: 0x1000,
+                size: 0x1000,
+            }],
+            stacks: vec![
+                stack(3, vec![at(1), at(2), at(1)]),
+                stack(2, vec![at(2), Pc::Abs(9)]),
+            ],
+            ..Dump::default()
+        };
+        let names: HashMap<String, String> = [("g:1", "leaf"), ("g:2", "mid")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        let (s, i) = top(&d, &names, 30);
+        let row = |n: &str, c| TopRow {
+            name: n.into(),
+            samples: c,
+        };
+        assert_eq!(s, vec![row("leaf", 3), row("mid", 2)]);
+        // `leaf` is twice in one stack but counts once.
+        assert_eq!(i, vec![row("mid", 5), row("leaf", 3), row("*:9", 2)]);
+        assert_eq!(top(&d, &names, 1).0.len(), 1);
+    }
 
     fn raw() -> RawProfile {
         let s = |frames: &[u64]| RawSample {

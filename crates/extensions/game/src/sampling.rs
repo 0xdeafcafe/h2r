@@ -55,6 +55,11 @@ pub struct StopParams {
     /// needs fetching.
     #[serde(default)]
     pub inline: bool,
+    /// Name the frames on this host and answer `symbols` (`module:offset`
+    /// to `name (file:line)`) and `top` (the 30 heaviest names by self and
+    /// inclusive samples).
+    #[serde(default)]
+    pub symbols: bool,
 }
 
 #[cfg(feature = "perf")]
@@ -172,6 +177,17 @@ mod imp {
                 .map_or(String::new(), |e| format!(" FAILED: {e}"))
         );
         with(|s| s.last = Some(v.clone()));
+        if p.symbols {
+            let names = perf::remote::resolve_here(&dump);
+            let (selfs, incl) = perf::remote::top(&dump, &names, 30);
+            let rows = |r: Vec<perf::remote::TopRow>| {
+                r.into_iter()
+                    .map(|t| json!({ "name": t.name, "samples": t.samples }))
+                    .collect::<Vec<_>>()
+            };
+            v["symbols"] = json!(names);
+            v["top"] = json!({ "self": rows(selfs), "inclusive": rows(incl) });
+        }
         if p.inline {
             v["dump"] = Value::from(text);
         }
