@@ -369,6 +369,107 @@ fn no_free_spot_on_any_ring_is_a_named_refusal_and_the_spawn_waits() {
     assert_ne!(s.refused & (1 << 3), 0, "logged once");
 }
 
+const TIME: u32 = 0x00a0_0000;
+
+/// A host that started alone, 20 units from the starts at tick `tick`,
+/// and player 1 (a friend who joined in progress) to spawn.
+fn joined_at(tick: u32) -> FakeGuest {
+    let mut g = world(2);
+    put_start(&mut g, 0, [0.0; 3]);
+    put_start(&mut g, 1, [10.0, 0.0, 0.0]);
+    add_player(&mut g, 0, 1, Some([20.0, 0.0, 0.0]), NONE);
+    add_player(&mut g, 1, 1 | FIRST_SPAWN, None, NONE);
+    g.put_u32(points::GAME_TIME.base, TIME)
+        .put_u32(TIME + 8, tick);
+    g
+}
+
+#[test]
+fn a_first_spawn_once_the_game_is_under_way_joins_in_progress() {
+    let g = joined_at(JOIN_SPAWN_TICKS);
+    let ps = players(&g);
+    assert_eq!(game_tick(&g), Some(JOIN_SPAWN_TICKS));
+    assert!(joins_in_progress(&g, &ps, &ps[1]), "player 1, any index");
+    assert!(!takes_spawn(&ps[1]), "not one of the level start's extras");
+    assert!(!joins_in_progress(&g, &ps, &ps[0]), "no first spawn pending");
+    // The level's start: everyone spawns on its first ticks.
+    let g = joined_at(JOIN_SPAWN_TICKS - 1);
+    assert!(!joins_in_progress(&g, &players(&g), &players(&g)[1]));
+    // Nobody alive to stand by: retail's pick.
+    let mut g = joined_at(JOIN_SPAWN_TICKS);
+    add_player(&mut g, 0, 1, None, NONE);
+    let ps = players(&g);
+    assert!(!joins_in_progress(&g, &ps, &ps[1]));
+    // No game time read: never.
+    let mut g = world(2);
+    add_player(&mut g, 0, 1, Some([20.0, 0.0, 0.0]), NONE);
+    add_player(&mut g, 1, 1 | FIRST_SPAWN, None, NONE);
+    let ps = players(&g);
+    assert!(!joins_in_progress(&g, &ps, &ps[1]));
+}
+
+#[test]
+fn a_join_in_progress_spawns_next_to_the_squad_not_at_the_level_start() {
+    let mut g = joined_at(600);
+    let regs = entered_pick(&mut g, 1);
+    let st: Arc<Mutex<State>> = Arc::default();
+    let s2 = Arc::clone(&st);
+    let f = move |cx: Cx| -> EntryFuture { Box::pin(pick(cx, Arc::clone(&s2), Arc::default())) };
+    let r = run(&f, g, regs, |c, m| {
+        if c.target == points::PLAYER_SPAWN_LOCATION.base {
+            // Retail finds the level's start free.
+            return Regs {
+                eax: 0x5500_0001,
+                ..Regs::default()
+            };
+        }
+        assert_eq!(c.target, points::SPAWN_LOCATION_FREE.base);
+        assert_eq!(c.ecx, Some(START_BASE), "starting location 0 moved");
+        Regs {
+            eax: free(c, m, &[]),
+            ..Regs::default()
+        }
+    });
+    assert_eq!(r.result, Ok(Ret::new(0x5500_0000, 12)), "location 0");
+    // Ring 1's first spot by player 0, the ground under it first.
+    let spot = [20.0, -spots::SPACING, 0.0];
+    assert_eq!(start_at(&r.guest, 0), spot, "spawns there");
+    assert_eq!(start_at(&r.guest, 1), [10.0, 0.0, 0.0]);
+    assert_eq!(
+        r.calls
+            .iter()
+            .filter(|c| c.target == points::SPAWN_LOCATION_FREE.base)
+            .count(),
+        2
+    );
+    assert_eq!(lock(&st).moved_start, Some((START_BASE, [0.0; 3])));
+}
+
+#[test]
+fn a_join_with_no_spot_by_the_squad_takes_retails_pick_and_says_so_once() {
+    let mut g = joined_at(600);
+    let regs = entered_pick(&mut g, 1);
+    let st: Arc<Mutex<State>> = Arc::default();
+    let s2 = Arc::clone(&st);
+    let f = move |cx: Cx| -> EntryFuture { Box::pin(pick(cx, Arc::clone(&s2), Arc::default())) };
+    let r = run(&f, g, regs, |c, _| {
+        let eax = if c.target == points::PLAYER_SPAWN_LOCATION.base {
+            1
+        } else {
+            0
+        };
+        Regs {
+            eax,
+            ..Regs::default()
+        }
+    });
+    assert_eq!(r.result, Ok(Ret::new(1, 12)), "retail's free start");
+    assert_eq!(start_at(&r.guest, 0), [0.0; 3], "start 0 put back");
+    let s = lock(&st);
+    assert_eq!(s.moved_start, None);
+    assert_ne!(s.join_refused & (1 << 1), 0, "logged once");
+}
+
 #[test]
 fn with_no_ground_found_a_spot_with_none_is_taken() {
     let mut g = level_start();

@@ -24,7 +24,8 @@ use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, FriendAction, LIVE_DIR_ENV, friend_run, status_of};
 
 const USAGE: &str = "usage:
-  h2 coop test [--disc ISO] [--players N] [--auto] [--late] [--drive] [--root DIR] [--out DIR]
+  h2 coop test [--disc ISO] [--players N] [--auto] [--late] [--solo-start] [--drive]
+               [--root DIR] [--out DIR]
                [--ip ADDR] [--port N] [--server-port N] [--pad host|guest]
                [--extras] [--fresh] [--dry-run] [-- <more h2 play arguments>]
   h2 coop verdict <coop.log> [--auto]
@@ -60,6 +61,12 @@ invite from the host's lobby (Y, the friends list) and accept on the guest.
 its invitation (H2_COOP_AUTO_ACCEPT_DELAY), so it arrives while the host is
 in the level and joins in progress (docs/live/live-coop.md section 14); the
 checklist then says whether and at which tick it joined.
+
+--solo-start (with --auto): the host starts the campaign alone and every
+guest joins in progress: each accepts 120 s after its invitation, as
+--late's guest does (docs/live/live-coop-join.md 13.4). The checklist adds
+a \"solo start\" part: the host started alone as a co-op game, stayed
+joinable, and each guest joined and was placed next to the squad.
 
 --drive (with --auto): nobody presses anything. Each game prints the menu
 screen its first player is on (H2_UI_WATCH=1), and this process presses
@@ -109,6 +116,9 @@ pub struct Opts {
     pub auto: bool,
     /// The last guest accepts [`LATE_SECS`] after its invitation.
     pub late: bool,
+    /// The host starts alone; every guest accepts [`LATE_SECS`] after its
+    /// invitation and joins in progress.
+    pub solo_start: bool,
     /// Press through the menus ([`crate::coop_drive`]).
     pub drive: bool,
     pub root: PathBuf,
@@ -153,6 +163,7 @@ pub fn parse(
     let mut players = 2;
     let mut auto = false;
     let mut late = false;
+    let mut solo_start = false;
     let mut drive = false;
     let mut root = None;
     let mut out = None;
@@ -178,6 +189,7 @@ pub fn parse(
             }
             "--auto" => auto = true,
             "--late" => late = true,
+            "--solo-start" => solo_start = true,
             "--drive" => drive = true,
             "--root" => root = Some(PathBuf::from(value("--root")?)),
             "--out" => out = Some(PathBuf::from(value("--out")?)),
@@ -214,7 +226,10 @@ pub fn parse(
         }
     }
     let disc = disc.with_context(|| format!("no disc: --disc ISO or H2_DISC\n\n{USAGE}"))?;
-    if late && (!auto || players < 3) {
+    if solo_start && !auto {
+        bail!("--solo-start needs --auto (every guest's accept is held back)");
+    }
+    if late && !solo_start && (!auto || players < 3) {
         bail!("--late needs --auto and --players 3 or more (the last guest joins late)");
     }
     if drive && !auto {
@@ -235,6 +250,7 @@ pub fn parse(
         players,
         auto,
         late,
+        solo_start,
         drive,
         root,
         out,
@@ -333,7 +349,7 @@ pub fn plan(opts: &Opts, server: &str, ip: Ipv4Addr, sockets: &Path) -> Vec<Game
                     env.push(("H2_COOP_AUTO_INVITE".into(), tags[1..].join(",")));
                 } else {
                     env.push(("H2_COOP_AUTO_ACCEPT".into(), tags[0].into()));
-                    if opts.late && i == tags.len() - 1 {
+                    if opts.solo_start || (opts.late && i == tags.len() - 1) {
                         env.push(("H2_COOP_AUTO_ACCEPT_DELAY".into(), LATE_SECS.to_string()));
                     }
                 }
@@ -540,7 +556,11 @@ fn test(opts: Opts) -> Result<()> {
     let stamp = stamp(crate::live_cmd::now());
     let logs = opts.root.join("logs").join(stamp);
     fs::create_dir_all(&logs)?;
-    let roles = roles(&games, opts.late);
+    let roles = if opts.solo_start {
+        solo_roles(&games)
+    } else {
+        roles(&games, opts.late)
+    };
     eprintln!(
         "coop test: Live server {} ({} store), web app at {}/",
         embedded.url, embedded.store, embedded.url
@@ -644,9 +664,28 @@ pub fn roles(games: &[Game], late: bool) -> Roles {
     }
 }
 
+/// `--solo-start`: the host alone in the lobby, every guest late.
+pub fn solo_roles(games: &[Game]) -> Roles {
+    Roles {
+        host: games[0].tag.clone(),
+        guests: Vec::new(),
+        late: games[1..].iter().map(|g| g.tag.clone()).collect(),
+    }
+}
+
 /// What the user presses next, once the host is at its main menu.
 pub fn next_steps(roles: &Roles, auto: bool) -> String {
     let host = &roles.host;
+    if roles.guests.is_empty() {
+        let late = roles.late.join(" and ");
+        return format!(
+            "coop test: next, on {late}'s window{s}: Xbox Live (to sign in). Then on {host}'s window: \
+             Xbox Live > Co-op Campaign > pick a level and difficulty; Start Game on {host} alone. \
+             {late} accept{v} {LATE_SECS} s after the invitation and join in progress.",
+            s = if roles.late.len() > 1 { "s" } else { "" },
+            v = if roles.late.len() > 1 { "" } else { "s" },
+        );
+    }
     let guests = roles.guests.join(" and ");
     let joining = if auto {
         // The game takes an accepted invitation only from its main menu's

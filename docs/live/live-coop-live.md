@@ -64,12 +64,13 @@ on this path: the code names that id once, in the lobby's status
 line (`0x24ffc9`, at `0x2500ab`), for start state 7 in co-op mode
 (`0x199994`). Start Game (`0x251050`) acts only on state 9 and shows no
 dialog otherwise, so the status line is where a refused start explains
-itself. On the Live co-op path it reads ours (`coop_live::line_for`):
+itself. On the Live co-op path it reads ours (`coop_live::host_line`):
 
 | When | Line |
 |---|---|
 | Co-op Campaign chosen, no session read yet | `Co-op over Xbox Live: 2 players, one per console.` / `Press Y in the lobby to invite a friend.` (`up to N players` above 2) |
-| the host alone in its session | `Invite a friend first: co-op over Xbox Live` / `needs at least 2 consoles. Press Y for Friends.` |
+| the host alone in its session | `Start Game to play now; friends join in progress.` / `Press Y in the lobby to invite a friend.` ([live-coop-join.md](live-coop-join.md) 13.4) |
+| the host alone, `coop.join_in_progress` off | `Invite a friend first: co-op over Xbox Live` / `needs at least 2 consoles. Press Y for Friends.` |
 | more players than consoles | `Co-op over Xbox Live: one player per console.` / `Sign out the extra players to start.` |
 | more consoles than the limit | `Co-op over Xbox Live takes up to N consoles;` / `M are in this lobby.` |
 | a guest (joined, or in a host's networked lobby before it knows) | `Co-op over Xbox Live: one player per console.` / `Waiting for the host to start the game.` |

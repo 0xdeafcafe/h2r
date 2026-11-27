@@ -17,7 +17,10 @@
 //!   reached `OPTIONS_NEW`. Nothing else runs in that window: the start
 //!   makes no other call between its entry and `OPTIONS_NEW`. The player
 //!   check (`0x6ee9b`, more than two players) is left as it is: two
-//!   machines with one player each pass it.
+//!   machines with one player each pass it. A co-op over Live host alone
+//!   (one peer, one player) is shown two players in the same window, so
+//!   the options' co-op byte is 1 for the friends who join in progress
+//!   ([`start_bypass`]).
 //! * **The campaign lobby.** On the host, once a second machine is in the
 //!   System Link lobby, the probe calls the lobby's own setters at the
 //!   start of a game tick (the menu ticks too): `LOBBY_SET_MAP`
@@ -328,6 +331,43 @@ pub fn peer_bypass(s: &Session, max: u32) -> Bypass {
     Bypass::Fake {
         real: s.peers,
         players: (s.players > START_PLAYER_CHECK).then_some(s.players),
+    }
+}
+
+/// The session start's decision with the solo start (`solo`: co-op over
+/// Live with `coop.join_in_progress` on, [`Arm::solo_start`]): one console
+/// alone with one player in a networked campaign session is shown two
+/// players until `OPTIONS_NEW`, so the options' "more than one player"
+/// byte (`0x6ef61`) is 1 and the game is co-op (respawn, the co-op loss
+/// rule) for the friends who join it in progress
+/// (docs/live/live-coop-join.md 13.4). Anything else: [`peer_bypass`].
+pub fn start_bypass(s: &Session, max: u32, solo: bool) -> Bypass {
+    if solo
+        && s.live()
+        && s.is_campaign()
+        && s.class != 0
+        && s.peers == 1
+        && s.players == 1
+    {
+        return Bypass::Fake {
+            real: 1,
+            players: Some(1),
+        };
+    }
+    peer_bypass(s, max)
+}
+
+/// The session start's line for a [`Bypass::Fake`]: one console alone, or
+/// `real` peers shown as one.
+pub fn fake_line(real: u32) -> String {
+    if real == 1 {
+        format!(
+            "session start: campaign with 1 peer (alone): showing the start {START_PLAYER_CHECK} players until OPTIONS_NEW, so the game is co-op; friends join in progress"
+        )
+    } else {
+        format!(
+            "session start: campaign with {real} peers: showing the start 1 peer until OPTIONS_NEW"
+        )
     }
 }
 
@@ -773,6 +813,12 @@ impl Arm {
     pub fn max_players(&self) -> u32 {
         self.max_players.load(Ordering::SeqCst)
     }
+    /// Whether a co-op host may start alone, friends joining in progress
+    /// (docs/live/live-coop-join.md 13.4): co-op over Live (not the
+    /// probe's forced arm) with `coop.join_in_progress` on.
+    pub fn solo_start(&self) -> bool {
+        !self.forced && crate::coop_jip::enabled()
+    }
     /// The limit a session's checks use on this console: the host's own
     /// setting; on a guest, [`CEILING`], since the host's lobby already
     /// held the start to its limit and a guest that refused it would only
@@ -923,7 +969,7 @@ impl hooks::Feature for Probe {
                 return Ok(Flow::Continue);
             };
             say(&format!("session start: {}", s.describe()));
-            match peer_bypass(&s, arm.limit_for(&s)) {
+            match start_bypass(&s, arm.limit_for(&s), arm.solo_start()) {
                 Bypass::Retail(why) => say(&format!("session start: retail ({why})")),
                 Bypass::Refuse(why) => say(&format!("session start: refused ({why}); retail refuses too")),
                 Bypass::Fake { real, players } => {
@@ -933,10 +979,8 @@ impl hooks::Feature for Probe {
                     });
                     if peers_ok && players_ok {
                         lock(&st).pending = Some(Pending { addr, peers: real, players });
-                        say(&format!(
-                            "session start: campaign with {real} peers: showing the start 1 peer until OPTIONS_NEW"
-                        ));
-                        if let Some(n) = players {
+                        say(&fake_line(real));
+                        if let Some(n) = players.filter(|_| real > 1) {
                             say(&format!(
                                 "session start: {n} players: showing the start {START_PLAYER_CHECK} until OPTIONS_NEW"
                             ));

@@ -939,3 +939,86 @@ fn the_co_op_features_block_snapshots_only_while_armed() {
     arm.disarm();
     assert_eq!(plan.snapshot_blockers(), Vec::new());
 }
+
+/// A networked campaign session in the lobby, this console hosting.
+fn alone(peers: u32, players: u32) -> Session {
+    Session {
+        state: 5,
+        peers,
+        players,
+        class: 1,
+        difficulty: 1,
+        ..Session::default()
+    }
+}
+
+/// docs/live/live-coop-join.md 13.4: a Live co-op host alone is shown two
+/// players until OPTIONS_NEW (the co-op byte), and its one peer and one
+/// player go back; anything else is the peer bypass as before.
+#[test]
+fn a_host_alone_starts_a_co_op_game_for_friends_to_join() {
+    assert_eq!(
+        start_bypass(&alone(1, 1), 2, true),
+        Bypass::Fake {
+            real: 1,
+            players: Some(1)
+        }
+    );
+    // Without the solo start (the probe, or join in progress off): retail.
+    assert_eq!(
+        start_bypass(&alone(1, 1), 2, false),
+        Bypass::Retail("one peer: retail starts it")
+    );
+    // Split screen on the host (two local players): retail's own co-op.
+    assert_eq!(
+        start_bypass(&alone(1, 2), 2, true),
+        Bypass::Retail("one peer: retail starts it")
+    );
+    // A local (unnetworked) session, a multiplayer one, a session not in a
+    // lobby or game state: never.
+    let local = Session {
+        class: 0,
+        ..alone(1, 1)
+    };
+    let mp = Session {
+        difficulty: NO_DIFFICULTY,
+        ..alone(1, 1)
+    };
+    let gone = Session {
+        state: 0,
+        ..alone(1, 1)
+    };
+    for s in [local, mp, gone] {
+        assert!(
+            matches!(start_bypass(&s, 2, true), Bypass::Retail(_)),
+            "{s:?}"
+        );
+    }
+    // Two consoles: the peer bypass, whatever the solo start says.
+    for solo in [true, false] {
+        assert_eq!(start_bypass(&alone(2, 2), 2, solo), peer_bypass(&alone(2, 2), 2));
+    }
+    // The window's lines, and the count it puts back.
+    assert!(fake_line(1).starts_with("session start: campaign with 1 peer (alone): "));
+    assert!(fake_line(1).contains("showing the start 2 players until OPTIONS_NEW"));
+    assert_eq!(
+        fake_line(3),
+        "session start: campaign with 3 peers: showing the start 1 peer until OPTIONS_NEW"
+    );
+    let mut m = Fake::default();
+    let p = Pending {
+        addr: 0x1000,
+        peers: 1,
+        players: Some(1),
+    };
+    let lines = restore_counts(&mut m, p, "before OPTIONS_NEW");
+    assert_eq!(m.u32(0x1000 + layout::PLAYERS), Some(1));
+    assert_eq!(m.u32(0x1000 + layout::PEERS), Some(1));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+}
+
+#[test]
+fn only_a_live_co_op_arm_starts_alone() {
+    assert!(Arm::session().solo_start(), "join in progress is on by default");
+    assert!(!Arm::forced(None).solo_start(), "the probe keeps retail's start");
+}

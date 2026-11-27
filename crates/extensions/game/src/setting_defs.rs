@@ -518,14 +518,15 @@ pub fn coop_max_players(store: &Store) -> u32 {
 }
 
 /// Whether a co-op campaign this console hosts over Xbox Live lets a friend
-/// join while it runs (coop::join, docs/live/live-coop.md section 14).
+/// join while it runs, and so starts with the host alone
+/// (docs/live/live-coop-join.md 13.4 and 14).
 pub static COOP_JOIN_IN_PROGRESS: Def = Def {
     key: "coop.join_in_progress",
     label: "Join In Progress",
-    help: "A friend can join a co-op campaign you host while it runs: the game \
-           holds for a second or two while it sends them where everyone is, and \
-           nobody goes back to a checkpoint. Off, joining waits for the next \
-           level (docs/live/live-coop.md section 14).",
+    help: "A friend can join a co-op campaign you host while it runs, so you can \
+           start alone: the game holds for a second or two while it sends them \
+           where everyone is, and nobody goes back to a checkpoint. Off, joining \
+           waits for the next level (docs/live/live-coop.md section 14).",
     kind: Kind::Bool,
     default: Value::Bool(true),
     env: Some("H2_COOP_JOIN_IN_PROGRESS"),

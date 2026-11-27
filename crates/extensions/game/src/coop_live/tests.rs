@@ -587,6 +587,7 @@ fn every_co_op_lobby_line_fits_and_none_says_single() {
     let mut lines = vec![
         LOBBY_LINE.to_string(),
         INVITE_FIRST.into(),
+        SOLO_LINE.into(),
         GUEST_LINE.into(),
         ONE_PER_CONSOLE.into(),
         lobby_line(4),
@@ -624,10 +625,16 @@ fn the_lobby_line_is_ours_from_the_co_op_row_and_says_invite_first_while_alone()
         lobby.texts.get(LINE_SLOT).unwrap(),
         lobby_line(lobby.max_players())
     );
-    // The squad session, alone: Start Game does nothing, so say why.
+    // The squad session, alone: Start Game starts, friends join in
+    // progress (13.4); without the solo start it would say invite first.
     lobby.observe(Some(session(1, 1)));
     lobby.refresh_line();
-    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), INVITE_FIRST);
+    assert!(lobby.solo_start());
+    assert_eq!(lobby.texts.get(LINE_SLOT).unwrap(), SOLO_LINE);
+    assert_eq!(
+        host_line(&Role::Host, Some(&session(1, 1)), 2, false),
+        INVITE_FIRST
+    );
     // A friend in, two players on one console between them.
     lobby.observe(Some(session(2, 3)));
     lobby.refresh_line();
@@ -1128,6 +1135,62 @@ fn the_start_state_line_names_the_consoles_once() {
             .as_deref(),
         Some("coop-live: lobby start state 8")
     );
+}
+
+/// docs/live/live-coop-join.md 13.4: a Live co-op host alone in a
+/// networked campaign lobby starts; nothing else that one console does.
+#[test]
+fn a_host_alone_lifts_the_co_op_check_with_the_solo_start() {
+    let net = |peers, players| {
+        let mut s = session(peers, players);
+        s.difficulty = 1;
+        s.class = 2;
+        s
+    };
+    let alone = net(1, 1);
+    assert!(lift_solo_start(START_COOP_OR_TEAMS, Some(&alone), true));
+    assert!(
+        !lift_solo_start(START_COOP_OR_TEAMS, Some(&alone), false),
+        "join in progress off: invite first"
+    );
+    assert!(!lift_solo_start(START_READY, Some(&alone), true), "only state 7");
+    assert!(!lift_solo_start(START_COOP_OR_TEAMS, None, true));
+    let mut local = alone;
+    local.class = 0;
+    assert!(!lift_solo_start(START_COOP_OR_TEAMS, Some(&local), true), "split screen");
+    let mut mp = alone;
+    mp.difficulty = coop_probe::NO_DIFFICULTY;
+    assert!(!lift_solo_start(START_COOP_OR_TEAMS, Some(&mp), true), "multiplayer");
+    let mut guest = alone;
+    guest.local_peer = 1;
+    assert!(!lift_solo_start(START_COOP_OR_TEAMS, Some(&guest), true), "not the host");
+    assert!(
+        !lift_solo_start(START_COOP_OR_TEAMS, Some(&net(1, 2)), true),
+        "two local players: retail's own check"
+    );
+    assert!(
+        !lift_solo_start(START_COOP_OR_TEAMS, Some(&net(2, 2)), true),
+        "two consoles: lift_coop_check"
+    );
+    // The line, and the lobby's answer for one console.
+    let (lobby, _) = lobby_with(Arc::default());
+    assert!(lobby.solo_start());
+    assert_eq!(
+        lobby
+            .start_state_line(START_COOP_OR_TEAMS, START_READY, 1)
+            .as_deref(),
+        Some(
+            "coop-live: lobby start state 7 (co-op wants one console) answered 9 for 1 console (alone; friends join in progress)"
+        )
+    );
+    // The host alone reads the solo line; a guest, or two consoles, not.
+    assert_eq!(host_line(&Role::Host, Some(&net(1, 1)), 2, true), SOLO_LINE);
+    assert_eq!(host_line(&Role::Idle, Some(&guest), 2, true), GUEST_LINE);
+    assert_eq!(host_line(&Role::Host, Some(&net(2, 2)), 2, true), LOBBY_LINE);
+    // Without hooks, no solo start.
+    let none: HostSkulls = Box::new(|_| Vec::new());
+    let bare = Lobby::new(levels_fixture(), None, None, none);
+    assert!(!bare.solo_start());
 }
 
 #[test]

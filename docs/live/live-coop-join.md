@@ -4,8 +4,9 @@ Join in progress.
 
 ## 13. More than two players
 
-Co-op over Live (sections 10 and 11) takes two consoles. This section is
-what holds a campaign at two, what is lifted, and what is left. Built on
+Co-op over Live (sections 10 and 11) takes two consoles, or one that
+starts alone (13.4). This section is what holds a campaign at two, what
+is lifted, and what is left. Built on
 tests only; **no game was built or run for it**.
 
 Evidence as at the top:
@@ -75,7 +76,8 @@ So the engine runs 16 players already. What holds at two is the data
 **Stage 1b** (feature `coop-players`, `crates/extensions/game/src/coop_players.rs`,
 on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`).
 It acts only while a player of index 2 or more is in a campaign; with two
-players every hook falls through to retail.
+players every hook falls through to retail, but a newcomer's spawn
+(14.9.5).
 
 The anchors:
 
@@ -183,6 +185,47 @@ dead third player respawn, do all three
 stay in sync (`OUT OF SYNC`, `h2 coop-probe diff` on three hash files,
 pairwise), and do 03a's and 05a's opening cutscenes leave anyone behind.
 Players 3+ are the same character as player 1.
+
+### 13.4 One console starts
+
+With `coop.join_in_progress` on, a Live co-op host can start the campaign
+alone; friends join it in progress (section 14). Off, the lobby keeps
+"Invite a friend first" and Start Game does nothing until a second
+console is in. Built on tests only.
+
+| step | retail | ours |
+|---|---|---|
+| lobby start check `0x19a2ce` | one present, local player: the co-op check (`0x19a3ed`, two wanted) fails, start state 7, `coop_takes_two` | `coop_live::lift_solo_start`: a networked campaign session, this console its host, 1 peer, 1 player; the state is the retail tail's (9 when ready) |
+| lobby line | `coop_takes_two` | `Start Game to play now; friends join in progress.` (`coop_live::SOLO_LINE`) |
+| session start `0x6ec80` | one peer passes; the co-op byte (`0x6ef61`, `count > 1`) is 0, a solo game | `coop_probe::start_bypass`: shows 2 players until `OPTIONS_NEW`, so the byte is 1: co-op respawn and the co-op loss rule. 1 player goes back before `OPTIONS_NEW` |
+| game-start limits `0x6e720` | campaign peer limit 1, player limit 2 | `limits_fix` raises both to `coop.max_players`, as for N |
+| join check `0x62fe0` | refuses (3) once the game runs | the lift (14.9.4) |
+| Live record | stays `open`; `sync_squad_slots` advertises `coop.max_players` minus the players | unchanged |
+
+Who may: `Arm::solo_start` (co-op over Live, not the probe's forced arm,
+and `coop.join_in_progress`). A second local player on the host is
+retail's split screen and passes retail's check.
+
+Lines on the host:
+
+- `coop-live: lobby start state 7 (co-op wants one console) answered 9 for 1 console (alone; friends join in progress)`;
+- `coop-probe: session start: campaign with 1 peer (alone): showing the start 2 players until OPTIONS_NEW, so the game is co-op; friends join in progress`,
+  then `... peer count back to 1`, `... player count back to 1 before OPTIONS_NEW`;
+- `coop-probe: game limits: campaign peer limit 1 -> N`;
+- `coop-probe: simulation mode sync-server (2)`. [guess] A networked
+  session of one peer still starts the synchronous server; `local (1)`
+  here means no console can join.
+
+Each friend then joins as 14.9.4 and 14.9.5 say. `h2 coop test --auto
+--solo-start` runs it (live-coop-test.md 12.7).
+
+Tests (`cargo xtask test -p game`): `coop_live::tests::a_host_alone_lifts_the_co_op_check_with_the_solo_start`,
+`coop_probe::tests::a_host_alone_starts_a_co_op_game_for_friends_to_join`
+and `only_a_live_co_op_arm_starts_alone`.
+
+[guess] The levels' scripts with `game_is_cooperative` true and one
+player: `player1` is none until a friend joins, as in a co-op game whose
+second player is dead.
 
 ### 13.5 Risks and open items
 
@@ -512,3 +555,32 @@ invitation, so have the level running by then. The lines, in order:
 Then play a minute: a desync shows as the out-of-sync latch (1.3) and
 the existing `coop-live`/`coop-probe` lines. If the retail path stops at
 2 to 4, the fallback is 14.7's protocol.
+
+**14.9.5 The newcomer's spawn** (`crates/extensions/game/src/coop_players.rs`; the grid of 13.2).
+The player-set change gives the newcomer a first spawn pending, and
+retail's pick (`0x14ef00`) puts it on a free level-start location, far
+from everyone. A first spawn at game tick 150 or later
+(`coop_players::JOIN_SPAWN_TICKS`, `[GAME_TIME]+8`) with someone alive is
+a join (`joins_in_progress`), at any index: a host that started alone has
+its first friend at index 1. Its pick is the first grid spot around the
+group anchor (13.2) that retail's free-spot test passes, ground first,
+with starting location 0 moved there for the spawn and put back after.
+The decision reads only the restored game, so every console, the
+newcomer's too, makes the same one.
+
+| line (every console) | means |
+|---|---|
+| `coop-players: player P joins in progress: placed next to player A (the nearest the squad's middle), ring R (x y z)` | placed |
+| `coop-players: player P joins in progress: REFUSED: no free spot on rings 1 to 3 next to player A (...)` | retail's level-start pick, said once |
+
+Tests (`coop_players::tests`): the decision (tick, first spawn, someone
+alive, game time read), the placement next to the squad with retail's
+free start ignored, and the refusal falling back to retail's pick.
+
+**The solo run:** `h2 coop test --players 3 --auto --solo-start`. Alpha
+starts alone (13.4); Bravo and Charlie accept 120 s after their
+invitations and join in progress, each with the lines 1 to 6 above and a
+`joins in progress: placed` line. The checklist's "solo start" part says
+whether Alpha started alone as a co-op game, let every late console in,
+placed each newcomer, whether each newcomer is a sync-client, and that no
+game reverted after the first join.

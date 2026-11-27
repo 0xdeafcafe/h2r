@@ -214,8 +214,8 @@ is for printed its line, and where a step counts, the count is N (the games in t
 | 8 | the guest accepted | guests | `coop-auto: accepting` (only with `--auto`) |
 | 9 | the guest is in the host's session | guests | `coop-live: guest: joined` |
 | 10 | ping | each | `coop-live: ping N ms` |
-| 11 | the co-op check passed for every console | host | `coop-live: lobby start state 7 ... answered 9 for N consoles` |
-| 12 | the session start counted the peers | host | `session start: campaign with N peers` |
+| 11 | the co-op check passed for every console | host | `coop-live: lobby start state 7 ... answered 9 for N consoles` (`for 1 console` alone) |
+| 12 | the session start counted the peers | host | `session start: campaign with N peers` (`1 peer (alone)`) |
 | 13 | the session started | each in the lobby | `session start returned 1` |
 | 14 | the host simulates | host | `simulation mode sync-server` |
 | 15 | the guest follows | guests | `simulation mode sync-client` |
@@ -312,3 +312,35 @@ without a press. The three parts of 12.5:
 [guess] Not seen in a run: whether `0x1e`'s A opens the Live menu at once (static: mode 3 → `0x2310b7`), the lobby's id, and whether the Live menu reads as a screen (`0xba`) or as none.
 
 Tests: `cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`. A model of the menus runs three games (with and without the invitation reader, with a late guest), and two recorded runs (`coop_drive/run-092343.log`, `coop_drive/run-023244.log`) are replayed.
+
+### 12.7 `--solo-start`: the host starts alone
+
+```sh
+h2 coop test --players 3 --auto --solo-start
+```
+
+Alpha is alone in its lobby and starts at once
+([live-coop-join.md](live-coop-join.md) 13.4); every guest accepts 120 s
+after its invitation (`H2_COOP_AUTO_ACCEPT_DELAY`, as `--late`'s guest)
+and joins in progress (14.9). It needs `--auto`; `--late` adds nothing.
+With `--drive` the host presses Start Game with nobody in the lobby, and
+every guest is a late guest (12.6).
+
+The log's header names every guest `# late`, so the lobby steps (12.3)
+count N = 1. The checklist adds a part after them:
+
+| Step | Game | Line |
+|---|---|---|
+| started alone | host | `answered 9 for 1 console (alone` |
+| a co-op game | host | `session start: campaign with 1 peer (alone)` |
+| stayed joinable | host | `coop-jip: host: a console joins the running game`, one per late guest |
+| each newcomer by the squad | host | `coop-players: player P joins in progress: placed next to player A`, one per late guest, no `joins in progress: REFUSED` |
+| each newcomer follows | late guests | `simulation mode sync-client` |
+| no revert | each | no `coop-probe: checkpoint revert` after the first join |
+
+Then the join-in-progress part as for `--late` (14.7): each guest's
+`joined in progress at tick T`, and the host's admissions.
+
+Tests: `coop_test_cmd::tests::solo_start_holds_back_every_guest_and_leaves_the_host_alone_in_the_lobby`,
+`coop_verdict::tests::a_solo_start_passes_its_own_steps_and_the_lobby_steps` and
+`a_solo_start_fails_on_a_revert_a_misplaced_newcomer_or_a_closed_game`.
