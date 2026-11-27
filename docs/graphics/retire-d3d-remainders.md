@@ -64,8 +64,9 @@ What keeps an item, by stage (**Code**):
   `dot_rflct_spec` stage bound a 2D bitmap; [native-objects.md](native-objects.md),
   "Object programs"), `object_shader_flag_target` (flag bit 0 before the
   frame's structure target copy with a flag-bit-20 program and a
-  structure parameter block, whose draw copies the target:
-  `object_program_gpu::makes_target_copy`),
+  structure parameter block, the refraction target not reading:
+  `object_program_gpu::makes_target_copy`; `_structure` and `_view`
+  beside structure draws or another copy of the colour),
   `object_texaccum` (no target or level), `object_texaccum_structure` (layer 1's sampling items beside a structure item), `object_aux_depth`
   (the device does not hold the toggle off), `object_fade` (the
   device's stipple or a fade byte's pattern is not known exactly),

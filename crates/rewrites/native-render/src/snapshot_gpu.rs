@@ -10,7 +10,8 @@
 //! `0x0001c0d0`) take the same copy at their own place.
 //!
 //! [`Snapshots`] keeps one scratch texture per target copy, made again when
-//! the extent or format changes; [`ViewSnapshot::record`] downsamples the
+//! the extent or format changes, or writes a guest target's own colour
+//! ([`Snapshots::into_target`]); [`ViewSnapshot::record`] downsamples the
 //! colour into it before the pass that samples it. Every stage that
 //! samples the snapshot binds [`ViewSnapshot::view`].
 //!
@@ -102,6 +103,15 @@ impl Snapshots {
                 .create_view(&Default::default())
         });
         ViewSnapshot { from: color.clone(), view: view.clone(), format, extent, blitter: self.blitter.clone() }
+    }
+
+    /// The snapshot of `color` into a guest render target's own colour
+    /// `to` (of `format`) at its size: the copy a caller of `0x000352e0`
+    /// makes into a target other samplers bind, such as `0x0003bea0`'s
+    /// into the refraction target `0x16`.
+    pub fn into_target(&self, color: &wgpu::TextureView, to: &wgpu::TextureView, format: wgpu::TextureFormat) -> ViewSnapshot {
+        let t = to.texture();
+        ViewSnapshot { from: color.clone(), view: to.clone(), format, extent: (t.width(), t.height()), blitter: self.blitter.clone() }
     }
 }
 
@@ -215,6 +225,40 @@ mod tests {
         assert_ne!(display.view.texture(), first.view.texture(), "one per target copy");
         let other = snapshots.take(&ctx.device, &color, (1280, 960), gfx::external::TargetCopy::Reference);
         assert_eq!((other.view.texture().width(), other.view.texture().height()), (320, 240));
+    }
+
+    /// `0x0003bea0`'s copy into the refraction target: the bound colour,
+    /// downsampled into the target's own colour at its size.
+    #[test]
+    fn the_refraction_copy_writes_the_targets_own_colour() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let texture = |size: (u32, u32), usage: wgpu::TextureUsages| {
+            ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("color"),
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+                view_formats: &[],
+            })
+        };
+        let color = texture((64, 32), wgpu::TextureUsages::TEXTURE_BINDING);
+        let rgba: Vec<u8> = [200u8, 40, 10, 255].repeat(64 * 32);
+        ctx.queue.write_texture(
+            color.as_image_copy(), &rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(64 * 4), rows_per_image: None },
+            color.size(),
+        );
+        let target = texture((16, 8), wgpu::TextureUsages::COPY_SRC);
+        let copy = Snapshots::default().into_target(&color.create_view(&Default::default()), &target.create_view(&Default::default()), target.format());
+        assert_eq!(copy.extent, (16, 8), "the target's own size");
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        copy.record(&ctx.device, &mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        let read = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (16, 8));
+        assert!(read.chunks(4).all(|p| p == [200, 40, 10, 255]), "every texel the colour's");
     }
 
     /// The water's colour copy is the bound colour at full size, one per
