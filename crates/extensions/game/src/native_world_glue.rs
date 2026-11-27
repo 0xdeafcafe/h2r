@@ -397,7 +397,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             };
             let gpu = guard.as_mut().ok_or("gpu_pending")?;
             configure_world(gpu, depth, cull, &stencil);
-            let mut selection = gpu.select_parts(parts, &admission_camera).ok_or("selection")?;
+            // The guest's list whole: the GPU culls it by the admission
+            // lens (`WorldPass::record_encoded`).
+            let mut selection = gpu.select_unculled(parts).ok_or("selection")?;
             if !gpu.select_texaccum(&mut selection, accumulation) { return Err("texaccum"); }
             gpu.animate_selection(&mut selection, time).map_err(|_| "animation")?;
             gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection)).ok_or("warming")
@@ -406,6 +408,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             selection, display_only,
             ready: Arc::clone(&ready),
             camera: scene_view.camera,
+            cull_camera: admission_camera,
             view: None,
             w_clip: None,
             stencil: stencil.clone(),
@@ -431,8 +434,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let (masks, cleared, selected) = {
             let bounds = ready.part_bounds.read().unwrap_or_else(|e| e.into_inner());
             render_bridge::native_world::plan_parts(
+                // Every loaded part of the guest's list: the GPU culls them.
                 &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
-                    bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
+                    bounds.contains_key(&(owner, part))
                 },
             )
             .ok_or("masks")?
@@ -1087,6 +1091,10 @@ struct WorldPass {
     selection: Arc<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
+    /// The lens the GPU culls the selection by: the union of the
+    /// reference and display copies' (`display_camera` at the target's
+    /// projection factor), as the admission took it.
+    cull_camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     /// The device's W-buffer clip at the pass (`d3d::DepthClip`): the range
@@ -1186,13 +1194,14 @@ impl d3d::ExternalPass for WorldPass {
         d3d::ExternalWrites { color: true, depth_stencil: true }
     }
 
-    /// Material programs' parts join the D3D render pass already open on
-    /// these attachments, their view rows written ahead of them
-    /// (`ExternalDraws::writes`): no pass, command buffer or worker round
-    /// trip of their own. The fixed stage records on its own encoder (`None`).
-    fn record_draws(
+    /// Material programs' parts are a stage of their own in the frame's
+    /// open encoder: the view rows and the guest cull's inputs copied in
+    /// draw order, the cull (`GpuWorld::culled_selection_draws`), then the
+    /// packets in a pass that loads and keeps the attachments. The fixed
+    /// stage records on its own encoder (`None`).
+    fn record_encoded(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         if !gpu.has_programs() { return None; }
@@ -1221,9 +1230,12 @@ impl d3d::ExternalPass for WorldPass {
             }
             Some((&t.device, &level.view))
         } else { None };
-        let draws = gpu.selection_draws_bound(t.color_format, t.depth_format, t.size, selection, &view,
-            world_lighting(t.copy, t.lighting), accumulation);
-        Some(draws.and_then(|draws| crate::native_layers_glue::clip_packets(draws, request, t.size)))
+        let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,
+            selection, &view, &self.cull_camera, world_lighting(t.copy, t.lighting), accumulation);
+        Some(culled.and_then(|(draws, dispatch)| {
+            let draws = crate::native_layers_glue::clip_packets(draws, request, t.size)?;
+            Ok(encoded_world(t, draws, dispatch))
+        }))
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
@@ -1259,6 +1271,51 @@ impl d3d::ExternalPass for WorldPass {
         }
         recorded
     }
+}
+
+/// A game view's culled world parts as commands for the frame's encoder
+/// ([`WorldPass::record_encoded`]): the view rows staged now and copied in
+/// draw order, the guest cull, then the packets in one pass over the
+/// attachments, loaded and kept.
+fn encoded_world(
+    t: &d3d::backend::ExternalAttachments, draws: d3d::backend::ExternalDraws,
+    dispatch: native_render::cull_gpu::GuestDispatch,
+) -> d3d::backend::ExternalEncoded {
+    let writes: Vec<_> = draws.writes.iter()
+        .map(|(dst, offset, bytes)| (t.uploads.stage(&t.device, &t.queue, bytes), dst.clone(), *offset, bytes.len() as u64))
+        .collect();
+    let (color, depth) = (t.color.clone(), t.depth.clone());
+    let has_stencil = t.depth_format.has_stencil_aspect();
+    let size = t.size;
+    let ranges = draws.ranges;
+    let packets = draws.packets;
+    let count = packets.len();
+    let commands = move |encoder: &mut wgpu::CommandEncoder| {
+        for ((src, at), dst, offset, len) in &writes {
+            encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+        }
+        dispatch.record(encoder);
+        fn keep<T>() -> wgpu::Operations<T> { wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native world culled"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &color, depth_slice: None, resolve_target: None, ops: keep(),
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth,
+                depth_ops: Some(keep()),
+                stencil_ops: has_stencil.then(keep),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
+        // Checked when the packets were made: every pipeline bound, none
+        // counted.
+        let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+    };
+    d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) }
 }
 
 static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -425,6 +425,10 @@ pub struct RecordedDraw {
     /// [`encode_pass`](Renderer::encode_pass) opens a new render pass for
     /// this draw.
     new_pass: bool,
+    /// Indexed indirect arguments instead of the index range: a buffer, an
+    /// offset and how many consecutive 20-byte slots
+    /// ([`RecordedDraw::with_indirect`]).
+    indirect: Option<(wgpu::Buffer, u64, u32)>,
     /// The pipeline's shader and fixed-function state, for
     /// [`describe`](Self::describe).
     state: Box<(
@@ -466,6 +470,7 @@ impl RecordedDraw {
             stencil_ref: u32::from(render.stencil.reference),
             count: None,
             new_pass: false,
+            indirect: None,
             state: Box::new((
                 key.shader,
                 key.primitive,
@@ -512,6 +517,18 @@ impl RecordedDraw {
         self.count = None;
     }
 
+    /// Draws `count` indexed indirect slots of `buffer` from `offset`
+    /// (`multi_draw_indexed_indirect`) in place of the index range: a
+    /// compute pass writes their instance counts (the native world's GPU
+    /// cull, docs/graphics/native-world.md, "Cull"). The slots' first index
+    /// is into the bound index range, so a caller binds the whole index
+    /// buffer. Only for an indexed draw that counts no samples.
+    pub fn with_indirect(mut self, buffer: wgpu::Buffer, offset: u64, count: u32) -> Self {
+        debug_assert!(self.indices.is_some() && self.count.is_none());
+        self.indirect = Some((buffer, offset, count));
+        self
+    }
+
     /// Makes [`Renderer::encode_pass`] start a new render pass (on the same
     /// encoder) at this draw instead of continuing the previous draw's.
     pub fn start_pass(&mut self) {
@@ -525,13 +542,14 @@ impl RecordedDraw {
     pub fn describe(&self) -> String {
         let (shader, primitive, depth_stencil, color) = &*self.state;
         format!(
-            "vb={:?} idx={:?} n={} builtin={} groups={:?} vp={:?} sc={:?} sref={} bc={:?}\n      shader={shader:?} primitive={primitive:?}\n      depth_stencil={depth_stencil:?}\n      color={color:?}",
+            "vb={:?} idx={:?} n={} indirect={:?} builtin={} groups={:?} vp={:?} sc={:?} sref={} bc={:?}\n      shader={shader:?} primitive={primitive:?}\n      depth_stencil={depth_stencil:?}\n      color={color:?}",
             self.vertex_buffers
                 .iter()
                 .map(|(b, o, l)| (b.size(), *o, *l))
                 .collect::<Vec<_>>(),
             self.indices.as_ref().map(|(b, o, l)| (b.size(), *o, *l)),
             self.vertices,
+            self.indirect.as_ref().map(|(b, o, n)| (b.size(), *o, *n)),
             self.builtin.is_some(),
             self.bind_groups
                 .iter()
@@ -1056,6 +1074,7 @@ impl Renderer {
             stencil_ref: d.state.stencil.reference as u32,
             count,
             new_pass: false,
+            indirect: None,
             state: Box::new((d.shader, key.primitive, key.depth_stencil, key.color_target)),
         })
     }
@@ -1418,7 +1437,11 @@ impl<'a> PassState<'a> {
             None => pass.draw(0..p.vertices, 0..1),
             Some((buf, off, len)) => {
                 pass.set_index_buffer(buf.slice(*off..*off + *len), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..p.vertices, 0, 0..1);
+                match &p.indirect {
+                    Some((args, at, 1)) => pass.draw_indexed_indirect(args, *at),
+                    Some((args, at, n)) => pass.multi_draw_indexed_indirect(args, *at, *n),
+                    None => pass.draw_indexed(0..p.vertices, 0, 0..1),
+                }
             }
         }
         self.last = Some((p, pipeline));

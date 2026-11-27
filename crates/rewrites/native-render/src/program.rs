@@ -4202,6 +4202,118 @@ mod tests {
         assert_eq!(gpu.relit_lightmap_ranges(&selection), 0);
     }
 
+    /// A game view's selected parts culled on the GPU
+    /// (`GpuWorld::culled_selection_draws`): the guest's list whole, a part
+    /// behind the camera and a repeated part included, draws what the
+    /// frustum-checked packets of its visible parts draw, and the cull's
+    /// slots keep exactly the parts `Frustum::sides` keeps.
+    #[test]
+    fn culled_world_packets_draw_what_the_admitted_packets_draw() {
+        use crate::camera::RenderCamera;
+        use crate::cull::Frustum;
+        use crate::gpu::GpuWorld;
+        use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+        use wgpu::{TextureFormat as F, TextureUsages as U};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        const SIZE: u32 = 32;
+        let wall = |x: f32, y: f32| SectionInput {
+            positions: vec![[x, y + 2.0, -2.0], [x, y - 2.0, -2.0], [x, y + 2.0, 2.0], [x, y - 2.0, 2.0]],
+            uvs: vec![[0.5; 2]; 4],
+            lightmap_uvs: vec![[0.5; 2]; 4],
+            normals: vec![[-1.0, 0.0, 0.0]; 4],
+            parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+            ..Default::default()
+        };
+        let key = LightmapKey { page: 0, palette: 0 };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &wall(10.0, 0.0), &Placement::IDENTITY, Some(key));
+        // Behind the camera, and far to its side: both outside the lens.
+        b.add_section(Owner::Cluster(1), &wall(-10.0, 0.0), &Placement::IDENTITY, Some(key));
+        b.add_section(Owner::Cluster(2), &wall(10.0, 60.0), &Placement::IDENTITY, Some(key));
+        let world = b.finish();
+        let program = compile(&plain_look(), &plain_program()).unwrap();
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, program)].into(),
+            &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])));
+        let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 60f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, SIZE as i16, SIZE as i16],
+            near: 0.0625,
+            far: 1024.0,
+        };
+        let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
+        constants[..4].copy_from_slice(&[
+            [0.0, -2.0, 0.0, 16.0], [0.0, 0.0, -2.0, 16.0], [0.5, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+        ]);
+        let view = ViewInputs { constants, guest_size: (SIZE, SIZE), size: (SIZE, SIZE), z_scale: 16_777_215.0, w_clip: None };
+        let guest = [(Owner::Cluster(0), 0), (Owner::Cluster(1), 0), (Owner::Cluster(2), 0), (Owner::Cluster(0), 0)];
+        assert!(gpu.select_parts(&guest, &camera).is_none(), "the CPU admission refuses the list");
+        let all = gpu.select_unculled(&guest).unwrap();
+        let visible = gpu.select_parts(&[(Owner::Cluster(0), 0); 2], &camera).unwrap();
+        let mut images = Vec::new();
+        for culled in [false, true] {
+            let selection = if culled { &all } else { &visible };
+            assert!(gpu.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, selection));
+            let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+                usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+            });
+            let (color, depth) = (texture(F::Rgba8Unorm), texture(F::Depth32Float));
+            let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+            let target = gfx::RenderTarget {
+                color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(F::Depth32Float),
+                size: (SIZE, SIZE), samples: 1,
+            };
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &cv, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &dv, stencil_ops: None,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            }));
+            let draws = if culled {
+                let (draws, dispatch) = gpu.culled_selection_draws(&arena, &ctx.device, &ctx.queue, F::Rgba8Unorm,
+                    F::Depth32Float, (SIZE, SIZE), selection, &view, &camera, d3d::Lighting::Retail, None).unwrap();
+                assert_eq!((draws.ranges, draws.packets.len()), (4, 2), "slots 0..3 in one run, the repeat its own");
+                dispatch.record(&mut enc);
+                draws
+            } else {
+                gpu.selection_draws_bound(F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selection, &view,
+                    d3d::Lighting::Retail, None).unwrap()
+            };
+            for (buffer, offset, bytes) in &draws.writes {
+                arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+            }
+            gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::NONE, &draws.packets, None).unwrap();
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let read = |t, aspect| gfx::readback::read_texture(&ctx, t, aspect, 4, (SIZE, SIZE));
+            images.push((read(&color, wgpu::TextureAspect::All), read(&depth, wgpu::TextureAspect::DepthOnly)));
+        }
+        assert!(images[0].1.chunks_exact(4).any(|d| f32::from_le_bytes([d[0], d[1], d[2], d[3]]) < 1.0), "the wall is drawn");
+        assert_eq!(images[0], images[1], "culled packets draw what the admitted ones draw");
+        let frustum = Frustum::sides(&camera.view_projection());
+        let want: Vec<bool> = gpu.world().draws.iter().map(|d| frustum.may_see(&d.bounds)).collect();
+        assert_eq!(want, [true, false, false]);
+        assert_eq!(gpu.read_guest_drawn(&ctx.device, &ctx.queue), want);
+        let stats = gpu.read_guest_cull_stats(&ctx.device, &ctx.queue);
+        assert_eq!((stats.visible, stats.total), (1, 3));
+    }
+
     #[test]
     fn per_draw_engine_inputs_keep_the_material_on_the_d3d_path() {
         let look = PassLook {

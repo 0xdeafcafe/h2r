@@ -139,6 +139,10 @@ pub(crate) struct GpuCull {
     bounds: wgpu::Buffer,
     view: wgpu::Buffer,
     stats: wgpu::Buffer,
+    /// 1 per draw the view starts from (`cull.wgsl`'s `start`): all ones
+    /// for the whole-world pass, the guest's selection for a game view
+    /// ([`GpuCull::guest_dispatch`]).
+    start: wgpu::Buffer,
     group: wgpu::BindGroup,
     early_frustum: wgpu::ComputePipeline,
     early_history: wgpu::ComputePipeline,
@@ -250,6 +254,11 @@ impl GpuCull {
             bytemuck::cast_slice(&vec![0u32; slots.len()]),
             wgpu::BufferUsages::STORAGE,
         );
+        let start = init(
+            "native world cull start",
+            bytemuck::cast_slice(&vec![1u32; slots.len()]),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
         let buffer = |label, size, usage| {
             gfx::churn::create_buffer(device, &wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
         };
@@ -281,12 +290,13 @@ impl GpuCull {
                 storage(3, false),
                 storage(4, false),
                 storage(5, false),
+                storage(6, true),
             ],
         });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native world cull"),
             layout: &layout,
-            entries: &[&view, &bounds, &early, &late, &history, &stats]
+            entries: &[&view, &bounds, &early, &late, &history, &stats, &start]
                 .iter()
                 .enumerate()
                 .map(|(i, b)| wgpu::BindGroupEntry { binding: i as u32, resource: b.as_entire_binding() })
@@ -325,6 +335,7 @@ impl GpuCull {
             bounds,
             view,
             stats,
+            start,
             group,
             pyramid_layout,
             seed_layout,
@@ -489,6 +500,40 @@ impl GpuCull {
         Pyramid { depth: depth.clone(), seed, reduce, sizes, late }
     }
 
+    /// A game view's frustum cull of the guest's selected parts, for a
+    /// stage that encodes its own commands (`gfx::external::ExternalEncoded`):
+    /// the view and the start set staged now in `uploads`, copied and
+    /// dispatched in draw order when [`GuestDispatch::record`] runs, so
+    /// each view's slots are written just before its draws read them.
+    /// `selected` holds the selection's draw indices.
+    pub(crate) fn guest_dispatch(
+        &self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view_proj: &Mat4,
+        frustum: &Frustum, selected: impl IntoIterator<Item = usize>,
+    ) -> GuestDispatch {
+        let view = CullView {
+            planes: frustum.planes,
+            view_proj: *view_proj,
+            depth: [0.0; 4],
+            viewport: [0.0; 4],
+            counts: [self.count, 0, 0, 0],
+        };
+        let mut start = vec![0u32; self.count.max(1) as usize];
+        for i in selected {
+            if let Some(s) = start.get_mut(i) {
+                *s = 1;
+            }
+        }
+        GuestDispatch {
+            view: (uploads.stage(device, queue, bytemuck::bytes_of(&view)), self.view.clone()),
+            start: (uploads.stage(device, queue, bytemuck::cast_slice(&start)), self.start.clone()),
+            start_len: start.len() as u64 * 4,
+            stats: self.stats.clone(),
+            pipeline: self.early_frustum.clone(),
+            group: self.group.clone(),
+            count: self.count,
+        }
+    }
+
     /// The last view's counts, read back (blocking): for tests and tools.
     pub(crate) fn read_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> CullStats {
         let words: Vec<u32> = read_back(device, queue, &self.stats, 16);
@@ -512,6 +557,39 @@ impl GpuCull {
             .take(self.count as usize)
             .map(|(e, l)| e.instance_count != 0 || l.instance_count != 0)
             .collect()
+    }
+}
+
+/// One game view's cull, recorded in draw order ([`GpuCull::guest_dispatch`]).
+#[derive(Clone)]
+pub struct GuestDispatch {
+    view: ((wgpu::Buffer, u64), wgpu::Buffer),
+    start: ((wgpu::Buffer, u64), wgpu::Buffer),
+    start_len: u64,
+    stats: wgpu::Buffer,
+    pipeline: wgpu::ComputePipeline,
+    group: wgpu::BindGroup,
+    count: u32,
+}
+
+impl GuestDispatch {
+    /// Copies the staged view and start set and writes the early slots.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        let ((src, at), dst) = &self.view;
+        encoder.copy_buffer_to_buffer(src, *at, dst, 0, size_of::<CullView>() as u64);
+        let ((src, at), dst) = &self.start;
+        encoder.copy_buffer_to_buffer(src, *at, dst, 0, self.start_len);
+        encoder.clear_buffer(&self.stats, 0, None);
+        if self.count == 0 {
+            return;
+        }
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("native world guest cull"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.dispatch_workgroups(self.count.div_ceil(GROUP), 1, 1);
     }
 }
 

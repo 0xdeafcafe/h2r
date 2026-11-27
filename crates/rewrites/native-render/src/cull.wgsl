@@ -32,11 +32,15 @@ struct Bounds {
 @group(0) @binding(4) var<storage, read_write> history: array<u32>;
 // 0: kept by the frustum, 1: drawn early, 2: drawn late, 3: occluded.
 @group(0) @binding(5) var<storage, read_write> stats: array<atomic<u32>, 4>;
+// 1 for a draw the view starts from: every draw for the whole-world pass,
+// the guest's selected parts for a game view.
+@group(0) @binding(6) var<storage, read> start: array<u32>;
 
 @group(1) @binding(0) var pyramid: texture_2d<f32>;
 
-fn may_see(b: Bounds) -> bool {
-    if (b.min.w == 0.0) {
+fn may_see(i: u32) -> bool {
+    let b = bounds[i];
+    if (b.min.w == 0.0 || start[i] == 0u) {
         return false;
     }
     for (var k = 0u; k < 6u; k++) {
@@ -121,7 +125,7 @@ fn early_frustum(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= view.counts.x) {
         return;
     }
-    let seen = may_see(bounds[i]);
+    let seen = may_see(i);
     early[i * 5u + 1u] = u32(seen);
     late[i * 5u + 1u] = 0u;
     history[i] = u32(seen);
@@ -139,7 +143,7 @@ fn early_history(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= view.counts.x) {
         return;
     }
-    let seen = may_see(bounds[i]);
+    let seen = may_see(i);
     let drawn = seen && history[i] != 0u;
     early[i * 5u + 1u] = u32(drawn);
     late[i * 5u + 1u] = 0u;
@@ -160,9 +164,8 @@ fn late_occlusion(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= view.counts.x) {
         return;
     }
-    let b = bounds[i];
-    var kept = may_see(b);
-    if (kept && occluded(b)) {
+    var kept = may_see(i);
+    if (kept && occluded(bounds[i])) {
         kept = false;
         atomicAdd(&stats[3], 1u);
     }
@@ -182,7 +185,7 @@ fn late_frustum(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= view.counts.x) {
         return;
     }
-    let seen = may_see(bounds[i]);
+    let seen = may_see(i);
     history[i] = u32(seen);
     let drawn = seen && early[i * 5u + 1u] == 0u;
     late[i * 5u + 1u] = u32(drawn);

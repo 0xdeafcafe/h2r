@@ -10,7 +10,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum};
-use crate::cull_gpu::{GpuCull, OcclusionSkips, SLOT_SIZE};
+use crate::cull_gpu::{GpuCull, GuestDispatch, OcclusionSkips, SLOT_SIZE};
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
@@ -331,6 +331,9 @@ pub struct GpuWorld {
     /// The whole-world pass's indirect slots and the compute cull that
     /// writes them.
     cull: GpuCull,
+    /// The game views' cull of the guest's selected parts
+    /// ([`GpuWorld::culled_selection_draws`]).
+    guest_cull: GpuCull,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
@@ -635,6 +638,7 @@ impl GpuWorld {
         };
         let indices = init("native world indices", bytemuck::cast_slice(idx), wgpu::BufferUsages::INDEX);
         let cull = GpuCull::new(device, &world);
+        let guest_cull = GpuCull::new(device, &world);
         let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native world frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
@@ -772,6 +776,7 @@ impl GpuWorld {
             program_vertices,
             indices,
             cull,
+            guest_cull,
             frame,
             frame_group,
             batch_groups,
@@ -830,6 +835,7 @@ impl GpuWorld {
         let run = self.world.replace_section(owner, section)?;
         self.write_run(queue, run);
         self.cull.write_bounds(queue, &self.world);
+        self.guest_cull.write_bounds(queue, &self.world);
         Ok(run)
     }
 
@@ -1453,11 +1459,21 @@ impl GpuWorld {
     /// Resolve this guest list against the current BSP and camera, once for all target copies.
     pub fn select_parts(&self, parts: &[(Owner, u8)], camera: &RenderCamera) -> Option<WorldSelection> {
         let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
+        let selection = self.select_unculled(parts)?;
+        selection.spans.iter().flat_map(|&(_, first, end)| first..end)
+            .all(|slot| frustum.may_see(&self.world.draws[slot].bounds))
+            .then_some(selection)
+    }
+
+    /// The guest's list as it is, every part kept whatever the camera sees:
+    /// for a game view the GPU culls ([`GpuWorld::culled_selection_draws`]).
+    /// `None` for a part the world does not hold or one with no triangles.
+    pub fn select_unculled(&self, parts: &[(Owner, u8)]) -> Option<WorldSelection> {
         let mut selection = WorldSelection::default();
         for part in parts {
             let &slot = self.part_slots.get(part)?;
             let draw = &self.world.draws[slot];
-            if draw.index_count == 0 || !frustum.may_see(&draw.bounds) {
+            if draw.index_count == 0 {
                 return None;
             }
             selection.push(slot, draw);
@@ -1680,6 +1696,48 @@ impl GpuWorld {
         selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        self.selection_packets(color_format, depth_format, target_size, selection, view, lighting, accumulation, None)
+    }
+
+    /// A game view's selected parts culled on the GPU (docs/graphics/
+    /// native-world.md, "Cull"): the packets draw the selection's slots of
+    /// the guest cull's indirect buffer, one `multi_draw_indexed_indirect`
+    /// per run of consecutive slots under one binding, in the selection's
+    /// order. [`GuestDispatch::record`] writes their instance counts from
+    /// the frustum of `camera` (`Frustum::sides`) and the selection as the
+    /// start set; the caller records it, then the packets, in one encoder.
+    pub fn culled_selection_draws(
+        &mut self, uploads: &gfx::ring::SubmissionUploads, device: &wgpu::Device, queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, camera: &RenderCamera, lighting: d3d::Lighting,
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
+    ) -> Result<(gfx::external::ExternalDraws, GuestDispatch), &'static str> {
+        let vp = camera.view_projection();
+        let selected = selection.spans.iter().flat_map(|&(_, first, end)| first..end);
+        let dispatch = self.guest_cull.guest_dispatch(device, queue, uploads, &vp, &Frustum::sides(&vp), selected);
+        let slots = self.guest_cull.early.clone();
+        let draws = self.selection_packets(color_format, depth_format, target_size, selection, view, lighting, accumulation, Some(slots))?;
+        Ok((draws, dispatch))
+    }
+
+    /// The last game view's guest cull counts (`visible` is what its
+    /// frustum kept of the selection), read back (blocking): for tests and
+    /// tools.
+    pub fn read_guest_cull_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> CullStats {
+        self.guest_cull.read_stats(device, queue)
+    }
+
+    /// Whether each draw was drawn by the last game view's guest cull.
+    pub fn read_guest_drawn(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<bool> {
+        self.guest_cull.read_drawn(device, queue)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn selection_packets(
+        &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>, culled: Option<wgpu::Buffer>,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         use crate::program::BatchTextures;
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
@@ -1702,19 +1760,25 @@ impl GpuWorld {
         let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
         let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
+        // `range`: indices, or with `culled` the slots of a run.
         let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
             let count = range.end - range.start;
-            packets.push(RecordedDraw::prepared_indexed(
+            let indexed = |at: u64, len: u64, n: u32| RecordedDraw::prepared_indexed(
                 &b.key,
                 b.pipeline.clone(),
                 vec![(program_vertices.clone(), 0, program_vertices.size())],
-                (indices.clone(), u64::from(range.start) * 4, u64::from(count) * 4),
-                count,
+                (indices.clone(), at, len),
+                n,
                 b.groups.clone(),
                 &b.state,
                 target_size,
                 scissor,
-            ));
+            );
+            packets.push(match &culled {
+                None => indexed(u64::from(range.start) * 4, u64::from(count) * 4, count),
+                Some(slots) => indexed(0, indices.size(), 0)
+                    .with_indirect(slots.clone(), u64::from(range.start) * SLOT_SIZE, count),
+            });
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
@@ -1779,9 +1843,14 @@ impl GpuWorld {
                         state,
                     }));
                 }
-                for d in &draws[k..end] {
-                    let next = d.first_index..d.first_index + d.index_count;
-                    if let Some(previous) = append_triangles(&mut pending, next) {
+                for (j, d) in draws[k..end].iter().enumerate() {
+                    let joined = if culled.is_some() {
+                        let slot = (first + k + j) as u32;
+                        append_slot(&mut pending, slot..slot + 1)
+                    } else {
+                        append_triangles(&mut pending, d.first_index..d.first_index + d.index_count)
+                    };
+                    if let Some(previous) = joined {
                         emit(&mut packets, &bound.as_ref().expect("bound before its draws").1, previous);
                     }
                 }
@@ -2026,6 +2095,15 @@ fn encode_set(
 
 
 /// Join adjacent complete triangle lists only while their render state is bound.
+/// [`append_triangles`] for runs of slots: `next` joins a run it follows.
+fn append_slot(pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range<u32>) -> Option<std::ops::Range<u32>> {
+    if let Some(previous) = pending && previous.end == next.start {
+        previous.end = next.end;
+        return None;
+    }
+    pending.replace(next)
+}
+
 fn append_triangles(
     pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range<u32>,
 ) -> Option<std::ops::Range<u32>> {
