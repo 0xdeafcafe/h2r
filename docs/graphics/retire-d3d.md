@@ -551,6 +551,7 @@ Switch `frame-scene.effects-shadow` (on).
 |---|---|---|
 | Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
 | Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
+| Emission | `engine/src/particle_emission.rs`: the particle callback `0x00224550` to its emitter call, its callees `0x00173ba0`, `0x00248df0`, `0x0004efb0`, `0x00246cd0`, `0x00246d80`, `0x00131bb0`, `0x00131e50`, `0x00016ae0` ("R2's emission arm") | at the emitter `0x0023ed30` called from `0x00224cd7`: the eight words, EBX, the two windows and the corners they point at, the input block and the draw context |
 | Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
 
 What the stamps arm writes:
@@ -588,6 +589,7 @@ or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
 | `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
 | `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
 | `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
+| `emission_matched`, `emission_mismatched_{words,window,corners,inputs,sequence,writes}`, `emission_refused_<reason>`, `emission_unbalanced` | particle callbacks on sampled frames |
 | `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
 | `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
 
@@ -605,6 +607,35 @@ its property evaluation, `0x00035b00`, the decal-list replays), the calls
 of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
 so every run counts `entry_runs_no_host_<kind>`: the display copy's own
 particles and decals need a host that draws them.
+
+### R2's emission arm
+
+`engine::particle_emission::predict` makes, from the callback's entry,
+what `0x00224550` pushes for the emitter: position, axis, size, rotation,
+the packed colour, the frame blend, the two frame windows and the corners,
+and its writes (the input cache at `state + 4i`, its mask `+0x44`, the
+sequence at `draw + 8`). SSE in the original's operand order under the
+guest's MXCSR, x87 under its control word, constants from the image; the
+tag function is `function_eval`, the colour `opaque_animation::rgb`.
+
+| Step | Guest |
+|---|---|
+| inputs the definition reads (`+0x98 & 0xf80f`), not cached, in bit order | `0x00173ba0`, `0x00248df0` cases 0 to 3, 11 to 15 |
+| rotation `+0x4c`, colour `+0x1c`, alpha `+0x2c`, size `+0x3c` | `0x00246cd0`, `0x00246d80`; flag `0x180` tints by the particle's `+0x3c` |
+| window and corners | flag `0x10000`: the definition's `+0xac`, `+0x9c`; else a type 3 bitmap's sequence (flag `0x10`), frame `+0x5c`, blend unless flag `0x20` |
+| flips | flags 2 and 4 with the particle's `+0x14`, `+0x16` bit 0 |
+
+Tests: `particle_emission/tests.rs`
+(`the_inputs_the_definition_reads_are_cached_in_bit_order_and_masked`,
+`the_emitter_words_point_into_the_callers_frame`,
+`a_definition_window_flips_with_the_particle`,
+`the_colour_lanes_are_clamped_before_they_are_packed`,
+`a_sequence_bitmap_picks_the_particles_sequence_and_blends_two_frames`,
+`what_the_model_cannot_read_is_a_named_refusal`),
+`effects_shadow/emission.rs` (a match, a differing word and input, another
+caller, a refusal), and against the lifted original
+`engine/tests/particle_emission_differential.rs` (feature `differential`,
+needs the XBE).
 
 ### R1's remainder
 

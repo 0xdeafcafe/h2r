@@ -690,6 +690,11 @@ points! { ALL;
     /// The particle systems' per-view update the render reaches from the
     /// object and effect draw paths: their visibility and location stamps.
     PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
+    /// One particle's emission: the particle draw's per-particle callback
+    /// (`ret 0x1c`), which evaluates its properties and calls the emitter.
+    PARTICLE_EVALUATE @ 0x0022_4550: [opaque], Optional; "docs/graphics/native-particles.md";
+    /// The particle emitter: eight words on the stack, EBX the corners.
+    PARTICLE_EMIT @ 0x0023_ed30: [opaque], Optional; "docs/graphics/native-particles.md";
     CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
