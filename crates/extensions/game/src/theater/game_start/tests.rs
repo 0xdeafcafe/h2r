@@ -149,9 +149,11 @@ fn a_game_never_described_gives_up_with_a_named_error() {
     rec.game_activated(&g);
     let mut s = rec.lock();
     let mut error = None;
-    for _ in 0..=DESCRIBE_UPDATES {
+    const LIMIT: u32 = 3;
+    for _ in 0..=LIMIT {
         note_first_update(None, &mut s, &g);
         let Mode::Record(r) = &mut s.mode else { panic!("a recording") };
+        r.starts.describe_updates = Some(LIMIT);
         if let Err(e) = r.starts.release(&mut r.meta) {
             error = Some(e.to_string());
             break;
