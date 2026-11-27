@@ -192,6 +192,23 @@ pub enum DirectorRun {
 }
 
 /// One director command, as the host log carries it.
+/// How a dropped squad arrives (`firefight::Arrival`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    #[default]
+    Auto,
+    Foot,
+    Ship,
+    Pod,
+}
+
+impl Arrival {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -210,6 +227,9 @@ pub enum Command {
         count: u16,
         zone: u8,
         weapon_tier: u8,
+        /// `pod`: the squad falls in a pod and is placed when it lands.
+        #[serde(default, skip_serializing_if = "Arrival::is_auto")]
+        arrival: Arrival,
     },
     /// The drop ship's hover hold.
     ShipHover {
@@ -380,6 +400,7 @@ mod tests {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
             json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
+            json!({"drop_squad": {"slot": 1, "class": "flood", "count": 3, "zone": 2, "weapon_tier": 0, "arrival": "pod"}}),
             json!({"ship_hover": {"on": true}}),
             json!("ship_unload"),
             json!({"ship_leave": {"zone": 1}}),

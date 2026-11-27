@@ -137,6 +137,7 @@ pub enum Command {
         /// `Pod`: the squad falls in a pod and is placed when it lands
         /// (the host then logs a `PlaceSquad`); `Ship` and `Auto`: the
         /// drop ship's.
+        #[serde(default, skip_serializing_if = "Arrival::is_auto")]
         arrival: Arrival,
     },
     /// The ship's hover hold (`VEHICLE_HOVER`), on while it flies a drop.

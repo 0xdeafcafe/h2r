@@ -183,7 +183,7 @@ pub enum Arrival {
 }
 
 impl Arrival {
-    pub(crate) fn is_auto(&self) -> bool {
+    pub fn is_auto(&self) -> bool {
         *self == Self::Auto
     }
 
