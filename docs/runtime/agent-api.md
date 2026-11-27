@@ -5809,7 +5809,8 @@ small against `checked`.
 after a call. For each observed function, `matched` and `differed` count
 completed comparisons. `declined` counts segments the Rust arm could
 not predict. `interrupted` counts predictions for which the guest exited
-before a comparison boundary. The first difference for each function is
+before a comparison boundary. `answered` counts segments the Rust body
+answered without the guest under `impl.sim.native.anim.manager`. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
 (`what`), and both values (`plan` and `guest`). An entry with `first` set
 to `null` has no recorded difference. Compare counts before and after
@@ -5842,8 +5843,8 @@ the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
 `sim.effects` groups. A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
-`mismatched`) and no `answered`; `anim.manager` has no `answered` and its
-`differed` is `mismatched`; shadow ports have no `answered` and their
+`mismatched`) and no `answered`; `anim.manager`'s `differed` is
+`mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`. A subsystem with its switch off reads zeros, so
 `clean` is false.
 

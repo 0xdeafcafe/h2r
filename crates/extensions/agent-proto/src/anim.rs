@@ -82,6 +82,9 @@ pub struct ManagerEntry {
     pub declined: u64,
     /// The guest exited before reaching the predicted boundary.
     pub interrupted: u64,
+    /// Segments the Rust body answered without the guest
+    /// (`impl.sim.native.anim.manager`).
+    pub answered: u64,
     pub first: Option<SegmentMismatch>,
 }
 
