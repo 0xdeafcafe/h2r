@@ -1681,7 +1681,12 @@ fn view_record_arm(m: &Ro<'_>, camera: &Camera, key: ViewKey, lens: VisibilityLe
     VIEW_RECORD_CHECKED.fetch_add(1, Ordering::Relaxed);
     if let VisibilityLens::Guest { projection: factor, .. } = lens {
         if let (Some(retail), Some(guest)) = (rust.camera.projection_xy, guest.camera.projection_xy) {
-            let state = GuestLensState::of(retail[0], guest[0], factor);
+            // The term the factor scaled: X below 1, Y above.
+            let state = if factor > 1.0 {
+                GuestLensState::of(retail[1], guest[1], canvas_fit::vertical_term(factor))
+            } else {
+                GuestLensState::of(retail[0], guest[0], factor)
+            };
             VIEW_RECORD_GUEST_LENS[state as usize].fetch_add(1, Ordering::Relaxed);
         }
         rust.camera = native_render::camera::display_camera(rust.camera, factor);

@@ -16,6 +16,8 @@ gpu = ["dep:mem-watch", "dep:assets", "dep:map", "dep:tags", "dep:wgpu", "dep:sh
 differential = []
 
 [dependencies]
+# The one widescreen rule (docs/graphics/high-resolution.md).
+canvas-fit = { path = "../../platform/canvas-fit" }
 mem-watch = { workspace = true, optional = true }
 # Bitmap and lightmap page decodes for the hosts (load::decode_lightmap, decode_first).
 assets = { workspace = true, optional = true }
