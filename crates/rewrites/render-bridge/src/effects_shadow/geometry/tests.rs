@@ -259,7 +259,7 @@ impl AnswerHost for Host {
 }
 
 #[test]
-fn a_proven_cluster_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_handler() {
+fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_handler() {
     use std::sync::Arc;
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = world();
@@ -285,20 +285,22 @@ fn a_proven_cluster_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_ha
     assert!(proven());
     let drawn = counter("answer_geometry_draw");
     assert!(answer_handler(&mut m, HESP));
-    assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, cluster: 0, part: 2, passes: 2 }]);
+    assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, owner: Owner::Cluster(0), part: 2, passes: 2 }]);
     assert_eq!(counter("answer_geometry_draw"), drawn + 1);
 
     // A host that refuses leaves the handler to the guest.
     set_answer_host(Some(Arc::new(Host(Mutex::default(), Err("warming")))));
     assert!(!answer_handler(&mut m, HESP));
-    // So does an entry that is not a cluster's, or a pass the model does not accept.
+    // A placement's entry is drawn as the placement's.
     set_answer_host(Some(host.clone()));
     m.set_u32(record + 0xc, 3 << 18).unwrap();
-    assert!(!answer_handler(&mut m, HESP));
+    assert!(answer_handler(&mut m, HESP));
+    assert_eq!(host.0.lock().unwrap()[1].owner, Owner::Placement(3));
+    // A pass the model does not accept keeps the guest's handler.
     m.set_u32(record + 0xc, 0x7ff << 18).unwrap();
     m.set_u32(0x0064_0000 + 4, 0).unwrap();
     assert!(!answer_handler(&mut m, HESP), "no vertex class to draw");
-    assert_eq!(host.0.lock().unwrap().len(), 1);
+    assert_eq!(host.0.lock().unwrap().len(), 2);
     set_answer_host(None);
     material_record(&["render_0x3b".to_owned()], &[]);
 }
