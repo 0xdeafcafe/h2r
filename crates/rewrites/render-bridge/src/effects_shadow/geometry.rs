@@ -30,6 +30,7 @@
 //! lane.
 
 use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::memory::GuestMemory;
@@ -158,12 +159,17 @@ pub struct Built {
 
 /// Makes the build's slot and AL for `a`, from the slot as it stands.
 pub fn predict(m: &dyn GuestMemory, a: &Args) -> Result<Built, Refusal> {
+    let mut old = [0; SLOT];
+    m.read(a.slot, &mut old).map_err(|_| Refusal::Fault)?;
+    predict_from(m, a, old)
+}
+
+/// [`predict`] with the slot's bytes as given (the slot itself is not read).
+pub fn predict_from(m: &dyn GuestMemory, a: &Args, old: [u8; SLOT]) -> Result<Built, Refusal> {
     shader_group(m, a.shader)?;
     if (a.argument >> 8) as u16 >= 0x352 {
         return Err(Refusal::Record);
     }
-    let mut old = [0; SLOT];
-    m.read(a.slot, &mut old).map_err(|_| Refusal::Fault)?;
     let e = scene_build::build(m, a.shader, a.lod, LAYER, a.selector, a.argument, old, true)
         .ok_or(Refusal::Layout)?;
     Ok(Built { slot: e.bytes, al: e.accepted })
@@ -429,6 +435,106 @@ pub fn material_record(fields: &[String], skipped: &[&str]) {
 /// Whether the last [`CLEAN`] sampled draws' materials matched the device.
 pub fn material_proven() -> bool {
     MATERIAL_STREAK.load(Ordering::Relaxed) >= CLEAN
+}
+
+/// One entry the answer draws natively: a BSP cluster's part of a shader
+/// whose template has `passes` passes in layer 15.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub shader: u32,
+    pub cluster: u32,
+    pub part: u8,
+    pub passes: u32,
+}
+
+/// The native draw of an entry's passes (the game glue,
+/// `native_layers_glue::answer_transparent`): `Err` names why the guest's
+/// handler runs instead.
+pub trait AnswerHost: Send + Sync {
+    fn draw(&self, mem: &mut dyn GuestMemory, request: &Request) -> Result<(), &'static str>;
+}
+
+static HOST: Mutex<Option<Arc<dyn AnswerHost>>> = Mutex::new(None);
+
+pub fn set_answer_host(host: Option<Arc<dyn AnswerHost>>) {
+    *HOST.lock().unwrap_or_else(|e| e.into_inner()) = host;
+}
+
+/// Whether the answer is open: the build answer and the material both
+/// proved, [`CLEAN`] sampled draws in a row each, and no difference since.
+pub fn proven() -> bool {
+    with_proof(|p| p.answering()) && material_proven()
+}
+
+struct Ro<'a>(&'a dyn GuestMemory);
+
+impl native_render::camera::GuestRead for Ro<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
+}
+
+fn kept(cause: &str) {
+    crate::native_layers::count_kept_as("", 15, "geometry_draw", cause, 1);
+}
+
+/// At the handler's entry (`esp` its return address). True when the entry
+/// is drawn natively and the handler returns (`ret 4`); false runs the
+/// guest's. Only on a frame that is not sampled, with [`proven`], for a BSP
+/// cluster's part whose every pass the build model accepts with the
+/// generic implementation 0 (the one the layer's compile took).
+pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
+    use native_render::transparent::{Source, read_entry};
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return false };
+    if sampled(&*m) != Some(false) || !proven() {
+        return false;
+    }
+    let Some(data) = esp.checked_add(4).and_then(|a| m.u32(a).ok()) else { return false };
+    let Some(entry) = read_entry(&Ro(&*m), data) else {
+        kept("entry");
+        return false;
+    };
+    let Source::Cluster(cluster) = entry.source else {
+        kept("not_cluster");
+        return false;
+    };
+    let Some(argument) = data.checked_add(4).and_then(|a| m.u32(a).ok()) else { return false };
+    let passes = match passes(&*m, entry.shader) {
+        Ok(n) if n > 0 => n,
+        Ok(_) => {
+            kept("no_passes");
+            return false;
+        }
+        Err(why) => {
+            kept(why.name());
+            return false;
+        }
+    };
+    for selector in 0..passes {
+        let a = Args { shader: entry.shader, lod: 0, selector: selector as u8, argument, slot: 0 };
+        match predict_from(&*m, &a, [0; SLOT]) {
+            Ok(b) if b.al && b.slot[4] == 0 => {}
+            Ok(_) => {
+                kept("pass");
+                return false;
+            }
+            Err(why) => {
+                kept(why.name());
+                return false;
+            }
+        }
+    }
+    let request = Request { shader: entry.shader, cluster: u32::from(cluster), part: entry.part, passes };
+    match host.draw(m, &request) {
+        Ok(()) => {
+            count("answer_geometry_draw", 1);
+            true
+        }
+        Err(cause) => {
+            kept(cause);
+            false
+        }
+    }
 }
 
 /// A snapshot load: an open handler or build never returns.

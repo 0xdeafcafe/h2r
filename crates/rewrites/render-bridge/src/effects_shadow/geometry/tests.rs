@@ -248,3 +248,57 @@ fn a_sampled_draw_takes_the_pass_its_build_made_once_and_the_material_streak_pro
     assert_eq!(counter("geometry_material_mismatched_stage0_address_u") > 0, true);
     assert_eq!(counter("geometry_material_proven"), proven);
 }
+
+struct Host(Mutex<Vec<Request>>, Result<(), &'static str>);
+
+impl AnswerHost for Host {
+    fn draw(&self, _: &mut dyn GuestMemory, request: &Request) -> Result<(), &'static str> {
+        self.0.lock().unwrap().push(*request);
+        self.1
+    }
+}
+
+#[test]
+fn a_proven_cluster_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_handler() {
+    use std::sync::Arc;
+    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut m = world();
+    let record = engine::render_loop::opaque_material::RENDER_RECORDS + RECORD_INDEX * 0x20;
+    m.set_u32(record + 0xc, 0x7ff << 18).unwrap();
+    m.set_u32(DATA - 4, 0x0004_1020).unwrap();
+    let host = Arc::new(Host(Mutex::default(), Ok(())));
+    set_answer_host(Some(host.clone()));
+
+    frame(&mut m, SAMPLE * 50 + 1);
+    assert!(!answer_handler(&mut m, HESP), "nothing is proven yet");
+    for k in 51..51 + CLEAN {
+        frame(&mut m, k * SAMPLE);
+        handler(&mut m);
+    }
+    for _ in 0..CLEAN {
+        material_record(&[], &[]);
+    }
+    // A sampled frame runs the guest; the next one answers.
+    frame(&mut m, (51 + CLEAN) * SAMPLE);
+    assert!(!answer_handler(&mut m, HESP));
+    frame(&mut m, (51 + CLEAN) * SAMPLE + 1);
+    assert!(proven());
+    let drawn = counter("answer_geometry_draw");
+    assert!(answer_handler(&mut m, HESP));
+    assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, cluster: 0, part: 2, passes: 2 }]);
+    assert_eq!(counter("answer_geometry_draw"), drawn + 1);
+
+    // A host that refuses leaves the handler to the guest.
+    set_answer_host(Some(Arc::new(Host(Mutex::default(), Err("warming")))));
+    assert!(!answer_handler(&mut m, HESP));
+    // So does an entry that is not a cluster's, or a pass the model does not accept.
+    set_answer_host(Some(host.clone()));
+    m.set_u32(record + 0xc, 3 << 18).unwrap();
+    assert!(!answer_handler(&mut m, HESP));
+    m.set_u32(record + 0xc, 0x7ff << 18).unwrap();
+    m.set_u32(0x0064_0000 + 4, 0).unwrap();
+    assert!(!answer_handler(&mut m, HESP), "no vertex class to draw");
+    assert_eq!(host.0.lock().unwrap().len(), 1);
+    set_answer_host(None);
+    material_record(&["render_0x3b".to_owned()], &[]);
+}

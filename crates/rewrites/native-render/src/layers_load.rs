@@ -29,6 +29,11 @@ use crate::world::{LightmapKey, Owner, World};
 /// resolved once, at the load.
 pub const PER_DRAW: &str = "per-draw inputs";
 
+/// Layer 15, the sorted transparent geometry's: compiled and uploaded with
+/// the planned layers, drawn only for the entries R2's geometry arm answers
+/// (`effects_shadow::geometry`), never planned from the scene.
+pub const TRANSPARENT_LAYER: u8 = 15;
+
 pub type Part = ((Owner, u8), (u32, u32, Option<LightmapKey>, u16));
 
 /// The plan's view of the load's resolved shaders: each material as the
@@ -188,7 +193,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
         out.materials.insert(shader.0, Arc::clone(&material));
         resolved.insert(m, material);
     }
-    for layer in layer_pass::planned_layers() {
+    for layer in layer_pass::planned_layers().chain(std::iter::once(TRANSPARENT_LAYER)) {
         let mut data = LayerData::default();
         let mut refused: BTreeMap<String, usize> = BTreeMap::new();
         // A pass that leaves `CULLMODE` unset draws with the cull the layer
