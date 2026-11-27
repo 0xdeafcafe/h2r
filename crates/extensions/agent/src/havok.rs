@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use agent_proto::havok::{
     Bodies, BodiesParams, Body, Contact, Contacts, ContactsParams, Digest, DigestParams,
-    IslandFallback, IslandIntegrate, Islands, IslandsParams, Point, Shape, Side, method,
+    IslandFallback, Islands, TakeoverArm, IslandsParams, Point, Shape, Side, method,
 };
 use agent_proto::{Kind, Object, ObjectId, RpcError, code};
 use live_telemetry::havok::{self as hk, IslandState};
@@ -132,28 +132,34 @@ fn digest_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
 }
 
 fn islands_method(v: Value) -> Result<Value, RpcError> {
-    use engine::sim_physics::parity;
     let IslandsParams {} = params(v)?;
     let (by_reason, solved) = sim_havok::island_solve::fallbacks();
-    let arm = parity::ISLAND_INTEGRATE.name;
-    let (_, matched, mismatched, declined) =
-        parity::status().into_iter().find(|s| s.0 == arm).expect("the integrate arm is in the table");
-    let takeover = parity::takeover().into_iter().find(|t| t.name == arm).expect("the integrate arm takes over");
     let islands = Islands {
         solved,
         declined: by_reason.iter().map(|(_, n)| n).sum(),
         fallbacks: fallbacks(&by_reason),
-        integrate: IslandIntegrate {
-            answered: takeover.answered,
-            matched,
-            mismatched,
-            declined,
-            fallbacks: fallbacks(&sim_havok::island_integrate::fallbacks()),
-            proven: takeover.proven,
-            ended: takeover.ended,
-        },
+        integrate: takeover_arm(&engine::sim_physics::parity::ISLAND_INTEGRATE, &sim_havok::island_integrate::fallbacks()),
+        deactivation: takeover_arm(&engine::sim_physics::parity::DEACTIVATION, &sim_havok::deactivation::fallbacks()),
+        phase: takeover_arm(&engine::sim_physics::parity::INTEGRATE_PHASE, &sim_havok::integrate_phase::fallbacks()),
     };
     Ok(serde_json::to_value(islands).expect("islands serialise"))
+}
+
+/// One take-over arm's counts, with its model's declines by reason.
+fn takeover_arm(arm: &engine::sim_physics::parity::Arm, by_reason: &[(&str, u64)]) -> TakeoverArm {
+    use engine::sim_physics::parity;
+    let (_, matched, mismatched, declined) =
+        parity::status().into_iter().find(|s| s.0 == arm.name).expect("the arm is in the table");
+    let takeover = parity::takeover().into_iter().find(|t| t.name == arm.name).expect("the arm takes over");
+    TakeoverArm {
+        answered: takeover.answered,
+        matched,
+        mismatched,
+        declined,
+        fallbacks: fallbacks(by_reason),
+        proven: takeover.proven,
+        ended: takeover.ended,
+    }
 }
 
 /// Counters by reason, on the wire.
@@ -357,6 +363,12 @@ mod tests {
         assert_eq!(reasons, ["memory", "action", "motion", "float", "solve", "monitor", "unobserved"]);
         sim_havok::island_integrate::count(sim_havok::island_integrate::Fallback::Action);
         assert!(read().integrate.fallbacks[1].count > after.integrate.fallbacks[1].count);
+        let reasons: Vec<_> = after.deactivation.fallbacks.iter().map(|f| f.reason.as_str()).collect();
+        assert_eq!(reasons, ["memory", "deactivator", "object", "float", "monitor", "unobserved"]);
+        let reasons: Vec<_> = after.phase.fallbacks.iter().map(|f| f.reason.as_str()).collect();
+        assert_eq!(reasons, ["memory", "pending", "deactivate", "listener", "split", "island", "float", "monitor", "unobserved"]);
+        sim_havok::integrate_phase::count(sim_havok::integrate_phase::Fallback::Listener);
+        assert!(read().phase.fallbacks[3].count > after.phase.fallbacks[3].count);
         assert_eq!(islands_method(json!({"reset": true})).unwrap_err().code, code::INVALID_PARAMS);
     }
 

@@ -1,7 +1,7 @@
 # The Havok step: entries, writes and classes
 
-Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1), the island solve (slice 2) and the island integrate's take-over arm (slice 3's first entry; below, "The island solve" and "The island integrate"). The step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
-Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/rewrites/sim-havok/src/island_solve.rs` and `crates/rewrites/engine/src/sim_physics/island_solve.rs` (the island solve), `crates/rewrites/sim-havok/src/island_integrate.rs`, `crates/rewrites/sim-havok/src/motion_solve.rs` (`forces`, `pose`) and `crates/rewrites/engine/src/sim_physics/island_integrate.rs` (the island integrate), `crates/rewrites/engine/tests/sim_havok_differential.rs` (their differential tests), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
+Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1), the island solve (slice 2) and slice 3's take-over arms for the island integrate, the deactivation test and the integrate phase (below, "The island solve"; [havok-integrate.md](havok-integrate.md)). The step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
+Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/rewrites/sim-havok/src/island_solve.rs` and `crates/rewrites/engine/src/sim_physics/island_solve.rs` (the island solve), `crates/rewrites/sim-havok/src/motion_solve.rs` (`forces`, `pose`, shared with the island integrate), `crates/rewrites/engine/tests/sim_havok_differential.rs` (their differential tests), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 This is the contract page for the world step `0x311100` and everything
@@ -30,7 +30,7 @@ else calls each node and what each writes that persists (**E**).
 | `0x0030fcb0` collide | none | `W+0x150..+0x1a7` (step copy and derived terms), `W+0x12c` lock, pending operations (`0x0030f6b0`), the island loop below, the listener walks `0x003188c0` |
 | `0x00317d30` island collide | none | via `0x003175e0` (AABBs, broadphase, agent creation and destruction `0x003173f0`, `I+0x30 = 1`), the pair walk `0x00317950`/`0x00317c00`, Halo's `0x00278e60`/`0x00278e80` (`I+0xae`, `[0x0055e4fc]`) |
 | `0x0030fef0` integrate | none | the reverse island loop, deactivation `0x0030cc60`, island split `0x0030e720`, `0x0030fc30`, `0x0030cda0`, `0x0030d400` over `W+0x114` |
-| `0x00316b30` deactivation test | none | the island's deactivator state (below, "Phantoms and deactivators") |
+| `0x00316b30` deactivation test | none | the island's timers and counter, the deactivators' references ([havok-integrate.md](havok-integrate.md#the-deactivation-test)) |
 | `0x00316a20` island integrate | none | the actions' `vt[+0x14]` (none exist, below), the motions' `vt[+0x08]`/`vt[+0x04]` when `I+0x5c == 0`, else `0x0031c100`; its caller then stores `I+0x30 = 0` (`0x0031000b`) |
 | `0x0031c100` island solve (cdecl, nine arguments) | none | `motion+0x08` per entity, `W+0x190`/`+0x194`, the contact points' impulse and velocity words, the motions' velocities and transforms via `vt[+0x10]`, the solver buffer's busy byte |
 | `0x0030cc60` island deactivate | `0x001c50c0` (Halo, from `0x001c2a10`), `0x0030ce20` | island arrays and the entities' island pointers |
@@ -440,8 +440,13 @@ pass, the exports and the busy byte. An island past the buffer's end
 takes its LIFO block as retail does (`island_solve::place`): inline from
 the descriptor, or through `0x002d7020` and `0x002d7090` as `sim_havok::mem`
 models them, the scratch then covering the buffer and the block and the
-decode following the rows into the block. Persistent words only are
-journalled; the buffer's and the block's contents stay in Rust. The
+decode following the rows into the block. The scratch records every word
+it is given; after the solve it takes the solved accumulators, each row's
+corrected right-hand side (`Decoded::row_words`) and the impulses, and
+every recorded word goes to the journal before the block is given back,
+so the buffer and the block hold what retail's solve leaves there. Words
+no stage writes keep the guest's older bytes, as in retail; a later
+island's fixed and leading accumulators read their flag from them. The
 decline is decided before any write, so the guest runs from untouched
 memory. An island falls back to the lifted entry, counted by reason
 (`island_solve::fallbacks`, read with `havok.islands`), when its block would come from a route the
@@ -459,57 +464,10 @@ declines.
 
 ## The island integrate
 
-`0x00316a20`, thiscall on the island, one stack argument (the step input
-`W+0x140`), `ret 4`; ecx is pushed and popped, so ebx, ebp, esi, edi and
-ecx are as on entry. Its one caller `0x0030fef0` stores `I+0x30 = 0` and
-loads eax from `W+0xa0` right after (`0x0031000b..0x0031000f`), and ecx
-and edx are written before any read on every path out of it, so eax, edx
-and the flags it leaves are dead. **E**
-
-In order (**E**):
-
-1. The actions `I+0x4c` (count `I+0x50`), each `vt[+0x14]` with
-   `W+0x150`. None exist (above, "Actions").
-2. With constraints (`I+0x5c != 0`): `0x0031c100` with step `input+0x10`,
-   parameters `input+0x20`, pair words `input+0x50`, gravity
-   `[I+0x20]+0xe0`, the island, `I+0x3c`, `I+0x40`, `I+0x58`, `I+0x5c`.
-3. Without: a timer record (monitor on only), then for each entity from
-   `I+0x40 - 1` down to 0, the array, the motion and the world read again,
-   `vt[+0x08]` (step, gravity) then `vt[+0x04]` (step), then a timer
-   record.
-
-The two unconstrained virtuals of each type, instruction for instruction
-(**E**):
-
-| Types | Forces `vt[+0x08]` | Pose `vt[+0x04]` |
-|---|---|---|
-| 2, 3 | `0x00319cd0`: the first half of `0x00319df0` (force `+0xc0`, torque `+0xd0`, both zeroed) | `0x00319f70`: velocities saved to `+0xe0`, `+0xf0`, then the pose step, the local centre taken off through the new basis |
-| 4, 5 | `0x0031b1c0`: the first half of `0x0031b300` (force `+0xf0`, torque `+0x100` while its `w` is nonzero) | `0x0031b060`: velocities saved to `+0xc0`, `+0xd0`, then the same pose step |
-| 6 | none | `0x003195d0`: the pose step, the local centre taken off through the quaternion (`0x002db7a0`) |
-| 7 | none | none |
-
-The pose step is the exports' (above, "Solve and export"): the previous
-centre with the swept radius, the centre, the orientation by its rate and
-one Newton step, the basis, the translation, and `w` of the centre set
-to 1. So types 2 and 3 take the translation through the basis here, where
-type 3's export takes it through the quaternion.
-
-**The port.** `sim_havok::island_integrate::integrate` runs the entry on
-a write journal: the solve stage of `island_solve`, or `motion_solve`'s
-`forces` and `pose` per entity, which share their float code with
-`accumulate` and `export`. The engine's
-`sim_physics/island_integrate.rs` captures the journal, the callee-saved
-registers, ecx and esp, and `parity`'s `physics.island.integrate` arm
-answers with it once proven (sim-rewrite-havok.md §9.5). A call declines
-to the guest, counted by reason (`island_integrate::fallbacks`, read with
-`havok.islands`), when the island holds actions (`action`), a motion's
-unconstrained slots are not one of the four pairs above (`motion`), the
-x87 stack is not empty, rounding is not nearest or a float would trap
-or load non-finite (`float`), the solve declines (`solve`, its own
-reason counted by the solve when the guest calls it), the monitor stream
-is on (`monitor`), a word is unreadable or a store unwritable or two
-stores share physical bytes (`memory`), or an audited return cannot be
-observed (`unobserved`).
+`0x00316a20`, its unconstrained virtuals and its port are in
+[havok-integrate.md](havok-integrate.md#the-island-integrate), with the
+integrate phase `0x0030fef0` and the deactivation test `0x00316b30` that
+run it.
 
 ## Floats
 
@@ -605,12 +563,6 @@ where physics differs.
 - Which motion types, joint classes, agents and shapes a multiplayer
   match and a co-op campaign level build: `havok.bodies`, `havok.agents`
   and `havok.contacts` in a run.
-- The guest's solver buffer after a solve the Rust answered: the buffer
-  keeps the bytes the last guest-run solve left, so a later island's
-  type 7 or leading accumulator reads its flag byte `+0x0c` from those,
-  where retail reads the previous island's. Whether any persistent word
-  can depend on it (a signed zero through a fixed body's rows) is open;
-  the run-parity digest is the check.
 - That the per-island listener arrays stay empty, and that `W+0x6c` and
   `W+0x78` are not read in the step.
 - The meaning of the save and revert flag bits.

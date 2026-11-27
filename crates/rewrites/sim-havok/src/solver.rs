@@ -544,11 +544,13 @@ pub struct Output {
 }
 
 /// A decoded stream: body `i` is the accumulator at `accumulators[i]`,
-/// command `i` writes back through `outputs[i]`.
+/// row `i` lies at `rows[i]`, command `i` writes back through
+/// `outputs[i]`.
 #[derive(Clone)]
 pub struct Decoded {
     pub stream: Stream,
     pub accumulators: Vec<u32>,
+    pub rows: Vec<u32>,
     pub outputs: Vec<Output>,
 }
 
@@ -576,7 +578,7 @@ pub struct Areas {
 /// block's start), an accumulator outside the island, or more rows than
 /// zeroed impulse words.
 pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<Decoded> {
-    let mut d = Decoded { stream: Stream::default(), accumulators: Vec::new(), outputs: Vec::new() };
+    let mut d = Decoded { stream: Stream::default(), accumulators: Vec::new(), rows: Vec::new(), outputs: Vec::new() };
     let body = |d: &mut Decoded, addr: u32| -> Option<usize> {
         let off = addr.checked_sub(areas.accumulators)?;
         if off % ACCUMULATOR_BYTES != 0 || off / ACCUMULATOR_BYTES > areas.count {
@@ -676,6 +678,7 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
         }
         let first_row = d.stream.rows.len();
         for i in 0..linear + angular {
+            d.rows.push(row_at);
             let row = if i < linear {
                 let r = Row {
                     normal: Some(s.vector(row_at)?),
@@ -716,6 +719,20 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
 }
 
 impl Decoded {
+    /// The words the solve leaves in the buffer for each row: the
+    /// corrected right-hand side (`w` of a linear row's normal, of an
+    /// angular row's second vector) and its impulse, row `i` at
+    /// `impulses + 4 i`.
+    pub fn row_words(&self, solved: &Stream, impulses: u32) -> Vec<(u32, u32)> {
+        let mut words = Vec::with_capacity(2 * self.rows.len());
+        for (i, (row, &at)) in solved.rows.iter().zip(&self.rows).enumerate() {
+            let rhs_at = at.wrapping_add(if row.normal.is_some() { 0x0c } else { 0x1c });
+            words.push((rhs_at, row.rhs()));
+            words.push((impulses.wrapping_add(4 * i as u32), row.impulse));
+        }
+        words
+    }
+
     /// The write-back pass: `(address, word)` in store order.
     pub fn writeback(&self, solved: &Stream, export_scale: u32, control: u16) -> Vec<(u32, u32)> {
         let mut writes = Vec::new();

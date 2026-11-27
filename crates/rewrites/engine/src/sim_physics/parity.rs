@@ -21,6 +21,11 @@
 //! unconstrained virtuals, run on a journal (`island_integrate`). Its
 //! declines are also counted by reason
 //! (`sim_havok::island_integrate::fallbacks`, read with `havok.islands`).
+//! The deactivation test's arm (`0x316b30`, `deactivation`) and the
+//! integrate phase's (`0x30fef0`, `integrate_phase`), whose prediction is
+//! every island's test and integrate in the phase's order, take over the
+//! same way, each with its own reasons (`sim_havok::deactivation`,
+//! `sim_havok::integrate_phase`).
 //!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
@@ -29,7 +34,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, island_integrate, motion};
+use super::{broadphase, deactivation, integrate_phase, island_integrate, motion};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -110,8 +115,11 @@ pub static MOTION_POSE: Arm = Arm::new("physics.motion.pose");
 pub static MOTION_FORCES: Arm = Arm::new("physics.motion.forces");
 pub static MOPP_BOX: Arm = Arm::new("physics.mopp.box");
 pub static ISLAND_INTEGRATE: Arm = Arm::new("physics.island.integrate");
+pub static DEACTIVATION: Arm = Arm::new("physics.island.deactivation");
+pub static INTEGRATE_PHASE: Arm = Arm::new("physics.integrate");
 
-static ARMS: [&Arm; 5] = [&BROADPHASE, &MOTION_POSE, &MOTION_FORCES, &MOPP_BOX, &ISLAND_INTEGRATE];
+static ARMS: [&Arm; 7] =
+    [&BROADPHASE, &MOTION_POSE, &MOTION_FORCES, &MOPP_BOX, &ISLAND_INTEGRATE, &DEACTIVATION, &INTEGRATE_PHASE];
 
 pub(super) fn declined(arm: &Arm) {
     arm.declined.fetch_add(1, Ordering::Relaxed);
@@ -141,7 +149,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 5] {
+pub fn status() -> [(&'static str, u64, u64, u64); 7] {
     ARMS.map(|a| {
         (
             a.name,
@@ -164,9 +172,10 @@ pub struct Takeover {
 }
 
 /// The take-over state of the arms that answer calls: the broadphase
-/// batch update's and the island integrate's.
-pub fn takeover() -> [Takeover; 2] {
-    [BROADPHASE.take_over(), ISLAND_INTEGRATE.take_over()]
+/// batch update's, the island integrate's, the deactivation test's and the
+/// integrate phase's.
+pub fn takeover() -> [Takeover; 4] {
+    [BROADPHASE.take_over(), ISLAND_INTEGRATE.take_over(), DEACTIVATION.take_over(), INTEGRATE_PHASE.take_over()]
 }
 
 /// At each map load, before the match's first step: every arm proves
@@ -265,6 +274,68 @@ pub fn integrate_compare(prediction: &island_integrate::Prediction, cpu: &CpuAbi
 pub fn integrate_uncompared() {
     sim_havok::island_integrate::count(sim_havok::island_integrate::Fallback::Unobserved);
     uncompared(&ISLAND_INTEGRATE);
+}
+
+/// The deactivation test's arm, at its entry: as [`integrate_enter`].
+pub fn deactivation_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<deactivation::Prediction> {
+    use sim_havok::deactivation as model;
+    enter(
+        &DEACTIVATION,
+        cpu,
+        guest,
+        |cpu, guest| deactivation::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            let applied = p.apply(cpu, guest);
+            if !applied {
+                model::count(model::Fallback::Memory);
+            }
+            applied
+        },
+    )
+}
+
+/// At the guest's return from an audited deactivation test.
+pub fn deactivation_compare(prediction: &deactivation::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&DEACTIVATION, prediction.matches(cpu, guest));
+}
+
+/// An audited deactivation test whose return could not be observed.
+pub fn deactivation_uncompared() {
+    sim_havok::deactivation::count(sim_havok::deactivation::Fallback::Unobserved);
+    uncompared(&DEACTIVATION);
+}
+
+/// The integrate phase's arm, at its entry: as [`integrate_enter`]. Each
+/// island an answered phase solved in Rust is counted in `havok.islands`.
+pub fn phase_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<integrate_phase::Prediction> {
+    use sim_havok::{integrate_phase as model, island_solve};
+    enter(
+        &INTEGRATE_PHASE,
+        cpu,
+        guest,
+        |cpu, guest| integrate_phase::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            if !p.apply(cpu, guest) {
+                model::count(model::Fallback::Memory);
+                return false;
+            }
+            for _ in 0..p.outcome.solved {
+                island_solve::count_solved();
+            }
+            true
+        },
+    )
+}
+
+/// At the guest's return from an audited integrate phase.
+pub fn phase_compare(prediction: &integrate_phase::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&INTEGRATE_PHASE, prediction.matches(cpu, guest));
+}
+
+/// An audited integrate phase whose return could not be observed.
+pub fn phase_uncompared() {
+    sim_havok::integrate_phase::count(sim_havok::integrate_phase::Fallback::Unobserved);
+    uncompared(&INTEGRATE_PHASE);
 }
 
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
@@ -402,9 +473,20 @@ mod tests {
         let names = status().map(|(name, ..)| name);
         assert_eq!(
             names,
-            ["physics.broadphase", "physics.motion.pose", "physics.motion.forces", "physics.mopp.box", "physics.island.integrate"]
+            [
+                "physics.broadphase",
+                "physics.motion.pose",
+                "physics.motion.forces",
+                "physics.mopp.box",
+                "physics.island.integrate",
+                "physics.island.deactivation",
+                "physics.integrate"
+            ]
         );
-        assert_eq!(takeover().map(|t| t.name), ["physics.broadphase", "physics.island.integrate"]);
+        assert_eq!(
+            takeover().map(|t| t.name),
+            ["physics.broadphase", "physics.island.integrate", "physics.island.deactivation", "physics.integrate"]
+        );
     }
 
     /// The arm's whole life on one synthetic arm: the guest answers below
