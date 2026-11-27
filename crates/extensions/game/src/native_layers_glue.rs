@@ -1302,7 +1302,7 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
             return Err("device");
         }
-        let (stencil, restore) = {
+        let (device_stencil, restore) = {
             let read = ReadMemory(&*mem);
             if !viewport_clip(&d, &read) {
                 return Err("viewport");
@@ -1312,27 +1312,58 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             if restore_moves_outside(&restore, &|slot| d.render_state(&read, slot)) {
                 return Err("object_restore");
             }
-            (layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil, restore)
+            (device_stencil, restore)
         };
+        let unmarked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil;
         let (mut free, mut outcomes, mut left) = (HashMap::new(), BTreeMap::new(), Left::default());
-        let Some((models, mut planned, _)) =
-            plan_objects(&d, &*mem, L, caller, &scene, pass, &[item], &stencil, Some(&restore), &mut free, &mut outcomes, &mut left)
+        let Some((models, mut planned, texaccum)) =
+            plan_objects(&d, &*mem, L, caller, &scene, pass, &[item], &unmarked, Some(&restore), &mut free, &mut outcomes, &mut left)
         else {
             return Err(left.layer.unwrap_or("object_models"));
         };
         let Some(planned) = planned.remove(&item.slot) else {
             return Err(left.items.get(&item.slot).copied().unwrap_or("object_plan"));
         };
-        if planned.marked {
-            return Err("object_stencil");
+        // A stencil-marking item draws under the mode-1 stencil, which the
+        // device must hold when the item's own draw would not set it
+        // (`layer_pass::item_stencil`).
+        let stencil = if planned.marked {
+            let marked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, true);
+            if marked.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1(&d, &*mem) {
+                return Err("object_stencil");
+            }
+            marked.stencil
+        } else {
+            unmarked
+        };
+        // The item's `0x0003bea0` clears the shader cache the first time
+        // the frame calls it (`TARGET_COPIED`): skipping it is neutral only
+        // with nothing cached, where the clear writes nothing. With a
+        // structure parameter block the call also copies the bound colour
+        // into the refraction target, which the pass does before its first
+        // draw (`snapshot_gpu::Snapshots::into_target`).
+        let mut slots = Vec::new();
+        let mut copy_at = None;
+        if planned.sets_copied {
+            let cached = mem.u32(native_render::sorted_entries::CACHED_IMPLEMENTATION).map_err(|_| "cached_state")?
+                | mem.u32(native_render::sorted_entries::CACHED_DESCRIPTOR).map_err(|_| "cached_state")?;
+            if cached != 0 {
+                return Err("object_target");
+            }
         }
-        if planned.copies || planned.sets_copied {
-            return Err("object_target");
+        if planned.copies {
+            let colour = planned.draws.iter().any(|(_, draw)| draw.view || draw.scene_copy);
+            if let Some(why) = copy_beside(false, colour) {
+                return Err(why);
+            }
+            let header = crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET).ok_or("object_shader_flag_target")?;
+            slots.push(Some(d3d::ExternalSlot { header, written: true }));
+            copy_at = Some(0);
         }
-        if planned.draws.iter().any(|(_, draw)| draw.view || draw.scene_copy || draw.texaccum) {
-            return Err("object_view");
-        }
+        let sets_copied = planned.sets_copied;
         let draws = planned.draws;
+        // Bound only when a surrendered draw samples it.
+        let texaccum = texaccum.filter(|_| draws.iter().any(|(_, draw)| draw.texaccum));
         let warm = d.external_pipeline_target(&*mem).is_some_and(|(device, color, depth)| {
             models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &draws))) == Some(true)
         });
@@ -1340,11 +1371,11 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             return Err("warming");
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: draws.len(), slots: Vec::new() };
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: draws.len(), slots };
         let pass = Box::new(LayerViewPass {
             ready: None,
             objects: Some(models),
-            texaccum: None,
+            texaccum,
             layer: L,
             runs: vec![LayerRun::Objects(draws)],
             samples: LayerSamples::new(),
@@ -1354,10 +1385,19 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             writes_depth: false,
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
-            copy_at: None,
+            copy_at,
         });
-        let reservation =
-            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten().ok_or("reservation")?;
+        // A pass writing the refraction target binds it as a slot, which no
+        // held packet carries.
+        let prepared = if copy_at.is_some() {
+            d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
+        } else {
+            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
+        };
+        let reservation = prepared.ok().flatten().ok_or("reservation")?;
+        if sets_copied && mem.set_u8(TARGET_COPIED, 1).is_err() {
+            return Err("object_target");
+        }
         reservation.commit();
         Ok(())
     }
