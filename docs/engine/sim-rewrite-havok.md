@@ -3,7 +3,7 @@
 Status: phase 5 landing, 2026-11-25. Built, with unit tests only: the
 `sim-havok` kernels (motion, support, welding, the sweep, the solver, the
 pool, structure polygons, the accumulators) at
-`crates/rewrites/sim-havok`; the engine adapters — the oracle ports'
+`crates/rewrites/sim-havok`; the engine adapters - the oracle ports'
 fast paths (`sim_physics/support.rs`, `weld.rs`), the world entries and
 capture arms under `impl.sim.native.physics`
 (`crates/rewrites/engine/src/sim_physics/{world,broadphase,motion,parity}.rs`),

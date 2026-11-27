@@ -47,9 +47,9 @@ builds every record in Rust, and the scatter writes what `1d8f50` writes.
    transform (`skeleton::compose`, the same `142a60` the skeleton walk
    uses, of the node's matrix and the local one), and the instance's
    trailing float.
-3. **Scatter** (`scatter`). The `0x70`-byte records — node `u16` at
+3. **Scatter** (`scatter`). The `0x70`-byte records - node `u16` at
    `+0`, local matrix `+4`, world matrix `+0x38`, the trailing float at
-   `+0x6c` — and the count in `eax`. The execution continues at
+   `+0x6c` - and the count in `eax`. The execution continues at
    `b8ded`, the instruction after the guest call, with the stack at the
    port's own frame: the six arguments the guest pushes and `1d8f50`'s
    frame are dead bytes below `esp`, written by neither side of the
@@ -101,7 +101,7 @@ same lifted code), when:
 
 - MXCSR is not masked, round-to-nearest and PE-sticky (`det::fast_env`),
   or any operand of any operation is off the fast path (`Float`);
-- a guest read faults — an unmapped instance pointer or node window
+- a guest read faults - an unmapped instance pointer or node window
   (`Fault`; the window is read eagerly, so a read the guest would not
   make can only decline, never change a result);
 - the model has more groups than the port's scan bound (256) and none
@@ -121,20 +121,20 @@ arm64 and x86-64 and MXCSR does not change.
   `f32`, the identity branch, the fill against the leaves called
   instance by instance, the mirror negation, the record layout.
 - `markers/tests.rs` (engine, no image): the port against the kernel
-  called by hand on the same synthetic world — records, count,
-  continuation and registers — plus every decline leaving the port
+  called by hand on the same synthetic world - records, count,
+  continuation and registers - plus every decline leaving the port
   exactly as it is with the kernel off, and the switch.
 - `marker_differential.rs` (`H2_XBE`, its own test binary because it
   flips the kernel's process-global switch on): the port, with the
-  kernel inside, against the lifted `b8d30` with nothing stubbed —
+  kernel inside, against the lifted `b8d30` with nothing stubbed,
   `1d8f00`, `1d8f50`, `141e10` and `142a60` all run on the IR
   interpreter. Final guest state outside the dead stack, the
   callee-saved registers, `esp`, the next pc, MXCSR and the x87 words,
   on host lanes and the scalar loop, over synthetic groups, instances,
   matrices, mirrors, capacities and names.
 - `tests/sim_native_differential.rs` (`marker_transforms`) keeps the
-  port itself — including the handoff it makes when the kernel declines
-  — equal to the lifted entry with `1d8f50` stubbed at the call
+  port itself - including the handoff it makes when the kernel declines
+  - equal to the lifted entry with `1d8f50` stubbed at the call
   boundary.
 
 ## Not verified
