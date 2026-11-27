@@ -444,6 +444,8 @@ pub enum Owner {
     Cluster(u32),
     /// An instanced-geometry placement, by index.
     Placement(u32),
+    /// An object, by handle: its model's passes, lit as the object is.
+    Object(u32),
 }
 
 /// One entry the answer draws natively: a BSP cluster's or a placement's
@@ -452,6 +454,8 @@ pub enum Owner {
 pub struct Request {
     pub shader: u32,
     pub owner: Owner,
+    /// The entry's render record (what the scene's item keys on).
+    pub record: u16,
     pub part: u8,
     pub passes: u32,
 }
@@ -506,10 +510,7 @@ pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
     let owner = match entry.source {
         Source::Cluster(c) => Owner::Cluster(u32::from(c)),
         Source::Placement(p) => Owner::Placement(u32::from(p)),
-        Source::Object(_) => {
-            kept("object");
-            return false;
-        }
+        Source::Object(handle) => Owner::Object(handle),
     };
     let Some(argument) = data.checked_add(4).and_then(|a| m.u32(a).ok()) else { return false };
     let passes = match passes(&*m, entry.shader) {
@@ -537,7 +538,7 @@ pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
             }
         }
     }
-    let request = Request { shader: entry.shader, owner, part: entry.part, passes };
+    let request = Request { shader: entry.shader, owner, record: entry.record, part: entry.part, passes };
     match host.draw(m, &request) {
         Ok(()) => {
             count("answer_geometry_draw", 1);
