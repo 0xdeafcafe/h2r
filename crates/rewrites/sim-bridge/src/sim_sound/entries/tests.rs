@@ -2,7 +2,8 @@ use super::*;
 use engine::entry::{self, EntryFuture, Regs};
 use engine::testing::FakeGuest;
 use hooks::{Base, Registry, Switches};
-use sim_sound::instances::{Flat, Permutation, PitchRange, Request, SoundTag, SourceParams, TagTable};
+use sim_sound::instances::{Flat, Permutation, PitchRange, Request, Scale, SoundTag, SourceParams, TagTable};
+use sim_sound::looping::{LoopTag, Segment, TrackTag};
 use sim_sound::owners::{NullOwners, Owner};
 
 const STACK: u32 = 0x0030_0000;
@@ -300,17 +301,19 @@ fn a_stop_fades_the_sound_and_stop_all_clears_the_table() {
 #[test]
 fn a_refused_entry_is_counted_by_its_address() {
     let t = table(Arc::new(Flat(10.0)));
-    let r = run_body(&t, Body::LoopUpdate, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
-    assert_eq!(r.result, Ok(Ret::new(0, 32)));
+    let r = run_body(&t, Body::StartsUpdate, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
     let r = run_body(&t, Body::StartLayerNew, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
     assert_eq!(r.result, Ok(Ret::new(NONE, 4)));
     let c = lock(&t).counters();
     assert_eq!(c["sound.refused_entry"], 2);
-    assert_eq!(c["sound.refused_entry.0x21a250"], 1);
+    assert_eq!(c["sound.refused_entry.0x21d390"], 1);
     for e in ENTRIES {
         assert!(!(e.body.refusal().is_some() && e.body.calls_original()), "{}", e.point.name);
     }
-    assert_eq!(Body::HistoryLast.refusal(), None);
+    for body in [Body::HistoryLast, Body::LoopUpdate, Body::LoopSource, Body::Ambience] {
+        assert_eq!(body.refusal(), None, "{body:?}");
+    }
 }
 
 #[test]
@@ -350,4 +353,98 @@ fn the_range_word_is_read_only_for_a_class_with_flag_bit_5() {
     let r = run_body(&t, Body::HistoryLast, stack, regs(), |_, _| panic!("no guest call"));
     assert_eq!(r.result, Ok(Ret::new(12, 8)));
     let _ = tag;
+}
+
+const LOOP_TAG: TagIndex = TagIndex(0xe200_0002);
+const SOURCE: u32 = RECORD + 0x400;
+
+/// One track whose loop segment is [`TAG`].
+fn loop_table() -> Shared {
+    let mut t = tags();
+    t.scales.push(Scale { pitch: [0, 0] });
+    let mut segments = [None; Segment::COUNT];
+    segments[usize::from(Segment::LOOP.0)] = Some(TAG);
+    let track = TrackTag { flags: 0, segments, fade_in: 0.0, crossfade: 0.0, fade_out: 0.1 };
+    t.loops.insert(LOOP_TAG, LoopTag { tracks: vec![track], details: vec![] });
+    Arc::new(Mutex::new(Table::new(Arc::new(t), Arc::new(Flat(10.0)))))
+}
+
+/// `0x21a250`'s eight arguments on the stack, the source record at [`SOURCE`].
+fn loop_call(tick: u32, tag: TagIndex, owner: u32, mode: u32, flags: u32, fade: f32, word5: u32) -> FakeGuest {
+    let mut g = guest(tick);
+    g.put_u32(SOURCE + 20, word5);
+    for (i, word) in [tag.0, 0, owner, 0, SOURCE, mode, flags, fade.to_bits()].into_iter().enumerate() {
+        g.put_u32(STACK + 4 + 4 * i as u32, word);
+    }
+    g
+}
+
+fn loop_update(t: &Shared, g: FakeGuest) -> Ret {
+    run_body(t, Body::LoopUpdate, g, regs(), |_, _| panic!("the loop update calls nothing")).result.unwrap()
+}
+
+#[test]
+fn a_loop_update_starts_keeps_and_stops_the_loop_of_an_owner() {
+    let t = loop_table();
+    assert_eq!(loop_update(&t, loop_call(0, LOOP_TAG, 0x55, 0, 0, 0.0, 1)), Ret::new(0, 32), "started");
+    let h = lock(&t).sounds.loop_find(LOOP_TAG, 0x55).expect("the owner's loop");
+    let primary = lock(&t).sounds.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    assert_eq!(lock(&t).sounds.get(primary).unwrap().tag, TAG);
+    // Kept: the same loop, its new source.
+    assert_eq!(loop_update(&t, loop_call(1, LOOP_TAG, 0x55, 1, 0, 0.0, 2)), Ret::new(0, 32));
+    assert_eq!(lock(&t).sounds.loops().len(), 1);
+    assert_eq!(lock(&t).sounds.loops().get(h).unwrap().source.0[5], 2);
+    // Another owner has none to stop.
+    assert_eq!(loop_update(&t, loop_call(1, LOOP_TAG, 0x56, 2, 0, 0.0, 2)), Ret::new(1, 32));
+    // The stop fades it over the given fade; a second stop does nothing.
+    assert_eq!(loop_update(&t, loop_call(2, LOOP_TAG, 0x55, 2, 0, 0.5, 2)), Ret::new(0, 32));
+    assert!(lock(&t).sounds.loops().get(h).unwrap().stopping);
+    assert!(matches!(lock(&t).sounds.get(primary).unwrap().phase, sim_sound::owners::Phase::Fading { since: 2, until: 17 }));
+    assert_eq!(loop_update(&t, loop_call(3, LOOP_TAG, 0x55, 2, 0, 0.5, 2)), Ret::new(0, 32));
+    // No tag: done, and the source is not read.
+    let mut g = loop_call(3, TagIndex(NONE), 0x55, 0, 0, 0.0, 2);
+    g.put_u32(STACK + 4 + 16, 0x0bad_0000);
+    assert_eq!(loop_update(&t, g), Ret::new(1, 32));
+    assert_eq!(lock(&t).ledger.refused_unreadable, 0);
+}
+
+#[test]
+fn a_shared_loop_with_a_spatial_source_is_one_for_every_owner() {
+    let t = loop_table();
+    let def = TIME + 0x3600;
+    let with_def = |mut g: FakeGuest| {
+        g.put_u32(points::TAG_ENTRIES.base, TIME + 0x3500).put_u32(TIME + 0x3500 + 2 * 16 + 8, def).put_u8(def, 0x80);
+        g.put_u32(SOURCE, 1 << 24);
+        g
+    };
+    for owner in [1, 2] {
+        assert_eq!(loop_update(&t, with_def(loop_call(0, LOOP_TAG, owner, 0, 0, 0.0, 0))), Ret::new(0, 32));
+    }
+    let t = lock(&t);
+    assert_eq!(t.sounds.loops().len(), 1);
+    assert!(t.sounds.loop_find(LOOP_TAG, LOOP_TAG.0 | 0x6000).is_some());
+}
+
+#[test]
+fn a_stop_frees_a_loop_that_holds_no_sound_at_once() {
+    let t = loop_table();
+    assert_eq!(loop_update(&t, loop_call(0, LOOP_TAG, 0x55, 0, 0, 0.0, 0)), Ret::new(0, 32));
+    let h = lock(&t).sounds.loop_find(LOOP_TAG, 0x55).unwrap();
+    let primary = lock(&t).sounds.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    lock(&t).sounds.finish(primary, Reason::PlayedOut, 1, &mut NullOwners);
+    assert_eq!(loop_update(&t, loop_call(1, LOOP_TAG, 0x55, 2, 0, 0.0, 0)), Ret::new(1, 32));
+    assert!(lock(&t).sounds.loops().is_empty());
+}
+
+#[test]
+fn the_ambience_runs_the_guests_blend_with_its_candidates() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut called = Vec::new();
+    let r = run_body(&t, Body::Ambience, guest(0), Regs { eax: RECORD, ..regs() }, |call, _| {
+        called.push((call.target, call.eax));
+        Regs::default()
+    });
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert_eq!(called, [(0x0012_6660, Some(RECORD))]);
+    assert_eq!(lock(&t).ledger.entry_guest_calls, 1);
 }
