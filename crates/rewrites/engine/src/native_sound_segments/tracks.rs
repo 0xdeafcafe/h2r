@@ -27,7 +27,14 @@ pub(super) fn run(cx: &mut Cx<'_>, mut pc: u32) -> Result<Next> {
                 c.ebx = frame::slot(c, g, 0x64)?;
                 c.ecx = byte(c.ecx, g.u8(at(c.eax, 0x7f))?);
                 g.set_u8(at(c.ebp, 0x53), c.ecx as u8)?;
-                if RequestMode(c.ebx).stopping() || g.u8(at(c.ebp, 0x50))? & 8 != 0 {
+                // `cmp ebx, 2`, and `test byte [ebp + 0x50], 8` when it is not equal.
+                arithmetic(c, c.ebx, 2, true);
+                let stopping = RequestMode(c.ebx).stopping();
+                if !stopping {
+                    let flags = g.u8(at(c.ebp, 0x50))? & 8;
+                    logic(c, flags.into(), 0x80);
+                }
+                if stopping || g.u8(at(c.ebp, 0x50))? & 8 != 0 {
                     let voices = g.u8(at(c.ebp, 0x51))?;
                     c.eax = byte(c.eax, voices);
                     logic(c, voices.into(), 0x80);
