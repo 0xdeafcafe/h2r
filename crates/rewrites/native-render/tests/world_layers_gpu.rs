@@ -785,6 +785,7 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
             .flat_map(|i| i.words).collect::<Vec<_>>().into(),
     };
     let pixel = 4 * (4 * SIZE as usize + 4);
+    let mut template = None;
     for value in [[0.0, 1.0, 0.0, 1.0], [1.0; 4]] {
         let rows = vec![value; 3];
         Arc::make_mut(&mut draw.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
@@ -799,6 +800,7 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
         assert!(after_compile(|| {
             let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None).unwrap();
             assert!(pass.replays_scene());
+            template = pass.sky_template();
             record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
         }));
         let pixels = backend.read_color(color).unwrap().0;
@@ -813,6 +815,27 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
         let pixels = backend.read_color(color).unwrap().0;
         assert_eq!(&pixels[pixel..pixel + 4], &[0, 0, 0, 255]);
     }
+
+    // The cut: the last admitted strip replayed with the guest's sky passed
+    // over, the made rows over its resident `SectionKey::Sky` entry.
+    use native_render::world_layers_gpu::SkyCut;
+    let template = template.expect("an admitted strip is a template");
+    let replay = |rows: Vec<[f32; 4]>| IndexedPass::sky_replay(&template, 1, rows, [[0.0; 4]; 3], SkyConstants::default());
+    assert_eq!(replay(vec![[0.5; 4]; 2]).err(), Some("transform"));
+    assert_eq!(replay(Vec::new()).err(), Some("transform"));
+    assert!(SkyCut::new(Vec::new()).is_none());
+    let item = SkyItem { model: 3, section: 1, part: 0, shader: 5, pass: 0, rows: vec![[1.0; 4]; 3], decompression: [[0.0; 4]; 3] };
+    let admitted = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item, SkyConstants::default(), None).unwrap();
+    assert!(SkyCut::new(vec![admitted]).is_none(), "only replays make a cut");
+    backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+    assert!(after_compile(|| {
+        let cut = SkyCut::new(vec![replay(vec![[0.0, 1.0, 0.0, 1.0]; 3]).unwrap()]).unwrap();
+        assert_eq!(cut.len(), 1);
+        assert!(cut.replays_scene());
+        record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(cut))
+    }));
+    let pixels = backend.read_color(color).unwrap().0;
+    assert_eq!(&pixels[pixel..pixel + 4], &[0, 255, 0, 255], "the replay draws the made rows");
 }
 
 /// A sky strip draws with its own cull mode, and each strip the stage

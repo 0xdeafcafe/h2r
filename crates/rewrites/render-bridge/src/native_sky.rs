@@ -7,7 +7,9 @@
 //! `sky_plan_admitted` (docs/graphics/retire-d3d.md, "By caller").
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use engine::memory::GuestMemory;
 
 pub use scene_extract::layout::sky::{Refusal, SkyItem};
 
@@ -164,22 +166,110 @@ pub fn count_geometry(outcome: &'static str) {
     *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
 }
 
-/// The cut's arm (docs/graphics/retire-d3d-r5.md, "Cutting the guest's
-/// sky setup"): the guest's sky setup may be cut for a BSP once
+/// The cut's arm (docs/graphics/retire-d3d-r5.md, "The sky's cut"): the
+/// guest's sky pass may be passed over for a BSP once
 /// [`CUT_TO_ANSWER`] strips in a row have had the made rows answering and
 /// the look and geometry from the load matching; one strip that does not
 /// stops it until the next BSP. Counted `sky_cut_<outcome>`: `waiting`,
 /// `ready`, `stopped`.
 pub const CUT_TO_ANSWER: u64 = 256;
 
+/// One sky pass in [`CUT_SAMPLE`] still runs the guest while the cut
+/// answers, and its strips are checked as before the cut.
+pub const CUT_SAMPLE: u64 = 64;
+
 #[derive(Debug, Default)]
 struct CutArm {
     generation: u64,
     run: u64,
     stopped: bool,
+    /// Sky passes (`0x0003ede0` calls) while ready, for the sample.
+    passes: u64,
 }
 
-static CUT: Mutex<CutArm> = Mutex::new(CutArm { generation: 0, run: 0, stopped: false });
+static CUT: Mutex<CutArm> = Mutex::new(CutArm { generation: 0, run: 0, stopped: false, passes: 0 });
+
+/// What draws the cut: the game's glue over the device and the strips the
+/// last guest pass admitted.
+pub trait CutHost: Send + Sync {
+    /// A guest sky pass starts: its admitted strips are kept for the cut.
+    fn begin_guest(&self, mem: &dyn GuestMemory);
+    /// The guest sky pass ended.
+    fn end_guest(&self);
+    /// Draws the kept strips as one native pass with the guest's sky
+    /// passed over; the number drawn, or why not (the guest runs).
+    fn draw(&self, mem: &mut dyn GuestMemory) -> Result<usize, &'static str>;
+}
+
+static CUT_HOST: Mutex<Option<Arc<dyn CutHost>>> = Mutex::new(None);
+
+/// Installs the cut's host (the game's glue). Without one the guest runs.
+pub fn set_cut_host(host: Arc<dyn CutHost>) {
+    *CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+/// Whether this sky pass is the cut's: the arm ready for `generation`
+/// and not the one pass in [`CUT_SAMPLE`] the guest keeps.
+pub fn cut_takes(generation: u64) -> bool {
+    let mut arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
+    if arm.generation != generation || arm.stopped || arm.run < CUT_TO_ANSWER {
+        return false;
+    }
+    arm.passes += 1;
+    arm.passes % CUT_SAMPLE != 0
+}
+
+/// Stops the arm for `generation` (a check the strips do not see, such
+/// as the view block, failed at a guest pass).
+pub fn cut_miss(generation: u64) {
+    let mut arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
+    if arm.generation == generation {
+        arm.stopped = true;
+    }
+    drop(arm);
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry("cut_stopped").or_default() += 1;
+}
+
+/// At `0x0003ede0`'s entry: `true` when the cut drew the sky and the
+/// guest's pass is passed over. Counted `sky_cut_drawn`, or
+/// `sky_cut_declined_<why>` (the guest runs and is checked).
+pub fn before_sky(mem: &mut dyn GuestMemory, generation: u64) -> bool {
+    let Some(host) = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return false };
+    let name = if cut_takes(generation) {
+        match host.draw(mem) {
+            Ok(_) => "cut_drawn",
+            Err(why) => cut_declined_name(why),
+        }
+    } else {
+        ""
+    };
+    if !name.is_empty() {
+        *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+    }
+    if name == "cut_drawn" {
+        return true;
+    }
+    host.begin_guest(mem);
+    false
+}
+
+/// At `0x0003ede0`'s return, when the guest ran.
+pub fn after_sky() {
+    if let Some(host) = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        host.end_guest();
+    }
+}
+
+fn cut_declined_name(why: &'static str) -> &'static str {
+    match why {
+        "unloaded" => "cut_declined_unloaded",
+        "strips" => "cut_declined_strips",
+        "rows" => "cut_declined_rows",
+        "constants" => "cut_declined_constants",
+        "device" => "cut_declined_device",
+        _ => "cut_declined_pass",
+    }
+}
 
 /// Records one strip (`all`: rows, look and geometry all the plan's) and
 /// answers whether the cut's arm is ready for this BSP.
@@ -278,6 +368,18 @@ mod tests {
         assert!(!cut_outcome(generation, true));
         assert!(!cut_outcome(generation + 1, true));
         assert_eq!(counter_name("cut_ready"), "sky_cut_ready");
+        // Ready, the cut takes all but one pass in CUT_SAMPLE; a miss
+        // returns every pass to the guest.
+        let ready = generation + 2;
+        assert!(!cut_takes(ready));
+        for _ in 0..CUT_TO_ANSWER {
+            cut_outcome(ready, true);
+        }
+        let taken = (0..CUT_SAMPLE).filter(|_| cut_takes(ready)).count() as u64;
+        assert_eq!(taken, CUT_SAMPLE - 1);
+        assert!(!cut_takes(ready + 1), "another BSP's");
+        cut_miss(ready);
+        assert!((0..CUT_SAMPLE).all(|_| !cut_takes(ready)));
     }
 
     /// The made rows answer after enough matching strips, are then sampled,

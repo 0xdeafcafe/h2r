@@ -1046,8 +1046,10 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Water compositing after the scene's layer 6.
     WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/native-water-fog.md";
-    /// Selects the current view's sky and draws its model.
-    RENDER_SKY @ 0x0003_ede0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Selects the current view's sky and draws its model. Reads no
+    /// arguments and returns with `ret` (`h2 disasm 0x3ede0`), so the
+    /// sky's cut passes over it (`render_bridge::native_sky::before_sky`).
+    RENDER_SKY @ 0x0003_ede0: [fn() ret 0]; "docs/graphics/native-renderer.md";
     /// Builds the viewport clear flags and issues the device clear.
     SCENE_CLEAR @ 0x0001_4b60: [opaque]; "docs/graphics/native-renderer.md";
     /// Selects the colour and depth targets, including cached selections.

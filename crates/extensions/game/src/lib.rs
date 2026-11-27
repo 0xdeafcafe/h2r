@@ -188,6 +188,8 @@ mod native_refusals;
 #[cfg(feature = "gpu")]
 pub mod native_residual_glue;
 #[cfg(feature = "gpu")]
+pub mod native_sky_cut_glue;
+#[cfg(feature = "gpu")]
 pub mod native_targets_glue;
 #[cfg(feature = "gpu")]
 pub mod native_transparents_glue;

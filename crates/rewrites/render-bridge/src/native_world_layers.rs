@@ -81,6 +81,25 @@ impl Feature for NativeWorldLayers {
                 LAYER.set(None)
             })
             .context_only();
+        // The sky's cut (docs/graphics/retire-d3d-r5.md, "The sky's cut"):
+        // once its arm is ready the native pass draws the sky and the
+        // guest's `0x0003ede0` is passed over, one pass in
+        // `native_sky::CUT_SAMPLE` still the guest's.
+        b.raw()
+            .before(&points::RENDER_SKY, "native_sky_cut", |c| {
+                let rt = std::sync::Arc::clone(c.ctx.runtime());
+                let cut = {
+                    let mut guest = rt.memory();
+                    crate::native_sky::before_sky(&mut *guest, crate::native_map_work::bsp_generation())
+                };
+                if cut { c.ret(0).map(hooks::Flow::Return) } else { Ok(hooks::Flow::Continue) }
+            })
+            .context_only()
+            .optional();
+        b.raw()
+            .observe_after(&points::RENDER_SKY, "native_sky_cut_end", |_| crate::native_sky::after_sky())
+            .context_only()
+            .optional();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
