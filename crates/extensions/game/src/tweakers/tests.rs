@@ -19,10 +19,15 @@ const RECORDS: u32 = 0x0005_0000;
 /// A list handler at `list` whose rows hold `words`, elements of
 /// `element` bytes.
 fn rows_with(g: &mut FakeGuest, list: u32, words: &[i16], element: i32) -> Vec<DatumHandle> {
+    rows_in(g, list, words, element, 11)
+}
+
+/// [`rows_with`] in an array of `max` datums.
+fn rows_in(g: &mut FakeGuest, list: u32, words: &[i16], element: i32, max: i32) -> Vec<DatumHandle> {
     g.map(NAME, 0x20).map(ARRAY, 0x1000);
     g.put_u32(list + LIST_ROWS, ARRAY);
     let rows = DatumArray::at(ARRAY);
-    rows.initialize_contiguous(g, NAME, 11, element, 0, 0)
+    rows.initialize_contiguous(g, NAME, max, element, 0, 0)
         .unwrap();
     rows.make_valid(g).unwrap();
     words
@@ -566,7 +571,8 @@ fn the_category_constructor_reserves_room_for_all_our_rows() {
     assert_eq!(list_capacity(16), 16);
     BUILDING_CATEGORY.set(false);
     assert_eq!(capacity, 10);
-    rows_with(&mut g, list, &GAME_TYPE_WORDS, 4);
+    // The list as retail builds it once the constructor reserved the room.
+    rows_in(&mut g, list, &GAME_TYPE_WORDS, 4, capacity as i32);
     let n = h1_options_row::insert_row_ordered(&mut g, list, with_row).unwrap();
     assert_eq!(n, capacity as usize);
     let words: Vec<i16> = (0..capacity as i32).map(|i| word_at(&g, list, i).unwrap()).collect();

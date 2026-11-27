@@ -527,9 +527,12 @@ pub fn spec_of(doc: &ScreenDoc, row: &Row, state: State) -> ScreenSpec {
             .enumerate()
             .map(|(i, card)| {
                 let mut r = RowSpec::action(&text_fit::line(&card.name, text_fit::ROW));
-                if let Some(screen) = row.opens(i) {
-                    r = r.press(Press::Open(screen));
-                }
+                // A card that names no screen is picked: A is the screen's
+                // action (a wave set's card picks the set and goes back).
+                r = r.press(match row.opens(i) {
+                    Some(screen) => Press::Open(screen),
+                    None => Press::Act,
+                });
                 match card.help.as_deref().filter(|h| !h.trim().is_empty()) {
                     Some(help) => r.describe(help),
                     None => r,

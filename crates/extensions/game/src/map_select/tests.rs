@@ -903,9 +903,16 @@ fn the_picker_opens_on_the_groups_and_each_group_lists_its_maps_the_same_way() {
         for (id, _) in rows {
             let name = &cat.all().find(|m| m.id == id).unwrap().name;
             assert_eq!(row_label(&cat, maps, id), None, "{name} reads its slot's own name");
+            // The built-in kit maps play Firefight themselves; the variant
+            // gives Siege on every map.
+            let firefight = crate::lobby_start::BUILTIN_KIT_MAPS
+                .iter()
+                .any(|b| b.eq_ignore_ascii_case(name))
+                .then_some("Firefight\n")
+                .unwrap_or_default();
             assert_eq!(
                 pane_text(&cat, maps, id, 0),
-                Some(format!("Supports\nSiege on {name} Keep")),
+                Some(format!("Supports\n{firefight}Siege on {name} Keep")),
                 "{group:?}"
             );
             assert!(opens_page(&cat, id), "{name}");

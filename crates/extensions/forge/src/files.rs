@@ -246,9 +246,14 @@ pub mod variants {
         format!("{package}.{stem}")
     }
 
-    /// Whether `file` is a packaged variant's handle, not a file stem.
+    /// Whether `file` is a packaged variant's handle, not a file stem:
+    /// `<package>.<stem>`, neither part empty and no path in it. A `../x`
+    /// is no handle but a bad file name, refused as one.
     fn is_handle(file: &str) -> bool {
-        file.contains('.')
+        file.split_once('.').is_some_and(|(package, stem)| {
+            !package.is_empty() && !stem.is_empty() && !file.contains(['/', '\\'])
+                && !file.contains("..")
+        })
     }
 
     static PACKAGED: std::sync::RwLock<Vec<Packaged>> = std::sync::RwLock::new(Vec::new());

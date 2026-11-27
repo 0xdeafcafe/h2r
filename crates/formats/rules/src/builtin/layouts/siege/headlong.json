@@ -232,44 +232,6 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 101
-       }
-      }
-     }
-    }
-   },
-   "id": 12
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 1,
-       "text": "siege_attack"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
-        "index": 102
-       }
-      }
-     }
-    }
-   },
-   "id": 13
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 1,
-       "text": "siege_attack"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
         "index": 103
        }
       }
@@ -308,25 +270,6 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 62
-       }
-      }
-     }
-    }
-   },
-   "id": 16
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 2,
-       "text": "siege_attack"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
         "index": 138
        }
       }
@@ -334,25 +277,6 @@
     }
    },
    "id": 17
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 2,
-       "text": "siege_attack"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
-        "index": 96
-       }
-      }
-     }
-    }
-   },
-   "id": 18
   },
   {
    "edit": {
@@ -391,25 +315,6 @@
     }
    },
    "id": 20
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 2,
-       "text": "siege_attack"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
-        "index": 112
-       }
-      }
-     }
-    }
-   },
-   "id": 21
   },
   {
    "edit": {
@@ -467,25 +372,6 @@
     }
    },
    "id": 24
-  },
-  {
-   "edit": {
-    "forge": {
-     "label": {
-      "label": {
-       "number": 0,
-       "text": "siege_defend"
-      },
-      "target": {
-       "base": {
-        "block": "starting_locations",
-        "index": 99
-       }
-      }
-     }
-    }
-   },
-   "id": 25
   },
   {
    "edit": {

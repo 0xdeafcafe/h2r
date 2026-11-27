@@ -483,8 +483,15 @@ fn a_rows_picker_carries_its_help() {
                 continue;
             }
             let Some((label, help)) = as_drawn(r, &page.spec(&Focus(0)), i) else { continue };
-            pickers += 1;
             let mut focus = Focus(i);
+            // A value row that names a screen pushes it (the Wave set's
+            // cards) in place of the picker; the screen says the help.
+            if let Some(screen) = &r.open {
+                let named = NAMES.iter().copied().find(|n| n == screen).expect("a screen");
+                assert_eq!(page.step(&mut focus, Input::A), ListEffect::Open(named), "{name} row {i}");
+                continue;
+            }
+            pickers += 1;
             assert_eq!(page.step(&mut focus, Input::A), ListEffect::Open(picker::NAME), "{name} row {i}");
             let pick = picker::current().expect("a pick");
             assert_eq!(pick.title, picker::title(&label), "{name} row {i}");

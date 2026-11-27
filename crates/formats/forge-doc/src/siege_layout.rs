@@ -318,8 +318,19 @@ pub fn document(map: &str, plan: &Plan, description: &str) -> Value {
     for b in &plan.barriers {
         ops.push((b.block.name(), b.index, "siege_barrier", Some(b.phase)));
     }
+    // A placement has one label and a later op replaces an earlier one, so
+    // a start planned for both sides keeps the label the document would
+    // resolve: the last.
+    let last: BTreeMap<(&str, u32), usize> = ops
+        .iter()
+        .enumerate()
+        .map(|(k, &(block, i, ..))| ((block, i), k))
+        .collect();
     let ops: Vec<Value> = ops
         .into_iter()
+        .enumerate()
+        .filter(|(k, (block, i, ..))| last[&(*block, *i)] == *k)
+        .map(|(_, op)| op)
         .enumerate()
         .map(|(k, (block, i, text, n))| op(k + 1, block, i, text, n))
         .collect();
