@@ -38,6 +38,13 @@ pub enum SquadOp {
         slot: u8,
         base: u8,
     },
+    /// Firefight's allied squad: its actors join the engine team `team`
+    /// (a player team) and are given the map's hold order for `base`.
+    Ally {
+        slot: u8,
+        team: u8,
+        base: u8,
+    },
     /// Remove the squad's actors and bodies.
     Erase {
         slot: u8,
@@ -49,6 +56,7 @@ impl SquadOp {
         match *self {
             SquadOp::Place(Placement { slot, .. })
             | SquadOp::Hunt { slot, .. }
+            | SquadOp::Ally { slot, .. }
             | SquadOp::Erase { slot } => slot,
         }
     }

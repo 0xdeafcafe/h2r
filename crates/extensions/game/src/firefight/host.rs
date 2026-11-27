@@ -807,6 +807,29 @@ impl Host {
                 *target = *team;
                 Ok(())
             }
+            // An allied squad takes the engine team its Firefight team's
+            // players are on, and that team's hold order at its base.
+            Command::Ally { slot, team } => {
+                anyhow::ensure!(
+                    usize::from(*team) < MAX_TEAMS && usize::from(*team) < self.kit.bases.len(),
+                    "the kit has no base for team {team}"
+                );
+                let teams = self.teams;
+                let engine = game
+                    .players()
+                    .iter()
+                    .find(|p| firefight_team(teams, p.team) == *team)
+                    .map(|p| p.team)
+                    .ok_or_else(|| anyhow::anyhow!("no player is on team {team} to ally with"))?;
+                squad(
+                    game,
+                    SquadOp::Ally {
+                        slot: *slot,
+                        team: engine,
+                        base: *team,
+                    },
+                )
+            }
             Command::Hunt { slot } => {
                 let base = self.targets.get(usize::from(*slot)).copied().unwrap_or(0);
                 squad(game, SquadOp::Hunt { slot: *slot, base })

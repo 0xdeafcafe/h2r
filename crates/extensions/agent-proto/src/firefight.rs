@@ -344,6 +344,10 @@ pub struct Kit {
     /// (`ff_hunt_00`, `ff_hunt_01`), `null` for a base without one.
     #[serde(default)]
     pub hunt_orders: Vec<Option<u16>>,
+    /// Each base's hold order, `ff_hold_NN`, the same way; empty on a kit
+    /// that predates allies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hold_orders: Vec<Option<u16>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
