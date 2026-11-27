@@ -30,7 +30,7 @@ free slots, the way the multiplayer list has 38 for downloaded maps
 A free slot has campaign id and map id `-1`. The `+0x178` element's block
 `+0x10` is the multiplayer list. Campaign 1's map ids are `100 * chapter
 + n`: `0x1` The Heretic, `0x65` Armory, `0x69` Cairo Station, `0x12d`
-Outskirts, ... `0x325` The Great Journey. Ids don't follow play order
+Outskirts, ... `0x325` `The Great Journey`. Ids don't follow play order
 everywhere: High Charity is `0x321` and Uprising `0x2c1`.
 
 ### The code (E)

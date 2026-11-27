@@ -150,7 +150,7 @@ plan:
   damage and vitality data. The cyborg's collision materials select
   the body or head section, and its armour and shields use each
   damage effect's source multipliers through Halo 2's damage table.
-  [Blood Gulch hit registration](objects.md#blood-gulch-hit-registration-built)
+  [Blood Gulch hit registration](objects-build-weapons.md#blood-gulch-hit-registration-built)
 
 ### The health meter in the HUD
 
