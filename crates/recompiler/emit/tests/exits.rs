@@ -255,10 +255,17 @@ fn a_direct_call_lends_the_callers_view() {
     assert_eq!(on.matches(lend).count(), 1, "{on}");
     let take_back = "do { uint32_t h_ = (d_)->gate; (d_)->gate = 0u; if (h_) { h2_gate_adopt(&h2g_, &h2_mem_->memory->data); h2g_.held = h_; } } while (0); if (h2_direct_back(";
     assert_eq!(on.matches(take_back).count(), 1, "{on}");
-    // The call is a trip of the hold, not its end.
+    // The call is a trip of the hold, not its end: the count is spent in
+    // the view under it, and only with no view (so no hold) is it dropped
+    // for the charge call.
     let before = &on[..on.find(lend).unwrap()];
     let tick = before.rfind("h2_gate_tick(h2_mem_, &h2g_)").expect("the call ticks the hold");
-    assert!(!before[tick..].contains("h2_gate_drop"), "{on}");
+    let call = &before[tick..];
+    assert_eq!(
+        call.matches("h2_gate_drop").count(),
+        call.matches("if (h2_mem_) { h2_view_spend(h2_mem_, h2acc); } else { h2_gate_drop").count(),
+        "{on}"
+    );
     // Each handler adopts a lent hold at entry, and a hand-up passes its
     // hold on up (or drops it) before it releases the view.
     assert_eq!(
