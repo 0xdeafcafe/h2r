@@ -348,6 +348,14 @@ fn registry_with_film(
             "light host requires sim-frame"
         );
     }
+    // Boot's frame step, after sim-frame: render_frame_and_present as Rust
+    // (a light host's sim-frame owns the point).
+    #[cfg(feature = "gpu")]
+    if !case.light {
+        features
+            .add(&render_bridge::render_frame::RenderFrame::default())
+            .unwrap();
+    }
     if let Some(a) = &late.agent {
         crate::host_metrics::install(&mut features, &a.agent, case.light).unwrap();
         if case.light && case.host_lobby {
@@ -558,6 +566,20 @@ fn the_biggest_plans_leave_room_in_the_guest_arena() {
         let mut case = Case::full(switches);
         case.coop_live = true;
         let plan = plan(&case).unwrap();
+        // The window-and-agent configuration boot installs after the plan's
+        // other features (`registry`'s `configure_takeover`): the lab
+        // takeover consent's dialog is in the plan and has its page of
+        // guest memory (`lab_takeover::Driver`), so it is counted below.
+        assert!(
+            plan.features.iter().any(|f| f.id == "lab-takeover" && f.off.is_none()),
+            "the lab takeover consent is not in the plan for {}",
+            case.describe()
+        );
+        assert!(
+            !plan.mappings(|a| a.feature == "lab-takeover").is_empty(),
+            "the lab takeover consent has no guest memory for {}",
+            case.describe()
+        );
         let used = plan.arena_used();
         // The biggest users first, so a failure names what grew.
         let mut by_feature: Vec<(&str, u32)> = plan
