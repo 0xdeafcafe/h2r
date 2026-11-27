@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/recompiler/simd:simd",
         "//crates/recompiler/x87:x87",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )
 
@@ -57,5 +58,6 @@ workspace_test(
     deps = [
         "//crates/recompiler/simd:simd",
         "//crates/recompiler/x87:x87",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )

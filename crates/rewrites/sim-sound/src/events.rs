@@ -50,3 +50,35 @@ impl SoundEvent {
         }
     }
 }
+
+/// One thing that happened to one sound in the table
+/// ([`crate::instances::Sounds`]). Replaces [`SoundEvent`] when the table
+/// is wired in (docs/engine/sound-instances.md, "Mixer feed"): the host
+/// picks nothing the sim drew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TableEvent {
+    Started {
+        handle: sim_world::Handle,
+        tag: crate::instances::TagIndex,
+        selection: crate::impulse::Selection,
+        gain: f32,
+        pitch: f32,
+        source: crate::instances::SourceParams,
+        /// A loop segment: only its loop ends it.
+        looping: bool,
+        tick: u32,
+    },
+    /// A stop: the sound fades for `fade_ticks`, then ends with `Faded`.
+    Stopped { handle: sim_world::Handle, fade_ticks: u32, tick: u32 },
+    Ended { handle: sim_world::Handle, reason: crate::owners::Reason, tick: u32 },
+}
+
+impl TableEvent {
+    pub fn handle(&self) -> sim_world::Handle {
+        match *self {
+            TableEvent::Started { handle, .. }
+            | TableEvent::Stopped { handle, .. }
+            | TableEvent::Ended { handle, .. } => handle,
+        }
+    }
+}
