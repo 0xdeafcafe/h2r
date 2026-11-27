@@ -530,7 +530,8 @@ impl Guest {
             return None;
         }
         let (lo, hi) = (start & !(c - 1), end.div_ceil(c) * c);
-        let below = (lo..start).step_by(PAGE_SIZE as usize).rev();
+        let page = PAGE_SIZE as u64;
+        let below = (0..(start - lo) / page).map(move |k| start - page * (k + 1));
         let above = (end..hi.min(1u64 << 32)).step_by(PAGE_SIZE as usize);
         below.chain(above).find_map(|n| {
             let m = &self.mappings[self.mapping_index(n)?];
