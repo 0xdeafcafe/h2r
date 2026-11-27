@@ -723,7 +723,7 @@ pub const METHODS: &[MethodDef] = &[
         m::VARIANT_MAPS,
         "List this machine's map variants a game variant may suggest (any map, saved then fetched)",
         r#"{}"#,
-        r#"{"maps":[{"map":"string","name":"string","base":"sha256","variant":"sha256","source":"saved|live"}]}"#,
+        r#"{"maps":[{"map":"string","name":"string","base":"sha256","variant":"sha256","source":"saved|live|package"}]}"#,
         r#"{}"#,
     ),
     def(

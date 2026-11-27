@@ -82,7 +82,11 @@ fn create_unique(dir: &Path, base: &str, ext: &str, bytes: &[u8]) -> Result<Stri
 
 /// The map variant store (docs/game/forge-map-variants.md, "The map variant
 /// file"): `<data>/map-variants/<base map>/<stem>.h2mapvariant`, with the ones
-/// fetched from Live under `live/`.
+/// fetched from Live under `live/`, and the `map-variant` items of the
+/// packages that are on ("A map variant in a package"), which the boot
+/// gives the store ([`variants::install_packaged`]). A packaged variant is
+/// listed and loaded as a saved one is; its handle is `<package>.<stem>`,
+/// which no file stem is.
 pub mod variants {
     use super::*;
     use forge_doc::{BuilderVersions, Sha256, Tier};
@@ -151,6 +155,9 @@ pub mod variants {
         NameTaken(String),
         /// No such file in this map's directory.
         Missing(String),
+        /// The variant is a package's: the store does not rename or
+        /// remove it.
+        Packaged(String),
         /// The file system refused.
         Io(String),
     }
@@ -163,6 +170,7 @@ pub mod variants {
                 Self::Name(_) => "variant_name",
                 Self::NameTaken(_) => "variant_name_taken",
                 Self::Missing(_) => "variant_file_missing",
+                Self::Packaged(_) => "variant_packaged",
                 Self::Io(_) => "variant_io",
             }
         }
@@ -171,7 +179,11 @@ pub mod variants {
     impl std::fmt::Display for Error {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::Problem(_, s) | Self::Name(s) | Self::Missing(s) | Self::Io(s) => {
+                Self::Problem(_, s)
+                | Self::Name(s)
+                | Self::Missing(s)
+                | Self::Packaged(s)
+                | Self::Io(s) => {
                     f.write_str(s)
                 }
                 Self::NameTaken(name) => write!(f, "A map variant named {name} already exists."),
@@ -192,6 +204,72 @@ pub mod variants {
         Saved,
         /// Fetched from Xbox Live.
         Live,
+        /// A `map-variant` item of a package that is on.
+        Package,
+    }
+
+    impl Source {
+        /// Whether `load` reads a variant of this source by its handle:
+        /// one saved here or a package's. A fetched one is listed only.
+        pub const fn loads(self) -> bool {
+            matches!(self, Self::Saved | Self::Package)
+        }
+    }
+
+    /// A `map-variant` item as the store holds it: read once, when the
+    /// set is given.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Packaged {
+        /// The package's id.
+        pub package: String,
+        /// The handle `load` and `duplicate` take: `<package>.<stem>`.
+        pub file: String,
+        pub doc: ForgeDoc,
+    }
+
+    impl Packaged {
+        /// The item of `package` whose source has the stem `stem` and the
+        /// bytes `bytes`; `None` when the bytes are not a Forge document
+        /// (`h2 package check` names why).
+        pub fn read(package: &str, stem: &str, bytes: &[u8]) -> Option<Self> {
+            let doc = ForgeDoc::from_bytes(bytes, &Limits::default()).ok()?;
+            Some(Self {
+                package: package.to_owned(),
+                file: handle(package, stem),
+                doc,
+            })
+        }
+    }
+
+    /// A packaged variant's handle.
+    pub fn handle(package: &str, stem: &str) -> String {
+        format!("{package}.{stem}")
+    }
+
+    /// Whether `file` is a packaged variant's handle, not a file stem.
+    fn is_handle(file: &str) -> bool {
+        file.contains('.')
+    }
+
+    static PACKAGED: std::sync::RwLock<Vec<Packaged>> = std::sync::RwLock::new(Vec::new());
+
+    /// Give the store the set's `map-variant` items, replacing the ones
+    /// it had. The boot calls it once the set is read
+    /// (`boot::packages::at_boot`).
+    pub fn install_packaged(packaged: Vec<Packaged>) {
+        *PACKAGED.write().unwrap_or_else(|e| e.into_inner()) = packaged;
+    }
+
+    /// The installed set's `map-variant` items.
+    pub fn packaged() -> Vec<Packaged> {
+        PACKAGED.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn packaged_refusal(file: &str) -> Error {
+        let package = file.split('.').next().unwrap_or(file);
+        Error::Packaged(format!(
+            "That map variant belongs to the package {package}. Duplicate it to change it."
+        ))
     }
 
     /// One file of a map's directory.
@@ -290,9 +368,20 @@ pub mod variants {
         dir.join(format!("{file}.{VARIANT_EXT}"))
     }
 
-    /// Every map variant of `map`, saved then fetched, by name without case.
-    /// `installed` is the hash of this machine's `map`, or `None`.
+    /// Every map variant of `map`: saved, then fetched, then the installed
+    /// set's packaged ones, each part by name without case. `installed` is
+    /// the hash of this machine's `map`, or `None`.
     pub fn list(data: &Path, map: &str, installed: Option<&Sha256>) -> Result<Vec<Listed>, Error> {
+        list_with(data, map, installed, &packaged())
+    }
+
+    /// [`list`] with the packaged variants given, not the installed ones.
+    pub fn list_with(
+        data: &Path,
+        map: &str,
+        installed: Option<&Sha256>,
+        packaged: &[Packaged],
+    ) -> Result<Vec<Listed>, Error> {
         let dir = map_dir(data, map)?;
         let limits = Limits::default();
         let mut out = vec![];
@@ -332,6 +421,26 @@ pub mod variants {
             part.sort_by_cached_key(|l| (l.name.to_lowercase(), l.file.clone()));
             out.extend(part);
         }
+        let mut part: Vec<Listed> = packaged
+            .iter()
+            .filter(|p| p.doc.base.map == map)
+            .map(|p| {
+                let problem = problem_of(&p.doc, map, installed);
+                Listed {
+                    source: Source::Package,
+                    file: p.file.clone(),
+                    name: p.doc.title.clone(),
+                    author: p.doc.author.clone(),
+                    id: p.doc.id().ok(),
+                    problem,
+                    sentence: problem.map(|q| q.sentence(&p.doc.title, map)),
+                    ground: matches!(p.doc.ground_recipe(), Ok(Some(_))),
+                    waves: p.doc.waves.is_some(),
+                }
+            })
+            .collect();
+        part.sort_by_cached_key(|l| (l.name.to_lowercase(), l.file.clone()));
+        out.extend(part);
         Ok(out)
     }
 
@@ -353,12 +462,40 @@ pub mod variants {
     }
 
     /// Every map variant on this machine a game variant may suggest: of any
-    /// map, saved then fetched, by map and name without case. A file that
+    /// map, saved then fetched by map and name without case, then the
+    /// installed set's packaged ones. A file that
     /// does not parse, is of the map tier, has another builder's form or
     /// sits in another map's directory is left out: a suggestion names a
     /// variant the lobby could pick. Whether this machine has the base map
     /// is not asked; the lobby checks that when it picks.
     pub fn suggestable(data: &Path) -> Result<Vec<Suggestable>, Error> {
+        suggestable_with(data, &packaged())
+    }
+
+    /// [`suggestable`] with the packaged variants given, not the installed
+    /// ones.
+    pub fn suggestable_with(data: &Path, packaged: &[Packaged]) -> Result<Vec<Suggestable>, Error> {
+        let mut out = saved_suggestable(data)?;
+        let mut part: Vec<Suggestable> = packaged
+            .iter()
+            .filter(|p| p.doc.tier() == Tier::Variant && p.doc.builder == BuilderVersions::CURRENT)
+            .filter_map(|p| {
+                Some(Suggestable {
+                    source: Source::Package,
+                    map: p.doc.base.map.clone(),
+                    file: p.file.clone(),
+                    name: p.doc.title.clone(),
+                    base: p.doc.base.sha256,
+                    id: p.doc.id().ok()?,
+                })
+            })
+            .collect();
+        part.sort_by_cached_key(|s| (s.map.clone(), s.name.to_lowercase(), s.file.clone()));
+        out.extend(part);
+        Ok(out)
+    }
+
+    fn saved_suggestable(data: &Path) -> Result<Vec<Suggestable>, Error> {
         let root = data.join(VARIANTS_DIR);
         let entries = match fs::read_dir(&root) {
             Ok(entries) => entries,
@@ -475,22 +612,41 @@ pub mod variants {
         }
     }
 
-    /// Read a saved variant of `map` and run the table's checks.
+    /// Read a saved or packaged variant of `map` and run the table's
+    /// checks.
     pub fn load(
         data: &Path,
         map: &str,
         file: &str,
         installed: Option<&Sha256>,
     ) -> Result<ForgeDoc, Error> {
-        let doc = open(data, map, file)?;
+        load_with(data, map, file, installed, &packaged())
+    }
+
+    /// [`load`] with the packaged variants given, not the installed ones.
+    pub fn load_with(
+        data: &Path,
+        map: &str,
+        file: &str,
+        installed: Option<&Sha256>,
+        packaged: &[Packaged],
+    ) -> Result<ForgeDoc, Error> {
+        let doc = open(data, map, file, packaged)?;
         match problem_of(&doc, map, installed) {
             Some(p) => Err(Error::Problem(p, p.sentence(&doc.title, map))),
             None => Ok(doc),
         }
     }
 
-    fn open(data: &Path, map: &str, file: &str) -> Result<ForgeDoc, Error> {
+    fn open(data: &Path, map: &str, file: &str, packaged: &[Packaged]) -> Result<ForgeDoc, Error> {
         let dir = map_dir(data, map)?;
+        if is_handle(file) {
+            return packaged
+                .iter()
+                .find(|p| p.file == file && p.doc.base.map == map)
+                .map(|p| p.doc.clone())
+                .ok_or_else(|| Error::Missing(format!("{file} is not a map variant.")));
+        }
         if !content::manifest::is_map_name(file) {
             return Err(Error::Missing(format!("{file} is not a map variant.")));
         }
@@ -505,7 +661,10 @@ pub mod variants {
     /// variant has a new id. A name another variant has, compared without case,
     /// is refused; nothing is replaced by a rename.
     pub fn rename(data: &Path, map: &str, file: &str, name: &str) -> Result<(), Error> {
-        let mut doc = open(data, map, file)?;
+        if is_handle(file) {
+            return Err(packaged_refusal(file));
+        }
+        let mut doc = open(data, map, file, &[])?;
         doc.title = name.to_owned();
         doc.expect = None;
         check_name(&doc)?;
@@ -519,10 +678,11 @@ pub mod variants {
         content::store::write_atomic(&path_of(&dir, file), bytes.as_bytes()).map_err(io)
     }
 
-    /// Copy a saved variant under a new name and return the copy's file stem.
-    /// The copy has the same edits and a new id.
+    /// Copy a saved or packaged variant under a new name and return the
+    /// copy's file stem. The copy is a saved one, with the same edits and a
+    /// new id.
     pub fn duplicate(data: &Path, map: &str, file: &str, name: &str) -> Result<String, Error> {
-        let mut doc = open(data, map, file)?;
+        let mut doc = open(data, map, file, &packaged())?;
         doc.title = name.to_owned();
         doc.expect = None;
         save(data, &doc, false)
@@ -530,6 +690,9 @@ pub mod variants {
 
     /// Remove a saved variant, readable or not.
     pub fn delete(data: &Path, map: &str, file: &str) -> Result<(), Error> {
+        if is_handle(file) {
+            return Err(packaged_refusal(file));
+        }
         let path = path_of(&map_dir(data, map)?, file);
         if !content::manifest::is_map_name(file) || path.symlink_metadata().is_err() {
             return Err(Error::Missing(format!("{file} is not a map variant.")));

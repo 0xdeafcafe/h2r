@@ -29,9 +29,13 @@ fn need_open(app: &mut App) -> Result<(), RpcError> {
 }
 
 /// This machine's map variants a game variant may suggest
-/// (`forge::files::variants::suggestable` under the data root).
+/// (`forge::files::variants::suggestable_with`: the files under the data
+/// root and the set's `map-variant` items).
 fn suggestable(app: &App) -> Result<Vec<forge::files::variants::Suggestable>, RpcError> {
-    forge::files::variants::suggestable(&app.data_root()).map_err(|e| err(code::FAILED, e.to_string()))
+    let data = app.data_root();
+    let set = crate::app::assets::read_set(&data);
+    forge::files::variants::suggestable_with(&data, &crate::app::forge_variants::store_packaged(&set))
+        .map_err(|e| err(code::FAILED, e.to_string()))
 }
 
 /// The suggestions for map variant `ids` (document ids), in the order
@@ -301,6 +305,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "source": match s.source {
                     forge::files::variants::Source::Saved => "saved",
                     forge::files::variants::Source::Live => "live",
+                    forge::files::variants::Source::Package => "package",
                 },
             })).collect::<Vec<_>>() }))
         }

@@ -873,8 +873,14 @@ fn suggest_section(ui: &Ui, app: &App, st: &mut VariantsUi) {
         return;
     }
     if st.suggestable.is_none() || ui.small_button("Refresh##suggest") {
+        let data = app.data_root();
+        let set = crate::app::assets::read_set(&data);
         st.suggestable = Some(
-            forge::files::variants::suggestable(&app.data_root()).unwrap_or_default(),
+            forge::files::variants::suggestable_with(
+                &data,
+                &crate::app::forge_variants::store_packaged(&set),
+            )
+            .unwrap_or_default(),
         );
     }
     ui.text_wrapped(

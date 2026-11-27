@@ -26,7 +26,9 @@
 //! - Every flow ends in a notice: [`saved`], [`loaded`], [`NOT_SAVED`],
 //!   [`NOT_LOADED`], or the store's own sentence for a refusal.
 
-use forge::files::variants::{Listed, Source};
+use forge::files::variants::Listed;
+#[cfg(test)]
+use forge::files::variants::Source;
 
 use super::sheet::{Act, Choice, Kind, NumberField, Sheet, SheetRow, TypeSpec};
 
@@ -96,7 +98,9 @@ pub struct Row {
     pub file: String,
     /// The variant's name.
     pub name: String,
-    /// Saved on this machine rather than fetched from Xbox Live.
+    /// Saved on this machine or a package's, rather than fetched from
+    /// Xbox Live: the store loads it. A package's is not renamed or
+    /// deleted, which the store refuses by name.
     pub saved: bool,
     /// Why it cannot be used, if it cannot.
     pub sentence: Option<String>,
@@ -107,7 +111,7 @@ impl Row {
         Row {
             file: listed.file.clone(),
             name: listed.name.clone(),
-            saved: listed.source == Source::Saved,
+            saved: listed.source.loads(),
             sentence: listed.sentence.clone(),
         }
     }

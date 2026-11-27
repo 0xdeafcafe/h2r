@@ -374,3 +374,62 @@ fn the_variant_list_reports_each_entrys_ground() {
     assert!(!ground("Plain"));
     assert!(!ground("Broken"), "a file that does not parse has none");
 }
+
+/// The `map-variant` item `stem` of the package `mine`, holding `doc`.
+fn packaged(stem: &str, doc: &ForgeDoc) -> variants::Packaged {
+    variants::Packaged::read("mine", stem, doc.canonical_json().unwrap().as_bytes()).unwrap()
+}
+
+#[test]
+fn a_packaged_variant_is_listed_and_loaded_beside_the_saved_ones() {
+    let dir = Dir::new();
+    variants::save(&dir.0, &doc("Alpha"), false).unwrap();
+    let set = [packaged("castle", &doc("Castle"))];
+    let listed = variants::list_with(&dir.0, "fixture", Some(&hash()), &set).unwrap();
+    let rows: Vec<_> = listed
+        .iter()
+        .map(|l| (l.name.as_str(), l.source, l.file.as_str(), l.problem))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("Alpha", Source::Saved, "Alpha", None),
+            ("Castle", Source::Package, "mine.castle", None),
+        ]
+    );
+    assert!(Source::Package.loads() && Source::Saved.loads() && !Source::Live.loads());
+    // The handle loads the package's document, with the store's checks.
+    let got = variants::load_with(&dir.0, "fixture", "mine.castle", Some(&hash()), &set).unwrap();
+    assert_eq!(got, set[0].doc);
+    let other = Sha256::of(b"another map");
+    assert!(matches!(
+        variants::load_with(&dir.0, "fixture", "mine.castle", Some(&other), &set),
+        Err(Error::Problem(Problem::BaseHash, _))
+    ));
+    // Another map's list does not hold it, and a handle the set has none of is missing.
+    assert!(variants::list_with(&dir.0, "nothing", None, &set).unwrap().is_empty());
+    assert!(matches!(
+        variants::load_with(&dir.0, "fixture", "mine.tower", Some(&hash()), &set),
+        Err(Error::Missing(_))
+    ));
+    // A game variant may suggest it.
+    let suggest = variants::suggestable_with(&dir.0, &set).unwrap();
+    let rows: Vec<_> = suggest.iter().map(|s| (s.name.as_str(), s.source)).collect();
+    assert_eq!(rows, vec![("Alpha", Source::Saved), ("Castle", Source::Package)]);
+    assert_eq!(suggest[1].id, set[0].doc.id().unwrap());
+}
+
+#[test]
+fn a_packaged_variant_is_not_renamed_or_deleted() {
+    let dir = Dir::new();
+    for refused in [
+        variants::rename(&dir.0, "fixture", "mine.castle", "Keep"),
+        variants::delete(&dir.0, "fixture", "mine.castle"),
+    ] {
+        let e = refused.unwrap_err();
+        assert_eq!(e.code(), "variant_packaged");
+        assert!(e.to_string().contains("mine"), "{e}");
+    }
+    // Bytes that are no document are no packaged variant.
+    assert_eq!(variants::Packaged::read("mine", "broken", b"{"), None);
+}

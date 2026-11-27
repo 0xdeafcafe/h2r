@@ -76,6 +76,7 @@ pub mod kits;
 mod layer;
 pub mod level;
 mod load;
+mod map_variants;
 mod maps;
 mod model;
 mod modes;
@@ -95,6 +96,8 @@ mod converted_tests;
 mod import_tests;
 #[cfg(test)]
 mod modes_tests;
+#[cfg(test)]
+mod map_variant_tests;
 #[cfg(test)]
 mod maps_tests;
 #[cfg(test)]
@@ -135,6 +138,7 @@ pub use game::{CACHE_DIR, Entry, GameSet, Listed, Off, Origin, PACKAGES_DIR, bak
 pub use ground::{GroundFile, GroundLabel, LabelName, Side};
 pub use hash::tag_hash;
 pub use hud::huds;
+pub use map_variants::{MapVariant, map_variants, read as read_map_variant, stem_of_source as map_variant_stem};
 pub use modes::{hopper_fragments, script_registry};
 pub use layer::Layered;
 pub use load::{
