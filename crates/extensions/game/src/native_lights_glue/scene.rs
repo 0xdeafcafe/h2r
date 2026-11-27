@@ -355,6 +355,21 @@ pub(super) struct Sequence<'a> {
     ops: Vec<Op>,
 }
 
+impl Sequence<'_> {
+    /// The sequence's operations before its layers 12 and 13 (`lit`
+    /// false: a gel, its casters, freezes and receivers), or those layers'
+    /// draws alone (`lit` true), for a held light whose shadow draws ahead
+    /// of its run (`tiles`).
+    pub(super) fn part(mut self, lit: bool) -> Self {
+        let groups = &self.groups;
+        self.ops.retain(|op| match op {
+            Op::Draw(n, _) => matches!(groups[*n].group.layer, 12 | 13) == lit,
+            _ => !lit,
+        });
+        self
+    }
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// Draws one light's passes of the open view from the scene, as one
     /// sequence ([`ops`]). Returns the layers drawn.

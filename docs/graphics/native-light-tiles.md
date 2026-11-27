@@ -1,6 +1,6 @@
 # Native light tiles: a run of lights' layers 12 and 13 in one pass
 
-Status: Partly built. The admission, the binning pass, the instanced draw and the host's held run are built; the host bins each light over its structure parts' projected box, and a compare arm checks tiled runs against their per-light passes.
+Status: Partly built. The admission, the binning pass, the instanced draw and the host's held run are built; the host bins each light over its structure parts' projected box, takes shadowed lights through per-light alpha masks, and a compare arm checks tiled runs against their per-light passes.
 Code: `crates/rewrites/native-render/src/light_tiles.rs` (planner, volumes, counters), `light_tiles_gpu.rs` (admission, the binning pass, the tiled program and its draws). Tests: in both files.
 Switch: none.
 
@@ -62,7 +62,7 @@ Additions in another order round differently: the tolerance is the target's roun
 
 ### The compare arm
 
-`light_tiles::ARM` compares every run until 4 match, then one run in 64. A compared run draws the tiled pass into a copy of the target, the per-light sequences on the target, then a GPU diff of the two whose largest channel difference is read back 8 flushes later. A difference over `(lights + 1) / 255` turns the arm off until the map retires: every light then draws per light.
+`light_tiles::ARM` compares every run until 4 match, then one run in 64. A compared run draws the tiled pass into a copy of the target, the per-light sequences on the target, then a GPU diff of the two (colour channels only for a masked run, whose copy keeps the alpha it began with) whose largest channel difference is read back 8 flushes later. A difference over `(lights + 1) / 255` turns the arm off until the map retires: every light then draws per light.
 
 | Counter | Counts |
 |---|---|
@@ -74,21 +74,39 @@ Additions in another order round differently: the tolerance is the target's roun
 
 | Counter (`render.scene`) | The light keeps its per-light pass because |
 |---|---|
-| `scene_light_tiles_refused_shadow` | its steps draw layer 10 or 11 (layer 11 writes the destination alpha its layers 12 and 13 read, or multiplies the destination's colour), or a lit pass samples a shadow map |
+| `scene_light_tiles_refused_shadow` | its steps draw layers 10 and 11 other than ahead of 12 and 13 alone, a receiver writes colour (multiplies the destination), a shadowed light's lit pass writes alpha, or a lit pass samples a shadow map |
 | `scene_light_tiles_refused_opaque` | its steps draw layer 14 (opaque, depth write, target 1) |
 | `scene_light_tiles_refused_gel_target` | its gel is drawn into target 13 per light (`Op::Gel`), which the next light overwrites |
-| `scene_light_tiles_refused_blend` | a pass replaces, or its blend reads the destination, or its operation is not an add with destination factor one |
+| `scene_light_tiles_refused_blend` | a pass replaces, or its blend reads the destination's colour, or reads its alpha while writing alpha, or its operation is not an add with destination factor one |
 | `scene_light_tiles_refused_depth` | a pass writes depth or compares other than `Less`, `LessEqual` or `Equal` |
 | `scene_light_tiles_refused_bounds` | its geometry's volume is not known |
 | `scene_light_tiles_refused_program` | a pass's translated module lacks the shape the instancing rewrite needs |
 
-A native caster map does not lift the shadow refusal on its own: layer 11 marks the target's alpha, or multiplies its colour ([native-shadows.md](native-shadows.md), the receiver table), once per light and between lights. Taking a shadowed light needs each one's receivers drawn into a mask of its own (a layer of an array, indexed by the light's bit) and its lit passes reading that mask in place of the destination alpha. Not built.
+### Shadowed lights: the masks
+
+Layer 11 marks the target's alpha per light ([native-shadows.md](native-shadows.md), the receiver table), and the light's layers 12 and 13 read it through a `DstAlpha` or `OneMinusDstAlpha` source factor. A run keeps each light's alpha in a mask layer of its own (`native_lights_glue/tiles.rs`, `Snapshot`):
+
+```mermaid
+flowchart LR
+  A[copy alpha to layer 0] --> B[light k: layers 10, 11 on the target] --> C[copy alpha to layer k] --> B
+  C --> D[tiled 12 and 13: each light reads its layer]
+```
+
+| Rule | Why |
+|---|---|
+| a light reads the layer of the last shadowed light at or before it | per light, that is the alpha its passes saw |
+| the blend's factor becomes one, the program multiplies by the mask (`xl_alpha_factor`), clamped first on a unorm target | the blend clamps the source before it multiplies |
+| receivers write alpha only (implementations 0, 1, 2, 6) | 3 and 4 multiply the colour, which the later lights' passes would see |
+| no lit pass of a masked run writes alpha (`Run::refuses` flushes first) | the masks are taken before the run's adds |
+| at most `MAX_SHADOWED` (3) shadowed lights a run | one target-sized layer each |
+
+A compared masked run takes the per-light sequences on the target with each shadowed light's layer copied between its receivers and its layers 12 and 13, then draws the tiled pass into the copy taken before them.
 
 `scene_light_tiles_runs` and `scene_light_tiles_lights` count the runs and the lights drawn tiled; `scene_light_tiles_single` counts admitted lights drawn alone, a run of one. A static bitmap gel is allowed: lights sharing a gel datum share a draw, and a light with its own gel is a draw of its own within the run.
 
 ## Evidence
 
-Tests: `a_tiles_list_holds_exactly_the_lights_whose_volume_touches_it` (the GPU masks against `light_tiles::bin_cpu` and by hand), `tiled_shading_equals_the_per_light_passes` (three overlapping lights, one with a gel, and a shadowed one, against `LightSet::draws` per light on an `Rgba16Float` target), `a_refused_light_draws_on_its_per_light_pass_and_is_counted` and `a_boxs_volume_is_its_corners_projected_through_the_views_rows` (`light_tiles`), `the_tiled_rewrite_indexes_uniforms_by_instance` (`light_tiles_gpu`).
+Tests: `a_tiles_list_holds_exactly_the_lights_whose_volume_touches_it` (the GPU masks against `light_tiles::bin_cpu` and by hand), `tiled_shading_equals_the_per_light_passes` (three overlapping lights, one with a gel, and a shadowed one, against `LightSet::draws` per light on an `Rgba16Float` target), `a_refused_light_draws_on_its_per_light_pass_and_is_counted` and `a_boxs_volume_is_its_corners_projected_through_the_views_rows` (`light_tiles`), `the_tiled_rewrite_indexes_uniforms_by_instance` and `a_masked_run_reads_each_lights_alpha_as_its_per_light_pass_did` (`light_tiles_gpu`).
 
 ## Not verified
 

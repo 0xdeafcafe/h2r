@@ -159,6 +159,22 @@ fn the_tiled_rewrite_indexes_uniforms_by_instance() {
         }),
         Err(TileRefusal::Blend)
     );
+    let mut masked = reads.clone();
+    masked.state.color_writes = wgpu::ColorWrites::COLOR;
+    assert_eq!(alpha_read(&masked), AlphaRead::Dst);
+    assert_eq!(alpha_read(&p), AlphaRead::None);
+    assert_eq!(
+        admit_pass(&LitPass {
+            program: &masked,
+            gel_target: false
+        }),
+        Ok(()),
+        "a read of the destination's alpha writing no alpha reads its mask"
+    );
+    let reading = tiled_wgsl_reading(&masked.wgsl, AlphaRead::OneMinusDst, true).unwrap();
+    shaders::validate(&reading).expect("valid WGSL");
+    assert!(reading.contains("saturate(c.rgb) * (1.0 - a)"));
+    assert!(tiled.contains("fn xl_alpha_factor(v: XboxVaryings, c: vec4f) -> vec4f { return c; }"));
     let mut writes = p.clone();
     writes.state.depth_write = true;
     assert_eq!(
@@ -198,6 +214,25 @@ fn the_tiled_rewrite_indexes_uniforms_by_instance() {
         Err(TileRefusal::Bounds)
     );
     assert_eq!(admit_light(&[12, 13], &pass, Some(v)), Ok(v));
+    let alpha = wgpu::ColorWrites::ALPHA;
+    assert_eq!(
+        admit_shadowed_light(&[10, 11, 12, 13], &[alpha, alpha]),
+        Ok(())
+    );
+    assert_eq!(
+        admit_shadowed_light(&[10, 11, 12], &[wgpu::ColorWrites::ALL]),
+        Err(TileRefusal::Shadow),
+        "a receiver that multiplies the colour"
+    );
+    assert_eq!(
+        admit_shadowed_light(&[10, 11, 14, 12, 13], &[alpha]),
+        Err(TileRefusal::Opaque)
+    );
+    assert_eq!(
+        admit_shadowed_light(&[11, 12], &[alpha]),
+        Err(TileRefusal::Shadow),
+        "receivers with no caster"
+    );
 }
 
 /// A depth target holding `tiles` (row by row, `across` a row) as the
@@ -809,7 +844,9 @@ fn tiled_shading_equals_the_per_light_passes() {
 
 #[test]
 fn the_compare_finds_the_largest_channel_difference() {
-    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        return;
+    };
     let (device, queue) = (&ctx.device, &ctx.queue);
     let size = (12u32, 9u32);
     let texture = |rgba: &[u8]| {
@@ -817,7 +854,11 @@ fn the_compare_finds_the_largest_channel_difference() {
             queue,
             &wgpu::TextureDescriptor {
                 label: None,
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -843,7 +884,9 @@ fn the_compare_finds_the_largest_channel_difference() {
         let mut enc = device.create_command_encoder(&Default::default());
         diff.encode(&mut enc);
         queue.submit([enc.finish()]);
-        diff.readback().slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        diff.readback()
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let d = difference(&diff.readback().slice(..).get_mapped_range().unwrap());
         d
@@ -852,5 +895,393 @@ fn the_compare_finds_the_largest_channel_difference() {
     assert_eq!(run(&a, &b), 0.0);
     let d = run(&a, &c);
     assert!((d - 10.0 / 255.0).abs() < 1e-4, "{d}");
-    assert!(d > crate::light_tiles::tolerance(3), "ten steps exceed three lights' rounding");
+    assert!(
+        d > crate::light_tiles::tolerance(3),
+        "ten steps exceed three lights' rounding"
+    );
+}
+
+/// Writes `alpha` into `view`'s alpha over `rect` (x, y, w, h), its
+/// colour kept: a stand-in for a shadowed light's layer 11 marks.
+fn fill_alpha(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    view: &wgpu::TextureView,
+    rect: [u32; 4],
+    alpha: f32,
+) {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+                    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
+                    return vec4f(p, 0.5, 1.0);
+                }}
+                @fragment fn fs() -> @location(0) vec4f {{ return vec4f(0.0, 0.0, 0.0, {alpha:?}); }}"
+            )
+            .into(),
+        ),
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: COLOUR,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALPHA,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let [x, y, w, h] = rect;
+        pass.set_scissor_rect(x, y, w, h);
+        pass.set_pipeline(&pipeline);
+        pass.draw(0..3, 0..1);
+    }
+    queue.submit([enc.finish()]);
+}
+
+#[test]
+fn a_masked_run_reads_each_lights_alpha_as_its_per_light_pass_did() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        return;
+    };
+    let (device, queue) = (&ctx.device, &ctx.queue);
+    const SIZE: (u32, u32) = (32, 32);
+    let depth = scene_depth(device, queue, SIZE, &[0.8; 4], 2);
+    let depth_view = depth.create_view(&Default::default());
+    let mut constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
+    constants[0] = [1.0, 0.0, 0.0, 0.0];
+    constants[1] = [0.0, 1.0, 0.0, 0.0];
+    constants[2] = [0.0, 0.0, 1.0, 0.0];
+    constants[3] = [0.0, 0.0, 1.0, 0.0];
+    let view = ViewInputs {
+        constants,
+        guest_size: SIZE,
+        size: SIZE,
+        z_scale: 100.0,
+        w_clip: Some(([0.0, 100.0], true)),
+    };
+    let set = LightSet::new(device, queue, None, None);
+    // `reads` adds its colour times the destination's alpha; `plain` adds
+    // it as is. Neither writes alpha.
+    let mut reads = program(false);
+    reads.state.blend.as_mut().unwrap().color.src_factor = wgpu::BlendFactor::DstAlpha;
+    reads.state.color_writes = wgpu::ColorWrites::COLOR;
+    let mut plain = program(false);
+    plain.state.color_writes = wgpu::ColorWrites::COLOR;
+    for p in [&reads, &plain] {
+        assert_eq!(
+            admit_pass(&LitPass {
+                program: p,
+                gel_target: false
+            }),
+            Ok(())
+        );
+    }
+    let gpu = |p: &LightProgram| {
+        let mut gpu = LightGpu::new(
+            device,
+            queue,
+            Arc::new(p.clone()),
+            set.uniforms_layout(),
+            &mut |_, _| Some(Image::solid([255; 4])),
+        )
+        .unwrap();
+        assert!(
+            gpu.pipeline(device, COLOUR, DEPTH, None, None)
+                .1
+                .get()
+                .is_some()
+        );
+        Mutex::new(gpu)
+    };
+    let (reads_gpu, plain_gpu) = (gpu(&reads), gpu(&plain));
+    timeline::frame();
+    let vertices = quad(0.0, 0.0, 32.0, 32.0, 50.0);
+    let init = |usage, bytes: &[u8]| {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytes,
+            usage,
+        })
+    };
+    let vertex_buffer = init(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&vertices));
+    let index: Vec<u32> = (0..vertices.len() as u32).collect();
+    let index_buffer = init(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(&index));
+    let g1 = [0..6];
+    let frame = |rgba: [f32; 4]| {
+        let mut f = [0u32; FRAME_DWORDS];
+        for (w, c) in f.iter_mut().zip(rgba) {
+            *w = c.to_bits();
+        }
+        f
+    };
+    // A reads the alpha the run began with; S's receivers mark the left
+    // half 0.25 before its passes read it; B reads nothing.
+    let (fa, fs, fb) = (
+        frame([0.5, 0.1, 0.0, 1.0]),
+        frame([0.4, 0.4, 0.4, 1.0]),
+        frame([0.05, 0.3, 0.7, 1.0]),
+    );
+    let reads: &'static LightProgram = Box::leak(Box::new(reads));
+    let plain: &'static LightProgram = Box::leak(Box::new(plain));
+    let draw = |program: &'static LightProgram, gpu, frame| LightDraw {
+        program,
+        gpu,
+        cull: None,
+        sample: None,
+        colours: [[0.0; 3]; 2],
+        frame,
+        projection: None,
+        gel: None,
+        gel_view: None,
+        gel_scale: None,
+        shadow_map: None,
+        ranges: &g1,
+        placement: None,
+        model: None,
+    };
+    let a = || draw(reads, &reads_gpu, &fa);
+    let s = || draw(reads, &reads_gpu, &fs);
+    let b = || draw(plain, &plain_gpu, &fb);
+
+    let colour = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: SIZE.0,
+            height: SIZE.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: COLOUR,
+        usage: U::RENDER_ATTACHMENT | U::COPY_SRC,
+        view_formats: &[],
+    });
+    let colour_view = colour.create_view(&Default::default());
+    let pool = gfx::ring::UploadPool::default();
+    let per_light = |draws: &[LightDraw<'_>], clear: Option<[f32; 4]>| {
+        let uploads = pool.begin();
+        let target = LightTarget {
+            device,
+            queue,
+            uploads: &uploads,
+            color: &colour_view,
+            color_format: COLOUR,
+            depth: &depth_view,
+            depth_format: DEPTH,
+            size: SIZE,
+        };
+        let packets = set
+            .draws(
+                &target,
+                &vertex_buffer,
+                &index_buffer,
+                &view,
+                [0, 0, SIZE.0, SIZE.1],
+                draws,
+            )
+            .expect("per-light draws");
+        let front = uploads.upload_commands(queue);
+        let rt = gfx::RenderTarget {
+            color: &colour_view,
+            color_format: COLOUR,
+            depth: Some(&depth_view),
+            depth_format: Some(DEPTH),
+            size: SIZE,
+            samples: 1,
+        };
+        let mut enc = device.create_command_encoder(&Default::default());
+        let clear = gfx::Clear {
+            color: clear,
+            depth: None,
+            stencil: None,
+        };
+        gfx::Renderer::encode_pass(&ctx, &mut enc, &rt, clear, &packets.packets, None).unwrap();
+        queue.submit(front.into_iter().chain([enc.finish()]));
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    };
+    let read = || {
+        gfx::readback::read_texture(&ctx, &colour, wgpu::TextureAspect::All, 8, SIZE)
+            .chunks_exact(2)
+            .map(|h| half(u16::from_le_bytes([h[0], h[1]])))
+            .collect::<Vec<f32>>()
+    };
+    let left = [0, 0, SIZE.0 / 2, SIZE.1];
+
+    // Per light: A, S's marks, S, B.
+    per_light(&[a()], Some(BASE));
+    fill_alpha(device, queue, &colour_view, left, 0.25);
+    per_light(&[s(), b()], None);
+    let expected = read();
+
+    // Tiled: the alpha before the run into layer 0, S's marks, the alpha
+    // after them into layer 1, then the run reading A's layer 0 and S's 1.
+    per_light(&[], Some(BASE));
+    let masks = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: SIZE.0,
+            height: SIZE.1,
+            depth_or_array_layers: 2,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: COLOUR,
+        usage: U::COPY_DST | U::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let snapshot = |layer: u32| {
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_texture(
+            colour.as_image_copy(),
+            wgpu::TexelCopyTextureInfo {
+                texture: &masks,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: SIZE.0,
+                height: SIZE.1,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([enc.finish()]);
+    };
+    snapshot(0);
+    fill_alpha(device, queue, &colour_view, left, 0.25);
+    snapshot(1);
+    let whole = TileVolume {
+        rect: [0.0, 0.0, SIZE.0 as f32, SIZE.1 as f32],
+        near: 0.0,
+    };
+    let mut tiles = LightTiles::new(device);
+    let mut enc = device.create_command_encoder(&Default::default());
+    let grid = tiles.bin(device, &mut enc, &depth_view, SIZE, &[whole; 3]);
+    queue.submit([enc.finish()]);
+    let run = [
+        TiledDraw {
+            set: None,
+            layer: 12,
+            lights: vec![(0, a()), (1, s())],
+        },
+        TiledDraw {
+            set: None,
+            layer: 12,
+            lights: vec![(2, b())],
+        },
+    ];
+    assert!(
+        tiles
+            .record(device, &set, &grid, &view, COLOUR, DEPTH, &run)
+            .is_err(),
+        "a read of the destination's alpha needs the masks"
+    );
+    let masks_view = masks.create_view(&mask_view());
+    let tiled = tiles
+        .record_masked(
+            device,
+            &set,
+            &grid,
+            &view,
+            COLOUR,
+            DEPTH,
+            &run,
+            Some((&masks_view, &[0u32, 1, 1][..])),
+        )
+        .expect("records");
+    let mut enc = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &colour_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        tiled.encode(
+            &mut pass,
+            &vertex_buffer,
+            &index_buffer,
+            [0, 0, SIZE.0, SIZE.1],
+        );
+    }
+    queue.submit([enc.finish()]);
+    let got = read();
+
+    let texel = |v: &[f32], x: u32, y: u32| v[(4 * (y * SIZE.0 + x)) as usize..][..4].to_vec();
+    let (l, r) = (texel(&expected, 4, 4), texel(&expected, 28, 4));
+    assert!(
+        (l[0] - (0.1 + 0.5 + 0.4 * 0.25 + 0.05)).abs() < 2e-3,
+        "the left half reads S's marks: {l:?}"
+    );
+    assert!(
+        (r[0] - (0.1 + 0.5 + 0.4 + 0.05)).abs() < 2e-3,
+        "the right half the alpha before them: {r:?}"
+    );
+    for (i, (e, g)) in expected.iter().zip(&got).enumerate() {
+        assert!(
+            (e - g).abs() <= 2e-3 * e.abs().max(1.0),
+            "texel {} channel {}: per light {e}, tiled {g}",
+            i / 4,
+            i % 4
+        );
+    }
 }
