@@ -119,8 +119,17 @@ classes share destructor `0x003142c0` and are built only by Halo's
 
 The contact class is the only one the step creates. The six joints come
 from Halo's physics model builder, so any object with a jointed physics
-model (ragdolls, **S**) puts them in islands; until slice 2 ports a class,
-an island holding it falls back.
+model (ragdolls, **S**) puts them in islands. `sim_havok::joint` ports
+kinds 0 (ball and socket: three linear rows along the world axes between
+the two world pivots, `0x0031f160`), 1 (hinge: two angular rows from
+`0x0031e7b0` keeping the axes parallel, then the ball-and-socket rows,
+`0x0031f3e0`) and 8 (stiff spring: one linear row, `0x0031ec30`, its
+right-hand side the rest length `+0x40` less the length, `0x0031e740`).
+Each writes the header `0x0031e770` (output `c+0x40`, `+0x70`, `+0x44`,
+stride 8), free linear rows `0x0003040d` and free angular rows
+`0x0004040c`. Kinds 2, 6 and 7 (limits through `0x0031f000`, motors and
+friction through `0x0031e900`, the angle `0x003725e0`) are not ported, and
+an island holding one falls back.
 
 ### Collision agents
 
@@ -415,7 +424,7 @@ falls back to the lifted entry, counted by reason
 (`island_solve::fallbacks`), when it overflows the buffer or its row area,
 holds a motion whose two solver slots are not one of the six classes
 (`motion_solve`, every type), holds a constraint whose
-`vt[+0x24]` is not ported (the six joint classes), finds the solver
+`vt[+0x24]` is not ported (joint kinds 2, 6 and 7), finds the solver
 tables unbuilt, runs under an unmasked float exception or would load a
 non-finite float into the x87 unit from memory (`float`), names an
 accumulator outside the island, or is a contact retail would corrupt or
