@@ -769,7 +769,9 @@ score_limit = 50
 team_play = false
 seed = 1
 max_ticks = 18000
-superbounce = true
+
+[rules]
+script = "superbounce"
 
 [[bot]]
 name = "Bouncer"
@@ -780,7 +782,7 @@ drift = 0.3
 still_ticks = 6
 "#;
     let m = parse_match(text, false).unwrap();
-    assert_eq!(m.superbounce, Some(true));
+    assert_eq!(m.rules.as_ref().unwrap().script, "superbounce");
     let t = m.bots[0].tuning.as_ref().unwrap();
     let b = t.bounce.as_ref().unwrap();
     assert_eq!(
@@ -791,7 +793,7 @@ still_ticks = 6
     // Written back, it reads the same (the flag before the tables).
     let again = parse_match(&toml::to_string(&m).unwrap(), false).unwrap();
     assert_eq!(again, m);
-    assert_eq!(parse_match(MATCH, false).unwrap().superbounce, None);
+    assert_eq!(parse_match(MATCH, false).unwrap().rules, None);
 
     // The arm's bounce over the bot's own, field by field.
     let own = BotParams {
@@ -861,7 +863,7 @@ fn the_bounce_practice_examples_load() {
     }
     let b = load_batch(&dir.join("superbounce-batch.toml")).unwrap();
     assert_eq!(b.runs.len(), 12);
-    assert!(b.runs.iter().all(|r| r.config.superbounce == Some(true)));
+    assert!(b.runs.iter().all(|r| r.config.plays_superbounce()));
     let maps: std::collections::BTreeSet<&str> = b.runs.iter().map(|r| r.map.as_str()).collect();
     assert_eq!(
         maps.into_iter().collect::<Vec<_>>(),
@@ -878,7 +880,9 @@ fn a_drill_names_its_site_and_needs_the_practice() {
     let text = r#"
 map = "ascension"
 team_play = true
-superbounce = true
+
+[rules]
+script = "superbounce"
 
 [drill]
 site = [-10.62, 3.88, -3.19]
@@ -892,10 +896,10 @@ name = "Bouncer"
     // Written back, it reads the same.
     assert_eq!(parse_match(&toml::to_string(&c).unwrap(), false).unwrap(), c);
     // Without the practice there is nothing to drill.
-    let off = text.replace("superbounce = true", "superbounce = false");
+    let off = text.replace("script = \"superbounce\"", "script = \"siege\"");
     assert!(resolve(c, &no_files).is_ok());
     let e = resolve(parse_match(&off, false).unwrap(), &no_files).unwrap_err();
-    assert!(e.contains("drill: needs superbounce = true"), "{e}");
+    assert!(e.contains("drill: needs [rules] script = \"superbounce\""), "{e}");
     // An unknown field is refused.
     assert!(parse_match(&text.replace("[drill]", "[drill]\nseat = 0"), false).is_err());
 }
@@ -1105,7 +1109,7 @@ skulls = false
     assert!(f.settings().contains(&("firefight.teams", Int(2))));
     // Every problem with the table is listed, and a table needs the type.
     let e = firefight(
-        "map = 'x'\ngame_type = 'firefight'\nteam_play = false\nsuperbounce = true\n\
+        "map = 'x'\ngame_type = 'firefight'\nteam_play = false\nrules = { script = 'superbounce' }\n\
          [firefight]\nset = 'endless'\ndifficulty = 'mythic'\nteams = 3\nlives = 4\n[[bot]]\n",
     )
     .unwrap_err();
@@ -1241,4 +1245,86 @@ fn the_report_has_rounds_and_score() {
     assert_eq!((r.set.as_str(), r.rounds_cleared), ("Crossfire", 0));
     let v = serde_json::to_value(&r).unwrap();
     assert!(v.get("outcome").is_none() && v.get("team").is_none());
+}
+
+const RULES_MATCH: &str = r#"
+map = "zanzibar"
+team_play = true
+
+[rules]
+script = "siege"
+options = { round_count = 2, phase_time = 60, fast = true, loadout = "light" }
+
+[[bot]]
+name = "A"
+team = 0
+
+[[bot]]
+name = "B"
+team = 1
+"#;
+
+#[test]
+fn a_rules_table_names_a_script_and_its_options() {
+    let c = parse_match(RULES_MATCH, false).unwrap();
+    let r = c.rules.as_ref().unwrap();
+    assert_eq!(r.script, "siege");
+    assert_eq!(r.options["round_count"], RuleOption::Int(2));
+    assert_eq!(r.options["phase_time"], RuleOption::Int(60));
+    assert_eq!(r.options["fast"], RuleOption::Bool(true));
+    assert_eq!(r.options["loadout"], RuleOption::Name("light".into()));
+    assert!(!r.is_path() && !r.is_superbounce());
+    // Written back, it reads the same, and it is not the bounce practice.
+    assert_eq!(parse_match(&toml::to_string(&c).unwrap(), false).unwrap(), c);
+    let m = resolve(c, &no_files).unwrap();
+    assert!(!m.superbounce);
+    assert_eq!(m.config.rules.unwrap().script, "siege");
+}
+
+#[test]
+fn the_superbounce_script_is_the_bounce_practice_in_any_case() {
+    let text = RULES_MATCH.replace("\"siege\"", "\"Superbounce\"");
+    let m = resolve(parse_match(&text, false).unwrap(), &no_files).unwrap();
+    assert!(m.superbounce);
+}
+
+#[test]
+fn a_rules_table_refuses_what_it_cannot_play() {
+    // The old flag is gone, and an unknown field of the table is refused.
+    assert!(parse_match("map = \"x\"\nsuperbounce = true\n", false).is_err());
+    let bad = RULES_MATCH.replace("script = \"siege\"", "script = \"siege\"\nspeed = 3");
+    assert!(parse_match(&bad, false).is_err());
+    assert!(parse_match(&RULES_MATCH.replace("script = \"siege\"", ""), false).is_err());
+    let empty = RULES_MATCH.replace("\"siege\"", "\"  \"");
+    let e = resolve(parse_match(&empty, false).unwrap(), &no_files).unwrap_err();
+    assert!(e.contains("rules: script is empty"), "{e}");
+    let ff = RULES_MATCH.replace("team_play = true", "game_type = \"firefight\"");
+    let e = resolve(parse_match(&ff, false).unwrap(), &no_files).unwrap_err();
+    assert!(e.contains("rules: not in a Firefight match"), "{e}");
+}
+
+#[test]
+fn a_script_file_is_read_relative_to_the_match_file() {
+    let dir = std::env::temp_dir().join(format!("h2-sim-rules-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.toml");
+    std::fs::write(&file, RULES_MATCH.replace("\"siege\"", "\"mine.rules\"")).unwrap();
+    let m = load_match(&file);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let r = m.unwrap().config.rules.unwrap();
+    assert!(r.is_path());
+    assert_eq!(Path::new(&r.script), dir.join("mine.rules"));
+}
+
+#[test]
+fn the_siege_rounds_example_loads() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("siege-zanzibar-rounds.toml")).unwrap();
+    assert!(!m.superbounce);
+    let r = m.config.rules.as_ref().unwrap();
+    assert_eq!(r.script, "siege");
+    assert_eq!(r.options["round_count"], RuleOption::Int(2));
+    assert_eq!(r.options["phase_time"], RuleOption::Int(60));
+    assert_eq!(m.bots.len(), 4);
+    assert_eq!(teams_of(&m), [Some(0), Some(0), Some(1), Some(1)]);
 }

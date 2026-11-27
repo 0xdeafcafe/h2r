@@ -760,6 +760,11 @@ pub struct Report {
     /// "Firefight").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firefight: Option<crate::firefight::FirefightReport>,
+    /// The scores at the start of each round of a rules script, in round
+    /// order (docs/runtime/sim.md, "Rounds"): the first round's, then each
+    /// later round's as the game reset it. Empty without a script.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rounds: Vec<RoundScores>,
     /// The flat RAM window's fixups per tick; `None` without a window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flat: Option<FlatReport>,
@@ -773,6 +778,36 @@ pub struct Report {
     pub tick_phases: Option<TickPhases>,
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+/// The scores at one round's start, as the rules runtime reads them from
+/// the game before the script's `on round_start` scores anything.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoundScores {
+    /// 1 for the first round.
+    pub round: u32,
+    /// The script's tick at the round start.
+    pub tick: u32,
+    pub players: Vec<RoundPlayer>,
+    pub teams: Vec<RoundTeam>,
+}
+
+/// One player's `player_score` at a round's start.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoundPlayer {
+    pub slot: u8,
+    /// The seat's bot name, when a bot holds the slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub team: u8,
+    pub player_score: i32,
+}
+
+/// One team's score at a round's start.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RoundTeam {
+    pub team: u8,
+    pub score: i32,
 }
 
 /// One phase's mean time per tick.
@@ -1485,6 +1520,7 @@ impl Tally {
             drops: None,
             bounces: None,
             firefight: None,
+            rounds: Vec::new(),
             flat: None,
             guest_census: self.census(),
             tick_phases: None,
@@ -2484,6 +2520,31 @@ mod tests {
         assert_eq!(v["kills"][0]["kind"], "suicide");
         assert_eq!(v["wall"]["peak_rss_mib"], 981);
         assert_eq!(v["wall"]["footprint_mib"], 143);
+        let back: Report = serde_json::from_value(v).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn the_rounds_record_round_trips_and_is_absent_without_a_script() {
+        let mut r = Tally::new().report(Finish::bare(End::Stopped));
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("rounds").is_none(), "no script, no record");
+        r.rounds = vec![RoundScores {
+            round: 2,
+            tick: 900,
+            players: vec![RoundPlayer {
+                slot: 1,
+                name: Some("Blue 1".into()),
+                team: 1,
+                player_score: 3,
+            }],
+            teams: vec![RoundTeam { team: 1, score: 5 }],
+        }];
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["rounds"][0]["round"], 2);
+        assert_eq!(v["rounds"][0]["players"][0]["player_score"], 3);
+        assert_eq!(v["rounds"][0]["players"][0]["name"], "Blue 1");
+        assert_eq!(v["rounds"][0]["teams"][0]["score"], 5);
         let back: Report = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
     }

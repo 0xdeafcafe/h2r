@@ -721,14 +721,18 @@ impl Sim {
                 .set_options(crate::firefight::options::source(&store));
             *lock_ended() = None;
         }
+        // The match's script (docs/runtime/sim.md, "Rules scripts"): the
+        // block of a lobby choosing that game type, on the game's record
+        // at its start.
+        if let Some(rules) = &self.0.matched.config.rules {
+            let block = crate::sim_rules::block_for(rules).map_err(anyhow::Error::msg)?;
+            crate::game_variants::inject::set_sim_block(Some(block));
+        }
         if self.0.matched.superbounce {
             // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
             // game plays the Superbounce script, which turns the mode on;
             // the bots' route reads its pair word, and the tally counts
             // the bounces.
-            let sb = crate::community_variants::listed_named("Superbounce")
-                .context("sim: the built-in Superbounce script is not listed")?;
-            crate::game_variants::inject::set_sim_block(Some(sb.block()));
             crate::superbounce_mode::collect_awards(true);
             crate::sim_bots::install_pair_reader();
             self.0.lock().tally.track_bounces();
@@ -1281,6 +1285,7 @@ fn build_report(inner: &Inner, s: &State) -> Report {
     let mut lean = s.lean.clone();
     lean.setup = Some(s.setup.phases(s.first_tick.unwrap_or_else(Instant::now)));
     report.set_lean(lean);
+    report.rounds = round_scores(&bots);
     if let Some(f) = &inner.matched.firefight {
         use sim_bench::firefight::FirefightReport;
         report.firefight = Some(match lock_ended().as_ref() {
@@ -1289,6 +1294,31 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         });
     }
     report
+}
+
+/// The report's `rounds`: the rules runtime's score log, a bot's name on
+/// the slot it holds (docs/runtime/sim.md, "Rounds").
+fn round_scores(bots: &[BotInfo]) -> Vec<sim_bench::metrics::RoundScores> {
+    use sim_bench::metrics::{RoundPlayer, RoundScores, RoundTeam};
+    crate::sim_rounds::take()
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| RoundScores {
+            round: i as u32 + 1,
+            tick: s.tick,
+            players: s
+                .players
+                .into_iter()
+                .map(|(slot, team, player_score)| RoundPlayer {
+                    slot,
+                    name: bots.iter().find(|b| b.player == Some(slot)).map(|b| b.name.clone()),
+                    team,
+                    player_score,
+                })
+                .collect(),
+            teams: s.teams.into_iter().map(|(team, score)| RoundTeam { team, score }).collect(),
+        })
+        .collect()
 }
 
 // ---- Firefight (docs/runtime/sim.md, "Firefight") ----

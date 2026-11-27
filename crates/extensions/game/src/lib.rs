@@ -227,6 +227,8 @@ pub mod sim_bounces;
 pub mod sim_census;
 pub mod sim_drops;
 pub mod sim_glue;
+pub mod sim_rounds;
+pub mod sim_rules;
 mod sim_pages;
 pub mod skull_glyphs;
 pub mod skulls;

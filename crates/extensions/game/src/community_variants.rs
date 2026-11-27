@@ -268,6 +268,27 @@ fn registry() -> &'static ::rules::builtin::Registry {
     REGISTRY.get_or_init(::rules::builtin::Registry::baked)
 }
 
+/// The script a word names: a script's key (`siege`, `gun_game`) or its
+/// name (`Gun Game`), in any case, among every script of the boot's set
+/// but the retail ports (a sim match's `[rules] script`,
+/// docs/runtime/sim.md, "Rules scripts").
+pub fn script_named(word: &str) -> Option<&'static ::rules::builtin::Script> {
+    registry().scripts().iter().find(|s| {
+        s.role != ::rules::builtin::Role::Retail
+            && (s.key.eq_ignore_ascii_case(word) || s.name.eq_ignore_ascii_case(word))
+    })
+}
+
+/// Every key [`script_named`] takes, in the set's order.
+pub fn script_keys() -> Vec<&'static str> {
+    registry()
+        .scripts()
+        .iter()
+        .filter(|s| s.role != ::rules::builtin::Role::Retail)
+        .map(|s| s.key.as_str())
+        .collect()
+}
+
 /// The most list entries: the description numbers between
 /// [`DESCRIPTION_BASE`] and the game-variant store's, and the name ids
 /// below our rows' (`0x74`).

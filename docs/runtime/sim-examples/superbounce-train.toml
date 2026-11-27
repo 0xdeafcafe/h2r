@@ -5,7 +5,7 @@
 # sites and write `<map>.learned`, merged at the end into --data's bots/.
 # Run the same command again to carry on from the file.
 out = "results/bounce-train"        # relative to this file
-match = "superbounce-train-match.toml" # superbounce = true and the bots
+match = "superbounce-train-match.toml" # [rules] script = "superbounce" and the bots
 maps = ["ascension"]
 seed = 1        # the match's seed and the search's draws
 shards = 4      # runs a map; fixed here, not by --parallel

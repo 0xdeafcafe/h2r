@@ -168,7 +168,7 @@ deterministic ([sim.md §8](../runtime/sim.md#8-determinism)).
 
 ### Scheduling a batch
 
-A match with `superbounce = true` and a `[train]` table is a training run
+A match with `[rules] script = "superbounce"` and a `[train]` table is a training run
 (`sim::train::TrainConfig`, refused without `superbounce`, as a `[drill]`
 is). Its bots share one board, `learn::Board` (process-wide, as
 `practice::CLAIMS` is), built from the map's bounce sites and its
@@ -368,7 +368,7 @@ h2 sim train <file> --reopen                       # dead and blocked back to op
 
 ```toml
 out = "results/bounce-train"       # relative to this file
-match = "superbounce-train.toml"   # superbounce = true and the bots
+match = "superbounce-train.toml"   # `[rules] script = "superbounce"` and the bots
 maps = ["ascension"]
 seed = 1
 shards = 4      # runs a map; fixed here, not by --parallel

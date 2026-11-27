@@ -64,8 +64,8 @@ fn sim_block() -> Option<[u8; variants::ext::LEN]> {
     *SIM_BLOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A sim match that plays a rules script (`superbounce = true` plays the
-/// Superbounce script, docs/runtime/sim.md): [`apply_block`] writes
+/// A sim match that plays a rules script (its `[rules]` table,
+/// [`crate::sim_rules::block_for`], docs/runtime/sim.md): [`apply_block`] writes
 /// `block`, naming that script, on the game's record at its start. `None`
 /// clears it.
 pub fn set_sim_block(block: Option<[u8; variants::ext::LEN]>) {

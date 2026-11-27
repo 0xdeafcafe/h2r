@@ -23,7 +23,9 @@ max_ticks = 9000      # 5 minutes at 30 ticks a second
 max_wall_s = 900
 render_every = 0
 pace = "unpaced"
-superbounce = true
+
+[rules]
+script = "superbounce"
 
 [drill]
 site = [-10.62, 3.88, -3.19]   # glitches::SPOTS[0], the measured patch

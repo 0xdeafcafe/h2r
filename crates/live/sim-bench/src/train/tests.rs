@@ -10,7 +10,7 @@ fn no_files(_: &Path) -> Result<BotParams, String> {
 const MATCH: &str = r#"
 map = "ascension"
 team_play = true
-superbounce = true
+rules = { script = "superbounce" }
 seed = 9
 
 [[bot]]
@@ -40,7 +40,7 @@ fn planned(f: TrainFile, m: &str, over: &Overrides) -> Result<Plan, String> {
 
 #[test]
 fn a_train_table_parses_with_defaults_and_round_trips() {
-    let text = "map = \"ascension\"\nteam_play = true\nsuperbounce = true\n\n[train]\nshard = 1\nshards = 4\n\n[[bot]]\nname = \"Bouncer\"\n";
+    let text = "map = \"ascension\"\nteam_play = true\nrules = { script = \"superbounce\" }\n\n[train]\nshard = 1\nshards = 4\n\n[[bot]]\nname = \"Bouncer\"\n";
     let c = parse_match(text, false).unwrap();
     let t = c.train.unwrap();
     assert_eq!(
@@ -66,7 +66,7 @@ fn a_train_table_is_checked_and_every_problem_listed() {
     let ok = TrainConfig::default();
     assert!(ok.problems(true, false).is_empty());
     let e = ok.problems(false, false);
-    assert_eq!(e, ["train: needs superbounce = true"]);
+    assert_eq!(e, ["train: needs [rules] script = \"superbounce\""]);
     assert!(ok.problems(true, true)[0].contains("drill"));
     let bad = TrainConfig {
         shard: 4,
@@ -91,8 +91,8 @@ fn a_match_resolves_a_train_table_only_with_the_practice() {
     let text =
         "map = \"ascension\"\nteam_play = true\n[train]\nshards = 2\n[[bot]]\nname = \"B\"\n";
     let e = resolve(parse_match(text, false).unwrap(), &no_files).unwrap_err();
-    assert!(e.contains("train: needs superbounce = true"), "{e}");
-    let drill = "map = \"ascension\"\nteam_play = true\nsuperbounce = true\n[drill]\nsite = [1.0, 2.0, 3.0]\n[train]\n[[bot]]\nname = \"B\"\n";
+    assert!(e.contains("train: needs [rules] script = \"superbounce\""), "{e}");
+    let drill = "map = \"ascension\"\nteam_play = true\nrules = { script = \"superbounce\" }\n[drill]\nsite = [1.0, 2.0, 3.0]\n[train]\n[[bot]]\nname = \"B\"\n";
     let e = resolve(parse_match(drill, false).unwrap(), &no_files).unwrap_err();
     assert!(e.contains("drill"), "{e}");
 }
@@ -162,7 +162,7 @@ fn a_plan_is_a_run_a_map_and_shard() {
                 seed: 7
             })
         );
-        assert_eq!(run.config.superbounce, Some(true));
+        assert!(run.config.plays_superbounce());
     }
     assert_eq!(p.batch.out, Path::new("/t/results/train"));
     // The shard count is the file's, not the machine's.
@@ -197,9 +197,9 @@ fn the_command_line_goes_over_the_file() {
 
 #[test]
 fn a_plan_refuses_what_a_run_would() {
-    let no_practice = MATCH.replace("superbounce = true", "superbounce = false");
+    let no_practice = MATCH.replace("\"superbounce\"", "\"siege\"");
     let e = planned(file(Some(2)), &no_practice, &Overrides::default()).unwrap_err();
-    assert!(e.contains("train: needs superbounce = true"), "{e}");
+    assert!(e.contains("train: needs [rules] script = \"superbounce\""), "{e}");
     let e = planned(file(Some(0)), MATCH, &Overrides::default()).unwrap_err();
     assert!(e.contains("shards is 1 to"), "{e}");
     let over = Overrides {
@@ -208,7 +208,7 @@ fn a_plan_refuses_what_a_run_would() {
     };
     let e = planned(file(None), MATCH, &over).unwrap_err();
     assert!(e.contains("budget is at least 1"), "{e}");
-    let no_bots = "map = \"ascension\"\nsuperbounce = true\n";
+    let no_bots = "map = \"ascension\"\nrules = { script = \"superbounce\" }\n";
     assert!(planned(file(None), no_bots, &Overrides::default()).is_err());
 }
 
