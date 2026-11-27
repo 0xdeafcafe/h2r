@@ -63,6 +63,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             "Coordinates...",
             "Heading",
             "Respawn time",
+            "Team",
             "Reset orientation",
             "Delete",
         ]
