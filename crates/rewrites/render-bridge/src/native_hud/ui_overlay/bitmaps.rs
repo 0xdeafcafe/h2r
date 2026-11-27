@@ -15,9 +15,10 @@
 //! 3. The tint: the alpha at `+0x64` and the colour at `+0x28..+0x30`,
 //!    each times `[0x0045dc38]` and rounded by `fistp`, packed ARGB with
 //!    shifts and ors and no masks ([`tint`]).
-//! 4. The image (`0x002b0b19`): the pointer at `+0x8c` when set (refused:
-//!    its tag is not named), else the bitmap tag's image `+0x88` when in
-//!    range, its first otherwise.
+//! 4. The image (`0x002b0b19`): the pointer at `+0x8c` when set (its
+//!    setters, through `0x002b0a7b`, take it from a bitmap tag's images
+//!    by `0x00137550`; [`named_image`] finds that tag), else the bitmap
+//!    tag's image `+0x88` when in range, its first otherwise.
 //! 5. The rectangle (`0x0022ea81`): the header's, plus the animated
 //!    offset's X and Y, its two corners projected at the offset's Z
 //!    about the view's centre (`0x0023618e`, `0x002360c3`, [`project`]);
@@ -88,7 +89,7 @@ use timeline::native::Ui;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The draw is not the overlay's quad: the debug labels on, an image
-    /// set from elsewhere (`+0x8c`), an image not resident, a tint
+    /// set at `+0x8c` that no loaded bitmap tag holds, an image not resident, a tint
     /// constant not white, the quads turned off, a blend mode past the
     /// tables or an empty image; a meter whose rasterizer bitmap has no
     /// second image.
@@ -143,8 +144,12 @@ mod definition {
 pub mod at {
     /// A byte: the widgets' debug labels.
     pub const DEBUG_LABELS: u32 = 0x0054_d59f;
-    /// The tag instances (`0x10` bytes each, the data pointer at `+8`).
+    /// The tag instances (`0x10` bytes each: the group at `+0`, the
+    /// full datum at `+4`, the data pointer at `+8`).
     pub const TAG_INSTANCES: u32 = 0x004e_3b44;
+    /// The tag index header: the scenario's datum at `+0x0c`, the slot
+    /// count at `+0x18` (docs/engine/tag_get_checked.md).
+    pub const TAG_INDEX: u32 = 0x0054_7f00;
     /// The UI camera's distance (`0x002360c3`).
     pub const CAMERA_DISTANCE: u32 = 0x0054_d5b0;
     /// The constants `0x002360c3`, `0x00235e5e` and the tint read.
@@ -428,6 +433,94 @@ fn tag_data(mem: &dyn GuestRead, datum: u32) -> Option<Option<u32>> {
     word(mem, instance).map(Some)
 }
 
+/// The bitmap group, as a tag instance holds it.
+const BITM: u32 = u32::from_be_bytes(*b"bitm");
+
+/// Image `index` of the bitmap tag `datum` when that is `image`: the
+/// tag's images from `+0x48`, its count at `+0x44`, its instance still
+/// naming `datum`.
+fn holds(mem: &dyn GuestRead, datum: u32, image: u32) -> Option<Option<u16>> {
+    let entry = word(mem, at::TAG_INSTANCES)?.checked_add((datum & 0xffff) * 0x10)?;
+    if datum == u32::MAX || word(mem, entry.checked_add(4)?)? != datum {
+        return Some(None);
+    }
+    let data = word(mem, entry.checked_add(8)?)?;
+    if data == 0 {
+        return Some(None);
+    }
+    let count = word(mem, data.checked_add(IMAGE_COUNT)?)? as i32;
+    let first = word(mem, data.checked_add(IMAGES)?)?;
+    let Some(past) = image.checked_sub(first) else {
+        return Some(None);
+    };
+    let index = past / IMAGE_BYTES;
+    let held = past % IMAGE_BYTES == 0 && i64::from(index) < i64::from(count) && index <= 0x7fff;
+    Some(held.then_some(index as u16))
+}
+
+/// [`named_image`]'s answers for one map (the index's entries and
+/// scenario): an image pointer's tag and index, or none.
+type Named = ((u32, u32), std::collections::HashMap<u32, Option<(u32, u16)>>);
+
+thread_local! {
+    static NAMED: std::cell::RefCell<Named> = Default::default();
+}
+
+/// The tag and index of the bitmap image the widget's `+0x8c` points
+/// at (`0x002b0a7b`'s callers set it to `0x00137550`'s image of a tag's
+/// bitmap; the widget keeps only the image). The definition's bitmap
+/// `own` is tried first, then every loaded bitmap tag; an answer is kept
+/// for the map and checked again on each use. `None`: no loaded bitmap
+/// tag holds it (the game draws it).
+pub fn named_image(
+    mem: &dyn GuestRead,
+    own: u32,
+    image: u32,
+) -> Result<Option<(u32, u16)>, Refusal> {
+    use Refusal::Unreadable;
+    if let Some(index) = holds(mem, own, image).ok_or(Unreadable)? {
+        return Ok(Some((own, index)));
+    }
+    let entries = word(mem, at::TAG_INSTANCES).ok_or(Unreadable)?;
+    let header = word(mem, at::TAG_INDEX).ok_or(Unreadable)?;
+    if header == 0 || entries == 0 {
+        return Ok(None);
+    }
+    let scenario = word(mem, header.checked_add(0x0c).ok_or(Unreadable)?).ok_or(Unreadable)?;
+    let map = (entries, scenario);
+    let kept = NAMED.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.0 != map {
+            *n = (map, Default::default());
+        }
+        n.1.get(&image).copied()
+    });
+    match kept {
+        Some(None) => return Ok(None),
+        Some(Some((tag, _))) => {
+            if let Some(index) = holds(mem, tag, image).ok_or(Unreadable)? {
+                return Ok(Some((tag, index)));
+            }
+        }
+        None => {}
+    }
+    let count = word(mem, header.checked_add(0x18).ok_or(Unreadable)?).ok_or(Unreadable)?;
+    let mut found = None;
+    for slot in 0..count.min(0x1_0000) {
+        let entry = entries.checked_add(slot * 0x10).ok_or(Unreadable)?;
+        if word(mem, entry).ok_or(Unreadable)? != BITM {
+            continue;
+        }
+        let datum = word(mem, entry.checked_add(4).ok_or(Unreadable)?).ok_or(Unreadable)?;
+        if let Some(index) = holds(mem, datum, image).ok_or(Unreadable)? {
+            found = Some((datum, index));
+            break;
+        }
+    }
+    NAMED.with(|n| n.borrow_mut().1.insert(image, found));
+    Ok(found)
+}
+
 /// A block's first element: its address when the count is not 0.
 fn first(mem: &dyn GuestRead, block: u32) -> Option<Option<u32>> {
     if word(mem, block)? == 0 {
@@ -643,23 +736,28 @@ pub fn read(
         ],
         f32_at(at::CHANNEL)?,
     );
-    // The image (`0x002b0b19`).
-    if w32(off(widget, widget::IMAGE_POINTER)?)? != 0 {
-        return Err(Refusal::State);
-    }
-    let instance = off(w32(at::TAG_INSTANCES)?, (datum & 0xffff) * 0x10 + 8)?;
-    let data = w32(instance)?;
-    let count = w32(off(data, IMAGE_COUNT)?)? as i32;
-    if count <= 0 {
-        return Err(Refusal::State);
-    }
-    let asked = i16_at(off(widget, widget::IMAGE)?)?;
-    let index = if asked >= 0 && i32::from(asked) < count {
-        asked as u16
+    // The image (`0x002b0b19`): the pointer when set, named by the
+    // bitmap tag that holds it ([`named_image`]).
+    let pointer = w32(off(widget, widget::IMAGE_POINTER)?)?;
+    let (tag, index, image) = if pointer != 0 {
+        let (tag, index) = named_image(mem, datum, pointer)?.ok_or(Refusal::State)?;
+        (tag, index, pointer)
     } else {
-        0
+        let instance = off(w32(at::TAG_INSTANCES)?, (datum & 0xffff) * 0x10 + 8)?;
+        let data = w32(instance)?;
+        let count = w32(off(data, IMAGE_COUNT)?)? as i32;
+        if count <= 0 {
+            return Err(Refusal::State);
+        }
+        let asked = i16_at(off(widget, widget::IMAGE)?)?;
+        let index = if asked >= 0 && i32::from(asked) < count {
+            asked as u16
+        } else {
+            0
+        };
+        let image = off(w32(off(data, IMAGES)?)?, u32::from(index) * IMAGE_BYTES)?;
+        (datum, index, image)
     };
-    let image = off(w32(off(data, IMAGES)?)?, u32::from(index) * IMAGE_BYTES)?;
     let size = [
         i16_at(off(image, IMAGE_SIZE)?)?,
         i16_at(off(image, IMAGE_SIZE + 2)?)?,
@@ -700,10 +798,7 @@ pub fn read(
     }
     let blend = blend(mem, mode).ok_or(Unreadable)?;
     let mut quads = pieces.into_iter().map(|(r, uv)| UiBitmap {
-        texture: OverlayTexture::Bitmap {
-            tag: datum,
-            image: index,
-        },
+        texture: OverlayTexture::Bitmap { tag, image: index },
         rect: corners(r),
         uv,
         color: rgba(argb),
@@ -736,6 +831,7 @@ pub(super) mod tests {
     const IMAGES_AT: u32 = 0x8000;
     const TINT_AT: u32 = 0xa000;
     pub const VIEW: u32 = 0xb000;
+    const INDEX_AT: u32 = 0xf000;
 
     /// Writes the `i16` at `addr` (even) into its aligned word.
     pub fn half(m: &mut Mem, addr: u32, v: i16) {
@@ -781,6 +877,14 @@ pub(super) mod tests {
         m.f(DEF + 0x14, 0.0);
         m.w(DEF + 0x1c, DATUM);
         m.w(at::TAG_INSTANCES, INSTANCES);
+        m.w(at::TAG_INDEX, INDEX_AT);
+        m.w(INDEX_AT + 0x0c, 0xe100_0000);
+        m.w(INDEX_AT + 0x18, 3);
+        for slot in 0..2 {
+            m.w(INSTANCES + slot * 0x10, u32::MAX);
+        }
+        m.w(INSTANCES + 2 * 0x10, BITM);
+        m.w(INSTANCES + 2 * 0x10 + 4, DATUM);
         m.w(INSTANCES + 2 * 0x10 + 8, DATA);
         m.w(DATA + 0x44, 2);
         m.w(DATA + 0x48, IMAGES_AT);
@@ -1116,6 +1220,51 @@ pub(super) mod tests {
         );
     }
 
+    /// An image set at `+0x8c` draws as the image it points at, named by
+    /// the bitmap tag that holds it: the definition's own (the image
+    /// index at `+0x88` not read), or another loaded bitmap's, found in
+    /// the tag index and kept for the map.
+    #[test]
+    fn an_image_set_from_elsewhere_is_named_by_its_bitmap_tag() {
+        let mut m = Mem::default();
+        bitmap_widget(&mut m);
+        half(&mut m, WIDGET + 0x88, 1);
+        m.w(WIDGET + 0x8c, IMAGES_AT);
+        let Ok(UiContent::Bitmap(own)) = content(&m) else {
+            panic!("not drawn: {:?}", content(&m))
+        };
+        assert_eq!(own.texture, OverlayTexture::Bitmap { tag: DATUM, image: 0 });
+        // Another bitmap tag in slot 1 with one 8 by 8 image, resident.
+        const OTHER: u32 = 0xe200_0001;
+        const OTHER_DATA: u32 = 0x7400;
+        const OTHER_IMAGE: u32 = 0x8400;
+        m.w(INSTANCES + 0x10, BITM);
+        m.w(INSTANCES + 0x10 + 4, OTHER);
+        m.w(INSTANCES + 0x10 + 8, OTHER_DATA);
+        m.w(OTHER_DATA + 0x44, 1);
+        m.w(OTHER_DATA + 0x48, OTHER_IMAGE);
+        half(&mut m, OTHER_IMAGE + 4, 8);
+        half(&mut m, OTHER_IMAGE + 6, 8);
+        m.w(OTHER_IMAGE + 0x0c, 0);
+        m.w(OTHER_IMAGE + 0x50, 0x9100);
+        m.w(OTHER_IMAGE + 0x70, 5);
+        m.w(WIDGET + 0x8c, OTHER_IMAGE);
+        let Ok(UiContent::Bitmap(other)) = content(&m) else {
+            panic!("not drawn: {:?}", content(&m))
+        };
+        assert_eq!(other.texture, OverlayTexture::Bitmap { tag: OTHER, image: 0 });
+        assert_eq!(other.uv, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(named_image(&m, DATUM, OTHER_IMAGE), Ok(Some((OTHER, 0))));
+        // Its residency is the pointed image's.
+        m.w(OTHER_IMAGE + 0x70, 2);
+        assert_eq!(content(&m), Err(Refusal::State));
+        // The kept answer is checked again: a tag whose images moved no
+        // longer holds the image, which goes back to the game.
+        m.w(OTHER_IMAGE + 0x70, 5);
+        m.w(OTHER_DATA + 0x48, OTHER_IMAGE + 0x100);
+        assert_eq!(content(&m), Err(Refusal::State));
+    }
+
     /// No definition, or no bitmap: no quad, nothing to draw.
     #[test]
     fn a_bitmap_widget_with_no_bitmap_draws_nothing() {
@@ -1130,7 +1279,7 @@ pub(super) mod tests {
     /// Each draw the overlay does not make is the game's, by its reason.
     #[test]
     fn a_bitmap_the_overlay_cannot_draw_is_refused() {
-        let cases: [(&str, fn(&mut Mem), Refusal); 8] = [
+        let cases: [(&str, fn(&mut Mem), Refusal); 9] = [
             (
                 "scrolls, not resident",
                 |m| {
@@ -1145,8 +1294,13 @@ pub(super) mod tests {
                 Refusal::State,
             ),
             (
-                "image set elsewhere",
+                "image set from no loaded bitmap",
                 |m| m.w(WIDGET + 0x8c, 0x8800),
+                Refusal::State,
+            ),
+            (
+                "image set between two of its tag's",
+                |m| m.w(WIDGET + 0x8c, IMAGES_AT + 4),
                 Refusal::State,
             ),
             (
