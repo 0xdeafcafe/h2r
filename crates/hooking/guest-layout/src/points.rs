@@ -705,6 +705,17 @@ points! { ALL;
     /// The `snd!` arm's sound at a point (`0x17ad9a`): EDX a `0x24`-byte
     /// record, XMM0 the scale, the tag on the stack.
     SOUND_START_AT_POINT @ 0x0018_95f0: [fn(record: edx, scale: xmm0, tag: stack 0) ret 4], Optional; "docs/engine/effects-parts.md";
+    /// The `char` arm's character effect (`0x17a93d`): the ticks, the
+    /// effect's object, its node, two part words and location `+8`; ESI the
+    /// part's tag.
+    EFFECT_PART_CHARACTER @ 0x001c_a290: [fn(tag: esi, ticks: stack 0, object: stack 1, node: stack 2, a: stack 3, b: stack 4, location: stack 5) ret 24], Optional; "docs/engine/effects-parts.md";
+    /// The decal system's create (`0x17ab0b`, the `deca` arm): ECX
+    /// `[0x510c78]`, the tag, the placement, a drawn `f32` and `0, -1, 0`.
+    DECAL_CREATE @ 0x0017_e670: [fn(decals: ecx, tag: stack 0, placement: stack 1, value: stack 2, a: stack 3, b: stack 4, c: stack 5) ret 24], Optional; "docs/engine/effects-parts.md";
+    /// The light creator (`0x17acab` and `0x17acdd`, the `ligh` arm): the
+    /// tag, an object and node or -1, -1, and a location or source; XMM0 the
+    /// scale.
+    LIGHT_CREATE @ 0x000c_0350: [fn(scale: xmm0, tag: stack 0, object: stack 1, node: stack 2, at: stack 3) ret 16], Optional; "docs/engine/effects-parts.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
     /// `animation_resource_get`: EAX a graph's resource record; loads it
     /// through the animation cache when needed and stamps the cache entry's

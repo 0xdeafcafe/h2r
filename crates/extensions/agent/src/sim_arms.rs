@@ -101,7 +101,8 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
 }
 
 /// The effects phase in Rust (`impl.sim.effects-parts`, on by default):
-/// the damage, object and sound arms, and the part switch's other parts
+/// the damage, object, sound, character, `coln`, decal and light arms, and
+/// the part switch's other parts
 /// (`answered` the ones returned from Rust, `declined` the ones the guest's
 /// arm ran unchecked).
 fn effects_parts(switches: &Switches, (parts, arms): (EffectParts, EffectArms)) -> Subsystem {
@@ -118,6 +119,10 @@ fn effects_parts(switches: &Switches, (parts, arms): (EffectParts, EffectArms)) 
         wire("effects.damage", arms.damage),
         wire("effects.object", arms.object),
         wire("effects.sound", arms.sound),
+        wire("effects.character", arms.character),
+        wire("effects.coln", arms.coln),
+        wire("effects.decal", arms.decal),
+        wire("effects.light", arms.light),
         Arm {
             name: "effects.parts".to_owned(),
             answered: parts.returned,
@@ -387,19 +392,34 @@ mod tests {
         let e = effects_parts(
             &Switches::default(),
             (
-                EffectParts { returned: 4, guest_decal: 2, declined_fault: 1, ..EffectParts::default() },
+                EffectParts { returned: 4, guest_other: 2, declined_fault: 1, ..EffectParts::default() },
                 EffectArms {
                     damage: EffectArm { checked: 6, matched: 5, mismatched: 1, answered: 3, unreached: 2, ..EffectArm::default() },
                     object: EffectArm { checked: 4, matched: 4, answered: 9, declined_fault: 1, ..EffectArm::default() },
                     sound: EffectArm { checked: 2, matched: 2, ..EffectArm::default() },
+                    decal: EffectArm { answered: 5, ..EffectArm::default() },
+                    ..EffectArms::default()
                 },
             ),
         );
         let names: Vec<&str> = e.arms.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["effects.damage", "effects.object", "effects.sound", "effects.parts"]);
+        assert_eq!(
+            names,
+            [
+                "effects.damage",
+                "effects.object",
+                "effects.sound",
+                "effects.character",
+                "effects.coln",
+                "effects.decal",
+                "effects.light",
+                "effects.parts"
+            ]
+        );
+        assert_eq!(e.arms[5].answered, 5);
         assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (6, 3, 2));
         assert_eq!((e.arms[1].checked, e.arms[1].answered, e.arms[1].declined), (4, 9, 1));
-        assert_eq!((e.arms[3].answered, e.arms[3].declined), (4, 3));
+        assert_eq!((e.arms[7].answered, e.arms[7].declined), (4, 3));
         assert!(!e.clean);
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
         assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));

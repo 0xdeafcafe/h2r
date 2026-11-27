@@ -5894,8 +5894,9 @@ field: physics and collision have no `checked` (it is `matched` plus
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
 `answered`. `effects-parts` is the effects phase in Rust, under
 `impl.sim.effects-parts` rather than an `impl.sim.native.*` switch: its
-`effects.damage`, `effects.object` and `effects.sound` arms are
-`sim_effects_parts::status`'s three part arms, and `effects.parts` counts
+`effects.damage`, `effects.object`, `effects.sound`,
+`effects.character`, `effects.coln`, `effects.decal` and `effects.light`
+arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts
 the parts returned from Rust as `answered` and the parts the guest's arm
 ran unchecked as `declined`
 ([effects-parts.md](../engine/effects-parts.md)). A subsystem with its

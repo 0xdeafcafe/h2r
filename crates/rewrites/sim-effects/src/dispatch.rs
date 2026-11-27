@@ -1,13 +1,13 @@
 //! What the part switch's Rust entry does with each part.
 //!
-//! - `jpt!`, `obje`, `snd!`: each its own arm ([`crate::arm`]), which
-//!   answers or audits: [`crate::damage`], [`crate::object`],
-//!   [`crate::sound`].
+//! - `jpt!`, `obje`, `snd!`, `char`, `coln`, `deca`, `ligh`: each its own
+//!   arm ([`crate::arm`]), which answers or audits: [`crate::damage`],
+//!   [`crate::object`], [`crate::sound`], [`crate::character`],
+//!   [`crate::coln`], [`crate::decal`], [`crate::light`]. Decal and light
+//!   parts also queue a scene event.
 //! - `lens`, `MGS2`, `tdtl`: retail makes nothing, so Rust returns with
 //!   `EAX` = the group, as the epilogue does, and queues a flare event.
-//! - `deca`, `ligh`: the guest's arm runs (it draws word +4 and writes the
-//!   decal and light arrays the arena hash covers), and an event is queued.
-//! - every other group: the guest's arm runs. Each is a named refusal.
+//! - every other group: the guest's arm runs, a named refusal.
 //!
 //! Each arm's audit slot counts its own parts only, so the parts around
 //! them never move which part is audited.
@@ -15,7 +15,7 @@
 use crate::arm::{self, Arm, Decision};
 use crate::parts::{Part, PartClass};
 use crate::scene::Queue;
-use crate::{damage, object, sound};
+use crate::{character, coln, damage, decal, light, object, sound};
 
 /// The decoded inputs of a part an arm handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,10 @@ pub enum Inputs {
     Damage(damage::Inputs),
     Object(object::Inputs),
     Sound(sound::Inputs),
+    Character(character::Inputs),
+    Coln(coln::Inputs),
+    Decal(decal::Inputs),
+    Light(light::Inputs),
 }
 
 /// Who answers a part.
@@ -38,6 +42,14 @@ pub enum Action {
     Object(object::Inputs),
     /// Rust makes this sound call.
     Sound(sound::Call, sound::Inputs),
+    /// Rust returns or makes the two calls.
+    Character(character::Call, character::Inputs),
+    /// Rust leaves the stream, the registers and the x87 state so.
+    Coln(coln::Call),
+    /// Rust runs the decal arm's leaves and draws.
+    Decal(decal::Inputs),
+    /// Rust makes this light call.
+    Light(light::Call),
 }
 
 /// Parts by what happened to them, since the map load.
@@ -50,15 +62,16 @@ pub struct Stats {
     pub damage: u64,
     pub object: u64,
     pub sound: u64,
-    /// Refusals: the guest's arm ran, by class.
-    pub guest_decal: u64,
-    pub guest_light: u64,
-    pub guest_character: u64,
-    pub guest_coln: u64,
+    pub character: u64,
+    pub coln: u64,
+    pub decal: u64,
+    pub light: u64,
+    /// Refusals: a group with no arm (retail sets its warning byte).
     pub guest_other: u64,
     /// Refusals: the part or its inputs could not be read, or the arm's
     /// arithmetic could raise an unmasked exception (an object part under
-    /// an MXCSR with an exception unmasked, a sound whose packing would).
+    /// an MXCSR with an exception unmasked, a sound whose packing would, a
+    /// `coln` or decal part under an x87 state that could fault).
     pub declined_fault: u64,
 }
 
@@ -69,26 +82,30 @@ impl Stats {
         damage: 0,
         object: 0,
         sound: 0,
-        guest_decal: 0,
-        guest_light: 0,
-        guest_character: 0,
-        guest_coln: 0,
+        character: 0,
+        coln: 0,
+        decal: 0,
+        light: 0,
         guest_other: 0,
         declined_fault: 0,
     };
 
     /// Every part the guest's arm ran unchecked.
     pub fn refused(&self) -> u64 {
-        self.guest_decal + self.guest_light + self.guest_character + self.guest_coln + self.guest_other + self.declined_fault
+        self.guest_other + self.declined_fault
     }
 }
 
-/// The three arms' counters.
+/// The arms' counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Arms {
     pub damage: arm::Stats,
     pub object: arm::Stats,
     pub sound: arm::Stats,
+    pub character: arm::Stats,
+    pub coln: arm::Stats,
+    pub decal: arm::Stats,
+    pub light: arm::Stats,
 }
 
 /// The part switch's Rust state: the arms and the counters. Rust owned,
@@ -98,6 +115,10 @@ pub struct Parts {
     pub damage: Arm<damage::Call>,
     pub object: Arm<object::Plan>,
     pub sound: Arm<sound::Call>,
+    pub character: Arm<character::Call>,
+    pub coln: Arm<coln::Call>,
+    pub decal: Arm<decal::Plan>,
+    pub light: Arm<light::Call>,
     stats: Stats,
 }
 
@@ -110,7 +131,16 @@ fn decide<T: arm::Prediction>(arm: &mut Arm<T>, prediction: T, answer: Action) -
 
 impl Parts {
     pub const fn new() -> Self {
-        Parts { damage: Arm::new(), object: Arm::new(), sound: Arm::new(), stats: Stats::ZERO }
+        Parts {
+            damage: Arm::new(),
+            object: Arm::new(),
+            sound: Arm::new(),
+            character: Arm::new(),
+            coln: Arm::new(),
+            decal: Arm::new(),
+            light: Arm::new(),
+            stats: Stats::ZERO,
+        }
     }
 
     /// A part entered the switch. `inputs` is the arm's decoded input
@@ -141,42 +171,60 @@ impl Parts {
                     s.sound += 1;
                     decide(&mut self.sound, call, Action::Sound(call, *i))
                 }
-                Err(sound::Unmasked) => {
-                    s.declined_fault += 1;
-                    self.sound.declined_fault();
-                    Action::Guest
-                }
+                Err(sound::Unmasked) => self.declined(PartClass::Sound),
             },
-            (PartClass::Damage | PartClass::Object | PartClass::Sound, _) => {
-                s.declined_fault += 1;
-                match class {
-                    PartClass::Damage => self.damage.declined_fault(),
-                    PartClass::Object => self.object.declined_fault(),
-                    _ => self.sound.declined_fault(),
+            (PartClass::Character, Some(Inputs::Character(i))) => {
+                s.character += 1;
+                let call = character::Call::predict(i);
+                decide(&mut self.character, call, Action::Character(call, *i))
+            }
+            (PartClass::Coln, Some(Inputs::Coln(i))) => match coln::Call::predict(i) {
+                Ok(call) => {
+                    s.coln += 1;
+                    decide(&mut self.coln, call, Action::Coln(call))
                 }
-                Action::Guest
+                Err(_) => self.declined(PartClass::Coln),
+            },
+            (PartClass::Decal, Some(Inputs::Decal(i))) if i.quiet_fpu() => {
+                s.decal += 1;
+                decide(&mut self.decal, decal::Plan::new(*i), Action::Decal(*i))
             }
-            (PartClass::Decal, _) => {
-                s.guest_decal += 1;
-                Action::Guest
+            (PartClass::Light, Some(Inputs::Light(i))) => {
+                s.light += 1;
+                let call = light::Call::predict(i);
+                decide(&mut self.light, call, Action::Light(call))
             }
-            (PartClass::Light, _) => {
-                s.guest_light += 1;
-                Action::Guest
-            }
-            (PartClass::Character, _) => {
-                s.guest_character += 1;
-                Action::Guest
-            }
-            (PartClass::Coln, _) => {
-                s.guest_coln += 1;
-                Action::Guest
-            }
+            (
+                PartClass::Damage
+                | PartClass::Object
+                | PartClass::Sound
+                | PartClass::Character
+                | PartClass::Coln
+                | PartClass::Decal
+                | PartClass::Light,
+                _,
+            ) => self.declined(class),
             (PartClass::Other, _) => {
                 s.guest_other += 1;
                 Action::Guest
             }
         }
+    }
+
+    /// A part of an arm's class the arm cannot take: the guest's arm runs.
+    fn declined(&mut self, class: PartClass) -> Action {
+        self.stats.declined_fault += 1;
+        match class {
+            PartClass::Damage => self.damage.declined_fault(),
+            PartClass::Object => self.object.declined_fault(),
+            PartClass::Sound => self.sound.declined_fault(),
+            PartClass::Character => self.character.declined_fault(),
+            PartClass::Coln => self.coln.declined_fault(),
+            PartClass::Decal => self.decal.declined_fault(),
+            PartClass::Light => self.light.declined_fault(),
+            PartClass::Nothing | PartClass::Other => {}
+        }
+        Action::Guest
     }
 
     /// A part whose record could not be read at all.
@@ -190,7 +238,15 @@ impl Parts {
     }
 
     pub fn arms(&self) -> Arms {
-        Arms { damage: self.damage.stats(), object: self.object.stats(), sound: self.sound.stats() }
+        Arms {
+            damage: self.damage.stats(),
+            object: self.object.stats(),
+            sound: self.sound.stats(),
+            character: self.character.stats(),
+            coln: self.coln.stats(),
+            decal: self.decal.stats(),
+            light: self.light.stats(),
+        }
     }
 
     /// A new map.
@@ -262,12 +318,13 @@ mod tests {
         let visual = [group::DECAL, group::LIGHT, group::LENS, group::MGS2];
         let (busy, busy_parts, busy_q) = run(n, &visual);
         assert_eq!(plain, busy);
-        assert_eq!(plain_parts.arms(), busy_parts.arms());
+        assert_eq!(plain_parts.arms().damage, busy_parts.arms().damage);
         assert!(busy.iter().any(|a| matches!(a, Action::Damage(_))));
         assert_eq!(plain_q.len(), 0);
         assert_eq!(busy_q.stats().queued, u64::from(n) * 4);
         let s = busy_parts.stats();
-        assert_eq!((s.returned, s.guest_decal, s.guest_light), (u64::from(n) * 2, u64::from(n), u64::from(n)));
+        // Decal and light parts with no inputs are refused to the guest.
+        assert_eq!((s.returned, s.declined_fault), (u64::from(n) * 2, u64::from(n) * 2));
     }
 
     /// Object and sound parts have their own arms: each is proven by its
@@ -308,10 +365,9 @@ mod tests {
     fn every_class_is_counted_by_name() {
         let mut parts = Parts::new();
         let mut q = Queue::new();
-        for g in [group::CHARACTER, group::COLN, 0x6162_6364] {
-            assert_eq!(parts.enter(&part(0, g), None, &mut q), Action::Guest);
-        }
-        for g in [group::DAMAGE, group::OBJECT, group::SOUND] {
+        assert_eq!(parts.enter(&part(0, 0x6162_6364), None, &mut q), Action::Guest);
+        let arms = [group::DAMAGE, group::OBJECT, group::SOUND, group::CHARACTER, group::COLN, group::DECAL, group::LIGHT];
+        for g in arms {
             assert_eq!(parts.enter(&part(0, g), None, &mut q), Action::Guest);
         }
         // An object part under an MXCSR with an exception unmasked.
@@ -319,9 +375,55 @@ mod tests {
         assert_eq!(parts.enter(&part(0, group::OBJECT), Some(&Inputs::Object(unmasked)), &mut q), Action::Guest);
         parts.fault();
         let s = parts.stats();
-        assert_eq!([s.guest_character, s.guest_coln, s.guest_other, s.declined_fault], [1, 1, 1, 5]);
-        assert_eq!((s.parts, s.refused()), (8, 8));
+        assert_eq!([s.guest_other, s.declined_fault], [1, 9]);
+        assert_eq!((s.parts, s.refused()), (10, 10));
         let a = parts.arms();
-        assert_eq!([a.damage.declined_fault, a.object.declined_fault, a.sound.declined_fault], [1, 2, 1]);
+        let declined = [a.damage, a.object, a.sound, a.character, a.coln, a.decal, a.light].map(|a| a.declined_fault);
+        assert_eq!(declined, [1, 2, 1, 1, 1, 1, 1]);
+    }
+
+    /// The character, `coln`, decal and light arms: each proven by its own
+    /// matches, then answering with its slot 4096 an audit.
+    #[test]
+    fn the_other_arms_answer_after_their_own_proof() {
+        let mut parts = Parts::new();
+        let mut q = Queue::new();
+        let ci = character::Inputs { tag: 3, node: 2, ..character::Inputs::default() };
+        let ni = coln::Inputs {
+            entry: 0x0030_0000,
+            seed_at: 0x0070_0004,
+            seed: 1,
+            lo: 0,
+            hi: 1.0f32.to_bits(),
+            scale: 0x3780_0000,
+            fpu: x87::abi::X87Abi { control: 0x027f, ..x87::abi::X87Abi::default() },
+        };
+        let di = crate::decal::tests::inputs();
+        let li = light::Inputs { object: u32::MAX, tag: 4, ..light::Inputs::default() };
+        let all = [
+            (group::CHARACTER, Inputs::Character(ci)),
+            (group::COLN, Inputs::Coln(ni)),
+            (group::DECAL, Inputs::Decal(di)),
+            (group::LIGHT, Inputs::Light(li)),
+        ];
+        for _ in 0..PROVEN_AFTER {
+            for (g, i) in &all {
+                assert_eq!(parts.enter(&part(0, *g), Some(i), &mut q), Action::Guest);
+            }
+            parts.character.seen(&character::Call::predict(&ci));
+            parts.coln.seen(&coln::Call::predict(&ni).unwrap());
+            parts.decal.verdict(None);
+            parts.light.seen(&light::Call::predict(&li));
+        }
+        for (g, i) in &all {
+            assert_eq!(parts.enter(&part(0, *g), Some(i), &mut q), Action::Guest, "{g:#x}: slot 4096 audits");
+            assert_ne!(parts.enter(&part(0, *g), Some(i), &mut q), Action::Guest, "{g:#x}: answers");
+        }
+        let a = parts.arms();
+        assert_eq!([a.character, a.coln, a.decal, a.light].map(|a| (a.matched, a.answered)), [(PROVEN_AFTER, 1); 4]);
+        // A decal part under an x87 state that could fault is the guest's.
+        let loud = crate::decal::Inputs { fpu: x87::abi::X87Abi { control: 0x027e, ..di.fpu }, ..di };
+        assert_eq!(parts.enter(&part(0, group::DECAL), Some(&Inputs::Decal(loud)), &mut q), Action::Guest);
+        assert_eq!(parts.arms().decal.declined_fault, 1);
     }
 }

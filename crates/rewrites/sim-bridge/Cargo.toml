@@ -23,6 +23,8 @@ sim-ext.workspace = true
 sim-sound.workspace = true
 # The effect part split, damage chain and visual events (sim_effects_parts.rs).
 sim-effects.workspace = true
+# The guest's x87 state the coln and decal draws run on (sim_effects_parts.rs).
+x87.workspace = true
 # The host mixer the sound events feed (sim_sound/mixer_feed.rs).
 audio = { path = "../../platform/audio", default-features = false }
 

@@ -8,8 +8,11 @@
 //!   by its tag group, and whether it touches the sim.
 //! - [`damage`]: a damage part's record (`0x88` bytes), built exactly as
 //!   the switch's `jpt!` arm builds it before it calls the area damage.
-//! - [`object`], [`sound`]: an object or sound part's leaf calls, as the
-//!   switch's `obje` and `snd!` arms make them.
+//! - [`object`], [`sound`], [`character`], [`coln`], [`decal`], [`light`]:
+//!   each part's leaf calls and draws, as the switch's `obje`, `snd!`,
+//!   `char`, `coln`, `deca` and `ligh` arms make them.
+//! - [`random`]: the shared stream's two draws, run on the guest's x87
+//!   state with the recompiler's x87 helpers.
 //! - [`arm`]: each part arm's proof: compared with the guest until it has
 //!   matched [`arm::PROVEN_AFTER`] parts, then answering, one part in
 //!   [`arm::AUDIT_EVERY`] still compared, the guest on any difference.
@@ -23,10 +26,15 @@
 #![forbid(unsafe_code)]
 
 pub mod arm;
+pub mod character;
+pub mod coln;
 pub mod damage;
+pub mod decal;
 pub mod dispatch;
+pub mod light;
 pub mod object;
 pub mod parts;
+pub mod random;
 pub mod scene;
 pub mod sound;
 pub mod walk;
