@@ -25,7 +25,7 @@ fn word(record: &[u8], offset: usize) -> u32 {
 
 /// The BSP pointer entry A takes starts at the first block descriptor.
 /// In a coll element that is the word after the node/flags header.
-pub(super) fn bsp_headers<'a>(view: &TagView<'a>, group: FourCC, address: u32) -> Vec<&'a [u8]> {
+pub(crate) fn bsp_headers<'a>(view: &TagView<'a>, group: FourCC, address: u32) -> Vec<&'a [u8]> {
     if group == SBSP {
         let root = view.range(address, 0x1c).unwrap();
         return view.block(root, 0x14, TagBsp::STRUCTURE_SIZE).unwrap();
@@ -512,7 +512,7 @@ fn for_each_map(mut visit: impl FnMut(&str, &mut Map<BufReader<File>>)) {
 
 /// Structures have individual address spaces. Ordinary tags can alias a
 /// root or share children beyond their tag index entry's byte extent.
-pub(super) fn for_each_tag(groups: &[FourCC], mut visit: impl FnMut(&str, FourCC, &TagView<'_>, u32)) {
+pub(crate) fn for_each_tag(groups: &[FourCC], mut visit: impl FnMut(&str, FourCC, &TagView<'_>, u32)) {
     for_each_map(|path, map| {
         let tags: Vec<_> = map.tags().iter()
             .filter(|t| groups.contains(&t.group))

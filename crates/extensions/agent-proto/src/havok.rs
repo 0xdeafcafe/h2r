@@ -243,6 +243,8 @@ pub struct Islands {
     pub deactivation: TakeoverArm,
     /// The integrate phase arm (`physics.integrate`).
     pub phase: TakeoverArm,
+    /// The structure polygon builder arm (`physics.structure.polygon`).
+    pub polygon: TakeoverArm,
 }
 
 /// A take-over arm: calls since the process started, and its take-over
@@ -372,11 +374,16 @@ mod tests {
                 "fallbacks": [{"reason": "listener", "count": 5}],
                 "proven": false, "ended": false,
             },
+            "polygon": {
+                "answered": 70, "matched": 4096, "mismatched": 0, "declined": 1,
+                "fallbacks": [{"reason": "ring", "count": 1}],
+                "proven": true, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
         assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
-        assert_eq!((i.deactivation.matched, i.phase.declined), (12, 5));
+        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered), (12, 5, 70));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

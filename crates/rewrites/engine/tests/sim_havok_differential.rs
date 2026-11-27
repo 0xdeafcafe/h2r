@@ -1978,3 +1978,267 @@ fn phases_the_model_does_not_cover_are_declined_and_counted() {
         assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
     }
 }
+
+// ---- the structure polygon builder `0x001edd00` ----------------------------
+
+use engine::sim_physics::structure_polygon as polygon_arm;
+use sim_havok::structure::{self as structure, Fallback as PolygonDecline};
+
+const BUILDER: u32 = 0x001e_dd00;
+const POLY_BSP: u32 = 0x0070_0000;
+const POLY_RECORD: u32 = 0x0070_0100;
+const POLY_EDGES: u32 = 0x0070_1000;
+const POLY_VERTICES: u32 = 0x0070_8000;
+const POLY_SHAPE: u32 = 0x0072_0000;
+const POLY_TRANSFORM: u32 = 0x0072_1000;
+
+/// The builder's arguments for a seeded call.
+struct PolyCall {
+    args: structure::Args,
+    vertices: u32,
+}
+
+/// A surface whose ring of three to eight edges takes each edge from
+/// either side, at scattered edge and vertex indices, with raw vertex
+/// words (a NaN or a denormal now and then), and on odd seeds a transform
+/// whose scale is one or not.
+fn poly_surface(r: &mut Rng, m: &mut FlatMemory, transformed: bool) -> PolyCall {
+    let surface = r.below(0x8000);
+    word(m, POLY_BSP + structure::BSP_SURFACES, POLY_RECORD.wrapping_sub(surface.wrapping_mul(8)));
+    word(m, POLY_BSP + structure::BSP_EDGES, POLY_EDGES);
+    word(m, POLY_BSP + structure::BSP_VERTICES, POLY_VERTICES);
+    let n = 3 + r.below(6);
+    let mut edges: Vec<u32> = Vec::new();
+    while edges.len() < n as usize {
+        let e = r.below(2000);
+        if !edges.contains(&e) {
+            edges.push(e);
+        }
+    }
+    word(m, POLY_RECORD, (edges[0] << 16) | (r.u32() & 0xffff));
+    word(m, POLY_RECORD + 4, r.u32());
+    for i in 0..n as usize {
+        let at = POLY_EDGES + 12 * edges[i];
+        let next = edges[(i + 1) % n as usize];
+        let vertex = r.below(4000);
+        let other = |r: &mut Rng| loop {
+            let v = r.u32() & 0xffff;
+            if v != surface {
+                break v;
+            }
+        };
+        let (left, right) = (other(r), other(r));
+        if r.below(2) == 0 {
+            // The surface on the left: start and forward.
+            word(m, at, vertex | (r.u32() & 0xffff) << 16);
+            word(m, at + 4, next | (r.u32() & 0xffff) << 16);
+            word(m, at + 8, surface | right << 16);
+        } else {
+            word(m, at, (r.u32() & 0xffff) | vertex << 16);
+            word(m, at + 4, (r.u32() & 0xffff) | next << 16);
+            word(m, at + 8, left | surface << 16);
+        }
+        for k in 0..4 {
+            let v = match r.below(16) {
+                0 => 0x7fc0_0000 | (r.u32() & 0xffff),
+                1 => r.u32() & 0x007f_ffff,
+                _ => bits(r, -500.0, 500.0),
+            };
+            word(m, POLY_VERTICES + 16 * vertex + 4 * k, v);
+        }
+    }
+    random_bytes(r, m, POLY_SHAPE, 0x20 + 16 * n + 0x40);
+    let transform = if transformed {
+        let scale = if r.below(2) == 0 { 1.0f32.to_bits() } else { bits(r, 0.5, 2.0) };
+        word(m, POLY_TRANSFORM, scale);
+        for i in 1..13 {
+            word(m, POLY_TRANSFORM + 4 * i, bits(r, -2.0, 2.0));
+        }
+        POLY_TRANSFORM
+    } else {
+        0
+    };
+    PolyCall {
+        args: structure::Args { shape: POLY_SHAPE, transform, bsp: POLY_BSP, flag: r.u32() as u8, owner: r.u32(), surface, tail: r.u32() },
+        vertices: n,
+    }
+}
+
+fn poly_stack(m: &mut FlatMemory, a: &structure::Args) {
+    for (i, v) in [EXIT, a.bsp, u32::from(a.flag), a.owner, a.surface, a.tail].into_iter().enumerate() {
+        word(m, STACK + 4 * i as u32, v);
+    }
+}
+
+/// Run the lifted builder and check its registers.
+fn run_builder(code: &mut lifted::Original, m: &mut FlatMemory, a: &structure::Args, mxcsr: u32, why: &str) {
+    poly_stack(m, a);
+    let mut cpu = Cpu { gpr: [0, a.shape, 0, 0x1111, STACK, 0x2222, 0x3333, a.transform], eip: BUILDER, ..Cpu::default() };
+    cpu.mxcsr = mxcsr;
+    run(code, &mut cpu, m);
+    let after = abi_cpu(&cpu);
+    assert_eq!((after.eax, after.ecx, after.edx, after.esp), (a.shape, a.shape, a.tail, STACK + 0x18), "{why}: eax, ecx, edx, ret 0x14");
+    assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, a.transform), "{why}");
+}
+
+fn builder_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    code.prime(BUILDER);
+    code
+}
+
+/// Seeded surfaces, untransformed and transformed under every rounding
+/// mode: the shape's words equal the lifted builder's, byte for byte.
+#[test]
+fn structure_polygons_match_the_lifted_builder() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = builder_code(image);
+    for seed in 0..512u64 {
+        let mut r = Rng(0x1edd_0000 + seed);
+        let mut mem = base.clone();
+        let call = poly_surface(&mut r, &mut mem, seed % 2 == 1);
+        let mxcsr = 0x1f80 | ((seed / 2 % 4) as u32) << 13;
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let n = structure::build(&mut j, &call.args, mxcsr).unwrap_or_else(|f| panic!("seed {seed}: declined {f:?}"));
+        assert_eq!(n, call.vertices, "seed {seed}");
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} ({n} vertices, transform {:#x}) mxcsr {mxcsr:#x}", call.args.transform);
+        run_builder(&mut code, &mut mem, &call.args, mxcsr, &why);
+        clear_frame([&mut mem, &mut expected], 0x14);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+}
+
+/// The arm end to end: an audited call's prediction matches the lifted
+/// answer, and an applied one leaves memory and the registers as it does.
+#[test]
+fn the_polygon_arm_answers_as_the_lifted_builder() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = builder_code(image);
+    for seed in 0..32u64 {
+        let mut r = Rng(0x1ede_0000 + seed);
+        let mut mem = base.clone();
+        let call = poly_surface(&mut r, &mut mem, seed % 2 == 1);
+        poly_stack(&mut mem, &call.args);
+        let cpu = runtime::CpuAbi { ecx: POLY_SHAPE, edi: call.args.transform, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, esp: STACK, mxcsr: 0x1f80, ..runtime::CpuAbi::default() };
+        let prediction = polygon_arm::capture(&cpu, &guest(&mem)).unwrap_or_else(|f| panic!("seed {seed}: declined {f:?}"));
+        assert_eq!(prediction.vertices, call.vertices);
+        let mut lifted = mem.clone();
+        run_builder(&mut code, &mut lifted, &call.args, 0x1f80, &format!("seed {seed}"));
+        let mut answered = cpu;
+        (answered.eax, answered.edx, answered.esp) = (POLY_SHAPE, call.args.tail, STACK + 0x18);
+        assert!(prediction.matches(&answered, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        assert_eq!((regs.eax, regs.ecx, regs.edx, regs.esp), (POLY_SHAPE, POLY_SHAPE, call.args.tail, STACK + 0x18));
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_frame([&mut lifted, &mut model], 0x14);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+    }
+}
+
+/// A ring that never closes, a transform under an unmasked MXCSR and an
+/// unaligned shape: declined with nothing written, each reason counted.
+#[test]
+fn polygons_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    for (reason, transformed) in [(PolygonDecline::Ring, false), (PolygonDecline::Float, true), (PolygonDecline::Memory, false)] {
+        let mut r = Rng(0xdec4_0000 + reason as u64);
+        let mut mem = base.clone();
+        let call = poly_surface(&mut r, &mut mem, transformed);
+        let mut cpu = runtime::CpuAbi { ecx: POLY_SHAPE, edi: call.args.transform, esp: STACK, mxcsr: 0x1f80, ..runtime::CpuAbi::default() };
+        match reason {
+            // The first edge's next edge is itself, from whichever side.
+            PolygonDecline::Ring => {
+                let first = mem.read_u32(POLY_RECORD).unwrap() >> 16;
+                let at = POLY_EDGES + 12 * first;
+                let next = mem.read_u32(at + 4).unwrap();
+                let second = if next & 0xffff == first { next >> 16 } else { next & 0xffff };
+                word(&mut mem, POLY_EDGES + 12 * second + 4, second | second << 16);
+            }
+            PolygonDecline::Float => cpu.mxcsr = 0x1f00,
+            _ => cpu.ecx = POLY_SHAPE + 2,
+        }
+        poly_stack(&mut mem, &call.args);
+        let mut g = guest(&mem);
+        let index = PolygonDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = structure::fallbacks()[index].1;
+        let declined = parity::status()[7].3;
+        assert!(matches!(parity::polygon_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(structure::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[7].3 > declined, "{reason:?} counted on the arm");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}
+
+/// Every surface of every collision BSP on the disc, structure and
+/// ordinary tags, built as `0x001ee4d0` builds it: the shape equals the
+/// lifted builder's. The BSP's surface, edge and vertex blocks are copied
+/// to fresh RAM with the header's addresses rebased.
+#[test]
+#[ignore = "reads the owner's Halo 2 ISO (H2_DISC) and XBE (H2_XBE)"]
+fn every_disc_surface_polygon_matches_the_lifted_builder() {
+    use crate::sim_collision_differential::disc::{bsp_headers, for_each_tag};
+    use map::FourCC;
+    const BLOCKS: u32 = 0x0100_0000;
+    let Some((image, base)) = ram() else { panic!("set H2_XBE to run the disc sweep") };
+    let mut code = builder_code(image);
+    let mut mem = base.clone();
+    mem.bytes.resize(0x0400_0000, 0);
+    let span = POLY_SHAPE as usize..POLY_SHAPE as usize + 0x20 + 16 * structure::MAX_RING as usize;
+    let (mut surfaces, mut bsps, mut declined) = (0u64, 0u64, 0u64);
+    let (coll, sbsp) = (FourCC(*b"coll"), FourCC(*b"sbsp"));
+    for_each_tag(&[coll, sbsp], |label, group, view, address| {
+        for header in bsp_headers(view, group, address) {
+            let mut at = BLOCKS;
+            let mut count = [0u32; 8];
+            for (i, stride) in sim_collision::bsp::block::STRIDE.into_iter().enumerate() {
+                let n = u32::from_le_bytes(header[8 * i..8 * i + 4].try_into().unwrap());
+                let source = u32::from_le_bytes(header[8 * i + 4..8 * i + 8].try_into().unwrap());
+                word(&mut mem, POLY_BSP + 8 * i as u32, n);
+                if i < sim_collision::bsp::block::SURFACES {
+                    continue;
+                }
+                let bytes = view.range(source, u64::from(n) * u64::from(stride)).unwrap();
+                assert!((at as usize + bytes.len()) < mem.bytes.len(), "{label}: blocks fit");
+                mem.bytes[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
+                word(&mut mem, POLY_BSP + 8 * i as u32 + 4, at);
+                count[i] = n;
+                at = (at + bytes.len() as u32 + 15) & !15;
+            }
+            bsps += 1;
+            for surface in 0..count[sim_collision::bsp::block::SURFACES] {
+                let a = structure::Args { shape: POLY_SHAPE, transform: 0, bsp: POLY_BSP, flag: 0, owner: 0, surface, tail: 0 };
+                mem.bytes[span.clone()].fill(0);
+                let writes = {
+                    let view = Flat(&mem);
+                    let mut j = Journal::new(&view);
+                    if structure::build(&mut j, &a, 0x1f80).is_err() {
+                        declined += 1;
+                        continue;
+                    }
+                    j.finish()
+                };
+                let mut expected = vec![0u8; span.len()];
+                for (&w, &v) in &writes {
+                    let off = (w as usize).checked_sub(span.start).filter(|&o| o + 4 <= span.len());
+                    let off = off.unwrap_or_else(|| panic!("{label} surface {surface}: a store outside the shape at {w:#x}"));
+                    expected[off..off + 4].copy_from_slice(&v.to_le_bytes());
+                }
+                let why = format!("{label} surface {surface}");
+                run_builder(&mut code, &mut mem, &a, 0x1f80, &why);
+                assert!(mem.bytes[span.clone()] == expected[..], "{why}: the shape differs");
+                surfaces += 1;
+            }
+            mem.bytes[BLOCKS as usize..at as usize].fill(0);
+        }
+    });
+    eprintln!("structure polygons: {surfaces} surfaces over {bsps} BSPs equal the lifted builder; {declined} declined");
+    assert!(surfaces > 0 && declined == 0, "{declined} surfaces declined");
+}

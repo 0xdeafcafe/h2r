@@ -13,6 +13,7 @@ mod island_solve;
 pub mod deactivation;
 pub mod integrate_phase;
 pub mod island_integrate;
+pub mod structure_polygon;
 mod solver_rows;
 mod solver_pairs;
 pub(crate) mod first_person;

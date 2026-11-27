@@ -579,6 +579,9 @@ points! { ALL;
     /// The integrate phase and the island deactivation test it runs per
     /// island (docs/engine/havok-integrate.md).
     HAVOK_INTEGRATE_PHASE @ 0x0030_fef0: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/havok-integrate.md";
+    /// The structure polygon builder every child-shape getter of the
+    /// structure's containers calls (docs/engine/havok-structure.md).
+    HAVOK_STRUCTURE_POLYGON @ 0x001e_dd00: [fn(shape: ecx, transform: edi, bsp: stack 0, flag: stack 1, owner: stack 2, surface: stack 3, tail: stack 4) -> eax ret 20], Hot; "docs/engine/havok-structure.md";
     HAVOK_DEACTIVATION_TEST @ 0x0031_6b30: [fn(island: ecx, out: stack 0, step: stack 1) -> eax ret 8], Hot; "docs/engine/havok-integrate.md";
     /// The island solve, cdecl (docs/engine/havok-step.md, "The island solve").
     HAVOK_ISLAND_SOLVE @ 0x0031_c100: [fn(step: stack 0, info: stack 1, pairs: stack 2, gravity: stack 3, island: stack 4, entities: stack 5, entity_count: stack 6, constraints: stack 7, constraint_count: stack 8) -> eax ret 0], Hot; "docs/engine/havok-step.md";

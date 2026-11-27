@@ -12,7 +12,9 @@ installed by `sim-bridge/src/sim_physics.rs`; the heap digest
 report's `havok.world` component); the shadow's `compare_only` arm for
 guest-authoritative candidates; the broadphase batch update's, the
 island integrate's, the deactivation test's and the integrate phase's
-take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the island
+take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the
+structure polygon builder's take-over (slice 4,
+[havok-structure.md](havok-structure.md)); the island
 solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
 switches are retired; their bodies are differential oracles. The ladder
@@ -624,7 +626,7 @@ memory.
 | 3 | `0x00316a20` | thiscall (island; input), `ret 4` | async (actions) |
 | 3 | `0x00316b30` | thiscall (island; out byte, step), `ret 8` | plain `fn` |
 | 3 | `0x0030fef0` | thiscall (world; step), `ret 4` | async |
-| 4 | the structure container's child-shape virtuals (vtable `0x00456160`) | slice 4, step 0 | plain `fn` |
+| 4 | `0x001edd00`, the polygon builder under the collection's `vt[+0x34]` `0x001ee4d0` (vtable `0x00456194`) and its two other callers | thiscall-like (shape ecx, transform edi; five stack words), `ret 0x14` | plain `fn` |
 | 5 | `vt[+0x10]` of `0x00412c48` and `0x00412290` | slice 5, step 0 | async (contact callback) |
 | 6 | `vt[+0x10]` of `0x00412a98`, `0x00412adc`, `0x00412f5c`, `0x00412f7c`, `0x00412fb0`, `0x00412fd0` | slice 6, step 0 | async |
 | 7 | `0x00317d30` | thiscall (island; broadphase, input), `ret 8` | async |
@@ -798,6 +800,7 @@ since start and whether the arm is proven or ended since the map load.
 | `physics.island.integrate` | `316a20`, `ret 4` | take-over |
 | `physics.island.deactivation` | `316b30`, `ret 8` | take-over |
 | `physics.integrate` | `30fef0`, `ret 4` | take-over |
+| `physics.structure.polygon` | `1edd00`, `ret 0x14` | take-over |
 
 - **Take-over.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
@@ -834,6 +837,12 @@ since start and whether the arm is proven or ended since the map load.
   reason (`havok.islands`'s `deactivation` and `phase`). The phase
   composes the other two models, so a proven phase answers the whole
   island loop in one call.
+- **Structure polygon.** The same at `1edd00`, the builder every
+  child-shape getter of the structure's containers calls
+  ([havok-structure.md](havok-structure.md)). The prediction is the
+  shape's words with eax and ecx the shape, edx the tail, ebx, ebp, esi
+  and edi and esp; declines `memory`, `ring`, `float`, `unobserved`
+  (`havok.islands`'s `polygon`).
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node), an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the
@@ -918,9 +927,10 @@ cargo test -p agent havok
   `rsqrtss` sites, the contact Jacobian builder among them
   ([havok-step.md](havok-step.md), "Floats"). Each calls `simd::rsqrtss`,
   the recompiled build's definition; `Fast` has no host shortcut there.
-- **The polygon builder's output (S).** That a structure child's polygon
-  depends only on the surface, and that nothing retains a pointer to the
-  temporary shape, is assumed from havok-runtime.md. Slice 4, step 0.
+- **The polygon builder's output (S).** A structure child's polygon
+  depends on the surface and the builder's arguments (flag, owner, tail,
+  transform) only ([havok-structure.md](havok-structure.md), **E**). That
+  nothing retains a pointer to the temporary shape is still assumed.
 - **Motion types 6 and 7, pair word `+0x0c`, property words `+0x04`,
   `+0x14`, `+0x18` (Open in havok-runtime.md).** A structural port copies
   the code that uses them, so naming them is not a blocker, but each must

@@ -25,7 +25,8 @@
 //! integrate phase's (`0x30fef0`, `integrate_phase`), whose prediction is
 //! every island's test and integrate in the phase's order, take over the
 //! same way, each with its own reasons (`sim_havok::deactivation`,
-//! `sim_havok::integrate_phase`).
+//! `sim_havok::integrate_phase`), and so does the structure polygon
+//! builder's (`0x1edd00`, `structure_polygon`, `sim_havok::structure`).
 //!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
@@ -34,7 +35,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, deactivation, integrate_phase, island_integrate, motion};
+use super::{broadphase, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -117,9 +118,18 @@ pub static MOPP_BOX: Arm = Arm::new("physics.mopp.box");
 pub static ISLAND_INTEGRATE: Arm = Arm::new("physics.island.integrate");
 pub static DEACTIVATION: Arm = Arm::new("physics.island.deactivation");
 pub static INTEGRATE_PHASE: Arm = Arm::new("physics.integrate");
+pub static STRUCTURE_POLYGON: Arm = Arm::new("physics.structure.polygon");
 
-static ARMS: [&Arm; 7] =
-    [&BROADPHASE, &MOTION_POSE, &MOTION_FORCES, &MOPP_BOX, &ISLAND_INTEGRATE, &DEACTIVATION, &INTEGRATE_PHASE];
+static ARMS: [&Arm; 8] = [
+    &BROADPHASE,
+    &MOTION_POSE,
+    &MOTION_FORCES,
+    &MOPP_BOX,
+    &ISLAND_INTEGRATE,
+    &DEACTIVATION,
+    &INTEGRATE_PHASE,
+    &STRUCTURE_POLYGON,
+];
 
 pub(super) fn declined(arm: &Arm) {
     arm.declined.fetch_add(1, Ordering::Relaxed);
@@ -149,7 +159,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 7] {
+pub fn status() -> [(&'static str, u64, u64, u64); 8] {
     ARMS.map(|a| {
         (
             a.name,
@@ -172,10 +182,16 @@ pub struct Takeover {
 }
 
 /// The take-over state of the arms that answer calls: the broadphase
-/// batch update's, the island integrate's, the deactivation test's and the
-/// integrate phase's.
-pub fn takeover() -> [Takeover; 4] {
-    [BROADPHASE.take_over(), ISLAND_INTEGRATE.take_over(), DEACTIVATION.take_over(), INTEGRATE_PHASE.take_over()]
+/// batch update's, the island integrate's, the deactivation test's, the
+/// integrate phase's and the structure polygon builder's.
+pub fn takeover() -> [Takeover; 5] {
+    [
+        BROADPHASE.take_over(),
+        ISLAND_INTEGRATE.take_over(),
+        DEACTIVATION.take_over(),
+        INTEGRATE_PHASE.take_over(),
+        STRUCTURE_POLYGON.take_over(),
+    ]
 }
 
 /// At each map load, before the match's first step: every arm proves
@@ -338,6 +354,35 @@ pub fn phase_uncompared() {
     uncompared(&INTEGRATE_PHASE);
 }
 
+/// The structure polygon builder's arm, at its entry: as [`integrate_enter`].
+pub fn polygon_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<structure_polygon::Prediction> {
+    use sim_havok::structure as model;
+    enter(
+        &STRUCTURE_POLYGON,
+        cpu,
+        guest,
+        |cpu, guest| structure_polygon::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            let applied = p.apply(cpu, guest);
+            if !applied {
+                model::count(model::Fallback::Memory);
+            }
+            applied
+        },
+    )
+}
+
+/// At the guest's return from an audited build.
+pub fn polygon_compare(prediction: &structure_polygon::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&STRUCTURE_POLYGON, prediction.matches(cpu, guest));
+}
+
+/// An audited build whose return could not be observed.
+pub fn polygon_uncompared() {
+    sim_havok::structure::count(sim_havok::structure::Fallback::Unobserved);
+    uncompared(&STRUCTURE_POLYGON);
+}
+
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
 pub fn motion_pose_begin(thread: u32, cpu: &CpuAbi, guest: &Guest) {
     POSE_OPEN.with_borrow_mut(|calls| {
@@ -480,12 +525,19 @@ mod tests {
                 "physics.mopp.box",
                 "physics.island.integrate",
                 "physics.island.deactivation",
-                "physics.integrate"
+                "physics.integrate",
+                "physics.structure.polygon"
             ]
         );
         assert_eq!(
             takeover().map(|t| t.name),
-            ["physics.broadphase", "physics.island.integrate", "physics.island.deactivation", "physics.integrate"]
+            [
+                "physics.broadphase",
+                "physics.island.integrate",
+                "physics.island.deactivation",
+                "physics.integrate",
+                "physics.structure.polygon"
+            ]
         );
     }
 

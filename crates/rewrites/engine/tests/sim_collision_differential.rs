@@ -23,7 +23,7 @@ mod common;
 #[path = "sim_collision_differential/crossing.rs"]
 mod crossing;
 #[path = "sim_collision_differential/disc.rs"]
-mod disc;
+pub(crate) mod disc;
 #[path = "sim_collision_differential/mopp_box.rs"]
 mod mopp_box;
 #[path = "sim_collision_differential/mopp_ray.rs"]
