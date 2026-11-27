@@ -217,7 +217,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         let range = Range {
             gpu: gpu.clone(),
             draw: Arc::new(d),
-            map: Some((Arc::new(Mutex::new(Some(map.clone()))), MapKind::Depth, MAP)),
+            map: Some((Arc::new(Mutex::new(crate::native_shadows_draw::Maps::of(Some(map.clone())))), MapKind::Depth, MAP)),
         };
         let target = surface.target();
         let mut enc = ctx.device.create_command_encoder(&Default::default());
