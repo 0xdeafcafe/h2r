@@ -63,9 +63,10 @@ What keeps an item, by stage (**Code**):
   function drives, an engine wave before `Tables::install_engine_slab`, a
   `dot_rflct_spec` stage bound a 2D bitmap; [native-objects.md](native-objects.md),
   "Object programs"), `object_shader_flag_target` (flag bit 0 before the
-  frame's structure target copy with a flag-bit-20 program, whose draw
-  makes the copy: `object_program_gpu::makes_target_copy`),
-  `object_texaccum` (layer 1, or no target or level), `object_aux_depth`
+  frame's structure target copy with a flag-bit-20 program and a
+  structure parameter block, whose draw copies the target:
+  `object_program_gpu::makes_target_copy`),
+  `object_texaccum` (no target or level), `object_texaccum_structure` (layer 1's sampling items beside a structure item), `object_aux_depth`
   (the device does not hold the toggle off), `object_fade` (the
   device's stipple or a fade byte's pattern is not known exactly),
   `object_stipple` (the engine's cached fade or the device's
@@ -73,7 +74,10 @@ What keeps an item, by stage (**Code**):
   `object_fog`, `object_stencil`, `object_warming`. And `order`: the
   native pass draws before the guest's body, so an item after a kept one
   is taken only when both are order-free and every kept item before it
-  restores what it sets (`layer_pass::clear_layer_items`, `order_free`).
+  restores what it sets (`layer_pass::clear_layer_items`, `order_free`);
+  at the scene and the alternate view the rest's structure items draw
+  between the kept sorted entries, the objects kept `object_sorted`
+  ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from the plan").
 - **Layer 3's world**: untranslated passes and missing program inputs ([native-world.md](native-world.md)).
 - **Layer 3's objects** draw before the call where the gate answers
   ("Layer 3's objects before the call", below), else inside the body: the

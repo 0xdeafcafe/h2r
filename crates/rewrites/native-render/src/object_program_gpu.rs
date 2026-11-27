@@ -2239,8 +2239,10 @@ impl<'a> PartInputs<'a> {
 /// ([`PartFlags::TARGET_UNCOPIED`]) calls `0x0003bea0` for a program with
 /// flag bit 20 ([`tags::material::ResolvedImplementation::copies_target`]),
 /// which clears the shader cache and, with a structure parameter block,
-/// copies and binds the structure's target. No native stage does that, so
-/// such an item keeps its guest draw (`object_shader_flag_target`); one
+/// copies and binds the structure's target. No native stage copies it, so
+/// with a block such an item keeps its guest draw
+/// (`object_shader_flag_target`; without one the world layers' glue
+/// draws it ahead of every kept item and sets the frame's flag); one
 /// whose programs lack the bit makes no call, and skipping its draw skips
 /// nothing else (docs/graphics/native-objects.md, "Fade, the shader flag
 /// and the item's argument").

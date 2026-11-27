@@ -206,7 +206,9 @@ fn ask_run(mem: &mut dyn GuestMemory, at: &crate::late_sorted::RunAt<'_>, left: 
 
 /// Holds `layer` of `caller` for its sorted entries when the plan left
 /// items to the order rule: every item the guest's layer draw holds, each
-/// with its cause as [`count_kept`] names it. `false` when nothing is held.
+/// with its cause as [`count_kept`] names it, counted once when the layer
+/// is done (the layer draw's own turn leaves them to it). `false` when
+/// nothing is held.
 fn hold_for_runs(mem: &dyn GuestMemory, layer: u32, caller: LayerCaller, left: &mut Left, extracted: Option<&HashSet<u32>>) -> bool {
     if !RUN_LAYERS.contains(&layer) || !scene_only(layer, caller) || !crate::late_sorted::wants(left) {
         return false;
@@ -220,6 +222,7 @@ fn hold_for_runs(mem: &dyn GuestMemory, layer: u32, caller: LayerCaller, left: &
             left.item(h.slot, "remainder");
         }
     }
+    with_tally(&ro, layer, |t| t.counted.extend(held.iter().map(|h| h.slot)));
     let held = held.into_iter().map(|h| (h.slot, h.kind(), h.item.is_some())).collect();
     let hold = crate::late_sorted::Hold { layer, list, site: site(caller), late: false, held };
     crate::late_sorted::hold(&SORTED, hold, left);
@@ -1028,7 +1031,7 @@ mod tests {
         left.item(0, "state");
         left.item(1, crate::late_sorted::ORDER);
         let extracted: HashSet<u32> = [0, 1].into_iter().collect();
-        assert!(!hold_for_runs(&m, 5, LayerCaller::Scene, &mut left.clone(), Some(&extracted)), "not a run layer");
+        assert!(!hold_for_runs(&m, 3, LayerCaller::Scene, &mut left.clone(), Some(&extracted)), "not a run layer");
         assert!(!hold_for_runs(&m, 2, LayerCaller::FirstPerson, &mut left.clone(), Some(&extracted)), "not cut to the scene");
         let (state, unnamed) = (kept("scene_kept_2_world_state"), kept("scene_kept_2_world_unnamed"));
         assert!(hold_for_runs(&m, 2, LayerCaller::Scene, &mut left, Some(&extracted)));
@@ -1036,6 +1039,28 @@ mod tests {
         crate::late_sorted::stale(&SORTED, &m);
         assert_eq!(kept("scene_kept_2_world_state"), state + 1);
         assert_eq!(kept("scene_kept_2_world_unnamed"), unnamed + 1, "no run decided the order item");
+    }
+
+    /// An opaque layer's order item holds the layer the same way, and the
+    /// layer draw's own turn leaves its items to the runs: each is counted
+    /// once, when the layer is done.
+    #[test]
+    fn an_order_item_of_an_opaque_layer_is_counted_once_when_its_runs_are_done() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        TALLY.with(|t| t.borrow_mut().take());
+        let m = list(5, &[(1, false), (2, false)]);
+        let mut left = Left::default();
+        left.item(0, "state");
+        left.item(1, crate::late_sorted::ORDER);
+        let extracted: HashSet<u32> = [0, 1].into_iter().collect();
+        let (state, unnamed) = (kept("scene_kept_5_world_state"), kept("scene_kept_5_world_unnamed"));
+        assert!(hold_for_runs(&m, 5, LayerCaller::Scene, &mut left, Some(&extracted)));
+        let tally = TALLY.with(|t| t.borrow_mut().take());
+        count_unnamed(&m, "", 5, tally.as_ref(), Keep::Structure);
+        assert_eq!((kept("scene_kept_5_world_state"), kept("scene_kept_5_world_unnamed")), (state, unnamed), "the turn counts none");
+        crate::late_sorted::stale(&SORTED, &m);
+        assert_eq!(kept("scene_kept_5_world_state"), state + 1);
+        assert_eq!(kept("scene_kept_5_world_unnamed"), unnamed + 1);
     }
 
     /// A scene layer the host does not draw (here its view does not

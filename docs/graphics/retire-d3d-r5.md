@@ -81,8 +81,9 @@ not take the rewrite: the guest draws it too, logged).
 
 ## Layer 2 from the plan
 
-Layers 2 and 17 (`native_layers::RUN_LAYERS`) at the scene's and the
-alternate view's calls use the same runs. The layer call's ask draws the
+The layers cut to the scene (1, 5, 7, 8, 20, 2 and 17:
+`native_layers::RUN_LAYERS`) at the scene's and the alternate view's
+calls use the same runs. The layer call's ask draws the
 leading items the order rule allows and clears their bits; when it leaves
 an item `order`, the bridge holds the layer (`late_sorted::hold`) and each
 run asks the glue again (`Host::ask_run`), which differs from the call's
@@ -93,7 +94,7 @@ ask in four ways.
 | Items | the list, by the order rule (`clear_layer_items`) | the sorted entries from `from`, up to the first kept (`layer_pass::sorted_layer_run`) |
 | Skip check | `skip_holds` against the device | against the device after the cached restore |
 | Objects | planned with the structure | kept, `object_sorted` (their checks read the device at the call) |
-| Outcomes | `layer_plan_2_*` | none; the held layer's `scene_kept_*` when done |
+| Outcomes | `layer_plan_<layer>_*` | none; the held layer's `scene_kept_*` once, when done (the layer draw's own turn leaves them) |
 
 No layer-2 draw is admitted at its resolved inputs: what no run takes
 keeps its guest draw and its count.
