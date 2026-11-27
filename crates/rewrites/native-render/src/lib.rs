@@ -40,6 +40,7 @@ pub mod cull;
 #[cfg(feature = "gpu")]
 pub mod cull_gpu;
 pub mod decal;
+pub mod decal_material;
 pub mod decal_scene;
 #[cfg(feature = "gpu")]
 pub mod decal_gpu;

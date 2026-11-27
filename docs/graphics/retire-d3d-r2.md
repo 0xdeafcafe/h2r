@@ -133,9 +133,16 @@ a plate into its corners, layers and the depth test GREATER. Tests:
 scene; the callback `0x00044040` is then cut, and `0x00041cc0`, `0x000423c0`
 (object and camouflage layers) are not the decals'.
 
-Not built: nothing draws these items. The decal callback needs the state
-`0x00043a40` sets (program, 192 constants, the mode's combiner block),
-which exists only in the D3D draw snapshot; a plate needs the placement
+The decal material is ported as data (`native_render::decal_material`:
+each mode's render states from `0x000222d0` calls and its 60-word combiner
+block from `0x00043a40`). The game proves it: one resolved decal draw in 64
+is compared with it (`game/src/native_decals_glue.rs`), `render.scene`
+carries `decal_material_{sampled,clean,mismatched,proven}` and
+`decal_material_mismatch_<field>` (`combiner_w<n>`, `render_<index>`), and
+`native_decals::material_proven()` holds after 8 clean samples in a row.
+
+Not built: nothing draws these items. The decal vertex program (engine
+slot 3) and the 192 constants are not ported or compared; a plate needs the placement
 test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
