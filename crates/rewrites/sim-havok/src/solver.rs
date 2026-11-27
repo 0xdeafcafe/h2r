@@ -595,6 +595,12 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
         d.accumulators.push(addr);
         Some(d.accumulators.len() - 1)
     };
+    // Every accumulator takes the velocity sums at each pass's end, the
+    // leading one and those no constraint names too (`0x0031e0c0` walks
+    // kind 2 from the base to the end byte 3).
+    for i in 0..=areas.count {
+        body(&mut d, areas.accumulators.checked_add(ACCUMULATOR_BYTES.checked_mul(i)?)?)?;
+    }
     let mut p = start;
     let mut row_at = areas.rows;
     let mut rows_end = areas.rows_end;

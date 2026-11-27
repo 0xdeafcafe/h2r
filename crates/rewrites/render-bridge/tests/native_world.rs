@@ -5,6 +5,7 @@
 //! without a host or in another layer; a structure item the host does not
 //! draw loses the bit too and is counted `scene_dropped_world_*`, the
 //! world drawing only from the scene), and its chain on a second executor.
+#![cfg(feature = "native-render")]
 
 use std::sync::{Arc, Mutex};
 

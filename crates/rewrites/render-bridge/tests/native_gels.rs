@@ -1,4 +1,5 @@
 //! Synthetic admission/placement tests; no retail bytes or game process.
+#![cfg(feature = "native-render")]
 use engine::memory::{FlatMemory, GuestMemory};
 use hooks::{Registry, Switches, plan::Base};
 use render_bridge::{native_gels::{self, Call, NativeGels}};

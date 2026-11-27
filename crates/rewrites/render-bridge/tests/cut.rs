@@ -185,6 +185,7 @@ fn the_cut_table_names_every_registry_producer() {
 /// entry, a request already queued stamps and counts the structure miss,
 /// and one that needs a new queue entry is the guest cache's own service.
 #[test]
+#[cfg(feature = "native-render")]
 fn object_setup_makes_the_guests_residency_requests() {
     use engine::testing::FakeGuest;
     use render_bridge::native_scene_lists::{ResidencyRequest, residency_request};

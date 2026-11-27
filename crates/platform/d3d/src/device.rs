@@ -6629,13 +6629,18 @@ impl<B: Backend> Device<B> {
                     pass: Arc::clone(&pass),
                 });
             }
+            // The attachments the carry names: a colour-only pass (its
+            // binding's depth is its colour, for a scratch depth) has no
+            // depth of the guest's to carry, whatever depth the draw had
+            // bound, so the sink matches it against the colour alone.
+            let carry_depth = if binding.surfaces.depth == color { None } else { depth };
             if let Some(fallback) = fallback {
                 // A retaining replay keeps a native producer's pass as its
                 // carried packets: begun before queuing, so the sink takes
                 // the queued draw, and recorded in its slot once queued. The
                 // game thread then never waits on the render thread for it.
                 let carry = native.is_some()
-                    && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
+                    && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, carry_depth, a));
                 let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
                 let queued = crate::backend::QueuedExternalDraw {
@@ -6662,7 +6667,7 @@ impl<B: Backend> Device<B> {
                 };
                 if self.backend.queue_external_draw(queued, textures) {
                     if carry {
-                        self.backend.record_native_carry(color, depth, textures);
+                        self.backend.record_native_carry(color, carry_depth, textures);
                         self.backend.end_native_carry();
                     }
                     if writes_color {
@@ -6689,7 +6694,7 @@ impl<B: Backend> Device<B> {
             // so a replaying sink carries it the same way
             // ([`crate::scene_sink::carries_native_stage`]).
             let carried = (native.is_some() || plan.stage == timeline::native::Stage::Water)
-                && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
+                && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, carry_depth, a));
             let commands = self.backend.prepare_external(
                 binding.surfaces.clone(),
                 binding.request,
@@ -6707,7 +6712,7 @@ impl<B: Backend> Device<B> {
                     // Recorded before the display copies materialise: the
                     // carried textures borrow the device's cache.
                     if carried {
-                        self.backend.record_native_carry(color, depth, textures);
+                        self.backend.record_native_carry(color, carry_depth, textures);
                     }
                     for &(_, surface) in &binding.colors {
                         self.materialize_display_copy(surface)?;

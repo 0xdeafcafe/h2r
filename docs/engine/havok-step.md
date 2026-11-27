@@ -306,7 +306,9 @@ so the entries are installed for every caller, under
 solver parameters `W+0x160`, pair words `W+0x190`, gravity `W+0xe0`, the
 island, its entity array and count, its constraint array and count; the
 caller (`0x00316b16`) pops `0x24`. Callee-saved registers are restored;
-`eax` is the LIFO block pointer, 0 when the island fits the buffer. **E**
+`eax` is 0 when the island fits the buffer; after a LIFO block it is
+what the release leaves: the descriptor's remaining bytes when inline,
+else the dispatcher free's `eax` (the caller passes it on unread). **E**
 
 **The buffer.** The solver buffer object `[0x00484b38]` holds base `+0x08`,
 size `+0x0c` and the busy byte `+0x10` (set to 1 on entry, 0 before the
@@ -404,7 +406,10 @@ measured from the points while flag bit 2 is set and then cleared, unless
 it comes out below `0x004155a8`, which leaves the two-row form. **E**
 
 **Solve and export.** `0x0031c940` (parameters, accumulators, schemas,
-impulses). When it returns 1, each entity in array order gets
+impulses). At each pass's end it walks every accumulator of kind 2 from
+the base to the end byte (`0x0031e0c0`), those no constraint names too,
+setting the sums `+0x40`, `+0x50` to the velocities on the first pass and
+adding them after. When it returns 1, each entity in array order gets
 `vt[+0x10]` (step, `[info+0x20]`, accumulator; `ret 0xc`), which returns
 the next accumulator. `0x0031a6a0` (type 7) writes nothing. Types 2 to 5
 set the velocities to the iteration sums `+0x40`, `+0x50` times the
