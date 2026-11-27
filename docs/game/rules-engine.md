@@ -1317,6 +1317,24 @@ the next tick (`on tick` in `siege.rules` sets the kit of a player whose
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
+#### Siege announcer lines
+
+`siege.rules` requires `audio.play` and plays the announcer's clips
+(`art/announcer/<clip>.wav`) with `sound_to`, `sound_to_team` and
+`sound_to_all`, naming a clip as the sound `"announcer/<clip>"`
+([rules-world-api.md](rules-world-api.md#audio)).
+
+| Event | Line | Audience |
+|---|---|---|
+| The game starts | Siege (`siege`, the type's start line, [audio.md](../audio/audio.md#our-medals-announcer-lines)) | all |
+| A round starts | Attack (`attack`) / Defend (`defend`) | the attackers / the defenders |
+| The last round starts | Final Round (`final-round`) | all |
+| A site falls (each, the last before the final assault too) | Site Captured (`site-captured`) | all |
+| A side's respawn wave lands, with dead to bring back | Reinforcements (`reinforcements`) | that side |
+| A round ends | Round Over (`round-over`) | all |
+
+Tests: `crates/formats/rules/tests/hud_marks.rs` (`siege_says_*`).
+
 #### Siege layouts
 
 A map plays ordered phases when its layout numbers its sites, names its

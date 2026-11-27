@@ -397,6 +397,15 @@ start, by the sound's path. A sound of a shared map (`shared.map`) is not
 in the loaded map's file and is refused the same way. A host that runs a
 film makes the same sounds.
 
+A sound whose path starts `announcer/` is one of the announcer's clips
+(`art/announcer/<clip>.wav`, [audio.md](../audio/audio.md#our-medals-announcer-lines)),
+not a tag of the map. The start gate's census skips it
+(`rules::labels::ANNOUNCER`), and each machine with a local player in the
+audience, dead or alive, joins it to the announcer's queue
+(`world::audio::say`), so it needs no sound lookup. A clip that is not one
+of ours refuses the script at the start, by its path (`audio::refusal`).
+The cue is the same sound cue, so a viewer and a film say it too.
+
 A script that names `say`, `sound_at`, `music`, `music_stop` or `announce`
 is refused at the start by the entry's name: R4 and R5 have not settled
 what each does on the host. `sound_at` waits on R4: the body of

@@ -182,6 +182,11 @@ pub struct Problem {
     pub text: String,
 }
 
+/// The path prefix of a sound that is one of the announcer's lines
+/// (`art/announcer/<clip>.wav`): `sound_to_all("announcer/attack")`. No map
+/// holds one, so the start gate asks the host about it, not the census.
+pub const ANNOUNCER: &str = "announcer/";
+
 /// Every problem the map has with the script's tables, labels in table
 /// order, then tags. `teams` are the teams in play, which `per team` reads.
 /// Labels the script does not declare, and tags the map does not hold, are
@@ -194,6 +199,10 @@ pub fn check(ir: &Ir, census: &Census, teams: &[u8]) -> Vec<Problem> {
     }
     for (i, t) in ir.tags.iter().enumerate() {
         if t.group == TagGroup::Sound {
+            // An announcer line is one of ours, not a tag of the map.
+            if t.path.starts_with(ANNOUNCER) {
+                continue;
+            }
             if let Some(sounds) = &census.sounds
                 && !sounds.contains(&t.path)
             {

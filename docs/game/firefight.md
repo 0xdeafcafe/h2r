@@ -1576,6 +1576,35 @@ last `ModeState` entry it applied, one tick after the host's own HUD
 shows it, since the entry is for the next tick. A distributed client
 gets the blob over the actor channel.
 
+### The announcer
+
+The HUD's mode blob diff that words the banners also picks the announcer's
+lines (`firefight/hud/banners.rs`, `lines`), spoken through the queue our
+medals use ([audio.md](../audio/audio.md#our-medals-announcer-lines)). Each
+machine says them from the blob it reads, so a client, a replica and a
+film's playback hear the same ones; split screen says them once. The clips
+are `art/announcer/<id>.wav`, the owner's recordings.
+
+| Event | Line (clip) |
+|---|---|
+| The match starts (round start cue) | FireFight (`firefight`) |
+| A wave or boss wave starts | New Wave (`new-wave`) |
+| A wave is cleared | Wave Complete (`wave-complete`) |
+| A round is cleared | Round Complete (`round-complete`) |
+| A set is cleared | Set Complete (`set-complete`) |
+| The bonus round starts | Bonus Round (`bonus-round`) |
+| The bonus round ends | Bonus Round Complete (`bonus-round-complete`) |
+| The viewer's lives rise | Lives Added (`lives-added`) |
+| The viewer is down to one life | Last Life (`last-life`) |
+| The match is lost | Game Over (`game-over`) |
+| Skulls switch off (a set or round's) | Skulls Off (`skulls-off`) |
+| A skull switches on | `<name>-on`: Assassins, Thunderstorm, Famine, Ghost, Black Eye, Catch, Mythic, Angry (the other skulls have clips too: Envy, Grunt Birthday Party, IWHBYD, Blind, Sputnik, Iron, Bandana) |
+| Every skull the blob carries is on | All Skulls On (`all-skulls-on`), in place of the tick's skull lines |
+
+Low Gravity has no line. Skulls on at the match's first blob are the
+lobby's and are not said. Siege's lines are in
+[rules-engine.md](rules-engine.md#siege-announcer-lines).
+
 ### Live
 
 - **Variant.** The Slayer record names the mode in the variant
