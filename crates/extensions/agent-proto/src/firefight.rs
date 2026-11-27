@@ -83,6 +83,29 @@ pub struct State {
     /// (each also one row in `errors`).
     #[serde(default)]
     pub placements_unseen: u32,
+    /// The players' drop pods; none until a match runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pods: Option<Pods>,
+}
+
+/// The players' drop pods (docs/game/firefight.md, "Drop pods").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pods {
+    /// Pods are on for this match: the Drop Pods setting is on and the kit
+    /// has a pod and a start under open sky.
+    pub on: bool,
+    /// Why they are not, when the kit is the reason (the row is hidden).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<String>,
+    /// Starts under open sky the kit has a fall for.
+    pub open_starts: u32,
+    /// Players dropped by pod.
+    pub pod_spawns: u32,
+    /// Players who spawned on foot, or whose drop stopped, by reason
+    /// (`no_fall`, `blocked`, `no_free_pod`, `seat_refused`, `pod_gone`,
+    /// `never_landed`, `gone`).
+    #[serde(default)]
+    pub pod_fallbacks: std::collections::BTreeMap<String, u32>,
 }
 
 /// The director's mode blob, summarised.
@@ -180,6 +203,22 @@ pub enum ShipKind {
     Pelican,
 }
 
+/// How a dropped squad arrives (`firefight::Arrival`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    #[default]
+    Auto,
+    Foot,
+    Ship,
+    Pod,
+}
+
+impl Arrival {
+    fn is_auto(&self) -> bool {
+        *self == Self::Auto
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -198,6 +237,9 @@ pub enum Command {
         count: u16,
         zone: u8,
         weapon_tier: u8,
+        /// `pod`: the squad falls in a pod and is placed when it lands.
+        #[serde(default, skip_serializing_if = "Arrival::is_auto")]
+        arrival: Arrival,
         /// The kind of ship that flies it in.
         ship: ShipKind,
     },
@@ -384,6 +426,7 @@ mod tests {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
             json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0, "ship": "pelican"}}),
+            json!({"drop_squad": {"slot": 1, "class": "flood", "count": 3, "zone": 2, "weapon_tier": 0, "arrival": "pod", "ship": "phantom"}}),
             json!({"ship_hover": {"ship": "phantom", "on": true}}),
             json!({"ship_unload": {"ship": "pelican"}}),
             json!({"ship_leave": {"ship": "phantom", "zone": 1}}),

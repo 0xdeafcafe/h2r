@@ -21,17 +21,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{
-    Kill, KindSeen, Phase, PlayerSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
+    Kill, KindSeen, Phase, PlayerSeen, PodsSeen, SQUAD_SLOTS, ShipSeen, State, ZoneSeen, firefight_team,
 };
 use ::firefight::{
-    Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
+    Arrival, Command, Def, Limits, MAX_TEAMS, Observed, Outcome, PlayerKill, ScoreReason, ScriptDirector,
     Settings, Skull,
 };
 use host_log::{Entry, Log, LogHead, Sha256};
 
 use ::firefight::ShipKind;
 
+use super::guest::PodFall;
+use super::pods::FALL_TICKS;
 use super::ship::{Boarding, FLY_TICKS, Launch, Ship, ShipPath};
+use super::squad_pods::{Fallback, Falling, SquadPods};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 
 /// Teams a game can hold.
@@ -85,6 +88,9 @@ pub struct Kit {
     /// base, base 1 the second team's. A squad's cleanup hunt goes to its
     /// target's base.
     pub bases: Vec<[f32; 3]>,
+    /// The classes whose `auto` arrival is a pod: every one that is not
+    /// Covenant.
+    pub pod_classes: BTreeSet<String>,
 }
 
 /// One player in the match, read after the game tick.
@@ -174,6 +180,19 @@ pub trait Game: SquadEntry {
     /// `unload`: everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
     fn unload(&mut self, _ship: u32) -> anyhow::Result<()> {
         anyhow::bail!("this game has no ships to unload")
+    }
+    /// The kit's squad pods, `ff_pod_NN` in order: each one's datum while
+    /// it is a live vehicle in the world.
+    fn squad_pods(&self) -> Vec<Option<u32>> {
+        Vec::new()
+    }
+    /// Each kit zone's fall, in kit order; none for a zone with no fall.
+    fn falls(&self) -> Vec<Option<PodFall>> {
+        Vec::new()
+    }
+    /// Put a pod back at its parking place.
+    fn park_pod(&mut self, _pod: u32) -> anyhow::Result<()> {
+        anyhow::bail!("this game has no pods to park")
     }
 }
 
@@ -335,6 +354,8 @@ pub struct Host {
     placements_unseen: u32,
     /// Their error rows, until the runtime takes them.
     unseen_errors: Vec<ApplyError>,
+    /// The kit's squad pods, which squads fall in.
+    pods: SquadPods,
 }
 
 /// Ticks after a placement is applied at which a slot with no actor counts
@@ -402,6 +423,7 @@ impl Host {
             unseen: BTreeMap::new(),
             placements_unseen: 0,
             unseen_errors: Vec::new(),
+            pods: SquadPods::new(game.squad_pods().len()),
         })
     }
 
@@ -556,13 +578,15 @@ impl Host {
         for entry in due {
             self.applied = entry.seq;
             game.begin_entry(entry.seq);
-            match self.apply(&entry.op, game) {
+            match self.apply(&entry.op, entry.tick, game) {
                 Ok(()) => match &entry.op {
                     Command::PlaceSquad { slot, class, .. } => {
                         self.unseen.insert(*slot, (entry.tick, class.clone()));
+                        self.pods.landed(*slot, entry.tick);
                     }
                     Command::EraseSquad { slot } => {
                         self.unseen.remove(slot);
+                        self.pods.cancel(*slot);
                     }
                     _ => {}
                 },
@@ -571,6 +595,12 @@ impl Host {
                     tick: entry.tick,
                     error,
                 }),
+            }
+        }
+        // The pods whose wreck is over go back to their parking places.
+        for pod in self.pods.parked(tick, &game.squad_pods()) {
+            if let Err(error) = game.park_pod(pod) {
+                errors.push(ApplyError { seq: None, tick, error });
             }
         }
         errors
@@ -584,7 +614,7 @@ impl Host {
             return Ok(0);
         }
         let teams = self.director.as_ref().map_or(1, |d| d.def().teams);
-        let seen = observe(&self.kit, &self.by_character, teams, game);
+        let seen = observe(&self.kit, &self.by_character, teams, &self.pods, game);
         self.check_unseen(tick, &seen.actors_alive_by_squad);
         let Some(director) = self.director.as_mut() else {
             return Ok(0);
@@ -611,6 +641,15 @@ impl Host {
             self.ended = Some(ended);
         }
         let at = tick.saturating_add(1);
+        // Squads whose pod lands by the next tick are placed there.
+        let mut commands = commands;
+        commands.extend(self.pods.due(at).into_iter().map(|f| Command::PlaceSquad {
+            slot: f.slot,
+            class: f.class,
+            count: f.count,
+            zone: f.zone,
+            weapon_tier: f.weapon_tier,
+        }));
         let appended = commands.len();
         for op in commands {
             let head = self.log.head();
@@ -728,7 +767,7 @@ impl Host {
             .ok_or_else(|| anyhow::anyhow!("the kit's {} is not in the world", kind.name()))
     }
 
-    fn apply(&mut self, op: &Command, game: &mut impl Game) -> anyhow::Result<()> {
+    fn apply(&mut self, op: &Command, tick: u32, game: &mut impl Game) -> anyhow::Result<()> {
         if self.test {
             match op {
                 // A test charges no lives, and the session's variant
@@ -764,9 +803,35 @@ impl Host {
                 count,
                 zone,
                 weapon_tier,
+                arrival,
                 ship: kind,
             } => {
                 let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                if *arrival == Arrival::Foot {
+                    return squad(game, SquadOp::Place(placement));
+                }
+                // By pod: the squad falls, and the host logs its placement
+                // when the pod lands. No fall, or no free pod, is on foot.
+                if *arrival == Arrival::Pod {
+                    let fall = game.falls().get(usize::from(*zone)).copied().flatten();
+                    let Some(fall) = fall else {
+                        self.pods.fell_back(Fallback::NoFall);
+                        return squad(game, SquadOp::Place(placement));
+                    };
+                    let falling = Falling {
+                        slot: *slot,
+                        class: class.clone(),
+                        count: *count,
+                        zone: *zone,
+                        weapon_tier: *weapon_tier,
+                        started: tick,
+                        landed: false,
+                    };
+                    return match self.pods.start(&game.squad_pods(), fall, tick, falling) {
+                        Some(launch) => game.fly(launch),
+                        None => squad(game, SquadOp::Place(placement)),
+                    };
+                }
                 let path = game.paths().get(usize::from(*zone)).copied().flatten();
                 let Some((ship, flight)) = game
                     .ship(*kind)
@@ -1063,6 +1128,7 @@ fn observe(
     kit: &Kit,
     by_character: &BTreeMap<u16, String>,
     teams: u8,
+    pods: &SquadPods,
     game: &impl Game,
 ) -> Observed {
     let players = game.players();
@@ -1110,6 +1176,16 @@ fn observe(
         zones,
         kills,
         player_kills: game.player_kills(),
+        pods: PodsSeen {
+            free: pods.free(&game.squad_pods()),
+            falls: {
+                let falls = game.falls();
+                (0..kit.zones.len())
+                    .map(|zone| falls.get(zone).is_some_and(Option::is_some))
+                    .collect()
+            },
+            classes: kit.pod_classes.clone(),
+        },
         ship: {
             let paths = game.paths();
             ShipSeen {

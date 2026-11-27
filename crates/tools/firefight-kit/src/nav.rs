@@ -253,7 +253,12 @@ pub(crate) fn prepare<R: Read + Seek>(
             let none = bots::los::Walls::default();
             let roof = match roofs.get(i).and_then(Option::as_ref) {
                 Some((solid, sky)) => crate::sky::Roof { solid, sky },
-                None => crate::sky::Roof { solid: &data.walls, sky: &none },
+                // No sky shader: the BSP closes its world in a lid at the
+                // sky height (`walls_without_sky`), which is no roof.
+                None => crate::sky::Roof {
+                    solid: open_walls.as_ref().unwrap_or(&data.walls),
+                    sky: &none,
+                },
             };
             let means: Vec<V3> = arena
                 .zones

@@ -862,17 +862,69 @@ The sky test (`sky::plan`) is a kit-build flag, the same on every machine,
 with no runtime ray. From 0.2 above the ground, five rays go up to the top of
 the collision: one straight up and four on a 0.6 ring. A ray is open when it
 hits nothing, or when the first surface it hits is sky (`sky::Roof`: the
-solid surfaces and the sky ones, split by collision material index in
-`Config::sky_materials`). The fall is the lower of 40 and the way up to the
-top of the collision, and under 12 is no fall. Which materials mark sky is
-unverified (docs/game/firefight.md plan step P2); with the list empty every
-surface is solid, so only a start with nothing above it is open. With no open
+solid surfaces and the sky ones, split by collision material index). A
+material is sky when its shader's path has a component `sky`, or ends in
+`sky` or `sky_...` (`sky::sky_materials`, over the structure BSP's
+materials block at `+0xa4`, 0x20 bytes an element with the shader at `+8`),
+and `Config::sky_materials` adds more. The fall is the lower of 40 and the
+way up to the top of the collision, and under 12 is no fall. The retail
+multiplayer maps have no sky material in their collision but close their world
+in a lid at the sky height: a map with no sky material tests against the walls
+without that lid (`bots::cache::walls_without_sky`, as the ship's paths do), so
+open sky is a ray that hits nothing else
+([note](notes/2026-11-27-firefight-sky-materials.md)). With no open
 zone or start there are no pods. `Package::pods` (`PodReport`) says `kept
 (tag, tags copied, bytes, zone falls); pod starts: N of M open` or `cut
 (reason)`; `Costs::pods` is the bytes. The game reads them with the kit
 (`guest::read_kit`): `KitLayout::{pods, player_pods, falls, player_falls}`.
 Pods are cut right after the ship and before any class when headroom is
 short.
+
+**Players fall in them** (`firefight/pods.rs`). The pod is layered on a
+spawn the engine has already made. While pods are on, a spawn prefers the
+team's open starts: `PLAYER_SPAWN_LOCATION` starts with that filter and the
+free-spot test `SPAWN_LOCATION_FREE` answers "taken" for any other start
+(`pods::pick`; with no open start, or pods off, the engine's own pick stands).
+`PodDrops` is a pure machine the runtime steps after each tick over the
+players and the pool `ff_ppod_NN`; a player who has just spawned within 2
+units of a fall's ground takes the first free pod, the first of a tick
+at once and the rest 10 ticks apart. Its acts are made at the next tick
+boundary as engine calls (`Call::PodDrop`, `PodEject`, `PodPark`):
+
+1. the line of sight from the fall's top to its ground is checked
+   (`AI_LINE_OF_SIGHT`, which includes objects), the pod is put at the top and
+   the unit is seated in its first seat (`UNIT_ENTER_VEHICLE`, `0x11ade0`: the
+   vehicle in EBX, the unit and the seat label on the stack; the label is
+   read from the vehicle tag's seats block);
+2. on success the pod flies the two points in 75 ticks (`Flights`), counted in
+   `pod_spawns`;
+3. when it is within a unit of the ground, 15 ticks later the rider is ejected
+   (`0xe68c0`, action `0x1e`), and 300 ticks after that the pod parks again;
+4. a pod that has not landed 30 ticks after its fall should have ejects its
+   rider and parks (the watchdog).
+
+Every failure leaves the player standing at the start and counts in
+`pod_fallbacks` by reason: `no_fall` (no fall at the spawn), `blocked`,
+`no_free_pod`, `seat_refused`, `pod_gone`, `never_landed`, `gone` (the player
+died first). A wave test drops no pods. The entry routine's registers are read
+from the disassembly and are not yet confirmed by a run (R6), and so is
+whether the engine's seat camera reads well in the fall. The drops are engine
+calls, not host log entries, so a film does not replay them.
+
+**Squads fall in them** (`firefight/squad_pods.rs`). A squad's `arrival`
+(`SquadSpec::arrival`: `auto`, `foot`, `ship`, `pod`; `Arrival::number` in the
+director's tables) picks how it reaches its zone. `auto` is a pod for a class
+that is not Covenant (`Kit::pod_classes`) and the ship otherwise. The script
+(`pod_class`, `zone_fall`, `pods_free`) sends a pod squad with
+`ff_drop_squad(..., 3)` (`Command::DropSquad { arrival: Pod }`) when the zone
+has a fall and a squad pod is free, and places it on foot otherwise, so a wave
+never waits. The host (`SquadPods`, stepped by every role that applies
+entries) flies the first free `ff_pod_NN` down the zone's fall in
+`pods::FALL_TICKS`; when the fall is over the host logs a `PlaceSquad` for the
+squad, so a film replays the same arrival at the same tick. The pod is a
+wreck for `pods::WRECK_TICKS` after the squad is placed, then parks. An
+erased squad's pod parks the same way. Fallbacks count as `no_fall` and
+`no_free_pod`.
 
 The kit only places the ship parked and gives it the points to fly. The
 placement carries no hover flag: the director turns the hold on
@@ -1235,14 +1287,17 @@ Map). `lobby_mode::arrange` keeps it only in the lobby's Firefight mode,
 where it follows Change Map; Multiplayer and Forge modes hide it
 ([The lobby](#the-lobby)). It opens
 the Firefight page, a kit screen on Quick
-Options' dialog with six choice rows, each backed by a setting
+Options' dialog with seven choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Teams
 (`firefight.teams`: the wave set's own, one team or two), Wave set
 (`firefight.waveset`: Endless first, then the lobby map's own sets, then
 the other built-ins in their order (`options::wave_menu`) — [Map-specific
 sets](#map-specific-sets)), Difficulty, Starting
-lives (the wave set's own, or 1 to 30) and Skulls (whether each round
-switches its skull on). A on a row opens the value picker over the page; left and right step
+lives (the wave set's own, or 1 to 30), Skulls (whether each round
+switches its skull on) and Drop pods (`firefight.pods`, on by default:
+players fall to their spawns in pods where the kit has them; the page always
+shows the row, and `firefight.state`'s `pods.hidden` says why pods are off on a
+map with no pod or no open start). A on a row opens the value picker over the page; left and right step
 as a shortcut. No row is an arrow row.
 
 `Options::read` reads the store when a game starts and the runtime plays

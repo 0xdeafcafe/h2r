@@ -465,6 +465,7 @@ fn ally_squad(class: &str, per_player: u8, min: u16, max: u16) -> SquadSpec {
         drop: Drop::Edge,
         weapon_tier: 0,
         side: Side::Ally,
+        arrival: ::firefight::Arrival::Auto,
     }
 }
 

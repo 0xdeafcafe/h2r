@@ -161,6 +161,41 @@ pub struct SquadSpec {
     /// `allies` are allies.
     #[serde(default, skip_serializing_if = "Side::is_enemy")]
     pub side: Side,
+    /// How the squad reaches its zone.
+    #[serde(default, skip_serializing_if = "Arrival::is_auto")]
+    pub arrival: Arrival,
+}
+
+/// How a squad reaches its zone (docs/game/firefight.md, "The drop ship"
+/// and "Drop pods"). Whatever the kit or the zone cannot do becomes the
+/// next arrival on this list: pod, then ship, then foot, so a wave never
+/// waits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arrival {
+    /// By faction: a Covenant squad by ship, a Flood or human one by pod.
+    #[default]
+    Auto,
+    /// Placed standing at the zone.
+    Foot,
+    Ship,
+    Pod,
+}
+
+impl Arrival {
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+
+    /// The rules table's number for it.
+    pub const fn number(self) -> i32 {
+        match self {
+            Self::Auto => 0,
+            Self::Foot => 1,
+            Self::Ship => 2,
+            Self::Pod => 3,
+        }
+    }
 }
 
 /// Which side of the players a squad is on. An ally takes the team of the

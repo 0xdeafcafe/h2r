@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::scoring::ScoreReason;
-use crate::{Difficulty, MAX_TEAMS, ShipKind, Skull};
+use crate::{Arrival, Difficulty, MAX_TEAMS, ShipKind, Skull};
 
 /// Squad slots the kit provides on every map.
 pub const SQUAD_SLOTS: usize = 16;
@@ -44,6 +44,21 @@ pub struct Observed {
     pub player_kills: Vec<PlayerKill>,
     /// The kit's drop ship and the zones it can fly to.
     pub ship: ShipSeen,
+    /// The kit's drop pods and the zones they can fall to.
+    pub pods: PodsSeen,
+}
+
+/// The drop pods as the kit has them (docs/game/firefight.md, "Drop
+/// pods"). A map without pods reads as the default: none free, no fall.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PodsSeen {
+    /// Squad pods parked and ready to fall.
+    pub free: u8,
+    /// Each kit zone, in kit order, has a fall.
+    pub falls: Vec<bool>,
+    /// The kit's classes whose `auto` arrival is a pod: every class that
+    /// is not Covenant.
+    pub classes: BTreeSet<String>,
 }
 
 /// The drop ships as the kit has them (docs/game/firefight.md, "The drop
@@ -148,14 +163,20 @@ pub enum Command {
     /// `PlaceSquad` by drop ship: the ship flies in over the zone and the
     /// squad is placed into it, up to its free seats; the rest of the squad
     /// is placed on foot. The host falls back to `PlaceSquad` when the kit
-    /// has no ship or no path for the zone.
+    /// has no ship or no path for the zone. By pod the squad is placed at
+    /// the pod's landing, as a later `PlaceSquad`.
     DropSquad {
         slot: u8,
         class: String,
         count: u16,
         zone: u8,
         weapon_tier: u8,
-        /// The kind of ship that flies it in.
+        /// `Pod`: the squad falls in a pod and is placed when it lands
+        /// (the host then logs a `PlaceSquad`); `Ship` and `Auto`: the
+        /// drop ship's.
+        #[serde(default, skip_serializing_if = "Arrival::is_auto")]
+        arrival: Arrival,
+        /// The kind of ship that flies it in (`Ship` and `Auto`).
         ship: ShipKind,
     },
     /// The ship's hover hold (`VEHICLE_HOVER`), on while it flies a drop.

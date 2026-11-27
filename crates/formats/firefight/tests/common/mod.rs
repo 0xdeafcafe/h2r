@@ -25,6 +25,7 @@ pub fn small_def(pool: u16, shared: bool) -> Def {
                 drop: Drop::Edge,
                 weapon_tier: 0,
                 side: Side::Enemy,
+                arrival: ::firefight::Arrival::Auto,
             }],
             boss: wave == 4,
             gap_ticks: 2,
@@ -103,6 +104,8 @@ pub struct World {
     pub applied_live: u16,
     /// The kit's drop ship and the zones with a path: none by default.
     pub ship: ShipSeen,
+    /// The kit's drop pods: none by default.
+    pub pods: firefight::director::PodsSeen,
 }
 
 impl World {
@@ -120,6 +123,7 @@ impl World {
             finished: None,
             applied_live: 0,
             ship: ShipSeen::default(),
+            pods: Default::default(),
         }
     }
 
@@ -191,6 +195,7 @@ impl World {
             kills: std::mem::take(&mut self.kills),
             player_kills: std::mem::take(&mut self.player_kills),
             ship: self.ship.clone(),
+            pods: self.pods.clone(),
         }
     }
 }

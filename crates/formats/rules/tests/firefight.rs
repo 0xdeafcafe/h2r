@@ -22,8 +22,8 @@ const zero_holds = 0
 const bonus_on = 0
 const bonus_ticks = 0
 const set_rounds = 1
-table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [
-    ("fixture", 0, 1, 1, 1, 2, 0),
+table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int, arrival: int) = [
+    ("fixture", 0, 1, 1, 1, 2, 0, 0),
 ]
 table waves: (first: int, count: int, gap: int) = [
     (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1), (0, 1, 1),

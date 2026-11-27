@@ -346,6 +346,9 @@ pub fn run(words: Vec<String>) -> Result<()> {
     for ship in [&saved.ship, &saved.pelican].into_iter().flatten() {
         println!("{ship}");
     }
+    if let Some(pods) = &saved.pods {
+        println!("{pods}");
+    }
     for step in &saved.fitted {
         println!("fit: {step}: {} (short of tag headroom)", step.reason());
     }
