@@ -200,7 +200,7 @@ bar) and places it there (`app::tile`).
 
 `h2 coop verdict <coop.log> [--auto]` prints it again
 (`crates/apps/cli/src/coop_verdict.rs`). Each step is seen when every game it
-is for printed its line:
+is for printed its line, and where a step counts, the count is N (the games in the lobby, host included):
 
 | # | Step | Game | Line |
 |---|---|---|---|
@@ -210,15 +210,18 @@ is for printed its line:
 | 4 | hosting in that lobby | host | `coop-live: hosting a co-op campaign in the game's own lobby` |
 | 5 | the lobby is in co-op mode | host | `... lobby: mode 2 (custom game) set as 0 (co-op campaign)` |
 | 6 | level and difficulty advertised | host | `coop-live: the lobby holds ... ; advertised` |
-| 7 | the host invited the guest | host | `coop-auto: invited` (only with `--auto`) |
+| 7 | the host invited every guest | host | `coop-auto: invited <tag>`, one per guest, N-1 (only with `--auto`) |
 | 8 | the guest accepted | guests | `coop-auto: accepting` (only with `--auto`) |
 | 9 | the guest is in the host's session | guests | `coop-live: guest: joined` |
 | 10 | ping | each | `coop-live: ping N ms` |
-| 11 | the co-op check passed for two consoles | host | `coop-live: lobby start state 7 ... answered` |
-| 12 | the session start counted the peers | host | `session start: campaign with` |
-| 13 | the session started | host | `session start returned 1` |
+| 11 | the co-op check passed for every console | host | `coop-live: lobby start state 7 ... answered 9 for N consoles` |
+| 12 | the session start counted the peers | host | `session start: campaign with N peers` |
+| 13 | the session started | each in the lobby | `session start returned 1` |
 | 14 | the host simulates | host | `simulation mode sync-server` |
 | 15 | the guest follows | guests | `simulation mode sync-client` |
+| 16 | one checkpoint tick | each in the lobby | `checkpoint save at tick T`, the same T on every game (each game's first) |
+| 17 | players 3 to N placed | host | `coop-players: player I placed`, one per player of index 2 to N-1, none `REFUSED` on any game |
+| 18 | no desync | each | no `OUT OF SYNC` line |
 
 A step not seen comes with the likely reason in plain words, most often a
 press nobody made: for step 3, "Alpha never opened the Xbox Live menu" (no
@@ -236,7 +239,7 @@ campaign or lobby itself); drive Alpha (host), the leftmost window".
 
 It ends with the first step not seen ("stopped at step 9: ...", with its
 reason) and lines
-that look like trouble (`ping: no answer`, `returned 0 (refused)`,
+that look like trouble (`OUT OF SYNC`, `ping: no answer`, `returned 0 (refused)`,
 `could not invite`, `could not accept`, `did not open`, panics). What to
 send back: `coop.log`, and the two whole logs if it stopped early.
 
@@ -271,7 +274,7 @@ without a press. The three parts of 12.5:
    per game. Each reads its game's `ui: screen` lines and every game's
    co-op lines, and asks for one press at a time, at least 0.7 s apart.
    A press happens only once a screen has held for 1.5 s, or after a line
-   it waited for. Every step has a 15 s timeout and up to 4 tries; after
+   it waited for. Every step has a timeout of 15 s per two games (`coop_drive::step_ms`: 120 s for sixteen) and up to 4 tries; after
    that the driver says `coop-drive: <tag>: stuck: ...; press on its
    window` and stops for that game. Each press goes into coop.log as
    `coop-drive: Alpha: press a on screen 0xba row 3 (Co-op Campaign)`.

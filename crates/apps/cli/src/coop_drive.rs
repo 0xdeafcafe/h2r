@@ -54,8 +54,16 @@ pub const BOOT_SETTLE_MS: u64 = 4000;
 /// No boot presses until this long after the first chance to press: the
 /// coop-test data reaches the main menu by itself in about 19 s.
 pub const BOOT_WAIT_MS: u64 = 60_000;
-/// How long a press may take to show its screen or line.
+/// How long a press may take to show its screen or line, with two or
+/// three games on the Mac; see [`step_ms`].
 pub const STEP_MS: u64 = 15_000;
+
+/// [`STEP_MS`] for a run of `games` games: one step per two games, since
+/// sixteen games booting and menu-walking on one Mac take far longer per
+/// press than two.
+pub fn step_ms(games: usize) -> u64 {
+    STEP_MS * (games / 2).max(1) as u64
+}
 /// A guest waits this long after its acceptance for the game to take the
 /// invitation before it joins through the browser.
 pub const INVITE_WAIT_MS: u64 = 20_000;
@@ -173,6 +181,8 @@ pub struct Driver {
     /// Said once each, and what is still to say.
     said: BTreeSet<String>,
     out: Vec<String>,
+    /// How long a press may take here ([`step_ms`] of the run's games).
+    step_ms: u64,
     /// Signed in once: going back to the Live menu is the fallback.
     fallback: bool,
 }
@@ -203,8 +213,15 @@ impl Driver {
             joined: BTreeSet::new(),
             said: BTreeSet::new(),
             out: Vec::new(),
+            step_ms: STEP_MS,
             fallback: false,
         }
+    }
+
+    /// This driver's step timeout for a run of `games` games ([`step_ms`]).
+    pub fn for_games(mut self, games: usize) -> Self {
+        self.step_ms = step_ms(games);
+        self
     }
 
     pub fn done(&self) -> bool {
@@ -463,7 +480,7 @@ impl Driver {
                     if !self.queue.is_empty() {
                         self.step = Step::ToLive { at: now, tries };
                     }
-                } else if now.saturating_sub(at) > STEP_MS {
+                } else if now.saturating_sub(at) > self.step_ms {
                     if tries + 1 >= TRIES {
                         self.stuck(format!(
                             "no Xbox Live menu after {TRIES} tries (on {})",
@@ -486,7 +503,7 @@ impl Driver {
                 }
             }
             Step::Hosting { at, tries } => {
-                if now.saturating_sub(at) > STEP_MS {
+                if now.saturating_sub(at) > self.step_ms {
                     if tries + 1 >= TRIES {
                         self.stuck("Co-op Campaign never said `coop-live: hosting`".into());
                     } else if screen == Some(LIVE_MENU) && self.held(now, SETTLE_MS) {
@@ -521,7 +538,7 @@ impl Driver {
                 }
             }
             Step::Starting { at, tries } => {
-                if now.saturating_sub(at) > STEP_MS {
+                if now.saturating_sub(at) > self.step_ms {
                     if tries + 1 >= TRIES {
                         self.stuck("Start Game didn't start the game".into());
                     } else {
@@ -605,7 +622,7 @@ impl Driver {
                 }
             }
             Step::ToBrowser { at, tries } => {
-                if now.saturating_sub(at) > STEP_MS {
+                if now.saturating_sub(at) > self.step_ms {
                     if tries + 1 >= TRIES {
                         self.stuck("the browser never opened".into());
                     } else if screen == Some(LIVE_MENU) && self.held(now, SETTLE_MS) {
@@ -632,7 +649,7 @@ impl Driver {
                     .probed
                     .is_some_and(|p| now.saturating_sub(p) >= SETTLE_MS);
                 match pressed {
-                    None if probed || now.saturating_sub(since) > STEP_MS => {
+                    None if probed || now.saturating_sub(since) > self.step_ms => {
                         self.queue = vec![press("a", "the first game in the browser")];
                         self.step = Step::Browsing {
                             since,
@@ -640,7 +657,7 @@ impl Driver {
                             tries,
                         };
                     }
-                    Some(p) if now.saturating_sub(p) > STEP_MS => {
+                    Some(p) if now.saturating_sub(p) > self.step_ms => {
                         if tries + 1 >= TRIES {
                             self.stuck("the browser's game never let it join".into());
                         } else if screen == Some(BROWSER) || screen == Some(LIVE_MENU) {

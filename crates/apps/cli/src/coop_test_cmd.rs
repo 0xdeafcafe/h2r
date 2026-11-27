@@ -792,7 +792,7 @@ impl Drive {
                 } else {
                     coop_drive::Role::Guest
                 };
-                coop_drive::Driver::new(&g.tag, role)
+                coop_drive::Driver::new(&g.tag, role).for_games(games.len())
             })
             .collect();
         Drive {
