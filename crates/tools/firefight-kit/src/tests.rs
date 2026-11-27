@@ -32,8 +32,8 @@ fn two_builds_of_one_map_are_byte_equal() {
             .as_nanos()
     ));
     let config = Config::default();
-    let first = build_package(&base, "court", Mode::Kit, &config, &dir, "one", false).unwrap();
-    let second = build_package(&base, "court", Mode::Kit, &config, &dir, "two", false).unwrap();
+    let first = build_package(&base, "court", Mode::Kit, &config, None, &dir, "one", false).unwrap();
+    let second = build_package(&base, "court", Mode::Kit, &config, None, &dir, "two", false).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(first.costs, second.costs);
     assert_eq!(first.bases, second.bases);
@@ -117,7 +117,7 @@ fn two_builds_of_one_map_are_byte_equal() {
             assert!(p.sector < 49, "{}: sector {}", zone.name, p.sector);
         }
     }
-    let probe = build_package(&base, "court", Mode::Probe, &config, &dir, "probe", false).unwrap();
+    let probe = build_package(&base, "court", Mode::Probe, &config, None, &dir, "probe", false).unwrap();
     assert_ne!(probe.id, first.id);
     let lib = Library::open(&dir);
     let p = lib.packages().iter().find(|p| p.id == probe.id).unwrap();
@@ -187,6 +187,75 @@ fn a_base_without_its_own_elite_is_refused() {
     assert!(error.contains("required Elite biped"), "{error}");
 }
 
+/// A record with every tag reference null: the kit's own references (its
+/// weapon) and the donor's (nulled in the kit) compare equal.
+fn without_refs(mut row: tags::defs::Record) -> tags::defs::Record {
+    for (_, value) in &mut row.fields {
+        if matches!(value, tags::defs::Val::Ref { .. }) {
+            *value = tags::defs::Val::tag(map::FourCC(*b"weap"), TagId::NULL);
+        }
+    }
+    row
+}
+
+/// The kit's Elite takes each behaviour row from the campaign Elite (its
+/// movement row from that Elite's parent), and differs from it only in
+/// the fields the kit authors and in the donor's tag references.
+#[test]
+fn the_kits_elite_rows_are_the_campaign_elites_but_the_authored_fields() {
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(&base[..])).unwrap();
+    let donor = ai::character::donor_rows(&mut map, "court").unwrap().unwrap();
+    let built = build(&base, "court", Mode::Kit, &Config::default()).unwrap();
+    let mut kit = Map::from_reader(Cursor::new(&built.bytes[..])).unwrap();
+    let weapon = kit
+        .tag(map::TagQuery::NameInGroup(testkit::SHARED_WEAPON, map::FourCC(*b"weap")))
+        .unwrap()
+        .id;
+    let elite = ai::character::rows_of(&mut kit, ai::ELITE_PATH, "kit").unwrap().unwrap();
+    let authored = ai::character::authored(weapon);
+    let mut touched = 0;
+    for ((name, want), (kit_name, got)) in donor.rows.iter().zip(&elite.rows) {
+        assert_eq!(name, kit_name);
+        let mut want = ai::character::donor_record(name, want).unwrap();
+        let got = ai::character::donor_record(name, got).unwrap();
+        if let Some((_, fields)) = authored.iter().find(|(n, _)| n == name) {
+            touched += 1;
+            for (key, value) in fields {
+                want.set(key, value.clone()).unwrap();
+            }
+        }
+        assert_eq!(without_refs(got).fields, without_refs(want).fields, "{name}");
+    }
+    assert_eq!(touched, authored.len());
+    // The movement row the engine read unchecked is the parent's.
+    let movement = |rows: &ai::character::DonorRows| {
+        rows.rows.iter().find(|(n, _)| *n == "movement").unwrap().1.clone()
+    };
+    assert_eq!(movement(&elite), movement(&ai::character::invented_donor()));
+}
+
+/// A base with no campaign Elite, and no donor map that has one, is
+/// refused, naming the Elite and the map to give.
+#[test]
+fn a_build_with_no_campaign_elite_is_refused_by_name() {
+    let base = fixture();
+    let mut map = Map::from_reader(Cursor::new(base)).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let id = map
+        .tag(map::TagQuery::NameInGroup(ai::character::DONOR_ELITE, map::FourCC(*b"char")))
+        .unwrap()
+        .id;
+    set.slots[id.index()].name = Some(r"invented\other_elite".into());
+    let base = set.build().unwrap().0;
+    let error = build(&base, "court", Mode::Kit, &Config::default())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains(ai::character::DONOR_ELITE), "{error}");
+    assert!(error.contains(ELITE_DONOR_MAP), "{error}");
+}
+
 #[test]
 fn the_kit_writes_each_start_its_base_team() {
     let base = fixture();
@@ -248,6 +317,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         &Config::default(),
         &Labels::default(),
         None,
+        &ai::character::invented_donor(),
         0,
         0,
         false,
@@ -304,8 +374,9 @@ fn a_map_short_of_headroom_takes_the_fit_steps_in_order() {
     let base = fixture();
     let config = Config::default();
     let labels = Labels::default();
+    let elite = ai::character::invented_donor();
     let within = |available: u32| {
-        fit_within(&base, "court", Mode::Kit, &config, &labels, None, available)
+        fit_within(&base, "court", Mode::Kit, &config, &labels, None, &elite, available)
     };
     let full = roomy(&base, &[]);
     let merged = roomy(&base, &[Fit::MergeSectors]);
@@ -448,7 +519,7 @@ fn the_layout_hash_changes_the_package_id() {
             .as_nanos()
     ));
     let id = |layout, name| {
-        build_package(&base, "court", Mode::Kit, &with(layout), &dir, name, false)
+        build_package(&base, "court", Mode::Kit, &with(layout), None, &dir, name, false)
             .unwrap()
             .id
     };

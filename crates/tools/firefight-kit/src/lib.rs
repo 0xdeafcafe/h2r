@@ -43,6 +43,11 @@ pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
 /// The kit's version: the `firefight` crate's, which session data names.
 pub const KIT_VERSION: u32 = firefight::KIT_VERSION;
 
+/// The disc map a build without a class donor reads the campaign Elite's
+/// behaviour rows from (`ai::character::DONOR_ELITE`; every campaign map
+/// carries it, and this one is a ship donor too).
+pub const ELITE_DONOR_MAP: &str = "03a_oldmombasa";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -336,6 +341,9 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
 /// drops the last class and takes them again, until it fits
 /// (`transplant`); otherwise it is refused with every part's and class's
 /// cost after every step.
+///
+/// The Elite's behaviour rows are the campaign Elite's, from the base or
+/// a class donor ([`elite_rows`]).
 fn build_with_classes(
     base: &[u8],
     base_name: &str,
@@ -344,8 +352,52 @@ fn build_with_classes(
     labels: &Labels,
     classes: Option<&Classes<'_>>,
 ) -> Result<Built> {
+    build_with_elite(base, base_name, mode, config, labels, classes, None)
+}
+
+/// [`build_with_classes`] with one more map to read the campaign Elite
+/// from, `elite`, tried after the base and before the class donors.
+fn build_with_elite(
+    base: &[u8],
+    base_name: &str,
+    mode: Mode,
+    config: &Config,
+    labels: &Labels,
+    classes: Option<&Classes<'_>>,
+    elite: Option<&Donor<'_>>,
+) -> Result<Built> {
     let available = headroom(base)?;
-    fit_within(base, base_name, mode, config, labels, classes, available)
+    let rows = elite_rows(base, base_name, classes, elite)?;
+    fit_within(base, base_name, mode, config, labels, classes, &rows, available)
+}
+
+/// The campaign Elite's behaviour rows the kit's Elite takes, from the
+/// first of the base, `elite` and the class donors that carries
+/// [`ai::character::DONOR_ELITE`]. None carrying it, or the one that does
+/// lacking a row, refuses the build by name.
+fn elite_rows(
+    base: &[u8],
+    base_name: &str,
+    classes: Option<&Classes<'_>>,
+    elite: Option<&Donor<'_>>,
+) -> Result<ai::character::DonorRows> {
+    let maps = std::iter::once((base_name, base))
+        .chain(elite.map(|d| (d.name, d.bytes)))
+        .chain(classes.into_iter().flat_map(|c| c.donors.iter().map(|d| (d.name, d.bytes))));
+    let mut looked = Vec::new();
+    for (name, bytes) in maps {
+        let mut map = Map::from_reader(Cursor::new(bytes))
+            .with_context(|| format!("reading {name} for the campaign Elite"))?;
+        if let Some(rows) = ai::character::donor_rows(&mut map, name).map_err(anyhow::Error::msg)? {
+            return Ok(rows);
+        }
+        looked.push(name);
+    }
+    anyhow::bail!(
+        "Firefight's Elite takes its behaviour rows from the campaign Elite {}, and no map given carries it ({}); give a campaign map such as {ELITE_DONOR_MAP}",
+        ai::character::DONOR_ELITE,
+        looked.join(", ")
+    )
 }
 
 /// The most `+0x1c` a kit may take a multiplayer map to:
@@ -378,6 +430,7 @@ fn headroom(base: &[u8]) -> Result<u32> {
 }
 
 /// [`build_with_classes`] against `available` bytes of tag headroom.
+#[allow(clippy::too_many_arguments)]
 fn fit_within(
     base: &[u8],
     base_name: &str,
@@ -385,6 +438,7 @@ fn fit_within(
     config: &Config,
     labels: &Labels,
     classes: Option<&Classes<'_>>,
+    elite: &ai::character::DonorRows,
     available: u32,
 ) -> Result<Built> {
     let total = classes.map_or(0, |c| c.specs.len());
@@ -427,7 +481,8 @@ fn fit_within(
         for steps in 0..=Fit::ALL.len() {
             let fit = &Fit::ALL[..steps];
             match assemble(
-                base, base_name, mode, config, labels, classes, keep, ships, pod, fit, available,
+                base, base_name, mode, config, labels, classes, elite, keep, ships, pod, fit,
+                available,
             ) {
                 Ok(mut built) => {
                     if let Some(c) = classes {
@@ -493,6 +548,7 @@ fn assemble(
     config: &Config,
     labels: &Labels,
     classes: Option<&Classes<'_>>,
+    elite_rows: &ai::character::DonorRows,
     keep: usize,
     ships: usize,
     pod: bool,
@@ -702,6 +758,7 @@ fn assemble(
         nav.zones,
         nav.base_zones,
         elite,
+        elite_rows,
         &named,
         mode == Mode::Probe,
     )
@@ -954,31 +1011,28 @@ fn install(
 
 /// Install a versioned file patch in the standard map library. The source
 /// stays on the local machine and is read only. Both modes use the same
-/// builder, packaging and headroom check as the agent recipe.
+/// builder, packaging and headroom check as the agent recipe. `elite` is
+/// the disc map the Elite's behaviour rows come from (a campaign map, such
+/// as [`ELITE_DONOR_MAP`]); without one, the base must carry the campaign
+/// Elite, which no retail multiplayer map does.
+#[allow(clippy::too_many_arguments)]
 pub fn build_package(
     base: &[u8],
     base_name: &str,
     mode: Mode,
     config: &Config,
+    elite: Option<&Donor<'_>>,
     maps_dir: &Path,
     package_dir: &str,
     replace: bool,
 ) -> Result<Package> {
-    build_package_with(
-        base,
-        base_name,
-        mode,
-        config,
-        None,
-        maps_dir,
-        package_dir,
-        replace,
-    )
+    build_package_with(base, base_name, mode, config, None, elite, maps_dir, package_dir, replace)
 }
 
 /// [`build_package`] with the transplanted `classes` (stage two). The
 /// package id follows the class list, so machines with the same donors
-/// and list build the same id.
+/// and list build the same id. The Elite's behaviour rows come from the
+/// base, else `elite`, else a class donor.
 #[allow(clippy::too_many_arguments)]
 pub fn build_package_with(
     base: &[u8],
@@ -986,18 +1040,13 @@ pub fn build_package_with(
     mode: Mode,
     config: &Config,
     classes: Option<&Classes<'_>>,
+    elite: Option<&Donor<'_>>,
     maps_dir: &Path,
     package_dir: &str,
     replace: bool,
 ) -> Result<Package> {
-    let built = build_with_classes(
-        base,
-        base_name,
-        mode,
-        config,
-        &Labels::default(),
-        classes,
-    )?;
+    let built =
+        build_with_elite(base, base_name, mode, config, &Labels::default(), classes, elite)?;
     let id = install(
         base,
         base_name,

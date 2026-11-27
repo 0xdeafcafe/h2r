@@ -119,6 +119,7 @@ fn kit_map_with(probe: bool, classes: &[&str]) -> Map<Cursor<Vec<u8>>> {
         vec![zone()],
         vec![base(0), base(1)],
         elite,
+        &character::invented_donor(),
         &tags,
         probe,
     )

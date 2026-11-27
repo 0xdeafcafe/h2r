@@ -200,6 +200,7 @@ fn two_machines_build_equal_ids() {
         testkit::NAME,
         Mode::Kit,
         &Config::default(),
+        None,
         &dir,
         "one",
         false,

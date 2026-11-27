@@ -69,6 +69,7 @@ fn no_labels_gives_the_kit_the_generator_builds() {
         NAME,
         Mode::Kit,
         &Config::default(),
+        None,
         &dir,
         "kit",
         false,

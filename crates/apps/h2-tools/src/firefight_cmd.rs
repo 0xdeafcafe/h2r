@@ -279,9 +279,11 @@ pub fn run(words: Vec<String>) -> Result<()> {
     if args.report {
         let disc = args.disc.map(Ok).unwrap_or_else(crate::default_disc)?;
         let bytes = read_disc_map(&disc, &args.base)?;
+        let elite = read_disc_map(&disc, firefight_kit::ELITE_DONOR_MAP)?;
+        let elite = Donor { name: firefight_kit::ELITE_DONOR_MAP, bytes: &elite };
         print!(
             "{}",
-            firefight_kit::builtin::layout_report(&bytes, &args.base, &args.config)?
+            firefight_kit::builtin::layout_report(&bytes, &args.base, &args.config, Some(&elite))?
         );
         return Ok(());
     }
@@ -335,6 +337,16 @@ pub fn run(words: Vec<String>) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     let classes = (!specs.is_empty() || !donor_names.is_empty())
         .then(|| classes_from(Schema::builtin(), &donor_names, &donor_bytes, specs, args.cut));
+    // The campaign map the Elite's behaviour rows come from, unless a
+    // donor already is it.
+    let elite_bytes = if donor_names.iter().any(|d| d == firefight_kit::ELITE_DONOR_MAP) {
+        None
+    } else {
+        Some(read_disc_map(&disc, firefight_kit::ELITE_DONOR_MAP)?)
+    };
+    let elite = elite_bytes
+        .as_deref()
+        .map(|bytes| Donor { name: firefight_kit::ELITE_DONOR_MAP, bytes });
     let data = args.data.unwrap_or_else(content::store::default_data_root);
     let maps = content::store::maps_dir(&data);
     let saved = firefight_kit::build_package_with(
@@ -343,6 +355,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
         mode,
         &args.config,
         classes.as_ref(),
+        elite.as_ref(),
         &maps,
         &dir,
         args.replace,
