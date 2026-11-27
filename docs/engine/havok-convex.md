@@ -1,7 +1,7 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query, the manifold update and the contact commit stay guest code.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; five leaves of the closest-feature query are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query's leaves), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -74,6 +74,28 @@ counted by reason (`convex::fallbacks`, `havok.islands`'s `convex`):
 | `float` | an unmasked exception, an x87 stack not empty, a non-finite x87 load or projection |
 | `monitor` | the monitor stream is on |
 | `unobserved` | an audited return could not be observed |
+
+## The query path
+
+When the bound does not hold, the call builds B's transform in A's
+frame and runs the closest-feature query. **E**
+
+| Function | Does | Ported |
+|---|---|---|
+| `0x002da4d0` (thiscall out; A, B; `ret 8`) | B's four columns by A's transposed rotation, then A's translation taken off | `gjk::relative` |
+| `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` | no |
+| `0x003037a0`, `0x00303540`, `0x00303dd0` | the query's edge, triangle and tetrahedron cases (`0x00303dd0` with the penetration path `0x00303b80`, `0x0030a6b0`) | no |
+| `0x00303360` (thiscall state; point, triangle, orient; `ret 0xc`) | the triangle's normal and the point's three edge signs (mask in eax); with `orient`, the normal faces the support difference, swapping the first two vertices to do it | `gjk::triangle` |
+| `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
+| `0x003032c0` (thiscall state; cache, separation, out; `ret 0xc`; the cache is not read) | the contact: the negated direction, the distance, and A's support point (A's simplex one vertex, weight 1.0), B's moved back by the distance (B's one vertex, 0.0) or the state's midpoint `+0x130` (0.5) | `gjk::contact` |
+| `0x002da6e0` (thiscall out; transform, vector; `ret 8`) | the separating direction back into the world | `gjk::rotate` |
+| `0x00302c70`, `0x00302eb0` | the manifold: add a point through the manager's `vt[+0x04]` (then Halo's contact callback), refresh and drop points through `vt[+0x08]` | no |
+
+The ported leaves are compared with the lifted functions in
+`sim_havok_differential.rs`. The arm still declines the query path
+(`closest`): it answers only when the query, every shape class's support
+virtuals and the manifold calls it makes are in Rust, and a call that
+adds or removes a point runs Halo's callback, which stays the guest's.
 
 ## Not verified
 

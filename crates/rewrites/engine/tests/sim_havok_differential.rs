@@ -2419,3 +2419,183 @@ fn convex_calls_the_model_does_not_cover_are_declined_and_counted() {
         assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
     }
 }
+
+// The closest-feature query's leaves (sim_havok::gjk,
+// docs/engine/havok-convex.md, "The query path") against the lifted
+// functions, each seeded under every rounding mode.
+
+use sim_havok::gjk;
+
+const GJK_STATE: u32 = 0x0077_0000;
+const GJK_IN: u32 = 0x0077_1000;
+const GJK_OUT: u32 = 0x0077_2000;
+
+fn gjk_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    for f in [0x2da4d0, 0x2da6e0, 0x303360, 0x308590, 0x3032c0] {
+        code.prime(f);
+    }
+    code
+}
+
+/// A float that is sometimes zero or an exact small integer, so equal,
+/// parallel and degenerate cases come up.
+fn coord(r: &mut Rng) -> f32 {
+    match r.below(8) {
+        0 => 0.0,
+        1 => (r.below(5) as f32) - 2.0,
+        _ => float(r, -4.0, 4.0),
+    }
+}
+
+fn seed_vector(r: &mut Rng, m: &mut FlatMemory, at: u32) -> [f32; 4] {
+    let v = [coord(r), coord(r), coord(r), coord(r)];
+    put_lanes(m, at, v);
+    v
+}
+
+/// Run the model on a journal over `before`, then the lifted function;
+/// the bytes outside the frame must agree. Returns the lifted registers.
+fn gjk_compare(
+    code: &mut lifted::Original,
+    mem: &mut FlatMemory,
+    eip: u32,
+    this: u32,
+    args: &[u32],
+    fpu: Fpu,
+    model: impl FnOnce(&mut Journal) -> Result<(), sim_havok::convex::Fallback>,
+    why: &str,
+) -> runtime::CpuAbi {
+    let before = mem.clone();
+    let view = Flat(&before);
+    let mut j = Journal::new(&view);
+    model(&mut j).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+    let mut expected = before.clone();
+    apply(&mut expected, j);
+    let after = run_this(code, mem, eip, this, args, fpu);
+    clear_frame([&mut *mem, &mut expected], 4 * args.len() as u32);
+    assert_eq!(first_difference(mem, &expected), None, "{why}: first different byte");
+    after
+}
+
+#[test]
+fn the_query_transforms_match_the_lifted_transforms() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    for seed in 0..256u64 {
+        let mut r = Rng(0x2da4_0000 + seed);
+        let mut mem = base.clone();
+        for i in 0..8 {
+            seed_vector(&mut r, &mut mem, GJK_IN + 16 * i);
+        }
+        let fpu = test_fpu(seed);
+        let (a, b) = (GJK_IN, GJK_IN + 0x40);
+        // Seed 3 in 16 writes over its own A, as an in-place caller would.
+        let out = if seed % 16 == 3 { a } else { GJK_OUT };
+        let why = format!("relative seed {seed} {fpu:x?}");
+        let after = gjk_compare(&mut code, &mut mem, 0x2da4d0, out, &[a, b], fpu, |j| gjk::relative(j, out, a, b, fpu), &why);
+        assert_eq!(after.esp, STACK + 12, "{why}: ret 8");
+        let why = format!("rotate seed {seed} {fpu:x?}");
+        let after = gjk_compare(&mut code, &mut mem, 0x2da6e0, GJK_OUT + 0x100, &[a, b], fpu, |j| gjk::rotate(j, GJK_OUT + 0x100, a, b, fpu), &why);
+        assert_eq!(after.esp, STACK + 12, "{why}: ret 8");
+    }
+}
+
+#[test]
+fn the_triangle_test_matches_the_lifted_test() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    let mut masks = [0u32; 8];
+    let mut flipped = 0;
+    for seed in 0..512u64 {
+        let mut r = Rng(0x3033_0000 + seed);
+        let mut mem = base.clone();
+        let (p, tri) = (GJK_IN, GJK_IN + 0x100);
+        seed_vector(&mut r, &mut mem, p);
+        for i in 0..6 {
+            seed_vector(&mut r, &mut mem, tri + 16 * i);
+        }
+        for off in [gjk::state::SUPPORT_A, gjk::state::SUPPORT_B, gjk::state::NORMAL, gjk::state::SIDES] {
+            seed_vector(&mut r, &mut mem, GJK_STATE + off);
+        }
+        let orient = if seed % 4 == 0 { 0 } else { 1 + r.below(3) };
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} orient {orient} {fpu:x?}");
+        let mut sides = None;
+        let after = gjk_compare(&mut code, &mut mem, 0x303360, GJK_STATE, &[p, tri, orient], fpu, |j| {
+            sides = Some(gjk::triangle(j, GJK_STATE, p, tri, orient, fpu)?);
+            Ok(())
+        }, &why);
+        let sides = sides.unwrap();
+        assert_eq!((after.eax, after.edx, after.esp), (sides.mask, sides.edx, STACK + 16), "{why}: eax, edx, ret 0xc");
+        masks[sides.mask as usize] += 1;
+        if sides.edx != tri {
+            flipped += 1;
+        }
+    }
+    assert!(masks.iter().filter(|&&n| n > 0).count() >= 6 && flipped > 4, "{masks:?}, {flipped} flipped");
+}
+
+#[test]
+fn closest_segment_points_match_the_lifted_solve() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    let mut seen = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x3085_0000 + seed);
+        let mut mem = base.clone();
+        let [p1, d1, p2, d2] = [0, 1, 2, 3].map(|i| GJK_IN + 16 * i);
+        seed_vector(&mut r, &mut mem, p1);
+        let dir = seed_vector(&mut r, &mut mem, d1);
+        seed_vector(&mut r, &mut mem, p2);
+        seed_vector(&mut r, &mut mem, d2);
+        match seed % 8 {
+            // Parallel, antiparallel and degenerate second segments.
+            1 => put_lanes(&mut mem, d2, dir.map(|x| 2.0 * x)),
+            2 => put_lanes(&mut mem, d2, dir.map(|x| -x)),
+            3 => put_lanes(&mut mem, d2, [0.0; 4]),
+            _ => {}
+        }
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} {fpu:x?}");
+        let mut closest = None;
+        let after = gjk_compare(&mut code, &mut mem, 0x308590, 0, &[p1, d1, p2, d2, GJK_OUT], fpu, |j| {
+            closest = Some(gjk::segments(j, p1, d1, p2, d2, GJK_OUT, fpu)?);
+            Ok(())
+        }, &why);
+        let closest = closest.unwrap();
+        assert_eq!((after.eax, after.ecx, after.edx, after.esp), (closest.flags, closest.flags, closest.distance, STACK + 4), "{why}: eax, ecx, edx, ret");
+        *seen.entry(closest.flags).or_insert(0) += 1;
+    }
+    assert!(seen.len() >= 6, "{seen:?}");
+}
+
+#[test]
+fn the_query_contact_matches_the_lifted_contact() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    let mut cases = [0u32; 3];
+    for seed in 0..256u64 {
+        let mut r = Rng(0x3032_0000 + seed);
+        let mut mem = base.clone();
+        let sep = GJK_IN;
+        seed_vector(&mut r, &mut mem, sep);
+        for off in [gjk::state::SUPPORT_A, gjk::state::SUPPORT_B, gjk::state::MIDPOINT] {
+            seed_vector(&mut r, &mut mem, GJK_STATE + off);
+        }
+        let case = r.below(3);
+        let (na, nb) = [(1, 1 + r.below(3)), (2 + r.below(2), 1), (2 + r.below(2), 2 + r.below(2))][case as usize];
+        word(&mut mem, GJK_STATE + gjk::state::COUNT_A, na);
+        word(&mut mem, GJK_STATE + gjk::state::COUNT_B, nb);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} ({na}, {nb}) {fpu:x?}");
+        let mut edx = None;
+        let after = gjk_compare(&mut code, &mut mem, 0x3032c0, GJK_STATE, &[0x0077_3000, sep, GJK_OUT], fpu, |j| {
+            edx = Some(gjk::contact(j, GJK_STATE, sep, GJK_OUT, fpu)?);
+            Ok(())
+        }, &why);
+        assert_eq!((after.eax, after.edx, after.esp), (GJK_OUT, edx.unwrap(), STACK + 16), "{why}: eax, edx, ret 0xc");
+        cases[case as usize] += 1;
+    }
+    assert!(cases.iter().all(|&n| n > 32), "{cases:?}");
+}
