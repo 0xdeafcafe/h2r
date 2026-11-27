@@ -1,7 +1,7 @@
 # Retiring the guest D3D path: the menus (R7)
 
-Status: Partly built. The menu frame's widgets, text, fade, bars, loading screen and blur draw from the scene's overlay where they read; every UI draw that does not is counted kept by kind and cause. Scrolling bitmaps, unread text and draw classes and active model widgets keep guest packets.
-Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test).
+Status: Partly built. The menu frame's widgets, text, fade, bars, loading screen and blur draw from the scene's overlay where they read; every UI draw that does not is counted kept by kind and cause. Unread text and draw classes and active model widgets keep guest packets.
+Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `ui_overlay::bitmaps::tests::a_scrolling_bitmap_reads_as_its_four_wrapped_quads`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay stage (`frame_scene::Overlay`, `FrameScene::overlay`) with the HUD of slice R6; R7 adds no stage of its own. The rule: a UI draw draws from the overlay or is counted `scene_kept_ui_<kind>_<cause>` at the first producer that refuses it. Nothing is dropped.
@@ -12,6 +12,7 @@ Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay s
 |---|---|---|
 | Containers, plain bitmap widgets, supported text, lists and buttons | the sorted list `0x002353a5`, one pass per run | [native-menus-overlay.md](native-menus-overlay.md#the-menus-on-the-overlay) |
 | Meters: one rectangle of the UI globals' meter colour | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#meters) |
+| Scrolling bitmaps: up to four wrapped quads | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#scrolling-bitmaps) |
 | Shader bitmaps | the shader quad `0x0022a664` | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | Fade, all six modes | `0x00040d86` | [native-menus-overlay.md](native-menus-overlay.md#the-fade-the-bars-and-the-loading-screen) |
 | Bars: fans, quads, polygons and strips | the uploader `0x0004b252` from `0x00052ce7` | this page, "Bars" |
@@ -40,7 +41,7 @@ Producers that refuse before any offer count their own (`kept::ui` for the `Ui` 
 
 | Kind | Draw | Causes |
 |---|---|---|
-| `widget` | a drawn widget of a sorted list, once per widget whatever it draws | `bitmap_scroll`, `bitmap_state`, `text`, `model`, `draw`, `unreadable`, `unlisted`, `pass` (per widget of a run not placed) |
+| `widget` | a drawn widget of a sorted list, once per widget whatever it draws | `bitmap_state`, `text`, `model`, `draw`, `unreadable`, `unlisted`, `pass` (per widget of a run not placed) |
 | `list` | a whole sorted list | `frame` (viewport not the full canvas, or rounding not to nearest), `mismatched`, `pass` (the UI scope's order did not hold) |
 | `fade`, `bar`, `loading`, `quad` | a screen draw (`quad`: a generic widget fan or screen quad) | the capture's: `target`, `clip_rects`, `depth`, `fill`, `query`, `colour_write`, `shader`, `combiner`, `sampler`, `texture`, `vertices`, `strip_shape`, `primitive`, `culled`, `clip`, `overlay`, `device`; the producer's: `order`, `push`, `scope` (no overlay scope names it), `reservation`; `packet` |
 | `menu_shader` | a menu shader bitmap's quad | as `fade` |
