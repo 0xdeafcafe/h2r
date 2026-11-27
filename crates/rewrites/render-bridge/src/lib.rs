@@ -36,6 +36,8 @@ pub mod native_objects;
 #[cfg(feature = "native-render")]
 pub mod native_particles;
 #[cfg(feature = "native-render")]
+pub mod particle_births;
+#[cfg(feature = "native-render")]
 pub mod native_effects;
 #[cfg(feature = "native-render")]
 mod native_flares;
