@@ -33,6 +33,7 @@ pub mod kernel;
 pub mod loader;
 pub mod perf;
 pub mod preempt;
+pub mod pruned;
 mod return_observers;
 pub mod runner;
 pub mod services;

@@ -10,6 +10,8 @@
 pub mod fallback;
 pub mod host_coverage;
 pub mod host_report;
+pub mod prune;
+pub use prune::register_lift_replaced;
 mod render_entries;
 pub use render_entries::{has_retail_render_sites, register_retail_entries, retail_entries};
 pub mod shim;
@@ -320,8 +322,9 @@ fn build_selected(
         if cached { " (cached)" } else { "" }
     );
     let t = Instant::now();
+    let prune = prune::plan(&x, &a)?;
     let lifter = lift::Lifter::new(&a, &x)?;
-    let entries: Vec<u32> = a.functions.keys().copied().collect();
+    let entries = emit::lifted_entries(&a, prune.as_ref().map(|p| &p.keep));
     let lifted = emit::par::map(&entries, |&e| lifter.lift(e));
     let mut funcs = Vec::new();
     let mut unlifted = Vec::new();
@@ -350,6 +353,10 @@ fn build_selected(
     );
     let src = out.join("src");
     let t = Instant::now();
+    let table = prune.as_ref().map(|p| p.table(&x, &a, &owners));
+    if let (Some(p), Some(table)) = (&prune, &table) {
+        eprintln!("{}", p.summary(table));
+    }
     let codegen = emit::Codegen::from_env().map_err(anyhow::Error::msg)?;
     let w = if let Some(coverage) = coverage {
         let native = coverage.owners(&owners)?;
@@ -378,6 +385,7 @@ fn build_selected(
         w.resumes
     );
     drop(owners);
+    emit::pruned::write_c(&src, table.as_ref())?;
     install_abi_header(&src)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
@@ -427,6 +435,10 @@ pub struct Module {
     pub entries: usize,
     pub resumes: usize,
     pub slim: bool,
+    /// The replaced entries the lift cut, from the module's pruned table
+    /// (empty: nothing left out). Boot checks them against its plan
+    /// (`boot::registration::check_pruned`).
+    pub pruned: Vec<emit::pruned::Root>,
 }
 
 /// `module` relative to the package root `root`, for `LoadPackagedLibrary`,
@@ -605,6 +617,14 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             }
             Err(_) => None,
         };
+        // The lift's left-out code, if it left any (prune.rs).
+        let pruned = match lib.get::<*const std::ffi::c_char>(emit::pruned::SYMBOL.as_bytes()) {
+            Ok(text) => {
+                let text = std::ffi::CStr::from_ptr(*text).to_str().context("pruned table is not UTF-8")?;
+                Some(emit::pruned::Table::parse(text).map_err(anyhow::Error::msg)?)
+            }
+            Err(_) => None,
+        };
         if std::env::var_os(host_report::ENV).is_some_and(|p| !p.is_empty()) {
             anyhow::ensure!(cold.is_none(), "host audit requires a full generated module");
             rt.enable_guest_coverage(entries, resumes);
@@ -621,6 +641,10 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
         fallback::init_with_cold(xbe_bytes, &rows, &res, cold).map_err(anyhow::Error::msg)?;
+        let pruned_table = pruned.as_ref().map(prune::runtime_table);
+        if let Some(p) = &pruned_table {
+            fallback::set_pruned(p.clone());
+        }
         // Each row is registered as itself, a slim module's left-out owners
         // go to the interpreter, and the runtime hands every generated STOP
         // to the fallback (fallback.rs).
@@ -631,6 +655,9 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
                 fallback::register_cold(d, cold, fallback::interpret_cold)
                     .context("registering slim host interpreter routes")?;
             }
+            if let Some(p) = pruned_table {
+                d.set_pruned(p);
+            }
             Ok(())
         })?;
         fallback::install_stop_recovery(rt);
@@ -639,6 +666,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             entries: entries.len(),
             resumes: resumes.len(),
             slim: cold.is_some(),
+            pruned: pruned.map(|t| t.roots).unwrap_or_default(),
         })
     }
 }

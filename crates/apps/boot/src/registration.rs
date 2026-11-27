@@ -1127,7 +1127,7 @@ pub(crate) fn register_late_for_profile(
 }
 
 mod profiles;
-pub use profiles::replaced_entries;
+pub use profiles::{check_pruned, lift_replaced, replaced_entries};
 
 #[cfg(test)]
 pub(crate) mod tests;

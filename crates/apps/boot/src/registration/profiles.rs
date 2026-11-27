@@ -19,6 +19,65 @@ use crate::lockstep_glue;
 /// playback and the headless host, each with default switches. One image
 /// serves all three, so an entry kept in any of them is kept.
 pub fn replaced_entries(entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point> {
+    hooks::replaced_in_every(&profile_plans(), entries)
+}
+
+/// [`replaced_entries`] with each entry's replacing feature, and the guest
+/// functions the on features' Rust calls in any profile, which the lift
+/// keeps: what boot registers for the build
+/// (`recomp::register_lift_replaced`, docs/lifter/lift-pruning.md).
+pub fn lift_replaced(entries: &BTreeSet<u32>) -> emit::pruned::Replaced {
+    let plans = profile_plans();
+    let feature = |addr: u32| {
+        plans
+            .iter()
+            .find_map(|p| p.chains.get(&addr)?.implement.as_ref().map(|h| h.feature))
+            .unwrap_or("?")
+    };
+    let entries = hooks::replaced_in_every(&plans, entries)
+        .into_iter()
+        .map(|(entry, p)| {
+            let root = emit::pruned::Root { entry, point: p.name.to_owned(), feature: feature(entry).to_owned() };
+            (entry, root)
+        })
+        .collect();
+    let calls = plans.iter().flat_map(|p| p.calls_guest.keys().copied()).collect();
+    emit::pruned::Replaced { entries, calls }
+}
+
+/// Boot's check of a pruned module against this boot's plan: every root
+/// the lift cut must still be replaced, or the left-out body could be
+/// reached. Refuses naming the point and its feature, before any guest
+/// code runs (docs/lifter/lift-pruning.md, "Boot safety").
+pub fn check_pruned(roots: &[emit::pruned::Root], plan: &hooks::Plan) -> anyhow::Result<()> {
+    let entries: BTreeSet<u32> = roots.iter().map(|r| r.entry).collect();
+    let live = plan.replaced(&entries);
+    let missing: Vec<String> = roots
+        .iter()
+        .filter(|r| !live.contains_key(&r.entry))
+        .map(|r| {
+            let why = match plan.features.iter().find(|f| f.id == r.feature) {
+                Some(f) => match &f.off {
+                    Some(why) => format!("{} is off ({why})", r.feature),
+                    None => format!("{} no longer replaces it", r.feature),
+                },
+                None => format!("{} is not in this boot's plan", r.feature),
+            };
+            format!("{} ({:#010x}): {why}", r.point, r.entry)
+        })
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the lift left out guest code this boot would run: {}. Turn the feature back on, or rebuild with H2_LIFT_PRUNE=0",
+        missing.join("; ")
+    )
+}
+
+/// The windowed game's, Theater playback's and the headless host's plans,
+/// each with default switches.
+fn profile_plans() -> Vec<hooks::Plan> {
     let window = Case { coop_live: true, telemetry: false, ..Case::full("") };
     let playback = Case { replaying: true, ..window.clone() };
     let host = Case {
@@ -28,15 +87,14 @@ pub fn replaced_entries(entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point
         telemetry: false,
         ..Case::full("")
     };
-    let plans: Vec<hooks::Plan> = [window, playback, host]
+    [window, playback, host]
         .iter()
         .map(|case| {
             registry(case)
                 .build(&hooks::Base)
                 .unwrap_or_else(|c| panic!("{case:?}: the plan refused: {} conflicts", c.len()))
         })
-        .collect();
-    hooks::replaced_in_every(&plans, entries)
+        .collect()
 }
 
 /// What a boot has, from nothing (a headless run with no settings) to

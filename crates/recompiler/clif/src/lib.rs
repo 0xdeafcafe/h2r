@@ -196,7 +196,19 @@ pub struct Report {
 /// linker (`emit::compile::link_objects`). No C is compiled; `dir/obj`
 /// holds the objects.
 pub fn build_dylib(owners: &[Owner], dir: &std::path::Path, out: &std::path::Path, jobs: usize) -> Result<Report, String> {
-    build_dylib_with(owners, dir, out, jobs, None)
+    build_dylib_with(owners, dir, out, jobs, None, None)
+}
+
+/// [`build_dylib`] for a pruned lift: the module carries `pruned`'s table
+/// (docs/lifter/lift-pruning.md, "Boot safety").
+pub fn build_dylib_pruned(
+    owners: &[Owner],
+    dir: &std::path::Path,
+    out: &std::path::Path,
+    jobs: usize,
+    pruned: Option<&emit::pruned::Table>,
+) -> Result<Report, String> {
+    build_dylib_with(owners, dir, out, jobs, None, pruned)
 }
 
 /// [`build_dylib`], with the linker looked up on the `PATH`-style list
@@ -207,6 +219,7 @@ pub fn build_dylib_with(
     out: &std::path::Path,
     jobs: usize,
     tools: Option<OsString>,
+    pruned: Option<&emit::pruned::Table>,
 ) -> Result<Report, String> {
     let t = std::time::Instant::now();
     let isa = isa()?;
@@ -214,6 +227,11 @@ pub fn build_dylib_with(
     let shards = objects.len();
     objects.push((REGISTRY_STEM.to_owned(), module::registry(&isa, owners).map_err(|e| e.to_string())?));
     objects.push((BRIDGE_STEM.to_owned(), module::bridge(&isa).map_err(|e| e.to_string())?));
+    let mut exports = module::EXPORTS.to_vec();
+    if let Some(table) = pruned {
+        objects.push((module::PRUNED_STEM.to_owned(), module::pruned(&isa, table).map_err(|e| e.to_string())?));
+        exports.push((emit::pruned::SYMBOL, true));
+    }
     let compile_secs = t.elapsed().as_secs_f64();
 
     let t = std::time::Instant::now();
@@ -233,7 +251,7 @@ pub fn build_dylib_with(
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    emit::compile::link_objects(emit::compile::Arch::host(), &paths, &module::EXPORTS, out, tools)
+    emit::compile::link_objects(emit::compile::Arch::host(), &paths, &exports, out, tools)
         .map_err(|e| e.to_string())?;
     Ok(Report { owners: owners.len(), shards, object_bytes, compile_secs, write_secs, link_secs: t.elapsed().as_secs_f64() })
 }

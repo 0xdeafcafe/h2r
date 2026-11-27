@@ -1357,7 +1357,7 @@ fn image_gate_holds() {
     let data = std::fs::read(path).unwrap();
     let x = xbe::Xbe::parse(&data).unwrap();
     let analysis = analyze::analyze(&x).unwrap();
-    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL, None).unwrap();
     // (accesses, gate takes) of a statement list; `held` carries across.
     fn walk(stmts: &[Stmt], held: &mut bool, n: &mut [u64; 2]) {
         for s in stmts {
@@ -1435,7 +1435,7 @@ fn image_transfer_sites() {
     let data = std::fs::read(path).unwrap();
     let x = xbe::Xbe::parse(&data).unwrap();
     let analysis = analyze::analyze(&x).unwrap();
-    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL, None).unwrap();
     let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
     let mut n: BTreeMap<&str, u64> = BTreeMap::new();
     // Indirect calls by how many distinct sites share a continuation owner.

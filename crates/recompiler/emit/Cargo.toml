@@ -26,6 +26,9 @@ simd.workspace = true
 sse-oracle = { path = "../sse-oracle" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 runtime = { path = "../../runtime/runtime" }
+# The fast tier's module for tests/prune.rs (clif depends on emit; a
+# dev-dependency cycle is allowed for integration tests).
+clif = { path = "../clif" }
 
 [lints]
 workspace = true

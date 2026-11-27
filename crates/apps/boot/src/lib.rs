@@ -94,6 +94,8 @@ pub fn perf_env_note(
 /// hosts); [`run`] and its variants call it too. Idempotent.
 pub fn register_image_entries() {
     recomp::register_retail_entries(image_entries());
+    // And what the lift may leave out (docs/lifter/lift-pruning.md).
+    recomp::register_lift_replaced(registration::lift_replaced);
 }
 
 /// The list [`register_image_entries`] registers, in order.
@@ -1687,6 +1689,9 @@ fn run_configured(
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))
     })?;
+    // A pruned module's cut roots must still be replaced: refused here,
+    // before any guest code runs (docs/lifter/lift-pruning.md).
+    registration::check_pruned(&module.pruned, &plan)?;
     let verbose_plan = hooks::plan_verbose();
     let installed = plan
         .install(&loaded.runtime)

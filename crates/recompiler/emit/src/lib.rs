@@ -49,6 +49,7 @@ pub mod host;
 mod lazy;
 pub mod output;
 pub mod par;
+pub mod pruned;
 pub mod sim;
 mod x87;
 
@@ -239,16 +240,31 @@ pub fn plan_with(funcs: Vec<IrFunction>, passes: opt::Passes) -> Vec<Owner> {
     owners
 }
 
-/// Lift every discovered function and plan its owner, running `passes`.
+/// Lift every discovered function `keep` does not drop and plan its
+/// owner, running `passes`. `None` lifts everything
+/// (docs/lifter/lift-pruning.md). A kept call of a dropped entry has no
+/// handler to call directly, so it is emitted as a dispatched call.
 pub fn plan_image(
     analysis: &analyze::Analysis,
     xbe: &xbe::Xbe,
     passes: opt::Passes,
+    keep: Option<&analyze::prune::Keep>,
 ) -> Result<Vec<Owner>, xbe::Error> {
     let lifter = lift::Lifter::new(analysis, xbe)?;
-    let entries: Vec<u32> = analysis.functions.keys().copied().collect();
+    let entries = lifted_entries(analysis, keep);
     let funcs = par::map(&entries, |&e| lifter.lift(e)).into_iter().flatten().collect();
     Ok(plan_with(funcs, passes))
+}
+
+/// The entries a lift lifts: every discovered function, less those `keep`
+/// drops.
+pub fn lifted_entries(analysis: &analyze::Analysis, keep: Option<&analyze::prune::Keep>) -> Vec<u32> {
+    analysis
+        .functions
+        .keys()
+        .copied()
+        .filter(|e| keep.is_none_or(|k| !k.dropped.contains_key(e)))
+        .collect()
 }
 
 /// FNV-1a, 64-bit: stable across Rust versions, which a cache key needs.

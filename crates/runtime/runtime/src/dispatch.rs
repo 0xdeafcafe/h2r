@@ -72,6 +72,9 @@ pub struct Dispatch {
     /// on the entry-table module), registered with `hostfault` while any
     /// dispatch holding it lives.
     flat_fixups: Option<Arc<hostfault::Table>>,
+    /// The module's left-out code (docs/lifter/lift-pruning.md), if the
+    /// lift left any out ([`Dispatch::set_pruned`]).
+    pruned: Option<Arc<crate::pruned::Pruned>>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -392,6 +395,19 @@ impl Dispatch {
         self.entry_fallback.clone()
     }
 
+    /// The module's pruned table: a transfer nothing resolves that lands
+    /// in one of its ranges stops naming the replaced entry, and the entry
+    /// fallback is never asked about it (docs/lifter/lift-pruning.md,
+    /// "Boot safety"). An empty table is none.
+    pub fn set_pruned(&mut self, pruned: crate::pruned::Pruned) {
+        self.pruned = (!pruned.is_empty()).then(|| Arc::new(pruned));
+    }
+
+    /// The left-out range holding `pc`, if any.
+    pub fn pruned_at(&self, pc: u32) -> Option<crate::pruned::Hit> {
+        self.pruned.as_ref()?.at(pc)
+    }
+
     /// A copy for a second executor ([`crate::executor`]): the generated
     /// handlers, resumes and stop recovery hook as they are, and each
     /// override, enabled or not, kept where it is
@@ -432,6 +448,7 @@ impl Dispatch {
             modules: self.modules,
             entry_table: self.entry_table.clone(),
             flat_fixups: self.flat_fixups.clone(),
+            pruned: self.pruned.clone(),
         }
     }
     /// Use the title's generated functions in an isolated executor. HLE-only

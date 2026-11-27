@@ -192,6 +192,21 @@ pub fn registry(isa: &OwnedTargetIsa, owners: &[Owner]) -> Result<Vec<u8>, Error
     emit(m)
 }
 
+/// The pruned table's object (docs/lifter/lift-pruning.md, "Boot
+/// safety"): `h2gen_pruned_v1`, the table's text and its NUL, exported as
+/// emit's `h2gen_pruned.c` exports it on the clang tier.
+pub fn pruned(isa: &OwnedTargetIsa, table: &emit::pruned::Table) -> Result<Vec<u8>, Error> {
+    let mut m = object(isa, PRUNED_STEM)?;
+    let mut d = DataDescription::new();
+    d.define(table.bytes().into_boxed_slice());
+    let id = declare_data(&mut m, emit::pruned::SYMBOL, Linkage::Export, false)?;
+    define_data(&mut m, id, &d)?;
+    emit(m)
+}
+
+/// The pruned table object's stem.
+pub const PRUNED_STEM: &str = "h2clif_pruned";
+
 /// The module's feature word: no clock and no call features, and
 /// `H2GEN_FEATURE_IMPRECISE_FAULTS` (128) when the passes ran with imprecise
 /// faults, as emit's registry declares it

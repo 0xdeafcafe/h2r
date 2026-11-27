@@ -620,6 +620,21 @@ impl ExecCtx {
                 ),
                 None,
             ),
+            Event::Pruned {
+                caller,
+                target,
+                root,
+                point,
+            } => (
+                Some(*caller),
+                None,
+                format!(
+                    "{target:#010x} was left out of the lift: {point} ({root:#010x}) replaces it, \
+                     so its replacing feature is off or a hook transferred to the body; \
+                     H2_LIFT_PRUNE=0 lifts everything"
+                ),
+                None,
+            ),
             Event::UnrecordedFault { pc } => (
                 Some(*pc),
                 None,

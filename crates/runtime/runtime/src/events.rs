@@ -69,6 +69,17 @@ pub enum Event {
         code: u32,
         arg: u32,
     },
+    /// A transfer to code the lift left out (docs/lifter/lift-pruning.md,
+    /// "Boot safety"): `target` lies in a range of the module's pruned
+    /// table, owned by the replaced entry `root` at `point`. `caller` is
+    /// the return address of a call, else the EIP the transfer left. A
+    /// stop, never recovered.
+    Pruned {
+        caller: u32,
+        target: u32,
+        root: u32,
+        point: std::sync::Arc<str>,
+    },
     /// A delivered [`crate::interrupt::GuestInterrupt`] returned with an ESP
     /// its calling convention does not allow. CPU state was restored to the
     /// interrupted point; the interrupted transfer did not continue.

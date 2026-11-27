@@ -1161,13 +1161,20 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         let (a, _) = boot::analyze_cached(&x, None)?;
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
-        let owners = emit::plan_image(&a, &x, passes)?;
+        // What the lift leaves out (docs/lifter/lift-pruning.md).
+        let prune = boot::prune::plan(&x, &a)?;
+        let owners = emit::plan_image(&a, &x, passes, prune.as_ref().map(|p| &p.keep))?;
         println!(
             "lift + plan: {:.3}s ({passes:?})",
             t.elapsed().as_secs_f64()
         );
+        let table = prune.as_ref().map(|p| p.table(&x, &a, &owners));
+        if let (Some(p), Some(table)) = (&prune, &table) {
+            println!("{}", p.summary(table));
+        }
         let t = Instant::now();
         let w = emit::write_module_with(&owners, &src, codegen)?;
+        emit::pruned::write_c(&src, table.as_ref())?;
         println!(
             "emit: {:.3}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries, {} loop back-edges",
             t.elapsed().as_secs_f64(),

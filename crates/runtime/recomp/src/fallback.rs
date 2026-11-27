@@ -56,6 +56,16 @@ pub fn register_cold(
 }
 
 static TABLES: OnceLock<Tables> = OnceLock::new();
+/// The module's left-out code (docs/lifter/lift-pruning.md, "Boot
+/// safety"): the interpreter stops there instead of decoding it from
+/// guest memory.
+static PRUNED: OnceLock<runtime::pruned::Pruned> = OnceLock::new();
+
+/// Hand the interpreter the module's pruned table; once per process, as
+/// [`init_with_cold`].
+pub fn set_pruned(pruned: runtime::pruned::Pruned) {
+    let _ = PRUNED.set(pruned);
+}
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static XBE: OnceLock<&'static [u8]> = OnceLock::new();
 
@@ -468,6 +478,9 @@ fn run_from(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: Option<u32>) -> Transfer
     let (mut x87n, mut mn): (u64, HashMap<String, u64>) = (0, HashMap::new());
     let mut memory_fault = None;
     let mut exception = false;
+    // A step into left-out code: (target, the PC that went there, owner).
+    let mut pruned: Option<(u32, u32, runtime::pruned::Hit)> = None;
+    let mut prev = cpu.eip;
     let result = {
         let mut guard = rt.memory();
         let mut mem = GuestMem(&mut guard, None, 0);
@@ -483,6 +496,11 @@ fn run_from(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: Option<u32>) -> Transfer
                     break Ok(TransferAbi::jump(pc));
                 }
             }
+            if let Some(hit) = PRUNED.get().and_then(|p| p.at(pc)) {
+                pruned = Some((pc, prev, hit));
+                break Err(format!("fallback: {pc:#x} was left out of the lift"));
+            }
+            prev = pc;
             if steps >= MAX_STEPS {
                 break Err(format!("fallback step limit at {pc:#x}"));
             }
@@ -599,6 +617,15 @@ fn run_from(cpu: &mut CpuAbi, ctx: &mut ExecCtx, owner: Option<u32>) -> Transfer
     match result {
         Ok(t) => t,
         Err(msg) => {
+            if let Some((target, caller, hit)) = pruned {
+                runtime::pruned::count_hit();
+                return TransferAbi::stop(ctx.emit(runtime::Event::Pruned {
+                    caller,
+                    target,
+                    root: hit.root,
+                    point: hit.point,
+                }));
+            }
             if owner.is_some() && let Some(fault) = memory_fault {
                 return ctx.fault(cpu.eip, fault);
             }

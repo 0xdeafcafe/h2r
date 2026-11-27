@@ -316,6 +316,18 @@ pub(crate) fn step<const SCOPED: bool, const DIAG: bool, const THUNK: bool>(
         })));
     }
     let Some(resolution) = ctx.resolve_cached(transfer) else {
+        // Code the lift left out stops by name, never quietly
+        // (docs/lifter/lift-pruning.md, "Boot safety").
+        if let Some(hit) = ctx.runtime().pruned_at(transfer.target_pc) {
+            crate::pruned::count_hit();
+            let caller = if transfer.kind == abi::CALL { transfer.resume_pc } else { cpu.eip };
+            return Step::Done(TransferAbi::stop(ctx.emit(Event::Pruned {
+                caller,
+                target: transfer.target_pc,
+                root: hit.root,
+                point: hit.point,
+            })));
+        }
         return Step::Done(TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
             pc: cpu.eip,
             target: transfer.target_pc,

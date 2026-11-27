@@ -339,6 +339,10 @@ impl Runtime {
     pub fn read_dispatch<R>(&self, f: impl FnOnce(&Dispatch) -> R) -> R {
         f(&self.dispatch.read().unwrap_or_else(|e| e.into_inner()))
     }
+    /// The pruned range holding `pc` ([`Dispatch::pruned_at`]).
+    pub fn pruned_at(&self, pc: u32) -> Option<crate::pruned::Hit> {
+        self.read_dispatch(|d| d.pruned_at(pc))
+    }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut d);
@@ -388,6 +392,10 @@ impl Runtime {
             let found = Self::resolve_in(&d, t);
             if found.is_some() || !matches!(t.route, abi::ENTRY | abi::RETURN_TARGET) {
                 return (generation, found);
+            }
+            // Left-out code is never interpreted: the runner stops by name.
+            if d.pruned_at(t.target_pc).is_some() {
+                return (generation, None);
             }
             let Some(fallback) = d.entry_fallback() else {
                 return (generation, None);

@@ -253,16 +253,21 @@ pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::com
         if cached { " (cached)" } else { "" }
     );
     let t = Instant::now();
+    let prune = crate::prune::plan(&x, &a)?;
     let lifter = lift::Lifter::new(&a, &x)?;
-    let entries: Vec<u32> = a.functions.keys().copied().collect();
+    let entries = emit::lifted_entries(&a, prune.as_ref().map(|p| &p.keep));
     let funcs: Vec<_> = emit::par::map(&entries, |&e| lifter.lift(e)).into_iter().flatten().collect();
     eprintln!("lift: {:.1}s, {} of {} lifted", t.elapsed().as_secs_f64(), funcs.len(), entries.len());
     let t = Instant::now();
     let owners = emit::plan(funcs);
     eprintln!("plan: {:.1}s", t.elapsed().as_secs_f64());
-    // No C compiler: the shards, the registry and the bridge are all
-    // Cranelift objects, linked by the platform's linker.
-    let r = clif::build_dylib(&owners, &dir, &lib, jobs).map_err(anyhow::Error::msg)?;
+    let table = prune.as_ref().map(|p| p.table(&x, &a, &owners));
+    if let (Some(p), Some(table)) = (&prune, &table) {
+        eprintln!("{}", p.summary(table));
+    }
+    // No C compiler: the shards, the registry, the bridge and the pruned
+    // table are all Cranelift objects, linked by the platform's linker.
+    let r = clif::build_dylib_pruned(&owners, &dir, &lib, jobs, table.as_ref()).map_err(anyhow::Error::msg)?;
     eprintln!(
         "cranelift: {} owners in {} shards, {:.1}s compiling, {:.1}s writing, {:.1}s linking, {:.1} MB of objects -> {}",
         r.owners,

@@ -113,8 +113,8 @@ inputs, no hash-map order.
 ```mermaid
 flowchart TD
     call[call, tail jump or return<br/>lands on a dropped address] --> how{registered?}
-    how -->|dropped entry| stop[Stop::Pruned: entry, owning point name, caller PC]
-    how -->|inside a dropped range| stop
+    how -->|no handler resolves| table{in the pruned table?}
+    table -->|yes| stop[Event::Pruned stop: target, owning point, caller PC]
     stop --> log[fatal, by name; counter lift_pruned_hits]
     boot[boot] --> chk{every pruned root replaced<br/>in the live plan?}
     chk -->|no| refuse[refuse to start: names the switch or feature<br/>and says H2_LIFT_PRUNE=0]
@@ -123,16 +123,22 @@ flowchart TD
 
 | Path into dropped code | What happens |
 |---|---|
-| direct call from kept generated code to a replaced entry | emitted as a dispatched call, so the hook chain answers; no `h2fn_<entry>` symbol exists |
-| direct call from kept code to any other dropped entry | cannot exist: `prune::keep` asserts the keep set is closed, and a missed one is an undefined symbol at link |
-| indirect call or jump to a dropped entry | the entry is registered with the pruned handler: `Stop::Pruned` |
-| return or resume into a dropped body | the pruned table's ranges turn `BAD_ENTRY` into `Stop::Pruned` with the owner's name |
-| the fallback interpreter (`crates/runtime/recomp/src/fallback.rs`) | `recover` does not handle `Stop::Pruned`, and the interpreter stops at a pruned range instead of decoding it from guest memory |
+| direct call from kept generated code to a dropped entry | a dropped entry has no entry index, so the call is emitted as a dispatched call; a replaced entry's hook chain answers it; no `h2fn_<entry>` symbol exists |
+| any call, jump, return or resume nothing resolves | the runner looks the target up in the pruned table (`Dispatch::set_pruned`, `crates/runtime/runtime/src/runner.rs`) and stops with `Event::Pruned`, naming the range's replaced entry |
+| the entry fallback (unread jump-table targets) | never asked about a pruned address (`Runtime::resolve_with_generation`) |
+| the fallback interpreter (`crates/runtime/recomp/src/fallback.rs`) | `recover` does not handle the stop, and the interpreter stops with `Event::Pruned` at a pruned range instead of decoding it from guest memory |
 | a hook marked `replaces_guest()` that transfers to its body anyway | the same stop, naming the point |
-| a switch or profile that turns the replacing feature off | boot refuses before the first guest instruction |
+| a switch or profile that turns the replacing feature off | boot refuses before the first guest instruction (`boot::registration::check_pruned`) |
 
-There is no fallback arm. The message names the dropped entry, the
-replaced point it hangs from, and the address that transferred.
+Ranges are the dropped functions' CFG blocks less every byte a kept
+owner's instructions cover, so a tail shared with kept code stays
+runnable. Each is owned by the lowest replaced entry whose cut body
+reaches it. **Code**: `crates/recompiler/emit/src/pruned.rs`,
+`crates/runtime/runtime/src/pruned.rs`.
+
+There is no fallback arm. The message names the dropped address, the
+replaced point it hangs from, and the caller: a call's return address,
+else the EIP the transfer left.
 
 ### Differential tests
 
@@ -158,8 +164,11 @@ set, so a pruned function still lifts on demand. **Code**:
 | `hooks::replaced_in_every(plans, entries) -> BTreeMap<u32, &'static Point>` | `Plan::replaced` in every plan; none given, none replaced |
 | `boot::registration::replaced_entries(entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the window, playback and light-host cases of `registration/profiles.rs`, default switches; panics if a profile's registration or plan fails |
 | `analyze::prune::keep(xbe, analysis, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u32>) -> Keep` | `Keep { kept: BTreeSet<u32>, dropped: BTreeMap<u32, Dropped>, digest: u64 }`; `Dropped { by, bytes }`, `by` the replaced entries whose cut bodies reach it through dropped code; digest FNV-1a over replaced then dropped |
-| `emit::plan_image(analysis, xbe, passes, keep: Option<&Keep>)` | `None` lifts everything |
-| pruned table in the module | rows of entry, end, owning point; read by both tiers' boot bridge |
+| `emit::plan_image(analysis, xbe, passes, keep: Option<&Keep>)` | `None` lifts everything; `emit::lifted_entries` is its entry list, which both tiers' builds lift |
+| `emit::pruned::Table` | `root` rows (entry, point, feature) and `range` rows (start, end, root), tab-separated text, exported NUL-terminated as `h2gen_pruned_v1`: `h2gen_pruned.c` on clang (`emit::pruned::write_c`), a data object on the fast tier (`clif::build_dylib_pruned`). No symbol, nothing left out. `recomp::load_module` reads it into `Module::pruned`, the dispatch tables and the interpreter |
+| `boot::registration::lift_replaced(entries) -> emit::pruned::Replaced` | `replaced_entries` with each entry's feature, plus every profile's `Plan::calls_guest` as roots. `boot::register_image_entries` registers it (`recomp::register_lift_replaced`); `recomp::prune::plan` calls it when `H2_LIFT_PRUNE` is on, and nothing replaced lifts everything |
+| `boot::registration::check_pruned(roots, plan)` | boot's refusal: a cut root `plan.replaced` no longer holds, named with its feature and `H2_LIFT_PRUNE=0` |
+| `Event::Pruned { caller, target, root, point }` | the stop; `runtime::pruned::hits()` is `lift_pruned_hits` |
 | `h2 analyze --prune-report [--replaced FILE]` | TSV, three row kinds, each after a `#` header. `point`: entry, name, body (`dropped`, `kept`, `unknown`), functions dropped alone and shared, bytes alone, shards, shards it alone empties. `function`: entry, source, bytes, shard, the points that drop it. `total`: functions, kept, dropped, bytes, shards touched, emptied, digest. `FILE` is one hex entry per line and an optional name; slice 2's list replaces it |
 
 ### Build caches
@@ -179,8 +188,8 @@ same pruned table.
 
 ## Rules and limits
 
-- A dropped function never runs quietly. Every path is a link error, a
-  refused boot or `Stop::Pruned`.
+- A dropped function never runs quietly. Every path is a refused boot or
+  an `Event::Pruned` stop.
 - The prune set is a function of the XBE and the `h2` executable alone. A
   user's switch file never changes what is lifted.
 - Unmarked means kept. Any doubt in a table above resolves to keeping.
@@ -188,7 +197,7 @@ same pruned table.
   reads. That needs proof no other code reaches the table, which the
   analyzer does not have.
 - `H2_LIFT_PRUNE=0` is the diagnostic arm: a whole image for bisecting a
-  `Stop::Pruned` or running with a replacing feature switched off.
+  `Event::Pruned` or running with a replacing feature switched off.
 - A snapshot taken on a whole image can hold a return address inside a
   function a pruned image drops. Restoring it stops by name.
 
@@ -198,7 +207,7 @@ same pruned table.
 |---|---|---|
 | 1 | `h2 analyze --prune-report` over a hand-given entry list: `analyze::prune::keep`, report only, nothing dropped. Gives the win before anything is built on it | invented graphs in `prune.rs`: a chain cut at a replaced entry; an address-taken callee, a gap-scan root and a callee reached from two sides stay; an interior entry keeps its owner; the entry point stays; nested cuts; determinism and digest; report rows. One synthetic image checks `Graph::build` |
 | 2 | `HookRef::replaces_guest`, `Builder::calls_guest`, `Plan::replaced`, `registration::replaced_entries`. Marks `controls-text` | `crates/hooking/hooks/tests/plan.rs` (`mod replaced`): marked implement is replaced; a refusing `before`, a compare arm, observers and an unmarked implement are not; a resuming port is not; the mark on a `before` refuses the feature; switch off is not; profile intersection; `calls_guest` roots. `controls_text.rs` and `registration/tests.rs`: `CONTROLS_ROW_TEXT` is replaced in every profile |
-| 3 | `plan_image` takes the keep set; pruned table; `Stop::Pruned`; fallback refuses; boot check; `H2_LIFT_PRUNE` | `emit/tests/prune.rs`: A calls replaced B, only B reaches C; module builds on both tiers; a call of C stops naming B; a return into B's body stops by name. Boot test: a pruned table with the feature off refuses and names it |
+| 3 | `plan_image` takes the keep set; pruned table; `Event::Pruned`; fallback refuses; boot check; `H2_LIFT_PRUNE` | `emit/tests/prune.rs`: A calls replaced B, only B reaches C; module builds on both tiers; a call of C stops naming B; a return into B's body stops by name; the fast tier's module carries the same table. Boot test (`registration/tests.rs`): a pruned root with the feature off refuses and names it |
 | 4 | Cache keys: receipt settings, fast stamp, slim split | receipt misses on a changed digest; an untouched shard's object key is unchanged; an emptied shard's file and object go |
 | 5 | Narrow `CodeRef` roots to immediates held by kept functions, to a fixed point | synthetic: a callback referenced only from a dropped function is dropped; referenced from data, kept |
 | 6 | Retail measurement and a note | `#[ignore]` disc test: keep set closed, digest stable across two runs; boot check on the fast tier with `lift_pruned_hits` at 0 |
@@ -236,7 +245,7 @@ Results go in `notes/lift-pruning.md`, dated, with the commit.
   (maths, memory, containers) have many kept callers, so the win may start
   small and grow as whole subsystems go.
 - That every Rust call into guest code goes through a named point that
-  `calls_guest` can declare. An undeclared one shows as `Stop::Pruned`.
+  `calls_guest` can declare. An undeclared one shows as `Event::Pruned`.
 - That a hooked hot callee is already reached through dispatch, not a
   static direct call, in both tiers.
 - Whether the headless host and Theater playback register the same

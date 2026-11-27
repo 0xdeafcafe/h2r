@@ -1276,4 +1276,30 @@ fn the_controls_row_text_is_replaced_in_every_profile() {
     let entry = engine::points::CONTROLS_ROW_TEXT.base;
     let replaced = super::replaced_entries(&[entry, engine::points::TEXT_SET.base].into_iter().collect());
     assert_eq!(replaced.keys().copied().collect::<Vec<_>>(), [entry]);
+    // The build's list names the feature and keeps what the port calls.
+    let lift = super::lift_replaced(&[entry, engine::points::TEXT_SET.base].into_iter().collect());
+    let root = &lift.entries[&entry];
+    assert_eq!((root.point.as_str(), root.feature.as_str()), ("CONTROLS_ROW_TEXT", crate::controls_text::ID));
+    assert!(lift.calls.contains(&engine::points::TEXT_SET.base), "{:x?}", lift.calls);
+}
+
+/// A pruned module whose cut root's feature is switched off refuses the
+/// boot, naming the point, the feature and `H2_LIFT_PRUNE=0`
+/// (docs/lifter/lift-pruning.md, "Boot safety").
+#[test]
+fn a_pruned_root_whose_feature_is_off_refuses_the_boot_by_name() {
+    let entry = engine::points::CONTROLS_ROW_TEXT.base;
+    let roots = [emit::pruned::Root {
+        entry,
+        point: "CONTROLS_ROW_TEXT".into(),
+        feature: crate::controls_text::ID.into(),
+    }];
+    super::check_pruned(&roots, &plan(&Case::full("")).unwrap()).unwrap();
+    let off = format!("-{}", crate::controls_text::ID);
+    let err = super::check_pruned(&roots, &plan(&Case::full(&off)).unwrap()).unwrap_err().to_string();
+    for want in ["CONTROLS_ROW_TEXT", crate::controls_text::ID, "H2_LIFT_PRUNE=0"] {
+        assert!(err.contains(want), "{want}: {err}");
+    }
+    // Nothing cut, nothing to check.
+    super::check_pruned(&[], &plan(&Case::full(&off)).unwrap()).unwrap();
 }
