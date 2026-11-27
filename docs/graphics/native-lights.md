@@ -175,9 +175,12 @@ guest's layer begin and end do not run; their device work is the steps:
 
 A colour-mask caster draws the same way on target 10: cleared to white
 with zero alpha, its casters colour only, its colour copied into each
-copy's map. A shader gel and a first-person light (slot 10) refuse the
-light, and so does a caster region that does not start at its target's
-corner or runs past it. The host's `draws_scene`
+copy's map. A light with a shader gel draws it first, into target 13's
+level 0 (`Op::Gel`, [native-gels.md](native-gels.md), "The gel from the
+scene"), and its layers sample that level through a read-only slot of
+their own. A first-person light (slot 10) refuses the light, and so does
+a caster region that does not start at its target's corner or runs past
+it. The host's `draws_scene`
 is true at any render scale and on every backend while the native
 shadows are on (`native_shadows_glue::enabled`); with them off the
 guest's light frame runs. The first-person lights
