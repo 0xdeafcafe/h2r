@@ -591,7 +591,8 @@ fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
 /// a row naming no body or no reason is refused.
 #[test]
 fn the_record_carries_the_bodies_a_kit_left_out() {
-    use forge_doc::bodies::{Body, Refused};
+    use crate::bodies::{Body, Refused};
+    use crate::record::{ForgeRecord, RecordError};
     let record = ForgeRecord {
         bodies_refused: BTreeMap::from([
             (Body::Sentinel, Refused::CannotCopy),
