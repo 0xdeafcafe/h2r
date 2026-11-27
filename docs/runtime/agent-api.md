@@ -5885,7 +5885,8 @@ the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
 `sim.effects` groups, `sim_seats::aim::arm::status` (`seats.aim`, the
 aim-assist cone's kernel arm, whose `declined` adds its unwatched
-audits), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
+audits), `sim_seats::device::arm::status` (`seats.device`, the bound
+controller's device read, likewise), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
 `mismatched`; shadow ports have no `answered` and their

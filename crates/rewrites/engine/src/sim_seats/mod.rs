@@ -8,12 +8,12 @@
 //! stores in a [`crate::sim_native::plan`] and declines — leaving the CPU
 //! and RAM untouched for the generated original — wherever the shape is
 //! one it does not take over: a float environment it does not assume, an
-//! aliased or unmapped operand, or a path the original owns (the
-//! controller's device bits before the first look-curve call, a
-//! resource type an edited image can name). The bound users' device
-//! reading and the phantom action builder therefore keep running in the
-//! generated code, and the unbound path the phantoms take is the body's
-//! entry.
+//! aliased or unmapped operand, or a path the original owns (a
+//! resource type an edited image can name). The phantom action builder
+//! therefore keeps running in the generated code, and the unbound path
+//! the phantoms take is the body's entry. The bound controller's device
+//! read is the kernel [`device`], run inside the control update's body
+//! through its shadow arm [`device::arm`].
 //!
 //! The aim-assist cone `1a50a0` is not a seat: the idiomatic kernel
 //! `sim_objects::aim_assist` answers it through [`aim::arm`], and its
@@ -31,6 +31,7 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 pub mod aim;
 pub mod camera;
 pub mod control;
+pub mod device;
 pub mod hud;
 pub mod look;
 pub mod resources;

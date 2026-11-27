@@ -143,7 +143,7 @@ mod tests {
             g.put_u32(USERS + 0xc + 4 * u, if mapped.contains(&u) { u } else { u32::MAX });
         }
         let ledger: &'static Mutex<sim_tick::Ledger> = Box::leak(Box::new(Mutex::new(sim_tick::Ledger::new())));
-        let f = move |cx: engine::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode)) };
+        let f = move |cx: engine::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode, sim_tick::Bodies::NONE)) };
         let callee = |c: &engine::entry::GuestCall, m: &mut dyn engine::memory::GuestMemory| {
             if c.target == sim_tick::RECORD_BEFORE || c.target == sim_tick::RECORD_AFTER {
                 m.set_u8(STACK - sim_tick::RECORD_SIZE + sim_tick::RUN_FLAG, 1).unwrap();

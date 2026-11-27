@@ -756,3 +756,223 @@ fn aim_assist_matches_lifted() {
         }
     }
 }
+
+// The bound controller's device read through its kernel arm
+// (`engine::sim_seats::device`), against the lifted original with its
+// real callees: the velocity's length `24590` and the image's `pow`
+// `372d48` on the interpreter's x87. The arm answers every read
+// (`force_answer`); the body's first transfer (the look curve's call,
+// the visibility walk's, or, unseen, the one after) must leave every
+// register but the flags and every byte above the dead stack as the
+// original's does at the same call.
+
+const DEV_OUT: u32 = RECORDS + 0x2000;
+const DEV_SETTINGS: u32 = RECORDS + 0x2800;
+const DEV_CONTROL: u32 = RECORDS + 0x3000;
+const DEV_SEAT: u32 = DEV_CONTROL + 0x94 + 0x14;
+const DEV_SLOT: u32 = RECORDS + 0x7000;
+const DEV_TICKS: u32 = RECORDS + 0x7100;
+const DEV_UNIT: u32 = RECORDS + 0x400;
+const DEV_VEHICLE: u32 = RECORDS + 0x8000;
+const DEV_ENTRIES: u32 = RECORDS + 0x9000;
+const DEV_DEF: u32 = RECORDS + 0xa000;
+const DEV_SEATS: u32 = RECORDS + 0xb000;
+const DEV_CASES: u32 = 11;
+
+/// The vehicle seat: speed, range, exponent, yaw and pitch ends.
+struct DevSeat {
+    velocity: [f32; 3],
+    range: [f32; 2],
+    exponent: f32,
+    yaw: [f32; 2],
+    pitch: [f32; 2],
+}
+
+fn device_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    let port = 1u32;
+    // seat 1, ..., the input slot, the record.
+    for (i, v) in [1, 7, 7, DEV_SLOT, DEV_OUT].into_iter().enumerate() {
+        word(m, STACK + 4 + 4 * i as u32, v);
+    }
+    word(m, SETTINGS, PHASE);
+    word(m, PHASE + 0xf4, DEV_SETTINGS);
+    word(m, DEV_SETTINGS + 0x74, 9);
+    word(m, DEV_SETTINGS + 0x78, RECORDS + 0x2900);
+    word(m, CONTROL_TABLE, DEV_CONTROL);
+    word(m, 0x004e_61cc + 4 * port, 0x1234);
+    m.bytes[0x004e_61b9] = u8::from(case == 1);
+    word(m, 0x0051_0c54, DEV_TICKS);
+    float(m, 0x0051_ea18 + port * 0x1c, 1.25 + case as f32 * 0.5);
+    float(m, 0x0051_ea1c + port * 0x1c, 0.75);
+    let block = 0x0051_ea88 + port * 0x50;
+    for i in 0..16 {
+        m.bytes[(block + i) as usize] = if i % 3 == case % 3 { 0 } else { (i as u8) | 0x40 };
+        let hold = (0x100 + i * 7 + case) as u16;
+        m.bytes[(block + 0x10 + 2 * i) as usize..][..2].copy_from_slice(&hold.to_le_bytes());
+    }
+    for i in 0..8 {
+        float(m, block + 0x30 + 4 * i, i as f32 * 0.125 - 0.3);
+    }
+    let sticks: [(f32, f32); 3] = [(0.6, -0.3), (0.2, 0.9), (0.05, -0.02)];
+    let (horizontal, vertical) = sticks[case as usize % 3];
+    float(m, block + 0x44, horizontal);
+    float(m, block + 0x40, vertical);
+    // The seat's wanted buttons.
+    word(m, DEV_SEAT + 0xc, 0x0f35_8b37 ^ case);
+    // The unit, its parent and the parent's seat block.
+    word(m, points::OBJECTS.base, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    word(m, points::TAG_ENTRIES.base, DEV_ENTRIES);
+    word(m, DATA + 2 * 12 + 8, DEV_UNIT);
+    word(m, DATA + 3 * 12 + 8, DEV_VEHICLE);
+    word(m, DEV_VEHICLE, 4);
+    word(m, DEV_ENTRIES + 4 * 16 + 8, DEV_DEF);
+    word(m, DEV_DEF + 0x1cc, DEV_SEATS);
+    m.bytes[(DEV_UNIT + 0x1fc) as usize..][..2].copy_from_slice(&1u16.to_le_bytes());
+    let seat = |velocity, range, exponent, yaw, pitch| Some(DevSeat { velocity, range, exponent, yaw, pitch });
+    let (unit, vehicle, blocked) = match case {
+        0..=2 => (u32::MAX, None, 0),
+        3 => (2, seat([3.0, 4.0, 1.0], [1.0, 9.0], 2.0, [1.0, 5.0], [0.0, 0.0]), 0),
+        4 => (2, seat([30.0, 0.0, 0.0], [1.0, 9.0], 0.0, [0.0, 2.0], [0.5, 0.25]), 0),
+        5 => (2, seat([0.1, 0.0, 0.0], [1.0, 9.0], 0.5, [1.0, 5.0], [1.0, 3.0]), 0),
+        6 => (2, seat([1.0, 1.0, 1.0], [4.0, 2.0], 1.5, [2.0, 1.0], [0.0, 0.0]), 0),
+        7 => (2, None, 1),
+        8 => (2, seat([2.0, 2.0, 1.0], [0.5, 6.0], 3.0, [1.0, 2.0], [2.0, 1.0]), 2),
+        9 => (u32::MAX, None, 1),
+        _ => (2, None, 2),
+    };
+    word(m, DEV_SEAT, if unit == u32::MAX { u32::MAX } else { 0x8200_0000 | unit });
+    word(m, DEV_UNIT + 0x14, if vehicle.is_some() { 0x8300_0003 } else { u32::MAX });
+    if let Some(s) = vehicle {
+        let at = DEV_SEATS + 0xb0;
+        for (i, v) in [s.yaw[0], s.yaw[1], s.pitch[0], s.pitch[1], s.range[0], s.range[1], s.exponent]
+            .into_iter()
+            .enumerate()
+        {
+            float(m, at + 0x44 + 4 * i as u32, v);
+        }
+        for (i, v) in s.velocity.into_iter().enumerate() {
+            float(m, DEV_VEHICLE + 0x88 + 4 * i as u32, v);
+        }
+    }
+    // Blocked by the console's flag (1) or the tick's pause pair (2).
+    m.bytes[(DEV_CONTROL + 0x10) as usize] = u8::from(blocked == 1);
+    m.bytes[DEV_TICKS as usize] = u8::from(blocked == 2);
+    m.bytes[DEV_TICKS as usize + 1] = u8::from(blocked == 2) * 3;
+    // Case 10's unit is not a biped: blocked and unseen.
+    m.bytes[(DATA + 2 * 12 + 3) as usize] = if case == 10 { 1 } else { 0 };
+    c.gpr[2] = port;
+}
+
+/// The state every bound-read test starts from.
+fn device_start(ram: &FlatMemory, case: u32, control: u16) -> (FlatMemory, Cpu) {
+    let mut mem = ram.clone();
+    word(&mut mem, STACK, EXIT);
+    let mut cpu = Cpu {
+        gpr: [0x1234_5678, 0x9876_5432, 0, 0x7b1c, STACK, 0x00aa_bbcc, 0x5151, 0x0e37],
+        eip: points::PLAYER_CONTROL_UPDATE.base,
+        eflags: 0x2,
+        mxcsr: 0x1fa0,
+        ..Default::default()
+    };
+    for (i, reg) in cpu.xmm.iter_mut().enumerate() {
+        *reg = (0x1234_u128 + i as u128) << 100 | 0x4000_0000;
+    }
+    cpu.x87.control = control;
+    device_fixture(&mut mem, &mut cpu, case);
+    (mem, cpu)
+}
+
+fn native_of(mem: &FlatMemory) -> Guest {
+    let mut native = Guest::new();
+    native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+    native.write_bytes(0, &mem.bytes, 1).unwrap();
+    native
+}
+
+#[test]
+fn bound_control_matches_lifted() {
+    use engine::sim_seats::device::arm;
+    let Some((image, ram)) = image() else { return };
+    let seat = find_seat("sim.seats.player_control_update");
+    let mut code = original(image, seat.point);
+    arm::force_answer(true);
+    let mut reached = BTreeSet::new();
+    for case in 0..DEV_CASES {
+        for control in [0x027f_u16, 0x037f, 0x007f] {
+            let (mut mem, mut cpu) = device_start(ram, case, control);
+            let mut native = native_of(&mem);
+            let mut regs = abi_cpu(&cpu);
+            let why = format!("case {case} control {control:#06x}");
+            let transfer = (seat.run)(&mut regs, &mut native, seat.point.base)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{why}: declined"));
+            assert_eq!(transfer.kind, abi::CALL, "{why}");
+            reached.insert(transfer.target_pc);
+            regs.eip = transfer.target_pc;
+            let esp = regs.esp;
+            lifted::code::run_until(&mut code, &mut cpu, &mut mem, 2_000_000, |c| {
+                c.eip == transfer.target_pc && c.gpr[4] == esp
+            })
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+            let want = abi_cpu(&cpu);
+            let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi];
+            assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx esp ebp esi edi");
+            assert_eq!(regs.xmm, want.xmm, "{why}: xmm");
+            assert_eq!(regs.mxcsr, want.mxcsr, "{why}: mxcsr");
+            assert_eq!(
+                (regs.x87.st, regs.x87.tag, regs.x87.status, regs.x87.control),
+                (want.x87.st, want.x87.tag, want.x87.status, want.x87.control),
+                "{why}: x87"
+            );
+            let start = native.mappings()[0].physical_start as usize;
+            let live = &native.physical_ram()[start..start + RAM];
+            let dead = (STACK - 0x1_0000) as usize..esp as usize;
+            let first = mem.bytes.iter().zip(live).enumerate()
+                .find(|(i, (a, b))| a != b && !dead.contains(i))
+                .map(|(i, (a, b))| (i, *a, *b));
+            assert_eq!(first, None, "{why}: first differing byte (original, port)");
+        }
+    }
+    arm::force_answer(false);
+    // The curve, the visibility walk, and an unseen read's next call.
+    assert!(reached.contains(&sim_seats::look::CURVE), "{reached:x?}");
+    assert!(reached.contains(&0x000e_4050), "{reached:x?}");
+    assert!(reached.len() >= 3, "{reached:x?}");
+}
+
+/// Unproven, the arm leaves the read to the guest and compares its
+/// prediction where the guest's read leads: the curve's entry, or the
+/// visibility walk's return.
+#[test]
+fn bound_control_audits_through_the_guest() {
+    use engine::sim_seats::device::arm;
+    let Some((image, ram)) = image() else { return };
+    let seat = find_seat("sim.seats.player_control_update");
+    let curve = find_seat("sim.seats.player_look_curve");
+    let mut code = original(image, seat.point);
+    arm::reset();
+    for (case, target) in [(0, sim_seats::look::CURVE), (3, sim_seats::look::CURVE), (7, 0x000e_4050), (8, 0x000e_4050)] {
+        let why = format!("case {case}");
+        let (mut mem, mut cpu) = device_start(ram, case, 0x027f);
+        let mut native = native_of(&mem);
+        let mut regs = abi_cpu(&cpu);
+        assert_eq!((seat.run)(&mut regs, &mut native, seat.point.base).unwrap(), None, "{why}: answered");
+        lifted::code::run_until(&mut code, &mut cpu, &mut mem, 2_000_000, |c| c.eip == target)
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+        if target == 0x000e_4050 {
+            // The walk answers "visible" and returns.
+            let sp = cpu.gpr[4];
+            cpu.eip = mem.read_u32(sp).unwrap();
+            assert_eq!(cpu.eip, arm::VISIBLE_SITE, "{why}");
+            cpu.gpr[4] = sp + 4;
+            cpu.gpr[0] = 1;
+        }
+        let mut native = native_of(&mem);
+        let mut regs = abi_cpu(&cpu);
+        let run = if target == 0x000e_4050 { seat.run } else { curve.run };
+        let _ = run(&mut regs, &mut native, cpu.eip);
+    }
+    let s = arm::status();
+    assert_eq!((s.checked, s.matched, s.mismatched, s.dropped), (4, 4, 0, 0), "{s:?}");
+}
