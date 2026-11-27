@@ -53,7 +53,7 @@ seen at the Warthog and at the gun, not near the world's origin.
 vehicle's middle (0.3 over its origin) with no lead (a locked rocket
 follows it), and fires only once it has held the vehicle in the reticle
 (the vehicle's apparent size, 0.8 world units, plus the skill's fire
-cone) for the lock time. At infantry nothing changes: fired unlocked, at
+cone) for the lock time. At infantry nothing changes: fired without a lock, at
 the feet for Heroic and Legendary (§3.4). The game's own lock time is not
 traced; the bot assumes 1 s (`lock::LOCK_TICKS`) and adds its margin:
 
@@ -69,7 +69,7 @@ fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
 a bot with it waits a second at a vehicle and then fires: slower, not
 wrong.
 
-**Ground-route performance.** On 2026-11-20, ground-vehicle A* accounted
+**Ground-route performance.** Ground-vehicle A* accounted
 for 2,917 of 5,201 game-thread samples in a Waterworks 2v2 sim. Only a
 ground driver asks for this path. A failed plan leaves it free to choose
 again next think, including picking a new roam goal. An exhausted search
@@ -83,7 +83,7 @@ corridor for the next plan and keeps the normal steering retry.
 
 **Which vehicles.** By class (`vehicle::Class::spec`).
 
-| Class | Seat taken | Controller behavior |
+| Class | Seat taken | Controller behaviour |
 |---|---|---|
 | Jeep (Warthog) | Driver | Ground routing |
 | Scout (Ghost, Spectre, Wraith) | Driver | Ground routing and primary fire |

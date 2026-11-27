@@ -345,7 +345,7 @@ Still open:
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
 - For objectives, the traced fields and their writers are in §3.7. The
-  outstanding checks are pickup behavior, rotated one-bomb rounds, hill
+  outstanding checks are pickup behaviour, rotated one-bomb rounds, hill
   transitions and capture volumes in play (§11.2).
 - For vehicles (§3.9): verify the rocket launcher's lock time and zoom
   requirement, the units of `O+0x88` (velocity), the Banshee's secondary

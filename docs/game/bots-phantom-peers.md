@@ -78,7 +78,7 @@ drops the simulation's network state (`0x6b040`). 6 is set after the
 leave message `0xd` (`0x61450`), 7 by `0x614a0` and 8 at `0x61646`. So
 "in a game" is state 5 with a game loaded, never 6 to 8.
 
-**Hosting the game** (traced 2026-11-19, `h2 disasm`). Runs
+**Hosting the game** (traced, `h2 disasm`). Runs
 20261119-005001 and 20261119-014620 had their phantoms wait on "the
 simulation is not the distributed server (mode 4 ...)". It was: the
 phantom check compared the simulation world's mode with the game's
@@ -176,7 +176,7 @@ its class 4.
    entries above it moved down, the last cleared, `S+0x54` - 1, counters
    + 1. Not done: its tail call `0x5a2e0`. Phantoms leave last first.
 
-**A phantom's player configuration** (traced 2026-11-23 from the
+**A phantom's player configuration** (traced from the
 disassembly, `h2 disasm`; tests only, no run yet). Each console builds
 its own players' requested configuration (`0x18fd94`, from slot
 `0x54e8e0 + 0xc70 * port`): `0x1537f0` clears the `0x90` bytes, then the
@@ -262,7 +262,7 @@ Tests: `phantom::session::tests`
 `lobby::a_hosts_handicap_is_never_a_phantoms_then_or_later`,
 `lobby::a_seated_phantoms_handicap_goes_back_to_none`).
 
-**Phantoms in the pregame lobby** (traced 2026-11-19 from the
+**Phantoms in the pregame lobby** (traced from the
 disassembly, built; no run yet). The user's ask: "it won't let me add 7
 clankers, only 3 max in a pregame lobby". The Count row was never capped
 (`clankers.count` is 1 to 15, every value a choice); the lobby showed only
@@ -384,7 +384,7 @@ ran. They now join the lobby as a real peer does.
   it polls (the lobby summary `0x7e210`) or only on join events; whether
   the lobby roster draws anything from a peer's second name (`+0x48`).
 
-**Phantoms in the game** (traced 2026-11-19 after the user's
+**Phantoms in the game** (traced after a
 Clankermatch: "the GAME OVER scoreboard lists all 7 clankers; only local
 Clankers 1 to 3 were ever in the world; map loading got slower"; built,
 no run yet).
@@ -439,7 +439,7 @@ distance, panning and obstruction. A human's first-person sound uses the
 retail owner check. The [agent's active listener list](../runtime/agent-api.md#audio-voice-routing)
 shows the slots and camera positions the game can select.
 
-**The user's Halo 1 run (2026-11-19: Live custom game on
+**The user's Halo 1 run (Live custom game on
 `h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
 the game).** Read from the log tail and the disassembly; no run yet.
 
@@ -681,7 +681,7 @@ in send order, at most one per tick after arrival. A new unit or a break
 in the stream clears buffered reports. The host always builds and stamps
 the retail action at gather with the current weapon and facing.
 
-**Midship replay, 2026-11-19.** In game
+**Midship replay.** In game
 `531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
 attribute 2,231 shots to the four phantoms. Fourteen bullet hits and
 nine melee hits from them dealt positive damage to opposing players.

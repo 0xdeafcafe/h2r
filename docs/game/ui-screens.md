@@ -65,7 +65,7 @@ from Change Game Type remembers the category row and its Game Setup return.
 Back rebuilds the category list and restores focus using the new list's
 datum handle. The channel free hook drops each outgoing instance's return. Profile and sign-in
 flows, variant editors, controller settings, and other dialogs with
-their own commit or navigation paths use retail behavior. The game-shell
+their own commit or navigation paths use retail behaviour. The game-shell
 channel uses its own reopen history.
 
 The value picker releases its offered values and setter when its screen is

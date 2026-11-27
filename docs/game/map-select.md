@@ -139,7 +139,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   the console says which rows won't show by name and why:
   `map select: Maps(MapPack): 4 of 9 rows won't show by name
   (Containment (0x514): not in the game's list, ...)`. Nothing is said
-  when every row has an unlocked slot.
+  when every row has an open slot.
 - **Row text** (`MAP_LIST_ROW_TEXT` `0x2c9ac4` notes which list is
   drawing; `MP_LEVEL_NAME` `0x2afd70` answers). The row text looks up the
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its

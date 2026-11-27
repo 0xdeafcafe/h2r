@@ -128,7 +128,7 @@ it as it is. Nothing scripts the fall; a fumbled try can still bounce.
 - `off_line`: the aim 0.12 to 0.25 units across the seam (along its
   drift, either way; any way round a busy point, which has none). A
   landing more than 0.1 off the seam line does not bounce (the
-  2026-11-23 sweep of 60 Ascension seams);
+  sweep of 60 Ascension seams);
 - `early`, `late` (a running jump off a launch floor): the takeoff 0.15
   to 0.30 units of run early, coming down short, or 0.10 to 0.20 late,
   coming down long;

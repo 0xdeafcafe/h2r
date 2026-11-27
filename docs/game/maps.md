@@ -231,7 +231,7 @@ in `crates/runtime/vfs/tests/packages.rs`.
 | SPPF ("Super PPF") | 2006 | four independent sections with relative byte replacements | The CLI moves the retail sections to their patched offsets and converts the result to PPF3 or BPS |
 | VCDIFF / xdelta3 | generic | source-window deltas | The importer runs `xdelta3` locally and converts the result to PPF3 or BPS |
 | Serenity | 2005–07 | tag-aware delta with compliant, non-compliant and NFG modes | The importer reports `unsupported_serenity` for Serenity files, including v3.3 |
-| ours | — | a map package (section 1) | this page |
+| ours | - | a map package (section 1) | this page |
 
 An SPPF starts with four little-endian u32 section lengths. Each section
 contains records of two little-endian u32s (offset and length) followed by
@@ -946,7 +946,7 @@ colour, animation and depth bias is the lobby tag's own unless noted):
 | Action | Buttons on `name_field` | One skin-0 row at (-262, 147). Download, progress, retry and removal share the row. |
 | Body and hint | The grid on `lobby_display` | Three lines of published description above a separate one-line hint. Installed maps point to Change Map > Mods. |
 | Picture | The lobby's `unknown_map`, 220 by 207 | At (-258, 30) below the panel. The class uses the selected map's bitmap when available and restores the placeholder otherwise. |
-| Table | White player names left, pale blue values right, 22 units between rows | Ten fact rows, with a gutter between the labels and values. Map, maker, uploader, size, downloads, date, version, modes, disc and join behavior. |
+| Table | White player names left, pale blue values right, 22 units between rows | Ten fact rows, with a gutter between the labels and values. Map, maker, uploader, size, downloads, date, version, modes, disc and join behaviour. |
 | Checklist | The lobby's settings lines | Changes, then four rows of two. Each ticked box names an affected feature. |
 
 The focused row and transfer state determine the footer. On the detail

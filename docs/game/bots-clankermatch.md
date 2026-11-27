@@ -51,7 +51,7 @@ the playlist's player limit.
    font, since every client is our recomp. A box on a stray unpatched font
    slot is the failure mode.
 
-   **Built (2026-11-19).** `font::gear` draws the gear in code (a wheel,
+   **Built.** `font::gear` draws the gear in code (a wheel,
    a hole and eight teeth; six below 14 pixels), square, as tall as the
    font's 'H' above the baseline (seven tenths of the ascent without
    one), standing on the baseline with a one-pixel gap before it.
@@ -123,7 +123,7 @@ after it, as the moved rows do. Every Live menu press sets `clankermatch::active
 or clears it (any other row). `h2 bots test` and `h2 coop test --drive`
 navigate by the new rows (`agent_proto::sim::menu`, `bots_drive`).
 
-**The playlists (traced 2026-11-19, confirmed from the disassembly).**
+**The playlists (traced, confirmed from the disassembly).**
 OptiMatch's press (`0x231025`) opens the playlist screen through
 `0x149f1e` with loader `0x00230c8d` (screen `0xdb`; vtable `0x00458c10`;
 the list handler at `+0x614`, constructor `0x002b1e08`, vtable
@@ -177,7 +177,7 @@ Two hooks keep Quickmatch on human hoppers
 
 With no marks (an older server) both are retail.
 
-**Switch To: Clankermatch (built 2026-11-19, the user's ask).** The
+**Switch To: Clankermatch (built).** The
 playlist screen's second opener (`0x002bbf06`, from `0x002bba93`) is the
 lobby's **"Switch To: Matchmaking"**: a Game Setup (squad settings)
 row whose press, `0x002bba8c` (EAX the press's player chain, the list
@@ -306,7 +306,7 @@ from starting. The current lobby join path adds the phantoms to the
 target session before the countdown. It also runs with the Clankers
 page disabled.
 
-**Tracing the matchmaking lobby (2026-11-19, from the disassembly; no
+**Tracing the matchmaking lobby (from the disassembly; no
 run yet).**
 
 - **The lobby is a pregame lobby.** A playlist press (`0x002b2149` →
@@ -356,7 +356,7 @@ run yet).**
 - **To see in a run:** whether the game changes team assignments when
   a matchmade team game starts.
 
-**The matchmaking host's lobby (traced 2026-11-19 from the user's
+**The matchmaking host's lobby (traced from a
 Clankermatch, cm-run2; built, no run yet).** The search hosted (`session
 893954eb98f2e2fe advertised`) and the log said `bots: lobby facts: lobby
 true, networking true, session type 6, session state 5: no pregame
@@ -461,7 +461,7 @@ at zero under the same host setup conditions as the custom lobby.
 `lobby_status::MatchCountdown` replaces the temporary text used to
 measure and draw the widget at `0x22d2ee`.
 
-**Phantoms only.** In the 2026-11-19 run on `f5d3010c`, the retired
+**Phantoms only.** In a run on `f5d3010c`, the retired
 controller-backed bots appeared in the player's party. The local-player
 pass (`0x63d80` → `0x65770`) put those signed-in users into both sessions.
 The matchmade start then refused to proceed because their controller

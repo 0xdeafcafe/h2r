@@ -107,7 +107,7 @@ its six-byte header.
 | `Actor` (1) | creation, replacement or removal | action byte, then entity (remove, 0) or actor row (upsert, 1) | 6 or 12 |
 | `Posture` (2) | on change | entity, posture (u8, includes AI-only animation) | 6 |
 | `Control` (3) | up to 10/s per actor if P3 requires it | entity, packed control (u16) | 7 |
-| `Line` (4) | a line starts | entity, vocalization (u16), original tick (u32) | 11 |
+| `Line` (4) | a line starts | entity, vocalisation (u16), original tick (u32) | 11 |
 | `State` (5) | mode state changes | length (u8), whole mode blob | 2 + mode bytes |
 | `Digest` (6) | every 30 ticks | host log head (32 SHA-256 bytes), mode hash (u64), live actor count (u16), show-state hash (u64) | 51 |
 | `Show` (7) | the script's show state, at most 5 a second when it changes and whole beside every key ([rules-world-api.md](rules-world-api.md#the-show-channel)) | length (u8), the state bytes (`rules::show::State::encode`, at most 255) | 2 + state bytes |
@@ -145,7 +145,7 @@ other posture bytes.
 `Replica::apply` replaces that state on a key and applies each packet atomically.
 It ignores duplicate and older ticks using wrapping 32-bit ordering. A
 delivered key restores the live actor set and mode state after earlier packet loss. Dialogue playback uses the original
-(entity, vocalization, tick) to recognize repeated copies of a line.
+(entity, vocalisation, tick) to recognize repeated copies of a line.
 
 **3. The host log** (`crates/formats/host-log`). An ordered, hash-chained
 list of entries `{seq, tick, op, prev_hash}`, generic over the op.
@@ -221,7 +221,7 @@ its clients see layer 1 only.
 3. Submit the requested mode, crouch and optional movement controls through
    `UNIT_APPLY_CONTROL`. Leave existing aim, weapons and action inputs to
    the engine. Pose and control updates skip depleted bodies.
-4. Resolve the vocalization in the unit's voice bank. Start the sound on
+4. Resolve the vocalisation in the unit's voice bank. Start the sound on
    its head marker and give a biped's sound instance to lip sync. The
    client remembers each original line tuple for the match, including
    across keys and repeats that arrive while the body is still missing.
@@ -459,7 +459,7 @@ keeps mirrors, schedules and the capability mark.
 | Dialogue queue entry | `0x20d0c0` (`AI_DIALOGUE_ENQUEUE`, [halo1/ai.md](../halo1/ai.md)) | AN3 observes it for `Line` |
 | Entity to object | `0xa58d0` compares the full entity ID at the start of its row in the simulation world's entity table and reads the local object at row `+8` or returns −1 | AN4 checks the unit type, object salt and the body's reciprocal entity |
 | Unit presentation | `0xc6de0` (`UNIT_APPLY_CONTROL`) writes the requested animation mode at unit `+0x14c` and the control flags at `+0x148` | AN4 applies posture, crouch and optional control |
-| Spatial dialogue | `0x1144a0` resolves the vocalization from the unit's voice bank. `0x1891d0` (`SOUND_START_AT_MARKER`) returns the instance passed to `0x109220` (`BIPED_DIALOGUE_LIP_SYNC`). | AN4 starts a replicated line on the speaking unit |
+| Spatial dialogue | `0x1144a0` resolves the vocalisation from the unit's voice bank. `0x1891d0` (`SOUND_START_AT_MARKER`) returns the instance passed to `0x109220` (`BIPED_DIALOGUE_LIP_SYNC`). | AN4 starts a replicated line on the speaking unit |
 
 ## Probes
 

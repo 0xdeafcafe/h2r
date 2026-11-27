@@ -63,7 +63,7 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (the shared settings dialog, "The settings dialog"), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
-| keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
+| keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | - | gamertag, invite |
 
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
 beneath, as the game's own dialogs are) or `Own` (it carries the game shell
@@ -1562,19 +1562,19 @@ names the owner. It is never a silent no-op.
 
 | Widget | Ours | Retail |
 |---|---|---|
-| a widget with an entry in its YAML (`title`, `body`, `legend`, a panel text, art) | rect (`at`, `size`), text | — |
-| a text block `text.N`, a button `button.N` | — | rect (`panes[0].text_blocks[N].rect`, `buttons[N].rect`) |
-| a bitmap `bitmap.N`, a list `list.N`, a table `table.N` | — | move only (`top_left`, `anchor`): the image or skin sets the size |
-| a row label `row.N.label` | text (`rows.row.N.text`) | — |
-| a settings dialog's `header.name`, `header.about` | text (`settings.name`; `settings.about`, or `settings.caller.help` when the page takes its about from its caller) | — |
-| a settings dialog's `description` | text: the help of the row it shows (`rows.row.N.help`) | — |
-| a settings dialog's `header.*`, `art.*`, `description`, moved | refused: `design.yaml` `components.settings.*` places it | — |
-| any row widget, moved | refused: rows sit where the list's `layout` puts them | — |
-| a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | — |
-| a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | — |
-| a legend made of `prompts` | text refused: edit its prompts | — |
-| any retail text | — | text refused: retail strings live in the map's localized string table (`unic`), which the editor does not write. Its string ID is set with `ui.set_string` |
-| `title` of a retail screen | — | refused: the header rectangle is the shared `wigl` header layout's |
+| a widget with an entry in its YAML (`title`, `body`, `legend`, a panel text, art) | rect (`at`, `size`), text | - |
+| a text block `text.N`, a button `button.N` | - | rect (`panes[0].text_blocks[N].rect`, `buttons[N].rect`) |
+| a bitmap `bitmap.N`, a list `list.N`, a table `table.N` | - | move only (`top_left`, `anchor`): the image or skin sets the size |
+| a row label `row.N.label` | text (`rows.row.N.text`) | - |
+| a settings dialog's `header.name`, `header.about` | text (`settings.name`; `settings.about`, or `settings.caller.help` when the page takes its about from its caller) | - |
+| a settings dialog's `description` | text: the help of the row it shows (`rows.row.N.help`) | - |
+| a settings dialog's `header.*`, `art.*`, `description`, moved | refused: `design.yaml` `components.settings.*` places it | - |
+| any row widget, moved | refused: rows sit where the list's `layout` puts them | - |
+| a widget with no YAML entry (`row.N.value`, `description`, `status`, `cell.N.*`) | refused: Rust fills it, and the refusal names the kind of value | - |
+| a text with `{slots}` | the template is edited, and its slots must stay as they are (the refusal names a slot that went or came) | - |
+| a legend made of `prompts` | text refused: edit its prompts | - |
+| any retail text | - | text refused: retail strings live in the map's localized string table (`unic`), which the editor does not write. Its string ID is set with `ui.set_string` |
+| `title` of a retail screen | - | refused: the header rectangle is the shared `wigl` header layout's |
 
 **Undo.** Edits are undo steps of the editor's Undo and Redo while the UI
 Screens tool is shown (`App::undo_redo`). Ours have their own stack. A

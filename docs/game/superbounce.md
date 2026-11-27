@@ -361,7 +361,7 @@ same steps gave the same launch to 0.01 units/s.
 | Run | Start | Bounced | Launch |
 |---|---|---|---|
 | A, C | teleport before both forced crouches, then the recorded crouches, walk and jump | 4 of 4 | +11.4 to +12.0 |
-| B, D | teleport to where the player stood after the second crouch, then the recorded walk and jump | 0 of 6 | — |
+| B, D | teleport to where the player stood after the second crouch, then the recorded walk and jump | 0 of 6 | - |
 
 Four of the six B and D runs landed at (−10.26, 4.02, −3.18) at −5.3 to
 −5.4, the place and speed of the bounces. The B and D runs came right
@@ -435,10 +435,10 @@ jump (recording tick 6684), then the recorded jump from there:
 
 | Word set to | Bounced | Launch |
 |---|---|---|
-| none (as teleported, 0) | 0 of 6 | — |
-| `00000000` (a write of the same value) | 0 of 1 | — |
+| none (as teleported, 0) | 0 of 6 | - |
+| `00000000` (a write of the same value) | 0 of 1 | - |
 | `fffffffd` (−3), held to the landing | 3 of 3 | +12.31 to +12.45 |
-| `fffffffd`, gone by the end of the run | 0 of 1 | — |
+| `fffffffd`, gone by the end of the run | 0 of 1 | - |
 
 All of them landed at (−10.25, 4.04, −3.25) at −5.4 units/s, where the
 player's own bounce launched at +12.4. A teleport keeps the pair and its

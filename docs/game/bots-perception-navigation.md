@@ -118,7 +118,7 @@ the nav mesh, and shared read-only by every bot in the process.
   (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
   whose `.vis` is current (`vis::current`: this version, the `.bots`
   stamp, its walls) is not built again.
-- **Build.** A row reuses the ordered collision candidates for center
+- **Build.** A row reuses the ordered collision candidates for centre
   rays with the same XY projection and the intersection terms that
   depend only on the ray's origin (`los::BuildRays`). The proof
   precomputes each triangle's plane and edges. It factors the 64
@@ -318,7 +318,7 @@ local player.
 |---|---|
 | Teleporter flag position, type and channel | `scnr+0x118`, stride `0x20`, position `+0`, types `7` and `8` at `+0x10`, identifier `+0x14`. See `map::scenario_layout`, `h1convert/src/apply.rs` and the retail checks in `h1convert/tests/h2_scenario.rs`. |
 | Scenery, machine and crate placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `map::scenario_layout`. Crates use the placement at `+0x328` (stride `0x4c`) and palette at `+0x330`. |
-| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto elevated playable BSP geometry. |
+| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto raised playable BSP geometry. |
 | Jump and standing clearance | Retail multiplayer Chief has standing height 0.725 and crouch height 0.5. See [superbounce.md](superbounce.md) and its traces of `0x000df66e`, `0x000dd8e0` and `0x000e2a06`. The sampled arc, shoulder offsets, and takeoff timing are **[guess]**. |
 
 The generator checks headroom at walk-sector centres and portals. The
@@ -466,9 +466,9 @@ in plan respectively. The corpus test checks coverage after regeneration.
 
 A calm sniper or precision gunner can seek a position and face the lane
 it covers. A bot ahead on the scoreboard can hold a nearby vantage.
-Patience extends the wait at a projected return, and a favorite weapon can
+Patience extends the wait at a projected return, and a favourite weapon can
 tip the choice between two nearby pads. A patient long-range gunner or one
-carrying its favorite rifle gives a stronger sightline more weight.
+carrying its favourite rifle gives a stronger sightline more weight.
 Skill and tuned awareness affect how many places and pad locations it
 recognizes, how far it will go, and how accurately it estimates arrival.
 A once-visible enemy can be chased at its last observed position. When an

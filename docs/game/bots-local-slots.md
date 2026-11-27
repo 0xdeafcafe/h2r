@@ -52,7 +52,7 @@ Its callers are all "a profile was chosen" paths: the profile UI
 `0x24b75b` after loading a file), the settings commit (`0x18fd0c`,
 `0x18fd59`) and `0x148b6b`. The sign-out is `0x18fc08`.
 
-**The file, and what "in use" means (traced 2026-11-19).** `file` is a
+**The file, and what "in use" means (traced).** `file` is a
 saved-file handle from the saved-file manager (`[0x51ea14]`: the
 built-in content first, at most `0x65` records of `0x1e4` bytes, then per
 device a list of up to `0x1000` saved files of `0x40` bytes from `+0xbef8`,
@@ -84,7 +84,7 @@ profile is refused with error 1 (dialog `0x4a`, `0x148ca8`) when a
 device's list or its `XFindFirstSaveGame` count is `0x1000` or more
 (`0x215c55`, `0x215c65`, `0x217590`).
 
-**Never a saved profile (2026-11-19).** The user's report: the profile
+**Never a saved profile .** The user's report: the profile
 list showed only "Default" (a built-in) and a new profile was refused,
 and they thought the bots had taken their profiles. The data root's saves
 were untouched (one profile, unchanged since before the bots signed in;
@@ -232,7 +232,7 @@ Game-side checks, from the traces above:
 Offline and in System Link nothing changes (no human on Live: no host to
 stand beside, and no roster).
 
-**Joining in the pregame lobby (traced, the user's run 2026-11-18).**
+**Joining in the pregame lobby (traced).**
 Live, Clankers On, Count 5, hosted from the Live menu: the game started
 on Ivory Tower with no bots. The players screen is never shown on that
 path (Clankers is set in Game Setup, over the lobby), and the join gate
@@ -377,7 +377,7 @@ goes by port:
   the one host output. Now a bot's port gets none
   (`voice_glue::player_pads`).
 
-**The players screen (traced, the user's ask 2026-11-19).** "I don't want
+**The players screen (traced).** "I don't want
 bots to appear in the other player slots on the Xbox Live screen." The
 screen's per-frame update `0x252554` (`PLAYERS_SCREEN_UPDATE`, vtable
 `0x45a490` slot 3) lays out one pane per port: a port is joined (its name,

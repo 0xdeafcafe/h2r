@@ -57,7 +57,7 @@ A melee cancel or second BR pull can't precede its nominal opening. The
 sword fly needs X one or two ticks after Y. The plasma overcharge row
 checks the nominal 24-tick hold. These rates measure pad timing. Whether
 the retail engine accepts an attempt depends on the weapon, target,
-movement and host behavior. Super-bounce landings need a physics run.
+movement and host behaviour. Super-bounce landings need a physics run.
 
 | Delivered sequence | Easy | Normal | Heroic | Legendary |
 |---|---:|---:|---:|---:|

@@ -902,10 +902,10 @@ seat, and a full lane is refused.
 The co-op link that offers the lanes is `game/src/forge_glue/link.rs`:
 in a synchronous network game (a co-op host or guest, by the simulation
 world's mode) whose lobby is in Forge mode, it runs one `coop::Peer` per
-other machine over the co-op channel — the XNet base port + 4, served
+other machine over the co-op channel - the XNet base port + 4, served
 from one bound socket (`coop::link::UdpPort`) whose peers the Live
 transport names (`Hle::coop_endpoints`; a guest's host from its joined
-session) — pumps each peer every tick, and offers the lanes
+session) - pumps each peer every tick, and offers the lanes
 (`forge_glue::net::offer_host`, one per guest seat, or `offer_guest`),
 re-made each tick so a session that opens finds them. A seat that joins
 after the offer is added (`net::add_seat`) and one that leaves is

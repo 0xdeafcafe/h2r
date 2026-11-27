@@ -452,8 +452,8 @@ player seat driven by a brain on the host ([bots.md](bots.md) section
 5). To a script it is a `player`; a `p.is_bot` read of the phantom
 registry (`bots::phantom::list`) is design, not built.
 
-**Code** (slice W7). An order is a `bots::brain::Order` — `Go`, `Hold`,
-`Follow` or `Attack` — kept on the brain's decisions
+**Code** (slice W7). An order is a `bots::brain::Order` - `Go`, `Hold`,
+`Follow` or `Attack` - kept on the brain's decisions
 (`crates/live/bots/src/decisions.rs`). While one stands it is the bot's
 goal in place of the objective's (`crates/live/bots/src/mind/strategy.rs`):
 `Go` and `Hold` walk the mind's own nav follower, `Follow` and `Attack`
@@ -502,7 +502,7 @@ script adds and removes none.
 ### Zones
 
 No capability: core entries with a host half but no group of their own
-(`world/zones.rs`). A zone is a labelled netgame flag — the host's census
+(`world/zones.rs`). A zone is a labelled netgame flag - the host's census
 has no Forge document at a game's start, so no zone is a trigger volume.
 A zone's shape is an area round its flag
 ([gametype-markers.md](gametype-markers.md), "In a script"), from the
@@ -538,7 +538,7 @@ nothing.
 
 | Script | Entry | Engine | Status | Synced by |
 |---|---|---|---|---|
-| `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) — the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
+| `set_loadout(p, primary, secondary)` | `set_loadout` | `STARTING_WEAPON_PICK` (`0x19eda0`) answers the value's tag from the map's multiplayer globals, as the spawn's weapon pass asks it; the weapon is made and added as a starting profile does (`placement_data_new`, `object_new`, `unit_add_weapon`, and `object_delete` when the unit refuses it) - the primary in mode 2, which empties the unit's weapon slots first and readies it, the secondary in mode 1 beside it (mode 2 when there is no primary) | named | the unit's weapon entities |
 
 ### Pickers
 
@@ -574,8 +574,8 @@ A player on another machine is asked the other way. The authority sends
 each picker as an offer cue on the show channel
 ([the show channel](#the-show-channel), `rules::show::Cue::Pick`: the
 picker's number, its title and its rows as string-table indexes, at most
-16 bytes) when the offers change — a picker taken away goes as an empty
-one — and again every 90 ticks while any stands. A client holds them
+16 bytes) when the offers change - a picker taken away goes as an empty
+one - and again every 90 ticks while any stands. A client holds them
 (`rules/world/pick.rs`, `client_offer`) and asks its own local players one
 at a time at the tick boundary with the same value picker, while the
 transport says picks travel upstream (`actor_net/link.rs::pick_upstream`,

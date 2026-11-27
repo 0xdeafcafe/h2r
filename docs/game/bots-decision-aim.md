@@ -164,10 +164,10 @@ difficulty and style.
 | Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
 
 The narrower Legendary bands give bots more consistent discipline while
-leaving room for different fighting styles. Favorites are drawn
+leaving room for different fighting styles. Favourites are drawn
 from automatic guns, precision rifles and pistols, shotguns, snipers, splash
 weapons, and swords. Loyalty biases existing pickup choices and can justify
-a short detour for a visible favorite when the bot is calm and free to rearm.
+a short detour for a visible favourite when the bot is calm and free to rearm.
 
 Confidence, tilt, and fear each run from 0 to 1. Enemy kills build confidence,
 with a larger gain as the streak grows. A death breaks the streak, drops
@@ -190,7 +190,7 @@ gather.
 
 The map decision layer uses `Personality::wait_weight()` for patience
 near a predicted spawn and `Personality::weapon_interest(role)` to value a
-favorite weapon there. A patient sniper with a favorite rifle will also travel
+favourite weapon there. A patient sniper with a favourite rifle will also travel
 farther for a firing position that overlooks a stronger lane. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
 for the live traits and mood.
 
@@ -342,7 +342,7 @@ The numbers in the table are starting points; tuning them needs runs
 
 ### Phantom aim diagnosis and next steps
 
-In the Midship replay on 2026-11-19
+In the Midship replay
 (`531b5da3ceab388417c044afcf18e01a`), four phantoms fired 2,231 shots.
 They dealt positive damage to opponents on 14 bullet hits and 9 melee
 hits. Three local Clankers fired 1,372 shots and landed 236 bullet hits.
@@ -377,7 +377,7 @@ with the same maps and seeds (§3.4.1).
 
 ### 3.4.1 The aim net (compared: the code aim stays)
 
-**Result (2026-11-20).** `aim-net-vs-code.toml` ran all 80 matches
+**Result.** `aim-net-vs-code.toml` ran all 80 matches
 (Midship and Lockout, easy to legendary, 5 seeds, both arm-swap legs,
 5-minute 2 v 2, using the local seats available at the time). The code
 aim won 60% of games to the net's 40%, and the net lost on accuracy (13.1% against 15.8%), damage (9.8
@@ -468,7 +468,7 @@ models count the turn they have asked for that the view does not show
 yet. The net takes 0.9 of it off its error, counted on the nominal radial
 curve its weights were designed against (3 rad/s at full stick, about
 54°/s at half). The code takes all of it off, counted on the response
-table (§3.4). The 2026-11-20 comparison ran before the code counted it:
+table (§3.4). The comparison ran before the code counted it:
 that code steered on the old view as if it were current, and in the test
 plant a 0.95 rad flick swung 37–54% past a still target where the code
 now goes 5–10% past.
