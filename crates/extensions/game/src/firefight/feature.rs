@@ -167,7 +167,10 @@ impl hooks::Feature for Firefight {
                 c.cpu.eax &= !0xff;
                 c.ret(0).map(hooks::Flow::Return)
             },
-        );
+        )
+        // The rules feature's spawn rules answer the same test: a rule's
+        // pick stands first, ours only where it keeps the start.
+        .after_feature("rules");
         let s = Arc::clone(&self.0);
         b.raw()
             .before(
