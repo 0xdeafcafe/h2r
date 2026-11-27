@@ -450,11 +450,13 @@ points! { ALL;
     /// vehicle leaves it first (action `0x1e` of `0xe68c0`). Read from the
     /// disassembly of the caller at `0x2a3ad0`, not yet confirmed by a run.
     UNIT_ENTER_VEHICLE @ 0x0011_ade0: [fn(vehicle: ebx, unit: stack 0, label: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
-    /// The HS cast of an AI reference to an object list of its actors; EAX
-    /// the reference (a plain squad's index), the list datum returned in
-    /// EAX. The register convention is read from the cast table
-    /// (docs/engine/hs_vm.md) and not yet confirmed by a run.
-    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: eax) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    /// The HS cast of an AI reference to an object list of its actors: the
+    /// reference (a plain squad's index) on the stack, the list datum
+    /// returned in EAX. The HS caller at `0x2a5b5b` pushes the reference
+    /// and does not pop it; the body reads it at `0x272ea4` and writes the
+    /// new list datum over that same stack slot at `0x272ebf`, so a call
+    /// that passes no stack argument loses its caller's return address.
+    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: stack 0) -> eax ret 4], Optional; "docs/engine/hs_vm.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
@@ -777,6 +779,13 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// A starting location's weight for the spawn chooser: the influence
+    /// sum `0x23b060` over the context at its position, plus the random
+    /// term (the game seed's top 16 bits / 65535, times the multiplayer
+    /// globals' `+0x530` element's first float). Its one caller is
+    /// `PLAYER_SPAWN_LOCATION` (`0x14efb1`); EAX is the location
+    /// (`scnr+0x104` + `0x34` × index), ESI the seed.
+    SPAWN_LOCATION_WEIGHT @ 0x0023_ba90: [fn(location: eax, player: stack 0, flag: stack 1, context: stack 2) -> xmm0 ret 12], Optional; "docs/engine/notes/2026-11-27-forge-spawner-rows.md";
     /// The netgame item spawner: makes entry `index`'s object
     /// (`scnr+0x120`, stride `0x90`), stores its handle at the entry's
     /// state (`state + 8 * index`) and the index at the object's `+0xaf`.

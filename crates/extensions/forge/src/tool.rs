@@ -364,6 +364,15 @@ pub enum Command {
         id: Endpoint,
         clips: Option<u8>,
     },
+    /// Give a starting point a weight, or Normal
+    /// (`Session::set_spawn_weight`).
+    SetSpawnWeight {
+        id: Endpoint,
+        weight: Option<forge_doc::SpawnWeight>,
+    },
+    /// Place an item spawner's item at a round's start, or hold it back
+    /// (`Session::set_place_at_start`).
+    SetPlaceAtStart { id: Endpoint, on: bool },
     /// Restore original: an own thing as the map has it
     /// (`Session::reset`).
     Reset {

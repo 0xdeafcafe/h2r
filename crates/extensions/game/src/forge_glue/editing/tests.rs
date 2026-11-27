@@ -92,7 +92,8 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         }),
         base_counts: [(item.block, 2)]
             .into_iter()
-            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, 1))))
+            // Each block counts its rows; they come in index order.
+            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, r.index + 1))))
             .collect(),
         ..Limits::default()
     };
@@ -127,6 +128,8 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
         names: Default::default(),
+        // The rifles hold a weapon; the grenades do not.
+        armed: [r"test\rifles".to_string()].into(),
     }
 }
 
@@ -141,11 +144,12 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     let objects = screens::screen(Kind::Objects).sheet();
     assert_eq!(
         objects.rows.len(),
-        4,
-        "Crates, the block-out Structure and Natural groups, then the AI page"
+        5,
+        "Crates, the block-out Structure and Natural groups, then the AI and Siege pages"
     );
     assert_eq!(objects.rows[0].label, "Crates");
     assert_eq!(objects.rows[3].label, "AI and objectives");
+    assert_eq!(objects.rows[4].label, "Siege");
     // The picker's choice: the shelf.
     e.choose(2, Choice::Select(0)).unwrap();
     assert_eq!(e.tool.placing, Some(0));
@@ -2173,4 +2177,104 @@ fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
     calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
     e.poll(4);
     assert_eq!(e.session.spare_clips(id), None);
+}
+
+/// The session's first monitor comes up at the map's first start, a
+/// standing eye along its facing, not at the game's pregame view; a later
+/// toggle takes the player's eye. The pose reaches the private world view
+/// with no player in it, as the render hook draws it every frame.
+#[test]
+fn the_first_monitor_starts_at_the_map_start_with_a_drawn_view() {
+    use crate::coop_players::layout::SCENARIO_STARTS;
+    use crate::spectator_view::{Pose, WORLD_VIEW_RETURN, blank_view, replace_world_view};
+    use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE, testing::FakeGuest};
+    const STACK: u32 = 0x5000;
+    const ORIGINAL: u32 = 0x6000;
+    const SCRATCH: u32 = 0x7000;
+    let mut m = FakeGuest::new();
+    m.put_u32(points::SCENARIO.base, 0x1000)
+        .put_u32(0x1000 + SCENARIO_STARTS, 2)
+        .put_u32(0x1004 + SCENARIO_STARTS, 0x2000)
+        .put_f32(0x2000, 12.0)
+        .put_f32(0x2004, -3.0)
+        .put_f32(0x2008, 1.5)
+        .put_f32(0x200c, 2.0);
+    let pregame = Camera { position: [0.0; 3], yaw: 0.0, pitch: 0.0 };
+    let first = monitor_camera(&m, true, Some(pregame)).unwrap();
+    assert_eq!(first.position, [12.0, -3.0, 1.5 + 0.64]);
+    assert_eq!((first.yaw, first.pitch), (2.0, 0.0));
+    let player = Camera { position: [5.0, 6.0, 7.0], yaw: 1.0, pitch: 0.2 };
+    assert_eq!(monitor_camera(&m, false, Some(player)), Some(player), "a toggle");
+    assert_eq!(monitor_camera(&m, false, None), Some(first), "no eye: the start");
+    assert_eq!(monitor_camera(&FakeGuest::new(), true, Some(player)), Some(player), "no starts");
+    assert_eq!(monitor_camera(&FakeGuest::new(), true, None), None);
+
+    // The render hook's private view: the start's eye, no local player.
+    let mut original = blank_view();
+    original[8..12].copy_from_slice(&0u32.to_le_bytes());
+    m.put_u32(STACK, WORLD_VIEW_RETURN)
+        .put_u32(STACK + 12, ORIGINAL)
+        .put(ORIGINAL, &original)
+        .map(SCRATCH, VIEW_STRIDE);
+    let pose = Pose { position: first.position, yaw: first.yaw, pitch: first.pitch };
+    assert!(replace_world_view(&mut m, STACK, 1, SCRATCH, |_, _| Some((pose, None))));
+    assert_eq!(m.u32(STACK + 12).unwrap(), SCRATCH);
+    assert_eq!(m.u32(SCRATCH + 8).unwrap(), u32::MAX);
+    for camera in [0x0c, 0x80] {
+        assert_eq!(m.vec3(SCRATCH + camera).unwrap(), first.position);
+        assert_eq!(m.vec3(SCRATCH + camera + 0x0c).unwrap(), pose.axes().0);
+        let [near, far] = [m.f32(SCRATCH + camera + 0x40).unwrap(), m.f32(SCRATCH + camera + 0x44).unwrap()];
+        assert!(0.0 < near && near < far, "{near} {far}");
+    }
+}
+
+/// The Spare clips row is a spawner's of a collection that holds a weapon:
+/// an equipment collection's, a vehicle's and an object's have none.
+#[test]
+fn spare_clips_rows_by_kind_and_collection() {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let spawner = |group: &str, path: &str| {
+        let mut fields = vec![Value::Int(0)];
+        fields.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+        fields.extend([
+            Value::Int(0),
+            Value::Vec3([0., 6., 0.].map(|c| F32::new(c).unwrap())),
+            Value::Vec3([0.; 3].map(|c| F32::new(c).unwrap())),
+            Value::Tag(Some(TagKey {
+                group: group.into(),
+                path: path.into(),
+            })),
+        ]);
+        fields
+    };
+    let block = BlockKind::NetgameEquipment;
+    let stride = map::scenario_layout::block(block).stride as usize;
+    let rows = [
+        spawner("itmc", r"test\rifles"),
+        spawner("itmc", r"test\grenades"),
+        spawner("vehc", r"test\hogs"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, fields)| BaseRow {
+        block,
+        index: i as u32,
+        raw: vec![i as u8 + 1; stride],
+        print: forge_doc::print(block, &fields).unwrap(),
+        fields,
+    })
+    .collect();
+    let e = Editor::new(
+        opened_with(Some(BaseRows { rows, left_out: vec![] })),
+        Path::new("."),
+        1,
+        calls::shared(),
+    );
+    let row = |i| e.spare_clips_row(Endpoint::base(block, i));
+    assert_eq!(
+        [row(0), row(1), row(2)],
+        [Some(None), None, None],
+        "weapons, equipment, a vehicle"
+    );
 }

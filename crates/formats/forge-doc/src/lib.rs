@@ -16,7 +16,9 @@ mod links;
 mod log;
 mod piece;
 mod prefab;
+pub mod record;
 mod resolve;
+pub mod siege_layout;
 mod validate;
 mod variant;
 pub mod waves;
@@ -26,8 +28,8 @@ pub use area::{Area, MarkerArea};
 pub use content::{MapId, Sha256};
 pub use document::*;
 pub use entry::{
-    EntryOp, OBJECT_BLOCKS, PROPERTY_TEAMS, Print, Property, SPARE_CLIPS_MAX, check_print,
-    for_game, object_games, print, spare_clips, teams,
+    EntryOp, OBJECT_BLOCKS, PROPERTY_TEAMS, Print, Property, SPARE_CLIPS_MAX, SpawnWeight,
+    check_print, for_game, held_at_start, object_games, print, spare_clips, spawn_weights, teams,
 };
 pub use ground::*;
 pub use groups::*;

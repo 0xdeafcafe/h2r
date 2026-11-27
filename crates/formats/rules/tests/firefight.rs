@@ -144,3 +144,89 @@ fn director_places_the_wave_and_scores_with_the_scheduled_skull() {
     assert_eq!(world.log[5].entry.id, id::FF_SCORE);
     assert_eq!(world.log[5].args, [Arg::Player(Some(0)), Arg::Int(15), Arg::Bool(false)]);
 }
+
+/// A world whose zones every ship can fly to, with the Phantom free: the
+/// first wave's squad of a ship class (`squad_ship` 0) and no pod class.
+#[derive(Default)]
+struct ShipWorld {
+    tick: u32,
+    log: Vec<(u32, Call)>,
+}
+
+impl Game for ShipWorld {
+    fn players(&self) -> Vec<u8> {
+        vec![0]
+    }
+
+    fn teams(&self) -> Vec<u8> {
+        vec![0]
+    }
+
+    fn labelled(&self, label: &str) -> Vec<Placed> {
+        World::default().labelled(label)
+    }
+
+    fn variant(&self, _: &str) -> i32 {
+        0
+    }
+
+    fn read(&mut self, call: &Call) -> i32 {
+        match call.entry.id {
+            id::ALIVE | id::ZONE_HAS_ROLE | id::SHIP_READY | id::ZONE_PATH => 1,
+            id::SQUAD_SHIP => 0,
+            id::SQUAD_ALIVE => 1,
+            _ => 0,
+        }
+    }
+
+    fn act(&mut self, call: &Call) {
+        self.log.push((self.tick, call.clone()));
+    }
+
+    fn script_error(&mut self, error: &ScriptError) {
+        panic!("Firefight script stopped: {error:?}");
+    }
+}
+
+/// The tick the first wave's first enemy stands on the ground: an on-foot
+/// placement's tick, or the tick a ship that carries it begins to unload.
+fn first_on_ground(gap: u32) -> u32 {
+    let waves = WAVES.replace("(0, 1, 1)", &format!("(0, 1, {gap})"));
+    let (ir, _) = rules::ship_files("firefight.rules", DIRECTOR, &|name| {
+        (name == "firefight-waves.rules").then(|| waves.clone())
+    })
+    .unwrap();
+    let options = ir.default_options();
+    let mut vm = Vm::new(ir, options, 1).unwrap();
+    let mut world = ShipWorld::default();
+    for tick in 0..3000 {
+        world.tick = tick;
+        vm.begin_tick(tick);
+        if tick == 0 {
+            vm.fire(&mut world, Input::Init);
+            vm.fire(&mut world, Input::Join(0));
+        }
+        vm.update(&mut world);
+        vm.flush_queue(&mut world);
+        if let Some((at, _)) = world
+            .log
+            .iter()
+            .find(|(_, c)| c.entry.id == id::PLACE_SQUAD_AT || c.entry.id == id::FF_SHIP_UNLOAD)
+        {
+            return *at;
+        }
+    }
+    panic!("no enemy reached the ground in 3000 ticks: {:?}", world.log.iter().map(|(t, c)| (t, c.entry.id)).collect::<Vec<_>>());
+}
+
+#[test]
+fn the_first_wave_is_on_the_ground_within_a_few_seconds() {
+    // Holdout's first gap is 20 s, and its Elites ride the Phantom: the
+    // full gap and the 8 s run in put the first enemy at the unload on
+    // tick 840. The warmup is cut to one second and the opening wave walks
+    // in from its zone.
+    assert_eq!(first_on_ground(600), 30);
+    // A set whose first gap is already shorter keeps it and the ship: the
+    // run (240 ticks) starts when the gap ends.
+    assert_eq!(first_on_ground(2), 2 + 240);
+}

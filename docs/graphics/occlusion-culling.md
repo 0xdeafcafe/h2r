@@ -1,10 +1,17 @@
 # Occlusion culling of objects
 
-Status: Research. The read below is current; the Hi-Z culling built on it
-was not adopted and is deleted ([not-adopted.md](notes/not-adopted.md)).
+Status: Reference (research). The read below is current. Hi-Z culling built on it was tried and not adopted ([not-adopted.md](notes/not-adopted.md)).
 Code: `crates/rewrites/engine/src/render_loop/occlusion/guest.rs` (the
 addresses), `crates/hooking/guest-layout/src/points.rs` (`OBJECT_RENDER_RECORDS`,
 `OBJECT_RENDER_SETUP`, `SCENE_TRANSPARENTS`).
+
+| Question | Answer | Section |
+|---|---|---|
+| Where does a view's object list come from | `0x0003f2c0` in `render_view_scene`, before the passes | The read |
+| What does an object cost | `0x00133790` builds its render records; every layer draws from them | The read |
+| Where can a skip go | A `before` hook on `0x00133790`, main view only | Where to skip |
+| How is depth scaled | The game scales w by `zs / far` itself | The W scale |
+| How does LOD Distance act | Two words: a retail guest word and a display word | Projected size and level of detail |
 
 The game's render front-end is CPU-bound guest code: each draw costs
 about 8 to 14 µs on the game thread before it reaches the GPU. This page
@@ -85,6 +92,7 @@ chosen; it consumes what `0x0003f2c0` built.
 Called only from the loop `0x00133746..0x0013377a` in `0x00133720`. ESI
 the visibility struct; stack `(list index as a word, byte, byte*, -1, the
 caller's argument)`; `ret 0x14`. The handle is `[[ESI+0x14]+0xc+4·index]`.
+
 It computes the view depth (the projection's depth row, globals
 `0x004b9e20`/`0x004b9e2c`/`0x004b9e38`/`0x004b9e44`) and pixel size,
 picks the LOD (`0x0004baf0`, `0x0004b5d0`) and calls `0x00133ab0`, which
@@ -155,16 +163,22 @@ projection accounts for the viewport and FOV, including split screen.
 The setting changes only what is drawn, on every path. The record reset at
 `0x0002cb30` samples LOD Distance into the render context's two words: the
 guest word the record walks read, and the display word the substituting
-render paths read. The guest word is always the retail/sim selection —
-whatever the setting, the walk's records, its pose evaluation, the live
+render paths read. The guest word is always the retail/sim selection.
+
+Whatever the setting, the walk's records, its pose evaluation, the live
 node matrices the marker lookup reads, and the lockstep and film digests
-are the retail ones — with one exception: a legacy film's recorded
-multiplier takes the guest word, so the playback reproduces the walk that
-recorded it. Choose Profile and Appearance reach the world reset caller
+are the retail ones. The one exception is a legacy film's recorded
+multiplier, which takes the guest word so the playback reproduces the walk that
+recorded it.
+
+Choose Profile and Appearance reach the world reset caller
 `0x00031ef5` through `0x0002bcd0` and `0x00031c80`. The Rust light frame
 body identifies that caller through `light_gather::frame::call_site`.
+
 Menu model widgets use the same record walk and draw at retail, like the
-reference. No run forces retail for the network, film or lockstep of it:
+reference.
+
+No run forces retail for the network, film or lockstep of it:
 the protected sessions keep their own reference copy, and the choice
 reaches only the display draws.
 
@@ -196,19 +210,22 @@ reaches only the display draws.
   projected size controls the fade and zero-alpha cull, and the record
   stores a size byte saturated at 255. The reset repairs an interrupted
   walk's projection, and object setup restores it before object lighting
-  computes its pixel radius. The record's fade byte — the stipple pattern
-  a faded placement draws with — follows the display word on the native
-  sorted handler's draws: a Highest display draws every placement fade
-  solid, and a multiplier recomputes the placement's fade at that many
-  output pixels per guest pixel, so a placement that covers enough of the
-  window draws solid where its guest-pixel size left it in the fade
-  window. Single-copy rendering changes the byte the guest's stipple takes.
-  Two-copy rendering (always so for a protected run: network, film or
-  lockstep, including Theater's autorecord) leaves the guest the record's
-  retail byte and gives the display copy alone the rescaled pattern, so
-  the reference copy and every guest readback stay retail. Retail detail
-  keeps each record's own byte on both, and the D3D fallback's guest
-  emitter always does.
+  computes its pixel radius.
+  The record's fade byte (the stipple pattern a faded placement draws
+  with) follows the display word on the native sorted handler's draws.
+  A Highest display draws every placement fade solid. A multiplier
+  recomputes the fade at that many output pixels per guest pixel, so a
+  placement that covers enough of the window draws solid where its
+  guest-pixel size left it in the fade window.
+
+  | Rendering | Guest stipple byte | Display copy |
+  |---|---|---|
+  | Single-copy | The rescaled byte | The rescaled byte |
+  | Two-copy (always for a protected run: network, film or lockstep, including Theater's autorecord) | The record's retail byte | The rescaled pattern alone |
+  | Retail detail | The record's own byte | The record's own byte |
+
+  The reference copy and every guest readback stay retail, and the D3D
+  fallback's guest emitter always keeps the record's byte.
   The screen-door pattern itself stays anchored to guest framebuffer
   pixels ([d3d.md](d3d.md), `SetStipple`), so a fade the display still
   draws shows its dots scaled with the frame. `render.scene`'s
@@ -284,7 +301,7 @@ scales w itself:
 
 So w reaches the W-buffer scaled by `zs / far`: the stored depth is
 `floor(view_depth · zs / far) / zs`, so a stored `d` in `[0, 1]` is a view
-depth of about `d · far`. The device's `+0x944` stays at 1. The deleted
-culling's probe confirmed it in Old Mombasa: with `+0x944` as the scale,
+depth of about `d · far`. The device's `+0x944` stays at 1. A
+probe from the Hi-Z attempt confirmed it in Old Mombasa: with `+0x944` as the scale,
 1929 of 2048 grid cells read nearer than half a world unit; rescaled by
 the camera's far plane they read as street depths.

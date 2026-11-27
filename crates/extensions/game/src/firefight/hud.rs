@@ -675,6 +675,9 @@ pub struct Feed {
     last: Option<Mode>,
     banners: banners::Banners,
     error: Option<String>,
+    /// The announcer's clips the last tick began ([`banners::lines`]),
+    /// until [`Feed::take_lines`].
+    lines: Vec<&'static str>,
 }
 
 impl Feed {
@@ -709,17 +712,39 @@ impl Feed {
         let Some(mode) = mode else {
             self.last = None;
             self.banners.clear();
+            self.lines.clear();
             return kit::hidden();
         };
         let mut events = banners::events(self.last.as_ref(), &mode, local, skull_name);
         if scope != Scope::Match {
             events.retain(|b| *b != banners::Banner::LastLife);
         }
+        self.lines = banners::lines(self.last.as_ref(), &mode, local, &events);
         let shown = self.banners.tick(events);
         let words = shown.map(|s| s.banner.text());
         let values = view_on(&mode, local, scope, screen, words.as_deref());
         self.last = Some(mode);
         values
+    }
+}
+
+impl Feed {
+    /// The announcer's clips the last tick began, once.
+    pub fn take_lines(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.lines)
+    }
+}
+
+/// Say the announcer's lines this tick began: one local user's, since
+/// every user's feed reads the same blob.
+pub fn announce(feeds: &mut Feeds) {
+    let mut said = false;
+    for feed in feeds.iter_mut() {
+        let lines = feed.take_lines();
+        if !said && !lines.is_empty() {
+            said = true;
+            lines.into_iter().for_each(crate::medal_announcer::announce_id);
+        }
     }
 }
 
@@ -812,13 +837,10 @@ impl hooks::Feature for FeedFeature {
             let mem: &dyn GuestMemory = &*guest;
             let slots = local_slots(mem).unwrap_or_default();
             let screen = layout::Screen::for_users(hud_kit::local_users(mem).unwrap_or(1));
-            let all = tick_all(
-                &mut feeds.lock().unwrap_or_else(|e| e.into_inner()),
-                &slots,
-                &scopes_now(),
-                screen,
-                &current(),
-            );
+            let mut feeds = feeds.lock().unwrap_or_else(|e| e.into_inner());
+            let all = tick_all(&mut feeds, &slots, &scopes_now(), screen, &current());
+            announce(&mut feeds);
+            drop(feeds);
             for (user, values) in all.into_iter().enumerate() {
                 let user = user as u32;
                 if user == 0 {

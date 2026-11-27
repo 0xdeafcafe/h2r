@@ -121,7 +121,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
             ),
             (
                 // An own item spawner of a collection the document changes,
-                // in a kit session: its Team, Spare clips, Restore original
+                // in a kit session: its Team, Spare clips, Place at start, Restore original
                 // and Duplicate rows.
                 "spawner",
                 sheet::properties_sheet_with(
@@ -146,6 +146,28 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                         kit: true,
                         team: Some(1),
                         spare_clips: Some(Some(2)),
+                        place_at_start: Some(false),
+                        ..sheet::Extras::default()
+                    },
+                )
+                .expect("rows"),
+            ),
+            (
+                // A starting point of the map's own set to High: its Team
+                // and Weight rows.
+                "start",
+                sheet::properties_sheet_with(
+                    "Starting point",
+                    &forge::Thing {
+                        fields: vec![("team", forge::Value::Int(1))],
+                        ..sample_thing(
+                            forge::BlockKind::StartingLocations,
+                            forge::ThingKind::StartingPoint,
+                        )
+                    },
+                    90.,
+                    &sheet::Extras {
+                        weight: Some(Some(forge_doc::SpawnWeight::High)),
                         ..sheet::Extras::default()
                     },
                 )

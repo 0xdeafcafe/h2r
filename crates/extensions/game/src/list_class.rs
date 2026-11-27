@@ -153,6 +153,12 @@ pub trait Rows: Send + Sync {
     fn shrink_growing_rows(&self) -> bool {
         false
     }
+    /// Whether the focus wraps from either end to the other, as the list
+    /// block's flag bit 0 says; false clears the handler's copy (`+0x7c`)
+    /// so Up on the first row and Down on the last stay put.
+    fn wraps(&self) -> bool {
+        true
+    }
     /// A press on row `row`.
     fn press(&self, row: i16) -> Chosen;
     /// The description's string id for row `row`, for a class with a
@@ -1828,6 +1834,45 @@ fn grow_rows(m: &mut dyn GuestMemory, screen: Screen, count: usize) -> Result<()
     Ok(())
 }
 
+/// The list handler's copy of its block's flag bit 0 (`0x24bc12`): the
+/// focus wraps at either end (`0x24c1c5`).
+const LIST_WRAPS: u32 = 0x7c;
+
+/// Gives each item widget of `list` the row the window puts on it: the
+/// first child's row is the window's top and child `i` shows the `i`th row
+/// after it, none past the last. The row binder (`0x24c0c4`) does this
+/// when the pane is set up; rows a growing list adds later would
+/// otherwise sit on no child, so the list stayed as tall as the rows it
+/// opened with and the focus wrapped within them.
+fn bind_rows(m: &mut dyn GuestMemory, list: ui::ListHandler) -> Result<(), MemFault> {
+    let live: Vec<DatumHandle> = list
+        .row_array(m)?
+        .live(m, i32::MAX)?
+        .into_iter()
+        .map(|(h, _)| h)
+        .collect();
+    let mut children = Vec::new();
+    let mut child = m.u32(list.addr.wrapping_add(WIDGET_CHILD))?;
+    while child != 0 && children.len() < 256 {
+        children.push(Item::at(child));
+        child = m.u32(child.wrapping_add(WIDGET_NEXT))?;
+    }
+    let top = match children.first() {
+        Some(first) => first
+            .row(m)?
+            .and_then(|h| live.iter().position(|l| *l == h))
+            .unwrap_or(0),
+        None => return Ok(()),
+    };
+    for (i, item) in children.iter().enumerate() {
+        let row = live.get(top + i).copied();
+        if item.row(m)? != row {
+            item.set_row(m, row)?;
+        }
+    }
+    Ok(())
+}
+
 /// The row an item shows.
 fn item_row(m: &dyn GuestMemory, item: u32) -> Result<Option<i16>, MemFault> {
     Ok(Item::at(item)
@@ -2126,6 +2171,17 @@ pub async fn row_text(
                 Ok::<_, MemFault>(())
             })?;
         }
+        cx.write(|m| bind_rows(m, screen.list()))?;
+    }
+    if !rows.wraps() {
+        let list = cx.entry().ecx.wrapping_add(LIST_WRAPS);
+        cx.write(|m| -> Result<(), MemFault> {
+            let flags = m.u8(list)?;
+            if flags & 1 != 0 {
+                m.set_u8(list, flags & !1)?;
+            }
+            Ok(())
+        })?;
     }
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
@@ -4182,6 +4238,45 @@ mod tests {
         let live = rows.live(&g, 4).unwrap();
         assert_eq!(live.len(), 4);
         assert_eq!(live[0].0, first);
+    }
+
+    /// A list that opened on its one waiting row and grew: the rows it
+    /// gains go onto the item widgets that had none, so the list is as
+    /// tall as its layout and the focus reaches every row; rows it loses
+    /// leave their widgets.
+    #[test]
+    fn a_grown_list_puts_its_new_rows_on_the_item_widgets_that_had_none() {
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200);
+        construct(&mut g, 6);
+        adopt(&mut g, SCREEN, &entries(), 1).unwrap();
+        let screen = Screen::at(SCREEN);
+        let list = screen.list();
+        let items: Vec<Item> = (0..4).map(|i| list.item(i)).collect();
+        g.set_u32(list.addr + WIDGET_CHILD, items[0].addr).unwrap();
+        for pair in items.windows(2) {
+            g.set_u32(pair[0].addr + WIDGET_NEXT, pair[1].addr).unwrap();
+        }
+        let array = list.row_array(&g).unwrap();
+        let first = array.live(&g, 8).unwrap()[0].0;
+        items[0].set_row(&mut g, Some(first)).unwrap();
+        for item in &items[1..] {
+            item.set_row(&mut g, None).unwrap();
+        }
+
+        grow_rows(&mut g, screen, 5).unwrap();
+        bind_rows(&mut g, list).unwrap();
+        let live: Vec<_> = array.live(&g, 8).unwrap().into_iter().map(|(h, _)| h).collect();
+        assert_eq!(live.len(), 5);
+        let shown = |g: &FakeGuest| items.iter().map(|i| i.row(g).unwrap()).collect::<Vec<_>>();
+        assert_eq!(shown(&g), live[..4].iter().copied().map(Some).collect::<Vec<_>>());
+
+        for (handle, _) in array.live(&g, 8).unwrap().into_iter().skip(2) {
+            array.array.delete(&mut g, handle).unwrap();
+        }
+        bind_rows(&mut g, list).unwrap();
+        assert_eq!(shown(&g), [Some(live[0]), Some(live[1]), None, None]);
     }
 
     #[test]

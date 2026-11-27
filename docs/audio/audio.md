@@ -437,6 +437,16 @@ embedded clips as `announcer/firefight` and `announcer/siege`.
   (`announcer: art/announcer/<id>.wav: a Git LFS pointer ...`) and stays
   silent. `git lfs pull` and a rebuild bring them in.
 
+Firefight's and Siege's event lines are clips of the same queue, the
+owner's recordings (`new-wave`, `wave-complete`, `set-complete`,
+`skulls-off`, `<skull>-on`, `attack`, `site-captured` and the rest of
+`art/announcer/`): [firefight.md](../game/firefight.md#the-announcer) lists
+Firefight's, whose HUD feed queues them (`firefight/hud.rs`, `announce`);
+[rules-engine.md](../game/rules-engine.md#siege-announcer-lines) Siege's,
+which the script plays as `sound_to*("announcer/<clip>")`. Each was split
+from the recording at -30 dB silences, trimmed, and set to -14.5 LUFS
+integrated with peaks under -0.5 dBTP, the level of the clips above.
+
 The Incel medal has a clip too (`incel.wav`), not compiled in: no line in
 the game shows that medal ([teabag.md](../game/teabag.md)), so nothing
 speaks it.

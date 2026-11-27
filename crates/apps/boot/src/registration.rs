@@ -605,6 +605,23 @@ pub(crate) fn register_core_film(
     features
         .add(&game::forge_spare_clips::SpareClips)
         .map_err(|e| anyhow::anyhow!("forge spare clips: {e}"))?;
+    // A Forge starting point's weight: its bias added to the spawn
+    // chooser's weight for the location.
+    features
+        .add(&game::forge_spawn_weight::SpawnWeight)
+        .map_err(|e| anyhow::anyhow!("forge spawn weight: {e}"))?;
+    // A Forge spawner's place at start: a held-back item waits its respawn
+    // time after each round reset.
+    features
+        .add(&game::forge_place_at_start::PlaceAtStart)
+        .map_err(|e| anyhow::anyhow!("forge place at start: {e}"))?;
+    // A built Forge map's record of the three, read at activation, so a
+    // match on the variant has them with no session.
+    if let Some(vfs) = i.vfs.clone() {
+        features
+            .add(&game::forge_record::Record { vfs })
+            .map_err(|e| anyhow::anyhow!("forge record: {e}"))?;
+    }
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;

@@ -167,6 +167,8 @@ pub(super) struct Editor {
     ui_up: bool,
     /// The map's palette entries the Objects palette leaves out, with why.
     refused: Vec<String>,
+    /// The map's item collections that hold a weapon (`forge_map::Opened::armed`).
+    armed: Arc<std::collections::BTreeSet<String>>,
     /// Set in a shared session (docs/game/forge-design.md, F5).
     net: Option<net::Net>,
     /// A film's edit records handed over and not yet applied, in film
@@ -213,6 +215,9 @@ pub(super) struct Editor {
     /// What the Waves page's Start from offers on this base map
     /// (`forge_screens::waves::presets`), read once as the session opens.
     wave_presets: Arc<[forge_doc::waves::Def]>,
+    /// The monitor has had a camera in this session: the first comes up at
+    /// the map's start ([`monitor_camera`]).
+    monitor_placed: bool,
 }
 
 impl Editor {
@@ -264,6 +269,7 @@ impl Editor {
             listed: false,
             ui_up: false,
             refused: opened.refused,
+            armed: Arc::new(opened.armed),
             net: None,
             played: Vec::new(),
             now: 0,
@@ -283,6 +289,7 @@ impl Editor {
             test_answer: None,
             test_set: None,
             wave_presets,
+            monitor_placed: false,
         }
     }
 
@@ -394,6 +401,7 @@ impl Editor {
         self.tags = opened.tags.into();
         self.walls = opened.walls;
         self.refused = opened.refused;
+        self.armed = Arc::new(opened.armed);
         self.bsp = None;
         self.guard = Guard {
             scenario,
@@ -1135,21 +1143,32 @@ impl Editor {
             kit: self.session.has_kit(),
             team: self.session.team(id),
             spare_clips: self.spare_clips_row(id),
+            weight: self
+                .session
+                .thing(id)
+                .filter(|t| t.kind == forge::ThingKind::StartingPoint)
+                .map(|_| self.session.spawn_weight(id)),
+            place_at_start: self
+                .session
+                .thing(id)
+                .filter(|t| t.kind == forge::ThingKind::ItemSpawner)
+                .map(|_| self.session.place_at_start(id)),
         }
     }
 
     /// The spare clips row's value for `id`: an item spawner of an item
-    /// collection (`itmc`) has the row; a vehicle's or any other thing's
-    /// has none. A collection of equipment takes the row too, and the game
-    /// leaves what is not a weapon as it is (`agent::forge::spare_clips`).
-    fn spare_clips_row(&self, id: Endpoint) -> Option<Option<u8>> {
+    /// collection (`itmc`) that holds a weapon has the row, a mixed one
+    /// too; a collection of equipment, a vehicle's or any other thing's has
+    /// none (`forge_map::holds_weapon`).
+    pub(crate) fn spare_clips_row(&self, id: Endpoint) -> Option<Option<u8>> {
         let thing = self.session.thing(id)?;
-        let collection = thing.kind == forge::ThingKind::ItemSpawner
+        let armed = thing.kind == forge::ThingKind::ItemSpawner
             && thing.fields.iter().any(|(name, value)| {
                 *name == "item"
-                    && matches!(value, forge_doc::Value::Tag(Some(key)) if key.group == "itmc")
+                    && matches!(value, forge_doc::Value::Tag(Some(key))
+                        if key.group == "itmc" && self.armed.contains(&key.path))
             });
-        collection.then(|| self.session.spare_clips(id))
+        armed.then(|| self.session.spare_clips(id))
     }
 
     /// The things Save as prefab takes for `id`: its group, else the
@@ -1684,7 +1703,8 @@ impl Editor {
         }
         if !self.busy() {
             if self.tool.monitor && self.tool.camera.is_none() {
-                self.tool.camera = controls::eye();
+                self.tool.camera = monitor_camera(memory, !self.monitor_placed, controls::eye());
+                self.monitor_placed |= self.tool.camera.is_some();
             }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
@@ -2514,6 +2534,19 @@ impl Editor {
                 let clips = i.checked_sub(1).and_then(|c| u8::try_from(c).ok());
                 return self.command(tick, Command::SetSpareClips { id, clips });
             }
+            Choice::Set(Prop::SpawnWeight, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a starting point.")?;
+                let weight = match i {
+                    0 => Some(forge_doc::SpawnWeight::Low),
+                    2 => Some(forge_doc::SpawnWeight::High),
+                    _ => None,
+                };
+                return self.command(tick, Command::SetSpawnWeight { id, weight });
+            }
+            Choice::Set(Prop::PlaceAtStart, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a spawner.")?;
+                return self.command(tick, Command::SetPlaceAtStart { id, on: i == 0 });
+            }
             Choice::Set(Prop::Role, i) => {
                 let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
                 return self.command(
@@ -2892,6 +2925,24 @@ fn list_variants(data: &Path, session: &Session) -> Result<Vec<Listed>, String> 
     variants::list(data, &base.map, Some(&base.sha256)).map_err(|e| e.to_string())
 }
 
+/// Where the monitor's camera comes up. The session's first monitor
+/// starts at the map's first player start, a standing eye along its
+/// facing: the view the game draws as a Forge game opens is from before
+/// the biped spawns, not a place in the level, and a camera taken from it
+/// draws nothing of the map. A later toggle takes the player's own view
+/// ([`controls::eye`]). Each falls back to the other.
+fn monitor_camera(m: &dyn engine::GuestMemory, first: bool, eye: Option<Camera>) -> Option<Camera> {
+    let start = || {
+        let pose = crate::agent_spawn_view::Starts::read(m)?.eye(m, 0)?;
+        Some(Camera {
+            position: pose.position,
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+        })
+    };
+    if first { start().or(eye) } else { eye.or_else(start) }
+}
+
 fn surface_hit(walls: Option<&bots::los::Walls>, camera: Camera) -> Option<(f32, [f32; 3])> {
     walls?
         .hit(camera.position, camera.point(forge::tool::MAX_HOLD))
@@ -2916,6 +2967,8 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Reset { id } => s.reset(w, tick, id),
         SetTeam { id, team } => s.set_team(w, tick, id, team),
         SetSpareClips { id, clips } => s.set_spare_clips(w, tick, id, clips),
+        SetSpawnWeight { id, weight } => s.set_spawn_weight(w, tick, id, weight),
+        SetPlaceAtStart { id, on } => s.set_place_at_start(w, tick, id, on),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),

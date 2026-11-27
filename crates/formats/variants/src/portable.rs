@@ -677,17 +677,32 @@ pub fn record_for_named(
 }
 
 /// The stock record with the script's settings, before its name and
-/// reference are attached. Scripts that ride Slayer and write no setting
-/// in its type area use the script index, whose stock type area is zero.
+/// reference are attached. Scripts that ride Slayer, write no setting in
+/// its type area and play without teams use the script index, whose stock
+/// type area is zero. A team script stays on Slayer's index: the retail
+/// pregame lobby reads the record's engine for its team rows, and the
+/// script index has no engine object until a game starts (docs/game/notes/2026-11-24-game-type-engine-reads.md,
+/// "The engine table"), so the lobby built an empty Game Setup list, an
+/// empty Quick Options and a broken player list for Siege. The game's
+/// start moves the record onto the script index with its type area
+/// dropped (`rules::record::move_onto_script_index` in the game crate).
 pub fn settings_record(ir: &rules::Ir) -> Result<GameVariant, PortableError> {
     let carrier = ir.header.engine();
     let ty = GameType::from_engine(i32::from(carrier));
-    let stock = if ty == GameType::Slayer && !writes_type_area(ir, carrier) {
+    let stock = if ty == GameType::Slayer && !writes_type_area(ir, carrier) && !plays_teams(ir) {
         GameType::Script
     } else {
         ty
     };
     settings_on(ir, stock, carrier)
+}
+
+/// Whether the script's settings turn team play on.
+pub fn plays_teams(ir: &rules::Ir) -> bool {
+    let Some((team_play, _)) = rules::settings::named("team_play") else {
+        return false;
+    };
+    ir.settings.iter().any(|s| s.index == team_play && s.value != 0)
 }
 
 /// Test the field a setting writes, including a write of zero. The stock
@@ -1779,6 +1794,23 @@ settings {
                 assert_eq!(ir.option_value(options, name), Some(value), "{key} {name}");
             }
         }
+    }
+
+        /// A team script stays on Slayer's index, where the retail lobby builds
+    /// its team rows; a free-for-all script with no type-area write takes
+    /// the script index. The game's start moves the team script's record
+    /// there.
+    #[test]
+    fn a_team_script_keeps_slayers_index_for_the_lobby() {
+        let siege = compiled(rules::builtin::SIEGE);
+        assert!(plays_teams(&siege));
+        let v = record_for(&siege, &[]).unwrap();
+        assert_eq!(v.game_type(), GameType::Slayer);
+        assert!(v.team_play());
+        assert_eq!(v.ext().script.prefix[..], siege.id().0[..8]);
+        let ffa = compiled("rules \"Practice\" 1\ntype research\nuses slayer\nsettings {\nlives = 3\n}\n");
+        assert!(!plays_teams(&ffa));
+        assert_eq!(record_for(&ffa, &[]).unwrap().game_type(), GameType::Script);
     }
 
     #[test]

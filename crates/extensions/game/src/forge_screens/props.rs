@@ -86,6 +86,22 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             let current = clips.map_or(0, |c| usize::from(c) + 1);
             picker(p, help, Prop::SpareClips, values, current.min(last))
         }
+        // A starting point's weight is the document's property: Low, Normal,
+        // High.
+        ("picker", "weight") => {
+            let current = match extras.weight? {
+                Some(forge_doc::SpawnWeight::Low) => 0,
+                None => 1,
+                Some(forge_doc::SpawnWeight::High) => 2,
+            };
+            picker(p, help, Prop::SpawnWeight, values, current.min(last))
+        }
+        // Place at start is the document's property, on an item spawner:
+        // Yes, then No.
+        ("picker", "place at start") => {
+            let current = usize::from(!extras.place_at_start?);
+            picker(p, help, Prop::PlaceAtStart, values, current.min(last))
+        }
         ("picker", "role") => {
             let current = int_of(thing, "type").clamp(0, last as i64) as usize;
             picker(p, help, Prop::Role, values, current)

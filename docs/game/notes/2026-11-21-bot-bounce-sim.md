@@ -224,7 +224,7 @@ The batch (`superbounce-batch.toml`, four bots a run, four maps by three seeds, 
 | ascension | 187 | 13 | 102 | path_lost_jump_crouch 95, pair_lost 25, missed 20 |
 | lockout | 173 | 0 | 101 | pair_lost 52, prime_failed 44, path_lost_stuck_crouch 34 |
 | midship | 185 | 0 | 109 | path_lost_stuck_crouch 69, pair_lost 48, missed 22 |
-| zanzibar | 0 | 0 | 0 | — |
+| zanzibar | 0 | 0 | 0 | - |
 | (all) | 545 | 13 | 312 | pair_lost 125, path_lost_stuck_crouch 105, path_lost_jump_crouch 95 |
 
 All 13 bounces are Ascension's measured drop. Most failures come before the jump, on the walk to the crouch spot or in the prime. The causes below come from the runs' `report.json` (`state_components_v1`: position, velocity, crouch and unit flags by tick), the `bots: bounce try:` lines and the maps' nav files (`H2BT`/`H2NV`, polys, edges and wall triangles). The reading was done with one-off Python that isn't kept.

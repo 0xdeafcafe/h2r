@@ -459,7 +459,7 @@ Firefight sits inside.
 | `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
 | `on round_start`, each round after the first | an observer after `ENGINE_ROUND_RESET` (`0x157ae0`), the engine's round reset, which the round state machine `0x15c550` calls as a round begins | at the next tick boundary |
 | `on quit` | an observer before `ENGINE_PLAYER_LEFT` (`0x157de0`): the player's salted datum in ESI, the player already off the roster (player `+2` bit 1) | at the next tick boundary |
-| `on touchdown`, `on launch`, `on grounded`, then `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: what its medal chain saw of each player's physics that tick, slot by slot (`Runtime::physics`, `world::physics`; [rules-world-api.md](rules-world-api.md#physics)), then each bounce and Bounced the chain files (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
+| `on touchdown`, `on launch`, `on grounded`, then `on bounce`, `on bounced` | the superbounce mode's tick observer, after `GAME_TICK`: what its medal chain saw of each player's physics that tick, slot by slot (`Runtime::physics`, `world::physics`; [rules-world-api.md](rules-world-api-reference.md#physics)), then each bounce and Bounced the chain files (`rules::feature::bounces`, "Firefight, AI and bounces") | at the next tick boundary |
 | `on death`, `on spawn`, `on leave`, `on enter`, then `on timer`, then `on tick` | an observer after `GAME_TICK`: the roster's and the zones' changes since the last tick (`runtime::tell`, `world::zones::events`), then the per-tick group | at the next tick boundary |
 | `on init`, then the first `on round_start` | the start observer | at the first tick boundary |
 
@@ -828,7 +828,9 @@ the start line comes from (retail's announcer, one of ours, or none) and
 the retail settings layout. A retail type names its engine's
 index (ctf 1, slayer 2, oddball 3, koth 4, juggernaut 7, territories 8,
 assault 9); our types use Slayer's layout, 2. `Header::engine` reads
-it. Eligible Slayer-layout records use index 6 on disk and in play. The
+it. Eligible Slayer-layout records use index 6 on disk and in play, except
+a team script's, which stays on Slayer's index until the game's start
+moves it (the retail lobby builds its team rows from the engine). The
 type files a variant under its row of the game type list: `research`
 under Research and Devolution, `party` under Party Games, and the other
 nine under their named rows. At round start the authority posts the
@@ -1315,6 +1317,67 @@ the next tick (`on tick` in `siege.rules` sets the kit of a player whose
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
+#### Siege announcer lines
+
+`siege.rules` requires `audio.play` and plays the announcer's clips
+(`art/announcer/<clip>.wav`) with `sound_to`, `sound_to_team` and
+`sound_to_all`, naming a clip as the sound `"announcer/<clip>"`
+([rules-world-api.md](rules-world-api.md#audio)).
+
+| Event | Line | Audience |
+|---|---|---|
+| The game starts | Siege (`siege`, the type's start line, [audio.md](../audio/audio.md#our-medals-announcer-lines)) | all |
+| A round starts | Attack (`attack`) / Defend (`defend`) | the attackers / the defenders |
+| The last round starts | Final Round (`final-round`) | all |
+| A site falls (each, the last before the final assault too) | Site Captured (`site-captured`) | all |
+| A side's respawn wave lands, with dead to bring back | Reinforcements (`reinforcements`) | that side |
+| A round ends | Round Over (`round-over`) | all |
+
+Tests: `crates/formats/rules/tests/hud_marks.rs` (`siege_says_*`).
+
+#### Siege layouts
+
+A map plays ordered phases when its layout numbers its sites, names its
+final stand and labels its starts by side and phase ("Map layouts"
+above). These maps have a built-in layout
+(`crates/formats/rules/src/builtin/layouts/siege/<map>.json`):
+
+| Map | Layout source | Sites (phase 0, phase 1) | Final stand | Barriers |
+|---|---|---|---|---|
+| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | the defenders' CTF stand (`base[defenders]`) | none |
+| Coagulation | `h2 siege layout coagulation`, red attacks | territory flags 20, 19; 21, 53 | blue's stand, flag 6 (`siege_goal`) | none: the map has no loose solid object across a way |
+| Headlong | `h2 siege layout headlong --barrier crates:17=2 --barrier crates:70=2`, red attacks | territory flags 51; 62 | blue's stand, flag 0 (`siege_goal`) | two giant tech crates by blue's base, open in the final assault |
+| Waterworks | `h2 siege layout waterworks --barrier crates:41=2 --barrier crates:42=2`, red attacks | territory flags 26, 23; 17 | blue's stand, flag 4 (`siege_goal`) | two giant packing crates by blue's base, open in the final assault |
+
+A recipe layout labels the defenders' stand `siege_goal`, so the final
+stand stays at one end of the map when the sides swap; Zanzibar's reads
+`base[defenders]` and so moves to the other stand in the second round.
+Each recipe layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
+written by `--scenario`) that `rules/tests/modes.rs`
+(`siege_plays_each_recipe_layouts_phases`) runs: the scenario's labels are
+the layout's, an attacker standing on one site of each phase in turn takes
+it, each phase's spawns and loadout tier open in order, the bots are sent
+at each site and then at the stand (`bot_goal_attack`), the barriers open
+in their phase, and the attackers win at the stand.
+
+The recipe (`forge_doc::siege_layout`) runs the attack line from the
+attackers' CTF flag stand to the defenders'. The territories between
+them (from 0.12 to 0.88 of the way along, a flag within 4 units of a kept
+one dropped), in order along the line, are the sites: the nearer half
+numbered 0, the farther half 1, at most two a phase. Each phase's starts
+are the ones nearest the attackers' stand, then nearest the sites they
+took, on their side of the phase's front, and for the defenders the ones
+past the phase's sites, then nearest their stand; `per_side` a side, no
+start both sides' in one phase. A barrier is named by its placement and
+phase: the recipe does not judge which object blocks a way.
+
+| Tool, command or screen | Output |
+|---|---|
+| `h2 siege layout <map> [--attack red\|blue] [--per-side N] [--barrier <block>:<index>=<phase>]... [-o layout.json] [--scenario s.json]` (`crates/apps/h2-tools/src/siege_cmd.rs`) | the plan, a line a label; with `-o` the labels-only document in the built-in layouts' form; with `--scenario` the fake-game walk through its phases |
+| Studio `siege.layout {attack?, per_side?, barriers?, out?}` (`crates/apps/studio/src/api/siege.rs`) | the same plan over the open map as edited, and the document; with `out` the file. The open map is not changed |
+| Studio `scenario.add {block: "label", label: "siege_site" \| "siege_goal" \| "siege_line", ...}` | a Forge-map label: one netgame flag with the label ("Maps for scripted games" in [game-types-without-carriers.md](game-types-without-carriers.md)) |
+| Forge's **Siege** page on the object menu (`forge_screens::sheet::SIEGE_PAGE`): **Site**, **Flag stand**, **Spawn line**, **Barrier** | `siege_site` (a site with its area), `siege_goal` and `siege_line` (a marker placed in front of the monitor), `siege_barrier` (the object aimed at, numbered 1; Properties changes it), in the map variant's document |
+
 ### A Forge graph is the same IR
 
 The Forge front end turns the document's nodes and links into the same
@@ -1529,7 +1592,7 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | `teleport(o, at)`, `move_to(o, at, t)`, `stop(o)`; `o.position`, `o.velocity`, `o.speed`; `on arrive(o)` | `OBJECT_SET_TRANSFORM` `0xb7430` for a put and a mover's step each tick; the movers in the VM's state (`RulesExt::movers`); the object datum's position and velocity for the reads (`rules/world/objects.rs`, [rules-world-api.md](rules-world-api.md#objects)) | named; whether a client sees the move is not researched (R2, R3) | `objects.move` |
 | device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
-| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` awaited at the next tick boundary for the VM's sight table (`RulesExt::sight`, `rules::runtime::run_work`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api.md#physics) | `sees` is hostable with a one-tick delay; the host delivers the three events and answers the biped reads while the superbounce mode runs; scripts using the reads must declare `requires hud.superbounce` | none |
+| `p.airborne`, `p.crouching`, `p.primed`; `sees(a, b)`; `on touchdown(p, down, up)`, `on launch(p, spot, speed)`, `on grounded(p)` | a biped's flags (`game::superbounce_charge`), `AI_LINE_OF_SIGHT` awaited at the next tick boundary for the VM's sight table (`RulesExt::sight`, `rules::runtime::run_work`), and the medal chain's physics for every player (`superbounce_chain::Physics`, `game::rules::world::physics`); [rules-world-api.md](rules-world-api-reference.md#physics) | `sees` is hostable with a one-tick delay; the host delivers the three events and answers the biped reads while the superbounce mode runs; scripts using the reads must declare `requires hud.superbounce` | none |
 | `message(to, text)`: `to` is a player, a team or `all` (everyone); the compiler picks one of three entries by its type (`message`, `message_team`, `message_all`), all spelled `message`. A text written in the call may hold up to four `{name}` holes, each a player, team, int, time or enum in scope (`{{` is a brace); the call reaches the game with the holes' values after its own arguments ([rules-language-types.md](rules-language-types.md#messages)). The host shows it to its local users in the audience through the notification insert (`hud_kit::NOTIFY`) and sends it to clients as a show cue ([rules-world-api.md](rules-world-api.md#the-show-channel)). Scoreboard text, announcer, waypoint | the notification queue (`0x24cbee`), per local user (hud-kit.md "Messages"); the centred text (`0x24cc73`) is not used | named | `hud.message` |
 | `hud_text(w, "…")`, `hud_value(w, n)`, `hud_fill(w, f)`, `hud_style(w, style)`, `hud_show(w, on)`, `hud_value_for(w, p, n)`; `mark(wp, at)`, `mark(wp, at, to)`, `unmark(wp)` | the VM's show state (`RulesExt::show`), drawn from the objective HUDs after each tick (`rules/world/hud.rs`); a mark's audience is a player's slot's bit or the team's seated players' bits, resolved in the VM from the roster (`Game::players_of_team`); the state rides the show channel's `Show` record ([rules-world-api.md](rules-world-api.md#the-show-channel)) | named | `hud.widgets`, `hud.waypoints` |
 | `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
@@ -2240,7 +2303,7 @@ players like any other to a script.
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
 hears `on bounce(p, spot, chain, monster)` and `on bounced(p)`, or the
 physics events under them (`on touchdown`, `on launch`, `on grounded`,
-[rules-world-api.md](rules-world-api.md#physics)), reads the scanner's spots as zones, scores
+[rules-world-api.md](rules-world-api-reference.md#physics)), reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce mode a script's own
 choice (`requires hud.superbounce`). The detector's rule is a traced
@@ -2285,7 +2348,7 @@ launch` adds one to the player's `chain` while `flying` and starts it at
 1 otherwise, `on grounded` clears `flying`, and a launch over 16 world
 units a second is a Monster; its counts and scores match the Rust
 chain's on every tick of the chain's test scenarios
-([rules-world-api.md](rules-world-api.md#physics)). The built-in Superbounce variant's
+([rules-world-api.md](rules-world-api-reference.md#physics)). The built-in Superbounce variant's
 record names it (mode 2, its hash prefix and default options); the
 record comes from `record_for` on the script, written into the built-in
 entry at list load (`community_variants::write_blocks`), and its other

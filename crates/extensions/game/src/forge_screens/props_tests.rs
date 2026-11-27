@@ -259,6 +259,8 @@ fn every_row_of_the_shipped_doc_binds() {
             kit: true,
             team: None,
             spare_clips: Some(None),
+            weight: Some(None),
+            place_at_start: Some(true),
         };
         let t = Thing {
             own: true,
@@ -408,6 +410,8 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         kit: false,
         team: None,
         spare_clips: None,
+        weight: None,
+        place_at_start: None,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
@@ -611,4 +615,58 @@ fn a_collection_spawner_has_a_spare_clips_picker_over_the_documents_property() {
     };
     assert_eq!(two.values[two.current], "2");
     assert_eq!(two.choices[two.current], Choice::Set(Prop::SpareClips, 3));
+}
+
+#[test]
+fn a_starting_point_has_a_weight_picker_over_the_documents_property() {
+    let d = doc();
+    let start = thing(BlockKind::StartingLocations, ThingKind::StartingPoint, &[]);
+    let weight_row = |weight| {
+        let extras = Extras {
+            weight,
+            ..Extras::default()
+        };
+        rows_with(&d, &start, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Weight")
+    };
+    assert!(weight_row(None).is_none(), "a thing the row is not for");
+    let Some(SheetRow { act: Act::Pick(normal), .. }) = weight_row(Some(None)) else {
+        panic!("a picker")
+    };
+    assert_eq!(normal.values, ["Low", "Normal", "High"]);
+    assert_eq!(normal.values[normal.current], "Normal");
+    assert_eq!(normal.choices[normal.current], Choice::Set(Prop::SpawnWeight, 1));
+    let Some(SheetRow { act: Act::Pick(high), .. }) =
+        weight_row(Some(Some(forge_doc::SpawnWeight::High)))
+    else {
+        panic!("a picker")
+    };
+    assert_eq!(high.values[high.current], "High");
+}
+
+#[test]
+fn an_item_spawner_has_a_place_at_start_picker_over_the_documents_property() {
+    let d = doc();
+    let spawner = thing(BlockKind::NetgameEquipment, ThingKind::ItemSpawner, &[]);
+    let row = |place_at_start| {
+        let extras = Extras {
+            place_at_start,
+            ..Extras::default()
+        };
+        rows_with(&d, &spawner, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Place at start")
+    };
+    assert!(row(None).is_none(), "a thing the row is not for");
+    let Some(SheetRow { act: Act::Pick(yes), .. }) = row(Some(true)) else {
+        panic!("a picker")
+    };
+    assert_eq!(yes.values, ["Yes", "No"]);
+    assert_eq!(yes.values[yes.current], "Yes");
+    let Some(SheetRow { act: Act::Pick(no), .. }) = row(Some(false)) else {
+        panic!("a picker")
+    };
+    assert_eq!(no.values[no.current], "No");
+    assert_eq!(no.choices[no.current], Choice::Set(Prop::PlaceAtStart, 1));
 }

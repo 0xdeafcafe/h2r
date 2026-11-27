@@ -61,10 +61,10 @@ fn the_detail_page_says_monitor_looks_drawn_as_markers_and_the_film_stays_playab
         monitor_looks: looks,
     };
     row.film.apply_compatibility(report(vec![look(2)]));
-    assert!(row.browse_description(None).contains("1 monitor look drawn as marker"));
+    assert!(row.browse_description(None).contains("1 monitor look as marker"));
     assert!(row.film.watch_unavailable().is_none());
     row.film.apply_compatibility(report(vec![look(2), look(3)]));
-    assert!(row.browse_description(None).contains("2 monitor looks drawn as markers"));
+    assert!(row.browse_description(None).contains("2 monitor looks as markers"));
     row.film.apply_compatibility(report(vec![]));
     assert!(!row.browse_description(None).contains("monitor look"));
 }
@@ -210,4 +210,18 @@ fn titled_clip_keeps_its_map_and_mode_when_the_date_is_missing() {
         clip.browse_description(None),
         "Lockout\nCustom Game\nLocal film"
     );
+}
+
+/// A campaign film reads as its level, and its game type once: the
+/// recorder names both the mode and the variant "Campaign".
+#[test]
+fn a_campaign_film_shows_its_level_name_and_its_game_type_once() {
+    let mut row = film("c", "05b_deltatowers", Some("Campaign"), 0);
+    row.film.mode = Some("Campaign".into());
+    row.film.variant_name = "campaign".into();
+    assert_eq!(row.row_title(), "Regret / Campaign");
+    assert_eq!(row.browse_description(None), "Campaign\nLocal film");
+    assert_eq!(film("i", "maps/cyclotron.map", None, 0).row_title(), "Ivory Tower");
+    assert_eq!(film("b", "beavercreek", None, 0).row_title(), "Beaver Creek");
+    assert_eq!(film("l", "lockout", None, 0).row_title(), "Lockout");
 }

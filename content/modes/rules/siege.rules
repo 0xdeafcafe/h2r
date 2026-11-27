@@ -58,7 +58,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds, bots.orders
+requires audio.play, player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds, bots.orders
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -339,12 +339,17 @@ fn show_front() {
     }
 }
 
+// The announcer's lines (`announcer/<clip>`, art/announcer/): the game's
+// start line, Siege, is the type's own. Attack and Defend open each round
+// for their side, Final Round the last, Site Captured each site that falls,
+// Reinforcements a side's wave and Round Over each round's end.
 // The round's end: the winners score a point each and the round counts
 // for their team. The next round starts with the sides swapped; after the
 // last, the team that won the more rounds wins the game.
 fn win(side: team) {
     over = true
     clock = 0t
+    sound_to_all("announcer/round-over")
     countdown(attackers, 0t)
     countdown(defenders, 0t)
     meter(attackers, 0, 0)
@@ -374,6 +379,7 @@ fn win(side: team) {
 fn round_banner() {
     if round + 1 == round_count {
         hud_text(banner_row, "FINAL ROUND")
+        sound_to_all("announcer/final-round")
     } else if round == 0 {
         hud_text(banner_row, "ROUND 1")
     } else if round == 1 {
@@ -427,6 +433,9 @@ fn hold(p: player) {
 // The side's dead come back together.
 fn release(side: team) {
     if not over {
+        if count(players p where p.team == side and not p.alive) > 0 {
+            sound_to_team(side, "announcer/reinforcements")
+        }
         for each players p where p.team == side and not p.alive { respawn(p) }
     }
 }
@@ -474,6 +483,8 @@ on round_start {
         message(attackers, "Round {n} of {total}: you attack")
         message(defenders, "Round {n} of {total}: you defend")
     }
+    sound_to_team(attackers, "announcer/attack")
+    sound_to_team(defenders, "announcer/defend")
     // Spartans attack, Elites defend.
     set_body(attackers, "objects/characters/masterchief/masterchief_mp")
     set_body(defenders, "objects/characters/elite/elite_mp")
@@ -549,6 +560,7 @@ on tick {
         // fall back.
         if let s = front {
             front = none
+            sound_to_all("announcer/site-captured")
             open_map()
             if ordered {
                 line_up()

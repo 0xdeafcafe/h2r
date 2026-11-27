@@ -600,3 +600,67 @@ fn a_refused_spare_clips_call_leaves_the_document_as_it_was() {
     s.set_spare_clips(&mut w, 2, spawner, Some(3)).unwrap();
     assert_eq!(w.calls, [Call::SpareClips(0, Some(3))]);
 }
+
+#[test]
+fn a_starting_points_weight_is_a_property_op_the_world_follows_by_row() {
+    use forge_doc::SpawnWeight::{High, Low};
+    let start = Endpoint::base(BlockKind::StartingLocations, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert_eq!(s.spawn_weight(start), None, "Normal");
+    s.set_spawn_weight(&mut w, 1, start, Some(High)).unwrap();
+    assert_eq!(s.spawn_weight(start), Some(High));
+    assert_eq!(w.calls, [Call::SpawnWeight(0, Some(High))]);
+    s.set_spawn_weight(&mut w, 2, start, Some(High)).unwrap();
+    assert_eq!(w.calls.len(), 1, "the same weight writes nothing");
+    s.set_spawn_weight(&mut w, 3, start, Some(Low)).unwrap();
+    s.undo(&mut w, 4).unwrap();
+    s.undo(&mut w, 5).unwrap();
+    assert_eq!(
+        &w.calls[1..],
+        [
+            Call::SpawnWeight(0, Some(Low)),
+            Call::SpawnWeight(0, Some(High)),
+            Call::SpawnWeight(0, None),
+        ]
+    );
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    assert_eq!(
+        s.set_spawn_weight(&mut w, 6, spawner, Some(Low)).unwrap_err(),
+        "This item spawner has no weight."
+    );
+    // A refused call leaves the document as it was.
+    let mut refusing = Fake {
+        refuse_at: Some(0),
+        ..Fake::default()
+    };
+    let mut s = open(rows());
+    assert!(s.set_spawn_weight(&mut refusing, 1, start, Some(Low)).is_err());
+    assert_eq!(s.spawn_weight(start), None);
+}
+
+#[test]
+fn a_spawners_place_at_start_is_a_property_op_the_world_follows_by_row() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert!(s.place_at_start(spawner), "Yes by default");
+    s.set_place_at_start(&mut w, 1, spawner, false).unwrap();
+    assert!(!s.place_at_start(spawner));
+    assert_eq!(w.calls, [Call::PlaceAtStart(0, true)]);
+    s.set_place_at_start(&mut w, 2, spawner, false).unwrap();
+    assert_eq!(w.calls.len(), 1, "the same answer writes nothing");
+    // Yes is a clear: the world places the item again.
+    s.set_place_at_start(&mut w, 3, spawner, true).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::PlaceAtStart(0, false)));
+    assert!(s.document().ops.iter().any(|op| matches!(
+        op.edit,
+        Edit::Entry(EntryOp::Property { property: forge_doc::Property::PlaceAtStart(None), .. })
+    )));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::PlaceAtStart(0, true)));
+    assert_eq!(
+        s.set_place_at_start(&mut w, 5, weapon(0), false).unwrap_err(),
+        "This object has no place at start."
+    );
+}

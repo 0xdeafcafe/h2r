@@ -34,6 +34,7 @@ fn manager_wire(stats: Vec<(u32, arm::Stats)>) -> Manager {
                     differed: s.differed,
                     declined: s.declined,
                     interrupted: s.interrupted,
+                    answered: s.answered,
                     first: s.first.map(|m| SegmentMismatch {
                         pc: format!("{:08x}", m.pc),
                         what: m.what,
@@ -140,6 +141,7 @@ mod tests {
             differed: 2,
             declined: 3,
             interrupted: 4,
+            answered: 5,
             first: Some(arm::Mismatch {
                 pc: 0x10124,
                 what: "eax".into(),
@@ -153,7 +155,7 @@ mod tests {
             serde_json::json!({
                 "switch": "impl.sim.native.anim",
                 "entries": { "00010100": {
-                    "matched": 7, "differed": 2, "declined": 3, "interrupted": 4,
+                    "matched": 7, "differed": 2, "declined": 3, "interrupted": 4, "answered": 5,
                     "first": {"pc": "00010124", "what": "eax", "plan": "1", "guest": "3"}
                 }}
             })

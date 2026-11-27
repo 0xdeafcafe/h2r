@@ -1357,12 +1357,13 @@ impl<S: Copy + Eq> ExternalBinding<S> {
         } else {
             self.colors.is_empty()
         };
+        // A colour-only pass binds its colour as a scratch depth: with no
+        // depth written either way, the depth the draw had bound is not one
+        // of its writes.
+        let colour_only = !writes_depth && self.surfaces.depth == color;
         same_color_write && self.depth_write == writes_depth
             && self.surfaces.color == color
-            && match depth {
-                Some(depth) => self.surfaces.depth == depth,
-                None => !writes_depth && self.surfaces.depth == color,
-            }
+            && (colour_only || depth == Some(self.surfaces.depth))
     }
 }
 

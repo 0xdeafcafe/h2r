@@ -7,7 +7,7 @@
 //! Where a source has no counter for a field the field is 0:
 //! * physics and collision count `matched` and `mismatched` only, so
 //!   `checked` is their sum, and `answered` is 0;
-//! * `anim.manager` reports `differed` for `mismatched`, and `answered` 0;
+//! * `anim.manager` reports `differed` for `mismatched`;
 //! * the shadow ports (`seats`, `effects`) count `skipped` for `declined`
 //!   and `answered` 0.
 
@@ -118,7 +118,7 @@ fn anim_wire(arm: &walk::ArmStats, body: &walk::Stats, segments: Vec<(u32, manag
         checked: s.matched + s.differed,
         matched: s.matched,
         mismatched: s.differed,
-        answered: 0,
+        answered: s.answered,
         declined: s.declined,
     }));
     arms
@@ -238,12 +238,13 @@ mod tests {
             matched: 5,
             differed: 1,
             declined: 2,
+            answered: 9,
             ..Default::default()
         };
         let arms = anim_wire(&graph, &body, vec![(0x10100, seg)]);
         assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (4, 3, 2));
         assert_eq!(arms[1].name, "anim.manager.00010100");
-        assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined), (6, 1, 2));
+        assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined, arms[1].answered), (6, 1, 2, 9));
         let mut stats = world::Stats::default();
         stats.vector.matched = 2;
         stats.ray.mismatched = 1;

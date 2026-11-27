@@ -6,6 +6,26 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
 
+| Producer | Guest entry | Native admission |
+|---|---|---|
+| Particles, beams | `0x002243c0` via emitter `0x0023ed30` | Four-corner quad, direct and at publication |
+| Contrails | dynamic entry `0x0004b220`, builder `0x00042cf0` | Completed triangle strip |
+| Effect quad | `0x00052040`, builder `0x00052020` | Four-vertex strip, fan or quad |
+| Light volumes (`MGS2`), trails (`tdtl`) | `0x0004f010`, `0x000508d0` via `0x0004f7e0` | Four-vertex billboard fan |
+| Weather | `0x00037a60`, `0x000391f0` | Quad strip, line lists (points refused) |
+| Material strips | `0x00244610`, `0x002be650` via `0x0019f680` | Completed triangle strip |
+| Colour flare fans | `native_flares.rs` | Six fan sites |
+| Lens flare visibility | `0x0002e540` | Counted fan (query) |
+
+```mermaid
+flowchart LR
+  G[guest builds geometry, runs every property and builder] --> H[hook captures the completed packet]
+  H --> A{DrawAdmission: declaration, shader, state proven?}
+  A -- yes --> R[reserve both copies, record one range each]
+  R -- both record --> N[native draw replaces the packet]
+  R -- a copy refuses --> D[D3D draws the packet]
+  A -- no --> D
+```
 
 The device prints one `native-particles` refusal summary per 100 presents
 with activity. Counts are grouped by producer and reason for admission
@@ -40,11 +60,13 @@ Code evidence from the owner's executable, inspected with `h2 disasm`:
 
 `native_render::particles::read_emission` reads the helper inputs without
 writing guest memory. The feature's context-only hook always returns
-Continue. Keeping the helper running preserves allocator failure behavior,
+Continue.
+
+Keeping the helper running preserves allocator failure behaviour,
 push-buffer put pointer, shader state and the last attribute values that a
 later native or D3D draw inherits. The adapter replaces only the captured
 primitive after those effects have occurred. The stage saves submission
-work only; it does not remove the per-particle property evaluation.
+work only, not the per-particle property evaluation.
 
 
 ### Contrails and other effects
@@ -83,31 +105,40 @@ work only; it does not remove the per-particle property evaluation.
 `boot::native_particles_glue::install(&device)` installs a concrete
 `ImmediateAdmission` host and `DrawAdmission` implementation. With the switch off it installs neither, which avoids extra D3D snapshot work.
 
-The original six hooks run with the walks disabled and use no Rust continuation:
-particle entry, publication (`0x0023ef77`) and epilogue (`0x0023ef79`), and
-dynamic entry, post-builder/pre-publication (`0x0004b28c`) and epilogue
-(`0x0004b2a3`). At entry the decoder captures the producer inputs. Before
-publication, the adapter reads the completed dynamic bytes and drains
-only previously published commands, with no admission active. It then
-arms exactly one packet. The epilogue drains that published packet and
-unconditionally clears the scope. Allocation failure publishes nothing
-and is cancelled. A mismatched first draw consumes the scope too: a later
-identical quad cannot become owned. Pending interrupt callbacks remain
-queued and refuse the scope. No shared sorted dispatcher is modified.
+The original six hooks run with the walks disabled and use no Rust continuation.
+
+| Producer | Entry | Publication | Epilogue |
+|---|---|---|---|
+| Particle | entry | `0x0023ef77` | `0x0023ef79` |
+| Dynamic | entry | post-builder, pre-publication `0x0004b28c` | `0x0004b2a3` |
+
+At entry the decoder captures the producer inputs. Before publication, the
+adapter reads the completed dynamic bytes and drains only previously
+published commands, with no admission active. It then arms exactly one
+packet. The epilogue drains that published packet and unconditionally
+clears the scope.
+
+- Allocation failure publishes nothing and is cancelled.
+- A mismatched first draw consumes the scope too: a later identical quad cannot become owned.
+- Pending interrupt callbacks remain queued and refuse the scope.
+- No shared sorted dispatcher is modified.
 
 `DrawSnapshot::draw` supplies the actual declaration, streams, defaults,
 shaders, constants, state and clipping. The direct particle path requires
-bitwise agreement with the independent emission decoder. The publication
-path can use the live declaration and carried defaults when the packet
-belongs to the emitter and its full corner bytes match. Generated geometry
-must agree byte-for-byte with the completed callback output, and its
-topology, count and declaration must agree independently.
+bitwise agreement with the independent emission decoder.
+
+The publication path can use the live declaration and carried defaults
+when the packet belongs to the emitter and its full corner bytes match.
+Generated geometry must agree byte-for-byte with the completed callback
+output, and its topology, count and declaration must agree independently.
 
 A small pure helper in `d3d::nv2a::resolved` uses the existing translator's
 program-key derivation and state rules for uniforms and samplers. It keeps
 the final-combiner latch, inherited defaults, fog, alpha test, signed
 channels, mip bias, W clipping and offset, stipple and per-copy window
-shift. W clipping remains enabled even when the fragment does not write
+shift.
+
+W clipping remains enabled even when the fragment does not write
 depth. Combiner constants are uniforms, not pipeline-cache keys. Neither
 this helper nor the native renderer writes the shared upload ring.
 
@@ -146,7 +177,7 @@ Explicit assumptions and limits:
   still come from its own snapshot. No stale per-view matrices are cached.
 - Only programmable vertex shaders, one scissor rectangle, a depth-backed
   target and the researched vertex declarations are admitted. Shadow
-  sampling, glyph filtering, unknown shader behavior and missing sampled
+  sampling, glyph filtering, unknown shader behaviour and missing sampled
   stages refuse. Only the dedicated flare visibility boundary admits a
   counted draw. Integer uniform render scale and
   single-sample attachments are the handoff/backend contract here.
@@ -232,11 +263,13 @@ replayed target on both the native and fallback paths.
 ### Additional immediate effect leaves
 
 The adapter also owns narrowly scoped immediate draws. These use the same
-`DrawAdmission` and two-copy reservation as particles. On each leaf's END
-boundary it drains previous published work with no owner, arms one draw,
-then drains/cancels at the next instruction. It never skips the leaf or its
-parent. For the two shared billboard emitters the saved return address must
-also match a researched caller; another caller gives `UnownedCaller`.
+`DrawAdmission` and two-copy reservation as particles.
+
+On each leaf's END boundary it drains previous published work with no
+owner, arms one draw, then drains or cancels at the next instruction. It
+never skips the leaf or its parent. For the two shared billboard emitters
+the saved return address must also match a researched caller; another
+caller gives `UnownedCaller`.
 
 | Producer | Researched path | Admission |
 | --- | --- | --- |
@@ -247,24 +280,29 @@ also match a researched caller; another caller gives `UnownedCaller`.
 | Weather particle points | Same helper, resolved PointList | `WeatherPointRasterization`: point size/expansion is not represented by this renderer |
 
 Boundary pairs (before END / after END) are `0x00048497/0x0004849d`,
-`0x00048ae5/0x00048aeb`, and `0x00038336/0x00038349`. The weather
-layer's End call (`0x00038342`) is also the return of the last vertex
-call, where a return resumes the caller's generated code without a hook,
-so its BEGIN is that call's first argument push (`0x00038336`). The
-callee pops its four arguments, so ESP there equals ESP at End; the strip
-is still open when the arm drains. Weather particles
-write END inline: observe before its put publication at `0x000396f7`, then
-finish at `0x000396f9`. Early-out paths never arm. The saved-caller stack
-offsets are `+0x24` and `+0x30` for the two billboard emitters.
+`0x00048ae5/0x00048aeb`, and `0x00038336/0x00038349`. The saved-caller
+stack offsets are `+0x24` and `+0x30` for the two billboard emitters.
+
+The weather layer's End call (`0x00038342`) is also the return of the last
+vertex call, where a return resumes the caller's generated code without a
+hook, so its BEGIN is that call's first argument push (`0x00038336`). The
+callee pops its four arguments, so ESP there equals ESP at End and the
+strip is still open when the arm drains.
+
+Weather particles write END inline: observe before its put publication at
+`0x000396f7`, then finish at `0x000396f9`. Early-out paths never arm.
 
 Admission requires a single 256-byte immediate stream with unique Float4
 attributes at `16 * register`, matching the resolved shader input mask,
 and position register zero present. `ImmediateDeclaration` and
-`ImmediateGeometry` identify malformed/unproved inputs. Written bits are
-copied exactly; unwritten attributes come from the resolved vertex defaults.
-The weather quad-strip winding is `(0,1,3),(0,3,2)`. Line primitives use the
-same shader/state translation as D3D and cannot enter the triangle pipeline.
-All shader, texture, target, scissor and state preflight restrictions above
+`ImmediateGeometry` identify malformed or unproved inputs.
+
+Written bits are copied exactly; unwritten attributes come from the
+resolved vertex defaults. The weather quad-strip winding is
+`(0,1,3),(0,3,2)`.
+
+Line primitives use the same shader and state translation as D3D and
+cannot enter the triangle pipeline. All shader, texture, target, scissor and state preflight restrictions above
 still apply. Failure on either copy retains the original draw.
 
 This assumes the resolved immediate stream is the authoritative output of
@@ -297,45 +335,58 @@ is unchanged; each owned leaf executes at its original position.
 | Wrapper `0x00048e40` | Producer `0x00047870`; sole statically found caller `0x001160b3` supplies callback `0x0024dc50`, a no-op return: `NoGeometryCallback`. The wrapper's material changes still run. A different runtime callback gives `UnownedMaterialCallback`. |
 | Four-vertex builder `0x00052020` | Called through `0x00052040` and the existing dynamic-upload adapter; covered without assigning an unsupported effect-family label. |
 
-The material strip's publication/finish pair is
-`0x0019fc3e/0x0019fc40`. At publication, saved caller at stack +0x40 must
-be `0x002445fa` or `0x002be647`. Require a resolved triangle strip with an
-even count of at least four vertices and the same validated immediate
-register declaration as billboards. The guest still publishes END and
-restores its render state afterwards. Other callers give `UnownedCaller`.
+The material strip's publication/finish pair is `0x0019fc3e/0x0019fc40`.
+At publication, the saved caller at stack +0x40 must be `0x002445fa` or
+`0x002be647`. The draw must be a resolved triangle strip with an even
+count of at least four vertices and the same validated immediate register
+declaration as billboards.
+
+The guest still publishes END and restores its
+render state afterwards. Other callers give `UnownedCaller`.
+
+#### Lens flares
 
 Lens flares use a separate queue: `0x0002dba0` → `0x000209b0`, populated
 from sky, object attachments, lights and effect parts. Pass `0x0002dd30`
 invokes callback `0x0002e540` through `0x00020bb0` with query work enabled.
 The native flare hook arms one read-only, position-only fan at END
 (`0x0002e9b6`) and disarms at `0x0002e9c1`, one instruction past End's
-return `0x0002e9bb`: no hook runs at a call's continuation. The queue helper brackets it with
-the guest's existing z-pass clear and report. The ordered fan carries a
-count pipeline using its actual scissor, vertex program and depth/stencil
-state. W-buffered fans use the count entry's W-depth output. The backend
-sums on the copy that owns the query and scales the count to guest pixels.
-The report stays ordered with earlier draws and retains the guest's
-ticket and polling lifecycle. If the fan, targets or count pipeline fail
-preparation, the original packet adds its samples through the same
-counter.
+return `0x0002e9bb`: no hook runs at a call's continuation.
+
+The queue helper brackets the fan with the guest's existing z-pass clear
+and report. The ordered fan carries a count pipeline using its actual
+scissor, vertex program and depth/stencil state. W-buffered fans use the
+count entry's W-depth output.
+
+The backend sums on the copy that owns the query and scales the count to
+guest pixels. The report stays ordered with earlier draws and retains the
+guest's ticket and polling lifecycle. If the fan, targets or count
+pipeline fail preparation, the original packet adds its samples through
+the same counter.
 
 Reflection pass `0x0002df00` invokes `0x0002e9e0` with counting disabled.
 Its visible billboards go to the native flare stage through the shared
 leaf at `0x000480a0` when the saved caller is `0x0002f24c`.
 
-Weather is a BSP weather-palette path, not one of these effect sort-list
+#### Weather
+
+Weather is a BSP weather-palette path, not one of the effect sort-list
 handlers. The palette is `sbsp+0x84`, stride 0x88, weather datum +0x24;
-cluster weather selection is +0x76. The loop around `0x00036e32` updates
-weat block +8/+12 (stride 0x3a8) through `0x00037260`, then draws it at
-`0x00037a60`. Block +0/+4 (stride 0x8c) updates through `0x00038450` and
-draws at `0x000391f0`. All updates, exclusions and cluster selection stay
-in the guest. That latter draw selects PointList or LineList from its mode
-field (+0x6c); admission uses the actual resolved primitive. Rain/snow
-names are not a reliable mode decoder: the repository's Live weather
-viewer infers those names from palette/tag labels. Admission therefore covers
-rain/snow **line draws**, while any rain/snow **point draws** explicitly
-refuse with `WeatherPointRasterization`. It makes no claim that all snow
-is one mode or all rain another.
+cluster weather selection is +0x76. All updates, exclusions and cluster
+selection stay in the guest.
+
+| Block | Stride | Update | Draw |
+|---|---|---|---|
+| +8/+12 (layer) | 0x3a8 | `0x00037260`, in the loop around `0x00036e32` | `0x00037a60` |
+| +0/+4 (particles) | 0x8c | `0x00038450` | `0x000391f0` |
+
+The particle draw selects PointList or LineList from its mode field
+(+0x6c); admission uses the actual resolved primitive. Rain and snow names
+are not a reliable mode decoder: the repository's Live weather viewer
+infers them from palette and tag labels. Admission therefore covers
+rain and snow **line draws**, while any rain or snow **point draws**
+refuse with `WeatherPointRasterization`. Nothing assumes all snow is one
+mode or all rain another.
 
 Other named admission refusals are `MissingColorTarget`,
 `MissingDepthTarget`, `UnsupportedClip`, `GlyphFiltering`,
@@ -346,29 +397,31 @@ material. Diagnostics are bounded and are not replacement receipts.
 
 ### Walking completed emission inputs
 
-The particle walk tries the direct emitter at
-`0x0023ed5c` after the allocator succeeds. The native issue uses the live
-declaration and the same carried attributes as the inline quad. A
-successful reservation bypasses the emitter's guest packet and preserves
-the final default registers. A refused reservation restores the
-defaults and the guest emits the quad in place. Behind the render thread
-the reservation is queued with the resolved quad as its D3D packet and
-succeeds once queued: the render thread records the particle or draws
-that packet ([render-thread.md](render-thread.md), "Keeping guest-visible
-semantics exact").
+The particle walk tries the direct emitter at `0x0023ed5c` after the
+allocator succeeds. The native issue uses the live declaration and the
+same carried attributes as the inline quad. A successful reservation
+bypasses the emitter's guest packet and preserves the final default
+registers. A refused reservation restores the defaults and the guest
+emits the quad in place.
+
+Behind the render thread the reservation is queued with the resolved quad
+as its D3D packet and succeeds once queued: the render thread records the
+particle or draws that packet ([render-thread.md](render-thread.md),
+"Keeping guest-visible semantics exact").
 
 A sealed frame retains eligible particle replacements beside the guest
 packet. It resolves the sampled textures against the replay's targets and
 updates verified view constants on paced frames.
 
-The effects walk admits the effect quad at
-`0x0004b252` from the builder's source and contrails at `0x0004b28c`
-from the builder's output. The return frame and caller arguments must
-still describe the same dynamic call. The quad's known builder only
-copies the four vertices. Contrails run their original builder before
-native issue. The effect leaves and query paths keep their documented
-admission and fallback boundaries. The effect quad, contrails and the
-guest-issued leaves are queued behind the render thread the same way.
+The effects walk admits the effect quad at `0x0004b252` from the
+builder's source and contrails at `0x0004b28c` from the builder's output.
+The return frame and caller arguments must still describe the same
+dynamic call. The quad's known builder only copies the four vertices;
+contrails run their original builder before native issue.
+
+The effect leaves and query paths keep their documented admission and
+fallback boundaries. The effect quad, contrails and the guest-issued
+leaves are queued behind the render thread the same way.
 
 ## Rules and limits
 

@@ -242,7 +242,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --live-server URL, or --live-local for a service in
                           the process; offline without one; docs/live/live.md)
   rules, variants, maps, tags, tag, firefight, map testbuild, testmap,
-  forge build|check, package check|build, collision, superbounce, hud, object,
+  forge build|check, package check|build, collision, superbounce, siege, hud, object,
   strings, effect, lights, shader, hs, extract-shaders
                           the offline map, tag and script tools: h2 runs
                           h2-tools beside it with the same words (`h2-tools

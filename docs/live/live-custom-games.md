@@ -293,7 +293,7 @@ Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
 asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
 `0x230e98`).
 
-The list hook makes it eight rows (seven without the co-op row), and the
+The list hook makes it eight rows (seven without the co-op row), all shown at once, and the
 row hooks show them in this order (`custom_games::Menu::layout`):
 
 | Row | Shows | Text | Press | Pane |
@@ -331,14 +331,14 @@ own, made the way the Controls list's added rows are (`speaker_row`):
   one more 0x80-byte item in our memory: zeroed, the item constructor
   (`0x24abae`, the same one the handler uses), the local player
   (`0x22ee92`). It links the items after the four (`0x22eb18`): three
-  (`custom_games::MAX_EXTRA_ITEMS`), so seven show and the list scrolls
-  to the other rows, with retail's own scroll arrows;
+  (`custom_games::MAX_EXTRA_ITEMS`, room for four), so the whole menu
+  shows; a longer one would scroll, with retail's own scroll arrows;
 - one set per open screen (8 slots), rebuilt when a handler is new, and
   moved back to the end when the original re-links the four.
 
-The tag's list already shows up to seven items (`+6` of the list block),
-so its visible count need not change. The tag copy raises it to seven if
-it were lower.
+The tag's list shows four items (`+6` of the list block). The tag copy
+raises it to the menu's row count, up to eight
+(`custom_games::VISIBLE_ITEMS`).
 
 **Positions.** `0x24bc12` lays the children out from the list's anchor,
 each one item height below the last (it places each item's widgets with
@@ -356,15 +356,15 @@ rows stand closer together:
   handler only, after the original lays the rows out, `repitch` moves row
   *i*'s widgets up by *i* × (43 − pitch). The first row stays put.
 - The pitch (`custom_games::pitch`) fits the rows into the room the
-  retail four rows and the gap under them take, keeping at least 5 units
-  above the hint block: 43 for four rows, 36 for five, 29 for six, 24
-  for seven. The skin's text is 20 units tall, so it fits in a row of 24.
-  The room is 145 units from the first row's origin to the last's; eight
-  rows at once would need 20 apart and nine 18, under
-  `custom_games::MIN_PITCH` (22), so seven show and the rest scroll.
+  retail four rows and the gap under them take, keeping at least 2 units
+  above the hint block: 43 for four rows, 37 for five, 29 for six, 24
+  for seven, 21 for eight. The skin's text is 20 units tall, so it fits in
+  a row of 21. The room is 148 units from the first row's origin to the
+  last's; nine rows at once would need 18 apart, under
+  `custom_games::MIN_PITCH` (21), so eight show and the rest scroll.
 - The screen-tag hook (`0x22f871`) gives the tag copies of its panes
   (`custom_games::extend_tag`). They move nothing. They raise the list's
-  visible count to seven, and add a pane per row of ours whichever rows
+  visible count to the row count (up to eight), and add a pane per row of ours whichever rows
   are on (nine panes, `custom_games::ALL_PANES`): a copy of the Custom
   Game pane, its picture included, with our help text in place of the
   one text that differs between panes. The Content Download pane, which
@@ -462,8 +462,8 @@ With Live on, the **Co-op Campaign** row sits directly above Custom Games,
 with its own pane ([live-coop.md](live-coop.md) section 10).
 `H2_NO_COOP_ROW=1` takes it out (eight rows).
 
-With the mod repository on (Live and the map gate), Mods reads "Mods" or
-"Mods (N new)", its pane's help text is the repository's, and it opens the
+With the mod repository on (Live and the map gate), Mods reads "Mod Downloader" or
+"Mod Downloader (N new)", its pane's help text is the repository's, and it opens the
 Mods screen instead of the Map Pack dialog ([maps.md](../game/maps.md) §5,
 "Mod downloads (in game)").
 

@@ -479,6 +479,17 @@ pub(super) struct Session {
     pad_motion: Drive,
     mouse_look: [f32; 2],
     mouse_zoom: f32,
+    /// What the viewer last drove the film with: the page's legend shows
+    /// its buttons.
+    pub last_device: Device,
+}
+
+/// The kind of input the playback page's legend shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Device {
+    #[default]
+    Pad,
+    Keyboard,
 }
 
 impl Session {
@@ -1052,6 +1063,9 @@ impl Session {
         if self.track.is_none() {
             return false;
         }
+        if down {
+            self.last_device = Device::Keyboard;
+        }
         if !down || repeat || !self.held_keys.insert(key) {
             return true;
         }
@@ -1288,6 +1302,13 @@ struct Drive {
 }
 
 impl Drive {
+    fn moving(&self) -> bool {
+        self.strafe != 0.0
+            || self.forward != 0.0
+            || self.rise != 0.0
+            || self.look != [0.0; 2]
+    }
+
     fn pad(state: &HostPadState) -> Self {
         let axis = |v: f32| {
             if v.is_finite() && v.abs() > 0.18 {
@@ -1341,17 +1362,24 @@ impl PadGate for Gate {
         let leaving = self.active && !active;
         self.active = active;
         self.pads.retain(|k, _| pads.iter().any(|p| p.key == *k));
+        // Every pad drives the film, the desktop's player one too: it is the
+        // first physical pad merged with the keyboard, reported as a pad
+        // that is not physical, and the Theater's own keys never reach it.
         session.pad_motion = if active && !entering && session.menu.is_none() {
             pads.iter()
-                .find(|p| p.pad.physical)
-                .map_or_else(Drive::default, |p| Drive::pad(&p.pad.state))
+                .map(|p| Drive::pad(&p.pad.state))
+                .find(|d| d.moving())
+                .unwrap_or_default()
         } else {
             Drive::default()
         };
-        for pad in pads.iter_mut().filter(|p| p.pad.physical) {
+        for pad in pads.iter_mut() {
             let track = self.pads.entry(pad.key).or_default();
             let state = &mut pad.pad.state;
-            let buttons = state.buttons;
+            let buttons = pressed(state);
+            if active && (buttons.bits() & !track.buttons.bits() != 0 || Drive::pad(state).moving()) {
+                session.last_device = Device::Pad;
+            }
             let triggers = (state.left_trigger >= 0.35, state.right_trigger >= 0.35);
             if active && !entering && session.menu.is_some() {
                 for button in [
@@ -1422,6 +1450,31 @@ impl PadGate for Gate {
             next.filter(pads);
         }
     }
+}
+
+/// The buttons down on `state`: its digital ones and the face buttons and
+/// bumpers a pad reports as pressures (the desktop's merged player one
+/// reports those only as pressures).
+fn pressed(state: &HostPadState) -> HostButtons {
+    let mut buttons = state.buttons;
+    if let Some(pressures) = state.analog_buttons {
+        for (button, pressure) in [
+            HostButton::South,
+            HostButton::East,
+            HostButton::West,
+            HostButton::North,
+            HostButton::RightBumper,
+            HostButton::LeftBumper,
+        ]
+        .into_iter()
+        .zip(pressures)
+        {
+            if pressure >= 0.25 {
+                buttons.set(button, true);
+            }
+        }
+    }
+    buttons
 }
 
 fn neutral(state: &mut HostPadState) {
@@ -1672,6 +1725,79 @@ mod tests {
             );
             assert_eq!(keyboard.spec(&t, None), controller.spec(&t, None));
         }
+    }
+
+    /// The desktop's player one is the first pad merged with the keyboard,
+    /// reported as a pad that is not physical, with A/B/X/Y and the bumpers
+    /// as pressures: its presses drive the film, the guest sees it neutral,
+    /// and the legend follows it.
+    #[test]
+    fn the_merged_player_one_pad_drives_the_film() {
+        use input::host::HostPad;
+        let theater = super::super::Theater::default();
+        {
+            let mut session = theater.session();
+            let mut track = sample_track();
+            track.players = ["A", "B"]
+                .map(|name| Player {
+                    name: name.into(),
+                    ..Player::default()
+                })
+                .to_vec();
+            session.track = Some(track);
+            session.ready = true;
+            session.last_device = Device::Keyboard;
+        }
+        let mut gate = Gate::new(theater.clone(), None);
+        let pad = |pressures: [f32; 6], buttons: &[HostButton]| {
+            let mut state = HostPadState {
+                analog_buttons: Some(pressures),
+                ..HostPadState::default()
+            };
+            for button in buttons {
+                state.buttons.set(*button, true);
+            }
+            vec![GatedPad {
+                key: (0, HostPadId(0)),
+                pad: HostPad {
+                    id: HostPadId(0),
+                    name: "Player one (pad + keyboard/mouse)".into(),
+                    state,
+                    physical: false,
+                    supports_rumble: true,
+                },
+            }]
+        };
+        let idle = [0.0; 6];
+        // The first sync takes the pads; nothing fires on it.
+        gate.filter(&mut pad(idle, &[]));
+        assert_eq!(theater.session().last_device, Device::Keyboard);
+
+        // RB (the sixth pressure is LB, the fifth RB): the next player.
+        let mut pads = pad([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[]);
+        gate.filter(&mut pads);
+        assert_eq!(pads[0].pad.state.analog_buttons, None, "the guest sees a neutral pad");
+        {
+            let session = theater.session();
+            assert_eq!(session.track.as_ref().unwrap().selected_player, 1);
+            assert_eq!(session.last_device, Device::Pad);
+        }
+        // Held, it does not fire again; LB goes back.
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[]));
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 0.0, 0.0, 1.0], &[]));
+        assert_eq!(theater.session().track.as_ref().unwrap().selected_player, 0);
+
+        // Y: the next camera.
+        let camera = theater.session().track.as_ref().unwrap().camera;
+        gate.filter(&mut pad([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], &[]));
+        assert_ne!(theater.session().track.as_ref().unwrap().camera, camera);
+
+        // A key moves the legend back to the keyboard; Start opens the menu.
+        theater.session().key(Key::Camera, true, false);
+        assert_eq!(theater.session().last_device, Device::Keyboard);
+        gate.filter(&mut pad(idle, &[HostButton::Start]));
+        assert!(theater.session().menu.is_some());
+        assert_eq!(theater.session().last_device, Device::Pad);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! `ScaledBackend` (docs/graphics/high-resolution.md, phase 1): a reference backend
+//! `ScaledBackend` (docs/graphics/high-resolution.md, "Exact mode: reference and view"): a reference backend
 //! at the guest's size answers the guest, a view backend renders the frame
 //! buffers at a multiple of it. One synthetic frame (render-to-texture with
 //! a write-back, scissored and rectangle-cleared draws, a textured draw over
@@ -483,8 +483,8 @@ fn rejects_scales_outside_one_to_six() {
     }
 }
 
-// Phase 2: what the view used to leave out (docs/graphics/high-resolution.md,
-// "Phase 2 as built"). Each scene is drawn by a plain backend and by the
+// Phase 2: what the view used to leave out (docs/graphics/high-resolution.md, "Exact mode: reference and view").
+// Each scene is drawn by a plain backend and by the
 // wrapper; the reference must be the plain image and the view, box-filtered
 // to the guest size, the reference. Every edge here is on a whole pixel, so
 // the match is exact.

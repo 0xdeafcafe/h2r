@@ -222,7 +222,7 @@ block's objects have a group (`Group::of_block`).
   Territory with Territories, and Siege site always. **Edit area** in
   Properties opens the draft circle, box, sphere or path
   editor on these goals, a flag return, a bomb goal and a siege goal
-  ([gametype-markers.md](gametype-markers.md#forge)).
+  ([gametype-markers.md](gametype-markers-drawing.md#forge)).
 - **Kit sessions.** Spawns, teleporters and item entries are
   rows of scenario blocks that cannot grow in a loaded map. A game
   started from the lobby in Forge mode runs on the base map's empty draft
@@ -274,8 +274,9 @@ opens a picker; an action row acts and closes.
 | item entry | Respawn time | the entry's respawn time (`+0x0e`, **E**, [scenario-editor.md](../editor/scenario-editor.md) section 2) | Live, from the next spawn | built (P3) |
 | item entry | Return time | the entry's abandon limit (`+0x10`, **E**, [scenario-editor.md](../editor/scenario-editor.md) section 2), typed as the engine counts it | Live | built (P3) |
 | item entry | Game types | the entry's four game-type slots | Live, from the next spawn | built (P3) |
-| item entry | Place at start | none: the reset spawns every matching entry at the start whatever its respawn mode ([forge-map-variants.md](forge-map-variants.md), "Fields by kind"), so there is no row | | left out |
-| item entry of a collection | Spare clips | the document's `spare_clips` property; the game fills each weapon the entry makes, and the one it has out (`World::spare_clips`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn | built (D5) |
+| item entry | Place at start | the document's `place_at_start` property: Yes, No; No holds the item back until its respawn time after each round reset (`World::place_at_start`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next round | built (D5) |
+| item entry whose collection holds a weapon | Spare clips | the document's `spare_clips` property; the game fills each weapon the entry makes, and the one it has out (`World::spare_clips`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn; a built variant's match from the Forge record | built (D5) |
+| spawn | Weight | the document's `weight` property: Low, Normal, High; the game adds its bias to the spawn chooser's weight for the location (`World::spawn_weight`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn; a built variant's match from the Forge record | built (D5) |
 | goal, spawn | Team | the flag's or location's team | built | P2 |
 | goal | Role | the netgame flag's type | built | P2 |
 | goal | Order | the flag's identifier, for hills and territories | built | P2 |
@@ -288,11 +289,15 @@ opens a picker; an action row acts and closes.
 | group member | Group, Lock group, Pivot, Ungroup | `Forge::GroupLock`, `Forge::Ungroup`, `Forge::Group` | none | built |
 | light | Colour, Size, Brightness | fields of the light's generated tag | Live | P6 |
 
+- **In a match.** A built variant carries the three properties the game
+  acts on in its Forge record
+  ([forge-map-variants.md](forge-map-variants.md), "The Forge record"),
+  so a match with no session plays them as the session did.
 - **The map's own entries.** Every row applies to an entry the base
   map has as it does to one the session added, through ops that name
   the entry by identity
   ([forge-map-variants.md](forge-map-variants.md), "The ops"). The rows
-  by kind, with Game types, Spare clips, Weight and Restore original,
+  by kind, with Game types, Spare clips, Weight, Place at start and Restore original,
   and the doc the page is built from, are in
   [forge-map-variants-ui.md](forge-map-variants-ui.md), "The Properties
   page"; where the two tables differ on a row that is not built, that
@@ -307,8 +312,8 @@ opens a picker; an action row acts and closes.
   (**C**). The row matters only for kinds that do simulate.
 - The built page has Coordinates... and Heading for any object, Team for
   starting points and goals, Role and Order for goals, and Respawn time,
-  Return time, Game types, Team and Spare clips (the document's properties) for item spawners. Heading is Coordinates' Yaw; the rotation step is the
-  Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Spare clips, Role
+  Return time, Game types, Team, Spare clips and Place at start (the document's properties) for item spawners, and Weight for starting points. Heading is Coordinates' Yaw; the rotation step is the
+  Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Spare clips, Weight, Place at start, Role
   and Order open pickers; Respawn time and Return time open the game's
   keyboard. The keyboard sends the `return time` property to
   `Session::set_field`, which writes `abandon limit`. A spawner whose

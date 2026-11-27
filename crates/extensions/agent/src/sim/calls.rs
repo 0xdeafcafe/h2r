@@ -225,6 +225,16 @@ pub enum ForgeStep {
     /// table (`forge::spare_clips`), which fills each weapon the entry
     /// makes, and the weapon it has out now.
     SpareClips { index: u32, clips: Option<u8> },
+    /// Give starting location `index` a weight, or Normal: the game's table
+    /// (`forge::spawn_weight`), which biases the spawn chooser.
+    SpawnWeight {
+        index: u32,
+        weight: Option<forge_doc::SpawnWeight>,
+    },
+    /// Hold netgame item entry `index` back at a round's start, or place
+    /// it: the game's table (`forge::place_at_start`), which the next round
+    /// reset follows.
+    PlaceAtStart { index: u32, held: bool },
     /// An edit of one of the map's own scenario entries (`forge::base`),
     /// after the other steps: checked with the batch, then done.
     Base(crate::forge::base::BaseStep),
@@ -252,13 +262,22 @@ fn teleporter_flag(m: &dyn GuestMemory, scenario: u32, flag: u32) -> Result<u32,
 
 /// Checks that the loaded scenario has netgame item entry `index`.
 fn item_entry(m: &dyn GuestMemory, scenario: u32, index: u32) -> Result<(), String> {
-    use map::scenario_layout::{BlockKind, block};
-    let def = block(BlockKind::NetgameEquipment);
+    entry_of(m, scenario, map::scenario_layout::BlockKind::NetgameEquipment, index)
+}
+
+/// Checks that the loaded scenario's `kind` block has entry `index`.
+fn entry_of(
+    m: &dyn GuestMemory,
+    scenario: u32,
+    kind: map::scenario_layout::BlockKind,
+    index: u32,
+) -> Result<(), String> {
+    let def = map::scenario_layout::block(kind);
     let count = m
         .u32(scenario + def.offset)
         .map_err(|e| format!("guest memory at {:#x} faulted", e.addr))?;
     if index >= count {
-        return Err(format!("the scenario has no netgame item {index}"));
+        return Err(format!("the scenario has no {} {index}", def.label.to_lowercase()));
     }
     Ok(())
 }
@@ -1105,7 +1124,15 @@ async fn run_forge(
                 }
                 (None, None)
             }
-            ForgeStep::SpareClips { index, .. } => {
+            ForgeStep::SpawnWeight { index, .. } => {
+                if let Err(e) = cx.read(|m| {
+                    entry_of(m, guard.scenario, map::scenario_layout::BlockKind::StartingLocations, *index)
+                }) {
+                    return Ok(Err(super::invalid(e)));
+                }
+                (None, None)
+            }
+            ForgeStep::SpareClips { index, .. } | ForgeStep::PlaceAtStart { index, .. } => {
                 if let Err(e) = cx.read(|m| item_entry(m, guard.scenario, *index)) {
                     return Ok(Err(super::invalid(e)));
                 }
@@ -1212,6 +1239,12 @@ async fn run_forge(
     // clips; then the one it has out. A spawner with none keeps the reserve
     // its weapon already has.
     for step in steps {
+        if let ForgeStep::SpawnWeight { index, weight } = *step {
+            crate::forge::spawn_weight::set(index, weight);
+        }
+        if let ForgeStep::PlaceAtStart { index, held } = *step {
+            crate::forge::place_at_start::set(index, held);
+        }
         if let ForgeStep::SpareClips { index, clips } = *step {
             crate::forge::spare_clips::set(index, clips);
             if let Some(clips) = clips {

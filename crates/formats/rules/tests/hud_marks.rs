@@ -316,3 +316,59 @@ fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
     let other = Viewer { slot: Some(1), team: Some(1) };
     assert_eq!(view(&held, vm.ir(), other), view(vm.show(), vm.ir(), other));
 }
+
+/// The announcer lines (`announcer/<clip>`) the script has played, each
+/// with its audience, in order.
+fn said(g: &FakeGame) -> Vec<(String, u16)> {
+    g.sounds
+        .iter()
+        .filter_map(|s| Some((s.path.strip_prefix("announcer/")?.to_string(), s.audience)))
+        .collect()
+}
+
+#[test]
+fn siege_says_attack_and_defend_to_each_side_and_the_final_round() {
+    use rules::show::{EVERYONE, player};
+    // Round one of two: each side hears its own word, nobody a final round.
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("phase_time", 60)]);
+    assert_eq!(
+        said(&g),
+        [("attack".to_string(), player(0)), ("defend".to_string(), player(1))]
+    );
+    // The clock runs out: the defenders hold, the round is over for all.
+    ticks(&mut vm, &mut g, 2, 1900);
+    let at = said(&g);
+    assert!(at.contains(&("round-over".to_string(), EVERYONE)), "{at:?}");
+    // The second round of two is the final one, and the sides swap.
+    g.sounds.clear();
+    vm.begin_tick(2000);
+    assert_eq!(vm.fire(&mut g, Input::RoundStart), Fired::Ran);
+    assert_eq!(
+        said(&g),
+        [
+            ("final-round".to_string(), EVERYONE),
+            ("attack".to_string(), player(1)),
+            ("defend".to_string(), player(0)),
+        ]
+    );
+}
+
+#[test]
+fn siege_says_a_site_captured_the_round_over_and_each_sides_reinforcements() {
+    use rules::show::{EVERYONE, player};
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
+    g.inside.insert((0, 600));
+    ticks(&mut vm, &mut g, 2, 60);
+    let at = said(&g);
+    assert!(at.contains(&("site-captured".to_string(), EVERYONE)), "{at:?}");
+    // A defender dies: the side's wave lands after its time, with a line to
+    // that side alone.
+    g.players.get_mut(&1).unwrap().alive = false;
+    vm.fire(&mut g, Input::Death(1));
+    ticks(&mut vm, &mut g, 62, 400);
+    let at = said(&g);
+    assert!(at.contains(&("reinforcements".to_string(), player(1))), "{at:?}");
+    assert!(!at.contains(&("reinforcements".to_string(), player(0))), "{at:?}");
+}

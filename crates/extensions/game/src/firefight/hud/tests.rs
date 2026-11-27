@@ -712,6 +712,80 @@ fn a_rounds_skull_is_a_banner_from_the_blob() {
     assert_eq!(words, ["ROUND 3", "BLACK EYE ON", "WAVE 1"]);
 }
 
+/// Each Firefight event says its line: a wave starts, a wave is cleared,
+/// each skull that switches on, and all of them at once.
+#[test]
+fn each_event_says_its_announcer_line() {
+    let wave = |n| Mode { stage: Stage::Spawning, wave: n, ..sample_mode() };
+    let between = Mode { stage: Stage::Intermission, ..sample_mode() };
+    let say = |before: &Mode, after: &Mode| {
+        let events = banners::events(Some(before), after, 0, skull_name);
+        banners::lines(Some(before), after, 0, &events)
+    };
+    assert_eq!(say(&between, &wave(1)), ["new-wave"]);
+    let fighting = Mode { stage: Stage::Fighting, ..sample_mode() };
+    assert_eq!(say(&fighting, &between), ["wave-complete"]);
+    // The skull lines, one for each skull that switches on.
+    for (skull, clip) in [
+        (Skull::Assassins, "assassins-on"),
+        (Skull::Thunderstorm, "thunderstorm-on"),
+        (Skull::Famine, "famine-on"),
+        (Skull::Ghost, "ghost-on"),
+        (Skull::BlackEye, "black-eye-on"),
+        (Skull::Catch, "catch-on"),
+        (Skull::Mythic, "mythic-on"),
+        (Skull::Angry, "angry-on"),
+    ] {
+        let on = Mode { skulls: skull_mask(&[skull]), ..fighting.clone() };
+        assert_eq!(say(&fighting, &on), [clip], "{skull:?}");
+    }
+    // A skull with no clip is silent; the other session skulls have one.
+    assert_eq!(banners::skull_clip("Low Gravity"), None);
+    for name in ["Envy", "Grunt Birthday Party", "IWHBYD", "Blind", "Sputnik", "Iron", "Bandana"] {
+        assert!(banners::skull_clip(name).is_some(), "{name}");
+    }
+    // Every skull on at once: one All Skulls On for the tick, not eight.
+    let all = Mode { skulls: SKULL_BITS, ..fighting.clone() };
+    assert_eq!(say(&fighting, &all), ["all-skulls-on"]);
+    // The last skull to switch on completes the set.
+    let almost = Mode { skulls: SKULL_BITS & !skull_mask(&[Skull::Angry]), ..fighting.clone() };
+    assert_eq!(say(&almost, &all), ["all-skulls-on"]);
+    // The rest of a match: a set, a round and a bonus round end, lives are
+    // added, the last life, the skulls going off, and the game over.
+    let set_done = Mode { stage: Stage::Intermission, set: 1, round: 0, wave: 0, ..sample_mode() };
+    assert_eq!(say(&fighting, &set_done), ["set-complete"]);
+    let round_done = Mode { stage: Stage::Intermission, round: 1, wave: 0, ..sample_mode() };
+    assert_eq!(say(&fighting, &round_done), ["round-complete"]);
+    let bonus = Mode { bonus_left: 900, ..fighting.clone() };
+    assert_eq!(say(&fighting, &bonus), ["bonus-round"]);
+    let paid = Mode { lives: Lives::Shared(6), ..fighting.clone() };
+    assert_eq!(say(&bonus, &paid), ["bonus-round-complete", "lives-added"]);
+    let two = Mode { lives: Lives::Shared(2), ..fighting.clone() };
+    let one = Mode { lives: Lives::Shared(1), ..fighting.clone() };
+    assert_eq!(say(&two, &one), ["last-life"]);
+    assert_eq!(say(&one, &two), ["lives-added"]);
+    let on = Mode { skulls: skull_mask(&[Skull::Ghost, Skull::Famine]), ..fighting.clone() };
+    assert_eq!(say(&on, &fighting), ["skulls-off"]);
+    let swapped = Mode { skulls: skull_mask(&[Skull::Catch]), ..fighting.clone() };
+    assert_eq!(say(&on, &swapped), ["skulls-off", "catch-on"]);
+    let lost = Mode { stage: Stage::Lost, ..sample_mode() };
+    assert_eq!(say(&fighting, &lost), ["game-over"]);
+    // The first blob of a match says nothing: its skulls are the lobby's.
+    assert!(banners::lines(None, &on, 0, &[]).is_empty());
+    // Every clip is the announcer's own, and plays.
+    for id in [
+        "set-complete", "round-complete", "bonus-round", "bonus-round-complete",
+        "lives-added", "last-life", "game-over", "skulls-off",
+    ] {
+        assert!(crate::medal_announcer::clip_bytes(id).is_some(), "{id}");
+    }
+    // Every clip is stored as audio the announcer can play.
+    for id in ["new-wave", "wave-complete", "all-skulls-on"] {
+        let bytes = crate::medal_announcer::clip_bytes(id).unwrap();
+        assert!(crate::medal_announcer::parse_wav(bytes).is_ok(), "{id}");
+    }
+}
+
 /// The end of a won match is a banner that stays up, from the blob alone.
 #[test]
 fn a_won_match_ends_on_a_banner_that_stays() {
