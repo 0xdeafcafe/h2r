@@ -1,10 +1,11 @@
 //! Screen docs and retail edit files (docs/game/ui-in-maps.md).
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use content::package::Maps;
+use content::patch::{OverlayView, Reader};
 use game::ui_kit::{data, inject, retail_edits};
 use map::Map;
 use map::build::TagSet;
@@ -54,16 +55,50 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
     // An earlier screen edit can move or grow the template. Materialize the
     // current set, then pin that snapshot so the injected panes' references
     // still point into the same template blocks when the final map is laid out.
-    let (map, _) = cx
-        .set
-        .build()
+    let Some(base) = cx.base else {
+        let (map, _) = cx
+            .set
+            .build()
+            .map_err(|e| format!("laying out UI templates: {e}"))?;
+        let mut map = Map::from_reader(Cursor::new(map))
+            .map_err(|e| format!("reading UI templates: {e}"))?;
+        return pin_again(cx, &mut map, &plan, false);
+    };
+    // A streamed set is laid out over the file it was decomposed from and
+    // pinned again with its prefix left there; the snapshot is that file,
+    // as an overlay over the base (docs/runtime/storage.md).
+    let (file, _) = crate::onto::lay_over(cx.set, base, cx.state.snapshot_over.as_ref())
         .map_err(|e| format!("laying out UI templates: {e}"))?;
-    let mut map =
-        Map::from_reader(Cursor::new(map)).map_err(|e| format!("reading UI templates: {e}"))?;
-    let facts = inject::tag::read_facts(&mut map, &plan).map_err(|e| format!("{e:#}"))?;
-    let mut set = TagSet::from_map(&mut map).map_err(|e| format!("pinning UI templates: {e}"))?;
+    let mut source = base;
+    let mut map = Map::from_reader(Reader::new(OverlayView {
+        overlay: &file,
+        base: &mut source,
+    }))
+    .map_err(|e| format!("reading UI templates: {e}"))?;
+    pin_again(cx, &mut map, &plan, true)?;
+    drop(map);
+    cx.state.snapshot_over = Some(file);
+    Ok(())
+}
+
+/// Inject `plan`'s screens into `map`, the current set laid out, and pin
+/// that map as the set from here on (`streamed`: its prefix left in the
+/// file, `TagSet::from_map_streamed`).
+fn pin_again<R: Read + Seek>(
+    cx: &mut Cx<'_>,
+    map: &mut Map<R>,
+    plan: &[inject::Entry],
+    streamed: bool,
+) -> Result<(), Failure> {
+    let facts = inject::tag::read_facts(map, plan).map_err(|e| format!("{e:#}"))?;
+    let pinned = if streamed {
+        TagSet::from_map_streamed(map)
+    } else {
+        TagSet::from_map(map)
+    };
+    let mut set = pinned.map_err(|e| format!("pinning UI templates: {e}"))?;
     let result =
-        inject::tag::add_screens_to(&mut set, &facts, &plan).map_err(|e| format!("{e:#}"))?;
+        inject::tag::add_screens_to(&mut set, &facts, plan).map_err(|e| format!("{e:#}"))?;
 
     for (name, _) in &result.injected {
         cx.check_free(&Cx::key(SCREEN, name))?;
@@ -78,7 +113,7 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
         cx.touch(id)?;
         cx.note_changed(&key);
     }
-    let unpin = MapUnpin::new(&mut map).map(|u| u.preserving(result.templates));
+    let unpin = MapUnpin::new(map).map(|u| u.preserving(result.templates));
     cx.pin_snapshot(set, unpin);
     for (name, _) in result.injected {
         let key = Cx::key(SCREEN, &name);
