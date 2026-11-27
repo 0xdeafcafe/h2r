@@ -148,7 +148,7 @@ impl Body {
     pub fn refusal(self) -> Option<&'static str> {
         match self {
             Body::StartsUpdate | Body::StartLayerNew | Body::StartLayerPlay | Body::StartLayerRun => {
-                Some("the start layer's records ([0x51ebe0]) are not in the table")
+                Some("the start layer's bodies over its rows (Sounds::starts) are not built")
             }
             _ => None,
         }
