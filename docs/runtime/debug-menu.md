@@ -190,12 +190,12 @@ its own words.
 |---|---|---|
 | Player | `cheat.list`, `cheat.set`, `sim.session`, `session.status`, `player.mark`, `player.recall` | God mode, Infinite ammo, Bottomless clip, Fly, Noclip, Give weapon >, Teleport >, Mark position, Recall position, Hide HUD. At the main menu every cheat says no game is running instead of looking accepted, and there is no player to mark or put back. |
 | Player > Give weapon | `edit.tags {group: "weap"}`, `sim.view`, `sim.give` | the map's weapons by name; select one to put it in the local player's hands (it replaces what they hold). The result reads `gave <name>`. |
-| Player > Teleport | `sim.view`, `sim.state.set` | each other player by name; select one to move beside them, facing the way they do. Mark position and Recall position sit beside it on the Player page: Mark keeps the local player's position and facing in the default slot (`quick`), Recall teleports back to it — a host write, greyed with the session's reason in co-op; an empty slot is the call's error. |
+| Player > Teleport | `sim.view`, `sim.state.set` | each other player by name; select one to move beside them, facing the way they do. Mark position and Recall position sit beside it on the Player page: Mark keeps the local player's position and facing in the default slot (`quick`), Recall teleports back to it: a host write, greyed with the session's reason in co-op; an empty slot is the call's error. |
 | World | `sim.session` | Spawn vehicle >, Spawn object > |
 | World > Spawn vehicle, Spawn object > (Weapons, Equipment, Scenery, Crates, Machines, Creatures) | `edit.tags {group}`, `sim.view`, `sim.spawn` | the map's tags of that kind by name; select one to make it 5 world units (vehicles) or 3 (objects) in front of the local player, half a unit up, facing the way the player does. |
 | Game | `state.list`, `sim.session`, `session.status`, `state.save`, `state.load`, `map.reload`, `game.menu` | Quick save (`state.save {name: "quick", replace: true}`), Quick load (confirm; greyed until a `quick` snapshot exists), Snapshots >, Restart map (confirm), Load level >, Test maps >, Quit to main menu (confirm), Game code >. A save or load that finds the machine busy fails with the agent's BUSY message, which names what is live. |
 | Game > Snapshots | `state.list`, `state.load` | each snapshot of this build, with its map, tick and size; select one twice to load it |
-| Game > Load level | `game.levels`, `game.load`, `sim.session` | the disc's campaign missions and multiplayer maps by name, under Campaign and Multiplayer headings; select one twice to load it — a mission on Normal, a map as a local Slayer game (`game.load {scenario}`). A co-op or networked session greys every row with its reason, as `game.load` refuses it. Works from the main menu too. |
+| Game > Load level | `game.levels`, `game.load`, `sim.session` | the disc's campaign missions and multiplayer maps by name, under Campaign and Multiplayer headings; select one twice to load it (a mission on Normal, a map as a local Slayer game (`game.load {scenario}`)). A co-op or networked session greys every row with its reason, as `game.load` refuses it. Works from the main menu too. |
 | Game > Test maps | `maps.test.list`, `maps.test.load` | each test map; a ready one loads (confirm), one being built or that failed is greyed with why |
 | Game > Game code | `game.code`, `game.code.restart` | Running (full speed, or the slower start on the fast tier), Full-speed build (building with minutes in and about how many left, ready, failed or not needed), the build log's last step and path, the module and its stamp, and Restart at full speed (confirm), greyed with why until the full-speed build is ready |
 | Time | `cheat.list`, `cheat.set`, `host.pause`, `host.step` | Game speed, over the speeds the cheat lists; Pause, the window's own pause (Cmd+P's): `host.pause {}` reads it, `{"on"}` sets it; Step one tick (`host.step {ticks: 1}`), greyed until paused. A headless game has no window, so both carry the method's refusal. |
@@ -246,7 +246,7 @@ world transform and are omitted. Hitboxes skip unrecognized physics shapes
 and collision nodes without a matching pose.
 
 The trace history holds the newest 512 queries from the owning simulation
-executor. Trace colors fade over 1–300 guest ticks (default 30). The traces
+executor. Trace colours fade over 1–300 guest ticks (default 30). The traces
 row gives a reason if the query entry is unavailable or lockstep, film
 recording or film playback is active. Repeated images retain their sampled
 lines. See [Drawing world-space lines over the frame](agent-api.md#drawing-world-space-lines-over-the-frame).

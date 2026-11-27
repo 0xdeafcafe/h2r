@@ -40,20 +40,20 @@ assigning those names to successive dates.
 [Insignia's Halo 2 FAQ](https://insignia.live/halo2/).
 
 This chronology combines release reporting with the five generations in
-the [preservation catalog](https://consolemods.org/wiki/Xbox:Title_Updates).
+the [preservation catalogue](https://consolemods.org/wiki/Xbox:Title_Updates).
 It does not imply that every generation had a distinct displayed version.
 
 | Image / preservation generation | Public release | Known changes and naming |
 |---|---|---|
 | Retail **1.0** | 2004-11-09 North America; 2004-11-11 Europe/Japan | Disc baseline. [Release history](https://en.wikipedia.org/wiki/Halo_2). |
 | TU1 | Unknown | Harcroft reportedly recovered an XBE dated **2004-10-14**. This is a reported authoring timestamp, not a verified delivery date; changes unknown. Only the secondary transcription was accessible during research. [Discovery account and original-post reference](https://www.halopedia.org/Halo_2_Auto-Updates). |
-| TU2 | **2004-11-17** | Contemporary reporting calls this the first auto-update: shorter matchmaking waits, 480p/HUD framing fixes and Foundation unlocked for everyone. [Contemporary Bungie announcement repost](https://www.neowin.net/news/halo-2-xbox-live-autoupdate/). |
+| TU2 | **2004-11-17** | Contemporary reporting calls this the first auto-update: shorter matchmaking waits, 480p/HUD framing fixes and Foundation open to everyone. [Contemporary Bungie announcement repost](https://www.neowin.net/news/halo-2-xbox-live-autoupdate/). |
 | TU3 / **1.1** | **2005-04-18** | Stronger melee and grenades, shorter grenade fuse, weaker Magnum and some dual-wield combinations; these balance changes concern multiplayer. [Microsoft release notice](https://news.xbox.com/en-us/2005/04/18/halo-2-autoupdate/), [Bungie balance preview](https://www.halo.bungie.org/bwu/index.html?item=21). |
 | TU4 / sometimes **1.1b** | **2005-07-20** | Anti-cheating measures targeting modified DLC and a Relic teleporter fix. The 1.1a/1.1b distinction is a secondary history's label, not a verified menu-string progression. [Update history](https://www.halopedia.org/Halo_2_Auto-Updates), [contemporary July coverage](https://halo.bungie.org/newsarchive.html?month=July&year=2005). |
 | TU5 / **1.5** | **2007-04-12** | Final Xbox TU. Supports the forthcoming maps, strengthens Banhammer functions and clears learned hosting history and map cache. [Bungie's April 12 announcement, preserved mirror](https://bnetarchive.haloman30.com/news/Blog7d2b-2.html?dfilter=&mode=tags&page=1&tag=22), [displayed label](https://insignia.live/halo2/). |
 
 April 2005 also addressed flag bouncing/through-wall flag grabs, Elite
-ghosting, multiplayer vehicle sword flying, PAL/NTSC desynchronization and
+ghosting, multiplayer vehicle sword flying, PAL/NTSC desynchronisation and
 standby abuse. Campaign sword flying remained. **Flag bouncing is distinct
 from player superbouncing.** Bungie's 2010 farewell still referred to BXR;
 there is no established original-Xbox TU removal of BXR or general player
@@ -77,11 +77,11 @@ repacked discs have different contents.
 [Bungie's Blastacular announcement](https://bnetarchive.haloman30.com/news/Blog7d2b-2.html?dfilter=&mode=tags&page=1&tag=22),
 [repack author's explanation](https://digiex.net/threads/halo-2-xbox-360-multiplayer-map-pack-download-all-4-map-packs-with-1-5-update.13961/).
 
-Retail title ID is `4D530064`. The catalog distinguishes English, French,
+Retail title ID is `4D530064`. The catalogue distinguishes English, French,
 German, Italian, Spanish, Korean, Traditional Chinese and Japanese disc
 versions (`03` through `0a`, respectively), each with five TU generations.
 English XBE revisions are `01/02/03/05/08`; other languages use `01`–`05`.
-These are catalog identifiers, not menu decimals. Region-free flags do not
+These are catalogue identifiers, not menu decimals. Region-free flags do not
 establish language/disc interchangeability. The separate Halo 2 Beta uses
 `4D530082`, disc version `01`, with four catalogued TU revisions (`01`–`04`),
 marked unverified and without dates or changelogs. No standalone demo TU
@@ -135,7 +135,7 @@ metadata for a console; neither is an official-version converter.
 [launcher author's release NFO](https://www.xbins.org/nfo.php?file=xboxnfo1248.nfo),
 [Content Tool author's README](https://github.com/feudalnate/XBX-Content-Tool).
 
-Preservation maintainers catalog recovered releases and bundle updates
+Preservation maintainers catalogue recovered releases and bundle updates
 with offline DLC installers. Installer provenance matters: a 2023 release
 explicitly included spoofed regional substitutes for then-missing original
 TU5 files. A matching title ID or displayed 1.5 is therefore insufficient
@@ -160,14 +160,14 @@ from obtaining the executable.
 [Insignia's update and DLC requirements](https://insignia.live/halo2/).
 
 Copy the installed `$u` tree privately through an existing dashboard's
-binary-mode FTP facility, or read the user's own unlocked HDD/image with a
+binary-mode FTP facility, or read the user's own ATA-unlocked HDD/image with a
 FATX-aware tool and the owner's required keys. Keep companions and provenance
 with `default.xbe`; leave the disc dump unchanged. The user's original map
 DVD offers the older offline update described above. Do not substitute its
 installer-menu XBE for the gameplay image.
 [Transfer guidance from the installer maintainer](https://www.xbox-scene.info/forums/topic/213-dlc-halo-2/),
 [xemu's own-HDD imaging guidance](https://xemu.app/docs/required-files/),
-[FATXplorer author's HDD-unlocking documentation](https://fatxplorer.eaton-works.com/2024/05/31/fatxplorer-3-0-beta-31-password-recovery-for-og-xbox-western-digital-drives/).
+[FATXplorer author's drive password documentation](https://fatxplorer.eaton-works.com/2024/05/31/fatxplorer-3-0-beta-31-password-recovery-for-og-xbox-western-digital-drives/).
 
 Future h2 tooling could import that tree into ignored `disc/updates/`,
 validate XBE bounds/sections, and report title ID, raw certificate version,
@@ -319,7 +319,7 @@ with iced-x86, table contents.
   tables are extra coverage, and they fail closed.
 - **Lift, IR, opt, emit, x87**: no image addresses. Generated symbols
   (`h2fn_XXXXXXXX`) and the `/* 0x... */` comments carry each image's own
-  addresses, and perf symbolization reads them back
+  addresses, and perf symbolisation reads them back
   (`perf/src/symbolize.rs:153`).
 - **Kernel**: imports go by ordinal. The thunk table is decoded from the
   header (`kernel/src/image.rs:127`), the title ID comes from the certificate

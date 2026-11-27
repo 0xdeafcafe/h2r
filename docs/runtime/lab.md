@@ -153,7 +153,7 @@ and note. A job using the host's own image shows `commit=current`. Host events
 use the `[host]` prefix and include pairing offers, successful pairings,
 revocations and updates. On attachment the watcher starts with up to 16
 KiB per log, then prints new lines as the files grow. Prefix
-color is enabled on a terminal. See `crates/apps/cli/src/lab/watch.rs`
+colour is enabled on a terminal. See `crates/apps/cli/src/lab/watch.rs`
 and `crates/apps/cli/src/lab/service.rs`.
 
 On the driving Mac, use the paired connection:

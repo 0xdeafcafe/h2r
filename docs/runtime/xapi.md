@@ -12,8 +12,8 @@ runtime (see [Runtime registration](#runtime-registration)).
 
 The supplied retail 5849 XBE has **43 Xapi signature matches**. The inventory
 adds **99 named entries, thunks and inferred helpers** from the existing Ghidra
-project: **142 entries**. Inferred names are descriptions of inspected behavior,
-not extra signature matches. All observed behavior below is anchored to its
+project: **142 entries**. Inferred names are descriptions of inspected behaviour,
+not extra signature matches. All observed behaviour below is anchored to its
 function/instruction address. Emulator bounds and host policies are labelled
 as such; they are not claims about retail limits.
 
@@ -57,7 +57,7 @@ XGetDevices and XInputPoll remain unbound adapters until an address is verified.
 
 | Addresses | Keep in Rust | Why the kernel path is insufficient |
 | --- | --- | --- |
-| `00408c57`, thunk `004098c0` | XInitDevices | Original enters USB/XPP initialization; native input backends replace that hardware stack. |
+| `00408c57`, thunk `004098c0` | XInitDevices | Original enters USB/XPP initialisation; native input backends replace that hardware stack. |
 | `004098c5`, `00409884` | XGetDeviceChanges, XPeekDevices | Cur/Prev/Chg belong to the native input manager; both views must share that state. |
 | `00409932`, `00409988` | XInputOpen, XInputClose | Native handles retain a host pad generation rather than a guest USB object. |
 | `00409994`, `00409b6c`, `00409bdf` | Capabilities, GetState, SetState | Translate packed reports, disconnected snapshots and asynchronous host feedback. |
@@ -76,15 +76,15 @@ range heuristic (the opt-in save games keep a small host table keyed by the
 search's kernel handle, below). Error 18 and name termination belong
 to the generated save/file path, not to a second implementation.
 
-| Addresses | Generated route | Required kernel behavior |
+| Addresses | Generated route | Required kernel behaviour |
 | --- | --- | --- |
-| `00330df2`, `00331055`, `00331125`, `0033122f`, `00331276` | Create/Delete/FindFirst/FindNext/FindClose save APIs | Ordinary file/directory calls through shared VFS and RtlNtStatusToDosError (301). Preserve the original hash, metadata, cursor and close behavior. |
+| `00330df2`, `00331055`, `00331125`, `0033122f`, `00331276` | Create/Delete/FindFirst/FindNext/FindClose save APIs | Ordinary file/directory calls through shared VFS and RtlNtStatusToDosError (301). Preserve the original hash, metadata, cursor and close behaviour. |
 | `0033039a`, `00330310`, `00330339`, `003321bd`, `00331385`, `002d5813` | Language, video standard/flags, AV pack, region, parental control | ExQueryNonVolatileSetting (24), plus coherent HalBootSMCVideoMode data (356) for AV pack. No Rust query overrides. |
 | `002d5838`, `002d5f65` | DiskFreeSpaceEx and cluster-size helper | NtQueryVolumeInformationFile (218) and ordinary file open/close. These are wrappers, not hardware services. |
 | `002d1d3e`, `002d1d66` | GetLastError, SetLastError | Guest FS/TLS access, without a parallel host/process last-error store. |
 | `002d0915` | XGetLaunchInfo | LaunchDataPage (164) storage and MmFreeContiguousMemory (171); use the original one-shot consumption and title/kind checks. |
 
-## Input behavior and sources
+## Input behaviour and sources
 
 Device types are guest `XPP_DEVICE_TYPE*` identities, not numeric XID types:
 `004086f8` is gamepad and `004087a8` is memory unit (arguments observed in
@@ -117,7 +117,7 @@ The native DeviceChanges struct records current/changed/previous separately.
 **XPeekDevices is different in the image.** At `00409884` it returns Cur and
 optionally writes Prev and `Prev & Chg & Cur`; its return is at `004098bd`.
 It does not clear Chg or update Prev, including when Chg=0. The adapter preserves
-that compiled behavior while sharing the corrected state. No BOOL/consuming
+that compiled behaviour while sharing the corrected state. No BOOL/consuming
 contract from `004098c5` is imposed on this three-slot peek API. The descriptor
 publication used by both routines is 12 bytes: Cur, Chg, Prev.
 
@@ -826,7 +826,7 @@ Run `cargo clippy -p xapi --no-deps --all-targets -- -D warnings` and
 replace live input with one. [input.md](../input/input.md#deterministic-timelines-for-boot-and-headless-runners)
 documents the integration: retain a `ScriptedInput` clone, call
 `advance_to(relative_guest_ticks)` before `service_input`/`pump_input`, and
-keep the usual status-write / unlock / signal / acknowledge sequence.
+keep the usual status-write / release / signal / acknowledge sequence.
 No new guest entry addresses or overrides are needed. XGetDevices and
 XInputPoll remain available as adapters, without an invented retail address;
 the generated device readers consume the published Cur/Chg/Prev object.
@@ -834,7 +834,7 @@ the generated device readers consume the published Cur/Chg/Prev object.
 Synthetic `tests/input_semantics.rs` exercises the stdcall entries for every
 button's press/hold/release, all pressure values, both sticks, packet changes,
 manual polling, capabilities, feedback completion and insertion/removal with
-stale handles. `tests/register.rs` additionally drives the actual registered
+stale handles. `tests/register.rs` also drives the actual registered
 state/capabilities/feedback entries at 0x409b6c/0x409994/0x409bdf with a timeline.
 `tests/mouse_look.rs` runs `sync_input` every slice and `XInputGetState` every
 200 slices with the keyboard pad: each game-rate read must see the mouse
@@ -848,7 +848,7 @@ boot is left to the boot runner's integration checks.
 
 ## References
 
-Behavioral addresses above refer to the user's supplied image and inspected
+Behavioural addresses above refer to the user's supplied image and inspected
 callers. Packed layout cross-checks use the pinned
 [Cxbx XAPI declarations](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/585c49a50af1255ab155099e06f24505f9c5a800/src/core/hle/XAPI/Xapi.h).
 See [input.md](../input/input.md), [storage.md](storage.md),

@@ -303,7 +303,7 @@ host entries that differ only by case report `FileCorrupt` rather than
 arbitrarily choosing one. Host symlinks, sockets/FIFOs/special files, files
 over the FATX size limit, and (on Unix) multiply linked files are hidden from
 listings; direct access to such objects fails. Names outside the supported
-FATX rules are also hidden. These neighbors do not poison ordinary directory
+FATX rules are also hidden. These neighbours do not poison ordinary directory
 queries or creation. Entry limits count eligible names/kinds without reading
 sidecar metadata.
 
@@ -367,7 +367,7 @@ OEM/codepage decoding and uppercasing of bytes above 0x7f is not yet modeled.
 Rejecting them is an explicit compatibility limit, not a claim that Xbox
 uses Unicode or that every high byte is illegal on hardware.
 
-The emulation additionally limits a volume-relative path to 250 bytes
+The emulation also limits a volume-relative path to 250 bytes
 (excluding device prefix) and a directory to 4,096 visible items. Public
 references disagree about full-path and per-directory limits across Xbox
 versions/tools. These are explicit VFS policies based on the
@@ -391,7 +391,7 @@ listed by the [FATXplorer author](https://fatxplorer.eaton-works.com/fatx-file-s
 `Timestamp(u64)` is NT time (100 ns since 1601 UTC). FATX's packed timestamp
 format uses a 2000 epoch and two-second precision, as shown in the
 [XboxDev FATX date/time definitions](https://github.com/XboxDev/fatx/blob/master/libfatx/fatx_internal.h).
-VFS rounds down to two seconds and clamps to 2000–2127, using UTC so behavior
+VFS rounds down to two seconds and clamps to 2000–2127, using UTC so behaviour
 is deterministic across host timezones. Creation/access/write times persist;
 change time is an additional emulated field. Reads update access time in
 memory and coalesce it per path; the record is persisted on explicit flush,
@@ -542,7 +542,7 @@ does not promise the host has that much physical free space. The root,
 metadata, FAT structures, fragmentation and directory growth are not charged
 as a physical FATX allocator would charge them.
 
-## File objects and NT behavior
+## File objects and NT behaviour
 
 The numeric access/share/disposition constants agree with
 [nxdk's public Xbox kernel header](https://github.com/XboxDev/nxdk/blob/master/lib/xboxkrnl/xboxkrnl.h).
@@ -574,7 +574,7 @@ The operation checks implied DELETE against existing share reservations,
 then grants only the requested handle rights. Supersede of a missing leaf
 creates it without implied deletion. This follows FastFat's distinction
 between operation access and granted access, not a claim that retail Xbox
-behavior has been measured: `FatOpenExistingFcb` records `AddedAccess`, adds
+behaviour has been measured: `FatOpenExistingFcb` records `AddedAccess`, adds
 DELETE for supersede, checks access/sharing, then clears `AddedAccess` before
 `IoSetShareAccess`; `FatOpenExistingFile` follows the same pattern.
 See [Microsoft FastFat create.c, pinned revision](https://github.com/microsoft/Windows-driver-samples/blob/96eb96dfb613e4c745db6bd1f53a92fe7e2290fc/filesys/fastfat/create.c#L3332)
@@ -609,7 +609,7 @@ invalid for reads. Negative NT sentinel offsets must be translated by the
 kernel; ordinary offsets must fit signed LARGE_INTEGER. A nonempty read at
 or beyond EOF returns EndOfFile; a read crossing EOF returns the available
 prefix successfully. A zero-length read succeeds with zero bytes. EOF resize
-does not move the position. Position behavior follows the synchronous model
+does not move the position. Position behaviour follows the synchronous model
 in [Microsoft's read contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwreadfile).
 
 `set_delete_pending` requires DELETE and rejects read-only files, volume roots
@@ -624,7 +624,7 @@ handles remain usable until all file objects for the path close. This file-objec
 The last close removes the host entry. Final-object cleanup uses
 `Backend::cleanup(path, write_access)`. Its default calls `flush` only for
 file objects opened with WRITE/APPEND; directory and read-only opens avoid
-unconditional sync. HostBackend additionally tracks dirty data and deferred
+unconditional sync. HostBackend also tracks dirty data and deferred
 atime: atime-only cleanup persists its record without syncing file data;
 write-capable or data-dirty cleanup syncs file data and persists the record
 any write left. Duplicate-handle closes
@@ -639,7 +639,7 @@ without `.`/`..` entries. The first expression is captured; later expressions
 are ignored, including on restart. Restart rebuilds and rewinds the snapshot.
 `*` and `?` work case-insensitively; `?` consumes exactly one byte and a dot
 is literal. Consequently `ab?` does not match `ab`, and `a*.*` does not match
-`abc`. This kernel-facing behavior follows [OXOS's original-Xbox matcher](https://github.com/kooscode/oxos/blob/main/kernel/src/filesystems/hddfs/volume.cpp#L327).
+`abc`. This kernel-facing behaviour follows [OXOS's original-Xbox matcher](https://github.com/kooscode/oxos/blob/main/kernel/src/filesystems/hddfs/volume.cpp#L327).
 Cxbx [forwards the mask to NtQueryDirectoryFile](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/kernel/exports/EmuKrnlNt.cpp#L1197),
 with a specific `*.*` to `*` rewrite that VFS retains, so `*.*` does include
 extensionless names. These implementation sources do not establish broader
@@ -649,10 +649,10 @@ registers `IopUnimplementedDeviceRequest` for IRP_MJ_DIRECTORY_CONTROL; that
 source has a name validator, but no FATX enumeration/name matcher to cite.
 **Kernel integration compatibility note:** VFS's `a*.*` will not match `abc`.
 If retail Xbox applies DOS-style semantics that make this a match, the
-current VFS mask behavior will miss the file and needs a hardware-backed
+current VFS mask behaviour will miss the file and needs a hardware-backed
 matcher correction; desktop forwarding or a reimplementation does not prove
-retail behavior. DOS_STAR, DOS_QM and DOS_DOT encodings remain unsupported; callers must not silently translate
-ordinary `?` into DOS_QM based on desktop FindFirstFile behavior. An absent
+retail behaviour. DOS_STAR, DOS_QM and DOS_DOT encodings remain unsupported; callers must not silently translate
+ordinary `?` into DOS_QM based on desktop FindFirstFile behaviour. An absent
 or initially empty expression means `*`. Initial no-match returns
 NoSuchFile; exhaustion returns NoMoreFiles. See the expression/cursor model
 in [Microsoft's directory query contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile).
@@ -792,10 +792,10 @@ E:\
 
 TitleMeta.xbx describes the title (`TitleName=...`); SaveMeta.xbx describes a
 save (`Name=...`). Metadata is text, commonly UTF-16LE; a save scanner should
-also account for ASCII and localization sections, as demonstrated by the
+also account for ASCII and localisation sections, as demonstrated by the
 [OGXBL homebrew metadata reader](https://github.com/OGXBL/XBLCloudGameSave/blob/main/README.md#save-metadata).
 TitleImage.xbx and SaveImage.xbx are Xbox texture resources. A save-specific
-image overrides the shared image in the title directory. This organization
+image overrides the shared image in the title directory. This organisation
 and image precedence are described in the
 [Xbox savegame format notes](https://xboxdevwiki.net/Xbox_Savegame_System).
 VFS only creates the TDATA/UDATA title roots: it does not invent save IDs,
@@ -812,7 +812,7 @@ case lookup/collisions, aliases, shares, directory search/restart/retry,
 duplicate positions, EOF/append/growth, persistent attributes/times, deletion,
 quota, directory count limits and host link rejection. Review regressions add
 readonly create/existing-handle rights, buffering hints, damaged records and
-unrepresentable neighbors, host litter, metadata retirement failure, deferred
+unrepresentable neighbours, host litter, metadata retirement failure, deferred
 atime and scan-count assertions, cleanup-time deletion, supersede permissions,
 original-Xbox punctuation, mask semantics, invalid disc names and low-level
 status/configuration cases. Re-review tests cover litter-only rmdir through

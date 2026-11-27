@@ -321,7 +321,7 @@ boundary that passes the quiescence check:
 
 A fresh-process load (boot, then load before the first slice) is the same
 sequence after the boot reaches its first slice. It costs a boot, but is
-the robust fallback if in-process cache invalidation turns out leaky.
+the safe fallback if in-process cache invalidation turns out leaky.
 
 
 ## File format

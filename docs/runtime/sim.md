@@ -77,7 +77,7 @@ under it**, which the simulation does not need. The GPU is already out.
   Mombasa, with the render) plus idle advances to the vblank. While the
   charged work stays under two vblanks (33.3 ms), every frame is exactly
   one tick. Skipping the render lowers the charged work, so the cadence
-  stays one tick a frame, and becomes more robust, not less.
+  stays one tick a frame, and becomes sturdier, not weaker.
 
 So "faster than real time" needs no clock work: the clock is already
 fixed and unpaced. What limits speed is host work per tick, and three
@@ -225,7 +225,7 @@ regular phantom uplink and remote gather.
 `host_lobby/retail.rs`. One step per game tick at the start of the tick:
 
 1. **Create and configure.** All four local profiles stay signed out.
-   With the menu and network session objects initialized, the host invokes
+   With the menu and network session objects initialised, the host invokes
    the Available Games browser's Create row. `0x199df9(0,0)` creates a
    class-1 System Link squad via `0x59890(1,0,0)`. The host selects custom
    mode with `0x199a03(2)` and records the new squad (`SquadCreated`).
@@ -675,7 +675,7 @@ earlier `h2-sim-report/1` reports.
 
 The `wall` block carries the process's memory: `peak_rss_mib`
 (`getrusage`'s `ru_maxrss`), `footprint_mib` on macOS
-(`proc_pid_rusage`'s `ri_phys_footprint` — dirty pages, the number a
+(`proc_pid_rusage`'s `ri_phys_footprint`, dirty pages, the number a
 fleet pays for), and, when the run loaded a shared copy-on-write guest
 RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
@@ -763,7 +763,7 @@ stores. A recording pass notes every byte range the guest reads through
 the VFS; the build packs those ranges per map into one small file; the
 run serves the map from it, byte for byte at the same offsets, and a
 read of a byte no recording covered is a named error (`NotInStore`,
-with the range on stderr) — never a silent fall back to the disc, so a
+with the range on stderr); never a silent fall back to the disc, so a
 miss is found, recorded, and the store rebuilt:
 
 ```sh
@@ -815,7 +815,7 @@ leaves no pages behind either.
 The snapshot shares guest RAM at a saved machine state. `state.save` with `"cow": true` writes, beside
 the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
 holes); `state.load` with `"cow": true` maps that file private
-copy-on-write in place of decoding RAM in — pages the match never
+copy-on-write in place of decoding RAM in, pages the match never
 writes stay one shared set across every process on the same image
 (including the zero pages), and only written pages become private.
 The [agent snapshot methods](snapshots.md) support this mode. The
