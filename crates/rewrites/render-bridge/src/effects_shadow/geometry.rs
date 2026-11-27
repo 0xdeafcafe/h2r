@@ -437,12 +437,21 @@ pub fn material_proven() -> bool {
     MATERIAL_STREAK.load(Ordering::Relaxed) >= CLEAN
 }
 
-/// One entry the answer draws natively: a BSP cluster's part of a shader
-/// whose template has `passes` passes in layer 15.
+/// Which structure geometry an answered entry draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// A BSP cluster, by index.
+    Cluster(u32),
+    /// An instanced-geometry placement, by index.
+    Placement(u32),
+}
+
+/// One entry the answer draws natively: a BSP cluster's or a placement's
+/// part of a shader whose template has `passes` passes in layer 15.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Request {
     pub shader: u32,
-    pub cluster: u32,
+    pub owner: Owner,
     pub part: u8,
     pub passes: u32,
 }
@@ -481,7 +490,7 @@ fn kept(cause: &str) {
 /// At the handler's entry (`esp` its return address). True when the entry
 /// is drawn natively and the handler returns (`ret 4`); false runs the
 /// guest's. Only on a frame that is not sampled, with [`proven`], for a BSP
-/// cluster's part whose every pass the build model accepts with the
+/// cluster's or a placement's part whose every pass the build model accepts with the
 /// generic implementation 0 (the one the layer's compile took).
 pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
     use native_render::transparent::{Source, read_entry};
@@ -494,9 +503,13 @@ pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
         kept("entry");
         return false;
     };
-    let Source::Cluster(cluster) = entry.source else {
-        kept("not_cluster");
-        return false;
+    let owner = match entry.source {
+        Source::Cluster(c) => Owner::Cluster(u32::from(c)),
+        Source::Placement(p) => Owner::Placement(u32::from(p)),
+        Source::Object(_) => {
+            kept("object");
+            return false;
+        }
     };
     let Some(argument) = data.checked_add(4).and_then(|a| m.u32(a).ok()) else { return false };
     let passes = match passes(&*m, entry.shader) {
@@ -524,7 +537,7 @@ pub(crate) fn answer_handler(m: &mut dyn GuestMemory, esp: u32) -> bool {
             }
         }
     }
-    let request = Request { shader: entry.shader, cluster: u32::from(cluster), part: entry.part, passes };
+    let request = Request { shader: entry.shader, owner, part: entry.part, passes };
     match host.draw(m, &request) {
         Ok(()) => {
             count("answer_geometry_draw", 1);

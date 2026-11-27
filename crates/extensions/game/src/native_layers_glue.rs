@@ -1070,7 +1070,11 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
         .ok_or("world_pending")?;
         let (view, palettes) = ready.layers.get().ok_or("no_layers")?;
         let data = view.layers.get(&L).ok_or("no_layer")?;
-        let part = (Owner::Cluster(r.cluster), r.part);
+        let owner = match r.owner {
+            render_bridge::effects_shadow::geometry::Owner::Cluster(c) => Owner::Cluster(c),
+            render_bridge::effects_shadow::geometry::Owner::Placement(p) => Owner::Instance(p),
+        };
+        let part = (owner, r.part);
         let &(material, shader) = data.part_set.get(&part).ok_or("set")?;
         if shader & 0xffff != r.shader & 0xffff {
             return Err("set");
