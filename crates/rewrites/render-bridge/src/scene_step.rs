@@ -997,6 +997,46 @@ pub fn shadow_filter(
     })
 }
 
+/// The groups of the open object shadow as the cut caster planned them
+/// from its item lists ([`crate::native_lights::object_shadow_scene::cut`]),
+/// with its light weight and filter. Ends the shadow's ops: no layer of
+/// it runs on the guest. False when no shadow is open or the builder
+/// refuses a group.
+pub(crate) fn object_shadow_groups(
+    groups: Vec<crate::native_lights::SceneGroup>,
+    weight: Option<f32>,
+    filter: Option<frame_scene::ShadowFilter>,
+) -> bool {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+    with_step(|step| {
+        if !step.shadow_open || step.builder.view().is_none() {
+            return false;
+        }
+        step.shadow_open = false;
+        for group in groups {
+            let entries: Vec<_> = group.entries.into_iter().zip(group.rows).collect();
+            if step.builder.push_shadow_group(group.group, &entries).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            LIGHT_GROUPS.fetch_add(1, Ordering::Relaxed);
+            LIGHT_GROUPS_WHOLE.fetch_add(1, Ordering::Relaxed);
+            LIGHT_ENTRIES.fetch_add(entries.len() as u64, Ordering::Relaxed);
+        }
+        if let Some(weight) = weight
+            && step.builder.set_shadow_weight(weight).is_err()
+        {
+            return false;
+        }
+        if let Some(filter) = filter
+            && step.builder.set_shadow_filter(filter).is_err()
+        {
+            return false;
+        }
+        true
+    })
+}
+
 /// A light layer's sorted entries (`sorted`, as the layer build leaves
 /// them on `list`) into a group of the open view's last light, or of its
 /// last object shadow for [`GroupSite::ObjectShadow`], with what the first

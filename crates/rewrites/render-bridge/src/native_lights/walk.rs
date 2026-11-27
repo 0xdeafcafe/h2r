@@ -1130,6 +1130,48 @@ mod tests {
         assert_eq!(m.u32(TARGETS + 9 * TARGET_STRIDE + 0x80).unwrap(), 0, "nothing written");
     }
 
+    /// The cut caster's object-shadow groups (`object_shadow_scene::groups`,
+    /// made after its item lists, before layer 10 begins) against the
+    /// layer build the guest's mask branch makes at its layer 10 draw: the
+    /// same entries in the same order, the mask's target 10 and the
+    /// receivers on the view's target, each group once.
+    #[test]
+    fn the_cut_casters_object_shadow_groups_equal_the_guests_layer_build() {
+        use crate::native_lights::{Ro, object_shadow_scene};
+        use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
+        use frame_scene::GroupSite;
+
+        let mut m = fixture(10);
+        m.set_u32(shadows::CASTERS + 12, 0).unwrap();
+        m.set_u32(lp::global::PASS_FLAGS, 0x14).unwrap();
+        m.set_u32(0x0048_58b8, 2).unwrap();
+        for target in [2, 10] {
+            m.set_u32(TARGETS + target * TARGET_STRIDE + 0x80, 256).unwrap();
+            m.set_u32(TARGETS + target * TARGET_STRIDE + 0x84, 128).unwrap();
+        }
+        // The receivers do not hold layer 11: the branch draws nothing.
+        assert_eq!(object_shadow_scene::groups(&m), Some(Vec::new()));
+
+        m.set_u32(shadows::RECEIVERS + 8, 1 << 11).unwrap();
+        let built = build(&m, shadows::CASTERS, 10, BUFFER).unwrap();
+        let items = m.u32(shadows::CASTERS + 20).unwrap();
+        let entries: Vec<_> = built
+            .sorted()
+            .into_iter()
+            .map(|s| scene_extract::light_groups::entry(&Ro(&m), items, s).unwrap().0)
+            .collect();
+        let groups = object_shadow_scene::groups(&m).unwrap();
+        assert_eq!(groups.iter().map(|g| g.group.layer).collect::<Vec<_>>(), [10, 11]);
+        assert!(groups.iter().all(|g| g.group.site == GroupSite::ObjectShadow));
+        assert_eq!(groups[0].entries, entries);
+        assert_eq!(entries.len(), 3);
+        assert!(groups[1].entries.is_empty(), "the fixture's receivers are empty");
+        let (mask, apply) = (groups[0].group.pass.unwrap(), groups[1].group.pass.unwrap());
+        assert_eq!((mask.target, mask.flags, mask.size), (10, 0x14, [256, 128]));
+        assert_eq!(apply.target, 2);
+        assert!(groups[0].group.projection.is_some());
+    }
+
     #[test]
     fn long_partition_preserves_the_original_permutation_of_equal_keys() {
         let mut slots = vec![[0; 24]; 9];
