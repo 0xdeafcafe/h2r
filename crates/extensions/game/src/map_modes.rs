@@ -223,8 +223,9 @@ pub const FIREFIGHT_TAG: &str = "Firefight";
 pub const SIEGE_TAG: &str = "Siege";
 
 /// A row's text: `name`, then the tags of what it supports (Firefight, then
-/// Siege). In a lobby playing a mode the map lacks, `name` then what it
-/// lacks instead.
+/// Siege) in brackets. In a lobby playing a mode the map lacks, `name` then
+/// what it lacks instead. One space between words: the UI kit's spacing
+/// check refuses doubled ones.
 pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
     let lacks = match played {
         Played::Firefight if !support.firefight => Some("no Firefight kit"),
@@ -232,7 +233,7 @@ pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
         _ => None,
     };
     if let Some(lacks) = lacks {
-        return Some(format!("{name}  ({lacks})"));
+        return Some(format!("{name} ({lacks})"));
     }
     let tags: Vec<&str> = [
         support.firefight.then_some(FIREFIGHT_TAG),
@@ -241,7 +242,7 @@ pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
     .into_iter()
     .flatten()
     .collect();
-    (!tags.is_empty()).then(|| format!("{name}  {}", tags.join("  ")))
+    (!tags.is_empty()).then(|| format!("{name} ({})", tags.join(", ")))
 }
 
 /// Why `support` does not play `played`; `None` when it does.
