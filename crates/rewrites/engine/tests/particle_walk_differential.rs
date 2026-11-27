@@ -338,8 +338,8 @@ fn case(image: &FlatMemory, r: &mut Rng) -> (FlatMemory, u32) {
         4 | 5 => 2,
         _ => 0,
     };
-    let chain = [SYSTEM, PARENT, GRANDPARENT];
-    for &at in &chain[1..] {
+    let lineage = [SYSTEM, PARENT, GRANDPARENT];
+    for &at in &lineage[1..] {
         for o in (0..0x50).step_by(4) {
             let v = if r.chance(2) { r.u32() } else { r.float() };
             put(&mut a, at + o, v);
@@ -351,13 +351,13 @@ fn case(image: &FlatMemory, r: &mut Rng) -> (FlatMemory, u32) {
     }
     put16(&mut a, SYSTEM + 0xc, if r.chance(8) { 0x400 } else { r.u32() as u16 & !0x400 });
     put(&mut a, SYSTEM + 0x18, if r.chance(4) { u32::MAX } else { r.below(4) | (r.below(4) << 16) });
-    for (level, &at) in chain.iter().enumerate().take(depth as usize + 1) {
+    for (level, &at) in lineage.iter().enumerate().take(depth as usize + 1) {
         let entry = if level == depth as usize { 0 } else { 1 };
         put16(&mut a, at + 0xe, r.below(2) as u16);
         put(&mut a, at + 0x10, entry | (r.below(0x1000) << 16));
         put(&mut a, at + 0x14, r.below(2));
         if level < depth as usize {
-            put(&mut a, at + 0x48, chain[level + 1]);
+            put(&mut a, at + 0x48, lineage[level + 1]);
         }
     }
     for s in 0..2 {
