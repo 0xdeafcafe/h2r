@@ -344,6 +344,7 @@ fn build(base: &[u8], base_name: &str, mode: Mode, config: &Config) -> Result<Bu
 ///
 /// The Elite's behaviour rows are the campaign Elite's, from the base or
 /// a class donor ([`elite_rows`]).
+#[allow(dead_code)] // the class-gated kit build; no caller yet
 fn build_with_classes(
     base: &[u8],
     base_name: &str,

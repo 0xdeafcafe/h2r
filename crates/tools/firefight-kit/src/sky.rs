@@ -365,7 +365,7 @@ pub(crate) fn author<R: Read + Seek>(
             for (j, v) in [at[0], at[1], at[2], 0.0, 0.0, 0.0].into_iter().enumerate() {
                 place.put_f32(8 + 4 * j, v);
             }
-            place.put_u32(0x28, UNIQUE_ID_HIGH << 16 | (UNIQUE_LOW + next_place as u32 & 0xffff));
+            place.put_u32(0x28, UNIQUE_ID_HIGH << 16 | ((UNIQUE_LOW + next_place as u32) & 0xffff));
             place.put_u16(0x2c, 0xffff);
             place.bytes[0x2e] = 1;
             place.bytes[0x2f] = 1;

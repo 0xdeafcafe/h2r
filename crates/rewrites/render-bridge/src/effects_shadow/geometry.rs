@@ -398,7 +398,7 @@ pub(super) fn end_build(m: &dyn GuestMemory, esp: u32, eax: u32) {
 /// pass whose material is compared with the device's, on a sampled frame,
 /// once. `None` on any other frame, or when no build of this frame made one.
 pub fn material_sample(m: &dyn GuestMemory) -> Option<Pass> {
-    if sampled(m)? != true {
+    if !sampled(m)? {
         return None;
     }
     let pass = CURRENT.take()?;

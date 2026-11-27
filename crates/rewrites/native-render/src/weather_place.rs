@@ -68,7 +68,7 @@ pub struct Range {
 /// scaled by 2^-16: the fixed point the function quantises to.
 pub fn quantise(x: f32) -> f32 {
     let scaled = (f64::from(x) * 65536.0).floor();
-    let i = if scaled >= -2147483648.0 && scaled < 2147483648.0 { scaled as i32 } else { i32::MIN };
+    let i = if (-2147483648.0..2147483648.0).contains(&scaled) { scaled as i32 } else { i32::MIN };
     (i as f32) * (1.0 / 65536.0)
 }
 
@@ -179,7 +179,7 @@ pub fn pack_colour(c: [f32; 3]) -> u32 {
 /// `floor` then `_ftol`, clamped to a byte (`0x0002b480`, `0x00322b0c`).
 fn clamp_byte(x: f32) -> u32 {
     let f = f64::from(x).floor();
-    let i = if f >= -2147483648.0 && f < 2147483648.0 { f as i32 } else { i32::MIN };
+    let i = if (-2147483648.0..2147483648.0).contains(&f) { f as i32 } else { i32::MIN };
     i.clamp(0, 0xff) as u32
 }
 
@@ -248,7 +248,7 @@ pub fn kind3(range: &Range, colours: &Colours, skip_setup: bool, wants_result: b
     // bytes.
     let v = {
         let f = (f64::from(range.near) * 65536.0).floor();
-        if f >= -2147483648.0 && f < 2147483648.0 { f as i32 } else { i32::MIN }
+        if (-2147483648.0..2147483648.0).contains(&f) { f as i32 } else { i32::MIN }
     };
     let mut low = (v & 0xff) as u32;
     let mut high = v >> 8;
@@ -323,12 +323,12 @@ pub fn kind3(range: &Range, colours: &Colours, skip_setup: bool, wants_result: b
     let a = u32::from(c.flag);
     let r = (a * 0x10 + 9) << 16 | (a * 0x10 + 0xa);
     word(&mut w, 0x485000, r << 8 | 0x1_0002);
-    word(&mut w, 0x484f78, on(n > 3) * 0x20 | 0x1d20_1d00);
+    word(&mut w, 0x484f78, (on(n > 3) * 0x20) | 0x1d20_1d00);
     word(&mut w, 0x484fe0, lvl(2, 1));
     word(&mut w, 0x484fa4, pack_colour(c.rgb[2]));
     word(&mut w, 0x485030, 0x1045);
     word(&mut w, 0x485004, (a * 0x10 + 0xb) << 8 | 0x2425_0001);
-    word(&mut w, 0x484f7c, on(n > 6) * 0x20 | 0x1d20_1d00);
+    word(&mut w, 0x484f7c, (on(n > 6) * 0x20) | 0x1d20_1d00);
     word(&mut w, 0x484fe4, lvl(5, 4));
     let g1 = (f64::from(far) * 256.0 / f64::from(1u32 << n)) as f32;
     let hi = clamp_byte(g1);

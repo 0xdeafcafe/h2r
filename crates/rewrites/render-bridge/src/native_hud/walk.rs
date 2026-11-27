@@ -154,7 +154,7 @@ fn state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     if s.generation != Some(generation) {
         *s = State { generation: Some(generation), ..State::default() };
     }
-    f(&mut *s)
+    f(&mut s)
 }
 
 fn proof<T>(widget: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
@@ -1148,7 +1148,7 @@ mod tests {
         finish(&m);
         let after = counters().into_iter().find(|(k, _)| k.ends_with("shadow_differed")).map_or(0, |(_, n)| n);
         assert_eq!(after, before + 1);
-        assert_eq!(proof(0x5000, |p| p.failed), true);
+        assert!(proof(0x5000, |p| p.failed));
         ACTIVE.with(|a| *a.borrow_mut() = None);
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
         m.put_u16(0x9000, 0x7001).put_u16(0x9000 + 0x44, u16::from(b'A')).put_u16(0x9000 + 0x46, u16::from(b'l'));
         let t = lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]).unwrap().unwrap();
         // Each glyph's shadow, then the glyph.
-        assert_eq!(t.quads.iter().map(|q| q.index).collect::<Vec<u32>>(), [b'A', b'A', b'l', b'l'].map(u32::from));
+        assert_eq!(t.quads.iter().map(|q| q.index).collect::<Vec<u32>>(), b"AAll".map(u32::from));
         // No player named: the empty string, which draws nothing.
         m.put_u8(RECORD + 0x224, 0);
         assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]), Ok(None));

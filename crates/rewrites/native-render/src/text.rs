@@ -63,11 +63,9 @@ impl FontFace {
                 continue;
             }
             let index = tag.glyph_index(unit);
-            if !decoded.contains_key(&index) {
+            if let std::collections::hash_map::Entry::Vacant(e) = decoded.entry(index) {
                 let g = tag.glyph_by_index(index)?;
-                decoded.insert(
-                    index,
-                    FaceGlyph {
+                e.insert(FaceGlyph {
                         index,
                         advance: g.record.advance,
                         x_offset: g.record.x_offset,
@@ -75,8 +73,7 @@ impl FontFace {
                         width: g.record.width,
                         height: g.record.height,
                         coverage: g.pixels.iter().map(|p| (p >> 12) as u8 * 17).collect(),
-                    },
-                );
+                    });
             }
             face.glyphs.insert(unit, decoded[&index].clone());
         }

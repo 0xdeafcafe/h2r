@@ -362,9 +362,8 @@ fn read_masks(ctx: &gfx::GfxContext, grid: &TileGrid) -> Vec<u32> {
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    let words =
-        bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range().unwrap()).to_vec();
-    words
+    
+    bytemuck::cast_slice::<u8, u32>(&staging.slice(..).get_mapped_range().unwrap()).to_vec()
 }
 
 #[test]
@@ -888,8 +887,8 @@ fn the_compare_finds_the_largest_channel_difference() {
             .slice(..)
             .map_async(wgpu::MapMode::Read, |_| {});
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let d = difference(&diff.readback().slice(..).get_mapped_range().unwrap());
-        d
+        
+        difference(&diff.readback().slice(..).get_mapped_range().unwrap())
     };
     let (a, b, c) = (texture(&base), texture(&base), texture(&changed));
     assert_eq!(run(&a, &b), 0.0);

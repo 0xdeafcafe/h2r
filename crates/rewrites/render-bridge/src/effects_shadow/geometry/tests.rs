@@ -244,7 +244,7 @@ fn a_sampled_draw_takes_the_pass_its_build_made_once_and_the_material_streak_pro
     let proven = counter("geometry_material_proven");
     material_record(&["stage0_address_u".to_owned()], &[]);
     assert!(!material_proven(), "a difference ends the streak");
-    assert_eq!(counter("geometry_material_mismatched_stage0_address_u") > 0, true);
+    assert!(counter("geometry_material_mismatched_stage0_address_u") > 0);
     assert_eq!(counter("geometry_material_proven"), proven);
 }
 

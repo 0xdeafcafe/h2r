@@ -3997,7 +3997,7 @@ mod tests {
     #[test]
     fn a_camouflage_pass_binds_the_scene_copy_in_the_sorted_handlers_layers_only() {
         use crate::object_program::SCENE_COPY_TEXTURE;
-        use crate::object_program::tests::{lit, rigid_program};
+        use crate::object_program::tests::rigid_program;
         use tags::material::{ResolvedLayer, ResolvedPass, StageTexture, TextureSource};
         let mut bytes = Vec::new();
         for k in 0..3 {

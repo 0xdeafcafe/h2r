@@ -29,6 +29,9 @@
 //! its scene-copy and reflection inputs supplied per view
 //! ([`water_gpu`]).
 
+// A run of ranges is the data's shape even when it holds one, and the
+// guest's min/max order decides NaN, which `clamp` would not keep.
+#![allow(clippy::single_range_in_vec_init, clippy::manual_clamp)]
 #[cfg(feature = "gpu")]
 pub mod base_look;
 pub mod bodies;

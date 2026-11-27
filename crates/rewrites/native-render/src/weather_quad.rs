@@ -90,7 +90,7 @@ pub fn quad(plate: &WeatherPlate, result: f32, near: f32, far: f32) -> Quad {
     let layers = |corner: usize| -> [[f32; 2]; 3] {
         std::array::from_fn(|i| {
             let s = plate.size[i];
-            let (u, v) = (if corner & 1 == 0 { s * -1.0 } else { s }, if corner & 2 == 0 { s * -1.0 } else { s });
+            let (u, v) = (if corner & 1 == 0 { -s } else { s }, if corner & 2 == 0 { -s } else { s });
             [u, v]
         })
     };

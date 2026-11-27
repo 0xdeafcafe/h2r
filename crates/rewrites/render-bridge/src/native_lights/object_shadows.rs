@@ -19,6 +19,7 @@ use crate::native_map_work::Stage;
 use frame_scene::ViewSlot;
 
 /// The view slot the object shadows draw in: slot 3, before layer 7.
+#[allow(dead_code)] // read once the shadows draw in their slot (nor-6c)
 pub const SLOT: ViewSlot = ViewSlot::ShadowsAndLayer7;
 
 #[derive(Clone, Copy)]
