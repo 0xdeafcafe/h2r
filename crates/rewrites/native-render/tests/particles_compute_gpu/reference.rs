@@ -25,11 +25,11 @@ fn sample(c: &[[f32; 4]; 4], x: f32) -> f32 {
     lerp(c[i / 4][i % 4], c[j / 4][j % 4], f)
 }
 
-fn input_of(inputs: &[f32; 8], i: u32) -> f32 {
+fn input_of(inputs: &[f32; 9], i: u32) -> f32 {
     if i >= INPUTS { 0.0 } else { inputs[i as usize] }
 }
 
-fn modify(inputs: &[f32; 8], op: u32, i: u32, v: f32) -> f32 {
+fn modify(inputs: &[f32; 9], op: u32, i: u32, v: f32) -> f32 {
     if i >= INPUTS {
         return v;
     }
@@ -40,7 +40,7 @@ fn modify(inputs: &[f32; 8], op: u32, i: u32, v: f32) -> f32 {
     }
 }
 
-fn property(p: &Property, inputs: &[f32; 8]) -> f32 {
+fn property(p: &Property, inputs: &[f32; 9]) -> f32 {
     let x = input_of(inputs, p.input);
     let r = input_of(inputs, p.range);
     let mut v = lerp(sample(&p.curve_lo, x), sample(&p.curve_hi, x), r);
@@ -51,7 +51,7 @@ fn property(p: &Property, inputs: &[f32; 8]) -> f32 {
     modify(inputs, p.modifier, p.modifier_input, v)
 }
 
-fn colour_of(p: &ColourProperty, inputs: &[f32; 8]) -> [f32; 3] {
+fn colour_of(p: &ColourProperty, inputs: &[f32; 9]) -> [f32; 3] {
     let x = input_of(inputs, p.input);
     let r = input_of(inputs, p.range);
     let v = modify(inputs, p.modifier, p.modifier_input, lerp(sample(&p.curve_lo, x), sample(&p.curve_hi, x), r));
@@ -86,6 +86,12 @@ fn aspect(w: [f32; 4]) -> [f32; 2] {
     }
 }
 
+/// `0x002490f4`: `v` less its truncation, plus one below zero.
+fn wrap(v: f32) -> f32 {
+    let f = v - v.trunc();
+    if f < 0.0 { f + 1.0 } else { f }
+}
+
 fn pack_unorm(v: [f32; 4]) -> u32 {
     let b = v.map(|c| (0.5 + 255.0 * c.clamp(0.0, 1.0)).floor() as u32);
     b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24
@@ -97,13 +103,14 @@ fn unpack_rgb(c: u32) -> [f32; 3] {
 
 impl System {
     /// The evaluation; true when the frame's position sits within 1e-3 of
-    /// a frame boundary, where the GPU's rounding may pick the neighbour.
-    /// A position of exactly zero (a birth) is not ambiguous.
+    /// a frame boundary, or the spin phase within 1e-3 of a whole turn,
+    /// where the GPU's rounding may pick the neighbour or wrap the other
+    /// way. A position of exactly zero (a birth) is not ambiguous.
     fn evaluate(&self, p: &mut Particle) -> bool {
         let d = &self.definition;
         let life = if p.lifetime > 0.0 { p.age / p.lifetime } else { 0.0 };
         let r = p.random;
-        let inputs = [life, p.age, r[0], r[1], r[2], r[3], 1.0, 0.0];
+        let inputs = [life, p.age, r[0], r[1], r[2], r[3], 1.0, 0.0, wrap(p.spin)];
         let flags = d.flags;
 
         let mut rotation = property(&d.rotation, &inputs) * d.angle_scale;
@@ -122,7 +129,8 @@ impl System {
         if flags & flag::FLIP_V != 0 && p.words & 0x1_0000 != 0 {
             flips |= 2;
         }
-        let mut edge = false;
+        let turn = p.spin - p.spin.round();
+        let mut edge = turn.abs() < 1e-3;
         if flags & flag::FIXED_WINDOW != 0 {
             let w = flipped(d.fixed_window, flips);
             p.window = w;
@@ -145,7 +153,7 @@ impl System {
                 let t = property(&d.frame, &inputs) * frames as f32;
                 let k = t.floor() as i32;
                 let fraction = t - k as f32;
-                edge = t != 0.0 && !(1e-3..=1.0 - 1e-3).contains(&fraction);
+                edge |= t != 0.0 && !(1e-3..=1.0 - 1e-3).contains(&fraction);
                 let first = ((k % count) + count) % count;
                 let next = (((k + 1) % count) + count) % count;
                 if flags & flag::NO_BLEND == 0 {
@@ -178,7 +186,7 @@ impl System {
     }
 
     /// One update: survivors in order, then the births that fit. Returns
-    /// each live particle's frame-edge flag.
+    /// each live particle's edge flag.
     pub fn step(&mut self, spawns: &[Spawn], dt: f32) -> Vec<bool> {
         let d = self.definition;
         let mut out = Vec::new();
@@ -191,6 +199,7 @@ impl System {
                     p.velocity[k] = (p.velocity[k] + d.gravity[k] * dt) * drag;
                     p.position[k] += p.velocity[k] * dt;
                 }
+                p.spin += p.spin_rate * dt;
                 edges.push(self.evaluate(&mut p));
                 out.push(p);
             }
@@ -206,6 +215,8 @@ impl System {
                 words: s.words,
                 tint: s.tint,
                 age: s.age,
+                spin: s.spin,
+                spin_rate: s.spin_rate,
                 ..Default::default()
             };
             edges.push(self.evaluate(&mut p));

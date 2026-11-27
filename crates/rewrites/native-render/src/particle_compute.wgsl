@@ -79,17 +79,17 @@ fn sample(curve: array<vec4<f32>, 4>, x: f32) -> f32 {
     return lerp(c[i / 4u][i % 4u], c[j / 4u][j % 4u], f);
 }
 
-fn input_of(values: array<f32, 8>, i: u32) -> f32 {
+fn input_of(values: array<f32, 9>, i: u32) -> f32 {
     var inputs = values;
-    if i >= 8u {
+    if i >= 9u {
         return 0.0;
     }
     return inputs[i];
 }
 
-fn modify(inputs: array<f32, 8>, op: u32, i: u32, v: f32) -> f32 {
+fn modify(inputs: array<f32, 9>, op: u32, i: u32, v: f32) -> f32 {
     let m = input_of(inputs, i);
-    if i >= 8u {
+    if i >= 9u {
         return v;
     }
     if op == 1u {
@@ -102,7 +102,7 @@ fn modify(inputs: array<f32, 8>, op: u32, i: u32, v: f32) -> f32 {
 }
 
 // 0x00246cd0.
-fn property(p: Property, inputs: array<f32, 8>) -> f32 {
+fn property(p: Property, inputs: array<f32, 9>) -> f32 {
     let x = input_of(inputs, p.input);
     let r = input_of(inputs, p.range);
     var v = lerp(sample(p.curve_lo, x), sample(p.curve_hi, x), r);
@@ -114,7 +114,7 @@ fn property(p: Property, inputs: array<f32, 8>) -> f32 {
 }
 
 // 0x00246d80.
-fn colour_of(p: ColourProperty, inputs: array<f32, 8>) -> vec3<f32> {
+fn colour_of(p: ColourProperty, inputs: array<f32, 9>) -> vec3<f32> {
     let x = input_of(inputs, p.input);
     let r = input_of(inputs, p.range);
     let v = modify(inputs, p.modifier, p.modifier_input, lerp(sample(p.curve_lo, x), sample(p.curve_hi, x), r));
@@ -154,11 +154,17 @@ fn aspect(w: vec4<f32>) -> vec2<f32> {
     return vec2<f32>(wd / ht, 1.0);
 }
 
+// 0x002490f4: v less its truncation, plus one below zero.
+fn wrap(v: f32) -> f32 {
+    let f = v - trunc(v);
+    return select(f, f + 1.0, f < 0.0);
+}
+
 // What 0x00224550 computes for the emitter, into the particle's outputs.
 fn evaluate(p: ptr<function, Particle>) {
     let life = select(0.0, (*p).age / (*p).lifetime, (*p).lifetime > 0.0);
     let r = (*p).random;
-    let inputs = array<f32, 8>(life, (*p).age, r.x, r.y, r.z, r.w, 1.0, 0.0);
+    let inputs = array<f32, 9>(life, (*p).age, r.x, r.y, r.z, r.w, 1.0, 0.0, wrap((*p).spin));
     let flags = definition.flags;
 
     var rotation = property(definition.rotation, inputs) * definition.angle_scale;
@@ -239,6 +245,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocati
             let drag = max(0.0, 1.0 - definition.drag * step.dt);
             p.velocity = (p.velocity + definition.gravity * step.dt) * drag;
             p.position = p.position + p.velocity * step.dt;
+            p.spin = p.spin + p.spin_rate * step.dt;
             evaluate(&p);
             alive = 1u;
         }
@@ -314,6 +321,8 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.id = s.id;
         p.words = s.words;
         p.tint = s.tint;
+        p.spin = s.spin;
+        p.spin_rate = s.spin_rate;
         evaluate(&p);
         dst[state.alive + i] = p;
     }

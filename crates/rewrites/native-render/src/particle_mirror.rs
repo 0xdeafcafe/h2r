@@ -10,6 +10,7 @@
 //! | input 1 (age) | `age` |
 //! | input 0 (life, age over lifetime) | `lifetime` = age / life; life 0 is an unbounded lifetime |
 //! | inputs 2, 3, 14, 15 | `random` (`particle_definition::INPUT_LANES`) |
+//! | input 11 (the spin phase `+0x38`, wrapped) | `spin`; `spin_rate` zero (nothing turns) |
 //! | particle `+0x14` (u32) | `words`: bit 0 flips u, `+0x16` bit 0 flips v, `+0x16` picks the sequence |
 //! | particle `+0x3c`, red in bits 16..23 | `tint`, red in the low byte |
 //!
@@ -78,7 +79,9 @@ pub fn spawn(inputs: &[f32; 16], position: [f32; 3], words: u32, packed: u32, id
         words,
         tint: ((packed >> 16) & 0xff) | (packed & 0xff00) | ((packed & 0xff) << 16),
         age,
-        _pad: 0,
+        spin: inputs[11],
+        spin_rate: 0.0,
+        _pad: [0; 3],
     }
 }
 
@@ -107,10 +110,12 @@ mod tests {
         inputs[3] = 0.2;
         inputs[14] = 0.3;
         inputs[15] = 0.4;
+        inputs[11] = 0.75;
         let s = spawn(&inputs, [1.0, 2.0, 3.0], 0x0003_0001, 0x00aa_bbcc, 0x4c_1000);
         assert_eq!(s.age, 1.5);
         assert_eq!(s.lifetime, 6.0, "life is age over lifetime");
         assert_eq!(s.random, [0.1, 0.2, 0.3, 0.4], "inputs 2, 3, 14, 15");
+        assert_eq!((s.spin, s.spin_rate), (0.75, 0.0), "input 11, not turned");
         assert_eq!(s.tint, 0x00cc_bbaa, "red moves to the low byte");
         assert_eq!((s.words, s.id, s.velocity), (0x0003_0001, 0x4c_1000, [0.0; 3]));
     }

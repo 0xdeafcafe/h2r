@@ -23,12 +23,14 @@ use crate::particle_system::{
 
 /// The guest's input indices (`0x00248df0`) the GPU has, and the lane each
 /// is: 0 the age over the lifetime, 1 the age in seconds, 2 and 3 the
-/// particle's `+0x14` and `+0x16` words, 14 and 15 its `+0x18` and `+0x1a`.
-pub const INPUT_LANES: [(i16, Input); 6] = [
+/// particle's `+0x14` and `+0x16` words, 11 its spin phase `+0x38`
+/// wrapped to 0..1, 14 and 15 its `+0x18` and `+0x1a`.
+pub const INPUT_LANES: [(i16, Input); 7] = [
     (0, Input::Life),
     (1, Input::Age),
     (2, Input::Random0),
     (3, Input::Random1),
+    (11, Input::Spin),
     (14, Input::Random2),
     (15, Input::Random3),
 ];
@@ -114,8 +116,8 @@ impl Refused {
     }
 }
 
-/// A lacked input's counter name: its index for 4 to 13 and 16, `other`
-/// for the rest.
+/// A lacked input's counter name: its index for 4 to 10, 12, 13 and 16,
+/// `other` for the rest.
 fn lacked(input: i16) -> &'static str {
     match input {
         4 => "input_the_gpu_lacks_4",
@@ -125,7 +127,6 @@ fn lacked(input: i16) -> &'static str {
         8 => "input_the_gpu_lacks_8",
         9 => "input_the_gpu_lacks_9",
         10 => "input_the_gpu_lacks_10",
-        11 => "input_the_gpu_lacks_11",
         12 => "input_the_gpu_lacks_12",
         13 => "input_the_gpu_lacks_13",
         16 => "input_the_gpu_lacks_16",
@@ -517,7 +518,7 @@ mod tests {
 
     #[test]
     fn an_input_the_gpu_lacks_is_a_named_refusal() {
-        for input in [4, 6, 7, 11, 12, 13, 16, -1] {
+        for input in [4, 6, 7, 12, 13, 16, -1] {
             let mut t = tag();
             t.properties[Slot::Rotation as usize].input = input;
             let e = definition(&t, None, &image()).unwrap_err();
@@ -526,7 +527,6 @@ mod tests {
                 4 => "input_the_gpu_lacks_4",
                 6 => "input_the_gpu_lacks_6",
                 7 => "input_the_gpu_lacks_7",
-                11 => "input_the_gpu_lacks_11",
                 12 => "input_the_gpu_lacks_12",
                 13 => "input_the_gpu_lacks_13",
                 16 => "input_the_gpu_lacks_16",
@@ -534,6 +534,16 @@ mod tests {
             };
             assert_eq!(e.name(), named, "input {input} by its own name");
         }
+    }
+
+    #[test]
+    fn input_11_is_the_spin_lane() {
+        let mut t = tag();
+        t.properties[Slot::Rotation as usize].input = 11;
+        assert_eq!(definition(&t, None, &image()).unwrap().rotation.input, Input::Spin as u32);
+        t.flags_98 &= !(1 << 11);
+        let e = definition(&t, None, &image()).unwrap_err();
+        assert_eq!(e, Refused::InputOutsideTheMask { slot: Slot::Rotation, role: Role::Input, input: 11 });
     }
 
     #[test]

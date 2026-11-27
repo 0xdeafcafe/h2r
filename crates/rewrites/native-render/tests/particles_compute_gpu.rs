@@ -74,7 +74,8 @@ fn curve(f: impl Fn(f32) -> f32) -> [f32; 16] {
 }
 
 /// Every evaluation path: random sequence, frame blend, flips, the
-/// particle's tint, spin, mapped and modified properties, a ranged colour.
+/// particle's tint, spin, mapped and modified properties, a ranged colour,
+/// and the spin phase (guest input 11) wrapping both ways.
 fn invented() -> (Definition, Vec<Sprite>) {
     let sprites: Vec<Sprite> = (0..12)
         .map(|i| {
@@ -89,6 +90,8 @@ fn invented() -> (Definition, Vec<Sprite>) {
     rotation.map = 1;
     rotation.lo = -0.5;
     rotation.hi = 0.5;
+    rotation.modifier_input = Input::Spin as u32;
+    rotation.modifier = modifier::ADD;
     let mut alpha = Property::curve(Input::Life, curve(|x| 1.0 - x * x));
     alpha.modifier_input = Input::Random2 as u32;
     alpha.modifier = modifier::MULTIPLY;
@@ -143,6 +146,9 @@ fn spawns(rng: &mut Lcg, first: u32, n: u32) -> Vec<Spawn> {
             random: [rng.unit(), rng.unit(), rng.unit(), rng.unit()],
             words: rng.u32(),
             tint: rng.u32() & 0x00ff_ffff,
+            // Phases either side of zero, turning either way.
+            spin: rng.unit() * 4.0 - 2.0,
+            spin_rate: rng.unit() * 6.0 - 3.0,
             ..Default::default()
         })
         .collect()
@@ -198,11 +204,12 @@ fn the_compute_update_equals_the_cpu_reference_over_forty_frames() {
             }
             assert!(colour_close(g.colour, want.colour), "{at}: colour {:08x} vs {:08x}", g.colour, want.colour);
             assert!(close(g.size, want.size), "{at}: size {} vs {}", g.size, want.size);
-            assert!(close(g.rotation, want.rotation), "{at}: rotation {} vs {}", g.rotation, want.rotation);
+            assert!(close(g.spin, want.spin), "{at}: spin {} vs {}", g.spin, want.spin);
             if *edge {
                 edges += 1;
                 continue;
             }
+            assert!(close(g.rotation, want.rotation), "{at}: rotation {} vs {}", g.rotation, want.rotation);
             assert!(close4(g.window, want.window), "{at}: window {:?} vs {:?}", g.window, want.window);
             assert!(close4(g.next_window, want.next_window), "{at}: next window {:?} vs {:?}", g.next_window, want.next_window);
             assert!(close4(g.corners, want.corners), "{at}: corners {:?} vs {:?}", g.corners, want.corners);
@@ -212,7 +219,7 @@ fn the_compute_update_equals_the_cpu_reference_over_forty_frames() {
     }
     assert!(died, "particles died along the way");
     assert!(most > 256, "more than one workgroup of particles: {most}");
-    assert!(edges * 100 < compared, "frame edges skipped: {edges} of {compared}");
+    assert!(edges * 100 < compared, "frame and spin edges skipped: {edges} of {compared}");
 }
 
 /// No bitmap, no curves: the definition's window and white, unit size.
@@ -283,6 +290,30 @@ fn a_mirror_is_its_births_alone_each_evaluated_at_its_own_age() {
     assert_eq!(got.iter().map(|p| p.id).collect::<Vec<_>>(), [3, 4], "the births alone, in order");
     assert_eq!(got.iter().map(|p| p.age).collect::<Vec<_>>(), [2.5, 9.0], "each at its own age, not aged");
     assert_eq!(draw_args(&ctx, &s), [6, 2, 0, 0]);
+}
+
+#[test]
+fn a_mirrored_birth_reads_its_spin_phase_wrapped_and_does_not_turn() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let mut d = plain();
+    d.angle_scale = 1.0;
+    d.rotation = Property::curve(Input::Spin, curve(|x| x));
+    let compute = ParticleCompute::new(&ctx.device);
+    let mut s = GpuParticles::new(&ctx.device, &compute, &d, &[], 8).unwrap();
+    let turning = |spin: f32, id| Spawn { spin, spin_rate: 100.0, age: 1.0, ..at([0.0; 3], 4.0, id) };
+    s.emit(&[turning(1.25, 1), turning(-0.25, 2), turning(0.5, 3)]);
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    s.mirror(&compute, &ctx.queue, &mut enc);
+    ctx.queue.submit([enc.finish()]);
+    let got = particles(&ctx, &s, counts(&ctx, &s).count);
+    let rotation: Vec<f32> = got.iter().map(|p| p.rotation).collect();
+    for (r, want) in rotation.iter().zip([0.25, 0.75, 0.5]) {
+        assert!(close(*r, want), "input 11 is the phase wrapped to 0..1: {rotation:?}");
+    }
+    assert_eq!(got.iter().map(|p| p.spin).collect::<Vec<_>>(), [1.25, -0.25, 0.5], "a birth is not turned");
 }
 
 #[test]

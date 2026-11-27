@@ -65,10 +65,14 @@ struct Particle {
     size: f32,
     rotation: f32,
     blend: f32,
-    _pad: f32,
+    spin: f32,
     window: vec4<f32>,
     next_window: vec4<f32>,
     corners: vec4<f32>,
+    spin_rate: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 struct Spawn {
@@ -80,6 +84,10 @@ struct Spawn {
     words: u32,
     tint: u32,
     age: f32,
-    _pad: u32,
+    spin: f32,
+    spin_rate: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 

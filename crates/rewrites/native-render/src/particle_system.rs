@@ -26,7 +26,7 @@ pub const CURVE: usize = 16;
 /// Stops in a colour gradient.
 pub const GRADIENT: usize = 8;
 /// Values a property can read ([`Input`]).
-pub const INPUTS: u32 = 8;
+pub const INPUTS: u32 = 9;
 /// A modifier input of this value (or any not below [`INPUTS`]) is none.
 pub const NO_INPUT: u32 = u32::MAX;
 
@@ -65,6 +65,9 @@ pub enum Input {
     Random3 = 5,
     One = 6,
     Zero = 7,
+    /// The particle's spin phase in turns ([`Particle::spin`]), wrapped to
+    /// 0..1 as `0x002490f4` does: guest input 11.
+    Spin = 8,
 }
 
 /// Modifier operations (a property's `+4`).
@@ -194,12 +197,17 @@ pub struct Particle {
     pub rotation: f32,
     /// The blend into the next frame's window.
     pub blend: f32,
-    pub _pad: f32,
+    /// The spin phase in turns (the guest particle's `+0x38`): random
+    /// 0..1 at birth, then `spin_rate` turns a second.
+    pub spin: f32,
     /// `(u, v, width, height)`, flips applied.
     pub window: [f32; 4],
     pub next_window: [f32; 4],
     /// The quad's extents `(x0, y0, x1, y1)` in size units.
     pub corners: [f32; 4],
+    /// Turns a second (the guest particle's `+0x34`).
+    pub spin_rate: f32,
+    pub _pad: [f32; 3],
 }
 
 /// A particle to be born at the next update, at `age` (0 for a new one;
@@ -215,7 +223,10 @@ pub struct Spawn {
     pub words: u32,
     pub tint: u32,
     pub age: f32,
-    pub _pad: u32,
+    /// [`Particle::spin`] and [`Particle::spin_rate`].
+    pub spin: f32,
+    pub spin_rate: f32,
+    pub _pad: [u32; 3],
 }
 
 /// The update's uniform.
@@ -308,8 +319,8 @@ mod tests {
         assert_eq!(size_of::<Property>(), 160);
         assert_eq!(size_of::<ColourProperty>(), 272);
         assert_eq!(size_of::<Definition>(), 96 + 4 * 160 + 272);
-        assert_eq!(size_of::<Particle>(), 128);
-        assert_eq!(size_of::<Spawn>(), 64);
+        assert_eq!(size_of::<Particle>(), 144);
+        assert_eq!(size_of::<Spawn>(), 80);
         assert_eq!(size_of::<Sprite>(), 32);
         assert_eq!(size_of::<View>(), 128);
         assert_eq!(MAX_CAPACITY, 65_536);
