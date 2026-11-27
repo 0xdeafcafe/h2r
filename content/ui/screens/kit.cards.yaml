@@ -1,0 +1,54 @@
+screen: kit.cards
+kind: list
+layout: moved
+backing: shell
+states:
+  first:
+    focus: 0
+  scrolled:
+    focus: 4
+  sliding:
+    focus: 4
+    slide: 50
+  last:
+    focus: 5
+widgets:
+  title:
+    component: title
+    text: "CARDS"
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+cards:
+  layout: row
+  items:
+    card.0:
+      name: "Lockout"
+      stats: "2 to 8 players"
+      level: lockout
+      help: "A card: a framed tile with a name, an art well and one line of stats."
+    card.1:
+      name: "Ascension"
+      stats: "2 to 8 players"
+      level: ascension
+      help: "The D-pad moves the focus along the row."
+    card.2:
+      name: "Beaver Creek"
+      stats: "2 to 8 players"
+      level: beavercreek
+      help: "The focused card has the bright frame and the white name."
+    card.3:
+      name: "Zanzibar"
+      stats: "8 to 16 players"
+      level: zanzibar
+      help: "A row shows four cards; the next one peeks in at the edge."
+    card.4:
+      name: "Coagulation"
+      stats: "8 to 16 players"
+      level: coagulation
+      help: "Past the last slot the row slides, eased, by one card."
+    card.5:
+      name: "Midship"
+      stats: "2 to 8 players"
+      level: midship
+      help: "A opens the focused card."

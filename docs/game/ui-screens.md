@@ -18,6 +18,8 @@ again, and so a screen can be seen and checked before anyone runs the game.
 | `ui_kit::spec` | A screen as data (`ScreenSpec`, the `Describe` trait) and the static checks |
 | `ui_kit::screen` | `KitScreen`: a declared screen on the list class |
 | `ui_kit::screens` | The skulls, co-op, sign-in and account screens described, with sample states |
+| `ui_kit::card`, `ui_kit::card_screen` | Cards, the card row and the carousel: a doc's `cards:` block, its offline page and its class in the game ("Cards and the card row") |
+| `ui_kit::floating` | The floating menu: a doc's `floating:` block, its anchor through `canvas_fit`, its offline page ("The floating menu") |
 | `ui_kit::preview` | A screen drawn offline from the disc's tags and fonts |
 
 ## Ids
@@ -231,6 +233,122 @@ An existing screen that keeps its own `Rows` gets the checks and previews by
 implementing `ui_kit::spec::Describe` (see `ui_kit/screens.rs` for the skulls
 and co-op ones, and `signin_screen::spec_for`).
 
+## Cards and the card row
+
+A card is a framed tile. A card row lays cards side by side; a carousel is
+the row with one slot. A screen gets one from its doc's `cards:` block, with
+no Rust of its own (`ui_kit::card`).
+
+```
+ row (kit.cards)                              carousel (firefight.wavesets)
+ CARDS                                        WAVE SET
+ +------++------++======++------++--                 +==============+
+ | well || well || well || well || w          --+    |              |    +--
+ |      ||      ||      ||      ||              |    |   map art    |    |
+ | Name || Name || NAME || Name || N            |    |   220x207    |    |
+ | stat || stat || stat || stat || s          --+    |  [ Holdout ] |    +--
+ +------++------++======++------++--                 | 3 rounds, .. |
+ help of the focused card       3 of 6               +==============+
+ (<>) CHANGE  (A) SELECT  (B) BACK            help of the card         3 of 7
+```
+
+| Part | Row (`layout: row`) | Carousel (`layout: carousel`) |
+|---|---|---|
+| Card | 124 by 150, well 96 high, 8 apart | 232 by 280, well 220 by 207 (a map picture's size), 12 apart |
+| Shown whole | 4 | 1, centred |
+| Art | blueprint lines (the well's thirds) | `level:` the map's picture; blueprint lines without one |
+| Name | a text in the card, white with the focus | the screen's one list row, so the game's list has the focus and the press |
+| Stats, help, count | one line in the card; help and `N of M` under the row | the same |
+| Focus | bright frame, two units thick | the centred card |
+
+| Press | Does (`card::Row::press`) |
+|---|---|
+| Left, Right (Up, Down) | focus moves a card; stops at the ends |
+| past the last slot | the row slides one card: 6 UI ticks, eased out (`card::ease_out`) |
+| A | opens the focused card: its `open:` screen, the row's, or the feature's pick |
+| B, Back | closes |
+
+Cards past either end peek in, cut at the row's window (`card::CLIP`, x
+-304 to 304); only a card wholly inside the title-safe area shows its texts
+and picture. Placement is canvas units through the screen's own `canvas_fit`
+fit, as every list screen's.
+
+```yaml
+cards:
+  layout: carousel          # row | carousel
+  bind: firefight.wavesets  # the feature's cards (card::bound); else items
+  open: some.screen         # A's screen when a card names none
+  items:
+    card.0: { name: "Endless", stats: "Endless, 15 waves, 7 lives", level: beavercreek, help: "..." }
+states:
+  sliding: { focus: 1, slide: 50 }   # 50% through the slide to card 1
+```
+
+| Screen | Cards | Opened by |
+|---|---|---|
+| `kit.cards` | six sample cards on a row | the preview only |
+| `firefight.wavesets` | the lobby map's wave sets (`firefight::options::wave_cards`): name, map picture, `3 rounds, 15 waves, 12 lives`, help | A on the Firefight page's Wave set row (`open: firefight.wavesets` on the value row; left and right still step it) |
+| `siege.variants` | the map and its map variants | the preview only |
+
+**In the game** (`card_screen::screen`, `card_screen::class`) a carousel is
+retail widgets: the name is a default-skin list row under the well, the
+picture is the pregame lobby's map picture moved into the well and pointed
+at the focused card's map (`Rows::picture`), and stats, count and help are
+text blocks. Left and right move the list's focus (`Rows::sideways_focus`).
+The frames, the peeking cards and the eased slide are the offline page's
+(`card::CardsPage`): no tag has a solid fill, so the game does not draw
+them. `ui.stack` reports the screen in `kit.cards`.
+
+## The floating menu
+
+A small list over the 3D view with nothing behind it, at a point of the
+screen or of the world. A screen gets one from its doc's `floating:` block
+(`ui_kit::floating`).
+
+```
+            . object                    . object near the right edge
+            +-----------+     +-----------+
+            | Edit      |     | Edit      |   kept inside the safe area:
+            | Duplicate |     | Duplicate |   `clamped` in ui.stack
+            | Delete    |     | Delete    |
+            | Properties|     | Properties|
+            +-----------+     +-----------+
+                         (A) SELECT  (B) BACK
+```
+
+| Anchor | The point |
+|---|---|
+| `world` | a world point through the camera each frame (`floating::project`), then the window point as the canvas point drawn there (`floating::window_point`, the inverse of `canvas_fit::window_fit`) |
+| `centre`, `top`, `bottom-left` ... | `canvas_fit::Anchor` held by `canvas_fit::anchor_fit`: an edge on the safe area's edge, or the window's with `pinned: true` |
+
+The list is the default skin with no frame art, up to six actions
+(`floating::MAX_ACTIONS`), its corner at the point plus `offset`, moved to
+stay inside `floating::ROOM`. Up and down move the focus, A acts (`act:`, a
+name the feature gives meaning) or opens (`open:`, a screen), B closes.
+
+```yaml
+backing: none
+floating:
+  anchor: world        # or centre, top, bottom-left ... (+ pinned: true)
+  offset: [12, 0]
+  actions:
+    action.0: { text: "Edit", open: forge.coordinates }
+    action.1: { text: "Duplicate", act: duplicate }
+states:
+  right-edge: { focus: 0, point: [250, 40] }   # a world anchor's point
+```
+
+**Forge's object actions** (`forge.object-actions`,
+`forge_screens::object_menu`): X on the aimed or held thing opens Edit
+(Coordinates), Duplicate, Delete and Properties at the object.
+
+| Step | Where |
+|---|---|
+| The object's window point, each tick | `forge_glue::editing` (`Editor::menu_point`): the monitor camera, the guest's lens |
+| The list placed as the screen opens | `object_menu::place`, `list_class::move_list` (the anchor written on the served tag) |
+| The drawn list moved each UI update | `object_menu::follow`, `list_class::offset_list` (the widgets' animated offset, after the game's update) |
+| `ui.stack` | `kit.floating`: `point`, `list`, `clamped`, `actions` |
+
 ## The checklist
 
 Before a game run (all of these are tests):
@@ -390,6 +508,18 @@ Drawn beside a 640 by 480 frame of the game, the co-op screen focused on row 4 l
 - The kit's keyboard row: it opens the game keyboard for controller 0 with
   context 20 (no check on Done). The sign-in prompt's keyboard path is the
   proven one.
+
+- Cards in the game: the carousel's list row, picture, stats and count
+  are read from the code and held by tests, not seen. Its scroll arrows
+  are the default skin's, beside the one row. It is pushed from the
+  Firefight page, a dialog; that it draws above the dialog is not seen.
+- The floating menu in the game: the anchor written on the served tag at
+  open, and the per-update offset (whether the game keeps an offset
+  written after its update, and whether the native UI pass moves an
+  item's children by their own offsets). The lens is the guest's
+  horizontal field of view word (`0x00485640`) taken at 4:3 with the
+  height kept on a wider window; the monitor's own lens is not read.
+  Properties opens above the menu, whose rows stay drawn beneath it.
 
 ## Related
 

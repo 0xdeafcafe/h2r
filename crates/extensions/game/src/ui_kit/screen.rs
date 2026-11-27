@@ -94,6 +94,12 @@ enum Kind {
         fill: Get<Option<Filled>>,
         offer: Get<Result<crate::ui_kit::picker::Pick, String>>,
     },
+    /// An action row whose label and help its binding gives
+    /// ([`Row::card`]); not drawn while it gives none.
+    Card {
+        fill: Get<Option<Filled>>,
+        press: Get<Then>,
+    },
 }
 
 type Typed = Arc<dyn Fn(Option<&str>) -> String + Send + Sync>;
@@ -114,6 +120,9 @@ pub struct Row {
     description: Option<String>,
     /// What the value picker says (a value row), else its description.
     explain: Option<String>,
+    /// The screen of ours A pushes from a value row in place of the value
+    /// picker ([`Row::opens`]).
+    opens: Option<&'static str>,
 }
 
 impl Row {
@@ -214,6 +223,28 @@ impl Row {
             },
         )
     }
+    /// A card of a carousel (`crate::ui_kit::card_screen`): `fill` is its
+    /// name and help as the screen shows it, or `None` for a slot with no
+    /// card, which is not drawn. A runs `press`.
+    pub fn card(
+        fill: impl Fn() -> Option<Filled> + Send + Sync + 'static,
+        press: impl Fn() -> Then + Send + Sync + 'static,
+    ) -> Self {
+        Self::of(
+            "",
+            Kind::Card {
+                fill: Arc::new(fill),
+                press: Arc::new(press),
+            },
+        )
+    }
+    /// On a value row: A pushes `screen` (a screen of ours that picks the
+    /// value its own way, a card carousel) in place of the value picker.
+    /// Left and right still step the values.
+    pub fn opens(mut self, screen: &'static str) -> Self {
+        self.opens = Some(screen);
+        self
+    }
     pub fn describe(mut self, text: &str) -> Self {
         self.description = Some(text.into());
         self
@@ -230,6 +261,7 @@ impl Row {
             kind,
             description: None,
             explain: None,
+            opens: None,
         }
     }
     fn spec(&self) -> RowSpec {
@@ -239,7 +271,7 @@ impl Row {
     /// A slot row's fill now; `None` for any other row.
     fn filled(&self) -> Option<Option<Filled>> {
         match &self.kind {
-            Kind::Slot { fill, .. } => Some(fill()),
+            Kind::Slot { fill, .. } | Kind::Card { fill, .. } => Some(fill()),
             _ => None,
         }
     }
@@ -255,7 +287,11 @@ impl Row {
             Kind::Value { values, get, .. } => {
                 let values = (values)();
                 let choices: Vec<&str> = values.iter().map(String::as_str).collect();
-                (RowSpec::value(&self.label, &choices, get()), true)
+                let row = RowSpec::value(&self.label, &choices, get());
+                match self.opens {
+                    Some(screen) => (row.press(spec::Press::Open(screen.into())), true),
+                    None => (row, true),
+                }
             }
             Kind::Info(value) => {
                 let (text, loaded) = value();
@@ -276,6 +312,15 @@ impl Row {
                 let f = fill().unwrap_or_default();
                 let row = RowSpec::value(&f.label, &[f.shown.as_str()], 0)
                     .press(spec::Press::Open(crate::ui_kit::picker::NAME.into()));
+                let row = match &f.help {
+                    Some(help) => row.describe(help),
+                    None => row,
+                };
+                return (row, true);
+            }
+            Kind::Card { fill, .. } => {
+                let f = fill().unwrap_or_default();
+                let row = RowSpec::action(&f.label);
                 let row = match &f.help {
                     Some(help) => row.describe(help),
                     None => row,
@@ -712,7 +757,7 @@ impl KitScreen {
         Ok(())
     }
 
-    fn bare(feature: &'static str, name: &'static str, ids: Family, title: &str) -> Self {
+    pub(super) fn bare(feature: &'static str, name: &'static str, ids: Family, title: &str) -> Self {
         KitScreen {
             feature,
             name,
@@ -950,6 +995,20 @@ impl KitScreen {
     pub fn slots(&self) -> u32 {
         self.header_slot() + self.header_lines().len() as u32
     }
+    /// Sets text slot `slot` of the screen's family, one past its own
+    /// ([`KitScreen::slots`]) for a class that draws more than its rows
+    /// (`crate::ui_kit::card_screen`'s stats and count). Its string id.
+    pub(super) fn set_text(&self, slot: u32, text: &str) -> u32 {
+        self.texts.set(slot, text)
+    }
+    /// Its screen's name in [`crate::ui_kit::screens::NAMES`].
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+    /// The family the screen's text slots are in.
+    pub(super) fn family(&self) -> Family {
+        self.texts.family
+    }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1166,12 +1225,17 @@ impl Rows for KitScreen {
             Chosen::Act
         };
         match &r.kind {
-            Kind::Action(press) => match press() {
+            Kind::Action(press) | Kind::Card { press, .. } => match press() {
                 Then::Stay(line) => Chosen::Stepped(line),
                 Then::Open(name) => Chosen::Open(name),
                 Then::Close => pend(Pending::Close),
                 Then::CloseThen(work) => pend(Pending::CloseThen(work)),
             },
+            // A value row that picks on a screen of its own: pushed, so B
+            // comes back to this one.
+            Kind::Value { .. } if r.opens.is_some() => {
+                r.opens.map_or(Chosen::Nothing, Chosen::Push)
+            }
             Kind::Value { values, get, set } => {
                 let pick = crate::ui_kit::picker::Pick::new(
                     &r.label,

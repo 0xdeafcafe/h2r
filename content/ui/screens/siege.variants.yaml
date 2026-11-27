@@ -1,0 +1,38 @@
+screen: siege.variants
+kind: list
+layout: moved
+backing: shell
+scrolls: true
+states:
+  first:
+    focus: 0
+  sliding:
+    focus: 1
+    slide: 50
+  last:
+    focus: 2
+widgets:
+  title:
+    component: title
+    text: "MAP VARIANT"
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+cards:
+  layout: carousel
+  items:
+    card.0:
+      name: "Lockout"
+      stats: "The map itself, 3 rounds"
+      level: lockout
+      help: "The map as it ships, with the Siege kit's own bases."
+    card.1:
+      name: "Lockout Towers"
+      stats: "Map variant, 3 rounds"
+      level: lockout
+      help: "A saved map variant: both bases moved up the towers."
+    card.2:
+      name: "Lockout Low"
+      stats: "Map variant, 5 rounds"
+      level: lockout
+      help: "A saved map variant: the fight kept to the lower walkways."

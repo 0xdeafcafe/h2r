@@ -437,6 +437,19 @@ fn row(
         }
         (k, _, _) => return Err((at("kind"), format!("{k:?}: a settings row is value, pick, open or action"))),
     };
+    // A value row that names a screen: A pushes it (a card carousel that
+    // picks the value) in place of the value picker.
+    let row = match (r.kind.as_str(), r.open.as_deref()) {
+        ("value", Some(open)) => {
+            let screen = crate::ui_kit::screens::NAMES
+                .iter()
+                .copied()
+                .find(|n| *n == open)
+                .ok_or_else(|| (at("open"), format!("no screen {open:?}")))?;
+            row.opens(screen)
+        }
+        _ => row,
+    };
     let row = row.describe(&help);
     Ok(match &r.explain {
         Some(e) => row.explain(e),

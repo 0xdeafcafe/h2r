@@ -269,7 +269,92 @@ pub struct ScreenDoc {
     /// Properties page"). Apart from `rows`, which are fixed by position.
     #[serde(default)]
     pub props: IndexMap<String, PropDoc>,
+    /// A row of cards (docs/game/ui-screens.md, "Cards and the card
+    /// row"): a `list` on `layout: moved` with no rows of its own.
+    pub cards: Option<CardsDoc>,
+    /// A floating menu (docs/game/ui-screens.md, "The floating menu"): a
+    /// `list` on `layout: moved` with `backing: none`, its rows the
+    /// block's actions.
+    pub floating: Option<FloatingDoc>,
 }
+
+/// A screen's row of cards ([`crate::ui_kit::card`]).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardsDoc {
+    /// `row` or `carousel` ([`CARD_LAYOUTS`]).
+    pub layout: String,
+    /// The feature source that gives the cards in the game
+    /// ([`crate::ui_kit::card::bound`]); the doc's own are the sample.
+    pub bind: Option<String>,
+    /// The screen A opens on a card that names none.
+    pub open: Option<String>,
+    /// The cards, by id (`card.0`), in order.
+    #[serde(default)]
+    pub items: IndexMap<String, CardDoc>,
+}
+
+/// One card.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardDoc {
+    pub name: String,
+    /// The line under the name: waves, rounds, lives.
+    #[serde(default)]
+    pub stats: String,
+    /// The map whose picture fills the well, by its file's stem; none
+    /// draws blueprint lines.
+    pub level: Option<String>,
+    /// The line under the row while the card has the focus.
+    pub help: Option<String>,
+    /// The screen A opens on this card.
+    pub open: Option<String>,
+}
+
+/// The layouts a card row may have.
+pub const CARD_LAYOUTS: [&str; 2] = ["row", "carousel"];
+
+/// A screen's floating menu ([`crate::ui_kit::floating`]).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FloatingDoc {
+    /// `world` (a point of the world, projected each frame) or a held
+    /// point of the screen ([`FLOATING_ANCHORS`]).
+    pub anchor: String,
+    /// The menu's corner from the anchor's point, `x, y` (Y up).
+    pub offset: Option<[i16; 2]>,
+    /// A screen anchor on the window's own edge, not the safe area's.
+    #[serde(default)]
+    pub pinned: bool,
+    /// The actions, by id (`action.0`), in order.
+    #[serde(default)]
+    pub actions: IndexMap<String, FloatActionDoc>,
+}
+
+/// One action of a floating menu.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FloatActionDoc {
+    pub text: String,
+    /// What the feature does on A, by name; the menu closes first.
+    pub act: Option<String>,
+    /// The screen A opens instead.
+    pub open: Option<String>,
+}
+
+/// The anchors a floating menu may name.
+pub const FLOATING_ANCHORS: [&str; 10] = [
+    "world",
+    "centre",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+];
 
 /// A row of a Forge page that is bound to a property of the thing shown:
 /// the kinds it is for, the property, what A does and a picker's values.
@@ -383,6 +468,12 @@ pub struct StateDoc {
     #[serde(default)]
     pub focus: usize,
     pub cursor: Option<usize>,
+    /// A card row: percent through the slide that brought the focus here
+    /// from the card before it.
+    pub slide: Option<u8>,
+    /// A floating menu on a world anchor: where the point is projected in
+    /// this state, UI units.
+    pub point: Option<[i16; 2]>,
 }
 
 /// One widget: its component and what the screen gives it.
@@ -655,13 +746,122 @@ impl ScreenDoc {
             }
         }
         self.validate_settings(design)?;
+        self.validate_primitives()?;
         let rows = self.rows.len();
+        let cards = self.cards.as_ref().map(|c| c.items.len());
+        let actions = self.floating.as_ref().map(|f| f.actions.len());
         for (name, s) in &self.states {
             if name.is_empty() || name.chars().any(char::is_control) {
                 return err(format!("states.{name}"), "a state has a name".into());
             }
             if rows > 0 && s.focus >= rows {
                 return err(format!("states.{name}.focus"), format!("focus {} past {rows} rows", s.focus));
+            }
+            if let Some(n) = cards.or(actions)
+                && s.focus >= n
+            {
+                return err(format!("states.{name}.focus"), format!("focus {} past {n} cards or actions", s.focus));
+            }
+            if s.slide.is_some_and(|p| cards.is_none() || p > 100) {
+                return err(format!("states.{name}.slide"), "a card row's slide, 0 to 100 percent".into());
+            }
+            if s.point.is_some() && self.floating.as_ref().is_none_or(|f| f.anchor != "world") {
+                return err(format!("states.{name}.point"), "only a floating menu on a world anchor has a point".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The `cards:` and `floating:` blocks' own rules
+    /// (docs/game/ui-screens.md, "Cards and the card row", "The floating
+    /// menu"): each on a moved list with no rows of its own, its ids in
+    /// order, its names real.
+    fn validate_primitives(&self) -> Result<(), DataError> {
+        let file = self.file();
+        let err = |at: String, what: String| Err(DataError::new(&file, &at, what));
+        let moved = (self.kind.as_str(), self.layout.as_deref()) == ("list", Some("moved"));
+        let ordered = |ids: Vec<&String>, prefix: &str| {
+            ids.iter()
+                .enumerate()
+                .find(|(i, id)| id.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()) != Some(*i))
+                .map(|(_, id)| (*id).clone())
+        };
+        let named = |v: &Option<String>| v.as_ref().is_none_or(|v| plain(v));
+        for (block, on) in [("cards", self.cards.is_some()), ("floating", self.floating.is_some())] {
+            if !on {
+                continue;
+            }
+            if !moved {
+                return err(block.into(), "only a list on layout: moved has one".into());
+            }
+            if !self.rows.is_empty() || !self.props.is_empty() {
+                return err("rows".into(), format!("a screen with a {block}: block has no rows of its own"));
+            }
+        }
+        if self.cards.is_some() && self.floating.is_some() {
+            return err("floating".into(), "a screen is a card row or a floating menu, not both".into());
+        }
+        if let Some(c) = &self.cards {
+            if !CARD_LAYOUTS.contains(&c.layout.as_str()) {
+                return err("cards.layout".into(), format!("{:?} is not one of {CARD_LAYOUTS:?}", c.layout));
+            }
+            if !named(&c.bind) || !named(&c.open) {
+                return err("cards".into(), "bind and open are names: lower case, digits, '.', '-', '_'".into());
+            }
+            if c.items.len() < 2 {
+                return err("cards.items".into(), "a card row has two cards or more".into());
+            }
+            if let Some(id) = ordered(c.items.keys().collect(), "card.") {
+                return err(format!("cards.items.{id}"), "card ids are card.0, card.1, ... in order".into());
+            }
+            for (id, card) in &c.items {
+                let at = |field: &str| format!("cards.items.{id}.{field}");
+                if card.name.trim().is_empty() {
+                    return err(at("name"), "a card has a name".into());
+                }
+                if !named(&card.level) {
+                    return err(at("level"), "a map's stem: lower case, digits, '.', '-', '_'".into());
+                }
+                if !named(&card.open) {
+                    return err(at("open"), "a screen's name".into());
+                }
+                for (field, text) in [("name", Some(&card.name)), ("stats", Some(&card.stats)), ("help", card.help.as_ref())] {
+                    if let Some(t) = text {
+                        slots_of(t).map_err(|what| DataError::new(&file, &at(field), what))?;
+                    }
+                }
+            }
+        }
+        if let Some(f) = &self.floating {
+            if self.backing.as_deref() != Some("none") {
+                return err("backing".into(), "a floating menu has backing: none".into());
+            }
+            if !FLOATING_ANCHORS.contains(&f.anchor.as_str()) {
+                return err("floating.anchor".into(), format!("{:?} is not one of {FLOATING_ANCHORS:?}", f.anchor));
+            }
+            if f.pinned && f.anchor == "world" {
+                return err("floating.pinned".into(), "only a screen anchor is pinned".into());
+            }
+            if f.actions.is_empty() || f.actions.len() > crate::ui_kit::floating::MAX_ACTIONS {
+                return err(
+                    "floating.actions".into(),
+                    format!("a floating menu has 1 to {} actions", crate::ui_kit::floating::MAX_ACTIONS),
+                );
+            }
+            if let Some(id) = ordered(f.actions.keys().collect(), "action.") {
+                return err(format!("floating.actions.{id}"), "action ids are action.0, action.1, ... in order".into());
+            }
+            for (id, a) in &f.actions {
+                let at = |field: &str| format!("floating.actions.{id}.{field}");
+                if a.text.trim().is_empty() {
+                    return err(at("text"), "an action has a label".into());
+                }
+                if a.act.is_some() == a.open.is_some() {
+                    return err(format!("floating.actions.{id}"), "an action names what it does (act) or the screen it opens (open), one of them".into());
+                }
+                if !named(&a.act) || !named(&a.open) {
+                    return err(format!("floating.actions.{id}"), "act and open are names: lower case, digits, '.', '-', '_'".into());
+                }
             }
         }
         Ok(())

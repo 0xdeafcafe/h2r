@@ -337,7 +337,8 @@ camera and tool take no input (`forge_screens::ui_up`, published to
 | Screen | Opened by | Built as | Slice |
 |---|---|---|---|
 | Object menu | X with nothing aimed at | `kit.picker.game` twice: groups, then the group's objects | U4 |
-| Properties | X on the thing aimed at or held | a list page on the in-game Controller Settings host; rows from a table by kind | U4 |
+| Object actions | X on the thing aimed at or held | a [floating menu](ui-screens.md#the-floating-menu) at the object (`forge.object-actions`, `forge_screens::object_menu`): Edit, Duplicate, Delete, Properties | U4 |
+| Properties | the Properties row of Object actions; X on a thing being placed | a list page on the in-game Controller Settings host; rows from a table by kind | U4 |
 | Tools | D-pad Right | `kit.picker.game` over the tools that are built | U4 |
 | Tool settings | D-pad Down; a row of Forge options | a list page on the same host, a row per setting | U4, rows in P1 |
 | Overlays | Back | a list page on the same host as Tool settings, a row per overlay | |

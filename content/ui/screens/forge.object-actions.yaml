@@ -1,0 +1,40 @@
+screen: forge.object-actions
+kind: list
+layout: moved
+backing: none
+states:
+  centre:
+    focus: 0
+    point: [0, 0]
+  delete:
+    focus: 2
+    point: [0, 0]
+  right-edge:
+    focus: 0
+    point: [250, 40]
+  low:
+    focus: 3
+    point: [-120, -200]
+widgets:
+  title:
+    component: title
+    text: "CRATE"
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "BACK"]]
+floating:
+  anchor: world
+  offset: [12, 0]
+  actions:
+    action.0:
+      text: "Edit"
+      open: forge.coordinates
+    action.1:
+      text: "Duplicate"
+      act: duplicate
+    action.2:
+      text: "Delete"
+      act: delete
+    action.3:
+      text: "Properties"
+      open: forge.properties

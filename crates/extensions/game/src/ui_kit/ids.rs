@@ -100,6 +100,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("forge squad", 0x20ff_c540, 0x20),
     Family::new("forge wave problems", 0x20ff_c560, 0x40),
     Family::new("forge enemy types", 0x20ff_c5a0, 0x20),
+    Family::new("firefight wave sets", 0x20ff_c5c0, 0x40),
+    Family::new("forge object actions", 0x20ff_c600, 0x10),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),

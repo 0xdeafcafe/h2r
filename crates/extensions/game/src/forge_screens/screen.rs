@@ -186,6 +186,9 @@ impl ForgeScreen {
         let slots = ((self.kind.family().len - ROWS) / 2) as usize;
         match self.kind.look() {
             Look::List => slots.min((crate::list_class::LINES_PER_CLASS / 2) as usize),
+            Look::Floating => slots
+                .min((crate::list_class::LINES_PER_CLASS / 2) as usize)
+                .min(crate::ui_kit::floating::MAX_ACTIONS),
             _ => slots,
         }
     }
@@ -197,6 +200,8 @@ impl ForgeScreen {
     fn style(&self) -> ValueStyle {
         match self.kind.look() {
             Look::List => ValueStyle::Column,
+            // The default skin's items have one text.
+            Look::Floating => ValueStyle::Inline,
             Look::Picker | Look::Question => DialogBase::Large.style(),
         }
     }
@@ -213,7 +218,7 @@ impl ForgeScreen {
     /// `None` is the screen's legend as it opens.
     pub fn prompts_at(&self, row: Option<usize>) -> Vec<Prompt> {
         let sheet = self.sheet();
-        let on_fact = self.kind.look() != Look::List
+        let on_fact = !matches!(self.kind.look(), Look::List | Look::Floating)
             && row
                 .or(Some(sheet.focus))
                 .and_then(|i| sheet.rows.get(i))
@@ -340,6 +345,9 @@ impl ForgeScreen {
             if me.kind == Kind::Coordinates {
                 super::send(super::sheet::Choice::CoordinatesDone);
             }
+            if me.kind == Kind::ObjectActions {
+                super::object_menu::closed();
+            }
             eprintln!("{}: {screen:#x} is freed", me.kind.screen());
             Box::pin(async { Ok(()) })
         });
@@ -371,6 +379,11 @@ impl ForgeScreen {
                 }),
             Look::List if self.kind == Kind::Coordinates => c.lines().sideways(),
             Look::List => c.lines(),
+            // No frame art and the rows at the menu's point; the point of
+            // each opening is written as it opens (`object_menu::place`).
+            Look::Floating => c
+                .lines()
+                .layout(super::object_menu::layout(crate::ui_kit::floating::MAX_ACTIONS)),
         }
     }
 }
@@ -413,7 +426,7 @@ impl Rows for ForgeScreen {
     /// In a game the Controller Settings items have one text: label and
     /// value on one line, two spaces apart, as retail's settings rows read.
     fn line(&self, row: i16) -> Option<String> {
-        if self.kind.look() != Look::List {
+        if !matches!(self.kind.look(), Look::List | Look::Floating) {
             return None;
         }
         let s = lock(&self.sheet);
@@ -645,6 +658,10 @@ impl Describe for ForgeScreen {
             }
             Look::List => {
                 s.scrolls = s.rows.len() > ListPlace::Controls.shown();
+            }
+            Look::Floating => {
+                s.list = ListPlace::from(Some(super::object_menu::layout(s.rows.len())));
+                s.transparent = true;
             }
         }
         s
