@@ -54,6 +54,11 @@ fn a_set_naming_a_cut_class_is_refused_by_name() {
 fn allied(allies: Vec<SquadSpec>) -> Def {
     let [mut def, ..] = builtin::definitions();
     def.rounds[0].allies = allies;
+    // Allies count toward the actor cap: room for the most the rules allow
+    // (four), so these checks reach the allies' own rules.
+    for (_, cap) in &mut def.caps.live_actors_by_players {
+        *cap += 4;
+    }
     def
 }
 

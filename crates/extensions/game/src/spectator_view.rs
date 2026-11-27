@@ -340,10 +340,15 @@ mod tests {
     }
 
     fn draw(guest: &mut FakeGuest, from: u32) -> bool {
+        draw_returning(guest, from, WORLD_VIEW_RETURN)
+    }
+
+    /// A call to the world view's routine from `returns_to`.
+    fn draw_returning(guest: &mut FakeGuest, from: u32, returns_to: u32) -> bool {
         const STACK: u32 = 0x1000;
         const SCRATCH: u32 = 0x3000;
         guest
-            .put_u32(STACK, WORLD_VIEW_RETURN)
+            .put_u32(STACK, returns_to)
             .put_u32(STACK + 12, from)
             .map(SCRATCH, VIEW_STRIDE);
         let pose = Pose { position: [0.0; 3], yaw: 0.0, pitch: 0.0 };
@@ -369,8 +374,7 @@ mod tests {
         guest.put_u32(VIEW_PLAYER, u32::MAX);
         PRIVATE_VIEW.store(false, Ordering::Relaxed);
         assert!(!skips_black_overlay(&guest), "the next frame, drawn by the game");
-        guest.put_u32(0x1000, 0);
-        assert!(!draw(&mut guest, 0x2000), "not the world view's call");
+        assert!(!draw_returning(&mut guest, 0x2000, 0), "not the world view's call");
         assert!(!skips_black_overlay(&guest));
     }
 
