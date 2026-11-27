@@ -14,14 +14,10 @@
 //! difference. One difference makes it fall back to the guest for the
 //! rest of the map; a map load starts every arm learning again, and the
 //! counts stay. With `impl.render.native.visibility=off` an arm still
-//! compares its samples and never answers.
+//! compares its samples and never answers. The state machine is
+//! `engine::shadow_arm`'s, which the byte-compared arms share.
 
-/// One frame in this many is compared with the guest's, whatever the
-/// arm's state.
-pub const SAMPLE_EVERY: u32 = 64;
-
-/// Sampled matches, with no difference, before an arm answers.
-pub const PROVEN_AFTER: u64 = 16;
+pub use engine::shadow_arm::{Counts, Outcome, PROVEN_AFTER, Plan, SAMPLE_EVERY, Shadow, sampled};
 
 /// The three arms, in the order their counters are listed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,144 +36,6 @@ impl Kind {
             Self::Frusta => "frusta",
             Self::Objects => "objects",
         }
-    }
-}
-
-/// What an arm does with one view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Plan {
-    /// Make the Rust result and compare it with the guest's.
-    Compare,
-    /// Make the Rust result and answer with it, uncompared.
-    Answer,
-    /// The guest answers; the Rust result is not needed.
-    Guest,
-}
-
-/// Who answered one view, and why.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Sampled, equal: answered by Rust once proven and on, else the guest.
-    Matched,
-    /// Sampled, different: the guest answers, and the arm falls back.
-    Differed,
-    /// Not sampled; Rust answered.
-    Answered,
-    /// Not sampled; the guest answered (learning, fallen or off).
-    Guest,
-    /// The Rust result declined or the guest's did not read: the guest
-    /// answers, or the view carries nothing.
-    Declined,
-}
-
-/// An arm's counts since start: every view it saw is in exactly one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Counts {
-    pub matched: u64,
-    pub differed: u64,
-    pub answered: u64,
-    pub guest: u64,
-    pub declined: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum State {
-    #[default]
-    Learning,
-    Proven,
-    Fallen,
-}
-
-/// One arm: its state on this map and its counts.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Shadow {
-    state: State,
-    /// Sampled matches on this map.
-    clean: u64,
-    pub counts: Counts,
-}
-
-/// Whether `frame` is a sampled one.
-pub fn sampled(frame: u32) -> bool {
-    frame % SAMPLE_EVERY == 0
-}
-
-impl Shadow {
-    /// A learning arm with no counts.
-    pub const NEW: Shadow = Shadow {
-        state: State::Learning,
-        clean: 0,
-        counts: Counts {
-            matched: 0,
-            differed: 0,
-            answered: 0,
-            guest: 0,
-            declined: 0,
-        },
-    };
-
-    /// The arm answers its unsampled frames.
-    pub fn proven(&self) -> bool {
-        self.state == State::Proven
-    }
-
-    /// The arm has seen a difference on this map.
-    pub fn fallen(&self) -> bool {
-        self.state == State::Fallen
-    }
-
-    /// What to do with a view of `frame`. `on` is
-    /// `impl.render.native.visibility`.
-    pub fn plan(&self, frame: u32, on: bool) -> Plan {
-        if sampled(frame) {
-            Plan::Compare
-        } else if on && self.proven() {
-            Plan::Answer
-        } else {
-            Plan::Guest
-        }
-    }
-
-    /// Record a compared view: `equal` is the comparison's result.
-    /// Returns whether Rust answers it.
-    pub fn compared(&mut self, equal: bool, on: bool) -> (Outcome, bool) {
-        if !equal {
-            self.counts.differed += 1;
-            self.state = State::Fallen;
-            return (Outcome::Differed, false);
-        }
-        self.counts.matched += 1;
-        if self.state == State::Learning {
-            self.clean += 1;
-            if self.clean >= PROVEN_AFTER {
-                self.state = State::Proven;
-            }
-        }
-        (Outcome::Matched, on && self.proven())
-    }
-
-    /// Record an unsampled view: Rust answers it when `plan` was
-    /// [`Plan::Answer`].
-    pub fn unsampled(&mut self, plan: Plan) -> (Outcome, bool) {
-        if plan == Plan::Answer {
-            self.counts.answered += 1;
-            (Outcome::Answered, true)
-        } else {
-            self.counts.guest += 1;
-            (Outcome::Guest, false)
-        }
-    }
-
-    /// Record a view whose Rust or guest side did not make a result.
-    pub fn declined(&mut self) -> (Outcome, bool) {
-        self.counts.declined += 1;
-        (Outcome::Declined, false)
-    }
-
-    /// A map load: learn again; the counts stay.
-    pub fn new_map(&mut self) {
-        self.state = State::Learning;
-        self.clean = 0;
     }
 }
 

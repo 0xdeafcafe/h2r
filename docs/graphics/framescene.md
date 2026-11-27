@@ -208,7 +208,7 @@ Once per guest frame, after the frame's ticks, the guest calls `render_frame_and
 
 | Point (research points, **Code** unless marked) | Runs on the sim thread |
 |---|---|
-| `render_game_views` `0x002234e0`, `0x00223080` per view | guest, unchanged: the view records are camera state other code reads |
+| `render_game_views` `0x002234e0`, `0x00223080` per view | Rust once its byte arm is proven, else the guest ([native-visibility.md](native-visibility.md#the-view-records)) |
 | `render_views` `0x0002b5d0` entry | `SceneBuilder::begin(frame)`; the game-time bracket runs in the guest |
 | per view, visibility `0x00040e90` and the gathers | the Rust scene lists, with the guest's portal traversal and light frustum setup as their inputs |
 | first `LAYER_DRAW` `0x00044550` of the view (layer 1) | extract the view: camera, clusters, instances, parts, rows, world state. The world and object hooks already assume the lists are final here |

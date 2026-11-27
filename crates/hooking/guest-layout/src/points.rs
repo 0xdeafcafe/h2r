@@ -996,8 +996,10 @@ points! { ALL;
     /// screen) and presents. Once a frame, from the main loop.
     RENDER_FRAME @ 0x0022_3240: [fn() ret 0]; "docs/engine/engine-map.md";
     /// `render_game_views`: builds the per-player view records and cameras,
-    /// then calls `render_views`.
-    RENDER_GAME_VIEWS @ 0x0022_34e0: [opaque]; "docs/engine/engine-map.md";
+    /// then calls `render_views` (from `0x00223714`). No arguments; it
+    /// keeps one local and four saved registers, `ret`.
+    /// `render_bridge::native_scene_lists::view_records` implements it.
+    RENDER_GAME_VIEWS @ 0x0022_34e0: [fn() ret 0]; "docs/graphics/native-visibility.md";
     /// `render_views`: begin-frame setup, the loop over view records, end of
     /// drawing.
     RENDER_VIEWS @ 0x0002_b5d0: [fn(count: eax, context: ecx, arg0: stack 0, arg1: stack 1, views: stack 2) ret 12]; "docs/engine/engine-map.md";

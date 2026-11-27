@@ -74,7 +74,7 @@ Builds the per-player (or cinematic) view records and their cameras, one
 stack arguments `(ebp, [esp+0x10], 0x0047f210)`: the view records are
 the static array at `0x0047f210`. The record fill uses `rep movsd` of 0x1d dwords
 and x87 (`fpatan`) for a field at `+0x28` (S: the horizontal FOV from the
-vertical one). Not ported: the records are camera state other code reads.
+vertical one). Rust builds the records and writes them once its byte arm is proven ([native-visibility.md](native-visibility.md#the-view-records)).
 
 ### `render_game_view` `0x0002b790` (Code, complete)
 
