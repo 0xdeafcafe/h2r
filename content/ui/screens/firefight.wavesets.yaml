@@ -1,0 +1,59 @@
+screen: firefight.wavesets
+kind: list
+layout: moved
+backing: shell
+scrolls: true
+states:
+  first:
+    focus: 0
+  sliding:
+    focus: 1
+    slide: 50
+  last:
+    focus: 6
+widgets:
+  title:
+    component: title
+    text: "WAVE SET"
+  legend:
+    component: legend
+    prompts: [[[Left, Right], "CHANGE"], [A, "SELECT"], [B, "BACK"]]
+cards:
+  layout: carousel
+  bind: firefight.wavesets
+  items:
+    card.0:
+      name: "Endless"
+      stats: "Endless, 15 waves, 7 lives"
+      level: beavercreek
+      help: "Sets of three rounds, each harder than the last, until the team is out."
+    card.1:
+      name: "Basin"
+      stats: "3 rounds, 15 waves, 10 lives"
+      level: beavercreek
+      help: "This map's own set."
+    card.2:
+      name: "Holdout"
+      stats: "3 rounds, 15 waves, 12 lives"
+      level: beavercreek
+      help: "A steady fight with the most lives."
+    card.3:
+      name: "Attrition"
+      stats: "3 rounds, 15 waves, 8 lives"
+      level: beavercreek
+      help: "More enemies for fewer lives."
+    card.4:
+      name: "Last Stand"
+      stats: "3 rounds, 15 waves, 5 lives"
+      level: beavercreek
+      help: "The hardest set, on the fewest lives."
+    card.5:
+      name: "Crossfire"
+      stats: "2 teams, 15 waves, 10 lives"
+      level: beavercreek
+      help: "Two teams fight the waves and each other."
+    card.6:
+      name: "Outbreak"
+      stats: "3 rounds, 15 waves, 10 lives"
+      level: beavercreek
+      help: "The Flood."

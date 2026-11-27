@@ -1405,7 +1405,11 @@ switches its skull on) and Drop pods (`firefight.pods`, on by default:
 players fall to their spawns in pods where the kit has them; the page always
 shows the row, and `firefight.state`'s `pods.hidden` says why pods are off on a
 map with no pod or no open start). A on a row opens the value picker over the page; left and right step
-as a shortcut. No row is an arrow row.
+as a shortcut. A on Wave set pushes a carousel of cards instead
+(`firefight.wavesets`, `options::wave_sets_page`): a card a set, with the
+lobby map's picture, its rounds, waves and lives (`options::wave_stats`) and
+its help; a set the kit lacks a class for says why and is not stored
+([ui-screens.md](ui-screens.md#cards-and-the-card-row)). No row is an arrow row.
 
 `Options::read` reads the store when a game starts and the runtime plays
 that match: `Options::definition` is the wave set the value names on the

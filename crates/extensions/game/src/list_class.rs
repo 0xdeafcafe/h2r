@@ -222,6 +222,13 @@ pub trait Rows: Send + Sync {
     fn sideways(&self, _row: i16, _right: bool) -> Option<String> {
         None
     }
+    /// The row left (`right` false) or right moves the focus to from row
+    /// `row`, for a class with sideways steps whose rows lie side by side
+    /// (a card carousel, `crate::ui_kit::card_screen`); asked before
+    /// [`Rows::sideways`]. `None`: the press steps the row or goes on.
+    fn sideways_focus(&self, _row: i16, _right: bool) -> Option<usize> {
+        None
+    }
     /// Writes the texts that change at run time (`crate::coop_live`'s) into
     /// guest memory, before a row's texts are set and when the screen
     /// opens. Most screens' texts are written once at install.
@@ -1104,6 +1111,81 @@ pub fn has_layout(vtable: u32) -> bool {
     crate::ui_kit::dialog_tag::by_vtable(vtable).is_some() || layout_screen(vtable).is_some()
 }
 
+/// The lists moved for the screens opened next, by screen name: a
+/// floating menu's anchor, set as it opens (`crate::ui_kit::floating`).
+static MOVED: Mutex<Vec<(&'static str, [i16; 2])>> = Mutex::new(Vec::new());
+
+/// Puts the list of the screens of `screen` opened from now on at
+/// `anchor` (its first item's point), in place of its layout's own;
+/// `None` gives the layout's back. The class has a layout
+/// ([`ListClass::layout`]): a screen with none is not moved.
+pub fn move_list(screen: &'static str, anchor: Option<[i16; 2]>) {
+    let mut moved = MOVED.lock().unwrap_or_else(|e| e.into_inner());
+    moved.retain(|(name, _)| *name != screen);
+    if let Some(anchor) = anchor {
+        moved.push((screen, anchor));
+    }
+}
+
+/// Where [`move_list`] put `screen`'s list.
+pub fn moved_list(screen: &str) -> Option<[i16; 2]> {
+    MOVED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(name, _)| *name == screen)
+        .map(|(_, anchor)| *anchor)
+}
+
+/// Writes `anchor` as the anchor of screen tag `tag`'s first pane's first
+/// list (docs/formats/ui.md "List placement"). A tag with no pane or no
+/// list is left.
+fn place_list(m: &mut dyn GuestMemory, tag: u32, anchor: [i16; 2]) -> Result<(), MemFault> {
+    if m.u32(tag + SCREEN_PANES)? == 0 {
+        return Ok(());
+    }
+    let pane = m.u32(tag + SCREEN_PANES + 4)?;
+    if m.u32(pane + PANE_LISTS)? == 0 {
+        return Ok(());
+    }
+    let list = m.u32(pane + PANE_LISTS + 4)?;
+    m.set_u16(list + LIST_ANCHOR, anchor[0] as u16)?;
+    m.set_u16(list + LIST_ANCHOR + 2, anchor[1] as u16)
+}
+
+/// A widget's animated offset (docs/formats/ui.md "Screens, panes and
+/// widgets"): two floats, `x, y`, Y up, added to its rectangle at each
+/// draw.
+const WIDGET_OFFSET: u32 = 0x58;
+/// The most widgets [`offset_list`] moves: a list's items and their
+/// children, with room to spare; a walk past it is a broken chain.
+const OFFSET_WIDGETS: usize = 256;
+
+/// Moves the drawn list of screen `screen` by `by` (`x, y`, Y up) from
+/// where its tag placed it: the animated offset of the list widget and of
+/// every widget under it. A floating menu on a world anchor follows its
+/// point this way while it is up (`crate::ui_kit::floating`). How many
+/// widgets were written.
+pub fn offset_list(m: &mut dyn GuestMemory, screen: u32, by: [f32; 2]) -> Result<usize, MemFault> {
+    let root = screen.wrapping_add(ui::LIST);
+    let mut stack = vec![root];
+    let mut written = 0;
+    while let Some(widget) = stack.pop() {
+        if widget == 0 || written >= OFFSET_WIDGETS {
+            continue;
+        }
+        m.set_u32(widget + WIDGET_OFFSET, by[0].to_bits())?;
+        m.set_u32(widget + WIDGET_OFFSET + 4, by[1].to_bits())?;
+        written += 1;
+        // The list's own siblings are the screen's other widgets.
+        if widget != root {
+            stack.push(m.u32(widget + WIDGET_NEXT)?);
+        }
+        stack.push(m.u32(widget + WIDGET_CHILD)?);
+    }
+    Ok(written)
+}
+
 /// What the screen-tag function returns for `screen`, given that it found
 /// `retail` (0 for none): a dialog class's copy of its base dialog
 /// whatever was found ([`crate::ui_kit::dialog_tag::served`]), our copy
@@ -1123,9 +1205,14 @@ pub fn served_tag(
     }
     // A screen opened on its own tag in the map (docs/game/ui-in-maps.md):
     // what the lookup found is the tag, already placed and skinned.
+    let moved = layout_screen(vtable).and_then(moved_list);
     if m.u16(screen + SCREEN_ID_OFFSET)
         .is_ok_and(|id| crate::ui_kit::inject::is_injected_id(id as i16))
     {
+        // The tag is ours alone: a moved list is written on it.
+        if let Some(anchor) = moved {
+            place_list(m, retail, anchor)?;
+        }
         return Ok(None);
     }
     let Some((layout, style)) = LAYOUTS
@@ -1139,11 +1226,17 @@ pub fn served_tag(
     };
     let at = vtable + TAG_COPY;
     if m.u32(vtable + TAG_SOURCE)? == retail {
+        if let Some(anchor) = moved {
+            place_list(m, at, anchor)?;
+        }
         return Ok(Some(at));
     }
     let made = copy_tag(m, retail, at, layout.as_ref(), style)?;
-    if made.is_some() {
+    if let Some(copy) = made {
         m.set_u32(vtable + TAG_SOURCE, retail)?;
+        if let Some(anchor) = moved {
+            place_list(m, copy, anchor)?;
+        }
     }
     Ok(made)
 }
@@ -1672,6 +1765,12 @@ impl ListClass {
     /// The class's panel.
     pub fn panel_of(&self) -> &Panel {
         &self.panel
+    }
+    /// Over `rows` in place of its own: a wrapper of them that answers
+    /// more (`crate::ui_kit::card_screen`'s picture and panel texts).
+    pub fn rows(mut self, rows: Arc<dyn Rows>) -> Self {
+        self.rows = rows;
+        self
     }
     /// With its list placed and skinned by `layout` ([`ListLayout`]).
     pub fn layout(mut self, layout: ListLayout) -> Self {
@@ -2445,6 +2544,16 @@ async fn event_on(
             .await?
             .eax;
         let row = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
+        // Rows side by side: left and right are the list's up and down.
+        if let Some(to) = row.and_then(|r| rows.sideways_focus(r, right)) {
+            cx.call(
+                GuestCall::new(LIST_SET_ROW)
+                    .eax(screen.wrapping_add(ui::LIST))
+                    .args([to as u32]),
+            )
+            .await?;
+            return Ok(Ret::new(1, 4));
+        }
         // The rows write the store with no guest memory held.
         if let Some(line) = row.and_then(|r| rows.sideways(r, right)) {
             eprintln!("{line}");
@@ -5446,6 +5555,69 @@ mod tests {
             .lock()
             .unwrap()
             .retain(|layout| layout.screen_vtable != TABLES);
+    }
+
+    /// A moved list (a floating menu's anchor) is written on the served
+    /// copy at each open, whether the copy is made then or was made before.
+    #[test]
+    fn a_moved_list_is_placed_on_the_served_copy() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        const VTABLE: u32 = 0x00a4_0000;
+        const OURS: u32 = 0x00a5_0000;
+        g.map(VTABLE, 0x1000).map(OURS, 4);
+        g.put_u32(OURS, VTABLE);
+        LAYOUTS.lock().unwrap().push(RegisteredLayout {
+            screen: "test.moved",
+            screen_vtable: VTABLE,
+            list_vtable: entries().list_vtable,
+            list: Some(LAYOUT),
+            style: TransitionStyle::Default,
+            scroll_arrows: None,
+        });
+        let at = VTABLE + TAG_COPY;
+        let list = at + SCREEN_ROOT_SIZE + PANE_SIZE;
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(Some(at)));
+        assert_eq!(g.u16(list + LIST_ANCHOR), Ok((-215i16) as u16), "the layout's own");
+        move_list("test.moved", Some([40, -60]));
+        assert_eq!(moved_list("test.moved"), Some([40, -60]));
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(Some(at)));
+        assert_eq!(g.u16(list + LIST_ANCHOR), Ok(40));
+        assert_eq!(g.u16(list + LIST_ANCHOR + 2), Ok((-60i16) as u16));
+        assert_eq!(g.u16(list + LIST_SKIN), Ok(0), "the rest of the layout stays");
+        move_list("test.moved", None);
+        assert_eq!(moved_list("test.moved"), None);
+        LAYOUTS
+            .lock()
+            .unwrap()
+            .retain(|layout| layout.screen_vtable != VTABLE);
+    }
+
+    /// The list's offset reaches the list widget and every widget under
+    /// it, and none of the screen's other widgets.
+    #[test]
+    fn a_list_offset_moves_the_list_and_everything_under_it() {
+        let mut g = FakeGuest::new();
+        const AT: u32 = 0x00b0_0000;
+        const ITEM: u32 = 0x00b4_0000;
+        const TEXT: u32 = 0x00b4_1000;
+        const SECOND: u32 = 0x00b4_2000;
+        const OTHER: u32 = 0x00b4_3000;
+        g.map(AT, ui::LIST + 0x100);
+        for w in [ITEM, TEXT, SECOND, OTHER] {
+            g.map(w, 0x100);
+        }
+        let list = AT + ui::LIST;
+        g.put_u32(list + WIDGET_CHILD, ITEM)
+            .put_u32(list + WIDGET_NEXT, OTHER)
+            .put_u32(ITEM + WIDGET_CHILD, TEXT)
+            .put_u32(ITEM + WIDGET_NEXT, SECOND);
+        assert_eq!(offset_list(&mut g, AT, [12.0, -30.5]), Ok(4));
+        for w in [list, ITEM, TEXT, SECOND] {
+            assert_eq!(g.u32(w + WIDGET_OFFSET), Ok(12.0f32.to_bits()), "{w:#x}");
+            assert_eq!(g.u32(w + WIDGET_OFFSET + 4), Ok((-30.5f32).to_bits()), "{w:#x}");
+        }
+        assert_eq!(g.u32(OTHER + WIDGET_OFFSET), Ok(0), "the list's sibling is the screen's");
     }
 
     #[test]

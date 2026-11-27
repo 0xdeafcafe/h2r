@@ -266,7 +266,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 
 /// The screens `h2 ui preview` knows, including the design specimens
 /// and layout gallery. Append new screens to preserve existing ids.
-pub const NAMES: [&str; 87] = [
+pub const NAMES: [&str; 91] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -354,6 +354,10 @@ pub const NAMES: [&str; 87] = [
     "forge.squad",
     "forge.wave-problems",
     "forge.enemy-types",
+    "kit.cards",
+    crate::firefight::options::WAVE_SETS_SCREEN,
+    "siege.variants",
+    crate::forge_screens::OBJECT_ACTIONS_SCREEN,
 ];
 
 /// The value picker as the Map Variant row opens it, with two usable map
@@ -405,6 +409,12 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// ([`ListPage`]): their rows write an in-memory profile store, never a
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
+    // A screen whose doc declares a card row or a floating menu is that
+    // primitive's own page (docs/game/ui-screens.md, "Cards and the card
+    // row", "The floating menu").
+    if let Some(page) = crate::ui_kit::card::live(name).or_else(|| crate::ui_kit::floating::live(name)) {
+        return Some(page);
+    }
     match name {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
@@ -1218,13 +1228,16 @@ mod tests {
                 | MODE_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
                 | "forge.objects" | "forge.tools" | "forge.link" | "forge.question" | "forge.games"
-                | "forge.variant" | "forge.rounds" | "forge.squads" | "forge.wave-problems",
+                | "forge.variant" | "forge.rounds" | "forge.squads" | "forge.wave-problems"
+                | crate::forge_screens::OBJECT_ACTIONS_SCREEN,
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")
         ) || matches!(
             (screen, issue),
-            ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
+            // A page over the live picture: its header has no band under it.
+            ("theater.pause-menu" | crate::forge_screens::OBJECT_ACTIONS_SCREEN, Issue::Contrast { id, .. })
+                if id == "title" || id == "legend"
         ) || (
             // The specimens and layouts on a dialog's rows: kit.dialog's.
             (screen.starts_with("design.") || screen.starts_with("layout."))

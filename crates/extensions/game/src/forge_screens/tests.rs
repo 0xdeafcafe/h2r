@@ -232,6 +232,9 @@ fn layout_and_content_in_every_state() {
                 .issues
                 .iter()
                 .filter(|i| !matches!(i, layout::Issue::Contrast { id, .. } if id.starts_with("row.") && kind.look() != Look::List))
+                // A floating menu has the game behind it: no backdrop to
+                // measure its texts against.
+                .filter(|i| !(kind.look() == Look::Floating && matches!(i, layout::Issue::Contrast { .. })))
                 .collect();
             assert!(issues.is_empty(), "{kind:?}/{name}: {issues:?}");
             for r in &s.rows {

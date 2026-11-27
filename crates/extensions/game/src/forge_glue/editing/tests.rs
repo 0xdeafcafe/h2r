@@ -312,7 +312,7 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     // two selected.
     e.tool.aimed_thing = Some(a);
     e.command(20, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     assert!(labels().contains(&"Select".to_string()), "{:?}", labels());
     assert!(!labels().contains(&"Group selection".to_string()));
     e.choose(21, Choice::ToggleSelected(a)).unwrap();
@@ -329,7 +329,7 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     e.choose(23, Choice::ToggleSelected(b)).unwrap();
     e.tool.aimed_thing = Some(b);
     e.command(24, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     assert!(
         labels().contains(&"Group selection".to_string()),
         "{:?}",
@@ -418,7 +418,7 @@ fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
     };
     e.tool.aimed_thing = Some(a);
     e.command(3, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let before = rows(&e);
     assert!(before.contains(&"Label".to_string()), "{before:?}");
     assert!(before.contains(&"Save as prefab".to_string()), "{before:?}");
@@ -454,7 +454,7 @@ fn labels_are_typed_and_the_object_menu_places_a_saved_prefab() {
         .is_err()
     );
     e.command(10, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let after = rows(&e);
     for want in ["Label number", "Clear label"] {
         assert!(after.contains(&want.to_string()), "{after:?}");
@@ -650,7 +650,7 @@ fn an_own_thing_aimed_at_is_named_opened_and_removed() {
     assert_eq!(e.status()["aimed_thing"]["base"]["block"], "weapons");
     let cmd = update(&mut e, Some(forge::tool::Action::Properties)).unwrap();
     e.command(2, cmd).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     assert_eq!(
         screens::screen(Kind::Properties).sheet().title,
         "BATTLE RIFLE"
@@ -834,7 +834,7 @@ fn coordinates_change_the_ghost_then_drop_once() {
     // An existing thing moves live first, then the close writes its op.
     e.tool.held_thing = Some(Endpoint::Added(placed.id));
     e.command(6, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     e.coordinate_number(7, sheet::Coordinate::Y, "1.5").unwrap();
     let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
     calls::lock(&e.calls).finish(ticket, Ok(json!({"handles": []})));
@@ -1494,7 +1494,14 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
     e.tool.aimed_thing = Some(added);
     e.tool.aimed = Some(id);
     e.command(4, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
+    // X on a thing of the map: its actions as a floating menu at it, with
+    // its Properties one row of them and shown on their own screen.
+    let menu = screens::screen(Kind::ObjectActions).sheet();
+    let actions: Vec<&str> = menu.rows.iter().map(|r| r.label.as_str()).collect();
+    assert_eq!(actions, ["Edit", "Duplicate", "Delete", "Properties"]);
+    assert_eq!(menu.title, screens::screen(Kind::Properties).sheet().title);
+    assert!(e.menu_at.is_some(), "the menu is anchored at the thing");
     let labels = || -> Vec<String> {
         screens::screen(Kind::Properties)
             .sheet()
@@ -1590,7 +1597,7 @@ fn delete_and_restore_original_on_the_properties_page() {
     e.tool.aimed_thing = Some(added);
     e.tool.aimed = Some(id);
     e.command(4, Command::Properties).unwrap();
-    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    assert_eq!(screens::take_request(), Some(Kind::ObjectActions));
     let labels: Vec<String> = screens::screen(Kind::Properties)
         .sheet()
         .rows

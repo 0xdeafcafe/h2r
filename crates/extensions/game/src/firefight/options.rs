@@ -14,8 +14,10 @@
 //! `content/ui/screens/firefight.yaml`: seven rows over [`DEFS`] on the
 //! lobby's own settings dialog, Quick Options, as the Clankers page is
 //! (`crate::clankers`). A row opens the value picker on A, and left and
-//! right step through the choices as a shortcut. No row is a "< All >"
-//! arrow row.
+//! right step through the choices as a shortcut. The Wave set row's A
+//! pushes a carousel of cards instead ([`wave_sets_page`]), a card a set
+//! with the map's picture and its rounds, waves and lives. No row is a
+//! "< All >" arrow row.
 //!
 //! **The row** is "Firefight Options..." on a custom game's Game Setup, the
 //! way "Clanker Options..." is ([`crate::clankers::SetupRow`], whose
@@ -54,6 +56,12 @@ pub const SCREEN: &str = "firefight";
 pub const ROW_FEATURE: &str = "firefight-row";
 /// The page's string ids.
 pub const IDS: Family = ids::family("firefight");
+/// The Wave set row's carousel (docs/game/ui-screens.md, "Cards and the
+/// card row"): its screen, its feature (`features.firefight-wavesets`)
+/// and its string ids.
+pub const WAVE_SETS_SCREEN: &str = "firefight.wavesets";
+pub const WAVE_SETS_FEATURE: &str = "firefight-wavesets";
+pub const WAVE_SETS_IDS: Family = ids::family("firefight wave sets");
 /// Our Game Setup row's action: after the Clankers row's 11 and the
 /// Clankermatch switch's 12 (retail uses 0 to 9; the press never reaches
 /// the original's jump table).
@@ -144,6 +152,106 @@ pub fn wave_entry(def: &Def, classes: Option<&[String]>) -> (String, Option<Stri
     (format!("{} ({why})", def.name), Some(why))
 }
 
+/// A wave set's line of stats on its card: its rounds (an endless set
+/// says so; a set for two teams says that instead), its waves and the
+/// lives a team starts with.
+pub fn wave_stats(def: &Def) -> String {
+    let waves: usize = def.rounds.iter().map(|r| r.waves.len()).sum();
+    let first = if def.set.endless {
+        "Endless".to_owned()
+    } else if def.teams > 1 {
+        format!("{} teams", def.teams)
+    } else {
+        format!("{} rounds", def.rounds.len())
+    };
+    format!("{first}, {waves} waves, {} lives", def.lives.pool_start)
+}
+
+/// The Wave set row's choices on `map` as cards, in [`wave_menu`]'s
+/// order: each set's name, the map's picture, its stats ([`wave_stats`])
+/// and its help, which is the carousel's doc's for a card of that name
+/// (`content/ui/screens/firefight.wavesets.yaml`), or why the set is not
+/// offered on a kit with `classes` ([`wave_entry`]).
+pub fn wave_cards(map: Option<&str>, classes: Option<&[String]>) -> Vec<crate::ui_kit::card::Card> {
+    let doc = crate::ui_kit::data::screen(WAVE_SETS_SCREEN);
+    let written = |name: &str| {
+        doc.as_ref()
+            .and_then(|d| d.cards.as_ref())
+            .and_then(|c| c.items.values().find(|card| card.name == name))
+            .and_then(|card| card.help.clone())
+    };
+    wave_menu(map)
+        .into_iter()
+        .map(|(value, def)| {
+            let help = match wave_entry(&def, classes).1 {
+                Some(why) => format!("Not offered: {why}."),
+                None if value >= builtin::MAP_SET_BASE => "This map's own set.".to_owned(),
+                None => written(&def.name).unwrap_or_else(|| {
+                    format!("{} rounds of waves for {} team{}.", def.rounds.len(), def.teams, if def.teams == 1 { "" } else { "s" })
+                }),
+            };
+            crate::ui_kit::card::Card {
+                stats: wave_stats(&def),
+                name: def.name,
+                level: map.map(str::to_owned),
+                help: Some(help),
+                open: None,
+            }
+        })
+        .collect()
+}
+
+/// The place in [`wave_menu`] of the set `store` holds on the lobby's map.
+pub fn held_wave(store: &Store) -> usize {
+    let held = match store.get(WAVE_SET.key) {
+        Some(Value::Int(v)) => v,
+        _ => 0,
+    };
+    wave_menu(lobby_start::kit_map().as_deref())
+        .iter()
+        .position(|(value, _)| *value == held)
+        .unwrap_or(0)
+}
+
+/// Stores choice `i` of [`wave_menu`] on the lobby's map as the wave set;
+/// what to log. A set the kit lacks a class for is refused, not stored.
+pub fn set_wave(store: &Store, i: usize) -> String {
+    let menu = wave_menu(lobby_start::kit_map().as_deref());
+    let Some((value, def)) = menu.get(i) else {
+        return format!("{}: no choice {i}", WAVE_SET.key);
+    };
+    if let (_, Some(why)) = wave_entry(def, lobby_start::kit_classes().as_deref()) {
+        return format!("{} -> {}: not offered: {why}", WAVE_SET.key, def.name);
+    }
+    match store.set(WAVE_SET.key, Value::Int(*value)) {
+        Ok(o) => match o.not_saved {
+            None => format!("{} -> {}", WAVE_SET.key, def.name),
+            Some(why) => format!("{} -> {}; not saved: {why}", WAVE_SET.key, def.name),
+        },
+        Err(e) => format!("{}: {e}", WAVE_SET.key),
+    }
+}
+
+/// The Wave set row's carousel over `store`
+/// (`content/ui/screens/firefight.wavesets.yaml`): a card for each set
+/// the lobby's map offers, the held one focused as it opens; A stores the
+/// focused card's set and closes, back to the Firefight page.
+pub fn wave_sets_page(store: Arc<Store>) -> KitScreen {
+    let (held, pick) = (Arc::clone(&store), store);
+    crate::ui_kit::card_screen::screen(
+        WAVE_SETS_FEATURE,
+        WAVE_SETS_SCREEN,
+        WAVE_SETS_IDS,
+        || wave_cards(lobby_start::kit_map().as_deref(), lobby_start::kit_classes().as_deref()),
+        move || held_wave(&held),
+        move |i| {
+            eprintln!("{WAVE_SETS_SCREEN}: {}", set_wave(&pick, i));
+            crate::ui_kit::screen::Then::Close
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
 /// [`TEAMS`]'s first choice: the wave set's own team count.
 pub const DEFAULT_TEAMS: i64 = 0;
 pub static TEAMS: Setting = setting(
@@ -214,7 +322,8 @@ pub static DEFS: [&Setting; 7] =
 /// [`DEFS`], their help and picker copy, and the Game Setup row's text
 /// and help (`settings.caller`). The Wave set row offers the lobby map's
 /// own sets first ([`builtin::menu`]), so it is bound, not read from the
-/// setting's fixed choices.
+/// setting's fixed choices; A on it pushes its carousel of cards
+/// ([`wave_sets_page`]), and left and right step it in place.
 pub fn page(store: Arc<Store>) -> KitScreen {
     let binds = Bindings::new().menu(
         "waveset",
@@ -227,35 +336,11 @@ pub fn page(store: Arc<Store>) -> KitScreen {
         },
         {
             let store = Arc::clone(&store);
-            move || {
-                let held = match store.get(WAVE_SET.key) {
-                    Some(Value::Int(v)) => v,
-                    _ => 0,
-                };
-                wave_menu(lobby_start::kit_map().as_deref())
-                    .iter()
-                    .position(|(value, _)| *value == held)
-                    .unwrap_or(0)
-            }
+            move || held_wave(&store)
         },
         {
             let store = Arc::clone(&store);
-            move |i: usize| {
-                let menu = wave_menu(lobby_start::kit_map().as_deref());
-                let Some((value, def)) = menu.get(i) else {
-                    return format!("{}: no choice {i}", WAVE_SET.key);
-                };
-                if let (_, Some(why)) = wave_entry(def, lobby_start::kit_classes().as_deref()) {
-                    return format!("{} -> {}: not offered: {why}", WAVE_SET.key, def.name);
-                }
-                match store.set(WAVE_SET.key, Value::Int(*value)) {
-                    Ok(o) => match o.not_saved {
-                        None => format!("{} -> {}", WAVE_SET.key, def.name),
-                        Some(why) => format!("{} -> {}; not saved: {why}", WAVE_SET.key, def.name),
-                    },
-                    Err(e) => format!("{}: {e}", WAVE_SET.key),
-                }
-            }
+            move |i: usize| set_wave(&store, i)
         },
     );
     crate::ui_kit::settings::screen(FEATURE, SCREEN, IDS, Some(store), binds)
@@ -605,6 +690,14 @@ pub fn install(registry: &mut hooks::Registry, store: &Arc<Store>) -> anyhow::Re
     registry
         .add(&screen.class())
         .map_err(|e| anyhow::anyhow!("firefight page: {e}"))?;
+    // The Wave set row's carousel.
+    let sets = Arc::new(wave_sets_page(Arc::clone(store)));
+    registry
+        .add(&KitTexts(Arc::clone(&sets)))
+        .map_err(|e| anyhow::anyhow!("firefight wave set texts: {e}"))?;
+    registry
+        .add(&crate::ui_kit::card_screen::class(&sets))
+        .map_err(|e| anyhow::anyhow!("firefight wave sets: {e}"))?;
     // The row's picture and description on Game Setup: the skull and crown
     // over crossed flags, and what the page is for.
     let help = Arc::clone(&screen);

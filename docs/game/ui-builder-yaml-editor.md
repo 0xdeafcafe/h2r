@@ -25,6 +25,14 @@ A screen's presentation is data in `content/ui/`; its Rust is behaviour
   art widget's `art`), and fixed `rows` (`row.0: {text, ...}`). A
   settings dialog has a `settings:` block and its rows' `help`,
   `setting`, `bind`, `explain` and `open` ("The settings dialog").
+  A `moved` list may be a card row (`cards:`: `layout` `row` or
+  `carousel`, `bind`, `open`, and `items` `card.0: {name, stats, level,
+  help, open}`; a state's `slide` is percent through the slide that
+  brought its focus there) or a floating menu (`floating:`: `anchor`
+  `world` or a screen anchor, `offset`, `pinned`, and `actions`
+  `action.0: {text, act | open}`; a state's `point` is the world
+  anchor's point), and then has no rows of its own
+  ([ui-screens.md](ui-screens.md#cards-and-the-card-row)).
 
 Both are baked into the game at compile time (`build.rs` writes
 `ui_baked.rs`, `ui_kit::data::baked`) and parsed once a process, the first

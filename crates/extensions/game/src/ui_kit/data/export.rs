@@ -309,6 +309,8 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
         widgets: IndexMap::new(),
         rows: IndexMap::new(),
         props: IndexMap::new(),
+        cards: None,
+        floating: None,
     };
     for (n, s) in states {
         doc.states.insert(
@@ -316,6 +318,8 @@ fn screen_doc(name: &str, states: &[(String, ScreenSpec)], design: &mut Design) 
             StateDoc {
                 focus: s.focus,
                 cursor: s.dialog.as_ref().and_then(|d| d.cells.as_ref()).and_then(|c| c.cursor),
+                slide: None,
+                point: None,
             },
         );
     }
@@ -553,9 +557,10 @@ pub fn export(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     let mut docs = Vec::new();
     for name in crate::ui_kit::screens::NAMES {
-        let doc = match super::baked(name).filter(|d| d.settings.is_some() || !d.props.is_empty()) {
-            // A settings dialog and a page of property rows are built
-            // from their docs: the doc stays.
+        let doc = match super::baked(name)
+            .filter(|d| d.settings.is_some() || !d.props.is_empty() || d.cards.is_some() || d.floating.is_some()) {
+            // A settings dialog, a page of property rows, a card row and
+            // a floating menu are built from their docs: the doc stays.
             Some(d) => (*d).clone(),
             None => {
                 let states = crate::ui_kit::screens::raw_states(name)

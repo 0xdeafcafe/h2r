@@ -3,10 +3,14 @@
 //! again (docs/game/ui-screens.md).
 //!
 //! - [`animation`]: tick-driven page transitions for the UI builder.
+//! - [`card`]: cards, the card row and the carousel, from a doc's `cards:`
+//!   block; [`card_screen`] is their class in the game.
 //! - [`choice`]: a row of many choices over a setting ([`choice::ChoiceRow`]).
 //! - [`dialog`]: modal dialogs over the screen beneath ([`dialog::DialogSpec`]).
 //! - [`dialog_tag`]: a dialog's tag pieces and tag copy, and the request
 //!   that opens it as the game opens its dialogs.
+//! - [`floating`]: the floating menu over the 3D view, from a doc's
+//!   `floating:` block.
 //! - [`ids`]: the one registry of string-id families, checked at compile
 //!   time.
 //! - [`inject`]: our screens as real `wgit` tags in the maps
@@ -31,6 +35,8 @@
 //! - [`findings`]: every check's findings for one screen state.
 
 pub mod animation;
+pub mod card;
+pub mod card_screen;
 pub mod choice;
 pub mod components;
 pub mod consistency;
@@ -39,6 +45,7 @@ pub mod data;
 pub mod dialog;
 pub mod dialog_tag;
 pub mod findings;
+pub mod floating;
 pub mod ids;
 pub mod inject;
 pub mod input;

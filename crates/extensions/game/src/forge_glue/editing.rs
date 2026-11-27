@@ -227,7 +227,19 @@ pub(super) struct Editor {
     enter_at_start: bool,
     /// The local player's handle, read each tick.
     player: Option<u32>,
+    /// The world point the object actions menu is anchored at, while it
+    /// is asked for or up (`forge_screens::object_menu`).
+    menu_at: Option<[f32; 3]>,
+    /// The guest's horizontal field of view at 4:3, radians, as last read
+    /// ([`FOV_GLOBAL`]); [`MENU_FOV`] until then.
+    menu_fov: f32,
 }
+
+/// The guest's horizontal field of view, radians (`crate::render_aspect`
+/// reads the same word for the ocean's grid).
+const FOV_GLOBAL: u32 = 0x0048_5640;
+/// The lens taken until the guest's is read: 70 degrees across.
+const MENU_FOV: f32 = 1.221_730_5;
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
@@ -303,6 +315,8 @@ impl Editor {
             swap: body::Swap::Biped,
             enter_at_start,
             player: None,
+            menu_at: None,
+            menu_fov: MENU_FOV,
         }
     }
 
@@ -489,6 +503,26 @@ impl Editor {
 
     pub fn monitor(&self) -> bool {
         self.tool.monitor
+    }
+
+    /// The object actions menu's object in the window now, in normalised
+    /// device coordinates (-1 to 1, Y up): its point through the monitor
+    /// camera, by the guest's lens at 4:3 with the height kept on a wider
+    /// window. `None` behind the camera, or with no menu or no monitor.
+    fn menu_point(&self) -> Option<[f32; 2]> {
+        let (at, camera) = (self.menu_at?, self.tool.camera?);
+        let (w, h) = crate::render_aspect::layout_output();
+        let [forward, _, up] = camera.basis();
+        crate::ui_kit::floating::project(
+            &crate::ui_kit::floating::Camera {
+                position: camera.position,
+                forward,
+                up,
+                fov_y: 2.0 * ((self.menu_fov * 0.5).tan() * 0.75).atan(),
+                aspect: w.max(1) as f32 / h.max(1) as f32,
+            },
+            at,
+        )
     }
 
     /// The monitor camera's position, yaw and pitch, for
@@ -1696,6 +1730,22 @@ impl Editor {
         self.refresh_sectors();
         self.bsp = bsp;
         self.ui_up = ui_up;
+        // The object actions menu follows its object: where the monitor
+        // camera shows it now.
+        if screens::screen(Kind::ObjectActions).is_up()
+            || screens::requested() == Some(Kind::ObjectActions)
+        {
+            if let Ok(fov) = memory.f32(FOV_GLOBAL)
+                && fov.is_finite()
+                && fov > 0.1
+                && fov < 3.0
+            {
+                self.menu_fov = fov;
+            }
+            screens::object_menu::aim(self.menu_point());
+        } else {
+            self.menu_at = None;
+        }
         if self.tool.game != game {
             self.tool.game = game;
             self.area = None;
@@ -2132,7 +2182,22 @@ impl Editor {
                 }
                 self.coordinates = Some((target, frame));
                 screens::screen(Kind::Coordinates).show(sheet::coordinates_sheet(&name, frame))?;
-                screens::open(sheet)?;
+                if self.tool.placing.is_some() {
+                    // A thing not placed yet has no actions: its
+                    // Properties alone.
+                    screens::open(sheet)?;
+                } else {
+                    // A thing of the map: its actions as a floating menu
+                    // at it, Properties among them
+                    // (docs/game/ui-screens.md, "The floating menu").
+                    screens::screen(Kind::Properties).show(sheet.clone())?;
+                    // The header is the object's name as Properties writes it.
+                    let title = sheet.title.clone();
+                    let menu = screens::object_menu::sheet(&title, thing.id, Some(sheet))?;
+                    self.menu_at = Some(frame.position);
+                    screens::object_menu::aim(self.menu_point());
+                    screens::open(menu)?;
+                }
             }
             Tools => screens::request(Kind::Tools)?,
             Settings => screens::request(Kind::Settings)?,

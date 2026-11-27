@@ -198,6 +198,12 @@ pub fn to_yaml(doc: &ScreenDoc) -> String {
             if let Some(c) = s.cursor {
                 let _ = writeln!(out, "    cursor: {c}");
             }
+            if let Some(p) = s.slide {
+                let _ = writeln!(out, "    slide: {p}");
+            }
+            if let Some(p) = s.point {
+                let _ = writeln!(out, "    point: {}", pair(p));
+            }
         }
     }
     if let Some(st) = &doc.settings {
@@ -219,6 +225,54 @@ pub fn to_yaml(doc: &ScreenDoc) -> String {
         out.push_str("props:\n");
         for (id, p) in &doc.props {
             prop_row(&mut out, id, p);
+        }
+    }
+    if let Some(c) = &doc.cards {
+        out.push_str("cards:\n");
+        let _ = writeln!(out, "  layout: {}", key(&c.layout));
+        if let Some(b) = &c.bind {
+            let _ = writeln!(out, "  bind: {}", key(b));
+        }
+        if let Some(o) = &c.open {
+            let _ = writeln!(out, "  open: {}", key(o));
+        }
+        out.push_str("  items:\n");
+        for (id, card) in &c.items {
+            let _ = writeln!(out, "    {}:", key(id));
+            let _ = writeln!(out, "      name: {}", quoted(&card.name));
+            if !card.stats.is_empty() {
+                let _ = writeln!(out, "      stats: {}", quoted(&card.stats));
+            }
+            if let Some(l) = &card.level {
+                let _ = writeln!(out, "      level: {}", key(l));
+            }
+            if let Some(h) = &card.help {
+                let _ = writeln!(out, "      help: {}", quoted(h));
+            }
+            if let Some(o) = &card.open {
+                let _ = writeln!(out, "      open: {}", key(o));
+            }
+        }
+    }
+    if let Some(f) = &doc.floating {
+        out.push_str("floating:\n");
+        let _ = writeln!(out, "  anchor: {}", key(&f.anchor));
+        if let Some(o) = f.offset {
+            let _ = writeln!(out, "  offset: {}", pair(o));
+        }
+        if f.pinned {
+            out.push_str("  pinned: true\n");
+        }
+        out.push_str("  actions:\n");
+        for (id, a) in &f.actions {
+            let _ = writeln!(out, "    {}:", key(id));
+            let _ = writeln!(out, "      text: {}", quoted(&a.text));
+            if let Some(act) = &a.act {
+                let _ = writeln!(out, "      act: {}", key(act));
+            }
+            if let Some(o) = &a.open {
+                let _ = writeln!(out, "      open: {}", key(o));
+            }
         }
     }
     out

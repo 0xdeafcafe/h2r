@@ -59,6 +59,9 @@ pub enum Kind {
     WaveProblems,
     /// The classes the AI ground builds, each On or Off.
     EnemyTypes,
+    /// The aimed or held object's actions, a floating menu at the object
+    /// (docs/game/ui-screens.md, "The floating menu"; [`super::object_menu`]).
+    ObjectActions,
 }
 
 /// How a screen is built, each on a retail screen tag the game maps have.
@@ -74,10 +77,14 @@ pub enum Look {
     /// The large dialog with a body and two answers, as
     /// `error_dialog_ok_cancel` asks.
     Question,
+    /// A floating menu: the in-game list of [`Look::List`] with no frame
+    /// art, its rows on the default skin at a point of the view
+    /// (`crate::ui_kit::floating`).
+    Floating,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 22] = [
         Kind::Objects,
         Kind::Properties,
         Kind::Coordinates,
@@ -99,6 +106,7 @@ impl Kind {
         Kind::Squad,
         Kind::WaveProblems,
         Kind::EnemyTypes,
+        Kind::ObjectActions,
     ];
 
     /// The name `Open` rows, `h2 ui preview` and the loader know it by.
@@ -125,6 +133,7 @@ impl Kind {
             Kind::Squad => "forge.squad",
             Kind::WaveProblems => "forge.wave-problems",
             Kind::EnemyTypes => "forge.enemy-types",
+            Kind::ObjectActions => super::OBJECT_ACTIONS_SCREEN,
         }
     }
 
@@ -152,6 +161,7 @@ impl Kind {
             Kind::Squad => "forge-squad",
             Kind::WaveProblems => "forge-wave-problems",
             Kind::EnemyTypes => "forge-enemy-types",
+            Kind::ObjectActions => "forge-object-actions",
         }
     }
 
@@ -178,6 +188,7 @@ impl Kind {
             Kind::Squad => const { ids::family("forge squad") },
             Kind::WaveProblems => const { ids::family("forge wave problems") },
             Kind::EnemyTypes => const { ids::family("forge enemy types") },
+            Kind::ObjectActions => const { ids::family("forge object actions") },
         }
     }
 
@@ -203,6 +214,7 @@ impl Kind {
             | Kind::Squad
             | Kind::EnemyTypes => Look::List,
             Kind::Link | Kind::Question => Look::Question,
+            Kind::ObjectActions => Look::Floating,
         }
     }
 
@@ -217,7 +229,7 @@ impl Look {
     pub const fn ingame_screen_id(self) -> i16 {
         match self {
             Look::Picker | Look::Question => crate::ui_kit::dialog::LARGE_SCREEN_ID,
-            Look::List => crate::list_class::INGAME_SCREEN_ID as i16,
+            Look::List | Look::Floating => crate::list_class::INGAME_SCREEN_ID as i16,
         }
     }
 }

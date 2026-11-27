@@ -36,6 +36,7 @@ rows:
     help: "Which set of waves you fight."
     bind: waveset
     explain: "Endless runs sets of three rounds until the team is out. The map's own set follows if any. Holdout is steady, Attrition sends more for fewer lives, Last Stand is hardest, Crossfire is two teams."
+    open: firefight.wavesets
   row.2:
     kind: value
     text: "Teams"

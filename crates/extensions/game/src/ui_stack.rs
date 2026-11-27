@@ -204,7 +204,18 @@ fn inspect(m: &dyn GuestMemory, nav: &Navigation) -> Value {
             "history": history,
         })
     }).collect();
-    json!({"channels": channels, "input": input, "back": back})
+    json!({"channels": channels, "input": input, "back": back, "kit": kit()})
+}
+
+/// The kit primitive on top, as its screen last said
+/// (docs/game/ui-screens.md, "Cards and the card row", "The floating
+/// menu"): a card screen's row (`cards`) or a floating menu's anchor
+/// (`floating`), each null while none is up.
+fn kit() -> Value {
+    json!({
+        "cards": crate::ui_kit::card::shown(),
+        "floating": crate::ui_kit::floating::shown(),
+    })
 }
 
 #[cfg(test)]

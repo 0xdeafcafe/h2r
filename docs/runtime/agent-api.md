@@ -3128,6 +3128,16 @@ or the game's UI state without UI watch. All are read-only except
   (consume Back during a replacement). It is null when there is no menu
   input target or when Back depends on a screen's custom handler. The kit
   value picker's `close` target identifies the settled screen underneath it.
+  `kit` is the [kit primitive](../game/ui-screens.md#cards-and-the-card-row)
+  on top, as its screen last said:
+
+  | Field | While | Holds |
+  |---|---|---|
+  | `kit.cards` | a card screen is up (`firefight.wavesets`) | `screen`, `layout` (`size`, `well`, `gap`, `visible`, `top`), `cards` (how many), `focus` and `first` (zero-based), `name` (the focused card's), `offset` (the slide now, UI units; 0 at rest) |
+  | `kit.floating` | a [floating menu](../game/ui-screens.md#the-floating-menu) is up (`forge.object-actions`) | `screen`, `anchor` (`world` or `screen`), `point` (the anchor's point, UI units; null behind the camera), `list` (the list's anchor), `clamped` (moved to stay in the safe area), `focus`, `actions` (the labels) |
+
+  Each is null while no such screen is up. A floating menu's `focus` is
+  the row it opened on.
   `ui.stack` is available without UI watch.
 - **`ui.campaign`** (`h2 agent ui.campaign`, no parameters): a tick-boundary
   read of the campaign menu from the guest screen and focus, without UI

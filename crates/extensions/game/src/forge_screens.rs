@@ -27,6 +27,7 @@ pub mod blockout;
 pub mod game_menu;
 pub mod games;
 pub(crate) mod map_limits;
+pub mod object_menu;
 pub mod pages;
 pub mod props;
 pub mod screen;
@@ -56,6 +57,9 @@ use crate::ui_kit::screen::{SlotTexts, TextPool};
 use game_menu::MenuRow;
 use screen::ForgeScreen;
 use sheet::{Ask, Choice, Kind, Look, NumberField, Sheet, TypeSpec};
+
+/// The object actions menu's screen ([`Kind::ObjectActions`]).
+pub const OBJECT_ACTIONS_SCREEN: &str = "forge.object-actions";
 
 /// What the session tells the screens it does not build each tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -358,7 +362,8 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
         | Kind::Link
         | Kind::Question
         | Kind::Games
-        | Kind::Variant => {
+        | Kind::Variant
+        | Kind::ObjectActions => {
             return Err(format!(
                 "{} shows the session's objects; the session opens it",
                 kind.screen()
@@ -430,6 +435,12 @@ async fn open_screen(cx: &Cx, kind: Kind) -> Result<(), EntryError> {
             cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([PLAYER_ONE, loader]))
                 .await?;
         }
+        (Look::Floating, _) => {
+            // The list is placed at the object's point as the screen opens.
+            object_menu::place(screen(kind).sheet().rows.len());
+            cx.call(GuestCall::new(points::OPEN_SCREEN.base).args([PLAYER_ONE, loader]))
+                .await?;
+        }
         (look, None) => eprintln!("{name}: a {look:?} screen with no dialog class; not opened"),
     }
     Ok(())
@@ -441,6 +452,9 @@ enum Step {
     Close(u32),
     Open(Kind),
     Keyboard(TypeSpec),
+    /// Nothing before the game's update: the object actions menu is up,
+    /// and follows its object after it.
+    Follow,
 }
 
 /// A map variant's row on Map variants was pressed: its dialog's Rename
@@ -493,7 +507,10 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if let Some(spec) = lock(&hub().keyboard_request).take() {
         return Some(Step::Keyboard(spec));
     }
-    lock(&hub().request).take().map(Step::Open)
+    lock(&hub().request)
+        .take()
+        .map(Step::Open)
+        .or_else(|| screen(Kind::ObjectActions).is_up().then_some(Step::Follow))
 }
 
 /// A keyboard, once it closed: Save as's name or the typed number.
@@ -703,6 +720,7 @@ impl Feature for Driver {
                             Step::Close(s) => dialog_tag::close(&cx, s).await,
                             Step::Open(kind) => open_screen(&cx, kind).await,
                             Step::Keyboard(spec) => open_keyboard(&cx, Some(spec)).await,
+                            Step::Follow => Ok(()),
                         };
                         if let Err(e) = done {
                             eprintln!("forge screens: {e}");
@@ -712,6 +730,15 @@ impl Feature for Driver {
                             .call(GuestCall::new(points::UI_UPDATE.base).args([elapsed]))
                             .await;
                         hub().passing_update.store(false, Ordering::SeqCst);
+                        // After the game's update, which is where a
+                        // widget's animation writes its offset.
+                        let menu = screen(Kind::ObjectActions);
+                        if let Some((at, by)) = menu.screen().and_then(|at| {
+                            object_menu::follow(menu.sheet().rows.len()).map(|by| (at, by))
+                        }) && let Err(e) = cx.write(|m| list_class::offset_list(m, at, by))
+                        {
+                            eprintln!("forge screens: moving the object menu: {e:?}");
+                        }
                         Ok(Ret::new(out?.eax, 4))
                     })
                 })

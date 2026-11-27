@@ -237,8 +237,9 @@ fn the_options_page_steps_and_opens_pickers() {
     ]);
 }
 
-/// A on any row opens the value picker for it, over Game Setup, with the
-/// row's own choices; no row is a "< All >" arrow row.
+/// A on any row but Wave set opens the value picker for it, over Game
+/// Setup, with the row's own choices; Wave set pushes its carousel of
+/// cards. No row is a "< All >" arrow row.
 #[test]
 fn a_opens_the_value_picker_on_every_row() {
     use crate::list_class::Rows;
@@ -256,6 +257,12 @@ fn a_opens_the_value_picker_on_every_row() {
         ("DROP PODS", &["Off", "On"]),
     ];
     for (row, (title, values)) in expected.iter().enumerate() {
+        if row == 1 {
+            assert_eq!(s.press(1), Chosen::Push(WAVE_SETS_SCREEN), "{title}");
+            let names: Vec<String> = wave_cards(None, None).into_iter().map(|c| c.name).collect();
+            assert_eq!(names, *values);
+            continue;
+        }
         assert_eq!(s.press(row as i16), Chosen::Open(picker::NAME), "{title}");
         let pick = picker::current().expect("a pick");
         assert_eq!(pick.title, *title);
@@ -440,8 +447,8 @@ fn every_wave_set_and_lives_choice_makes_a_valid_definition() {
 }
 
 /// The lobby's kit map puts its own set after Endless in the Wave set row:
-/// the picker offers Endless, Basin, then the built-ins; picking Basin keeps its own
-/// value, and right from it steps to Holdout.
+/// its carousel offers Endless, Basin, then the built-ins; picking Basin
+/// keeps its own value, and right from it steps to Holdout.
 #[test]
 fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     use crate::lobby_start;
@@ -449,17 +456,18 @@ fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     lobby_start::set_kit_map(Some("beavercreek".into()));
     let kept = store();
     let s = screen(&kept);
-    assert_eq!(s.press(1), Chosen::Open(picker::NAME), "Wave set");
-    let pick = picker::current().expect("a pick");
+    assert_eq!(s.press(1), Chosen::Push(WAVE_SETS_SCREEN), "Wave set");
+    let cards = wave_cards(Some("beavercreek"), None);
+    let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
-        pick.values,
+        names,
         ["Endless", "Basin", "Holdout", "Attrition", "Last Stand", "Crossfire", "Outbreak"]
     );
-    assert_eq!(pick.opener, Opener::GAME_SETUP_FIREFIGHT);
+    assert!(cards.iter().all(|c| c.level.as_deref() == Some("beavercreek")));
     assert_eq!(
-        (pick.set)(1),
+        set_wave(&kept, 1),
         "firefight.waveset -> Basin",
-        "the picker keeps the map set's own value"
+        "the carousel keeps the map set's own value"
     );
     assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(builtin::MAP_SET_BASE)));
     // Right from the map's own set steps to Holdout.
@@ -681,6 +689,11 @@ fn every_row_has_a_help_and_real_picker_copy() {
         for bad in ["docs/", "todo", "placeholder", "lorem", "tbd", "phantom", "peer", "session"] {
             assert!(!lower.contains(bad), "{}: {e}", r.text);
         }
+        // Wave set picks on its carousel, whose cards say their own help.
+        if row == 1 {
+            assert_eq!(s.press(1), Chosen::Push(WAVE_SETS_SCREEN), "{}", r.text);
+            continue;
+        }
         // A opens the value picker with that explanation.
         assert_eq!(s.press(row as i16), Chosen::Open(picker::NAME), "{}", r.text);
         assert_eq!(picker::current().expect("a pick").description, e, "{}", r.text);
@@ -762,17 +775,62 @@ fn a_set_naming_a_class_the_kit_lacks_is_greyed_out_with_the_reason() {
     assert!(text.starts_with("Outbreak (the map's kit lacks"), "{text}");
     assert_eq!(wave_entry(outbreak, None).1, None);
     assert_eq!(wave_entry(holdout, Some(&[])).1, None);
-    // The picker lists the reason and refuses the pick without storing it.
+    // The carousel's card says the reason and refuses the pick without
+    // storing it.
     lobby_start::set_kit_map(Some("beavercreek".into()));
     lobby_start::set_kit_classes(Some(have(&["marine"])));
     let kept = store();
     let s = screen(&kept);
-    assert_eq!(s.press(1), Chosen::Open(picker::NAME), "Wave set");
-    let pick = picker::current().expect("a pick");
-    let at = pick.values.iter().position(|v| v.starts_with("Outbreak")).unwrap();
-    assert!(pick.values[at].contains("lacks"), "{:?}", pick.values);
-    assert!((pick.set)(at).contains("not offered"));
+    assert_eq!(s.press(1), Chosen::Push(WAVE_SETS_SCREEN), "Wave set");
+    let cards = wave_cards(Some("beavercreek"), Some(&have(&["marine"])));
+    let at = cards.iter().position(|c| c.name == "Outbreak").unwrap();
+    assert!(cards[at].help.as_deref().unwrap_or_default().contains("lacks"), "{:?}", cards[at]);
+    assert!(set_wave(&kept, at).contains("not offered"));
     assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(0)));
     lobby_start::set_kit_classes(None);
     lobby_start::set_kit_map(None);
+}
+
+/// A wave set's card: its name, the lobby map's picture, one line of
+/// rounds, waves and lives, and help that fits the carousel's block.
+#[test]
+fn each_wave_set_is_a_card_with_its_map_and_stats() {
+    use crate::ui_kit::card::Layout;
+    use crate::ui_kit::spec::{fallback, wrap};
+    let cards = wave_cards(Some("beavercreek"), None);
+    assert_eq!(cards.len(), wave_menu(Some("beavercreek")).len());
+    assert!(cards.len() <= crate::ui_kit::card_screen::MAX_CARDS);
+    assert_eq!(cards[0].stats, "Endless, 15 waves, 7 lives");
+    let holdout = cards.iter().find(|c| c.name == "Holdout").unwrap();
+    assert_eq!(holdout.stats, "3 rounds, 15 waves, 12 lives");
+    let crossfire = cards.iter().find(|c| c.name == "Crossfire").unwrap();
+    assert_eq!(crossfire.stats, "2 teams, 15 waves, 10 lives");
+    let [top, left, bottom, right] = Layout::CAROUSEL.help_rect();
+    let room = i32::from(Layout::CAROUSEL.size[0] - 2 * crate::ui_kit::card::PAD);
+    for c in &cards {
+        assert_eq!(c.level.as_deref(), Some("beavercreek"), "{}", c.name);
+        assert!(fallback::width(&c.stats) <= room, "{}: {}", c.name, c.stats);
+        let help = c.help.as_deref().unwrap_or_default();
+        assert!(!help.is_empty(), "{}", c.name);
+        let lines = wrap(help, i32::from(right - left), &fallback::width).len() as i32;
+        assert!(lines * fallback::LINE <= i32::from(top - bottom), "{}: {lines} lines", c.name);
+    }
+    // Off a kit map the cards have no picture: blueprint lines stand in.
+    assert!(wave_cards(None, None).iter().all(|c| c.level.is_none()));
+}
+
+/// The carousel's screen: a card a slot, the held set focused as it
+/// opens, and A stores the focused card's set and closes.
+#[test]
+fn the_wave_set_carousel_picks_the_focused_card() {
+    use crate::list_class::Rows;
+    use crate::lobby_start;
+    lobby_start::set_kit_map(Some("beavercreek".into()));
+    let kept = store();
+    let s = Arc::new(wave_sets_page(Arc::clone(&kept)));
+    assert_eq!(s.count(), 7, "a row a card");
+    assert_eq!(s.press(1), Chosen::Act, "A picks and closes");
+    assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(builtin::MAP_SET_BASE)));
+    lobby_start::set_kit_map(None);
+    assert_eq!(s.count(), 6, "the built-ins alone off a kit map");
 }
