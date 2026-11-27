@@ -1550,10 +1550,15 @@ pub(crate) mod tests {
         def.texture_modes = 0x01 << 5;
         let live = PassLook { pixel_shader: def.to_bytes(), ..look.clone() };
         assert_eq!(compile_object(&live, &coordinates(false), None, WORLD).unwrap_err(), unset(21));
-        // Stage 0's coordinate reads c[19], which the pass sets.
+        // Stage 0's coordinate reads c[19], which the pass sets: the
+        // constants pass, and the compile goes on to the stage (bound
+        // nothing in this look).
         def.texture_modes = 0x01;
         let first = PassLook { pixel_shader: def.to_bytes(), ..look };
-        assert!(compile_object(&first, &coordinates(false), None, WORLD).is_ok());
+        assert_eq!(
+            compile_object(&first, &coordinates(false), None, WORLD).unwrap_err(),
+            "stage 0 is sampled with nothing bound"
+        );
     }
 
     /// An object pass's program may read the rows of `c[21..25]` the pass
