@@ -276,7 +276,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | The kernel clock, `rdtsc`, scheduling | logical: the same guest work gives the same schedule (**Code**, `kernel::clock`, `kernel::pacer`) |
 | The epoch (system time) | fixed at 0 unless a host sets it |
 | The pacer | waits only; never changes the schedule |
-| The render front-end | **skipped**, so it no longer steps the shared seed: deterministic, but a different stream from a rendered run |
+| The render front-end | **skipped**, so it does not step the shared seed: deterministic, but a different stream from a rendered run |
 | The render thread | none: no GPU backend |
 | Audio | logical pacing into a `NullSink` |
 | Input | Each phantom observes guest state on the game thread during the simulation tick’s input gather |

@@ -397,9 +397,8 @@ from the method's implementation, not its doc).
 - With the keyboard on (the default), player one is
   `input::backend::fallback::KeyboardFallback`: the first pad merged with the
   keyboard through the guest's pad. The merge carries the pad's touchpad
-  across, so the gate sees its click. It used to drop it, so neither the
-  click nor the chord opened the menu from player one's DualShock 4 or
-  DualSense (fixed 2026-11-19; test
+  across, so the gate sees its click and the menu opens from player one's
+  DualShock 4 or DualSense (test
   `a_touchpad_click_on_player_ones_pad_opens_it_through_the_input_manager`).
 
 ## When a pad doesn't open it

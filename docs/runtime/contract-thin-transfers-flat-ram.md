@@ -320,7 +320,7 @@ different macros and files and can alternate. Slices that change
   `entry_outside_code_guard_goes_to_runner`,
   `protecting_lifted_code_empties_the_entry_table`,
   `a_loop_ignores_a_queued_interrupt_for_another_thread` and the rest of
-  the direct-call suite (`crates/recompiler/emit/tests/direct.rs`, now on
+  the direct-call suite (`crates/recompiler/emit/tests/direct.rs`, on
   guarded code); the registry's numbering and map
   (`registry_numbers_rows_and_maps_each_entry_byte`); registration
   (`an_entry_table_maps_each_row_and_nothing_else`,
