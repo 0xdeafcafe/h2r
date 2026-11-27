@@ -974,12 +974,11 @@ mod tests {
         // The last entry has a callback the typed group cannot express.
         m.set_u32(ITEMS + 3 * 24, 0x8400).unwrap();
         assert!(collect(&m, GroupSite::Light).is_none());
+        // The layer's sort reads each item's build and draw first, so the
+        // callback is refused there, before any entry is read.
         let refusal = typed_groups::plan_or_refusal(&m, GroupSite::Light, &steps, 0, 32, None).err();
-        assert_eq!(
-            refusal,
-            Some(typed_groups::GroupRefusal::Entry(scene_extract::light_groups::Cause::Callback))
-        );
-        assert_eq!(refusal.unwrap().name(), "entry_callback");
+        assert_eq!(refusal, Some(typed_groups::GroupRefusal::Sort));
+        assert_eq!(refusal.unwrap().name(), "sort");
         assert_eq!(m.u32(lp::global::DEFINITION).unwrap(), u32::MAX);
         assert_eq!(m.bytes(BUFFER, 72).unwrap(), [0x55; 72]);
     }
