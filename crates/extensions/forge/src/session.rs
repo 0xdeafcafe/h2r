@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -58,6 +58,9 @@ pub struct Session {
     /// The own entries as the world holds them: the document's, but for a
     /// held entry's frame.
     own_live: OwnMap,
+    /// The spare clips the world holds, by netgame item row
+    /// ([`World::spare_clips`]).
+    clips_live: BTreeMap<u32, u8>,
     /// The entry held and the tick of its last move: a hold moves at most
     /// once a tick.
     held: Option<(Endpoint, u32)>,
@@ -121,6 +124,7 @@ impl Session {
             base: Arc::default(),
             own: OwnMap::new(),
             own_live: OwnMap::new(),
+            clips_live: BTreeMap::new(),
             held: None,
             head,
             log: vec![],
@@ -707,6 +711,96 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// An item spawner's spare clips, by the document's `Property` ops
+    /// ([`forge_doc::spare_clips`]); none when it gives its weapon's own
+    /// reserve.
+    pub fn spare_clips(&self, id: Endpoint) -> Option<u8> {
+        forge_doc::spare_clips(&self.doc.ops)
+            .get(&id.identity())
+            .copied()
+    }
+
+    /// Give an item spawner spare clips, or none: one `EntryOp::Property`,
+    /// which the world follows with [`World::spare_clips`] on the entry's
+    /// row (docs/engine/notes/2026-11-27-forge-spawner-rows.md). A thing
+    /// that is no spawner is refused by the sentence of the property's rule.
+    pub fn set_spare_clips(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        clips: Option<u8>,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::ItemSpawner {
+            return Err(format!("This {} has no spare clips.", thing.kind.name()));
+        }
+        if self.spare_clips(thing.id) == clips {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Property {
+            target: thing.id,
+            property: forge_doc::Property::SpareClips(clips),
+        })])?;
+        self.edit(world, tick, ops, None)
+    }
+
+    /// The spare clips `doc` gives, by the netgame item row the world has
+    /// each spawner at: an own entry at its base index, one the kit added
+    /// at its kit row. A removed entry has none.
+    fn clips_by_row(&self, doc: &ForgeDoc, own: &OwnMap) -> BTreeMap<u32, u8> {
+        let block = BlockKind::NetgameEquipment;
+        let first = self.limits.base_counts.get(&block).copied().unwrap_or(0);
+        let added = self
+            .kit
+            .as_ref()
+            .and_then(|kit| kit.live.get(&block))
+            .map_or(&[][..], Vec::as_slice);
+        forge_doc::spare_clips(&doc.ops)
+            .into_iter()
+            .filter_map(|(end, clips)| {
+                let row = match end {
+                    Endpoint::Base { block: b, index, .. } if b == block => {
+                        if own.get(&(block, index)).is_some_and(|o| o.removed) {
+                            return None;
+                        }
+                        index
+                    }
+                    Endpoint::Base { .. } => return None,
+                    Endpoint::Added(id) => first + added.iter().position(|r| r.id == id)? as u32,
+                };
+                Some((row, clips))
+            })
+            .collect()
+    }
+
+    /// Bring the world's spare clips to `want`: one call for each row that
+    /// changes. A refused call puts back the rows already written.
+    fn reconcile_clips(
+        &mut self,
+        world: &mut impl World,
+        want: BTreeMap<u32, u8>,
+    ) -> Result<(), String> {
+        let rows: BTreeSet<u32> = self.clips_live.keys().chain(want.keys()).copied().collect();
+        let mut done = Vec::new();
+        for row in rows {
+            let (was, now) = (self.clips_live.get(&row).copied(), want.get(&row).copied());
+            if was == now {
+                continue;
+            }
+            if let Err(error) = world.spare_clips(row, now) {
+                for &(row, was) in done.iter().rev() {
+                    let _ = world.spare_clips(row, was);
+                }
+                return Err(error);
+            }
+            done.push((row, was));
+        }
+        self.clips_live = want;
+        Ok(())
+    }
+
     /// Active areas keyed by the flag identity used in this session.
     pub fn areas(&self) -> Result<BTreeMap<Endpoint, Area>, String> {
         self.doc
@@ -1114,6 +1208,10 @@ impl Session {
                     break;
                 }
             }
+        }
+        if result.is_ok() {
+            let want = self.clips_by_row(doc, &own);
+            result = self.reconcile_clips(world, want);
         }
         if let Err(error) = result {
             let objects_repair = scene::reconcile(world, &mut self.objects, &before, true);

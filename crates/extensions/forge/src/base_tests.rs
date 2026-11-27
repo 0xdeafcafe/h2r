@@ -23,6 +23,7 @@ pub(crate) enum Call {
     BaseRestore(BlockKind, u32, Vec<u8>),
     KitAdd(BlockKind, u32, Vec<(String, Value)>),
     KitDrop(BlockKind, u32),
+    SpareClips(u32, Option<u8>),
 }
 
 /// A world that records each call. `refuse_at` refuses the call at that
@@ -94,6 +95,9 @@ impl World for Fake {
     }
     fn kit_drop(&mut self, block: BlockKind, index: u32) -> Result<(), String> {
         self.call(Call::KitDrop(block, index))
+    }
+    fn spare_clips(&mut self, index: u32, clips: Option<u8>) -> Result<(), String> {
+        self.call(Call::SpareClips(index, clips))
     }
 }
 

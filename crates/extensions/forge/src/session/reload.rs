@@ -221,6 +221,9 @@ impl Session {
             })
             .collect();
         self.own_live = own;
+        // The copy's game starts with no spare clips (`forge_spare_clips`
+        // empties its table at activation): the next settle writes them.
+        self.clips_live.clear();
         if let Some(kit) = &mut self.kit {
             // The kit's room is what the copy has past its rows, and the
             // rows the document adds are in it already.

@@ -771,6 +771,12 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The netgame item spawner: makes entry `index`'s object
+    /// (`scnr+0x120`, stride `0x90`), stores its handle at the entry's
+    /// state (`state + 8 * index`) and the index at the object's `+0xaf`.
+    /// Its one caller is the per-tick update `0x15ae70` (`0x15b1aa`), on
+    /// the authority only.
+    NETGAME_ITEM_SPAWN @ 0x0015_aad0: [fn(state: stack 0, index: stack 1) ret 8], Optional; "docs/engine/notes/2026-11-27-forge-spawner-rows.md";
     /// The game engine's round reset: clears the engine globals' round
     /// block (`E+0x74`, 27 dwords), resets each player's round bytes
     /// (`0x157a80`) and ends in a tail jump to the engine's slot `+0x0c`.
