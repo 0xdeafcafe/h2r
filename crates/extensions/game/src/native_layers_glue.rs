@@ -38,8 +38,11 @@
 //!   each of its material's passes in the layer plans
 //!   (`LitObjects::plan_layer_item`) with its fog. A pass sampling the
 //!   texture accumulation target (engine texture 3) binds its level as
-//!   layer 3's objects do (`native_objects_glue::sampled_texaccum`), and
-//!   not in layer 1, which draws into it (else `object_texaccum`). An
+//!   layer 3's objects do (`native_objects_glue::sampled_texaccum`; else
+//!   `object_texaccum`); in layer 1, which draws into it, each such draw
+//!   binds a copy of the bound colour made just before it
+//!   (`accumulation_segments`), and only where the layer takes no
+//!   structure item (else `object_texaccum_structure`). An
 //!   item toggling the auxiliary state (record bit 11) draws with the
 //!   rows and clip its view holds (`frame_scene::View::aux_depth`), and
 //!   only when the device holds the toggle off
@@ -413,6 +416,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
             None => (None, HashMap::new(), None),
         };
+        // Layer 1's draws that sample the accumulation target are recorded
+        // as commands, which carry no structure draws: beside a structure
+        // item the layer takes they keep their guest draws.
+        if l == 1 && !taken.is_empty() {
+            let before = object_draws.len();
+            object_draws.retain(|&slot, o| {
+                let accumulates = o.draws.iter().any(|(_, d)| d.texaccum);
+                if accumulates {
+                    left.item(slot, "object_texaccum_structure");
+                }
+                !accumulates
+            });
+            *outcomes.entry("object_texaccum_structure").or_default() += (before - object_draws.len()) as u64;
+        }
         let marked = object_draws.values().any(|o| o.marked);
         let mut stencil = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, marked);
         if stencil.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1(&d, mem) {
@@ -772,10 +789,16 @@ fn plan_objects<B: d3d::backend::Backend>(
             continue;
         }
         // Engine texture 3, the texture accumulation target, as layer 3's
-        // objects bind it (`native_objects_glue::sampled_texaccum`): not in
-        // layer 1, which draws into it.
+        // objects bind it (`native_objects_glue::sampled_texaccum`); layer
+        // 1, which draws into it, binds a copy of the bound colour made
+        // before each draw that samples it (`accumulation_segments`).
         if draws.iter().any(|draw| draw.texaccum)
-            && (layer == 1 || texaccum.get_or_insert_with(|| crate::native_objects_glue::sampled_texaccum(d, mem, true).ok().flatten()).is_none())
+            && texaccum
+                .get_or_insert_with(|| match layer {
+                    1 => crate::native_objects_glue::accumulation_target(mem),
+                    _ => crate::native_objects_glue::sampled_texaccum(d, mem, true).ok().flatten(),
+                })
+                .is_none()
         {
             *outcomes.entry("object_texaccum").or_default() += 1;
             left.item(item.slot, "object_texaccum");
@@ -984,7 +1007,13 @@ impl LayerViewPass {
     /// pass is then recorded as commands with a copy of the bound colour
     /// ([`LayerViewPass::encoded`]).
     fn samples_view(&self) -> bool {
-        self.object_draws().any(|d| d.view || d.scene_copy)
+        self.accumulates() || self.object_draws().any(|d| d.view || d.scene_copy)
+    }
+
+    /// Whether this is layer 1 and a draw samples the accumulation target
+    /// it draws into ([`accumulation_segments`]).
+    fn accumulates(&self) -> bool {
+        self.layer == 1 && self.object_draws().any(|d| d.texaccum)
     }
 }
 
@@ -1059,11 +1088,131 @@ impl d3d::ExternalPass for LayerViewPass {
         if !self.samples_view() {
             return None;
         }
+        if self.accumulates() {
+            return Some(self.encoded_accumulation(t, request));
+        }
         Some(self.encoded(t, request))
     }
 }
 
+/// Layer 1's draws split where each draw sampling the accumulation target
+/// starts a segment: the bound colour is copied before every segment that
+/// starts with one, so that draw reads the target as every draw before it
+/// left it, as the D3D path's draw reads the attachment it samples.
+/// `samples` is each draw's: whether it samples the target. A segment is
+/// whether it starts with a copy, and its draws.
+pub(crate) fn accumulation_segments(samples: impl IntoIterator<Item = bool>) -> Vec<(bool, std::ops::Range<usize>)> {
+    let mut out: Vec<(bool, std::ops::Range<usize>)> = Vec::new();
+    for (n, samples) in samples.into_iter().enumerate() {
+        match out.last_mut() {
+            Some((_, range)) if !samples => range.end = n + 1,
+            _ => out.push((samples, n..n + 1)),
+        }
+    }
+    out
+}
+
+/// Records `encoder`'s render pass on the bound attachments, loaded and
+/// stored.
+fn load_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder, color: &'a wgpu::TextureView, depth: &'a wgpu::TextureView, stencil: bool,
+) -> wgpu::RenderPass<'a> {
+    fn keep<V>() -> wgpu::Operations<V> {
+        wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }
+    }
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("native layer 1 accumulation"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color,
+            depth_slice: None,
+            resolve_target: None,
+            ops: keep(),
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(keep()),
+            stencil_ops: stencil.then(keep),
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
+}
+
 impl LayerViewPass {
+    /// Layer 1's object runs sampling the accumulation target as commands:
+    /// their uniforms' writes, then per segment
+    /// ([`accumulation_segments`]) the bound colour copied when it starts
+    /// with a sampling draw and a render pass on the bound attachments,
+    /// the segment's draws binding the copy at the target's guest size.
+    fn encoded_accumulation(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        if self.world_runs().next().is_some() {
+            return Err("structure items in a layer whose objects sample the accumulation target");
+        }
+        if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(&t.color, t.size) {
+            return Err("the bound colour cannot be copied for the accumulation stages");
+        }
+        let target = self.texaccum.ok_or("texture accumulation target unavailable")?;
+        let view = self.view_inputs(t, request)?;
+        let draws: Vec<(u32, PlannedDraw)> = self.object_draws_with_models().cloned().collect();
+        if draws.iter().any(|(_, d)| d.view || d.scene_copy) {
+            return Err("view stages beside the accumulation target");
+        }
+        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
+        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
+        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
+        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
+            return Err("layer object geometry or material unavailable");
+        }
+        let copy = lit.view_copy(&t.device, &t.color, t.copy);
+        let sampled = native_render::object_program_gpu::Texaccum { view: &copy.view, guest_size: target.size };
+        let mut writes = Vec::new();
+        let mut segments = Vec::new();
+        let (mut ranges, mut count) = (0, 0);
+        for (copies, range) in accumulation_segments(draws.iter().map(|(_, d)| d.texaccum)) {
+            let out = lit.draws_with_view(
+                &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
+                request.projection_factor(t.copy), &draws[range], Some(sampled), None, None,
+            )?;
+            let out = clip_packets(out, request, t.size)?;
+            for (dst, offset, bytes) in out.writes {
+                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
+                writes.push((src, at, dst, offset, bytes.len() as u64));
+            }
+            ranges += out.ranges;
+            count += out.packets.len();
+            segments.push((copies, out.packets));
+        }
+        let passes = segments.len();
+        let (color, depth) = (t.color.clone(), t.depth.clone());
+        let stencil = t.depth_format.has_stencil_aspect();
+        let (from, to, extent) = (copy.from, copy.to, copy.extent);
+        let commands = move |encoder: &mut wgpu::CommandEncoder| {
+            for (src, at, dst, offset, len) in &writes {
+                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+            }
+            for (copies, packets) in &segments {
+                if *copies {
+                    encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), extent);
+                }
+                let mut pass = load_pass(encoder, &color, &depth, stencil);
+                // Checked when the packets were made: every pipeline
+                // built, no counted draw.
+                let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
+            }
+        };
+        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes, commands: Box::new(commands) })
+    }
+
+    fn object_draws_with_models(&self) -> impl Iterator<Item = &(u32, PlannedDraw)> {
+        self.runs.iter().flat_map(|r| match r {
+            LayerRun::Objects(draws) => draws.as_slice(),
+            LayerRun::World(_) => &[][..],
+        })
+    }
+
     /// The view inputs of this recording.
     fn view_inputs(&self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest) -> Result<ViewInputs, &'static str> {
         let constants = self.view.ok_or("layer view constants unavailable")?;
@@ -1301,5 +1450,22 @@ mod restore_tests {
         let unknown = [writes[1], Write::Setter { state: 0x90, setter: 0x0001_2340, value: 1 }];
         assert_eq!(restore_list(&mut device, &mut m, &unknown), Err("setter"));
         assert!(m.bytes == before, "nothing written");
+    }
+}
+
+#[cfg(test)]
+mod accumulation_tests {
+    use super::accumulation_segments;
+
+    /// Each draw sampling the accumulation target starts a segment with a
+    /// copy of the bound colour, so it reads every draw before it; the
+    /// draws after it up to the next one join its segment; leading draws
+    /// that sample nothing take no copy.
+    #[test]
+    fn each_draw_sampling_the_accumulation_target_reads_a_copy_made_just_before_it() {
+        let got = accumulation_segments([false, false, true, false, true, true, false]);
+        assert_eq!(got, [(false, 0..2), (true, 2..4), (true, 4..5), (true, 5..7)]);
+        assert_eq!(accumulation_segments([true]), [(true, 0..1)]);
+        assert!(accumulation_segments([]).is_empty());
     }
 }

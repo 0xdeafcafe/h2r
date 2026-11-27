@@ -1968,6 +1968,15 @@ pub(crate) fn sampled_texaccum<B: d3d::backend::Backend>(
     native_render::world_layers::Texaccum::read(&Ro(mem)).map(Some).ok_or(())
 }
 
+/// The texture accumulation target layer 1 draws into, read at the hook
+/// (`world_layers::Texaccum::read`): its passes that sample it bind a copy
+/// of the bound colour made before each such draw
+/// (`native_layers_glue::accumulation_segments`), so the levels need not
+/// be sampled in place. `None` when the guest gives none.
+pub(crate) fn accumulation_target(mem: &dyn GuestMemory) -> Option<native_render::world_layers::Texaccum> {
+    native_render::world_layers::Texaccum::read(&Ro(mem))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
