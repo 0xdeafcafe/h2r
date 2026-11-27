@@ -682,8 +682,11 @@ paths in "What exists":
    (`map::build::TagSet::from_map_streamed`); the build holds the
    header, index, names and metadata, and serves an overlay over the
    map (`vfs::Rewritten::Over`), so a campaign map of any size takes its
-   packages. A package whose item writes the prefix in memory is refused
-   for that map by name. The overlay is kept in
+   packages. A screen item, which pins the map again, lays the set out
+   as an overlay over the map and decomposes that file the same way
+   (`workspace::onto::lay_over`); the final overlay composes over it. A
+   package whose item writes the prefix in memory is refused for that
+   map by name. The overlay is kept in
    `<data>/packages/cache/<map sha>-<key>.splice` (16 hex digits of
    each, the key `workspace::cache_key`), its runs' bytes, with a
    `.json` receipt holding the full key, the splice's hash and where

@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use content::package::{Item, Kind, MapScope, Maps, Package, Refusal};
+use content::patch::Overlay;
 use content::{Sha256, canonicalize};
 use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, TagId};
@@ -33,6 +34,7 @@ use serde_json::json;
 use tags::repo::TagKey;
 
 use crate::assets::Assets;
+use crate::base::Base;
 use crate::builders::{self, BUILDERS_VERSION};
 use crate::hash::tag_hash;
 use crate::unpin::MapUnpin;
@@ -207,6 +209,9 @@ pub struct Cx<'a> {
     pub(crate) state: &'a mut State,
     unpin: Option<&'a dyn Unpin>,
     shading: Option<&'a Result<Shading, String>>,
+    /// A streamed set's base map, read by offset (`TagSet::from_map_streamed`);
+    /// `None` when the set holds its file prefix.
+    pub(crate) base: Option<Base<'a>>,
 }
 
 #[derive(Default)]
@@ -231,6 +236,10 @@ pub(crate) struct State {
     // After a builder pins a snapshot of the current map, later items
     // relocate against that snapshot instead of the original map.
     snapshot_unpin: Option<Result<MapUnpin, String>>,
+    /// A streamed set's snapshot: the file it was decomposed from again, as
+    /// an overlay over the base ([`Cx::base`]). The final build reads that
+    /// file, not the base.
+    pub(crate) snapshot_over: Option<Overlay>,
 }
 
 impl State {
@@ -614,7 +623,21 @@ pub fn build_with(
     unpin: Option<&dyn Unpin>,
     shading: Option<&Result<Shading, String>>,
 ) -> Result<Report, BuildError> {
-    run(set, packages, target, unpin, shading, None, None).map_err(|stopped| match stopped {
+    build_over(set, packages, target, unpin, shading, None).map(|(report, _)| report)
+}
+
+/// [`build_with`] on a set streamed from `base` (`None`: a set that holds
+/// its file prefix), with the snapshot overlay a screen item left
+/// ([`State::snapshot_over`]).
+pub(crate) fn build_over(
+    set: &mut TagSet,
+    packages: &[Loaded],
+    target: &Target<'_>,
+    unpin: Option<&dyn Unpin>,
+    shading: Option<&Result<Shading, String>>,
+    base: Option<Base<'_>>,
+) -> Result<(Report, Option<Overlay>), BuildError> {
+    run(set, packages, target, unpin, shading, None, None, base).map_err(|stopped| match stopped {
         Stopped::Failed(e) => e,
         // Only the refusing build starts again.
         Stopped::Again { package, why } => unreachable!("{package}: {why}"),
@@ -642,7 +665,8 @@ pub(crate) fn build_refusing(
     strict: &BTreeSet<String>,
     off: &mut Vec<Refusal>,
     assets: Option<&mut dyn Assets>,
-) -> Result<Report, Stopped> {
+    base: Option<Base<'_>>,
+) -> Result<(Report, Option<Overlay>), Stopped> {
     run(
         set,
         packages,
@@ -651,6 +675,7 @@ pub(crate) fn build_refusing(
         shading,
         Some((strict, off)),
         assets,
+        base,
     )
 }
 
@@ -699,7 +724,8 @@ fn run(
     shading: Option<&Result<Shading, String>>,
     mut off: Option<(&BTreeSet<String>, &mut Vec<Refusal>)>,
     mut assets: Option<&mut dyn Assets>,
-) -> Result<Report, Stopped> {
+    base: Option<Base<'_>>,
+) -> Result<(Report, Option<Overlay>), Stopped> {
     let mut state = State::default();
     for loaded in packages {
         let manifest = &loaded.package.manifest;
@@ -749,6 +775,7 @@ fn run(
                 state: &mut state,
                 unpin,
                 shading,
+                base,
             };
             let job = builders::Job {
                 item,
@@ -793,7 +820,7 @@ fn run(
             state.report.packages.push((name.to_owned(), ran));
         }
     }
-    Ok(state.report)
+    Ok((state.report, state.snapshot_over))
 }
 
 /// Why a package is refused for a streamed map ([`prefix_written`]).

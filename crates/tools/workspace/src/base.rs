@@ -92,6 +92,21 @@ impl<'a> Base<'a> {
     }
 }
 
+impl Source for Base<'_> {
+    fn size(&self) -> u64 {
+        self.len()
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        match *self {
+            Self::Bytes(b) => {
+                let mut b = b;
+                b.read_at(offset, buf)
+            }
+            Self::Shared(s) => s.read_at(offset, buf),
+        }
+    }
+}
+
 /// A source shared by every reader of one build. Reads borrow it one at a
 /// time; a build is single-threaded.
 pub struct Shared<'a> {

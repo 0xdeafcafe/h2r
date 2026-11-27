@@ -487,14 +487,15 @@ fn invalid_sets_are_rejected() {
     }
     assert!(t.set.build().is_err());
 
-    // Too much metadata for the cache type.
+    // Too much metadata for the cache type: one tag the size of its bound.
     let mut t = tiny();
     t.set.cache_type = CacheType::MainMenu;
+    let bound = crate::writer::max_metadata_size(CacheType::MainMenu).unwrap();
     t.set
         .add_tag(
             cc(b"thng"),
             "big",
-            TagPayload::Built(Block::zeroed(0x1d3000)),
+            TagPayload::Built(Block::zeroed(bound as usize)),
         )
         .unwrap();
     assert!(err(&t.set).contains("tag memory"));

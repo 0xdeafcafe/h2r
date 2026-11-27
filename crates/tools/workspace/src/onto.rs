@@ -11,13 +11,14 @@ use std::collections::BTreeSet;
 use std::io::Cursor;
 
 use content::package::{MapScope, Refusal};
+use content::patch::{Overlay, OverlayView, Reader};
 use map::build::{BuildLayout, StreamedBuild, TagSet};
 use map::{CacheType, Map};
 
 use crate::assets::Assets;
 use crate::base::Base;
 use crate::build::{
-    Loaded, Report, Shading, Target, Unpin, build_refusing, build_with, wants_shading,
+    Loaded, Report, Shading, Target, Unpin, build_over, build_refusing, wants_shading,
 };
 use crate::unpin::MapUnpin;
 
@@ -70,7 +71,7 @@ pub fn build_map_laid_out(
     packages: &[Loaded],
     target: &Target<'_>,
 ) -> Result<BuiltMap, String> {
-    let (set, report) = settle(base.into(), packages, target, None, None, false)?;
+    let (set, report, _) = settle(base.into(), packages, target, None, None, false)?;
     finish(set, report)
 }
 
@@ -97,15 +98,14 @@ pub fn build_map_settled<'a>(
     strict: &BTreeSet<String>,
     assets: Option<&mut dyn Assets>,
 ) -> Result<BuiltMap, String> {
-    let (set, report) = settle(base.into(), packages, target, Some(strict), assets, false)?;
+    let (set, report, _) = settle(base.into(), packages, target, Some(strict), assets, false)?;
     finish(set, report)
 }
 
-/// A map [`build_map_streamed`] built: the base's bytes up to
-/// `build.base` with `build.runs` over them, the rest the runs alone.
+/// A map [`build_map_streamed`] built: `overlay` over the base.
 #[derive(Debug)]
 pub struct StreamedMap {
-    pub build: StreamedBuild,
+    pub overlay: Overlay,
     pub report: Report,
     pub layout: BuildLayout,
 }
@@ -126,15 +126,54 @@ pub fn build_map_streamed(
     strict: Option<&BTreeSet<String>>,
     assets: Option<&mut dyn Assets>,
 ) -> Result<StreamedMap, String> {
-    let (set, report) = settle(base, packages, target, strict, assets, true)?;
-    let (build, layout) = set
-        .build_streamed(&mut base.reader())
-        .map_err(|e| format!("building the map: {e}"))?;
+    let (set, report, snapshot) = settle(base, packages, target, strict, assets, true)?;
+    let (overlay, layout) = lay_over(&set, base, snapshot.as_ref())?;
     Ok(StreamedMap {
-        build,
+        overlay,
         report,
         layout,
     })
+}
+
+/// Build the streamed `set` over the file it was decomposed from: `base`,
+/// or `snapshot` over it when an item pinned the set again
+/// ([`crate::build`]'s `snapshot_over`). The result is one overlay over
+/// `base`.
+pub(crate) fn lay_over(
+    set: &TagSet,
+    base: Base<'_>,
+    snapshot: Option<&Overlay>,
+) -> Result<(Overlay, BuildLayout), String> {
+    let mut source = base;
+    let built = match snapshot {
+        None => set.build_streamed(&mut base.reader()),
+        Some(overlay) => set.build_streamed(&mut Reader::new(OverlayView {
+            overlay,
+            base: &mut source,
+        })),
+    };
+    let (build, layout) = built.map_err(|e| format!("building the map: {e}"))?;
+    let len = snapshot.map_or(base.len(), Overlay::len);
+    let mine = over(len, build);
+    Ok((
+        match snapshot {
+            Some(s) => s.then(&mine),
+            None => mine,
+        },
+        layout,
+    ))
+}
+
+/// A streamed build as an overlay over the `base_len` bytes it was built
+/// from.
+pub(crate) fn over(base_len: u64, build: StreamedBuild) -> Overlay {
+    let mut overlay = Overlay::new(base_len);
+    overlay.set_len(build.base);
+    for (at, bytes) in build.runs {
+        overlay.write_owned(at, bytes);
+    }
+    debug_assert_eq!(overlay.len(), build.len);
+    overlay
 }
 
 /// Lay the set out in memory.
@@ -166,7 +205,7 @@ fn settle(
     strict: Option<&BTreeSet<String>>,
     mut assets: Option<&mut dyn Assets>,
     streamed: bool,
-) -> Result<(TagSet, Report), String> {
+) -> Result<(TagSet, Report, Option<Overlay>), String> {
     let Some(strict) = strict else {
         return match attempt(base, packages, target, None, None, streamed) {
             Ok(built) => Ok(built),
@@ -186,9 +225,9 @@ fn settle(
             crate::assets::lend(&mut assets),
             streamed,
         ) {
-            Ok((set, mut report)) => {
+            Ok((set, mut report, snapshot)) => {
                 report.refused = refused;
-                return Ok((set, report));
+                return Ok((set, report, snapshot));
             }
             Err(Broke::Failed(why)) => return Err(why),
             Err(Broke::Again { package, why }) => {
@@ -215,7 +254,7 @@ fn attempt(
     off: Option<(&BTreeSet<String>, &mut Vec<Refusal>)>,
     mut assets: Option<&mut dyn Assets>,
     streamed: bool,
-) -> Result<(TagSet, Report), Broke> {
+) -> Result<(TagSet, Report, Option<Overlay>), Broke> {
     let mut map =
         Map::from_reader(base.reader()).map_err(|e| Broke::Failed(format!("not a map: {e}")))?;
     let unpin = MapUnpin::new(&mut map);
@@ -242,7 +281,9 @@ fn attempt(
         Ok(_) => Broke::Failed(e.to_string()),
         Err(why) => Broke::Failed(format!("{e} (the map's reader: {why})")),
     };
-    let report = match off {
+    // A streamed set's items lay the map out over the base it reads.
+    let streamed = streamed.then_some(base);
+    let (report, snapshot) = match off {
         Some((strict, off)) => build_refusing(
             &mut set,
             packages,
@@ -252,14 +293,14 @@ fn attempt(
             strict,
             off,
             crate::assets::lend(&mut assets),
+            streamed,
         )
         .map_err(|s| match s {
             crate::build::Stopped::Failed(e) => stopped(e),
             crate::build::Stopped::Again { package, why } => Broke::Again { package, why },
         })?,
-        None => {
-            build_with(&mut set, packages, target, reader, shading.as_ref()).map_err(stopped)?
-        }
+        None => build_over(&mut set, packages, target, reader, shading.as_ref(), streamed)
+            .map_err(stopped)?,
     };
-    Ok((set, report))
+    Ok((set, report, snapshot))
 }

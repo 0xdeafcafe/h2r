@@ -508,7 +508,7 @@ impl PackageRewrite {
             }
         }
         let built = built.expect("built above");
-        let overlay = over(base_len, built.build);
+        let overlay = built.overlay;
         let receipt = Receipt {
             key,
             map: Sha256::of(&[]),
@@ -605,17 +605,6 @@ pub fn stem_of(path: &str) -> Option<String> {
     let lower = path.to_ascii_lowercase().replace('/', "\\");
     let stem = lower.strip_prefix("maps\\")?.strip_suffix(".map")?;
     (!stem.is_empty() && !stem.contains('\\')).then(|| stem.to_owned())
-}
-
-/// A streamed build as an overlay over its base of `base_len` bytes.
-fn over(base_len: u64, build: map::build::StreamedBuild) -> Overlay {
-    let mut overlay = Overlay::new(base_len);
-    overlay.set_len(build.base);
-    for (at, bytes) in build.runs {
-        overlay.write_owned(at, bytes);
-    }
-    debug_assert_eq!(overlay.len(), build.len);
-    overlay
 }
 
 impl vfs::Rewrite for PackageRewrite {
