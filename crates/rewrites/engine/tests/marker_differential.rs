@@ -137,6 +137,18 @@ struct Oracle<'a> {
 }
 
 impl Oracle<'_> {
+    /// Lift the function at `entry`, so a run that resumes in its middle
+    /// (the kernel's handoff at `b8ded`) finds those instructions.
+    fn prime(&mut self, entry: u32) {
+        let f = self
+            .lifter
+            .lift(entry)
+            .unwrap_or_else(|| panic!("function at {entry:#x}"));
+        for insn in f.blocks.into_values().flat_map(|b| b.insns) {
+            self.cache.insert(insn.pc, insn);
+        }
+    }
+
     fn run(&mut self, c: &mut Cpu, mem: &mut Ram<'_>, mut pc: u32) {
         for _ in 0..2_000_000 {
             c.eip = pc;
@@ -180,6 +192,7 @@ fn with_oracle(name: &str, f: impl FnOnce(&mut Oracle<'_>, &[u8])) {
         lifter: &lifter,
         cache: BTreeMap::new(),
     };
+    oracle.prime(points::SIM_MARKER_TRANSFORMS.base);
     f(&mut oracle, &image);
 }
 
@@ -244,7 +257,7 @@ fn case(rng: &mut Rng, n: u32, c: &mut CpuAbi, m: &mut Ram<'_>) -> bool {
             (rng.next() % u64::from(node_count)) as u8
         };
         let answers = rng.next() % 5 != 0;
-        let name = if answers { 0x40 + node } else { 0x80 };
+        let name = if answers { 0x40u8.wrapping_add(node) } else { 0x80 };
         m.store(at, &[node, name, (rng.next() % 5) as u8, 0]);
         for k in 1..9 {
             let v = if rng.next() % 6 == 0 {
