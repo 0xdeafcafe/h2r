@@ -35,9 +35,9 @@ The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_cal
 
 An entered sound is the engine's record (`SOUND_INSTANCES`, `0xBC` bytes, salted datum handle; `owners::record`). The sim reads its tag (`+0xC`), owner (`+0x10`), callback table (`+0x14`), payload (`+0x5C`), pitch range (`+0x9C`), permutation (`+0x9D`) and, for a stop, the fade fields (`+0x20`, `+0xB4`, `+0xB8`).
 
-- **End.** On the end tick the sim calls the engine's finish `0x127320` with reason `owners::ENDED_REASON`, if the guest has not freed the record already (`SoundLedger::stale`). The engine's finish runs the owner's `+0x10` callback (`0x18c8c0`, `0x18c910`), so the dialogue word and slot are cleared by the engine's code.
+- **End.** On the end tick the sim calls the engine's finish `0x127320` with reason `owners::ENDED_REASON` (2, the engine's reason for a one-shot whose channel has stopped: the service `0x128040` at `0x12810f`), if the guest has not freed the record already (`SoundLedger::stale`). The engine's finish runs the owner's `+0x10` callback (`0x18c8c0`, `0x18c910`), so the dialogue word and slot are cleared by the engine's code.
 - **Stop ramp.** `0x126360` starts the ramp; the sim polls each instance with the ramp flag (`+4` bit 7) through `0x12a810` and ends it when `[+0x20] + ramp` is at or under the floor (`0x44a0b4`) and `[+0xB4] > [+0xB8]` (signed), with reason 4 (`owners::ramp_done`). The mixer clock the ramp reads is milliseconds in retail and wall-clock driven; the sim writes `tick * 1000 / 30` each tick (`sim_sound::clock_ms`).
-- **Update.** `+8` is called from the service, once per running owned instance per main-loop run, the way `0x129593` calls it; its audio time is the ticks since the start over 30 (`owners::seconds`).
+- **Update.** `+8` is called from the service, once per running owned instance per main-loop run, the way `0x129593` calls it; its audio time is the ticks since the start over 30 (`owners::seconds`). The engine's value is the channel's `+0x10`, which `0x12a450` accumulates per service run (`0x12a5c6`) as the format's playback ratio (`0x21f650`) times the run's wall-clock step (`[mixer + 0x1e0]`, from the timer at `0x126a34`). That step is wall time and differs between runs of the engine itself, so no sim value can equal it bit for bit; the sim's is the sim time elapsed, the engine's at ratio 1. The only reader is the lip-sync update (`0x18c720`).
 
 Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start_sets_the_clock_polls_ramps_and_finishes_then_runs_the_tick`, `an_instance_the_guest_freed_is_not_finished_twice`, `the_service_makes_the_owners_update_with_the_seconds_since_the_start`, `an_ended_sounds_finish_is_due_on_the_tick_after_its_end_event`, `running_sounds_survive_a_save` (`sim_sound.rs`); the instance readers in `owners.rs`.
 
@@ -57,8 +57,8 @@ Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start
 
 ## Not verified
 
-- The finish reason for a sound that plays to its end (`owners::ENDED_REASON`, 0); only the fade's 4 is read from the engine.
-- The audio time the engine passes to `+8` (`[channel + 0x10]` from `0x129aa0`); the sim uses ticks over 30.
+- That every natural end is the engine's reason 2: a stopped channel with flag bits 9 and 6 unset, or a looping source, leaves the instance to another path (reason 3 when the owner's `+0` callback returns false, 0xF).
+- The playback ratio of the sound formats (`0x21f650`): the sim assumes 1.
 - That a guest call to `SOUND_IMPULSE_ALLOCATE` and `GAME_TICK` from a hook re-enters the chain (the admission guards with a busy flag, the tick with the per-tick delivery).
 - That `h2 sim diff` matches over a run with the switch on, on a map with dialogue.
 - The mixer wiring at boot (`MixerHost` needs a `Clips` over the decoded sound data).

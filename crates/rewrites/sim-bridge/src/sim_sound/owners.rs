@@ -20,11 +20,14 @@ pub const FINISH: u32 = 0x0012_7320;
 pub const RAMP: u32 = 0x0012_a810;
 /// The reason of a finish that the fade of a stop completes (`0x1294b7`).
 pub const FADE_REASON: u32 = 4;
-/// The reason of a finish at the end of the permutation's samples. The
-/// engine's completion reaches the finish from the stream callbacks
-/// (`0x21c3bf`) with the stream's own reason; this value is not read from
-/// the engine.
-pub const ENDED_REASON: u32 = 0;
+/// The reason of a finish for a sound that played out. The per-instance
+/// service (`0x128040`) finishes an instance whose channel has stopped
+/// (`[channel + 9] == 0`, or no channel) with 2 when its flags word (`+4`)
+/// has bits 9 and 6 and its source is not a loop (`[source + 0xd] & 7 == 0`,
+/// `0x1280d4..0x12810f`). The other reasons there are 0xF (`0x128146`), 3
+/// (the owner's `+0` callback returned false, `0x12815d`), and the start
+/// failures 0xD, 0xE and 7.
+pub const ENDED_REASON: u32 = 2;
 
 const GESTALT: u32 = 0x0051_ebd4;
 /// The mixer's globals: `+0x84` is its clock in milliseconds.
@@ -172,7 +175,12 @@ pub fn ramp_done(m: &dyn GuestMemory, handle: u32, ramp: u32) -> bool {
     under && flags & FLAG_RAMP != 0 && (end as i32) > (start as i32)
 }
 
-/// The seconds since a start, from ticks.
+/// The seconds since a start, from ticks. The engine's value is the
+/// channel's `+0x10`, which `0x12a450` adds to once per service run
+/// (`0x12a5c6`): the playback ratio of the channel's format (`0x21f650`)
+/// times the run's wall-clock step (`[mixer + 0x1e0]`, from the timer
+/// `0x3314b0` at `0x126a34`). The sim has no wall-clock step, so this is the
+/// sim time elapsed, which is the engine's value at ratio 1.
 pub fn seconds(ticks: u32) -> f32 {
     ticks as f32 / TICKS_PER_SECOND
 }
