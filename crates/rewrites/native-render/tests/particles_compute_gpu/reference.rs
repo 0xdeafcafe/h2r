@@ -205,6 +205,7 @@ impl System {
                 id: s.id,
                 words: s.words,
                 tint: s.tint,
+                age: s.age,
                 ..Default::default()
             };
             edges.push(self.evaluate(&mut p));

@@ -119,6 +119,7 @@ pub mod particle_compute;
 #[cfg(feature = "gpu")]
 pub mod particle_definition;
 pub mod particle_material;
+pub mod particle_mirror;
 pub mod particle_system;
 pub mod particles;
 #[cfg(feature = "gpu")]

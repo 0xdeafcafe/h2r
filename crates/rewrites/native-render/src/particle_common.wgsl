@@ -79,6 +79,7 @@ struct Spawn {
     random: vec4<f32>,
     words: u32,
     tint: u32,
-    _pad: vec2<u32>,
+    age: f32,
+    _pad: u32,
 }
 

@@ -1,6 +1,6 @@
 # Native particles and effect geometry
 
-Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen; the run host does not draw them yet. Pixel parity and timing are not verified.
+Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen; R2's mirror holds the guest's particles as their births ([retire-d3d-r2.md](retire-d3d-r2.md), "R2's particle mirror"), and its game host is not built. Pixel parity and timing are not verified.
 Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `particle_system.rs`, `particle_definition.rs`, `particle_compute.rs` (`particle_common.wgsl`, `particle_compute.wgsl`, `particle_draw.wgsl`), `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `particles_compute_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -455,7 +455,9 @@ flowchart LR
 - **Integration.** `age += dt`; a particle with `age >= lifetime` dies.
   Otherwise `velocity = (velocity + gravity * dt) * max(0, 1 - drag * dt)`,
   then `position += velocity * dt`. Births are evaluated, not aged, on the
-  frame they arrive.
+  frame they arrive, at their `Spawn::age` (0 for a new particle).
+- **Mirror.** `GpuParticles::mirror` keeps no survivor: the system is the
+  staged births alone, a mirror of particles the guest owns.
 - **Evaluation** is `0x00224550`'s, as `engine::particle_emission` models
   it, with the tag function baked:
 
@@ -524,7 +526,7 @@ test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
-- GPU particle systems: a `Definition` from a disc particle tag, and drawing them from the run host; update and draw cost at 1k, 10k and 65k particles.
+- GPU particle systems: a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 

@@ -221,7 +221,20 @@ impl GpuParticles {
     /// then the staged births. The step and births go through the queue,
     /// so one update per submission: a second would overwrite them.
     pub fn update(&mut self, compute: &ParticleCompute, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, dt: f32) {
-        let step = Step { dt, spawns: self.pending.len() as u32, capacity: self.capacity, _pad: 0 };
+        self.record(compute, queue, encoder, dt, 0);
+    }
+
+    /// The staged births become the whole system: no particle survives,
+    /// and each birth is evaluated at its own [`Spawn::age`], not aged. A
+    /// mirror of particles another simulation owns (the guest's), drawn
+    /// as they are this frame (docs/graphics/retire-d3d-r2.md, "R2's
+    /// particle mirror"). One per submission, as [`Self::update`].
+    pub fn mirror(&mut self, compute: &ParticleCompute, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder) {
+        self.record(compute, queue, encoder, 0.0, 1);
+    }
+
+    fn record(&mut self, compute: &ParticleCompute, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, dt: f32, mirror: u32) {
+        let step = Step { dt, spawns: self.pending.len() as u32, capacity: self.capacity, mirror };
         queue.write_buffer(&self.step, 0, bytemuck::bytes_of(&step));
         if !self.pending.is_empty() {
             queue.write_buffer(&self.spawns, 0, bytemuck::cast_slice(&self.pending));

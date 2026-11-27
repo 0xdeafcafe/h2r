@@ -33,6 +33,7 @@ mod answer;
 pub mod dispatch;
 mod emission;
 pub mod geometry;
+pub mod mirror;
 mod overlay;
 mod ribbon;
 pub mod view_update;
@@ -570,6 +571,7 @@ pub fn forget() {
     UPDATE.with(|u| u.borrow_mut().take());
     DISPATCH.with(|d| d.borrow_mut().take());
     emission::forget();
+    mirror::forget();
     ribbon::forget();
     geometry::forget();
 }
@@ -610,6 +612,14 @@ pub fn install(b: &mut Builder) {
             } else {
                 Ok(Flow::Continue)
             }
+        })
+        .context_only()
+        .optional();
+    // The particle draw's return: the mirror's held batch draws.
+    b.raw()
+        .observe_after(&crate::effect_materials::PARTICLE_MATERIAL, "effects_shadow_mirror_end", |o| {
+            let g = o.guest();
+            mirror::finish(&*g);
         })
         .context_only()
         .optional();

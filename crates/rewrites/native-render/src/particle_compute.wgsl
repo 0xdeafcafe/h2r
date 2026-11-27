@@ -24,7 +24,7 @@ struct Step {
     dt: f32,
     spawns: u32,
     capacity: u32,
-    _pad: u32,
+    mirror: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> src: array<Particle>;
@@ -235,7 +235,7 @@ fn update(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocati
     if i < n {
         var p = src[i];
         p.age = p.age + step.dt;
-        if p.age < p.lifetime {
+        if step.mirror == 0u && p.age < p.lifetime {
             let drag = max(0.0, 1.0 - definition.drag * step.dt);
             p.velocity = (p.velocity + definition.gravity * step.dt) * drag;
             p.position = p.position + p.velocity * step.dt;
@@ -307,7 +307,7 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
         let s = spawns[i];
         var p: Particle;
         p.position = s.position;
-        p.age = 0.0;
+        p.age = s.age;
         p.velocity = s.velocity;
         p.lifetime = s.lifetime;
         p.random = s.random;

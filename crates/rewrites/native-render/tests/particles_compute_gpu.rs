@@ -143,7 +143,7 @@ fn spawns(rng: &mut Lcg, first: u32, n: u32) -> Vec<Spawn> {
             random: [rng.unit(), rng.unit(), rng.unit(), rng.unit()],
             words: rng.u32(),
             tint: rng.u32() & 0x00ff_ffff,
-            _pad: [0; 2],
+            ..Default::default()
         })
         .collect()
 }
@@ -261,6 +261,28 @@ fn a_dead_particle_is_compacted_out_and_births_past_capacity_drop() {
     step(&ctx, &compute, &mut s);
     assert_eq!(ids(&s), [8, 9, 100, 101, 102, 103, 104, 105], "the survivors keep their places; six of ten fit");
     assert_eq!(draw_args(&ctx, &s), [6, 8, 0, 0]);
+}
+
+#[test]
+fn a_mirror_is_its_births_alone_each_evaluated_at_its_own_age() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let compute = ParticleCompute::new(&ctx.device);
+    let mut s = GpuParticles::new(&ctx.device, &compute, &plain(), &[], 8).unwrap();
+    s.emit(&[at([0.0; 3], 10.0, 1), at([0.0; 3], 10.0, 2)]);
+    step(&ctx, &compute, &mut s);
+    // A mirrored frame: the guest's particles as they are, older than
+    // their lifetime or not; nothing of the last frame survives.
+    s.emit(&[Spawn { age: 2.5, ..at([1.0; 3], 4.0, 3) }, Spawn { age: 9.0, ..at([2.0; 3], 4.0, 4) }]);
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    s.mirror(&compute, &ctx.queue, &mut enc);
+    ctx.queue.submit([enc.finish()]);
+    let got = particles(&ctx, &s, counts(&ctx, &s).count);
+    assert_eq!(got.iter().map(|p| p.id).collect::<Vec<_>>(), [3, 4], "the births alone, in order");
+    assert_eq!(got.iter().map(|p| p.age).collect::<Vec<_>>(), [2.5, 9.0], "each at its own age, not aged");
+    assert_eq!(draw_args(&ctx, &s), [6, 2, 0, 0]);
 }
 
 #[test]

@@ -309,7 +309,7 @@ run. A sampled frame runs the guest, so the arms go on comparing.
 
 | Body | The answer | Kept, `scene_kept_15_<kind>_<cause>` |
 |---|---|---|
-| particle callback `0x00224550` | the emission from `particle_emission`, drawn through the native particle path's direct draw (`native_particles::draw_emission`); its writes made in the guest; `ret 0x1c`. The emitter `0x0023ed30` never runs | `particle_<refusal>`, `particle_{refused,no_host,declaration,register,unreadable,...}`, `particle_stack` |
+| particle callback `0x00224550` | the emission from `particle_emission`, held by [the mirror](#r2s-particle-mirror) or drawn through the native particle path's direct draw (`native_particles::draw_emission`); its writes made in the guest; `ret 0x1c`. The emitter `0x0023ed30` never runs | `particle_<refusal>`, `particle_{refused,no_host,declaration,register,unreadable,...}`, `particle_stack` |
 | contrail builder `0x00042cf0` | the ribbon from `contrail_ribbon` written at its first argument, its writes, AL; `ret 0xc`. The polygon handler draws it by the native effect path | `contrail_<refusal>` |
 | decal runs | `RunHost` (the seam for the decal replays from the scene) | `decal_replay`, each entry while no host is installed |
 
@@ -324,6 +324,45 @@ Tests: `answer.rs`
 (`an_answered_particle_draws_from_the_rust_emission_and_a_refused_one_keeps_its_guest_body`,
 `a_sampled_frame_or_a_closed_gate_runs_the_guest_and_the_arm_compares`),
 `effects_shadow.rs` (`an_answering_gate_draws_each_decal_run_after_its_last_entry`).
+
+## R2's particle mirror
+
+Built (**Code**): `render-bridge/src/effects_shadow/mirror.rs`,
+`native_render::particle_mirror`. An answered particle is held as a GPU
+particle system's birth; when the particle draw `0x002243c0` returns, the
+host draws each held batch with `ParticleDraw`. The guest still owns and
+simulates the particle; the mirror is that frame's state alone
+(`GpuParticles::mirror`: nothing survives, each birth is evaluated at its
+own age).
+
+| Spawn | From the callback |
+|---|---|
+| `position` | its `position` argument; no velocity |
+| `age`, `lifetime` | inputs 1 and 0 as the callback caches them; lifetime is age over life (life 0: unbounded), so life matches to float rounding |
+| `random` | inputs 2, 3, 14, 15 |
+| `words`, `tint` | the particle's `+0x14`; its `+0x3c` with red moved to the low byte |
+| system (`Key`) | the definition `[draw]`, bitmap `[draw + 4]`, the `tint` and `size` arguments (`Definition::tint`, `size_scale`) |
+
+The guest's order holds: a particle the mirror does not take, or one of
+another `Key`, draws the held batch first, then its own direct draw.
+
+| Outcome | Counter |
+|---|---|
+| batch drawn | `layer_plan_15_effects_shadow_answer_mirrored` (particles) |
+| not taken: direct draw | `scene_kept_15_particle_mirror_<cause>`: `no_host`, `orientation` (`0x0023ea80`'s class, definition `+4`, not 0), `tint_scale` (flag `0x180` with `BYTE * TINT` not 1/255), `unreadable`, or the host's (`MirrorHost::accepts`) |
+| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took |
+
+The host (`MirrorHost`) is not installed yet: every answered particle is
+`mirror_no_host` and takes the direct draw. Its draw is a `ParticleDraw`
+pass in the bound target with the `Definition` from the tag
+(`particle_definition::definition`, cached per `prt3`).
+
+Tests: `mirror.rs`
+(`a_particle_draws_batched_at_the_draws_return_from_its_state_as_the_callback_leaves_it`,
+`a_particle_the_mirror_refuses_draws_the_held_batch_first_and_is_kept_by_name`,
+`a_batch_the_host_refuses_is_dropped_by_name_and_the_gate_stops_answering`),
+`particle_mirror.rs` (four), `native-render/tests/particles_compute_gpu.rs`
+(`a_mirror_is_its_births_alone_each_evaluated_at_its_own_age`).
 
 ## R2's materials
 
