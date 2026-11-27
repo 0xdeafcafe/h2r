@@ -567,6 +567,12 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
     Some(view)
 }
 
+/// The current list's `layer` items into the first person's view, for
+/// the cut's answer (`native_first_person::build`).
+pub(crate) fn first_person_layer(mem: &dyn GuestMemory, layer: u8) {
+    layer_items(mem, ViewKind::FirstPerson, u32::from(layer));
+}
+
 /// The current list's `layer` items into the open view of `kind` (a
 /// layer draw of the scene's world layers or of the first person's).
 fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
@@ -799,6 +805,18 @@ fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
             return Vec::new();
         }
         crate::native_lights::gather_scene_passes(scene, view)
+    })
+}
+
+/// The open game view's object shadows, owned, outside the step's lock
+/// ([`crate::native_lights::object_shadow_scene::gather`]).
+pub(crate) fn open_object_shadow_passes() -> Vec<crate::native_lights::object_shadow_scene::ObjectShadowPass> {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
+        if view.key.kind != ViewKind::Game {
+            return Vec::new();
+        }
+        crate::native_lights::object_shadow_scene::gather(scene, view)
     })
 }
 

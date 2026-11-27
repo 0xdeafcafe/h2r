@@ -269,6 +269,47 @@ pub const TIME_LENGTH: u32 = 4;
 /// The record is on the guest stack below the entry `ESP`, and every call
 /// reserves it.
 pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
+    run_with(cx, ledger, Present::Always).await
+}
+
+/// Which seat-presentation phases a tick calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Present {
+    /// Every phase, as retail does.
+    Always,
+    /// The presentation phases ([`is_presentation`]) only when a local user
+    /// is mapped: with none, the guest bodies have no seat to work on and
+    /// the tick does not call them.
+    LocalOnly,
+}
+
+/// Phases 26, 28 and 29: first person, HUD and the camera neighbourhood.
+pub fn is_presentation(phase: usize) -> bool {
+    matches!(PHASES[phase].entry, 0x0016_5dc1 | 0x0019_17b2 | 0x0016_f200)
+}
+
+/// The players' globals pointer; `+0xc` holds four local users' player
+/// indices, `u32::MAX` for an unmapped user.
+pub const LOCAL_USERS: u32 = 0x004e_8c20;
+pub const LOCAL_USER_SLOTS: u32 = 0xc;
+pub const LOCAL_USER_COUNT: u32 = 4;
+
+/// Mapped local users now.
+pub fn local_users(m: &dyn crate::memory::GuestMemory) -> u32 {
+    let Ok(base) = m.u32(LOCAL_USERS) else { return LOCAL_USER_COUNT };
+    let mut n = 0;
+    for u in 0..LOCAL_USER_COUNT {
+        match m.u32(base.wrapping_add(LOCAL_USER_SLOTS + 4 * u)) {
+            Ok(u32::MAX) => {}
+            // An unreadable slot counts as a user: the phase runs.
+            _ => n += 1,
+        }
+    }
+    n
+}
+
+/// [`run`] with a presentation mode.
+pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present) -> EntryResult {
     let entered = Instant::now();
     ledger.lock().unwrap_or_else(|e| e.into_inner()).begin_tick(entered);
     let record = cx.entry().esp.wrapping_sub(RECORD_SIZE);
@@ -283,7 +324,14 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
         // Each phase's time runs from the previous clock read to the one
         // after its call.
         let mut mark = Instant::now();
+        let views = match present {
+            Present::Always => LOCAL_USER_COUNT,
+            Present::LocalOnly => cx.read(|m| local_users(m)),
+        };
         for (i, phase) in PHASES.iter().enumerate() {
+            if views == 0 && is_presentation(i) {
+                continue;
+            }
             match phase.owner {
                 Owner::Guest => {
                     ledger.lock().unwrap_or_else(|e| e.into_inner()).record(i);

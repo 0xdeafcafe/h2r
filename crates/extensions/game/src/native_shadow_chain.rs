@@ -21,7 +21,8 @@ use std::sync::{
 /// pass and the receiver boundary.
 pub struct Chain {
     ctx: gfx::GfxContext,
-    pair: Mutex<Option<Arc<Pair>>>,
+    /// One pair per target copy (a scaled backend records two sizes).
+    pairs: Mutex<Vec<Arc<Pair>>>,
     spilled: AtomicBool,
     output: Output,
 }
@@ -32,7 +33,7 @@ impl Chain {
     pub fn new(ctx: gfx::GfxContext, output: Output) -> Arc<Self> {
         Arc::new(Self {
             ctx,
-            pair: Mutex::new(None),
+            pairs: Mutex::new(Vec::new()),
             spilled: AtomicBool::new(false),
             output,
         })
@@ -48,15 +49,30 @@ impl Chain {
         !self.spilled.swap(true, Ordering::AcqRel)
     }
 
-    /// The pair the caster pass made when it recorded.
+    /// The last pair the caster pass made when it recorded.
     pub fn pair(&self) -> Option<Arc<Pair>> {
-        self.pair.lock().ok()?.clone()
+        self.pairs.lock().ok()?.last().cloned()
+    }
+
+    /// The pair of the target copy whose texels are `size`.
+    pub fn pair_for(&self, size: (u32, u32)) -> Option<Arc<Pair>> {
+        self.pairs.lock().ok()?.iter().find(|p| p.size == size).cloned()
+    }
+
+    fn add(&self, pair: &Arc<Pair>) -> Result<(), &'static str> {
+        let mut pairs = self.pairs.lock().map_err(|_| "private shadow pair poisoned")?;
+        pairs.retain(|p| p.size != pair.size);
+        pairs.push(Arc::clone(pair));
+        Ok(())
     }
 
     /// The filter's commands are recorded: the receivers may sample the
     /// mask from here on in GPU order.
     pub fn publish(&self, pair: &Pair) {
-        *self.output.lock().unwrap_or_else(|e| e.into_inner()) = Some(pair.sampled());
+        self.output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(pair.size, Some(pair.sampled()));
     }
 }
 
@@ -98,9 +114,6 @@ impl PrivateCasters {
         t: &d3d::backend::ExternalAttachments,
         request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
-        if t.size != request.surface_size {
-            return Err("private shadow chain needs the unscaled target");
-        }
         let draws = self
             .inner
             .record_draws(t, request)
@@ -109,19 +122,21 @@ impl PrivateCasters {
             return Err("caster writes a visibility query");
         }
         let pair = Arc::new(
-            Pair::new(&t.device, t.color_format, Some(t.depth_format), t.size)
-                .ok_or("private shadow pair unavailable")?,
+            Pair::scaled(
+                &t.device,
+                t.color_format,
+                Some(t.depth_format),
+                t.size,
+                request.surface_size,
+            )
+            .ok_or("private shadow pair unavailable")?,
         );
         // The packets' persistent bytes go ahead of the commands, as the
         // backend writes them for a packet run.
         for (buffer, offset, bytes) in &draws.writes {
             t.queue.write_buffer(buffer, *offset, bytes);
         }
-        *self
-            .chain
-            .pair
-            .lock()
-            .map_err(|_| "private shadow pair poisoned")? = Some(Arc::clone(&pair));
+        self.chain.add(&pair)?;
         let ctx = self.chain.ctx.clone();
         let packets = draws.packets;
         Ok(d3d::backend::ExternalEncoded {
@@ -195,8 +210,8 @@ impl d3d::ExternalPass for Spill {
             return;
         };
         let dest = level.view.texture();
-        match self.chain.pair() {
-            Some(pair) if t.size == t.guest_size && pair.spills_into(dest) => {
+        match self.chain.pair_for(t.size) {
+            Some(pair) if pair.spills_into(dest) => {
                 pair.spill(t.encoder, dest);
             }
             _ => {
@@ -226,6 +241,29 @@ mod tests {
     }
 
     #[test]
+    fn a_scaled_chain_holds_a_pair_and_a_mask_per_copy() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let output: Output = Default::default();
+        let chain = Chain::new(ctx.clone(), Arc::clone(&output));
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let guest = (8, 4);
+        for size in [guest, (16, 8), (32, 16)] {
+            let pair = Arc::new(Pair::scaled(&ctx.device, format, None, size, guest).unwrap());
+            assert_eq!(pair.filter_slots()[0].guest_size, guest);
+            chain.add(&pair).unwrap();
+            chain.publish(&pair);
+        }
+        for size in [guest, (16, 8), (32, 16)] {
+            assert_eq!(chain.pair_for(size).unwrap().size, size);
+            assert_eq!(output.lock().unwrap().at(size).unwrap().size, size);
+        }
+        assert!(chain.pair_for((64, 32)).is_none());
+        assert_eq!(chain.pair().unwrap().size, (32, 16));
+    }
+
+    #[test]
     fn a_chain_spills_once_and_publishes_its_mask_into_the_shared_output() {
         let Ok(ctx) = gfx::GfxContext::headless() else {
             return;
@@ -236,7 +274,7 @@ mod tests {
         assert!(chain.pair().is_none());
         let pair = Pair::new(&ctx.device, wgpu::TextureFormat::Rgba8Unorm, None, (8, 4)).unwrap();
         chain.publish(&pair);
-        let map = output.lock().unwrap().clone().unwrap();
+        let map = output.lock().unwrap().latest().cloned().unwrap();
         assert_eq!(map.size, (8, 4));
         assert_eq!(map.view.texture(), pair.mask.texture());
         assert!(chain.spill_once());

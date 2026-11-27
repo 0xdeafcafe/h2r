@@ -257,6 +257,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let Some(layer) = Mem(mem).read_u32(skip::CURRENT_LAYER) else { return };
     let Some(caller) = caller(layer, ret) else { return };
+    if layer == 7 && caller == LayerCaller::Scene {
+        // The object shadows draw in slot 3 ahead of layer 7.
+        let shadows = crate::scene_step::open_object_shadow_passes();
+        crate::native_lights::object_shadow_scene::draw(mem, &shadows);
+    }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };

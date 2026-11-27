@@ -418,17 +418,20 @@ fn a_blob_it_does_not_understand_is_refused() {
     let mut teams = two_team_mode().encode();
     teams[HEAD + TEAMS] = LIVES_SHARED;
     assert!(Mode::decode(&teams).is_err());
-    // Per-player lives: a count past the room, and slots out of order.
+    // Per-player lives: more slots than the blob holds, and counts missing.
     let mut each = Mode {
         lives: Lives::Each(vec![(1, 1), (2, 2)]),
         ..sample_mode()
     }
     .encode();
-    each[HEAD + 5] = 9;
+    // Nine slots named.
+    each[HEAD + 5] = 0xff;
+    each[HEAD + 6] = 0x01;
     assert_eq!(Mode::decode(&each), Err(Error::Field("lives")));
-    each[HEAD + 5] = 2;
-    each[HEAD + 6] = 5;
-    assert_eq!(Mode::decode(&each), Err(Error::Field("lives")));
+    // Three slots named with two counts behind them.
+    each[HEAD + 5] = 0b111;
+    each[HEAD + 6] = 0;
+    assert!(matches!(Mode::decode(&each), Err(Error::Length { .. })));
 }
 
 /// With two teams each viewer reads its own team's pool, and the end
@@ -834,7 +837,7 @@ fn a_monitor_sees_the_banner_and_the_enemies_pill() {
     assert_eq!(Scope::of(true, true), Scope::Monitor);
 }
 
-// ---- blob v3, the layout and the banners (S6) ----
+// ---- blob v4, the layout and the banners (S6) ----
 
 use super::banners::{self, Banner, Banners, EASE, HOLD};
 use super::layout::{self, Screen};
@@ -843,7 +846,7 @@ use super::layout::{self, Screen};
 /// team and two, every flag, the widest numbers. All encode within the
 /// channel's 63 bytes and read back.
 #[test]
-fn blob_v3_round_trips_at_every_size() {
+fn blob_v4_round_trips_at_every_size() {
     let mut most = 0;
     for endless in [false, true] {
         for teams in [None, Some(two_team_mode().teams.unwrap())] {
@@ -884,8 +887,8 @@ fn blob_v3_round_trips_at_every_size() {
             }
         }
     }
-    assert_eq!(most, 55, "the worst case");
-    assert_eq!(VERSION, 3);
+    assert_eq!(most, 48, "the worst case");
+    assert_eq!(VERSION, 4);
 }
 
 /// The states the layout is checked in: every stage, a boss wave, the

@@ -48,19 +48,33 @@ pub const CUTS: &[Cut] = &[
         abi_result: 0,
         pop: 0,
     },
+    // The object shadows (docs/graphics/native-shadows.md): the Rust list
+    // answers every call, and a shadow it cannot draw is
+    // `scene_dropped_object_shadows`. Its layers draw in slot 3, before
+    // layer 7. `eax` is the list's own count of casters, none on a drop.
+    Cut {
+        name: "object_shadows",
+        entry: 0x0003_35e0,
+        abi_result: 0,
+        pop: 4,
+    },
+    // Both calls, argument 0 and 1; no caller reads its answer.
+    crate::native_first_person::CUT,
 ];
 
 /// Cuts whose producer is a feature that builds the call's whole output
-/// from the call's registers, so
+/// from the call's registers (the first person: `native_first_person`,
+/// which draws the scene's parts), so
 /// [`install`] leaves their points to it. Each still has its row here, so
-/// the census and the table cannot drift.
+/// the census and the table cannot drift. The object shadows are the same:
+/// `native_lights::object_shadows` answers the list, and its drop is a count.
 ///
 /// `dynamic_lights` is one too: its point also holds the light frame body
 /// ([`crate::native_lights`]), and a point takes one implementation, so
 /// that body answers the cut itself ([`answer`]) when the scene's own
 /// light path runs ([`crate::native_lights::scene_path_ready`]) and
 /// otherwise gathers as before.
-pub const OWN_PRODUCER: &[&str] = &["dynamic_lights"];
+pub const OWN_PRODUCER: &[&str] = &["dynamic_lights", "first_person", "object_shadows"];
 
 /// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
 /// scene. The layer draw serves every layer, so these are cut per layer: its

@@ -18,6 +18,9 @@
 //!   for its lists, constants, projection and each layer's draws.
 //! - [`first_person`]: the first-person lights (`0x000404b0`) and each
 //!   slot's record replay (`0x000402b0`), with the same layer blocks.
+//! - [`first_person_items`]: the first-person draw's items (`0x0003fdf0`'s
+//!   record loop and `0x00041040` in kind 0) into list 0 and the sorted
+//!   list.
 //! - [`object_shadows`]: the ranked object rows and their mask casters.
 //!
 //! The leaves are functions of guest memory and typed arguments. They
@@ -26,6 +29,7 @@
 
 pub mod extra_caster;
 pub mod first_person;
+pub mod first_person_items;
 pub mod frame;
 pub mod geometry;
 mod guest;

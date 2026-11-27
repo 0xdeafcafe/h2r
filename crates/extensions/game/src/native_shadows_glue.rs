@@ -39,7 +39,7 @@ impl ReceiverTerm {
     /// Resolve when recording after the caster/filter in GPU order.
     /// An unavailable term keeps the light's original chain.
     pub fn sampled(&self) -> Option<native_render::shadow_gpu::SampledMap> {
-        self.output.lock().ok()?.clone()
+        self.output.lock().ok()?.latest().cloned()
     }
 }
 type ReceiverObserver = Arc<dyn Fn(ReceiverTerm) + Send + Sync>;
@@ -95,6 +95,7 @@ pub fn install<B: d3d::backend::Backend + 'static>(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .add_draw_admission(gate.clone());
+        *SCENE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = gate.gpu.clone();
         native_shadows::set_host(Arc::new(Glue {
             device: Arc::clone(device),
             gate: Arc::clone(&gate),
@@ -102,9 +103,19 @@ pub fn install<B: d3d::backend::Backend + 'static>(
         }));
         Some(gate)
     } else {
+        *SCENE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = None;
         native_shadows::clear_host();
         None
     }
+}
+
+static SCENE_GPU: Mutex<Option<SharedGpu>> = Mutex::new(None);
+
+/// The shadow stage's GPU, for a light drawn from the scene that freezes
+/// its own caster map (`native_lights_glue::scene`); `None` off a single
+/// 1x backend.
+pub(crate) fn scene_gpu() -> Option<SharedGpu> {
+    SCENE_GPU.lock().ok()?.clone()
 }
 
 fn format(mem: &DeviceMemory<'_>, header: u32) -> Option<gfx::D3DFormat> {
@@ -161,7 +172,9 @@ impl ShadowFilterPass {
         t: &d3d::backend::ExternalAttachments,
     ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
         if let Some(chain) = &self.chain {
-            let pair = chain.pair().ok_or("private shadow pair missing")?;
+            let pair = chain
+                .pair_for(t.size)
+                .ok_or("private shadow pair missing")?;
             let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
             let encoded = native_render::shadow_filter_gpu::prepare(
                 &t.device,

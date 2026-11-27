@@ -179,6 +179,26 @@ impl LightWrites<'_> {
 }
 
 impl<B: Backend> PreparedSequence<'_, B> {
+    /// Commit every step in order with no device call and no guest write:
+    /// a sequence whose producer has no guest pass left (the cut light
+    /// frame, docs/graphics/native-lights.md, "The light frame under the
+    /// cut"). The bound target, viewport, constants and push buffer are
+    /// left as they are; each step's attachments are marked written.
+    pub fn commit(self) {
+        let d = self.device;
+        for step in self.steps {
+            d.backend.commit_carried_stage(step.stage, step.copies);
+            for (header, surface) in step.colors {
+                d.color_surface_written(surface);
+                d.mark_color_written(header);
+            }
+            if step.depth != 0 {
+                d.mark_depth_header_written(step.depth);
+            }
+            d.stats.external_passes += 1;
+        }
+    }
+
     /// Apply a view light's D3D calls on the same bound viewport: the
     /// layer target setter and its mode-0 state, stencil and scissors off,
     /// depth-clip restore and final target setter. The upload at 0x3f7330

@@ -1034,21 +1034,22 @@ growth in tag memory. It compares the growth with the available space
 before anything is installed. A refusal says by how much the kit is over
 and names its biggest part.
 
-Available is `writer::max_metadata_size(Multiplayer)` (`0x62c000`)
-minus the map's `+0x1c`. That bound is the largest retail multiplayer
-map, not a loader constant: the loader takes `+0x1c` from the physical
-arena, and growth comes out of the pool that gets the arena's free pages
-after the load (map-format.md, "Growing the metadata"). How much that
-pool can lose is not measured, so the kit does not go past it. Before
-the kit, on the owner's disc (**V**, docs/halo1/notes/shared-map.md):
-Waterworks has no room, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation
-876 KiB, the others 0.9 to 1.5 MiB. The Map Pack maps' room is not
-measured. Zanzibar's sectors before trimming are 158 KiB; the numbers,
-and what a map needs, are in
+Available is `writer::max_metadata_size(Campaign)` (`0xc24000`, the
+kit's `KIT_METADATA_BUDGET`) minus the map's `+0x1c`. It is not a loader
+constant: the loader takes `+0x1c` from one physical arena that is the same
+size for every map type (`0x30e4000`), and growth comes out of the pool that
+gets the arena's free pages after the load (map-format.md, "Growing the
+metadata"). A campaign map loads that much beside its two shared maps,
+which is more than a multiplayer map at that total beside its one shared
+map, so the kit takes the retail campaign maximum rather than the
+multiplayer one (`0x62c000`, the largest retail multiplayer map, which
+the map editor keeps). Before the kit, on the owner's disc (**V**,
+docs/halo1/notes/shared-map.md), the room under the multiplayer maximum was:
+Waterworks none, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation 876 KiB.
+Under the kit's budget Zanzibar has 6.1 MiB and keeps the Phantom with
+its drops (`h2 firefight kit zanzibar` reports the growth and the room).
+The numbers are in
 [notes/2026-11-23-firefight-kit-headroom.md](notes/2026-11-23-firefight-kit-headroom.md).
-By that estimate the trimmed kit fits Zanzibar with a few KB to spare,
-and the fit steps give more; the kit's run on the disc gives the real
-figure.
 
 Every machine in a session loads the kit map: the host's entities name
 tags by index, so the indices must agree (ai-networking.md, "Rules and
@@ -1340,12 +1341,14 @@ the set (and whether the definition is endless), the bonus round's ticks
 left, the wave's total actors (the enemies meter's full length; in a bonus
 round its length in ticks), the one-team score, the team count, and the
 lives (the shared pool, each player's own up to eight players, or each
-team's pool). With two teams the blob carries both scores and a mask of
-team 1's slots, so each viewer sees its own team's pool. Version 3
-encodes to 26 bytes with one shared pool, 49 with eight players' own
-lives, 34 with two team pools and 55 with two teams and eight players'
-own lives, inside the actor channel's 63-byte mode state
-(`blob_v3_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
+team's pool). Each player's own lives are a mask of their roster slots
+and a count each, in slot order. With two teams the blob carries both scores and a mask of
+team 1's slots, so each viewer sees its own team's pool. Version 4
+encodes to 26 bytes with one shared pool, 42 with eight players' own
+lives, 34 with two team pools and 48 with two teams and eight players'
+own lives, inside the 51 bytes left of the actor channel's 63-byte mode
+state by the script role's 12-byte header
+(`blob_v4_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
 0 until the host runs a bonus round. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
 and "DRAW".
 

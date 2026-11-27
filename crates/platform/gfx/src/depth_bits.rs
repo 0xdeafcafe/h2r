@@ -134,6 +134,44 @@ impl DepthBits {
         depth: &wgpu::Texture,
         size: (u32, u32),
     ) -> wgpu::Texture {
+        let out = Self::output(&ctx.device, size);
+        self.convert_into(ctx, encoder, depth, &out);
+        out
+    }
+
+    /// The `Rgba8Unorm` texture [`Self::convert_into`] writes for a depth
+    /// texture of `size`, made before the conversion is recorded, so a
+    /// later pass can bind it while the conversion is still to run.
+    pub fn output(device: &wgpu::Device, size: (u32, u32)) -> wgpu::Texture {
+        let (w, h) = (size.0.max(1), size.1.max(1));
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gfx depth bits"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    }
+
+    /// [`Self::convert`] into `out`, an [`Self::output`] of the depth's
+    /// size.
+    pub fn convert_into(
+        &self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::Texture,
+        out: &wgpu::Texture,
+    ) {
+        let size = (out.width(), out.height());
         let device = &ctx.device;
         let (w, h) = (size.0.max(1), size.1.max(1));
         let row_bytes = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -221,22 +259,6 @@ impl DepthBits {
             pass.set_bind_group(0, &bind, &[]);
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
-        let out = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gfx depth bits"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &words,
@@ -247,7 +269,7 @@ impl DepthBits {
                 },
             },
             wgpu::TexelCopyTextureInfo {
-                texture: &out,
+                texture: out,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -258,6 +280,5 @@ impl DepthBits {
                 depth_or_array_layers: 1,
             },
         );
-        out
     }
 }
