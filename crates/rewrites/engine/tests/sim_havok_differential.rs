@@ -2242,3 +2242,180 @@ fn every_disc_surface_polygon_matches_the_lifted_builder() {
     eprintln!("structure polygons: {surfaces} surfaces over {bsps} BSPs equal the lifted builder; {declined} declined");
     assert!(surfaces > 0 && declined == 0, "{declined} surfaces declined");
 }
+
+// The convex agent's process call `0x002eeb40` (sim_havok::convex,
+// docs/engine/havok-convex.md): the separated-pair path against the
+// lifted call.
+
+use engine::sim_physics::convex_agent as convex_arm;
+use sim_havok::convex::{self as convex, Fallback as ConvexDecline};
+
+const CONVEX: u32 = 0x002e_eb40;
+const CONVEX_AGENT: u32 = 0x0075_0000;
+const CONVEX_A: u32 = 0x0075_1000;
+const CONVEX_B: u32 = 0x0075_1100;
+const CONVEX_MOTION_A: u32 = 0x0075_2000;
+const CONVEX_MOTION_B: u32 = 0x0075_2100;
+const CONVEX_MANAGER: u32 = 0x0075_3000;
+const CONVEX_INPUT: u32 = 0x0075_4000;
+const CONVEX_OUTPUT: u32 = 0x0075_5000;
+const CONVEX_ARGS: [u32; 4] = [CONVEX_A, CONVEX_B, CONVEX_INPUT, CONVEX_OUTPUT];
+
+fn convex_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    for f in [CONVEX, 0x3029d0] {
+        code.prime(f);
+    }
+    code
+}
+
+/// One pair: both collidables' motions (two positions, an allowance in the
+/// first's `w`), the agent's axis and bound, no manifold points. Bounds
+/// near the reach land on both sides of zero.
+fn convex_pair(r: &mut Rng, m: &mut FlatMemory) {
+    word(m, CONVEX_A, 0x0076_0000 + r.below(0x100) * 16);
+    word(m, CONVEX_B, 0x0076_8000 + r.below(0x100) * 16);
+    for (collidable, motion) in [(CONVEX_A, CONVEX_MOTION_A), (CONVEX_B, CONVEX_MOTION_B)] {
+        word(m, collidable + convex::COLLIDABLE_MOTION, motion);
+        let from: [f32; 3] = std::array::from_fn(|_| float(r, -10.0, 10.0));
+        put_lanes(m, motion + convex::MOTION_FROM, [from[0], from[1], from[2], float(r, 0.0, 0.2)]);
+        let to: [f32; 3] = std::array::from_fn(|i| from[i] + float(r, -0.3, 0.3));
+        put_lanes(m, motion + convex::MOTION_TO, [to[0], to[1], to[2], float(r, -1.0, 1.0)]);
+    }
+    let axis: [f32; 3] = std::array::from_fn(|_| float(r, -1.0, 1.0));
+    put_lanes(m, CONVEX_AGENT + convex::field::AXIS, [axis[0], axis[1], axis[2], float(r, -1.0, 1.0)]);
+    let bound = if r.below(4) == 0 { float(r, 0.0, 0.8) } else { float(r, 0.5, 3.0) };
+    word(m, CONVEX_AGENT + convex::field::BOUND, bound.to_bits());
+    word(m, CONVEX_AGENT + convex::field::MANAGER, CONVEX_MANAGER);
+    word(m, CONVEX_AGENT + convex::field::POINTS, 0);
+}
+
+fn check_convex_regs(after: &runtime::CpuAbi, head: u32, why: &str) {
+    assert_eq!(
+        (after.eax, after.ecx, after.edx, after.esp),
+        (CONVEX_AGENT + convex::field::POINTS, head, CONVEX_MANAGER, STACK + 0x14),
+        "{why}: eax, ecx, edx, ret 0x10"
+    );
+    assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}");
+}
+
+/// Seeded separated pairs under every rounding mode: the bound the model
+/// stores equals the lifted call's, byte for byte, and the registers too.
+/// Pairs whose bound reaches zero are the closest-feature query's.
+#[test]
+fn separated_convex_pairs_match_the_lifted_process_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = convex_code(image);
+    let head = base.read_u32(MONITOR_HEAD).unwrap();
+    let (mut answered, mut closest) = (0, 0);
+    for seed in 0..512u64 {
+        let mut r = Rng(0x2eeb_0000 + seed);
+        let mut mem = base.clone();
+        convex_pair(&mut r, &mut mem);
+        let fpu = test_fpu(seed);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let args = convex::Args { agent: CONVEX_AGENT, a: CONVEX_A, b: CONVEX_B };
+        match convex::process(&mut j, &args, fpu) {
+            Ok(_) => answered += 1,
+            Err(ConvexDecline::Closest) => {
+                closest += 1;
+                continue;
+            }
+            Err(f) => panic!("seed {seed}: declined {f:?}"),
+        }
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} {fpu:x?}");
+        let after = run_this(&mut code, &mut mem, CONVEX, CONVEX_AGENT, &CONVEX_ARGS, fpu);
+        check_convex_regs(&after, head, &why);
+        clear_frame([&mut mem, &mut expected], 0x10);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+    assert!(answered > 256 && closest > 16, "{answered} answered, {closest} closest");
+}
+
+fn convex_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ecx: CONVEX_AGENT, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+fn convex_stack(m: &mut FlatMemory) {
+    for (i, v) in std::iter::once(EXIT).chain(CONVEX_ARGS).enumerate() {
+        word(m, STACK + 4 * i as u32, v);
+    }
+}
+
+/// The arm end to end: an audited call's prediction matches the lifted
+/// answer, and an applied one leaves memory and the registers as it does.
+#[test]
+fn the_convex_arm_answers_as_the_lifted_process_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = convex_code(image);
+    let head = base.read_u32(MONITOR_HEAD).unwrap();
+    let mut checked = 0;
+    for seed in 0..64u64 {
+        let mut r = Rng(0x2eec_0000 + seed);
+        let mut mem = base.clone();
+        convex_pair(&mut r, &mut mem);
+        convex_stack(&mut mem);
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f };
+        let cpu = convex_cpu(fpu);
+        let prediction = match convex_arm::capture(&cpu, &guest(&mem)) {
+            Ok(p) => p,
+            Err(ConvexDecline::Closest) => continue,
+            Err(f) => panic!("seed {seed}: declined {f:?}"),
+        };
+        let mut lifted = mem.clone();
+        let after = run_this(&mut code, &mut lifted, CONVEX, CONVEX_AGENT, &CONVEX_ARGS, fpu);
+        assert_eq!(lifted.read_u32(CONVEX_AGENT + convex::field::BOUND), Some(prediction.bound), "seed {seed}");
+        assert!(prediction.matches(&after, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        check_convex_regs(&regs, head, &format!("seed {seed}"));
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_frame([&mut lifted, &mut model], 0x10);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+        checked += 1;
+    }
+    assert!(checked > 24, "{checked} answered");
+}
+
+/// A bound at zero, a manifold with points, an unmasked MXCSR, the monitor
+/// stream and an unaligned motion: declined with nothing written, each
+/// reason counted.
+#[test]
+fn convex_calls_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(ConvexDecline, fn(&mut FlatMemory, &mut runtime::CpuAbi)); 5] = [
+        (ConvexDecline::Closest, |m, _| word(m, CONVEX_AGENT + convex::field::BOUND, 0)),
+        (ConvexDecline::Points, |m, _| word(m, CONVEX_AGENT + convex::field::POINTS, 2)),
+        (ConvexDecline::Float, |_, cpu| cpu.mxcsr = 0x1f00),
+        (ConvexDecline::Monitor, |m, _| word(m, MONITOR_END, 0x0060_0900)),
+        (ConvexDecline::Memory, |m, _| word(m, CONVEX_A + convex::COLLIDABLE_MOTION, CONVEX_MOTION_A + 4)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec5_0000 + reason as u64);
+        let mut mem = base.clone();
+        convex_pair(&mut r, &mut mem);
+        // Far apart: separated whatever the motions.
+        word(&mut mem, CONVEX_AGENT + convex::field::BOUND, 100.0f32.to_bits());
+        convex_stack(&mut mem);
+        let mut cpu = convex_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        spoil(&mut mem, &mut cpu);
+        let mut g = guest(&mem);
+        let index = ConvexDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = convex::fallbacks()[index].1;
+        let declined = parity::status()[8].3;
+        assert!(matches!(parity::convex_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(convex::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[8].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}

@@ -1,0 +1,88 @@
+# The Havok convex agent: separated pairs
+
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query, the manifold update and the contact commit stay guest code.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`.
+Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
+
+A convex pair's agent keeps a separating axis and a bound on the
+distance along it ([havok-runtime.md](havok-runtime.md), "Convex child
+state"). While the bound stays positive after both bodies' motion is
+projected onto the axis, the pair is still apart and the call does no
+query. Slice 5 of [sim-rewrite-havok.md](sim-rewrite-havok.md) starts
+with that path, bit-exact; the query and the contact work behind it are
+the rest of the slice.
+
+Evidence: read with `h2 disasm` (**E**), **S** supposed.
+
+## Who calls it
+
+| Caller | How |
+|---|---|
+| the convex agent `0x00412c48` | its `vt[+0x10]`, from the island's pair pass |
+| the biped wrapper's agent `0x00412290` (`0x002db2b0`) | a direct call at `0x002db5e0`, after its sweep and feature reseed |
+
+Thiscall on the agent, then collidable A, collidable B, the collision
+input and the result collector; `ret 0x10`. **E**
+
+## The call
+
+```mermaid
+flowchart TD
+    B0{bound > 0?} -- no --> Q[closest-feature query 0x003048a0, 0x003032c0; manifold 0x00302c70, 0x00302eb0]
+    B0 -- yes --> P[bound -= allowance B + allowance A + axis . motion]
+    P --> S[store the bound]
+    S --> B1{still > 0?}
+    B1 -- no --> Q
+    B1 -- yes --> R[remove the manifold's points 0x003029d0]
+    Q --> R2[return]
+    R --> R2
+```
+
+| Read | Where |
+|---|---|
+| the bound | agent `+0x2c`, x87, compared with `0.0` at `0x0045dbd8`; `test ah,0x41` continues only when ordered and above |
+| the axis | agent `+0x20`, `movaps` |
+| each body's motion | collidable `+0x08`; positions at `+0x00` and `+0x10`, the allowance at `+0x0c` (**S**: the step's two positions and a rotation allowance) |
+| the point count, the manager | agent `+0x18`, `+0x08` |
+
+- The projection is packed SSE: `(B.to - B.from) - (A.to - A.from)`,
+  times the axis, summed `y + x` then `z + that` (`0x002eebe4`). The `w`
+  lanes are computed and dropped.
+- The x87 chain is `(allowance B + allowance A) + t`, then `bound -` that
+  (`fsubr`), in binary64 under the control word. The store rounds to
+  binary32; the second test compares the register value, not the stored
+  one (`0x002eec1b`, `0x002eec1e`).
+- The bound is stored before the second test, so a pair that comes within
+  reach leaves the reduced bound for the query path.
+- With no points the removal call returns at once; with points it calls
+  the manager's `vt[+0x08]` for each, last first.
+
+**The port.** `sim_havok::convex::process` on a journal, the engine's
+`sim_physics/convex_agent.rs` capture, and `parity`'s
+`physics.agent.convex` arm answering once proven (sim-rewrite-havok.md
+§9.5). The answer is the bound's store with eax the point-count address,
+ecx the monitor head, edx the manager word, ebx, ebp, esi and edi, and
+esp past the four arguments. The x87 condition codes, the sticky
+exception flags and the XMM registers are not modelled. Declines,
+counted by reason (`convex::fallbacks`, `havok.islands`'s `convex`):
+
+| Reason | When |
+|---|---|
+| `memory` | a word is unmapped or unaligned, a vector not 16-byte aligned, a store unwritable |
+| `closest` | the bound is not above zero before or after the projection |
+| `points` | the pair is apart but its manifold holds points |
+| `float` | an unmasked exception, an x87 stack not empty, a non-finite x87 load or projection |
+| `monitor` | the monitor stream is on |
+| `unobserved` | an audited return could not be observed |
+
+## Not verified
+
+- How many of a match's convex calls take the separated path; `closest`
+  and `answered` on `havok.islands` give it.
+- What the motion's two positions and allowance are (**S**).
+
+## Related
+
+- [havok-runtime.md](havok-runtime.md): the agents and the convex child state.
+- [havok-step.md](havok-step.md): the agent census.
+- [sim-rewrite-havok.md](sim-rewrite-havok.md): slice 5 and §9.5.

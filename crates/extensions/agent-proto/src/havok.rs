@@ -245,6 +245,8 @@ pub struct Islands {
     pub phase: TakeoverArm,
     /// The structure polygon builder arm (`physics.structure.polygon`).
     pub polygon: TakeoverArm,
+    /// The convex agent's process call arm (`physics.agent.convex`).
+    pub convex: TakeoverArm,
 }
 
 /// A take-over arm: calls since the process started, and its take-over
@@ -379,11 +381,16 @@ mod tests {
                 "fallbacks": [{"reason": "ring", "count": 1}],
                 "proven": true, "ended": false,
             },
+            "convex": {
+                "answered": 9, "matched": 4096, "mismatched": 0, "declined": 30,
+                "fallbacks": [{"reason": "closest", "count": 30}],
+                "proven": true, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
         assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
-        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered), (12, 5, 70));
+        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered, i.convex.declined), (12, 5, 70, 30));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

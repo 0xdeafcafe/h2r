@@ -10,6 +10,7 @@ mod answer;
 mod colors;
 mod havok;
 mod island_solve;
+pub mod convex_agent;
 pub mod deactivation;
 pub mod integrate_phase;
 pub mod island_integrate;

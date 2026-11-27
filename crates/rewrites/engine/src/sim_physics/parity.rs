@@ -25,8 +25,10 @@
 //! integrate phase's (`0x30fef0`, `integrate_phase`), whose prediction is
 //! every island's test and integrate in the phase's order, take over the
 //! same way, each with its own reasons (`sim_havok::deactivation`,
-//! `sim_havok::integrate_phase`), and so does the structure polygon
-//! builder's (`0x1edd00`, `structure_polygon`, `sim_havok::structure`).
+//! `sim_havok::integrate_phase`), and so do the structure polygon
+//! builder's (`0x1edd00`, `structure_polygon`, `sim_havok::structure`) and
+//! the convex agent's process call's (`0x2eeb40`, `convex_agent`,
+//! `sim_havok::convex`), which answers the separated-pair path.
 //!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
@@ -35,7 +37,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
+use super::{broadphase, convex_agent, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -119,8 +121,9 @@ pub static ISLAND_INTEGRATE: Arm = Arm::new("physics.island.integrate");
 pub static DEACTIVATION: Arm = Arm::new("physics.island.deactivation");
 pub static INTEGRATE_PHASE: Arm = Arm::new("physics.integrate");
 pub static STRUCTURE_POLYGON: Arm = Arm::new("physics.structure.polygon");
+pub static CONVEX_AGENT: Arm = Arm::new("physics.agent.convex");
 
-static ARMS: [&Arm; 8] = [
+static ARMS: [&Arm; 9] = [
     &BROADPHASE,
     &MOTION_POSE,
     &MOTION_FORCES,
@@ -129,6 +132,7 @@ static ARMS: [&Arm; 8] = [
     &DEACTIVATION,
     &INTEGRATE_PHASE,
     &STRUCTURE_POLYGON,
+    &CONVEX_AGENT,
 ];
 
 pub(super) fn declined(arm: &Arm) {
@@ -159,7 +163,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 8] {
+pub fn status() -> [(&'static str, u64, u64, u64); 9] {
     ARMS.map(|a| {
         (
             a.name,
@@ -183,14 +187,16 @@ pub struct Takeover {
 
 /// The take-over state of the arms that answer calls: the broadphase
 /// batch update's, the island integrate's, the deactivation test's, the
-/// integrate phase's and the structure polygon builder's.
-pub fn takeover() -> [Takeover; 5] {
+/// integrate phase's, the structure polygon builder's and the convex
+/// agent's.
+pub fn takeover() -> [Takeover; 6] {
     [
         BROADPHASE.take_over(),
         ISLAND_INTEGRATE.take_over(),
         DEACTIVATION.take_over(),
         INTEGRATE_PHASE.take_over(),
         STRUCTURE_POLYGON.take_over(),
+        CONVEX_AGENT.take_over(),
     ]
 }
 
@@ -383,6 +389,35 @@ pub fn polygon_uncompared() {
     uncompared(&STRUCTURE_POLYGON);
 }
 
+/// The convex agent's process call's arm, at its entry: as [`integrate_enter`].
+pub fn convex_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<convex_agent::Prediction> {
+    use sim_havok::convex as model;
+    enter(
+        &CONVEX_AGENT,
+        cpu,
+        guest,
+        |cpu, guest| convex_agent::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            let applied = p.apply(cpu, guest);
+            if !applied {
+                model::count(model::Fallback::Memory);
+            }
+            applied
+        },
+    )
+}
+
+/// At the guest's return from an audited process call.
+pub fn convex_compare(prediction: &convex_agent::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&CONVEX_AGENT, prediction.matches(cpu, guest));
+}
+
+/// An audited process call whose return could not be observed.
+pub fn convex_uncompared() {
+    sim_havok::convex::count(sim_havok::convex::Fallback::Unobserved);
+    uncompared(&CONVEX_AGENT);
+}
+
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
 pub fn motion_pose_begin(thread: u32, cpu: &CpuAbi, guest: &Guest) {
     POSE_OPEN.with_borrow_mut(|calls| {
@@ -526,7 +561,8 @@ mod tests {
                 "physics.island.integrate",
                 "physics.island.deactivation",
                 "physics.integrate",
-                "physics.structure.polygon"
+                "physics.structure.polygon",
+                "physics.agent.convex"
             ]
         );
         assert_eq!(
@@ -536,7 +572,8 @@ mod tests {
                 "physics.island.integrate",
                 "physics.island.deactivation",
                 "physics.integrate",
-                "physics.structure.polygon"
+                "physics.structure.polygon",
+                "physics.agent.convex"
             ]
         );
     }
