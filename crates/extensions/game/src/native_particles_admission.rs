@@ -239,6 +239,12 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         drawn
     }
 
+    fn material_cut(
+        &self, mem: &mut dyn GuestMemory, kind: render_bridge::effect_materials::Kind,
+    ) -> Result<(), &'static str> {
+        material_proof::cut(mem, kind)
+    }
+
     fn arm(&self, _: &mut dyn GuestMemory, call: &Call) -> bool {
         self.arm(Source::Particle(call.clone()))
     }

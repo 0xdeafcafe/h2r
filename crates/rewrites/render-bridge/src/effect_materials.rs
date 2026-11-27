@@ -9,9 +9,18 @@
 //! the one dynamic draw whose context is its entry data). The game's
 //! native admission compares one admitted draw in [`SAMPLE`] of each kind
 //! and records the outcome here: `render.scene` carries
-//! `<kind>_material_{sampled,matched,mismatched}`,
+//! `<kind>_material_{sampled,matched,mismatched,open,fallback,cut}`,
 //! `<kind>_material_mismatched_<field>` and
 //! `<kind>_material_refused_<reason>`.
+//!
+//! Each kind has a gate: [`CLEAN`] matched comparisons in a row open it,
+//! any mismatch or refusal closes it (`fallback` counts the closings of
+//! an open gate). While it is open the setup itself is the cut's: at the
+//! setup's call (`0x0023ea80` from `0x00224419`, `0x00043720` from
+//! `0x00035b21`) one call in [`SAMPLE`] runs the guest's setup and its
+//! first draw is compared; the others are cut when the host draws from
+//! the Rust material (`Host::material_cut`), and what it refuses keeps
+//! the guest's setup, counted `scene_kept_15_<kind>_material_<cause>`.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -22,8 +31,16 @@ use hooks::Builder;
 use native_render::{contrail_material, particle_material};
 
 /// One admitted draw in this many is compared (the first, then every
-/// 64th).
+/// 64th); with the gate open, one setup call in this many runs the guest.
 pub const SAMPLE: u64 = 64;
+/// Matched comparisons in a row that open a kind's gate.
+pub const CLEAN: u32 = 8;
+/// The particle setup `0x0023ea80` and the return of its call in the
+/// particle draw (`ret 0xc`, AL whether the walk runs).
+pub const PARTICLE_SETUP: Point = Point::new("PARTICLE_SETUP", 0x0023_ea80, Sig::Opaque, DOC);
+pub const PARTICLE_SETUP_RETURN: u32 = 0x0022_441e;
+/// The polygon handler's return from its entry's setup (`call eax`).
+pub const CONTRAIL_SETUP_RETURN: u32 = 0x0003_5b23;
 
 const DOC: &str = "docs/graphics/retire-d3d-r2.md";
 pub const PARTICLE_MATERIAL: Point = Point::new("PARTICLE_MATERIAL", particle_material::DRAW, Sig::Opaque, DOC);
@@ -42,6 +59,14 @@ impl Kind {
             Self::Contrail => "contrail_material",
         }
     }
+
+    /// The `scene_kept_15_<kind>_...` kind.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Particle => "particle",
+            Self::Contrail => "contrail",
+        }
+    }
 }
 
 /// One kind's tally.
@@ -53,17 +78,90 @@ pub struct Proof {
     pub mismatched: u64,
     pub fields: BTreeMap<String, u64>,
     pub refused: BTreeMap<&'static str, u64>,
+    run: u32,
+    open: bool,
+    pub fallback: u64,
+    setups: u64,
+    /// The setup running now was cut: its draws are not compared.
+    under_cut: bool,
+    /// The setup running now is the sampled guest's: its first draw is
+    /// compared.
+    compare_next: bool,
+    pub cut: u64,
 }
 
 impl Proof {
     const fn new() -> Self {
-        Self { seen: 0, sampled: 0, matched: 0, mismatched: 0, fields: BTreeMap::new(), refused: BTreeMap::new() }
+        Self {
+            seen: 0,
+            sampled: 0,
+            matched: 0,
+            mismatched: 0,
+            fields: BTreeMap::new(),
+            refused: BTreeMap::new(),
+            run: 0,
+            open: false,
+            fallback: 0,
+            setups: 0,
+            under_cut: false,
+            compare_next: false,
+            cut: 0,
+        }
     }
 
-    /// Whether this draw is to be compared.
+    /// Whether this draw is to be compared: with the gate closed one in
+    /// [`SAMPLE`], with it open the first draw of a sampled guest setup;
+    /// never a draw under a cut setup.
     pub fn sample(&mut self) -> bool {
+        if self.under_cut {
+            return false;
+        }
+        if self.open {
+            return std::mem::take(&mut self.compare_next);
+        }
         self.seen += 1;
         (self.seen - 1) % SAMPLE == 0
+    }
+
+    pub fn open(&self) -> bool {
+        self.open
+    }
+
+    /// At a setup's call: whether it is cut. A closed gate or the sampled
+    /// call keeps the guest's setup (the latter's first draw compared);
+    /// otherwise `host` draws from the Rust material or names why not,
+    /// which keeps the guest's setup (`material_<cause>`) and closes the
+    /// gate.
+    pub fn setup(&mut self, host: impl FnOnce() -> Result<(), &'static str>) -> Result<bool, &'static str> {
+        self.under_cut = false;
+        self.compare_next = false;
+        if !self.open {
+            return Ok(false);
+        }
+        self.setups += 1;
+        if (self.setups - 1) % SAMPLE == 0 {
+            self.compare_next = true;
+            return Ok(false);
+        }
+        match host() {
+            Ok(()) => {
+                self.under_cut = true;
+                self.cut += 1;
+                Ok(true)
+            }
+            Err(cause) => {
+                self.close();
+                Err(cause)
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        if self.open {
+            self.fallback += 1;
+        }
+        self.open = false;
+        self.run = 0;
     }
 
     /// A compared draw's differing fields, or why the material was not
@@ -71,10 +169,18 @@ impl Proof {
     pub fn record(&mut self, outcome: Result<&[String], &'static str>) {
         self.sampled += 1;
         match outcome {
-            Err(why) => *self.refused.entry(why).or_default() += 1,
-            Ok([]) => self.matched += 1,
+            Err(why) => {
+                *self.refused.entry(why).or_default() += 1;
+                self.close();
+            }
+            Ok([]) => {
+                self.matched += 1;
+                self.run = (self.run + 1).min(CLEAN);
+                self.open |= self.run >= CLEAN;
+            }
             Ok(fields) => {
                 self.mismatched += 1;
+                self.close();
                 for f in fields {
                     *self.fields.entry(f.clone()).or_default() += 1;
                 }
@@ -87,6 +193,9 @@ impl Proof {
             (format!("{prefix}_sampled"), self.sampled),
             (format!("{prefix}_matched"), self.matched),
             (format!("{prefix}_mismatched"), self.mismatched),
+            (format!("{prefix}_open"), u64::from(self.open)),
+            (format!("{prefix}_fallback"), self.fallback),
+            (format!("{prefix}_cut"), self.cut),
         ];
         out.extend(self.fields.iter().map(|(f, n)| (format!("{prefix}_mismatched_{f}"), *n)));
         out.extend(self.refused.iter().map(|(r, n)| (format!("{prefix}_refused_{r}"), *n)));
@@ -130,6 +239,12 @@ pub fn take_contrail_inputs(context: u32) -> Option<contrail_material::Inputs> {
     }
 }
 
+/// The contrail setup's inputs held now, not taken.
+pub fn contrail_inputs() -> Option<contrail_material::Inputs> {
+    let held = *CONTRAIL.lock().unwrap_or_else(|e| e.into_inner());
+    held.map(|(_, i)| i)
+}
+
 /// `render.scene` rows of both kinds.
 pub fn counters() -> Vec<(String, u64)> {
     let p = PROOFS.lock().unwrap_or_else(|e| e.into_inner());
@@ -151,6 +266,25 @@ fn on_particle(mem: &dyn GuestMemory, esp: u32, eax: u32) {
     *PARTICLE.lock().unwrap_or_else(|e| e.into_inner()) = inputs;
 }
 
+/// At a setup's call from its handler (`esp` the return address's slot):
+/// whether the setup is cut.
+fn cut(mem: &mut dyn GuestMemory, kind: Kind, esp: u32, from: u32) -> bool {
+    if mem.u32(esp).ok() != Some(from) {
+        return false;
+    }
+    let host = crate::native_particles::HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let decided = with(kind, |p| {
+        p.setup(|| host.as_ref().map_or(Err("no_host"), |h| h.material_cut(&mut *mem, kind)))
+    });
+    match decided {
+        Ok(cut) => cut,
+        Err(cause) => {
+            crate::native_layers::count_kept_as("", 15, kind.name(), &format!("material_{cause}"), 1);
+            false
+        }
+    }
+}
+
 fn on_contrail(mem: &dyn GuestMemory, esp: u32) {
     let word = |a: u32| mem.u32(a).ok();
     let held = esp
@@ -169,10 +303,29 @@ pub(crate) fn build(b: &mut Builder) {
         })
         .context_only()
         .optional();
+    // The setup's body does not run on a cut call: the particle setup
+    // returns AL 1 (`ret 0xc`), the contrail's returns (`ret 4`).
     b.raw()
-        .observe_before(&CONTRAIL_MATERIAL, "effect_materials_contrail", |o| {
-            let mem = o.guest();
-            on_contrail(&*mem, o.cpu.esp);
+        .before(&PARTICLE_SETUP, "effect_materials_particle_setup", |c| {
+            let rt = std::sync::Arc::clone(c.ctx.runtime());
+            if !cut(&mut *rt.memory(), Kind::Particle, c.cpu.esp, PARTICLE_SETUP_RETURN) {
+                return Ok(hooks::Flow::Continue);
+            }
+            c.cpu.eax = (c.cpu.eax & !0xff) | 1;
+            c.ret(12).map(hooks::Flow::Return)
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .before(&CONTRAIL_MATERIAL, "effect_materials_contrail", |c| {
+            let rt = std::sync::Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            on_contrail(&*mem, c.cpu.esp);
+            if !cut(&mut *mem, Kind::Contrail, c.cpu.esp, CONTRAIL_SETUP_RETURN) {
+                return Ok(hooks::Flow::Continue);
+            }
+            drop(mem);
+            c.ret(4).map(hooks::Flow::Return)
         })
         .context_only()
         .optional();
@@ -201,6 +354,58 @@ mod tests {
         ] {
             assert!(rows.contains(&(name.to_owned(), n)), "{name}");
         }
+    }
+
+    /// A gate opened by `CLEAN` matched comparisons.
+    fn proven() -> Proof {
+        let mut p = Proof::new();
+        for _ in 0..CLEAN {
+            p.record(Ok(&[]));
+        }
+        assert!(p.open());
+        p
+    }
+
+    #[test]
+    fn a_proven_material_cuts_the_handler_setup() {
+        let mut p = Proof::new();
+        assert_eq!(p.setup(|| Ok(())), Ok(false), "a closed gate keeps the guest's setup");
+        let mut p = proven();
+        assert_eq!(p.setup(|| Ok(())), Ok(false), "the first call is the sample");
+        assert_eq!(p.setup(|| Ok(())), Ok(true));
+        assert!(!p.sample(), "a draw under a cut setup is not compared");
+        assert_eq!(p.cut, 1);
+    }
+
+    #[test]
+    fn one_draw_in_64_keeps_the_guest_setup_and_compares() {
+        let mut p = proven();
+        let cuts: Vec<bool> = (0..2 * SAMPLE).map(|_| p.setup(|| Ok(())).unwrap()).collect();
+        assert_eq!(cuts.iter().filter(|c| !**c).count(), 2);
+        assert!(!cuts[0] && !cuts[SAMPLE as usize] && cuts[1]);
+        // The sampled setup's first draw only.
+        let mut p = proven();
+        assert_eq!(p.setup(|| Ok(())), Ok(false));
+        assert!(p.sample());
+        assert!(!p.sample());
+        // A mismatch there closes the gate and falls back.
+        p.record(Ok(&["texture0".to_owned()]));
+        assert!(!p.open());
+        assert_eq!(p.fallback, 1);
+        assert_eq!(p.setup(|| Ok(())), Ok(false));
+    }
+
+    #[test]
+    fn a_refused_material_keeps_the_guest_setup_by_name() {
+        let mut p = proven();
+        assert_eq!(p.setup(|| Ok(())), Ok(false));
+        assert_eq!(p.setup(|| Err("device_state")), Err("device_state"));
+        assert!(!p.open());
+        assert_eq!((p.fallback, p.cut), (1, 0));
+        // A refusal recorded by a comparison closes it too.
+        let mut p = proven();
+        p.record(Err("tags"));
+        assert_eq!((p.open(), p.fallback), (false, 1));
     }
 
     #[test]
