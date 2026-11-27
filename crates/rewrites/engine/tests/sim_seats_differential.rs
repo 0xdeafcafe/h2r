@@ -988,6 +988,9 @@ const LEAF_VECTOR: u32 = RECORDS + 0x300;
 const LEAF_OUT: u32 = RECORDS + 0x320;
 const LEAF_BODY: u32 = RECORDS + 0x1000;
 const LEAF_TICKS: u32 = RECORDS + 0x380;
+const LEAF_PACKET: u32 = RECORDS + 0xc00;
+/// `c6ef0`'s pointer to the vector its three directions start as.
+const PACKET_VECTOR: u32 = 0x0046_87a8;
 
 fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, case: u32) {
     use sim_seats::leaf::Leaf;
@@ -1056,6 +1059,19 @@ fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, ca
             }
             c.gpr[1] = LEAF_VECTOR;
             c.gpr[0] = LEAF_OUT;
+        }
+        Leaf::InitPacket => {
+            // A packet full of stale bytes, every one of which `c6ef0`
+            // writes, and a vector of its own per case.
+            let v: [[f32; 3]; 4] = [[0.0, 0.0, 0.0], [1.0, -0.5, 0.25], [-0.0, 3.0e8, -1.5], [f32::NAN, 0.1, -7.0]];
+            for (i, x) in v[case as usize % 4].into_iter().enumerate() {
+                float(m, LEAF_VECTOR + 4 * i as u32, x);
+            }
+            word(m, PACKET_VECTOR, LEAF_VECTOR);
+            for (i, b) in m.bytes[LEAF_PACKET as usize..][..0x7c].iter_mut().enumerate() {
+                *b = ((i as u8).wrapping_mul(37) ^ (case as u8).wrapping_mul(0x5b)) | 1;
+            }
+            c.gpr[2] = LEAF_PACKET;
         }
     }
 }
@@ -1201,4 +1217,30 @@ fn weapon_ready_declines_a_wrapping_count() {
     native.write_bytes(0, &mem.bytes, 1).unwrap();
     let regs = abi_cpu(&cpu);
     assert_eq!(leaf::kernel(Leaf::WeaponReady, &regs, &native), Err(Decline::Fault));
+}
+
+/// `c6ef0` declines a packet over the vector it copies or over the
+/// pointer to it (the guest reads both after its first stores), and a set
+/// direction flag (its `rep stosd` would run backwards).
+#[test]
+fn init_packet_declines_an_overlap() {
+    use sim_seats::leaf::{self, Decline, Leaf};
+    let mut mem = FlatMemory::new(0, RAM);
+    word(&mut mem, PACKET_VECTOR, LEAF_VECTOR);
+    let mut native = Guest::new();
+    native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+    native.write_bytes(0, &mem.bytes, 1).unwrap();
+    let mut regs = abi_cpu(&Cpu::default());
+    for (packet, eflags, want) in [
+        (LEAF_PACKET, 0x2, None),
+        (LEAF_VECTOR - 0x78, 0x2, Some(Decline::Fault)),
+        (LEAF_VECTOR + 8, 0x2, Some(Decline::Fault)),
+        (PACKET_VECTOR - 0x10, 0x2, Some(Decline::Fault)),
+        (LEAF_PACKET, 0x402, Some(Decline::Float)),
+    ] {
+        regs.edx = packet;
+        regs.eflags = eflags;
+        let got = leaf::kernel(Leaf::InitPacket, &regs, &native).err();
+        assert_eq!(got, want, "packet {packet:#x} eflags {eflags:#x}");
+    }
 }

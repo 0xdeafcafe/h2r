@@ -14,12 +14,13 @@
 //! | [`Leaf::UserPlayer`] | `14de70` | the HUD seat update (`PLAYER_FOUND`) | the user slot's player |
 //! | [`Leaf::Submit`] | `187b30` | the control update, `0x186a94` | the input record's flags into the control globals' word, the latches and the axis clamps |
 //! | [`Leaf::WeaponReady`] | `100f70` | the control update, `0x1866b3` | the weapon can be readied: none of its magazines holds 1 to 6 rounds (its callee `100880`, [`magazine`]) and it has a zoom level |
+//! | [`Leaf::InitPacket`] | `c6ef0` | the action and neutral packet builders, `0x150673`, `0x1507b4` | the whole `0x7c`-byte unit-control packet, as a [`Block`] |
 //!
 //! At the call, [`call`] runs the kernel. Until [`PROVEN_AFTER`] of a
 //! leaf's predictions have matched with no mismatch, the guest's leaf
 //! runs and the prediction is compared at the return site ([`at_site`]):
 //! `eax`, `ecx`, `edx`, the callee-saved registers, `xmm0`, the x87 stack
-//! where the leaf uses it, and the words it writes. After that the kernel
+//! where the leaf uses it, the words it writes and its [`Block`]. After that the kernel
 //! answers in place and the body goes on at the site in the same segment;
 //! one answerable call in [`AUDIT_EVERY`] still goes to the guest. A
 //! mismatch hands that leaf back to the guest until the next map.
@@ -49,6 +50,11 @@ const CONTROL: u32 = 0x004e_d284;
 const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
 /// `100880`'s index is `movsx cx`: a count past this would wrap it.
 const MAGAZINES_MAX: i32 = 0x7fff;
+/// `c6ef0` reads its three directions through this pointer.
+const PACKET_VECTOR: u32 = 0x0046_87a8;
+/// The packet's first word, `c6ef0`'s immediate at `0xc6f09`.
+const PACKET_HEADER: u32 = 0x0600_0086;
+const DIRECTION_FLAG: u32 = 1 << 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaf {
@@ -59,10 +65,11 @@ pub enum Leaf {
     UserPlayer,
     Submit,
     WeaponReady,
+    InitPacket,
 }
 
 impl Leaf {
-    pub const ALL: [Leaf; 7] = [
+    pub const ALL: [Leaf; 8] = [
         Leaf::Visible,
         Leaf::PlayerIndex,
         Leaf::Direction,
@@ -70,6 +77,7 @@ impl Leaf {
         Leaf::UserPlayer,
         Leaf::Submit,
         Leaf::WeaponReady,
+        Leaf::InitPacket,
     ];
 
     pub fn name(self) -> &'static str {
@@ -81,6 +89,7 @@ impl Leaf {
             Leaf::UserPlayer => "user_player",
             Leaf::Submit => "submit",
             Leaf::WeaponReady => "weapon_ready",
+            Leaf::InitPacket => "init_packet",
         }
     }
 
@@ -93,6 +102,7 @@ impl Leaf {
             Leaf::Submit => 0x0018_7b30,
             Leaf::WeaponReady => 0x0010_0f70,
             Leaf::UserPlayer => 0x0014_de70,
+            Leaf::InitPacket => 0x000c_6ef0,
         }
     }
 
@@ -104,8 +114,8 @@ impl Leaf {
 /// Why a call was left to the guest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR or the x87 not in the pinned state, an operand off the exact
-    /// range, or a step the x87 model refuses.
+    /// MXCSR, the x87 or the direction flag not in the pinned state, an
+    /// operand off the exact range, or a step the x87 model refuses.
     Float,
     /// A read of the inputs faulted, or a write would.
     Fault,
@@ -206,7 +216,8 @@ fn proven(i: usize) -> bool {
 }
 
 /// What a leaf leaves: the registers, `xmm0` and `xmm1`, the x87 state
-/// with its last instruction and operand, and up to six word stores.
+/// with its last instruction and operand, up to six word stores and one
+/// [`Block`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Effect {
     pub eax: u32,
@@ -219,6 +230,21 @@ pub struct Effect {
     pub xmm1: [u8; 16],
     pub x87: Option<(X87State, u32, u32)>,
     pub writes: [Option<(u32, u32)>; 6],
+    /// Laid down before `writes`. Held inline, so an effect with none
+    /// costs one tag test in [`apply`] and [`at_site`], and no allocation.
+    pub block: Option<Block>,
+}
+
+/// Bytes in a [`Block`]: the longest store run a leaf leaves, `c6ef0`'s
+/// packet.
+pub const BLOCK: usize = 0x7c;
+
+/// A leaf's run of [`BLOCK`] bytes at `addr`, past what six word stores
+/// hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Block {
+    pub addr: u32,
+    pub bytes: [u8; BLOCK],
 }
 
 impl Effect {
@@ -235,6 +261,7 @@ impl Effect {
             xmm1: c.xmm[1],
             x87: None,
             writes: [None; 6],
+            block: None,
         }
     }
 }
@@ -286,12 +313,18 @@ pub fn call<M: Memory>(
     m.call(c, leaf.target(), site)
 }
 
-/// Lay `e` down: the stores, then the registers.
+/// Lay `e` down: the block in word pieces (a segment's store log takes
+/// four bytes a store), the word stores, then the registers.
 pub fn apply(
     c: &mut CpuAbi,
     m: &mut impl Memory,
     e: &Effect,
 ) -> std::result::Result<(), runtime::GuestFault> {
+    if let Some(b) = &e.block {
+        for (i, piece) in b.bytes.chunks(4).enumerate() {
+            m.write_bytes(b.addr.wrapping_add(4 * i as u32), piece, 1)?;
+        }
+    }
     for (a, v) in e.writes.iter().flatten() {
         m.set_u32(*a, *v)?;
     }
@@ -346,6 +379,11 @@ pub fn at_site(c: &CpuAbi, m: &impl Memory, pc: u32) {
         .any(|(a, v)| m.u32(*a).ok() != Some(*v))
     {
         Some("stores")
+    } else if e.block.as_ref().is_some_and(|b| {
+        let mut got = [0u8; BLOCK];
+        m.read_bytes(b.addr, &mut got, 1).is_err() || got != b.bytes
+    }) {
+        Some("block")
     } else {
         None
     };
@@ -406,6 +444,7 @@ pub fn kernel(leaf: Leaf, c: &CpuAbi, m: &impl Memory) -> std::result::Result<Ef
         }
         Leaf::Visible => visible(c, m, &mut e)?,
         Leaf::Direction => direction(c, m, &mut e)?,
+        Leaf::InitPacket => init_packet(c, m, &mut e)?,
     }
     Ok(e)
 }
@@ -777,5 +816,58 @@ fn submit(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result<()
         Some((rec.wrapping_add(0x14), yaw)),
         Some((rec.wrapping_add(0x10), pitch)),
     ];
+    Ok(())
+}
+
+/// `c6ef0 (packet: edx)`: zero the `0x7c`-byte unit-control packet, then
+/// its header word, the `-1` selections at `+6..+0xe` and words
+/// `+0x58..+0x64`, and the vector at `[PACKET_VECTOR]` into each of the
+/// three directions at `+0x28`, `+0x34` and `+0x40`. It leaves `eax` the
+/// vector's third word, `ecx` `-1` and `xmm0` zero (`xorps`); `ebx`, `ebp`
+/// and `edi` come back saved. Only the dead frame below the return is not
+/// laid down.
+fn init_packet(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result<(), Decline> {
+    let word = |a: u32| m.u32(a).map_err(|_| Decline::Fault);
+    // `rep stosd` runs backwards under a set direction flag.
+    if c.eflags & DIRECTION_FLAG != 0 {
+        return Err(Decline::Float);
+    }
+    let packet = c.edx;
+    let source = word(PACKET_VECTOR)?;
+    // The guest reads the pointer and the vector after its first stores:
+    // either inside the packet would see them.
+    disjoint(m, (packet, BLOCK), (PACKET_VECTOR, 4))?;
+    disjoint(m, (packet, BLOCK), (source, 12))?;
+    let v = [word(source)?, word(source.wrapping_add(4))?, word(source.wrapping_add(8))?];
+    // The stores must take: check the whole packet before predicting it.
+    let mut bytes = [0u8; BLOCK];
+    m.read_bytes(packet, &mut bytes, 1).map_err(|_| Decline::Fault)?;
+    bytes = [0; BLOCK];
+    bytes[..4].copy_from_slice(&PACKET_HEADER.to_le_bytes());
+    bytes[6..0xe].fill(0xff);
+    bytes[0x58..0x64].fill(0xff);
+    for at in [0x28, 0x34, 0x40] {
+        for (i, w) in v.iter().enumerate() {
+            bytes[at + 4 * i..][..4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    e.eax = v[2];
+    e.ecx = u32::MAX;
+    e.xmm0 = [0; 16];
+    e.block = Some(Block { addr: packet, bytes });
+    Ok(())
+}
+
+/// Two guest ranges that share no physical byte.
+fn disjoint(
+    m: &impl Memory,
+    a: (u32, usize),
+    b: (u32, usize),
+) -> std::result::Result<(), Decline> {
+    let x = u64::from(m.physical_read(a.0, a.1).ok_or(Decline::Fault)?);
+    let y = u64::from(m.physical_read(b.0, b.1).ok_or(Decline::Fault)?);
+    if x < y + b.1 as u64 && y < x + a.1 as u64 {
+        return Err(Decline::Fault);
+    }
     Ok(())
 }

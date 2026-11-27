@@ -366,7 +366,7 @@ The entries install as the shadow's guest-authoritative arm: `shadow.enable`
 on, the original answers and each body is checked against it on a copy;
 checks off, the bodies answer. The switch retires `native_observer_camera`.
 
-The aim-assist cone, the bound controller's device read and the seven leaf
+The aim-assist cone, the bound controller's device read and the eight leaf
 callees are kernels with their own arms, described in
 [sim-rewrite-sketches.md](sim-rewrite-sketches.md#seats-and-rules-phase-7-kernels).
 
