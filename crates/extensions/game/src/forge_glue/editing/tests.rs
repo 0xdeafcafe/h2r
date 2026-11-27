@@ -2226,6 +2226,7 @@ fn the_first_monitor_starts_at_the_map_start_with_a_drawn_view() {
         let [near, far] = [m.f32(SCRATCH + camera + 0x40).unwrap(), m.f32(SCRATCH + camera + 0x44).unwrap()];
         assert!(0.0 < near && near < far, "{near} {far}");
     }
+}
 
 /// The Spare clips row is a spawner's of a collection that holds a weapon:
 /// an equipment collection's, a vehicle's and an object's have none.
