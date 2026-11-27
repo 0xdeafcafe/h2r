@@ -308,11 +308,10 @@ pub mod layer {
         }
     }
 
-    /// The guest body's lasting writes for a layer draw that builds no
-    /// entry, in its order, then the frame step's 5.2 rows for the turn
-    /// (none: no handler runs). Call only after [`keep`] said `Ok`.
-    pub fn writes(mem: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        mem.set_u8(DRAW_FLAG, 1)?;
+    /// `0x00016b10`'s writes to the shader-draw cache after its restore
+    /// list: the words it zeroes, the ones it sets to -1 and the slots it
+    /// stores [`SETUP_FLOAT`] in.
+    pub fn clear_cache(mem: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let float = mem.u32(SETUP_FLOAT)?;
         for at in ZEROED {
             mem.set_u32(SETUP + at, 0)?;
@@ -323,6 +322,15 @@ pub mod layer {
         for at in FLOATS {
             mem.set_u32(SETUP + at, float)?;
         }
+        Ok(())
+    }
+
+    /// The guest body's lasting writes for a layer draw that builds no
+    /// entry, in its order, then the frame step's 5.2 rows for the turn
+    /// (none: no handler runs). Call only after [`keep`] said `Ok`.
+    pub fn writes(mem: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        mem.set_u8(DRAW_FLAG, 1)?;
+        clear_cache(mem)?;
         mem.set_u32(DRAWN_LAYER, u32::MAX)?;
         super::writes(mem, Step::Producer(PRODUCER)).map(drop)
     }

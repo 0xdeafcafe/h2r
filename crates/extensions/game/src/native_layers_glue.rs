@@ -1340,20 +1340,16 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             unmarked
         };
         // The item's `0x0003bea0` clears the shader cache the first time
-        // the frame calls it (`TARGET_COPIED`): skipping it is neutral only
-        // with nothing cached, where the clear writes nothing. With a
-        // structure parameter block the call also copies the bound colour
-        // into the refraction target, which the pass does before its first
-        // draw (`snapshot_gpu::Snapshots::into_target`).
+        // the frame calls it (`TARGET_COPIED`): `0x00016b10` writes the
+        // cached implementation's restore list (`0x00018900`, the open
+        // shader's `restore_list`) and then zeroes the cache. Skipping the
+        // call does both, the restore before the pass and the clear with
+        // the flag. With a structure parameter block the call also copies
+        // the bound colour into the refraction target, which the pass does
+        // before its first draw (`snapshot_gpu::Snapshots::into_target`).
         let mut slots = Vec::new();
         let mut copy_at = None;
-        if planned.sets_copied {
-            let cached = mem.u32(native_render::sorted_entries::CACHED_IMPLEMENTATION).map_err(|_| "cached_state")?
-                | mem.u32(native_render::sorted_entries::CACHED_DESCRIPTOR).map_err(|_| "cached_state")?;
-            if cached != 0 {
-                return Err("object_target");
-            }
-        }
+        let open = if planned.sets_copied { render_bridge::open_shader::read(&*mem).map_err(|_| "cached_state")? } else { None };
         if planned.copies {
             let colour = planned.draws.iter().any(|(_, draw)| draw.view || draw.scene_copy);
             if let Some(why) = copy_beside(false, colour) {
@@ -1395,13 +1391,22 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         });
         // A pass writing the refraction target binds it as a slot, which no
         // held packet carries.
+        // The cache's restore list, as `0x00018900` writes it; a list the
+        // device does not take leaves the guest's handler.
+        if let Some(open) = &open {
+            restore_list(&mut d, mem, &open.writes)?;
+        }
         let prepared = if copy_at.is_some() {
             d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
         } else {
             d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
         };
         let reservation = prepared.ok().flatten().ok_or("reservation")?;
-        if sets_copied && mem.set_u8(TARGET_COPIED, 1).is_err() {
+        if sets_copied
+            && (mem.set_u8(TARGET_COPIED, 1).is_err()
+                || mem.set_u8(engine::render_loop::layer::DRAW_FLAG, 1).is_err()
+                || render_bridge::frame_step::layer::clear_cache(mem).is_err())
+        {
             return Err("object_target");
         }
         reservation.commit();
