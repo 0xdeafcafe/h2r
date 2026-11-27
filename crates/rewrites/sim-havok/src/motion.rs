@@ -230,6 +230,76 @@ pub fn apply_forces(input: ForceInput, one: f32, zero: f32, control: u16) -> Opt
     })
 }
 
+/// The solver-side virtuals of a motion (docs/engine/havok-step.md,
+/// "Motions"): `vt[+0x0c]` builds its accumulator in the solver buffer,
+/// `vt[+0x10]` integrates from it after the solve. Classes are told apart
+/// by those two slots' targets, so a copied vtable is still recognised.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolverClass {
+    /// Type 7, the level's: `0x0031a770` zeroes the accumulator,
+    /// `0x0031a6a0` writes nothing.
+    Fixed,
+}
+
+pub const FIXED_ACCUMULATE: u32 = 0x0031_a770;
+pub const FIXED_EXPORT: u32 = 0x0031_a6a0;
+/// Type 6. The accumulator is ported; the export (`0x00319490`, the pose
+/// integration through `0x00319300`, `0x001d8d60`, `0x00372500` and
+/// `0x002db7a0`) is not, so the class is not covered yet.
+pub const KEYFRAMED_ACCUMULATE: u32 = 0x0031_9430;
+pub const KEYFRAMED_EXPORT: u32 = 0x0031_9490;
+
+impl SolverClass {
+    pub fn of(accumulate: u32, export: u32) -> Option<Self> {
+        match (accumulate, export) {
+            (FIXED_ACCUMULATE, FIXED_EXPORT) => Some(Self::Fixed),
+            _ => None,
+        }
+    }
+
+    pub fn accumulator(self) -> Accumulator {
+        match self {
+            Self::Fixed => fixed_accumulator(),
+        }
+    }
+}
+
+/// One accumulator's bytes, `0x80` each. Byte 0 is the kind
+/// ([`ACCUMULATOR_KIND`]); byte `+0x0c` is the identity-basis flag the
+/// contact builder tests (`0x0031f6be`); `+0x10..+0x80` are seven vectors:
+/// linear velocity, angular velocity, inverse inertia with inverse mass in
+/// `w`, then the centre and the transposed body basis while the Jacobians
+/// are built (the iteration sums during the solve).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Accumulator {
+    /// `None`: the builder leaves byte `+0x0c` as the buffer held it.
+    pub flag: Option<u8>,
+    pub vectors: [u128; 7],
+}
+
+pub const ACCUMULATOR_BYTES: u32 = 0x80;
+/// Byte 0 of every accumulator, the island's leading zeroed one included.
+pub const ACCUMULATOR_KIND: u8 = 2;
+/// Byte 0 after the last accumulator (`0x0031c31c`).
+pub const ACCUMULATOR_END: u8 = 3;
+
+/// `0x0031a770` (type 7) and the island's leading accumulator
+/// (`0x0031c2b0`): kind 2, every vector zero, bytes 1 to 15 untouched.
+pub fn fixed_accumulator() -> Accumulator {
+    Accumulator { flag: None, vectors: [0; 7] }
+}
+
+/// `0x00319430` (type 6): the motion's velocities (`+0x40`, `+0x50`) and
+/// centre (`+0x70`) copied, no inverse mass or inertia, the identity as
+/// the basis, and the flag set.
+pub fn keyframed_accumulator(linear: u128, angular: u128, center: u128) -> Accumulator {
+    let one = u128::from(1.0f32.to_bits());
+    Accumulator {
+        flag: Some(1),
+        vectors: [linear, angular, 0, center, one, one << 32, one << 64],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +327,23 @@ mod tests {
         assert!(result.clear_torque);
         assert_eq!(result.linear, [0.0; 4]);
         assert_eq!(result.angular, [3.0, 4.5, 2.25, 0.0]);
+    }
+
+    #[test]
+    fn only_the_fixed_pair_of_slots_is_a_covered_class() {
+        assert_eq!(SolverClass::of(FIXED_ACCUMULATE, FIXED_EXPORT), Some(SolverClass::Fixed));
+        assert_eq!(SolverClass::of(KEYFRAMED_ACCUMULATE, KEYFRAMED_EXPORT), None);
+        assert_eq!(SolverClass::of(FIXED_ACCUMULATE, KEYFRAMED_EXPORT), None);
+    }
+
+    #[test]
+    fn a_keyframed_accumulator_carries_the_identity_basis_in_its_last_rows() {
+        let a = keyframed_accumulator(1, 2, 3);
+        assert_eq!(a.flag, Some(1));
+        assert_eq!(a.vectors[..4], [1, 2, 0, 3]);
+        // +0x50, +0x64 and +0x78 hold 1.0; every other word is zero.
+        let words: Vec<u32> = a.vectors[4..].iter().flat_map(|v| (0..4).map(move |i| (*v >> (32 * i)) as u32)).collect();
+        let one = 1.0f32.to_bits();
+        assert_eq!(words, [one, 0, 0, 0, 0, one, 0, 0, 0, 0, one, 0]);
     }
 }
