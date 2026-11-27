@@ -50,35 +50,28 @@ dropped. Tests: `every_item_the_guest_body_draws_is_counted_once_under_its_stage
 What keeps an item, by stage (**Code**):
 
 - **Layers 1, 5, 7, 8 and 20** (`layer_plan_<layer>_refused_*`,
-  `_alt<layer>_*`, `_fp<layer>_*`). Structure items: the plan's causes
-  (`material`, `instance`, `no_pass`, `pass`, `implementation`, `input`,
-  `animation`, `texture_transform`, `object_animation`, `property`,
-  `wave`, `material_c18`, `time`, `per_draw`), `program`, `palettes`,
-  `state`, `stencil`, `warming`, `device`, `viewport`, `unread`. Object
-  items: extraction's causes (`object_shader_flag`, `object_layer5_stream`,
-  `object_subparts`, `object_aux_state`, `object_unread`), then
-  `object_models`, `object_w_buffer`, `object_model`,
-  `object_plan_<cause>` (`not_compiled`: a program reading a constant or
-  register the object draw does not give, an animated property an object
-  function drives, an engine wave before `Tables::install_engine_slab`, a
-  `dot_rflct_spec` stage bound a 2D bitmap; [native-objects.md](native-objects.md),
-  "Object programs"), `object_shader_flag_target` (flag bit 0 before the
-  frame's structure target copy with a flag-bit-20 program and a
-  structure parameter block, the refraction target not reading:
-  `object_program_gpu::makes_target_copy`; `_structure` and `_view`
-  beside structure draws or another copy of the colour),
-  `object_texaccum` (no target or level), `object_texaccum_structure` (layer 1's sampling items beside a structure item), `object_aux_depth`
-  (the device does not hold the toggle off), `object_fade` (the
-  device's stipple or a fade byte's pattern is not known exactly),
-  `object_stipple` (the engine's cached fade or the device's
-  pattern is not what the epilogue leaves), `object_state`, `object_prt`,
-  `object_fog`, `object_stencil`, `object_warming`. And `order`: the
-  native pass draws before the guest's body, so an item after a kept one
-  is taken only when both are order-free and every kept item before it
-  restores what it sets (`layer_pass::clear_layer_items`, `order_free`);
-  at the scene and the alternate view the rest draw between the kept
-  sorted entries ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from
-  the plan").
+  `_alt<layer>_*`, `_fp<layer>_*`; a sorted run counts the held layer's
+  `scene_kept_*` when done). Every cause left:
+
+  | Items | Cause | Why the guest keeps the draw |
+  |---|---|---|
+  | structure | `material`, `instance`, `no_pass`, `pass`, `implementation`, `input`, `animation`, `texture_transform`, `object_animation`, `property`, `wave`, `material_c18`, `time`, `per_draw` | the plan does not resolve it |
+  | structure | `program`, `palettes`, `device` | no material of the layer compiled, or its palettes changed |
+  | structure | `state`, `stencil`, `warming`, `set` | skipping would leave another state; the stencil does not read or mode 1 is not held; no pipeline yet; no compiled part or fog |
+  | structure | `first_person_structure`, `sorted_structure` | the first person's and sorted handlers' calls take objects only |
+  | object | `object_shader_flag`, `object_layer5_stream`, `object_subparts`, `object_aux_state`, `object_unread` | extraction's (`object_shader_flag` also where the device or engine does not hold the structure upload) |
+  | object | `object_models`, `object_model`, `object_layer` | models not resident, the item's model not uploaded, a layer outside `OBJECT_LAYERS` |
+  | object | `object_plan_<cause>` | the material's passes did not plan (`not_compiled`: a constant or register the draw does not give, an object-function property, an engine wave before `Tables::install_engine_slab`, a 2D bitmap at `dot_rflct_spec`; [native-objects.md](native-objects.md), "Object programs") |
+  | object | `object_w_buffer`, `object_layer_begin` | the draws are not W-buffered, or the begin's `ZENABLE` did not set |
+  | object | `object_shader_flag_target` | a copying item whose refraction target `0x16` does not read |
+  | object | `object_texaccum` | no accumulation target or level to bind |
+  | object | `object_aux_depth`, `object_fade`, `object_stipple` | the device does not hold the toggle off; a stipple or fade pattern not known exactly; the cached fade or pattern is not the epilogue's |
+  | object | `object_state`, `object_prt`, `object_fog`, `object_stencil`, `object_warming` | another state left; the PRT stream; no fog; a marked item outside mode 1; no pipeline yet |
+  | any | `order` | after a kept item it does not commute with; at the scene and the alternate view such items draw between the kept sorted entries ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from the plan") |
+  | any | `viewport`, `unread`, `cached_state`, `reservation`, `world_changed`, `masks`, `entry` | the device's clip is not the viewport; the pass, the cached restore or the masks do not read; the device refused the pass; the world changed; the run stopped at a kept entry |
+
+  The first person keeps its flag-bit-20 items before the frame's copy
+  (`native_first_person_glue`).
 - **Layer 3's world**: untranslated passes and missing program inputs ([native-world.md](native-world.md)).
 - **Layer 3's objects** draw before the call where the gate answers
   ("Layer 3's objects before the call", below), else inside the body: the

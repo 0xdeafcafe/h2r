@@ -41,8 +41,7 @@
 //!   layer 3's objects do (`native_objects_glue::sampled_texaccum`; else
 //!   `object_texaccum`); in layer 1, which draws into it, each such draw
 //!   binds a copy of the bound colour made just before it
-//!   (`accumulation_segments`), and only where the layer takes no
-//!   structure item (else `object_texaccum_structure`). An
+//!   (`layer_segments`). An
 //!   item toggling the auxiliary state (record bit 11) draws with the
 //!   rows and clip its view holds (`frame_scene::View::aux_depth`), and
 //!   only when the device holds the toggle off
@@ -66,8 +65,7 @@
 //!   ([`TARGET_COPIED`]) and, with a structure parameter block, the pass
 //!   copying the colour into the refraction target before its draws
 //!   ([`STRUCTURE_COPY_TARGET`]; kept `object_shader_flag_target` where
-//!   the target does not read, `_structure` or `_view` beside structure
-//!   draws or another copy of the colour).
+//!   the target does not read).
 //!   The skip clears the layer's bit on each such item
 //!   (`layer_pass::clear_layer_items`). The external pass draws before the
 //!   guest's layer draw, so an item after one the guest keeps is taken only
@@ -93,9 +91,9 @@
 //!   clip at the issue, then per run of the list `GpuWorld::layer_draws`
 //!   or `LitObjects::draws` in the D3D pass open on the bound
 //!   attachments. A scene view's structure runs are culled on the GPU
-//!   instead (`LayerViewPass::encoded_culled`, `GpuWorld::culled_layer_draws`;
+//!   instead (`LayerViewPass::encoded`, `GpuWorld::culled_layer_draws`;
 //!   docs/graphics/native-world.md, "Cull"): recorded as commands, the
-//!   layer cull, then one pass with every run's packets. A sorted handler's layer whose passes sample the view's
+//!   layer cull, then the passes of its segments ([`layer_segments`]). A sorted handler's layer whose passes sample the view's
 //!   own target (engine texture 5) is recorded as commands instead: the
 //!   bound colour copied (`LitObjects::view_copy`), then a render pass of
 //!   its own on the same attachments with the draws binding the copy
@@ -202,14 +200,6 @@ struct RunObjects {
     texaccum: Option<native_render::world_layers::Texaccum>,
 }
 
-/// Whether `restore` writes, with a value other than `device`'s, a render
-/// state an object's checks read outside the state array
-/// (`native_objects_glue::read_outside_states`): its objects then keep
-/// their guest draws (`object_sorted_restore`).
-fn restore_moves_outside(restore: &[(u32, u32)], device: &dyn Fn(u32) -> Option<u32>) -> bool {
-    let outside = crate::native_objects_glue::read_outside_states();
-    restore.iter().any(|&(slot, value)| outside.contains(&slot) && device(slot) != Some(value))
-}
 
 /// The object draw, counted over the drawn object items in order (each
 /// whether it copies and its draw count), before which the structure
@@ -225,19 +215,6 @@ fn copy_point(items: impl IntoIterator<Item = (bool, usize)>) -> Option<usize> {
     None
 }
 
-/// Why a layer's items that copy keep their guest draws: beside the
-/// structure's draws (`structure`), which the copy's split commands do
-/// not carry, or beside a draw sampling another copy of the bound colour
-/// (`colour`: the view, the scene copy, layer 1's accumulation target).
-fn copy_beside(structure: bool, colour: bool) -> Option<&'static str> {
-    if structure {
-        Some("object_shader_flag_target_structure")
-    } else if colour {
-        Some("object_shader_flag_target_view")
-    } else {
-        None
-    }
-}
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -305,13 +282,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// docs/graphics/retire-d3d-r5.md, "Layer 2 from the plan"): the
     /// structure items the plan draws up to the first entry the guest
     /// keeps, drawn there and set in `run`. A run counts no outcome (the
-    /// layer call's ask has), sets no device state, and plans its items
-    /// against the device as the shader draw's cached restore leaves it:
-    /// the objects' entry states, fog and skip with the restore over the
-    /// state array, kept `object_sorted_restore` when it moves a state
-    /// their checks read elsewhere (`restore_moves_outside`), and
-    /// `object_sorted_target` or `object_sorted_view` for a copy flag or
-    /// a copy of the bound colour the run does not make.
+    /// layer call's ask has), sets no device state but the frame's copy
+    /// flag its items' calls would, and plans its items against the device
+    /// as the shader draw's cached restore leaves it
+    /// (`sorted_entries::after_restore`): the stencil, the objects' entry
+    /// states, fog, W buffer, stipple and skip.
     #[allow(clippy::too_many_arguments)]
     fn ask_at(
         &self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left, at: Option<&RunAt<'_>>,
@@ -449,10 +424,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             report(&outcomes, 0);
             return None;
         }
-        // The device's stencil at the layer call, which the items draw
-        // under (`layer_pass::item_stencil`); one that does not read
-        // leaves the layer to the D3D path.
-        let Some(device_stencil) = d.stencil_state(&read) else {
+        // A run's items draw at the next kept entry, with the device as
+        // the shader draw's restore of its cached implementation leaves it
+        // (`sorted_entries::after_restore`): every check of the run reads
+        // the device through it.
+        let restore = if running {
+            let Some(restore) = native_render::sorted_entries::cached_restore(&read) else {
+                left.all("cached_state");
+                return None;
+            };
+            restore
+        } else {
+            Vec::new()
+        };
+        let device = |slot: u32| d.render_state(&read, slot);
+        let device_state = native_render::sorted_entries::after_restore(&restore, &device);
+        // The device's stencil at the layer call (in a run, after the
+        // restore), which the items draw under (`layer_pass::item_stencil`);
+        // one that does not read leaves the layer to the D3D path.
+        let Some(device_stencil) = crate::native_objects_glue::stencil_with(&device_state) else {
             refuse_all(&mut outcomes, &mut *left, "stencil", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;
@@ -473,28 +463,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         // one (`layer_pass::clear_layer_items`).
         let unmarked = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, false).stencil;
         let mut free: HashMap<u32, u32> = HashMap::new();
-        // A run's skip leaves the next kept entry the device the shader
-        // draw's restore of its cached implementation leaves.
-        let restore = if running {
-            let Some(restore) = native_render::sorted_entries::cached_restore(&read) else {
-                left.all("cached_state");
-                return None;
-            };
-            restore
-        } else {
-            Vec::new()
-        };
-        // A run's objects plan with the device as the restore leaves it
-        // (`plan_objects`), which holds only for the render states read
-        // from the state array: a restore that moves one read elsewhere
-        // keeps them.
-        if running && !objects.is_empty() && restore_moves_outside(&restore, &|slot| d.render_state(&read, slot)) {
-            *outcomes.entry("object_sorted_restore").or_default() += objects.len() as u64;
-            objects.drain(..).for_each(|item| left.item(item.slot, "object_sorted_restore"));
-        }
         if let Some(plan) = &plan {
-            let device = |slot: u32| d.render_state(&read, slot);
-            let device_state = native_render::sorted_entries::after_restore(&restore, &device);
             for draw in plan.draws.iter().filter(|d| layer_pass::world_owner(d.owner).is_some()) {
                 let holds =
                     draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)));
@@ -519,23 +488,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
             None => (None, HashMap::new(), None),
         };
-        // Layer 1's draws that sample the accumulation target are recorded
-        // as commands, which carry no structure draws: beside a structure
-        // item the layer takes they keep their guest draws.
-        if l == 1 && !taken.is_empty() {
-            let before = object_draws.len();
-            object_draws.retain(|&slot, o| {
-                let accumulates = o.draws.iter().any(|(_, d)| d.texaccum);
-                if accumulates {
-                    left.item(slot, "object_texaccum_structure");
-                }
-                !accumulates
-            });
-            *outcomes.entry("object_texaccum_structure").or_default() += (before - object_draws.len()) as u64;
-        }
         let marked = object_draws.values().any(|o| o.marked);
         let mut stencil = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, marked);
-        if stencil.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1(&d, mem) {
+        if stencil.needs_mode_1 && !crate::native_objects_glue::in_stencil_mode_1_with(mem, Some(device_stencil)) {
             if pass.stencil_off {
                 // Every item's draw leaves mode 1: skipping them is
                 // state-neutral only from mode 1.
@@ -585,22 +540,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             if !warm {
                 *outcomes.entry("object_warming").or_default() += object_draws.len() as u64;
                 object_draws.drain().for_each(|(slot, _)| left.item(slot, "object_warming"));
-            }
-        }
-        // The copy splits the pass's commands, which carry no structure
-        // draws and no other copy of the bound colour: beside those an
-        // item that copies keeps its guest draw.
-        if object_draws.values().any(|o| o.copies) {
-            let colour = object_draws.values().any(|o| o.draws.iter().any(|(_, d)| d.view || d.scene_copy || (l == 1 && d.texaccum)));
-            if let Some(why) = copy_beside(!taken.is_empty(), colour) {
-                let before = object_draws.len();
-                object_draws.retain(|&slot, o| {
-                    if o.copies {
-                        left.item(slot, why);
-                    }
-                    !o.copies
-                });
-                *outcomes.entry(why).or_default() += (before - object_draws.len()) as u64;
             }
         }
         if taken.is_empty() && object_draws.is_empty() {
@@ -820,6 +759,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if found.drawn.is_empty() {
             return None;
         }
+        // A drawn item's `0x0003bea0` as the layer call's commit leaves it:
+        // the frame's copy flag, and with a structure parameter block the
+        // copy into the refraction target before its first draw.
+        let drawn_objects = || found.drawn.iter().filter_map(|i| match *i {
+            ListItem::Object { slot, .. } => object_draws.get(&slot),
+            ListItem::World(_) => None,
+        });
+        let sets_copied = drawn_objects().any(|o| o.sets_copied);
+        let copy_at = copy_point(drawn_objects().map(|o| (o.copies, o.draws.len())));
         // One range per structure item, one per object pass draw, as the
         // layer call's.
         let mut runs: Vec<LayerRun> = Vec::new();
@@ -854,7 +802,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
             LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
-        let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: Vec::new() };
+        let slots = match copy_at {
+            Some(_) => match crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET) {
+                Some(header) => vec![Some(d3d::ExternalSlot { header, written: true })],
+                None => {
+                    left.all("object_shader_flag_target");
+                    *run = Run::Refused;
+                    return None;
+                }
+            },
+            None => Vec::new(),
+        };
+        let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots };
         let pass = Box::new(LayerViewPass {
             ready: ready.clone(),
             objects: models,
@@ -868,13 +827,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             writes_depth: data.is_some_and(|d| d.writes_depth),
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
-            copy_at: None,
+            copy_at,
             // Layer 2's sorted runs are not the cull's: drawn unculled.
             camera: None,
             cull_camera: None,
             token: 0,
         });
-        let Some(reservation) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten() else {
+        // A pass writing the refraction target binds it as a slot, which
+        // no held packet carries.
+        let prepared = if copy_at.is_some() {
+            d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
+        } else {
+            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
+        };
+        let Some(reservation) = prepared.ok().flatten() else {
             left.all("reservation");
             *run = Run::Refused;
             return None;
@@ -886,6 +852,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 *run = Run::Refused;
                 return None;
             }
+        }
+        if sets_copied && mem.set_u8(TARGET_COPIED, 1).is_err() {
+            left.all("masks");
+            *run = Run::Refused;
+            return None;
         }
         reservation.commit();
         let slots = found.drawn.iter().map(|i| i.slot()).collect();
@@ -919,11 +890,15 @@ fn plan_objects<B: d3d::backend::Backend>(
     let read = ReadMemory(mem);
     // The render states the items' draws start from: the device's at the
     // layer call; in a run (`restore`) as the shader draw's restore of its
-    // cached implementation leaves them before the next entry, which the
-    // caller has checked moves nothing read elsewhere.
+    // cached implementation leaves them before the next entry. What the
+    // checks read outside the state array follows the restore too: the W
+    // buffer its `ZENABLE` sets, the stipple switch it pushes, the fog
+    // colour the structure's upload is compared with.
+    let restore = restore.unwrap_or(&[]);
     let device = |slot: u32| d.render_state(&read, slot);
-    let device_state = native_render::sorted_entries::after_restore(restore.unwrap_or(&[]), &device);
+    let device_state = native_render::sorted_entries::after_restore(restore, &device);
     let (entry, w_buffered) = crate::native_objects_glue::entry_states_with(d, mem, &device_state);
+    let w_buffered = crate::native_objects_glue::w_buffered_after(restore).unwrap_or(w_buffered);
     if !w_buffered {
         return all("object_w_buffer");
     }
@@ -979,22 +954,6 @@ fn plan_objects<B: d3d::backend::Backend>(
         // item's draw.
         let sets_copied = object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw)));
         let copies = sets_copied && item.flags.contains(PartFlags::STRUCTURE_PARAMETERS);
-        // In a run the commit sets no copy flag and makes no copy, and its
-        // pass binds no copy of the bound colour.
-        if restore.is_some() {
-            let why = if sets_copied {
-                Some("object_sorted_target")
-            } else if draws.iter().any(|d| d.view || d.scene_copy || (layer == 1 && d.texaccum)) {
-                Some("object_sorted_view")
-            } else {
-                None
-            };
-            if let Some(why) = why {
-                *outcomes.entry(why).or_default() += 1;
-                left.item(item.slot, why);
-                continue;
-            }
-        }
         if copies && crate::native_shadows_glue::target_header(mem, STRUCTURE_COPY_TARGET).is_none() {
             *outcomes.entry("object_shader_flag_target").or_default() += 1;
             left.item(item.slot, "object_shader_flag_target");
@@ -1003,7 +962,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         // Engine texture 3, the texture accumulation target, as layer 3's
         // objects bind it (`native_objects_glue::sampled_texaccum`); layer
         // 1, which draws into it, binds a copy of the bound colour made
-        // before each draw that samples it (`accumulation_segments`).
+        // before each draw that samples it (`layer_segments`).
         if draws.iter().any(|draw| draw.texaccum)
             && texaccum
                 .get_or_insert_with(|| match layer {
@@ -1034,7 +993,7 @@ fn plan_objects<B: d3d::backend::Backend>(
                 scene
                     .view_of_pass(pass)
                     .and_then(|v| v.structure_parameters)
-                    .is_some_and(|p| crate::native_objects_glue::structure_at_rest(d, mem, &p))
+                    .is_some_and(|p| crate::native_objects_glue::structure_at_rest_with(d, mem, &p, fog_words[6]))
             })
         {
             *outcomes.entry("object_shader_flag").or_default() += 1;
@@ -1053,7 +1012,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             left.item(item.slot, "object_stipple");
             continue;
         }
-        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple(d, mem));
+        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple_after(d, mem, restore));
         let Ok(rows) = crate::native_objects_glue::record_stipple(mem, device_stipple, item.key.record, faded) else {
             *outcomes.entry("object_fade").or_default() += 1;
             left.item(item.slot, "object_fade");
@@ -1490,9 +1449,9 @@ struct LayerViewPass {
 
 impl LayerViewPass {
     /// Whether the structure runs are culled on the GPU
-    /// ([`LayerViewPass::encoded_culled`]).
+    /// ([`LayerViewPass::encoded`]), whatever else the layer copies.
     fn culls(&self) -> bool {
-        self.world_runs().next().is_some() && self.cull_camera.is_some() && self.camera.is_some() && !self.samples_view()
+        self.world_runs().next().is_some() && self.cull_camera.is_some() && self.camera.is_some()
     }
 
     fn world_runs(&self) -> impl Iterator<Item = &[(Owner, u8)]> {
@@ -1509,15 +1468,16 @@ impl LayerViewPass {
         }).map(|(_, d)| d)
     }
 
-    /// Whether a draw samples the view's own target or the scene copy: the
-    /// pass is then recorded as commands with a copy of the bound colour
+    /// Whether a draw samples the view's own target, the scene copy or
+    /// layer 1's accumulation target, or the pass makes the frame's
+    /// structure target copy: it is then recorded as commands
     /// ([`LayerViewPass::encoded`]).
     fn samples_view(&self) -> bool {
         self.accumulates() || self.copy_at.is_some() || self.object_draws().any(|d| d.view || d.scene_copy)
     }
 
     /// Whether this is layer 1 and a draw samples the accumulation target
-    /// it draws into ([`accumulation_segments`]).
+    /// it draws into ([`layer_segments`]).
     fn accumulates(&self) -> bool {
         self.layer == 1 && self.object_draws().any(|d| d.texaccum)
     }
@@ -1544,16 +1504,8 @@ impl d3d::ExternalPass for LayerViewPass {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("layer view constants or W-buffer clip unavailable");
         }
-        // The structure target copy samples the colour, checked as it is
-        // recorded (`encoded_structure_copy`).
-        if self.samples_view() && self.copy_at.is_none() {
-            if self.world_runs().next().is_some() {
-                return Err("structure items in a layer whose objects sample the view");
-            }
-            if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(t.color, t.size) {
-                return Err("the bound colour cannot be copied for the view stages");
-            }
-        }
+        // What the commands copy is checked as they are recorded
+        // (`LayerViewPass::encoded`).
         if self.world_runs().next().is_some() {
             let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
             let mut guard = ready.gpu();
@@ -1593,34 +1545,37 @@ impl d3d::ExternalPass for LayerViewPass {
     fn record_encoded(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        if self.culls() {
-            return Some(self.encoded_culled(t, request));
-        }
-        if !self.samples_view() {
+        if !self.culls() && !self.samples_view() {
             return None;
-        }
-        if self.accumulates() {
-            return Some(self.encoded_accumulation(t, request));
-        }
-        if let Some(at) = self.copy_at {
-            return Some(self.encoded_structure_copy(t, request, at));
         }
         Some(self.encoded(t, request))
     }
 }
 
-/// Layer 1's draws split where each draw sampling the accumulation target
-/// starts a segment: the bound colour is copied before every segment that
-/// starts with one, so that draw reads the target as every draw before it
-/// left it, as the D3D path's draw reads the attachment it samples.
-/// `samples` is each draw's: whether it samples the target. A segment is
-/// whether it starts with a copy, and its draws.
-pub(crate) fn accumulation_segments(samples: impl IntoIterator<Item = bool>) -> Vec<(bool, std::ops::Range<usize>)> {
-    let mut out: Vec<(bool, std::ops::Range<usize>)> = Vec::new();
-    for (n, samples) in samples.into_iter().enumerate() {
+/// One render pass of a layer recorded as commands ([`layer_segments`]):
+/// whether the bound colour is copied before it, whether the frame's
+/// structure target copy is made before it, and its draws.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Segment {
+    pub copies_colour: bool,
+    pub copies_target: bool,
+    pub units: std::ops::Range<usize>,
+}
+
+/// A layer's draws (structure parts and object pass draws, in the list's
+/// order) split where a draw reads the bound colour as the draws before
+/// it left it: each draw sampling the view's own target or layer 1's
+/// accumulation target starts a segment the bound colour is copied
+/// before, as the D3D path's draw reads the attachment it samples, and
+/// the draw the frame's structure target copy is made before starts one.
+/// `units` is each draw's: whether it samples the colour, whether the copy
+/// is made before it.
+pub(crate) fn layer_segments(units: impl IntoIterator<Item = (bool, bool)>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    for (n, (samples, copy)) in units.into_iter().enumerate() {
         match out.last_mut() {
-            Some((_, range)) if !samples => range.end = n + 1,
-            _ => out.push((samples, n..n + 1)),
+            Some(s) if !samples && !copy => s.units.end = n + 1,
+            _ => out.push(Segment { copies_colour: samples, copies_target: copy, units: n..n + 1 }),
         }
     }
     out
@@ -1654,153 +1609,6 @@ fn load_pass<'a>(
 }
 
 impl LayerViewPass {
-    /// Layer 1's object runs sampling the accumulation target as commands:
-    /// their uniforms' writes, then per segment
-    /// ([`accumulation_segments`]) the bound colour copied when it starts
-    /// with a sampling draw and a render pass on the bound attachments,
-    /// the segment's draws binding the copy at the target's guest size.
-    fn encoded_accumulation(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
-        if self.world_runs().next().is_some() {
-            return Err("structure items in a layer whose objects sample the accumulation target");
-        }
-        if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(&t.color, t.size) {
-            return Err("the bound colour cannot be copied for the accumulation stages");
-        }
-        let target = self.texaccum.ok_or("texture accumulation target unavailable")?;
-        let view = self.view_inputs(t, request)?;
-        let draws: Vec<(u32, PlannedDraw)> = self.object_draws_with_models().cloned().collect();
-        if draws.iter().any(|(_, d)| d.view || d.scene_copy) {
-            return Err("view stages beside the accumulation target");
-        }
-        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
-        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
-        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
-            return Err("layer object geometry or material unavailable");
-        }
-        let copy = lit.view_copy(&t.device, &t.color, t.copy);
-        let sampled = native_render::object_program_gpu::Texaccum { view: &copy.view, guest_size: target.size };
-        let mut writes = Vec::new();
-        let mut segments = Vec::new();
-        let (mut ranges, mut count) = (0, 0);
-        for (copies, range) in accumulation_segments(draws.iter().map(|(_, d)| d.texaccum)) {
-            let out = lit.draws_with_view(
-                &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-                request.projection_factor(t.copy), &draws[range], Some(sampled), None, None,
-            )?;
-            let out = clip_packets(out, request, t.size)?;
-            for (dst, offset, bytes) in out.writes {
-                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
-                writes.push((src, at, dst, offset, bytes.len() as u64));
-            }
-            ranges += out.ranges;
-            count += out.packets.len();
-            segments.push((copies, out.packets));
-        }
-        let passes = segments.len();
-        let (color, depth) = (t.color.clone(), t.depth.clone());
-        let stencil = t.depth_format.has_stencil_aspect();
-        let (from, to, extent) = (copy.from, copy.to, copy.extent);
-        let commands = move |encoder: &mut wgpu::CommandEncoder| {
-            for (src, at, dst, offset, len) in &writes {
-                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
-            }
-            for (copies, packets) in &segments {
-                if *copies {
-                    encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), extent);
-                }
-                let mut pass = load_pass(encoder, &color, &depth, stencil);
-                // Checked when the packets were made: every pipeline
-                // built, no counted draw.
-                let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
-            }
-        };
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes, commands: Box::new(commands) })
-    }
-
-    /// The object runs as commands with the frame's structure target copy:
-    /// their uniforms' writes, the draws before `at` in a render pass on
-    /// the bound attachments, the bound colour downsampled into the
-    /// refraction target's own colour (the plan's slot 0, this target
-    /// copy's), then the rest in another pass. The copy holds the colour
-    /// as every draw before the item left it, as `0x0003bea0`'s does.
-    fn encoded_structure_copy(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest, at: usize,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
-        if self.world_runs().next().is_some() {
-            return Err("structure items in a layer whose objects copy the target");
-        }
-        if t.color.texture().format() != t.color_format || !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-            return Err("the bound colour cannot be sampled for the structure target copy");
-        }
-        let target = t.slots.first().and_then(Option::as_ref).ok_or("the refraction target unavailable")?;
-        let view = self.view_inputs(t, request)?;
-        let draws: Vec<(u32, PlannedDraw)> = self.object_draws_with_models().cloned().collect();
-        if at > draws.len() || draws.iter().any(|(_, d)| d.view || d.scene_copy) {
-            return Err("view stages beside the structure target copy");
-        }
-        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
-        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
-        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
-            return Err("layer object geometry or material unavailable");
-        }
-        let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
-        let copy = lit.structure_copy(&t.color, &target.attachment, target.format);
-        let mut writes = Vec::new();
-        let mut segments = Vec::new();
-        let (mut ranges, mut count) = (0, 0);
-        for range in [0..at, at..draws.len()] {
-            if range.is_empty() {
-                segments.push(Vec::new());
-                continue;
-            }
-            let out = lit.draws_with_view(
-                &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-                request.projection_factor(t.copy), &draws[range], texaccum, None, None,
-            )?;
-            let out = clip_packets(out, request, t.size)?;
-            for (dst, offset, bytes) in out.writes {
-                let (src, from) = t.uploads.stage(&t.device, &t.queue, &bytes);
-                writes.push((src, from, dst, offset, bytes.len() as u64));
-            }
-            ranges += out.ranges;
-            count += out.packets.len();
-            segments.push(out.packets);
-        }
-        let passes = segments.iter().filter(|p| !p.is_empty()).count() + 1;
-        let (color, depth) = (t.color.clone(), t.depth.clone());
-        let stencil = t.depth_format.has_stencil_aspect();
-        let device = t.device.clone();
-        let commands = move |encoder: &mut wgpu::CommandEncoder| {
-            for (src, at, dst, offset, len) in &writes {
-                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
-            }
-            for (n, packets) in segments.iter().enumerate() {
-                if n == 1 {
-                    copy.record(&device, encoder);
-                }
-                if packets.is_empty() {
-                    continue;
-                }
-                let mut pass = load_pass(encoder, &color, &depth, stencil);
-                // Checked when the packets were made: every pipeline
-                // built, no counted draw.
-                let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
-            }
-        };
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count + 1, passes, commands: Box::new(commands) })
-    }
-
-    fn object_draws_with_models(&self) -> impl Iterator<Item = &(u32, PlannedDraw)> {
-        self.runs.iter().flat_map(|r| match r {
-            LayerRun::Objects(draws) => draws.as_slice(),
-            LayerRun::World(_) => &[][..],
-        })
-    }
-
     /// The view inputs of this recording.
     fn view_inputs(&self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest) -> Result<ViewInputs, &'static str> {
         let constants = self.view.ok_or("layer view constants unavailable")?;
@@ -1816,137 +1624,18 @@ impl LayerViewPass {
         })
     }
 
-    /// The object runs as commands: their uniforms' writes, the bound
-    /// colour copied into this target copy's scratch texture, then one
-    /// render pass on the bound attachments (loaded and stored) with the
-    /// draws in the list's order, each view stage binding the copy, its
-    /// coordinates texels of the target's guest size. The copy holds the
-    /// target as the draws before the layer left it, as the D3D path's
-    /// first item reads it.
-    fn encoded(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
-        if self.world_runs().next().is_some() {
-            return Err("structure items in a layer whose objects sample the view");
-        }
-        if t.color.texture().format() != t.color_format || !LitObjects::can_copy_view(&t.color, t.size) {
-            return Err("the bound colour cannot be copied for the view stages");
-        }
-        let view = self.view_inputs(t, request)?;
-        let draws: Vec<(u32, PlannedDraw)> = self
-            .runs
-            .iter()
-            .flat_map(|r| match r {
-                LayerRun::Objects(draws) => draws.as_slice(),
-                LayerRun::World(_) => &[][..],
-            })
-            .cloned()
-            .collect();
-        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
-        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
-        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
-            return Err("layer object geometry or material unavailable");
-        }
-        let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
-        let needs_view = draws.iter().any(|(_, d)| d.view);
-        let needs_scene = draws.iter().any(|(_, d)| d.scene_copy);
-        if needs_scene && !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-            return Err("the bound colour cannot be sampled for the scene copy");
-        }
-        let copy = needs_view.then(|| lit.view_copy(&t.device, &t.color, t.copy));
-        // Once for the handler's call: its layers 18 and 21 draw from one
-        // downsample, made before they draw (the guest's `0x000352e0`).
-        let scene = needs_scene.then(|| lit.scene_copy(&t.device, &t.color, request.surface_size, t.copy));
-        let sampled = copy
-            .as_ref()
-            .map(|c| native_render::object_program_gpu::Texaccum { view: &c.view, guest_size: request.surface_size });
-        let scene_sampled = scene.as_ref().map(|c| native_render::object_program_gpu::Texaccum {
-            view: &c.view,
-            guest_size: native_render::object_program::SCENE_COPY_SIZE,
-        });
-        let out = lit.draws_with_view(
-            &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-            request.projection_factor(t.copy), &draws, texaccum, sampled, scene_sampled,
-        )?;
-        let out = clip_packets(out, request, t.size)?;
-        let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
-            .writes
-            .into_iter()
-            .map(|(dst, offset, bytes)| {
-                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
-                (src, at, dst, offset, bytes.len() as u64)
-            })
-            .collect();
-        let packets = out.packets;
-        let (ranges, count) = (out.ranges, packets.len());
-        let (color, depth) = (t.color.clone(), t.depth.clone());
-        let has_stencil = t.depth_format.has_stencil_aspect();
-        let copy = copy.map(|c| (c.from, c.to, c.extent));
-        let device = t.device.clone();
-        let commands = move |encoder: &mut wgpu::CommandEncoder| {
-            for (src, at, dst, offset, len) in &writes {
-                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
-            }
-            if let Some(scene) = &scene {
-                scene.record(&device, encoder);
-            }
-            if let Some((from, to, extent)) = &copy {
-                encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), *extent);
-            }
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("native layer with view copy"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                    stencil_ops: has_stencil
-                        .then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            // Checked when the packets were made: every pipeline built, no
-            // counted draw.
-            let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
-        };
-        let blit = usize::from(needs_scene);
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count + blit, passes: 1 + blit, commands: Box::new(commands) })
-    }
-
+    /// The packets of `runs`, in order: the structure's from the world's
+    /// layer set, the objects' with the accumulation target's level.
     fn record(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        let constants = self.view.ok_or("layer view constants unavailable")?;
-        if self.w_clip.is_none() {
-            return Err("layer W-buffer clip unavailable");
-        }
-        let view = ViewInputs {
-            constants: request.view_constants(t.copy, constants),
-            guest_size: request.surface_size,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: self.w_clip,
-        };
+        let view = self.view_inputs(t, request)?;
+        let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
         let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
         for run in &self.runs {
             let draws = match run {
-                LayerRun::World(selected) => {
-                    let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
-                    let mut guard = ready.gpu();
-                    let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
-                    gpu.layer_draws(
-                        self.layer, &t.device, t.color_format, t.depth_format, t.size, selected, &view,
-                        &self.fogs, &self.stencil, &self.samples,
-                    )?
-                }
-                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws)?,
+                LayerRun::World(selected) => self.world_run(t, &view, selected)?,
+                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws, texaccum, None, None)?,
             };
             out.ranges += draws.ranges;
             out.packets.extend(draws.packets);
@@ -1956,10 +1645,28 @@ impl LayerViewPass {
         clip_packets(out, request, t.size)
     }
 
-    /// One run of object pass draws, from the models.
+    /// One run of structure parts, from the world's layer set, unculled.
+    fn world_run(
+        &self, t: &d3d::backend::ExternalAttachments, view: &ViewInputs, selected: &[(Owner, u8)],
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
+        let mut guard = ready.gpu();
+        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+        gpu.layer_draws(
+            self.layer, &t.device, t.color_format, t.depth_format, t.size, selected, view,
+            &self.fogs, &self.stencil, &self.samples,
+        )
+    }
+
+    /// One run of object pass draws, from the models, with the
+    /// accumulation target, the view copy and the scene copy each binds.
+    #[allow(clippy::too_many_arguments)]
     fn object_run(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest, view: &ViewInputs,
         draws: &[(u32, PlannedDraw)],
+        texaccum: Option<native_render::object_program_gpu::Texaccum<'_>>,
+        view_copy: Option<native_render::object_program_gpu::Texaccum<'_>>,
+        scene_copy: Option<native_render::object_program_gpu::Texaccum<'_>>,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
         let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
@@ -1967,72 +1674,187 @@ impl LayerViewPass {
         if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
             return Err("layer object geometry or material unavailable");
         }
-        lit.draws(
+        lit.draws_with_view(
             &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, view,
-            request.projection_factor(t.copy), draws, crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
+            request.projection_factor(t.copy), draws, texaccum, view_copy, scene_copy,
         )
     }
 
-    /// The runs as commands, the structure culled on the GPU
-    /// (`GpuWorld::culled_layer_draws`): the runs' uniform writes copied
-    /// in draw order, the layer cull by `cull_camera` (and, where this
-    /// view's layer 3 built one on this target, its pyramid), then one
-    /// render pass on the bound attachments (loaded and kept) with every
-    /// run's packets in the list's order.
-    fn encoded_culled(
+    /// The layer as commands: their uniforms' writes; where the structure
+    /// is culled on the GPU ([`LayerViewPass::culls`]), the layer cull by
+    /// `cull_camera` (and, where this view's layer 3 built one on this
+    /// target, its pyramid, `GpuWorld::culled_layer_draws`); the scene
+    /// copy once (a sorted handler's call, the guest's `0x000352e0` at its
+    /// entry); then per segment ([`layer_segments`]) the bound colour
+    /// copied when it starts with a draw sampling the view's own target or
+    /// layer 1's accumulation target, the frame's structure target copy
+    /// downsampled into the refraction target (the plan's slot 0) when it
+    /// starts at [`LayerViewPass::copy_at`], and a render pass on the bound
+    /// attachments with the segment's structure and object draws in the
+    /// list's order. A segment starts only at an object draw, so each
+    /// structure run lies in one.
+    fn encoded(
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        use native_render::object_program_gpu::Texaccum;
+        if t.color.texture().format() != t.color_format {
+            return Err("the bound colour's format is not the pass's");
+        }
         let view = self.view_inputs(t, request)?;
-        let (camera, cull_camera) = self.camera.zip(self.cull_camera).ok_or("layer camera unavailable")?;
-        let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
-        let lens = native_render::camera::display_camera(camera, request.projection_factor(t.copy));
-        let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
-        let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
-        let world_runs: Vec<&[(Owner, u8)]> = self.world_runs().collect();
-        let (world, dispatch) = {
+        // Per draw (each structure part, each object pass draw): whether it
+        // reads the bound colour, whether the structure copy is made
+        // before it.
+        let mut units: Vec<(bool, bool)> = Vec::new();
+        let mut object = 0usize;
+        for run in &self.runs {
+            match run {
+                LayerRun::World(parts) => units.extend(parts.iter().map(|_| (false, false))),
+                LayerRun::Objects(draws) => {
+                    for (_, d) in draws {
+                        units.push((d.view || (self.layer == 1 && d.texaccum), self.copy_at == Some(object)));
+                        object += 1;
+                    }
+                }
+            }
+        }
+        let segments = layer_segments(units.iter().copied());
+        let copies_colour = segments.iter().any(|s| s.copies_colour);
+        let needs_scene = self.object_draws().any(|d| d.scene_copy);
+        if copies_colour && !LitObjects::can_copy_view(&t.color, t.size) {
+            return Err("the bound colour cannot be copied for the view stages");
+        }
+        if (needs_scene || self.copy_at.is_some()) && !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+            return Err("the bound colour cannot be sampled for a snapshot");
+        }
+        let target = match self.copy_at {
+            Some(_) => Some(t.slots.first().and_then(Option::as_ref).ok_or("the refraction target unavailable")?),
+            None => None,
+        };
+        let (mut copy, mut scene, mut structure) = (None, None, None);
+        if copies_colour || needs_scene || target.is_some() {
+            let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
+            let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
+            let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
+            if copies_colour {
+                copy = Some(lit.view_copy(&t.device, &t.color, t.copy));
+            }
+            // Once for the handler's call: its layers 18 and 21 draw from
+            // one downsample, made before they draw.
+            if needs_scene {
+                scene = Some(lit.scene_copy(&t.device, &t.color, request.surface_size, t.copy));
+            }
+            if let Some(target) = target {
+                structure = Some(lit.structure_copy(&t.color, &target.attachment, target.format));
+            }
+        }
+        let texaccum = match (&copy, self.accumulates()) {
+            (Some(c), true) => {
+                let target = self.texaccum.ok_or("texture accumulation target unavailable")?;
+                Some(Texaccum { view: &c.view, guest_size: target.size })
+            }
+            _ => crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
+        };
+        let view_copy = copy.as_ref().filter(|_| self.object_draws().any(|d| d.view))
+            .map(|c| Texaccum { view: &c.view, guest_size: request.surface_size });
+        let scene_copy = scene.as_ref().map(|c| Texaccum { view: &c.view, guest_size: native_render::object_program::SCENE_COPY_SIZE });
+        // The structure runs culled at once, in order, with the dispatch
+        // recorded before every pass.
+        let (mut culled, dispatch) = if self.culls() {
+            let (camera, cull_camera) = self.camera.zip(self.cull_camera).ok_or("layer camera unavailable")?;
+            let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
+            let lens = native_render::camera::display_camera(camera, request.projection_factor(t.copy));
+            let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
+            let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
+            let world_runs: Vec<&[(Owner, u8)]> = self.world_runs().collect();
             let mut guard = ready.gpu();
             let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
-            gpu.culled_layer_draws(
+            let (world, dispatch) = gpu.culled_layer_draws(
                 self.layer, &t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size, &world_runs, &view,
                 &self.fogs, &self.stencil, &self.samples, &cull_camera, occlusion,
-            )?
+            )?;
+            (Some(world.into_iter()), Some(dispatch))
+        } else {
+            (None, None)
         };
-        let mut world = world.into_iter();
-        let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
-        for run in &self.runs {
-            let draws = match run {
-                LayerRun::World(_) => world.next().ok_or("a structure run drew nothing")?,
-                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws)?,
-            };
-            out.ranges += draws.ranges;
-            out.packets.extend(draws.packets);
-            out.discards |= draws.discards;
-            out.writes.extend(draws.writes);
+        let mut writes = Vec::new();
+        let mut recorded = Vec::with_capacity(segments.len());
+        let (mut ranges, mut count) = (0, 0);
+        for s in &segments {
+            let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
+            // Each run's draws within the segment, by their unit offsets.
+            let mut at = 0usize;
+            for run in &self.runs {
+                let len = match run {
+                    LayerRun::World(parts) => parts.len(),
+                    LayerRun::Objects(draws) => draws.len(),
+                };
+                let (from, to) = (at.max(s.units.start), (at + len).min(s.units.end));
+                let first = at;
+                at += len;
+                if from >= to {
+                    continue;
+                }
+                let draws = match run {
+                    LayerRun::World(parts) => {
+                        if (from, to) != (first, first + len) {
+                            return Err("a structure run split by a segment");
+                        }
+                        match culled.as_mut() {
+                            Some(world) => world.next().ok_or("a structure run drew nothing")?,
+                            None => self.world_run(t, &view, parts)?,
+                        }
+                    }
+                    LayerRun::Objects(draws) => {
+                        self.object_run(t, request, &view, &draws[from - first..to - first], texaccum, view_copy, scene_copy)?
+                    }
+                };
+                out.ranges += draws.ranges;
+                out.packets.extend(draws.packets);
+                out.discards |= draws.discards;
+                out.writes.extend(draws.writes);
+            }
+            let out = clip_packets(out, request, t.size)?;
+            if out.discards {
+                return Err("a discarding draw in a layer recorded as commands");
+            }
+            for (dst, offset, bytes) in out.writes {
+                let (src, from) = t.uploads.stage(&t.device, &t.queue, &bytes);
+                writes.push((src, from, dst, offset, bytes.len() as u64));
+            }
+            ranges += out.ranges;
+            count += out.packets.len();
+            recorded.push((s.copies_colour, s.copies_target, out.packets));
         }
-        let out = clip_packets(out, request, t.size)?;
-        let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
-            .writes
-            .into_iter()
-            .map(|(dst, offset, bytes)| {
-                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
-                (src, at, dst, offset, bytes.len() as u64)
-            })
-            .collect();
-        let packets = out.packets;
-        let (ranges, count) = (out.ranges, packets.len());
+        let snapshots = usize::from(scene.is_some()) + usize::from(structure.is_some());
+        let passes = recorded.len() + snapshots;
         let (color, depth) = (t.color.clone(), t.depth.clone());
         let stencil = t.depth_format.has_stencil_aspect();
+        let device = t.device.clone();
+        let copy = copy.map(|c| (c.from, c.to, c.extent));
         let commands = move |encoder: &mut wgpu::CommandEncoder| {
             for (src, at, dst, offset, len) in &writes {
                 encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
             }
-            dispatch.record(encoder);
-            let mut pass = load_pass(encoder, &color, &depth, stencil);
-            // Checked when the packets were made: every pipeline bound, no
-            // counted draw.
-            let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+            if let Some(dispatch) = &dispatch {
+                dispatch.record(encoder);
+            }
+            if let Some(scene) = &scene {
+                scene.record(&device, encoder);
+            }
+            for (copies_colour, copies_target, packets) in &recorded {
+                if *copies_colour && let Some((from, to, extent)) = &copy {
+                    encoder.copy_texture_to_texture(from.as_image_copy(), to.as_image_copy(), *extent);
+                }
+                if *copies_target && let Some(structure) = &structure {
+                    structure.record(&device, encoder);
+                }
+                let mut pass = load_pass(encoder, &color, &depth, stencil);
+                // Checked when the packets were made: every pipeline
+                // built, no counted draw.
+                let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
+            }
         };
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) })
+        Ok(d3d::backend::ExternalEncoded { ranges, draws: count + snapshots, passes, commands: Box::new(commands) })
     }
 }
 
@@ -2111,7 +1933,7 @@ mod restore_tests {
 
 #[cfg(test)]
 mod accumulation_tests {
-    use super::accumulation_segments;
+    use super::{Segment, layer_segments};
 
     /// Each draw sampling the accumulation target starts a segment with a
     /// copy of the bound colour, so it reads every draw before it; the
@@ -2119,10 +1941,16 @@ mod accumulation_tests {
     /// that sample nothing take no copy.
     #[test]
     fn each_draw_sampling_the_accumulation_target_reads_a_copy_made_just_before_it() {
-        let got = accumulation_segments([false, false, true, false, true, true, false]);
-        assert_eq!(got, [(false, 0..2), (true, 2..4), (true, 4..5), (true, 5..7)]);
-        assert_eq!(accumulation_segments([true]), [(true, 0..1)]);
-        assert!(accumulation_segments([]).is_empty());
+        let seg = |copies_colour, copies_target, units| Segment { copies_colour, copies_target, units };
+        let got = layer_segments([false, false, true, false, true, true, false].map(|s| (s, false)));
+        assert_eq!(got, [seg(false, false, 0..2), seg(true, false, 2..4), seg(true, false, 4..5), seg(true, false, 5..7)]);
+        assert_eq!(layer_segments([(true, false)]), [seg(true, false, 0..1)]);
+        assert!(layer_segments([]).is_empty());
+        // The structure target copy starts a segment of its own, and a
+        // draw that samples there takes both.
+        let got = layer_segments([(false, false), (false, true), (false, false), (true, false)]);
+        assert_eq!(got, [seg(false, false, 0..1), seg(false, true, 1..3), seg(true, false, 3..4)]);
+        assert_eq!(layer_segments([(true, true)]), [seg(true, true, 0..1)]);
     }
 }
 
@@ -2157,31 +1985,5 @@ mod target_copy_tests {
         assert_eq!(STRUCTURE_COPY_TARGET, 0x16, "0x000352e0(0x16, 1) at 0x0003bed4");
     }
 
-    /// A run's objects plan with the restore over the state array; a
-    /// restore that changes a state their checks read elsewhere (here the
-    /// stencil function) keeps them, one that writes the value the device
-    /// already holds or a state of the array alone does not.
-    #[test]
-    fn a_restore_moving_a_state_read_outside_the_array_keeps_a_runs_objects() {
-        use gfx::state::RenderStateType as R;
-        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-        let stencil = table.canonical_to_guest(R::StencilFunc.index()).expect("a guest slot");
-        let blend = table.canonical_to_guest(R::AlphaBlendEnable.index()).expect("a guest slot");
-        assert!(crate::native_objects_glue::read_outside_states().contains(&stencil));
-        let device = |slot: u32| Some(if slot == stencil { 8 } else { 0 });
-        assert!(restore_moves_outside(&[(stencil, 4)], &device));
-        assert!(!restore_moves_outside(&[(stencil, 8)], &device), "the value the device holds");
-        assert!(!restore_moves_outside(&[(blend, 1)], &device), "in the array: overlaid");
-        assert!(!restore_moves_outside(&[], &device), "nothing cached");
-    }
 
-    /// Beside structure draws, or another copy of the bound colour, an
-    /// item that copies keeps its guest draw under a cause of its own.
-    #[test]
-    fn an_item_that_copies_beside_structure_or_another_colour_copy_is_named() {
-        assert_eq!(copy_beside(true, false), Some("object_shader_flag_target_structure"));
-        assert_eq!(copy_beside(true, true), Some("object_shader_flag_target_structure"));
-        assert_eq!(copy_beside(false, true), Some("object_shader_flag_target_view"));
-        assert_eq!(copy_beside(false, false), None);
-    }
 }
