@@ -560,13 +560,47 @@ one entry per function):
 | `185be0` | player-control update: the unbound entry, which the phantom seats take, and every segment from the first look-curve return on; the bound controller's device reading stays guest |
 | `1505f0`, `150790`, `c6de0` | action, neutral and unit control packet builders |
 | `13a838` | HUD per-seat update |
-| `1a50a0`, `1a66f0` | aim-assist cone, target comparator |
+| `1a66f0` | target comparator |
 | `16e5e0` | observer resource walk |
 | `1a5370`, `1a4900`, `1a4c00` | target search, follow update, shot aim: proven on the disc by the shadow arm rather than the synthetic differential |
 
 The entries install as the shadow's guest-authoritative arm: `shadow.enable`
 on, the original answers and each body is checked against it on a copy;
 checks off, the bodies answer. The switch retires `native_observer_camera`.
+
+*The aim-assist cone.* `1a50a0` is not a seat entry. The kernel
+`sim-objects/src/aim_assist.rs` is the cone and its three callees (the zoom
+magnification `101090`, the tracking test `1011d0`, the acquisition test
+`101160`) as plain Rust over Rust-owned data. Only the zoom's x87 sequence
+around the image's `pow` comes from the caller (`Magnify`), run on the x87
+model.
+
+| Data | Owner | Lifetime |
+|---|---|---|
+| The unit's two slots, each weapon's cone, class, flags and zoom range, the primary's trigger states and kinds | `Input` | copied from the guest per call |
+| The image's 1.0, the x87 state the zoom's `pow` runs on | `Input`, the arm's x87 model | per call |
+
+`engine::sim_seats::aim::arm` runs it as a shadow arm at each `1a50a0`
+entry, behind `impl.sim.aim-assist` (off; installed by
+`sim-bridge/src/present.rs`):
+
+```
+entry -> predict -> declined?  -> guest answers                  (declined[float, triggers, fault])
+                 -> unproven or slot % 64 == 0
+                               -> guest answers, compare at return (checked, matched, mismatched)
+                 -> else       -> Rust answers: record, al, eax, ecx, edx, xmm0-3, x87, ret 4 (answered)
+```
+
+An answer leaves what retail leaves except the arithmetic flags, the x87
+last-instruction pointers and the dead stack below the return: `ecx` is the
+first bend (retail's `push ecx` slot holds it), `eax` and `edx` the values
+the exit path last loaded. Proof is 4096 matches with no mismatch, per map;
+a mismatch hands every call back to the guest until the next map.
+`sim.arms` reports it as `seats.aim`. `aim_assist_matches_lifted`
+(`engine/tests/sim_seats_differential.rs`) runs the arm's applied answer
+against the lifted original with its real callees, `pow` included. The
+register-level port stays as the differential oracle
+`sim_seats::PARAMS_ORACLE`.
 
 `observer-resources` (the trim that spares the headless host most of the
 prediction walk) stays on by default until the seats are promoted. With the
@@ -823,6 +857,21 @@ with the record's bytes reserved below the call's stack); a Rust phase is a
 body in the driver. Every phase is still a guest call today. The in-place
 call that avoids the unwind per phase is a later speed-up, not a
 prerequisite.
+
+**Presentation phases.** Phases 26 (first person `0x165dc1`), 28 (HUD
+`0x1917b2`) and 29 (the camera neighbourhood `0x16f200`) are the seats'
+views (`impl.sim.present`, on; `Present::LocalOnly`):
+
+| Local users mapped | The three phases | Their random draws |
+|---|---|---|
+| none (phantoms, hosts) | not called; 0 calls and 0 ns in the ledger | none |
+| one or more | called in retail order | from `PRESENT_SEEDS`, the presentation's own copy of both shared seeds `[0x4e7408]` `+0` and `+4`, swapped in before each phase and the sim's put back after |
+
+So the sim's draws, and the hash, are the same with 0 and 4 views
+(`hash_equal_with_0_and_4_views`, `sim-bridge/src/present.rs`). The stream
+starts as the sim's seeds, lives for the process and is not saved. A phase
+whose seed words do not read runs on the sim's seeds, counted by
+`sim_tick::unisolated`.
 
 The hooks on `GAME_TICK` run as before: the driver takes the original's place
 in the chain, so each `observe_before`, `before`, `after` and

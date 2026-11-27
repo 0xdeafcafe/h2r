@@ -15,6 +15,11 @@
 //! generated code, and the unbound path the phantoms take is the body's
 //! entry.
 //!
+//! The aim-assist cone `1a50a0` is not a seat: the idiomatic kernel
+//! `sim_objects::aim_assist` answers it through [`aim::arm`], and its
+//! register-level port stays as the differential oracle
+//! [`PARAMS_ORACLE`].
+//!
 //! The bodies replace `sim.native_observer_camera` and
 //! `sim.observer-resources`; those switches are gone and the observer
 //! camera stays as the `oracle.observer_camera` test oracle
@@ -69,6 +74,16 @@ fn params(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
     }
     aim::params(c, g, pc).map(Some)
 }
+
+/// The aim-assist cone's register-level port: the differential oracle of
+/// `1a50a0`. The point itself belongs to the kernel arm [`aim::arm`]
+/// (`impl.sim.aim-assist`), so it is not one of the [`SEATS`].
+pub const PARAMS_ORACLE: Seat = Seat {
+    point: &points::AIM_ASSIST_PARAMS,
+    name: "sim.seats.aim_assist_params",
+    sites: aim::SITES,
+    run: params,
+};
 
 pub const SEATS: &[Seat] = &[
     Seat {
@@ -130,12 +145,6 @@ pub const SEATS: &[Seat] = &[
         name: "sim.seats.shot_aim",
         sites: aim::SHOT_SITES,
         run: shot,
-    },
-    Seat {
-        point: &points::AIM_ASSIST_PARAMS,
-        name: "sim.seats.aim_assist_params",
-        sites: aim::SITES,
-        run: params,
     },
     Seat {
         point: &points::OBSERVER_RESULT,

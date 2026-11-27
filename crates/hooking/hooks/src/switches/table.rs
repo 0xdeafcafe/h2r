@@ -110,6 +110,8 @@ pub const TABLE: &[Switch] = &[
         "effects, particles, contrails and decals (engine::sim_effects): on in the lane that lands it, then deleted"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
         "ticks with no local user skip the presentation phases (sim-bridge/src/present.rs); h2 sim diff of lockout-2v2 is identical over 9000 ticks"),
+    sw("impl.sim.aim-assist", Off, "sim", "2026-11-27",
+        "the aim-assist cone 1a50a0 as the sim-objects kernel's shadow arm (sim-bridge/src/present.rs): promote after h2 sim diff parity and seats.aim clean"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.effects-parts", Off, "sim", "2026-11-27",

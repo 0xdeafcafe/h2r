@@ -11,6 +11,7 @@
 //! guest call or a tick.
 #![deny(clippy::disallowed_methods)]
 
+pub mod aim_assist;
 pub mod damage;
 pub mod defs;
 pub mod events;
