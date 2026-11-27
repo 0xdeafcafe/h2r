@@ -428,12 +428,24 @@ pub fn build_with(
             specs,
             cut_to_fit: true,
         });
-        let built = firefight_kit::ground::build_with(
+        // The Elite's behaviour rows are the disc's campaign Elite's
+        // (`firefight_kit::ELITE_DONOR_MAP`, the same on every retail
+        // disc); a disc without that map leaves them to the class donors,
+        // and with none the build is refused by name.
+        let elite_bytes = lookup(firefight_kit::ELITE_DONOR_MAP)
+            .map(|source| source_bytes(firefight_kit::ELITE_DONOR_MAP, &source, false))
+            .transpose()?;
+        let elite = elite_bytes.as_deref().map(|bytes| firefight_kit::Donor {
+            name: firefight_kit::ELITE_DONOR_MAP,
+            bytes,
+        });
+        let built = firefight_kit::ground::build_with_elite(
             &output,
             &doc.base.map,
             &labels,
             &ground::recipe(&recipe),
             classes.as_ref(),
+            elite.as_ref(),
         )
         .map_err(|e| Error::Ground(format!("{e:#}")))?;
         report = Some(GroundReport {

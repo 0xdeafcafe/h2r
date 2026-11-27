@@ -177,3 +177,32 @@ fn the_row_is_hidden_without_open_starts() {
     // Nothing is preferred on a map with no open start.
     assert!(spawn_pick(true, &kit(2, 0), &[0], 0).is_empty());
 }
+
+/// An invented unit, graph and tag table for the seat test: the graph has
+/// the modes `labels`.
+fn seat_guest(labels: &[u32], any_seat: u8) -> (engine::testing::FakeGuest, u32) {
+    let mut g = engine::testing::FakeGuest::new();
+    let (unit, state_offset, graph_tag, modes, table) = (0x10_0000, 0x300u16, 0x20_0000, 0x21_0000, 0x30_0000);
+    g.put_u8(unit + ANY_SEAT, any_seat)
+        .put_u16(unit + ANIMATION_STATE, state_offset)
+        .put_u32(unit + u32::from(state_offset) + STATE_GRAPH, 0xe000_0005)
+        .put_u32(TAG_TABLE, table)
+        .put_u32(table + 5 * 16 + 8, graph_tag)
+        .put_u32(graph_tag + GRAPH_MODES, labels.len() as u32)
+        .put_u32(graph_tag + GRAPH_MODES + 4, modes);
+    for (i, label) in labels.iter().enumerate() {
+        g.put_u32(modes + i as u32 * MODE_STRIDE, *label);
+    }
+    (g, unit)
+}
+
+/// The rider takes a seat only when its graph has the seat's mode, unless
+/// it takes any seat: the test the engine makes before it seats anyone.
+#[test]
+fn a_rider_takes_a_seat_its_graph_has_a_mode_for() {
+    let (g, unit) = seat_guest(&[0x0a00_0001, 0x0a00_0002], 0);
+    assert_eq!(takes_seat(&g, unit, 0x0a00_0002), Some(true));
+    assert_eq!(takes_seat(&g, unit, 0x0a00_0003), Some(false), "no such mode");
+    let (g, unit) = seat_guest(&[], 1);
+    assert_eq!(takes_seat(&g, unit, 0x0a00_0003), Some(true), "takes any seat");
+}
