@@ -1,6 +1,6 @@
 # The menus, the fade and the blur on the overlay
 
-Status: Partly built. Containers, plain bitmap widgets, supported text, lists and buttons, the fade, the bars, the loading screen and the blur under a dialog draw from the overlay; meters, scrolling bitmaps and unsupported widget states keep the guest's draws.
+Status: Partly built. Containers, plain bitmap widgets, meters, supported text, lists and buttons, the fade, the bars, the loading screen and the blur under a dialog draw from the overlay; scrolling bitmaps and unsupported widget states keep the guest's draws.
 Code: `crates/rewrites/render-bridge/src/native_hud/ui_overlay.rs`, `ui_overlay/bitmaps.rs`, `modal_blur.rs`, `crates/extensions/game/src/hud_overlay.rs`, `modal_blur_glue.rs`, `crates/rewrites/scene-extract/src/ui` (`collect`, `compare`, `sort_widgets`, `read_widget`, `draw_list`), `crates/rewrites/native-render/src/ui_gpu.rs`, `glow.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -60,9 +60,8 @@ The remaining guest draws count by reason in `render.stats`:
 
 | Reason | Draw | What keeps it on the guest |
 |---|---|---|
-| `bitmap_meter` | `0x002b07e2` | the meter's own quads |
 | `bitmap_scroll` | `0x00235f31` | the scrolling quad's coordinates from the widget's `+0x7c` state |
-| `bitmap_state` | `0x002b0565` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off |
+| `bitmap_state` | `0x002b0565`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
 | `text` | text or button label | interface overrides, reveal updates, substitution, custom tabs or an unsupported transform |
 | `model` | model scene | active nested view, light processing or unresolved selection semantics |
 | `draw` | list, button or custom draw | unsupported class-specific lookup, placement or guest side effects |
@@ -80,7 +79,19 @@ The bitmap widget's draw `0x002b0540` (Code, `h2 disasm`) draws nothing without 
 
 For a record of one image and no colour pointers, `0x00052040` writes a two-stage combiner: stage 0 multiplies the image by its first constant, stage 1 multiplies that by the vertex colour, and the final combiner outputs it. The constant is the colour `[0x00468710]` points at with alpha 1; when that colour is white, the combiner is `Combiner::Texture`. The begin's screen transform with its half pixel puts a guest pixel coordinate on the overlay's pixel edge of the same number.
 
-`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or refuses the widget: a meter, a scrolling bitmap, or any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads, or when the image does not decode, the run is not placed and the game draws it.
+### Meters
+
+A meter's draw `0x002b07e2` is one filled rectangle (`ui_overlay::bitmaps::meter`):
+
+| Step | Code | What it does |
+|---|---|---|
+| Colour | `0x00148350`, `0x001482e8` | the shared UI globals' meter colour (`wigl` `+0x50`: alpha, red, green, blue), the `wigl` named by the interface's `wgtz` for the scenario's type (`scnr` `+0x10`: `matg` interface `+0x8c`, `+0x94`, `+0x84`); each times `[0x0045dc38]`, truncated by `_ftol2` `0x00322b0c` (not rounded, as the bitmap's tint is) and packed the same way; each channel `[0x0045dc38]` alone with no globals. The widget's alpha and tint do not enter it |
+| Rectangle | `0x0022ea81` | as step 4, then each edge truncated (`cvttss2si`) and the view's offset added in 16 bits, Y as it is (not negated) |
+| Draw | `0x00147cbc`, `0x0013c050` | nothing with no scenario; else four corners from (left, top) clockwise, texture coordinate 0, the colour on each, and `0x0023675a`'s screen-quad record with blend mode 0 and image 1 of the bitmap the rasterizer globals name (`matg` `+0x108`, its first element's reference at `+0x60`); `0x00052040` draws it with no residency check and no image count check |
+
+The overlay draws it as a `UiContent::Bitmap` of that image at texel 0. An image that is not resident, a bitmap with one image, or the debug labels on is `bitmap_state`.
+
+`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or refuses the widget: a scrolling bitmap, or any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads, or when the image does not decode, the run is not placed and the game draws it.
 
 ## The fade, the bars and the loading screen
 

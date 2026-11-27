@@ -737,7 +737,7 @@ mod tests {
     }
 
     /// A bitmap widget lists as the quad its draw makes, in a run of its
-    /// own; a meter is the game's, counted by its reason.
+    /// own; a scrolling one is the game's, counted by its reason.
     #[test]
     fn a_bitmap_widget_is_claimed_with_its_quad() {
         use bitmaps::tests::{DATUM, DEF, VIEW, WIDGET, bitmap_widget};
@@ -766,13 +766,44 @@ mod tests {
                 image: 1
             }
         );
-        mem.w(DEF, 4);
+        mem.w(DEF + 0x14, 0.5f32.to_bits());
         let (claim, refused) = plan(&mem, &list);
         assert!(claim.runs.is_empty());
-        assert_eq!(refused, [(0, MenuRefusal::Bitmap(bitmaps::Refusal::Meter))]);
+        assert_eq!(refused, [(0, MenuRefusal::Bitmap(bitmaps::Refusal::Scroll))]);
         assert_eq!(
-            MenuRefusal::Bitmap(bitmaps::Refusal::Meter).counter() as usize,
-            Ui::OverlayMenuRefusedBitmapMeter as usize
+            MenuRefusal::Bitmap(bitmaps::Refusal::Scroll).counter() as usize,
+            Ui::OverlayMenuRefusedBitmapScroll as usize
+        );
+    }
+
+    /// A meter is claimed as its one rectangle, in a run of its own.
+    #[test]
+    fn a_meter_is_claimed_with_its_rectangle() {
+        use bitmaps::tests::{DATUM, VIEW, WIDGET, meter_widget};
+        let mut mem = Mem::default();
+        meter_widget(&mut mem);
+        let list = UiList {
+            frame: 0x8000,
+            root: WIDGET,
+            user: VIEW,
+            window: [-1.0, 1.0],
+            entries: vec![ListEntry {
+                widget: WIDGET,
+                depth: 0.0,
+                bias: 0,
+            }],
+        };
+        let (claim, refused) = plan(&mem, &list);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(claim.claimed(), 1);
+        let part = &claim.runs[0].part;
+        assert_eq!(part.items.len(), 1);
+        assert_eq!(
+            part.items[0].material.texture,
+            frame_scene::OverlayTexture::Bitmap {
+                tag: DATUM,
+                image: bitmaps::METER_IMAGE
+            }
         );
     }
 

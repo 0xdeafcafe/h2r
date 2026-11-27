@@ -6,7 +6,7 @@
 //! The draw (Code, `h2 disasm`):
 //!
 //! 1. No definition (`+0x70`): nothing. A definition whose flags have
-//!    bit 2 is a meter (`0x002b0a68`, drawn by `0x002b07e2`): refused.
+//!    bit 2 is a meter (`0x002b0a68`), drawn by `0x002b07e2` ([`meter`]).
 //! 2. `0x002b0565`: the view's offset from the draw's argument, a
 //!    rectangle (top, left, bottom, right), by `0x002363d4`
 //!    ([`view_offset`]). With the debug labels on (`[0x0054d59f]`) a
@@ -41,6 +41,27 @@
 //! checks). S, as for the text (`native_render::hud::text_quad`): the
 //! vertex program passes the coordinates through times the record's
 //! scale, 1.
+//!
+//! The meter's draw `0x002b07e2` is one filled rectangle:
+//!
+//! 1. The colour: the shared UI globals' meter colour (`wigl` `+0x50`,
+//!    alpha, red, green, blue; `0x00148350` through the interface's
+//!    `wgtz` by the scenario's type, `0x001482e8`), each times
+//!    `[0x0045dc38]`, truncated by `_ftol2` `0x00322b0c` (the bitmap's
+//!    tint rounds) and packed as the tint is ([`meter_tint`]); with no
+//!    globals each channel is `[0x0045dc38]` alone. The widget's alpha
+//!    does not enter it.
+//! 2. The view's offset (`0x002363d4`), the debug labels (refused, as
+//!    above), and the rectangle (`0x0022ea81`, as step 5) truncated
+//!    (`cvttss2si`) and moved by the view's offset in 16 bits, X by X
+//!    and Y by Y (the bitmap's draw subtracts its Y).
+//! 3. `0x00147cbc` hands the rectangle to the rectangle draw
+//!    `0x0013c050`: nothing with no scenario; else the four corners
+//!    (left, top) clockwise at texture coordinate 0, the colour on each,
+//!    and the same screen-quad record as `0x0023675a`'s with blend mode
+//!    0 and image 1 of the bitmap the rasterizer globals name (`matg`
+//!    `+0x108`'s first element, its reference at `+0x60`), drawn by
+//!    `0x00052040` without the residency check.
 
 use frame_scene::{Combiner, OverlayBlend, OverlayTexture, Sampler};
 use scene_extract::GuestRead;
@@ -50,14 +71,13 @@ use timeline::native::Ui;
 /// Why a bitmap widget's draw is the game's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// A meter (`0x002b07e2`).
-    Meter,
     /// A scrolling bitmap (`0x00235f31`).
     Scroll,
     /// The draw is not the overlay's quad: the debug labels on, an image
     /// set from elsewhere (`+0x8c`), an image not resident, a tint
     /// constant not white, the quads turned off, a blend mode past the
-    /// tables or an empty image.
+    /// tables or an empty image; a meter whose rasterizer bitmap has no
+    /// second image.
     State,
     /// The widget, its definition, its bitmap or a constant did not read.
     Unreadable,
@@ -66,7 +86,6 @@ pub enum Refusal {
 impl Refusal {
     pub fn counter(self) -> Ui {
         match self {
-            Refusal::Meter => Ui::OverlayMenuRefusedBitmapMeter,
             Refusal::Scroll => Ui::OverlayMenuRefusedBitmapScroll,
             Refusal::State => Ui::OverlayMenuRefusedBitmapState,
             Refusal::Unreadable => Ui::OverlayMenuRefusedUnreadable,
@@ -122,7 +141,32 @@ pub mod at {
     pub const BLEND_SOURCE: u32 = 0x0045_0718;
     pub const BLEND_DEST: u32 = 0x0045_06e8;
     pub const BLEND_EQUATION: u32 = 0x0045_06b8;
+    /// The scenario (`0x0013c050` draws nothing without one; its `i16`
+    /// type at `+0x10` picks the interface's `wgtz`).
+    pub const SCENARIO: u32 = 0x004e_0350;
+    /// The globals tag (`matg`).
+    pub const GLOBALS: u32 = 0x004e_034c;
 }
+
+/// The globals tag's blocks the meter's draw reads: each a count, then
+/// the elements' address.
+mod globals {
+    /// The rasterizer globals; the bitmap's reference at `+0x60`, its
+    /// datum at `+0x64`.
+    pub const RASTERIZER: u32 = 0x108;
+    pub const RASTERIZER_BITMAP: u32 = 0x64;
+    /// The interface; `wgtz` datums at `+0x8c`, `+0x94`, `+0x84` for
+    /// scenario types 0, 1 and 2.
+    pub const INTERFACE: u32 = 0x110;
+    pub const WGTZ: [u32; 3] = [0x8c, 0x94, 0x84];
+    /// `wgtz` `+4`: the `wigl` datum; `wigl` `+0x50`: the meter colour.
+    pub const WIGL: u32 = 0x04;
+    pub const METER_COLOUR: u32 = 0x50;
+    pub const SCENARIO_TYPE: u32 = 0x10;
+}
+
+/// The image of the rasterizer bitmap the meter draws (`0x0013c050`).
+pub const METER_IMAGE: u16 = 1;
 
 /// The bitmap tag's images (`0x002b0b19`): the count at `+0x44`, the
 /// first at `+0x48`, `0x74` bytes each.
@@ -308,6 +352,190 @@ fn blend(mem: &dyn GuestRead, mode: u32) -> Option<OverlayBlend> {
     })
 }
 
+/// The tag data a datum names (the instance's `+8`), unchecked as the
+/// guest's lookups are; `None` for -1.
+fn tag_data(mem: &dyn GuestRead, datum: u32) -> Option<Option<u32>> {
+    if datum == u32::MAX {
+        return Some(None);
+    }
+    let instance = word(mem, at::TAG_INSTANCES)?.checked_add((datum & 0xffff) * 0x10 + 8)?;
+    word(mem, instance).map(Some)
+}
+
+/// A block's first element: its address when the count is not 0.
+fn first(mem: &dyn GuestRead, block: u32) -> Option<Option<u32>> {
+    if word(mem, block)? == 0 {
+        return Some(None);
+    }
+    word(mem, block.checked_add(4)?).map(|at| (at != 0).then_some(at))
+}
+
+/// `0x001482e8` then `0x00148350`: the shared UI globals (`wigl`) the
+/// scenario's interface names, when there are.
+pub fn shared_globals(mem: &dyn GuestRead) -> Option<Option<u32>> {
+    let scenario = word(mem, at::SCENARIO)?;
+    let matg = word(mem, at::GLOBALS)?;
+    if scenario == 0 || matg == 0 {
+        return Some(None);
+    }
+    let Some(interface) = first(mem, matg.checked_add(globals::INTERFACE)?)? else {
+        return Some(None);
+    };
+    let kind = short(mem, scenario.checked_add(globals::SCENARIO_TYPE)?)?;
+    let Some(&slot) = usize::try_from(kind)
+        .ok()
+        .and_then(|k| globals::WGTZ.get(k))
+    else {
+        return Some(None);
+    };
+    let Some(wgtz) = tag_data(mem, word(mem, interface.checked_add(slot)?)?)? else {
+        return Some(None);
+    };
+    tag_data(mem, word(mem, wgtz.checked_add(globals::WIGL)?)?)
+}
+
+/// `_ftol2` (`0x00322b0c`): toward zero through 64 bits, the low word.
+/// `None` for a value it has no integer for.
+fn ftol(v: f32) -> Option<u32> {
+    (v.is_finite() && v.abs() < 9.223_372e18).then(|| v.trunc() as i64 as u32)
+}
+
+/// The meter's colour (`0x002b07e2`'s first steps): each of the globals'
+/// meter colour's channels (alpha, red, green, blue) times `channel` in
+/// single precision, truncated by `_ftol2` (not rounded, as the bitmap's
+/// tint is), packed by shifting left 8 and or-ing the next, unmasked;
+/// each channel `channel` alone with no globals. `None` when a channel
+/// has no integer or does not read.
+pub fn meter_tint(mem: &dyn GuestRead, channel: f32) -> Option<u32> {
+    let scaled = match shared_globals(mem)? {
+        Some(wigl) => {
+            let c = |n: u32| {
+                float(mem, wigl.checked_add(globals::METER_COLOUR + 4 * n)?).map(|v| v * channel)
+            };
+            [c(0)?, c(1)?, c(2)?, c(3)?]
+        }
+        None => [channel; 4],
+    };
+    scaled
+        .into_iter()
+        .try_fold(0u32, |argb, c| Some(argb.wrapping_shl(8) | ftol(c)?))
+}
+
+/// `cvttss2si` into a 16-bit add: toward zero, the integer indefinite
+/// (low half 0) out of range.
+fn truncated(v: f32) -> i16 {
+    if v.is_finite() && v >= -2_147_483_648.0 && v < 2_147_483_648.0 {
+        v as i32 as i16
+    } else {
+        0
+    }
+}
+
+/// `0x00012360`: the image is resident and has a texture.
+fn resident(mem: &dyn GuestRead, image: u32) -> Result<bool, Refusal> {
+    let w32 = |a: Option<u32>| a.and_then(|a| word(mem, a)).ok_or(Refusal::Unreadable);
+    let stamp = w32(image.checked_add(IMAGE_STAMP))? as i32;
+    let after = w32(Some(at::RESIDENT_AFTER))? as i32;
+    let texture = w32(image.checked_add(IMAGE_TEXTURE))?;
+    Ok(stamp > after && texture != 0)
+}
+
+/// `0x0022ea81`: the widget's rectangle, `[x0, x1, y0, y1]` in the view's
+/// pixels: the header's moved by the animated offset, its two corners
+/// projected at the offset's Z about the view's centre.
+fn placed(
+    mem: &dyn GuestRead,
+    lens: &Lens,
+    header: &UiWidget,
+    widget: u32,
+    view: [i16; 4],
+) -> Result<[f32; 4], Refusal> {
+    let f = |o: u32| {
+        widget
+            .checked_add(o)
+            .and_then(|a| float(mem, a))
+            .ok_or(Refusal::Unreadable)
+    };
+    let [ox, oy, oz] = [
+        f(widget::OFFSET)?,
+        f(widget::OFFSET + 4)?,
+        f(widget::OFFSET + 8)?,
+    ];
+    let [top, left, bottom, right] = header.rect.map(f32::from);
+    let near = project(lens, [left + ox, top + oy, oz], view);
+    let far = project(lens, [right + ox, bottom + oy, oz], view);
+    Ok([near[0], far[0], near[1], far[1]])
+}
+
+/// The meter widget's draw `0x002b07e2`: one rectangle of the meter
+/// colour over texel 0 of the rasterizer bitmap's second image, or why
+/// the game draws it. No scenario draws nothing.
+pub fn meter(
+    mem: &dyn GuestRead,
+    mut header: UiWidget,
+    widget: u32,
+    view_at: u32,
+) -> Result<UiWidget, Refusal> {
+    use Refusal::{State, Unreadable};
+    let w32 = |a: Option<u32>| a.and_then(|a| word(mem, a)).ok_or(Unreadable);
+    let channel = float(mem, at::CHANNEL).ok_or(Unreadable)?;
+    let argb = meter_tint(mem, channel).ok_or(Unreadable)?;
+    let view = view(mem, view_at).ok_or(Unreadable)?;
+    if byte(mem, at::DEBUG_LABELS).ok_or(Unreadable)? != 0 {
+        return Err(State);
+    }
+    let lens = Lens::read(mem).ok_or(Unreadable)?;
+    let [x0, x1, y0, y1] = placed(mem, &lens, &header, widget, view)?;
+    let [px, py] = view_offset(view);
+    let x = |v: f32| truncated(v).wrapping_add(px);
+    let y = |v: f32| truncated(v).wrapping_add(py);
+    let rect = [x(x0), y(y0), x(x1), y(y1)].map(f32::from);
+    // `0x0013c050`.
+    if w32(Some(at::SCENARIO))? == 0 {
+        return Ok(header);
+    }
+    let matg = w32(Some(at::GLOBALS))?;
+    let Some(rasterizer) = first(
+        mem,
+        matg.checked_add(globals::RASTERIZER).ok_or(Unreadable)?,
+    )
+    .ok_or(Unreadable)?
+    else {
+        // The guest reads through a null element.
+        return Err(Unreadable);
+    };
+    let datum = w32(rasterizer.checked_add(globals::RASTERIZER_BITMAP))?;
+    let data = tag_data(mem, datum).ok_or(Unreadable)?.ok_or(Unreadable)?;
+    // The guest takes the second image with no count check.
+    if (w32(data.checked_add(IMAGE_COUNT))? as i32) <= i32::from(METER_IMAGE) {
+        return Err(State);
+    }
+    let image = w32(data.checked_add(IMAGES))?
+        .checked_add(u32::from(METER_IMAGE) * IMAGE_BYTES)
+        .ok_or(Unreadable)?;
+    // `0x00052040`.
+    let quads_off = short(mem, at::QUADS_OFF).ok_or(Unreadable)? != 0;
+    if quads_off || !white_tint(mem).ok_or(Unreadable)? || !resident(mem, image)? {
+        return Err(State);
+    }
+    header.content = UiContent::Bitmap(UiBitmap {
+        texture: OverlayTexture::Bitmap {
+            tag: datum,
+            image: METER_IMAGE,
+        },
+        rect,
+        uv: [0.0; 4],
+        color: rgba(argb),
+        combiner: Combiner::Texture,
+        sampler: Sampler {
+            wrap: false,
+            point: false,
+        },
+        blend: blend(mem, 0).ok_or(Unreadable)?,
+    });
+    Ok(header)
+}
+
 /// The bitmap widget at `widget` (`depth` the list entry's), drawn in
 /// the view at `view_at` (the draw's argument): its header and the quad
 /// its draw makes ([`UiContent::Bitmap`]; [`UiContent::None`] when it
@@ -330,7 +558,7 @@ pub fn read(
         return Ok(header);
     }
     if w32(def)? & definition::METER != 0 {
-        return Err(Refusal::Meter);
+        return meter(mem, header, widget, view_at);
     }
     if byte(mem, at::DEBUG_LABELS).ok_or(Unreadable)? != 0 {
         return Err(Refusal::State);
@@ -373,17 +601,10 @@ pub fn read(
     let linear = (w32(off(image, IMAGE_FLAGS_WORD)?)? >> 16) as u16 & LINEAR != 0;
     // The rectangle (`0x0022ea81`, `0x0023618e`), then the view's offset.
     let lens = Lens::read(mem).ok_or(Unreadable)?;
-    let [ox, oy, oz] = [
-        f32_at(off(widget, widget::OFFSET)?)?,
-        f32_at(off(widget, widget::OFFSET + 4)?)?,
-        f32_at(off(widget, widget::OFFSET + 8)?)?,
-    ];
-    let [top, left, bottom, right] = header.rect.map(f32::from);
-    let near = project(&lens, [left + ox, top + oy, oz], view);
-    let far = project(&lens, [right + ox, bottom + oy, oz], view);
+    let [x0, x1, y0, y1] = placed(mem, &lens, &header, widget, view)?;
     let [px, py] = view_offset(view);
     let (px, py) = (f32::from(px), -i32::from(py) as f32);
-    let r = [near[0] + px, far[0] + px, near[1] + py, far[1] + py];
+    let r = [x0 + px, x1 + px, y0 + py, y1 + py];
     // The definition's scrolling.
     let scroll = [
         f32_at(off(def, definition::SCROLL)?)?,
@@ -397,10 +618,7 @@ pub fn read(
     if i16_at(at::QUADS_OFF)? != 0 || !white_tint(mem).ok_or(Unreadable)? {
         return Err(Refusal::State);
     }
-    let stamp = w32(off(image, IMAGE_STAMP)?)? as i32;
-    let after = w32(at::RESIDENT_AFTER)? as i32;
-    let texture = w32(off(image, IMAGE_TEXTURE)?)?;
-    if stamp <= after || texture == 0 || size[0] <= 0 || size[1] <= 0 {
+    if !resident(mem, image)? || size[0] <= 0 || size[1] <= 0 {
         return Err(Refusal::State);
     }
     let blend = blend(mem, mode).ok_or(Unreadable)?;
@@ -517,6 +735,141 @@ pub(super) mod tests {
         half(m, VIEW + 6, 640);
     }
 
+    const SCENARIO_AT: u32 = 0xc000;
+    const MATG: u32 = 0xd000;
+    const INTERFACE_AT: u32 = 0xd800;
+    const RASTERIZER_AT: u32 = 0xd900;
+    const WGTZ_DATA: u32 = 0xe000;
+    const WIGL_DATA: u32 = 0xe400;
+
+    /// The bitmap widget's definition marked a meter, with a scenario of
+    /// type 1, its interface's `wgtz` naming a `wigl` whose meter colour
+    /// is (alpha 0.5, red 1, green 0.25, blue 0), and the rasterizer
+    /// globals naming the widget's two-image bitmap.
+    pub fn meter_widget(m: &mut Mem) {
+        bitmap_widget(m);
+        m.w(DEF, definition::METER);
+        m.w(at::SCENARIO, SCENARIO_AT);
+        half(m, SCENARIO_AT + 0x10, 1);
+        m.w(at::GLOBALS, MATG);
+        m.w(MATG + 0x108, 1);
+        m.w(MATG + 0x10c, RASTERIZER_AT);
+        m.w(RASTERIZER_AT + 0x64, DATUM);
+        m.w(MATG + 0x110, 1);
+        m.w(MATG + 0x114, INTERFACE_AT);
+        m.w(INTERFACE_AT + 0x94, 0xe124_0003);
+        m.w(INSTANCES + 3 * 0x10 + 8, WGTZ_DATA);
+        m.w(WGTZ_DATA + 4, 0xe125_0004);
+        m.w(INSTANCES + 4 * 0x10 + 8, WIGL_DATA);
+        for (n, v) in [0.5, 1.0, 0.25, 0.0].into_iter().enumerate() {
+            m.f(WIGL_DATA + 0x50 + 4 * n as u32, v);
+        }
+    }
+
+    /// `0x002b07e2`: one rectangle, the header's placed as the bitmap's
+    /// is but truncated and moved by the view's offset with its Y as it
+    /// is; texel 0 of the rasterizer bitmap's second image; the meter
+    /// colour truncated, not the widget's tint or alpha; blend mode 0.
+    #[test]
+    fn a_meter_reads_as_one_rectangle_of_the_meter_colour() {
+        let mut m = Mem::default();
+        meter_widget(&mut m);
+        m.f(WIDGET + 0x58, 5.75);
+        // A top-half view: centre (320, 120), offset (0, -16).
+        half(&mut m, VIEW + 4, 240);
+        let w = read(&m, WIDGET, 0.0, VIEW).unwrap();
+        let UiContent::Bitmap(b) = w.content else {
+            panic!("not a bitmap: {:?}", w.content)
+        };
+        assert_eq!(
+            b,
+            UiBitmap {
+                texture: OverlayTexture::Bitmap {
+                    tag: DATUM,
+                    image: METER_IMAGE
+                },
+                // x 275.75 and 355.75; y 10 and 50, then 16 up.
+                rect: [275.0, -6.0, 355.0, 34.0],
+                uv: [0.0; 4],
+                color: rgba(0x7fff_3f00),
+                combiner: Combiner::Texture,
+                sampler: Sampler {
+                    wrap: false,
+                    point: false
+                },
+                blend: OverlayBlend::On {
+                    source: 0x302,
+                    dest: 0x303,
+                    equation: 0x8006
+                },
+            }
+        );
+    }
+
+    /// No shared globals for the scenario's type: each channel is the
+    /// channel constant, white. No scenario: the rectangle draw makes
+    /// nothing.
+    #[test]
+    fn a_meter_without_globals_is_white_and_without_a_scenario_draws_nothing() {
+        let mut m = Mem::default();
+        meter_widget(&mut m);
+        half(&mut m, SCENARIO_AT + 0x10, 3);
+        let Ok(UiContent::Bitmap(b)) = content(&m) else {
+            panic!()
+        };
+        assert_eq!(b.color, [1.0; 4]);
+        assert_eq!(meter_tint(&m, 255.0), Some(0xffff_ffff));
+        m.w(at::SCENARIO, 0);
+        assert_eq!(content(&m), Ok(UiContent::None));
+    }
+
+    /// A meter the overlay does not draw as the game does is the game's.
+    #[test]
+    fn a_meter_the_overlay_cannot_draw_is_refused() {
+        let cases: [(&str, fn(&mut Mem), Refusal); 6] = [
+            (
+                "debug labels",
+                |m| m.w(at::DEBUG_LABELS & !3, 1 << 24),
+                Refusal::State,
+            ),
+            ("one image", |m| m.w(DATA + 0x44, 1), Refusal::State),
+            (
+                "not resident",
+                |m| m.w(at::RESIDENT_AFTER, 5),
+                Refusal::State,
+            ),
+            ("tint constant", |m| m.f(TINT_AT + 4, 0.5), Refusal::State),
+            (
+                "no rasterizer globals",
+                |m| m.w(MATG + 0x108, 0),
+                Refusal::Unreadable,
+            ),
+            (
+                "a colour with no integer",
+                |m| m.f(WIGL_DATA + 0x54, f32::INFINITY),
+                Refusal::Unreadable,
+            ),
+        ];
+        for (what, set, why) in cases {
+            let mut m = Mem::default();
+            meter_widget(&mut m);
+            set(&mut m);
+            assert_eq!(content(&m), Err(why), "{what}");
+        }
+    }
+
+    /// `_ftol2` truncates toward zero and keeps the low word.
+    #[test]
+    fn the_meter_colour_truncates() {
+        assert_eq!(ftol(127.9), Some(127));
+        assert_eq!(ftol(-1.5), Some((-1i32) as u32));
+        assert_eq!(ftol(4_294_967_296.0), Some(0));
+        assert_eq!(ftol(f32::NAN), None);
+        assert_eq!(truncated(-5.9), -5);
+        assert_eq!(truncated(65_537.0), 1);
+        assert_eq!(truncated(f32::NAN), 0);
+    }
+
     fn content(m: &Mem) -> Result<UiContent, Refusal> {
         read(m, WIDGET, 0.0, VIEW).map(|w| w.content)
     }
@@ -599,8 +952,7 @@ pub(super) mod tests {
     /// Each draw the overlay does not make is the game's, by its reason.
     #[test]
     fn meters_scrolling_and_other_state_are_refused() {
-        let cases: [(&str, fn(&mut Mem), Refusal); 9] = [
-            ("meter", |m| m.w(DEF, 4), Refusal::Meter),
+        let cases: [(&str, fn(&mut Mem), Refusal); 8] = [
             ("scrolls", |m| m.f(DEF + 0x14, 0.5), Refusal::Scroll),
             (
                 "debug labels",
