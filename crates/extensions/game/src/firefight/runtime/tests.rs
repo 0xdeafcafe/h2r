@@ -1399,7 +1399,7 @@ fn a_film_of_map_waves_replays_from_its_document() {
     let dir = std::env::temp_dir().join(format!("h2-film-waves-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let doc = forge_doc::ForgeDoc {
-        format: forge_doc::FORMAT,
+        format: forge_doc::FORMAT_WAVES,
         builder: forge_doc::BuilderVersions::CURRENT,
         base: forge_doc::MapRef { map: "firefight-probe".into(), sha256: content::Sha256::of(b"base") },
         sources: vec![],
