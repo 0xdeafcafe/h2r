@@ -1158,6 +1158,11 @@ impl Sim {
                 "rendered_world": f.rendered_world,
                 "other": f.other,
                 "stub_faults": f.stub_faults,
+                "checked": f.checked,
+                "mismatch_frame_counter": f.mismatch_frame_counter,
+                "mismatch_one_shot": f.mismatch_one_shot,
+                "mismatch_present_counter": f.mismatch_present_counter,
+                "fell_back": f.fell_back,
             },
             "end": s.end.map(End::name),
             "drops": crate::sim_drops::status(),
@@ -1232,6 +1237,12 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         "frames: {} world frames skipped, {} rendered (render_every {}), {} menu or loading frames",
         f.skipped, f.rendered_world, inner.matched.config.render_every, f.other
     ));
+    if f.fell_back {
+        notes.push(format!(
+            "a rendered frame's tick writes differed from the skip's (frame counter {}, one-shot {}, present counter {} of {} checked); world frames rendered from then on",
+            f.mismatch_frame_counter, f.mismatch_one_shot, f.mismatch_present_counter, f.checked
+        ));
+    }
     if f.stub_faults > 0 {
         notes.push(format!(
             "{} skipped frames could not write their stubs",
