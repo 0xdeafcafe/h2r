@@ -31,11 +31,13 @@ pub enum ViewSlot {
     Late,
     /// Slot 9, all kinds: transparents and effects `0x000c3e90`, `0x00036b50`,
     /// layer 15, `0x001595d0`, contrails `0x00042b20`, sorted `0x0001e370`;
-    /// call site `0x0002c19a`.
+    /// call site `0x0002c19a`. The sorted list's camouflage and hologram
+    /// entries draw layers 18, 19 and 21 here, each after its view snapshot
+    /// ([`ViewSlot::sorted_layer`]).
     Transparents,
     /// Slot 10: first person `0x0003fdf0`(0), its lights `0x000404b0`,
     /// `0x0003fdf0`(1), its sorted pass `0x00040870`; call sites `0x0002c2b3`
-    /// and `0x0002c2b9`.
+    /// and `0x0002c2b9`. Its sorted pass draws its own layers 18, 19 and 21.
     FirstPerson,
     /// Slot 11: flare query `0x0002dd30`, which tests the final depth; call
     /// site `0x0002c2e4`.
@@ -46,9 +48,6 @@ pub enum ViewSlot {
     /// `0x0002d140`, flare draw `0x0002df00` and glow `0x00046ea0`; call sites
     /// `0x0002c322` and `0x00013b7e`.
     Post,
-    /// Snapshots and layers 18, 19 and 21. **Unplaced**: the slot is unknown
-    /// until research item R-a, so it sorts after slot 13, before the overlay.
-    Snapshot,
     /// Overlay: the HUD, `0x001917eb`.
     Hud,
     /// Overlay: the fade, `0x00040890` (a `Fill`).
@@ -69,8 +68,19 @@ impl ViewSlot {
         }
     }
 
-    /// The slot's number, 1 to 13, or `None` for the unplaced snapshot
-    /// slot and the overlay.
+    /// The slot a sorted handler's layer 18, 19 or 21 draws in: the sorted
+    /// list `0x0001e370` runs in slot 9, and again for the first person
+    /// (`0x00040870`) in slot 10 (docs/graphics/notes/2026-11-27-snapshot-slot.md).
+    /// `None` for any other layer.
+    pub fn sorted_layer(layer: u8, first_person: bool) -> Option<Self> {
+        match layer {
+            18 | 19 | 21 if first_person => Some(Self::FirstPerson),
+            18 | 19 | 21 => Some(Self::Transparents),
+            _ => None,
+        }
+    }
+
+    /// The slot's number, 1 to 13, or `None` for the overlay.
     pub fn number(self) -> Option<u8> {
         Some(match self {
             Self::OpaqueBase => 1,
@@ -86,14 +96,8 @@ impl ViewSlot {
             Self::FlareQuery => 11,
             Self::Layer17 => 12,
             Self::Post => 13,
-            Self::Snapshot | Self::Hud | Self::Fade | Self::Ui => return None,
+            Self::Hud | Self::Fade | Self::Ui => return None,
         })
-    }
-
-    /// Whether the slot's place in the order is known. False only for
-    /// [`ViewSlot::Snapshot`] (research item R-a).
-    pub fn placed(self) -> bool {
-        self != Self::Snapshot
     }
 
     /// Whether the slot is in the per-frame overlay, after every view.
@@ -104,7 +108,6 @@ impl ViewSlot {
     fn key(self) -> (u8, u8) {
         match self {
             Self::DecalsLate(mode) => (7, mode),
-            Self::Snapshot => (14, 0),
             Self::Hud => (15, 0),
             Self::Fade => (16, 0),
             Self::Ui => (17, 0),
@@ -145,15 +148,12 @@ mod tests {
             ViewSlot::FlareQuery,
             ViewSlot::Layer17,
             ViewSlot::Post,
-            ViewSlot::Snapshot,
         ];
         for (i, pair) in order.windows(2).enumerate() {
             assert!(pair[0] < pair[1], "{:?} before {:?}", pair[0], pair[1]);
             assert_eq!(pair[0].number(), Some(i as u8 + 1));
         }
         assert_eq!(ViewSlot::Post.number(), Some(13));
-        assert!(!ViewSlot::Snapshot.placed());
-        assert!(ViewSlot::Post.placed());
         assert!(ViewSlot::DecalsLate(2) < ViewSlot::DecalsLate(6));
     }
 
@@ -169,9 +169,17 @@ mod tests {
     }
 
     #[test]
+    fn the_snapshot_layers_draw_in_their_sorted_lists_slot() {
+        for layer in [18, 19, 21] {
+            assert_eq!(ViewSlot::sorted_layer(layer, false), Some(ViewSlot::Transparents));
+            assert_eq!(ViewSlot::sorted_layer(layer, true), Some(ViewSlot::FirstPerson));
+        }
+        assert_eq!(ViewSlot::sorted_layer(17, false), None, "layer 17 is slot 12's");
+    }
+
+    #[test]
     fn the_overlay_draws_hud_then_fade_then_ui() {
         assert!(ViewSlot::Post < ViewSlot::Hud);
-        assert!(ViewSlot::Snapshot < ViewSlot::Hud);
         assert!(ViewSlot::Hud < ViewSlot::Fade);
         assert!(ViewSlot::Fade < ViewSlot::Ui);
         assert!(ViewSlot::Hud.is_overlay() && !ViewSlot::Post.is_overlay());

@@ -148,6 +148,8 @@ pub mod transparent_streams;
 pub mod ui_gpu;
 #[cfg(feature = "gpu")]
 pub mod water_gpu;
+#[cfg(feature = "gpu")]
+pub mod snapshot_gpu;
 pub mod subpart_map;
 pub mod weather_scene;
 pub mod world;
