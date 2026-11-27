@@ -1470,6 +1470,19 @@ impl Runtime {
         }
     }
 
+    /// The starting locations a spawn of `team` is kept to: the open ones
+    /// when this match has pods on (`super::pods::pick`). None leaves the
+    /// engine's own pick alone.
+    pub fn pod_pick(&self, m: &dyn GuestMemory, team: u32) -> Option<super::pods::Pick> {
+        let Status::Running(game) = &self.status else {
+            return None;
+        };
+        if !game.pods.enabled() || game.host.test() {
+            return None;
+        }
+        super::pods::pick(m, true, &game.kit, i16::try_from(team).ok()?)
+    }
+
     /// `firefight.state`.
     pub fn state(&self) -> wire::State {
         let errors = self.errors.iter().cloned().collect();

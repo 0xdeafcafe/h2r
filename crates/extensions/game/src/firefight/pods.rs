@@ -383,6 +383,56 @@ pub fn spawn_pick(
         .collect()
 }
 
+/// The starting locations a spawn pick is kept to
+/// (`PLAYER_SPAWN_LOCATION`, whose free-spot test `SPAWN_LOCATION_FREE`
+/// answers "taken" for any other; docs/game/rules-engine.md, "Spawn
+/// rules"): by guest address, as the chooser asks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pick {
+    pub base: u32,
+    pub stride: u32,
+    pub live: std::collections::BTreeSet<u32>,
+}
+
+impl Pick {
+    /// Whether the location at guest address `location` may be picked. An
+    /// address that is no entry of the block passes: the test is the
+    /// engine's then.
+    pub fn passes(&self, location: u32) -> bool {
+        let off = location.wrapping_sub(self.base);
+        if self.stride == 0 || off % self.stride != 0 {
+            return true;
+        }
+        self.live.contains(&(off / self.stride))
+    }
+}
+
+/// A starting location's team designator (`+0x10`, `i16`).
+const START_TEAM: u32 = 0x10;
+
+/// The loaded scenario's starting locations' block and each one's team.
+pub fn starts(m: &dyn GuestMemory) -> Option<(u32, u32, Vec<i16>)> {
+    use forge_doc::BlockKind;
+    let block = map::scenario_layout::block(BlockKind::StartingLocations);
+    let scnr = m.u32(points::SCENARIO.base).ok().filter(|s| *s != 0)?;
+    let n = (m.i32(scnr + block.offset).ok()?.max(0) as u32).min(forge_doc::CENSUS_ENTRY_LIMIT);
+    let base = m.u32(scnr + block.offset + 4).ok().filter(|b| *b != 0)?;
+    let teams = (0..n)
+        .map(|i| m.u16(base + i * block.stride + START_TEAM).map(|t| t as i16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    Some((base, block.stride, teams))
+}
+
+/// The pick for a spawn of `team` on the loaded map: the team's open
+/// starts when pods are on and the kit has any, else none (the engine's
+/// own pick, untouched).
+pub fn pick(m: &dyn GuestMemory, on: bool, kit: &KitLayout, team: i16) -> Option<Pick> {
+    let (base, stride, teams) = starts(m)?;
+    let live = spawn_pick(on, kit, &teams, team);
+    (!live.is_empty()).then_some(Pick { base, stride, live })
+}
+
 // --- The engine side -------------------------------------------------------
 
 /// `0xe68c0`: a unit's action request, `ecx` the action, the unit on the
