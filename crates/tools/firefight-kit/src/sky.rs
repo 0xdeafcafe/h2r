@@ -36,6 +36,8 @@ pub const POD: &str = r"objects\vehicles\insertion_pod\insertion_pod";
 /// Parked squad pods, `ff_pod_NN`.
 pub const POD_PREFIX: &str = "ff_pod_";
 /// Parked player pods, `ff_ppod_NN`.
+/// Parked Flood squad pods, `ff_fpod_NN`: the human squads fall in `ff_pod_NN`.
+pub const FLOOD_POD_PREFIX: &str = "ff_fpod_";
 pub const PLAYER_POD_PREFIX: &str = "ff_ppod_";
 /// A zone's fall, the point set `ff_fall_NN` for `ff_drop_NN`.
 pub const FALL_PREFIX: &str = "ff_fall_";
@@ -296,7 +298,7 @@ fn current<R: Read + Seek>(
 pub(crate) fn author<R: Read + Seek>(
     map: &mut Map<R>,
     pod: TagId,
-    squad_pod: Option<TagId>,
+    flood_pod: Option<TagId>,
     falls: &Falls,
     bsp: i16,
     fields: &mut Vec<(usize, u32, Block)>,
@@ -316,7 +318,7 @@ pub(crate) fn author<R: Read + Seek>(
     let (name_count, mut names) = current(map, &root, fields, OBJECT_NAMES as usize, OBJECT_NAME)?;
     ensure!(
         !names.bytes.chunks(OBJECT_NAME).any(|n| {
-            [POD_PREFIX, PLAYER_POD_PREFIX]
+            [POD_PREFIX, FLOOD_POD_PREFIX, PLAYER_POD_PREFIX]
                 .iter()
                 .any(|p| n.starts_with(p.as_bytes()))
         }),
@@ -337,9 +339,11 @@ pub(crate) fn author<R: Read + Seek>(
             at / PALETTE
         }
     };
-    // The squads' pool is the Flood pod when the kit has one.
+    // The human squads and the players fall in the insertion pod, the Flood
+    // squads in the Flood pod when the kit has one.
     let player_row = row_of(pod);
-    let squad_row = squad_pod.map_or(player_row, &mut row_of);
+    let squad_row = player_row;
+    let flood_row = flood_pod.map(&mut row_of);
     let palette_len = palette.bytes.len() / PALETTE;
     let index = |len: usize, what: &str| {
         i16::try_from(len).map_err(|_| anyhow::anyhow!("{what} index overflow"))
@@ -375,6 +379,9 @@ pub(crate) fn author<R: Read + Seek>(
     };
     if let Some(first) = squad_first {
         pool(POD_PREFIX, SQUAD_PODS, first.top, squad_row)?;
+        if let Some(row) = flood_row {
+            pool(FLOOD_POD_PREFIX, SQUAD_PODS, first.top, row)?;
+        }
     }
     if let Some(first) = player_first {
         pool(PLAYER_POD_PREFIX, PLAYER_PODS, first.top, player_row)?;
