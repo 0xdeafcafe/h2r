@@ -90,3 +90,16 @@ fn no_pod_tag_leaves_the_kit_without_pools() {
     let names = metadata_block(&mut map, &root, OBJECT_NAMES as usize, OBJECT_NAME).unwrap();
     assert!(names.iter().all(|n| !n.starts_with(b"ff_pod") && !n.starts_with(b"ff_ppod")));
 }
+
+#[test]
+fn a_shader_named_sky_is_a_sky_material() {
+    let names = [
+        Some(r"scenarios\shaders\multi\halo\coagulation\coag_ground"),
+        Some(r"scenarios\shaders\sky\space_dome"),
+        None,
+        Some(r"scenarios\shaders\multi\halo\sky"),
+        Some(r"scenarios\shaders\multi\halo\sky_blocker"),
+        Some(r"scenarios\shaders\multi\halo\skylight"),
+    ];
+    assert_eq!(sky_materials(names), [1, 3, 4]);
+}

@@ -1,7 +1,7 @@
 # The Havok step: entries, writes and classes
 
-Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1); the step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
-Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
+Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1). The island solve's entry is installed with its frame modelled; it declines every island until a constraint class and the schema solve are ported (below, "The island solve"). The step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
+Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/rewrites/sim-havok/src/island_solve.rs` and `crates/rewrites/engine/src/sim_physics/island_solve.rs` (the island solve), `crates/rewrites/engine/tests/sim_havok_differential.rs` (its differential tests), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 This is the contract page for the world step `0x311100` and everything
@@ -279,6 +279,84 @@ flags are scratch and left undefined; the callee-saved registers and
 so the entries are installed for every caller, under
 `impl.sim.native.physics`.
 
+## The island solve
+
+`0x0031c100`, cdecl, nine stack arguments in this order: step `W+0x150`,
+solver parameters `W+0x160`, pair words `W+0x190`, gravity `W+0xe0`, the
+island, its entity array and count, its constraint array and count; the
+caller (`0x00316b16`) pops `0x24`. Callee-saved registers are restored;
+`eax` is the LIFO block pointer, 0 when the island fits the buffer. **E**
+
+**The buffer.** The solver buffer object `[0x00484b38]` holds base `+0x08`,
+size `+0x0c` and the busy byte `+0x10` (set to 1 on entry, 0 before the
+return). From the base, four areas, sums wrapping (`0x0031c142`):
+
+| Area | Bytes |
+|---|---|
+| accumulators | `I+0x14 + 0x90`: a leading zeroed one, one per entity, the end byte 3 |
+| rows | `I+0x0c` |
+| impulses | `I+0x18 × 4 + 8`, zeroed from the start for `I+0x18` words (`0x0031c3c0`) |
+| schemas | `I+0x10 + 4`, the last word the end schema `0x400` |
+
+The island fits when the schemas' end is at or below the buffer's end,
+unsigned (`0x0031c175`). Otherwise retail takes a LIFO block from the
+descriptor at `[0x00480118]+0x08` (inline when the remaining bytes allow,
+else `vt[+0x24]`, which is `0x002d7020`): for everything when even the
+rows do not start inside the buffer, for impulses and schemas when the
+rows fit, and for the rows' tail plus `2 × I+0x08` (with impulses and
+schemas) when only the rows overflow; the Jacobian cursor's limit is then
+the buffer's end less `I+0x08`. The block is released before the return,
+inline or through `vt[+0x28]` when it is the descriptor's own payload or
+the descriptor has none. **E**
+
+**Accumulators.** `0x80` bytes. Byte 0 is the kind 2; byte `+0x0c` the
+identity-basis flag the contact builder tests (`0x0031f6be`); `+0x10`
+linear velocity, `+0x20` angular velocity, `+0x30` inverse inertia with
+inverse mass in `w`, `+0x40..+0x7f` the centre and the transposed basis
+while the rows are built. Per entity in array order, `motion+0x08`
+becomes the accumulator's offset from the base, stored only when it
+differs (`0x0031c2f0`); then `vt[+0x0c]` (step, gravity, accumulator;
+`ret 0xc`) fills it and returns the next. Only bytes 0 and `+0x0c` of the
+first 16 are ever written, so the rest keep the buffer's older contents:
+
+- `0x0031a770` (type 7) zeroes `+0x10..+0x7f` and leaves the flag as the
+  buffer held it, as the leading accumulator does.
+- `0x00319430` (type 6) copies `motion+0x40`, `+0x50` and `+0x70` to
+  `+0x10`, `+0x20` and `+0x40`, zeroes `+0x30`, writes the identity at
+  `+0x50`, `+0x64`, `+0x78`, and sets the flag to 1.
+
+An entity outside the island (the level, in the fixed island) keeps
+whatever offset its motion holds, usually 0: its accumulator is the
+leading zeroed one.
+
+**Constraints.** In array order: the pair words get A's and B's
+accumulator addresses (`[c+0x0c]` and `[c+0x10]`, through their motions'
+offsets), then the cursor moves to the overflow block if its row pointer
+is at or past the limit, then `vt[+0x24]` (pair words, cursor; `ret 8`)
+appends. The cursor is the frame's `+0x1c..+0x2c`: row pointer, schema
+pointer, limit, overflow block. The contact class's `0x0031bdf0` calls
+`0x0031f620` with the points `c+0x34`, their count `c+0x38`, the
+properties `c+0x90`, `c+0x50`, the pair words and the cursor; its first
+schema is `0x00011801` followed by the row pointer, the properties, A, B
+and `0x1c`. **E**
+
+**Solve and export.** `0x0031c940` (parameters, accumulators, schemas,
+impulses). When it returns 1, each entity in array order gets
+`vt[+0x10]` (step, `[info+0x20]`, accumulator; `ret 0xc`), which returns
+the next accumulator. `0x0031a6a0` (type 7) writes nothing. **E**
+
+**The port.** `sim_havok::island_solve` runs the entry on a write journal
+in stages: gather (every word read and checked before a write), the
+accumulator offsets, the pair words per constraint, each class's rows.
+Persistent words only are journalled; the buffer's contents stay in Rust.
+An island falls back to the lifted entry, counted by reason
+(`island_solve::fallbacks`), when it overflows the buffer, holds a motion
+whose two solver slots are not a covered class (type 7 only: type 6's
+export is not ported), holds a constraint whose `vt[+0x24]` is not ported
+(none is yet, so every island falls back here), finds the solver tables
+unbuilt, or reaches the schema solve, which is not modelled. The decline
+is decided before any write, so the guest runs from untouched memory.
+
 ## Floats
 
 `h2 fpstats --root 0x311100` (direct calls and jumps only): 86 functions
@@ -373,6 +451,13 @@ where physics differs.
 - Which motion types, joint classes, agents and shapes a multiplayer
   match and a co-op campaign level build: `havok.bodies`, `havok.agents`
   and `havok.contacts` in a run.
+- The island solve's remaining stages: the contact builder `0x0031f620`
+  (922 instructions, mixed x87 and packed SSE, two `rsqrtss` sites and a
+  tail at `0x00320280`), the joint classes' builders, the schema solve's
+  decode into `sim_havok::solver::Stream` with its write-back pass, and
+  the dynamic motions' accumulators and exports (types 2 to 5) and type
+  6's export. Until they land, the island fallback counter counts every
+  constrained island.
 - That the per-island listener arrays stay empty, and that `W+0x6c` and
   `W+0x78` are not read in the step.
 - The meaning of the save and revert flag bits.

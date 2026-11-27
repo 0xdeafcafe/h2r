@@ -641,6 +641,7 @@ that id, and each machine loads its own build.
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
 | Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
+| Drop pods | Halo 2's `insertion_pod` by stage-2 transplant when the map lacks it, pools `ff_pod_00..03` (squads) and `ff_ppod_00..07` (players), a point set `ff_fall_NN` per drop zone and `ff_pfall_NN` per starting location with an open column ("Drop pods", below) | cut after the ship, before any class |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
@@ -818,6 +819,33 @@ default, `firefight_kit::Config::dropship`):
   paths)` or `cut (reason)`: over the tag headroom, no donor, or no clear
   column; `Costs::ship` is the bytes (the copied tags, the placement, the
   palette row, the name and the point sets). A probe kit has no ship.
+
+**Drop pods.** A kit carries Halo 2's `insertion_pod` vehicle (`src/sky.rs`),
+copied in by stage two from a donor when the map lacks it
+(`transplant::add`; a donor without it, or a refused copy, is a
+`PodRefused` and the build goes on without pods). `Config::no_pods` leaves
+them out. The kit writes parked placements `ff_pod_00` to `ff_pod_03` for
+squads and `ff_ppod_00` to `ff_ppod_07` for players, and two kinds of point
+set with the points `top` and `ground`: `ff_fall_NN` for drop zone `ff_drop_NN`
+(its first area's mean) and `ff_pfall_NN` for starting location NN (its
+index in the scenario). The pods go in the same vehicle blocks as the ship
+(`sky::author` extends them) and the same scripting block as its paths.
+
+The sky test (`sky::plan`) is a kit-build flag, the same on every machine,
+with no runtime ray. From 0.2 above the ground, five rays go up to the top of
+the collision: one straight up and four on a 0.6 ring. A ray is open when it
+hits nothing, or when the first surface it hits is sky (`sky::Roof`: the
+solid surfaces and the sky ones, split by collision material index in
+`Config::sky_materials`). The fall is the lower of 40 and the way up to the
+top of the collision, and under 12 is no fall. Which materials mark sky is
+unverified (docs/game/firefight.md plan step P2); with the list empty every
+surface is solid, so only a start with nothing above it is open. With no open
+zone or start there are no pods. `Package::pods` (`PodReport`) says `kept
+(tag, tags copied, bytes, zone falls); pod starts: N of M open` or `cut
+(reason)`; `Costs::pods` is the bytes. The game reads them with the kit
+(`guest::read_kit`): `KitLayout::{pods, player_pods, falls, player_falls}`.
+Pods are cut right after the ship and before any class when headroom is
+short.
 
 The kit only places the ship parked and gives it the points to fly. The
 placement carries no hover flag: the director turns the hold on
