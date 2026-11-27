@@ -1454,6 +1454,11 @@ fn every_method_in_methods_has_a_test() {
             (None, Err(e))
                 if matches!(d.name, m::UI_HIDE | m::UI_DUPLICATE | m::UI_SET_STRING)
                     && e.code == code::REFUSED => {}
+            // A new multiplayer map is built over the disc's coagulation,
+            // which the invented source lacks (the refusal is
+            // `map_new_names_why_it_cannot_start`).
+            (None, Err(e))
+                if d.name == m::MAP_NEW && e.code == code::REFUSED && e.message.contains("coagulation") => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => {
                 assert!(

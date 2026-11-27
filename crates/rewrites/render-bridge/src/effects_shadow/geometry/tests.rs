@@ -337,6 +337,10 @@ fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
     for _ in 0..CLEAN {
         material_record(&[], &[]);
     }
+    // A sampled frame runs the guest, and its first hook closes the last
+    // compared one; the next frame answers.
+    frame(&mut m, (51 + CLEAN) * SAMPLE);
+    assert!(!answer_handler(&mut m, HESP));
     frame(&mut m, (51 + CLEAN) * SAMPLE + 1);
     assert!(proven());
     assert!(answer_handler(&mut m, HESP));

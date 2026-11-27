@@ -207,6 +207,8 @@ mod tests {
         let mut m = world();
         m.set_u32(DATA + 0x38 + 0x34, 0).unwrap();
         let refused = counter("ribbon_refused_unbounded");
+        // Points 0 and 1 name each other: a cycle, so the model names the refusal.
+        assert_eq!(cr::predict(&m, ESP, 0x1f80, 0x027f).err(), Some(engine::light_constants::Error::Unbounded));
         begin(&m, ESP, 0x1f80, 0x027f);
         assert_eq!(counter("ribbon_refused_unbounded"), refused + 1);
     }

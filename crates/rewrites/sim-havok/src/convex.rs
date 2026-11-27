@@ -220,8 +220,8 @@ mod tests {
         h.0.insert(A + COLLIDABLE_MOTION, MOTION_A);
         h.0.insert(B + COLLIDABLE_MOTION, MOTION_B);
         h.0.insert(AGENT + field::MANAGER, 0x9000);
-        h.0.insert(AGENT + field::BOUND, f(bound));
-        put4(&mut h, AGENT + field::AXIS, [1.0, 0.0, 0.0, 0.0]);
+        // The axis is 16 bytes at `+0x20`, so its `w` lane is the bound at `+0x2c`.
+        put4(&mut h, AGENT + field::AXIS, [1.0, 0.0, 0.0, bound]);
         put4(&mut h, MOTION_A, [0.0, 0.0, 0.0, 0.25]);
         put4(&mut h, MOTION_A + MOTION_TO, [1.0, 0.0, 0.0, 0.0]);
         put4(&mut h, MOTION_B, [5.0, 0.0, 0.0, 0.5]);
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn lanes_past_z_do_not_enter_the_projection() {
         let mut h = heap(2.0);
-        put4(&mut h, AGENT + field::AXIS, [1.0, 0.0, 0.0, 7.0]);
+        // The axis's `w` is the bound (2.0, nonzero); the motion's `w` lanes are huge.
         put4(&mut h, MOTION_B + MOTION_TO, [5.0, 0.0, 0.0, 1e30]);
         assert_eq!(process(&mut Journal::new(&h), &ARGS, FPU).map(|s| s.bound), Ok(f(2.25)));
     }
