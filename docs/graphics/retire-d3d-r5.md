@@ -1,7 +1,7 @@
 # Retiring D3D: R5, the rest of a game view
 
-Status: Partly built. Fog and water draw per item; layer 2's remainder and the sky from the scene are the sections below that say "not built".
-Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`). Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
+Status: Partly built. Fog, water and layers 2 and 17 draw per item; the sky from the scene is the section below that says "not built".
+Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`), `crates/rewrites/native-render/src/layer_pass.rs` (`sorted_layer_run`), `crates/rewrites/render-bridge/src/native_layers.rs` (`RUN_LAYERS`). Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 R5 of [retire-d3d.md](retire-d3d.md) moves the rest of a game view off the
@@ -18,7 +18,7 @@ keeps its guest draw").
 
 | Stage | Counter | Kept |
 |---|---|---|
-| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20 |
+| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20, plus `object_sorted`, `set` and `entry` from the sorted runs |
 | Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
 | Layers 2 and 17, other callers | `scene_kept_{2,17}_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
 | Fog, layer 16 | `scene_kept_16_*` | the walk's per-slot causes, `state` and `entry` from the sorted runs, objects' items, other callers, view refusals. A record with no layer-16 entry draws nothing and is not counted (`fog::guest_items`) |
@@ -76,14 +76,33 @@ held), `_sorted_taken` (items the runs drew), `_refused_state`,
 `_refused_entry`, `_sorted_pass_failed` (a committed run whose entry would
 not take the rewrite: the guest draws it too, logged).
 
+## Layer 2 from the plan
+
+Layers 2 and 17 (`native_layers::RUN_LAYERS`) at the scene's and the
+alternate view's calls use the same runs. The layer call's ask draws the
+leading items the order rule allows and clears their bits; when it leaves
+an item `order`, the bridge holds the layer (`late_sorted::hold`) and each
+run asks the glue again (`Host::ask_run`), which differs from the call's
+ask in four ways.
+
+| Step | Layer call | Sorted run |
+|---|---|---|
+| Items | the list, by the order rule (`clear_layer_items`) | the sorted entries from `from`, up to the first kept (`layer_pass::sorted_layer_run`) |
+| Skip check | `skip_holds` against the device | against the device after the cached restore |
+| Objects | planned with the structure | kept, `object_sorted` (their checks read the device at the call) |
+| Outcomes | `layer_plan_2_*` | none; the held layer's `scene_kept_*` when done |
+
+No layer-2 draw is admitted at its resolved inputs: what no run takes
+keeps its guest draw and its count.
+
+Counters: `layer_plan_{2,17}_sorted_views`, `_sorted_taken`,
+`_sorted_pass_failed`.
+
 ## Not built
 
 - **The sky from the scene.** The strip is admitted at its resolved draw
   (`native_residual_glue`), so the guest's sky selection, its node palette
   upload and the strip's setup run.
-- **Layer 2's packets.** The standard geometry the plan leaves at the main
-  and alternate calls is admitted at its resolved draw, kind 2 setup
-  included.
 
 ## Not verified
 
@@ -99,7 +118,9 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `a_held_layer_whose_boundary_never_comes_keeps_every_draw`,
 `a_refused_view_asks_no_later_run` (`late_sorted`);
 `a_sorted_run_ends_at_the_entry_the_guest_keeps_and_the_next_starts_after_it`
-(`native_render::fog`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,
+(`native_render::fog`); `a_sorted_layer_run_ends_at_the_entry_the_guest_keeps`
+(`layer_pass`), `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
+(`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,
 `the_cached_restore_list_reads_from_the_descriptor_table` (`sorted_entries`);
 `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
 (`native_layers`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`

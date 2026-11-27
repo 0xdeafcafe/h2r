@@ -111,6 +111,7 @@ use native_render::object_program_gpu::{self, LitObjects, OBJECT_LAYERS, Planned
 use native_render::object_streams::StreamFormats;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
+use render_bridge::late_sorted::{Run, RunAt};
 use render_bridge::native_layers::{Host, LayerCaller, Left, count_for};
 
 use crate::native_fog_glue::{device_fog_words, fog_of};
@@ -149,6 +150,33 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left) -> Option<native_render::skip::Cleared> {
+        self.ask_at(mem, layer, caller, scene, left, None, &mut Run::Refused)
+    }
+
+    fn ask_run(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, at: &RunAt<'_>, left: &mut Left) -> Run {
+        let mut run = Run::Refused;
+        self.ask_at(mem, layer, caller, scene, left, Some(at), &mut run);
+        run
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// The layer call's ask (`at` `None`): plans the items, clears the bits
+    /// of the leading ones the order rule lets the pass draw, and commits.
+    /// Or one run of the sorted entries from `at` (`render_bridge::late_sorted`,
+    /// docs/graphics/retire-d3d-r5.md, "Layer 2 from the plan"): the
+    /// structure items the plan draws up to the first entry the guest
+    /// keeps, drawn there and set in `run`. A run counts no outcome (the
+    /// layer call's ask has), checks the skip against the device as the
+    /// shader draw's cached restore leaves it, and leaves the objects to
+    /// the guest (`object_sorted`: their checks read the device at the
+    /// layer call).
+    #[allow(clippy::too_many_arguments)]
+    fn ask_at(
+        &self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left, at: Option<&RunAt<'_>>,
+        run: &mut Run,
+    ) -> Option<native_render::skip::Cleared> {
+        let running = at.is_some();
         let Ok(l) = u8::try_from(layer) else {
             left.all("layer");
             return None;
@@ -215,6 +243,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         }
         let report = |outcomes: &BTreeMap<&'static str, u64>, drawn: u64| {
+            if running {
+                return;
+            }
             for (why, &n) in outcomes {
                 count_for(caller, layer, &format!("refused_{why}"), n);
             }
@@ -230,6 +261,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if let Some(why) = item.refusal {
                 *outcomes.entry(why.name()).or_default() += 1;
                 left.item(item.slot, why.name());
+            } else if running {
+                left.item(item.slot, "object_sorted");
             } else if !OBJECT_LAYERS.contains(&l) {
                 *outcomes.entry("object_layer").or_default() += 1;
                 left.item(item.slot, "object_layer");
@@ -299,8 +332,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // one (`layer_pass::clear_layer_items`).
         let unmarked = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, false).stencil;
         let mut free: HashMap<u32, u32> = HashMap::new();
+        // A run's skip leaves the next kept entry the device the shader
+        // draw's restore of its cached implementation leaves.
+        let restore = if running {
+            let Some(restore) = native_render::sorted_entries::cached_restore(&read) else {
+                left.all("cached_state");
+                return None;
+            };
+            restore
+        } else {
+            Vec::new()
+        };
         if let Some(plan) = &plan {
-            let device_state = |slot: u32| d.render_state(&read, slot);
+            let device = |slot: u32| d.render_state(&read, slot);
+            let device_state = native_render::sorted_entries::after_restore(&restore, &device);
             for draw in plan.draws.iter().filter(|d| layer_pass::world_owner(d.owner).is_some()) {
                 let holds =
                     draw.passes.iter().all(|p| draw.implementation(p).is_some_and(|imp| layer_pass::skip_holds_with(imp, Some(&draw.inputs), &device_state)));
@@ -391,6 +436,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     fogs.insert(material, fog_of(&resolved));
                 }
             }
+        }
+        if let Some(at) = at {
+            return self.commit_run(&mut d, mem, l, caller, &ready, data, &taken, &fogs, samples, stencil, at, left, run);
         }
         let read = ReadMemory(mem);
         let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else {
@@ -514,6 +562,88 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         reservation.commit();
         Some(cleared)
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// A run's draw: the structure items from `at` the plan took and the
+    /// sets draw, up to the first entry the guest keeps
+    /// (`layer_pass::sorted_layer_run`), reserved, committed and set in
+    /// `run`. That entry is named `entry` when nothing else named it.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_run(
+        &self, d: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, l: u8, caller: LayerCaller, ready: &Option<Arc<Ready>>, data: Option<&LayerData>,
+        taken: &HashMap<u32, u32>, fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>, samples: LayerSamples, stencil: gfx::state::StencilState,
+        at: &RunAt<'_>, left: &mut Left, run: &mut Run,
+    ) -> Option<native_render::skip::Cleared> {
+        let take = |item: ListItem| match item {
+            ListItem::World(item) => data.is_some_and(|data| {
+                taken.get(&item.slot) == Some(&item.shader)
+                    && data.part_set.get(&(item.owner, item.part)).is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
+            }),
+            ListItem::Object { .. } => false,
+        };
+        let Some(found) = layer_pass::sorted_layer_run(&ReadMemory(mem), u32::from(l), &at.sorted, at.from, &take) else {
+            left.all("list");
+            return None;
+        };
+        if let Some(stop) = found.stop {
+            if taken.contains_key(&stop) && !left.items.contains_key(&stop) {
+                left.item(stop, "set");
+            } else if !left.items.contains_key(&stop) {
+                left.item(stop, "entry");
+            }
+        }
+        *run = Run::Stopped;
+        if found.drawn.is_empty() {
+            return None;
+        }
+        let mut runs: Vec<LayerRun> = Vec::new();
+        for item in &found.drawn {
+            let ListItem::World(i) = *item else { continue };
+            match runs.last_mut() {
+                Some(LayerRun::World(parts)) => parts.push((i.owner, i.part)),
+                _ => runs.push(LayerRun::World(vec![(i.owner, i.part)])),
+            }
+        }
+        let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let stage = match caller {
+            LayerCaller::Scene | LayerCaller::AlternateView => timeline::native::Stage::World,
+            LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
+            LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
+        };
+        let plan = d3d::ExternalPlan { stage, view: view_index, ranges: found.drawn.len(), slots: Vec::new() };
+        let pass = Box::new(LayerViewPass {
+            ready: ready.clone(),
+            objects: None,
+            texaccum: None,
+            layer: l,
+            runs,
+            samples,
+            fogs: fogs.clone(),
+            view: None,
+            w_clip: None,
+            writes_depth: data.is_some_and(|d| d.writes_depth),
+            stencil,
+            run: u64::from(d.swap_count()).wrapping_add(1),
+        });
+        let Some(reservation) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten() else {
+            left.all("reservation");
+            *run = Run::Refused;
+            return None;
+        };
+        if let Some(ready) = ready {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready)) {
+                left.all("world_changed");
+                *run = Run::Refused;
+                return None;
+            }
+        }
+        reservation.commit();
+        let slots = found.drawn.iter().map(|i| i.slot()).collect();
+        *run = Run::Drawn { slots, entries: found.entries, parts: Vec::new() };
+        None
     }
 }
 

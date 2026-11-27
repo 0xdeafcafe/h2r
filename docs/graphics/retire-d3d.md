@@ -20,6 +20,7 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
 | R5, fog and water per item | layers 16 and 6 draw every item their stage takes in the guest's sorted order, interleaved with the items it keeps (`late_sorted`) | [retire-d3d-r5.md](retire-d3d-r5.md) |
+| R5, layers 2 and 17 per item | the items the order rule holds back draw in the sorted order the same way; no layer-2 draw is admitted at its resolved inputs | [retire-d3d-r5.md](retire-d3d-r5.md) |
 | R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | [retire-d3d-r5.md](retire-d3d-r5.md) |
 
 Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. "R1's remainder" lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).

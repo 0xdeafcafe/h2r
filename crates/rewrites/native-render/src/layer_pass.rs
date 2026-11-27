@@ -605,6 +605,97 @@ pub fn clear_layer_items(
     Some(LayerSkip { drawn, cleared, order })
 }
 
+/// List slot `i`'s item for `layer` as the skip reads it: `Some(None)`
+/// for an item of unknown effect (not a geometry build, or no record),
+/// `None` when a word does not read.
+fn list_item(mem: &dyn crate::camera::GuestRead, items: u32, i: u32) -> Option<Option<ListItem>> {
+    use crate::skip::{GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
+    use crate::world::Owner;
+    let item = items.checked_add(ITEM_SIZE.checked_mul(i)?)?;
+    let geometry = mem.read_u32(item)? == GEOMETRY_BUILD;
+    let arg = if geometry { mem.read_u32(item + 0xc)? } else { 0 };
+    let record = (arg >> 8) as u16 as i16;
+    if !geometry || record < 0 {
+        return Some(None);
+    }
+    let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+    let shader = mem.read_u32(item + 8)?;
+    Some(Some(if mem.read_u32(base + 4)? != u32::MAX {
+        ListItem::Object { slot: i, shader }
+    } else {
+        let packed = mem.read_u32(base + 0xc)?;
+        let owner = if mem.read_u32(base)? & (1 << 12) == 0 {
+            Owner::Cluster((packed >> 9) & 0x1ff)
+        } else {
+            Owner::Instance((packed >> 18) & 0x7ff)
+        };
+        ListItem::World(SkipItem { slot: i, owner, part: arg as u8, shader })
+    }))
+}
+
+/// One run of a layer's sorted entries the native pass draws
+/// ([`sorted_layer_run`]): its items in the guest's order with their entry
+/// indices, and the slot of the entry that ends it, which the guest draws.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LayerRun {
+    pub drawn: Vec<ListItem>,
+    pub entries: Vec<u32>,
+    pub stop: Option<u32>,
+}
+
+/// The run of `layer`'s sorted entries from entry `from`
+/// (`crate::sorted_entries`): each entry whose item `take` says the native
+/// pass draws, up to the first it does not (or one of unknown effect),
+/// which ends the run. Entries the loop passes over are passed by.
+/// Drawn between the guest's own entries, a run needs no order rule
+/// ([`clear_layer_items`]'s): every item keeps its place in the sort.
+/// Nothing is written. `None` when the layer is not current, or the list
+/// or an entry does not read, or an entry names a slot outside the list.
+pub fn sorted_layer_run(
+    mem: &dyn crate::camera::GuestRead,
+    layer: u32,
+    sorted: &crate::sorted_entries::Sorted,
+    from: u32,
+    take: &dyn Fn(ListItem) -> bool,
+) -> Option<LayerRun> {
+    use crate::skip::{CURRENT_LAYER, CURRENT_LIST, ITEM_SIZE, MAX_ITEMS};
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return None;
+    }
+    let count = mem.read_u32(list.checked_add(4)?)?;
+    let first = mem.read_u32(list.checked_add(0xc)?)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    if first > count || count - first > MAX_ITEMS {
+        return None;
+    }
+    items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+    let mut run = LayerRun::default();
+    for k in from..sorted.count {
+        let e = sorted.entry(mem, k)?;
+        if e.passed {
+            continue;
+        }
+        if e.slot < first || e.slot >= count {
+            return None;
+        }
+        match list_item(mem, items, e.slot)? {
+            Some(item) if take(item) => {
+                run.drawn.push(item);
+                run.entries.push(k);
+            }
+            _ => {
+                run.stop = Some(e.slot);
+                break;
+            }
+        }
+    }
+    Some(run)
+}
+
 /// LOGICOP's canonical index, which [`gfx::state::RenderStateType`] does
 /// not model: `0` (none) draws the colour, anything else combines it
 /// with the target's.
@@ -1362,6 +1453,41 @@ pub(crate) mod tests {
         assert!(skip.drawn.is_empty() && skip.cleared.items.is_empty());
         assert_eq!(skip.order, 2);
         assert_eq!(clear_layer_items(&mut m, 7, &|_| TAKE), None, "not the current layer");
+    }
+
+    /// Sorted entries of `slots` for the list at [`layer_list`]'s memory.
+    fn sorted_of(m: &mut scene_extract::testing::Mem, slots: &[u32]) -> crate::sorted_entries::Sorted {
+        const ESP: u32 = 0x0070_0000;
+        const TARGET: u32 = 0x0071_0000;
+        m.w(TARGET + 0x100, 0);
+        let s = crate::sorted_entries::Sorted::at(ESP, slots.len() as u32).unwrap();
+        for (k, &slot) in slots.iter().enumerate() {
+            let e = s.buffer + crate::sorted_entries::ENTRY_SIZE * k as u32;
+            m.w(e, slot);
+            m.w(e + 0x10, TARGET);
+        }
+        s
+    }
+
+    /// The guest sorted placement 9, the object, cluster 7: the first run
+    /// is the placement, ended by the object the guest keeps; the next,
+    /// after it, is the cluster, which no order rule holds back.
+    #[test]
+    fn a_sorted_layer_run_ends_at_the_entry_the_guest_keeps() {
+        use crate::world::Owner;
+        let records = [(1, 0, u32::MAX, 7 << 9), (3, 0, 0xe100_0001, 0), (4, 1 << 12, u32::MAX, 9 << 18)];
+        let items = [(1, 1 << 2), (3, 1 << 2), (4, 1 << 2)];
+        let mut m = layer_list(2, &records, &items);
+        let s = sorted_of(&mut m, &[2, 1, 0]);
+        let structure = |i: ListItem| matches!(i, ListItem::World(_));
+        let run = sorted_layer_run(&m, 2, &s, 0, &structure).unwrap();
+        assert_eq!(run.entries, vec![0]);
+        assert!(matches!(run.drawn[..], [ListItem::World(SkipItem { owner: Owner::Instance(9), .. })]));
+        assert_eq!(run.stop, Some(1));
+        let run = sorted_layer_run(&m, 2, &s, 2, &structure).unwrap();
+        assert_eq!((run.entries, run.stop), (vec![2], None));
+        assert_eq!(mask_at(&m, 0), Some(1 << 2), "nothing written");
+        assert_eq!(sorted_layer_run(&m, 5, &s, 0, &structure), None, "not the current layer");
     }
 
     #[test]

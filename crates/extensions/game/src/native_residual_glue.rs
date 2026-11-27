@@ -1,4 +1,6 @@
-//! Admission of sorted pool surfaces, sky strips and residual layer-2 packets.
+//! Admission of sorted pool surfaces and sky strips. Layer 2's standard
+//! geometry draws from the plan (`native_layers_glue`), what it keeps on
+//! the guest (docs/graphics/retire-d3d-r5.md).
 
 use native_render::world_layers_gpu::IndexedPass;
 use render_bridge::native_sky;
@@ -54,7 +56,7 @@ impl d3d::DrawAdmission for ResidualDraws {
         &self,
         snapshot: &d3d::DrawSnapshot<'_>,
     ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        use native_render::world_layers::{Owner, Site};
+        use native_render::world_layers::Site;
 
         let draw = snapshot.draw;
         if draw.entry != "D3DDevice_DrawIndexedVertices" {
@@ -64,36 +66,23 @@ impl d3d::DrawAdmission for ResidualDraws {
             return admit_pool(draw, view, count, self.geometry.get());
         }
         let call = crate::native_world_layers_glue::indexed_draw()?;
-        let (stage, pass) = match (call.layer.site, call.layer.number) {
-            (Site::Sky, 15) => {
-                let item = crate::native_world_layers_glue::take_sky()?;
-                let plan = native_sky::admit(
-                    item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
-                    |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item),
-                );
-                match plan {
-                    Ok(pass) => {
-                        native_sky::count("admitted");
-                        (timeline::native::Stage::Sky, pass)
-                    }
-                    Err(reason) => {
-                        native_sky::count(reason);
-                        return None;
-                    }
-                }
+        if (call.layer.site, call.layer.number) != (Site::Sky, 15) {
+            return None;
+        }
+        let item = crate::native_world_layers_glue::take_sky()?;
+        let plan = native_sky::admit(
+            item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
+            |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item),
+        );
+        let (stage, pass) = match plan {
+            Ok(pass) => {
+                native_sky::count("admitted");
+                (timeline::native::Stage::Sky, pass)
             }
-            (Site::Scene | Site::AlternateView, 2) if call.layer.list != 0 => {
-                if draw.indices.as_ref()?.len() != call.index_count? as usize {
-                    return None;
-                }
-                let stage = match call.geometry?.owner {
-                    Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
-                    Owner::Object { .. } => timeline::native::Stage::Objects,
-                };
-                let pass = IndexedPass::new(draw, self.geometry.get(), call.frame, None)?;
-                (stage, pass)
+            Err(reason) => {
+                native_sky::count(reason);
+                return None;
             }
-            _ => return None,
         };
         Some((
             d3d::ExternalPlan {

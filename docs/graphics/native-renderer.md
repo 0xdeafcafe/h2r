@@ -512,9 +512,12 @@ the GPU sample counter inside the guest's query.
 plan as layers 1, 5, 7, 8 and 20 do (`frame-scene.layers`,
 `layer_pass::OVERLAY_LAYER`; [framescene.md](framescene.md), slice 4); its
 outcomes are `layer_plan_2_*`, `layer_plan_alt2_*` and `layer_plan_fp2_*` in `render.scene`.
-The standard layer-2 geometry the plan leaves at the main-scene and alternate-scene sites is admitted with its resolved inputs.
-The pass records the full range on both live target copies before the device
-drops the D3D draw.
+What the plan takes but the order rule holds back at the main and
+alternate calls (`order`) draws per item over the guest's sorted entries,
+as fog and water do ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from
+the plan"). What the plan refuses keeps its guest draw, counted
+`scene_kept_2_*` and `scene_kept_alt2_*`; no layer-2 draw is admitted at
+its resolved inputs.
 
 Other layer-2 and layer-17 callers stay on D3D, each item counted
 `scene_kept_<layer>_<kind>_caller` (`native_layers::UNTAKEN_CALLER`). Layer

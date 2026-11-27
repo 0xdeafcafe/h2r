@@ -82,6 +82,11 @@ pub struct Deferred {
     drawn: HashSet<u32>,
     parts: Vec<LatePart>,
     refused: bool,
+    /// The kept counters' site (`""` the scene, `alt` the alternate view).
+    site: &'static str,
+    /// A late layer (6 or 16), which the scene records as the guest
+    /// draws it when no run draws.
+    late: bool,
 }
 
 /// Whether the walk before the build left accepted items to the sort.
@@ -97,20 +102,39 @@ pub fn defer(slot: &Mutex<Option<Deferred>>, mem: &dyn GuestRead, layer: u32, le
         return false;
     };
     let held = held.into_iter().map(|h| (h.slot, h.kind(), h.item.is_some())).collect();
+    hold(slot, Hold { layer, list, site: "", late: true, held }, left);
+    true
+}
+
+/// A layer to hold: its list, the counters' site, whether it is a late
+/// layer, and what the guest's layer draw holds of it, by slot and kind,
+/// with whether the item's record read.
+pub struct Hold {
+    pub layer: u32,
+    pub list: u32,
+    pub site: &'static str,
+    pub late: bool,
+    pub held: Vec<(u32, &'static str, bool)>,
+}
+
+/// Holds a layer for its sorted entries with the walk's causes, its
+/// `order` items to be decided by the runs.
+pub fn hold(slot: &Mutex<Option<Deferred>>, h: Hold, left: &Left) {
     let mut left = left.clone();
     left.items.retain(|_, c| *c != ORDER);
+    count(h.layer, "sorted_views", 1);
     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Deferred {
-        layer,
-        list,
+        layer: h.layer,
+        list: h.list,
         left,
-        held,
+        held: h.held,
         sorted: None,
         drawn: HashSet::new(),
         parts: Vec::new(),
         refused: false,
+        site: h.site,
+        late: h.late,
     });
-    count(layer, "sorted_views", 1);
-    true
 }
 
 /// Counts what the guest drew of a held layer, once: every item it held
@@ -122,10 +146,10 @@ fn finish(mem: &dyn GuestMemory, d: Deferred) {
             continue;
         }
         let cause = if record { d.left.cause(slot) } else { "record" };
-        count_kept_as("", d.layer, kind, cause, 1);
+        count_kept_as(d.site, d.layer, kind, cause, 1);
     }
     count(d.layer, "sorted_taken", d.drawn.len() as u64);
-    if d.drawn.is_empty() {
+    if d.late && d.drawn.is_empty() {
         crate::scene_step::late_kept(mem, d.layer as u8, true);
     }
 }
