@@ -280,6 +280,10 @@ pub struct Driver {
     map_done: bool,
     /// What Select Map's lines said ([`map`]).
     seen: map::Seen,
+    /// The focused list's rows the harness read (`ui.audit`), for the map
+    /// drive, and the last ones read for its give-up.
+    rows: Option<map::Rows>,
+    last_rows: Option<map::Rows>,
     said: BTreeSet<String>,
     out: Vec<String>,
 }
@@ -422,6 +426,8 @@ impl Driver {
             map: None,
             map_done: false,
             seen: map::Seen::default(),
+            rows: None,
+            last_rows: None,
             said: BTreeSet::new(),
             out: Vec::new(),
         }
@@ -1148,7 +1154,7 @@ impl Driver {
 }
 
 pub mod clankermatch;
-mod map;
+pub mod map;
 
 #[cfg(test)]
 mod tests;

@@ -494,6 +494,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
 /// How often the harness asks the game and the server.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
+/// How often the map drive reads the focused list (`ui.audit`).
+const ROWS_EVERY: Duration = Duration::from_millis(700);
 const SERVER_EVERY: Duration = Duration::from_secs(3);
 /// Once every check passed, this long more for the last lines.
 const SETTLE: Duration = Duration::from_secs(3);
@@ -786,6 +788,7 @@ struct Watch<'a> {
     agent_up: bool,
     conn: Option<agent_proto::Client>,
     status_at: Option<Instant>,
+    rows_at: Option<Instant>,
     server_at: Option<Instant>,
     last_status: String,
     last_session: String,
@@ -817,6 +820,7 @@ impl<'a> Watch<'a> {
             agent_up: false,
             conn: None,
             status_at: None,
+            rows_at: None,
             server_at: None,
             last_status: String::new(),
             last_session: String::new(),
@@ -860,6 +864,20 @@ impl<'a> Watch<'a> {
                 }
                 let now = self.now_ms();
                 self.drive.status(now, &phase);
+            }
+        }
+        if self.agent_up
+            && self.driving
+            && self.drive.wants_rows()
+            && self.rows_at.is_none_or(|t| t.elapsed() >= ROWS_EVERY)
+        {
+            // The focused list's real rows (`ui.audit`): the map drive finds
+            // its rows by their text.
+            self.rows_at = Some(Instant::now());
+            if let Ok(v) = self.call(agent_proto::method::UI_AUDIT, serde_json::json!({}))
+                && let Some(rows) = crate::bots_drive::map::rows_from_audit(&v)
+            {
+                self.drive.rows(rows);
             }
         }
         if self.agent_up && self.driving {

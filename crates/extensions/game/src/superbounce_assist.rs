@@ -1211,7 +1211,10 @@ impl AssistTap {
             let raw: &[u8; Gamepad::SIZE] = (&packet[4..])
                 .try_into()
                 .expect("a packet is a number and a gamepad");
-            if let Some(pad) = crate::player_bot::pad_read(&Gamepad::from_bytes(raw), &Mem(m)) {
+            // What the player holds, not what the agent's steps made of it: the
+            // agent's own presses (`h2 bots test`'s driver) are not the player's.
+            let held = agent::live_pad(handle).unwrap_or_else(|| Gamepad::from_bytes(raw));
+            if let Some(pad) = crate::player_bot::pad_read(&held, &Mem(m)) {
                 packet[4..].copy_from_slice(&pad.to_bytes());
                 publish_crouch(None);
                 if self.live || self.latch.0 {

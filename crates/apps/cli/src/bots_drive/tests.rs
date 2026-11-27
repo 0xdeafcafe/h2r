@@ -755,25 +755,62 @@ fn in_lobby_for(map: &str) -> Driver {
     d
 }
 
+/// The audited rows of a list, the focus on `focus`.
+fn rows(labels: &[&str], focus: u32) -> map::Rows {
+    map::Rows {
+        rows: labels
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i as u32, t.to_string()))
+            .collect(),
+        focus: Some(focus),
+    }
+}
+
+/// The Live custom game lobby's list, and Game Setup's in a custom game.
+const LOBBY_ROWS: [&str; 2] = ["Start Game", "Game Setup"];
+const SETUP_ROWS: [&str; 5] = [
+    "Change Map...",
+    "Change Rules...",
+    "Quick Options...",
+    "Halo 1 Options...",
+    "Clanker Options...",
+];
+
+/// The presses from the lobby's rows (the focus on `focus`) to Game
+/// Setup; its dialog line follows.
+fn to_game_setup(d: &mut Driver, focus: u32) -> Vec<String> {
+    assert!(d.wants_rows(), "the drive waits on the lobby's rows");
+    assert!(presses(d, 8300, 11_000).is_empty(), "and presses nothing before them");
+    d.rows(rows(&LOBBY_ROWS, focus));
+    let p = presses(d, 11_100, 13_000);
+    d.line(14_000, GAME_SETUP_DIALOG);
+    p
+}
+
+/// From the open Game Setup: its rows read (the focus on Change Map), A.
+fn change_map(d: &mut Driver) -> Vec<String> {
+    assert!(presses(d, 14_050, 18_000).is_empty(), "nothing until its rows are read");
+    assert!(d.wants_rows());
+    d.rows(rows(&SETUP_ROWS, 0));
+    presses(d, 18_100, 22_000)
+}
+
 #[test]
 fn the_lobby_map_is_picked_through_game_setup_before_start() {
     let mut d = in_lobby_for("zanzibar");
-    // Game Setup is DOWN, A from the lobby.
-    let p = presses(&mut d, 8300, 11_000);
-    assert_eq!(p, ["down to Game Setup, for the map", "a Game Setup"]);
-    // Nothing more until Game Setup is up; then Change Map.
-    assert!(presses(&mut d, 11_100, 12_000).is_empty());
-    d.line(12_000, GAME_SETUP_DIALOG);
-    let p = presses(&mut d, 12_100, 15_000);
-    assert_eq!(p, ["a Change Map"]);
-    // The categories, then A on the first; the maps list names its rows.
-    d.line(15_100, "map select: Select Map lists Categories (2 rows)");
-    d.line(15_100, "map select: rows: Halo 2, Map Pack");
-    let p = presses(&mut d, 15_200, 17_000);
+    // The lobby's focus is on Start Game: DOWN to Game Setup, A.
+    let p = to_game_setup(&mut d, 0);
+    assert_eq!(p, ["down to Game Setup (row 1)", "a Game Setup"]);
+    // Game Setup's own rows, read; Change Map is the focused row.
+    assert_eq!(change_map(&mut d), ["a Change Map"]);
+    d.line(24_100, "map select: Select Map lists Categories (2 rows)");
+    d.line(24_100, "map select: rows: Halo 2, Map Pack");
+    let p = presses(&mut d, 24_200, 26_000);
     assert_eq!(p, ["a the first category"]);
-    d.line(17_100, "map select: Select Map lists Maps(Halo2) (3 rows)");
-    d.line(17_100, "map select: rows: lockout, ascendance, zanzibar");
-    let p = presses(&mut d, 17_200, 21_000);
+    d.line(26_100, "map select: Select Map lists Maps(Halo2) (3 rows)");
+    d.line(26_100, "map select: rows: lockout, ascendance, zanzibar");
+    let p = presses(&mut d, 26_200, 29_000);
     assert_eq!(
         p,
         [
@@ -782,12 +819,12 @@ fn the_lobby_map_is_picked_through_game_setup_before_start() {
             "a pick zanzibar"
         ]
     );
-    d.line(21_100, "map select: picked zanzibar");
-    let p = presses(&mut d, 21_200, 23_000);
+    d.line(29_100, "map select: picked zanzibar");
+    let p = presses(&mut d, 29_200, 31_000);
     assert_eq!(p, ["b out of Game Setup: the map is picked"]);
     // Game Setup closes; Start Game follows, as without a map.
-    d.line(23_100, LOBBY);
-    let p = presses(&mut d, 23_200, 30_000);
+    d.line(31_100, LOBBY);
+    let p = presses(&mut d, 31_200, 38_000);
     assert_eq!(p, ["a Start Game: 1 phantoms in the lobby"]);
     assert!(
         d.take_said()
@@ -796,17 +833,59 @@ fn the_lobby_map_is_picked_through_game_setup_before_start() {
 }
 
 #[test]
+fn the_focus_decides_the_presses_to_the_game_setup_row() {
+    // On Game Setup already: A alone, where a fixed DOWN, A pressed Start
+    // Game's row round again (the run that started on cyclotron).
+    let mut d = in_lobby_for("zanzibar");
+    assert_eq!(to_game_setup(&mut d, 1), ["a Game Setup"]);
+    // Below it: UP.
+    let mut d = in_lobby_for("zanzibar");
+    d.rows(rows(&["Start Game", "Players", "Game Setup", "Leave"], 3));
+    let p = presses(&mut d, 8300, 11_000);
+    assert_eq!(p, ["up to Game Setup (row 2)", "a Game Setup"]);
+}
+
+#[test]
+fn a_lobby_without_a_game_setup_row_stops_naming_the_rows_it_saw() {
+    let mut d = in_lobby_for("zanzibar");
+    d.rows(rows(&["Start Game"], 0));
+    presses(&mut d, 8300, 8300 + STEP_MS + 2000);
+    assert!(d.stuck());
+    let said = d.take_said();
+    assert!(
+        said.iter().any(|s| s.contains("no Game Setup row") && s.contains("Start Game")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn the_audit_names_the_focused_lists_rows() {
+    let v = serde_json::json!({"active": {"pane": 0, "panes": [
+        {"index": 1, "active": false, "lists": []},
+        {"index": 0, "active": true, "lists": [{"focused_row": 1, "item_count": 2,
+            "rows": [{"index": 0, "text": "Start Game"}, {"index": 1, "text": "Game Setup"}]}]}
+    ]}});
+    assert_eq!(map::rows_from_audit(&v), Some(rows(&LOBBY_ROWS, 1)));
+    assert!(map::rows_from_audit(&serde_json::json!({"active": {"panes": []}})).is_none());
+}
+
+/// Drives to the Select Map categories (`cats`) for `map`.
+fn to_categories(map: &str, cats: &str) -> Driver {
+    let mut d = in_lobby_for(map);
+    to_game_setup(&mut d, 0);
+    change_map(&mut d);
+    d.line(24_100, "map select: Select Map lists Categories (2 rows)");
+    d.line(24_100, &format!("map select: rows: {cats}"));
+    presses(&mut d, 24_200, 26_000);
+    d
+}
+
+#[test]
 fn a_map_in_another_category_backs_out_and_tries_the_next() {
-    let mut d = in_lobby_for("Halo 1 Map");
-    presses(&mut d, 8300, 11_000);
-    d.line(12_000, GAME_SETUP_DIALOG);
-    presses(&mut d, 12_100, 15_000);
-    d.line(15_100, "map select: Select Map lists Categories (2 rows)");
-    d.line(15_100, "map select: rows: Halo 2, Halo: CE");
-    presses(&mut d, 15_200, 17_000);
-    d.line(17_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
-    d.line(17_100, "map select: rows: lockout");
-    let p = presses(&mut d, 17_200, 21_000);
+    let mut d = to_categories("Halo 1 Map", "Halo 2, Halo: CE");
+    d.line(26_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
+    d.line(26_100, "map select: rows: lockout");
+    let p = presses(&mut d, 26_200, 29_000);
     assert_eq!(
         p,
         [
@@ -815,51 +894,47 @@ fn a_map_in_another_category_backs_out_and_tries_the_next() {
             "a the next category"
         ]
     );
-    d.line(21_100, "map select: Select Map lists Categories (2 rows)");
-    d.line(21_100, "map select: rows: Halo 2, Halo: CE");
-    d.line(22_000, "map select: Select Map lists Maps(Halo1) (1 rows)");
-    d.line(22_000, "map select: rows: halo 1 map");
-    let p = presses(&mut d, 22_100, 24_000);
+    d.line(29_100, "map select: Select Map lists Categories (2 rows)");
+    d.line(29_100, "map select: rows: Halo 2, Halo: CE");
+    d.line(30_000, "map select: Select Map lists Maps(Halo1) (1 rows)");
+    d.line(30_000, "map select: rows: halo 1 map");
+    let p = presses(&mut d, 30_100, 32_000);
     assert_eq!(p, ["a pick Halo 1 Map"]);
 }
 
 #[test]
 fn a_map_no_category_lists_stops_the_drive_saying_so() {
-    let mut d = in_lobby_for("nowhere");
-    presses(&mut d, 8300, 11_000);
-    d.line(12_000, GAME_SETUP_DIALOG);
-    presses(&mut d, 12_100, 15_000);
-    d.line(15_100, "map select: Select Map lists Categories (1 rows)");
-    d.line(15_100, "map select: rows: Halo 2");
-    presses(&mut d, 15_200, 17_000);
-    d.line(17_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
-    d.line(17_100, "map select: rows: lockout");
-    presses(&mut d, 17_200, 19_000);
+    let mut d = to_categories("nowhere", "Halo 2");
+    d.line(26_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
+    d.line(26_100, "map select: rows: lockout");
+    presses(&mut d, 26_200, 28_000);
     assert!(d.stuck());
     assert!(d.take_said().iter().any(|s| s.contains("no category lists a map \"nowhere\"")));
 }
 
 #[test]
 fn a_different_pick_stops_the_drive() {
-    let mut d = in_lobby_for("zanzibar");
-    presses(&mut d, 8300, 11_000);
-    d.line(12_000, GAME_SETUP_DIALOG);
-    presses(&mut d, 12_100, 15_000);
-    d.line(15_100, "map select: Select Map lists Categories (1 rows)");
-    d.line(15_100, "map select: rows: Halo 2");
-    presses(&mut d, 15_200, 17_000);
-    d.line(17_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
-    d.line(17_100, "map select: rows: zanzibar");
-    presses(&mut d, 17_200, 19_000);
-    d.line(19_100, "map select: picked lockout");
-    presses(&mut d, 19_200, 21_000);
+    let mut d = to_categories("zanzibar", "Halo 2");
+    d.line(26_100, "map select: Select Map lists Maps(Halo2) (1 rows)");
+    d.line(26_100, "map select: rows: zanzibar");
+    presses(&mut d, 26_200, 28_000);
+    d.line(28_100, "map select: picked lockout");
+    presses(&mut d, 28_200, 30_000);
     assert!(d.stuck());
 }
 
 #[test]
 fn game_setup_never_opening_gives_up_naming_it() {
     let mut d = in_lobby_for("zanzibar");
-    presses(&mut d, 8300, 8300 + 5 * (STEP_MS + 2000));
+    let mut t = 8300;
+    // The rows are read each time the drive asks; the dialog never comes.
+    while t < 8300 + 6 * (STEP_MS + 2000) && !d.stuck() {
+        if d.wants_rows() {
+            d.rows(rows(&LOBBY_ROWS, 0));
+        }
+        d.poll(t);
+        t += 100;
+    }
     assert!(d.stuck());
     assert!(d.take_said().iter().any(|s| s.contains("Game Setup (dialog 0x17) never opened")));
 }

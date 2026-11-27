@@ -475,15 +475,16 @@ non-zero on a failure).
 **Notes.**
 
 - `--map NAME` picks the custom game lobby's map before Start Game, through
-  the game's own screens (`bots_drive/map.rs`): DOWN, A to Game Setup
-  (dialog `0x17`), A on Change Map, A on a category, then DOWN to the map's
-  row and A. The game names each Select Map list's rows in order
+  the game's own screens (`bots_drive/map.rs`). The harness reads the
+  focused list with `ui.audit` (`rows_from_audit`), and the driver finds
+  the Game Setup row (dialog `0x17`) in the lobby's list, then Change Map
+  in Game Setup's, by their text, pressing DOWN or UP from the focused row
+  and A. Then A on a category, DOWN to the map's row and A. The game names each Select Map list's rows in order
   (`map select: rows: ...`, `map_select::row_names`) and says
   `map select: picked NAME`, so the driver counts its presses off those
   lines and a category without the map is backed out of for the next. A
   screen that does not come stops the drive and names it. The gameplay
-  check then confirms the map played. The path is from the docs, not yet
-  seen in a run.
+  check then confirms the map played.
 - The Clankers fill runs twice in a log: first as host-made bots
   (`clankers: no roster yet: this console hosts no Xbox Live session`), then
   again once the lobby is hosted, when Live's roster replaces them (the

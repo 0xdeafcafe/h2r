@@ -199,6 +199,34 @@ fn a_real_press_hands_the_seat_back() {
     assert_eq!(read(&mut t, Gamepad::default()), Gamepad::default());
 }
 
+/// A read the agent's tap has seen: `held` is what the player holds, and
+/// `merged` what the agent's steps made of it (the packet the assist gets).
+fn read_through_agent(t: &mut AssistTap, held: Gamepad, merged: Gamepad) -> Gamepad {
+    agent::note_live_pad(HANDLE, Some(held));
+    let pad = read(t, merged);
+    agent::note_live_pad(HANDLE, None);
+    pad
+}
+
+#[test]
+fn an_agent_press_does_not_hand_the_seat_back_but_a_physical_one_does() {
+    let _g = fresh();
+    let mut t = tap();
+    turn_on_with(Ask::default(), STAND_IN);
+    let mut press = Gamepad::default();
+    press.analog[AnalogButton::A.index()] = 255;
+    // The agent presses A over an idle pad: the merged packet has the press.
+    let pad = read_through_agent(&mut t, Gamepad::default(), press);
+    assert_eq!(pad, game_pad(1), "the brain still plays");
+    assert!(active(), "an agent press is not the player's");
+    TICK.store(101, Ordering::Relaxed);
+    // The player's own pad press, with or without an agent step on it.
+    let pad = read_through_agent(&mut t, press, press);
+    assert_eq!(pad, press);
+    assert!(!active());
+    assert_eq!(status().off.as_deref(), Some("pad"));
+}
+
 #[test]
 fn outside_a_game_the_real_pad_goes_through_and_the_brain_waits() {
     let _g = fresh();

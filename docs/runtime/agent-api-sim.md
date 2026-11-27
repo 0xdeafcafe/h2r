@@ -210,7 +210,9 @@ h2 agent player.goto_cancel
 Clanker brain for benchmarks and spectating: it moves, fights and picks
 up weapons on the first controller's pad, through the pad tap
 `player.goto` drives. `on: false`, or any real press on that pad (a
-button, a trigger, a stick past half), hands it back at once. The
+button, a trigger, a stick past half), hands it back at once; a press
+`input.pad` makes does not (the tap reads the pad as it was before the
+agent's steps, `agent::live_pad`). The
 glue is `crates/extensions/game/src/player_bot.rs`.
 
 | | |

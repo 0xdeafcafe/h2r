@@ -35,6 +35,25 @@ use xapi::tap::{InputLog, InputTap, PACKET, Recorder, ReplayStats, Replayer};
 
 use crate::{Access, Agent};
 
+thread_local! {
+    /// The pad a handle's last read had before the agent's steps merged
+    /// over it: what the player holds.
+    static LIVE: std::cell::Cell<Option<(u32, Gamepad)>> = const { std::cell::Cell::new(None) };
+}
+
+/// The pad the current read of `handle` had before an agent step or route
+/// merged over it (what a physical pad, or a replay, holds), when the
+/// agent's tap has seen this read. A tap under the agent's, which sees the
+/// merged packet, asks it to tell a physical press from an agent's.
+pub fn live_pad(handle: u32) -> Option<Gamepad> {
+    LIVE.get().filter(|(h, _)| *h == handle).map(|(_, p)| p)
+}
+
+/// Notes the pad `handle`'s current read had before the agent's steps.
+pub fn note_live_pad(handle: u32, pad: Option<Gamepad>) {
+    LIVE.set(pad.map(|p| (handle, p)));
+}
+
 /// What one handle was last given, to keep its packet numbers moving.
 #[derive(Debug, Clone, Copy, Default)]
 struct Delivered {
@@ -491,6 +510,10 @@ impl Input {
     /// until the first step.
     fn step(&mut self, handle: u32, packet: &mut [u8; PACKET]) {
         let port = self.ports.get(&handle).map(|&p| p as usize);
+        note_live_pad(
+            handle,
+            Some(Gamepad::from_bytes(packet[4..].try_into().unwrap())),
+        );
         let route = port.and_then(|p| self.routes.get(p)?.as_ref());
         let remote = port.and_then(|p| self.pads.get(p)).filter(|r| r.busy());
         let stepped = route.is_some() || remote.is_some();
