@@ -1,6 +1,6 @@
 # Object update bodies: units, weapons, vehicles and bipeds
 
-Status: Built (behind `impl.sim.native.objects`). The bodies of slices 6a, 6b, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. Contract page for [sim-rewrite-objects.md](sim-rewrite-objects.md) phase 3; entries are in [object-update.md](object-update.md).
+Status: Built (behind `impl.sim.native.objects`). The bodies of slices 6a, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. Contract page for [sim-rewrite-objects.md](sim-rewrite-objects.md) phase 3; entries are in [object-update.md](object-update.md).
 
 ## Slice 6a bodies
 
@@ -85,80 +85,6 @@ drivers use the guest frame across all nine return sites.
   are checked only against stub answers.
 - That the x87 crate's transcendentals do not depend on the rounding
   mode is read from its source, not checked in a test.
-
-## Slice 6b bodies
-
-Each is **C** for its control flow and accesses: read at its address
-with `h2 disasm`, and compared with the lifted original by
-`tests/sim_objects_differential.rs` (the four roots below over the
-slice 6a dressing plus the fields they branch on, and the unit update
-root, which fuses the first three). Field names are ours and **L**. The
-body files' headers (`engine::sim_objects::unit_state`: `control.rs`,
-`state.rs`, `seats.rs`) record each frame, the registers kept across
-calls and what each function does.
-
-**Transfers.** The eight integer registers, the `xmm` registers, MXCSR
-and the x87 state are retail's at every call and return, and every store
-retail makes is made, stack stores included (the `push 1` arguments of
-`10f720`, the record `189210` takes, the flag word `c58f0` stores as a
-word and reads back as a dword with the stale upper half). Flags are
-left undefined at every transfer: `scripts/sim-liveness.py` shows no
-caller and no callee of the four reading a flag before writing it (and
-`d1080` reads only DF, which no body touches). x87: `c49b0`'s `fld;
-fistp` (`c4c08`, `c4c0c`) and `ce0c0`'s three `fld; fabs; fstp`
-(`ce254`..`ce2ec`) run through `x87::abi` on the guest's x87 state with
-the pointers the last one leaves.
-
-**Constants.** String IDs (`c4cf3`, `c4cfb`, `c4dfb`, `c4e03`, `c5c03`)
-and the `0.5` pushed at `c59e1` and `c59fa` are read from the
-instructions that carry them in the loaded image. Float constants are
-read from their image addresses.
-
-**Control `c49b0`.** The desired aim and look (`+15c`, `+180`) come from
-`d0080`'s facing when body `+134` bit 21 is set, otherwise (bit 1 clear)
-from the parent's seat node or the unit's own `+70`; then the timed bits
-(`+1ec`, `+1f0`, `+148` bit 16 toggled every `[45dc20]` × ticks a second
-ticks, `+1c0`), the two linked objects at `+248` and `+24c`, and the
-`+334`/`+338` pair. The `idiv` by that tick count is the guest's divide
-error when the count is 0; the body faults at `c4c19` as the lifted code
-does.
-
-**State `c58f0`.** Timers `+1f5`, `+1fa`, `+1fb`; unit states through
-`e68c0`; held weapons' time stamps and states; `+23c` through `110ab0`
-and `cbec0`; the idle test `c85c0` (a slice 6a body, fused) choosing
-`+240` and the name `189210` plays; per held weapon `100430` with a flag
-word from body `+148`; then `d1540`.
-
-**Seats `c5eb0` and refresh `ce0c0`.** `c5eb0` calls `d0c10` and
-`ce0c0`, then moves each of the definition's powered seats (`+1b8`
-records at `+1bc`) toward 1 or 0 by one tick over the seat's time, into
-body `+25c + 4n`. Its result is the top byte of the `ecx` it pushed, so
-`ecx` returns with it, and the Halo 1 drive model's `before` hook on
-`ce0c0` sets that byte through the return address `c5f04`. `ce0c0`
-clears body `+134` bits 25 and 26, asks `d1080` for the control frame,
-and stores the position's change (`+270..+284`), its changes in the
-basis (`+294..+29c`) and their blend (`+288..+290`); bits 25 and 26 are
-set when an absolute change passes a threshold. The drive model's hook
-makes `UNIT_CONTROL_REFRESH` a guarded body: `c5eb0` reaches it through
-the runtime, which runs the hook, then the body.
-
-**Callees**, every one a callout except `c85c0`, `ce0c0` and slice 7a's
-`e68c0` and `e4050` (bodies, fused), with the bytes `ret` pops: `d0d20`,
-`d0080`, `10f5f0`, `c7070`, `1143d0`, `f42f0`, `cc380`, `113da0`,
-`113df0`, `cbec0`, `189210`, `d0c10`, `138880` (0); `10f720`, `113d20`,
-`113d60`, `110ab0`, `d1540` (4); `d1080` (8); `100430` (`c`).
-
-### Not verified for slice 6b
-
-- Captures from Waterworks and a campaign level with vehicles and
-  turrets (the slice's testable result): registers and RAM at the n-th
-  call of each of the four, compared with `impl.sim.native.objects`
-  off. The harness covers synthetic pools with stubbed callees.
-- The harness dresses only units whose linked objects are pool objects;
-  a linked object of another type, and `10f5f0`'s names beyond the two
-  the bodies test for, are read only from the code.
-- The Halo 1 drive model's hook with the body guarded is read from the
-  installer (`hooks::install::guard_shared_bodies`), not run.
 
 ## Slice 9 body
 

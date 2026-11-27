@@ -298,8 +298,8 @@ How the bodies keep the contract is in "Slice 7b bodies" below.
 | Page | Holds |
 |---|---|
 | [object-update-bodies-core.md](object-update-bodies-core.md) | Slice 0 resolutions and the bodies of slices 1, 3 and 4: the walks and dispatchers, function values and change colours, and the post-update shell. |
-| [object-update-bodies-types.md](object-update-bodies-types.md) | The bodies of slices 8, 11 and 5: the damage update, the item, scenery, device, machine, crate, creature and projectile updates, and the lights. |
-| [object-update-bodies-units.md](object-update-bodies-units.md) | The bodies of slices 6a, 6b, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. |
+| [object-update-bodies-types.md](object-update-bodies-types.md) | The bodies of slices 8, 11, 5 and 6b: the damage update, the item, scenery, device, machine, crate, creature and projectile updates, and the lights. |
+| [object-update-bodies-units.md](object-update-bodies-units.md) | The bodies of slices 6a, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. |
 | [object-update-liveness.md](object-update-liveness.md) | The register liveness scan over every entry and call site of the object update bodies. |
 
 ## Resolved in slice 0
@@ -340,7 +340,7 @@ In [object-update-bodies-units.md](object-update-bodies-units.md).
 
 ## Slice 6b bodies
 
-In [object-update-bodies-units.md](object-update-bodies-units.md).
+In [object-update-bodies-types.md](object-update-bodies-types.md).
 
 ## Slice 9 body
 

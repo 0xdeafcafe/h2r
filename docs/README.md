@@ -256,7 +256,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports behind `impl.sim.native.effects`, and their parity arm
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
 - [object-update-bodies-core.md](engine/object-update-bodies-core.md): the object update bodies of slices 0, 1, 3 and 4 (walks, function values, post-update shell)
-- [object-update-bodies-types.md](engine/object-update-bodies-types.md): the bodies of slices 8, 11 and 5 (damage, small types, lights)
+- [object-update-bodies-types.md](engine/object-update-bodies-types.md): the bodies of slices 8, 11, 5 and 6b (damage, small types, lights, unit state)
 - [object-update-bodies-units.md](engine/object-update-bodies-units.md): the bodies of the unit, weapon, vehicle and biped updates
 - [object-update-liveness.md](engine/object-update-liveness.md): register liveness over every object update entry and call site
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
