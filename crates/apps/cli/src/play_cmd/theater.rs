@@ -288,8 +288,8 @@ mod tests {
             right: false,
             colour: [1.0; 3],
         });
-        let mut pages = Pages { disc: None, drawn: None };
-        assert!(pages.render(spec, None).is_none());
+        let mut pages = Pages { disc: None, drawn: None, keys: None };
+        assert!(pages.render(spec, None, false).is_none());
     }
 
     fn local_entry(map: &str) -> film::LibraryEntry {
