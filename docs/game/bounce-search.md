@@ -77,7 +77,7 @@ moving the aim moves the miss (`learn::Try::from_leap`):
 
 `need` is the site's (`Site::need`): a measured one, else the one
 threshold every seam shares, 5.4 units/s
-([superbounce.md, "Speed"](superbounce.md#speed)). Any
+([superbounce.md, "Speed"](superbounce-spots.md#speed)). Any
 bounce outscores any landing that did not bounce, a deadly bounce scores
 under a clean miss, and among misses the score rises as the miss shrinks
 and the landing speeds up: that slope is what the search climbs before a

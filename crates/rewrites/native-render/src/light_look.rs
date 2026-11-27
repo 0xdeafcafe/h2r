@@ -1,6 +1,6 @@
 //! Stage 4: a lit material's layer-12 (diffuse) and layer-13 (specular)
-//! pass as the game draws it for one light (docs/graphics/native-lights.md,
-//! "Stage 4", "Implementations" and "Engine constants").
+//! pass as the game draws it for one light (docs/graphics/native-lights-constants.md,
+//! "Implementations" and "Engine constants").
 //!
 //! The engine picks the implementation per light (`engine::light_passes`:
 //! `diffuse`, `specular`) and resolves the pass with the light's engine

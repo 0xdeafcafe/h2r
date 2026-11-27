@@ -24,6 +24,7 @@ mod rules_editors;
 mod rules_lsp;
 mod scripts;
 mod shader;
+mod siege_cmd;
 mod strings;
 mod studio_link;
 mod superbounce_cmd;
@@ -63,6 +64,8 @@ sits beside h2 (docs/runtime/cli-tools.md).
                           (docs/editor/studio-redesign.md, Packages)
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
+  siege layout <map>      scaffold a Siege layout from the map's flags and
+                          starts; -o, --scenario (docs/game/rules-engine.md)
   superbounce scan <map>  bounce strips and forced-crouch spots in a map's
                           collision; --bsp N, --json (docs/game/superbounce.md)
   hud preview <hud> --out DIR  a HUD kit HUD drawn over the retail player HUD,
@@ -115,6 +118,7 @@ fn main() -> Result<()> {
         "maps" | "tags" | "tag" => maps::run(&cmd, rest),
         "collision" => collision::run(rest),
         "superbounce" => superbounce_cmd::run(rest),
+        "siege" => siege_cmd::run(rest),
         "hud" => hud_cmd::run(rest),
         "object" => object::run(rest),
         "strings" => strings::run(rest),

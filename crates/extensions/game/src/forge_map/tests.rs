@@ -211,3 +211,31 @@ fn a_palette_entry_must_be_a_visible_object_of_its_own_group() {
     assert!(refusal(BlockKind::Scenery, scen, &bad).contains("no model"));
     assert!(refusal(BlockKind::Vehicles, FourCC(*b"vehi"), &def).contains("not a vehi object"));
 }
+
+/// An item collection's payload at 0x1000: its entries block, then the
+/// entries, each a weight and an item of `groups`.
+fn collection(groups: &[&[u8; 4]]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend((groups.len() as u32).to_le_bytes());
+    b.extend(0x1008u32.to_le_bytes());
+    for g in groups {
+        b.extend(1f32.to_le_bytes());
+        b.extend(u32::from_be_bytes(**g).to_le_bytes());
+        b.extend(0xe000_0000u32.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+    }
+    b
+}
+
+#[test]
+fn a_collection_holds_a_weapon_when_any_entry_is_one() {
+    let holds = |groups: &[&[u8; 4]]| holds_weapon(&collection(groups), 0x1000).unwrap();
+    assert!(holds(&[b"weap", b"weap"]));
+    assert!(holds(&[b"eqip", b"weap"]), "a mixed collection");
+    assert!(!holds(&[b"eqip"]), "grenades");
+    assert!(!holds(&[]));
+    // An entries block past the payload does not read.
+    let mut bad = collection(&[b"weap"]);
+    bad[4..8].copy_from_slice(&0x2000u32.to_le_bytes());
+    assert!(holds_weapon(&bad, 0x1000).is_err());
+}

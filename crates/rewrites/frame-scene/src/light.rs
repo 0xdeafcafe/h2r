@@ -183,7 +183,7 @@ pub struct LightProjection {
 }
 
 /// One light's constants as its passes read them, words as the game
-/// stores them (docs/graphics/native-lights.md, "Stage 4", "Engine
+/// stores them (docs/graphics/native-lights-constants.md, "Engine
 /// constants"); `engine::light_constants` and `engine::light_passes`
 /// compute them without writing guest memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]

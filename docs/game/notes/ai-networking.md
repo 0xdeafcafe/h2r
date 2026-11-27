@@ -3,7 +3,7 @@
 Evidence for [ai-networking.md](../ai-networking.md) and
 [firefight.md](../firefight.md). Newest first.
 
-## 2026-11-21 — Correction to the spare-slot count
+## 2026-11-21 - Correction to the spare-slot count
 
 At `f563722220f6`, the registry initializer at `0x67e30` establishes
 32 entity pointers and 15 free slots. The 33-pointer estimate below

@@ -87,7 +87,7 @@ quarters of that is rendering.
 
 The pipelined-render census measured exactly which guest memory the render
 front-end writes and the simulation then reads
-([pipelined-render.md](../graphics/notes/pipelined-render.md), "Every dependency
+([pipelined-render-census.md](../graphics/notes/pipelined-render-census.md), "Every dependency
 line" and "The new dependency sites"). Skipping the render is the extreme
 case of running it on another thread: it never runs. Each dependency line,
 and what sim mode does with it:

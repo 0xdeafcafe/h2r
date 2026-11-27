@@ -91,11 +91,71 @@ A Forge session's document is loaded at the session's first tick, after
 no document at all (the same is true of a spawner's team,
 `rules/census.rs`). No path carries a document property to the round
 reset of the game that plays it, so the row would do nothing in play.
-It waits for a property that reaches a match (the built package's
-document read before `GAME_ACTIVATE`, or a record in the map's tail as the
-areas use).
 
-### Weight (not proven)
+**What it would take.** The property has to be in the built map, read
+before the first `ENGINE_ROUND_RESET`:
+
+1. **The record.** A per-game Forge block in the map's tail, in the
+   manner of the areas record (`game_markers::record`, read at activation
+   by `map_areas::activate`, before the rules runtime's start): rows of
+   (block, index, print, property), written by `forge_build` from the
+   document's properties that reach play (Place at start; Spare clips and
+   Weight too, so a match on a built variant keeps them). The materialiser
+   knows each entry's final index (`forge_doc::resolve`).
+2. **Reading it.** `EditorSources::activated` reads the record with the
+   areas and fills the game's tables (`spare_clips::TABLE`,
+   `spawn_weight::TABLE`, and a Place at start set) before the round
+   reset runs.
+3. **The write.** An observer after `ENGINE_ROUND_RESET` sets the
+   countdown (`[GAME_ENGINE]+0x7dc + 8 * index + 4`) of each entry with
+   Place at start No from 1 to 0. A later round's reset runs it again.
+   In a Forge session the same write runs when the property changes,
+   for the next round.
+4. **Peers.** Only the authority spawns (`0x15ae7b`), so only the host
+   needs the table; a member builds the same package and holds it unused.
+
+### Weight (built)
+
+- **The chooser.** `PLAYER_SPAWN_LOCATION` (`0x14ef00`) starts with the
+  best weight `[0x45df28]` = -1000.0, weighs every starting location
+  (`0x14ef90`..`0x14efff`) and keeps the heaviest that passes the free-spot
+  test (`0x14efb6` `comiss`, then `0x23bb70`). `0x23ba90`'s one caller is
+  `0x14efb1`; EAX the location, the weight back in XMM0 (`ret 0Ch`).
+- **The influence.** The context (`0x23bc40`, `[esi]` a count up to `0x80`)
+  is filled by `0x23b170`, `0x23b500`, `0x23b8e0` and the engine's slot
+  `+0x80` (Oddball `0x2bcd50` and KotH `0x2bdb00` add spheres of kinds 5, 6
+  and 7, 8; the default `0x24dc50` adds none). Each sphere comes from
+  `0x23ba10`, whose weights are the table `0x502260` (`0xc` a kind: inner
+  radius, outer radius, weight) and the heights `0x502258`, `0x50225c`.
+  `0x23aea0` fills the table from the multiplayer globals (`mulg`'s
+  universal element, `+0x184`..: four rows of `0xa8`, three kinds each,
+  and the scenario's overrides at `scnr+0x318`). On lockout the kinds'
+  weights are -0.75, 0.1, -0.75, 0.05, 0, 0.05 (row 0) and -1.0, 0.05, -1.0,
+  0.5, -0.75, 0.25 (row 1), the heights 3.0: an enemy weighs -0.75 to -1,
+  everything else 0.05 to 0.5 (read with `tag.read` on
+  `mulg:multiplayer\multiplayer_globals`).
+- **The random term.** `0x23bb04`..`0x23bb54`: the seed in ESI (from the
+  player index, spawn count and options, `0x14ef50`) stepped
+  `x * 0x19660d + 0x3c6ef35f`, its top 16 bits times `[0x45dc50]`
+  (1/65535), times the first float of `mulg`'s universal element's block
+  `+0x530` (`[[*GLOBALS_TAG]+0x16c]` tag `+0x0c`, `+0x534`), which is 1.0
+  on the disc. So the term is uniform over `[0, 1]`.
+- **The bias.** Low and High add -0.5 and +0.5 after `0x23ba90` returns
+  (`agent::forge::spawn_weight::BIAS`). Against a location of equal
+  influence, High wins when its draw plus 0.5 beats the other's draw:
+  seven times in eight. It is smaller than one enemy sphere (0.75 to 1),
+  so a High location by an enemy still loses to a clear one, and much
+  larger than the non-enemy spheres, so it outweighs a teammate's pull.
+  The effect is static evidence; a run that counts spawns was not made.
+
+Built: `forge_doc::Property::Weight` (`SpawnWeight::{Low, High}`),
+`Session::set_spawn_weight`, `World::spawn_weight`,
+`agent::forge::spawn_weight`, and the game's `forge_spawn_weight` feature
+(an observer before `SPAWN_LOCATION_WEIGHT` keeps EAX, a hook after adds
+the bias to XMM0).
+
+### Weight: the earlier reading
+
 
 - The spawn chooser (`PLAYER_SPAWN_LOCATION`, `0x14ef00`) loops over the
   starting locations (`0x14ef90`..`0x14efff`, the index at `[esp+14h]`).
@@ -113,6 +173,4 @@ areas use).
   read, nor the globals float that scales the random term. A bias of the
   wrong size either does nothing or picks one location every time.
 
-**Why there is no row.** The size of the bias is a guess until the
-influence weights and the random term's scale are read for each game
-type.
+The influence weights and the scale were read the same day (above).

@@ -1,7 +1,7 @@
 # Multiplayer map selection
 
 Status: Built. The category dialog, the separate mod slots and the live refresh are in the code; the game checks under "Game verification" are open.
-Code: `crates/extensions/game/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`). Tests: `crates/extensions/game/src/map_select.rs`.
+Code: `crates/extensions/game/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`), `crates/extensions/game/src/map_modes.rs` (the modes each map supports). Tests: `crates/extensions/game/src/map_select.rs`.
 Switch: none.
 
 Game Setup's **Change Map** uses the game's Select Map dialog to show
@@ -16,7 +16,6 @@ focused. From the categories, **B** or **Back** closes the picker.
 | Map Pack | Maps installed by `h2 import-mappack` | The game's order |
 | Mods | Community packages, including mods based on disc and Map Pack maps | Name, then list ID |
 | Halo: CE | Converted Halo 1 maps | Name, then list ID |
-| Firefight | Installed kit maps | Name, then list ID |
 
 The pregame picker opens the catalogue even with a single category. A full
 Mods category can show an overflow notice even when no mod fits.
@@ -27,20 +26,46 @@ picker, since the Select Map dialog's list is only filled in the main
 menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 `pause_change_map`).
 
-**By lobby mode** (`map_select::mode_category`, the mode is
-`lobby_start::Mode`, [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)):
+**By lobby mode** (the mode is `lobby_start::Mode`,
+[forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)): Multiplayer,
+Forge and Firefight lobbies, and a Custom Games lobby on a Firefight or
+Siege variant, all open the categories above. There is no Firefight
+category and no separate list of Firefight maps.
 
-| Mode | Change Map opens |
-|---|---|
-| Multiplayer | the categories above |
-| Forge | the same installed categories as Custom Games |
-| Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`), then each original map with a saved map variant that has AI ground (`Catalogue::with_ground_maps`) |
+## One list, with the modes each map supports
 
-Selecting a Firefight variant opens its compatible kit maps directly.
-B or Back returns to Game Setup. A wave set with no compatible installed
-map has an empty list. Script variants with label or tag requirements
-filter the catalogue using the map census. The remaining maps retain
-their catalogue order.
+Every map row says which of two modes it supports, as a tag after its
+name: `Lockout  Firefight  Siege`. The support comes from data, one
+function a mode (`crates/extensions/game/src/map_modes.rs`):
+
+| Mode | A map supports it when | Function |
+|---|---|---|
+| Firefight | it is a kit package (`Firefight – <map>`), an installed kit package names it, the game builds a kit for it (`lobby_start::BUILTIN_KIT_MAPS`), or it has a saved map variant with AI ground; with a wave set made for one map, only that map | `map_modes::firefight_support` |
+| Siege | its census has a `siege_site`, a territory, a `siege_goal` or the defending team's flag stand | `rules::gate::siege_objectives`, read through `rules::gate::siege_supports` over the map file |
+
+A kit package is listed under its original map, not beside it, unless no
+original map is installed. In a Firefight lobby the original map's row
+puts the package's list ID on the lobby, so the lobby's map carries the
+kit.
+
+When the lobby plays Firefight (the Firefight mode, or a Firefight
+variant) or Siege (the Siege variant), the picker lists the maps that
+play it first, each group in its category's order. The others stay
+listed and read `Midship  (no Firefight kit)` or `Coagulation  (no Siege
+sites)`. A on one is refused and the lobby's status line says why
+(`lobby_tabs::Reason::MapNoFirefight`, `MapNoSiege`). Siege's variant
+keeps every map in the picker; other rules scripts still hide the maps
+that lack their labels (`rules::gate::map_filter`).
+
+**Auto-pick.** When the lobby's game type becomes Firefight or Siege and
+its map does not support it, the lobby moves to the map last used with
+that game type in the session, else the first map the picker lists
+(`map_modes::pick`, the tick hook in `map_select`). A supported map is
+noted as the last used. Nothing moves once the game is starting.
+
+The picker's design is the `map.picker.slayer`, `map.picker.firefight`
+and `map.picker.siege` screens (`h2 studio ui.render`), whose rows come
+from `map_modes::sample`.
 
 ## Separate slots for mods
 
@@ -73,7 +98,7 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-Installed mods appear in their own slots when space allows. See [generated offers](maps.md#package-offers) for slot
+Installed mods appear in their own slots when space allows. See [generated offers](maps-new-maps.md#package-offers) for slot
 allocation, IDs and load paths.
 
 ## Names, descriptions and pictures
@@ -88,7 +113,7 @@ The game applies the record to a free slot and uploads the preview to
 that slot's bitmap. Select Map, Game Setup and the lobby use the same
 slot, so all three show the chosen mod's picture. The retail slot
 retains its own name, description and bitmap. See
-[Map Pack §8.1](map-pack.md#81-where-10-reads-patchlvl) and
+[Map Pack §8.1](map-pack-playing.md#81-where-10-reads-patchlvl) and
 [map packages §4](maps.md#4-new-maps-and-the-map-pack).
 
 ## Changes during a session
@@ -139,7 +164,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   the console says which rows won't show by name and why:
   `map select: Maps(MapPack): 4 of 9 rows won't show by name
   (Containment (0x514): not in the game's list, ...)`. Nothing is said
-  when every row has an unlocked slot.
+  when every row has an open slot.
 - **Row text** (`MAP_LIST_ROW_TEXT` `0x2c9ac4` notes which list is
   drawing; `MP_LEVEL_NAME` `0x2afd70` answers). The row text looks up the
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its

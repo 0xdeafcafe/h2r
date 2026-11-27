@@ -214,6 +214,10 @@ struct Engine {
 
 impl Engine {
     fn answer(&mut self, c: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
+        // Every call the body makes fits its callee's signature.
+        if let Some(p) = points::by_base(c.target) {
+            assert_eq!(c.shape_error(&p.sig), None, "the call to {}", p.name);
+        }
         let eax = if c.target == points::AI_SQUAD_PLACE.base {
             let take = c.eax.unwrap() as usize;
             for (actor, _, _) in self.pool.iter().skip(self.placed).take(take) {
@@ -293,7 +297,7 @@ fn place_squad_in_seats_at_most_the_free_seats() {
         [
             GuestCall::new(points::AI_SQUAD_PLACE.base).eax(3).args([1, u32::MAX, 0, 1]),
             GuestCall::new(points::AI_SET_TEAM.base).eax(1).ebx(5),
-            GuestCall::new(points::OBJECT_LIST_FROM_AI.base).eax(1),
+            GuestCall::new(points::OBJECT_LIST_FROM_AI.base).args([1]),
             GuestCall::new(points::VEHICLE_LOAD.base).edx(ship).args([u32::MAX, 0x1234]),
         ]
     );
@@ -460,5 +464,25 @@ fn the_hold_and_the_unload_are_the_engines_vehicle_entries() {
         returns(0),
     );
     assert!(result.unwrap_err().to_string().contains("not a live vehicle"));
+    assert!(calls.is_empty());
+}
+
+#[test]
+fn a_list_cast_with_the_squad_in_eax_is_refused_before_the_guest_sees_it() {
+    // The shape that crashed a Firefight game: the cast found no stack
+    // argument, read the entry's return address as the squad and wrote its
+    // list datum over it, and the entry returned to that datum.
+    let (result, calls, _) = drive(
+        FakeGuest::new(),
+        |cx| {
+            Box::pin(async move {
+                guest::call(&cx, GuestCall::new(points::OBJECT_LIST_FROM_AI.base).eax(1)).await
+            })
+        },
+        |_, _| panic!("a refused call reaches no callee"),
+    );
+    let why = result.unwrap_err().to_string();
+    assert!(why.contains("OBJECT_LIST_FROM_AI"), "{why}");
+    assert!(why.contains("1 stack argument(s) and the call passes 0"), "{why}");
     assert!(calls.is_empty());
 }

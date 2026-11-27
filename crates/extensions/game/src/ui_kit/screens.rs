@@ -266,7 +266,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 
 /// The screens `h2 ui preview` knows, including the design specimens
 /// and layout gallery. Append new screens to preserve existing ids.
-pub const NAMES: [&str; 82] = [
+pub const NAMES: [&str; 85] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
@@ -311,6 +311,9 @@ pub const NAMES: [&str; 82] = [
     "kit.picker.game",
     MAP_VARIANT_PICKER,
     MODE_PICKER,
+    MAP_PICKER_SLAYER,
+    MAP_PICKER_FIREFIGHT,
+    MAP_PICKER_SIEGE,
     crate::custom_games::browser_filters::SCREEN,
     "design.title",
     "design.body",
@@ -358,6 +361,14 @@ pub const MAP_VARIANT_PICKER: &str = "kit.picker.map-variant";
 /// The GAME MODE picker X opens in the pregame lobby, over the lobby
 /// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
 pub const MODE_PICKER: &str = "kit.picker.mode";
+
+/// The Select Map picker as Game Setup opens it for a lobby playing a game
+/// type: every map listed, those that play it first, each row tagged with
+/// the modes it supports, the ones that do not play it refused with their
+/// reason ([`crate::map_modes`]).
+pub const MAP_PICKER_SLAYER: &str = "map.picker.slayer";
+pub const MAP_PICKER_FIREFIGHT: &str = "map.picker.firefight";
+pub const MAP_PICKER_SIEGE: &str = "map.picker.siege";
 
 /// Every named state of screen `name` for the preview sheet: a list's
 /// first, middle and last row focused; the sign-in prompt's pages
@@ -517,6 +528,28 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                 Some("lockout-towers"),
                 Arc::new(|_| String::new()),
             ))
+        }
+        MAP_PICKER_SLAYER | MAP_PICKER_FIREFIGHT | MAP_PICKER_SIEGE => {
+            use crate::map_modes::Played;
+            let played = match name {
+                MAP_PICKER_FIREFIGHT => Played::Firefight,
+                MAP_PICKER_SIEGE => Played::Siege,
+                _ => Played::Other,
+            };
+            let rows = crate::map_modes::sample(played);
+            let (blocked, details) = (rows.iter().map(|r| r.1).collect(), rows.iter().map(|r| r.2.clone()).collect());
+            Some(
+                crate::ui_kit::picker::Pick::new(
+                    "Select Map",
+                    rows.into_iter().map(|r| r.0).collect(),
+                    0,
+                    "Maps that play this game type come first.",
+                    Arc::new(|_| String::new()),
+                )
+                .over(crate::ui_kit::view::Opener::GAME_SETUP)
+                .details(details)
+                .blocked(blocked),
+            )
         }
         MODE_PICKER => {
             use crate::lobby_tabs::{Facts, Place, Present, Tab, header::Shown, row};
@@ -724,6 +757,13 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         // The held value first, so the picker opens on it; then the
         // first and last.
+        MAP_PICKER_SLAYER | MAP_PICKER_FIREFIGHT | MAP_PICKER_SIEGE => {
+            let pick = lobby_pick_sample(name)?;
+            let at = [0, 2, pick.values.len().saturating_sub(1)];
+            crate::ui_kit::picker::offer_list(pick)?;
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
+            list(ListPage::new(p.class(), described(&p)).with_states(&at))
+        }
         MODE_PICKER => {
             let pick = lobby_pick_sample(name)?;
             let at = [pick.current, 0, pick.values.len().saturating_sub(1)];

@@ -61,6 +61,9 @@ pub struct Session {
     /// The spare clips the world holds, by netgame item row
     /// ([`World::spare_clips`]).
     clips_live: BTreeMap<u32, u8>,
+    /// The starting points' weights the world holds, by row
+    /// ([`World::spawn_weight`]).
+    weights_live: BTreeMap<u32, forge_doc::SpawnWeight>,
     /// The entry held and the tick of its last move: a hold moves at most
     /// once a tick.
     held: Option<(Endpoint, u32)>,
@@ -125,6 +128,7 @@ impl Session {
             own: OwnMap::new(),
             own_live: OwnMap::new(),
             clips_live: BTreeMap::new(),
+            weights_live: BTreeMap::new(),
             held: None,
             head,
             log: vec![],
@@ -746,20 +750,24 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
-    /// The spare clips `doc` gives, by the netgame item row the world has
-    /// each spawner at: an own entry at its base index, one the kit added
-    /// at its kit row. A removed entry has none.
-    fn clips_by_row(&self, doc: &ForgeDoc, own: &OwnMap) -> BTreeMap<u32, u8> {
-        let block = BlockKind::NetgameEquipment;
+    /// A property's values by the row the world has each entry of `block`
+    /// at: an own entry at its base index, one the kit added at its kit row.
+    /// A removed entry has none.
+    fn by_row<T>(
+        &self,
+        block: BlockKind,
+        values: BTreeMap<Endpoint, T>,
+        own: &OwnMap,
+    ) -> BTreeMap<u32, T> {
         let first = self.limits.base_counts.get(&block).copied().unwrap_or(0);
         let added = self
             .kit
             .as_ref()
             .and_then(|kit| kit.live.get(&block))
             .map_or(&[][..], Vec::as_slice);
-        forge_doc::spare_clips(&doc.ops)
+        values
             .into_iter()
-            .filter_map(|(end, clips)| {
+            .filter_map(|(end, value)| {
                 let row = match end {
                     Endpoint::Base { block: b, index, .. } if b == block => {
                         if own.get(&(block, index)).is_some_and(|o| o.removed) {
@@ -770,35 +778,73 @@ impl Session {
                     Endpoint::Base { .. } => return None,
                     Endpoint::Added(id) => first + added.iter().position(|r| r.id == id)? as u32,
                 };
-                Some((row, clips))
+                Some((row, value))
             })
             .collect()
     }
 
-    /// Bring the world's spare clips to `want`: one call for each row that
-    /// changes. A refused call puts back the rows already written.
-    fn reconcile_clips(
+    /// Bring the world's spare clips, then its starting points' weights, to
+    /// what `doc` gives: one call for each row that changes. A refused call
+    /// puts back the rows already written.
+    fn reconcile_properties(
         &mut self,
         world: &mut impl World,
-        want: BTreeMap<u32, u8>,
+        doc: &ForgeDoc,
+        own: &OwnMap,
     ) -> Result<(), String> {
-        let rows: BTreeSet<u32> = self.clips_live.keys().chain(want.keys()).copied().collect();
-        let mut done = Vec::new();
-        for row in rows {
-            let (was, now) = (self.clips_live.get(&row).copied(), want.get(&row).copied());
-            if was == now {
-                continue;
+        let clips = self.by_row(BlockKind::NetgameEquipment, forge_doc::spare_clips(&doc.ops), own);
+        let weights = self.by_row(
+            BlockKind::StartingLocations,
+            forge_doc::spawn_weights(&doc.ops),
+            own,
+        );
+        let done_clips = reconcile_rows(&self.clips_live, &clips, |row, v| {
+            world.spare_clips(row, v)
+        })?;
+        if let Err(error) = reconcile_rows(&self.weights_live, &weights, |row, v| {
+            world.spawn_weight(row, v)
+        }) {
+            for (row, was) in done_clips.into_iter().rev() {
+                let _ = world.spare_clips(row, was);
             }
-            if let Err(error) = world.spare_clips(row, now) {
-                for &(row, was) in done.iter().rev() {
-                    let _ = world.spare_clips(row, was);
-                }
-                return Err(error);
-            }
-            done.push((row, was));
+            return Err(error);
         }
-        self.clips_live = want;
+        self.clips_live = clips;
+        self.weights_live = weights;
         Ok(())
+    }
+
+    /// A starting point's weight, by the document's `Property` ops
+    /// ([`forge_doc::spawn_weights`]); none for Normal.
+    pub fn spawn_weight(&self, id: Endpoint) -> Option<forge_doc::SpawnWeight> {
+        forge_doc::spawn_weights(&self.doc.ops)
+            .get(&id.identity())
+            .copied()
+    }
+
+    /// Give a starting point a weight, or Normal: one `EntryOp::Property`,
+    /// which the world follows with [`World::spawn_weight`] on the
+    /// location's row. A thing that is no starting point is refused.
+    pub fn set_spawn_weight(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        weight: Option<forge_doc::SpawnWeight>,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::StartingPoint {
+            return Err(format!("This {} has no weight.", thing.kind.name()));
+        }
+        if self.spawn_weight(thing.id) == weight {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Property {
+            target: thing.id,
+            property: forge_doc::Property::Weight(weight),
+        })])?;
+        self.edit(world, tick, ops, None)
     }
 
     /// Active areas keyed by the flag identity used in this session.
@@ -1210,8 +1256,7 @@ impl Session {
             }
         }
         if result.is_ok() {
-            let want = self.clips_by_row(doc, &own);
-            result = self.reconcile_clips(world, want);
+            result = self.reconcile_properties(world, doc, &own);
         }
         if let Err(error) = result {
             let objects_repair = scene::reconcile(world, &mut self.objects, &before, true);
@@ -1495,4 +1540,30 @@ fn vector(name: &str, v: [f32; 3]) -> Result<FieldWrite, String> {
 
 fn reason(e: forge_doc::Refusal) -> String {
     e.to_string()
+}
+
+/// Bring the rows `live` holds to `want` through `call`, one call for each
+/// row that changes. On a refusal the rows already written are put back
+/// and the refusal returned; otherwise the rows written, with what each was.
+fn reconcile_rows<T: Copy + PartialEq>(
+    live: &BTreeMap<u32, T>,
+    want: &BTreeMap<u32, T>,
+    mut call: impl FnMut(u32, Option<T>) -> Result<(), String>,
+) -> Result<Vec<(u32, Option<T>)>, String> {
+    let rows: BTreeSet<u32> = live.keys().chain(want.keys()).copied().collect();
+    let mut done = Vec::new();
+    for row in rows {
+        let (was, now) = (live.get(&row).copied(), want.get(&row).copied());
+        if was == now {
+            continue;
+        }
+        if let Err(error) = call(row, now) {
+            for &(row, was) in done.iter().rev() {
+                let _ = call(row, was);
+            }
+            return Err(error);
+        }
+        done.push((row, was));
+    }
+    Ok(done)
 }

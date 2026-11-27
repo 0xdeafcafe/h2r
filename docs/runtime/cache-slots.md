@@ -137,7 +137,7 @@ If the bytes at a path change within a session, the game can reuse a
 stale copy while the slot still holds that path. Generated mods have
 their own `T:\$c\<offer>\<name>.map` paths, so a mod and its retail
 base already have distinct cache identities.
-[Generated offers](../game/maps.md#package-offers)
+[Generated offers](../game/maps-new-maps.md#package-offers)
 
 Without invalidation, a stale multiplayer copy persists until another
 multiplayer map loads. A campaign copy can survive up to two other

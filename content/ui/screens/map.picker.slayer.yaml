@@ -1,0 +1,23 @@
+screen: map.picker.slayer
+kind: picker
+layout: picker
+backing: over
+opener: game-setup
+states:
+  focus-0:
+    focus: 0
+  focus-2:
+    focus: 2
+  focus-4:
+    focus: 4
+widgets:
+  title:
+    component: title
+    text: "{title}"
+  description:
+    component: description
+    at: [15, 74]
+    size: [235, 154]
+  legend:
+    component: legend
+    prompts: [[A, "SELECT"], [B, "CANCEL"]]

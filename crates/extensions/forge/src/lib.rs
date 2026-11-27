@@ -102,6 +102,17 @@ pub trait World {
         let _ = (index, clips);
         Err("This game cannot give a spawner spare clips.".into())
     }
+    /// Give starting location `index` of the loaded scenario a weight, or
+    /// Normal: the spawn chooser adds its bias to the location's weight
+    /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
+    fn spawn_weight(
+        &mut self,
+        index: u32,
+        weight: Option<forge_doc::SpawnWeight>,
+    ) -> Result<(), String> {
+        let _ = (index, weight);
+        Err("This game cannot weigh a starting point.".into())
+    }
     /// Move and turn own entry `index` of `block`: its position and
     /// orientation in the loaded scenario, and its live object when the
     /// block makes objects.

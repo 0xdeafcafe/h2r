@@ -111,6 +111,8 @@ pub fn register(api: &mut Api) {
     // ground.status and ground.build: the open map's AI ground
     // (app::ground).
     api.register(Box::new(super::ground::Ground));
+    // siege.layout: the Siege layout recipe over the open map.
+    api.register(Box::new(super::siege::Siege));
     // Playtest's static checks over the open map (app::playtest_static).
     api.register(Box::new(super::playtest::Playtest::new()));
     // The Tags tool's browsing (shared caches), resources and tag bundles.

@@ -1,0 +1,795 @@
+{
+ "author": "h2recomp",
+ "base": {
+  "map": "headlong",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "builder": {
+  "bots": 5,
+  "forge_build": 1,
+  "pathfind": 1
+ },
+ "description": "Siege on headlong, labels only, scaffolded by h2 siege layout: the attackers start at red's flag stand; 2 sites in 2 phases, then the defenders' flag stand (netgame flag 0).",
+ "format": 2,
+ "imports": [],
+ "ops": [
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 51
+       }
+      }
+     }
+    }
+   },
+   "id": 1
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_site"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 62
+       }
+      }
+     }
+    }
+   },
+   "id": 2
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "text": "siege_goal"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 0
+       }
+      }
+     }
+    }
+   },
+   "id": 3
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 16
+       }
+      }
+     }
+    }
+   },
+   "id": 4
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 15
+       }
+      }
+     }
+    }
+   },
+   "id": 5
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 17
+       }
+      }
+     }
+    }
+   },
+   "id": 6
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 14
+       }
+      }
+     }
+    }
+   },
+   "id": 7
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 18
+       }
+      }
+     }
+    }
+   },
+   "id": 8
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 19
+       }
+      }
+     }
+    }
+   },
+   "id": 9
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 70
+       }
+      }
+     }
+    }
+   },
+   "id": 10
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 69
+       }
+      }
+     }
+    }
+   },
+   "id": 11
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 101
+       }
+      }
+     }
+    }
+   },
+   "id": 12
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 102
+       }
+      }
+     }
+    }
+   },
+   "id": 13
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 103
+       }
+      }
+     }
+    }
+   },
+   "id": 14
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 142
+       }
+      }
+     }
+    }
+   },
+   "id": 15
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 62
+       }
+      }
+     }
+    }
+   },
+   "id": 16
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 138
+       }
+      }
+     }
+    }
+   },
+   "id": 17
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 96
+       }
+      }
+     }
+    }
+   },
+   "id": 18
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 139
+       }
+      }
+     }
+    }
+   },
+   "id": 19
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 135
+       }
+      }
+     }
+    }
+   },
+   "id": 20
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_attack"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 112
+       }
+      }
+     }
+    }
+   },
+   "id": 21
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 101
+       }
+      }
+     }
+    }
+   },
+   "id": 22
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 100
+       }
+      }
+     }
+    }
+   },
+   "id": 23
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 102
+       }
+      }
+     }
+    }
+   },
+   "id": 24
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 99
+       }
+      }
+     }
+    }
+   },
+   "id": 25
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 98
+       }
+      }
+     }
+    }
+   },
+   "id": 26
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 0,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 68
+       }
+      }
+     }
+    }
+   },
+   "id": 27
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 62
+       }
+      }
+     }
+    }
+   },
+   "id": 28
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 96
+       }
+      }
+     }
+    }
+   },
+   "id": 29
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 112
+       }
+      }
+     }
+    }
+   },
+   "id": 30
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 95
+       }
+      }
+     }
+    }
+   },
+   "id": 31
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 160
+       }
+      }
+     }
+    }
+   },
+   "id": 32
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 99
+       }
+      }
+     }
+    }
+   },
+   "id": 33
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 159
+       }
+      }
+     }
+    }
+   },
+   "id": 34
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 178
+       }
+      }
+     }
+    }
+   },
+   "id": 35
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 128
+       }
+      }
+     }
+    }
+   },
+   "id": 36
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 158
+       }
+      }
+     }
+    }
+   },
+   "id": 37
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 177
+       }
+      }
+     }
+    }
+   },
+   "id": 38
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 176
+       }
+      }
+     }
+    }
+   },
+   "id": 39
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_barrier"
+      },
+      "target": {
+       "base": {
+        "block": "crates",
+        "index": 17
+       }
+      }
+     }
+    }
+   },
+   "id": 40
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_barrier"
+      },
+      "target": {
+       "base": {
+        "block": "crates",
+        "index": 70
+       }
+      }
+     }
+    }
+   },
+   "id": 41
+  }
+ ]
+}

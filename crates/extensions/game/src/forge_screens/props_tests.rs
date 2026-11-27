@@ -259,6 +259,7 @@ fn every_row_of_the_shipped_doc_binds() {
             kit: true,
             team: None,
             spare_clips: Some(None),
+            weight: Some(None),
         };
         let t = Thing {
             own: true,
@@ -408,6 +409,7 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         kit: false,
         team: None,
         spare_clips: None,
+        weight: None,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
@@ -611,4 +613,32 @@ fn a_collection_spawner_has_a_spare_clips_picker_over_the_documents_property() {
     };
     assert_eq!(two.values[two.current], "2");
     assert_eq!(two.choices[two.current], Choice::Set(Prop::SpareClips, 3));
+}
+
+#[test]
+fn a_starting_point_has_a_weight_picker_over_the_documents_property() {
+    let d = doc();
+    let start = thing(BlockKind::StartingLocations, ThingKind::StartingPoint, &[]);
+    let weight_row = |weight| {
+        let extras = Extras {
+            weight,
+            ..Extras::default()
+        };
+        rows_with(&d, &start, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Weight")
+    };
+    assert!(weight_row(None).is_none(), "a thing the row is not for");
+    let Some(SheetRow { act: Act::Pick(normal), .. }) = weight_row(Some(None)) else {
+        panic!("a picker")
+    };
+    assert_eq!(normal.values, ["Low", "Normal", "High"]);
+    assert_eq!(normal.values[normal.current], "Normal");
+    assert_eq!(normal.choices[normal.current], Choice::Set(Prop::SpawnWeight, 1));
+    let Some(SheetRow { act: Act::Pick(high), .. }) =
+        weight_row(Some(Some(forge_doc::SpawnWeight::High)))
+    else {
+        panic!("a picker")
+    };
+    assert_eq!(high.values[high.current], "High");
 }

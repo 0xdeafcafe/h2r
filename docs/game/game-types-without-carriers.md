@@ -276,11 +276,18 @@ area zero, and the rest stays. Three kinds of record move:
   before scripts that ride Slayer took the script index is one.
 
 Siege has no retail type and no disc record. Its record is the script's own
-(`variants::portable::record_for`), made on the script index with team play,
-one life and no starting weapon, so the swap leaves it where it is
-(`script_index.rs`, `the_listed_siege_record_is_on_the_script_index_and_a_slayer_copy_of_it_moves_there`);
-a copy of it on the Slayer index moves with its script reference, options and
-common settings whole.
+(`variants::portable::record_for`), made with team play, one life and no
+starting weapon. A team script's record stays on Slayer's index outside a
+game (`variants::portable::plays_teams`): the retail pregame lobby builds
+its Game Setup rows, its Quick Options and its team player list from the
+record's engine, and the script index has no engine object until a game
+starts, so a team record on index 6 gave the lobby an empty Game Setup
+list, an empty Quick Options and a broken player list. The swap moves it
+onto the script index at the start with its script reference, options and
+common settings whole (`script_index.rs`,
+`the_listed_siege_record_is_on_slayers_index_in_the_lobby_and_moves_at_the_start`).
+The lobby names a Game Setup list built with no rows on its log instead of
+showing it empty (`lobby_mode::rows_to_write`).
 
 A record with no script on Slayer, or on a type with no built-in, stays. A
 retail record whose type area holds a value the built-in's option cannot
@@ -314,7 +321,7 @@ entry plays (design, [forge-firefight.md](forge-firefight.md)).
 | `ff_cover` | a firing position | a marker with a facing | sampled from the sectors |
 | `siege_site` | a site the attackers take | a territory flag, as `siege.rules` reads now | the map's own territories |
 | `siege_goal`, `siege_line` | the final stand; where each side spawns per phase | a flag stand; markers with a phase and a team | the map's CTF stands |
-| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the AI and objectives page, numbered by its phase | none: the map plays as before |
+| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the Siege page, numbered by its phase | none: the map plays as before |
 
 A script declares the labels it reads, so the tools offer exactly those
 for the game type the author is building for, and a map with none of a
@@ -339,12 +346,15 @@ each placed `ff_drop` (GM1), so a wave lands at a placed drop.
 ### In Forge
 
 The monitor's Objects tool has an **AI and objectives** palette page
-with the labels above (`forge_screens::sheet::objects_with_ai`); a
+with the Firefight labels above and a **Siege** page with the Siege
+labels as **Site**, **Flag stand**, **Spawn line** and **Barrier**
+(`forge_screens::sheet::objects_with_ai`, `SIEGE_PAGE`; "Siege layouts" in
+[rules-engine.md](rules-engine.md)); a
 marker is a netgame flag the document adds with a label op
 (`crates/formats/forge-doc/src/ground.rs`), placed in front of the
 monitor, and moved and removed through the session
-([forge-map-variants.md](forge-map-variants.md), "AI ground"). The page
-offers every label; a script's own list narrows it when the Game Type
+([forge-map-variants.md](forge-map-variants.md), "AI ground"). The
+pages offer every label; a script's own list narrows it when the Game Type
 row picks one.
 
 Ground is built when it is asked for, never while placing:
