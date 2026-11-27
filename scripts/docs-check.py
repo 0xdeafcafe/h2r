@@ -15,7 +15,7 @@ Checks:
   paths   backticked crates/, platform/, scripts/, deploy/ and web/ paths exist
   style   headings that record history instead of the design
   voice   an em dash, a banned word, an American spelling, connective filler
-          or a manufactured contrast (docs/meta/docs-style.md rule 13)
+          or a manufactured contrast (docs/meta/docs-style.md rule 14)
   length  a paragraph over MAX_SENTENCES sentences (rule 12)
   code    docs/*.md paths cited in code comments exist (always fails), and
           the section they cite (`§ 5.2` or "Title") is still a heading
@@ -356,7 +356,7 @@ def check_style(files):
     return bad
 
 
-# Voice rules: docs/meta/docs-style.md rule 13.
+# Voice rules: docs/meta/docs-style.md rule 14.
 BANNED = re.compile(
     r"\b(?:delve[sd]?|leverag(?:e|es|ed|ing)|utili[sz](?:e|es|ed|ing)|robust(?:ly|ness)?"
     r"|seamless(?:ly)?|unlock(?:s|ed|ing)?|elevat(?:e|es|ed|ing)|empower(?:s|ed|ing)?"
