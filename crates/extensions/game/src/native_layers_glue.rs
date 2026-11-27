@@ -44,11 +44,12 @@
 //!   rows and clip its view holds (`frame_scene::View::aux_depth`), and
 //!   only when the device holds the toggle off
 //!   (`native_objects_glue::aux_depth_at_rest`; else `object_aux_depth`).
-//!   An item whose record has a fade byte (`frame_scene::PartFlags::FADE`)
-//!   draws unmasked, as the guest's draw does with the device's polygon
-//!   stipple off (`native_objects_glue::stipple_off`; else `object_fade`),
-//!   and only where the device holds the solid pattern and the engine a
-//!   cached fade of one, which its epilogue leaves
+//!   Under the device's polygon stipple every item draws masked by its
+//!   record's pattern: a faded record's (`frame_scene::PartFlags::FADE`)
+//!   its byte's, any other's the device's
+//!   (`native_objects_glue::record_stipple`; else `object_fade`). An item
+//!   with a fade byte draws only where the device holds the rest pattern
+//!   and the engine a cached fade of one, which its epilogue leaves
 //!   (`native_objects_glue::stipple_at_rest`; else `object_stipple`).
 //!   An item whose shader's prologue uploads the structure's parameter
 //!   block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with
@@ -158,6 +159,48 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.ask_at(mem, layer, caller, scene, left, Some(at), &mut run);
         run
     }
+
+    fn restore(&self, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write]) -> Result<(), &'static str> {
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        restore_list(&mut device, mem, writes)
+    }
+}
+
+/// The open shader's restore list (`render_bridge::open_shader`) through
+/// `device`, as `0x00018900`'s calls reach it: a simple state through
+/// `SetRenderState_Simple` and the shadow, a deferred one into the dirty
+/// word and the shadow, any other through its setter (the slot
+/// `d3d::abi::RENDER_STATE_SETTERS` gives it). `Err` before any write when
+/// a setter is not one of them (`setter`).
+pub(crate) fn restore_list<B: d3d::backend::Backend>(
+    device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write],
+) -> Result<(), &'static str> {
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    use render_bridge::open_shader::Write;
+    let slot = |setter: u32| d3d::abi::RENDER_STATE_SETTERS.iter().find(|e| e.0 == setter).map(|e| e.2);
+    if writes.iter().any(|w| matches!(*w, Write::Setter { setter, .. } if slot(setter).is_none())) {
+        return Err("setter");
+    }
+    for w in writes {
+        let done = match *w {
+            Write::Simple { state, header, value } => device
+                .set_render_state_simple(&mut crate::native_lights_glue::DeviceMemory(mem), header, value)
+                .ok()
+                .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value).ok()),
+            Write::Deferred { state, mask, value } => mem
+                .u32(DIRTY)
+                .and_then(|dirty| mem.set_u32(DIRTY, dirty | mask))
+                .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value))
+                .ok(),
+            Write::Setter { setter, value, .. } => slot(setter).and_then(|slot| {
+                device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), slot, value).ok()
+            }),
+        };
+        // A write the device refused after others were made: the
+        // reference then writes the whole list again.
+        done.ok_or("write")?;
+    }
+    Ok(())
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -682,10 +725,11 @@ fn plan_objects<B: d3d::backend::Backend>(
     let mut aux_at_rest: Option<bool> = None;
     // The texture accumulation target, read once when an item samples it.
     let mut texaccum: Option<Option<native_render::world_layers::Texaccum>> = None;
-    // The device's polygon stipple, read once when an item has a fade
-    // byte: whether it is off, and whether it holds what a faded record's
-    // epilogue leaves.
-    let mut stipple: Option<(bool, bool)> = None;
+    // The device's polygon stipple (`native_objects_glue::device_stipple`),
+    // and whether it holds what a faded record's epilogue leaves, each
+    // read once.
+    let mut stipple: Option<Result<Option<[u32; 32]>, ()>> = None;
+    let mut stipple_rest: Option<bool> = None;
     // Whether the device and the engine hold the structure parameters a
     // flagged shader's prologue uploads, read once when an item uploads
     // them.
@@ -763,23 +807,26 @@ fn plan_objects<B: d3d::backend::Backend>(
             continue;
         }
         // An item with a fade byte: its prologue sets the stipple pattern
-        // the byte picks and its epilogue the solid one. Drawn unmasked
-        // only where the device's stipple is off, and skipped only where
-        // the device and the engine already hold what the epilogue leaves.
-        if item.flags.contains(PartFlags::FADE) {
-            let (off, at_rest) = *stipple.get_or_insert_with(|| {
-                (crate::native_objects_glue::stipple_off(d, mem), crate::native_objects_glue::stipple_at_rest(d, mem))
-            });
-            if !off {
-                *outcomes.entry("object_fade").or_default() += 1;
-                left.item(item.slot, "object_fade");
-                continue;
-            }
-            if !at_rest {
-                *outcomes.entry("object_stipple").or_default() += 1;
-                left.item(item.slot, "object_stipple");
-                continue;
-            }
+        // the byte picks and its epilogue the rest one, so it is skipped
+        // only where the device and the engine already hold what the
+        // epilogue leaves. Under the device's stipple every item draws
+        // masked by its record's pattern
+        // (`native_objects_glue::record_stipple`).
+        let faded = item.flags.contains(PartFlags::FADE);
+        if faded && !*stipple_rest.get_or_insert_with(|| crate::native_objects_glue::stipple_at_rest(d, mem)) {
+            *outcomes.entry("object_stipple").or_default() += 1;
+            left.item(item.slot, "object_stipple");
+            continue;
+        }
+        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple(d, mem));
+        let Ok(rows) = crate::native_objects_glue::record_stipple(mem, device_stipple, item.key.record, faded) else {
+            *outcomes.entry("object_fade").or_default() += 1;
+            left.item(item.slot, "object_fade");
+            continue;
+        };
+        let mut draws = draws;
+        for draw in &mut draws {
+            draw.stipple = rows;
         }
         if !draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::skip_holds(&p.implementation, &device_state))) {
             *outcomes.entry("object_state").or_default() += 1;
@@ -1199,5 +1246,60 @@ mod viewport_tests {
             assert_eq!(bottom.y + bottom.height, size.1);
             assert_eq!(bottom.width, size.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+    use engine::memory::FlatMemory;
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    use render_bridge::open_shader::Write;
+
+    fn device() -> (d3d::Device<d3d::RecordingBackend>, FlatMemory) {
+        let push = d3d::GuestRange { addr: 0x0041_0000, len: 0x10000 };
+        let scratch = d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 };
+        let config = d3d::DeviceConfig::halo2(push, scratch);
+        let mut device = d3d::Device::new(config, d3d::RecordingBackend::default());
+        let mut m = FlatMemory::new(0x0040_0000, 0x18_0000);
+        for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
+            m.set_u32(config.layout.simple_encode + 4 * slot, (1 << 18) | (4 * (slot + 1))).unwrap();
+        }
+        let params = scratch.addr + scratch.len;
+        let mut dm = crate::native_lights_glue::DeviceMemory(&mut m);
+        d3d::PresentParameters {
+            width: 32, height: 32, back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
+            back_buffer_count: 1, multisample_type: 0, swap_effect: 0,
+            enable_auto_depth_stencil: false, auto_depth_stencil_format: 0,
+            flags: 0, refresh_rate: 0, presentation_interval: 0,
+            buffer_surface: 0, depth_stencil_surface: 0,
+        }.write(&mut dm, params).unwrap();
+        device.create_device(&mut dm, 0, params, 0).unwrap();
+        (device, m)
+    }
+
+    /// The replay writes each entry as `0x00018900`'s call would: the
+    /// simple state's shadow, the deferred state's mask and shadow, the
+    /// setter's slot; a setter the device does not know refuses before
+    /// any write.
+    #[test]
+    fn the_open_shaders_restore_writes_each_entry_as_its_call_would() {
+        const CULL_MODE: u32 = 147;
+        let (mut device, mut m) = device();
+        m.set_u32(DIRTY, 0x1).unwrap();
+        let writes = [
+            Write::Simple { state: 0x10, header: (1 << 18) | (4 * 0x11), value: 1 },
+            Write::Deferred { state: 0x60, mask: 0x20, value: 7 },
+            Write::Setter { state: CULL_MODE as u8, setter: 0x003f_53d0, value: 0x405 },
+        ];
+        restore_list(&mut device, &mut m, &writes).unwrap();
+        assert_eq!(m.u32(SHADOW + 0x40).unwrap(), 1);
+        assert_eq!(m.u32(SHADOW + 0x180).unwrap(), 7);
+        assert_eq!(m.u32(DIRTY).unwrap(), 0x21);
+        assert_eq!(device.render_state(&ReadMemory(&m), CULL_MODE), Some(0x405), "the setter's own slot");
+        let before = m.bytes.clone();
+        let unknown = [writes[1], Write::Setter { state: 0x90, setter: 0x0001_2340, value: 1 }];
+        assert_eq!(restore_list(&mut device, &mut m, &unknown), Err("setter"));
+        assert!(m.bytes == before, "nothing written");
     }
 }

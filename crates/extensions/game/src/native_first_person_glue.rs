@@ -46,11 +46,13 @@ struct LayerEntry {
     /// (`native_objects_glue::sampled_texaccum`); an item sampling it
     /// refuses without one.
     texaccum: Option<native_render::world_layers::Texaccum>,
-    /// The device's polygon stipple at the call: off
-    /// (`native_objects_glue::stipple_off`), and holding what a faded
-    /// record's epilogue leaves (`native_objects_glue::stipple_at_rest`).
-    /// An item with a fade byte draws unmasked only with both.
-    stipple_off: bool,
+    /// The device's polygon stipple at the call
+    /// (`native_objects_glue::device_stipple`), and whether it holds what
+    /// a faded record's epilogue leaves
+    /// (`native_objects_glue::stipple_at_rest`): every draw masks with its
+    /// record's pattern (`native_objects_glue::record_stipple`), and an
+    /// item with a fade byte draws only from the rest state.
+    stipple: Result<Option<[u32; 32]>, ()>,
     stipple_at_rest: bool,
     /// What a flagged shader's prologue uploads from the active
     /// structure's parameter block, where the device and the engine
@@ -227,7 +229,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 aux: native_render::aux_depth::read(&Ro(mem))
                     .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(&device, mem, aux)),
                 texaccum: crate::native_objects_glue::sampled_texaccum(&device, mem, true).ok().flatten(),
-                stipple_off: crate::native_objects_glue::stipple_off(&device, mem),
+                stipple: crate::native_objects_glue::device_stipple(&device, mem),
                 stipple_at_rest: crate::native_objects_glue::stipple_at_rest(&device, mem),
                 structure: native_render::structure_parameters::read(&Ro(mem))
                     .filter(|p| crate::native_objects_glue::structure_at_rest(&device, mem, p)),
@@ -287,7 +289,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         // An animated pass samples its constants at the render clock.
         let time = native_render::layer_pass::render_time(&Ro(mem));
-        let plan = plan_parts(&gpu, scene, parts, &entry, time);
+        let plan = plan_parts(mem, &gpu, scene, parts, &entry, time);
         let committed = !plan.draws.is_empty() && self.commit(mem, &gpu, generation, &entry, &plan.draws);
         settle(plan.refused, plan.draws.len(), committed)
     }
@@ -313,7 +315,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return reserved();
         };
         let time = native_render::layer_pass::render_time(&Ro(mem));
-        let plan = plan_parts(&gpu, scene, parts, &entry, time);
+        let plan = plan_parts(mem, &gpu, scene, parts, &entry, time);
         let warm = !plan.draws.is_empty() && self.device.lock().ok().and_then(|device| {
             let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
             let mut lit = gpu.lit.try_lock().ok()?;
@@ -553,6 +555,7 @@ struct ViewPlan {
 /// entry field or W mode is a refusal here, before `Host::draw` returns,
 /// never a silent encode-time omission.
 fn plan_parts(
+    mem: &dyn GuestMemory,
     models: &Models,
     scene: &frame_scene::FrameScene,
     parts: &[u32],
@@ -574,16 +577,14 @@ fn plan_parts(
                 return Err("the device's draws are not W-buffered".into());
             }
             // A record's fade byte: its prologue sets the stipple pattern
-            // the byte picks and its epilogue the solid one
+            // the byte picks and its epilogue the rest one
             // (`frame_scene::PartFlags::FADE`).
-            if part.flags.contains(frame_scene::PartFlags::FADE) {
-                if !entry.stipple_off {
-                    return Err("the record's fade byte, drawn with the polygon stipple on, which the first-person draw does not apply".into());
-                }
-                if !entry.stipple_at_rest {
-                    return Err("the record's fade byte, where the device does not hold the solid stipple and a cached fade of one, which its epilogue leaves".into());
-                }
+            let faded = part.flags.contains(frame_scene::PartFlags::FADE);
+            if faded && !entry.stipple_at_rest {
+                return Err("the record's fade byte, where the device does not hold the rest stipple and a cached fade of one, which its epilogue leaves".into());
             }
+            let stipple = crate::native_objects_glue::record_stipple(mem, entry.stipple, part.key.record, faded)
+                .map_err(|()| "the polygon stipple's pattern, which the device's switch or the record's fade does not give exactly")?;
             // A shader whose prologue uploads the structure's parameter
             // block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`).
             if part.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
@@ -591,6 +592,7 @@ fn plan_parts(
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
             let mut draw = lit.plan_part_of(model, scene, instance, part, &entry.states, time, entry.structure.as_ref())?;
+            draw.stipple = stipple;
             // A record toggling the auxiliary state draws with what the
             // toggle sets for the first person's view.
             if part.flags.contains(frame_scene::PartFlags::AUX_DEPTH) {

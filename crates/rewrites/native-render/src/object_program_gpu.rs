@@ -671,9 +671,16 @@ struct LitBuffer {
 
 type InheritedState = std::sync::Mutex<Option<(bool, EntryStates, DrawState)>>;
 
+type PipelineSlot = (wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState, Vec<Attribute>, bool);
+
 struct LitProgram {
     pass: ObjectPass,
     compiler: crate::pipelines::Pipelines,
+    /// The stipple variant ([`crate::object_program::stipple_wgsl`]),
+    /// compiled at a stippled draw's first request; `Some(None)` when it
+    /// failed (the draw keeps its D3D call).
+    stipple: Option<Option<crate::pipelines::Pipelines>>,
+    layout_entries: Vec<wgpu::BindGroupLayoutEntry>,
     textures_layout: wgpu::BindGroupLayout,
     /// The stages' views the program owns, and every stage's sampler.
     views: Vec<(usize, wgpu::TextureView)>,
@@ -692,8 +699,9 @@ struct LitProgram {
     accum_groups: Vec<((EncodeViews, [Option<u32>; 4]), Option<wgpu::BindGroup>)>,
     /// Per attachment formats, buffer layout and state: the pipeline and
     /// the key its ordered packets describe themselves by.
-    /// Keyed also by the PRT stream's formats (empty without one).
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState, Vec<Attribute>), (PipelineKey, Arc<PendingPipeline>)>,
+    /// Keyed also by the PRT stream's formats (empty without one) and
+    /// whether the draw tests the stipple.
+    pipelines: HashMap<PipelineSlot, (PipelineKey, Arc<PendingPipeline>)>,
     inherited: InheritedState,
 }
 
@@ -1025,6 +1033,10 @@ pub struct PlannedDraw {
     /// Per stage, the image its animated frame selects at the draw's clock
     /// ([`animated_blocks`]); `None` binds the compiled image.
     pub frames: [Option<u32>; 4],
+    /// The device's polygon stipple rows when it is on (a faded record,
+    /// `0x00013800`): drawn with the program's stipple variant
+    /// ([`crate::object_program::stipple_wgsl`]); `None` without.
+    pub stipple: Option<[u32; 32]>,
 }
 
 impl LitBufferInput {
@@ -1349,7 +1361,7 @@ impl LitObjects {
             })?)
         };
         Some(LitProgram {
-            pass, compiler, textures_layout, views, frame_views, frame_groups: Vec::new(), samplers, textures,
+            pass, compiler, stipple: None, layout_entries, textures_layout, views, frame_views, frame_groups: Vec::new(), samplers, textures,
             accum_groups: Vec::new(), pipelines: HashMap::new(), inherited: Default::default(),
         })
     }
@@ -1648,6 +1660,9 @@ impl LitObjects {
         let mut vertex = frame_vertex(&d.vertex, view);
         vertex.w_clamp = d.state.w_clamp;
         let mut pixel = frame_pixel(&d.pixel, view);
+        if let Some(rows) = d.stipple {
+            pixel.stipple = rows;
+        }
         if let Some(aux) = &d.aux_depth {
             with_aux_depth(&mut vertex, &mut pixel, aux);
             // This per-part matrix replaced the view upload above.
@@ -1703,7 +1718,16 @@ impl LitObjects {
         let buffer = model.buffers.get(draw.buffer)?;
         let program = model.programs.get_mut(draw.program)?;
         let prt = prt_layout(program, draw)?;
-        let key = (color, depth, buffer.layout_id, draw.state.pipeline_state(), prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default());
+        let key = (
+            color, depth, buffer.layout_id, draw.state.pipeline_state(), prt.as_ref().map(|(_, f)| f.clone()).unwrap_or_default(),
+            draw.stipple.is_some(),
+        );
+        if draw.stipple.is_some() && program.stipple.is_none() {
+            let compiled = crate::object_program::stipple_wgsl(&program.pass.program).ok().and_then(|wgsl| {
+                self.shared.shader(device, &wgsl, &self.uniforms_layout, (&program.layout_entries, &program.textures_layout))
+            });
+            program.stipple = Some(compiled);
+        }
         let (entry, resident) = match program.pipelines.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => (entry.into_mut(), true),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1729,7 +1753,8 @@ impl LitObjects {
                     },
                     samples: 1,
                 };
-                let pending = program.compiler.request(device, &descriptor);
+                let compiler = if draw.stipple.is_some() { program.stipple.as_ref()?.as_ref()? } else { &program.compiler };
+                let pending = compiler.request(device, &descriptor);
                 (entry.insert((descriptor, pending)), false)
             }
         };
@@ -1828,7 +1853,7 @@ impl LitObjects {
             }
             let p = &mut m.programs[d.program];
             let prt_formats = d.prt.as_ref().and_then(|(_, v)| v.as_ref()).map(|v| v.formats.clone()).unwrap_or_default();
-            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state.pipeline_state(), prt_formats))
+            let (described, pipeline) = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state.pipeline_state(), prt_formats, d.stipple.is_some()))
                 .cloned().ok_or("object pipeline unavailable")?;
             let textures = match &p.textures {
                 // An animated frame's draw: the images its frames chose.
@@ -1900,7 +1925,7 @@ impl LitObjects {
                 }
             };
             gfx::churn::native_cache(resident[i]);
-            discards |= d.state.alpha_test.is_some();
+            discards |= d.state.alpha_test.is_some() || d.stipple.is_some();
             let groups = vec![
                 BoundGroup { index: 0, group: uniforms.group.clone(), offsets: uniforms.offsets(i).to_vec() },
                 BoundGroup::new(1, textures),
@@ -2172,6 +2197,7 @@ fn plan_layer_part_at_entry<'a>(
             default_final: compiled.default_final,
             prt: item.prt.clone().map(|s| (s, None)),
             frames,
+            stipple: None,
         });
     }
     Ok(out)
@@ -2359,6 +2385,7 @@ fn plan_indexed_part<'a>(
         default_final: pass.default_final,
         prt: None,
         frames,
+        stipple: None,
     })
 }
 
@@ -4853,6 +4880,24 @@ mod tests {
         assert_eq!(record(1.5), 1, "and for a new pose");
         let total = gfx::churn::snapshot() - before;
         assert_eq!((total.buffers_created, total.queue_writes), (0, 1));
+        // A faded record's draw, the device's stipple on: the program's
+        // stipple variant, a pipeline of its own, the rows in its pixel
+        // block.
+        let arena = pool.begin();
+        let mut faded = objects.plan(7, &frame(), &key(0, 0, 0), &[[0.5; 4]; 3], &entry()).unwrap();
+        faded.stipple = Some([0x5555_aaaa; 32]);
+        let (_, pixel) = objects.issued(7, &faded, &view, 1.0, None, None, None).unwrap();
+        assert_eq!(pixel.stipple, [0x5555_aaaa; 32]);
+        assert_eq!(pixel.stipple_scale, PixelUniforms::stipple_grid(view.guest_size, view.size));
+        let (color, depth) = (wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(objects.request_draw(&ctx.device, color, depth, 7, &faded).unwrap().0.get().is_some());
+        timeline::frame();
+        let packets = objects.draws(&ctx.device, &ctx.queue, &arena, color, depth, view.size, &view, 1.0, &[(7, faded)], None).unwrap();
+        arena.flush(&ctx.queue);
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert!(packets.packets[0].pipeline_valid());
+        assert_eq!(objects.models[&7].programs[0].pipelines.len(), 2, "the stipple variant's pipeline beside the plain one");
+        assert!(matches!(objects.models[&7].programs[0].stipple, Some(Some(_))));
     }
 
     #[test]
