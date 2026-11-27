@@ -1386,6 +1386,7 @@ fn endless() -> Def {
             drop: Drop::Edge,
             weapon_tier: 0,
             side: Side::Enemy,
+            arrival: ::firefight::Arrival::Auto,
         },
         lives_by_points: vec![(100, 1)],
     });

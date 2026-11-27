@@ -369,6 +369,9 @@ pub mod id {
     pub const FF_SHIP_HOVER: u16 = 139;
     pub const FF_SHIP_UNLOAD: u16 = 140;
     pub const FF_SHIP_LEAVE: u16 = 141;
+    pub const ZONE_FALL: u16 = 142;
+    pub const PODS_FREE: u16 = 143;
+    pub const POD_CLASS: u16 = 144;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -716,13 +719,21 @@ pub const ENTRIES: &[Entry] = &[
     // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
     // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
     // and whether the kit's ship is in the world; `ff_drop_squad` is
-    // `firefight::Command::DropSquad` (a squad flown in), and the ship's
+    // `firefight::Command::DropSquad` (a squad flown or dropped in), and the ship's
     // hover hold, unloading and flight out are the commands of the same
     // names. The host makes the flights and the loads
     // (`game::firefight::ship`).
     read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
     read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
-    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    // Firefight's drop pods (docs/game/firefight.md, "Drop pods"): whether
+    // kit zone `n` has a fall, how many squad pods are parked and free,
+    // and whether a class's `auto` arrival is a pod
+    // (`firefight::director::PodsSeen`). `ff_drop_squad`'s last argument
+    // is the arrival, `firefight::Arrival::number`.
+    read(id::ZONE_FALL, "zone_fall", &[Int], Bool, Named),
+    read(id::PODS_FREE, "pods_free", &[], Int, Named),
+    read(id::POD_CLASS, "pod_class", &[Class], Bool, Named),
     act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
     act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
     act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),

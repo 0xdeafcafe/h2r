@@ -13,6 +13,7 @@ use crate::director::{
     Command, Observed, Phase, PlayerState, SQUAD_SLOTS, Settings, Slot, State,
 };
 use crate::scoring::ScoreReason;
+use crate::Arrival;
 use crate::{
     BONUS_SKULLS, Def, Difficulty, Drop, MAX_BONUS_ROWS, MULTIPLIER_SCALE, Outcome, Refusal, Skull,
     WAVES_PER_ROUND,
@@ -132,17 +133,18 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         writeln!(data, "const {name} = {value}").unwrap();
     }
 
-    data.push_str("table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [\n");
+    data.push_str("table squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int, arrival: int) = [\n");
     for squad in def.rounds.iter().flat_map(|r| &r.waves).flat_map(|w| &w.squads) {
         let (preferred, role) = drop_columns(squad.drop);
         writeln!(
             data,
-            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}, {}),",
             squad.class,
             squad.count.per_player,
             squad.count.min,
             squad.count.max,
             squad.weapon_tier,
+            squad.arrival.number(),
         )
         .unwrap();
     }
@@ -152,31 +154,33 @@ fn wave_module(def: &Def) -> Result<String, ScriptRefusal> {
         let (preferred, role) = drop_columns(squad.drop);
         writeln!(
             data,
-            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}, {}),",
             squad.class, squad.count.per_player, squad.count.min, squad.count.max, squad.weapon_tier,
+            squad.arrival.number(),
         )
         .unwrap();
     }
     // The rounds' allies: a row each, and each round's first row and count.
     // A table needs a row, so a definition with none has one that no
     // round's count reaches.
-    data.push_str("]\ntable ally_squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int) = [\n");
+    data.push_str("]\ntable ally_squads: (kind: Class, per_player: int, minimum: int, maximum: int, preferred: int, tier: int, zone_role: int, arrival: int) = [\n");
     for squad in def.rounds.iter().flat_map(|round| &round.allies) {
         let (preferred, role) = drop_columns(squad.drop);
         writeln!(
             data,
-            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}),",
+            "(\"{}\", {}, {}, {}, {preferred}, {}, {role}, {}),",
             squad.class,
             squad.count.per_player,
             squad.count.min,
             squad.count.max,
             squad.weapon_tier,
+            squad.arrival.number(),
         )
         .unwrap();
     }
     if ally_rows == 0 {
         let class = &def.rounds[0].waves[0].squads[0].class;
-        writeln!(data, "(\"{class}\", 0, 1, 1, -1, 0, 0),").unwrap();
+        writeln!(data, "(\"{class}\", 0, 1, 1, -1, 0, 0, 1),").unwrap();
     }
     data.push_str("]\ntable ally_rounds: (first: int, count: int) = [\n");
     let mut first = 0;
@@ -706,6 +710,17 @@ impl Game for Host<'_> {
                     .unwrap_or(false),
             ),
             (id::SHIP_READY, []) => i32::from(self.seen.ship.ready),
+            (id::ZONE_FALL, [Arg::Int(z)]) => i32::from(
+                usize::try_from(*z)
+                    .ok()
+                    .and_then(|z| self.seen.pods.falls.get(z))
+                    .copied()
+                    .unwrap_or(false),
+            ),
+            (id::PODS_FREE, []) => i32::from(self.seen.pods.free),
+            (id::POD_CLASS, [Arg::Class(Some(class))]) => {
+                i32::from(self.seen.pods.classes.contains(class))
+            }
             (id::ZONE_SEEN, [Arg::Object(Some(z))]) => zone(z).map_or(0, |z| i32::from(z.seen)),
             (id::ZONE_DISTANCE, [Arg::Object(Some(z))]) => {
                 zone(z).map_or(0, |z| i32::try_from(z.distance).unwrap_or(i32::MAX))
@@ -755,6 +770,7 @@ fn command(call: &Call) -> Option<Command> {
                 Arg::Int(count),
                 Arg::Int(zone),
                 Arg::Int(tier),
+                Arg::Int(arrival),
             ],
         ) => Command::DropSquad {
             slot: *slot,
@@ -762,6 +778,9 @@ fn command(call: &Call) -> Option<Command> {
             count: narrow_u16(*count)?,
             zone: narrow_u8(*zone)?,
             weapon_tier: narrow_u8(*tier)?,
+            arrival: [Arrival::Auto, Arrival::Foot, Arrival::Ship, Arrival::Pod]
+                .into_iter()
+                .find(|a| a.number() == *arrival)?,
         },
         (id::FF_SHIP_HOVER, [Arg::Bool(on)]) => Command::ShipHover { on: *on },
         (id::FF_SHIP_UNLOAD, []) => Command::ShipUnload,
