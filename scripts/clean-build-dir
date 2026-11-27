@@ -45,6 +45,12 @@ if [ "${1:-}" = --worktree ]; then
 	for wt in "$@"; do
 		wt=$(cd "$wt" 2>/dev/null && pwd -P) || { echo "gone: $wt"; continue; }
 		case "$wt" in */.claude/worktrees/?*) ;; *) echo "refused (not a worktree): $wt"; status=1; continue ;; esac
+		gd=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null)
+		if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ] || [ -f "$gd/MERGE_HEAD" ] || [ -f "$gd/CHERRY_PICK_HEAD" ]; then
+			echo "rebase or merge in progress, kept: $wt"
+			status=1
+			continue
+		fi
 		if ! git -C "$wt" merge-base --is-ancestor HEAD origin/master 2>/dev/null; then
 			echo "not on origin/master yet, kept: $wt"
 			status=1
