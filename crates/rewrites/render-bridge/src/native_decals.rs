@@ -37,6 +37,22 @@ thread_local! {
     /// The guest callback currently emitting on this render thread.
     static CURRENT: Cell<Option<(Mode, i16)>> = const { Cell::new(None) };
     static LAST_PRESENT: Cell<Option<u64>> = const { Cell::new(None) };
+    /// The render camera's matrix block when the callback began.
+    static VIEW: Cell<Option<native_render::decal_material::View>> = const { Cell::new(None) };
+}
+
+/// The view the callback emitting on this thread draws in, as Rust gives
+/// its matrix constants.
+pub fn view() -> Option<native_render::decal_material::View> {
+    VIEW.with(Cell::get)
+}
+
+struct Ro<'a>(&'a dyn GuestMemory);
+
+impl scene_extract::GuestRead for Ro<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
 }
 
 static EXAMINED: AtomicU64 = AtomicU64::new(0);
@@ -301,6 +317,9 @@ fn begin(mem: &dyn GuestMemory, list: i16) {
         .ok()
         .and_then(|v| Mode::from_guest(v as i16));
     CURRENT.with(|c| c.set(mode.map(|m| (m, list))));
+    let view = scene_extract::extract::camera(&Ro(mem))
+        .and_then(|c| native_render::decal_material::View::from_camera(&c));
+    VIEW.with(|v| v.set(view));
     let present = timeline::frames();
     if LAST_PRESENT.with(|last| last.replace(Some(present)) != Some(present)) {
         log_completed_presents(mem, present);

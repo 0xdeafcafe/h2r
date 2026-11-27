@@ -201,6 +201,89 @@ pub fn compare(m: &Material, combiner: &[u32; WORDS], render: &[u32]) -> Vec<Str
     out
 }
 
+/// The constants a vertex program reads: the registers it names directly
+/// and whether it indexes any relatively (`c[a0.x + n]`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reads {
+    pub registers: std::collections::BTreeSet<u8>,
+    pub relative: bool,
+}
+
+/// What the Rust side gives the view's matrix block: the open view's
+/// viewport rectangle (left, top, width, height) and the rows of its
+/// view-projection in register order, as bits, the relation the carried
+/// draws' camera classification proves (`d3d` `scene_sink/camera.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View {
+    pub rect: [u32; 4],
+    pub rows: [[u32; 4]; 4],
+}
+
+impl View {
+    pub fn from_camera(cam: &crate::camera::RenderCamera) -> Option<Self> {
+        let [top, left, bottom, right] = cam.viewport;
+        if top < 0 || left < 0 || !cam.is_usable() {
+            return None;
+        }
+        let m = cam.view_projection();
+        m.iter().flatten().all(|v| v.is_finite()).then(|| Self {
+            rect: [left as u32, top as u32, (right - left) as u32, (bottom - top) as u32],
+            rows: std::array::from_fn(|row| m.map(|column| column[row].to_bits())),
+        })
+    }
+}
+
+/// Where a draw's constants differ from what Rust gives, of the registers
+/// its program reads (an unread one cannot change a pixel): `constant_c<n>`
+/// for a matrix row that differs, `constant_c<n>_scaled` when it is the
+/// expected row times one factor, `constant_c<n>_ungiven` for a read of a
+/// register nothing in Rust sets yet, `constant_relative`,
+/// `constant_view_unread` and `constant_viewport` for the view itself.
+/// `base` is the first of the four matrix rows the program's position
+/// uses.
+pub fn compare_constants(
+    reads: &Reads,
+    base: Option<u8>,
+    view: Option<&View>,
+    viewport: [u32; 4],
+    constants: &[[f32; 4]],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if reads.relative {
+        out.push("constant_relative".to_owned());
+    }
+    let mut matrix = false;
+    for &r in &reads.registers {
+        let row = base.and_then(|b| r.checked_sub(b)).filter(|&i| i < 4);
+        let Some(i) = row else {
+            out.push(format!("constant_c{r}_ungiven"));
+            continue;
+        };
+        matrix = true;
+        let (Some(view), Some(actual)) = (view, constants.get(usize::from(r))) else {
+            if !out.contains(&"constant_view_unread".to_owned()) {
+                out.push("constant_view_unread".to_owned());
+            }
+            continue;
+        };
+        let want = view.rows[usize::from(i)];
+        if actual.map(f32::to_bits) != want {
+            let want = want.map(f32::from_bits);
+            let ratio = (0..4)
+                .find(|&k| want[k] != 0.0 && actual[k].is_finite())
+                .map(|k| actual[k] / want[k]);
+            let scaled = ratio.is_some_and(|q| {
+                q.is_finite() && q != 0.0 && (0..4).all(|k| (actual[k] - want[k] * q).abs() <= 1e-4 * actual[k].abs())
+            });
+            out.push(format!("constant_c{r}{}", if scaled { "_scaled" } else { "" }));
+        }
+    }
+    if matrix && view.is_some_and(|v| v.rect != viewport) {
+        out.push("constant_viewport".to_owned());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +360,30 @@ mod tests {
         render[0x4a] = 0x8007;
         assert_eq!(compare(&m, &combiner, &render), ["combiner_w53", "render_0x4a"]);
         assert_eq!(compare(&m, &m.combiner, &render[..0x10]).len(), m.states.len());
+    }
+
+    #[test]
+    fn constants_compare_by_the_registers_the_program_reads() {
+        let rows = [[1.0f32, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 3.0, 4.0], [0.0, 0.0, 1.0, 0.0]];
+        let view = View { rect: [0, 0, 640, 480], rows: rows.map(|r| r.map(f32::to_bits)) };
+        let mut c = vec![[0.0f32; 4]; 192];
+        c[..4].copy_from_slice(&rows);
+        let reads = |regs: &[u8]| Reads { registers: regs.iter().copied().collect(), relative: false };
+        let at = [0, 0, 640, 480];
+        assert!(compare_constants(&reads(&[0, 1, 2, 3]), Some(0), Some(&view), at, &c).is_empty());
+        // An unread register may be anything.
+        c[9] = [5.0; 4];
+        assert!(compare_constants(&reads(&[0, 3]), Some(0), Some(&view), at, &c).is_empty());
+        // A differing row, a scaled one, another viewport.
+        c[1][1] = 2.5;
+        c[2] = rows[2].map(|v| v * 0.5);
+        let got = compare_constants(&reads(&[0, 1, 2]), Some(0), Some(&view), [0, 0, 320, 480], &c);
+        assert_eq!(got, ["constant_c1", "constant_c2_scaled", "constant_viewport"]);
+        // A register nothing gives, a relative read, no view.
+        let r = Reads { relative: true, ..reads(&[9, 2]) };
+        assert_eq!(
+            compare_constants(&r, Some(0), None, at, &c),
+            ["constant_relative", "constant_view_unread", "constant_c9_ungiven"]
+        );
     }
 }

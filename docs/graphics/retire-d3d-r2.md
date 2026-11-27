@@ -138,7 +138,18 @@ carries `decal_material_{sampled,clean,mismatched,proven}` and
 `decal_material_mismatch_<field>` (`combiner_w<n>`, `render_<index>`), and
 `native_decals::material_proven()` holds after 8 clean samples in a row.
 
-Not built: nothing draws these items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field); the 192 constants are not ported or compared; a plate needs the placement
+The view's matrix constants are compared with the same sample
+(`native_render::decal_material::compare_constants`). Of the registers the
+program reads (`constant_reads`, decoded with `shaders::vsh`), the four rows
+its position goes through must equal the open view's view-projection rows
+bit for bit and the draw's viewport its camera's rectangle (the relation of
+`d3d` `scene_sink/camera.rs`). Mismatch fields: `constant_c<n>`,
+`constant_c<n>_scaled` (the row times one factor), `constant_viewport`,
+`constant_view_unread`, `constant_relative`, and `constant_c<n>_ungiven`
+for a register nothing in Rust sets yet, so the proof stays open until the
+live fields name none.
+
+Not built: nothing draws these items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). A plate needs the placement
 test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.

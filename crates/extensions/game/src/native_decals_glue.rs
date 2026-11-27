@@ -208,6 +208,32 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
     })
 }
 
+/// The registers a program reads and the first of the four rows its
+/// position goes through. `None` when the microcode does not decode.
+fn constant_reads(
+    microcode: &[u32],
+) -> Option<(native_render::decal_material::Reads, Option<u8>)> {
+    use d3d::clip_space::epilogue::{Position, position};
+    use shaders::vsh::{Program, ProgramKind, SrcReg};
+    let program = Program::from_words(ProgramKind::Normal, microcode).ok()?;
+    let mut reads = native_render::decal_material::Reads::default();
+    for inst in &program.instructions {
+        for src in inst.sources() {
+            if let SrcReg::Const { index, relative } = src.reg {
+                if relative {
+                    reads.relative = true;
+                }
+                reads.registers.insert(index);
+            }
+        }
+    }
+    let base = match position(microcode) {
+        Position::Rows(b) => Some(b),
+        _ => None,
+    };
+    Some((reads, base))
+}
+
 impl DrawAdmission for Glue {
     fn admit(
         &self,
@@ -246,6 +272,17 @@ impl DrawAdmission for Glue {
                 |pixel| native_render::decal_material::compare(&material, pixel, &d.raw.render),
             );
             if let VertexProcessing::Program { microcode, .. } = &d.shader.vertex {
+                let viewport = [d.viewport.x, d.viewport.y, d.viewport.width, d.viewport.height];
+                match constant_reads(microcode) {
+                    Some((reads, base)) => fields.extend(native_render::decal_material::compare_constants(
+                        &reads,
+                        base,
+                        render_bridge::native_decals::view().as_ref(),
+                        viewport,
+                        &*d.shader.constants,
+                    )),
+                    None => fields.push("constant_reads_unread".to_owned()),
+                }
                 let mut code = vec![0x78, 0x20];
                 code.extend_from_slice(&((microcode.len() / 4) as u16).to_le_bytes());
                 code.extend(microcode.iter().flat_map(|w| w.to_le_bytes()));
@@ -411,6 +448,26 @@ impl d3d::ExternalPass for DecalPass {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_program_reports_its_constant_reads_and_matrix_base() {
+        use shaders::vsh::encode::{Inst, Operand as O};
+        use shaders::vsh::{MacOp, OutReg};
+        let mut p = Vec::new();
+        for (i, mask) in [(0u8, 8u8), (1, 4), (2, 2), (3, 1)] {
+            p.push(
+                Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(10 + i)), None)
+                    .to_out(false, OutReg::Pos, mask),
+            );
+        }
+        p.push(Inst::mac(MacOp::Mov, Some(O::c(40)), None, None).to_out(false, OutReg::T(0), 15));
+        let last = p.len() - 1;
+        let mut words: Vec<u32> = p.iter().flat_map(|i| i.words()).collect();
+        words[last * 4 + 3] |= 1;
+        let (reads, base) = constant_reads(&words).unwrap();
+        assert_eq!(reads.registers.into_iter().collect::<Vec<_>>(), [10, 11, 12, 13, 40]);
+        assert_eq!((reads.relative, base), (false, Some(10)));
+    }
+
     use super::*;
     use d3d::backend::{StreamBytes, StreamData};
     use gfx::vertex::VertexAttribute;
