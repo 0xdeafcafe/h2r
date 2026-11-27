@@ -27,7 +27,7 @@ use crate::object_program::{
     IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, animated_blocks, object_layer3, object_pass, object_pixel_uniforms,
     object_vertex_uniforms,
 };
-use crate::object_program::{LIGHTMAP_STREAM, object_layer_pass, object_layer_passes, texaccum_dimensions};
+use crate::object_program::{LIGHTMAP_STREAM, object_layer_levels, object_layer_pass, object_layer_passes, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamElement, StreamFormats, declaration, gather, registers};
 use crate::object_state::{self, DrawState, EntryStates};
 use crate::objects::{ItemDraw, ItemKey, ObjectFrame};
@@ -375,6 +375,8 @@ pub struct LitLayerPass {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LitLayerPart {
     pub layer: u8,
+    /// The shader level its passes are of (an item's `+0x15`).
+    pub level: u8,
     pub section: u16,
     pub part: u8,
     pub decompression: [Row; 3],
@@ -643,7 +645,8 @@ struct LitModel {
     /// part draws its own material's passes, and in the sorted handlers'
     /// layers those of a shader the game puts on its record instead
     /// ([`OVERRIDE_LAYERS`]).
-    layer_index: HashMap<(u8, u16, u8, u32), usize>,
+    /// By layer, level, section, part and shader tag.
+    layer_index: HashMap<(u8, u8, u16, u8, u32), usize>,
     _geometry_bytes: mem_watch::Gauge,
 }
 
@@ -1201,7 +1204,7 @@ impl LitObjects {
         let part_index = index_parts(&input.parts);
         let mut layer_index = HashMap::with_capacity(input.layers.len());
         for (i, p) in input.layers.iter().enumerate() {
-            layer_index.entry((p.layer, p.section, p.part, p.shader_tag)).or_insert(i);
+            layer_index.entry((p.layer, p.level, p.section, p.part, p.shader_tag)).or_insert(i);
         }
         static GEOMETRY: mem_watch::Counter = mem_watch::Counter::new("native.object_geometry_buffer_bytes");
         let geometry_bytes = buffers.iter().map(|b| b.vertices.size() + b.indices.size()).sum();
@@ -1468,8 +1471,8 @@ impl LitObjects {
     /// The draws of an object item of world layer `layer` (one of
     /// [`OBJECT_LAYERS`]; `pass` its layer draw in `scene`, `item` the
     /// item) in model `index`: for the one pass of the layer the item
-    /// names (`frame_scene::LayerItem::pass`, at the first level; another
-    /// level refuses), the implementation it draws for the item (its only
+    /// names (`frame_scene::LayerItem::pass`) at its level (`level`), the
+    /// implementation it draws for the item (its only
     /// one, or the item's), every per-object constant put in from the
     /// item's lighting, the draw's defaults and the item's rows, and its
     /// state resolved over the device at the layer call (`entry`,
@@ -1491,11 +1494,18 @@ impl LitObjects {
         }
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
         let rows = scene.rows.get(item.rows.start as usize..item.rows.end as usize).ok_or("the item's rows are not in the scene")?;
-        let at = m.layer_index.get(&(layer, item.key.section, item.key.part, item.key.shader)).copied();
-        if at.is_none() && m.layers.iter().any(|p| p.layer == layer && p.section == item.key.section && p.part == item.key.part) {
+        let at = m.layer_index.get(&(layer, item.level, item.key.section, item.key.part, item.key.shader)).copied();
+        let same_part = |p: &&LitLayerPart| p.layer == layer && p.section == item.key.section && p.part == item.key.part;
+        if at.is_none() && m.layers.iter().filter(same_part).any(|p| p.level == item.level) {
             return Err(format!(
                 "the item names shader {:#010x}, which section {} part {} has no native passes of in layer {layer}",
                 item.key.shader, item.key.section, item.key.part
+            ));
+        }
+        if at.is_none() && m.layers.iter().any(|p| same_part(&p)) {
+            return Err(format!(
+                "section {} part {} has no native passes of layer {layer} at level {}",
+                item.key.section, item.key.part, item.level
             ));
         }
         let view = scene.view_of_pass(pass);
@@ -1951,8 +1961,7 @@ fn item_inputs<'a>(frame: &'a ObjectFrame, item: &'a ItemDraw, aux: bool) -> Res
 /// programs' passes (`pass_of`), the item's rows `rows`: for the part's
 /// pass the item names (its `+0x14`; the guest's list holds an item per
 /// pass), the implementation it draws for the item, its blocks and its
-/// state. The parts hold the first level's passes, so an item at another
-/// level (`+0x15`) refuses. In layer 1 with the stencil off the draws take stencil mode 0,
+/// state, from the part of the item's level (`+0x15`). In layer 1 with the stencil off the draws take stencil mode 0,
 /// as the prologue sets it (`0x0004d640`); layers 5, 7, 8 and 20 draw
 /// under the device's stencil. An item with a PRT stream (layer 5) draws
 /// each pass's PRT variant ([`LitLayerPass::prt`]) with the stream's
@@ -2016,9 +2025,9 @@ fn plan_layer_part_at_entry<'a>(
     };
     // The item draws one pass at one level, its `+0x14` and `+0x15`
     // (`0x00016b90`); the list's other items draw the layer's other
-    // passes. The parts' passes are compiled for the first level only.
-    if item.level != 0 {
-        return Err(format!("level {} of layer {layer}, whose passes the object programs do not compile", item.level));
+    // passes. Each level's passes are a part of their own.
+    if p.level != item.level {
+        return Err(format!("layer {layer}'s part is of level {}, the item's level {}", p.level, item.level));
     }
     let n = usize::from(item.pass);
     let lp = p.passes.get(n).ok_or_else(|| format!("pass {n} of layer {layer}, which has {}", p.passes.len()))?;
@@ -2743,84 +2752,89 @@ pub fn lit_model(
             }
         }
         for layer in OBJECT_LAYERS {
-            let Ok(passes) = object_layer_passes(&lit.material, layer) else { continue };
-            let mut per: Vec<Vec<LitLayerPass>> = secs.iter().map(|_| vec![LitLayerPass::default(); passes.len()]).collect();
-            let mut drawn = false;
-            for (k, pass) in passes.iter().enumerate() {
-                for slot in per.iter_mut() {
-                    slot[k].count = pass.implementations.len();
-                }
-                for (n, imp) in pass.implementations.iter().enumerate().take(IMPLEMENTATIONS) {
-                    if imp.vertex_shader.is_none() {
-                        for slot in per.iter_mut() {
-                            slot[k].empty |= 1 << n;
-                        }
-                        continue;
+            // Every level: an item draws the level its `+0x15` names.
+            for level in object_layer_levels(&lit.material, layer) {
+                let Ok(passes) = object_layer_passes(&lit.material, layer, level) else { continue };
+                let at = if level == 0 { String::new() } else { format!("level {level} ") };
+                let mut per: Vec<Vec<LitLayerPass>> = secs.iter().map(|_| vec![LitLayerPass::default(); passes.len()]).collect();
+                let mut drawn = false;
+                for (k, pass) in passes.iter().enumerate() {
+                    for slot in per.iter_mut() {
+                        slot[k].count = pass.implementations.len();
                     }
-                    let (resolved, blend_color) = match layer_instance_states(layer, imp, &lit.material.inputs) {
-                        Ok(resolved) => resolved,
-                        Err(e) => {
-                            out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}")));
+                    for (n, imp) in pass.implementations.iter().enumerate().take(IMPLEMENTATIONS) {
+                        if imp.vertex_shader.is_none() {
+                            for slot in per.iter_mut() {
+                                slot[k].empty |= 1 << n;
+                            }
                             continue;
                         }
-                    };
-                    let imp = resolved.as_ref();
-                    let index_list = |s: u16| lists[&s].0.clone();
-                    let compiled = compile_layer_sections(
-                        None, pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image, &mut buffers,
-                        &mut out.input.buffers, &index_list,
-                    );
-                    match compiled {
-                        Ok(got) => {
-                            for (slot, (mut program, buffer)) in per.iter_mut().zip(got) {
-                                program.pass.blend_color = blend_color.clone();
-                                out.input.programs.push(program);
-                                slot[k].implementations[n] = Some((out.input.programs.len() - 1, buffer));
+                        let (resolved, blend_color) = match layer_instance_states(layer, imp, &lit.material.inputs) {
+                            Ok(resolved) => resolved,
+                            Err(e) => {
+                                out.layer_refused.push((m, layer, format!("{at}pass {k} implementation {n}: {e}")));
+                                continue;
                             }
-                            drawn = true;
-                        }
-                        Err(e) => out.layer_refused.push((m, layer, format!("pass {k} implementation {n}: {e}"))),
-                    }
-                    // Layer 5's variant for an object whose model has a PRT
-                    // block: the same pass over the section's streams and
-                    // the PRT stream ([`PrtInput`]).
-                    if layer == PRT_LAYER {
-                        let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
-                            compile_layer_sections(
-                                Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image,
-                                &mut buffers, &mut out.input.buffers, &index_list,
-                            )
-                        });
+                        };
+                        let imp = resolved.as_ref();
+                        let index_list = |s: u16| lists[&s].0.clone();
+                        let compiled = compile_layer_sections(
+                            None, pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image, &mut buffers,
+                            &mut out.input.buffers, &index_list,
+                        );
                         match compiled {
                             Ok(got) => {
-                                for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                                for (slot, (mut program, buffer)) in per.iter_mut().zip(got) {
+                                    program.pass.blend_color = blend_color.clone();
                                     out.input.programs.push(program);
-                                    slot[k].prt[n] = Some((out.input.programs.len() - 1, buffer));
+                                    slot[k].implementations[n] = Some((out.input.programs.len() - 1, buffer));
                                 }
                                 drawn = true;
                             }
-                            Err(e) => out.layer_refused.push((m, layer, format!("pass {k} implementation {n} with the PRT stream: {e}"))),
+                            Err(e) => out.layer_refused.push((m, layer, format!("{at}pass {k} implementation {n}: {e}"))),
+                        }
+                        // Layer 5's variant for an object whose model has a PRT
+                        // block: the same pass over the section's streams and
+                        // the PRT stream ([`PrtInput`]).
+                        if layer == PRT_LAYER {
+                            let compiled = formats.elements(PRT_STREAM).and_then(|prt| {
+                                compile_layer_sections(
+                                    Some(prt.as_slice()), pass.pass, imp, &lit.properties, &secs, formats, engine, layer, &mut *vertex, &mut *image,
+                                    &mut buffers, &mut out.input.buffers, &index_list,
+                                )
+                            });
+                            match compiled {
+                                Ok(got) => {
+                                    for (slot, (program, buffer)) in per.iter_mut().zip(got) {
+                                        out.input.programs.push(program);
+                                        slot[k].prt[n] = Some((out.input.programs.len() - 1, buffer));
+                                    }
+                                    drawn = true;
+                                }
+                                Err(e) => out.layer_refused.push((m, layer, format!("{at}pass {k} implementation {n} with the PRT stream: {e}"))),
+                            }
                         }
                     }
                 }
-            }
-            if !drawn {
-                continue;
-            }
-            for (s, part, indices, subparts, listed) in &parts {
-                let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
-                out.input.layers.push(LitLayerPart {
-                    layer,
-                    section: s.index,
-                    part: *part,
-                    decompression: s.decompression,
-                    shader_tag: lit.material.shader.0,
-                    shader: lit.shader,
-                    indices: indices.clone(),
-                    subparts: subparts.clone(),
-                    listed: listed.clone(),
-                    passes: per[k].clone(),
-                });
+                if !drawn {
+                    continue;
+                }
+                for (s, part, indices, subparts, listed) in &parts {
+                    let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
+                    out.input.layers.push(LitLayerPart {
+                        layer,
+                        level: level as u8,
+                        section: s.index,
+                        part: *part,
+                        decompression: s.decompression,
+                        shader_tag: lit.material.shader.0,
+                        shader: lit.shader,
+                        indices: indices.clone(),
+                        subparts: subparts.clone(),
+                        listed: listed.clone(),
+                        passes: per[k].clone(),
+                    });
+                }
             }
         }
     }
@@ -4142,6 +4156,7 @@ mod tests {
         let pass_of = |i: usize| passes.get(i);
         let layers = [LitLayerPart {
             layer: PRT_LAYER,
+            level: 0,
             section: 4,
             part: 0,
             decompression: [[0.0; 4]; 3],
@@ -4220,7 +4235,7 @@ mod tests {
         let stale_bank = Some([0; 4]);
         for layer in [1, 17] {
             let parts = [LitLayerPart {
-                layer, section: 4, part: 0, shader_tag: item.key.shader, shader: Default::default(),
+                layer, level: 0, section: 4, part: 0, shader_tag: item.key.shader, shader: Default::default(),
                 decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
                 passes: vec![LitLayerPass { count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default() }],
             }];
@@ -4286,7 +4301,7 @@ mod tests {
         let key = key(1, 0, 0);
         let instance = InstanceKey(2);
         let layers = [LitLayerPart {
-            layer: 19, section: key.section, part: key.part, shader_tag: key.shader,
+            layer: 19, level: 0, section: key.section, part: key.part, shader_tag: key.shader,
             shader: Default::default(), decompression: [[0.0; 4]; 3], indices: 0..3, subparts: None, listed: None,
             passes: vec![LitLayerPass {
                 count: 1, implementations: [Some((0, 0)), None, None, None, None], ..Default::default()
@@ -4339,6 +4354,7 @@ mod tests {
         let pass_of = |i: usize| passes.get(i);
         let part = |layer: u8| LitLayerPart {
             layer,
+            level: 0,
             section: 4,
             part: 0,
             decompression: [[0.0; 4]; 3],
@@ -4401,7 +4417,10 @@ mod tests {
         assert!(plan(Some(0), 7, &seven, &at(1, 3), &e).unwrap_err().contains("no native implementation 3"));
         assert!(plan(Some(0), 7, &seven, &at(2, 0), &e).unwrap_err().contains("pass 2 of layer 7"), "past the layer's passes");
         let far = LayerItem { level: 1, ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &far, &e).unwrap_err().contains("level 1"), "only the first level compiles");
+        assert!(plan(Some(0), 7, &seven, &far, &e).unwrap_err().contains("level 1"), "level 0's part");
+        let far_part = [LitLayerPart { level: 1, ..part(7) }];
+        let d = plan_layer_part(&far_part, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, &LayerItem { pass: 1, ..far.clone() }, &e).unwrap();
+        assert_eq!(drawn(&d), [(0, 1)], "level 1's part draws the item's pass at its level");
         assert!(plan(None, 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native in layer 7"));
         assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
         let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };

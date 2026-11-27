@@ -222,20 +222,36 @@ pub fn object_pass(
     object_pass_with(pass, imp, properties, microcode, provided, fetch, lightmap, false)
 }
 
-/// The passes of an object material's world layer `layer` (first level
-/// of detail, in the order `0x00016610` draws them), or why none: the
-/// layers an object item draws besides layer 3 (`object_program_gpu::OBJECT_LAYERS`).
+/// The passes of an object material's world layer `layer` at shader
+/// level `level` (in the order `0x00016610` draws them), or why none:
+/// the layers an object item draws besides layer 3
+/// (`object_program_gpu::OBJECT_LAYERS`). An item names its level
+/// (`frame_scene::LayerItem::level`), so every level compiles.
 pub fn object_layer_passes(
     material: &tags::material::Material,
     layer: u8,
+    level: usize,
 ) -> Result<&[tags::material::ResolvedPass], String> {
     material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == usize::from(layer))
+        .find(|l| l.lod == level && l.layer == usize::from(layer))
         .map(|l| l.passes.as_slice())
         .filter(|p| !p.is_empty())
-        .ok_or_else(|| format!("no layer {layer}"))
+        .ok_or_else(|| format!("no layer {layer} at level {level}"))
+}
+
+/// The shader levels `material` has passes of in `layer`, in order.
+pub fn object_layer_levels(material: &tags::material::Material, layer: u8) -> Vec<usize> {
+    let mut levels: Vec<usize> = material
+        .layers
+        .iter()
+        .filter(|l| l.layer == usize::from(layer) && !l.passes.is_empty())
+        .map(|l| l.lod)
+        .collect();
+    levels.sort_unstable();
+    levels.dedup();
+    levels
 }
 
 /// [`object_pass`] for one pass of a world layer other than 3: its blend
@@ -1592,18 +1608,13 @@ pub(crate) mod tests {
                 layer(0, 20, 0),
             ],
         };
-        assert_eq!(object_layer_passes(&material, 7).unwrap().len(), 2);
-        assert_eq!(
-            object_layer_passes(&material, 8).unwrap_err(),
-            "no layer 8",
-            "only a lower level of detail's"
-        );
-        assert_eq!(
-            object_layer_passes(&material, 20).unwrap_err(),
-            "no layer 20",
-            "no passes"
-        );
-        assert_eq!(object_layer_passes(&material, 1).unwrap_err(), "no layer 1");
+        assert_eq!(object_layer_passes(&material, 7, 0).unwrap().len(), 2);
+        assert_eq!(object_layer_passes(&material, 8, 0).unwrap_err(), "no layer 8 at level 0", "only level 1's");
+        assert_eq!(object_layer_passes(&material, 8, 1).unwrap().len(), 1, "level 1's pass, for an item at level 1");
+        assert_eq!(object_layer_passes(&material, 20, 0).unwrap_err(), "no layer 20 at level 0", "no passes");
+        assert_eq!(object_layer_levels(&material, 8), [1]);
+        assert_eq!(object_layer_levels(&material, 20), [] as [usize; 0], "no passes");
+        assert_eq!(object_layer_passes(&material, 1, 0).unwrap_err(), "no layer 1 at level 0");
     }
 
     /// An object pass whose constants animate compiles from its clock-0

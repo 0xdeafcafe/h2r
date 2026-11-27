@@ -488,7 +488,7 @@ fn lit_parts(
             .material
             .layers
             .iter()
-            .filter(|layer| layer.lod == 0 && (layer.layer == look::LIGHTMAP_LAYER || crate::native_objects_glue::drawn_layer(layer.layer)))
+            .filter(|layer| (layer.lod == 0 && layer.layer == look::LIGHTMAP_LAYER) || crate::native_objects_glue::drawn_layer(layer.layer))
             .flat_map(|layer| &layer.passes)
             .flat_map(|pass| &pass.implementations)
             .filter_map(|implementation| implementation.vertex_shader);
@@ -637,6 +637,7 @@ mod publication_tests {
         build.refused.push((4, "no layer-3 pass".into()));
         build.input.layers.push(LitLayerPart {
             layer: 8,
+            level: 0,
             section: 2,
             part: 3,
             decompression: [[0.0; 4]; 3],
