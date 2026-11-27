@@ -171,6 +171,11 @@ static DECORATOR_PLACEMENTS: [AtomicU64; scene_extract::decorators::PlacementSou
 static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static DECAL_ITEMS: AtomicU64 = AtomicU64::new(0);
+static DECAL_QUADS: AtomicU64 = AtomicU64::new(0);
+static DECAL_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static WEATHER_PLATES: AtomicU64 = AtomicU64::new(0);
+static WEATHER_UNREAD: AtomicU64 = AtomicU64::new(0);
 static LIGHT_EXTRACT_VIEWS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_EXTRACT_NS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_EXTRACT_UNREAD: AtomicU64 = AtomicU64::new(0);
@@ -631,6 +636,37 @@ fn decorators(mem: &dyn GuestMemory) {
                 DECORATOR_DRAWS.fetch_add(u64::from(got.draws), Ordering::Relaxed);
                 DECORATOR_INSTANCES.fetch_add(u64::from(got.instances), Ordering::Relaxed);
                 DECORATOR_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+}
+
+/// The decals (`scene_extract::decals`) and weather plates
+/// (`scene_extract::weather`) of the open view, at its layer 3: the
+/// visible-cluster list and the view's window are set by then, and the
+/// decal chains are tick state.
+fn decals_and_weather(mem: &dyn GuestMemory) {
+    let m = Ro(mem);
+    with_step(|step| {
+        match scene_extract::decals::extract(&m, &mut step.builder) {
+            Ok(Some(got)) => {
+                DECAL_ITEMS.fetch_add(u64::from(got.items), Ordering::Relaxed);
+                DECAL_QUADS.fetch_add(u64::from(got.quads), Ordering::Relaxed);
+                DECAL_REMAINDER.fetch_add(u64::from(got.remainder), Ordering::Relaxed);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        match scene_extract::weather::extract(&m, &mut step.builder) {
+            Ok(Some((plates, unread))) => {
+                WEATHER_PLATES.fetch_add(u64::from(plates), Ordering::Relaxed);
+                WEATHER_UNREAD.fetch_add(u64::from(unread), Ordering::Relaxed);
             }
             Ok(None) => {}
             Err(_) => {
@@ -1997,6 +2033,11 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             "scene_decorator_remainder",
             DECORATOR_REMAINDER.load(Ordering::Relaxed),
         ),
+        ("scene_decal_items", DECAL_ITEMS.load(Ordering::Relaxed)),
+        ("scene_decal_quads", DECAL_QUADS.load(Ordering::Relaxed)),
+        ("scene_decal_remainder", DECAL_REMAINDER.load(Ordering::Relaxed)),
+        ("scene_weather_plates", WEATHER_PLATES.load(Ordering::Relaxed)),
+        ("scene_weather_unread", WEATHER_UNREAD.load(Ordering::Relaxed)),
         (
             "scene_light_extract_views",
             LIGHT_EXTRACT_VIEWS.load(Ordering::Relaxed),
@@ -2184,6 +2225,8 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ),
     )
     .chain(crate::native_decorators::counters())
+    .chain(native_render::decal_scene::counters())
+    .chain(native_render::weather_scene::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_lights::scene_frame::counters())
     .chain([
@@ -2214,6 +2257,7 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
         (Site::Scene, LIGHTMAP_LAYER) => {
             if open_kind_at_layer(mem, ViewKind::Game, true).is_some() {
                 decorators(mem);
+                decals_and_weather(mem);
             }
         }
         (Site::Scene, 1 | 2 | 5 | 7 | 8 | 20) => layer_items(mem, ViewKind::Game, layer),

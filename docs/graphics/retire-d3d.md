@@ -606,6 +606,42 @@ of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
 so every run counts `entry_runs_no_host_<kind>`: the display copy's own
 particles and decals need a host that draws them.
 
+### R2's decals and weather
+
+Built (**Code**): the scene holds both as typed items, read at the view's
+layer 3 (`render-bridge/src/scene_step.rs`, `decals_and_weather`).
+
+| Item | Read by | Holds | Slot |
+|---|---|---|---|
+| `DecalItem` (`frame-scene/src/decal.rs`) | `scene-extract/src/decals.rs` | mode 0 to 6, cluster, record, bitmap and image, tint (`+0x24`), the quad list's vertices | mode 0 in slot 2, 1 in slot 5, 2 to 6 in slot 7 |
+| `EffectItem::WeatherPlate` (`frame-scene/src/effect.rs`) | `scene-extract/src/weather.rs` | per `weat` block element: window, three bitmaps, per-player scroll, tint | slot 9 |
+
+Decals follow the guest's order: modes 0 to 6, each over the visible
+cluster list `0x00547f94`, each bucket's chain from its head
+(`[0x004ea94c] + 4 * (mode * 512 + cluster)`, link `+0x34`); a record
+whose owner (`+0x38`) is met again in the view is skipped, as the callback's
+frame marker skips it. A record that does not read is the view's
+`decal_remainder`, counted `scene_decal_remainder`. `render.scene` carries
+`scene_decal_items`, `scene_decal_quads`, `scene_weather_plates` and
+`scene_weather_unread`.
+
+`native_render::decal_scene` turns a view's decals into groups per slot with
+each mode's depth and blend (`state`); `native_render::weather_scene` turns
+a plate into its corners, layers and the depth test GREATER. Tests:
+`decal_items_match_the_datum_list`, `decal_modes_draw_in_their_three_slots`,
+`a_weather_plate_tests_against_scene_depth`, `a_plate_scrolls_per_player`,
+`an_undrawn_plate_counts_scene_dropped_weather_plate`.
+`native_decals::scene_draws()` is true when a host draws the decals from the
+scene; the callback `0x00044040` is then cut, and `0x00041cc0`, `0x000423c0`
+(object and camouflage layers) are not the decals'.
+
+Not built: nothing draws these items. The decal callback needs the state
+`0x00043a40` sets (program, 192 constants, the mode's combiner block),
+which exists only in the D3D draw snapshot; a plate needs the placement
+test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
+`scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
+once a host takes the slots; until then the guest draws them.
+
 ### R1's remainder
 
 Every R1 layer is `partial` (`residual_census::PARTIAL_LAYERS`): its

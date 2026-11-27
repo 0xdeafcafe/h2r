@@ -20,6 +20,7 @@
 //! |---|---|---|
 //! | (none yet) | | |
 
+pub mod decals;
 pub mod decorators;
 pub mod extract;
 mod guest;
@@ -31,5 +32,6 @@ pub mod lights;
 pub mod testing;
 pub mod ui;
 pub mod visibility;
+pub mod weather;
 
 pub use guest::{GuestRead, GuestWrite};

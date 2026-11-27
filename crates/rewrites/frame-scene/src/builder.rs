@@ -200,6 +200,7 @@ impl SceneBuilder {
         let l = scene.lights.len() as u32;
         let p = scene.layer_passes.len() as u32;
         let d = scene.decorators.len() as u32;
+        let dc = scene.decals.len() as u32;
         scene.views.push(View {
             key,
             cut,
@@ -217,6 +218,9 @@ impl SceneBuilder {
             layers: p..p,
             decorators: d..d,
             decorator_remainder: 0,
+            decals: dc..dc,
+            decal_remainder: 0,
+            effects: Default::default(),
             fog: None,
             water: None,
             water_composite: None,

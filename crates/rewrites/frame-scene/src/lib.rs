@@ -11,6 +11,7 @@
 pub mod transparent;
 pub mod blend;
 pub mod builder;
+pub mod decal;
 pub mod decorator;
 pub mod display;
 pub mod effect;
