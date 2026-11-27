@@ -49,16 +49,6 @@ pub struct ShipPut {
 /// (`fly_time`).
 pub const FLY_TICKS: u32 = 240;
 
-/// Seats the host counts on a ship. The kit does not read the vehicle tag's
-/// seat blocks, so this is the Phantom's nine passenger seats less one:
-/// an engine load that seats fewer leaves the surplus on foot
-/// ([`place_squad_in`]).
-pub const SEATS: u8 = 8;
-/// The Pelican's, counted the same way: its passenger seats less none we
-/// know of (V: the tag is not read), so a short load leaves the rest on
-/// foot as for the Phantom.
-pub const PELICAN_SEATS: u8 = 6;
-
 /// A kit's ship in the world: its datum and how many seats it has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ship {
@@ -90,12 +80,27 @@ impl ShipPath {
     }
 }
 
-/// The seats the host counts on a kind of ship.
-pub const fn seats(kind: ShipKind) -> u8 {
-    match kind {
-        ShipKind::Phantom => SEATS,
-        ShipKind::Pelican => PELICAN_SEATS,
+/// The tag table global (`[4e3b44]`: 16-byte entries, the definition at
+/// `+8`) and a vehicle definition's seats block count.
+const TAG_TABLE: u32 = 0x004e_3b44;
+const VEHICLE_SEATS: u32 = 0x1c8;
+
+/// The seats the ship's own `vehi` tag lists, which the host counts on: an
+/// engine load that seats fewer leaves the surplus on foot
+/// ([`place_squad_in`]). None when the object is no live vehicle or its
+/// tag is not in memory.
+pub fn tag_seats(m: &dyn GuestMemory, ship: u32) -> Option<u8> {
+    let (kind, body) = objects::get(m, DatumHandle::from_raw(ship)?).ok()??;
+    if kind != objects::VEHICLE {
+        return None;
     }
+    let definition = body.definition(m).ok()??;
+    let table = m.u32(TAG_TABLE).ok()?;
+    let tag = m.u32(table.checked_add((definition.index() as u32) * 16 + 8)?).ok()?;
+    if tag == 0 {
+        return None;
+    }
+    u8::try_from(m.u32(tag + VEHICLE_SEATS).ok()?).ok().filter(|&n| n > 0)
 }
 
 /// The live vehicle placed at `placement` in the scenario's vehicle

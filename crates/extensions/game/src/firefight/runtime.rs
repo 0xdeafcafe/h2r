@@ -505,10 +505,8 @@ impl Game for GuestGame<'_> {
     fn ship(&self, kind: ::firefight::ShipKind) -> Option<super::ship::Ship> {
         let placement = self.kit?.ships[kind.index()]?;
         let object = super::ship::placed_ship(&*self.m, placement)?;
-        Some(super::ship::Ship {
-            object,
-            capacity: super::ship::seats(kind),
-        })
+        let capacity = super::ship::tag_seats(&*self.m, object)?;
+        Some(super::ship::Ship { object, capacity })
     }
     fn class_ships(&self) -> BTreeMap<String, Option<::firefight::ShipKind>> {
         let Some(kit) = self.kit else {
