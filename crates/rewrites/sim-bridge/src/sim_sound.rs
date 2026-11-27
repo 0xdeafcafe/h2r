@@ -16,6 +16,9 @@ use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
 pub mod mixer_feed;
+pub mod tag_durations;
+
+pub use tag_durations::GuestDurations;
 
 pub const SOUND: &str = "sim.native.sound";
 /// The sound simulation's switch (`impl.sim.sound-events`, default off until
@@ -42,6 +45,11 @@ pub fn from_handle(h: u32) -> Option<SoundId> {
 pub trait Durations: Send + Sync {
     /// The definition of the sound tag `tag`.
     fn def(&self, tag: u32) -> SoundDef;
+    /// The definition of `tag` read from guest memory at a start. The default
+    /// is [`Durations::def`]; [`GuestDurations`] reads the loaded tag.
+    fn guest_def(&self, _g: &runtime::Guest, tag: u32) -> SoundDef {
+        self.def(tag)
+    }
     /// The tag of a marker start, from its parameter block in guest memory.
     /// `None` when the block's layout is not known: the start then has tag 0
     /// and ends on the tick it starts.
@@ -186,6 +194,8 @@ fn game_tick(g: &runtime::Guest) -> Result<u32, runtime::GuestFault> {
 ///   (an observer; no guest call).
 /// - `SOUND_UPDATE` (`0x125b40`, the main-loop service): implemented here;
 ///   it hands the events to the host and returns, with no guest call.
+/// - `SOUND_STOP_INSTANCE` (`0x126360`): a stop of a sim handle ends its sound
+///   on the schedule; a guest instance still runs the guest's stop.
 /// - `SOUND_IMPULSE_ALLOCATE` and `SOUND_START_AT_MARKER`: implemented
 ///   here; the start goes to the schedule and the caller gets a sim handle
 ///   ([`handle`]) in place of a guest instance.
@@ -198,7 +208,7 @@ impl SimSoundEvents {
         SimSoundEvents { sim: Arc::new(Mutex::new(sim)) }
     }
 
-    /// No tag knowledge and no host: the headless arm.
+    /// The guest's tags and no host: the headless arm.
     pub fn headless() -> Self {
         Self::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost)))
     }
@@ -237,22 +247,37 @@ impl Feature for SimSoundEvents {
         });
         let sim = Arc::clone(&self.sim);
         b.raw().implement(&points::SOUND_IMPULSE_ALLOCATE, "sound impulse", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
+            let mem = ctx.memory();
             let tag = mem.u32(cpu.esp.wrapping_add(4))?;
             let source = mem.u32(cpu.esp.wrapping_add(12))?;
             let tick = game_tick(&mem)?;
-            cpu.eax = handle(lock(&sim).start(tag, Source(source), tick));
+            let durations = Arc::clone(lock(&sim).durations());
+            let def = durations.guest_def(&mem, tag);
+            cpu.eax = handle(lock(&sim).start_def(def, Source(source), tick));
             mem.ret(cpu, 16)
         });
         let sim = Arc::clone(&self.sim);
         b.raw().implement(&points::SOUND_START_AT_MARKER, "sound at marker", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
+            let mem = ctx.memory();
             let params = mem.u32(cpu.esp.wrapping_add(4))?;
             let tick = game_tick(&mem)?;
-            let mut sim = lock(&sim);
-            let tag = sim.durations().marker_tag(&mem, params).unwrap_or(0);
-            cpu.eax = handle(sim.start(tag, Source(cpu.esi), tick));
+            let durations = Arc::clone(lock(&sim).durations());
+            let tag = durations.marker_tag(&mem, params).unwrap_or(0);
+            let def = durations.guest_def(&mem, tag);
+            cpu.eax = handle(lock(&sim).start_def(def, Source(cpu.esi), tick));
             mem.ret(cpu, 4)
+        });
+        // A stop by instance handle: a sim handle ends its sound on the
+        // schedule and the guest's stop (a pool lookup that would find
+        // nothing) is skipped; a guest instance runs the guest's own stop.
+        let sim = Arc::clone(&self.sim);
+        b.raw().before(&points::SOUND_STOP_INSTANCE, "sound stop", move |call| {
+            if let Some(id) = from_handle(call.cpu.ebx) {
+                let tick = game_tick(&call.ctx.memory())?;
+                lock(&sim).stop(id, tick);
+                return Ok(hooks::Flow::Return(call.ret(0)?));
+            }
+            Ok(hooks::Flow::Continue)
         });
         Ok(())
     }
@@ -410,6 +435,24 @@ mod tests {
             }
             assert_eq!(plan.chains.contains_key(&points::GAME_TICK.base), on);
         }
+    }
+
+    #[test]
+    fn a_stop_by_sim_handle_ends_the_sound_and_only_under_the_switch() {
+        for (spec, on) in [("", false), ("impl.sim.sound-events", true)] {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&SimSoundEvents::headless()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let chain = plan.chains.get(&points::SOUND_STOP_INSTANCE.base);
+            assert_eq!(chain.is_some_and(|c| c.before.len() == 1 && c.implement.is_none()), on);
+        }
+        // The hook's effect on the schedule: the handle names the sound.
+        let mut sim = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let id = sim.start(60_000, Source(1), 0);
+        assert_eq!(from_handle(handle(id)), Some(id));
+        assert!(sim.stop(id, 5));
+        assert!(sim.wait_done(id, 5));
+        assert!(!sim.stop(id, 6), "a second stop finds nothing");
     }
 
     #[test]
