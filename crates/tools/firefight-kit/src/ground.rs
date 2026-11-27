@@ -298,6 +298,8 @@ pub struct Ground {
     pub fitted: Vec<crate::Fit>,
     /// The dropship, kept or cut ([`crate::ShipReport`]).
     pub ship: Option<crate::ShipReport>,
+    /// The drop pods, kept or cut ([`crate::PodReport`]).
+    pub pods: Option<crate::PodReport>,
     /// What each kept stage-two class added, in palette order after the
     /// Elite; empty for a build with none.
     pub classes: Vec<ClassCost>,
@@ -349,6 +351,7 @@ pub fn build_with(
         problems: built.problems,
         fitted: built.fitted,
         ship: built.ship,
+        pods: built.pods,
         classes: built.classes,
         cut: built.cut,
         receipt: Receipt::of(Sha256::of(base), &canonical, recipe),
@@ -391,6 +394,7 @@ impl Ground {
             cut: self.cut.clone(),
             fitted: self.fitted.clone(),
             ship: self.ship.clone(),
+            pods: self.pods.clone(),
         })
     }
 }

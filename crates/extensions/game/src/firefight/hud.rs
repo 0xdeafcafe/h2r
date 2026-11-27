@@ -48,9 +48,11 @@ pub use hud_kit_core::views::firefight::{BANNER, State, Stage};
 use crate::hud_kit::{self, Handle};
 
 /// The blob's format.
-pub const VERSION: u8 = 3;
-/// The actor channel's mode state holds this many bytes at most.
-pub const MAX_BLOB: usize = 63;
+pub const VERSION: u8 = 4;
+/// The blob's bytes at most: the actor channel's mode state holds 63
+/// (`actor_net::wire::MAX_STATE_BYTES`), and the script role's 12-byte
+/// header rides in front of the blob (`actor_net::roles`).
+pub const MAX_BLOB: usize = 51;
 /// Players whose own lives the blob carries when lives are not shared.
 pub const MAX_EACH: usize = 8;
 /// The most rounds, and waves in a round, the blob admits.
@@ -236,6 +238,9 @@ impl Mode {
             if state.players.len() > MAX_EACH {
                 return Err(Error::TooManyPlayers(state.players.len()));
             }
+            if let Some(&slot) = state.players.keys().find(|&&s| s >= 16) {
+                return Err(Error::Slot(slot));
+            }
             Lives::Each(state.players.iter().map(|(&s, p)| (s, p.lives)).collect())
         };
         let teams = if two {
@@ -331,10 +336,12 @@ impl Mode {
                 }
             }
             Lives::Each(each) => {
+                // The slots as bits (slots are under 16, [`Error::Slot`]),
+                // then each one's count in slot order.
                 out.push(LIVES_EACH);
-                out.push(each.len() as u8);
-                for &(player, count) in each {
-                    out.push(player);
+                let slots = each.iter().fold(0u16, |m, &(player, _)| m | 1 << (player & 15));
+                out.extend_from_slice(&slots.to_le_bytes());
+                for &(_, count) in each {
                     out.extend_from_slice(&count.to_le_bytes());
                 }
             }
@@ -439,21 +446,23 @@ impl Mode {
                 (Lives::Teams(std::array::from_fn(pool)), want)
             }
             LIVES_EACH => {
-                let n = usize::from(*bytes.get(at).ok_or_else(|| short(at + 1))?);
+                if bytes.len() < at + 2 {
+                    return Err(short(at + 2));
+                }
+                let slots = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+                let n = slots.count_ones() as usize;
                 if n > MAX_EACH {
                     return Err(Error::Field("lives"));
                 }
-                let want = at + 1 + 3 * n;
+                let want = at + 2 + 2 * n;
                 if bytes.len() < want {
                     return Err(short(want));
                 }
-                let each = bytes[at + 1..want]
-                    .chunks_exact(3)
-                    .map(|c| (c[0], u16::from_le_bytes([c[1], c[2]])))
+                let each = (0..16u8)
+                    .filter(|slot| slots & (1 << slot) != 0)
+                    .zip(bytes[at + 2..want].chunks_exact(2))
+                    .map(|(slot, c)| (slot, u16::from_le_bytes([c[0], c[1]])))
                     .collect::<Vec<_>>();
-                if each.windows(2).any(|w| w[0].0 >= w[1].0) {
-                    return Err(Error::Field("lives"));
-                }
                 (Lives::Each(each), want)
             }
             _ => return Err(Error::Field("lives")),

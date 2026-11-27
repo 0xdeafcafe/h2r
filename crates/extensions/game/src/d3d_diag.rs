@@ -1082,6 +1082,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.accepts_scene_pass(pass)
     }
 
+    fn take_scene_refusal(&mut self) -> bool {
+        self.inner.take_scene_refusal()
+    }
+
     fn queues_scene_stages(&self) -> bool {
         self.inner.queues_scene_stages()
     }

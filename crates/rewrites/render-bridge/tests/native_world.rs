@@ -339,6 +339,26 @@ fn no_opaque_item_reaches_the_device() {
     assert_eq!(masks(&m), vec![0b1010; 3], "the bits are back for the next layer");
 }
 
+/// Guest memory in which one range does not read, as a record past the
+/// guest's mapped memory does not.
+struct Unreadable {
+    inner: FlatMemory,
+    hole: std::ops::Range<u32>,
+}
+
+impl GuestMemory for Unreadable {
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), engine::memory::MemFault> {
+        if addr < self.hole.end && addr.saturating_add(buf.len() as u32) > self.hole.start {
+            return Err(engine::memory::MemFault { addr, len: buf.len() as u32, write: false });
+        }
+        self.inner.read(addr, buf)
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), engine::memory::MemFault> {
+        self.inner.write(addr, data)
+    }
+}
+
 /// A part whose render record does not read is dropped by name, not left to
 /// the guest.
 #[test]
@@ -346,11 +366,14 @@ fn an_unreadable_part_is_a_named_drop() {
     let _serial = HOST_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     native_world::set_host(Arc::new(Refuser));
     let before = dropped("scene_dropped_world_unreadable");
-    let mut m = guest();
-    // Item 1's render record index points far outside the memory.
-    m.set_u32(ITEMS + 0x18 + 0xc, 0x7000 << 8 | 1).unwrap();
+    let mut inner = guest();
+    // Item 1's render record is record 0x7000, and that record does not read
+    // (the memory the test maps holds it, so the hole is made by hand).
+    inner.set_u32(ITEMS + 0x18 + 0xc, 0x7000 << 8 | 1).unwrap();
+    let record = RENDER_RECORDS + 0x20 * 0x7000;
+    let mut m = Unreadable { inner, hole: record..record + 0x20 };
     native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m)[1], 0b0010, "no guest entry for it");
+    assert_eq!(masks(&m.inner)[1], 0b0010, "no guest entry for it");
     assert_eq!(dropped("scene_dropped_world_unreadable"), before + 1);
     native_world::restore_pending(&mut m);
 }

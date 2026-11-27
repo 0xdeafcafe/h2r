@@ -25,6 +25,7 @@ pub mod ground;
 mod nav;
 pub mod retail;
 pub mod ship;
+pub mod sky;
 mod transplant;
 /// An invented map the kit builds on, for tests here and in other crates.
 #[cfg(any(test, feature = "testkit"))]
@@ -33,6 +34,7 @@ pub mod testkit;
 pub use firefight::Faction;
 pub use bases::{Bases, Config, Source, Team};
 pub use ship::{Dropship, ShipReport};
+pub use sky::{Fall, PodReport};
 pub use retail::RetailClass;
 pub use ground::{Ground, Labels, Problem, Receipt, Recipe};
 pub use transplant::{ClassCost, ClassSpec, Classes, Donor};
@@ -69,6 +71,9 @@ pub struct Costs {
     /// The dropship: its transplanted tags (when a donor gave them), its
     /// parked placement, palette row, object name and point sets.
     pub ship: usize,
+    /// The drop pods: the copied tags, the pools, the falls and their
+    /// names (`sky`).
+    pub pods: usize,
     pub scripts: usize,
     /// The starting locations, when their rewritten rows cannot stay in
     /// place (0 when they do).
@@ -89,7 +94,7 @@ pub struct Costs {
 
 impl Costs {
     /// The parts, largest first.
-    fn parts(&self) -> [(&'static str, usize); 10] {
+    fn parts(&self) -> [(&'static str, usize); 11] {
         let mut parts = [
             ("sectors", self.sectors),
             ("zones", self.zones),
@@ -97,6 +102,7 @@ impl Costs {
             ("characters and palettes", self.characters),
             ("transplanted classes", self.classes),
             ("dropship", self.ship),
+            ("drop pods", self.pods),
             ("scripts", self.scripts),
             ("starting locations", self.starts),
             ("tag index", self.index),
@@ -119,9 +125,14 @@ impl fmt::Display for Costs {
         } else {
             format!("dropship {} B, ", self.ship)
         };
+        let pods = if self.pods == 0 {
+            String::new()
+        } else {
+            format!("drop pods {} B, ", self.pods)
+        };
         write!(
             f,
-            "sectors {} B ({} of {} generated kept{merged}), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, {ship}scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
+            "sectors {} B ({} of {} generated kept{merged}), zones {} B, squads {} B, characters and palettes {} B, transplanted classes {} B, {ship}{pods}scripts {} B, starting locations {} B, tag index {} B, padding {} B; tag growth {} B, available {} B",
             self.sectors,
             self.sectors_kept,
             self.sectors_generated,
@@ -205,6 +216,9 @@ pub struct Package {
     /// The dropship, kept or cut; none when the build asked for none
     /// ([`Dropship::None`]).
     pub ship: Option<ShipReport>,
+    /// The drop pods, kept or cut; none when the build asked for none
+    /// (a probe, or [`Config::no_pods`]).
+    pub pods: Option<PodReport>,
 }
 
 struct Built {
@@ -218,6 +232,7 @@ struct Built {
     cut: Vec<String>,
     fitted: Vec<Fit>,
     ship: Option<ShipReport>,
+    pods: Option<PodReport>,
 }
 
 struct Field {
@@ -329,11 +344,20 @@ fn build_with_classes(
     fit_within(base, base_name, mode, config, labels, classes, available)
 }
 
-/// The tag memory `base` has left: `max_metadata_size(Multiplayer)` less
-/// its `+0x1c`.
+/// The most `+0x1c` a kit may take a multiplayer map to: the largest retail
+/// campaign map's, `max_metadata_size(Campaign)` (`0xc24000`). The engine
+/// reserves one physical arena for every map type (`0x30e4000` bytes), and
+/// a campaign map loads that much beside its two shared maps, which
+/// is more than a multiplayer map of this size plus its one shared map
+/// (docs/game/firefight.md, "The kit"). It is not a loader constant:
+/// the multiplayer bound `max_metadata_size(Multiplayer)` is the largest
+/// retail multiplayer map, which Zanzibar sits 132 KiB under.
+const KIT_METADATA_BUDGET: CacheType = CacheType::Campaign;
+
+/// The tag memory `base` has left: [`KIT_METADATA_BUDGET`] less its `+0x1c`.
 fn headroom(base: &[u8]) -> Result<u32> {
     let map = Map::from_reader(Cursor::new(base))?;
-    Ok(max_metadata_size(CacheType::Multiplayer)?.saturating_sub(map.header().meta_size))
+    Ok(max_metadata_size(KIT_METADATA_BUDGET)?.saturating_sub(map.header().meta_size))
 }
 
 /// [`build_with_classes`] against `available` bytes of tag headroom.
@@ -356,18 +380,24 @@ fn fit_within(
     // without, and only then do classes go.
     // A probe is two Elites and a startup script: no ship.
     let asked = config.dropship != Dropship::None && mode == Mode::Kit;
-    let attempts: Vec<(usize, bool)> = asked
-        .then_some((total, true))
-        .into_iter()
-        .chain((fewest..=total).rev().map(|keep| (keep, false)))
-        .collect();
+    let asked_pods = !config.no_pods && mode == Mode::Kit;
+    // Pods go right after the ship, before any class.
+    let mut attempts: Vec<(usize, bool, bool)> = Vec::new();
+    if asked || asked_pods {
+        attempts.push((total, asked, asked_pods));
+    }
+    if asked && asked_pods {
+        attempts.push((total, false, true));
+    }
+    attempts.extend((fewest..=total).rev().map(|keep| (keep, false, false)));
     let mut over = None;
     let mut ship_cut: Option<String> = None;
-    for (keep, ship) in attempts {
+    let mut pod_cut: Option<String> = None;
+    for (keep, ship, pod) in attempts {
         for steps in 0..=Fit::ALL.len() {
             let fit = &Fit::ALL[..steps];
             match assemble(
-                base, base_name, mode, config, labels, classes, keep, ship, fit, available,
+                base, base_name, mode, config, labels, classes, keep, ship, pod, fit, available,
             ) {
                 Ok(mut built) => {
                     if let Some(c) = classes {
@@ -383,6 +413,11 @@ fn fit_within(
                             ship_cut.unwrap_or_else(|| "over the tag headroom".into()),
                         ));
                     }
+                    if asked_pods && !pod && built.pods.is_none() {
+                        built.pods = Some(PodReport::cut(
+                            pod_cut.unwrap_or_else(|| "over the tag headroom".into()),
+                        ));
+                    }
                     return Ok(built);
                 }
                 Err(e) if e.downcast_ref::<transplant::Overflow>().is_some() => over = Some(e),
@@ -393,6 +428,11 @@ fn fit_within(
                         && e.downcast_ref::<transplant::ShipRefused>().is_some() =>
                 {
                     ship_cut = Some(e.to_string());
+                    break;
+                }
+                // Pods are always optional.
+                Err(e) if e.downcast_ref::<transplant::PodRefused>().is_some() => {
+                    pod_cut = Some(e.to_string());
                     break;
                 }
                 Err(e) => return Err(e),
@@ -414,6 +454,7 @@ fn assemble(
     classes: Option<&Classes<'_>>,
     keep: usize,
     ship: bool,
+    pod: bool,
     fit: &[Fit],
     available: u32,
 ) -> Result<Built> {
@@ -472,10 +513,28 @@ fn assemble(
         Some(ship::Pick::Copy(path)) => Some(*path),
         _ => None,
     };
+    // The drop pods, when a zone or a start has an open column.
+    let falls = nav.falls;
+    let mut pod_report = None;
+    let pod_pick = if !pod {
+        None
+    } else if falls.zone_count() + falls.start_count() == 0 {
+        pod_report = Some(PodReport::cut("no zone or start has a clear column to the sky"));
+        None
+    } else {
+        Some(sky::pick(&set))
+    };
+    let copy_pod = match &pod_pick {
+        Some(sky::Pick::Copy(path)) => Some(*path),
+        _ => None,
+    };
     let added = match classes {
-        Some(c) => transplant::add(&mut set, c, keep, copy)?,
+        Some(c) => transplant::add(&mut set, c, keep, copy, copy_pod)?,
         None if copy.is_some() => {
             return Err(transplant::ShipRefused("no donor maps for the dropship".into()).into());
+        }
+        None if copy_pod.is_some() => {
+            return Err(transplant::PodRefused("no donor maps for the drop pod".into()).into());
         }
         None => transplant::Copied::default(),
     };
@@ -485,6 +544,11 @@ fn assemble(
             .ship
             .as_ref()
             .map(|(id, _)| (*id, (*path).to_owned())),
+        None => None,
+    };
+    let pod_tag = match &pod_pick {
+        Some(sky::Pick::Have(id, name)) => Some((*id, name.clone())),
+        Some(sky::Pick::Copy(path)) => added.pod.as_ref().map(|(id, _)| (*id, (*path).to_owned())),
         None => None,
     };
     let named: Vec<(&str, TagId, firefight::Faction)> = added
@@ -507,7 +571,22 @@ fn assemble(
         None => None,
     };
     let ship_kept = authored.as_ref().map(|a| a.paths);
-    let ship_fields = authored.map(|a| a.fields).unwrap_or_default();
+    let mut ship_fields = authored.map(|a| a.fields).unwrap_or_default();
+    let pods_authored = match &pod_tag {
+        Some((tag, _)) => sky::author(
+            &mut map,
+            *tag,
+            &falls,
+            ship_bsp,
+            &mut ship_fields,
+            if ship_kept.is_some() {
+                ship::path_sets(&ship_runs, ship_bsp)
+            } else {
+                Vec::new()
+            },
+        )?,
+        None => None,
+    };
     // Each starting location takes its nearest base's team, so team 0
     // spawns at the home base and team 1 at the other.
     let starts_moved = !nav.starts.is_empty() && !starts_in_place(&mut set, scenario, &nav.starts)?;
@@ -553,6 +632,7 @@ fn assemble(
     };
     let mut squads = 0;
     costs.ship = added.ship.as_ref().map_or(0, |(_, c)| c.bytes);
+    costs.pods = added.pod.as_ref().map_or(0, |(_, c)| c.bytes);
     for (field, (address, bytes)) in fields.iter().zip(allocations) {
         set_pair(&mut set, &map, field, address)?;
         if field.tag != scenario {
@@ -573,6 +653,12 @@ fn assemble(
         } else {
             costs.scripts += bytes;
         }
+    }
+
+    // The pods' share of the vehicle blocks they extended.
+    if let Some(a) = &pods_authored {
+        costs.pods += a.bytes;
+        costs.ship = costs.ship.saturating_sub(a.bytes);
     }
 
     // Use the real layout (including a tag-index move and alignment), so a
@@ -617,6 +703,19 @@ fn assemble(
             why: None,
         });
     }
+    if let (Some(a), Some((_, tag))) = (&pods_authored, pod_tag) {
+        pod_report = Some(PodReport {
+            kept: true,
+            tag,
+            tags: added.pod.as_ref().map_or(0, |(_, c)| c.tags),
+            bytes: costs.pods,
+            zone_falls: falls.zone_count(),
+            open_starts: falls.start_count(),
+            starts: falls.starts.len(),
+            why: None,
+        });
+        let _ = a;
+    }
     Ok(Built {
         bytes,
         costs,
@@ -628,6 +727,7 @@ fn assemble(
         cut: Vec::new(),
         fitted: Vec::new(),
         ship: ship_report,
+        pods: pod_report,
     })
 }
 
@@ -737,6 +837,7 @@ pub fn build_package_with(
         cut: built.cut,
         fitted: built.fitted,
         ship: built.ship,
+        pods: built.pods,
     })
 }
 

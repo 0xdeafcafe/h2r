@@ -127,6 +127,10 @@ struct Played {
     stages: BTreeSet<u8>,
     /// Every banner the client's feed showed.
     banners: BTreeSet<String>,
+    /// Every banner the blobs announced, shown or not: a banner queued
+    /// behind another is replaced by the next announcement, and these
+    /// waves clear in ten ticks.
+    announced: BTreeSet<String>,
     boss_spawn: bool,
     ticks: u32,
     finished: Option<Outcome>,
@@ -148,6 +152,7 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
     let mut out = Played {
         stages: BTreeSet::new(),
         banners: BTreeSet::new(),
+        announced: BTreeSet::new(),
         boss_spawn: false,
         ticks: 0,
         finished: None,
@@ -155,6 +160,7 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
         last: None,
         feed: Feed::default(),
     };
+    let mut prev: Option<Mode> = None;
     for tick in 0..4_000u32 {
         let mut kills = Vec::new();
         for slot in 0..SQUAD_SLOTS {
@@ -189,6 +195,12 @@ fn play(mut d: ScriptDirector, players: &[u8], local: u8) -> Played {
             let at = |m: &Mode| layout::layout(m, local, M, screen, Some("WAVE 1"));
             assert_eq!(at(&client), at(&host), "tick {tick} {screen:?}");
         }
+        out.announced.extend(
+            banners::events(prev.as_ref(), &client, local, skull_name)
+                .iter()
+                .map(Banner::text),
+        );
+        prev = Some(client.clone());
         let values = out.feed.tick(Some(Ok(client.clone())), local, M, Screen::Full);
         if let Some(b) = values.get(ff::BANNER).filter(|b| b.shown) {
             out.banners.insert(b.text.clone());
@@ -230,13 +242,16 @@ fn the_hud_reads_only_the_mode_blob() {
         assert!(played.stages.contains(&(stage as u8)), "{stage:?}");
     }
     assert!(played.boss_spawn, "a boss wave spawned");
-    for banner in ["WAVE 1", "BOSS WAVE", "WAVE CLEAR", "ROUND COMPLETE", "VICTORY"] {
+    for banner in ["BOSS WAVE", "WAVE CLEAR", "ROUND COMPLETE", "VICTORY"] {
         assert!(
             played.banners.contains(banner),
             "{banner}: {:?}",
             played.banners
         );
     }
+    // Round one's skull comes on with its first wave, so the feed shows
+    // the skull and the first wave waits behind it; the blobs announce it.
+    assert!(played.announced.contains("WAVE 1"), "{:?}", played.announced);
 
     // Two teams, a player each: the first scores every kill, so its team
     // wins at the end; each viewer reads its own team's pool.
@@ -403,17 +418,20 @@ fn a_blob_it_does_not_understand_is_refused() {
     let mut teams = two_team_mode().encode();
     teams[HEAD + TEAMS] = LIVES_SHARED;
     assert!(Mode::decode(&teams).is_err());
-    // Per-player lives: a count past the room, and slots out of order.
+    // Per-player lives: more slots than the blob holds, and counts missing.
     let mut each = Mode {
         lives: Lives::Each(vec![(1, 1), (2, 2)]),
         ..sample_mode()
     }
     .encode();
-    each[HEAD + 5] = 9;
+    // Nine slots named.
+    each[HEAD + 5] = 0xff;
+    each[HEAD + 6] = 0x01;
     assert_eq!(Mode::decode(&each), Err(Error::Field("lives")));
-    each[HEAD + 5] = 2;
-    each[HEAD + 6] = 5;
-    assert_eq!(Mode::decode(&each), Err(Error::Field("lives")));
+    // Three slots named with two counts behind them.
+    each[HEAD + 5] = 0b111;
+    each[HEAD + 6] = 0;
+    assert!(matches!(Mode::decode(&each), Err(Error::Length { .. })));
 }
 
 /// With two teams each viewer reads its own team's pool, and the end
@@ -819,7 +837,7 @@ fn a_monitor_sees_the_banner_and_the_enemies_pill() {
     assert_eq!(Scope::of(true, true), Scope::Monitor);
 }
 
-// ---- blob v3, the layout and the banners (S6) ----
+// ---- blob v4, the layout and the banners (S6) ----
 
 use super::banners::{self, Banner, Banners, EASE, HOLD};
 use super::layout::{self, Screen};
@@ -828,7 +846,7 @@ use super::layout::{self, Screen};
 /// team and two, every flag, the widest numbers. All encode within the
 /// channel's 63 bytes and read back.
 #[test]
-fn blob_v3_round_trips_at_every_size() {
+fn blob_v4_round_trips_at_every_size() {
     let mut most = 0;
     for endless in [false, true] {
         for teams in [None, Some(two_team_mode().teams.unwrap())] {
@@ -869,8 +887,8 @@ fn blob_v3_round_trips_at_every_size() {
             }
         }
     }
-    assert_eq!(most, 55, "the worst case");
-    assert_eq!(VERSION, 3);
+    assert_eq!(most, 48, "the worst case");
+    assert_eq!(VERSION, 4);
 }
 
 /// The states the layout is checked in: every stage, a boss wave, the

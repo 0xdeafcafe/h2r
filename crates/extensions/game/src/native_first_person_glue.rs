@@ -12,7 +12,7 @@ use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
 use native_render::objects::{ClearedObjects, ItemDraw, ObjectFrame};
 use native_render::program::ViewInputs;
-use render_bridge::native_first_person::{Host, ItemMasks};
+use render_bridge::native_first_person::{Dropped, Host, Outcome};
 use render_bridge::native_objects::NativeSet;
 
 use crate::native_first_person_load::{self, MapState, Models};
@@ -253,92 +253,23 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
+    /// The first person draws from the scene in slot 10
+    /// (`render_bridge::native_first_person`), with no guest layer call to
+    /// capture the device's entry states at. The device pass for a scene's
+    /// first-person parts is not built yet, so every offered part is a
+    /// named drop: counted, never drawn through D3D.
     fn draw(
         &self,
-        mem: &mut dyn GuestMemory,
-        generation: u64,
-        objects: Vec<ObjectFrame>,
-        items: Vec<ItemDraw>,
-        models: HashMap<u16, u32>,
-        masks: ItemMasks,
-    ) -> Option<ClearedObjects> {
-        if crate::h1_cinematics::reflection_active(mem) {
-            return None;
-        }
-        let gpu = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(
-                &state
-                    .as_ref()
-                    .filter(|state| state.generation == generation)?
-                    .models,
-            )
-        };
-        let entry = self
-            .entry
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()?;
-        let mut device = self.device.lock().ok()?;
-        // An animated pass samples its constants at the render clock.
-        let time = native_render::layer_pass::render_time(&Ro(mem));
-        let plan = plan_view(&gpu, &objects, &items, &models, &entry, time);
-        let ranges = plan.draws.len();
-        if ranges == 0 {
-            return None;
-        }
-        let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
-        if !gpu
-            .lit
-            .try_lock()
-            .ok()?
-            .as_mut()?
-            .prewarm_draws(&gpu_device, color, depth, &plan.draws)
-        {
-            return None;
-        }
-        let mut drawn = vec![false; items.len()];
-        for &index in &plan.drawn {
-            drawn[index] = true;
-        }
-        let texaccum = entry.texaccum.filter(|_| plan.draws.iter().any(|(_, draw)| draw.texaccum));
-        let pass = Box::new(FirstPersonPass {
-            models: Arc::clone(&gpu),
-            draws: plan.draws,
-            texaccum,
-            view: Some(entry.view),
-            w_clip: entry.w_clip,
-        });
-        let view = mem
-            .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
-            .unwrap_or(u32::MAX);
-        let promise = d3d::ExternalPlan {
-            stage: timeline::native::Stage::FirstPerson,
-            view,
-            ranges,
-            slots: Vec::new(),
-        };
-        let ready = device
-            .prepare_external_bound(
-                &mut crate::native_lights_glue::DeviceMemory(mem),
-                promise,
-                pass,
-                Vec::new(),
-            )
-            .ok()??;
-        // Pin the load through mask application and the commit. A replaced
-        // generation cannot win after the copies have been reserved.
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.as_ref().is_some_and(|state| {
-            state.generation == generation
-                && state.map_generation == render_bridge::native_map_work::generation()
-                && Arc::ptr_eq(&state.models, &gpu)
-        }) {
-            return None;
-        }
-        let cleared = masks.apply(mem, &drawn)?;
-        ready.commit();
-        Some(cleared)
+        _mem: &mut dyn GuestMemory,
+        _scene: &frame_scene::FrameScene,
+        _view: &frame_scene::View,
+        _slot: frame_scene::ViewSlot,
+        _mode: u32,
+        parts: &[u32],
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        out.drop(Dropped::Reservation, parts.len());
+        out
     }
 }
 

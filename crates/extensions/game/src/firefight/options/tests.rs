@@ -238,7 +238,7 @@ fn a_opens_the_value_picker_on_every_row() {
     let s = screen(&store());
     let expected: [(&str, &[&str]); 6] = [
         ("FIREFIGHT", &["Off", "On"]),
-        ("WAVE SET", &["Holdout", "Attrition", "Last Stand", "Crossfire", "Endless"]),
+        ("WAVE SET", &["Endless", "Holdout", "Attrition", "Last Stand", "Crossfire"]),
         ("TEAMS", &["Default", "One team", "Two teams"]),
         ("DIFFICULTY", &["Easy", "Normal", "Heroic", "Legendary"]),
         (
@@ -427,8 +427,8 @@ fn every_wave_set_and_lives_choice_makes_a_valid_definition() {
     }
 }
 
-/// The lobby's kit map puts its own set first in the Wave set row: the
-/// picker offers Basin, then the built-ins; picking Basin keeps its own
+/// The lobby's kit map puts its own set after Endless in the Wave set row:
+/// the picker offers Endless, Basin, then the built-ins; picking Basin keeps its own
 /// value, and right from it steps to Holdout.
 #[test]
 fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
@@ -441,11 +441,11 @@ fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     let pick = picker::current().expect("a pick");
     assert_eq!(
         pick.values,
-        ["Basin", "Holdout", "Attrition", "Last Stand", "Crossfire", "Endless"]
+        ["Endless", "Basin", "Holdout", "Attrition", "Last Stand", "Crossfire"]
     );
     assert_eq!(pick.opener, Opener::GAME_SETUP_FIREFIGHT);
     assert_eq!(
-        (pick.set)(0),
+        (pick.set)(1),
         "firefight.waveset -> Basin",
         "the picker keeps the map set's own value"
     );

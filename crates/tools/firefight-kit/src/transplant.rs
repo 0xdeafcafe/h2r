@@ -142,6 +142,8 @@ pub(crate) struct Copied {
     pub costs: Vec<ClassCost>,
     /// The dropship's `vehi` tag and what it added.
     pub ship: Option<(TagId, ClassCost)>,
+    /// The drop pod's `vehi` tag and what it added.
+    pub pod: Option<(TagId, ClassCost)>,
 }
 
 /// Donors read once, and the base's sound gestalt once, shared by every
@@ -255,13 +257,15 @@ impl<'a> Copier<'a, '_> {
 /// Copy the first `keep` classes of `all` into `set`, in order, then the
 /// `ship` (a `vehi` tag's name, from the first donor that has it) when
 /// asked: a ship the donors cannot give, or the schema cannot copy, is
-/// a [`ShipRefused`]. Nothing is undone on an error: the caller drops the
+/// a [`ShipRefused`]; then the drop `pod` the same way ([`PodRefused`]).
+/// Nothing is undone on an error: the caller drops the
 /// set.
 pub(crate) fn add(
     set: &mut TagSet,
     all: &Classes<'_>,
     keep: usize,
     ship: Option<&str>,
+    pod: Option<&str>,
 ) -> Result<Copied> {
     let mut copier = Copier {
         all,
@@ -293,6 +297,19 @@ pub(crate) fn add(
                 .map_err(refused)?,
         );
     }
+    if let Some(path) = pod {
+        let refused = |e: anyhow::Error| anyhow::Error::from(PodRefused(format!("drop pod: {e:#}")));
+        let donor = copier
+            .donor_of(VEHI, path)
+            .map_err(refused)?
+            .ok_or_else(|| {
+                PodRefused(format!(
+                    "no donor map carries the drop pod {path} ({} donors)",
+                    all.donors.len()
+                ))
+            })?;
+        out.pod = Some(copier.copy(set, "pod", donor, VEHI, path).map_err(refused)?);
+    }
     // The gestalt grows only when a copy brought sounds.
     if copier.merged > 0 {
         if let Some(Some(g)) = copier.base_gestalt {
@@ -316,6 +333,19 @@ impl std::fmt::Display for ShipRefused {
 }
 
 impl std::error::Error for ShipRefused {}
+
+/// The drop pod cannot be copied in: no donor has it, or a donor's copy is
+/// refused. The build goes without pods, and says why.
+#[derive(Debug)]
+pub(crate) struct PodRefused(pub String);
+
+impl std::fmt::Display for PodRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PodRefused {}
 
 /// A build over the tag headroom, in the stage-one kit's words: a caller
 /// tells it from any other error and cuts a class.

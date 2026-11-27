@@ -48,10 +48,13 @@ pub const CUTS: &[Cut] = &[
         abi_result: 0,
         pop: 0,
     },
+    // Both calls, argument 0 and 1; no caller reads its answer.
+    crate::native_first_person::CUT,
 ];
 
 /// Cuts whose producer is a feature that builds the call's whole output
-/// from the call's registers, so
+/// from the call's registers (the first person: `native_first_person`,
+/// which draws the scene's parts), so
 /// [`install`] leaves their points to it. Each still has its row here, so
 /// the census and the table cannot drift.
 ///
@@ -60,7 +63,7 @@ pub const CUTS: &[Cut] = &[
 /// that body answers the cut itself ([`answer`]) when the scene's own
 /// light path runs ([`crate::native_lights::scene_path_ready`]) and
 /// otherwise gathers as before.
-pub const OWN_PRODUCER: &[&str] = &["dynamic_lights"];
+pub const OWN_PRODUCER: &[&str] = &["dynamic_lights", "first_person"];
 
 /// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
 /// scene. The layer draw serves every layer, so these are cut per layer: its

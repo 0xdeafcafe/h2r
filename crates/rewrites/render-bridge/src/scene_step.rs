@@ -567,6 +567,12 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
     Some(view)
 }
 
+/// The current list's `layer` items into the first person's view, for
+/// the cut's answer (`native_first_person::build`).
+pub(crate) fn first_person_layer(mem: &dyn GuestMemory, layer: u8) {
+    layer_items(mem, ViewKind::FirstPerson, u32::from(layer));
+}
+
 /// The current list's `layer` items into the open view of `kind` (a
 /// layer draw of the scene's world layers or of the first person's).
 fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
@@ -1967,6 +1973,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     )
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
+    .chain(crate::native_lights::scene_frame::counters())
     .chain(crate::native_shadows::filter_counters())
     .chain(crate::native_shadows::chain_counters())
     .chain(
