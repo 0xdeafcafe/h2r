@@ -1103,8 +1103,10 @@ impl App {
 
 mod browse;
 mod creation;
+mod drop;
 mod forge;
 mod thumbs;
+pub use drop::DropKind;
 pub use forge::forge_items;
 pub use thumbs::{THUMB_EDGE, has_thumb, shrink};
 pub use browse::{Browse, BrowseMode, BrowseRow, BrowseView};

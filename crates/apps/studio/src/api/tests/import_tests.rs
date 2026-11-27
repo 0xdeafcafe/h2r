@@ -289,3 +289,48 @@ fn import_model_adds_its_atlas_and_opens_the_model_source() {
     assert_eq!(loaded.package.manifest.items[1].kind, content::package::Kind::Data);
     assert_eq!(::workspace::check_package(&loaded), vec![]);
 }
+
+#[test]
+fn a_dropped_source_file_becomes_the_item_of_its_kind() {
+    let (t, mut app, mut api) = setup("asset-drop");
+    std::fs::write(t.path("Boing Loud.wav"), tone(1, 22_050, 640)).unwrap();
+    std::fs::write(t.path("pic.png"), png(3, 2)).unwrap();
+    let file = |name: &str| t.path(name).display().to_string();
+    let v = call(&mut api, &mut app, m::ASSET_DROP, json!({"file": file("Boing Loud.wav"), "package": "mine"}));
+    assert_eq!((v["kind"].clone(), v["package"].clone()), (json!("sound"), json!("mine")));
+    let sound = v["tag"].as_str().unwrap().to_owned();
+    assert!(sound.starts_with("sounds\\"), "{sound}");
+    // A sound opens its source tab.
+    assert!(v["front"].as_str().is_some_and(|d| d.starts_with("item:mine:")), "{v}");
+    // With no package the edit target takes it.
+    call(&mut api, &mut app, m::PACKAGE_TARGET, json!({"id": "mine"}));
+    let v = call(&mut api, &mut app, m::ASSET_DROP, json!({"file": file("pic.png")}));
+    assert_eq!((v["kind"].clone(), v["tag"].clone()), (json!("bitmap"), json!("bitmaps\\pic")));
+    let man = manifest(&t);
+    assert_eq!(man.items.len(), 2);
+    assert_eq!(man.items[0].kind, content::package::Kind::Sound);
+    assert_eq!(man.items[0].tag.as_deref(), Some(sound.as_str()));
+    assert_eq!(man.items[1].kind, content::package::Kind::Bitmap);
+    assert_eq!(man.items[1].tag.as_deref(), Some("bitmaps\\pic"));
+    let loaded = ::workspace::Loaded::from_dir(&t.path("data/packages/mine")).unwrap();
+    assert_eq!(::workspace::check_package(&loaded), vec![]);
+}
+
+#[test]
+fn a_drop_refuses_a_file_that_is_no_source_and_a_second_copy() {
+    let (t, mut app, mut api) = setup("asset-drop-refused");
+    std::fs::write(t.path("pic.png"), png(3, 2)).unwrap();
+    let pic = t.path("pic.png").display().to_string();
+    // A map is not a source file: source.open opens it.
+    let e = api
+        .call(&mut app, m::ASSET_DROP, json!({"file": t.path("lockout.map").display().to_string(), "package": "mine"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    // No package and no edit target.
+    let e = api.call(&mut app, m::ASSET_DROP, json!({"file": pic})).unwrap_err();
+    assert_eq!(e.code, code::NO_TARGET);
+    call(&mut api, &mut app, m::ASSET_DROP, json!({"file": pic, "package": "mine"}));
+    // The tag is taken: the second drop adds nothing.
+    assert!(api.call(&mut app, m::ASSET_DROP, json!({"file": pic, "package": "mine"})).is_err());
+    assert_eq!(manifest(&t).items.len(), 1);
+}

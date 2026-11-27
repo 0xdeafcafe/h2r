@@ -265,6 +265,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"tag:weap:objects\\weapons\\rifle"}"#,
     ),
     def(
+        m::ASSET_DROP,
+        "A source file into a package, as a file dropped on the window goes into the package the Browser shows: a .wav becomes a `sound` item that writes `sounds\\<name>`, a .png a `bitmap` item that writes `bitmaps\\<name>`, a model .yaml (or .yml) a `model` item that writes `models\\<name>\\model` with its sibling atlas PNG as a `data` item. `<name>` is the file's name made safe for a path; import.sound, import.bitmap and import.model take a tag of the caller's choosing and refuse the same files. A sound and a model open their source tab (`front`). The package defaults to the edit target. A file of another kind is refused: source.open opens a map",
+        r#"{"file":"string (a .wav, .png, .yaml or .yml path)","package?":"string (a local package's id)"}"#,
+        r#"{"file":"string","kind":"sound|bitmap|model","tag":"string","package":"string","front":"string|null","log":"[string]"}"#,
+        r#"{"file":"$OUT/clip.wav","package":"mine"}"#,
+    ),
+    def(
         m::ASSET_FORK,
         "Fork for this map: the lines of a tag as they are for one map, in an `edits` item of a package under <data>/packages/ (`package`, else the edit target) whose `maps` names that map alone (`edits/<map>.yaml`). It is never a copy of the tag: every other level reads the asset as it was. Without `set` the lines are the ones the package's other `edits` items that reach the map have for the tag (the last to set a path wins); a package with none is refused, and so is a tag already forked for the map. With `set`, those lines are put in by path. The lock is rewritten",
         r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map":"string","package?":"string","set?":"[{path,value,from?}]"}"#,

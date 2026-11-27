@@ -95,6 +95,7 @@ What goes through actions, from both sides:
 | Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
 | Open as fields | `OpenFields {asset, map}` | a Browser tag row's menu, **Fields** in the header's **Open with** | `shell.open {asset, fields: true}` |
+| Drop a source file on a package | `DropFile {file, package}` | a WAV, a PNG or a model YAML dropped on the window: the package is the one the Browser's Packages root shows or has selected, else the edit target | `asset.drop` |
 | Where used, Show edits | `WhereUsed {asset}`, `ShowEdits {asset}`, `ClearBrowse` | a Browser row's menu, the header's **Links** menu, the Browser view's **Clear** | `asset.where_used`, `asset.edits` |
 | A Forge map variant's field, its save | `Forge(ForgeAction::{Set, Save, Select})`, `UndoDoc(Doc::Forge)`, `RedoDoc(Doc::Forge)` | the Forge variant window's field boxes and rows, the header's Undo, Redo and Save | `forge.variant.set`, `forge.variant.save`, `doc.undo`, `doc.redo` |
 | Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
@@ -1803,6 +1804,20 @@ picture a Browser row draws (`app/assets/thumbs.rs`).
 | a bitmap tag (`tag:bitm:<path>`) the open map holds | image 0 at its base level, 64 pixels on its longer side | `{asset, path, bytes, width, height, source}`, `source` the map |
 | a bitmap no open map holds; any other tag (a model through `model.render`, a waveform, a screen) | none | `not-yet` |
 
+`asset.drop {file, package?}` is a source file dropped on the window
+(`app/assets/drop.rs`). It answers `{file, kind, tag, package, front, log}`.
+
+| File | `kind` | `tag` | As |
+|---|---|---|---|
+| `.wav` | `sound` | `sounds\<name>` | `import.sound`; opens the source tab |
+| `.png` | `bitmap` | `bitmaps\<name>` | `import.bitmap` |
+| `.yaml`, `.yml` | `model` | `models\<name>\model` | `import.model`; opens the source tab |
+
+`<name>` is the file's name in lower case with `-` for every run of other
+characters. With no `package`, the method uses the edit target or returns
+`NO_TARGET`. Any other file is `INVALID_PARAMS` (`source.open` opens a
+map); a file the import refuses is refused the same way.
+
 `asset.copy {asset, package?, to?}` is **New from this...**. It writes
 `tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
 `tag` item to the package's `package.toml` and rewrites its
@@ -1848,6 +1863,7 @@ answers `{asset, view, rows: [{asset, role, via}], total, problems}`.
 ```sh
 h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
 h2 studio asset.list '{"root":"packages","package":"pogo"}'
+h2 studio asset.drop '{"file":"/tmp/boing.wav","package":"my-pack"}'
 h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
 h2 studio asset.where_used '{"asset":"tag:hlmt:objects\\weapons\\rifle_model"}'

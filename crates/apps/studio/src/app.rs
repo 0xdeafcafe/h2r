@@ -351,6 +351,10 @@ pub enum Action {
     OpenFields { asset: String, map: Option<String> },
     /// Make and open a package item in the edit target.
     CreateAsset(assets::CreateAsset),
+    /// A file dropped on the window: a source file (a WAV, a PNG, a model
+    /// YAML) becomes an item of `package`, else of the edit target; any
+    /// other file opens as a source (`app::assets::drop`).
+    DropFile { file: PathBuf, package: Option<String> },
     /// **Where used**: the Browser lists what uses the asset, the
     /// `used_by` rows of the link table (`app::assets::browse`).
     WhereUsed { asset: String },
@@ -540,6 +544,8 @@ impl Action {
         match self {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty_map(),
+            // A dropped file that is no source file opens as a source.
+            Action::DropFile { file, .. } if assets::DropKind::of(file).is_none() => dirty_map(),
             // A shared cache opens in the Tags tool, beside the open map.
             Action::SelectMap(name) if tag_browse::opens_as_tags(name) => None,
             Action::SelectMap(name)
@@ -1253,6 +1259,7 @@ impl App {
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::OpenFields { asset, map } => self.open_fields(&asset, map.as_deref()),
             Action::CreateAsset(request) => self.create_in_target(request),
+            Action::DropFile { file, package } => self.drop_file(file, package),
             Action::WhereUsed { asset } => self.show_where_used(&asset),
             Action::ShowEdits { asset } => self.show_edits(&asset),
             Action::ClearBrowse => self.clear_browse(),

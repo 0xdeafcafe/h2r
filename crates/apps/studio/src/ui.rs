@@ -1232,7 +1232,7 @@ impl Studio {
                     "opening another map"
                 }
                 Some(Action::OpenPackageEntry(_)) => "opening another package",
-                Some(Action::OpenSource(_)) => "opening another source",
+                Some(Action::OpenSource(_) | Action::DropFile { .. }) => "opening another source",
                 Some(Action::OpenHopper(_)) => "opening another playlist file",
                 Some(Action::NewHopper | Action::NewDefaultHopper) => {
                     "starting a new playlist file"

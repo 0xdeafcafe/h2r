@@ -373,6 +373,11 @@ pub fn draw(
     }
     if st.root == Root::Packages {
         super::package::new_package(ui, &mut st.new_package_name, actions);
+        // Where a dropped source file goes.
+        ui.text_disabled(match st.drop_package().or_else(|| app.edit_target()) {
+            Some(package) => format!("Drop a WAV, a PNG or a model YAML here to add it to {package}"),
+            None => "Select a package, then drop a WAV, a PNG or a model YAML to add it".to_owned(),
+        });
     }
     let key = Key {
         root: root_id(st.root),
@@ -488,6 +493,21 @@ fn link_entries(ui: &Ui, asset: &str, edits: bool, actions: &mut Vec<Action>) {
 }
 
 impl BrowserUi {
+    /// The package a file dropped on the window goes into: the one whose
+    /// items the Packages root lists, else the package row selected
+    /// there. `None` is the edit target ([`Action::DropFile`]).
+    pub fn drop_package(&self) -> Option<String> {
+        if self.root != Root::Packages {
+            return None;
+        }
+        self.package.clone().or_else(|| {
+            self.selected
+                .as_deref()
+                .and_then(|asset| asset.strip_prefix("package:"))
+                .map(str::to_owned)
+        })
+    }
+
     /// Whether the app has a link view this panel has not brought forward
     /// yet; answers once per view.
     pub(super) fn take_browse(&mut self, serial: u32) -> bool {
@@ -905,6 +925,21 @@ fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
 mod linked_tests {
     use super::*;
     use crate::app::links::Link;
+
+    #[test]
+    fn a_dropped_file_goes_to_the_package_shown_else_the_one_selected() {
+        let mut browser = BrowserUi::default();
+        // The Tags root names none: the edit target takes the file.
+        browser.selected = Some("package:kit-test".into());
+        assert_eq!(browser.drop_package(), None);
+        browser.root = Root::Packages;
+        assert_eq!(browser.drop_package().as_deref(), Some("kit-test"));
+        browser.package = Some("pogo".into());
+        assert_eq!(browser.drop_package().as_deref(), Some("pogo"));
+        browser.package = None;
+        browser.selected = Some("item:kit-test:0".into());
+        assert_eq!(browser.drop_package(), None);
+    }
 
     #[test]
     fn a_thumbnail_is_a_line_high_and_no_wider_than_twice_that() {

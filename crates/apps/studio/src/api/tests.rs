@@ -235,7 +235,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::create_dir_all(dir.join("data")).unwrap();
             std::fs::write(dir.join("data/note.txt"), "a note\n").unwrap();
         }
-        m::IMPORT_SOUND => {
+        m::IMPORT_SOUND | m::ASSET_DROP => {
             // An empty local package `mine` and a WAV of an invented tone.
             import_tests::package(&t.path("data/packages/mine"), "mine");
             std::fs::create_dir_all(t.path("out")).unwrap();

@@ -123,6 +123,39 @@ fn browse(app: &mut App, p: &P, edits: bool) -> Reply {
     }
 }
 
+/// `asset.drop`: a source file into a package, as a file dropped on the
+/// window goes into the one the Browser shows.
+fn drop_file(app: &mut App, p: &P) -> Reply {
+    let file = PathBuf::from(p.str("file")?);
+    let kind = assets::DropKind::of(&file).ok_or_else(|| {
+        err(
+            code::INVALID_PARAMS,
+            format!(
+                "{} is not a source file (a .wav, a .png or a model .yaml); source.open opens a map",
+                file.display()
+            ),
+        )
+    })?;
+    let package = package_or_target(app, p)?;
+    let action = Action::DropFile {
+        file: file.clone(),
+        package: Some(package.clone()),
+    };
+    let log = app.perform(action, false).map_err(|r| match r {
+        Refused::Failed(e) => err(code::REFUSED, e),
+        other => super::scenario::refused(other),
+    })?;
+    app.sync_tabs();
+    Ok(serde_json::json!({
+        "file": file.display().to_string(),
+        "kind": kind.id(),
+        "tag": kind.tag(&file),
+        "package": package,
+        "front": app.front_doc().map(|d| app.doc_id(d)),
+        "log": log,
+    }))
+}
+
 /// `package`, else the edit target; with neither, `NO_TARGET`.
 pub(super) fn package_or_target(app: &App, p: &P) -> Result<String, agent_proto::RpcError> {
     match p.opt_str("package")? {
@@ -201,6 +234,7 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::ASSET_LINKS => links(app, p),
         m::ASSET_WHERE_USED => browse(app, p, false),
         m::ASSET_EDITS => browse(app, p, true),
+        m::ASSET_DROP => drop_file(app, p),
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }

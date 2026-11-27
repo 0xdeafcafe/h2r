@@ -92,6 +92,7 @@ pub mod method {
     pub const ASSET_LINKS: &str = "asset.links";
     pub const ASSET_WHERE_USED: &str = "asset.where_used";
     pub const ASSET_EDITS: &str = "asset.edits";
+    pub const ASSET_DROP: &str = "asset.drop";
     pub const ASSET_FORK: &str = "asset.fork";
     // Forge map variants and the Forge palette (api/forge_variants.rs).
     pub const FORGE_VARIANT_LIST: &str = "forge.variant.list";
