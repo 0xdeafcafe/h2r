@@ -19,7 +19,7 @@ const MODEL: u32 = 0xe200_0001;
 const SHADER: u32 = 0x10;
 
 #[test]
-fn the_plan_places_the_cut_only_when_on() {
+fn the_plan_places_the_cut_only_when_on_and_not_held() {
     let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     off.add(&NativeFirstPerson).unwrap();
     assert!(!off.build(&Base).unwrap().text().contains("native_first_person"));
@@ -27,6 +27,11 @@ fn the_plan_places_the_cut_only_when_on() {
     let mut on = Registry::new(Switches::defaults());
     on.add(&NativeFirstPerson).unwrap();
     let plan = on.build(&Base).unwrap();
+    if native_first_person::HELD {
+        // The guest body draws the first person until the scene equals it.
+        assert!(!plan.text().contains("native_first_person_skip"));
+        return;
+    }
     assert!(plan.text().contains("native_first_person_skip"));
     let chain = plan
         .chains
@@ -43,7 +48,8 @@ fn the_cut_row_is_in_the_table_and_the_census() {
     assert_eq!((row.entry, row.pop, row.abi_result), (0x0003_fdf0, 4, 1));
     assert!(cut::OWN_PRODUCER.contains(&"first_person"));
     let census = &REGISTRY[residual_census::row("first_person").unwrap()];
-    assert_eq!((census.entry, census.status), (0x0003_fdf0, Status::Native));
+    let status = if native_first_person::HELD { Status::D3d } else { Status::Native };
+    assert_eq!((census.entry, census.status), (0x0003_fdf0, status));
 }
 
 fn camera() -> RenderCamera {
