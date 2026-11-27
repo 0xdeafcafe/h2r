@@ -191,6 +191,7 @@ fn a_handler_leaves_through_one_exit_call() {
                     .filter(|s| {
                         s.contains("h2abi_v1_")
                             || s.contains("h2_gate_drop")
+                            || s.contains("->gate")
                             || s.contains("cpu->eip")
                     })
                     .collect();
@@ -202,15 +203,23 @@ fn a_handler_leaves_through_one_exit_call() {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; h2abi_v1_exit(ctx, 0u)"
                 }
                 (false, true, true) => {
-                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (!(h2_lent_ != 0) || 0u) h2abi_v1_exit(ctx, 0u)"
+                    // A handler on a lent view hands its hold back to the
+                    // caller; any other drops it.
+                    "h2_exit: do { if ((h2_lent_ != 0)) h2_direct(ctx)->gate = h2g_.held; \
+                     else h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; \
+                     do { if (!(h2_lent_ != 0) || 0u) h2abi_v1_exit(ctx, 0u)"
                 }
                 (true, false, _) => {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (h2acc) { h2_gate_drop(h2_mem_, &h2g_); h2abi_v1_charge(ctx, h2acc)"
                 }
-                (true, true, _) => {
+                (true, true, false) => {
                     // The count is spent in the view: the call is left only
                     // for no view (the lent-view wrapper is pinned above).
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; if (!h2_mem_) h2abi_v1_exit(ctx, n_)"
+                }
+                (true, true, true) => {
+                    "h2_exit: do { if ((h2_lent_ != 0)) h2_direct(ctx)->gate = h2g_.held; \
+                     else h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; if (!h2_mem_) h2abi_v1_exit(ctx, n_)"
                 }
             };
             assert_eq!(shape(n), expect, "{case}: {n}");
@@ -218,8 +227,9 @@ fn a_handler_leaves_through_one_exit_call() {
     }
 }
 
-/// A direct call lends the caller's view just before it invokes the
-/// callee, and a hand-up from a handler on a lent view releases nothing.
+/// A direct call lends the caller's view and its hold on the RAM gate just
+/// before it invokes the callee and takes back the hold the callee hands
+/// back, and a hand-up from a handler on a lent view releases nothing.
 /// Without direct calls, or with `H2_DIRECT_VIEW=0`, nothing is lent.
 #[test]
 fn a_direct_call_lends_the_callers_view() {
@@ -238,9 +248,32 @@ fn a_direct_call_lends_the_callers_view() {
         return;
     };
     let text = |defines: &[&str]| preprocess_all(&src, &c, defines);
-    let lend = "((d_)->view = h2_mem_); TransferAbi r_ = (";
+    // The hold on the RAM gate goes with the view, and what the callee
+    // hands back is taken back before anything else after the call.
+    let lend = "((d_)->view = h2_mem_, (d_)->gate = h2g_.held, h2g_.held = 0u); TransferAbi r_ = (";
     let on = text(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]);
     assert_eq!(on.matches(lend).count(), 1, "{on}");
+    let take_back = "do { uint32_t h_ = (d_)->gate; (d_)->gate = 0u; if (h_) { h2_gate_adopt(&h2g_, &h2_mem_->memory->data); h2g_.held = h_; } } while (0); if (h2_direct_back(";
+    assert_eq!(on.matches(take_back).count(), 1, "{on}");
+    // The call is a trip of the hold, not its end.
+    let before = &on[..on.find(lend).unwrap()];
+    let tick = before.rfind("h2_gate_tick(h2_mem_, &h2g_)").expect("the call ticks the hold");
+    assert!(!before[tick..].contains("h2_gate_drop"), "{on}");
+    // Each handler adopts a lent hold at entry, and a hand-up passes its
+    // hold on up (or drops it) before it releases the view.
+    assert_eq!(
+        on.matches("H2Gate h2g_ = {.held = h2_gate_borrow(ctx, h2_lent_), .dirtied = 4294967295U}; if (h2g_.held) h2g_.data = &h2_lent_->memory->data;").count(),
+        2,
+        "{on}"
+    );
+    assert_eq!(
+        on.matches(
+            "do { if ((h2_lent_ != 0)) h2_direct(ctx)->gate = h2g_.held; else h2_gate_drop(h2_mem_, &h2g_); } while (0); ((void)0); do { if (!(h2_lent_ != 0)) h2abi_v1_fast_release(ctx); } while (0); return (r_);"
+        )
+        .count(),
+        1,
+        "{on}"
+    );
     assert_eq!(
         on.matches(
             "do { if (!(h2_lent_ != 0)) h2abi_v1_fast_release(ctx); } while (0); return (r_);"
