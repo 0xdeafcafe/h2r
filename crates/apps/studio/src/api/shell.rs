@@ -2,7 +2,8 @@
 //! shell"). Every call runs the window's own command
 //! ([`Action::OpenDoc`], [`Action::FocusDoc`], [`Action::CloseDoc`]), so a
 //! click on the tab strip and the call leave the same state. A tab's id
-//! is what `doc.*` takes for it.
+//! is what `doc.*` takes for it. `shell.open {asset, fields: true}` is the
+//! Browser's **Open as fields** ([`Action::OpenFields`]).
 
 use agent_proto::RpcError;
 use serde_json::{Value, json};
@@ -72,14 +73,15 @@ fn open(app: &mut App, p: &P) -> Reply {
                 "shell.open takes one of asset or tag",
             ));
         }
-        let log = run(
-            app,
-            Action::OpenAsset {
-                asset: asset.to_owned(),
-                map: map.map(str::to_owned),
-            },
-            discard,
-        )?;
+        let (asset, map) = (asset.to_owned(), map.map(str::to_owned));
+        // `fields` is Open as fields: the field panel, whatever editor
+        // the tag's group gets.
+        let action = if p.bool("fields")? {
+            Action::OpenFields { asset: asset.clone(), map }
+        } else {
+            Action::OpenAsset { asset: asset.clone(), map }
+        };
+        let log = run(app, action, discard)?;
         app.sync_tabs();
         let Some(shown) = app.front_doc() else {
             return Err(err(code::REFUSED, format!("{asset} did not open")));

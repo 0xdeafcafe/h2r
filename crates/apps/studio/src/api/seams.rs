@@ -95,6 +95,8 @@ pub trait Provider {
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    // Forge map variants as documents and the Forge palette.
+    api.register(Box::new(super::forge_variants::ForgeVariants));
     // Curve functions of a `view=function` field, read, edited and
     // sampled (rich editors F1).
     api.register(Box::new(super::curves::Curves));

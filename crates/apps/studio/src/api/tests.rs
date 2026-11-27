@@ -22,6 +22,7 @@ mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
 mod links_tests;
+mod forge_tests;
 mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
@@ -190,8 +191,25 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY | m::ASSET_LINKS => {
+        m::ASSET_LIST
+        | m::ASSET_THUMB
+        | m::ASSET_COPY
+        | m::ASSET_LINKS
+        | m::ASSET_WHERE_USED
+        | m::ASSET_EDITS => {
             // An invented tags tree of two maps and a package `kit-test`.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::FORGE_VARIANT_LIST
+        | m::FORGE_VARIANT_READ
+        | m::FORGE_VARIANT_SET
+        | m::FORGE_VARIANT_SAVE => {
+            // The invented map variant `Castle` of the map `fixture`, open.
+            forge_tests::open_castle(api, app);
+        }
+        m::FORGE_ITEMS => {
+            // The invented tree and the package `kit-test`, which adds a weapon.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
         }
@@ -217,7 +235,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::create_dir_all(dir.join("data")).unwrap();
             std::fs::write(dir.join("data/note.txt"), "a note\n").unwrap();
         }
-        m::IMPORT_SOUND => {
+        m::IMPORT_SOUND | m::ASSET_DROP => {
             // An empty local package `mine` and a WAV of an invented tone.
             import_tests::package(&t.path("data/packages/mine"), "mine");
             std::fs::create_dir_all(t.path("out")).unwrap();

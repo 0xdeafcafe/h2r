@@ -95,6 +95,8 @@ pub enum Doc {
     /// The voice open in the voice document (`app::voices`): the id is
     /// `Voices::doc`, the pane `Voices::pane`.
     Voice,
+    /// The Forge map variant open as a document (`app::forge_variants`).
+    Forge,
     /// The focused package manifest and its items.
     Package,
     /// A tag of the open map, in the editor its group gets.
@@ -175,7 +177,7 @@ impl From<ToolKind> for Surface {
 }
 
 /// The tools' documents, in the order their tabs are first given.
-pub const TOOL_DOCS: [Doc; 8] = [
+pub const TOOL_DOCS: [Doc; 9] = [
     Doc::Map,
     Doc::Variant,
     Doc::Playlists,
@@ -183,6 +185,7 @@ pub const TOOL_DOCS: [Doc; 8] = [
     Doc::Hud,
     Doc::Rules,
     Doc::Voice,
+    Doc::Forge,
     Doc::Package,
 ];
 
@@ -201,6 +204,8 @@ impl Doc {
             // The voice document draws over the field panel's surface,
             // as the sound editor does (`ui::voices::window`).
             Doc::Voice => ToolKind::Tags,
+            // The variant's window draws over the same surface.
+            Doc::Forge => ToolKind::Tags,
             Doc::Package => ToolKind::Package,
             Doc::Tag(_) => return None,
         })
@@ -216,6 +221,7 @@ impl Doc {
             Doc::Hud => "hud",
             Doc::Rules => "rules",
             Doc::Voice => "voice",
+            Doc::Forge => "forge",
             Doc::SourceAsset(_) => "item",
             Doc::Package => "package",
             Doc::Tag(_) => return None,
@@ -355,9 +361,19 @@ impl App {
     }
 
     fn tag_editor(&self, id: TagId) -> Editor {
+        if self.fields_only.contains(&id) {
+            return Editor::FieldPanel;
+        }
         self.tags
             .tag(id)
             .map_or(Editor::FieldPanel, |t| kinds::kind(t.group).editor)
+    }
+
+    /// The tag's tab is open as fields ([`super::Action::OpenFields`]): the
+    /// field panel shows it, and its group's own editor (the sound editor,
+    /// the animation window, the Textures canvas) stays away.
+    pub fn as_fields(&self, id: TagId) -> bool {
+        self.fields_only.contains(&id)
     }
 
     /// A tab's id: a tool document's name (`map`, `variant`, `playlists`,
@@ -371,6 +387,11 @@ impl App {
             },
             Doc::SourceAsset(_) => self.source_asset(doc).map(|s| s.id.clone()).unwrap_or_default(),
             Doc::Voice => format!("voice:{}", self.voices.doc.as_deref().unwrap_or_default()),
+            Doc::Forge => self
+                .forge_variants
+                .open
+                .as_ref()
+                .map_or_else(|| "forge".to_owned(), |open| open.asset()),
             other => match self.tab_item(other) {
                 Some(item) => item.to_owned(),
                 None => other.tool_id().expect("a tool document").to_owned(),
@@ -423,6 +444,11 @@ impl App {
                 .as_deref()
                 .and_then(|id| self.voice_status(id))
                 .map_or_else(|| "voice".to_owned(), |v| v.name.to_owned()),
+            Doc::Forge => self
+                .forge_variants
+                .open
+                .as_ref()
+                .map_or_else(|| "Forge variant".to_owned(), |open| open.doc.title.clone()),
             Doc::Tag(id) => match self.tags.tag(id) {
                 Some(t) => format!(
                     "{}.{}",
@@ -444,6 +470,7 @@ impl App {
             // Lines that are said and not kept are the batch's, not a
             // document's edits: nothing to ask about on close.
             Doc::Voice => false,
+            Doc::Forge => self.forge_variants.open.as_ref().is_some_and(|open| open.dirty()),
             Doc::Map => self.tool_dirty(ToolKind::Scenario) || self.tool_dirty(ToolKind::Textures),
             other => self.tool_dirty(other.holder().expect("a tool document")),
         }
@@ -479,6 +506,12 @@ impl App {
             Doc::SourceAsset(_) => (false, false),
             // A voice's lines are rows: Remove takes one away.
             Doc::Voice | Doc::Package => (false, false),
+            // Each field edit is a step of the variant's own stack.
+            Doc::Forge => self
+                .forge_variants
+                .open
+                .as_ref()
+                .map_or((false, false), |open| open.can()),
             Doc::Variant => self
                 .variants
                 .as_ref()
@@ -506,6 +539,7 @@ impl App {
             Doc::Hud => self.hud.session.is_some(),
             Doc::Rules => self.rules.opened,
             Doc::Voice => self.voices.doc.is_some(),
+            Doc::Forge => self.forge_variants.open.is_some(),
             Doc::Package => self.package_document.id().is_some(),
             Doc::Tag(_) => false,
             Doc::SourceAsset(_) => false,
@@ -569,6 +603,10 @@ impl App {
         if self.tabs.front.is_some_and(|f| !self.tabs.has(f)) {
             self.tabs.front = self.tabs.list().last().map(|t| t.doc);
         }
+        // A tag id means another tag on another map: the mark goes with
+        // its tab.
+        let tabs = &self.tabs;
+        self.fields_only.retain(|id| tabs.has(Doc::Tag(*id)));
     }
 
     /// The tool shown changed through its old tab: bring forward the tab
@@ -684,9 +722,16 @@ impl App {
         let Some(i) = before.iter().position(|&d| d == doc) else {
             return;
         };
+        if doc == Doc::Forge && self.doc_dirty(doc) {
+            return self.error(
+                "the map variant has unsaved edits: save it, or undo them, before closing",
+            );
+        }
         let was_front = self.tabs.front() == Some(doc);
         match doc {
-            Doc::Tag(_) => {}
+            Doc::Tag(id) => {
+                self.fields_only.remove(&id);
+            }
             Doc::SourceAsset(index) => self.source_assets[index] = None,
             Doc::Map => {
                 self.close_tool(ToolKind::Scenario);
@@ -700,6 +745,7 @@ impl App {
             Doc::Rules => self.rules.opened = false,
             // The batch keeps its rows for the next open.
             Doc::Voice => self.voices.doc = None,
+            Doc::Forge => self.forge_variants.open = None,
             Doc::Package => {
                 self.package_document.read = None;
                 self.package_document.result = None;
@@ -824,6 +870,9 @@ impl App {
         if doc == Doc::Voice {
             return self.info("a voice's lines are rows: Remove takes one away");
         }
+        if doc == Doc::Forge {
+            return self.forge_undo_redo(undo);
+        }
         let Doc::Tag(id) = doc else {
             // The map's scripts are the map document's while the Scripts
             // surface shows them: a compile is its step.
@@ -900,6 +949,7 @@ impl App {
         }
         if let Doc::Tag(id) = doc {
             v["editor"] = json!(self.tag_editor(id).id());
+            v["fields"] = json!(self.as_fields(id));
             v["id"] = json!(format!("{:#010x}", id.0));
             v["map"] = json!(tab.map);
             if let Some(t) = self.tags.tag(id) {

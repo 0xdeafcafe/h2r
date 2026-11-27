@@ -139,6 +139,10 @@ pub fn window(ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, st: &mut AnimUi) {
         .then(|| app.shown_tags().selected)
         .flatten()
         .and_then(|id| {
+            // A tab opened as fields shows the field panel alone.
+            if app.as_fields(id) {
+                return None;
+            }
             let entry = app.shown_tags().tag(id)?;
             (entry.group.0 == *b"jmad").then(|| (id, entry.name.clone()))
         });

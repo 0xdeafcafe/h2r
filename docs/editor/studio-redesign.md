@@ -30,8 +30,9 @@ before its slice starts.
 | The window: the document bar, View > Editors, a dock layout per surface, Go to anything, the game link (SH5) | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::Surface` |
 | One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
 | Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
-| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item), `asset.copy` (SH2) | built | `app/assets.rs`, `api/assets.rs` |
-| The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **New from this...** (SH2, FL11) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CreateAsset` |
+| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item, a bitmap tag of the open map), `asset.copy`, `asset.where_used`, `asset.edits`, `asset.drop` (SH2, FL13, FL16, FL17) | built | `app/assets.rs`, `app/assets/{browse,thumbs,drop}.rs`, `api/assets.rs` |
+| The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **New from this...**, **Open as fields**, the **Where used** and **Show edits** views, bitmap thumbnails, a dropped source file (SH2, FL11, FL13, FL15 to FL17) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CreateAsset`, `Action::OpenFields`, `Action::WhereUsed`, `Action::ShowEdits`, `Action::DropFile` |
+| Forge map variants as documents and the Forge palette as a Browser kind (FL14) | built | `app/forge_variants.rs`, `app/assets/forge.rs`, `ui/forge_variant.rs`, `api/forge_variants.rs` ([studio-flow.md](studio-flow.md), "Forge variants and items") |
 | The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
@@ -183,11 +184,21 @@ this...** asks for the new path and writes a `like:` tag to the edit
 target via `asset.copy`. With no target, the edit-target picker opens.
 The copy opens in its package source tab.
 
-Thumbnails, **Open as fields**, **Show edits**, **Where used**, folders
-in the tree and dragging a source file onto a package are not built: the
-rows carry the data (`asset.thumb`; `used`, the keys that reference a
-tag, for **Where used**) and the menu gains the entries as their slices
-land.
+A row's right-click menu and the list itself hold the rest
+([studio-flow.md](studio-flow.md), "Links" and "Interfaces"):
+
+| Part | Does | Code |
+|---|---|---|
+| **Where used**, **Show edits** | replace the list with the asset's users, or the items that change it; **Clear** brings the list back | `app/assets/browse.rs` |
+| **Open as fields** | opens a tag's tab in the field panel in place of its group's editor | `Action::OpenFields` |
+| Thumbnails | a bitmap tag the open map holds, and a package's PNG bitmap item, draw their picture a line high; hovering shows it larger | `app/assets/thumbs.rs` |
+| A dropped file | a WAV, a PNG or a model YAML dropped on the window becomes an item of the package the Packages root shows or has selected, else of the edit target; any other file opens as a source | `app/assets/drop.rs` |
+| **Forge variants**, **Forge items** | two kinds of the Kind picker | `app/forge_variants.rs`, `app/assets/forge.rs` |
+
+Folders in the tree are not built. A thumbnail for a model, a sound's
+waveform or a screen is not built: `asset.thumb` answers `not-yet`. The
+operating system gives a drop no row to land on, so the package is the
+one the Browser shows, not the one under the pointer.
 
 A loose `.map` (a community mod) opened from **File > Open** is stored
 as an import layer (W9) and its tags join the tree under its name.
@@ -300,6 +311,10 @@ Every row above is a method. The shell's own, in
 | `asset.list {root?, package?, kind?, map?, query?, limit?}` | the browser's rows with kind, origin badge and the packages that edit them |
 | `asset.thumb {asset, out?}` | a thumbnail as a PNG path |
 | `asset.copy {asset, package?, to?}` | New from this |
+| `asset.where_used {asset}`, `asset.edits {asset}` | the Browser's link views |
+| `asset.drop {file, package?}` | a dropped source file into a package |
+| `shell.open {asset, fields: true}` | Open as fields |
+| `forge.variant.*`, `forge.items` | Forge map variants and the Forge palette |
 | `problems.list {source?}` | the Problems panel |
 | `preview.target {doc?, target?}` | the preview switch |
 | `package.*` | below, "Studio's side" |

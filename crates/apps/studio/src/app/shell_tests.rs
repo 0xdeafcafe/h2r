@@ -267,6 +267,50 @@ fn opening_an_asset_opens_its_tag_of_the_open_map() {
     assert!(app.status().is_some_and(|s| s.text().contains("not in the open map")));
 }
 
+/// **Open as fields** (`Action::OpenFields`): the tag's tab is marked to
+/// show the field panel, in the Tags tool, until the tag is opened plainly
+/// or its tab closes. A scenario and an asset that is no tag are refused.
+#[test]
+fn open_as_fields_marks_the_tab_until_it_is_opened_plainly_or_closed() {
+    let t = Temp::new("open-fields");
+    let mut app = app(&t.0);
+    let asset = {
+        let tag = app.tags.tag(kit_id()).unwrap();
+        format!("tag:{}:{}", tags::defs::fourcc_text(tag.group), tag.name)
+    };
+    let fields = |asset: &str| Action::OpenFields {
+        asset: asset.to_owned(),
+        map: None,
+    };
+    app.dispatch(fields(&asset));
+    assert_eq!(app.front_doc(), Some(Doc::Tag(kit_id())));
+    assert!(app.as_fields(kit_id()));
+    assert_eq!(app.doc_tool(Doc::Tag(kit_id())), ToolKind::Tags);
+    let tab = app.tabs().iter().find(|t| t.doc == Doc::Tag(kit_id())).unwrap().clone();
+    let json = app.tab_json(&tab);
+    assert_eq!(json["editor"], "field_panel");
+    assert_eq!(json["fields"], true);
+    // Open puts the tag back in its group's editor.
+    app.dispatch(Action::OpenAsset { asset: asset.clone(), map: None });
+    assert!(!app.as_fields(kit_id()));
+    assert_eq!(app.tab_json(&tab)["fields"], false);
+    // The mark goes with the tab.
+    app.dispatch(fields(&asset));
+    app.dispatch(Action::CloseDoc(Doc::Tag(kit_id())));
+    assert!(!app.as_fields(kit_id()));
+    // No tab for what is not a tag of the open map, or is the map itself.
+    let tabs = app.tabs().len();
+    for (asset, why) in [
+        ("package:nope", "is for a tag"),
+        ("tag:scnr:scenarios\\anything", "the map's own tab"),
+        ("tag:weap:objects\\nothing", "not in the open map"),
+    ] {
+        app.dispatch(fields(asset));
+        assert_eq!(app.tabs().len(), tabs, "{asset}");
+        assert!(app.status().is_some_and(|s| s.text().contains(why)), "{asset}");
+    }
+}
+
 /// The script editor is a document: opening a script gives it a tab in
 /// front, showing the Variants panels with its tab picked; closing the tab
 /// keeps the text and does not touch the variant.

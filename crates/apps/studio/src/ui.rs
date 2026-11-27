@@ -4,6 +4,7 @@
 
 mod bar;
 pub mod browser;
+mod forge_variant;
 mod doc_tabs;
 mod doc_header;
 #[cfg(test)]
@@ -121,6 +122,8 @@ pub struct Studio {
     anim: anim::AnimUi,
     /// The voice document (`Doc::Voice`): the announcer and the clones.
     voices: voices::VoicesUi,
+    /// The Forge map variant document (`Doc::Forge`).
+    forge_variant: forge_variant::ForgeVariantUi,
     /// The tag workspace's start page and status-line bar
     /// (`app::workspace`).
     workspace: workspace::WorkspaceUi,
@@ -163,6 +166,7 @@ impl Studio {
             sound: sound::SoundUi::new(),
             anim: anim::AnimUi::default(),
             voices: voices::VoicesUi::default(),
+            forge_variant: Default::default(),
             workspace: workspace::WorkspaceUi::default(),
         }
     }
@@ -237,7 +241,7 @@ impl Studio {
                 // even behind another tab, hidden, so "shows" is the window's
                 // own Hidden flag, not whether its contents ran.
                 let want = self.want_tab.map(|(tab, _)| tab);
-                self.browser_window(ui, app, want == Some(MapTab::Browser), &mut actions);
+                self.browser_window(ui, app, gpu, want == Some(MapTab::Browser), &mut actions);
                 self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions);
                 self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions);
                 self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions);
@@ -255,7 +259,7 @@ impl Studio {
                 self.inspector_window(ui, app, gpu, &mut actions);
             }
             Surface::Package => {
-                self.browser_window(ui, app, false, &mut actions);
+                self.browser_window(ui, app, gpu, false, &mut actions);
                 package::window(ui, app, &self.keys.package, &mut self.package, &mut self.browser, self.dialogs, &mut actions);
             }
             Surface::Variants => self.variant_windows(ui, app, &mut actions),
@@ -282,6 +286,7 @@ impl Studio {
         // The same seam for model poses (that page's slice M1).
         anim::window(ui, app, gpu, &mut self.anim);
         voices::window(ui, app, &mut self.voices, self.dialogs);
+        forge_variant::window(ui, app, &mut self.forge_variant, &mut actions);
         // The tag workspace's first-start page (a floating window; the
         // shell is another lane's).
         workspace::start_page(ui, app, &mut self.workspace, &self.fonts, self.dialogs);
@@ -819,8 +824,20 @@ impl Studio {
     /// The browser: every tag of the tree by path, the packages and Live
     /// (`ui/browser.rs`), beside the Open and Folder buttons that choose
     /// the source the tree's maps are read from.
-    fn browser_window(&mut self, ui: &Ui, app: &App, focus: bool, actions: &mut Vec<Action>) {
+    fn browser_window(
+        &mut self,
+        ui: &Ui,
+        app: &App,
+        gpu: &mut Gpu<'_>,
+        focus: bool,
+        actions: &mut Vec<Action>,
+    ) {
         let mut st = std::mem::take(&mut self.browser);
+        // The rows' thumbnails are pictures on the GPU beside the map
+        // grid's (`MapListUi::picture`).
+        let mut pictures = std::mem::take(&mut self.map_list);
+        // A new link view (Where used, Show edits) brings the panel forward.
+        let focus = st.take_browse(app.browse.serial) || focus;
         ui.window(&self.keys.browser).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
@@ -838,8 +855,9 @@ impl Studio {
                 ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
             st.import_buttons(ui, self.dialogs);
-            browser::draw(ui, app, &mut st, actions);
+            browser::draw(ui, app, &mut st, gpu, &mut pictures, actions);
         });
+        self.map_list = pictures;
         self.browser = st;
     }
 
@@ -1208,12 +1226,13 @@ impl Studio {
                     Action::SelectMap(_)
                     | Action::OpenMapPack(_)
                     | Action::SelectHalo1Map(_)
-                    | Action::OpenAsset { .. },
+                    | Action::OpenAsset { .. }
+                    | Action::OpenFields { .. },
                 ) => {
                     "opening another map"
                 }
                 Some(Action::OpenPackageEntry(_)) => "opening another package",
-                Some(Action::OpenSource(_)) => "opening another source",
+                Some(Action::OpenSource(_) | Action::DropFile { .. }) => "opening another source",
                 Some(Action::OpenHopper(_)) => "opening another playlist file",
                 Some(Action::NewHopper | Action::NewDefaultHopper) => {
                     "starting a new playlist file"

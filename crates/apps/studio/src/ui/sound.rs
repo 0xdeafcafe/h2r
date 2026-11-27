@@ -140,11 +140,15 @@ pub fn row_text(row: &SoundRow) -> String {
 /// other kind.
 pub fn target(app: &App) -> Option<(TagId, String)> {
     if app.tool != ToolKind::Tags
-        || matches!(app.front_doc(), Some(Doc::Voice | Doc::SourceAsset(_)))
+        || matches!(app.front_doc(), Some(Doc::Voice | Doc::Forge | Doc::SourceAsset(_)))
     {
         return None;
     }
     let id = app.front_tag_doc().or(app.shown_tags().selected)?;
+    // A tab opened as fields shows the field panel alone.
+    if app.as_fields(id) {
+        return None;
+    }
     let entry = app.shown_tags().tag(id)?;
     (entry.group.0 == *b"snd!").then(|| (id, entry.name.clone()))
 }

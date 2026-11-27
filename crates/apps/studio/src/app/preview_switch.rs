@@ -205,6 +205,9 @@ impl App {
             Doc::Voice => Err(
                 "a voice has no preview in the game: a line previews as the sound it replaces".into(),
             ),
+            Doc::Forge => Err(
+                "a map variant is played from the game: pick it on the Map variants page".into(),
+            ),
             Doc::SourceAsset(_) => Err("Build the package and open a map containing this asset".into()),
             Doc::Variant => Err("a variant starts Studio's own game".into()),
             Doc::Playlists => Err(
