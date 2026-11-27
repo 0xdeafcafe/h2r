@@ -441,7 +441,6 @@ is Crossfire with two Clankers on each team:
 
 ```
 h2 firefight kit beavercreek
-h2 bots nav beavercreek
 h2 sim run docs/runtime/sim-examples/firefight-beavercreek.toml
 h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
 ```
@@ -1109,8 +1108,9 @@ h2 sim batch docs/runtime/sim-examples/superbounce-batch.toml --parallel 4
 ```
 
 The map needs its nav mesh and its spot scan in `--data`'s `bots/`:
-`h2 bots nav <map>` writes both (the scan is `<map>.spots`, beside the
-mesh). Sim mode builds neither: the cached nav load
+the run makes both before it starts, as `h2 bots nav <map>` does (the
+scan is `<map>.spots`, beside the mesh; see "The nav mesh" below). The
+cached nav load
 (`bots::autonav::load_cached`) publishes the cached scan for the
 practice to pick sites from.
 
@@ -1573,7 +1573,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | Spawn locations | `0x14ef00` mixes the player index and spawn count with two game-options words that the session fills anew for each game, not the shared seed. Sim writes them from the match seed ahead of the first spawn (`crates/extensions/game/src/sim_glue.rs`); without that, two runs start their players in different places |
 | The bots' randomness | SplitMix64 of the match seed and logical seat drives individual choices (`sim::config::bot_seed`). The gamertag fixes the profile |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
-| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>`. A built mesh is read on the game thread in sim mode (`H2_BOTS_MAP_INLINE=1`): read on a worker, the bots of a loaded host acted without it for their first ticks, and two runs split soon after the opening hold |
+| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). So a run with bots makes its map's nav mesh and visibility grid in its own `--data` before it starts (`cli::bots_nav::ensure`, the worker `h2 bots nav` runs, in the foreground): a current file there is kept, a finished build in the shared cache (`bots::autonav::shared_cache_dir`, keyed by map file and generator version) is copied, anything else is built; a `firefight-<base>` map uses its base map's. A build that fails stops the run with an error naming the map. A map whose mesh still did not load is reported (`"nav": "missing"`). A built mesh is read on the game thread in sim mode (`H2_BOTS_MAP_INLINE=1`): read on a worker, the bots of a loaded host acted without it for their first ticks, and two runs split soon after the opening hold |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
 | Our own observers | read-only; the agent's tick observer adds dispatch transfers, the same in every run that has it |
 

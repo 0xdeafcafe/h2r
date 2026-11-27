@@ -484,6 +484,13 @@ fn run_one(args: Vec<String>) -> Result<()> {
     // is not there stops the run, named.
     #[cfg(feature = "desktop")]
     crate::firefight_kits::ensure_map(&disc, &data, &m.config.map)?;
+    // The run builds no nav itself (H2_BOTS_NAV_AUTO=0 above), so the
+    // bots' nav mesh and visibility grid are made in its data first, from
+    // the shared cache when a build is there; a failed build stops it.
+    #[cfg(feature = "desktop")]
+    if !m.bots.is_empty() {
+        crate::bots_nav::ensure(&disc, &data, &m.config.map)?;
+    }
     let matched = boot::sim_glue::Sim::new(file, m, Some(report.clone()));
     let r = boot::run_sim(&xbe, &lib, &sim_options(disc, data), matched, upload);
     drop(slot);

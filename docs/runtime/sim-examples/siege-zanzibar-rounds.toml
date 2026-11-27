@@ -5,6 +5,9 @@
 # `rounds` holds every player's `player_score` and each team's score as
 # each round began: read `rounds[1]` to see what the second round started
 # with (a `player_score` that reset reads 0 there).
+# The run makes Zanzibar's bot nav mesh and visibility grid in its data
+# first when they are not there (sim.md, "The nav mesh"), so no
+# `h2 bots nav` is needed.
 map = "zanzibar"
 game_type = "slayer"
 time_limit_s = 3600   # longer than max_ticks: the script or the tick limit ends it

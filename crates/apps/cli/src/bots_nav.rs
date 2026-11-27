@@ -67,6 +67,39 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// Makes sure `map`'s nav mesh and visibility grid are in `data`'s bots
+/// directory before a run that does not build them itself (`h2 sim` sets
+/// `H2_BOTS_NAV_AUTO=0`): a fresh file is kept, a finished build in the
+/// shared cache is copied, and anything else is built here, in the
+/// foreground. A Firefight kit map (`firefight-<base>`) plays on its base
+/// map's mesh. A build that fails is an error naming the map.
+pub(super) fn ensure(disc: &Path, data: &Path, map: &str) -> Result<()> {
+    let base = map.strip_prefix("firefight-").unwrap_or(map);
+    let source = one(base, Some(disc.to_owned()))
+        .with_context(|| format!("the bots' nav for {base}: finding the map"))?;
+    ensure_with(source, data, base, bots::autonav::shared_cache_dir())
+}
+
+fn ensure_with(source: Box<dyn Source>, data: &Path, map: &str, shared: Option<PathBuf>) -> Result<()> {
+    let out = bots::cache::dir(data);
+    std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+    let mut sources = Some(vec![source]);
+    let (worker, _) = Worker::new(out.clone(), Box::new(move || sources.take().unwrap_or_default()));
+    let sum = worker
+        .shared_cache(shared)
+        .any_kind(true)
+        .log(|l| eprintln!("h2 sim: bots nav: {l}"))
+        .run();
+    anyhow::ensure!(
+        sum.failed.is_empty(),
+        "the bots' nav for {map} did not build into {} ({}): run `h2 bots nav {map} --data {}` to see why",
+        out.display(),
+        sum.failed.join(", "),
+        data.display()
+    );
+    Ok(())
+}
+
 /// The disc's `maps\*.map`, each a region of the image.
 pub(super) fn disc_maps(disc: &Path) -> Result<Vec<Box<dyn Source>>> {
     let mut iso = super::open_iso(disc)?;
@@ -121,6 +154,22 @@ mod tests {
     /// Against the user's disc (`H2_DISC` or `disc/`), read in place: every
     /// multiplayer map builds into a scratch directory, then a second pass
     /// finds them all up to date.
+    /// A map whose nav cannot be built stops the run with the map named,
+    /// rather than running bots that only roam.
+    #[test]
+    fn a_nav_that_does_not_build_is_a_named_error() {
+        let t = std::env::temp_dir().join(format!("cli-bots-ensure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(&t).unwrap();
+        let map = t.join("broken.map");
+        std::fs::write(&map, b"not a map").unwrap();
+        let e = ensure_with(Box::new(Region::file(map)), &t.join("data"), "broken", None).unwrap_err();
+        let text = e.to_string();
+        assert!(text.starts_with("the bots' nav for broken did not build"), "{text}");
+        assert!(text.contains("h2 bots nav broken --data"), "{text}");
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
     #[test]
     #[ignore = "needs the user's disc"]
     fn every_multiplayer_map_builds_then_is_up_to_date() {
