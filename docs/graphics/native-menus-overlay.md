@@ -1,14 +1,15 @@
 # The menus, the fade and the blur on the overlay
 
 Status: Partly built. Containers, plain and scrolling bitmap widgets, meters, supported text, lists and buttons, the fade, the bars, the loading screen and the blur under a dialog draw from the overlay; unsupported widget states keep the guest's draws.
-Code: `crates/rewrites/render-bridge/src/native_hud/ui_overlay.rs`, `ui_overlay/bitmaps.rs`, `modal_blur.rs`, `crates/extensions/game/src/hud_overlay.rs`, `modal_blur_glue.rs`, `crates/rewrites/scene-extract/src/ui` (`collect`, `compare`, `sort_widgets`, `read_widget`, `draw_list`), `crates/rewrites/native-render/src/ui_gpu.rs`, `glow.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`.
+Code: `crates/rewrites/render-bridge/src/native_hud/ui_overlay.rs`, `ui_overlay/bitmaps.rs`, `fade.rs`, `modal_blur.rs`, `crates/extensions/game/src/hud_overlay.rs`, `modal_blur_glue.rs`, `crates/rewrites/scene-extract/src/ui` (`collect`, `compare`, `sort_widgets`, `read_widget`, `draw_list`), `crates/rewrites/native-render/src/ui_gpu.rs`, `glow.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 | Draw | Taken at | Section |
 |---|---|---|
 | Containers, plain bitmap widgets, text, lists, buttons, idle model scenes | the sorted list (`0x00235428` to `0x0023545c`) | [The menus on the overlay](#the-menus-on-the-overlay) |
 | Shader bitmaps | the shader quad `0x0022a664` | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
-| Fade, bars, loading screen | their producers | [The fade, the bars and the loading screen](#the-fade-the-bars-and-the-loading-screen) |
+| Fade | its entry `0x00040890`, in Rust | [The fade in Rust](#the-fade-in-rust) |
+| Bars, loading screen | their producers | [The fade, the bars and the loading screen](#the-fade-the-bars-and-the-loading-screen) |
 | Backdrop blur under a dialog | `0x00235756` | [The blur under a dialog](#the-blur-under-a-dialog) |
 
 ## The menus on the overlay
@@ -114,11 +115,32 @@ Each of these draws is taken at its producer ([native-ui-producers.md](native-ui
 
 | Draw | Detail (Code, `h2 disasm`) |
 |---|---|
-| Fade `0x00040890` | Its mode `[0x00485870]` (0 draws nothing) picks one of six cases through the table at `0x00040dc0`. The colour at `0x00485878` and its complement, each times the fraction at `0x00485874`, are packed (`0x00131e50`). Mode 1 blends one with one minus source alpha, added. Mode 2 is one with one, reverse-subtracted. Modes 3 to 5 are one minus the destination colour with one minus the constant colour, by maximum, minimum and addition, the packed colour as `BLENDCOLOR`. Mode 6 is one with one minus the constant colour, added, the packed complement as `BLENDCOLOR`. Each case writes its combiner words into the PSDEF at `0x00484f68` before the fan at `0x00040d86`. The overlay item carries the constant (`OverlayItem::blend_constant`), which the pass sets per batch (`fade_quads`) |
+| Fade `0x00040890` | Its mode `[0x00485870]` (0 draws nothing) picks one of six cases through the table at `0x00040dc0`. The colour at `0x00485878` and its complement, each times the fraction at `0x00485874`, are packed (`0x00131e50`). Mode 1 blends one with one minus source alpha, added. Mode 2 is one with one, reverse-subtracted. Modes 3 to 5 are one minus the destination colour with one minus the constant colour, by maximum, minimum and addition, the packed colour as `BLENDCOLOR`. Mode 6 is one with one minus the constant colour, added, the packed complement as `BLENDCOLOR`. Each case writes its combiner words into the PSDEF at `0x00484f68` before the fan at `0x00040d86`. The overlay item carries the constant (`OverlayItem::blend_constant`), which the pass sets per batch (`fade_quads`). A proven mode is made in Rust instead ([The fade in Rust](#the-fade-in-rust)) |
 | Bars `0x00052ce7`, in `0x00052040` | Menu fade rectangles, cinematic and progress bars and split-screen dividers. A record with no image writes no combiner (`0x00052857` skips to the upload), so the PSDEF at `0x00484f68` is the one the last record with an image wrote; the snapshot at the draw holds that definition, so the bar inherits it as the game's does (`bar_quads`). A fan, quad list or polygon is taken as drawn, a strip with its corners put round the quad (`hud_overlay::corner_order`, [retire-d3d-menus.md](retire-d3d-menus.md#bars)) |
 | Loading screen `0x000289e0` | Its background and sweep bitmaps at `0x0002ae60` and its spinner at `0x0002a1f4`, each with its bound bitmap (`loading_quads`) |
 
 The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are not filled from these draws: a fade's combiner is not one of the overlay's fixed ones.
+
+### The fade in Rust
+
+A proven fade's body does not run (`native_hud::fade`). At its entry Rust reads the mode, the fraction, the colour and the view's rectangle (`[0x00485648]`: top, left, bottom, right as `i16`), packs the colour and its complement as `0x00131e50` does (`fade::pack`: each channel times 255.0, rounded to nearest with ties to even, alpha in the top byte), writes the PSDEF words of the mode's case to `0x00484f68` (`fade::psdef`) and returns. The overlay gets one `Fill` in slot `Fade`, between the HUD's items and the UI's (`fade::plan`). Mode 0 draws nothing and returns at once.
+
+| Mode | Blend (source, dest, op) | Constant | Stage 0 inputs (alpha, colour) |
+|---|---|---|---|
+| 1 | one, one minus source alpha, add | none | `0x11200000`, `0x01200000` |
+| 2 | one, one, reverse subtract | none | `0x11200000`, `0x01200000` |
+| 3 | one minus destination colour, one minus constant colour, max | colour | 0, `0x01201140` |
+| 4 | the same, min | colour | 0, `0x01201120` |
+| 5 | the same, add | colour | 0, `0x01411120` |
+| 6 | one, one minus constant colour, add | complement | 0, `0x11200000` |
+
+The cut makes no render-state, texture, program or draw call. The device and the game's state cache (`0x004b81fc`, and D3D's mirror `0x00407498`) keep their values, so they still agree. The PSDEF is game memory, and a bar with no image draws with it, so the cut writes it.
+
+A mode is cut only after a guest call of that mode has been checked and matched. After that, one call in 64 runs the body.
+
+A checked call's fan is taken on the overlay as usual (`hud_overlay::draw_screen` hands it to `fade::guest_drew`). At the body's return (`0x00040dbf`) its PSDEF words, target, clip, blend, constant, combiner and colour writes are compared with the cut's. Its corners must also cover the clip. A difference sends every later call to the body for the session.
+
+Counters in `render.scene`: `fade_{calls,cut,checked}`, and `scene_kept_fade_<cause>` for a call whose body ran (`fallback`, `mode`, `rect`, `scene`, `target`, `append`, `uncaptured` when the overlay did not take a checked fan, `mismatch`).
 
 ## The blur under a dialog
 

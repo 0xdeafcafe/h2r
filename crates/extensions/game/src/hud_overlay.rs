@@ -133,7 +133,12 @@ where
     B: d3d::Backend + Send + 'static,
     F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
 {
-    let taken = capture(device, mem, Source::Screen, issue);
+    let source = if what == ScreenDraw::Fade { Source::Fade } else { Source::Screen };
+    let (taken, item) = capture_item(device, mem, source, issue);
+    if let (ScreenDraw::Fade, Some(item)) = (what, &item) {
+        // A checked call of the fade made in Rust compares this.
+        render_bridge::native_hud::fade::guest_drew(item);
+    }
     if taken {
         what.counter().count();
     } else {
@@ -142,15 +147,8 @@ where
     taken
 }
 
-fn capture<B, F>(device: &d3d::abi::SharedDevice<B>, mem: &mut dyn GuestMemory, source: Source<'_>, issue: F) -> bool
-where
-    B: d3d::Backend + Send + 'static,
-    F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
-{
-    capture_item(device, mem, source, issue).0
-}
-
-/// [`capture`], and the one-quad overlay the capture took.
+/// The draw `issue` makes, captured as one overlay quad and appended to
+/// the scene's overlay: whether it was taken, and the quad.
 fn capture_item<B, F>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
@@ -197,6 +195,8 @@ enum Source<'a> {
     Glyph(&'a HudTagQuad),
     /// A screen draw: its first bound texture, no tag.
     Screen,
+    /// The fade's fan (`0x00040890`): a screen draw in slot `Fade`.
+    Fade,
 }
 
 impl Source<'_> {
@@ -204,7 +204,7 @@ impl Source<'_> {
     fn shader(&self) -> (u32, [f32; 4]) {
         match self {
             Source::Tag(at) | Source::Glyph(at) => (at.shader, at.hud_input),
-            Source::Screen => (0, [0.0; 4]),
+            Source::Screen | Source::Fade => (0, [0.0; 4]),
         }
     }
 
@@ -216,6 +216,7 @@ impl Source<'_> {
             Source::Tag(_) | Source::Glyph(_) => ViewSlot::Hud,
             Source::Screen if render_bridge::native_hud::kept::in_hud() => ViewSlot::Hud,
             Source::Screen => ViewSlot::Ui,
+            Source::Fade => ViewSlot::Fade,
         }
     }
 
@@ -230,7 +231,7 @@ impl Source<'_> {
         Some(match (self, first) {
             (_, None) => OverlayTexture::None,
             (Source::Tag(at), Some(_)) => OverlayTexture::Bitmap { tag: at.bitmap, image: at.image },
-            (Source::Glyph(_) | Source::Screen, Some(n)) => stages[n]?,
+            (Source::Glyph(_) | Source::Screen | Source::Fade, Some(n)) => stages[n]?,
         })
     }
 }
