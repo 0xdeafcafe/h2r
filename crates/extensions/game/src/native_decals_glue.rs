@@ -234,6 +234,30 @@ fn constant_reads(
     Some((reads, base))
 }
 
+/// Builds the parts of a proven draw from Rust: the combiner from the
+/// mode's material and the position matrix rows from the open view,
+/// instead of the guest's own words.
+fn apply_rust(prepared: &mut Prepared, mode: Mode, d: &d3d::ResolvedDraw) {
+    let material = native_render::decal_material::material(mode, render_bridge::native_decals::offset_bits());
+    prepared.shader.combiner = d3d::nv2a::guest_def(
+        &material.combiner,
+        &d.shader.combiner_state,
+        d.raw.render[136],
+        d.shader.final_combiner_latch,
+    );
+    let VertexProcessing::Program { microcode, .. } = &d.shader.vertex else { return };
+    let (Some((_, Some(base))), Some(view)) =
+        (constant_reads(microcode), render_bridge::native_decals::view())
+    else {
+        return;
+    };
+    for (i, row) in view.rows.iter().enumerate() {
+        if let Some(c) = prepared.shader.vertex.constants.get_mut(usize::from(base) + i) {
+            *c = row.map(f32::from_bits);
+        }
+    }
+}
+
 impl DrawAdmission for Glue {
     fn admit(
         &self,
@@ -244,7 +268,7 @@ impl DrawAdmission for Glue {
             return None;
         }
         render_bridge::native_decals::note_examined();
-        let prepared = match prepare(mode, snapshot) {
+        let mut prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
             Err(why @ ("vertex declaration" | "vertex streams")) => {
                 let d = snapshot.draw;
@@ -260,8 +284,14 @@ impl DrawAdmission for Glue {
             }
         };
         render_bridge::native_decals::note_candidate();
-        // The Rust material against this draw's own, 1 in 64.
-        if render_bridge::native_decals::proof_sample() {
+        // Once the material is proven the draw is built from it, and one
+        // draw in 64 is the guest's own, compared with the Rust one.
+        let proven = render_bridge::native_decals::material_proven();
+        let sampled = render_bridge::native_decals::proof_sample();
+        if proven && !sampled {
+            apply_rust(&mut prepared, mode, snapshot.draw);
+        }
+        if sampled {
             let material = native_render::decal_material::material(
                 mode,
                 render_bridge::native_decals::offset_bits(),
@@ -295,6 +325,11 @@ impl DrawAdmission for Glue {
                 fields.push("vertex_program_missing".to_owned());
             }
             render_bridge::native_decals::proof_record(&fields);
+            if proven {
+                // The guest answers a compared draw; a difference has
+                // already ended the proof.
+                return None;
+            }
         }
         Some((
             ExternalPlan {

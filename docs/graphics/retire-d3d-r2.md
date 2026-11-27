@@ -255,6 +255,13 @@ bit for bit and the draw's viewport its camera's rectangle (the relation of
 for a register nothing in Rust sets yet, so the proof stays open until the
 live fields name none.
 
+Once the material is proven (`material_proven()`), an admitted decal draw
+takes its combiner from the mode's Rust material and its position matrix
+rows from the open view (`apply_rust` in `native_decals_glue.rs`); one draw
+in 64 stays the guest's own and is the comparison. The callback `0x00044040`
+is not cut: the host draws the guest's quads from its resolved draws, not
+from the scene's items.
+
 Not built: nothing draws these items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). A plate needs the placement
 test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
