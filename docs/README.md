@@ -519,7 +519,14 @@ Reading and converting Halo 1 data:
 ## Editor (`editor/`)
 
 - [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map placements, tags, variants, playlists, UI screens, HUDs and Halo 1 maps
+- [editor-guide-maps.md](editor/editor-guide-maps.md): editor guide, section 4: editing a map, playing it, saving, packages, Map Pack, Halo 1 maps
+- [editor-guide-variants.md](editor/editor-guide-variants.md): editor guide, sections 5 and 6: game variants, game type scripts, playlists
+- [editor-guide-content.md](editor/editor-guide-content.md): editor guide, sections 7 to 9: UI Screens, HUD, tags, announcer, voices
+- [editor-guide-troubleshooting.md](editor/editor-guide-troubleshooting.md): editor guide, section 12: troubleshooting
 - [editor.md](editor/editor.md): the editor for developers (`crates/apps/studio`, Dear ImGui + wgpu): window, the tools, Halo 1 maps and converting, the playlist format rules, code layout, scripted headless screenshots (`--do`, `--crop`, `--callout`), viewport gaps
+- [editor-scenario.md](editor/editor-scenario.md): the editor for developers, Scenario: the Maps list, packages, Halo 1 maps, the Map Pack, what the viewport shows
+- [editor-play.md](editor/editor-play.md): the editor for developers, play and pair, game variants and playlists
+- [editor-tags.md](editor/editor-tags.md): the editor for developers, the Tags tool: field registry, document, bundles, windows and panel
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/tools/scenario-edit`): blocks, fields, save rules, packages
 - [rules-editors.md](editor/rules-editors.md): game type scripts in VS Code and Zed: the extensions in `editors/`, `h2 rules editors`, the language server's features, CI and troubleshooting
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
