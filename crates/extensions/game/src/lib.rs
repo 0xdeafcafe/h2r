@@ -190,6 +190,8 @@ pub mod native_residual_glue;
 #[cfg(feature = "gpu")]
 pub mod native_targets_glue;
 #[cfg(feature = "gpu")]
+pub mod native_flare_query_glue;
+#[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
 #[cfg(feature = "gpu")]
 pub mod native_water_glue;

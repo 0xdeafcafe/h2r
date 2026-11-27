@@ -25,6 +25,7 @@
 pub mod decals;
 pub mod decorators;
 pub mod extract;
+pub mod flares;
 mod guest;
 pub mod hud;
 pub mod late;

@@ -85,3 +85,20 @@ The visibility tests feed lens flares, and through them some scripted lights. Al
 A count of 0 is an invisible flare. Under the W-buffer the quad's rasterized z is about 1 (or 0.5 with depth clamp), above every stored w except the cleared far plane, so without the count entry only flares seen against the sky show.
 
 Scripted lights depend on it: the Armory's look test creates `looker_light_top_red` / `looker_light_bottom_red`, model-less `mach` objects whose one attachment is a `lens`. With a count of 0 the light never lights. The script's look gates pass on `objects_can_see_object` or `player0_looking_up`/`_down` regardless. Test: `shaders_render.rs` `w_buffered_visibility_test_counts_against_the_stored_w`.
+
+### The query in Rust
+
+`native-flare-query` (on with the native renderer) makes the query pass's walker call and the reader in Rust (`render_bridge::native_flare_query`). The pass's own setup in `0x2dd30` (target, render states, vertex program) stays the guest's, so the count reads the depth the guest bound.
+
+| Guest | Rust |
+|---|---|
+| `0x20bb0(view, 0x1f, 0, 0, 1, 0x2e540)` | each entry's quad (`scene_extract::flares::Lens::query`, the port of `0x2e540` and `0x48b00`), one compute pass over the bound depth (`native_render::flare_gpu`), the area at `+6` and the set's bit |
+| `0x20770` | each byte from its count two frames back (`read_byte`), `0x20e50` for an inactive entry, the view's read frame |
+| other `0x20bb0` calls (the water's class 5 query, the draw pass) | the guest's; the reader reads their slots from the device |
+
+- The count is exact: a guest pixel of the quad passes when the quad's stored depth (its `w` held to the W clip and floored, over the full scale) is at most the depth at the pixel's centre. A quad the W clip culls counts 0.
+- The bitmaps at `0x5233f0` stay the one record of which slots hold a test. Before a guest body runs, the bits of Rust's slots are cleared, so the device is never asked for a test it did not end.
+- The arm: one query call in 64 also runs the guest walker after the Rust pass and compares the areas; the reader call that reads that set runs the guest reader and compares the bytes where both counts are back. A difference sends both calls to the guest for the session.
+- Counters in `render.scene`: `flare_{query,read}_{calls,cut,checked}`, `scene_kept_flare_{query,read}_<cause>` (a call the guest body ran) and `scene_dropped_flare_query_<cause>` (a placed pass that did not count; its bytes keep their values).
+
+Tests: `scene-extract` `a_flare_fades_from_its_query_result` and `a_quad_is_the_projected_point_with_its_half_size_held_to_2_and_128`; `render-bridge` `the_visibility_byte_lags_two_frames`, `the_water_query_counts_its_quad`, `a_guest_body_never_sees_the_cuts_slots`; `native-render` `a_w_buffered_quad_tests_its_floored_w_over_the_full_scale`.

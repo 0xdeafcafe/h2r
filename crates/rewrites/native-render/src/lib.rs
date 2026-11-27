@@ -53,6 +53,7 @@ pub mod decorators_load;
 pub mod effect_geometry;
 pub mod effect_immediate;
 pub mod effect_material;
+pub mod flare_gpu;
 pub mod flares;
 #[cfg(feature = "gpu")]
 pub mod engine_states;
