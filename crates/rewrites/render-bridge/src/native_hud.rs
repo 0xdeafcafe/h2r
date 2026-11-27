@@ -5,6 +5,7 @@
 
 mod backdrop;
 pub mod definitions;
+pub mod fade;
 pub mod hud_inputs;
 pub mod hud_overlay;
 pub mod kept;
