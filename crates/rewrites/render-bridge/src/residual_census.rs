@@ -817,6 +817,14 @@ impl Census {
         self.stack.truncate(i);
     }
 
+    /// Ends `p` if it is open; nothing is counted when it is not
+    /// ([`passed_over`]).
+    pub fn close_if_open(&mut self, p: Producer) {
+        if self.stack.iter().any(|o| o.producer == p) {
+            self.leave(|q| q == p);
+        }
+    }
+
     /// A render frame begins (`render_frame_and_present`).
     pub fn frame_begin(&mut self) {
         self.charge_time();
@@ -937,6 +945,18 @@ fn boundary(mem: &mut dyn GuestMemory) {
         let t = d.drain(mem);
         with(|c| c.drained(t));
     }
+}
+
+/// The producer at `entry` ends without the guest running it: a `before`
+/// hook passed over its call (the sky's cut, `native_sky::before_sky`),
+/// so its end observer does not run. Closes it when its entry observer
+/// opened it; otherwise nothing is open to close and nothing is counted.
+#[cfg(feature = "native-render")]
+pub fn passed_over(mem: &mut dyn GuestMemory, entry: u32) {
+    let Some(i) = REGISTRY.iter().position(|r| r.entry == entry) else { return };
+    let p = Producer::Fixed(i);
+    boundary(mem);
+    with(|c| c.close_if_open(p));
 }
 
 /// Installs the producer observers (the frame step's build, with
@@ -1153,6 +1173,20 @@ pub fn install(b: &mut hooks::Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A producer passed over closes only if it was opened, leaving the
+    /// census balanced either way.
+    #[test]
+    fn a_passed_over_producer_closes_only_when_open() {
+        let sky = row("sky").unwrap();
+        let mut c = Census::new(true, false);
+        c.enter(Producer::Fixed(sky));
+        c.close_if_open(Producer::Fixed(sky));
+        assert!(c.stack.is_empty());
+        assert_eq!(c.unbalanced, 0);
+        c.close_if_open(Producer::Fixed(sky));
+        assert_eq!(c.unbalanced, 0, "nothing open, nothing counted");
+    }
 
     fn tally(draws: u64, claimed: u64, residual: u64, push_words: u64) -> Tally {
         Tally {

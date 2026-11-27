@@ -144,8 +144,14 @@ guest's (`SkyItem::rows`) at the strip.
 | Answering | after 256 matches (`exact`, or `close`: within `1e-5` relative, the x87's trigonometry) and no difference; one strip in 64 compared |
 | Stopped | at a difference, until the next BSP |
 
-A section drawn through a region palette (`0x00137800`'s blend) is
-declined, `palette`. Counters: `sky_rows_{exact,close,differ,skipped,answering}`,
+A section with no single node (`SECTION_NODE` -1) takes its node map's
+palette as `0x00137800` builds it (from `0x0003e380`, detail level 4):
+every node's rows, then the sky group's compound nodes (`mode +0x38`,
+group `byte mode +0x3c + 4`), each the weighted sum of up to four of the
+matrices so far (`m·w + sum`, the fourth weight `1 - sum`), then the loaded
+section's (`+0x34`) node map (`+0x64`) over them. A model with flag bit 2
+(one matrix) is declined, `palette`; a group or record that does not read,
+`blend`; a node map that does not read or names a matrix not made, `map`. Counters: `sky_rows_{exact,close,differ,skipped,answering}`,
 `sky_rows_declined_<why>`. The strip draws the guest's rows in every state
 until the cut.
 
@@ -213,8 +219,9 @@ A guest pass that keeps a strip on the guest leaves the kept strips empty
 until a complete one. A view block that differs stops the arm for the BSP
 (`sky_cut_view`). Counters: `sky_cut_drawn`, `sky_cut_declined_<why>`
 (`unloaded`, `strips`, `rows`, `constants`, `device`, `pass`), and the
-arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky does not reach
-the residual census's `sky` end.
+arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky closes the
+residual census's `sky` producer when its entry observer opened it
+(`residual_census::passed_over`).
 
 ## Not built
 
@@ -250,6 +257,7 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `the_sky_look_from_the_material_is_checked_against_the_strip`,
 `the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
 `the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss` (`native_sky`),
+`a_passed_over_producer_closes_only_when_open` (`residual_census`),
 `a_strip_holds_the_view_block_bit_for_bit` (`native_sky_cut_glue`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
