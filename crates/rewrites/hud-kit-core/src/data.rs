@@ -489,7 +489,7 @@ fn place_of(p: &PlaceFile) -> Place {
 /// The HUDs of ours, each one's YAML: the files of the first-party
 /// packages' `hud` items (`content/<package>/huds/`), which `hud_kit_core`
 /// reads for the HUDs it knows (`views`).
-pub const BUILTIN: [(&str, &str); 14] = [
+pub const BUILTIN: [(&str, &str); 15] = [
     (
         "superbounce",
         include_str!("../../../../content/superbounce/huds/superbounce.hud.yaml"),
