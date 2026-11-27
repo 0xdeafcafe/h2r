@@ -519,7 +519,7 @@ D3D entry calls.
 | Slice | What | Size | Needs | Payoff (**Estimate**, ceiling) | Proof |
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
-| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
+| R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`) and the layer draw's return when every item of a layer is native (`frame_step::layer`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
 | R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust | L | R0; the effects seed and `0x00174420` stamps reproduced | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes; hash gate |
@@ -566,10 +566,24 @@ draw `0x00044550` still runs for all of them (kind 2 setup included). What
 keeps a guest draw, by the counter that names it (**Code**):
 
 - **The whole-call replacement.** framescene.md slice 4's
-  `render_bridge::frame_step` (the layer draws of 1, 3, 5, 7, 8 and 20
-  returning after the writes of 5.2) is not built, and the mask plans it
-  deletes are the mechanism every stage below uses. 8.2's rule 1 holds
-  for no entry.
+  `render_bridge::frame_step` is built for the layer draw: `native_layers`
+  places `frame_step::layer` as `LAYER_DRAW`'s implementation, and a call
+  of layer 1, 3, 5, 7, 8 or 20 from the scene, the alternate view or the
+  first person returns without the guest body when no item of the list
+  still holds the layer's bit after every stage's observer has run. It
+  makes the body's own writes (the drawn layer `0x004858b0` back to -1,
+  the draw byte `0x004670bc`, the shader-draw cache `0x00485b48` cleared
+  as `0x00016b10` clears it) and none of 5.2's rows, since no handler
+  runs (`tests/frame_step_layer.rs`, against a model of the body). Any
+  other call runs the guest body, counted in `render.scene` as
+  `layer_return_<site><layer>_guest_<cause>` (`<site>` empty, `alt` or
+  `fp`), each return as `_returned`. The causes: `standing_down`,
+  `unread`, `open_shader` (the cache holds a shader whose render states
+  `0x00018900` restores, a D3D write), and `structure`, `object` or
+  `other` for the first item still holding the bit. The mask plans stay
+  the mechanism every stage below uses to clear the bits, so 8.2's
+  rule 1 holds for no entry; the light passes' and the shadow layers'
+  draws are not replaced.
 - **Layers 1, 5, 7, 8 and 20** (the scene's, the alternate view's 1 and
   5, the first person's 1, 7, 8 and 20; `layer_plan_<layer>_refused_*`,
   `_fp<layer>_*`, `_alt<layer>_*`). Structure items: the plan's causes

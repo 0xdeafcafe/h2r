@@ -1004,8 +1004,11 @@ commits. The three parts are built.
 
 ### Slice 4: whole-call replacement for the opaque block
 
-Its entry census is built; its replacements are not, because rule 1 of
-8.2 (no remainder) holds for none of its entries. What each still leaves
+Its entry census is built, and the layer draw returns without its body
+when every item of the layer is native (`frame_step::layer`,
+[retire-d3d.md](retire-d3d.md), "R1's remainder"); its other
+replacements are not, because rule 1 of 8.2 (no remainder) holds for
+none of its entries. What each still leaves
 to the guest's draws (**Code**):
 
 - **Layers 1, 5, 7, 8 and 20, the scene's and the first person's.** Their
