@@ -298,7 +298,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
 
 ## Game verification
 
-Use [`ui.stack`](../runtime/agent-api.md#ui-what-the-menus-show) for
+Use [`ui.stack`](../runtime/agent-api-host.md#ui-what-the-menus-show) for
 game checks. Open Change Map with at least two categories. Record the
 focused row, open that category, and check that the active mode is
 `maps` with a `folders` parent. Press B and check that active mode is

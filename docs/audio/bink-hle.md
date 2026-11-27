@@ -171,8 +171,8 @@ The guard runs in movie playback mode outside film sessions. In skip mode,
 the retail timer can fade the music, call the wrapper's skip stub, then reset
 the idle clock and restart the music. Film recording and playback use the
 retail timer and the film's movie selection.
-[`ui.attract`](../runtime/agent-api.md#uiattract) reports the timer, asset
-and the wrapper's last attempt. [`audio.loops`](../runtime/agent-api.md#audioloops)
+[`ui.attract`](../runtime/agent-api-host.md#uiattract) reports the timer, asset
+and the wrapper's last attempt. [`audio.loops`](../runtime/agent-api-input.md#audioloops)
 shows the accompanying music transitions.
 
 ## Behaviour

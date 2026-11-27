@@ -221,15 +221,15 @@ the database has no valid row for the title, and the kernel seeds one.
 
 XapiInitProcess (`002d1b4e`), mainCRTStartup (`002d0aee`), mainXapiStartup
 (`002d0a7a`), XapiThreadStartup (`002d212e`), `_rtinit` (`002d1d15`) and `_cinit`
-(`002d1cbd`) remain generated. The initializer creates the heap at `0055f148`,
+(`002d1cbd`) remain generated. The initialiser creates the heap at `0055f148`,
 verifies data-volume cluster size through `002d15f0`, and maps T:/U: through
 `002d1a83`. The kernel/VFS must agree on 16 KiB FATX clusters and title roots.
 Do not stub out heap, guest FS/TLS, exception setup, notifications or constructors.
 
-The power-down initializer at `002d6031` sets up a timer/DPC whose reset routine
+The power-down initialiser at `002d6031` sets up a timer/DPC whose reset routine
 is `002d6004`; the DPC at `002d601f` can request shutdown. Native policy disables
 all of it. POWER_DOWN_OVERRIDES groups both hook functions: install/remove them
-in the same dispatch edit, never register only the initializer or reset routine.
+in the same dispatch edit, never register only the initialiser or reset routine.
 
 The title-update path at `002d129f` can call `002d111e` directly, bypassing the
 public launch hook; `002d0979` also reaches firmware reboot. Preserve generated

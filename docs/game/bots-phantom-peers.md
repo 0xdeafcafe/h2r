@@ -350,7 +350,7 @@ ran. They now join the lobby as a real peer does.
   handicap put back to none, a team move) move the membership counters once, after all of them, not
   once per phantom, so the game rebuilds what depends on the membership
   once (`Phantoms::tick`, `Repairs`). `bots.stats` counts the frames that
-  wrote and each kind of repair ([agent-api.md](../runtime/agent-api.md#bot-combat)).
+  wrote and each kind of repair ([agent-api.md](../runtime/agent-api-sim.md#bot-combat)).
   Thirty writing frames in a row mean the game undoes a repair every
   frame; the log says so once per run (`bots: phantoms: the session's
   membership was rewritten on 30 frames in a row (...)`), with the
@@ -438,7 +438,7 @@ slots.
 The sound owner check leaves a Clanker's attached weapon and unit sounds
 positioned. The retail mixer selects a human listener and handles
 distance, panning and obstruction. A human's first-person sound uses the
-retail owner check. The [agent's active listener list](../runtime/agent-api.md#audio-voice-routing)
+retail owner check. The [agent's active listener list](../runtime/agent-api-input.md#audio-voice-routing)
 shows the slots and camera positions the game can select.
 
 **The user's Halo 1 run (Live custom game on

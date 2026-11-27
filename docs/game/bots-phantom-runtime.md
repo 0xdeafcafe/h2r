@@ -171,7 +171,7 @@ bars at 60 ms to one at 800 ms with nearest-even rounding.
 
 The pregame lists show voice activity. The agent reads the same connection
 ratings for their members through
-[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+[`ui.lobby.players`](../runtime/agent-api-host.md#ui-what-the-menus-show).
 
 **Scoreboard and stats.** Bots participate in the scoreboard, the
 carnage report and post-game stats. Telemetry identifies phantoms by

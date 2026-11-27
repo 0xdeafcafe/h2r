@@ -20,7 +20,7 @@ one catch) is built in `crates/live/superbounce`. The state is built:
 for the tracker and the landing classifier,
 `superbounce_capsule.rs` for the capsule test, `superbounce_assist.rs`'s
 `predict` for the predicted landing), and `superbounce.state` returns
-them ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+them ([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)).
 The world overlay ("Crouch spots in the world", "Floor marks" and
 "Lock-on") is built in `superbounce_world.rs`.
 
@@ -410,7 +410,7 @@ No game was run for this section.
 
 `superbounce.verify` tries the loaded map's scanned spots in the running
 game and says which work
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)).
 It is `crates/extensions/game/src/superbounce_verify.rs`: the plan in
 `plan.rs`, a trial tick by tick in `trial.rs`, the verdicts in
 `summary.rs`.

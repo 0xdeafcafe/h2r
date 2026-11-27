@@ -87,7 +87,7 @@ The [map picker](map-select.md) also restores the folder list when Back
 dismisses a category's maps, independent of the lobby Back switch. A list
 opened directly from Game Setup returns there. The list records its opener
 when built, including when the same map category is reachable both ways. Use
-[`ui.stack`](../runtime/agent-api.md#ui-what-the-menus-show) to inspect
+[`ui.stack`](../runtime/agent-api-host.md#ui-what-the-menus-show) to inspect
 the active screen, its Back target, and map picker focus. The lobby Back
 switch is listed in [Switches](../runtime/switches.md#settings).
 

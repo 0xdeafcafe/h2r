@@ -376,7 +376,7 @@ A managed fleet at any step still needs the rights determination in
 |---|---|
 | `GET /v1/pack` (`pack.rs`) | reports each match’s private and shared bytes, sampled peak Pss, CPU seconds and gameplay tick p99; the template field is reserved for the template work |
 | `POST /v1/pack/matches` | starts a supervised game child for the lease |
-| `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api.md#hostmetrics)) | reports the Linux resident split, CPU seconds, and a rolling 30-second gameplay tick p99 and count above 36 ms |
+| `host.metrics` (`crates/extensions/game/src/host_metrics.rs`, [agent API](../runtime/agent-api-host.md#hostmetrics)) | reports the Linux resident split, CPU seconds, and a rolling 30-second gameplay tick p99 and count above 36 ms |
 | Sim report `wall` block (`crates/live/sim-bench/src/metrics.rs`) | adds `mapped_read_bytes` and `copied_read_bytes` |
 | Pool `place` (`hostroom.rs`, `local_pack.rs`) | reconciles demand independently of placement; the Worker records whether a placement reused a running supervisor |
 | `HostEnded` (`live-proto`) | optionally carries measured group CPU time, peak Pss, the slot lifetime, its share of occupied container time and the start-charge flag |

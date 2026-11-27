@@ -76,7 +76,7 @@ canonical document and the locally built map. They resolve through
 and recipe contract.
 
 **F3 in detail.** Methods in `crates/extensions/agent` with their
-`agent-proto` types and fake-game tests. The [Forge probes](../runtime/agent-api.md#forge-probes) read the arena
+`agent-proto` types and fake-game tests. The [Forge probes](../runtime/agent-api-modes.md#forge-probes) read the arena
 cursors, object pool, block counts and candidate kit tails.
 `forge.probe {what: "replication", group}` makes one object on an
 `mp_host` so the client can check for it through `sim.objects`.

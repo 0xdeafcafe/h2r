@@ -32,7 +32,7 @@ Numbers, interfaces, slices, rules, evidence and risks. Part of [theater-design.
 ### Agent API
 
 `crates/extensions/agent-proto/src/theater.rs`, documented in
-[agent-api.md](../runtime/agent-api.md#theater-transport).
+[agent-api.md](../runtime/agent-api-modes.md#theater-transport).
 
 | Method | Parameters | Result |
 |---|---|---|
@@ -65,7 +65,7 @@ A lane writes the code and its tests; the coordinator builds, tests and
 makes the game runs. Slices run in order unless "Starts" says otherwise.
 Each slice updates the pages that name what it changes
 ([theater.md](theater.md), [switches.md](../runtime/switches.md),
-[agent-api.md](../runtime/agent-api.md#theater-transport)).
+[agent-api.md](../runtime/agent-api-modes.md#theater-transport)).
 
 | # | Slice | Starts | Tests |
 |---|---|---|---|
@@ -197,5 +197,5 @@ Slices 3 and 4 touch files no other slice does and can run beside 1b and
 - [live-coop.md](../live/live-coop.md): the simulation update and the synchronous path
 - [level-boot.md](../runtime/level-boot.md): the options block and how a game starts
 - [checkpoints.md](../runtime/checkpoints.md): the engine's game-state save and restore
-- [agent-api.md](../runtime/agent-api.md#theater-transport), [live-api.md](../live/live-api-theater-stats.md#theater)
+- [agent-api.md](../runtime/agent-api-modes.md#theater-transport), [live-api.md](../live/live-api-theater-stats.md#theater)
 - [web-viewer.md](../live/web-viewer.md): the viewer that draws the stats stream

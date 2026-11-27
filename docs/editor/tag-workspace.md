@@ -419,7 +419,7 @@ a package written while it runs.
 - **Checksums and identities.** The builder writes the header checksum
   and takes dependency identities from the base's header. A play copy
   is checked against the retail payload checksum on load
-  ([agent-api.md](../runtime/agent-api.md#test-maps)); which built
+  ([agent-api.md](../runtime/agent-api-checks.md#test-maps)); which built
   outputs that check accepts is to be read before slice W3.
 - **Tag memory.** One added tag can move the whole index table into
   metadata, and some retail maps have no room

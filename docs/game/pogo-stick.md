@@ -257,7 +257,7 @@ at once.
   cost and the placed tags; **`h2 pogo models [--out DIR]`** writes the
   three meshes as OBJ files, with no disc (`crates/apps/cli/src/pogo_cmd.rs`).
 - **`pogo.state`** and **`pogo.test`** on the agent API
-  ([agent-api.md](../runtime/agent-api.md#pogo-superbounces-pogo-stick)):
+  ([agent-api.md](../runtime/agent-api-world.md#pogo-superbounces-pogo-stick)):
   the options, the map's weapon tags, every rider's phase and trick and
   the camera; and a trick shown on the local player's stick.
 - **Guest boundary.** One hook changes the simulation:

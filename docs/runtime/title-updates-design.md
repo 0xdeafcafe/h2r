@@ -60,7 +60,7 @@ pub enum Evidence { Exact, XdkName, StringRef, Structural, Propagated }
 ```
 
 The map is written to `<data or cache root>/imagemap/<target-sha>.toml` and
-never committed. It holds only addresses, scores and hashes of normalized
+never committed. It holds only addresses, scores and hashes of normalised
 instruction streams.
 
 Matching runs in passes, roughly the way BinDiff- and Diaphora-style differs
@@ -76,7 +76,7 @@ on both sides.
      name, with no `ambiguous` or `shared` flag.
    - The data symbols that symbols votes for (the D3D device pointer, state
      offsets).
-2. **Exact normalized bodies.** Decode each discovered function with iced-x86.
+2. **Exact normalised bodies.** Decode each discovered function with iced-x86.
    Replace every operand that points into the image (rel32 targets,
    absolute data or code addresses, as the analyzer classifies them) with a
    placeholder. Then hash the stream of mnemonics, operand kinds and
@@ -94,7 +94,7 @@ on both sides.
    imports, string refs, and non-address constants, plus a small-prime
    product over block degrees. Accept a unique feature match only when its
    call-graph neighbourhood agrees.
-6. **Data by operand correspondence.** For two functions whose normalized
+6. **Data by operand correspondence.** For two functions whose normalised
    bodies are equal, the k-th placeholder in one aligns with the k-th in the
    other. Each pair of aligned data addresses is a vote. Accept a data match
    only if every vote agrees and there are at least two (or one from an
@@ -136,7 +136,7 @@ Refactor so that no crate passes a literal address to `register_override`.
     report.
 - **Unmatched data globals always refuse.** Data has no slow path.
 - **Check the bytes at registration.** The map stores each match's
-  `body_hash`. When a hook is installed, normalize the target function again
+  `body_hash`. When a hook is installed, normalise the target function again
   and compare. This stops a stale or hand-edited map file from placing a
   hook.
 - **Conventions.** An `Exact` match proves the register convention and the

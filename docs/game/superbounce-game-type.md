@@ -57,7 +57,7 @@ Superbounce and Bounce Practice scripts do. The block's flag byte has no
 superbounce bit (bit 2 is reserved and reads as off), the variant's name
 turns nothing on, and no switch does. An agent can force the mode off in
 any game with `superbounce.set`; it cannot force it on
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
 
 Each tick, what the medal chain saw of each player's physics goes to a
@@ -85,7 +85,7 @@ one pair against the level (pair `+0x0c`,
 `live_telemetry::havok_agents::fixed_pair_word`, which checks handles and
 islands and decodes no collision-agent cache). A word of −3 is primed. It
 publishes that with the nearest bounce spot; the HUD, the lines and
-`superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+`superbounce.state` ([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type))
 all read it.
 
 **Spots.** The first tick on a map and structure BSP starts a scan of the
@@ -177,7 +177,7 @@ game's own takes the box while it shows. Closing the last step sets the
 **The lines.** One marker, on the one spot the player is going for,
 drawn by the window's world-line pass with no depth test (the styles are
 described in
-[the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)),
+[the agent API](../runtime/agent-api-edit.md#drawing-world-space-lines-over-the-frame)),
 from `crates/extensions/game/src/superbounce_world.rs` (`frame`,
 `targets`, `figures`, and the lock-on's `LockMarks`): a bold ring on the
 floor with a pin standing over it and a short label at the pin's top, as
@@ -371,7 +371,7 @@ the tag.
 
 `superbounce.state` has the mode in effect, its count, the tag and the
 marked points as `targets`
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)).
 
 ### The second bounce
 

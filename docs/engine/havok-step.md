@@ -580,4 +580,4 @@ where physics differs.
 - [sim-rewrite-havok.md](sim-rewrite-havok.md): the design and the slices.
 - [havok-runtime.md](havok-runtime.md): the object layouts.
 - [FLOAT.md](../lifter/FLOAT.md): the float contract.
-- [agent-api.md](../runtime/agent-api.md#havok-the-physics-world): `havok.*`.
+- [agent-api.md](../runtime/agent-api-world.md#havok-the-physics-world): `havok.*`.

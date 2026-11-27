@@ -414,7 +414,7 @@ method is needed (Design, by the rule in `AGENTS.md`):
   flies, `null` for the route's own), and while training `practice.train`:
   `site`, `stage`, `axis`, `slot`, `tries`.
 
-Both are documented in [agent-api.md, "Bounce routes"](../runtime/agent-api.md#bounce-routes)
+Both are documented in [agent-api.md, "Bounce routes"](../runtime/agent-api-sim.md#bounce-routes)
 with the code.
 
 ## Rules and limits

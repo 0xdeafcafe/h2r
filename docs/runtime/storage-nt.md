@@ -59,7 +59,7 @@ new position/search cursor. `close` frees the reservation when the last
 handle to its object closes. Handles are opaque Rust values; kernel handles
 must live in the kernel object table. An identifier is valid only in the VFS
 instance that created it. Handle values are opaque and never reused within
-that VFS instance, including after close. Do not serialize or reconstruct them.
+that VFS instance, including after close. Do not serialise or reconstruct them.
 
 `read`/`write` return the actual transferred byte count. Operations are
 synchronous; Current and Absolute offsets update the shared position after

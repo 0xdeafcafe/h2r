@@ -212,7 +212,7 @@ gather.
 The map decision layer uses `Personality::wait_weight()` for patience
 near a predicted spawn and `Personality::weapon_interest(role)` to value a
 favourite weapon there. A patient sniper with a favourite rifle will also travel
-farther for a firing position that overlooks a stronger lane. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+farther for a firing position that overlooks a stronger lane. See [the agent bot view](../runtime/agent-api-sim.md#sim-simulated-players-and-direct-state)
 for the live traits and mood.
 
 ## 3.4 Aim

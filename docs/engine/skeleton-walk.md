@@ -110,7 +110,7 @@ before anything reads them.
   and declines; `arm_stats()` counts the arm's checks, matches,
   mismatches, declines and dropped plans, and keeps the first mismatch.
   The agent method `anim.graph_walk` returns both
-  ([agent-api.md](../runtime/agent-api.md#anim-the-animation-graph-walk)).
+  ([agent-api.md](../runtime/agent-api-checks.md#anim-the-animation-graph-walk)).
 
 ## Rules and limits
 

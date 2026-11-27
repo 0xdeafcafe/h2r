@@ -5,7 +5,7 @@ Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extrac
 Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` and `impl.render.native-hud-walk` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
 | Slice | Built | Where it is specified |
-|---| R0 | `render.residual` and the three frame counters | [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work) |
+|---| R0 | `render.residual` and the three frame counters | [agent-api.md](../runtime/agent-api-render-checks.md#renderresidual-residual-d3d-work) |
 | R1, structure | static items of layers 1, 5, 7, 8 and 20 draw from the scene's plan by default | framescene.md slice 4, "The stage" |
 | R1, objects | items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20 | framescene.md slice 4, "The stage" |
 | R1, object items with auxiliary state | draw with the rows and clip the toggle sets for their view where the device holds it off; those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both | [native-objects.md](native-objects.md) |
@@ -239,7 +239,7 @@ in `render_bridge::residual_census`, the adapter's hook in
 `crates/platform/d3d/src/residual.rs` and `runtime_glue.rs`, glue in
 `crates/extensions/game/src/scene_glue.rs` and `d3d_glue.rs`, the CLI
 short form (`h2 agent residual N`), and a section in
-[agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work).
+[agent-api.md](../runtime/agent-api-render-checks.md#renderresidual-residual-d3d-work).
 
 **Tests** (synthetic, the device's draw rig): entry calls from two return
 addresses land in two caller rows; an inline draw written under one
@@ -356,7 +356,7 @@ shader without a supported combiner; a clip off the target; a glyph the
 atlas lacks; a texture that is not resident or a blend that is not a D3D
 blend) is dropped and counted: the overlay has no guest draw behind it.
 `render.stats` reports the counts as `native_ui_overlay_*`
-([agent-api.md](../runtime/agent-api.md#renderstats)).
+([agent-api.md](../runtime/agent-api-render.md#renderstats)).
 
 A `Blur` item blurs what the items before it drew, inside its clip: the menus' backdrop under a dialog. It carries the guest's steps by value (each step's spread, the tap's offset over it, and the constant of the combiner that blends the taps, `pick`), and the plan turns the spreads into offsets that are fractions of the target, so a blur looks the same at any scale. The plan ends the batch before a blur (`native_render::overlay::PlanBlur`); `OverlayGpu` ends its pass there, copies the target, runs each step as four bilinear taps blended in pairs by the guest's combiner between two scratch targets, and writes the result back through the texture combiner into every channel inside the clip.
 

@@ -27,7 +27,7 @@ A custom game hosted with Clankers shows **Setting up bots…** at the
 end of the countdown while their seats are being prepared. The match
 scoreboard rates connections from measured packet RTT. The lobby roster
 and each player's rating are available through
-[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+[`ui.lobby.players`](../runtime/agent-api-host.md#ui-what-the-menus-show).
 See [phantom peers and connection bars](../game/bots.md#5-way-in-2-phantom-peers).
 
 Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
@@ -72,7 +72,7 @@ empty filtered search shows **No games match. Press X to clear filters**.
 
 Choices are saved in `<data>/live-browser-filters.toml`. The agent can
 read them with
-[`ui.browser.filters`](../runtime/agent-api.md#ui-what-the-menus-show).
+[`ui.browser.filters`](../runtime/agent-api-host.md#ui-what-the-menus-show).
 
 The filter page is the shared settings dialog, `browser.filters`
 (`content/ui/screens/browser.filters.yaml`; [ui-builder.md](../game/ui-builder.md)
@@ -131,7 +131,7 @@ films named with `--film`.
 
 A link joined during a session's
 [default recording](../game/film-format.md#recording-every-game) discards
-the recording of the game in play; films of games already ended stay. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
+the recording of the game in play; films of games already ended stay. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api-host.md#live-session-links)
 
 ## 1. How the System Link browser works
 

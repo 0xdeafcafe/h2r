@@ -394,7 +394,7 @@ Also measured:
 ### The pair word (Trace, lab playback)
 
 Measured 2026-11-21 through the lab on a build with `havok.pair.set`
-([agent-api.md](../runtime/agent-api.md#havokpairset)), same recording and
+([agent-api.md](../runtime/agent-api-world.md#havokpairset)), same recording and
 playback as above. Scripts and results are in the lab session's keep
 directory, not in the repository.
 

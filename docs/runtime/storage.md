@@ -329,7 +329,7 @@ Mac host litter (`.DS_Store`, `._*`, `.Spotlight-V100`, `.fseventsd`) is reserve
 and hidden at every level, including entire litter directory subtrees. It
 does not count toward item limits or logical allocation. It cannot be
 created or addressed through guest paths. Deleting a guest-empty directory
-first removes these recognized litter entries, including their directory
+first removes these recognised litter entries, including their directory
 subtrees. Litter symlinks are unlinked without following them. Other invisible
 objects are left untouched and can still prevent physical removal; that
 failure preserves the directory's logical metadata.
@@ -379,7 +379,7 @@ also states that its validation follows Xbox/Xbox 360 rules. The looser
 disagrees; it is not used as evidence for broadening this character set.
 The earlier Velocity-only citation has been replaced with original-Xbox
 evidence. Control characters and non-ASCII bytes remain unsupported.
-Names preserve trailing spaces and periods; they are not Windows-normalized.
+Names preserve trailing spaces and periods; they are not Windows-normalised.
 `.` and `..` cannot be stored. Xbox object strings are byte strings; complete
 OEM/codepage decoding and uppercasing of bytes above 0x7f is not yet modeled.
 Rejecting them is an explicit compatibility limit, not a claim that Xbox

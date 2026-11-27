@@ -393,7 +393,7 @@ structure table that cannot fit uses the live cluster word. A BSP whose
 essential storage cannot fit declines before writing guest state.
 Admission runs again after concurrent decodes finish. The agent API serves
 the byte totals, fallback counts and FP distributions through
-[`collision.stats`](../runtime/agent-api.md#collision-the-native-collision-world).
+[`collision.stats`](../runtime/agent-api-checks.md#collision-the-native-collision-world).
 
 ## Tests
 

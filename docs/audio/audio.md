@@ -364,7 +364,7 @@ Code: `crates/platform/audio/src/meter.rs` (the maths),
 the tap's wiring in boot's `lib.rs`. Tests: `meter.rs`'s own and
 `mixer_meter/tests.rs`.
 
-`audio.meter` ([agent-api.md](../runtime/agent-api.md#audiometer))
+`audio.meter` ([agent-api.md](../runtime/agent-api-input.md#audiometer))
 reads the level of the mixer's output bus: the interleaved stereo `f32`
 DirectSound's output thread renders in logical time, handed to
 `dsound::Output::tap_samples` before the device queue. The same tap

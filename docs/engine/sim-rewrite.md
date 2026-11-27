@@ -328,7 +328,7 @@ films and goldens get re-recorded per build.
      alive, within a stated tolerance);
    - golden films re-recorded and replayed hash-clean.
 
-The agent method `sim.arms` is the gate read for turning a phase on by default: it reports every subsystem's shadow and authority arms (`checked`, `matched`, `mismatched`, `answered`, `declined`) and `clean` when `checked > 0` and `mismatched == 0` ([agent-api.md](../runtime/agent-api.md#simarms-the-native-sim-gate-read)).
+The agent method `sim.arms` is the gate read for turning a phase on by default: it reports every subsystem's shadow and authority arms (`checked`, `matched`, `mismatched`, `answered`, `declined`) and `clean` when `checked > 0` and `mismatched == 0` ([agent-api.md](../runtime/agent-api-checks.md#simarms-the-native-sim-gate-read)).
 
 ## 4. Subsystem map
 

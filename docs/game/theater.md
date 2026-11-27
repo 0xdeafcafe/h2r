@@ -237,7 +237,7 @@ H2_RESOLUTION=2922x1662 h2 run "$H2_DISC" --out "$H2_IMAGE" --data "$film_run/wi
 H2_RESOLUTION=640x480 h2 theater play "$film_run/wide.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
 ```
 
-During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
+During either run the agent exposes the [Theater transport](../runtime/agent-api-modes.md#theater-transport).
 `theater.state` reports the seek route and remaining ticks. A seek behind
 the tick shown loads the latest [session ring](theater-design.md#the-session-ring)
 entry at or before its target and runs forward from it (`theater.keyframes`
@@ -455,7 +455,7 @@ See [UI builder](ui-builder.md) and [editor](../editor/editor.md). `game::theate
 metadata from `film::Library` and the signed Live listing. Live's
 `GET /v1/games/{id}/film` streams the private recording to authenticated
 participants. The menu and playback window use
-[the Theater agent methods](../runtime/agent-api.md#theater-transport).
+[the Theater agent methods](../runtime/agent-api-modes.md#theater-transport).
 
 Offline samples are `theater.films`, `theater.film`, `theater.playback`
 and `theater.pause-menu` in `h2 ui preview`. The playback samples include

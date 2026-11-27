@@ -404,7 +404,7 @@ The macOS input backend sets `GCDeviceLight.color` on the same
 controllers distinct and follows port changes when the keyboard shares
 player one. When the setting is Off, a seat loses its colour, or the
 game closes, the backend restores the controller colour it captured
-before the first override. Use the [agent API](../runtime/agent-api.md#inputlightbar-playstation-controller-colours)
+before the first override. Use the [agent API](../runtime/agent-api-input.md#inputlightbar-playstation-controller-colours)
 to inspect or override the desired colour with or without a pad.
 [Apple GameController light documentation](https://developer.apple.com/documentation/gamecontroller/gccontroller/light)
 

@@ -79,7 +79,7 @@ The read-only agent method `anim.manager` reports matched, differed,
 declined, interrupted and answered segments per entry and retains the
 first difference. The live arm checks the transfer, CPU state (including defined
 flags, x87 and XMM) and final bytes at predicted physical write addresses.
-See the [agent API](../runtime/agent-api.md#anim-the-animation-graph-walk).
+See the [agent API](../runtime/agent-api-checks.md#anim-the-animation-graph-walk).
 
 The lifted differential `every_manager_entry_and_return_site` checks the
 body inventory and return selectors against the original control-flow

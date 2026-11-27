@@ -10,7 +10,7 @@ local cache identities, network topology, and tick windows. Keep raw
 agent output, tag names and local fixtures outside Git. This note takes
 aggregate counts, byte gaps, timings and verdicts.
 
-Use the [agent methods](../../runtime/agent-api.md#forge-probes) on the
+Use the [agent methods](../../runtime/agent-api-modes.md#forge-probes) on the
 coordinator's own disc runs. For the two-peer experiments, use a
 [playerless System Link host](../../live/dedicated-host-ops.md#playerless-lobby)
 and a client, with separate data roots and agent endpoints. The commands

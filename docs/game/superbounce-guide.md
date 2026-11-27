@@ -327,7 +327,7 @@ physics: the assist replaces the left stick
 the guest reads and takes X out of it, and writes nothing to the world. It
 is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
 and `superbounce.assist_test`
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type))
 show it and hold the button without a pad.
 
 **When it applies.** The mode is on, the setting is on, the first local
@@ -369,7 +369,7 @@ is judged, and of those that pass (`choose`):
 
 `superbounce.assist` returns the choice: the reason, each strip judged
 with its verdict, and the read the assist last engaged on
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)).
 
 **The steer.** The aim is the strip's
 [landing point](superbounce-spots.md#the-landing-point) (`aim_at`: a measured landing as it

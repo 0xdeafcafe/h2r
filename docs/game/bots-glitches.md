@@ -425,7 +425,7 @@ is clear (docs/formats/collision.md, "Breakable mask").
   before.
 
 `h2 agent world.breakable` reads the same mask
-([agent-api.md](../runtime/agent-api.md#worldbreakable-broken-glass)).
+([agent-api.md](../runtime/agent-api-world.md#worldbreakable-broken-glass)).
 Tests (`cargo test -p bots`): `glass::tests` (only flagged, indexed
 surfaces are panes; the walk in goes through the low piece and under the
 lip's; a piece is whole while its bit is set),

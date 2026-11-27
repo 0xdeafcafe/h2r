@@ -95,7 +95,7 @@ decision and the library rules live in
   `theater.status` reports the same while it runs: whether a game is
   being recorded, the films sealed, the last discard reason, the notes
   and any failure
-  ([agent API](../runtime/agent-api.md#theater-transport)).
+  ([agent API](../runtime/agent-api-modes.md#theater-transport)).
 - **Local films** stay on the player's computer until the player shares
   one or the account library's background upload takes it
   ([theater-design.md](theater-design-recording-playback.md#account-film-library)). A

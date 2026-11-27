@@ -75,6 +75,16 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [storage-nt.md](runtime/storage-nt.md): xbox storage: file objects, NT behaviour and kernel integration
 - [background-work.md](runtime/background-work.md): work nothing on the frame waits for (nav meshes, film hashes, uploads) on threads below the game's priority, and the worker cap (`crates/runtime/background`, `H2_BACKGROUND_THREADS`)
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
+- [agent-api-session.md](runtime/agent-api-session.md): the agent API, the live mirror and `session.*`
+- [agent-api-world.md](runtime/agent-api-world.md): the agent API, the world, Havok and Superbounce views
+- [agent-api-render.md](runtime/agent-api-render.md): the agent API, profiling and `render.*`
+- [agent-api-render-checks.md](runtime/agent-api-render-checks.md): the agent API, FrameScene checks and residual D3D work
+- [agent-api-host.md](runtime/agent-api-host.md): the agent API, load timeline, `host.*`, lobby and `ui.*`
+- [agent-api-input.md](runtime/agent-api-input.md): the agent API, audio, HaloScript, input and `state.*`
+- [agent-api-edit.md](runtime/agent-api-edit.md): the agent API, `edit.*`, menu methods and the paired editor
+- [agent-api-sim.md](runtime/agent-api-sim.md): the agent API, bots, bounce routes, `player.goto` and `sim.*`
+- [agent-api-modes.md](runtime/agent-api-modes.md): the agent API, Forge, Firefight, rules, variants and Theater
+- [agent-api-checks.md](runtime/agent-api-checks.md): the agent API, `anim`, `collision`, traces, shadow checks, test maps and the tag store
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
 - [contract-thin-transfers-flat-ram-target.md](runtime/contract-thin-transfers-flat-ram-target.md): spec section 4: the flat memory model and the thin transfers

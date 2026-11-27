@@ -549,7 +549,7 @@ before it spawns anything, and fails the job when it does not. `ticks`
 is the wait between the animation's start and the one capture; the
 result's `applied` holds the `spawn` and `animate` answers, and `reads`
 the object's `world.query` row and the animation's start
-([`world.object.animate`](../runtime/agent-api.md#worldobjectanimate)).
+([`world.object.animate`](../runtime/agent-api-input.md#worldobjectanimate)).
 
 A `sound` preview has no picture. Beside the game's readings (`applied`,
 the answer of `audio.play`, and `audio`, as `pair.audio` gives it) the
@@ -557,7 +557,7 @@ result has `editor`: Studio's own `sound.measure` of the tag (levels and
 verdict against the open map's sounds), or `{why}` when the tag is not in
 the map the Tags tool shows. A game that does not list `audio.play` fails
 the job. The sound starts at the player's unit through the game's own sound
-start ([`audio.play`](../runtime/agent-api.md#audioplay)).
+start ([`audio.play`](../runtime/agent-api-input.md#audioplay)).
 
 The other params are `ticks` to let run before the reads (0 to 600;
 default 30, and 0 for `ui`), `view` for the picture, `out` to copy the

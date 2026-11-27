@@ -311,7 +311,7 @@ followed by steering:
 - "stuck" detection and recovery (below).
 
 A move becomes a left-stick vector relative to the bot's facing. A bot
-never warps. The agent API's [routes](../runtime/agent-api.md#routes) use
+never warps. The agent API's [routes](../runtime/agent-api-input.md#routes) use
 the same bot path search, follower, pad steering and jump arc to drive a
 local player.
 
