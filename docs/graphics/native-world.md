@@ -1,7 +1,7 @@
 # Native renderer stage 1: the static world
 
 Status: Built. The static world draws natively in the default configuration.
-Code: `crates/rewrites/native-render/src/{world,load,camera,cull,skip,gpu,program,look}.rs`, `crates/rewrites/render-bridge/src/{native_world,native_edits}.rs`, `crates/extensions/game/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/native-render/tests/edits_gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
+Code: `crates/rewrites/native-render/src/{world,load,camera,cull,cull_gpu,skip,gpu,program,look}.rs`, `crates/rewrites/native-render/src/{cull,cull_pyramid}.wgsl`, `crates/rewrites/render-bridge/src/{native_world,native_edits}.rs`, `crates/extensions/game/src/native_world_glue.rs`. Tests: `crates/rewrites/native-render/tests/gpu.rs`, `crates/rewrites/native-render/tests/cull_gpu.rs`, `crates/rewrites/native-render/tests/edits_gpu.rs`, `crates/rewrites/render-bridge/tests/native_world.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Stage 1 of [native-renderer.md](native-renderer.md). The structure BSP's opaque geometry is read from the map's tags once, uploaded once, and drawn each frame from the game's render camera with frustum-culled indirect draws. The game skips its own layer-3 entries for the parts drawn natively. The rule that must hold: a part the native pass draws is exactly what the D3D path would have drawn, including depth, stencil and the state the layer leaves behind.
@@ -42,13 +42,51 @@ The load runs at map load and on a BSP switch. The active BSP is `0x004e0348` an
 | Step | What happens |
 |---|---|
 | Camera | Reads the render camera record and builds the view and projection |
-| Cull | Frustum planes against each draw's world bounds, on the CPU |
+| Cull | The guest's selected parts: frustum planes against each part's world bounds, on the CPU. The whole-world pass: compute passes on the GPU, frustum then depth pyramid |
 | Skip | Clears layer 3's bit on the BSP items the native pass draws |
 | Draw | One render pass into the game's colour target and depth with the game's viewport; per batch, bind textures, then `multi_draw_indexed_indirect` over its slot range |
 
 **Camera.** The render camera record is `0x004b9da0` (0x74 bytes, filled by `0x0002f800` per view): position `+0`, forward `+0xc`, up `+0x18`, vertical FOV `+0x28`, viewport `+0x30` (i16 top, left, bottom, right), near `+0x40`, far `+0x44` ([occlusion-culling.md](occlusion-culling.md), "Camera and view"). The view matrix and projection use the game's aspect rule (`0x0002fb70`). The paired projection at `0x004b9e14`, when available, supplies both diagonal scales and the off-centre terms. The display copy adjusts the horizontal row for the presented viewport and the retail copy keeps the original lens ([widescreen projection](high-resolution.md#widescreen-projection)).
 
-**Cull.** The CPU tests a few thousand AABBs in microseconds. The result is `instance_count` 0 or 1 in the indirect buffer (one 20-byte slot per draw), the only per-frame upload besides one uniform block. The frustum test is conservative: it draws a superset and depth sorts out the rest. These rules keep the pass equal to the D3D path:
+**Cull.** Two passes draw the world, and they cull in different places:
+
+| Pass | Who uses it | Cull |
+|---|---|---|
+| Selected parts (`select_parts`, `selection_draws`) | the game: the guest's layer-3 list | On the CPU at admission: a part outside `Frustum::sides` refuses the list, so the D3D path draws it |
+| Whole world (`prepare`, `encode`) | the theater's host view, the editor's native view | On the GPU ([`cull_gpu`](../../crates/rewrites/native-render/src/cull_gpu.rs), `cull.wgsl`): compute passes write each draw's `instance_count` into the indirect slots |
+
+The whole-world pass uploads each draw's world bounds once at load (again after `replace_section`) and, per frame, only the view: the planes, the view-projection, the depth rule and the viewport (`CullView`). Every draw owns one 20-byte slot in each of two indirect buffers, `early` and `late`, and each batch is a contiguous slot range drawn with one `multi_draw_indexed_indirect`.
+
+```mermaid
+flowchart LR
+  P[prepare: upload view, early cull] --> E[draw early slots]
+  E --> Y[depth pyramid of the target]
+  Y --> T[late cull: frustum and pyramid]
+  T --> L[draw late slots]
+  T --> H[history for next frame]
+```
+
+| Phase | Writes |
+|---|---|
+| Early (`prepare`) | `early`: draws in the frustum that the last test kept (`history`); with no pyramid this view, the frustum's whole set |
+| Pyramid (`encode`) | The depth target after the early draws, reduced by max into an R32 mip chain (`cull_pyramid.wgsl`); a level's last column and row take the odd one below, so texel `x` of level `k` covers level 0's `[x·2^k, (x+1)·2^k)` |
+| Late (`encode`) | `late`: draws in the frustum the pyramid does not hide, less what `early` drew; `history` for the next frame |
+
+A draw that comes into view is not in `early`, so the late phase draws it the same frame. Draw order changes only between the two runs: a draw revealed this frame draws after the early set.
+
+The pyramid test is conservative: it takes the box's nearest clip `w` and stored depth (`w_depth`, floored as the fixed stage writes it), the box's screen rectangle widened by a pixel and clamped to the viewport, and the largest pyramid depth over that rectangle at the level where it spans two texels. It culls only when the box's nearest depth is past that by more than `1e-5`, so every fragment would fail the `LessEqual` depth test anyway. A box across the eye's plane is never occluded.
+
+A view the pyramid cannot serve draws the frustum's whole set and is counted by why (`GpuWorld::occlusion_skips`):
+
+| Counter | When |
+|---|---|
+| `programs` | The world draws with material programs. Their depth is the guest's W-buffer range, which the test does not model. |
+| `depth_unsampled` | The depth target lacks `TEXTURE_BINDING`, is multisampled, or has more than one level or layer. `gfx::presenter::OffscreenTarget` (the theater's) creates its depth sampleable. |
+| `viewport_moved` | `encode` drew with another viewport than `prepare` uploaded. |
+
+`GpuWorld::read_cull_stats` (frustum kept, drawn, occluded) and `read_drawn` read the last view's results back, blocking: for tests and tools.
+
+The admission's frustum test keeps the selected-parts pass equal to the D3D path:
 
 | Rule | Detail |
 |---|---|
@@ -161,7 +199,7 @@ The native pass compiles the selected vertex program (`vrtx`) and pixel shader d
 | Check | What it covers |
 |---|---|
 | Unit tests (no disc) | World building from invented sections (draw ranges, batches, instance placement, bounds), the camera read from an invented guest record, frustum culling against known boxes, the scene list walk and restore on invented guest memory |
-| GPU tests (headless wgpu, skipped without an adapter) | A native draw of an invented world into an offscreen target; its W depth equals the formula |
+| GPU tests (headless wgpu, skipped without an adapter) | A native draw of an invented world into an offscreen target; its W depth equals the formula. The GPU cull against the reference box test, and its occlusion |
 | Frame A/B (the game) | The same 03a frame with and without the native renderer (`impl.render.native=off`), compared by pixel diff, through the headless capture (`H2_BOOT_GFX`) or the agent API's `capture`. Report the share of differing pixels, the largest difference and an image of the differences. Frame stats `cpu`, `d3d`, `encode`, `submit` and the `render-timing` site `0x0002bed0` (layer 3) give the CPU saved. |
 
 ### Modules
@@ -173,9 +211,10 @@ The native pass compiles the selected vertex program (`vrtx`) and pixel shader d
 | `world` | One vertex and index buffer for the whole BSP, one draw per opaque part in world space, sorted into batches of one material and one lightmap page. Transparent parts and bad triangles are counted and left out. | Test |
 | `load` | The scenario's (BSP, lightmap) pairs, the BSP's material shaders, every cluster and placed instance through `tags::structure`, each with its lightmap page and palette from the group whose checksum matches; P8 pages expanded through their palette | Test for the expansion and the render-info rules; the map read needs the disc |
 | `camera` | The render camera record read from guest memory (rejects NaN, empty viewports, `far <= near`), the view, the projection by the game's aspect rule, the W-buffer depth formula | Test |
-| `cull` | Frustum planes, the conservative box test, one indirect slot per draw | Test |
+| `cull` | Frustum planes and the conservative box test (the admission's, the models', and the reference for `cull.wgsl`) | Test |
+| `cull_gpu` | The whole-world pass's cull: bounds uploaded once, two indirect slot buffers, the early and late compute passes, the depth pyramid, the skip counters | `tests/cull_gpu.rs`: the compute cull keeps exactly what `Frustum::may_see` keeps on a random scene, with and without the pyramid; a box behind a wall is culled; a box revealed by a step aside is drawn that frame |
 | `skip` | The current list's walk, the structure-item test, clear and restore | Test, on invented guest memory |
-| `gpu` | Buffers and bind groups made once, one pipeline per (colour, depth) format pair, `prepare` (cull, uniform, slots) and `encode` (one pass that loads and keeps the game's target and depth, one `multi_draw_indexed_indirect` per batch) | `tests/gpu.rs` draws an invented wall at view depth 10 and a culled one behind the camera; colour is base times page and depth is `w_depth(10, far, D24)` within one step |
+| `gpu` | Buffers and bind groups made once, one pipeline per (colour, depth) format pair, `prepare` (uniform, view, early cull) and `encode` (the early run, the pyramid and late cull, the late run; each run one pass that loads and keeps the target and depth, one `multi_draw_indexed_indirect` per batch) | `tests/gpu.rs` draws an invented wall at view depth 10 and a culled one behind the camera; colour is base times page and depth is `w_depth(10, far, D24)` within one step |
 | `program`, `look`, `pass_state` | The material translation ([native-world-materials.md](native-world-materials.md)) | |
 
 ### Wired into the game

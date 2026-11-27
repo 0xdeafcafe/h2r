@@ -931,8 +931,8 @@ impl NativeWorld {
     /// far plane), then draw the world seen by `camera` into the whole
     /// `size` target: layer 1, the base look, then layers 5, 8, 20 and 7
     /// ([`LAYERS_BEFORE`], [`LAYERS_AFTER`]) where they were uploaded,
-    /// with the camera's view constants (`ViewInputs::from_camera`).
-    /// Returns what the frustum kept.
+    /// with the camera's view constants (`ViewInputs::from_camera`). The
+    /// world's cull runs on the GPU ([`NativeWorld::cull_stats`]).
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -944,14 +944,20 @@ impl NativeWorld {
         size: [u32; 2],
         camera: &Camera,
         clear: Clear,
-    ) -> CullStats {
+    ) {
         let view = render_camera(camera, size);
+        let viewport = PassViewport {
+            x: 0.0,
+            y: 0.0,
+            width: size[0] as f32,
+            height: size[1] as f32,
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("editor native world"),
         });
         clear_pass(&mut encoder, color, depth, clear);
         let arena = self.pool.begin();
-        let stats = {
+        {
             let mut uploads = gfx::ring::EncoderUploads {
                 device,
                 queue,
@@ -963,8 +969,8 @@ impl NativeWorld {
                 self.gpu
                     .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs, &l.constants);
             }
-            self.gpu.prepare(&mut uploads, &view, DEPTH_RULE)
-        };
+            self.gpu.prepare(&mut uploads, &view, viewport, DEPTH_RULE);
+        }
         self.encode_layers(
             &LAYERS_BEFORE,
             device,
@@ -995,12 +1001,7 @@ impl NativeWorld {
                 color_format,
                 depth,
                 depth_format,
-                PassViewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: size[0] as f32,
-                    height: size[1] as f32,
-                },
+                viewport,
                 (size[0], size[1]),
             );
         }
@@ -1017,7 +1018,12 @@ impl NativeWorld {
         let patches = arena.upload_commands(queue);
         queue.submit(patches.into_iter().chain([encoder.finish()]));
         queue.on_submitted_work_done(move || drop(arena));
-        stats
+    }
+
+    /// What the last [`NativeWorld::render`]'s cull kept, read back from
+    /// the GPU (blocking).
+    pub fn cull_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> CullStats {
+        self.gpu.read_cull_stats(device, queue)
     }
 }
 

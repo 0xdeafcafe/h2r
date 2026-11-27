@@ -220,7 +220,7 @@ fn centre_of(
         crate::render::DEPTH_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT,
     );
-    let stats = world.render(
+    world.render(
         device,
         queue,
         &color.create_view(&Default::default()),
@@ -231,7 +231,7 @@ fn centre_of(
         camera,
         Clear::all([0.0; 3]),
     );
-    (read_centre(device, queue, &color), stats)
+    (read_centre(device, queue, &color), world.cull_stats(device, queue))
 }
 
 /// The centre pixel of a 64 by 64 colour texture.

@@ -1,43 +1,10 @@
-//! Frustum culling of the world's draws into indirect slots.
-//!
-//! Every draw owns one 20-byte slot of the indirect buffer for the whole
-//! map ([`indirect_slots`]); a frame only flips each slot's
-//! `instance_count` between 0 and 1 ([`cull`]). The slots of a batch are
-//! contiguous, so the pass makes one `multi_draw_indexed_indirect` per
-//! batch. A compute pass can take the same slots over later.
+//! The world's view volume: the frustum planes and the conservative box
+//! test. The world pass's cull runs this test on the GPU
+//! ([`crate::cull_gpu`], `cull.wgsl`'s `may_see`); the guest's admission
+//! of selected parts and the models' instances run it here.
 
 use crate::camera::Mat4;
-use crate::world::{Aabb, World};
-use bytemuck::{Pod, Zeroable};
-
-/// `wgpu`'s indexed indirect layout.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
-pub struct IndirectSlot {
-    pub index_count: u32,
-    pub instance_count: u32,
-    pub first_index: u32,
-    pub base_vertex: i32,
-    pub first_instance: u32,
-}
-
-/// Size of a slot in bytes.
-pub const SLOT_SIZE: u64 = std::mem::size_of::<IndirectSlot>() as u64;
-
-/// One slot per draw, in draw order, all culled.
-pub fn indirect_slots(world: &World) -> Vec<IndirectSlot> {
-    world
-        .draws
-        .iter()
-        .map(|d| IndirectSlot {
-            index_count: d.index_count,
-            instance_count: 0,
-            first_index: d.first_index,
-            base_vertex: 0,
-            first_instance: 0,
-        })
-        .collect()
-}
+use crate::world::Aabb;
 
 /// Six planes `(n, d)` with `n · p + d >= 0` inside.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,24 +60,17 @@ impl Frustum {
     }
 }
 
+/// One view's world cull, as the GPU counted it
+/// (`GpuWorld::read_cull_stats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CullStats {
+    /// Draws the frustum keeps.
     pub visible: u32,
+    /// Draws drawn (the early run's and the late run's).
+    pub drawn: u32,
+    /// Draws the frustum keeps that the depth pyramid hides.
+    pub occluded: u32,
     pub total: u32,
-}
-
-/// Sets each slot's `instance_count` from the frustum test of its draw.
-pub fn cull(world: &World, frustum: &Frustum, slots: &mut [IndirectSlot]) -> CullStats {
-    let mut visible = 0;
-    for (slot, d) in slots.iter_mut().zip(&world.draws) {
-        let on = frustum.may_see(&d.bounds);
-        slot.instance_count = u32::from(on);
-        visible += u32::from(on);
-    }
-    CullStats {
-        visible,
-        total: world.draws.len() as u32,
-    }
 }
 
 #[cfg(test)]
@@ -178,7 +138,6 @@ mod tests {
             builder.add_section(Owner::Cluster(id), &section, &Placement::IDENTITY, None);
         }
         let world = builder.finish();
-        let mut slots = indirect_slots(&world);
         let lens = |horizontal: f32| RenderCamera {
             // Player degrees describe a horizontal 4:3 lens; the render camera stores vertical FOV.
             fov: 2.0 * ((horizontal.to_radians() * 0.5).tan() * 0.75).atan(),
@@ -192,39 +151,12 @@ mod tests {
             // The 16:9 display retains the 70-degree camera's vertical lens.
             (display_camera(retail, 0.75), vec![Owner::Cluster(0), Owner::Cluster(1)]),
         ] {
-            cull(&world, &Frustum::sides(&view.view_projection()), &mut slots);
-            let drawn: Vec<_> = world.draws.iter().zip(&slots)
-                .filter(|(_, slot)| slot.instance_count != 0)
-                .map(|(draw, _)| draw.owner)
+            let frustum = Frustum::sides(&view.view_projection());
+            let drawn: Vec<_> = world.draws.iter()
+                .filter(|draw| frustum.may_see(&draw.bounds))
+                .map(|draw| draw.owner)
                 .collect();
             assert_eq!(drawn, visible);
         }
-    }
-
-    #[test]
-    fn slots_follow_the_draws_and_culling_flips_instance_counts() {
-        let quad = |x: f32| SectionInput {
-            positions: vec![[x, -1.0, -1.0], [x, 1.0, -1.0], [x, -1.0, 1.0]],
-            parts: vec![PartInput {
-                material: 0,
-                transparent: false,
-                triangles: vec![[0, 1, 2]],
-            }],
-            ..Default::default()
-        };
-        let mut b = WorldBuilder::new();
-        b.add_section(Owner::Cluster(0), &quad(10.0), &Placement::IDENTITY, None);
-        b.add_section(Owner::Cluster(1), &quad(-10.0), &Placement::IDENTITY, None);
-        let w = b.finish();
-        let mut slots = indirect_slots(&w);
-        assert_eq!(slots.len(), 2);
-        assert_eq!(slots[1].first_index, 3);
-        assert!(slots.iter().all(|s| s.index_count == 3 && s.instance_count == 0));
-        let f = Frustum::from_view_projection(&camera().view_projection());
-        let stats = cull(&w, &f, &mut slots);
-        assert_eq!(stats, CullStats { visible: 1, total: 2 });
-        let on: Vec<_> = w.draws.iter().zip(&slots).map(|(d, s)| (d.owner, s.instance_count)).collect();
-        assert!(on.contains(&(Owner::Cluster(0), 1)) && on.contains(&(Owner::Cluster(1), 0)));
-        assert_eq!(SLOT_SIZE, 20);
     }
 }

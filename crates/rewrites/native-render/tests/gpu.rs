@@ -152,14 +152,13 @@ fn the_world_draws_lit_with_the_games_w_depth() {
     assert!(gpu.prepare_parts(&ctx.device, color_format, depth_format, &front, &camera()));
     assert!(!gpu.prepare_parts(&ctx.device, color_format, depth_format, &back, &camera()));
     assert!(!gpu.prepare_parts(&ctx.device, color_format, depth_format, &[(Owner::Cluster(0), 99)], &camera()));
-    let stats = gpu.prepare(&mut uploads, &camera(), DepthRule::D24);
-    assert_eq!((stats.visible, stats.total), (1, 2));
     let viewport = PassViewport {
         x: 0.0,
         y: 0.0,
         width: SIZE as f32,
         height: SIZE as f32,
     };
+    gpu.prepare(&mut uploads, &camera(), viewport, DepthRule::D24);
     gpu.encode(
         &ctx.device,
         &mut enc,
@@ -173,6 +172,8 @@ fn the_world_draws_lit_with_the_games_w_depth() {
     arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
 
+    let stats = gpu.read_cull_stats(&ctx.device, &ctx.queue);
+    assert_eq!((stats.visible, stats.drawn, stats.total), (1, 1, 2));
     let px = read(&ctx, &color, wgpu::TextureAspect::All);
     let at = |x: u32, y: u32| {
         let i = ((y * SIZE + x) * 4) as usize;
@@ -219,7 +220,8 @@ fn selected_and_indirect_world_draws_match_for_both_cameras_at_both_scales_in_on
         let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: None, size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
-            usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+            // TEXTURE_BINDING: the indirect views' cull reads the depth pyramid.
+            usage: U::RENDER_ATTACHMENT | U::COPY_SRC | U::TEXTURE_BINDING, view_formats: &[],
         });
         let color = texture(F::Rgba8Unorm);
         let depth = texture(F::Depth32Float);
@@ -250,7 +252,7 @@ fn selected_and_indirect_world_draws_match_for_both_cameras_at_both_scales_in_on
                 assert!(world.write_selection(&mut uploads, &selection, None, &camera, DepthRule::D24));
                 assert_eq!(world.encode_selection(&mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size), &selection), 2);
             } else {
-                assert_eq!(world.prepare(&mut uploads, &camera, DepthRule::D24).visible, 1);
+                world.prepare(&mut uploads, &camera, vp, DepthRule::D24);
                 world.encode(&ctx.device, &mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size));
             }
         }

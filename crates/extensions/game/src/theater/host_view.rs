@@ -608,16 +608,16 @@ impl MountedView {
                 encoder: &mut encoder,
                 arena: &arena,
             };
-            scene.world.prepare(&mut uploads, &view, DepthRule::D24);
-            scene
-                .models
-                .prepare(&gfx.device, &mut uploads, &view, DepthRule::D24, &instances);
             let viewport = PassViewport {
                 x: 0.,
                 y: 0.,
                 width: dimensions.raster.0 as f32,
                 height: dimensions.raster.1 as f32,
             };
+            scene.world.prepare(&mut uploads, &view, viewport, DepthRule::D24);
+            scene
+                .models
+                .prepare(&gfx.device, &mut uploads, &view, DepthRule::D24, &instances);
             scene.world.encode(
                 &gfx.device,
                 &mut encoder,

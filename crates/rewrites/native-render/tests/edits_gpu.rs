@@ -114,8 +114,8 @@ fn draw(ctx: &gfx::GfxContext, gpu: &mut GpuWorld) -> (Vec<u8>, u32) {
     }));
     let arena = gfx::ring::UploadPool::default().begin();
     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };
-    let stats = gpu.prepare(&mut uploads, &camera(), DepthRule::D24);
     let viewport = PassViewport { x: 0.0, y: 0.0, width: SIZE as f32, height: SIZE as f32 };
+    gpu.prepare(&mut uploads, &camera(), viewport, DepthRule::D24);
     gpu.encode(
         &ctx.device,
         &mut enc,
@@ -128,7 +128,7 @@ fn draw(ctx: &gfx::GfxContext, gpu: &mut GpuWorld) -> (Vec<u8>, u32) {
     );
     arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
-    (read(ctx, &color, 0), stats.visible)
+    (read(ctx, &color, 0), gpu.read_cull_stats(&ctx.device, &ctx.queue).visible)
 }
 
 /// A cluster behind the camera moved in front of it: with the bounds left
