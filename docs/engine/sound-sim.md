@@ -12,7 +12,10 @@ A sound started in the sim is a record: id, source, tag, start tick and an end t
 - **Step.** `Schedule::step(tick)` returns the starts and stops since the last step in call order, then the sounds whose end tick has come, in start order. Ids count up from 1 and are not reused in a run.
 - **Script waits.** A wait on a sound is `Schedule::finished(id, tick)`: true once the sound is gone or its end tick is not after `tick`. It reads the schedule and nothing from a voice, so it is the same on a host with no audio device. Test: `script_wait_ends_on_computed_tick`.
 - **Save.** `Schedule::save` and `restore` are the canonical bytes of the active sounds. `SimSoundEvents` registers them as a machine-snapshot section. Test: `save_round_trips_active_sounds`.
-- **Host feed.** `SoundSim::service` hands the events the ticks made to a `Host` ([`sim_sound::feed`]). `MixerHost` turns a start into a mixer buffer, a stop into its removal, and sweeps the buffers that have played out. `NullHost` hears nothing. Test: `null_sink_host_hash_equals_audible`.
+
+## The host feed
+
+`SoundSim::service` hands the events the ticks made to a `Host` ([`sim_sound::feed`]). `MixerHost` turns a start into a mixer buffer, a stop into its removal, and sweeps the buffers that have played out. `NullHost` hears nothing. Test: `null_sink_host_hash_equals_audible`. The feed reads the events and never the sim, so the hash is the same with any host or none.
 
 ## Where the sound runs
 
@@ -22,6 +25,7 @@ The 29 phases of the tick ([sim-rewrite.md](sim-rewrite.md), "The tick driver") 
 |---|---|---|
 | Sound service `SOUND_UPDATE` (`0x125b40`) | the main loop `12b450`, once a frame, outside the tick | implemented in Rust: delivers events to the host, no guest call |
 | Game sound `GAME_SOUND_UPDATE` (`0x18c060`) | inside the tick, under a guest phase | not replaced: its sources still run as guest code and start sounds through the two start entries below |
+| Stop `SOUND_STOP_INSTANCE` (`0x126360`, instance in EBX) | called by a script stop, a retrigger of a playing line (`0x189f1f`) and the object code | a `before` hook: a sim handle ends its sound on the schedule and the guest's stop is skipped; a guest instance runs the guest's stop |
 | Starts `SOUND_IMPULSE_ALLOCATE` (`0x126000`), `SOUND_START_AT_MARKER` (`0x1891d0`) | called from both paths and from the object code | implemented in Rust: the start goes to the schedule and the caller gets a sim handle (`0x7000_0000 | id`) in place of a guest instance |
 | The schedule's step | after `GAME_TICK`, an observer | no guest call |
 
@@ -42,8 +46,9 @@ The engine takes a sound's length from one word: the `snd!` metadata's `+0x10`, 
 
 ## Rules and limits
 
-- Sounds the guest still starts and stops itself (a stop by instance handle, lip sync's instance argument, dialogue's end callbacks) see a sim handle where they expect a guest instance. Their effect is not yet routed to the schedule. Design.
-- Which sounds are culled under load, and when a sound ends relative to the audio device, no longer match retail. A script wait ends on the computed tick; retail ends it on the voice. This and the unsimulated stops are what `h2 sim diff` flags.
+- Sounds the guest still starts see a sim handle where they expect a guest instance. A stop by handle is routed to the schedule (`SOUND_STOP_INSTANCE`). Lip sync's instance argument (`0x109220`) and the dialogue end callbacks still get a handle the guest pool does not hold. Design.
+- **Script waits** (`sound_impulse_time`, `sound_impulse_language_time` at `0x2a9f70`, `0x18a2f0`) read the guest's own line table (`[0x4ed288] + 0x128`, 16 slots of tag, start tick, instance, chosen permutation), which `0x189ee0` stamps at the start of a script line from the tag and the chosen permutation's length (`0x20b140`, `0x20b3c0`): `(start - now + length_ticks) * tick_seconds`, floored at 0. The wait never reads a voice, so it is the same with the switch on or off. The sim does not touch the table; the schedule's end tick (`snd!` `+0x10`, the longest permutation) can pass the table's end for a line whose permutation is shorter, and nothing in the guest reads it.
+- Which sounds are culled under load, and when a sound ends relative to the audio device, no longer match retail. These are what `h2 sim diff` can flag.
 - The step runs once per tick number; a tick run twice steps once.
 
 ## Not verified

@@ -194,6 +194,8 @@ fn game_tick(g: &runtime::Guest) -> Result<u32, runtime::GuestFault> {
 ///   (an observer; no guest call).
 /// - `SOUND_UPDATE` (`0x125b40`, the main-loop service): implemented here;
 ///   it hands the events to the host and returns, with no guest call.
+/// - `SOUND_STOP_INSTANCE` (`0x126360`): a stop of a sim handle ends its sound
+///   on the schedule; a guest instance still runs the guest's stop.
 /// - `SOUND_IMPULSE_ALLOCATE` and `SOUND_START_AT_MARKER`: implemented
 ///   here; the start goes to the schedule and the caller gets a sim handle
 ///   ([`handle`]) in place of a guest instance.
@@ -264,6 +266,18 @@ impl Feature for SimSoundEvents {
             let def = durations.guest_def(&mem, tag);
             cpu.eax = handle(lock(&sim).start_def(def, Source(cpu.esi), tick));
             mem.ret(cpu, 4)
+        });
+        // A stop by instance handle: a sim handle ends its sound on the
+        // schedule and the guest's stop (a pool lookup that would find
+        // nothing) is skipped; a guest instance runs the guest's own stop.
+        let sim = Arc::clone(&self.sim);
+        b.raw().before(&points::SOUND_STOP_INSTANCE, "sound stop", move |call| {
+            if let Some(id) = from_handle(call.cpu.ebx) {
+                let tick = game_tick(&call.ctx.memory())?;
+                lock(&sim).stop(id, tick);
+                return Ok(hooks::Flow::Return(call.ret(0)?));
+            }
+            Ok(hooks::Flow::Continue)
         });
         Ok(())
     }
@@ -421,6 +435,24 @@ mod tests {
             }
             assert_eq!(plan.chains.contains_key(&points::GAME_TICK.base), on);
         }
+    }
+
+    #[test]
+    fn a_stop_by_sim_handle_ends_the_sound_and_only_under_the_switch() {
+        for (spec, on) in [("", false), ("impl.sim.sound-events", true)] {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&SimSoundEvents::headless()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let chain = plan.chains.get(&points::SOUND_STOP_INSTANCE.base);
+            assert_eq!(chain.is_some_and(|c| c.before.len() == 1 && c.implement.is_none()), on);
+        }
+        // The hook's effect on the schedule: the handle names the sound.
+        let mut sim = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let id = sim.start(60_000, Source(1), 0);
+        assert_eq!(from_handle(handle(id)), Some(id));
+        assert!(sim.stop(id, 5));
+        assert!(sim.wait_done(id, 5));
+        assert!(!sim.stop(id, 6), "a second stop finds nothing");
     }
 
     #[test]
