@@ -190,6 +190,15 @@ pub enum Counter {
     D3dResidualDraws,
     /// Push-buffer words `d3d` decoded, counted once per drain. Always on.
     D3dPushWords,
+    /// Native inline draws (particles) `d3d` resolved in full
+    /// (`Stats::native_inline_full`; docs/graphics/native-particles.md).
+    NativeInlineFull,
+    /// Native inline draws that took a same-state run's fast path.
+    NativeInlineFast,
+    /// Queued native admissions the render thread prepared
+    /// (`d3d::threaded::queued_runs`), and the draws in them.
+    QueuedRuns,
+    QueuedRunDraws,
 }
 
 /// Number of [`Counter`]s.
@@ -203,7 +212,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 36] = [
+    pub const ALL: [Counter; 40] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -240,6 +249,10 @@ impl Counter {
         Counter::D3dEntries,
         Counter::D3dResidualDraws,
         Counter::D3dPushWords,
+        Counter::NativeInlineFull,
+        Counter::NativeInlineFast,
+        Counter::QueuedRuns,
+        Counter::QueuedRunDraws,
     ];
 
     pub fn label(self) -> &'static str {
@@ -279,6 +292,10 @@ impl Counter {
             Counter::D3dEntries => "d3d_entries",
             Counter::D3dResidualDraws => "d3d_residual_draws",
             Counter::D3dPushWords => "d3d_push_words",
+            Counter::NativeInlineFull => "native_inline_full",
+            Counter::NativeInlineFast => "native_inline_fast",
+            Counter::QueuedRuns => "queued_runs",
+            Counter::QueuedRunDraws => "queued_run_draws",
             Counter::FileIoUs => "file_io_us",
         }
     }

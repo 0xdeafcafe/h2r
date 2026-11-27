@@ -238,6 +238,7 @@ impl<B: Backend> Device<B> {
         };
         self.inline_capture = self.inline_runs;
         self.stats.native_inline_full += 1;
+        timeline::phase::count(timeline::phase::Counter::NativeInlineFull, 1);
         let result = self.try_native_producer(mem, parts, admission);
         self.inline_capture = false;
         if matches!(result, Ok(true)) {
