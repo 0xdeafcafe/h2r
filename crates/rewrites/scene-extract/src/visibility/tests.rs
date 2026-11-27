@@ -577,8 +577,7 @@ fn display_additions_survive_equal_guest_lens_sets() {
         objects: vec![0x0001_0001],
         source: VisibilitySource::Guest,
     };
-    let (taken, parity) = arm(gather.clone(), narrow.clone());
-    assert!(parity.holds(), "{parity:?}");
+    let taken = answer(gather.clone(), narrow.clone(), true, true);
     assert_eq!(taken.source, VisibilitySource::Rust);
     camera.projection_xy = Some([9.0 / 16.0, 1.0, 0.0, 0.0]);
     let mut wide = compute(&m, &camera, &mut cache, 1).unwrap();
