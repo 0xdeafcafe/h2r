@@ -12,6 +12,7 @@ mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
 mod markers;
+mod particles;
 mod private;
 mod sun;
 pub mod passes;
@@ -227,6 +228,9 @@ fn record(
     // The Forge monitors' bodies, in the markers' place and drawn first
     // (`bodies`).
     let body_stages = bodies::plan(scene, frame);
+    // The GPU particle systems, in slot 9 before the sorted transparents
+    // (`particles`).
+    let particle_stages = particles::plan(scene, frame);
     let rows = observer
         .as_ref()
         .map(|_| pass_rows(frame))
@@ -261,6 +265,9 @@ fn record(
                 }
             }
             for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
+                pass.apply(stage).map_err(named)?;
+            }
+            if let Some(stage) = particle_stages.get(&i) {
                 pass.apply(stage).map_err(named)?;
             }
             if let Some(stage) = body_stages.get(&i) {
