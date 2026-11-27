@@ -124,6 +124,41 @@ impl TileVolume {
         Some(Self { rect, near })
     }
 
+    /// The volume of the world-space box `bounds` (`min`, `max`) as `view`'s
+    /// world programs draw it (`ViewInputs::from_camera`): each corner's
+    /// clip `x`, `y` and `w` from the view-projection rows `c[0]`, `c[1]`
+    /// and `c[3]`, then over `w` through the viewport scale `c[10]` and
+    /// offset `c[11]` to guest pixels ([`Self::from_window`]). The view's
+    /// constants are the copy's (`ExternalPassRequest::view_constants`),
+    /// so a widened display copy projects as it draws. `None` for an empty
+    /// or non-finite box.
+    pub fn from_bounds(
+        view: &crate::program::ViewInputs,
+        bounds: ([f32; 3], [f32; 3]),
+    ) -> Option<Self> {
+        let (min, max) = bounds;
+        if (0..3).any(|k| min[k] > max[k]) {
+            return None;
+        }
+        let c = &view.constants;
+        let dot = |r: [f32; 4], p: [f32; 3]| r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3];
+        let corners: Vec<[f32; 3]> = (0..8)
+            .map(|n| {
+                let p = std::array::from_fn(|k| if (n >> k) & 1 == 0 { min[k] } else { max[k] });
+                let w = dot(c[3], p);
+                if w <= 0.0 {
+                    return [0.0, 0.0, w];
+                }
+                [
+                    dot(c[0], p) / w * c[10][0] + c[11][0],
+                    dot(c[1], p) / w * c[10][1] + c[11][1],
+                    w,
+                ]
+            })
+            .collect();
+        Self::from_window(&corners, view.guest_size, view.size, view.z_scale)
+    }
+
     /// Whether the volume touches tile `(tx, ty)` of a `size` target whose
     /// farthest stored depth there is `far`.
     pub fn touches(&self, tx: u32, ty: u32, size: (u32, u32), far: f32) -> bool {
@@ -256,7 +291,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_light_tiles_runs", RUNS.load(Ordering::Relaxed)),
         ("scene_light_tiles_lights", LIGHTS.load(Ordering::Relaxed)),
         ("scene_light_tiles_single", SINGLE.load(Ordering::Relaxed)),
-        ("scene_light_tiles_fallback", FALLBACK.load(Ordering::Relaxed)),
+        (
+            "scene_light_tiles_fallback",
+            FALLBACK.load(Ordering::Relaxed),
+        ),
         ("scene_light_tiles_lost", LOST.load(Ordering::Relaxed)),
     ];
     out.extend(ARM.counters());
@@ -349,9 +387,18 @@ impl Arm {
 
     pub fn counters(&self) -> [(&'static str, u64); 4] {
         [
-            ("scene_light_tiles_compared", self.compared.load(Ordering::Relaxed)),
-            ("scene_light_tiles_matched", self.matched.load(Ordering::Relaxed)),
-            ("scene_light_tiles_mismatched", self.mismatched.load(Ordering::Relaxed)),
+            (
+                "scene_light_tiles_compared",
+                self.compared.load(Ordering::Relaxed),
+            ),
+            (
+                "scene_light_tiles_matched",
+                self.matched.load(Ordering::Relaxed),
+            ),
+            (
+                "scene_light_tiles_mismatched",
+                self.mismatched.load(Ordering::Relaxed),
+            ),
             ("scene_light_tiles_arm_off", u64::from(!self.on())),
         ]
     }
@@ -464,7 +511,10 @@ mod tests {
     fn the_arm_compares_every_run_until_proven_then_one_in_64_and_a_difference_turns_it_off() {
         let arm = Arm::new();
         let first: Vec<Decision> = (0..PROVEN).map(|_| arm.decide()).collect();
-        assert!(first.iter().all(|d| *d == Decision::Compare), "unproven: all compared");
+        assert!(
+            first.iter().all(|d| *d == Decision::Compare),
+            "unproven: all compared"
+        );
         for _ in 0..PROVEN {
             arm.report(true);
         }
@@ -488,6 +538,57 @@ mod tests {
                 Segment::Tiled(0..MAX_RUN),
                 Segment::Tiled(MAX_RUN..MAX_RUN + 3)
             ]
+        );
+    }
+
+    #[test]
+    fn a_boxs_volume_is_its_corners_projected_through_the_views_rows() {
+        // Clip x = x, y = y, w = z; the viewport maps x/w, y/w in [-1, 1]
+        // to a 64 square, y down. The box spans x, y in [-1, 1] at
+        // z 10..20: its near face projects to 32 +/- 3.2.
+        let mut constants = [[0.0; 4]; crate::program::VIEW_CONSTANTS];
+        constants[0] = [1.0, 0.0, 0.0, 0.0];
+        constants[1] = [0.0, 1.0, 0.0, 0.0];
+        constants[3] = [0.0, 0.0, 1.0, 0.0];
+        constants[10] = [32.0, -32.0, 0.0, 0.0];
+        constants[11] = [32.0, 32.0, 0.0, 0.0];
+        let view = crate::program::ViewInputs {
+            constants,
+            guest_size: (64, 64),
+            size: (128, 128),
+            z_scale: 100.0,
+            w_clip: None,
+        };
+        let v = TileVolume::from_bounds(&view, ([-1.0, -1.0, 10.0], [1.0, 1.0, 20.0])).unwrap();
+        let want = [
+            2.0 * 28.8 - 1.0,
+            2.0 * 28.8 - 1.0,
+            2.0 * 35.2 + 1.0,
+            2.0 * 35.2 + 1.0,
+        ];
+        for k in 0..4 {
+            assert!(
+                (v.rect[k] - want[k]).abs() < 1e-3,
+                "{:?} at the copy's scale",
+                v.rect
+            );
+        }
+        assert_eq!(v.near, 0.1, "the nearest corner's w over the W scale");
+        assert!(
+            !v.touches(0, 0, (128, 128), 1.0),
+            "the corner tile is culled"
+        );
+        assert!(v.touches(3, 3, (128, 128), 1.0));
+        let across =
+            TileVolume::from_bounds(&view, ([-1.0, -1.0, -5.0], [1.0, 1.0, 20.0])).unwrap();
+        assert_eq!(
+            (across.rect, across.near),
+            ([0.0, 0.0, 128.0, 128.0], 0.0),
+            "a box across the eye"
+        );
+        assert!(
+            TileVolume::from_bounds(&view, ([1.0; 3], [0.0; 3])).is_none(),
+            "an empty box"
         );
     }
 

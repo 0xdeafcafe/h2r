@@ -20,13 +20,38 @@ use render_bridge::native_lights::{SceneDraw, ScenePass};
 
 use super::{
     DeviceMemory, Glue, Keep, PreparedLight, RetainedLight, constants, scale_scissor, scene_light,
+    structure_key,
 };
 
-/// One held light: its passes as the scene gave them and its layers 12
-/// and 13 prepared at its passes.
+/// A world-space box (`min`, `max`).
+type Bounds = ([f32; 3], [f32; 3]);
+
+/// One held light: its passes as the scene gave them, its layers 12
+/// and 13 prepared at its passes, and the world-space box of what they
+/// draw; `None` when a part's box is not resident (an object's), and the
+/// light then covers the whole target.
 pub(super) struct Held {
     passes: Vec<ScenePass>,
     lit: Vec<(u8, PreparedLight)>,
+    bounds: Option<Bounds>,
+}
+
+/// The box of `entries`' structure parts (`WorldDraw::bounds`, world
+/// space for placements too); `None` for an object entry or a part that
+/// is not resident.
+fn entry_bounds<'a>(
+    world: &super::LightsWorld,
+    entries: impl IntoIterator<Item = &'a frame_scene::LightEntry>,
+    into: &mut native_render::world::Aabb,
+) -> Option<()> {
+    for e in entries {
+        structure_key(e)?;
+        for (draw, _) in world.structure_entry(e).ok()? {
+            into.add(draw.bounds.min);
+            into.add(draw.bounds.max);
+        }
+    }
+    Some(())
 }
 
 /// The run of held lights of one view's target.
@@ -167,7 +192,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let d = self.device.lock().map_err(|_| None)?;
         let ready = self.ready(mem).map_err(|_| None)?;
         let [_, _, x, y, w, h, _, _] = draw.view_target;
+        let world = ready.lights.get().ok_or(None)?;
         let mut lit = Vec::new();
+        let mut aabb = native_render::world::Aabb::EMPTY;
+        let mut bounded = true;
         for pass in draw.passes {
             let layer = pass.group.group.layer;
             if !matches!(layer, 12 | 13) || pass.group.entries.is_empty() {
@@ -201,11 +229,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 })
                 .map_err(Some)?;
             }
+            bounded &= entry_bounds(world, &pass.group.entries, &mut aabb).is_some();
             lit.push((layer, prepared));
         }
         Ok(Held {
             passes: draw.passes.to_vec(),
             lit,
+            bounds: (bounded && !aabb.is_empty()).then_some((aabb.min, aabb.max)),
         })
     }
 
@@ -330,6 +360,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             plan: plan(ranges),
             pass: Box::new(TiledRun {
                 lit,
+                bounds: lights.iter().map(|h| h.bounds).collect(),
                 ranges,
                 view: None,
                 clip: None,
@@ -368,6 +399,8 @@ struct TiledRun {
     /// Per light, in the run's order (its bit), each lit layer prepared
     /// and retained.
     lit: Vec<Vec<(u8, PreparedLight, RetainedLight)>>,
+    /// Per light, its box ([`Held::bounds`]).
+    bounds: Vec<Option<Bounds>>,
     ranges: usize,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     clip: Option<d3d::DepthClip>,
@@ -486,7 +519,16 @@ impl TiledRun {
             rect: [0.0, 0.0, t.size.0 as f32, t.size.1 as f32],
             near: 0.0,
         };
-        let volumes = vec![whole; self.lit.len()];
+        // Each light's box through the copy's view (`TileVolume::from_bounds`);
+        // a light with no box covers the whole target from depth 0.
+        let volumes: Vec<TileVolume> = self
+            .bounds
+            .iter()
+            .map(|b| {
+                b.and_then(|b| TileVolume::from_bounds(&view, b))
+                    .unwrap_or(whole)
+            })
+            .collect();
         let colour = t.color.texture().clone();
         let scratch = match &self.scratch {
             Some(shared) => {
