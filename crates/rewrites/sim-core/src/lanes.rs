@@ -46,6 +46,14 @@ pub fn ordinary1(x: u32) -> bool {
     magnitude == 0 || (LOW..HIGH).contains(&magnitude)
 }
 
+/// An operand a compare reads without raising a flag: zero, normal or
+/// infinite, never NaN or subnormal.
+#[inline]
+pub fn compared1(x: u32) -> bool {
+    let magnitude = x & 0x7fff_ffff;
+    magnitude == 0 || (0x0080_0000..=0x7f80_0000).contains(&magnitude)
+}
+
 /// One correctly rounded binary32 operation on the host.
 #[inline]
 pub fn binary1(op: Op, a: u32, b: u32) -> u32 {

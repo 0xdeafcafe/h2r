@@ -128,8 +128,9 @@ fn plan_vector(
     let (start_at, delta_at) = (m.u32(sp.wrapping_add(12))?, m.u32(sp.wrapping_add(16))?);
     let (start, delta) = (m.vec3(start_at)?, m.vec3(delta_at)?);
     let one = m.u32(layout::ONE)?;
+    // The limit is only compared; the walk computes with `min(limit, 1)`.
     let mut fp = Fp::new();
-    fp.check(limit);
+    fp.check_compared(limit);
     fp.check(one);
     if !fp.exact() {
         return Err(Bail::Float);
@@ -145,6 +146,10 @@ fn plan_vector(
     } else {
         limit
     };
+    fp.check(t1);
+    if !fp.exact() {
+        return Err(Bail::Float);
+    }
     let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
     let outputs = Outputs::new(
         g,

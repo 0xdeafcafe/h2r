@@ -1,7 +1,7 @@
 # Native particles and effect geometry
 
 Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`).
+Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
@@ -155,10 +155,7 @@ Explicit assumptions and limits:
 
 ### One admission a run
 
-Each particle the walk emits still resolves as its own device draw
-(`Device::try_native_inline_draw` through `submit_inner`), and its
-admission is still checked on its own. What the render thread is handed
-is joined at that admission: the threaded backend's queue
+What the render thread is handed is joined as each particle is queued: the threaded backend's queue
 (`d3d::threaded`, `QueuedRun`) takes a queued draw into the run that ends
 its pending batch when nothing was queued between them, the stage, view,
 attachments, request, fallback depth and textures are the same, and the
@@ -176,6 +173,30 @@ admissions would each have. `d3d::threaded::queued_runs` counts the runs
 handed over and the draws in them; draws minus runs is the admissions
 saved. A run ends at any other queued command, at a batch handed to the
 render thread, or at a particle that does not join.
+
+### Same-state particles
+
+A particle the walk emits resolves through `submit_inner` only when the
+device state has changed since the last one
+(`crates/platform/d3d/src/device/inline_run.rs`). A native inline draw
+that commits through `submit_inner` with plain textures (no frame copy,
+depth alias or depth level), no scoped admission or indexed tail, and a UI
+fit that leaves its vertices alone, opens a run: its resolved draw, raw
+shader inputs, state words, binding and texture keys, under a key of the
+state they came from. The key holds the push-buffer words decoded, the
+D3D API entries made (`Device::live`), the constants generation, the
+render-target epoch, the bound textures, palettes, targets, shaders and
+program, the viewport, the pushed NV2A state, the UI fit, the display
+projection and the vertex bytes' length.
+
+The next inline draw with the same key, equal state words and the same
+shader inputs but for its carried defaults takes the fast path: the run's
+draw with its vertices and defaults, offered to the producer's admission
+(which still checks the geometry), and queued on the run's binding, with
+the replay carry the full path makes. Any other submit ends the run, as
+does a refusal or a queue that declines; the draw then resolves in full.
+`Stats::native_inline_full` and `native_inline_fast` count the two paths;
+`Device::set_inline_runs(false)` resolves every draw in full.
 
 ### Colour flare fans
 

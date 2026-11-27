@@ -390,6 +390,104 @@ pub struct LitLayerPart {
     pub passes: Vec<LitLayerPass>,
 }
 
+/// Why an object item of a world layer keeps its D3D draw at the plan
+/// ([`LitObjects::plan_layer_item`], [`plan_layer_part`]): a named cause,
+/// counted `layer_plan_<layer>_refused_<name>`, with what it says.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LayerPlanRefusal {
+    /// Extraction's cause (`frame_scene::LayerItem::refusal`).
+    Extraction(frame_scene::LayerObjectRefusal),
+    /// Not an object's item, its model not uploaded or its rows not in
+    /// the scene.
+    Model(&'static str),
+    /// The item's material's passes of the layer did not compile for the
+    /// model ([`LitModelInput::layer_refused`]: the first reason).
+    NotCompiled(String),
+    /// The model holds no part of the layer for the item's section and
+    /// part, and no compile reason was kept.
+    NoPart,
+    /// The part's passes in the layer are of another shader.
+    Shader,
+    /// The part's passes in the layer are of other levels.
+    Level,
+    /// The item's pass is past the part's passes.
+    Pass,
+    /// The item's implementation of its pass draws nothing (no vertex
+    /// program).
+    PassEmpty,
+    /// The pass has no native implementation for the item (with the PRT
+    /// stream, or without).
+    Implementation,
+    /// A PRT stream outside layer 5, or one the program does not take.
+    Prt(String),
+    /// The auxiliary state toggle, whose values the view does not hold.
+    AuxDepth,
+    /// The structure's parameter block, whose upload the draw was not
+    /// given.
+    StructureParameters,
+    /// The inputs' defaults do not read.
+    Defaults,
+    /// The record's chosen subparts do not map onto the part's.
+    Ranges(String),
+    /// The pass's program is missing.
+    Program,
+    /// An animated constant's block does not sample.
+    Animation(String),
+    /// A constant does not compute: the item's own, the structure
+    /// parameters' or the material's `c[18]`.
+    Constants(String),
+    /// The draw's state does not resolve over the device's.
+    State(String),
+}
+
+impl LayerPlanRefusal {
+    /// The cause's name, as `render.scene` counts it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            LayerPlanRefusal::Extraction(why) => why.name(),
+            LayerPlanRefusal::Model(_) => "object_plan_model",
+            LayerPlanRefusal::NotCompiled(_) => "object_plan_not_compiled",
+            LayerPlanRefusal::NoPart => "object_plan_no_part",
+            LayerPlanRefusal::Shader => "object_plan_shader",
+            LayerPlanRefusal::Level => "object_plan_level",
+            LayerPlanRefusal::Pass => "object_plan_pass",
+            LayerPlanRefusal::PassEmpty => "object_plan_pass_empty",
+            LayerPlanRefusal::Implementation => "object_plan_implementation",
+            LayerPlanRefusal::Prt(_) => "object_plan_prt",
+            LayerPlanRefusal::AuxDepth => "object_plan_aux_depth",
+            LayerPlanRefusal::StructureParameters => "object_plan_structure_parameters",
+            LayerPlanRefusal::Defaults => "object_plan_defaults",
+            LayerPlanRefusal::Ranges(_) => "object_plan_ranges",
+            LayerPlanRefusal::Program => "object_plan_program",
+            LayerPlanRefusal::Animation(_) => "object_plan_animation",
+            LayerPlanRefusal::Constants(_) => "object_plan_constants",
+            LayerPlanRefusal::State(_) => "object_plan_state",
+        }
+    }
+}
+
+impl std::fmt::Display for LayerPlanRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayerPlanRefusal::Extraction(why) => f.write_str(why.name()),
+            LayerPlanRefusal::Model(why) => f.write_str(why),
+            LayerPlanRefusal::NotCompiled(why) => write!(f, "its material's passes of the layer did not compile: {why}"),
+            LayerPlanRefusal::NoPart => f.write_str("its part draws nothing native in the layer"),
+            LayerPlanRefusal::Shader => f.write_str("its part's passes in the layer are of another shader"),
+            LayerPlanRefusal::Level => f.write_str("its part's passes in the layer are of other levels"),
+            LayerPlanRefusal::Pass => f.write_str("its pass is past the part's passes"),
+            LayerPlanRefusal::PassEmpty => f.write_str("its implementation of its pass draws nothing"),
+            LayerPlanRefusal::Implementation => f.write_str("its pass has no native implementation for it"),
+            LayerPlanRefusal::Prt(why) | LayerPlanRefusal::Ranges(why) | LayerPlanRefusal::Animation(why)
+            | LayerPlanRefusal::Constants(why) | LayerPlanRefusal::State(why) => f.write_str(why),
+            LayerPlanRefusal::AuxDepth => f.write_str("the auxiliary state toggle, whose values its view does not hold"),
+            LayerPlanRefusal::StructureParameters => f.write_str("the structure's parameter block, whose upload the draw was not given"),
+            LayerPlanRefusal::Defaults => f.write_str("the inputs' defaults do not read"),
+            LayerPlanRefusal::Program => f.write_str("its program is missing"),
+        }
+    }
+}
+
 /// A model's lit parts, ready to upload: programs and buffers indexed by
 /// [`LitPart::implementations`] and [`LitLayerPass::implementations`].
 #[derive(Default)]
@@ -399,6 +497,10 @@ pub struct LitModelInput {
     pub parts: Vec<LitPart>,
     /// The parts' passes of the world layers [`OBJECT_LAYERS`].
     pub layers: Vec<LitLayerPart>,
+    /// Why a material's passes of a world layer did not compile, by layer
+    /// and the material's shader tag: the first reason, which the plan
+    /// names for an item of it ([`LayerPlanRefusal::NotCompiled`]).
+    pub layer_refused: HashMap<(u8, u32), String>,
 }
 
 impl LitModelInput {
@@ -483,7 +585,10 @@ impl LitModelInput {
                 *b += buffers;
             }
         };
-        let LitModelInput { programs: their_programs, buffers: their_buffers, layers, .. } = other;
+        let LitModelInput { programs: their_programs, buffers: their_buffers, layers, layer_refused, .. } = other;
+        for (key, why) in layer_refused {
+            self.layer_refused.entry(key).or_insert(why);
+        }
         self.programs.extend(their_programs);
         self.buffers.extend(their_buffers);
         for mut part in layers {
@@ -641,12 +746,14 @@ struct LitModel {
     parts: Vec<LitPart>,
     part_index: HashMap<(u16, u8), usize>,
     layers: Vec<LitLayerPart>,
-    /// (layer, section, part, shader datum) to its index in `layers`: a
+    /// Layer, level, section, part and shader datum to its index in `layers`: a
     /// part draws its own material's passes, and in the sorted handlers'
     /// layers those of a shader the game puts on its record instead
-    /// ([`OVERRIDE_LAYERS`]).
-    /// By layer, level, section, part and shader tag.
+    /// ([`OVERRIDE_LAYERS`]). Keyed by layer, level, section, part and
+    /// shader tag.
     layer_index: HashMap<(u8, u8, u16, u8, u32), usize>,
+    /// [`LitModelInput::layer_refused`].
+    layer_refused: HashMap<(u8, u32), String>,
     _geometry_bytes: mem_watch::Gauge,
 }
 
@@ -1210,6 +1317,7 @@ impl LitObjects {
         let geometry_bytes = buffers.iter().map(|b| b.vertices.size() + b.indices.size()).sum();
         self.models.insert(index, LitModel {
             programs, buffers, parts: input.parts, part_index, layers: input.layers, layer_index,
+            layer_refused: input.layer_refused,
             _geometry_bytes: GEOMETRY.track(geometry_bytes),
         });
         true
@@ -1487,26 +1595,26 @@ impl LitObjects {
     /// not resolve.
     pub fn plan_layer_item(
         &self, index: u32, layer: u8, scene: &FrameScene, pass: &LayerPass, item: &LayerItem, entry: &ObjectLayerEntry,
-    ) -> Result<Vec<PlannedDraw>, String> {
-        let LayerOwner::Object(instance) = item.owner else { return Err("not an object's item".into()) };
+    ) -> Result<Vec<PlannedDraw>, LayerPlanRefusal> {
+        use LayerPlanRefusal as R;
+        let LayerOwner::Object(instance) = item.owner else { return Err(R::Model("not an object's item")) };
         if let Some(why) = item.refusal {
-            return Err(why.name().into());
+            return Err(R::Extraction(why));
         }
-        let m = self.models.get(&index).ok_or("its model is not uploaded")?;
-        let rows = scene.rows.get(item.rows.start as usize..item.rows.end as usize).ok_or("the item's rows are not in the scene")?;
+        let m = self.models.get(&index).ok_or(R::Model("its model is not uploaded"))?;
+        let rows = scene.rows.get(item.rows.start as usize..item.rows.end as usize).ok_or(R::Model("the item's rows are not in the scene"))?;
         let at = m.layer_index.get(&(layer, item.level, item.key.section, item.key.part, item.key.shader)).copied();
-        let same_part = |p: &&LitLayerPart| p.layer == layer && p.section == item.key.section && p.part == item.key.part;
-        if at.is_none() && m.layers.iter().filter(same_part).any(|p| p.level == item.level) {
-            return Err(format!(
-                "the item names shader {:#010x}, which section {} part {} has no native passes of in layer {layer}",
-                item.key.shader, item.key.section, item.key.part
-            ));
-        }
-        if at.is_none() && m.layers.iter().any(|p| same_part(&p)) {
-            return Err(format!(
-                "section {} part {} has no native passes of layer {layer} at level {}",
-                item.key.section, item.key.part, item.level
-            ));
+        if at.is_none() {
+            let same_part = |p: &&LitLayerPart| p.layer == layer && p.section == item.key.section && p.part == item.key.part;
+            if m.layers.iter().filter(same_part).any(|p| p.level == item.level) {
+                return Err(R::Shader);
+            }
+            if m.layers.iter().any(|p| same_part(&p)) {
+                return Err(R::Level);
+            }
+            if let Some(why) = m.layer_refused.get(&(layer, item.key.shader)) {
+                return Err(R::NotCompiled(why.clone()));
+            }
         }
         let view = scene.view_of_pass(pass);
         let aux = view.and_then(|v| v.aux_depth);
@@ -1974,7 +2082,7 @@ pub fn plan_layer_part<'a>(
     layers: &[LitLayerPart], at: Option<usize>,
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
-) -> Result<Vec<PlannedDraw>, String> {
+) -> Result<Vec<PlannedDraw>, LayerPlanRefusal> {
     plan_layer_part_at_entry(layers, at, pass_of, instance, layer, rows, pass, item, entry, None, None, None)
 }
 
@@ -1984,13 +2092,14 @@ fn plan_layer_part_at_entry<'a>(
     pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
     instance: frame_scene::InstanceKey, layer: u8, rows: &[Row], pass: &LayerPass, item: &LayerItem, entry: &EntryStates,
     c18: Option<MaterialConstant18>, aux: Option<&AuxDepth>, structure: Option<&StructureParameters>,
-) -> Result<Vec<PlannedDraw>, String> {
+) -> Result<Vec<PlannedDraw>, LayerPlanRefusal> {
+    use LayerPlanRefusal as R;
     if let Some(why) = item.refusal {
-        return Err(why.name().into());
+        return Err(R::Extraction(why));
     }
-    let structure = uploaded(item.flags, structure)?;
+    let structure = uploaded(item.flags, structure).map_err(|_| R::StructureParameters)?;
     if item.prt.is_some() && layer != PRT_LAYER {
-        return Err(format!("a PRT stream in layer {layer}"));
+        return Err(R::Prt(format!("a PRT stream in layer {layer}")));
     }
     // The prologue turns the toggle on for the item's draw and the
     // epilogue off (`0x0004d640`, `0x0004d720`), in every layer: the draw
@@ -1998,20 +2107,20 @@ fn plan_layer_part_at_entry<'a>(
     let aux_depth = match (item.flags.contains(PartFlags::AUX_DEPTH), aux) {
         (false, _) => None,
         (true, Some(aux)) => Some(*aux),
-        (true, None) => return Err("the auxiliary state toggle, whose values its view does not hold".into()),
+        (true, None) => return Err(R::AuxDepth),
     };
     let key = &item.key;
-    let at = at.ok_or_else(|| format!("section {} part {} draws nothing native in layer {layer}", key.section, key.part))?;
-    let p = layers.get(at).ok_or("its layer part is missing")?;
+    let at = at.ok_or(R::NoPart)?;
+    let p = layers.get(at).ok_or(R::NoPart)?;
     if p.layer != layer || p.section != key.section || p.part != key.part {
-        return Err(format!("section {} part {} draws nothing native in layer {layer}", key.section, key.part));
+        return Err(R::NoPart);
     }
     if p.shader_tag != key.shader {
-        return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
+        return Err(R::Shader);
     }
     let strip = Some(item.flags.contains(PartFlags::STRIP));
-    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts.as_ref())?;
-    let defaults = pass.inputs.defaults.ok_or("the inputs' defaults do not read")?;
+    let ranges = part_ranges(&p.indices, p.subparts.as_ref(), p.listed.as_ref(), strip, item.subparts.as_ref()).map_err(R::Ranges)?;
+    let defaults = pass.inputs.defaults.ok_or(R::Defaults)?;
     let inputs = ObjectInputs { layer: Some(&pass.inputs), lighting: item.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let unstenciled;
     let entry = if layer == 1 && pass.stencil_off {
@@ -2027,51 +2136,47 @@ fn plan_layer_part_at_entry<'a>(
     // (`0x00016b90`); the list's other items draw the layer's other
     // passes. Each level's passes are a part of their own.
     if p.level != item.level {
-        return Err(format!("layer {layer}'s part is of level {}, the item's level {}", p.level, item.level));
+        return Err(R::Level);
     }
-    let n = usize::from(item.pass);
-    let lp = p.passes.get(n).ok_or_else(|| format!("pass {n} of layer {layer}, which has {}", p.passes.len()))?;
+    let lp = p.passes.get(usize::from(item.pass)).ok_or(R::Pass)?;
     let mut out = Vec::with_capacity(1);
     {
         let implementation = if lp.count == 1 { 0 } else { key.implementation };
         if implementation < IMPLEMENTATIONS && lp.empty >> implementation & 1 != 0 {
-            return Err(format!("its pass {n} of layer {layer} draws nothing"));
+            return Err(R::PassEmpty);
         }
         let slots = if item.prt.is_some() { &lp.prt } else { &lp.implementations };
         let (program, buffer) = slots
             .get(implementation)
             .copied()
             .flatten()
-            .ok_or_else(|| match item.prt {
-                Some(_) => format!("layer {layer} pass {n} has no native implementation {implementation} with the PRT stream"),
-                None => format!("layer {layer} pass {n} has no native implementation {implementation}"),
-            })?;
-        let compiled = pass_of(program).ok_or("its program is missing")?;
-        let (vertex_base, pixel_base, frames) = animated_blocks(compiled, pass.inputs.time)?;
-        let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression)?;
+            .ok_or(R::Implementation)?;
+        let compiled = pass_of(program).ok_or(R::Program)?;
+        let (vertex_base, pixel_base, frames) = animated_blocks(compiled, pass.inputs.time).map_err(R::Animation)?;
+        let mut vertex = object_vertex_uniforms(&vertex_base, &compiled.implementation, &inputs, rows, p.decompression).map_err(R::Constants)?;
         if matches!(layer, 1 | 17) && let Some(c18) = c18 {
-            c18.apply(compiled, &mut vertex)?;
+            c18.apply(compiled, &mut vertex).map_err(R::Constants)?;
         } else if compiled.inherits_c18 {
-            return Err("the inherited c[18] needs the draw's material state".into());
+            return Err(R::Constants("the inherited c[18] needs the draw's material state".into()));
         }
         if let Some(prt) = &item.prt {
-            let input = compiled.prt.as_ref().ok_or("its PRT variant has no PRT stream")?;
+            let input = compiled.prt.as_ref().ok_or_else(|| R::Prt("its PRT variant has no PRT stream".into()))?;
             let first = usize::from(frame_scene::PRT_FIRST_CONSTANT);
             if let Some(c) = input.last_constant.filter(|&c| usize::from(c) >= first + prt.constants.len()) {
-                return Err(format!("its program reads c[{c}], past the {} constants the PRT draw sets", prt.constants.len()));
+                return Err(R::Prt(format!("its program reads c[{c}], past the {} constants the PRT draw sets", prt.constants.len())));
             }
             let end = (first + prt.constants.len()).min(vertex.constants.len());
             vertex.constants[first..end].copy_from_slice(&prt.constants[..end - first]);
         }
-        let mut pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs)?;
-        with_structure_parameters(compiled, structure, &mut vertex, &mut pixel)?;
-        let alpha_test = compiled.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
+        let mut pixel = object_pixel_uniforms(&pixel_base, &compiled.implementation, &inputs).map_err(R::Constants)?;
+        with_structure_parameters(compiled, structure, &mut vertex, &mut pixel).map_err(R::Constants)?;
+        let alpha_test = compiled.program.state.as_ref().ok_or_else(|| R::State("its pass has no state".into()))?.alpha_test;
         let imp = &compiled.implementation;
         let mut states = std::borrow::Cow::Borrowed(&imp.render_states);
         if let Some(blend) = &compiled.blend_color {
-            states.to_mut().push(blend.resolve(imp, entry, &pass.inputs, item.lighting.as_ref(), p.shader)?);
+            states.to_mut().push(blend.resolve(imp, entry, &pass.inputs, item.lighting.as_ref(), p.shader).map_err(R::State)?);
         }
-        let mut state = object_state::resolve_layer(&states, entry, alpha_test)?;
+        let mut state = object_state::resolve_layer(&states, entry, alpha_test).map_err(R::State)?;
         if item.flags.contains(PartFlags::STENCIL_MARK) && !pass.stencil_off {
             object_state::mark(&mut state);
         }
@@ -2094,9 +2199,6 @@ fn plan_layer_part_at_entry<'a>(
             prt: item.prt.clone().map(|s| (s, None)),
             frames,
         });
-    }
-    if out.is_empty() {
-        return Err(format!("its passes of layer {layer} draw nothing"));
     }
     Ok(out)
 }
@@ -2836,6 +2938,13 @@ pub fn lit_model(
                     });
                 }
             }
+        }
+    }
+    // The first reason each material's layer did not compile, for the
+    // plan to name.
+    for (m, layer, why) in &out.layer_refused {
+        if let Some(lit) = materials.get(m) {
+            out.input.layer_refused.entry((*layer, lit.material.shader.0)).or_insert_with(|| why.clone());
         }
     }
     out
@@ -4047,7 +4156,7 @@ mod tests {
         };
         let draw = &plan(0x6d80_8080).unwrap()[0];
         assert_eq!(draw.state.blend_color(), wgpu::Color { r: 128.0 / 255.0, g: 128.0 / 255.0, b: 128.0 / 255.0, a: 109.0 / 255.0 });
-        assert!(plan(0x6d00_0000).unwrap_err().contains("BLENDCOLOR would leave"));
+        assert!(plan(0x6d00_0000).unwrap_err().to_string().contains("BLENDCOLOR would leave"));
         let (programs, buffers) = (model.input.programs.len(), model.input.buffers.len());
         let own_parts = model.input.parts.len();
         assert_eq!(own_parts, 2, "both parts draw the model's own layer 3");
@@ -4213,7 +4322,7 @@ mod tests {
         assert_eq!(plan(&plain).unwrap()[0].program, 0, "without a stream, the plain variant");
         // The program reads c[70]: two constants do not reach it.
         let short = LayerItem { prt: Some(PrtStream { constants: vec![[0.0; 4]; 2], ..stream }), ..item };
-        assert!(plan(&short).unwrap_err().contains("c[70]"));
+        assert!(plan(&short).unwrap_err().to_string().contains("c[70]"));
     }
 
     #[test]
@@ -4251,7 +4360,7 @@ mod tests {
             let plan = |dirty| plan_layer_part_at_entry(&parts, Some(0), &|_| Some(&compiled), instance,
                 layer, &[[0.0; 4]; 3], &pass, &item, &states, Some(MaterialConstant18::new(device, stale_bank, dirty)), None, None);
             assert_eq!(plan(Some(false)).unwrap()[0].vertex.constants[18].map(f32::to_bits), device.map(f32::to_bits));
-            assert!(plan(Some(true)).unwrap_err().contains("pending c[18] upload"));
+            assert!(plan(Some(true)).unwrap_err().to_string().contains("pending c[18] upload"));
             assert!(plan(None).is_err());
         }
     }
@@ -4342,7 +4451,7 @@ mod tests {
         assert_eq!(crate::light_look::repack(d.pixel.c0[0]) & 0x00ff_ffff, 0x0040_80ff);
 
         mem.0.remove(&layer_inputs::FOG_VECTOR);
-        assert!(plan(&mem).unwrap_err().contains("view vector 41"));
+        assert!(plan(&mem).unwrap_err().to_string().contains("view vector 41"));
         mem.w(layer_inputs::FOG_PLANE, u32::MAX);
         assert_eq!(plan(&mem).unwrap()[0].vertex.constants[18], [0.75, 0.75, 0.75, 0.0]);
     }
@@ -4418,20 +4527,20 @@ mod tests {
         assert_eq!(drawn(&plan(Some(0), 7, &seven, &at(1, 1), &e).unwrap()), [(1, 1)], "pass 1 alone, the item's implementation");
         assert_eq!(drawn(&plan(Some(0), 7, &seven, &at(1, 0), &e).unwrap()), [(0, 0)]);
         assert_eq!(drawn(&plan(Some(0), 7, &seven, &item(2), &e).unwrap()), [(0, 0)], "pass 0 has one implementation");
-        assert!(plan(Some(0), 7, &seven, &at(1, 2), &e).unwrap_err().contains("draws nothing"), "implementation 2 of the second pass");
-        assert!(plan(Some(0), 7, &seven, &at(1, 3), &e).unwrap_err().contains("no native implementation 3"));
-        assert!(plan(Some(0), 7, &seven, &at(2, 0), &e).unwrap_err().contains("pass 2 of layer 7"), "past the layer's passes");
+        assert_eq!(plan(Some(0), 7, &seven, &at(1, 2), &e).unwrap_err(), LayerPlanRefusal::PassEmpty, "implementation 2 of the second pass");
+        assert_eq!(plan(Some(0), 7, &seven, &at(1, 3), &e).unwrap_err(), LayerPlanRefusal::Implementation);
+        assert_eq!(plan(Some(0), 7, &seven, &at(2, 0), &e).unwrap_err(), LayerPlanRefusal::Pass, "past the layer's passes");
         let far = LayerItem { level: 1, ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &far, &e).unwrap_err().contains("level 1"), "level 0's part");
+        assert_eq!(plan(Some(0), 7, &seven, &far, &e).unwrap_err(), LayerPlanRefusal::Level, "level 0's part");
         let far_part = [LitLayerPart { level: 1, ..part(7) }];
         let d = plan_layer_part(&far_part, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, &LayerItem { pass: 1, ..far.clone() }, &e).unwrap();
         assert_eq!(drawn(&d), [(0, 0)], "level 1's part draws the item's pass at its level");
-        assert!(plan(None, 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native in layer 7"));
-        assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
+        assert_eq!(plan(None, 7, &seven, &item(0), &e).unwrap_err(), LayerPlanRefusal::NoPart);
+        assert_eq!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err(), LayerPlanRefusal::NoPart, "layer 8's part");
         let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &other, &e).unwrap_err().contains("shader"));
+        assert_eq!(plan(Some(0), 7, &seven, &other, &e).unwrap_err(), LayerPlanRefusal::Shader);
         let refused = LayerItem { refusal: Some(LayerObjectRefusal::ShaderFlag), ..item(0) };
-        assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), "object_shader_flag", "extraction's cause");
+        assert_eq!(plan(Some(0), 7, &seven, &refused, &e).unwrap_err(), LayerPlanRefusal::Extraction(LayerObjectRefusal::ShaderFlag), "extraction's cause");
         // A faded record's and a flagged shader's item (the case the scene
         // carries) plan as any other: the stipple is the host's to check,
         // and the prologue uploads nothing.
@@ -4451,7 +4560,7 @@ mod tests {
         // planned as the plain item, its passes' bump matrices of stages
         // 1 to 3 the upload's (these programs read no row of c[21..25]).
         let uploading = LayerItem { flags: PartFlags::SHADER_FLAG | PartFlags::STRUCTURE_PARAMETERS, ..item(1) };
-        assert!(plan(Some(0), 7, &seven, &uploading, &e).unwrap_err().contains("parameter block"));
+        assert_eq!(plan(Some(0), 7, &seven, &uploading, &e).unwrap_err(), LayerPlanRefusal::StructureParameters);
         let upload = structure_upload();
         let d = plan_layer_part_at_entry(&layers, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, &uploading, &e, None, None, Some(&upload))
             .unwrap();
@@ -4466,9 +4575,9 @@ mod tests {
         }
         let prt = frame_scene::PrtStream { kind: 0x39, stride: 10, data: 0x8000_0000, constants: vec![[0.0; 4]; 2] };
         let streamed = LayerItem { prt: Some(prt), ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().contains("PRT stream"));
+        assert!(plan(Some(0), 7, &seven, &streamed, &e).unwrap_err().to_string().contains("PRT stream"));
         let aux = LayerItem { flags: PartFlags::AUX_DEPTH, ..item(0) };
-        assert!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err().contains("auxiliary"), "without the view's values");
+        assert_eq!(plan(Some(0), 7, &seven, &aux, &e).unwrap_err(), LayerPlanRefusal::AuxDepth, "without the view's values");
         // With them, every pass draws with the toggle's rows and clip on,
         // and an item that does not toggle takes none.
         let toggle = AuxDepth {
@@ -4486,7 +4595,7 @@ mod tests {
         assert!(d.iter().all(|d| d.aux_depth == Some(toggle)), "the pass toggles");
         assert!(with_view(&item(0)).unwrap().iter().all(|d| d.aux_depth.is_none()), "a plain item draws with the device's");
         let no_defaults = LayerPass { inputs: LayerInputs::default(), ..layer_pass(7, false) };
-        assert!(plan(Some(0), 7, &no_defaults, &item(0), &e).unwrap_err().contains("defaults"));
+        assert_eq!(plan(Some(0), 7, &no_defaults, &item(0), &e).unwrap_err(), LayerPlanRefusal::Defaults);
         // A marked item draws in mode 2 unless the stencil is off.
         let marked = LayerItem { flags: PartFlags::STENCIL_MARK, ..item(0) };
         let d = plan(Some(0), 7, &seven, &marked, &e).unwrap();
@@ -4589,6 +4698,7 @@ mod tests {
     #[test]
     fn model_upload_checks_all_geometry_and_material_references() {
         let mut input = LitModelInput {
+            layer_refused: Default::default(),
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
             programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default(), frames: Default::default() }],
             buffers: vec![LitBufferInput { indices: vec![0, 1, 2], ..Default::default() }],
@@ -4612,6 +4722,7 @@ mod tests {
         let geometry = LitBufferInput { indices: vec![0, 1, 2], ..Default::default() };
         let unused = LitBufferInput { indices: vec![2, 1, 0], ..Default::default() };
         let mut input = LitModelInput {
+            layer_refused: Default::default(),
             parts: vec![part(0, 0, [Some((0, 0)), Some((0, 2)), None, None, None])],
             programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default(), frames: Default::default() }],
             buffers: vec![geometry.clone(), unused, geometry],
@@ -4647,6 +4758,7 @@ mod tests {
             let pass = equal_pass(0);
             let registers: Vec<_> = (0u8..16).filter(|i| pass.program.inputs & (1u16 << i) != 0).collect();
             LitModelInput {
+                layer_refused: Default::default(),
                 parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
                 buffers: vec![LitBufferInput {
                     vertices: vec![[0; SLOT]; 3 * registers.len()],
@@ -4705,12 +4817,14 @@ mod tests {
             registers, indices: vec![0, 1, 2],
         };
         objects.add_model(&ctx.device, &ctx.queue, 7, LitModelInput {
+            layer_refused: Default::default(),
             programs: vec![LitProgramInput { pass, images: Default::default(), frames: Default::default() }],
             buffers: vec![buffer],
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
             layers: Vec::new(),
         });
         let invalid = LitModelInput {
+            layer_refused: Default::default(),
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
             ..Default::default()
         };

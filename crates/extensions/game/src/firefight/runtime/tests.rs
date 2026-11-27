@@ -663,7 +663,10 @@ fn the_kit_reply_reads_the_scenario() {
     assert_eq!(kit.zones.len(), 1);
     assert_eq!(kit.zones[0].point, [40.0, 0.0, 0.0]);
     assert_eq!(kit.zones[0].starts, 2);
-    assert_eq!(kit.classes, BTreeMap::from([("elite".to_string(), 0)]));
+    assert_eq!(
+        kit.classes,
+        BTreeMap::from([("elite".to_string(), 0), ("marine".to_string(), 1)])
+    );
     assert_eq!(kit.hunt_orders, [Some(0)]);
     assert!(kit.bases.is_empty(), "the fixture marks no base zone");
     let (m, _) = guest(false, 1);

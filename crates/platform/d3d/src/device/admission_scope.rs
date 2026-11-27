@@ -204,22 +204,46 @@ impl<B: Backend> Device<B> {
             let value = attribute_value(a.data_type, &last[o..o + a.data_type.byte_size() as usize]);
             self.immediate.carry(a.register.0 as usize, value);
         }
+        let layout = VertexLayout {
+            streams: vec![StreamLayout { stream: 0, attributes, stride: size }],
+            pretransformed: false,
+        };
+        // The same state as the run's last draw: its resolution stands,
+        // with these vertices (`inline_run`).
+        if self.inline_runs {
+            match self.try_inline_run(mem, &data, &layout, vertex.clone(), &words, admission) {
+                Ok(super::inline_run::Fast::Full) => {}
+                Ok(super::inline_run::Fast::Drawn) => return Ok(true),
+                Ok(super::inline_run::Fast::Refused) => {
+                    self.immediate = Immediate::with_registers(initial);
+                    return Ok(false);
+                }
+                Err(e) => {
+                    self.immediate = Immediate::with_registers(initial);
+                    return Err(e);
+                }
+            }
+        }
+        let data_len = data.len();
         let parts = DrawParts {
             entry: ENTRY,
             indexed_esp: None,
             primitive,
             vertex_count,
-            layout: VertexLayout {
-                streams: vec![StreamLayout { stream: 0, attributes, stride: size }],
-                pretransformed: false,
-            },
+            layout,
             vertex,
             streams: vec![StreamBytes { data: data.into(), stride: size }],
             indices: None,
             words,
         };
+        self.inline_capture = self.inline_runs;
+        self.stats.native_inline_full += 1;
         let result = self.try_native_producer(mem, parts, admission);
-        if !matches!(result, Ok(true)) {
+        self.inline_capture = false;
+        if matches!(result, Ok(true)) {
+            self.open_inline_run(data_len);
+        } else {
+            self.inline_run = None;
             self.immediate = Immediate::with_registers(initial);
         }
         result

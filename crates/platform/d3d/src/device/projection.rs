@@ -9,6 +9,13 @@ pub(super) struct DisplayProjection {
     last: Option<(crate::shader::Constants, usize, crate::shader::Constants)>,
 }
 
+impl DisplayProjection {
+    /// The camera's own lens factor, as bits (a run's state key).
+    pub(super) fn camera_factor_bits(&self) -> u32 {
+        self.camera_factor.to_bits()
+    }
+}
+
 impl Default for DisplayProjection {
     fn default() -> Self {
         Self {

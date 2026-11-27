@@ -47,12 +47,29 @@ const EPOCH: u32 = 71;
 
 /// A single marked, breakable instance surface, also used by the whole-query differential.
 pub(super) fn populate_instance_cluster(m: &mut Ram<'_>, scale: f32) {
+    populate(m, scale, false);
+}
+
+/// The wall of [`populate_instance_cluster`]. One-sided, it backs onto
+/// solid and the 2D lookup alone decides the surface. Two-sided, it parts
+/// two two-sided leaves, so the crossing also takes the ring test
+/// (`0x1debd0`), which is the only one that reads the breakable bit.
+fn populate(m: &mut Ram<'_>, scale: f32, two_sided: bool) {
     // A rotated, translated wall, local x=0. A world +y ray
     // crosses it through the centre of its square.
     let mut bsp = Builder::default();
     bsp.planes.push([1., 0., 0., 0.]);
-    bsp.nodes.push((0, synth::leaf(0), synth::SOLID));
-    bsp.leaves.push((0, 1, 0));
+    let back = if two_sided {
+        synth::leaf(1)
+    } else {
+        synth::SOLID
+    };
+    bsp.nodes.push((0, synth::leaf(0), back));
+    let leaf_flags = u8::from(two_sided);
+    bsp.leaves.push((leaf_flags, 1, 0));
+    if two_sided {
+        bsp.leaves.push((leaf_flags, 0, 0));
+    }
     bsp.refs.push((0, synth::surface(0)));
     let ring = bsp.ring(
         0,
@@ -110,10 +127,11 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                 "filtered",
                 "table",
                 "outside",
+                "two-sided",
                 "broken",
             ] {
                 let mut m = fresh(image);
-                populate_instance_cluster(&mut m, scale);
+                populate(&mut m, scale, matches!(case, "two-sided" | "broken"));
                 if case == "already marked" {
                     m.word(instance::MARK_BASE, EPOCH);
                 }
@@ -221,7 +239,7 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                         assert!(mismatch.starts_with(label), "{label}: {mismatch}");
                     }
                 }
-                let hit = case == "hit" || case == "first hit";
+                let hit = matches!(case, "hit" | "first hit" | "two-sided");
                 assert_eq!(cpu.gpr[0] as u8, u8::from(hit), "{case} {scale} lifted");
                 assert_eq!(plan.hit.is_some(), hit, "{case} {scale} native");
                 if let Some(hit) = &plan.hit {

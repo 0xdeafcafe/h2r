@@ -252,14 +252,16 @@ fn a_light_frame_calls_the_gather_in_the_guests_order() {
     let passes = made(call::LIGHT_PASSES);
     assert_eq!(passes.eax, Some(0xa000_0000));
     assert_eq!(passes.ecx, Some(S + slot::VOLUME));
-    // The shadow dword: the byte over the list's argument pushed there.
-    let shadow = (S + slot::ROWS) & !0xff;
+    // The shadow dword: the byte over stack bytes nothing in the frame
+    // writes (zero here); the list's argument is pushed below it.
+    let shadow = 0;
     assert_eq!(passes.args, [datum(0), r + 0x84, shadow, 1.0f32.to_bits()]);
 
     // The visible list is in the frame's rows, as the guest leaves it.
     let g = &ran.run.guest;
     assert_eq!(g.u32(S + slot::ROWS + 4).unwrap(), datum(0));
     assert_eq!(g.u32(S + slot::ROWS + 0x14 + 4).unwrap(), datum(1));
+    assert_eq!(g.u32(S + slot::LIST_ARGUMENT).unwrap(), S + slot::ROWS);
     let light_frame = ran.frame.expect("the frame");
     assert_eq!(light_frame.lights.len(), 2);
     assert!(light_frame.lights[0].drawn && !light_frame.lights[1].drawn);
