@@ -183,6 +183,9 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             m::DOC_SAVE_AS,
             json!({"doc": "map", "path": t.path("out/first.map").display().to_string()}),
         ),
+        // The layout runs between the two teams' CTF flag stands, which the
+        // invented map has none of: the line map has them.
+        m::SIEGE_LAYOUT => siege_tests::line_map(api, app, t),
         m::SCENARIO_ADD | m::SCENARIO_DUPLICATE | m::TAG_BLOCK_ADD | m::TAG_BLOCK_DUPLICATE => {
             // Every block of the invented map is full (the editor does
             // not grow blocks): make room in the starting locations, which

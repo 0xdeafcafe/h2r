@@ -50,6 +50,12 @@ pub const SHARED_PANELS: &[(&str, &str)] = &[
 /// every screen's chrome.
 const CHROME: [&str; 2] = ["title", "legend"];
 
+/// A card carousel's texts (`card.<n>.stats`, `cards.count`): the
+/// carousel's one list row is the focused card's name
+/// (`ui_kit::card_screen`), so the card's frame holds the list row and the
+/// rest of the same card, one group.
+const CARD_TEXTS: [&str; 2] = ["card", "cards"];
+
 /// The list's own texts and the chrome, which a modal opened from the list
 /// covers as retail's do: the rows, the help line about the focused row,
 /// and the dialog's body and status.
@@ -201,7 +207,7 @@ fn panel_shared(shown: &[(&Widget, &Footprint)], rules: &Rules, out: &mut Vec<Is
             .filter(|w| w.text().is_some_and(|t| !t.trim().is_empty()))
             .filter(|w| {
                 let g = group(&w.id);
-                g != "list" && !CHROME.contains(&g)
+                g != "list" && !CHROME.contains(&g) && !CARD_TEXTS.contains(&g)
             })
             .map(|w| w.id.clone())
             .collect();

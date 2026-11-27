@@ -22,7 +22,7 @@ impl Provider for Siege {
             "Plan a Siege layout over the open map as edited, as `h2 siege layout` does: the attack line from the attackers' CTF flag stand (`attack` red, the default, or blue) to the defenders', the territories between them as sites two a phase, the defenders' stand as the siege_goal, and each phase's starting locations labelled siege_attack and siege_defend (`per_side` a side, default 6). `barriers` name objects that open in a phase (`crates:22=2`). Answers the plan and the labels-only document; `out` also writes the document there. The open map is not changed",
             r#"{"attack?":"red|blue","per_side?":"integer","barriers?":"[string]","out?":"string (a path)"}"#,
             r#"{"sites":"[{index,phase}]","goal":"integer","attack":"[{index,phase}]","defend":"[{index,phase}]","barriers":"[{block,index,phase}]","phases":"integer","document":"object","written":"string|null"}"#,
-            r#"{"attack":"red","barriers":["crates:0=2"]}"#,
+            r#"{"attack":"red","per_side":1}"#,
         )]
     }
 

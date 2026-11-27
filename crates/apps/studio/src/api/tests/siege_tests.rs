@@ -3,7 +3,7 @@
 
 use super::*;
 
-fn line_map(api: &mut Api, app: &mut App, t: &Temp) {
+pub(super) fn line_map(api: &mut Api, app: &mut App, t: &Temp) {
     open_map(api, app, t, "line.map", fixture::fixture_at_end());
     app.session.set_allow_growth(true);
     let set = |api: &mut Api, app: &mut App, block: &str, index: usize, field: &str, value: Value| {

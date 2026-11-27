@@ -547,6 +547,7 @@ pub fn spec_of(doc: &ScreenDoc, row: &Row, state: State) -> ScreenSpec {
     } else {
         spec.list = ListPlace::from(Some(no_list()));
         spec.inputs = vec![Input::Left, Input::Right, Input::A, Input::B];
+        spec.content.card_row = !row.cards.is_empty();
     }
     row.place(&mut spec, state);
     spec

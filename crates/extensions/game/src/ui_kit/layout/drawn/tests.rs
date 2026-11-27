@@ -228,6 +228,15 @@ fn text_on_art_drawn_past_its_rectangle_is_found() {
 }
 
 #[test]
+fn a_cards_texts_share_its_panel_with_the_list_row_that_is_its_name() {
+    let mut v = lobby_f(false, 114);
+    v.widgets.push(text("card.0.stats", [135, -40, 61, 105], "3 rounds"));
+    v.widgets.push(text("cards.count", [135, -40, 61, 105], "1 of 3"));
+    let r = check(&v, &SyntheticSource, &Rules::default());
+    assert!(of_kind(&r.issues, "panel_shared").is_empty(), "{:?}", r.issues);
+}
+
+#[test]
 fn groups_come_from_ids() {
     assert_eq!(group("row.3.label"), "list");
     assert_eq!(group("cell.2.art"), "list");
