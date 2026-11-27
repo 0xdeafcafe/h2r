@@ -2,7 +2,7 @@
 
 Evidence for the [native renderer](../native-renderer.md) and the [D3D retirement inventory](../retire-d3d.md).
 
-## 2026-11-24 — visibility, reflections and the filtered fan sequence
+## 2026-11-24 - visibility, reflections and the filtered fan sequence
 
 Read at `ac1f1c67e` with `h2 disasm` on the owner's retail Xbox executable.
 From a checkout containing the extracted executable, reproduce the reads with:

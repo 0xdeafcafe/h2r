@@ -60,7 +60,7 @@ See `world_layers_gpu.rs`, `d3d_diag.rs`, and `render_census.rs`.
 changed. Unbounded native pipeline variants and the archive backlog
 also persisted. The later HUD, post and frame-tail commits routed
 more draws to native code. The same UI and screen caches remained,
-and `2bdaeef9e` expanded the glow pipeline key with live color state.
+and `2bdaeef9e` expanded the glow pipeline key with live colour state.
 See `gfx/ring.rs`, `gfx/program.rs`, `pipelines.rs`, `ui_gpu.rs`,
 `glow.rs`, and `screen_gpu.rs`.
 

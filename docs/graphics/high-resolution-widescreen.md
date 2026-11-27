@@ -114,7 +114,7 @@ To locate a missing BSP cluster, compare its ID in the guest visibility list, th
 
 - **First person.** Draws use the weapon camera and the section, parts and node palette selected by the guest's first-person records. On the native layer-3 path the material's fog and specular state resolve over the device state at the draw boundary (`crates/extensions/game/src/native_first_person_glue.rs`).
 - **Theater observer.** The playerless observer has the whole BSP and object array. It uses the same Hor+ lens for projection and its own frustum test on both. See [the host film view](../game/film-format.md#choosing-a-players-view).
-- **Highest.** The setting requests the finest model tiers at any resolution; the structure walks keep their retail projected sizes and pixel radii. To compare raster cost with retail geometry choices, record both settings with the timings ([lab benchmarks](../runtime/lab.md#--serve-and-bench)). In offline play the guest walk selects retail geometry whatever the setting ([projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail)).
+- **Highest.** The setting requests the finest model tiers at any resolution; the structure walks keep their retail projected sizes and pixel radii. To compare raster cost with retail geometry choices, record both settings with the timings ([lab benchmarks](../runtime/lab.md#sim-benchmarks)). In offline play the guest walk selects retail geometry whatever the setting ([projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail)).
 
 ## Related
 

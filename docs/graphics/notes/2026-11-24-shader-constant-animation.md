@@ -2,7 +2,7 @@
 
 Evidence for [shader instances, templates and passes](../../formats/shader-instances.md).
 
-## 2026-11-24 — constant destinations and sources
+## 2026-11-24 - constant destinations and sources
 
 Read at `0aee0afea` using the owner's retail executable and `h2 disasm`.
 To reproduce the instruction traces:
