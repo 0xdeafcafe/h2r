@@ -362,3 +362,44 @@ fn the_edge_under_a_point_is_the_nearest_of_its_floor() {
     assert_eq!(floors_near(&polys, [10.0, 0.0], 1.0).len(), 0);
     assert_eq!(floors_near(&polys, [0.40, 0.0], 0.1).len(), 2);
 }
+
+/// The launch rule against the traced launches (the notes' "The sideways
+/// normal" and "Faster falls bounce from above").
+#[test]
+fn launch_fits_the_traces() {
+    let near = |a: f32, b: f32, tol: f32| assert!((a - b).abs() <= tol, "{a} vs {b}");
+    // By drift at 5.39 in.
+    near(launch(5.39, 0.10), 0.07, 0.1);
+    near(launch(5.39, 0.15), 6.2, 0.3);
+    near(launch(5.39, 0.20), 9.4, 0.3);
+    near(launch(5.39, 0.30), 13.0, 0.3);
+    near(launch(5.39, 0.60), 12.6, 0.5);
+    // By fall speed at a full drift.
+    near(launch(9.0, 0.30), 10.68, 0.3);
+    near(launch(13.0, 0.30), 8.75, 0.3);
+}
+
+#[test]
+fn no_drift_no_launch() {
+    assert_eq!(launch(5.4, 0.09), 0.0);
+    assert_eq!(launch(5.4, 0.0), 0.0);
+    assert_eq!(launch(f32::NAN, 0.3), 0.0);
+}
+
+/// The launch falls as the fall speed rises, and rises with the drift up
+/// to a full lean.
+#[test]
+fn launch_is_monotonic() {
+    let mut last = f32::INFINITY;
+    for s in [5.4, 7.0, 9.0, 11.0, 13.0, 16.0] {
+        let l = launch(s, 0.3);
+        assert!(l <= last, "{s}: {l} over {last}");
+        last = l;
+    }
+    let mut last = 0.0;
+    for d in [0.1, 0.12, 0.15, 0.2, 0.25, 0.3] {
+        let l = launch(5.4, d);
+        assert!(l >= last, "{d}: {l} under {last}");
+        last = l;
+    }
+}

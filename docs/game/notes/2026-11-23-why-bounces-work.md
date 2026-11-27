@@ -203,7 +203,7 @@ capsule's radius plus `de` (0.203, 0.233 and 0.263 at 0.03, 0.06 and
 0.09) and its neighbour 0.199 minus `de` (0.170, 0.140, 0.110).
 
 **The launch** is the solver's (the step at `0x00311100`), not decoded.
-**Open**. Measured at 5.39 in, 0.06 from the edge: drift 0.10 leaves
+**Open** for the code; `rule::launch` fits it to these numbers. Measured at 5.39 in, 0.06 from the edge: drift 0.10 leaves
 +0.07, 0.15 leaves +6.2, 0.20 leaves +9.4, 0.30 leaves +13.0 and 0.60
 leaves +12.6. The launch barely changes with `de` or with the depth
 (+12.93 to +13.01 over every run that bounced at drift 0.30).

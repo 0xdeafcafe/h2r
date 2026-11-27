@@ -109,6 +109,8 @@ the nearest edge of the floor under a point. A drift of 0.15 units/s is
 the full-launch minimum (`DRIFT_FULL`), and `DROP_MIN`, `DROP_BEST` and
 `DROP_MAX` are 3.35, 3.45 and 3.60. The HUD, the bots' takeoff gate and
 the search use these same constants and the same verdict.
+`rule::launch(speed, across)` (and `Verdict::launch`) is the launch the
+bounce gives, fitted to the traces.
 
 ## Forced crouch (Code)
 
