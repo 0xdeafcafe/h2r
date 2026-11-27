@@ -298,6 +298,8 @@ pub struct Ground {
     pub fitted: Vec<crate::Fit>,
     /// The dropship, kept or cut ([`crate::ShipReport`]).
     pub ship: Option<crate::ShipReport>,
+    /// The Pelican, kept or cut.
+    pub pelican: Option<crate::ShipReport>,
     /// The drop pods, kept or cut ([`crate::PodReport`]).
     pub pods: Option<crate::PodReport>,
     /// What each kept stage-two class added, in palette order after the
@@ -351,6 +353,7 @@ pub fn build_with(
         problems: built.problems,
         fitted: built.fitted,
         ship: built.ship,
+        pelican: built.pelican,
         pods: built.pods,
         classes: built.classes,
         cut: built.cut,
@@ -394,6 +397,7 @@ impl Ground {
             cut: self.cut.clone(),
             fitted: self.fitted.clone(),
             ship: self.ship.clone(),
+            pelican: self.pelican.clone(),
             pods: self.pods.clone(),
         })
     }

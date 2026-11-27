@@ -15,6 +15,7 @@ use map::{
     build::{Block, TagPayload, TagSet},
     writer::max_metadata_size,
 };
+use firefight::ShipKind;
 use serde::Serialize;
 use tags::pathfinding::SBSP_PATHFINDING_FIELD;
 
@@ -216,6 +217,8 @@ pub struct Package {
     /// The dropship, kept or cut; none when the build asked for none
     /// ([`Dropship::None`]).
     pub ship: Option<ShipReport>,
+    /// The Pelican, kept or cut; none when no dropship was asked for.
+    pub pelican: Option<ShipReport>,
     /// The drop pods, kept or cut; none when the build asked for none
     /// (a probe, or [`Config::no_pods`]).
     pub pods: Option<PodReport>,
@@ -232,6 +235,7 @@ struct Built {
     cut: Vec<String>,
     fitted: Vec<Fit>,
     ship: Option<ShipReport>,
+    pelican: Option<ShipReport>,
     pods: Option<PodReport>,
 }
 
@@ -382,22 +386,35 @@ fn fit_within(
     let asked = config.dropship != Dropship::None && mode == Mode::Kit;
     let asked_pods = !config.no_pods && mode == Mode::Kit;
     // Pods go right after the ship, before any class.
-    let mut attempts: Vec<(usize, bool, bool)> = Vec::new();
+    // The Pelican goes before the Phantom (`retail::KEEP_ORDER`): a ship
+    // count is how many of the kinds are tried, in `ShipKind::ALL` order.
+    let kinds = if asked && config.dropship != Dropship::Spirit {
+        ShipKind::ALL.len()
+    } else {
+        usize::from(asked)
+    };
+    let mut attempts: Vec<(usize, usize, bool)> = Vec::new();
     if asked || asked_pods {
-        attempts.push((total, asked, asked_pods));
+        attempts.push((total, kinds, asked_pods));
+    }
+    if asked {
+        for n in (1..kinds).rev() {
+            attempts.push((total, n, asked_pods));
+        }
     }
     if asked && asked_pods {
-        attempts.push((total, false, true));
+        attempts.push((total, 0, true));
     }
-    attempts.extend((fewest..=total).rev().map(|keep| (keep, false, false)));
+    attempts.extend((fewest..=total).rev().map(|keep| (keep, 0, false)));
     let mut over = None;
     let mut ship_cut: Option<String> = None;
+    let mut pelican_cut: Option<String> = None;
     let mut pod_cut: Option<String> = None;
-    for (keep, ship, pod) in attempts {
+    for (keep, ships, pod) in attempts {
         for steps in 0..=Fit::ALL.len() {
             let fit = &Fit::ALL[..steps];
             match assemble(
-                base, base_name, mode, config, labels, classes, keep, ship, pod, fit, available,
+                base, base_name, mode, config, labels, classes, keep, ships, pod, fit, available,
             ) {
                 Ok(mut built) => {
                     if let Some(c) = classes {
@@ -408,9 +425,15 @@ fn fit_within(
                             .collect();
                     }
                     built.fitted = fit.to_vec();
-                    if asked && !ship && built.ship.is_none() {
+                    if asked && ships == 0 && built.ship.is_none() {
                         built.ship = Some(ShipReport::cut(
                             ship_cut.unwrap_or_else(|| "over the tag headroom".into()),
+                        ));
+                    }
+                    if kinds > 1 && ships < 2 && built.pelican.is_none() {
+                        built.pelican = Some(ShipReport::cut_kind(
+                            ShipKind::Pelican,
+                            pelican_cut.unwrap_or_else(|| "over the tag headroom".into()),
                         ));
                     }
                     if asked_pods && !pod && built.pods.is_none() {
@@ -430,6 +453,11 @@ fn fit_within(
                     ship_cut = Some(e.to_string());
                     break;
                 }
+                // The Pelican is always optional.
+                Err(e) if e.downcast_ref::<transplant::PelicanRefused>().is_some() => {
+                    pelican_cut = Some(e.to_string());
+                    break;
+                }
                 // Pods are always optional.
                 Err(e) if e.downcast_ref::<transplant::PodRefused>().is_some() => {
                     pod_cut = Some(e.to_string());
@@ -442,8 +470,8 @@ fn fit_within(
     Err(over.expect("one build at least"))
 }
 
-/// One build of the kit with the first `keep` classes, the dropship when
-/// `ship` and the `fit` steps, refused when its growth is over `available`.
+/// One build of the kit with the first `keep` classes, the first `ships`
+/// kinds of ship and the `fit` steps, refused when its growth is over `available`.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     base: &[u8],
@@ -453,7 +481,7 @@ fn assemble(
     labels: &Labels,
     classes: Option<&Classes<'_>>,
     keep: usize,
-    ship: bool,
+    ships: usize,
     pod: bool,
     fit: &[Fit],
     available: u32,
@@ -498,21 +526,52 @@ fn assemble(
     // The dropship, when a zone has a clear column for it.
     let ship_runs = nav.ship_runs;
     let ship_bsp = nav.ship_bsp;
-    let any_run = ship_runs.iter().any(Option::is_some);
-    let want = if ship { config.dropship } else { Dropship::None };
     let mut ship_report = None;
-    let pick = if want != Dropship::None && !any_run {
-        ship_report = Some(ShipReport::cut("no drop zone has a clear column for it"));
-        None
-    } else if want != Dropship::None {
-        Some(ship::pick(&set, want)?)
+    let mut pelican_report = None;
+    // The kinds asked for, in `ShipKind::ALL` order, each kept only when a
+    // zone has a column clear for a ship that wide.
+    let asked_kinds: Vec<ShipKind> = if config.dropship == Dropship::None || ships == 0 {
+        Vec::new()
+    } else if config.dropship == Dropship::Spirit {
+        vec![ShipKind::Phantom]
     } else {
-        None
+        ShipKind::ALL[..ships.min(ShipKind::ALL.len())].to_vec()
     };
-    let copy = match &pick {
-        Some(ship::Pick::Copy(path)) => Some(*path),
-        _ => None,
-    };
+    let mut kept_kinds = Vec::new();
+    for kind in &asked_kinds {
+        if ship_runs[kind.index()].iter().any(Option::is_some) {
+            kept_kinds.push(*kind);
+        } else {
+            let why = match kind {
+                ShipKind::Phantom => "no drop zone has a clear column for it",
+                ShipKind::Pelican => "no drop zone has a clear column wide enough for it",
+            };
+            let report = ShipReport::cut_kind(*kind, why);
+            match kind {
+                ShipKind::Phantom => ship_report = Some(report),
+                ShipKind::Pelican => pelican_report = Some(report),
+            }
+        }
+    }
+    let picks: Vec<(ShipKind, ship::Pick)> = kept_kinds
+        .iter()
+        .map(|kind| {
+            Ok((
+                *kind,
+                match kind {
+                    ShipKind::Phantom => ship::pick(&set, config.dropship)?,
+                    ShipKind::Pelican => ship::pick_pelican(&set),
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let copies: Vec<&str> = picks
+        .iter()
+        .filter_map(|(_, pick)| match pick {
+            ship::Pick::Copy(path) => Some(*path),
+            _ => None,
+        })
+        .collect();
     // The drop pods, when a zone or a start has an open column.
     let falls = nav.falls;
     let mut pod_report = None;
@@ -529,8 +588,8 @@ fn assemble(
         _ => None,
     };
     let added = match classes {
-        Some(c) => transplant::add(&mut set, c, keep, copy, copy_pod)?,
-        None if copy.is_some() => {
+        Some(c) => transplant::add(&mut set, c, keep, &copies, copy_pod)?,
+        None if !copies.is_empty() => {
             return Err(transplant::ShipRefused("no donor maps for the dropship".into()).into());
         }
         None if copy_pod.is_some() => {
@@ -538,14 +597,18 @@ fn assemble(
         }
         None => transplant::Copied::default(),
     };
-    let ship_tag = match &pick {
-        Some(ship::Pick::Have(id, name)) => Some((*id, name.clone())),
-        Some(ship::Pick::Copy(path)) => added
-            .ship
-            .as_ref()
-            .map(|(id, _)| (*id, (*path).to_owned())),
-        None => None,
-    };
+    let mut copied = added.ships.iter();
+    let mut ship_tags: Vec<(ShipKind, TagId, String)> = Vec::new();
+    for (kind, pick) in &picks {
+        match pick {
+            ship::Pick::Have(id, name) => ship_tags.push((*kind, *id, name.clone())),
+            ship::Pick::Copy(path) => {
+                if let Some((id, _)) = copied.next() {
+                    ship_tags.push((*kind, *id, (*path).to_owned()));
+                }
+            }
+        }
+    }
     let pod_tag = match &pod_pick {
         Some(sky::Pick::Have(id, name)) => Some((*id, name.clone())),
         Some(sky::Pick::Copy(path)) => added.pod.as_ref().map(|(id, _)| (*id, (*path).to_owned())),
@@ -566,9 +629,12 @@ fn assemble(
         mode == Mode::Probe,
     )
     .map_err(anyhow::Error::msg)?;
-    let authored = match &ship_tag {
-        Some((tag, _)) => ship::author(&mut map, *tag, &ship_runs, ship_bsp)?,
-        None => None,
+    // One path a zone, cleared for the widest ship kept.
+    let widest = ship_tags.iter().map(|(kind, _, _)| *kind).max_by_key(|k| k.index());
+    let shared_runs = widest.map_or_else(Vec::new, |kind| ship_runs[kind.index()].clone());
+    let authored = {
+        let tags: Vec<(ShipKind, TagId)> = ship_tags.iter().map(|(k, t, _)| (*k, *t)).collect();
+        ship::author(&mut map, &tags, &shared_runs, ship_bsp)?
     };
     let ship_kept = authored.as_ref().map(|a| a.paths);
     let mut ship_fields = authored.map(|a| a.fields).unwrap_or_default();
@@ -580,7 +646,11 @@ fn assemble(
             ship_bsp,
             &mut ship_fields,
             if ship_kept.is_some() {
-                ship::path_sets(&ship_runs, ship_bsp)
+                ship::path_sets(
+                    &shared_runs,
+                    ship_bsp,
+                    &ship_tags.iter().map(|(k, _, _)| *k).collect::<Vec<_>>(),
+                )
             } else {
                 Vec::new()
             },
@@ -631,7 +701,7 @@ fn assemble(
         ..Costs::default()
     };
     let mut squads = 0;
-    costs.ship = added.ship.as_ref().map_or(0, |(_, c)| c.bytes);
+    costs.ship = added.ships.iter().map(|(_, c)| c.bytes).sum();
     costs.pods = added.pod.as_ref().map_or(0, |(_, c)| c.bytes);
     for (field, (address, bytes)) in fields.iter().zip(allocations) {
         set_pair(&mut set, &map, field, address)?;
@@ -693,15 +763,33 @@ fn assemble(
         ))
         .into());
     }
-    if let (Some(paths), Some((_, tag))) = (ship_kept, ship_tag) {
-        ship_report = Some(ShipReport {
-            kept: true,
-            tag,
-            tags: added.ship.as_ref().map_or(0, |(_, c)| c.tags),
-            bytes: costs.ship,
-            paths,
-            why: None,
-        });
+    if let Some(paths) = ship_kept {
+        // A kind's own copied tags; the placements and paths are the first
+        // kind's, so the reports add up to the ships' cost.
+        let copied: usize = added.ships.iter().map(|(_, c)| c.bytes).sum();
+        let mut own = added.ships.iter();
+        for (n, (kind, pick_tag, tag)) in ship_tags.iter().enumerate() {
+            let cost = if picks.iter().any(|(k, p)| k == kind && matches!(p, ship::Pick::Copy(_))) {
+                own.next().map(|(_, c)| (c.tags, c.bytes))
+            } else {
+                None
+            };
+            let _ = pick_tag;
+            let (tags, own_bytes) = cost.unwrap_or((0, 0));
+            let report = ShipReport {
+                kind: *kind,
+                kept: true,
+                tag: tag.clone(),
+                tags,
+                bytes: own_bytes + if n == 0 { costs.ship.saturating_sub(copied) } else { 0 },
+                paths,
+                why: None,
+            };
+            match kind {
+                ShipKind::Phantom => ship_report = Some(report),
+                ShipKind::Pelican => pelican_report = Some(report),
+            }
+        }
     }
     if let (Some(a), Some((_, tag))) = (&pods_authored, pod_tag) {
         pod_report = Some(PodReport {
@@ -727,6 +815,7 @@ fn assemble(
         cut: Vec::new(),
         fitted: Vec::new(),
         ship: ship_report,
+        pelican: pelican_report,
         pods: pod_report,
     })
 }
@@ -837,6 +926,7 @@ pub fn build_package_with(
         cut: built.cut,
         fitted: built.fitted,
         ship: built.ship,
+        pelican: built.pelican,
         pods: built.pods,
     })
 }

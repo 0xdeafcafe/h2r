@@ -514,7 +514,7 @@ fn the_built_in_layouts_keep_their_drops_and_a_zone_has_a_column_for_the_ship() 
         assert!(nav.refused.is_empty(), "{name}: {:?}", nav.refused);
         assert_eq!(nav.snapped.len(), drops, "{name}: every drop snapped");
         assert!(
-            nav.ship_runs.iter().any(Option::is_some),
+            nav.ship_runs[0].iter().any(Option::is_some),
             "{name}: no zone has a clear column for the ship"
         );
     }
