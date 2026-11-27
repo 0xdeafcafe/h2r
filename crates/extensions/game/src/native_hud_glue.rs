@@ -128,10 +128,13 @@ impl DrawAdmission for Admission {
             return None;
         }
         Ui::GuestBuilderDraw.count();
-        if !scope.eligible {
-            return None;
+        let planned = if scope.eligible { self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into()) } else { None };
+        // A HUD draw no producer offered first is `untraced`
+        // (`kept::untraced`); a kept item's own draw is not counted again.
+        if scope.kind == UiScope::Hud {
+            render_bridge::native_hud::kept::untraced(if planned.is_some() { "packet" } else { "scope" });
         }
-        self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into())
+        planned
     }
 }
 
@@ -286,8 +289,13 @@ impl<B: d3d::Backend> Glue<B> {
             device.try_native_immediate_draw(&mut memory, PrimitiveType::TriangleFan, vertices, &candidate)
         };
         let drawn = matches!(result, Ok(true));
-        if !drawn {
+        if drawn {
+            // The guest's resolved packet, not the overlay: a HUD item
+            // drawn so is counted `packet` (`kept::carried`).
+            render_bridge::native_hud::kept::carried();
+        } else {
             Ui::Reservation.count();
+            render_bridge::native_hud::kept::refuse("reservation");
         }
         drawn
     }
@@ -342,6 +350,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::hud_overlay::draw_tag_quad(&self.device, mem, at, vertices)
     }
 
+    fn rust_hud_quad(&self, mem: &mut dyn GuestMemory, at: &HudTagQuad, vertices: &HudVertices) -> bool {
+        self.permits_draw() && crate::hud_native::draw(&self.device, mem, at, vertices)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
         SCOPES.with(|s| s.borrow().screen_source(self.admission.owner))
             .is_some_and(|source| self.screen_overlay(mem, source, vertices))
@@ -366,7 +378,7 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             }
             let hud_input = render_bridge::native_hud::hud_overlay::inputs(mem)?;
             Some(HudTagQuad {
-                bitmap: texture, image: 0, shader, hud_input,
+                bitmap: texture, image: 0, shader, hud_input, widget: false,
             })
         };
         cache().is_some_and(|at| crate::hud_overlay::draw_text_quad(&self.device, mem, &at, vertices))

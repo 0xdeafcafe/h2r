@@ -10,6 +10,10 @@ pub struct HudTagQuad {
     pub image: u16,
     pub shader: u32,
     pub hud_input: [f32; 4],
+    /// A HUD item's quad ([`tag_quad`]: a bitmap widget, the training
+    /// frame, a navpoint, waypoint or indicator), not a menu shader
+    /// bitmap's ([`menu_shader_quad`]) or a text widget's.
+    pub widget: bool,
 }
 
 pub const MATERIAL_INPUTS: u32 = 0x004e_6980;
@@ -55,16 +59,20 @@ fn arguments(mem: &dyn GuestMemory, frame: u32) -> Option<(u32, u16, u32)> {
     (bitmap != u32::MAX && shader != u32::MAX).then_some((bitmap, image, shader))
 }
 
-/// Only the HUD bitmap widget helper's calls ([`menu_shader_quad`] is the
-/// menus'); the rest of `0x22a664`'s callers keep the UI fan path.
+/// The HUD's calls of the shader quad whose kind is known
+/// ([`super::kept::quad_kind`]: the bitmap widgets, the training frame,
+/// the navpoints' arrows, outlines and markers, the indicator); the menus'
+/// is [`menu_shader_quad`], and any other caller keeps the UI fan path.
+/// The four `hud_input` values are the widget helper's (`0x0022b380`);
+/// another caller's quad reads what they hold, as its shader does.
 pub fn tag_quad(mem: &dyn GuestMemory, frame: u32) -> Option<HudTagQuad> {
     let caller = mem.u32(frame.checked_add(4)?).ok()?;
-    if !matches!(caller, 0x22b695 | 0x22b561 | 0x22b39c | 0x22b701 | 0x22b754 | 0x22b7d3 | 0x22bca9) {
+    if super::kept::quad_kind(caller) == super::kept::OverlayKind::Other {
         return None;
     }
     let (bitmap, image, shader) = arguments(mem, frame)?;
     let hud_input = inputs(mem)?;
-    Some(HudTagQuad { bitmap, image, shader, hud_input })
+    Some(HudTagQuad { bitmap, image, shader, hud_input, widget: true })
 }
 
 /// A menu shader bitmap widget's quad (type 9): its definition's bitmap,
@@ -76,7 +84,7 @@ pub fn menu_shader_quad(mem: &dyn GuestMemory, frame: u32) -> Option<HudTagQuad>
     }
     let (bitmap, image, shader) = arguments(mem, frame)?;
     let hud_input = ui_inputs(mem)?;
-    Some(HudTagQuad { bitmap, image, shader, hud_input })
+    Some(HudTagQuad { bitmap, image, shader, hud_input, widget: false })
 }
 
 /// A pointer to the record whose `+0x3fc` is the datum of the `unic` tag
@@ -179,9 +187,30 @@ mod tests {
         let quad = tag_quad(&m, frame).unwrap();
         assert_eq!((quad.bitmap, quad.image, quad.shader), (0xaa00_0001, 1, 0xbb00_0002));
         assert_eq!(quad.hud_input, [0.25, 0.5, -1.0, 2.0]);
+        assert!(quad.widget);
         m.put_u32(frame + 12, u32::MAX);
         assert!(tag_quad(&m, frame).is_none());
         m.put_u32(frame + 12, 1).put_u32(frame + 4, 0x1234);
+        assert!(tag_quad(&m, frame).is_none());
+    }
+
+    /// The navpoint's arrow, the waypoint marker, the training frame and
+    /// the indicator are HUD quads too; a menu's shader bitmap is not.
+    #[test]
+    fn every_hud_caller_of_the_shader_quad_is_a_tag_quad() {
+        let mut m = FakeGuest::new();
+        let frame = 0x2000;
+        m.put_u32(frame + 8, 0xaa00_0001).put_u32(frame + 12, 0).put_u32(frame + 16, 0xbb00_0002);
+        for i in 0..4 {
+            m.put_f32(MATERIAL_INPUTS + 4 * i, 1.0);
+        }
+        for caller in [0x24eca5, super::super::kept::WAYPOINT_QUAD_RETURN, 0x1e936f, super::super::kept::INDICATOR_QUAD_RETURN] {
+            m.put_u32(frame + 4, caller);
+            let quad = tag_quad(&m, frame).unwrap_or_else(|| panic!("{caller:#x}"));
+            assert_eq!((quad.bitmap, quad.shader), (0xaa00_0001, 0xbb00_0002));
+            assert!(quad.widget);
+        }
+        m.put_u32(frame + 4, MENU_SHADER_RETURN);
         assert!(tag_quad(&m, frame).is_none());
     }
     /// The guest's string lookup over invented tables: the language's
@@ -265,6 +294,7 @@ mod tests {
         let quad = menu_shader_quad(&m, frame).unwrap();
         assert_eq!((quad.bitmap, quad.image, quad.shader), (0xaa00_0003, 2, 0xbb00_0004));
         assert_eq!(quad.hud_input, [0.75, 0.0, 1.0, -0.5]);
+        assert!(!quad.widget);
         assert!(tag_quad(&m, frame).is_none(), "not a HUD widget's call");
         m.put_u32(frame + 16, u32::MAX);
         assert!(menu_shader_quad(&m, frame).is_none(), "no shader");

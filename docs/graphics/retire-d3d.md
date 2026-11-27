@@ -1,8 +1,8 @@
 # Retiring the guest D3D path
 
-Status: Design. R0 is built. R1, R4, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
+Status: Design. R0 is built. R1, R4, R5, R6 and the parts of earlier stages listed below are partly built; no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
-Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. R4's producers have `impl.render.native.visibility` (on), which only turns them off.
+Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
 | Slice | Built | Where it is specified |
 |---|---|---|
@@ -20,6 +20,9 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
 | R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | "R5's remainder" |
+| R6, HUD bitmap widgets | a widget quad whose shader's Rust material is proven against the guest's draws is drawn at `0x0022a7b3` with no guest shader setup or draw | [native-hud-overlay.md](native-hud-overlay.md#the-material-in-rust) |
+| R6, the other HUD quads | the training frame, the navpoints' arrows and outlines, the waypoint markers and the indicator are captured and proven as the widgets are | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
+| R6, what is kept | every HUD item a producer offers and the overlay does not draw, and every HUD draw no producer offered, is a `scene_kept_overlay_*` count by kind and cause | "R6's remainder" |
 
 Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. "R1's remainder" lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 
@@ -103,7 +106,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_17_*`); other callers (`scene_kept_17_*_caller`) | none |
-| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | tag-shader and supported generic widget quads through the overlay, motion sensor compositing fans | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
+| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | every HUD caller's tag-shader quad through the overlay (widgets, crosshair, training frame, navpoints, waypoints, indicator), HUD glyphs, motion sensor compositing fans; a proven shader's quads with no shader draw | the shader draw `0x0001bbf0` per quad of an unproven or refused shader and one proven quad in 32; what "R6's remainder" counts; the built-in diffuse shader; the HUD walk itself | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890` | full-screen overlay | all six fade modes through the native overlay | guest state setup and draws refused by the overlay | not measured |
 | Menu rectangles and bars (`0x0004b252` from `0x00052ce7`), outlines `0x0001ed98` | immediate fans, a line strip | the geometry | state setup, the line state | none |
@@ -413,7 +416,7 @@ classified readers, 73 read run state and 30 start from it.
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | Native counted and colour fans, fade state guest-owned |
 | Post | `0x00013870`, `0x000214f0`, `0x0002d140`, `0x0002dd30`, `0x0002df00`, layer 17 | typed post from the scenario's screen effects and the camera's parameters | glow and screen effects built |
-| HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the live shader quad and glyph callbacks emit overlay items with the evaluated widget shader and layer inputs |
+| HUD | `0x001917eb`, `0x0013954b`, the widgets `0x0022b397` to `0x0022bca4` | a Rust HUD that walks the HUD definitions against the unit's and weapon's state and emits a draw list. It is the same HUD kit the added HUD pieces use | the live shader quad and glyph callbacks emit overlay items with the evaluated widget shader and layer inputs; a bitmap widget's material is read from the map with the HUD's function inputs, and a proven shader's quads skip the guest's setup ([native-hud-overlay.md](native-hud-overlay.md#the-material-in-rust)) |
 | Menus and UI | `0x00147af1`, the widget sort `0x002353a5`, each widget's draw | a Rust walk of the guest's screens and widgets (the UI's logic, input and state stay the guest's) that emits a draw list: bitmaps, text runs, model widgets, the backdrop's blur chain | the walk emits the overlay's items (`scene_extract::ui::draw_list`, from a `UiFrame`); at each sorted list the guest's widgets are read and runs of exact ones drawn from the overlay with their draws skipped ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). Containers and plain bitmap widgets read exactly; a shader bitmap's quad is drawn from the overlay at the shader quad with its template's combiner; the blur under a dialog is the overlay's `Blur` item, drawn in place of its quads ([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)); supported text, lists and buttons draw from the sorted claim. Active model scenes use the model material hooks |
 | Text | glyph decode `0x0001f5c0`, the glyph cache, one quad per glyph | Rust shaping from the font data ([fonts.md](../formats/fonts.md)) into the renderer's own atlas, one draw per run | not built |
 | Movies | `0x00156040`'s blit and quad, `BinkCopyToBuffer` | the decoder's host frame goes to the renderer as a scene item; no guest texture is locked | not built |
@@ -760,6 +763,57 @@ Tests: `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
 (`native_render::fog`), `a_sky_strip_keeps_its_cull_and_each_refusal_is_named`
 (`tests/world_layers_gpu.rs`), `a_kept_strip_is_counted_scene_kept_by_its_cause`
 (`native_sky`), `the_world_layers_are_cut_in_their_slots` (`tests/cut.rs`).
+
+### R6's remainder
+
+What keeps a guest draw in the game view's overlay, by counter (**Code**,
+`render_bridge::native_hud::kept`). Each is
+`scene_kept_overlay_<kind>_<cause>` in `render.scene`, under its `kept`
+map as `overlay_<kind>_<cause>`.
+
+| Kind | Producer (Code, the call's return) |
+|---|---|
+| `widget`, `crosshair` | bitmap widget quads (`0x0022aff1`, `0x0022bbca`); `crosshair` while the widget's anchor id is 4, the centre |
+| `text` | HUD glyph quads at the screen quad `0x000363c4` |
+| `motion_sensor` | the wash, tint and composite fans of `0x002548f0` in the HUD |
+| `navpoint`, `waypoint` | the arrow `0x0024e9c7` and outline `0x0024f0fc`; the marker `0x0024ef29` |
+| `training`, `indicator` | the training frame `0x001e9140`; the indicator group `0x00200462` |
+| `screen_effect` | a screen-effect widget's call of `0x0002d140` (`0x0022bbc0`) |
+| `other` | a shader quad of another caller in the HUD |
+| `untraced` | a HUD draw that reached the device with no producer before it |
+
+| Cause | Kept because |
+|---|---|
+| `inputs` | the producer did not read the item (vertices, fan) |
+| `host` | no native host is installed |
+| `target`, `clip_rects`, `depth`, `fill`, `query`, `colour_write` | the draw's state is outside the overlay (`hud_overlay::Widget::plan`) |
+| `shader`, `combiner`, `sampler`, `texture`, `glyph_cache`, `vertices`, `culled`, `clip`, `overlay` | its combiner, stages or corners are outside the overlay |
+| `device` | the device did not take the draw (push room, a pending fence) |
+| `packet`, `reservation` | the guest's resolved packet drew it (the carried grade), or that failed too |
+| `template_pass` .. `template_skipped`, `plan`, `unplanned`, `loading`, `effect_depth`, `swallow`, `arm`, `scope_zoom` | a screen effect's preflight refusal, its plan, the map's effects still loading, or a converted scope-zoom profile |
+| `packet`, `scope` (`untraced` only) | drawn by its packet, or outside an eligible scope |
+
+A kept item's own guest draw is not counted again as `untraced`, nor are a kept screen effect's strips (`kept::hold` until the call returns).
+
+Not built:
+
+- **The HUD walk in Rust.** The guest still selects, places and animates
+  each widget and evaluates its shader (`0x0001bbf0`) until the shader is
+  proven; text keeps the guest's layout.
+- **Screen effects from the scene.** A HUD screen effect is drawn by the
+  post's transaction at its call, as `render_screen_effects`' are.
+- **The carried grade.** An item the overlay refuses is drawn from its
+  resolved packet (`packet`), which `d3d` still resolves.
+
+Tests: `every_hud_quad_caller_names_its_kind_and_the_centre_widget_is_the_crosshair`,
+`a_kept_item_counts_its_first_cause_and_a_drawn_one_nothing`,
+`a_packet_drawn_item_is_counted_packet_once`,
+`a_kept_items_own_guest_draw_is_not_untraced_but_the_next_draw_is` (`native_hud::kept`),
+`every_hud_caller_of_the_shader_quad_is_a_tag_quad` (`native_hud::hud_overlay`).
+
+Exit (**Run**, not done): `render.frame` at 1x with `impl.render.native`
+off and on matches exactly for text and HUD, on a HUD frame of every
+weapon and vehicle, with `scene_kept_overlay_*` read beside each.
 
 ## Rules and limits
 

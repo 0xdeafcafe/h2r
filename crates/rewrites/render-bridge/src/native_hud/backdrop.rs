@@ -7,7 +7,15 @@ use timeline::native::{Metric, Stage, Ui};
 
 use hooks::{Builder, Call, Flow};
 
-use super::{host, ui};
+use super::kept::{self, OverlayKind};
+use super::{HudVertices, host, ui};
+
+/// A pass's fan as the guest built it.
+enum Fan {
+    Wash(HudVertices),
+    Tint(HudVertices),
+    Composite(ui_backdrop::Fan<2>),
+}
 
 #[derive(Clone, Copy)]
 enum Pass {
@@ -42,40 +50,51 @@ fn draw(c: &mut Call<'_>, pass: Pass) -> Option<TransferAbi> {
         return None;
     }
     let mut mem = rt.memory();
+    // In the HUD these are the motion sensor's fans (the sensor calls
+    // `0x002548f0` at `0x001a295b`), counted when nothing draws them.
+    let hud = kept::in_hud();
+    let refuse = || {
+        if hud {
+            kept::count(OverlayKind::MotionSensor, "inputs");
+        }
+        refuse_inputs()
+    };
     let Some(esp) = fan_stack(&*mem, c.cpu.esp, pass) else {
-        return refuse_inputs();
+        return refuse();
     };
     // All three layouts write UV to register 1. Wash starts in the middle
     // of the inline branch, before any of its push words or flags change.
     if c.cpu.ebx != 1 || (!matches!(pass, Pass::Composite) && c.cpu.ebp != 0) {
-        return refuse_inputs();
+        return refuse();
     }
     let mut mxcsr = c.cpu.mxcsr;
     let Some(host) = host() else {
+        if hud {
+            kept::count(OverlayKind::MotionSensor, "host");
+        }
         Ui::BackdropReservation.count();
         ui::record(false);
         return None;
     };
-    let drawn = match pass {
-        Pass::Wash => {
-            let Some(vertices) = ui_backdrop::wash(&*mem, esp, c.cpu.edi, &mut mxcsr) else {
-                return refuse_inputs();
-            };
-            host.backdrop_wash(&mut *mem, &vertices)
-        }
-        Pass::Tint => {
-            let Some(vertices) = ui_backdrop::tint(&*mem) else {
-                return refuse_inputs();
-            };
-            host.draw_quad(&mut *mem, &vertices)
-        }
-        Pass::Composite => {
-            let Some(vertices) = ui_backdrop::composite(&*mem, esp, &mut mxcsr) else {
-                return refuse_inputs();
-            };
-            host.backdrop_composite(&mut *mem, &vertices)
-        }
+    let vertices = match pass {
+        Pass::Wash => ui_backdrop::wash(&*mem, esp, c.cpu.edi, &mut mxcsr).map(Fan::Wash),
+        Pass::Tint => ui_backdrop::tint(&*mem).map(Fan::Tint),
+        Pass::Composite => ui_backdrop::composite(&*mem, esp, &mut mxcsr).map(Fan::Composite),
     };
+    let Some(vertices) = vertices else {
+        return refuse();
+    };
+    if hud {
+        kept::begin(OverlayKind::MotionSensor);
+    }
+    let drawn = match &vertices {
+        Fan::Wash(v) => host.backdrop_wash(&mut *mem, v),
+        Fan::Tint(v) => host.draw_quad(&mut *mem, v),
+        Fan::Composite(v) => host.backdrop_composite(&mut *mem, v),
+    };
+    if hud {
+        kept::end(drawn);
+    }
     ui::record(drawn);
     if !drawn {
         Ui::BackdropReservation.count();

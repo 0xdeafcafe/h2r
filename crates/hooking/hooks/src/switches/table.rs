@@ -73,6 +73,8 @@ pub const TABLE: &[Switch] = &[
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
     sw("impl.render.native.visibility", On, "render", "2026-11-27",
         "the guest's view projection and visibility producers replaced (retire-d3d.md R4): delete when R4's differentials hold on the gate corpus"),
+    sw("impl.render.native-hud", On, "render", "2026-11-27",
+        "HUD widget quads from their Rust material, no guest shader setup (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),

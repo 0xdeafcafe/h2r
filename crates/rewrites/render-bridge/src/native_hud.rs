@@ -4,7 +4,9 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
+pub mod hud_inputs;
 pub mod hud_overlay;
+pub mod kept;
 pub mod modal_blur;
 mod model;
 mod outline;
@@ -31,6 +33,27 @@ pub use ui_overlay::MenuRefusal;
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
+
+/// The HUD's widget quads drawn with their material read in Rust, the
+/// guest's shader setup and draw left out once a shader is proven
+/// (docs/graphics/native-hud-overlay.md, "The material in Rust"): on
+/// with the native UI, `impl.render.native-hud=off` turns it off.
+pub const RUST_HUD: &str = "impl.render.native-hud";
+
+/// Whether the Rust HUD material ([`RUST_HUD`]) is on.
+pub fn rust_hud_on(switches: &hooks::Switches) -> bool {
+    on(switches) && switches.feature("impl.render.native-hud", true)
+}
+
+static RUST_HUD_PLACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this run placed the Rust HUD's hooks: the host checks each
+/// captured widget quad against its Rust material only then.
+pub fn rust_hud() -> bool {
+    RUST_HUD_PLACED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub use points::scene_effects::HUD_QUAD_SETUP;
 
 use points::scene_effects::HUD_QUAD_READY;
 const HUD_QUAD_TAIL: u32 = 0x0022_a854;
@@ -65,35 +88,82 @@ fn vertices(mem: &dyn GuestMemory, frame: u32, colour: u32) -> Option<HudVertice
 
 fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
     Stage::Ui.count(Metric::WalkExamined, 1);
+    // A HUD item is counted by its kind when nothing draws it
+    // (`kept`, `scene_kept_overlay_<kind>_<cause>`).
+    let kind = kept::in_hud().then(|| {
+        let caller = frame.checked_add(4).and_then(|at| mem.u32(at).ok()).unwrap_or(0);
+        kept::quad_kind(caller)
+    });
     let Some(vertices) = vertices(mem, frame, colour) else {
         Stage::Ui.count(Metric::WalkRefusedInputs, 1);
+        if let Some(kind) = kind {
+            kept::count(kind, "inputs");
+        }
         return false;
     };
-    let drawn = host().is_some_and(|host| {
-        if let Some(at) = hud_overlay::tag_quad(mem, frame) {
-            if host.draw_tag_quad(mem, &at, &vertices) {
-                timeline::native::Ui::OverlayHudTagQuads.count();
-                return true;
-            }
-            timeline::native::Ui::OverlayHudTagFallback.count();
-        } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
-            // A menu shader bitmap: the game's draw at the sorted list
-            // (`ui_overlay::plan`), its quad from the overlay here.
-            if host.draw_tag_quad(mem, &at, &vertices) {
-                timeline::native::Ui::OverlayMenuShaderQuads.count();
-                return true;
-            }
-            timeline::native::Ui::OverlayMenuShaderFallback.count();
+    let Some(host) = host() else {
+        if let Some(kind) = kind {
+            kept::count(kind, "host");
         }
-        host.draw_quad(mem, &vertices)
-    });
+        ui::record(false);
+        return false;
+    };
+    if let Some(at) = hud_overlay::tag_quad(mem, frame) {
+        if let Some(kind) = kind {
+            kept::begin(kind);
+        }
+        if host.draw_tag_quad(mem, &at, &vertices) {
+            timeline::native::Ui::OverlayHudTagQuads.count();
+            kept::end(true);
+            ui::record(true);
+            return true;
+        }
+        timeline::native::Ui::OverlayHudTagFallback.count();
+    } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
+        // A menu shader bitmap: the game's draw at the sorted list
+        // (`ui_overlay::plan`), its quad from the overlay here.
+        if host.draw_tag_quad(mem, &at, &vertices) {
+            timeline::native::Ui::OverlayMenuShaderQuads.count();
+            ui::record(true);
+            return true;
+        }
+        timeline::native::Ui::OverlayMenuShaderFallback.count();
+    }
+    // The screen capture's cause is the one that counts.
+    if let Some(kind) = kind {
+        kept::begin(kind);
+    }
+    let drawn = host.draw_quad(mem, &vertices);
+    kept::end(drawn);
     ui::record(drawn);
+    drawn
+}
+
+/// The shader quad at [`HUD_QUAD_SETUP`]: a HUD widget's quad the host
+/// draws from its Rust material, its setup and draw left out.
+fn setup_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
+    let Some(at) = hud_overlay::tag_quad(mem, frame) else { return false };
+    let Some(vertices) = vertices(mem, frame, colour) else { return false };
+    let drawn = host().is_some_and(|host| host.rust_hud_quad(mem, &at, &vertices));
+    if drawn {
+        Ui::OverlayHudRustDrawn.count();
+        Stage::Ui.count(Metric::BuildsSkipped, 1);
+        ui::record(true);
+    }
     drawn
 }
 
 /// What the screen draws become: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
     fn draw_tag_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    /// A HUD widget's quad before its shader setup ([`HUD_QUAD_SETUP`]):
+    /// true when the host drew it from its shader's Rust material, so the
+    /// setup and the draw are left out. A shader not yet proven against
+    /// the guest's own setup is not drawn here.
+    fn rust_hud_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
         false
     }
 
@@ -329,6 +399,21 @@ impl Feature for NativeHud {
             ui_overlay::close(c.cpu.ebp);
             Ok(Flow::Continue)
         }).context_only().optional();
+        let rust = rust_hud_on(b.switches());
+        RUST_HUD_PLACED.store(rust, std::sync::atomic::Ordering::Relaxed);
+        if rust {
+            b.raw().before(&HUD_QUAD_SETUP, "native_hud_rust_quad", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
+                    return Ok(Flow::Continue);
+                }
+                let mut mem = rt.memory();
+                if !setup_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx) {
+                    return Ok(Flow::Continue);
+                }
+                Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
+            }).context_only().optional();
+        }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {

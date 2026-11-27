@@ -40,15 +40,27 @@ use crate::native_map::NativeMap;
 
 /// A HUD bitmap widget's quad, or a menu shader bitmap's: drawn from the
 /// overlay with its tag shader's evaluated combiner. Whether it was taken.
+///
+/// With the Rust HUD on (`render_bridge::native_hud::rust_hud`), a HUD
+/// widget's quad is also predicted from its shader's Rust material before
+/// the capture and checked against what the capture took
+/// ([`crate::hud_native`]): a shader that matches is proven, and its
+/// later quads skip the guest's setup.
 pub fn draw_tag_quad<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    capture(device, mem, Source::Tag(at), |d, m, a| {
+    let check = render_bridge::native_hud::rust_hud() && at.widget && crate::hud_native::wants_check(at.shader);
+    let predicted = if check { Some(crate::hud_native::predict(&*mem, at, vertices)) } else { None };
+    let (taken, item) = capture_item(device, mem, Source::Tag(at), |d, m, a| {
         d.try_native_immediate_draw(m, gfx::vertex::PrimitiveType::TriangleFan, vertices, a)
-    })
+    });
+    if let (true, Some(predicted), Some(item)) = (taken, predicted, item) {
+        crate::hud_native::check(at, predicted, &item);
+    }
+    taken
 }
 
 /// A HUD text widget's glyph quad, over the live glyph cache.
@@ -115,27 +127,45 @@ where
     B: d3d::Backend + Send + 'static,
     F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
 {
+    capture_item(device, mem, source, issue).0
+}
+
+/// [`capture`], and the one-quad overlay the capture took.
+fn capture_item<B, F>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    source: Source<'_>,
+    issue: F,
+) -> (bool, Option<Arc<Overlay>>)
+where
+    B: d3d::Backend + Send + 'static,
+    F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
+{
     let admission = Widget {
         source,
         captured: Mutex::new(None),
     };
     let Ok(mut device) = device.lock() else {
-        return false;
+        render_bridge::native_hud::kept::refuse("device");
+        return (false, None);
     };
     let mut mem = DeviceMemory(mem);
     let taken = issue(&mut *device, &mut mem, &admission);
     drop(device);
     if taken.ok() != Some(true) {
-        return false;
+        // The admission's own cause holds; else the device did not take
+        // the draw (its packet, push room, a pending fence).
+        render_bridge::native_hud::kept::refuse("device");
+        return (false, None);
     }
-    if let Some(overlay) = admission
+    let captured = admission
         .captured
         .into_inner()
-        .unwrap_or_else(|e| e.into_inner())
-    {
-        let _ = render_bridge::scene_step::with_overlay(|o| o.append(&overlay));
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(overlay) = &captured {
+        let _ = render_bridge::scene_step::with_overlay(|o| o.append(overlay));
     }
-    true
+    (true, captured)
 }
 
 /// What a captured draw is, and so what its item names.
@@ -255,23 +285,32 @@ fn faces_visible(corners: &[OverlayVertex; 4], cull: CullMode) -> bool {
 
 impl DrawAdmission for Widget<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        // A refusal names its cause for the HUD's kept counts
+        // (`render_bridge::native_hud::kept`).
+        self.plan(snapshot).map_err(render_bridge::native_hud::kept::refuse).ok()
+    }
+}
+
+impl Widget<'_> {
+    /// The draw as one overlay quad, or the first thing that keeps it off
+    /// the overlay.
+    fn plan(&self, snapshot: &DrawSnapshot<'_>) -> Result<(ExternalPlan, Box<dyn ExternalPass>), &'static str> {
         let draw = snapshot.draw;
         let rs = &draw.state.render;
-        if snapshot.color_header == 0
-            || !draw.clip_rects.is_empty()
-            || draw.writes_depth_stencil()
-            || (rs.depth_mode != DepthBufferMode::Disabled && rs.depth_func != CompareFunc::Always)
-            || rs.stencil.enable
-            || rs.fill_mode != FillMode::Solid
-            || draw.hw.zpass_count_enable
-            || rs.color_write.xbox_value() == 0
-        {
-            return None;
-        }
-        let words = d3d::nv2a::overlay_shader_words(draw)?;
-        if !native_render::ui_gpu::hud_shader_supported(&words) {
-            return None;
-        }
+        let refused = |bad: bool, cause: &'static str| if bad { Err(cause) } else { Ok(()) };
+        refused(snapshot.color_header == 0, "target")?;
+        refused(!draw.clip_rects.is_empty(), "clip_rects")?;
+        refused(
+            draw.writes_depth_stencil()
+                || (rs.depth_mode != DepthBufferMode::Disabled && rs.depth_func != CompareFunc::Always)
+                || rs.stencil.enable,
+            "depth",
+        )?;
+        refused(rs.fill_mode != FillMode::Solid, "fill")?;
+        refused(draw.hw.zpass_count_enable, "query")?;
+        refused(rs.color_write.xbox_value() == 0, "colour_write")?;
+        let words = d3d::nv2a::overlay_shader_words(draw).ok_or("shader")?;
+        refused(!native_render::ui_gpu::hud_shader_supported(&words), "combiner")?;
         let sampled = snapshot.sampled_stages;
         let first = sampled.iter().position(|&v| v);
         let mut shader_stages = [None; 4];
@@ -281,28 +320,24 @@ impl DrawAdmission for Widget<'_> {
             if !active {
                 continue;
             }
-            samplers[stage] = sampler(draw, stage)?;
+            samplers[stage] = sampler(draw, stage).ok_or("sampler")?;
             let header = snapshot.bound_textures[stage];
-            if header == 0 {
-                return None;
-            }
+            refused(header == 0, "texture")?;
             shader_stages[stage] = Some(OverlayTexture::Bound { header });
             if draw.extras[stage].alpha_kill & 4 != 0 {
                 alpha_kill |= 1u8 << stage;
             }
         }
-        let texture = self.source.texture(&shader_stages, first)?;
+        let texture = self.source.texture(&shader_stages, first).ok_or("glyph_cache")?;
         let (tag, hud_input) = self.source.shader();
         let (blend, blend_constant) = blend(rs);
-        let evaluated = d3d::nv2a::overlay_vertices(draw, sampled)?;
+        let evaluated = d3d::nv2a::overlay_vertices(draw, sampled).ok_or("vertices")?;
         let corners = evaluated.map(|(position, coords, color)| OverlayVertex {
             position,
             uv: coords[first.unwrap_or(0)],
             color,
         });
-        if !faces_visible(&corners, rs.cull_mode) {
-            return None;
-        }
+        refused(!faces_visible(&corners, rs.cull_mode), "culled")?;
         let material = OverlayMaterial {
             program: Program::Shader { tag },
             texture,
@@ -311,8 +346,8 @@ impl DrawAdmission for Widget<'_> {
         };
         let mut overlay = Overlay::new([draw.target.width, draw.target.height]);
         overlay
-            .push_quad(material, clip(draw.clip?), corners)
-            .ok()?;
+            .push_quad(material, clip(draw.clip.ok_or("clip")?), corners)
+            .map_err(|_| "overlay")?;
         let item = &mut overlay.items[0];
         item.alpha_test = rs
             .alpha_test_enable
@@ -331,7 +366,7 @@ impl DrawAdmission for Widget<'_> {
             members: vec![Member { draw: Arc::new(draw.clone()), overlay }],
             sampled,
         };
-        Some((
+        Ok((
             ExternalPlan {
                 stage: Stage::Ui,
                 view: 4,
@@ -645,10 +680,43 @@ fn spawn_load(name: String, generation: u64) {
     }
 }
 
-/// Decodes the images `part`'s quads name into `assets`: whether each did.
+/// Runs `f` on the map read for the overlay's images (the loaded map's):
+/// `None` while it loads or with no map loaded.
+pub(crate) fn with_art_map<T>(mem: &dyn GuestMemory, f: impl FnOnce(&mut NativeMap) -> T) -> Option<T> {
+    let (art, _) = slot(mem)?;
+    let art = art?;
+    let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+    Some(f(&mut a.map))
+}
+
+/// Places `part` (HUD quads whose stages name bitmap images) at this
+/// point in the frame with the map's assets, its images decoded first:
+/// whether it was placed. While the map loads, or when an image does
+/// not decode, nothing is placed.
+pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    part: Overlay,
+) -> bool {
+    let Some((Some(art), assets)) = slot(mem) else { return false };
+    {
+        let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+        if !decode_images(&mut a, &part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            return false;
+        }
+    }
+    let _ = render_bridge::scene_step::with_overlay(|o| o.append(&part));
+    place(device, mem, Arc::new(part), assets)
+}
+
+/// Decodes the images `part`'s quads name into `assets`, their material's
+/// and their shader stages': whether each did.
 fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> bool {
-    for item in &part.items {
-        let OverlayTexture::Bitmap { tag, image } = item.material.texture else { continue };
+    let named = part.items.iter().flat_map(|item| {
+        std::iter::once(item.material.texture).chain(item.shader_stages.iter().flatten().copied())
+    });
+    for texture in named {
+        let OverlayTexture::Bitmap { tag, image } = texture else { continue };
         if assets.images.contains_key(&(tag, image)) {
             continue;
         }
@@ -1002,7 +1070,7 @@ mod tests {
     /// and names it; a screen draw names its first bound stage, or none.
     #[test]
     fn each_source_names_its_texture() {
-        let at = HudTagQuad { bitmap: 0x40, image: 3, shader: 0xe000_0001, hud_input: [0.5; 4] };
+        let at = HudTagQuad { bitmap: 0x40, image: 3, shader: 0xe000_0001, hud_input: [0.5; 4], widget: true };
         let bound = [None, Some(OverlayTexture::Bound { header: 0x40 }), None, None];
         assert_eq!(
             Source::Tag(&at).texture(&bound, Some(1)),
