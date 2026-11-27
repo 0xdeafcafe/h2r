@@ -48,8 +48,8 @@
 // number. Each phase from the second opens a heavier loadout tier to
 // both sides to pick from. A map with no numbered site plays as the lines
 // above say: any sites in any order, spawns near them, the first tier.
-// docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff";
-// docs/game/siege.md.
+// docs/game/rules-engine.md, "Phases: attack and defend" (the Siege
+// section) and "Payoff".
 //
 // Entries a host cannot make yet (`verify::unhostable`): none.
 rules "Siege" 1
