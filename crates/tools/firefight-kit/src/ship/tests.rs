@@ -3,7 +3,6 @@ use super::*;
 use crate::testkit::{self, DONOR, PELICAN_BULK, PHANTOM_BULK};
 use crate::{Built, Classes, Config, Donor, Labels, Mode, build_with_classes};
 use h1campaign::ai::h2::Area;
-use tags::schema::Schema;
 use std::io::Cursor;
 
 fn kit(

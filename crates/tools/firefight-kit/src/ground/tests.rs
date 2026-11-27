@@ -2,7 +2,7 @@
 use std::io::Cursor;
 
 use h1campaign::ai::h2::ScenarioAi;
-use map::{CacheType, Map, build::TagSet, writer::max_metadata_size};
+use map::{Map, build::TagSet, writer::max_metadata_size};
 
 use super::*;
 use crate::Source;
@@ -246,7 +246,7 @@ fn ground_over_headroom_is_refused_with_its_biggest_part() {
     let base = testkit::court();
     let mut map = Map::from_reader(Cursor::new(&base)).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let max = max_metadata_size(crate::KIT_METADATA_BUDGET).unwrap();
     let pin = set.pinned.as_mut().unwrap();
     pin.metadata_size += max - map.header().meta_size;
     let full = set.build().unwrap().0;
