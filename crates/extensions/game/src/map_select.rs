@@ -514,7 +514,7 @@ impl Selection {
         } else {
             // Nothing to analyse the maps with: the lobby's game type still
             // says what it plays.
-            let view = crate::map_modes::View { played, ..Default::default() };
+            let view = crate::map_modes::View::playing(played);
             catalogue = Arc::new(catalogue.with_modes(view));
         }
         *lock(&self.picker) = Some(catalogue);

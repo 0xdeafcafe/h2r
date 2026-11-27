@@ -90,6 +90,13 @@ pub struct View {
     hidden: BTreeSet<u32>,
 }
 
+impl View {
+    /// A view that knows only what the lobby plays: no map is analysed.
+    pub fn playing(played: Played) -> Self {
+        View { played, ..Default::default() }
+    }
+}
+
 /// The [`View`] of `cat` for a lobby playing `played`. `ground` says
 /// whether a map has a saved map variant with AI ground, `siege` whether it
 /// has Siege's objectives (`false` when that cannot be told).
