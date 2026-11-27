@@ -5851,7 +5851,9 @@ switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
 `declined` (calls left to the guest unchecked, summed over reasons). The
-sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
+sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
+(`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
+whose `declined` adds its `dropped` audits),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
 `sim.effects` groups. A source without a counter reports 0 for that

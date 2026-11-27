@@ -425,6 +425,36 @@ as runtime before).
   `bcc20`) and lights (`c1400`, `c0c80`, which subsume
   `impl.sim.static-light`'s bypass); the markers `b8d30` belong to
   phase 1c ([markers.md](markers.md)).
+- *The function evaluator.* `sim-objects/src/functions/evaluator.rs` is
+  `bab40`, `ba8c0`, `108d90`, `bcc20` and `13bb90`'s output range as plain
+  Rust over Rust-owned data, on the curve kernel `functions/curve.rs`:
+
+  | Data | Owner | Lifetime |
+  |---|---|---|
+  | Exports and function blobs per definition | `Library` | decoded at first use; again when the count or table moves; dropped at map load |
+  | Shape (8) and wave (12) tables, image constants and string IDs | `Library` | read at the map's first call |
+  | Body fields, parent, type levels, world globals, game time | guest | read per call |
+
+  It answers a call only when every step is Rust: the built-in names, the
+  base level's own values, every matching export with its scale and gate,
+  the parent. It declines, by reason, an override (body `+c0` bit 9), an
+  import a type level or a base callout answers, curve kinds 9 and 10, an
+  operand off the exact path, a fault and a recursion past 16.
+  `engine::sim_objects::functions::arm` runs it as a shadow arm at each
+  `bab40` entry the objects driver runs, behind
+  `impl.sim.native.objects.functions` (off):
+
+  ```
+  entry -> evaluate -> declined?  -> guest answers                  (declined[reason])
+                    -> unproven or slot % 64 == 0
+                                  -> guest answers, compare at return (checked, matched, mismatched)
+                    -> else       -> Rust answers: out, al, ecx, xmm0  (answered)
+  ```
+
+  Proof is 4096 matches with no mismatch, per map. A mismatch hands every
+  call back to the guest until the next map. A compared call whose return
+  the driver never sees is `dropped`. `sim.arms` reports it as
+  `objects.function`.
 - *Parallelism.* Pose and matrix passes run per object in hierarchy waves.
 
 **Sound sim (phase 4).**
