@@ -32,8 +32,9 @@ pub fn ship_name(kind: ShipKind) -> String {
 
 /// A kind of ship's size, read from its `vehi` tag: how far its body
 /// reaches round its path (the object's bounding radius), how many seats it
-/// has (the vehicle's seat block) and how high its lift points hold it (the
-/// tallest `antigrav_height`). A path is clear for a kind when rays that
+/// has (the vehicle's seat block) and how high its root must hover for the
+/// bounding sphere to clear the ground (the radius less the sphere centre's
+/// height over the root). A path is clear for a kind when rays that
 /// far to each side of it are clear too.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Dims {
@@ -60,9 +61,7 @@ const VEHI_SIZE: usize = 0x300;
 const OBJE_BOUNDING_RADIUS: usize = 0x4;
 const VEHI_SEATS: usize = 0x1c8;
 const SEAT_STRIDE: usize = 0xb0;
-const VEHI_LIFT_POINTS: usize = 0x2e8;
-const LIFT_STRIDE: usize = 0x4c;
-const LIFT_HEIGHT: usize = 0x10;
+const OBJE_BOUNDING_OFFSET: usize = 0x8;
 
 /// The size the `vehi` tag `path` of `map` gives, none when the map has no
 /// such tag or it is too short to hold the fields.
@@ -76,13 +75,10 @@ pub(crate) fn dims_in<R: Read + Seek>(map: &mut Map<R>, path: &str) -> Option<Di
     let root = v.at(0, VEHI_SIZE).ok()?;
     let f = |at: usize| f32::from_le_bytes(root[at..at + 4].try_into().unwrap());
     let seats = v.block(root, VEHI_SEATS, SEAT_STRIDE).ok()?.len();
-    let hover = v
-        .block(root, VEHI_LIFT_POINTS, LIFT_STRIDE)
-        .ok()?
-        .iter()
-        .map(|p| f32::from_le_bytes(p[LIFT_HEIGHT..LIFT_HEIGHT + 4].try_into().unwrap()))
-        .fold(0.0, f32::max);
     let radius = f(OBJE_BOUNDING_RADIUS);
+    // The root sits this high over the floor when the bounding sphere's
+    // underside just touches it.
+    let hover = radius - f(OBJE_BOUNDING_OFFSET + 8);
     (radius > 0.0 && seats > 0 && hover > 0.0).then_some(Dims { radius, seats, hover, from_tag: true })
 }
 
