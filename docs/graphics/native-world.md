@@ -42,7 +42,7 @@ The load runs at map load and on a BSP switch. The active BSP is `0x004e0348` an
 | Step | What happens |
 |---|---|
 | Camera | Reads the render camera record and builds the view and projection |
-| Cull | On the GPU: the guest's whole layer-3 list by the frustum (a game view); the whole-world pass by the frustum then the depth pyramid |
+| Cull | On the GPU, by the frustum then the depth pyramid: the guest's whole layer-3 list (a game view) and the whole-world pass |
 | Skip | Clears layer 3's bit on the BSP items the native pass draws |
 | Draw | One render pass into the game's colour target and depth with the game's viewport; per batch, bind textures, then `multi_draw_indexed_indirect` over its slot range |
 
@@ -52,7 +52,7 @@ The load runs at map load and on a BSP switch. The active BSP is `0x004e0348` an
 
 | Pass | Who uses it | Cull |
 |---|---|---|
-| Game view (`select_unculled`, `culled_selection_draws`) | the game: the guest's layer-3 list, material programs | On the GPU by `Frustum::sides` of the admission lens: every loaded part of the list is claimed and its slot drawn indirect |
+| Game view (`select_unculled`, `culled_selection_draws`) | the game: the guest's layer-3 list, material programs | On the GPU by `Frustum::sides` of the admission lens, then the pyramid of the guest's depth: every loaded part of the list is claimed and its slot drawn indirect |
 | Selected parts (`select_parts`, `selection_draws`) | the fixed stage, tests | On the CPU: a part outside the frustum refuses the list |
 | Whole world (`prepare`, `encode`) | the theater's host view, the editor's native view | On the GPU ([`cull_gpu`](../../crates/rewrites/native-render/src/cull_gpu.rs), `cull.wgsl`): compute passes write each draw's `instance_count` into the indirect slots |
 
@@ -92,15 +92,22 @@ A view the pyramid cannot serve draws the frustum's whole set and is counted by 
 | Step | What |
 |---|---|
 | Copies | The programs' view rows and the cull's view and start set, staged at prepare and copied in draw order, so each view's slots are written just before its draws read them |
-| Cull | `early_frustum` over the guest cull's slots (`GuestDispatch::record`): a draw is drawn when the guest's list holds it (`start`) and `Frustum::sides` of the admission lens (the reference and display copies' union, `cull_camera`) may see it |
-| Draws | One pass that loads and keeps the attachments; one packet per run of consecutive slots under one binding, in the list's order, `multi_draw_indexed_indirect` over the whole index buffer (`RecordedDraw::with_indirect`). A part the list repeats is drawn again |
+| Early | `early_history` over the guest cull's slots (`GuestDispatch::record`): a draw is drawn when the guest's list holds it (`start`), `Frustum::sides` of the admission lens (the reference and display copies' union, `cull_camera`) may see it, and the last view kept it or its order matters; `early_frustum` (no history) when the pyramid does not run |
+| Early draws | One pass that loads and keeps the attachments; one packet per run of consecutive slots under one binding, in the list's order, `multi_draw_indexed_indirect` over the whole index buffer (`RecordedDraw::with_indirect`). A part the list repeats is drawn again |
+| Late | `GuestDispatch::record_late`: the pyramid of the guest's depth after the early draws, then `late_occlusion`: the list's draws in the frustum the pyramid does not hide, less what `early` drew, and the history for the next view |
+| Late draws | A second pass of the same packets over the `late` slots, without the bindings whose order matters |
 
-A part the lens cannot see is still the native pass's, and the guest does not draw it; it was clipped on the D3D path too. The depth pyramid does not run for a game view yet. What it needs is in place:
+A part the lens cannot see is still the native pass's, and the guest does not draw it; it was clipped on the D3D path too. The late test reads:
 
-| Need | Where |
+| Input | Where |
 |---|---|
-| The programs' depth, modelled | `DepthModel::program`: the W-buffer value is the device's `c[3]` row dotted with the world position, clamped to the pass's W clip range, floored, over `z_scale` (`xps_w_depth`; `program::frame_pixel` gives world passes no polygon offset). The fixed stage's is `DepthModel::fixed`. The late test takes a box's least value at its nearest corner. |
-| The guest's depth, sampleable | Guest depth surfaces are `TEXTURE_BINDING` (`gfx::surface`); a multisampled one is not served (`depth_servable`) |
+| The programs' depth, modelled | `DepthModel::program`: the W-buffer value is the device's `c[3]` row dotted with the world position, clamped to the pass's W clip range, floored, over `z_scale` (`xps_w_depth`; `program::frame_pixel` gives world passes no polygon offset). The late test takes a box's least value at its nearest corner. |
+| The screen rectangle | `ScreenMap::viewport`: the copy's lens (`display_camera`) into the request's rectangle (`external_viewport`), widened by two pixels plus the copy's scale over the guest's, for a scaled copy's sample shift |
+| The guest's depth, sampleable | Guest depth surfaces are `TEXTURE_BINDING` (`gfx::surface`); a multisampled one is not served (`depth_servable`). The pyramids are cached per depth texture, up to four. |
+
+**Order.** A binding whose draws must keep their place in the guest's list is never in the late set (`gpu::keeps_order`): one that blends, writes no depth, tests depth other than `Less` or `LessEqual` (a depth-equal decal pass included), or writes stencil when the depth test fails. Its slots start `ORDERED` (2, against `OCCLUDABLE` 1) and the frustum alone culls them, in the early run, in the list's order. An opaque draw the late run reveals draws after the early set, which changes nothing among depth-tested opaque draws. One case is left: an opaque draw revealed behind a blended one draws after it, so for that one view the blend covers what lay behind the revealed draw.
+
+A game view the pyramid cannot serve draws the frustum's whole set early and is counted (`GpuWorld::guest_occlusion_skips`): `depth_unsampled` as above, and `depth_model` when the view's `c[3]` row is not the lens's w row times a positive scale (`DepthModel::agrees_with`), so the programs' depth and the screen map would disagree.
 
 The admission's frustum test kept the selected-parts pass equal to the D3D path by these rules, which the GPU's `Frustum::sides` keeps:
 

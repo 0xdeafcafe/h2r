@@ -92,8 +92,14 @@ pub struct CullView {
     pub depth: [f32; 4],
     /// [`DepthModel::w_row`].
     pub w_row: [f32; 4],
-    /// The pass's viewport in target pixels.
-    pub viewport: [f32; 4],
+    /// [`ScreenMap::clip`].
+    pub occlusion: Mat4,
+    /// [`ScreenMap::screen`].
+    pub screen: [f32; 4],
+    /// [`ScreenMap::clamp`].
+    pub clamp_px: [f32; 4],
+    /// `x`: [`ScreenMap::margin`].
+    pub margin: [f32; 4],
     /// `x`: the draw count.
     pub counts: [u32; 4],
 }
@@ -142,6 +148,21 @@ impl DepthModel {
         }
     }
 
+    /// Whether the W-buffer row is the w row of `view_proj` times one
+    /// positive scale (to `1e-3` of the row's size): the programs' depth
+    /// and the camera's lens describe one view.
+    pub fn agrees_with(&self, view_proj: &Mat4) -> bool {
+        let w = [view_proj[0][3], view_proj[1][3], view_proj[2][3], view_proj[3][3]];
+        let norm = |r: [f32; 4]| r.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let (a, b) = (norm(self.w_row), norm(w));
+        if a == 0.0 || b == 0.0 || !a.is_finite() {
+            return false;
+        }
+        let k = a / b;
+        let dot: f32 = self.w_row.iter().zip(&w).map(|(x, y)| x * y).sum();
+        dot > 0.0 && self.w_row.iter().zip(&w).all(|(x, y)| (x - y * k).abs() <= 1e-3 * a)
+    }
+
     /// The least depth a fragment of `b` stores (the reference for
     /// `cull.wgsl`'s `w_depth` of the box's nearest corner).
     pub fn nearest(&self, b: &crate::world::Aabb) -> f32 {
@@ -155,6 +176,38 @@ impl DepthModel {
 
     fn uniform(&self) -> ([f32; 4], [f32; 4]) {
         ([self.full_scale, f32::from(u8::from(self.floor)), self.range[0], self.range[1]], self.w_row)
+    }
+}
+
+/// Where a view's draws land in its target, for the pyramid test: the
+/// clip position is `clip` times the world position, and its pixel
+/// `clip.xy / clip.w * screen.xy + screen.zw`, inside `clamp` (first x,
+/// y, last x, y), widened by `margin` pixels each side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenMap {
+    pub clip: Mat4,
+    pub screen: [f32; 4],
+    pub clamp: [f32; 4],
+    pub margin: f32,
+}
+
+impl ScreenMap {
+    /// A view-projection into a viewport of the target: the fixed stage's
+    /// camera and pass viewport, or a game view's lens for its copy
+    /// (`display_camera` at the copy's projection factor, as the fixed
+    /// stage draws the game) into the request's rectangle in texels.
+    pub fn viewport(view_proj: &Mat4, v: PassViewport) -> Self {
+        Self {
+            clip: *view_proj,
+            screen: [v.width * 0.5, -v.height * 0.5, v.x + v.width * 0.5, v.y + v.height * 0.5],
+            clamp: [v.x.floor(), v.y.floor(), (v.x + v.width).ceil() - 1.0, (v.y + v.height).ceil() - 1.0],
+            margin: 1.0,
+        }
+    }
+
+    /// `self` widened by `margin` pixels each side.
+    pub fn with_margin(self, margin: f32) -> Self {
+        Self { margin, ..self }
     }
 }
 
@@ -179,6 +232,10 @@ pub struct OcclusionSkips {
     pub depth_unsampled: u64,
     /// The pass drew with another viewport than the one `prepare` uploaded.
     pub viewport_moved: u64,
+    /// A game view's `c[3]` row is not the camera's w row times a positive
+    /// scale ([`DepthModel::agrees_with`]): the programs' depth is not the
+    /// lens the screen map is.
+    pub depth_model: u64,
 }
 
 /// What [`GpuCull::early`] dispatched, for [`GpuCull::late`].
@@ -194,10 +251,35 @@ enum Planned {
 /// The depth pyramid of one depth target.
 struct Pyramid {
     depth: wgpu::Texture,
+    build: PyramidBuild,
+    late: wgpu::BindGroup,
+}
+
+/// The passes that build one pyramid, for recording later.
+#[derive(Clone)]
+struct PyramidBuild {
+    seed_pipeline: wgpu::ComputePipeline,
+    reduce_pipeline: wgpu::ComputePipeline,
     seed: wgpu::BindGroup,
     reduce: Vec<wgpu::BindGroup>,
     sizes: Vec<(u32, u32)>,
-    late: wgpu::BindGroup,
+}
+
+impl PyramidBuild {
+    fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("native world depth pyramid"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.seed_pipeline);
+        pass.set_bind_group(0, &self.seed, &[]);
+        pass.dispatch_workgroups(self.sizes[0].0.div_ceil(TILE), self.sizes[0].1.div_ceil(TILE), 1);
+        pass.set_pipeline(&self.reduce_pipeline);
+        for (group, &(w, h)) in self.reduce.iter().zip(&self.sizes[1..]) {
+            pass.set_bind_group(0, group, &[]);
+            pass.dispatch_workgroups(w.div_ceil(TILE), h.div_ceil(TILE), 1);
+        }
+    }
 }
 
 pub(crate) struct GpuCull {
@@ -223,7 +305,9 @@ pub(crate) struct GpuCull {
     reduce_layout: wgpu::BindGroupLayout,
     seed: wgpu::ComputePipeline,
     reduce: wgpu::ComputePipeline,
-    pyramid: Option<Pyramid>,
+    /// The pyramids of the depth targets seen last (a game view's
+    /// reference and display copies, split screen), newest last.
+    pyramids: Vec<Pyramid>,
     planned: Option<Planned>,
     skips: OcclusionSkips,
 }
@@ -410,7 +494,7 @@ impl GpuCull {
             pyramid_layout,
             seed_layout,
             reduce_layout,
-            pyramid: None,
+            pyramids: Vec::new(),
             planned: None,
             skips: OcclusionSkips::default(),
         }
@@ -433,12 +517,16 @@ impl GpuCull {
         far: f32, viewport: PassViewport, occlusion: bool,
     ) {
         let (depth, w_row) = DepthModel::fixed(view_proj, depth, far).uniform();
+        let map = ScreenMap::viewport(view_proj, viewport);
         let view = CullView {
             planes: frustum.planes,
             view_proj: *view_proj,
             depth,
             w_row,
-            viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
+            occlusion: map.clip,
+            screen: map.screen,
+            clamp_px: map.clamp,
+            margin: [map.margin, 0.0, 0.0, 0.0],
             counts: [self.count, 0, 0, 0],
         };
         uploads.write(&self.view, 0, bytemuck::bytes_of(&view));
@@ -489,7 +577,7 @@ impl GpuCull {
         pass.set_bind_group(0, &self.group, &[]);
         if served {
             pass.set_pipeline(&self.late_occlusion);
-            pass.set_bind_group(1, &self.pyramid.as_ref().expect("built above").late, &[]);
+            pass.set_bind_group(1, &self.pyramids.last().expect("built above").late, &[]);
         } else {
             pass.set_pipeline(&self.late_frustum);
         }
@@ -498,22 +586,22 @@ impl GpuCull {
     }
 
     fn build_pyramid(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, depth: &wgpu::Texture) {
-        if self.pyramid.as_ref().is_none_or(|p| p.depth != *depth) {
-            self.pyramid = Some(self.make_pyramid(device, depth));
+        self.pyramid_for(device, depth).build.record(encoder);
+    }
+
+    /// `depth`'s pyramid, made on first use, kept as the newest.
+    fn pyramid_for(&mut self, device: &wgpu::Device, depth: &wgpu::Texture) -> &Pyramid {
+        if let Some(at) = self.pyramids.iter().position(|p| p.depth == *depth) {
+            let p = self.pyramids.remove(at);
+            self.pyramids.push(p);
+        } else {
+            if self.pyramids.len() >= 4 {
+                self.pyramids.remove(0);
+            }
+            let p = self.make_pyramid(device, depth);
+            self.pyramids.push(p);
         }
-        let p = self.pyramid.as_ref().expect("made above");
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("native world depth pyramid"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&self.seed);
-        pass.set_bind_group(0, &p.seed, &[]);
-        pass.dispatch_workgroups(p.sizes[0].0.div_ceil(TILE), p.sizes[0].1.div_ceil(TILE), 1);
-        pass.set_pipeline(&self.reduce);
-        for (group, &(w, h)) in p.reduce.iter().zip(&p.sizes[1..]) {
-            pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups(w.div_ceil(TILE), h.div_ceil(TILE), 1);
-        }
+        self.pyramids.last().expect("pushed above")
     }
 
     fn make_pyramid(&self, device: &wgpu::Device, depth: &wgpu::Texture) -> Pyramid {
@@ -569,39 +657,64 @@ impl GpuCull {
             layout: &self.pyramid_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&whole) }],
         });
-        Pyramid { depth: depth.clone(), seed, reduce, sizes, late }
+        let build = PyramidBuild { seed_pipeline: self.seed.clone(), reduce_pipeline: self.reduce.clone(), seed, reduce, sizes };
+        Pyramid { depth: depth.clone(), build, late }
     }
 
-    /// A game view's frustum cull of the guest's selected parts, for a
-    /// stage that encodes its own commands (`gfx::external::ExternalEncoded`):
-    /// the view and the start set staged now in `uploads`, copied and
+    /// A game view's cull of the guest's selected parts, for a stage that
+    /// encodes its own commands (`gfx::external::ExternalEncoded`): the
+    /// view and the start set staged now in `uploads`, copied and
     /// dispatched in draw order when [`GuestDispatch::record`] runs, so
     /// each view's slots are written just before its draws read them.
-    /// `selected` holds the selection's draw indices.
+    /// `start` is per draw (`cull.wgsl`'s `start`: 0, 1, or [`ORDERED`]).
+    /// With `occlusion` (the programs' depth and screen, the depth target)
+    /// the early set is the history's and [`GuestDispatch::record_late`]
+    /// tests the rest against the pyramid; a target the pyramid cannot
+    /// read is counted and drawn by the frustum alone.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn guest_dispatch(
-        &self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view_proj: &Mat4,
-        frustum: &Frustum, selected: impl IntoIterator<Item = usize>,
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view_proj: &Mat4,
+        frustum: &Frustum, start: &[u32], occlusion: Option<(DepthModel, ScreenMap, &wgpu::Texture)>,
     ) -> GuestDispatch {
+        let occlusion = occlusion.filter(|(model, map, depth)| {
+            if !sampleable(depth) {
+                self.skips.depth_unsampled += 1;
+                false
+            } else if !model.agrees_with(&map.clip) {
+                self.skips.depth_model += 1;
+                false
+            } else {
+                true
+            }
+        });
+        let (depth, w_row) = occlusion.as_ref().map_or(([1.0, 0.0, 0.0, 0.0], [0.0; 4]), |(m, ..)| m.uniform());
+        let map = occlusion.as_ref().map(|(_, map, _)| *map);
         let view = CullView {
             planes: frustum.planes,
             view_proj: *view_proj,
-            depth: [0.0; 4],
-            w_row: [0.0; 4],
-            viewport: [0.0; 4],
+            depth,
+            w_row,
+            occlusion: map.map_or([[0.0; 4]; 4], |m| m.clip),
+            screen: map.map_or([0.0; 4], |m| m.screen),
+            clamp_px: map.map_or([0.0; 4], |m| m.clamp),
+            margin: [map.map_or(0.0, |m| m.margin), 0.0, 0.0, 0.0],
             counts: [self.count, 0, 0, 0],
         };
-        let mut start = vec![0u32; self.count.max(1) as usize];
-        for i in selected {
-            if let Some(s) = start.get_mut(i) {
-                *s = 1;
-            }
+        let mut words = vec![0u32; self.count.max(1) as usize];
+        for (w, &s) in words.iter_mut().zip(start) {
+            *w = s;
         }
+        let late = occlusion.map(|(_, _, depth)| {
+            let p = self.pyramid_for(device, depth);
+            (p.build.clone(), p.late.clone())
+        });
         GuestDispatch {
             view: (uploads.stage(device, queue, bytemuck::bytes_of(&view)), self.view.clone()),
-            start: (uploads.stage(device, queue, bytemuck::cast_slice(&start)), self.start.clone()),
-            start_len: start.len() as u64 * 4,
+            start: (uploads.stage(device, queue, bytemuck::cast_slice(&words)), self.start.clone()),
+            start_len: words.len() as u64 * 4,
             stats: self.stats.clone(),
-            pipeline: self.early_frustum.clone(),
+            pipeline: if late.is_some() { self.early_history.clone() } else { self.early_frustum.clone() },
+            late: late.map(|(build, pyramid)| (build, self.late_occlusion.clone(), pyramid)),
             group: self.group.clone(),
             count: self.count,
         }
@@ -641,6 +754,8 @@ pub struct GuestDispatch {
     start_len: u64,
     stats: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
+    /// The pyramid build, the late cull and the pyramid's group.
+    late: Option<(PyramidBuild, wgpu::ComputePipeline, wgpu::BindGroup)>,
     group: wgpu::BindGroup,
     count: u32,
 }
@@ -664,7 +779,36 @@ impl GuestDispatch {
         pass.set_bind_group(0, &self.group, &[]);
         pass.dispatch_workgroups(self.count.div_ceil(GROUP), 1, 1);
     }
+
+    /// Whether a late run follows the early one: the pyramid is read.
+    pub fn has_late(&self) -> bool {
+        self.late.is_some()
+    }
+
+    /// After the early run's draws: builds the pyramid of the depth target
+    /// and writes the late slots. Nothing without occlusion.
+    pub fn record_late(&self, encoder: &mut wgpu::CommandEncoder) {
+        let Some((build, pipeline, pyramid)) = &self.late else { return };
+        if self.count == 0 {
+            return;
+        }
+        build.record(encoder);
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("native world guest late cull"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        pass.set_bind_group(1, pyramid, &[]);
+        pass.dispatch_workgroups(self.count.div_ceil(GROUP), 1, 1);
+    }
 }
+
+/// [`GpuCull::guest_dispatch`]'s start value of a draw that keeps its
+/// place in the order: the frustum alone culls it, in the early run.
+pub const ORDERED: u32 = 2;
+/// A draw the pyramid may cull.
+pub const OCCLUDABLE: u32 = 1;
 
 fn read_back<T: Pod>(device: &wgpu::Device, queue: &wgpu::Queue, src: &wgpu::Buffer, size: u64) -> Vec<T> {
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {

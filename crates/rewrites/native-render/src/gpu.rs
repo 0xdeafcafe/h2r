@@ -10,7 +10,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum};
-use crate::cull_gpu::{GpuCull, GuestDispatch, OcclusionSkips, SLOT_SIZE};
+use crate::cull_gpu::{DepthModel, GpuCull, GuestDispatch, OcclusionSkips, SLOT_SIZE, ScreenMap};
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
@@ -1697,27 +1697,51 @@ impl GpuWorld {
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.selection_packets(color_format, depth_format, target_size, selection, view, lighting, accumulation, None)
+            .map(|(draws, ..)| draws)
     }
 
     /// A game view's selected parts culled on the GPU (docs/graphics/
     /// native-world.md, "Cull"): the packets draw the selection's slots of
-    /// the guest cull's indirect buffer, one `multi_draw_indexed_indirect`
+    /// the guest cull's indirect buffers, one `multi_draw_indexed_indirect`
     /// per run of consecutive slots under one binding, in the selection's
-    /// order. [`GuestDispatch::record`] writes their instance counts from
-    /// the frustum of `camera` (`Frustum::sides`) and the selection as the
-    /// start set; the caller records it, then the packets, in one encoder.
+    /// order. [`GuestDispatch::record`] writes the early slots from the
+    /// frustum of `camera` (`Frustum::sides`) and the selection as the
+    /// start set. With `occlusion` (the depth target the draws test, which
+    /// the pyramid must read, and the copy's lens and rectangle) the early
+    /// set is what the last view kept, and [`GuestDispatch::record_late`]
+    /// tests the rest against the pyramid of the early run's depth (the
+    /// programs' [`DepthModel`], the lens's [`ScreenMap`]) for the late
+    /// packets. A binding whose order matters
+    /// ([`keeps_order`]) has no late packets: the frustum alone culls it,
+    /// in the early run. The caller records `record`, the early packets,
+    /// `record_late`, then the late packets, in one encoder.
+    #[allow(clippy::too_many_arguments)]
     pub fn culled_selection_draws(
         &mut self, uploads: &gfx::ring::SubmissionUploads, device: &wgpu::Device, queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs, camera: &RenderCamera, lighting: d3d::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
-    ) -> Result<(gfx::external::ExternalDraws, GuestDispatch), &'static str> {
+        occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport)>,
+    ) -> Result<CulledSelection, &'static str> {
+        let slots = (self.guest_cull.early.clone(), self.guest_cull.late.clone());
+        let (draws, late, start) = self.selection_packets(color_format, depth_format, target_size, selection, view,
+            lighting, accumulation, Some(slots))?;
         let vp = camera.view_projection();
-        let selected = selection.spans.iter().flat_map(|&(_, first, end)| first..end);
-        let dispatch = self.guest_cull.guest_dispatch(device, queue, uploads, &vp, &Frustum::sides(&vp), selected);
-        let slots = self.guest_cull.early.clone();
-        let draws = self.selection_packets(color_format, depth_format, target_size, selection, view, lighting, accumulation, Some(slots))?;
-        Ok((draws, dispatch))
+        // The copy's lens into its rectangle; a scaled copy's sample shift
+        // within one guest pixel of the margin.
+        let scale = target_size.0 as f32 / view.guest_size.0.max(1) as f32;
+        let occlusion = occlusion.map(|(t, lens, viewport)| {
+            let map = ScreenMap::viewport(&lens.view_projection(), viewport).with_margin(2.0 + scale);
+            (DepthModel::program(view), map, t)
+        });
+        let dispatch = self.guest_cull.guest_dispatch(device, queue, uploads, &vp, &Frustum::sides(&vp), &start, occlusion);
+        let late = if dispatch.has_late() { late } else { Vec::new() };
+        Ok(CulledSelection { draws, late, dispatch })
+    }
+
+    /// Views of a game whose guest cull ran without the pyramid, by why.
+    pub fn guest_occlusion_skips(&self) -> OcclusionSkips {
+        self.guest_cull.skips()
     }
 
     /// The last game view's guest cull counts (`visible` is what its
@@ -1736,8 +1760,8 @@ impl GpuWorld {
     fn selection_packets(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
-        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>, culled: Option<wgpu::Buffer>,
-    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>, culled: Option<(wgpu::Buffer, wgpu::Buffer)>,
+    ) -> Result<(gfx::external::ExternalDraws, Vec<gfx::RecordedDraw>, Vec<u32>), &'static str> {
         use crate::program::BatchTextures;
         use gfx::{BoundGroup, RecordedDraw, ScissorRect};
         let Self { programs, packet_pipelines, world, stencil, program_vertices, indices, .. } = self;
@@ -1754,14 +1778,17 @@ impl GpuWorld {
             pipeline: std::sync::Arc<gfx::compile::PendingPipeline>,
             groups: Vec<BoundGroup>,
             state: gfx::state::RenderState,
+            ordered: bool,
         }
         let mut packets = Vec::new();
+        let mut late = Vec::new();
+        let mut start = vec![0u32; if culled.is_some() { world.draws.len() } else { 0 }];
         let mut ranges = 0;
         let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
         let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
         // `range`: indices, or with `culled` the slots of a run.
-        let emit = |packets: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
+        let emit = |packets: &mut Vec<RecordedDraw>, late: &mut Vec<RecordedDraw>, b: &Bound, range: std::ops::Range<u32>| {
             let count = range.end - range.start;
             let indexed = |at: u64, len: u64, n: u32| RecordedDraw::prepared_indexed(
                 &b.key,
@@ -1774,11 +1801,16 @@ impl GpuWorld {
                 target_size,
                 scissor,
             );
-            packets.push(match &culled {
-                None => indexed(u64::from(range.start) * 4, u64::from(count) * 4, count),
-                Some(slots) => indexed(0, indices.size(), 0)
-                    .with_indirect(slots.clone(), u64::from(range.start) * SLOT_SIZE, count),
-            });
+            match &culled {
+                None => packets.push(indexed(u64::from(range.start) * 4, u64::from(count) * 4, count)),
+                Some((early, late_slots)) => {
+                    let at = u64::from(range.start) * SLOT_SIZE;
+                    packets.push(indexed(0, indices.size(), 0).with_indirect(early.clone(), at, count));
+                    if !b.ordered {
+                        late.push(indexed(0, indices.size(), 0).with_indirect(late_slots.clone(), at, count));
+                    }
+                }
+            }
         };
         for &(i, first, last) in &selection.spans {
             let batch = &world.batches[i];
@@ -1811,7 +1843,7 @@ impl GpuWorld {
                 let binding = (batch.material, textures.clone(), instance, reference);
                 if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
                     if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
-                        emit(&mut packets, b, range);
+                        emit(&mut packets, &mut late, b, range);
                     }
                     let (pipeline, uniforms, offsets) = match instance {
                         None => {
@@ -1833,7 +1865,9 @@ impl GpuWorld {
                     let mut state = gfx::state::RenderState::default();
                     // Set only with a stencil aspect, as the pass sets it.
                     state.stencil.reference = if has_stencil { reference as u8 } else { 0 };
+                    let ordered = keeps_order(&key);
                     bound = Some((binding, Bound {
+                        ordered,
                         key,
                         pipeline,
                         groups: vec![
@@ -1846,12 +1880,15 @@ impl GpuWorld {
                 for (j, d) in draws[k..end].iter().enumerate() {
                     let joined = if culled.is_some() {
                         let slot = (first + k + j) as u32;
+                        let ordered = bound.as_ref().is_some_and(|(_, b)| b.ordered);
+                        let value = if ordered { crate::cull_gpu::ORDERED } else { crate::cull_gpu::OCCLUDABLE };
+                        start[slot as usize] = start[slot as usize].max(value);
                         append_slot(&mut pending, slot..slot + 1)
                     } else {
                         append_triangles(&mut pending, d.first_index..d.first_index + d.index_count)
                     };
                     if let Some(previous) = joined {
-                        emit(&mut packets, &bound.as_ref().expect("bound before its draws").1, previous);
+                        emit(&mut packets, &mut late, &bound.as_ref().expect("bound before its draws").1, previous);
                     }
                 }
                 ranges += end - k;
@@ -1859,14 +1896,14 @@ impl GpuWorld {
             }
         }
         if let (Some(range), Some((_, b))) = (pending, &bound) {
-            emit(&mut packets, b, range);
+            emit(&mut packets, &mut late, b, range);
         }
         if packets.is_empty() {
             return Err("world selection draws nothing");
         }
         // Conservative: the programs' alpha tests and kill sources discard.
         let writes = p.selected_writes(view, selection);
-        Ok(gfx::external::ExternalDraws { ranges, packets, discards: true, writes })
+        Ok((gfx::external::ExternalDraws { ranges, packets, discards: true, writes }, late, start))
     }
 
     fn record_spans(
@@ -2094,7 +2131,31 @@ fn encode_set(
 }
 
 
-/// Join adjacent complete triangle lists only while their render state is bound.
+/// A game view's culled selection ([`GpuWorld::culled_selection_draws`]).
+pub struct CulledSelection {
+    /// The early run's packets, the view rows written ahead of them.
+    pub draws: gfx::external::ExternalDraws,
+    /// The late run's packets: every binding's but those that keep their
+    /// order; empty when the pyramid does not run.
+    pub late: Vec<gfx::RecordedDraw>,
+    pub dispatch: GuestDispatch,
+}
+
+/// Whether a binding's draws must keep their place in the guest's order,
+/// so the frustum alone culls them in the early run: one that blends,
+/// writes no depth, tests depth other than less or equal (equal
+/// included), or writes stencil when the depth test fails (a culled draw
+/// would not).
+pub fn keeps_order(key: &gfx::pipeline::PipelineKey) -> bool {
+    use wgpu::{CompareFunction as C, StencilOperation as S};
+    let Some(ds) = &key.depth_stencil else { return true };
+    key.color_target.blend.is_some()
+        || ds.depth_write_enabled != Some(true)
+        || !matches!(ds.depth_compare, Some(C::Less | C::LessEqual))
+        || ds.stencil.write_mask != 0
+            && [ds.stencil.front, ds.stencil.back].iter().any(|f| f.depth_fail_op != S::Keep)
+}
+
 /// [`append_triangles`] for runs of slots: `next` joins a run it follows.
 fn append_slot(pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range<u32>) -> Option<std::ops::Range<u32>> {
     if let Some(previous) = pending && previous.end == next.start {
@@ -2104,6 +2165,7 @@ fn append_slot(pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range
     pending.replace(next)
 }
 
+/// Join adjacent complete triangle lists only while their render state is bound.
 fn append_triangles(
     pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range<u32>,
 ) -> Option<std::ops::Range<u32>> {

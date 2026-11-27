@@ -15,8 +15,15 @@ struct View {
     depth: vec4<f32>,
     // The W-buffer value of a world position: `dot(w_row.xyz, p) + w_row.w`.
     w_row: vec4<f32>,
-    // The pass's viewport in target pixels: x, y, width, height.
-    viewport: vec4<f32>,
+    // The clip position the draws rasterise (`occlusion` times the world
+    // position) to target pixels: `xy / w * screen.xy + screen.zw`.
+    occlusion: mat4x4<f32>,
+    screen: vec4<f32>,
+    // The pixels a box's rectangle is clamped to: first x, y, last x, y.
+    clamp_px: vec4<f32>,
+    // x: pixels the rectangle is widened by on each side (rounding, a
+    // copy's sub-pixel shift).
+    margin: vec4<f32>,
     // x: the draw count, yzw: unused.
     counts: vec4<u32>,
 };
@@ -35,9 +42,13 @@ struct Bounds {
 @group(0) @binding(4) var<storage, read_write> history: array<u32>;
 // 0: kept by the frustum, 1: drawn early, 2: drawn late, 3: occluded.
 @group(0) @binding(5) var<storage, read_write> stats: array<atomic<u32>, 4>;
-// 1 for a draw the view starts from: every draw for the whole-world pass,
-// the guest's selected parts for a game view.
+// The draws the view starts from: 0 not in it, 1 a draw the pyramid may
+// cull, 2 one that keeps its place in the order (blended, depth-equal or
+// another test, a stencil write on depth fail): the frustum alone culls
+// it and it draws in the early run. Every draw is 1 for the whole-world
+// pass; a game view's are its guest list.
 @group(0) @binding(6) var<storage, read> start: array<u32>;
+const ORDERED: u32 = 2u;
 
 @group(1) @binding(0) var pyramid: texture_2d<f32>;
 
@@ -73,8 +84,8 @@ const SLACK: f32 = 1e-5;
 // Whether every pixel the box can cover already holds nearer depth. False
 // for a box across the eye's plane or wholly outside the viewport.
 fn occluded(b: Bounds) -> bool {
-    var lo = vec2<f32>(1.0);
-    var hi = vec2<f32>(-1.0);
+    var lo = vec2<f32>(3.4e38);
+    var hi = vec2<f32>(-3.4e38);
     var near = 3.4e38;
     for (var k = 0u; k < 8u; k++) {
         let p = vec3<f32>(
@@ -82,28 +93,21 @@ fn occluded(b: Bounds) -> bool {
             select(b.min.y, b.max.y, (k & 2u) != 0u),
             select(b.min.z, b.max.z, (k & 4u) != 0u),
         );
-        let clip = view.view_proj * vec4<f32>(p, 1.0);
+        let clip = view.occlusion * vec4<f32>(p, 1.0);
         if (clip.w <= 1e-4) {
             return false;
         }
-        let ndc = clip.xy / clip.w;
-        lo = min(lo, ndc);
-        hi = max(hi, ndc);
+        let px = clip.xy / clip.w * view.screen.xy + view.screen.zw;
+        lo = min(lo, px);
+        hi = max(hi, px);
         near = min(near, dot(view.w_row.xyz, p) + view.w_row.w);
     }
-    lo = clamp(lo, vec2<f32>(-1.0), vec2<f32>(1.0));
-    hi = clamp(hi, vec2<f32>(-1.0), vec2<f32>(1.0));
-    let vp = view.viewport;
-    // Target pixels, y down, one pixel wider on each side.
-    let px0 = vp.x + (lo.x * 0.5 + 0.5) * vp.z - 1.0;
-    let px1 = vp.x + (hi.x * 0.5 + 0.5) * vp.z + 1.0;
-    let py0 = vp.y + (0.5 - hi.y * 0.5) * vp.w - 1.0;
-    let py1 = vp.y + (0.5 - lo.y * 0.5) * vp.w + 1.0;
+    // Widened by the margin, clamped to the view's pixels and the pyramid.
     let size = vec2<i32>(textureDimensions(pyramid, 0));
-    let first = vec2<i32>(max(floor(vp.xy), vec2<f32>(0.0)));
-    let last = min(vec2<i32>(ceil(vp.xy + vp.zw)) - 1, size - 1);
-    let a = clamp(vec2<i32>(floor(vec2<f32>(px0, py0))), first, last);
-    let z = clamp(vec2<i32>(floor(vec2<f32>(px1, py1))), first, last);
+    let first = max(vec2<i32>(view.clamp_px.xy), vec2<i32>(0));
+    let last = min(vec2<i32>(view.clamp_px.zw), size - 1);
+    let a = clamp(vec2<i32>(floor(lo - view.margin.x)), first, last);
+    let z = clamp(vec2<i32>(floor(hi + view.margin.x)), first, last);
     if (any(z < a)) {
         return false;
     }
@@ -148,7 +152,7 @@ fn early_history(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let seen = may_see(i);
-    let drawn = seen && history[i] != 0u;
+    let drawn = seen && (start[i] == ORDERED || history[i] != 0u);
     early[i * 5u + 1u] = u32(drawn);
     late[i * 5u + 1u] = 0u;
     if (seen) {
@@ -166,6 +170,10 @@ fn early_history(@builtin(global_invocation_id) id: vec3<u32>) {
 fn late_occlusion(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= view.counts.x) {
+        return;
+    }
+    if (start[i] == ORDERED) {
+        late[i * 5u + 1u] = 0u;
         return;
     }
     var kept = may_see(i);
@@ -191,7 +199,7 @@ fn late_frustum(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let seen = may_see(i);
     history[i] = u32(seen);
-    let drawn = seen && early[i * 5u + 1u] == 0u;
+    let drawn = seen && start[i] != ORDERED && early[i * 5u + 1u] == 0u;
     late[i * 5u + 1u] = u32(drawn);
     if (drawn) {
         atomicAdd(&stats[2], 1u);
