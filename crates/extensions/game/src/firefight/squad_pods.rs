@@ -37,6 +37,14 @@ impl Fallback {
     }
 }
 
+/// Which pods a squad falls in: the Flood have their own, every other
+/// squad the insertion pod.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Human,
+    Flood,
+}
+
 /// A squad on its way down: what to place when it lands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Falling {
@@ -73,15 +81,19 @@ pub struct Counts {
 /// The squad pods of one match.
 #[derive(Clone, Debug)]
 pub struct SquadPods {
+    /// The first this many slots are human pods, the rest Flood.
+    human: usize,
     slots: Vec<Slot>,
     counts: Counts,
 }
 
 impl SquadPods {
-    /// The machine for a kit with `pods` squad pods.
-    pub fn new(pods: usize) -> Self {
+    /// The machine for a kit with `human` insertion pods and `flood` Flood
+    /// pods (`pool` in the calls below is the human ones, then the Flood).
+    pub fn new(human: usize, flood: usize) -> Self {
         Self {
-            slots: vec![Slot::Free; pods],
+            human,
+            slots: vec![Slot::Free; human + flood],
             counts: Counts::default(),
         }
     }
@@ -92,14 +104,19 @@ impl SquadPods {
 
     /// Pods free and in the world: what the director may drop squads in.
     /// `pool` is each pod's live datum, in `ff_pod_NN` order.
-    pub fn free(&self, pool: &[Option<u32>]) -> u8 {
+    pub fn free(&self, pool: &[Option<u32>], kind: Kind) -> u8 {
         let n = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(i, s)| **s == Slot::Free && pool.get(*i).is_some_and(Option::is_some))
+            .range(kind)
+            .filter(|&i| self.slots[i] == Slot::Free && pool.get(i).is_some_and(Option::is_some))
             .count();
         u8::try_from(n).unwrap_or(u8::MAX)
+    }
+
+    fn range(&self, kind: Kind) -> std::ops::Range<usize> {
+        match kind {
+            Kind::Human => 0..self.human,
+            Kind::Flood => self.human..self.slots.len(),
+        }
     }
 
     /// Count a squad placed on foot instead of by pod.
@@ -112,11 +129,13 @@ impl SquadPods {
     pub fn start(
         &mut self,
         pool: &[Option<u32>],
+        kind: Kind,
         fall: PodFall,
         tick: u32,
         squad: Falling,
     ) -> Option<Launch> {
-        let free = (0..self.slots.len())
+        let free = self
+            .range(kind)
             .find(|&i| self.slots[i] == Slot::Free && pool.get(i).is_some_and(Option::is_some));
         let Some(i) = free else {
             self.fell_back(Fallback::NoFreePod);

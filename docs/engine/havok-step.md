@@ -321,6 +321,19 @@ first 16 are ever written, so the rest keep the buffer's older contents:
 
 - `0x0031a770` (type 7) zeroes `+0x10..+0x7f` and leaves the flag as the
   buffer held it, as the leading accumulator does.
+- `0x00319df0` (types 2 and 3) first integrates the pending force
+  (`motion+0xc0`, times `dt` and the inverse mass `+0x2c`), gravity and
+  the torque (`+0xd0`, times `dt` and the scalar inverse inertia `+0x10`)
+  into the velocities `+0x40` and `+0x50`, each damped by
+  `1 - dt × +0x14` (`+0x18` for angular) raised to zero, and zeroes both
+  buckets. The accumulator takes the velocities, the inertia splatted
+  with the inverse mass in `w`, the centre `+0x70`, the identity basis and
+  flag 1.
+- `0x0031b300` (types 4 and 5) does the same from the force `+0xf0`; the
+  torque `+0x100` is applied only while its `w` is nonzero, through the
+  body frame (`0x0031af90`, inertia `+0xe0`), and then zeroed. The
+  accumulator holds the angular velocity in the body frame, the inertia
+  vector `+0xe0`, the transposed basis (`0x002da7a0`) and flag 0.
 - `0x00319430` (type 6) copies `motion+0x40`, `+0x50` and `+0x70` to
   `+0x10`, `+0x20` and `+0x40`, zeroes `+0x30`, writes the identity at
   `+0x50`, `+0x64`, `+0x78`, and sets the flag to 1.
@@ -372,7 +385,18 @@ it comes out below `0x004155a8`, which leaves the two-row form. **E**
 **Solve and export.** `0x0031c940` (parameters, accumulators, schemas,
 impulses). When it returns 1, each entity in array order gets
 `vt[+0x10]` (step, `[info+0x20]`, accumulator; `ret 0xc`), which returns
-the next accumulator. `0x0031a6a0` (type 7) writes nothing. After the
+the next accumulator. `0x0031a6a0` (type 7) writes nothing. Types 2 to 5
+set the velocities to the iteration sums `+0x40`, `+0x50` times the
+scale (the angular sum through the old basis for 4 and 5), masked by
+`0x00415120` for 3 and 5, and save them (`+0xe0`, `+0xf0` for 2 and 3;
+`+0xc0`, `+0xd0` for 4 and 5). Every type but 7 then integrates the
+pose: the previous centre with the swept radius `+0x0c × dt × |angular|`
+in `w`, the centre, the orientation by its rate (`0x00319300`) and one
+Newton step on `rsqrtss` (`0x001d8d60`), the basis (`0x00372500`), and
+the translation, the local centre `+0x20` taken off through the new basis
+(types 2, 4) or the quaternion (`0x002db7a0`; 3, 5, 6). Types 2 and 4
+finish by restoring the solved velocities `+0x10`, `+0x20` (the angular
+one through the new basis for 4), masked. After the
 iterations a write-back pass walks the schemas again and, for each row,
 stores the impulse and the corrected right-hand side times `[info+0x10]`:
 the per-point forms at the header's output pointer stepping by its
@@ -389,8 +413,8 @@ journalled; the buffer's contents stay in Rust. The decline is decided
 before any write, so the guest runs from untouched memory. An island
 falls back to the lifted entry, counted by reason
 (`island_solve::fallbacks`), when it overflows the buffer or its row area,
-holds a motion whose two solver slots are not a covered class (type 7
-only: type 6's export is not ported), holds a constraint whose
+holds a motion whose two solver slots are not one of the six classes
+(`motion_solve`, every type), holds a constraint whose
 `vt[+0x24]` is not ported (the six joint classes), finds the solver
 tables unbuilt, runs under an unmasked float exception or would load a
 non-finite float into the x87 unit from memory (`float`), names an

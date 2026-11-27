@@ -20,6 +20,7 @@ fn kit(pods: usize, falls: usize) -> KitLayout {
         ship: None,
         paths: Vec::new(),
         pods: Vec::new(),
+        flood_pods: Vec::new(),
         player_pods: (0..pods as i16).collect(),
         falls: Vec::new(),
         player_falls: (0..falls).map(|n| (n as u16, fall(10.0 * n as f32))).collect(),

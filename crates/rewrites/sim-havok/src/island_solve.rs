@@ -4,7 +4,8 @@
 //! [`solve`] runs the entry on a [`Journal`]. It returns the guest's `eax`,
 //! or the [`Fallback`] that sends the island to the lifted entry; on a
 //! fallback the journal is discarded, so nothing has been written. Only
-//! persistent words are journalled: `motion+0x08`, the pair words, the
+//! persistent words are journalled: `motion+0x08`, the motions' fields the
+//! virtuals write ([`motion_solve`]), the pair words, the
 //! contact builder's point properties and friction blocks, the write-back
 //! pass's outputs, the solver buffer's busy byte. The buffer's contents
 //! (accumulators, rows, impulses, schemas) are scratch and stay in Rust
@@ -13,6 +14,7 @@ use crate::jacobian::{self, Cursor, Fpu, Scratch};
 use crate::mem::Journal;
 use crate::solver::{self, Areas, Params};
 use crate::motion::{Accumulator, SolverClass, ACCUMULATOR_BYTES, ACCUMULATOR_END, ACCUMULATOR_KIND};
+use crate::motion_solve::{self, Solved};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The solver buffer object: base `+0x08`, size `+0x0c`, busy byte `+0x10`.
@@ -187,12 +189,11 @@ impl Layout {
     }
 }
 
-/// One entity's motion and the accumulator it builds.
+/// One entity's motion and its solver class.
 #[derive(Clone, Copy, Debug)]
 pub struct Body {
     pub motion: u32,
     pub class: SolverClass,
-    pub accumulator: Accumulator,
 }
 
 /// What the gather stage found: everything the later stages read.
@@ -225,7 +226,7 @@ pub fn gather(j: &Journal, a: &Args) -> Result<Island, Fallback> {
         let accumulate = j.get(vt.wrapping_add(MOTION_ACCUMULATE_SLOT)).ok_or(Memory)?;
         let export = j.get(vt.wrapping_add(MOTION_EXPORT_SLOT)).ok_or(Memory)?;
         let class = SolverClass::of(accumulate, export).ok_or(Motion)?;
-        bodies.push(Body { motion, class, accumulator: class.accumulator() });
+        bodies.push(Body { motion, class });
     }
     let mut constraints = Vec::with_capacity(a.constraint_count as usize);
     for i in 0..a.constraint_count {
@@ -276,14 +277,24 @@ pub const SOLVER_ZERO: u32 = 0x0045_dbd8;
 /// More iterations than this decline (retail's parameters hold a few).
 pub const MAX_ITERATIONS: u32 = 64;
 
+/// Each entity's `vt[+0x0c]` in array order: the motion's pending forces
+/// integrated (journalled) and its accumulator built.
+pub fn accumulate(j: &mut Journal, a: &Args, island: &Island, fpu: Fpu) -> Result<Vec<Accumulator>, Fallback> {
+    island
+        .bodies
+        .iter()
+        .map(|b| motion_solve::accumulate(j, b.class, b.motion, a.step, a.gravity, fpu))
+        .collect()
+}
+
 /// Lay the accumulators into the scratch buffer as the frame and each
 /// motion's `vt[+0x0c]` leave them (`0x0031c2a2..0x0031c31c`): kind 2 at
 /// byte 0, the flag at `+0x0c` as the class writes it or as the guest's
 /// buffer holds it, the seven vectors, and the end byte 3 after the last.
-pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island) -> Option<()> {
+pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island, accumulators: &[Accumulator]) -> Option<()> {
     let base = island.layout.accumulators;
-    let leading = Body { motion: 0, class: SolverClass::Fixed, accumulator: crate::motion::fixed_accumulator() };
-    for (i, body) in std::iter::once(&leading).chain(&island.bodies).enumerate() {
+    let leading = crate::motion::fixed_accumulator();
+    for (i, accumulator) in std::iter::once(&leading).chain(accumulators).enumerate() {
         let at = base.checked_add(ACCUMULATOR_BYTES * i as u32)?;
         let kind = j.get(at)? & !0xff | u32::from(ACCUMULATOR_KIND);
         s.put(at, kind)?;
@@ -291,12 +302,12 @@ pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island) -> Option
             s.put(at + off, j.get(at + off)?)?;
         }
         let flag = j.get(at + 0x0c)?;
-        let flag = match body.accumulator.flag {
+        let flag = match accumulator.flag {
             Some(f) => flag & !0xff | u32::from(f),
             None => flag,
         };
         s.put(at + 0x0c, flag)?;
-        for (k, v) in body.accumulator.vectors.iter().enumerate() {
+        for (k, v) in accumulator.vectors.iter().enumerate() {
             s.put_vector(at + 0x10 + 0x10 * k as u32, *v)?;
         }
     }
@@ -322,8 +333,9 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
         return Err(Overflow);
     }
     place_accumulators(j, &island).ok_or(Memory)?;
+    let accumulators = accumulate(j, a, &island, fpu)?;
     let mut s = Scratch::new(l.accumulators, l.end).ok_or(Memory)?;
-    lay_accumulators(j, &mut s, &island).ok_or(Memory)?;
+    lay_accumulators(j, &mut s, &island, &accumulators).ok_or(Memory)?;
     let base = l.accumulators;
     let mut cursor = Cursor { rows: l.rows, schemas: l.schemas, limit: l.impulses, overflow: 0 };
     for &(constraint, class) in &island.constraints {
@@ -371,11 +383,12 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
             s.put_vector(addr + off, v).ok_or(Memory)?;
         }
     }
-    // 0x0031c414: each motion's export; the fixed class writes nothing.
-    for body in &island.bodies {
-        match body.class {
-            SolverClass::Fixed => {}
-        }
+    // 0x0031c414: each motion's export, in entity order, from its
+    // accumulator as the solve left it.
+    for (i, body) in island.bodies.iter().enumerate() {
+        let at = base + ACCUMULATOR_BYTES * (i as u32 + 1);
+        let solved = Solved::read(|w| s.get(w), at).ok_or(Memory)?;
+        motion_solve::export(j, body.class, body.motion, a.step, params.scale, &solved, fpu)?;
     }
     // 0x0031c457: the busy byte, set to 1 on entry, is 0 again.
     let busy = island.buffer.wrapping_add(BUFFER_BUSY);
@@ -503,7 +516,7 @@ mod tests {
     #[test]
     fn an_unported_motion_falls_back_before_the_constraints_are_read() {
         let mut h = heap(1, 0x1000);
-        h.0.insert(FIXED_VT + MOTION_EXPORT_SLOT, motion::KEYFRAMED_EXPORT);
+        h.0.insert(FIXED_VT + MOTION_EXPORT_SLOT, motion::SPHERE_EXPORT);
         h.0.remove(&CONSTRAINTS);
         assert_eq!(gather(&Journal::new(&h), &args(1)).unwrap_err(), Fallback::Motion);
     }
@@ -518,11 +531,7 @@ mod tests {
             buffer: BUFFER,
             layout: Layout::read(&j, ISLAND, BASE, 0x1000).unwrap(),
             bodies: (0..3)
-                .map(|i| Body {
-                    motion: MOTIONS + 0x100 * i,
-                    class: SolverClass::Fixed,
-                    accumulator: motion::fixed_accumulator(),
-                })
+                .map(|i| Body { motion: MOTIONS + 0x100 * i, class: SolverClass::Fixed })
                 .collect(),
             constraints: vec![],
         };

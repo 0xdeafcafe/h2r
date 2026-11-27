@@ -220,13 +220,21 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
 /// the same margin retail has at 4:3. A `factor` of 1 or more (a window
 /// no wider than the guest's lens) or one that does not read leaves the
 /// retail grid. Whether it widened.
+///
+/// A fitted window at 2560x1440 on Delta Towers' bay showed the grid's far
+/// corners inside the picture (the water ended in two curved edges, the
+/// 4:3 window showed none), so the widened grid takes `OCEAN_GRID_SPARE`
+/// on top of the window's own lens.
+/// Extra width on a widened ocean grid, so its far corners stay off screen.
+const OCEAN_GRID_SPARE: f32 = 1.25;
+
 fn widen_ocean_grid(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> bool {
     if !(factor.is_finite() && factor > 0.0 && factor < 1.0) {
         return false;
     }
     let Some(at) = esp.checked_add(0x10) else { return false };
     let Ok(aspect) = mem.f32(at) else { return false };
-    let widened = aspect / factor;
+    let widened = aspect / factor * OCEAN_GRID_SPARE;
     if !(aspect.is_finite() && aspect > 0.0 && widened.is_finite()) {
         return false;
     }
@@ -1233,13 +1241,14 @@ mod tests {
                 guest.put_f32(at, 4.0 / 3.0);
                 assert!(widen_ocean_grid(&mut guest, esp, factor));
                 let aspect = guest.f32(at).unwrap();
-                close(aspect, output.0 as f32 / output.1 as f32);
+                close(aspect, output.0 as f32 / output.1 as f32 * OCEAN_GRID_SPARE);
                 let grid = ocean_half_tangent(fov, aspect);
                 assert!(grid >= window_half_tangent(fov, factor), "{output:?} at {fov}");
-                // The margin is retail's at 4:3.
+                // The margin is retail's at 4:3, and the spare on top.
                 close(
                     grid / window_half_tangent(fov, factor),
-                    ocean_half_tangent(fov, 4.0 / 3.0) / window_half_tangent(fov, 1.0),
+                    ocean_half_tangent(fov, 4.0 / 3.0) / window_half_tangent(fov, 1.0)
+                        * OCEAN_GRID_SPARE,
                 );
             }
             // 16:10 and 16:9 were inside retail's margin already, and
@@ -1272,7 +1281,7 @@ mod tests {
         mem.put_u8(0x0048_5ac2, 1).put_f32(0x0045_dfdc, 4.0 / 3.0).put_f32(at, 2.0);
         let factor = projection_factor(&mem, (3440, 1440));
         assert!(widen_ocean_grid(&mut mem, esp, factor));
-        close(mem.f32(at).unwrap(), 2.0 * (3440.0 / 1440.0) / (16.0 / 9.0));
+        close(mem.f32(at).unwrap(), 2.0 * (3440.0 / 1440.0) / (16.0 / 9.0) * OCEAN_GRID_SPARE);
     }
 
     #[cfg(feature = "desktop-runtime")]
