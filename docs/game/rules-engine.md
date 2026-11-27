@@ -1244,7 +1244,12 @@ carries across rounds). A round ends on the objective or on the clock
 (`win`): the winners score, their team's `wins` goes up, and while
 rounds are left the script calls `next_round` (`game.rounds`), so the
 engine runs its round's end and the next round starts with every
-player back, the scores kept and the VM's round state gone. The last
+player back, the scores kept and the VM's round state gone. The engine's
+round reset zeroes each statborg row's round score and adds it into the
+row's earlier rounds' score (`0x1e97b0`); `player_score` and team score
+read the game's, the two added (`rules::guest::player_score`,
+`guest_layout::game::game_score`), so a round's points carry and the
+post-game's scores count every round. The last
 round calls `end_round` with the team that won the more rounds, or
 `none` for an even count; a game of one round ends with the round's
 winner. Each round of a game of more than one opens with its number
@@ -2520,9 +2525,11 @@ the ReachVariantTool importer follows phase 10.
   and `Session::apply`, which both homes run (`live-server` and the
   Cloudflare worker); the worker's own run of the test is not seen.
 - **The winner of a round or a game.** The game-end latch and the round
-  end are known; where the engine keeps the winner is not. Whether
-  `player_score` reads the round's or the game's score after a round
-  reset is **S** ([notes/2026-11-27-next-round.md](../engine/notes/2026-11-27-next-round.md)).
+  end are known; where the engine keeps the winner is not. That a
+  statborg row's `+0x02` is the earlier rounds' score, which the
+  post-game shows, is **S**: the round reset adds the round's `+0x00`
+  into it and zeroes `+0x00`, and the game's end adds it in and keeps it
+  ([notes/2026-11-27-next-round.md](../engine/notes/2026-11-27-next-round.md)).
 - **`set_team`, per-player traits, movement speed.** No entry is known.
 - **`give`, `hide`, `attach`, `camera`, and `take` outside a drop.** No
   entry is proven. `0x10ca80` is known only as an observer of a pickup,

@@ -4,7 +4,7 @@
 # the clock in minutes, and the sides swap for the second. The report's
 # `rounds` holds every player's `player_score` and each team's score as
 # each round began: read `rounds[1]` to see what the second round started
-# with (a `player_score` that reset reads 0 there).
+# with (the game's scores so far: the first round's winners read 1 each).
 # The run makes Zanzibar's bot nav mesh and visibility grid in its data
 # first when they are not there (sim.md, "The nav mesh"), so no
 # `h2 bots nav` is needed.

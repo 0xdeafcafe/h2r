@@ -416,3 +416,54 @@ fn a_document_with_object_game_types_expects_no_map() {
     let error = validate(&doc, &object_limits()).unwrap_err().to_string();
     assert!(error.contains("expects no map"), "{error}");
 }
+
+fn clips(id: u32, target: Endpoint, clips: Option<u8>) -> Op {
+    Op {
+        id: OpId(id),
+        edit: Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::SpareClips(clips),
+        }),
+    }
+}
+
+#[test]
+fn spare_clips_are_an_item_spawners_in_range_and_the_last_op_wins() {
+    let op = clips(1, at(ITEMS, 0), Some(2));
+    let json = serde_json::to_value(&op.edit).unwrap();
+    assert_eq!(
+        json["entry"]["property"]["property"],
+        serde_json::json!({"spare_clips": 2})
+    );
+    validate(
+        &with(vec![op, clips(2, at(ITEMS, 1), Some(SPARE_CLIPS_MAX))]),
+        &limits(),
+    )
+    .unwrap();
+    let refuse = |ops: Vec<Op>, expected: &str| {
+        let error = validate(&with(ops), &limits()).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error} did not mention {expected}");
+    };
+    refuse(
+        vec![clips(1, at(WEAPONS, 0), Some(1))],
+        "spare clips are an item spawner's",
+    );
+    refuse(
+        vec![clips(1, at(ITEMS, 0), Some(SPARE_CLIPS_MAX + 1))],
+        "spare clips are 0 to 10",
+    );
+
+    // Teams and clips are read apart; a clear leaves none; a reset covers both.
+    let mut ops = vec![
+        clips(1, at(ITEMS, 0), Some(3)),
+        team(2, at(ITEMS, 0), Some(1)),
+        clips(3, at(ITEMS, 0), Some(0)),
+        clips(4, at(ITEMS, 1), Some(5)),
+        clips(5, at(ITEMS, 1), None),
+    ];
+    assert_eq!(spare_clips(&ops), BTreeMap::from([(Endpoint::base(ITEMS, 0), 0)]));
+    assert_eq!(teams(&ops), BTreeMap::from([(Endpoint::base(ITEMS, 0), 1)]));
+    ops.push(reset(6, at(ITEMS, 0)));
+    assert!(spare_clips(&ops).is_empty());
+    assert!(resolve(&ops, &limits().base_counts).unwrap().lowered.is_empty());
+}

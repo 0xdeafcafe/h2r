@@ -1299,6 +1299,54 @@ fn siege_plays_its_rounds_with_the_sides_swapped() {
     );
 }
 
+/// Siege's rounds on the clock alone, a minute a phase: nobody moves, so
+/// the defenders hold each round when its phase clock runs out.
+fn siege_on_the_clock(ticks: usize) -> (rules::Ir, Scenario) {
+    let (ir, options) = siege(&[("round_count", 2), ("phase_time", 60)]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.options = options;
+    let spawns = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(1)];
+    s.ticks = vec![ScenarioTick::default(); ticks.max(1)];
+    s.ticks[0].events = spawns;
+    (ir, s)
+}
+
+/// The defenders hold both rounds on the clock: each round's defenders
+/// score a point, so each team has one and the game is drawn.
+#[test]
+fn siege_defenders_holding_both_rounds_score_one_each_and_draw() {
+    let (ir, s) = siege_on_the_clock(3700);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Each phase clock is 1800 ticks; round 2 starts at the boundary after.
+    assert_eq!(calls(&r, "next_round"), [(1799, &[Arg::Team(Some(1))][..])]);
+    let end = calls(&r, "end_round");
+    assert_eq!(end.len(), 1, "{end:?}");
+    assert_eq!(end[0].1, &[Arg::Team(None)][..], "one round each draws");
+    assert_eq!(r.game.players[&0].score, 1, "team 0 held round 2");
+    assert_eq!(r.game.players[&1].score, 1, "team 1 held round 1");
+    let holds = lines(&r).iter().filter(|l| **l == "The defenders held").count();
+    assert_eq!(holds, 2);
+}
+
+/// Team 0 takes everything in round 1 and holds round 2 on the clock: two
+/// rounds to none, and the game names team 0.
+#[test]
+fn siege_team_that_wins_both_rounds_wins_the_game() {
+    let (ir, mut s) = siege_on_the_clock(0);
+    let won: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.ticks = won.ticks;
+    s.ticks.extend(vec![ScenarioTick::default(); 1900]);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(calls(&r, "next_round"), [(1351, &[Arg::Team(Some(0))][..])]);
+    let end = calls(&r, "end_round");
+    assert_eq!(end.len(), 1, "{end:?}");
+    assert_eq!(end[0].1, &[Arg::Team(Some(0))][..], "two rounds to none");
+    assert_eq!(r.game.players[&0].score, 2);
+    assert_eq!(r.game.players[&1].score, 0);
+}
+
 /// A game of one round ends at the round's win, and a side that won the
 /// more rounds wins the game.
 #[test]

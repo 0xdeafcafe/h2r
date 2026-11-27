@@ -202,6 +202,23 @@ fn engine_statistics_are_rows_of_their_stride() {
     assert_eq!(e.team_stats(2).addr, 0x1000 + 0x4c8 + 2 * 0x12);
 }
 
+/// A game of rounds: the round reset moves the round's score into the
+/// earlier rounds', and the game's end adds it in and keeps it.
+#[test]
+fn the_games_score_is_the_earlier_rounds_and_this_ones_until_the_end() {
+    use crate::game::game_score;
+    // Round 1: one point this round.
+    assert_eq!(game_score(1, 0, false), 1);
+    // Round 2 starts: the reset moved it (round 0, earlier 1).
+    assert_eq!(game_score(0, 1, false), 1);
+    // Round 2 won: one more.
+    assert_eq!(game_score(1, 1, false), 2);
+    // The game's end added it in and kept it: counted once.
+    assert_eq!(game_score(1, 2, true), 2);
+    assert_eq!(PlayerStats::ROUNDS_SCORE.offset, 0x2);
+    assert_eq!(TeamStats::ROUNDS_SCORE.offset, 0x2);
+}
+
 #[test]
 fn object_types_round_trip_and_name_their_group() {
     for (i, t) in ObjectType::ALL.iter().enumerate() {

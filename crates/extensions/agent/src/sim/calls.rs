@@ -221,6 +221,10 @@ pub enum ForgeStep {
     /// Set the identifier of the loaded scenario's netgame flag `flag`, a
     /// teleporter sender or receiver, to `channel`.
     Channel { flag: u32, channel: i16 },
+    /// Give netgame item entry `index` spare clips, or none: the game's
+    /// table (`forge::spare_clips`), which fills each weapon the entry
+    /// makes, and the weapon it has out now.
+    SpareClips { index: u32, clips: Option<u8> },
     /// An edit of one of the map's own scenario entries (`forge::base`),
     /// after the other steps: checked with the batch, then done.
     Base(crate::forge::base::BaseStep),
@@ -244,6 +248,19 @@ fn teleporter_flag(m: &dyn GuestMemory, scenario: u32, flag: u32) -> Result<u32,
         return Err(format!("netgame flag {flag} is not a teleporter"));
     }
     Ok(at)
+}
+
+/// Checks that the loaded scenario has netgame item entry `index`.
+fn item_entry(m: &dyn GuestMemory, scenario: u32, index: u32) -> Result<(), String> {
+    use map::scenario_layout::{BlockKind, block};
+    let def = block(BlockKind::NetgameEquipment);
+    let count = m
+        .u32(scenario + def.offset)
+        .map_err(|e| format!("guest memory at {:#x} faulted", e.addr))?;
+    if index >= count {
+        return Err(format!("the scenario has no netgame item {index}"));
+    }
+    Ok(())
 }
 
 fn teleporter_identifier() -> u32 {
@@ -1088,6 +1105,12 @@ async fn run_forge(
                 }
                 (None, None)
             }
+            ForgeStep::SpareClips { index, .. } => {
+                if let Err(e) = cx.read(|m| item_entry(m, guard.scenario, *index)) {
+                    return Ok(Err(super::invalid(e)));
+                }
+                (None, None)
+            }
             ForgeStep::Base(base_step) => {
                 if let Err(e) =
                     cx.read(|m| crate::forge::base::plan_ahead(m, guard.scenario, base_step))
@@ -1183,6 +1206,22 @@ async fn run_forge(
                 }
             };
             cx.write(|m| m.write(at + teleporter_identifier(), &channel.to_le_bytes()))?;
+        }
+    }
+    // The table first, so a weapon the entry makes from here on takes the
+    // clips; then the one it has out. A spawner with none keeps the reserve
+    // its weapon already has.
+    for step in steps {
+        if let ForgeStep::SpareClips { index, clips } = *step {
+            crate::forge::spare_clips::set(index, clips);
+            if let Some(clips) = clips {
+                cx.write(|m| -> Result<(), engine::MemFault> {
+                    if let Some(state) = crate::forge::spare_clips::state(m)? {
+                        crate::forge::spare_clips::fill(m, state, index, clips)?;
+                    }
+                    Ok(())
+                })?;
+            }
         }
     }
     for step in steps {

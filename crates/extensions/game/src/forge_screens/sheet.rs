@@ -260,6 +260,9 @@ pub enum Prop {
     Team,
     /// An item spawner's team, a property of the document.
     SpawnerTeam,
+    /// A weapon spawner's spare clips, a property of the document: value 0
+    /// the weapon's own reserve, then 0 to 10 clips.
+    SpareClips,
     /// A goal's netgame flag type.
     Role,
     /// A goal's identifier.
@@ -1242,6 +1245,10 @@ pub struct Extras {
     pub kit: bool,
     /// An item spawner's team, from the document's property.
     pub team: Option<u8>,
+    /// A weapon spawner's spare clips, from the document's property: none
+    /// for a thing with no such row, `Some(None)` for the weapon's own
+    /// reserve.
+    pub spare_clips: Option<Option<u8>>,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in
