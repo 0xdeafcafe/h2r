@@ -22,6 +22,7 @@ use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
 
 mod flare_pass;
+mod material_proof;
 mod refusal_samples;
 mod particle_capture;
 
@@ -189,7 +190,8 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             source: Source::Particle(call.clone()),
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
+        let proof = Mutex::new(material_proof::particle(mem, call.return_address));
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof };
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), PrimitiveType::QuadList, data, &carried, &candidate,
@@ -220,7 +222,11 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             return false;
         };
         *bytes = Some(generated.as_slice().into());
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
+        let proof = match call.kind {
+            effect_geometry::Kind::Contrail => material_proof::contrail(mem, call.context),
+            effect_geometry::Kind::EffectQuad => None,
+        };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(proof) };
         let drawn = self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), primitive, generated, &[None; 16], &candidate,
@@ -528,10 +534,16 @@ struct Direct<'a> {
     admission: &'a Admission,
     pending: Pending,
     stage: Stage,
+    /// The sampled draw's Rust material, compared with the first draw
+    /// offered (`material_proof`).
+    proof: Mutex<Option<material_proof::Expected>>,
 }
 
 impl DrawAdmission for Direct<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        if let Some(e) = self.proof.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            material_proof::record(&e, snapshot.draw);
+        }
         self.admission.plan(snapshot, &self.pending, self.stage, false)
     }
 }

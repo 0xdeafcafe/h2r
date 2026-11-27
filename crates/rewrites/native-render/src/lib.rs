@@ -34,6 +34,7 @@ pub mod base_look;
 pub mod bodies;
 pub mod camera;
 pub mod cone_shadows;
+pub mod contrail_material;
 #[cfg(feature = "gpu")]
 pub mod cone_shadows_gpu;
 pub mod cull;
@@ -51,6 +52,7 @@ pub mod decorators_gpu;
 pub mod decorators_load;
 pub mod effect_geometry;
 pub mod effect_immediate;
+pub mod effect_material;
 pub mod flares;
 #[cfg(feature = "gpu")]
 pub mod engine_states;
@@ -111,6 +113,7 @@ pub mod overlay;
 pub mod particle_gpu;
 #[cfg(feature = "gpu")]
 pub mod particle_compute;
+pub mod particle_material;
 pub mod particle_system;
 pub mod particles;
 #[cfg(feature = "gpu")]

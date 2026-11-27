@@ -160,13 +160,64 @@ also counts `layer_plan_15_effects_shadow_answer_{particles,contrails,fault}`.
 
 The handlers stay: the native particle draw takes its pipeline from the
 D3D state the guest's material setup leaves (`native_render::particle_gpu`).
-Cutting them needs the particle and contrail materials from the shader tag
-in Rust.
+Cutting them needs the materials in Rust, which [R2's materials](#r2s-materials)
+builds and proves.
 
 Tests: `answer.rs`
 (`an_answered_particle_draws_from_the_rust_emission_and_a_refused_one_keeps_its_guest_body`,
 `a_sampled_frame_or_a_closed_gate_runs_the_guest_and_the_arm_compares`),
 `effects_shadow.rs` (`an_answering_gate_draws_each_decal_run_after_its_last_entry`).
+
+## R2's materials
+
+Built (**Code**): the material each handler's setup leaves on the device,
+made in Rust as data (`native_render::effect_material::Material`) and
+compared with the draw the native admission takes, one in 64 of each kind
+(`game/src/native_particles_admission/material_proof.rs`).
+
+| | Particles | Contrails |
+|---|---|---|
+| Setup | `0x002243c0` → `0x0023ea80` | `0x00035b00` → `0x00043720` → `0x00052d40` |
+| Inputs, read at | the draw's entry: shader, layer, pass, the system's `+4`, the view matrix `[0x004687d0]` | the setup's entry: material block `e[+0xc]` (`+0x24` type, `+0x28` flags, `+0x2a` blend mode, `+0x2e` map flags), bitmap `e[+0x18]`, image `e[+0x1c]` |
+| Port | `particle_material`: `STIPPLEENABLE` off, then implementation 0 of lod 0, layer, pass from `tags::material` (`0x00016b90`) | `contrail_material`: `0x00052d40` as data, the blend tables `0x004506b8`, `0x004506e8`, `0x00450718` copied from the image |
+| Render and stage states | the implementation's, in set order; stage states as `0x000189a0` writes them | cull, colour write, blend, alpha test, stencil, depth, z bias; stage 0's addressing and filters |
+| Combiner | the implementation's 60 words; constants its draw-time inputs drive are not compared | the 60 words built at `0x00484f68` |
+| Textures | each bound stage's bitmap image (`0x000143c0`) | stage 0's bitmap image |
+| Constants | `c78..c80`, the view matrix | `c78..c80`, the identity |
+| Vertex program | program `class + 7` of implementation 0's `vrtx` | engine slot 4's program 0 |
+
+`compare` names each differing field: `render_<index>`, `stage<n>_<index>`,
+`combiner_w<n>`, `texture<n>`, `constant<register>`, `vertex_program`. A
+state set twice is compared at its last value. `render.scene` carries
+`<kind>_material_{sampled,matched,mismatched}`,
+`<kind>_material_mismatched_<field>` and `<kind>_material_refused_<reason>`
+for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
+
+Refused, by name, rather than approximated:
+
+| Reason | Kind | Branch |
+|---|---|---|
+| `particle_model`, `not_shader` | particle | a `PRTM`/`prt3` or other tag in the shader's place |
+| `reset` | particle | `0x0001bbf0`'s device reset (`[0x004670bc]` set) |
+| `vertex_override` | particle | `0x0001ccb0(0x2b)` (`[0x00470a38]` and `[0x00470a39]` set) |
+| `animated`, `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | animated parameters, a combiner variant or a state the draw's inputs choose, an engine texture or the lightmap, the frame copy |
+| `tags`, `no_vertex_shader`, `library_loading`, `library_unread` | particle | the shader does not resolve, or the map's library is not read yet |
+| `kind`, `blend_mode`, `view_matrix` | contrail | a block type other than 1, a blend mode past the tables, option bit 5 |
+| `texture_streaming`, `texture_unbound` | both | a bitmap image that is not resident, or a bitmap with no images |
+| `vertex_builtin`, `vertex_not_vrtx`, `vertex_program_index` | both | a program not in a `vrtx` tag |
+| `no_setup` | both | no setup read for the draw |
+
+Not compared: the stipple pattern (`0x003f8cc0`), the polygon offsets
+`SetRenderState_ZBias` derives (slots 77 to 81), the vertex declaration
+and the other vertex constants.
+
+Tests: `effect_material.rs`
+(`a_resident_image_binds_its_texture_and_others_fall_back_as_the_binder_does`,
+`a_draw_that_differs_is_named_by_field_and_a_state_set_twice_by_its_last_value`),
+`contrail_material.rs` (`the_blend_mode_comes_from_the_images_tables_and_mode_ten_turns_blending_off`,
+`the_combiner_has_one_or_three_stages_then_the_blend_modes`),
+`particle_material.rs` (`only_a_shad_without_reset_or_override_reaches_the_shader_setup`),
+`effect_materials.rs` (`one_draw_in_sixty_four_is_compared_and_each_outcome_is_counted_by_name`).
 
 ## Related
 
