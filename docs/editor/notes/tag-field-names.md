@@ -223,7 +223,7 @@ subtree.
 | obje attachments +0xc | Signed 16-bit index | 16-bit enumeration | The engine reads the signed index, including -1. |
 | obje +0xa4 | Eight opaque bytes | Block with 0x50-byte elements | Empty on examined retail objects. No independently established element stride. |
 | obje change_colors.block_0 +0x4, +0x10 and change_colors.block_8 +0x8, +0x14 | Three separate words in each triplet | RGB float triplets | The converter populates the three components independently by their word paths. |
-| unit +0xd8 | Four opaque bytes | String ID | A string would change encoding and fixup behavior; our structural schema has no string there. |
+| unit +0xd8 | Four opaque bytes | String ID | A string would change encoding and fixup behaviour; our structural schema has no string there. |
 | unit +0xe0, +0xf0 and block_198 +0x4 | Two, three and three words respectively | Angular range and two three-float vectors | These fields cross our word boundaries. |
 | unit block_1a8 +0x4 | Two words | Tag reference | The reference straddles our fields and lacks a matching schema fixup. |
 | vehi block_1c8 +0x24; +0x44, +0x4c, +0x6c, +0x88 | Three words; four pairs of words | Three-float vector; two float ranges and two angular ranges | They straddle our fields. The converter writes the camera angle bounds as individual words. |

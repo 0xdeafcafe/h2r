@@ -955,7 +955,7 @@ which is why R4 follows R1.
 - The light passes of model parts (`ModelLights`) hold the model load's
   images and are rebuilt only when the models load again after a `Model`
   edit; an `Image` edit rewrites the world's passes only. The lights'
-  normalization cube and attenuation volume, and the decorators'
+  normalisation cube and attenuation volume, and the decorators'
   lightmap stage (the globals' rasterizer bitmap), are not refreshed.
 - A fog, water or layer image that decodes as a linear texture is
   refused by the refresh's decode and keeps its pixels.

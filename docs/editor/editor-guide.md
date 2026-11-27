@@ -221,7 +221,7 @@ Map tool, or drop a disc image, `.map` file or folder onto the window.
 
 **The first start.** With no tags tree yet, the editor opens a **First
 start** window over the panels: choose the disc to extract every tag
-from (an `.iso` image, a `.map` file or a folder of them — `H2_DISC` and
+from (an `.iso` image, a `.map` file or a folder of them - `H2_DISC` and
 `disc/halo2.iso` are offered), see how big it is, and press **Extract
 every map**. The tree it writes is game data under the data folder
 (about 2.65 GB for the retail disc, a minute and a half, never
@@ -229,8 +229,8 @@ committed; a folder of your choosing when `tags_root` is set, which is
 kept with the window layout); a bar in the status line shows the
 progress and you can work while it fills. Press **Not now** to skip it
 for this run. On later starts the editor re-extracts in the background
-what a changed disc or a better layout made stale — the same bar in the
-status line — and maps already extracted keep working while it runs. The
+what a changed disc or a better layout made stale - the same bar in the
+status line - and maps already extracted keep working while it runs. The
 agent API's `workspace.status`, `workspace.extract` and
 `workspace.prune` are the same thing
 ([agent-api.md](agent-api.md#the-tag-workspace)).

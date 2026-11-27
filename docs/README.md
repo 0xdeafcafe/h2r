@@ -525,6 +525,12 @@ Reading and converting Halo 1 data:
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/formats/variants`)
 - [hud-editor.md](editor/hud-editor.md): the HUD tool (`nhdt` tags): placement, checks, the save, what is not modelled
 - [agent-api.md](editor/agent-api.md): the editor's socket API: JSON methods over maps, tags, placements, variants, playlists and UI screens, and content previews in a paired game (`pair.preview`, `pair.audio`)
+- [agent-api-methods.md](editor/agent-api-methods.md): the editor API, method reference by namespace
+- [agent-api-pairing.md](editor/agent-api-pairing.md): the editor API, pairing, mirror, views and previews in a paired game
+- [agent-api-workspace.md](editor/agent-api-workspace.md): the editor API, tag workspace, Browser, packages, Forge variants, problems
+- [agent-api-media.md](editor/agent-api-media.md): the editor API, image generation, content checks, announcer and voices
+- [agent-api-extensions.md](editor/agent-api-extensions.md): the editor API, provider extension points per tool
+- [agent-api-models.md](editor/agent-api-models.md): the editor API, `model.*`, poses and customisation
 - The [Studio content skill](../.claude/skills/h2-studio-content/SKILL.md) guides coding agents through building content in Studio: render, `check.run`, then preview it in a running game.
 - [live-mirror.md](editor/live-mirror.md): paired game discovery, live world state, conditional edit batches, undo and conflict handling
 - [click-to-edit.md](editor/click-to-edit.md): placement-to-tag navigation, editable tag documents, references and the remaining unified Map work

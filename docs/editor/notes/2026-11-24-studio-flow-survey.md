@@ -10,8 +10,8 @@ built, tested or run. The window was read from
 `crates/apps/studio/src/ui.rs` (`Studio::frame`, `menu_bar`), the modules
 of `src/ui/` and `src/app/shell.rs`, `app/assets.rs`, `app/commands.rs`
 and `app/problems.rs`, against [editor-guide.md](../editor-guide.md) and
-[studio-redesign.md](../studio-redesign.md). To repeat it: walk each
-journey below in the window and compare each step with the file named.
+[studio-redesign.md](../studio-redesign.md). To repeat it: take each
+walk-through below in the window and compare each step with the file named.
 
 Each step is marked with what goes wrong there:
 
@@ -43,7 +43,7 @@ Ways in:
 | A reference row in the Tags inspector | the tag it names | anything that is not a tag reference |
 | A Problems row (`App::open_problem`) | a tag and its field, a package in the Browser, a tool | |
 
-### Journey 1: a new weapon, end to end
+### Walk-through 1: a new weapon, end to end
 
 | Step | In the window | Problem |
 |---|---|---|
@@ -61,7 +61,7 @@ Ways in:
 | See it in the game | Preview > **Preview in game** (Cmd+Enter) for the front tab; the result is a job and a log line | **hidden**: the Preview menu is the only control; the document has none |
 | What uses it | the inspector's header says "shared by n placements, n tags"; the list is `tag.uses` (API) | **unfindable** from the weapon outward to the packages and variants that name it |
 
-### Journey 2: an announcer line in a cloned voice
+### Walk-through 2: an announcer line in a cloned voice
 
 | Step | In the window | Problem |
 |---|---|---|
@@ -75,7 +75,7 @@ Ways in:
 | Hear it in the game | Preview in game needs the sound's tab in front again | **lost** |
 | Find the new line later | it is a `sound` item of the package; the item row opens nothing | **dead end** |
 
-### Journey 3: a game type, tested in the Game view, packaged as a mod
+### Walk-through 3: a game type, tested in the Game view, packaged as a mod
 
 | Step | In the window | Problem |
 |---|---|---|

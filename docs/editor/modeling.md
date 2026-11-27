@@ -644,8 +644,8 @@ pages open read-only.
   sequences no longer fits where it is stored:
   `tags::bitmap_grow::Parts::split` takes the tag apart into its
   header, image records, sequence records and sprites (refused, and the
-  bitmap then cannot gain anything — `bitmap.read`'s `movable` says
-  why — when a block lies outside the tag, records share bytes, or a
+  bitmap then cannot gain anything - `bitmap.read`'s `movable` says
+  why - when a block lies outside the tag, records share bytes, or a
   byte no record holds is nonzero, so an unknown payload is never
   rewritten), `Parts::layout` writes them again as one payload with the
   new records, and the save writes that whole copy at the end of the
