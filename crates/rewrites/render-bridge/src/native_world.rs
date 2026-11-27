@@ -426,7 +426,7 @@ fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> bool {
 /// draw. The objects are the sorted walk's (`native_objects`) and stay.
 fn drop_unclaimed(mem: &mut dyn GuestMemory) {
     let mut m = Mem(mem);
-    let Some(skip) = native_render::layer_pass::clear_scene_layer(&mut m, LIGHTMAP_LAYER, false, &|_| false) else {
+    let Some(skip) = native_render::layer_items::clear_scene_layer(&mut m, LIGHTMAP_LAYER, false, &|_| false) else {
         crate::native_layers::count_dropped("unreadable", 1);
         return;
     };

@@ -6,6 +6,7 @@
 //! draw; nothing changes without a host, in another layer, from another
 //! caller, with the gate off, or for a part the host leaves to the D3D
 //! path.
+#![cfg(feature = "native-render")]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

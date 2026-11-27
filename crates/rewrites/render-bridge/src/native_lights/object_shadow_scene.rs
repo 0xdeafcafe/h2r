@@ -248,7 +248,7 @@ mod tests {
         );
         // Slot 3 holds the shadows and then layer 7: the shadows are
         // handed over at layer 7's draw, ahead of it.
-        assert_eq!(passes[0].slot, native_render::layer_pass::world_slot(7).unwrap());
+        assert_eq!(passes[0].slot, native_render::layer_items::world_slot(7).unwrap());
         let host = Arc::new(Records(Mutex::new(Vec::new())));
         set_host(host.clone());
         VIEW_TARGET.set(Some([1; 8]));

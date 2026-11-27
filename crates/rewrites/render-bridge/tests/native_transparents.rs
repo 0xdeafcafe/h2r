@@ -1,5 +1,6 @@
 //! Sorted entries are identified on the original guest stack, including
 //! when another handler runs without calling the geometry observer.
+#![cfg(feature = "native-render")]
 
 use engine::{memory::{FlatMemory, GuestMemory}, points};
 use render_bridge::native_transparents::{self, NativeTransparents, Scope};

@@ -64,6 +64,7 @@ pub mod glow;
 pub mod gpu;
 pub mod hud;
 pub mod instances;
+pub mod layer_items;
 #[cfg(feature = "gpu")]
 pub mod layer_pass;
 #[cfg(feature = "gpu")]

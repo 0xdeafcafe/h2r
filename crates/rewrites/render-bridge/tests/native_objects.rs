@@ -1,6 +1,7 @@
 //! The `native-objects` feature (docs/graphics/native-objects.md, stage
 //! 2): its plan next to every other hook on the layer draw, its snapshot
 //! policy, and which items of the native set a host is offered.
+#![cfg(feature = "native-render")]
 
 use render_bridge::native_objects::{self, NativeObjects, NativeSet, SetPart};
 use hooks::plan::Base;

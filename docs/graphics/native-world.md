@@ -940,7 +940,7 @@ layer ID.
 The world layers are cut per layer (`render_bridge::cut::LAYER_CUTS`; the
 layer draw `0x00044550` serves every layer, so no whole-function hook
 applies). Each draws only from the scene, in the slot the traced order gives
-it (`native_render::layer_pass::world_slot`):
+it (`native_render::layer_items::world_slot`):
 
 | Layers | Slot | Producer |
 |---|---|---|
@@ -950,7 +950,7 @@ it (`native_render::layer_pass::world_slot`):
 
 The observer before the layer draw clears the layer's bit on every geometry
 item the native pass does not draw, as well as on those it does
-(`layer_pass::clear_scene_layer`), so the guest builds no entry for any of
+(`layer_items::clear_scene_layer`), so the guest builds no entry for any of
 them and none reaches the device. There is no order rule: the pass draws
 its items in the list's order and no kept guest draw is left to precede or
 follow them. A structure item the pass does not draw is a named drop,
