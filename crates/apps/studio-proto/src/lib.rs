@@ -252,6 +252,7 @@ pub mod method {
     pub const GROUND_BUILD: &str = "ground.build";
     pub const GROUND_SAVE: &str = "ground.save";
     pub const SIEGE_LAYOUT: &str = "siege.layout";
+    pub const MAP_NEW: &str = "map.new";
     pub const PLAYTEST_STATIC: &str = "playtest.static";
     pub const PLAYTEST_RUN: &str = "playtest.run";
     pub const PLAYTEST_STATUS: &str = "playtest.status";

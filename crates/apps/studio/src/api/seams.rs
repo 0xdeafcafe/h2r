@@ -73,6 +73,8 @@
 //!   `voice.dataset.status`, `voice.clone.train` and `voice.clone.say`
 //!   ([`super::voice`], [`super::voice_clone`]) over `app::announcer`
 //!   and `app::voices`.
+//! - **New map**: `map.new` builds a starter map and opens it
+//!   ([`super::new_map`], `app::new_map`, the `starter_map` crate).
 //!
 //! [`Action`]: crate::app::Action
 //! [`App::perform`]: crate::App::perform
@@ -188,4 +190,7 @@ pub fn register(api: &mut Api) {
     // Voices: game characters cloned from the disc: datasets, the local
     // model's jobs and lines (app::voices).
     api.register(Box::new(super::voice_clone::VoiceClone));
+    // map.new: File > New map, a starter map built and opened
+    // (app::new_map, starter_map).
+    api.register(Box::new(super::new_map::NewMap));
 }

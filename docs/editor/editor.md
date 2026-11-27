@@ -544,6 +544,50 @@ lists the nine maps, opens the first and last with every section loaded
 from the disc's shared maps, finds tags with raw data in `shared.map`,
 and saves one edit.
 
+### New maps
+
+**File > New map...** asks for a name and a kind and builds a map that
+boots and plays at once: a derived package (`[base] derived = true`) in
+`<data>/maps/<name>/`. The agent API's `map.new` runs the same build
+([agent-api.md](agent-api.md), "New maps"). The build is the
+`starter_map` crate. The window runs it on a thread
+(`app/new_map.rs`) and opens the map when it is done.
+
+The template is data, not code: `content/new-map/courtyard.yaml`.
+
+| Step | What it makes | Code |
+|---|---|---|
+| Floor | a 32 m lit floor: render mesh, collision from the collision compiler with its MOPP, the lightmap from the sun and sky fill, the sky | `stage_kit::map::build_over` |
+| Pieces | 4 walls, a ramp, a platform, 3 cover blocks, 2 pillars: block-out pieces, each with its `bloc`, render model, `coll` and `phmo`, placed as crates | `forge_build::blockout::install` ([forge-blockout.md](../game/forge-blockout.md)) |
+| Placements | spawns, netgame flags, equipment, through a scenario-edit recipe, each checked as the editor checks it | `starter_map::build::place` |
+| Check | the scenario read back starts every mode the template claims | `starter_map::coverage` |
+| Package | the built map as layer 1, the placements as layer 2, `report.json` | `starter_map::write` |
+
+| Kind | Base map | Placements |
+|---|---|---|
+| Multiplayer | `coagulation` | 16 respawns (8 a team); CTF flag and return, assault bomb and return for each team; an oddball; a 4-corner hill; 4 territories; a battle rifle and a Warthog. Every retail mode starts |
+| Campaign | `05a_deltaapproach` | the player start; one squad of two Elites in a zone of 6 firing positions under one order. The base's AI, scripts and object names are cleared first |
+
+The pieces are the Forge block-out set, so the map is edited later with
+the same pieces. A piece that does not install, a tag the template names
+that the base lacks, or a mode it does not cover stops the build and
+names the gap.
+
+**Where a tag-workspace project plugs in.** The base's tags come through
+`tags::repo::TagSource`. A disc map is `starter_map::build` over a
+`MapSource`. A project is a `TagSource` and a `stage_kit::map::Base`
+passed to `starter_map::build::build_over`, and adds its own tags to the
+closure through `stage_kit::map::Over::roots`.
+
+Not built yet:
+
+| Gap | Effect |
+|---|---|
+| One cluster, no portals | the whole yard is one visibility cell |
+| No cubemap | the floor shader samples none |
+| No pathfinding | the campaign squad fights from where it stands |
+| One-sided floor | the floor is not seen from below |
+
 ### What the viewport shows, and what it does not yet
 
 `scenario_edit::scene` builds the map's art when it opens, from your own

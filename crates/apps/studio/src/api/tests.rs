@@ -34,6 +34,7 @@ mod shell_tests;
 mod ui_export_tests;
 mod shader_tests;
 mod siege_tests;
+mod new_map_tests;
 
 struct Temp(PathBuf);
 impl Temp {

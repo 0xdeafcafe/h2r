@@ -795,6 +795,24 @@ format and budget.
   bytes. (modeling.md, "Texture editing"
   ([modeling.md](modeling.md)).)
 
+### Start a new map
+
+**File > New map...** makes a map you can play straight away: a small
+lit courtyard with walls, a ramp and cover.
+
+1. Open your Halo 2 disc. The new map takes its tags from it.
+2. Choose **File > New map...**, type a name and pick a kind.
+3. Click **Build**. The map opens when it is built, and it is listed
+   under **Packages**.
+
+| Kind | You get |
+|---|---|
+| Multiplayer | 16 spawns over two teams, points for every game type, a battle rifle and a Warthog |
+| Campaign | the player start and a squad of two Elites |
+
+The walls, ramp and cover are block-out pieces. Move them, delete them
+or add more, as on any map. **File > Save** updates the package.
+
 ### Your packages in the Maps list
 
 Every package in the data folder is listed under **Packages** in **Maps**,

@@ -146,3 +146,14 @@ fn the_socket_lives_in_the_cache_directory() {
     }
     assert_eq!(crate::output_dir(), agent_proto::cache_dir().join("studio"));
 }
+
+#[test]
+fn the_new_map_short_form_takes_a_name_and_a_kind() {
+    assert_eq!(c("new-map courtyard"), (m::MAP_NEW.into(), json!({"name": "courtyard"})));
+    assert_eq!(
+        c("new-map yard campaign"),
+        (m::MAP_NEW.into(), json!({"name": "yard", "kind": "campaign"}))
+    );
+    assert!(parse_call(&split("new-map").unwrap()).is_err());
+    assert!(parse_call(&split("new-map a campaign extra").unwrap()).is_err());
+}

@@ -48,6 +48,7 @@ mod markers_check;
 mod mirror;
 mod models;
 mod nav;
+mod new_map;
 mod game;
 mod ground;
 mod siege;

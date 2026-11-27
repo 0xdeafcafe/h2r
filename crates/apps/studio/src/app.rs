@@ -15,6 +15,7 @@ pub mod bot_nav;
 pub mod ground;
 pub mod commands;
 pub(crate) mod convert;
+pub(crate) mod new_map;
 pub mod hud;
 pub mod kinds;
 pub mod live;
@@ -201,6 +202,12 @@ pub enum Action {
     SetLighting(scenario_edit::native_view::Lighting),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
+    /// File > New map: build a starter map of the kind, called `title`,
+    /// in the background, and open it (docs/editor/editor.md, "New maps").
+    NewMap {
+        title: String,
+        kind: starter_map::Kind,
+    },
     /// The sandbox "Convert to Halo 2" uses.
     SetConvertSandbox(ConvertSandbox),
     Undo,
@@ -699,6 +706,9 @@ pub struct App {
     /// runs it.
     convert: Option<Running>,
     convert_error: Option<String>,
+    new_map: Option<new_map::Running>,
+    new_map_error: Option<String>,
+    new_map_written: Option<new_map::Written>,
     converter: Converter,
     /// The sandbox "Convert to Halo 2" uses.
     pub convert_sandbox: ConvertSandbox,
@@ -828,6 +838,9 @@ impl App {
             overlay_rev: 0,
             convert: None,
             convert_error: None,
+            new_map: None,
+            new_map_error: None,
+            new_map_written: None,
             converter: from_scratch,
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
@@ -1237,6 +1250,12 @@ impl App {
             Action::SetLayers(layers) => self.layers = layers,
             Action::SetLighting(lighting) => self.lighting = lighting,
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
+            Action::NewMap { title, kind } => {
+                if let Err(e) = self.start_new_map(&title, kind, false) {
+                    self.error(format!("new map: {e}"));
+                    self.new_map_error = Some(e);
+                }
+            }
             Action::SetConvertSandbox(sandbox) => {
                 self.convert_sandbox = sandbox;
                 self.convert_error = None;

@@ -334,6 +334,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `markers` | `list {kind?, layer?}`, `render {kind?, team?, area?, view?, size?, out?}`, `area.set {id, area}`, `area.convert {id}`: the game type markers of the open map, their areas, and the marker shapes drawn on a grid ([Game type markers](#game-type-markers)) |
 | `nav` | `status`, `back`, `forward`, `go` (the inspector's history); `pathfinding {bsp?, offset?, limit?}`, `bots {wait?, polys?, links?, spots?, offset?, limit?}`, `pick {origin, dir}` or `pick {point, within?}` (with `layer?`, `shown?`, `select?`) or `pick {kind, index, focus?}` (the Navigation layers) |
 | `ground` | `status {offset?, limit?}`, `build {wait?, offset?, limit?}`: the open map's AI ground ([AI ground](#ai-ground)) |
+| `map` | `new {name, kind?, replace?}`: File > New map, a starter map built and opened ([New maps](#new-maps)); short form `new-map <name> [multiplayer\|campaign]` |
 | `playtest` | `static {wait?}`: the open map's static checks and each built-in game type's readiness ([playtest.md](playtest.md#static-checks)); `run {preset?, game_types?, seeds?, minutes?, bots?, compare_to?}`, `status {run?}`, `result {run?, game_type?, measure?}`, `compare {a?, b?, game_type?}`, `cancel {run?}`: headless bot matches on the open map and their measures ([playtest.md](playtest.md#what-a-run-is)) |
 | `variant` | `list`, `get` (with `script`), `set {setting \| option, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
@@ -2851,6 +2852,39 @@ phases, document, written}`, `document` the labels-only layout, and with
 `out` writes it there. The open map is not changed. A bad `attack` or
 barrier is `INVALID_PARAMS`, a map without both stands or a start for a
 side is `REFUSED`, no map `NO_DOCUMENT`. Tests: `api/tests/siege_tests.rs`.
+
+## New maps
+
+`map.new {name, kind?, replace?}` (`api/new_map.rs`) is File > New map
+([editor.md](editor.md), "New maps"). It builds a starter map over the open
+Halo 2 source and writes it as a derived package, waits for the build, then
+opens the map.
+
+| Param | Value |
+|---|---|
+| `name` | the title; the map name is its lowercase form, `_` for spaces (`Big Yard` is `big_yard`) |
+| `kind` | `multiplayer` (default) or `campaign` |
+| `replace` | overwrite a package of that name |
+
+It answers `{name, kind, dir, map_id, scenario, opened}`. Pass `map_id`
+to the game's `maps.load`.
+
+| Code | When |
+|---|---|
+| `INVALID_PARAMS` | `kind` is not one of the two |
+| `REFUSED` | no source is open, the source lacks the base map, the name is not a map name, a build is running, the package exists without `replace`, the data directory is in a Git checkout |
+| `FAILED` | the build failed; the message names the step and the tag |
+
+Boot check for a multiplayer map, on the game's agent API:
+
+```sh
+h2 studio map.new '{"name":"Courtyard"}'      # answers map_id
+h2 agent maps.load '{"map_id":"<map_id>"}'    # a Slayer game on it
+```
+
+Tests: `starter-map/src/tests.rs` (the template, the coverage of every
+mode, each piece's collision, the placements on an invented map, the
+campaign AI) and `studio-proto/src/tests.rs` (the short form).
 
 ## Game type markers
 
