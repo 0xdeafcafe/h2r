@@ -474,7 +474,7 @@ pub fn live_offer(name: &str, title: &str, rows: &[String]) -> Option<Box<dyn Li
         .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS);
     crate::ui_kit::picker::offer_list(pick)?;
     let p = Arc::new(crate::ui_kit::picker::Picker::new(name == crate::ui_kit::picker::GAME_NAME));
-    Some(list(ListPage::new(p.class(), described(&p))))
+    Some(Box::new(Driven::new(ListPage::new(p.class(), described(&p)))))
 }
 
 /// The lobby's pickers' samples: [`MAP_VARIANT_PICKER`], Original and
