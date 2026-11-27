@@ -244,7 +244,8 @@ mod tests {
         let mut s = Schedule::new();
         let a = s.start(def(100), Source(1), 0);
         let b = s.start(def(100), Source(2), 0);
-        let c = s.start(def(10), Source(3), 0);
+        // 90 ms is 2.7 ticks, rounded to 3: it ends with the 100 ms sounds.
+        let c = s.start(def(90), Source(3), 0);
         let ev = s.step(0);
         assert_eq!(ev.iter().map(SoundEvent::id).collect::<Vec<_>>(), [a, b, c]);
         // Sounds due on one tick end in start order.
