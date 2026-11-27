@@ -52,13 +52,17 @@ pub struct Observed {
 /// pods"). A map without pods reads as the default: none free, no fall.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PodsSeen {
-    /// Squad pods parked and ready to fall.
+    /// Insertion pods parked and ready to fall.
     pub free: u8,
+    /// Flood pods parked and ready to fall.
+    pub free_flood: u8,
     /// Each kit zone, in kit order, has a fall.
     pub falls: Vec<bool>,
     /// The kit's classes whose `auto` arrival is a pod: every class that
     /// is not Covenant.
     pub classes: BTreeSet<String>,
+    /// The Flood classes among them: they fall in Flood pods.
+    pub flood_classes: BTreeSet<String>,
 }
 
 /// The drop ship as the kit has it (docs/game/firefight.md, "The drop
