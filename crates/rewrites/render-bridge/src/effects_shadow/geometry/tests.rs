@@ -320,6 +320,13 @@ fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
         m.set_u32(at, v).unwrap();
     }
     m.set_u32(record + RECORD_MODEL, 0xe100_0000 | RECORD_INDEX).unwrap();
+    // The build reads that model's tag: a `mode` whose section 0 has the
+    // BSP world's geometry (four parts) and vertex class 0.
+    m.set_u32(TABLE + RECORD_INDEX * 16, u32::from_be_bytes(*b"mode")).unwrap();
+    m.set_u32(TABLE + RECORD_INDEX * 16 + 8, 0x0066_0000).unwrap();
+    m.set_u32(0x0066_0000 + 0x24, 1).unwrap();
+    m.set_u32(0x0066_0000 + 0x28, 0x0066_1000).unwrap();
+    m.set_u32(0x0066_1000 + 0x34, 0x0065_2000).unwrap();
     m.set_u32(record + RECORD_LIGHTING, scene_extract::testing::lighting(4 + 7)).unwrap();
     let host = Arc::new(Host(Mutex::default(), Ok(())));
     set_answer_host(Some(host.clone()));

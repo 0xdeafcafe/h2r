@@ -1095,6 +1095,24 @@ fn a_masked_run_reads_each_lights_alpha_as_its_per_light_pass_did() {
     let colour_view = colour.create_view(&Default::default());
     let pool = gfx::ring::UploadPool::default();
     let per_light = |draws: &[LightDraw<'_>], clear: Option<[f32; 4]>| {
+        if draws.is_empty() {
+            // `LightSet::draws` refuses a run of no draws (no uniforms to
+            // take a slot for): the clear alone is the pass.
+            let rt = gfx::RenderTarget {
+                color: &colour_view,
+                color_format: COLOUR,
+                depth: Some(&depth_view),
+                depth_format: Some(DEPTH),
+                size: SIZE,
+                samples: 1,
+            };
+            let mut enc = device.create_command_encoder(&Default::default());
+            let clear = gfx::Clear { color: clear, depth: None, stencil: None };
+            gfx::Renderer::encode_pass(&ctx, &mut enc, &rt, clear, &[], None).unwrap();
+            queue.submit([enc.finish()]);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            return;
+        }
         let uploads = pool.begin();
         let target = LightTarget {
             device,

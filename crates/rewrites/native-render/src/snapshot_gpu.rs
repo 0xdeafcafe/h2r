@@ -244,7 +244,8 @@ mod tests {
                 view_formats: &[],
             })
         };
-        let color = texture((64, 32), wgpu::TextureUsages::TEXTURE_BINDING);
+        // Written by the queue below, so a copy destination too.
+        let color = texture((64, 32), wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
         let rgba: Vec<u8> = [200u8, 40, 10, 255].repeat(64 * 32);
         ctx.queue.write_texture(
             color.as_image_copy(), &rgba,

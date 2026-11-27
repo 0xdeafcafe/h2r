@@ -182,6 +182,10 @@ mod tests {
             }
             m.f(at + 0x80, 1.5);
             m.f(at + 0x84, 2.5);
+            // The fill colour, read from the element itself.
+            for (i, v) in [0.25f32, 0.5, 2.0].into_iter().enumerate() {
+                m.f(at + 0x98 + 4 * i as u32, v);
+            }
             for p in 0..4 {
                 let s = at + PLAYER_STRIDE * p;
                 for i in 0..3 {
@@ -232,6 +236,7 @@ mod tests {
         assert_eq!(p2[1].player, 2);
         // The sheet's colour: state x gain, clamped to [0, 1].
         assert_eq!(p0[0].tint, [1.0, 0.25, 0.0]);
+        assert_eq!(p0[0].fill, [0.25, 0.5, 1.0], "the element's fill, clamped");
         assert_eq!((p0[0].window, p0[0].extent), ([10, 20, 650, 500], [1.5, 2.5]));
         assert_eq!(p0[1].bitmaps, [0xe600_0001, 0xe600_0010, 0xe600_0020]);
     }
