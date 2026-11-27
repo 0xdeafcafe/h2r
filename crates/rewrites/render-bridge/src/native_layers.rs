@@ -29,6 +29,13 @@
 //!
 //! The plan's outcomes are counted by cause for `render.scene`
 //! ([`counters`]).
+//!
+//! The layer draw itself is implemented here for the opaque block's layers
+//! 1, 3, 5, 7, 8 and 20 of the scene, the alternate view and the first
+//! person ([`layer_return`]): after every observer has run, when no item of
+//! the list still holds the layer's bit, the call makes the guest body's
+//! writes (`frame_step::layer`) and returns without running it; otherwise
+//! the guest body runs, counted `layer_return_<site><layer>_guest_<cause>`.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -137,6 +144,10 @@ type Left = [u32; 3];
 fn left_of(m: &dyn GuestRead, item: u32) -> Left {
     [0x10, 8, 0xc].map(|at| m.read_u32(item + at).unwrap_or(0))
 }
+/// The layer draws of the opaque block that returned, and those that ran the
+/// guest body by cause (`layer_return_<site><layer>_returned`,
+/// `_guest_<cause>`).
+static RETURNS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 static ASKED: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
@@ -205,6 +216,7 @@ pub fn counters() -> Vec<(String, u64)> {
         ("layer_plan_items".to_owned(), ITEMS.load(Ordering::Relaxed)),
     ];
     out.extend(OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
+    out.extend(RETURNS.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
     out.extend(DROPPED.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (format!("scene_dropped_world_{k}"), v)));
     out
 }
@@ -335,6 +347,64 @@ pub(crate) fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
+/// The site prefix of a layer draw of the opaque block: `""` the scene's,
+/// `alt` the alternate view's, `fp` the first person's; `None` for every
+/// other call of the layer draw.
+pub fn return_site(layer: u32, ret: u32) -> Option<&'static str> {
+    if !crate::frame_step::layer::LAYERS.contains(&layer) {
+        return None;
+    }
+    match layer_site(layer, ret) {
+        Site::Scene => Some(""),
+        Site::AlternateView => Some("alt"),
+        Site::FirstPerson => Some("fp"),
+        _ => None,
+    }
+}
+
+fn count_return(site: &str, layer: u32, outcome: &str) {
+    let mut r = RETURNS.lock().unwrap_or_else(|e| e.into_inner());
+    *r.entry(format!("layer_return_{site}{layer}_{outcome}")).or_default() += 1;
+}
+
+/// The layer draw's own turn, after its observers: true when the call is
+/// one of the opaque block's and every item of it was native, its writes
+/// made (`frame_step::layer::step`), so the caller returns without the
+/// guest body. `ret` is the call's return address.
+pub fn layer_return(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) -> bool {
+    let Ok(layer) = mem.u32(skip::CURRENT_LAYER) else { return false };
+    let Some(site) = return_site(layer, ret) else { return false };
+    let step = if standing_down {
+        Err(crate::frame_step::layer::Keep::StandingDown)
+    } else {
+        crate::frame_step::layer::step(mem, layer)
+    };
+    match step {
+        Ok(()) => {
+            count_return(site, layer, "returned");
+            true
+        }
+        Err(keep) => {
+            count_return(site, layer, &format!("guest_{}", keep.name()));
+            false
+        }
+    }
+}
+
+/// The original body at `addr`.
+fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    if let Some(original) = ctx.runtime().resolve_original(addr) {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
+    let event = ctx.emit(runtime::Event::UnsupportedTarget {
+        pc: cpu.eip,
+        target: addr,
+        kind: runtime::abi::JUMP,
+        route: runtime::abi::ENTRY,
+    });
+    Ok(runtime::TransferAbi::fault(event))
+}
+
 pub struct NativeLayers;
 
 impl Feature for NativeLayers {
@@ -359,6 +429,19 @@ impl Feature for NativeLayers {
             })
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)
+            .context_only();
+        b.raw()
+            .implement(&points::LAYER_DRAW, "frame_step_layer_return", |cpu, ctx, addr| {
+                if addr == points::LAYER_DRAW.base {
+                    let standing_down = crate::native_map_work::Stage::World.standing_down();
+                    let mut g = ctx.memory();
+                    let ret = g.u32(cpu.esp).unwrap_or(0);
+                    if layer_return(&mut *g, ret, standing_down) {
+                        return g.ret(cpu, 0);
+                    }
+                }
+                original(cpu, ctx, addr)
+            })
             .context_only();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
@@ -440,6 +523,52 @@ mod tests {
         count_for(LayerCaller::Sorted(SortedHandler::Camouflage), 18, "taken", 4);
         let c: BTreeMap<String, u64> = counters().into_iter().collect();
         assert!(c["layer_plan_sorted18_taken"] >= 4, "a sorted handler's apart");
+    }
+
+    #[test]
+    fn the_opaque_blocks_layer_draws_return_or_run_the_guest_counted_by_cause() {
+        use crate::frame_step::layer as fl;
+        use engine::memory::FlatMemory;
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
+        let (list, items) = (0x004a_0000, 0x004a_0100);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 2).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0x18, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0x18 + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, 0xe000_0003).unwrap();
+        // The alternate view's layer 1 (`0x0002bd5c`): nothing holds the bit.
+        mem.set_u32(fl::CURRENT_LAYER, 1).unwrap();
+        let returned = get("layer_return_alt1_returned");
+        assert!(layer_return(&mut mem, 0x0002_bd5c, false));
+        assert_eq!(get("layer_return_alt1_returned"), returned + 1);
+        assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), u32::MAX, "the body's writes made");
+        // The first person's layer 20 (`0x0004020b`): an object's item kept.
+        mem.set_u32(fl::CURRENT_LAYER, 20).unwrap();
+        mem.set_u32(items + 0x18 + 0x10, 1 << 20).unwrap();
+        let object = get("layer_return_fp20_guest_object");
+        assert!(!layer_return(&mut mem, 0x0004_020b, false));
+        assert_eq!(get("layer_return_fp20_guest_object"), object + 1);
+        // An open shader, and the map's stages standing down.
+        mem.set_u32(items + 0x18 + 0x10, 0).unwrap();
+        mem.set_u32(fl::SETUP + fl::SETUP_OPEN, 1).unwrap();
+        let open = get("layer_return_fp20_guest_open_shader");
+        assert!(!layer_return(&mut mem, 0x0004_020b, false));
+        assert_eq!(get("layer_return_fp20_guest_open_shader"), open + 1);
+        let down = get("layer_return_fp20_guest_standing_down");
+        assert!(!layer_return(&mut mem, 0x0004_020b, true));
+        assert_eq!(get("layer_return_fp20_guest_standing_down"), down + 1);
+        // Another caller's layer draw is not the frame step's, and not counted.
+        mem.set_u32(fl::SETUP + fl::SETUP_OPEN, 0).unwrap();
+        mem.set_u32(fl::CURRENT_LAYER, 3).unwrap();
+        let returns = || counters().into_iter().filter(|(k, _)| k.starts_with("layer_return_")).map(|(_, v)| v).sum::<u64>();
+        let before = returns();
+        assert!(!layer_return(&mut mem, 0x0004_1ffd, false), "a light pass's");
+        mem.set_u32(fl::CURRENT_LAYER, 2).unwrap();
+        assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 2 is not the opaque block's");
+        assert_eq!(returns(), before);
     }
 
     #[test]
