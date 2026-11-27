@@ -821,8 +821,8 @@ a handler may still use them as names. Each is given at most once.
 **The type.** `type <word>` is required and given once. The word is
 a row of the closed table in `crates/formats/rules/src/types.rs`
 (`rules::types::TABLE`): `slayer`, `ctf`, `assault`, `oddball`, `koth`,
-`juggernaut` and `territories` (the seven retail types) and `research`,
-`party`, `firefight` and `siege` (ours). A row holds the word, the list
+`juggernaut` and `territories` (the seven retail types) and `party`,
+`firefight` and `siege` (ours). A row holds the word, the list
 label, what a point is called when the script has no `points` line, where
 the start line comes from (retail's announcer, one of ours, or none) and
 the retail settings layout. A retail type names its engine's
@@ -831,9 +831,8 @@ assault 9); our types use Slayer's layout, 2. `Header::engine` reads
 it. Eligible Slayer-layout records use index 6 on disk and in play, except
 a team script's, which stays on Slayer's index until the game's start
 moves it (the retail lobby builds its team rows from the engine). The
-type files a variant under its row of the game type list: `research`
-under Research and Devolution, `party` under Party Games, and the other
-nine under their named rows. At round start the authority posts the
+type files a variant under its row of the game type list: `party` under
+Party Games, and the other nine under their named rows. At round start the authority posts the
 declared type's line, including when `uses` selects a different type's
 handlers. See [the list](community-gametypes.md#tweakers) and
 [the start event](game-types-without-carriers.md#the-display).
@@ -2395,7 +2394,7 @@ scores bounces is not yet a parity game.
 
 **The Superbounce game type is a script**,
 `content/modes/rules/superbounce.rules`, an example
-(`builtin::examples`): `type research`,
+(`builtin::examples`): `type party`,
 `requires hud.superbounce`, no kill rule (a kill scores nothing), and
 four options: `suicide_costs` (default on), a point off for a death with
 no killer or by the player's own hand; `bounce_points` (0 to 5, default 1), times the

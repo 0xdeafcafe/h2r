@@ -321,3 +321,76 @@ fn every_mode_label_fits_the_header() {
         assert!(w <= room, "{}: {w} of {room}", t.label());
     }
 }
+
+/// The game line names the mode and the variant, never the record's base
+/// game type, and a kit package by its map.
+#[test]
+fn a_game_with_its_own_mode_is_named_by_it_not_by_the_base_game_type() {
+    use variants::ext::Mode as Script;
+    let kit = "Firefight \u{2013} Lockout";
+    let line = |lobby, script, siege, record: &str, waves| {
+        own_mode(lobby, script, siege, record, waves).map(|(mode, variant)| title(mode, &variant, kit))
+    };
+    // A Firefight variant picked in Choose Rules.
+    assert_eq!(
+        line(Mode::Multiplayer, Script::Firefight, false, "Holdout", None).as_deref(),
+        Some("Firefight: Holdout on Lockout")
+    );
+    // A Firefight lobby plays the options page's set on the Slayer record.
+    assert_eq!(
+        line(Mode::Firefight, Script::None, false, "Slayer", Some("Covenant")).as_deref(),
+        Some("Firefight: Covenant on Lockout")
+    );
+    assert_eq!(line(Mode::Firefight, Script::None, false, "Slayer", None).as_deref(), Some("Firefight on Lockout"));
+    // Siege's variant has no other name; one saved under a name has.
+    assert_eq!(line(Mode::Multiplayer, Script::Rules, true, "Siege", None).as_deref(), Some("Siege on Lockout"));
+    assert_eq!(
+        line(Mode::Multiplayer, Script::Rules, true, "Long Siege", None).as_deref(),
+        Some("Siege: Long Siege on Lockout")
+    );
+    // Any other rules script is its variant's name.
+    assert_eq!(
+        line(Mode::Multiplayer, Script::Rules, false, "Bounce Practice", None).as_deref(),
+        Some("Bounce Practice on Lockout")
+    );
+    // A record that plays as its own game type keeps retail's line.
+    assert_eq!(line(Mode::Multiplayer, Script::None, false, "Team Slayer", None), None);
+    assert_eq!(line(Mode::Forge, Script::Unknown(9), false, "Slayer", None), None);
+    for script in [Script::Firefight, Script::Rules] {
+        for (siege, record) in [(false, "Holdout"), (true, "Siege")] {
+            let said = line(Mode::Multiplayer, script, siege, record, None).unwrap();
+            assert!(!said.contains("Slayer") && !said.contains('\u{2013}'), "{said}");
+        }
+    }
+    assert_eq!(title(Some("Firefight"), " Holdout ", "Lockout"), "Firefight: Holdout on Lockout");
+    assert_eq!(title(None, "", "Lockout"), "Lockout");
+}
+
+/// Retail's game line ends with the map slot's name and says more.
+#[test]
+fn retails_game_line_is_told_by_the_map_slots_name() {
+    let kit = "Firefight \u{2013} Lockout";
+    assert!(is_game_line("Slayer on Firefight \u{2013} Lockout", kit));
+    assert!(!is_game_line(kit, kit), "the map's name alone is another widget");
+    assert!(!is_game_line("Kill the other players.", kit));
+    assert!(!is_game_line("Slayer on Lockout", ""));
+    // A game with no mode of its own on a kit package names the map plainly.
+    assert_eq!(on_plain_map("Team Slayer on Firefight \u{2013} Lockout", kit).as_deref(), Some("Team Slayer on Lockout"));
+    assert_eq!(on_plain_map("Team Slayer on Lockout", "Lockout"), None, "no kit package, retail's line");
+}
+
+/// The two texts retail's panel update writes are the fourth and fifth
+/// text children, counted as its lookup counts them.
+#[test]
+fn the_game_lines_are_found_by_their_place_among_the_texts() {
+    let mut g = lobby(0, false);
+    let at = |n: u32| AREA + 0x1000 + n * 0x100;
+    g.put_u32(BITMAP_AT + WIDGET_NEXT, at(0));
+    for n in 0..4 {
+        text(&mut g, at(n), 2 + n as u16, if n == 3 { 0 } else { at(n + 1) });
+    }
+    // Texts 0 and 1 are the header and the footer; 2 is at(0).
+    let f = find(&g, SCREEN).unwrap();
+    assert_eq!(f.lines, [Some(at(1)), Some(at(2))]);
+    assert_eq!(find(&lobby(0, true), SCREEN).unwrap().lines, [None, None]);
+}

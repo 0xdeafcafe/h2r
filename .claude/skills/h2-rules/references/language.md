@@ -31,7 +31,7 @@ keywords (`enum Role { none, vip }`). Type and kind words (`zone`,
 
 Types (`rules::types::TABLE`): `slayer ctf assault oddball koth juggernaut
 territories` (the retail ones, each with a built-in script `uses` may name)
-and `research party firefight siege`. `type`, `uses` and `points` are header
+and `party firefight siege`. `type`, `uses` and `points` are header
 words only at the start of a line; in a handler they are names. A script
 with `uses` holds header lines, `settings`, `quick` and `about` only.
 `carrier`, `list` and `scoring` lines are refused (`header.retired`).

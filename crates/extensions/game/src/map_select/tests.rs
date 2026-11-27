@@ -873,6 +873,57 @@ fn a_map_with_variants_opens_its_page_and_a_map_without_picks() {
     assert!(list_for(&cat, Mode::Variants { map: 2, from: Category::Halo2 }, &|_| 0).is_empty());
 }
 
+/// Change Map opens on the groups, and a group's maps read as any map
+/// list's: names only, the pane under the description, and a map's page
+/// that goes back to its own group.
+#[test]
+fn the_picker_opens_on_the_groups_and_each_group_lists_its_maps_the_same_way() {
+    use crate::map_modes::{Played, Support, Variant, analyse};
+    let selection = Selection::new(sample());
+    let open = selection.begin_picker(crate::lobby_start::Mode::Multiplayer, None);
+    assert_eq!(open.mode, Mode::Categories, "the groups first, whatever the lobby plays");
+    let base = sample();
+    let view = analyse(&base, Played::Other, None, &|_| false, &|m| {
+        vec![Variant {
+            file: "keep".into(),
+            name: format!("{} Keep", m.name),
+            support: Support { firefight: false, siege: true },
+        }]
+    });
+    let cat = base.with_modes(view);
+    let groups: Vec<String> = list_for(&cat, Mode::Categories, &|_| 0)
+        .into_iter()
+        .map(|(id, _)| row_label(&cat, Mode::Categories, id).expect("a group's row is labelled").1)
+        .collect();
+    assert_eq!(groups, ["Halo 2", "Map Pack", "Mods", "Halo: CE"]);
+    for group in Category::ALL {
+        let maps = Mode::Maps(group);
+        let rows = list_for(&cat, maps, &|_| 0);
+        assert_eq!(rows.len(), cat.maps(group).len(), "{group:?}");
+        for (id, _) in rows {
+            let name = &cat.all().find(|m| m.id == id).unwrap().name;
+            assert_eq!(row_label(&cat, maps, id), None, "{name} reads its slot's own name");
+            assert_eq!(
+                pane_text(&cat, maps, id, 0),
+                Some(format!("Supports\nSiege on {name} Keep")),
+                "{group:?}"
+            );
+            assert!(opens_page(&cat, id), "{name}");
+            let page = Mode::Variants { map: id, from: group };
+            assert_eq!(list_for(&cat, page, &|_| 0), [(id, 0), (id, 0)]);
+            assert_eq!(page_label(&cat, id, 1).unwrap().1, format!("{name} Keep"));
+        }
+        // Back from a map's page is its group's maps, and Back again the
+        // groups on that group.
+        let f = Flow::default();
+        f.maps_on(group, 1);
+        assert_eq!(f.opening().unwrap().mode, maps);
+        f.categories(Some(group));
+        let back = f.opening().unwrap();
+        assert_eq!((back.mode, back.focus), (Mode::Categories, Some(group)));
+    }
+}
+
 #[test]
 fn back_from_a_page_reopens_its_maps_on_the_map() {
     let f = Flow::default();

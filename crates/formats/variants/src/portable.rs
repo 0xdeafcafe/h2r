@@ -1278,13 +1278,13 @@ mod tests {
         set_row(&mut v, score, 11).unwrap();
         let attach = Attach::from_source(rules::builtin::GLITCH_HUNT).unwrap();
         let bundle = Bundle::new(&v, "Unfamiliar name", "", Some(attach)).unwrap();
-        assert_eq!(bundle.game_type, rules::types::Type::Research.row().label);
+        assert_eq!(bundle.game_type, rules::types::Type::Party.row().label);
         assert_eq!(bundle.engine, record::SCRIPT_INDEX);
         let checked = read(&bundle.canonical()).unwrap().check().unwrap();
         assert_eq!(checked.variant.game_type(), GameType::Script);
         assert_eq!(checked.variant.get(SettingId(2)), Some(11));
         let header = checked.script.unwrap().1.header;
-        assert_eq!(header.game_type, rules::types::Type::Research);
+        assert_eq!(header.game_type, rules::types::Type::Party);
 
         let attach = Attach::from_source(&carried("ctf", "ctf_flag_type = 1\n")).unwrap();
         assert!(matches!(
@@ -1808,7 +1808,7 @@ settings {
         assert_eq!(v.game_type(), GameType::Slayer);
         assert!(v.team_play());
         assert_eq!(v.ext().script.prefix[..], siege.id().0[..8]);
-        let ffa = compiled("rules \"Practice\" 1\ntype research\nuses slayer\nsettings {\nlives = 3\n}\n");
+        let ffa = compiled("rules \"Practice\" 1\ntype party\nuses slayer\nsettings {\nlives = 3\n}\n");
         assert!(!plays_teams(&ffa));
         assert_eq!(record_for(&ffa, &[]).unwrap().game_type(), GameType::Script);
     }
@@ -1845,16 +1845,16 @@ settings {
     fn only_slayer_scripts_without_type_area_writes_move_to_the_script_index() {
         // A category and the game whose rules it uses can differ. An hx
         // extra and a common setting do not need Slayer's type area.
-        let research = compiled(
-            "rules \"Practice\" 1\ntype research\nuses slayer\nsettings {\ngravity = 50\nlives = 3\n}\n",
+        let practice = compiled(
+            "rules \"Practice\" 1\ntype party\nuses slayer\nsettings {\ngravity = 50\nlives = 3\n}\n",
         );
-        let v = record_for(&research, &[]).unwrap();
-        assert!(!writes_type_area(&research, research.header.engine()));
+        let v = record_for(&practice, &[]).unwrap();
+        assert!(!writes_type_area(&practice, practice.header.engine()));
         assert_eq!(v.game_type(), GameType::Script);
         assert!(v.bytes()[record::TYPE_AREA].iter().all(|&b| b == 0));
         assert_eq!(v.ext().gravity, 50);
         assert_eq!(v.get(SettingId(16)), Some(3));
-        assert_eq!(v.ext().script.prefix[..], research.id().0[..8]);
+        assert_eq!(v.ext().script.prefix[..], practice.id().0[..8]);
 
         for (setting, writes_area) in [("lives = 3", false), ("ctf_flag_type = 0", true)] {
             let ir = compiled(&carried("ctf", &format!("{setting}\n")));

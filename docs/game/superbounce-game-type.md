@@ -7,7 +7,7 @@ The superbounce game type: targets and the second bounce. Part of [superbounce.m
 A built-in variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-and lines over the map. It is listed under **Research and Devolution**, one of our rows at
+and lines over the map. It is listed under **Party Games**, one of our rows at
 the bottom of the game type list (after Territories), and not under Slayer; underneath
 it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
 Its entry is built from its script, one of `rules::builtin::LISTED`
@@ -18,7 +18,7 @@ options), and `community_variants::write_blocks` writes that block into
 its built-in record when the list loads, so a game on it and a saved
 copy of it name the script. The script is
 `content/modes/rules/superbounce.rules`, compiled into the
-game: `type research` files the variant under Research and Devolution and
+game: `type party` files the variant under Party Games and
 `requires hud.superbounce` turns the mode on
 ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). It scores
 bounces alone, and keeps their chain itself on what the medal chain

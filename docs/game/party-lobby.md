@@ -136,6 +136,28 @@ the party leader only, and not while the countdown runs, the game
 loads or a search has its lobby (`Shown::prompt_visible`). A member
 never sees it, since a member's X does nothing here.
 
+**The game line** is the lobby's "<game type> on <map>" text. Retail's
+panel update writes it from the record's game type and the map slot's
+name. A game with a mode of its own plays on the Slayer record, and a
+Firefight map is a kit package named "Firefight – <map>", so the update
+writes the line from the mode and the variant
+(`lobby_tabs::header::own_mode`, `title`). The base game type is never
+part of it.
+
+| The lobby's game | The line |
+|---|---|
+| a Firefight variant, or a Firefight lobby's wave set | `Firefight: <variant> on <map>` |
+| Siege | `Siege on <map>`; `Siege: <variant> on <map>` for a named variant |
+| another rules script's variant | `<variant> on <map>` |
+| a retail game type on a Firefight kit package | retail's line with the map named plainly (`header::on_plain_map`) |
+| a retail game type | retail's own line |
+
+The line is one of the two texts retail's update looks up
+(`header::GAME_LINES`); the update replaces the one that ends with the
+map slot's name (`header::is_game_line`). Not verified in a game run:
+which of the two holds the line, and the line in a language whose
+sentence does not end with the map's name.
+
 The update is the party lobby's own `before` on `LOBBY_VARIANT_PANEL`
 (`lobby_tabs::header::panel`): it runs retail's update, then
 `lobby_tabs::header::update`, which takes a request from the Xbox Live
@@ -438,7 +460,7 @@ in another owner's files, named in its row.
   the squad session's mode (`+0x49a4` equal to 2 in states 3 to 8, as
   `0x64160` reads it), and the co-op lobby from the session's campaign
   difficulty (`lobby_tabs::header::retail_mode`).
-- That our rows (Research and Devolution, Party Games) show on SELECT
+- That our rows (Party Games, Firefight, Siege) show on SELECT
   GAME (screen 207): their hooks are on and the list has room, but a
   play of the single-row version found no row. The next check is
   the log line "tweakers: rows added to screen 207" and `ui.audit` on

@@ -181,7 +181,8 @@ fn a_description_has_the_pane_under_it() {
 
 #[test]
 fn the_sample_shows_names_only_and_the_union_on_the_root_row() {
-    let rows = sample(Played::Siege);
+    let (group, rows) = sample(Played::Siege);
+    assert_eq!(group, "Halo 2", "a map list is a group's");
     let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
     assert!(names.iter().all(|n| !n.contains('(')), "{names:?}");
     // Lockout plays Siege through Castle Keep, so it lists with Midship,
@@ -196,6 +197,20 @@ fn the_sample_shows_names_only_and_the_union_on_the_root_row() {
     assert_eq!(map, "Lockout");
     let page: Vec<(&str, bool)> = page.iter().map(|r| (r.0.as_str(), r.1)).collect();
     assert_eq!(page, [("Lockout", true), ("Castle Keep", false), ("Lockout Towers", true)]);
+}
+
+/// The picker opens on the groups, and every mode's sample lists maps
+/// inside one: names only, with the pane under each.
+#[test]
+fn the_sample_opens_on_the_groups_and_lists_maps_inside_one() {
+    assert_eq!(sample_groups(), ["Halo 2", "Map Pack", "Mods", "Halo: CE"]);
+    for played in [Played::Other, Played::Firefight, Played::Siege] {
+        let (group, rows) = sample(played);
+        assert!(sample_groups().contains(&group), "{group}");
+        assert!(rows.len() >= 5, "{played:?}: {rows:?}");
+        assert!(rows.iter().all(|r| !r.0.contains('(') && !r.0.starts_with("Firefight")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.2.contains("Supports\n")), "{played:?}: {rows:?}");
+    }
 }
 
 #[test]

@@ -1,0 +1,13 @@
+# Choose Rules shows every game type at once (docs/game/community-gametypes.md,
+# "Choose Rules"; docs/game/ui-in-maps.md, "Retail edits as data"). The
+# disc's list shows nine rows, seven of them its own game types. Ours
+# (Party Games, Firefight, Siege) make ten, so the list shows ten and
+# none is off the bottom. This is Game Setup's
+# Change Rules (screen 207), whose list is pane 0's.
+screen: 'ui\screens\game_shell\mp_game_select\game_engine_category_listing_lobby'
+map: mainmenu
+pane: 0
+edits:
+  - op: set_list_rows
+    block: list
+    rows: 10

@@ -107,6 +107,8 @@ const GATE_SLOT: u32 = PANEL_SLOTS + MAX_PANEL_LINES as u32 + 1;
 /// refused ([`variant_text_id`]).
 const VARIANT_SLOT: u32 = GATE_SLOT + 1;
 const THEATER_HELP_SLOT: u32 = VARIANT_SLOT + 1;
+/// The lobby's game line, "<game> on <map>" ([`title_id`]).
+const TITLE_SLOT: u32 = THEATER_HELP_SLOT + 1;
 
 pub const MAP_VARIANT_LABEL: &str = "Map Variant...";
 /// A matchmaking lobby's action 9 ([`crate::clankermatch::CHANGE_PLAYLIST`]).
@@ -715,6 +717,24 @@ pub fn variant_hold(m: &dyn GuestMemory) -> Option<String> {
         || crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
     );
     crate::map_variant::hold()
+}
+
+/// The lobby's game line `text` (`crate::lobby_tabs::header::title`),
+/// written to its slot.
+pub fn title_id(m: &mut dyn GuestMemory, text: &str) -> Option<u32> {
+    let id = TEXTS.set(TITLE_SLOT, text);
+    TEXTS.write(m).ok()?;
+    Some(id)
+}
+
+/// The wave set a Firefight lobby plays, as the panel names it: the
+/// options page's choice for the lobby's kit map, or the held map
+/// variant's own set under Map Waves. `None` while the options cannot be
+/// read.
+pub fn firefight_waves(m: &dyn GuestMemory, store: &Store) -> Option<String> {
+    let mut options = ff::Options::for_map(store, lobby_start::kit_map().as_deref()).ok()?;
+    options.waves = map_waves_in_lobby(m);
+    Some(options.wave_set_label())
 }
 
 /// The status line's text while the map variant holds Start Game, written

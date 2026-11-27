@@ -4,7 +4,7 @@
     "description": "The header: name, version, game type and teams.",
     "body": [
       "rules \"${1:Name}\" ${2:1}",
-      "type ${3|slayer,ctf,assault,oddball,koth,juggernaut,territories,research,party,firefight,siege|}",
+      "type ${3|slayer,ctf,assault,oddball,koth,juggernaut,territories,party,firefight,siege|}",
       "teams ${4:2}",
       "$0"
     ]

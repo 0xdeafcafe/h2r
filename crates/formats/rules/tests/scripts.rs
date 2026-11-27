@@ -713,11 +713,9 @@ fn a_type_line_files_the_script_and_changes_no_rule() {
     use rules::types::Type;
     let plain = compile("rules \"X\" 1\ntype slayer\non tick { }\n").unwrap();
     assert_eq!(plain.header.game_type, Type::Slayer);
-    let research = compile("rules \"X\" 1\ntype research\non tick { }\n").unwrap();
-    assert_eq!(research.header.game_type, Type::Research);
     let party = compile("rules \"X\" 1\ntype party\non tick { }\n").unwrap();
     assert_eq!(party.header.game_type, Type::Party);
-    assert_ne!(plain.id(), research.id());
+    assert_ne!(plain.id(), party.id());
     assert_eq!(plain.handlers, party.handlers);
     assert!(
         compile_error("rules \"X\" 1\ntype tetris\non tick { }\n")
@@ -825,7 +823,7 @@ const BOUNCE_PAIRS: &[(u32, i32)] = &[
 ];
 
 fn expected() -> Vec<Expected> {
-    use rules::types::Type::{Juggernaut, Koth, Oddball, Party, Research, Siege, Slayer};
+    use rules::types::Type::{Juggernaut, Koth, Oddball, Party, Siege, Slayer};
     let e = |name, engine, ty, uses, pairs| Expected { name, engine, ty, uses, pairs };
     vec![
         e("Zombies", 2, Party, Some(Slayer), &[
@@ -860,15 +858,15 @@ fn expected() -> Vec<Expected> {
         e("Cops and Robbers", 2, Party, Some(Slayer), &[
             (91, 1), (16, 3), (19, 1), (84, 0), (85, 0), (89, 9), (94, 6), (83, 1),
         ]),
-        e("Bounce Practice", 2, Research, Some(Slayer), BOUNCE_PAIRS),
-        e("Glitch Hunt", 2, Research, Some(Slayer), &[
+        e("Bounce Practice", 2, Party, Some(Slayer), BOUNCE_PAIRS),
+        e("Glitch Hunt", 2, Party, Some(Slayer), &[
             (2, 0), (10, 0), (17, 3), (18, 0), (19, 2), (105, 1), (89, 17), (94, 8), (24, 0),
         ]),
         e("Bumper Cars", 2, Party, Some(Slayer), &[
             (89, 1), (94, 1), (88, 0), (83, 1), (86, 0), (84, 0), (85, 0), (76, 1), (77, 3),
             (78, 4), (79, 4), (81, 6), (82, 6), (2, 25),
         ]),
-        e("Superbounce", 2, Research, None, BOUNCE_PAIRS),
+        e("Superbounce", 2, Party, None, BOUNCE_PAIRS),
         e("Siege", 2, Siege, None, &[(91, 1), (2, 0), (10, 0), (16, 1), (89, 1), (94, 1)]),
         e("Gun Game", 2, Party, None, &[(89, 1), (94, 1), (83, 1), (2, 0)]),
         e("Race", 2, Party, None, &[(2, 0)]),

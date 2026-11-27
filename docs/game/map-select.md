@@ -128,10 +128,13 @@ Game Setup's **Map Variant...** row
 the variant of the lobby's map without a visit to Change Map. A pack
 member and a row of the pause menu's picker pick the map directly.
 
-The picker's design is the `map.picker.slayer`, `map.picker.firefight`,
-`map.picker.siege` and `map.picker.variants` screens
-(`h2 studio ui.render`), whose rows come from `map_modes::sample` and
-`map_modes::sample_page`.
+The picker's design is three steps of screens (`h2 studio ui.render`):
+
+| Screen | Step | Rows from |
+|---|---|---|
+| `map.picker.groups` | the groups Change Map opens on | `map_modes::sample_groups` |
+| `map.picker.slayer`, `map.picker.firefight`, `map.picker.siege` | a group's maps (Halo 2, the title), for a lobby playing that game | `map_modes::sample` |
+| `map.picker.variants` | a map's page | `map_modes::sample_page` |
 
 ## Separate slots for mods
 

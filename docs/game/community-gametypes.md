@@ -10,10 +10,9 @@ modes (Siege, Gun Game, Race and VIP), as extra built-ins.
 Each is a script compiled into the game
 ([rules-variants.md](rules-variants.md#built-in-list-entries)): its list
 entry, its description and its row come from the script, and its record
-names the script. The script header files it in one of seven retail rows or four custom rows
+names the script. The script header files it in one of seven retail rows or three custom rows
 after Territories ([Tweakers](#tweakers)). Siege has its own row,
-Hide and Seek appears in Party Games, and Superbounce appears in
-Research and Devolution. Community variants carry a
+and Hide and Seek and Superbounce appear in Party Games. Community variants carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
@@ -153,7 +152,7 @@ show through.
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades; its script requires `hud.superbounce`, so the superbounce HUD, spot lines and practising bots are on ([superbounce.md](superbounce.md#the-superbounce-game-type)), and Slayer's scoring stays |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, scored by bounces, with the superbounce HUD's options ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Research and Devolution ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`type research`) and turns the mode on (as Bounce Practice's `requires hud.superbounce` does) |
+| Superbounce | Slayer | Bounce Practice's rules, scored by bounces, with the superbounce HUD's options ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under Party Games ([Tweakers](#tweakers)), not Slayer; its built-in record names the Superbounce rules script, whose header lists it there (`type party`) and turns the mode on (as Bounce Practice's `requires hud.superbounce` does) |
 | Siege | Slayer | team play; no score or time limit; no starting weapon (our added choice) and no secondary, since its script gives each side a loadout at spawn; one life a round (our added choice), so each side's dead wait to respawn together on its wave; the attackers take the map's territories, then the defenders' CTF flag stand, each phase on its own clock, and a map with no stand stops at the sites ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); scored by its script and listed under Siege (`type siege`) |
 | Gun Game | Slayer | no starting weapon (our added choice) and no secondary; nothing on the map; no score limit; its script gives each player the weapon of their rung at spawn and the next rung's on each kill, from the SMG to the energy sword, and the kill past the sword wins; a suicide demotes a rung (an option); listed under Party Games |
 | Race | Slayer | no score limit; the map's King of the Hill hills are the checkpoints, run in number order from the lowest and back for a lap, and the first to finish the laps (3 by default) wins; listed under Party Games |
@@ -337,13 +336,15 @@ disc (`#[ignore]`, `$H2_DISC`):
 
 ## Tweakers
 
-Four rows follow Territories in the lobby and Settings game type pickers.
+Three rows follow Territories in the lobby and Settings game type pickers.
+The list shows all ten rows at once: `content/ui/retail-edits/game_engine_category_listing.yaml`
+and `game_engine_category_listing_lobby.yaml` set the lists of screens 60 and
+207 to ten rows ([ui-in-maps.md](ui-in-maps.md#retail-edits-as-data)).
 The pause menu lists each type that has a variant, in the same order.
 
 | Type | Row | Examples |
 |---|---|---|
-| `research` | Research and Devolution | Bounce Practice, Glitch Hunt, Superbounce |
-| `party` | Party Games | Zombies, Gun Game, Hide and Seek |
+| `party` | Party Games | Zombies, Gun Game, Hide and Seek, Bounce Practice, Glitch Hunt, Superbounce |
 | `firefight` | Firefight | Director wave sets, including map-specific variants such as Basin on Beaver Creek |
 | `siege` | Siege | Siege |
 
@@ -363,10 +364,10 @@ Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
 
 | Address | What it is | Ours |
 |---|---|---|
-| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: reserve room in the list allocator and append words 9 through 12, except in the create mode (`+0xb39`) |
-| `0x2c5823` | a row's text, by word | `before`: words 9 through 12 draw their row's label |
-| `0x2c5897` | a row chosen | `before`: words 9 through 12 run retail's press with a private press record containing Slayer's row handle, with the row set to mark the variant list it opens |
-| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Research and Devolution, 2 Party Games, 3 Firefight, 4 Siege) while its press runs, else 0 |
+| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: reserve room in the list allocator and append words 9 through 11, except in the create mode (`+0xb39`) |
+| `0x2c5823` | a row's text, by word | `before`: words 9 through 11 draw their row's label |
+| `0x2c5897` | a row chosen | `before`: words 9 through 11 run retail's press with a private press record containing Slayer's row handle, with the row set to mark the variant list it opens |
+| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): the row's number (`Row::mark`, 1 Party Games, 2 Firefight, 3 Siege) while its press runs, else 0 |
 | `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for a game type list, enumerate its category then the other six, load each handle with `0x212bc0` and retain matches to the selected type. A marked list hides Create New. |
 | `0x2cad45` | the variant list's per-frame update | `before` on a marked list: the row's title and description in the texts retail sets for Slayer's |
 | `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode and row, which opens it marked |
@@ -383,16 +384,14 @@ against the declared type.
 
 Not verified in a game run:
 
-- the four rows and their labels on both screens, and their panes with their
-  texts. "Research and Devolution" is the longest label on the list and
-  may not fit the row;
+- the three rows and their labels on both screens, their panes with their
+  texts, and all ten rows showing at once above the footer;
 - the variant lists: Slayer's without the rows' variants, each row's with
   its own and no Create New, and the row's title and description;
-- a game started from Research and Devolution having the mode on through
+- a Superbounce game started from Party Games having the mode on through
   its script (the ext block surviving from the built-in record into the
   active variant);
-- Edit on Superbounce saving a copy that lists under Research and
-  Devolution;
+- Edit on Superbounce saving a copy that lists under Party Games;
 - Back from a game or a nested screen reopening the row's list;
 - that the lifter exposes the seven new points as hookable entries.
 

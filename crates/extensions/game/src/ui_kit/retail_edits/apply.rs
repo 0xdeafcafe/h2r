@@ -33,6 +33,11 @@ const ROOT_PANES: u32 = 0x20;
 const ROOT_HEADER: usize = 0x2c;
 /// One pane's size.
 const PANE_SIZE: usize = 0x4c;
+/// A pane's list block (count, address), one list's size and its count of
+/// rows shown at once (`tags::ui::List::visible_items`).
+const PANE_LIST: usize = 0x0c;
+const LIST_SIZE: usize = 0x18;
+const LIST_ROWS: usize = 6;
 
 /// What one file did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,10 +287,46 @@ fn clear_fixup(block: &mut Block, offset: usize) {
     block.fixups.retain(|f| f.offset as usize != offset);
 }
 
+/// Sets the rows shown by the list of every pane of `root` that has one;
+/// a line saying which panes those were.
+fn set_list_rows(root: &mut Block, rows: i16) -> Result<String, String> {
+    let (panes, block) =
+        child_mut(root, ROOT_PANES).ok_or("the screen's panes are not in its own bytes")?;
+    let panes = *panes as usize;
+    block.share = None;
+    let mut set = Vec::new();
+    for pane in 0..panes {
+        let at = pane * PANE_SIZE + PANE_LIST;
+        let stored = u32_at(&block.bytes, at);
+        let Some((count, list)) = child_mut(block, at as u32) else {
+            if stored != 0 {
+                return Err(format!("pane {pane}'s list is another tag's or has no address"));
+            }
+            continue;
+        };
+        if *count == 0 {
+            continue;
+        }
+        if list.bytes.len() < LIST_SIZE {
+            return Err(format!("pane {pane}'s list holds {} bytes", list.bytes.len()));
+        }
+        list.share = None;
+        put_i16(&mut list.bytes, LIST_ROWS, rows);
+        set.push(pane.to_string());
+    }
+    if set.is_empty() {
+        return Err("no pane of the screen has a list".into());
+    }
+    Ok(format!("list shows {rows} rows (pane {})", set.join(", ")))
+}
+
 /// Makes edit `e` on pane `pane` of the screen tree `root`; a line saying
 /// what it did.
 fn edit(root: &mut Block, pane: usize, e: &Edit) -> Result<String, String> {
     let (kind, index) = match (e, e.block()) {
+        (Edit::SetListRows { rows, .. }, BlockName::List) => return set_list_rows(root, *rows),
+        (Edit::SetListRows { .. }, _) => return Err("only the list has rows".into()),
+        (_, BlockName::List) => return Err("the list takes only set_list_rows".into()),
         (Edit::SetString { name, .. }, BlockName::Title) => {
             clear_fixup(root, ROOT_HEADER);
             root.string_id(ROOT_HEADER as u32, name);
@@ -352,5 +393,6 @@ fn edit(root: &mut Block, pane: usize, e: &Edit) -> Result<String, String> {
             block.string_id((start + at) as u32, name);
             Ok(format!("{kind}.{index} reads {name}"))
         }
+        Edit::SetListRows { .. } => Err("only the list has rows".into()),
     }
 }

@@ -1,6 +1,5 @@
 //! Our game type rows at the bottom of the custom game's game type list,
-//! under Territories: Research and Devolution, Party Games, Firefight and
-//! Siege ([`community::Row`];
+//! under Territories: Party Games, Firefight and Siege ([`community::Row`];
 //! docs/game/community-gametypes.md "Tweakers").
 //!
 //! **The list** (read from the XBE, 2026-11-21, static). Change Rules on
@@ -76,10 +75,9 @@ pub const CREATE_FLAG: u32 = 0xb39;
 pub const GAME_TYPE_WORDS: [i16; 7] = [0, 1, 3, 4, 6, 7, 8];
 pub const SLAYER_WORD: i16 = 0;
 /// Our rows' words: past retail's, never seen by its press.
-pub const RESEARCH_WORD: i16 = 9;
-pub const PARTY_WORD: i16 = 10;
-pub const FIREFIGHT_WORD: i16 = 11;
-pub const SIEGE_WORD: i16 = 12;
+pub const PARTY_WORD: i16 = 9;
+pub const FIREFIGHT_WORD: i16 = 10;
+pub const SIEGE_WORD: i16 = 11;
 /// Slayer's pane (index 0), the one our rows show with their texts.
 pub const SLAYER_PANE: i16 = 0;
 /// The pane's text blocks: the description (block 0) and the title
@@ -144,7 +142,6 @@ pub const MAX_HANDLES: u32 = 0x1065;
 /// The word of one of our rows.
 pub fn word_of_row(row: Row) -> i16 {
     match row {
-        Row::Research => RESEARCH_WORD,
         Row::PartyGames => PARTY_WORD,
         Row::Firefight => FIREFIGHT_WORD,
         Row::Siege => SIEGE_WORD,
@@ -329,6 +326,9 @@ pub fn drop_create_new(m: &mut dyn GuestMemory, handler: u32) -> Result<bool, Me
 // The shared UI list allocator is called inside the category constructor.
 // It allocates nine datums for the stock picker, enough for seven stock
 // rows and two custom ones. Grow the allocation before retail fills it.
+// The list shows as many rows as it holds
+// (`content/ui/retail-edits/game_engine_category_listing*.yaml`), so
+// none is off its bottom.
 thread_local! {
     static BUILDING_CATEGORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -571,11 +571,6 @@ fn row_chosen(c: &mut Call) -> Result<Flow, GuestFault> {
 /// The reopen entries' labels: for each row in [`Row::ALL`]'s order, its
 /// settings, lobby and pick loaders.
 const REOPEN_LABELS: [[&str; 3]; Row::ALL.len()] = [
-    [
-        "tweakers: reopen a Research and Devolution list (settings)",
-        "tweakers: reopen a Research and Devolution list (lobby)",
-        "tweakers: reopen a Research and Devolution list (pick)",
-    ],
     [
         "tweakers: reopen a Party Games list (settings)",
         "tweakers: reopen a Party Games list (lobby)",

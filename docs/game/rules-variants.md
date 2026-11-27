@@ -301,14 +301,14 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | SWAT, Duel, Tower of Power | `slayer` | `slayer` | |
 | Jousting, Cops and Robbers | `party` | `slayer` | |
 | Bumper Cars | `party` | `slayer` | `starting_weapon = none` is one of our added choices; without `variant_options` the entry is left out, as today |
-| Glitch Hunt | `research` | `slayer` | |
-| Bounce Practice | `research` | `slayer` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
+| Glitch Hunt | `party` | `slayer` | |
+| Bounce Practice | `party` | `slayer` | `bounce_practice.rules`: settings only; the bounce-scoring script is `bounce_hunt.rules` |
 | Zombies | `party` | `slayer` | the honour rules stay in `about`. `infection.rules` enforces them but waits on `set_team` (untraced, `verify::unhostable`) |
 | Sun King | `koth` | `koth` | |
 | Wheeeeee! | `oddball` | `oddball` | |
 | Clint Eastwood | `juggernaut` | `juggernaut` | |
 | Hide and Seek | `party` | `juggernaut` | a row's list is Slayer's and Juggernaut's variant lists filtered (slice 12) |
-| Superbounce | `research` | none | `superbounce.rules` gains its settings; the table's are deleted |
+| Superbounce | `party` | none | `superbounce.rules` gains its settings; the table's are deleted |
 | Gun Game | `party` | none | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
 | Race | `party` | none | `race.rules`: the map's hills are its checkpoints, run in number order, so every map with hills races |
 | VIP | `party` | none | `vip.rules`: a VIP per team, worth `vip_points` to kill, the role passing to a teammate; the script ends the round at the score limit |

@@ -106,7 +106,7 @@ def open_row(parent, label):
     if normalize(label) == "theater" and child["active"]["name"] != "theater.films":
         raise RuntimeError(f"{label}: opened {surface(child)}")
     if parent["active"]["id"] == 207:
-        expect = {normalize(s): s for s in ("Siege", "Firefight", "Research and Devolution", "Party Games")}
+        expect = {normalize(s): s for s in ("Siege", "Firefight", "Party Games")}
         node = next(ch["active"] for ch in opened["channels"] if ch["active"]
                     and ch["active"]["instance"] == opened["input"]["instance"])
         back = opened["back"] or {}

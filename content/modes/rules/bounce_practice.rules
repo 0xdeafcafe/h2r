@@ -5,7 +5,7 @@
 // medals, and the bots practising), as it does for Superbounce.
 // docs/game/community-gametypes.md.
 rules "Bounce Practice" 1
-type research
+type party
 requires hud.superbounce
 uses slayer
 about "Practice super bounces and crouch jumps with a magnum: no score, no time limit, tough players, quick respawns and nothing to pick up."

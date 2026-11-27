@@ -46,8 +46,8 @@ h2 rules build my_mode.rules -o my_mode.rir         # the verified blob and its 
 2. **Write the `.rules` file**: a header (`rules "Name" 1`, `type
    slayer`, optional `teams n`, `points "Label"`, `uses <game>` and
    `requires ...`), options, variables, functions, handlers. The type is
-   one of `slayer ctf assault oddball koth juggernaut territories research
-   party firefight siege`; a new mode picks the row it belongs in.
+   one of `slayer ctf assault oddball koth juggernaut territories party
+   firefight siege`; a new mode picks the row it belongs in.
 3. **`h2 rules check`.** Fix every error and read the report.
 4. **`h2 rules sim`** first: it plays whole matches made up from what
    the script handles and says who won, how each match ended, the
@@ -392,8 +392,8 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
 - **A script names a type, not an engine.** `type` files the variant and
   picks its start line; `points` names what a point is. A retail type's
   record is that game's engine (`ctf`, `assault`, `oddball`, `koth`,
-  `juggernaut`, `territories`); `research`, `party`, `firefight` and
-  `siege` are on Slayer's, and a variant file's record must be that
+  `juggernaut`, `territories`); `party`, `firefight` and `siege` are on
+  Slayer's, and a variant file's record must be that
   engine. `carrier`, `list` and `scoring` lines are refused
   (`header.retired`), each naming its replacement
   ([docs/game/game-types-without-carriers.md](../../../docs/game/game-types-without-carriers.md)). Retail settings (score and time limits, lives, team play) stay in

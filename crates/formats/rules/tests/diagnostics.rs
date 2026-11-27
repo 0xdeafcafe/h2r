@@ -862,13 +862,13 @@ fn a_uses_script_takes_no_handlers() {
     }
     // Its header lines, settings and quick are its whole script.
     let src = riding(
-        "research",
+        "party",
         "uses slayer\nrequires hud.superbounce\npoints \"Bounces\"\nabout \"Bounce.\"\nquick lives\nsettings { lives = 3 }\n",
     );
     let c = diagnose(&src);
     assert!(c.diagnostics.is_empty(), "{:#?}", c.diagnostics);
     let ir = c.ir.unwrap();
-    assert_eq!((ir.header.game_type, ir.header.uses), (Type::Research, Some(Type::Slayer)));
+    assert_eq!((ir.header.game_type, ir.header.uses), (Type::Party, Some(Type::Slayer)));
     assert_eq!((ir.header.points.as_str(), ir.header.about.as_str()), ("Bounces", "Bounce."));
     assert_eq!(ir.header.engine(), 2);
     // `uses` names a built-in game: a retail type.
@@ -903,7 +903,7 @@ fn type_points_and_about_codes() {
     assert_eq!(m, "a script names its game type: type slayer");
     let m = error(&riding("king", "on tick { }\n"), "name.unknown");
     assert!(m.starts_with("unknown type king: a type is slayer, ctf, assault"), "{m}");
-    assert!(m.ends_with("research, party, firefight, siege"), "{m}");
+    assert!(m.ends_with("territories, party, firefight, siege"), "{m}");
     let m = error(&riding("slayer", "type ctf\non tick { }\n"), "syntax");
     assert!(m.contains("the type is named twice"), "{m}");
     // Points defaults to the type's and takes 1 to 32 bytes.
@@ -952,7 +952,7 @@ fn carrier_list_and_scoring_lines_are_refused_with_their_replacement() {
     assert!(m[1].starts_with("scoring carrier is gone: write `uses oddball`"), "{m:?}");
     // The old header alone: every line is named, and the carrier line's own
     // error says which type to write, so no second error asks for it.
-    let c = diagnose("rules \"V\" 1\ncarrier slayer\nlist research\nscoring carrier\n");
+    let c = diagnose("rules \"V\" 1\ncarrier slayer\nlist party\nscoring carrier\n");
     let codes: Vec<&str> = c.errors().map(|d| d.code).collect();
     assert_eq!(codes, ["header.retired", "header.retired", "header.retired"]);
 }

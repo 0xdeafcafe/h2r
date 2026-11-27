@@ -15,6 +15,16 @@
 //! (its visible byte). A lobby whose tag has no such block has no prompt
 //! line, and the update leaves it alone.
 //!
+//! **The game line** is the lobby's "<game type> on <map>" text, which
+//! retail's panel update writes from the record's game type and the map
+//! slot's name. A game with a mode of its own (Firefight, Siege, a rules
+//! script) plays on the Slayer record and a Firefight map is a kit
+//! package, so retail's line reads "Slayer on Firefight – Lockout". The
+//! update writes the line from the mode and the variant instead
+//! ([`own_mode`], [`title`]): "Firefight: Holdout on Lockout". Any other
+//! game on a kit package keeps retail's game and names the map plainly
+//! ([`on_plain_map`]).
+//!
 //! **The update** runs where the lobby's panel is (`crate::lobby_options`,
 //! on `LOBBY_VARIANT_PANEL`). It reads the lobby ([`read`]), works out its
 //! mode ([`shown`]), runs a switch a Live menu row asked for
@@ -65,6 +75,103 @@ pub struct Found {
     pub header: Option<u32>,
     /// The text widget of block [`PROMPT_BLOCK`] on pane 0.
     pub prompt: Option<u32>,
+    /// The two text widgets retail's panel update writes besides the
+    /// option rows ([`GAME_LINES`]): one of them is the game line.
+    pub lines: [Option<u32>; 2],
+}
+
+/// The direct text children retail's panel update (`0x2501c0`) looks up
+/// for its own lines, counted as its lookup counts them (`0x22edb8(6, n)`
+/// at `0x250252` and `0x250260`).
+pub const GAME_LINES: [usize; 2] = [3, 4];
+/// A text widget's inline UTF-16 buffer and its room
+/// (`crate::lobby_options`).
+const TEXT_BUFFER: u32 = 0x74 + 0x44;
+const TEXT_UNITS: usize = 255;
+
+// ---- the game line ----
+
+/// The mode a lobby's game has of its own, and its variant's name; `None`
+/// when the record plays as its own game type and retail's line stands.
+/// `lobby` is the lobby's mode, `script` the record's script mode, `siege`
+/// whether it is the Siege game type, `record` its name and `waves` the
+/// wave set a Firefight lobby plays. A mode's label is `None` for a rules
+/// script with no mode name: its variant's name is the game.
+pub fn own_mode(
+    lobby: Mode,
+    script: variants::ext::Mode,
+    siege: bool,
+    record: &str,
+    waves: Option<&str>,
+) -> Option<(Option<&'static str>, String)> {
+    use variants::ext::Mode as Script;
+    match (script, lobby) {
+        // A Firefight variant names its wave set.
+        (Script::Firefight, _) => Some((Some(crate::map_modes::FIREFIGHT_TAG), record.to_owned())),
+        // A Firefight lobby plays the options page's set on any record.
+        (_, Mode::Firefight) => Some((Some(crate::map_modes::FIREFIGHT_TAG), waves.unwrap_or_default().to_owned())),
+        (Script::Rules, _) if siege => Some((Some(crate::map_modes::SIEGE_TAG), record.to_owned())),
+        (Script::Rules, _) => Some((None, record.to_owned())),
+        (Script::None | Script::Unknown(_), _) => None,
+    }
+}
+
+/// The game line of a game with a mode of its own: `Firefight: Holdout on
+/// Lockout`. The mode stands alone when the variant has no other name
+/// (`Siege on Lockout`), a variant without a mode name stands alone
+/// (`Bounce Practice on Lockout`), and a kit package is named as its map
+/// (`crate::lobby_start::KIT_NAME_PREFIX`). The record's base game type is
+/// never part of it.
+pub fn title(mode: Option<&str>, variant: &str, map: &str) -> String {
+    let map = map.strip_prefix(crate::lobby_start::KIT_NAME_PREFIX).unwrap_or(map).trim();
+    let variant = variant.trim();
+    let game = match mode {
+        Some(mode) if variant.is_empty() || variant.eq_ignore_ascii_case(mode) => mode.to_owned(),
+        Some(mode) => format!("{mode}: {variant}"),
+        None => variant.to_owned(),
+    };
+    match (game.is_empty(), map.is_empty()) {
+        (false, false) => format!("{game} on {map}"),
+        (false, true) => game,
+        (true, _) => map.to_owned(),
+    }
+}
+
+/// Whether the text `shown` on a widget is retail's game line for the map
+/// slot named `map`: it ends with the slot's name and says more than it.
+pub fn is_game_line(shown: &str, map: &str) -> bool {
+    let shown = shown.trim();
+    !map.is_empty() && shown.len() > map.len() && shown.ends_with(map)
+}
+
+/// Retail's game line `shown` for the map slot named `map`, with a kit
+/// package named as its map: `None` when the slot is no kit package. A
+/// game with no mode of its own on a kit map keeps retail's game and
+/// loses only the package's prefix.
+pub fn on_plain_map(shown: &str, map: &str) -> Option<String> {
+    let plain = map.strip_prefix(crate::lobby_start::KIT_NAME_PREFIX)?.trim();
+    let game = shown.trim().strip_suffix(map)?;
+    Some(format!("{game}{plain}"))
+}
+
+/// The lobby map slot's name, and the game line for it when the lobby's
+/// game has a mode of its own ([`own_mode`]).
+fn game_line(m: &dyn GuestMemory, store: Option<&Store>) -> Option<(Option<String>, String)> {
+    let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok()?;
+    let catalogue = crate::map_select::current()?;
+    let map = catalogue.all().find(|map| map.id == id)?.name.clone();
+    let record = crate::pause_change_map::lobby_variant(m)?;
+    let lobby = crate::lobby_start::mode();
+    #[cfg(feature = "rules")]
+    let siege = crate::rules::gate::is_siege_record(&record);
+    #[cfg(not(feature = "rules"))]
+    let siege = false;
+    let waves = (lobby == Mode::Firefight)
+        .then(|| store.and_then(|store| crate::lobby_mode::firefight_waves(m, store)))
+        .flatten();
+    let ours = own_mode(lobby, record.ext().script.mode, siege, &record.name(), waves.as_deref())
+        .map(|(mode, variant)| title(mode, &variant, &map));
+    Some((ours, map))
 }
 
 /// The lobby `screen`'s header and prompt line, read from its children;
@@ -73,12 +180,19 @@ pub fn find(m: &dyn GuestMemory, screen: u32) -> Option<Found> {
     let mut f = Found::default();
     let pane0 = m.u16(screen.checked_add(SCREEN_PANE)?).ok()? == 0;
     let mut child = m.u32(screen.checked_add(WIDGET_CHILD)?).ok()?;
+    let mut texts = 0usize;
     for _ in 0..MAX_CHILDREN {
         if child == 0 {
             return Some(f);
         }
-        let text = m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND
-            && m.u32(child).ok()? == TEXT_VTABLE;
+        let kind = m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND;
+        let text = kind && m.u32(child).ok()? == TEXT_VTABLE;
+        if kind {
+            if let Some(line) = GAME_LINES.iter().position(|&n| n == texts) {
+                f.lines[line] = text.then_some(child);
+            }
+            texts += 1;
+        }
         if text {
             if f.header.is_none() {
                 f.header = Some(child);
@@ -367,6 +481,26 @@ pub async fn update(cx: &Cx, screen: u32, store: Option<Arc<Store>>) -> Result<(
     };
     if let Some(header) = found.header {
         set_text(cx, screen, header, state.selected.id()).await?;
+    }
+    // Retail has just written "<game type> on <map slot>"; a game with a
+    // mode of its own is named by that mode and its variant instead.
+    if let Some((ours, map)) = cx.read(|m| game_line(m, store.as_deref())) {
+        for widget in found.lines.into_iter().flatten() {
+            let Some(shown) = cx.read(|m| m.utf16(widget + TEXT_BUFFER, TEXT_UNITS).ok()) else {
+                continue;
+            };
+            if !is_game_line(&shown, &map) {
+                continue;
+            }
+            let Some(line) = ours.clone().or_else(|| on_plain_map(&shown, &map)) else {
+                continue;
+            };
+            if line != shown
+                && let Some(id) = cx.write(|m| crate::lobby_mode::title_id(m, &line))
+            {
+                set_text(cx, screen, widget, id).await?;
+            }
+        }
     }
     if let Some(prompt) = found.prompt {
         set_text(cx, screen, prompt, super::CHANGE_MODE_ID).await?;

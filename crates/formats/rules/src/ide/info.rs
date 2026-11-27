@@ -368,7 +368,7 @@ pub(crate) fn keyword_doc(w: &str) -> Option<&'static str> {
         "const" => "A named constant, folded at compile time and usable wherever a literal is: `const last_phase = 2`, `const hold = 30s`.",
         "match" => "One arm per variant of an enum value: `match role { Role.vip { } Role.guard, Role.none { } }`, or an `else` arm. Every variant needs an arm.",
         "teams" => "In the header, the team count (1 to 8): `teams 2`. In a set, every team.",
-        "list" => "Gone: `type` files a variant in its row: `type research`, `type party`.",
+        "list" => "Gone: `type` files a variant in its row: `type party`, `type firefight`.",
         "type" => "The game type: `type slayer`. It picks the game type list's row the script's variants are filed under, the announcer's line at the start and what a point is called. A type changes no rule.",
         "points" => "What a point is, for the scoreboard and the post-game: `points \"Captures\"`. With no `points` line it is the type's.",
         "uses" => "The built-in game whose rules the script plays under its own settings: `uses slayer`. The script then holds its header lines, `settings` and `quick` only.",

@@ -3,7 +3,7 @@ Header lines
 ================================================================================
 
 rules "Slayer" 1
-type research
+type party
 teams 2
 uses slayer
 points "Bounces"

@@ -251,7 +251,7 @@ fn the_game_types_are_the_lobbys_with_our_rows_last() {
         listed("Zombies", GameType::Slayer, Some(Row::PartyGames)),
         listed("CTF Classic", GameType::Ctf, None),
         listed("Crazy King", GameType::King, None),
-        listed("Superbounce", GameType::Slayer, Some(Row::Research)),
+        listed("Superbounce", GameType::Slayer, Some(Row::PartyGames)),
     ];
     assert_eq!(
         game_types::groups(&list),
@@ -259,7 +259,6 @@ fn the_game_types_are_the_lobbys_with_our_rows_last() {
             Group::Type(GameType::Slayer),
             Group::Type(GameType::King),
             Group::Type(GameType::Ctf),
-            Group::Row(Row::Research),
             Group::Row(Row::PartyGames),
         ]
     );
@@ -267,7 +266,7 @@ fn the_game_types_are_the_lobbys_with_our_rows_last() {
     let slayer = game_types::of_group(&list, Group::Type(GameType::Slayer));
     assert_eq!(slayer.len(), 1, "a row's variants are not Slayer's");
     assert_eq!(Group::Type(GameType::Ctf).label(), "Capture the Flag");
-    assert_eq!(Group::Row(Row::Research).label(), "Research and Devolution");
+    assert_eq!(Group::Row(Row::PartyGames).label(), "Party Games");
     assert!(
         game_types::listed(GameVariant::blank(GameType::Other(5))).is_none(),
         "an engine the list has no row for"

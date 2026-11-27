@@ -311,6 +311,7 @@ pub const NAMES: [&str; 86] = [
     "kit.picker.game",
     MAP_VARIANT_PICKER,
     MODE_PICKER,
+    MAP_PICKER_GROUPS,
     MAP_PICKER_SLAYER,
     MAP_PICKER_FIREFIGHT,
     MAP_PICKER_SIEGE,
@@ -363,8 +364,12 @@ pub const MAP_VARIANT_PICKER: &str = "kit.picker.map-variant";
 /// (docs/game/party-lobby.md, "Changing mode"; `crate::lobby_tabs::picker`).
 pub const MODE_PICKER: &str = "kit.picker.mode";
 
-/// The Select Map picker as Game Setup opens it for a lobby playing a game
-/// type: every map listed by name, those that play it first, the pane
+/// The Select Map picker as Game Setup opens it: the groups (Halo 2, Map
+/// Pack, Mods, Halo: CE), each opened with A
+/// ([`crate::map_modes::sample_groups`]).
+pub const MAP_PICKER_GROUPS: &str = "map.picker.groups";
+/// A group's maps, for a lobby playing a game
+/// type: every map of the group listed by name, those that play it first, the pane
 /// listing the modes the focused map supports under its description, the
 /// ones that do not play it refused ([`crate::map_modes`]).
 pub const MAP_PICKER_SLAYER: &str = "map.picker.slayer";
@@ -541,11 +546,11 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                 MAP_PICKER_SIEGE => Played::Siege,
                 _ => Played::Other,
             };
-            let rows = crate::map_modes::sample(played);
+            let (group, rows) = crate::map_modes::sample(played);
             let (blocked, details) = (rows.iter().map(|r| r.1).collect(), rows.iter().map(|r| r.2.clone()).collect());
             Some(
                 crate::ui_kit::picker::Pick::new(
-                    "Select Map",
+                    &group,
                     rows.into_iter().map(|r| r.0).collect(),
                     0,
                     "Maps that play this game type come first.",
@@ -556,6 +561,16 @@ pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
                 .blocked(blocked),
             )
         }
+        MAP_PICKER_GROUPS => Some(
+            crate::ui_kit::picker::Pick::new(
+                "Select Map",
+                crate::map_modes::sample_groups(),
+                0,
+                "Choose a group, then a map.",
+                Arc::new(|_| String::new()),
+            )
+            .over(crate::ui_kit::view::Opener::GAME_SETUP),
+        ),
         MAP_PICKER_VARIANTS => {
             let (map, rows) = crate::map_modes::sample_page(crate::map_modes::Played::Siege);
             let (blocked, details) = (rows.iter().map(|r| r.1).collect(), rows.iter().map(|r| r.2.clone()).collect());
@@ -778,7 +793,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         // The held value first, so the picker opens on it; then the
         // first and last.
-        MAP_PICKER_VARIANTS => {
+        MAP_PICKER_GROUPS | MAP_PICKER_VARIANTS => {
             let pick = lobby_pick_sample(name)?;
             let at = [0, 1, pick.values.len().saturating_sub(1)];
             crate::ui_kit::picker::offer_list(pick)?;
