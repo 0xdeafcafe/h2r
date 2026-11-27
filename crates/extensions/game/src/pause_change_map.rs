@@ -69,12 +69,12 @@ pub const RULES_SCREEN: &str = "pause-game-rules";
 pub const QUICK_SCREEN: &str = "pause-quick-options";
 pub const CLANKERS_SCREEN: &str = "pause-clanker-options";
 
-/// GAME MENU's rows' array (`crate::forge_screens::game_menu`).
-pub const ARRAY_NAME: u32 = crate::forge_screens::game_menu::ARRAY_NAME;
+/// GAME MENU's rows' datum array's name (the constructor's
+/// `LIST_DATA_NEW`).
+pub const ARRAY_NAME: u32 = 0x0045_93a8;
 /// Retail's End Game action word.
 pub const END_GAME: u16 = 5;
-/// Our row's action word: clear of retail's 0 to 5 and the Forge rows'
-/// `0x20` to `0x24`.
+/// Our row's action word: clear of retail's 0 to 5.
 pub const SETUP_ACTION: u16 = 0x30;
 const ACTION_WORD: u32 = 2;
 
@@ -976,8 +976,7 @@ impl Feature for PauseChangeMap {
                 })
             })
             // Each answers only its own action words.
-            .after_feature("pause-mp-rows")
-            .after_feature("forge-screens");
+            .after_feature("pause-mp-rows");
 
         let visit = Arc::clone(&self.0);
         b.raw()

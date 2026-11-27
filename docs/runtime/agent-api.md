@@ -5150,8 +5150,8 @@ Objects tool. `back` with nothing to cancel does nothing. In player mode
 only `toggle` enters the monitor. The screens are the game's: while one
 is up (ours or the game's), `forge.input` is refused with "A screen is
 up; drive it with ui.press." and the screen is driven with `ui.press`.
-`menu` is refused with "The Forge menu is the game's GAME MENU; open it
-with Start.". An analog request supplies one 1/30-second sample
+`menu` opens the Forge menu, as Back does, and is refused in player mode
+with "The Forge menu opens while you fly the monitor.". An analog request supplies one 1/30-second sample
 with at least one axis. Movement is [right, forward, up], look is [yaw,
 pitch] and roll turns a preview with `rotating:true`. Each axis is in
 [-1, 1]. Read `forge.status` for the resulting monitor and document

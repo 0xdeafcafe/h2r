@@ -234,7 +234,7 @@ off is left out.
   player's GAME MENU is retail's. The rows' array (name `0x4593a8`) is
   made one row larger while the feature is built
   (`pause_change_map::list_count`, from the datum array hook in
-  `layout_glue`), on top of the Forge rows' room.
+  `layout_glue`).
 - **One row, not four.** GAME MENU's list is not shown to scroll past its
   item widgets, so the four rows sit on Game Setup and GAME MENU gains one
   row, as with Change Map alone.

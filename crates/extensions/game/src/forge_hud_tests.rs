@@ -29,7 +29,7 @@ fn the_buttons_are_read_from_the_table() {
     assert_eq!(buttons().objects.press(), "Press \u{e102}");
     assert_eq!(buttons().delete.press(), "Hold \u{e103}");
     assert_eq!(buttons().turn.press(), "Hold \u{e107}");
-    assert_eq!(buttons().menu.press(), "Press \u{e10c}");
+    assert_eq!(buttons().menu.press(), "Press \u{e10d}");
 }
 
 /// Every pad button has its own glyph in the fonts' button range, and every

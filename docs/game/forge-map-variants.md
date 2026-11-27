@@ -465,7 +465,7 @@ collision and each machine builds its own.
   form of the play form (`Session::ground_copy_form`; forge-design.md,
   "Rebuild map"), which has no spare rows for the kit.
 - **When it is built.** Never while placing. **Build AI ground** on the
-  Forge options page builds now; **Test waves** builds when the running
+  Forge menu's Waves tab builds now; **Test waves** builds when the running
   map does not hold the current ground (`Session::ground_loaded`) and
   the game reloads, and otherwise when the ground is stale or was never
   built; a save builds first when it was built and is

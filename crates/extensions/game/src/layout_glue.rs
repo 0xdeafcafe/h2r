@@ -839,8 +839,6 @@ pub fn install(
                 }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
-                // GAME MENU's Forge rows, while a local Forge session runs.
-                let n = crate::forge_screens::game_menu_count(name, n);
                 // GAME MENU's Game Setup row, for the party leader.
                 let n = crate::pause_change_map::list_count(name, n);
                 // The variant editor's categories get the multiplayer

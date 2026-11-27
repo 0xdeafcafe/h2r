@@ -1833,6 +1833,7 @@ impl Editor {
         });
         screens::publish(Facts {
             active: true,
+            monitor: self.tool.monitor,
             dirty: self.dirty(),
             pending_rebuild: self.session.pending_rebuild(),
             rotation_snap: self.rotation_step,
@@ -2138,7 +2139,7 @@ impl Editor {
             Settings => screens::request(Kind::Settings)?,
             Overlays => screens::open(sheet::overlays_with(self.tool.overlays, self.dev_view))?,
             PieceSize { .. } => return self.open_size(),
-            Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
+            Menu => screens::request(Kind::Menu)?,
             BuildGround => return self.start_ground(tick, false, None),
             GenerateNav => return self.start_nav(tick, None),
             TestWaves => return self.test_waves(tick, None),
@@ -2790,8 +2791,8 @@ impl Editor {
                 ask: Ask::Leave, ..
             } => {}
             Choice::Save => match flows::save(self.filename.as_deref()) {
-                // GAME MENU opens the keyboard for an unnamed map before it
-                // sends Save; a Save that gets here without one is refused.
+                // The Forge menu opens the keyboard for an unnamed map before
+                // it sends Save; a Save that gets here without one is refused.
                 flows::SaveStep::Keyboard => return Err(flows::UNNAMED.into()),
                 flows::SaveStep::Write { name, replace } => return self.save(name, replace),
             },

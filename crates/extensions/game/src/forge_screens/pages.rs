@@ -233,11 +233,14 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                 sheet::question(Ask::Waves(WavesAsk::StartFrom(1)), "Attrition"),
             ),
         ],
-        Kind::Options => {
-            let open = sheet::options();
-            let last = at(&open, open.rows.len() - 1);
-            let waves = sheet::options_with_waves(&[], &[], false, true, true);
-            vec![("open", open), ("last", last), ("waves", waves)]
+        // A state a tab, in the strip's order (`SheetPage::step` steps
+        // them).
+        Kind::Menu => {
+            let facts = super::menu::sample_facts();
+            super::menu::Tab::ALL
+                .into_iter()
+                .map(|tab| (tab.state(), super::menu::sheet(tab, &facts)))
+                .collect()
         }
         Kind::Waves => {
             let f = waves::sample_facts();
@@ -327,7 +330,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
 
 /// Sample map variants: two saved (the second is the open one), one from
 /// Xbox Live and one that fails a check.
-fn sample_variants() -> Vec<super::variants::Row> {
+pub(super) fn sample_variants() -> Vec<super::variants::Row> {
     use super::variants::Row;
     let row = |file: &str, name: &str, saved, sentence: Option<String>| Row {
         file: file.into(),
@@ -388,6 +391,19 @@ impl Page for SheetPage {
     type Effect = ListEffect;
 
     fn step(&self, s: &mut Shown, input: Input) -> ListEffect {
+        // The Forge menu's tabs are its samples: a step of the strip
+        // shows the next one, focused on its first row.
+        let (kind, button) = input.event();
+        if self.kind == Kind::Menu
+            && let Some(right) = super::menu::turn_of(kind, button)
+        {
+            let tab = super::menu::Tab::ALL[s.sample % super::menu::Tab::ALL.len()].next(right);
+            *s = Shown {
+                sample: tab.index(),
+                focus: 0,
+            };
+            return ListEffect::Hook;
+        }
         let screen = self.screen(*s);
         let page = ListPage::new(screen.class(), described(&screen));
         let mut focus = Focus(s.focus);

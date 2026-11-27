@@ -41,14 +41,14 @@ objects that are guest truth, tool state that is presentation
 | Typed numbers, Coordinates | built | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not. A typed or nudged value moves the held thing live, and closing writes one op (`Session::hold`, then `move_thing`) | none |
 | Duplicate | built | One `Placement::Add` with the source's tag from the placeable palette, at the frame in front of the monitor. The tool holds the copy at once (`Session::duplicate`, `Tool::take_up`). In a kit session (`Session::duplicate_kit`) a spawner or starting point copies its editable fields, a teleporter keeps its role and takes the channel a new one takes, and a goal keeps its team and order with its own default area (a hill takes the next free hill); each is one undo step and takes a spare kit row, or is refused with the kit's sentence. A session without the kit refuses them ("Duplicating a goal needs a kit session."). | none |
 | Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
-| Limits by kind | built (P4) | **Map limits** on Forge options lists live object pool use and scenario block counts with their known engine limits ([forge-map-variants-ui.md](forge-map-variants-ui.md), "The budget") | none |
+| Limits by kind | built (P4) | **Map limits** on the Forge menu lists live object pool use and scenario block counts with their known engine limits ([forge-map-variants-ui.md](forge-map-variants-ui.md), "The budget") | none |
 | Selection, groups, group pivot | built (P5) | A selection is tool state (`Tool::toggle_selected`). A group is a Forge-family op naming its members by endpoint (`forge_doc::Group`); moving one is a batch of entry sets in one undo step, as a delete of a linked machine is one step (`Session::move_thing`). The pivot, centre or first member, is a field of the op (`pivot_first`); the local Properties page sets it with `Session::set_group_pivot` | none; the document format is 4 (`FORMAT_GROUPS`) |
 | Prefabs | built (P5) | A prefab is a small file: tag keys and frames relative to a pivot, no game bytes. Placing one checks every tag against this map's palette and refuses by name | sharing on Live rides F14 |
 | Folders, lock | built | A group's name is the folder (the browser lists groups first); lock is a flag on the group (`Forge::GroupLock`) that the tool honours: it does not aim at a locked group's things | none |
 | Placed lights | P6 | A kit piece of ours with a generated light tag; colour and size are tag field writes, which are Live ([forge-design.md](forge-design.md), "What the engine allows at runtime"). Halo 2 lights the level from a baked lightmap, so a placed light adds dynamic light only and casts no shadow (**S**: the engine's count of dynamic lights a frame, to be probed) | M, after F8's generators |
 | Node graph | F7, [rules-engine.md](rules-engine.md) | The graph exists in the design as links between ports ([forge-features.md](forge-features.md), "Teleporters, buttons and triggers"), compiled to the rules IR. On a pad it is edited in the world with the Links tool, one link at a time; a canvas view belongs to the paired editor. Its caps are the validator's and the Forge step's budget of node visits a tick | L (F7), unchanged |
 | Bots on an edited map | F9 | `bots::autonav` rebuilds the nav mesh off the game thread | M (F9), unchanged |
-| AI ground for scripted games | built (GM3) | Labelled markers on the Objects tool's AI and objectives page, **Build AI ground** and **Test waves** on the Forge options page, and a save that builds first when the ground is stale ([forge-map-variants.md](forge-map-variants.md), "AI ground") | none |
+| AI ground for scripted games | built (GM3) | Labelled markers on the Objects tool's AI and objectives page, **Build AI ground** and **Test waves** on the Forge menu's Waves tab, and a save that builds first when the ground is stale ([forge-map-variants.md](forge-map-variants.md), "AI ground") | none |
 | Test without leaving | built | D-pad Up swaps monitor and player in the same session, as in Halo 3 | none |
 | Versions | F14 | A document is content-addressed, so every published save is a version | in F14 |
 | Magnets | with F8, kit pieces only | Our generated pieces can carry snap points at face centres and corners. A retail object has none and gets none | S, in F8 |
@@ -81,19 +81,26 @@ Black and White buttons.
 | Cancel a hold or a started link; back | B | Escape |
 | Tools | D-pad Right | T |
 | Tool settings | D-pad Down | G |
-| Overlays | Back | H |
+| Overlays | Click the right stick | H |
 | Undo; redo | D-pad Left; hold for redo | Cmd+Z; Shift+Cmd+Z |
-| Forge menu | Start | Escape with nothing held |
+| Forge menu, in the monitor | Back | M |
+| Game menu | Start | Escape with nothing held |
 
 - The layout follows Halo 3's table (**C**), with B as cancel.
-  Hold A to select, the D-pad's other three directions and the stick
-  click are Forge controls. Reach puts its tools on B (**C**).
+  Hold A to select, the D-pad's other three directions, the stick
+  clicks and Back's Forge menu are Forge controls. Reach puts its tools
+  on B (**C**).
+- Back opens the Forge menu only while the player flies the monitor
+  ([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). In
+  their own body Back is the game's, the scoreboard: the gate hands the
+  game every button but the swap's (`forge_controls::handed`), as Halo 3
+  keeps Forge's actions to edit mode (**C**).
 - In the Links tool the same buttons mean the same things: A starts a
   link and makes it, X opens the Link question of the thing aimed at,
   hold Y removes its latest link, B cancels a started link.
 - Start, and Escape with nothing to cancel, are the game's: they open
-  its GAME MENU with the Forge rows in it. The table's Start row does
-  nothing of the session's (`Does::Game`).
+  its GAME MENU, whose rows are the game's own. The table's Start row
+  does nothing of the session's (`Does::Game`).
 - While a screen is up, ours or the game's, the monitor takes no input:
   the pad and the keys go to the game's UI (`forge_controls::State`,
   `screen`).
@@ -124,7 +131,8 @@ A tool that is not built is absent from the picker.
 
 ## Overlays
 
-An overlay is a drawing the monitor adds over the world. Back (H) opens
+An overlay is a drawing the monitor adds over the world. A click of the
+right stick (H) opens
 the Overlays page: a row for each overlay in `sheet::OVERLAYS`, showing
 On or Off, A opening a picker on the two. Every overlay starts On.
 Overlays are tool state, as the settings are: never in the document, the
@@ -378,7 +386,7 @@ opens a picker; an action row acts and closes.
   first piece. A prefab naming a tag the map lacks, or more objects than
   the budget has left, is refused by name (`Session::prefab_fits`) and
   nothing is placed or substituted.
-- The browser (**Placed objects**, a row of the Forge options page)
+- The browser (**Placed objects**, the row of the Forge menu's Objects tab)
   opens a picker over every object placed, named as the object menu names
   it and numbered when the map has more than one ("Beacon 2", in the
   order placed), listed by the object menu's groups and then by name.

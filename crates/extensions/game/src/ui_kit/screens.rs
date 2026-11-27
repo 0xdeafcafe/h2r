@@ -273,7 +273,7 @@ pub const NAMES: [&str; 87] = [
     "forge.settings",
     "forge.link",
     "forge.question",
-    "forge.options",
+    "forge.menu",
     "forge.controls",
     "forge.games",
     "forge.variants",
@@ -408,7 +408,7 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
         // The game's screens (`crate::forge_screens`).
         "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
-        | "forge.question" | "forge.options" | "forge.controls" | "forge.games"
+        | "forge.question" | "forge.menu" | "forge.controls" | "forge.games"
         | "forge.variants" | "forge.variant" | "forge.map-limits" | "forge.waves"
         | "forge.rounds" | "forge.round" | "forge.wave" | "forge.squads" | "forge.squad"
         | "forge.wave-problems" | "forge.enemy-types" => {

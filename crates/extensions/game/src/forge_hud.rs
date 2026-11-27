@@ -203,7 +203,7 @@ pub fn buttons() -> Buttons {
         objects: cue(Does::Act(Gesture::ObjectsOrProperties)),
         delete: cue(Does::Act(Gesture::Do(Action::Delete))),
         turn: cue(Does::Hold(Held::Manipulate)),
-        menu: cue(Does::Game),
+        menu: cue(Does::Act(Gesture::Do(Action::Menu))),
     }
 }
 

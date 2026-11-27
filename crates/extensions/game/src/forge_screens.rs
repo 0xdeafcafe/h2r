@@ -1,14 +1,14 @@
 //! The Forge screens in the game (docs/game/forge-firefight-ui.md "The
 //! screens"): the object menu, Properties, Tools, Tool settings, the Link
-//! dialog, the questions, Forge options and Controls, each a list class of
-//! ours on a retail screen tag ([`sheet::Look`]), drawn by the game's UI
-//! over the running world; and the Forge rows of the game's GAME MENU
-//! ([`game_menu`]).
+//! dialog, the questions, the Forge menu and Controls, each a list class
+//! of ours on a retail screen tag ([`sheet::Look`]), drawn by the game's
+//! UI over the running world. The game's GAME MENU keeps its own rows: the
+//! Forge menu is Back's, while the player flies the monitor ([`menu`]).
 //!
 //! - **Who builds what.** The session builds the sheets that need its
 //!   document ([`open`]: the object menu, Properties, Link, a question).
 //!   The rest are built here from what the session publishes ([`Facts`],
-//!   [`request`]): Tools, Tool settings, Forge options, Controls, and the
+//!   [`request`]): Tools, Tool settings, the Forge menu, Controls, and the
 //!   Waves screens from the set the session publishes ([`waves`]).
 //! - **Opening.** A sheet asked for opens at the next UI update, for player
 //!   one, once nothing is pending on the dialogs' window: the large
@@ -17,16 +17,17 @@
 //!   Controller Settings opens.
 //! - **Choices.** A press sends its [`sheet::Choice`] to its screen's
 //!   outbox; [`take_choices`] drains them for the session, oldest first.
-//!   Yes to Leave Game is this module's: the session is left as the title
-//!   leaves a game (`host_lobby::LEAVE_SESSIONS`, then the main menu).
+//!   GAME MENU's Leave Game asks first while edits are not saved; Yes is
+//!   this module's: the session is left as the title leaves a game
+//!   (`host_lobby::LEAVE_SESSIONS`, then the main menu).
 //! - **Input.** While any screen is up, ours or the game's ([`ui_up`]), the
 //!   session publishes it to `crate::forge_controls`, which hands the pad
 //!   and the keys to the game's UI.
 
 pub mod blockout;
-pub mod game_menu;
 pub mod games;
 pub(crate) mod map_limits;
+pub mod menu;
 pub mod pages;
 pub mod props;
 pub mod screen;
@@ -44,24 +45,24 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
-use engine::view::ui::{self, ListHandler};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;
 
 use crate::layout_glue::ReadGm;
 use crate::list_class;
 use crate::ui_kit::dialog_tag;
-use crate::ui_kit::picker::{self, Pick};
 use crate::ui_kit::screen::{SlotTexts, TextPool};
-use game_menu::MenuRow;
 use screen::ForgeScreen;
 use sheet::{Ask, Choice, Kind, Look, NumberField, Sheet, TypeSpec};
 
 /// What the session tells the screens it does not build each tick.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// A local Forge session runs: GAME MENU has its rows.
+    /// A local Forge session runs.
     pub active: bool,
+    /// The player flies their Forge body, not their biped: only then is
+    /// the Forge menu up.
+    pub monitor: bool,
     /// Edits not saved: Leave Game asks first.
     pub dirty: bool,
     pub pending_rebuild: usize,
@@ -88,14 +89,14 @@ pub struct Facts {
     /// ([`sheet::folder_rows`]).
     pub folders: Vec<sheet::Folder>,
     pub(crate) map_limits: map_limits::Usage,
-    /// A wave test runs or is starting: Forge options' Test waves row reads
-    /// Stop waves.
+    /// A wave test runs or is starting: the Forge menu's Test waves row
+    /// reads Stop waves.
     pub testing: bool,
     /// The wave set and what the Waves screens read with it; `None` with
-    /// no waves to edit, and Forge options has no Waves row.
+    /// no waves to edit, and the Forge menu has no Waves row.
     pub waves: Option<waves::Facts>,
     /// The Enemy types page's rows (a class of the retail table each);
-    /// empty when there are none, and Forge options has no Enemy types
+    /// empty when there are none, and the Forge menu has no Enemy types
     /// row.
     pub enemy_types: Vec<waves::EnemyType>,
 }
@@ -107,23 +108,36 @@ const TEXT_POOL_LEN: u32 = 0x10000;
 /// The longest name Save as takes: a map variant's.
 pub const NAME_CHARS: u32 = forge_doc::MAX_VARIANT_NAME as u32;
 
+/// GAME MENU's Leave Game action word (the multiplayer pause screen,
+/// `mp_menu`, screen 195): the row asks first while edits are not saved.
+pub const LEAVE_GAME: u16 = 0;
+
+/// A keyboard asked for and not yet opened.
+#[derive(Clone, Debug, PartialEq)]
+enum Keyboard {
+    /// A map variant's name: what is typed is [`Choice::SaveAs`].
+    Name,
+    /// A typed number, or a variant's new name.
+    Field(TypeSpec),
+}
+
 struct Hub {
     screens: Vec<Arc<ForgeScreen>>,
     /// The screen to open at the next UI update.
     request: Mutex<Option<Kind>>,
-    /// Choices made outside a screen's own rows (GAME MENU, Load's picker,
-    /// Save as's keyboard).
+    /// Choices made outside a screen's own rows (a keyboard's text, a
+    /// notice).
     inbox: Mutex<VecDeque<Choice>>,
     facts: Mutex<Facts>,
-    /// The one guest region every screen's texts and GAME MENU's labels
-    /// are placed in ([`TextPool`]).
+    /// The one guest region every screen's texts and the Forge menu's
+    /// strip are placed in ([`TextPool`]).
     text_pool: Arc<TextPool>,
-    /// GAME MENU's labels.
-    menu_texts: SlotTexts,
+    /// The Forge menu's strip of tabs ([`menu::strip`]).
+    tab_texts: SlotTexts,
     /// Save as's UTF-16 buffer, and whether the keyboard is on it.
     keyboard: AtomicU32,
-    /// A typed-number keyboard asked for and not yet opened.
-    keyboard_request: Mutex<Option<TypeSpec>>,
+    /// A keyboard asked for and not yet opened.
+    keyboard_request: Mutex<Option<Keyboard>>,
     /// Which number a keyboard edits; Save as has none.
     keyboard_field: Mutex<Option<NumberField>>,
     /// The file stem of the map variant whose dialog is up: what Rename
@@ -134,8 +148,6 @@ struct Hub {
     leave: AtomicBool,
     /// Our UI update is calling retail's: let it through.
     passing_update: AtomicBool,
-    /// The GAME MENU list whose constructor is being let through (0: none).
-    passing_ctor: AtomicU32,
     /// The driver's hooks are built: a screen asked for opens.
     built: AtomicBool,
     /// The page each Waves screen was opened on ([`waves::open`]).
@@ -155,8 +167,8 @@ impl Hub {
             request: Mutex::new(None),
             inbox: Mutex::new(VecDeque::new()),
             facts: Mutex::new(Facts::default()),
-            menu_texts: SlotTexts::pooled(
-                crate::ui_kit::ids::family("forge game menu"),
+            tab_texts: SlotTexts::pooled(
+                crate::ui_kit::ids::family("forge menu tabs"),
                 Arc::clone(&text_pool),
             ),
             text_pool,
@@ -167,7 +179,6 @@ impl Hub {
             typing: AtomicBool::new(false),
             leave: AtomicBool::new(false),
             passing_update: AtomicBool::new(false),
-            passing_ctor: AtomicU32::new(0),
             // A test's screens open without a game.
             built: AtomicBool::new(cfg!(test)),
             wave_pages: Mutex::new(Vec::new()),
@@ -211,13 +222,25 @@ pub fn screen(kind: Kind) -> Arc<ForgeScreen> {
 
 /// The session's facts, from this tick. A change of the wave set, or a
 /// Waves edit refused since the last publish, builds the Waves pages again
-/// ([`waves::refresh`]).
+/// ([`waves::refresh`]). The Forge menu is the monitor's: a swap back to
+/// the player's body drops one asked for and closes one that is up.
 pub fn publish(facts: Facts) {
     if !facts.active {
         *lock(&hub().request) = None;
         lock(&hub().inbox).clear();
         hub().typing.store(false, Ordering::SeqCst);
         hub().leave.store(false, Ordering::SeqCst);
+    }
+    if !facts.monitor {
+        let mut request = lock(&hub().request);
+        if *request == Some(Kind::Menu) {
+            *request = None;
+        }
+        drop(request);
+        let menu = screen(Kind::Menu);
+        if menu.is_up() {
+            menu.close_with_dialog();
+        }
     }
     let set = facts.waves.clone();
     let changed = {
@@ -338,13 +361,11 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
                 .position(|g| *g == f.block_grid)
                 .unwrap_or(sheet::DEFAULT_GRID_INDEX),
         ),
-        Kind::Options => sheet::options_with_waves(
-            &f.folders,
-            &f.placed,
-            f.testing,
-            f.waves.is_some(),
-            !f.enemy_types.is_empty(),
-        ),
+        // The tab it last showed, its rows as the session stands now.
+        Kind::Menu if !f.monitor => {
+            return Err("The Forge menu opens while you fly the monitor.".into());
+        }
+        Kind::Menu => menu::sheet(menu::tab_of(&screen(Kind::Menu).sheet()), &f),
         Kind::Waves => return waves::open(waves::Page::Waves),
         Kind::EnemyTypes => {
             waves::enemy_types_sheet(&f.enemy_types).ok_or("The AI ground names no enemy types.")?
@@ -377,7 +398,7 @@ pub(crate) fn prepare(kind: Kind) -> Result<(), String> {
 }
 
 /// The choices made since the last take, oldest first: the screens' rows,
-/// then GAME MENU's. Yes to Leave Game is kept here (module docs).
+/// then the keyboards'. Yes to Leave Game is kept here (module docs).
 pub fn take_choices() -> Vec<Choice> {
     let mut all: Vec<Choice> = hub()
         .screens
@@ -404,10 +425,15 @@ fn send(c: Choice) {
     lock(&hub().inbox).push_back(c);
 }
 
-/// The GAME MENU rows' array grows by ours while a session runs
-/// (`layout_glue`'s list size chain).
-pub fn game_menu_count(name: u32, n: u32) -> u32 {
-    game_menu::list_count(name, n, lock(&hub().facts).active)
+/// The string id of text `i` of the Forge menu's strip, reading `text`
+/// ([`menu::strip`]).
+pub(crate) fn tab_text(i: usize, text: &str) -> u32 {
+    hub().tab_texts.set(i as u32, text)
+}
+
+/// Writes the strip's texts that changed.
+pub(crate) fn write_tab_texts(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    hub().tab_texts.write(m)
 }
 
 /// Opens `kind`'s screen for player one: a dialog class over the screen
@@ -435,12 +461,19 @@ async fn open_screen(cx: &Cx, kind: Kind) -> Result<(), EntryError> {
     Ok(())
 }
 
+/// Whether a press of GAME MENU's row with action word `word` asks before
+/// it acts: Leave Game, in a Forge session with edits not saved. Nothing
+/// else on GAME MENU is ours.
+fn asks_before_leaving(word: Option<u16>, f: &Facts) -> bool {
+    f.active && f.dirty && word == Some(LEAVE_GAME)
+}
+
 /// What the UI update does first this frame.
 enum Step {
     Leave,
     Close(u32),
     Open(Kind),
-    Keyboard(TypeSpec),
+    Keyboard(Keyboard),
 }
 
 /// A map variant's row on Map variants was pressed: its dialog's Rename
@@ -454,8 +487,19 @@ fn ask_keyboard(spec: TypeSpec) -> crate::ui::Chosen {
     if hub().typing.load(Ordering::SeqCst) {
         return crate::ui::Chosen::Stepped("A keyboard is already open.".into());
     }
-    *lock(&hub().keyboard_request) = Some(spec);
+    *lock(&hub().keyboard_request) = Some(Keyboard::Field(spec));
     crate::ui::Chosen::Act
+}
+
+/// The Forge menu's Save as (and Save, for a session with no name) asks
+/// for the game's keyboard on a map variant's name. Refused by name while
+/// a keyboard is open.
+pub(crate) fn ask_name() -> Result<(), String> {
+    if hub().typing.load(Ordering::SeqCst) {
+        return Err("A keyboard is already open.".into());
+    }
+    *lock(&hub().keyboard_request) = Some(Keyboard::Name);
+    Ok(())
 }
 
 fn step(m: &dyn GuestMemory) -> Option<Step> {
@@ -465,11 +509,14 @@ fn step(m: &dyn GuestMemory) -> Option<Step> {
     if hub().leave.swap(false, Ordering::SeqCst) {
         return Some(Step::Leave);
     }
-    // The object menu closes after a pick; Map variants after its dialog
-    // chose a Load or a Delete, whose question needs no screen of ours up;
-    // a Waves page when the part it shows is gone (`waves::refresh`).
+    // The object menu closes after a pick; the Forge menu after its Load
+    // picked, or when the player is back in their body (`publish`); Map
+    // variants after its dialog chose a Load or a Delete, whose question
+    // needs no screen of ours up; a Waves page when the part it shows is
+    // gone (`waves::refresh`).
     for kind in [
         Kind::Objects,
+        Kind::Menu,
         Kind::Variants,
         Kind::Round,
         Kind::Wave,
@@ -532,18 +579,21 @@ fn poll_keyboard(m: &dyn GuestMemory) -> Result<(), MemFault> {
     Ok(())
 }
 
-async fn open_keyboard(cx: &Cx, spec: Option<TypeSpec>) -> Result<(), EntryError> {
+async fn open_keyboard(cx: &Cx, ask: Keyboard) -> Result<(), EntryError> {
     let buffer = hub().keyboard.load(Ordering::SeqCst);
     if buffer == 0 {
         send(Choice::Notice("The keyboard has no memory.".into()));
         return Ok(());
     }
-    let start = match spec {
-        Some(spec) => {
+    let start = match ask {
+        Keyboard::Field(spec) => {
             *lock(&hub().keyboard_field) = Some(spec.field);
             spec.initial
         }
-        None => facts().filename.unwrap_or_default(),
+        Keyboard::Name => {
+            *lock(&hub().keyboard_field) = None;
+            facts().filename.unwrap_or_default()
+        }
     };
     cx.write(|m| m.write(buffer, &crate::signin_keyboard::units(&start)))?;
     hub().typing.store(true, Ordering::SeqCst);
@@ -556,74 +606,12 @@ async fn open_keyboard(cx: &Cx, spec: Option<TypeSpec>) -> Result<(), EntryError
     Ok(())
 }
 
-/// A press of one of our GAME MENU rows, for the player of `chain`, on
-/// the list `list`.
-async fn menu_press(cx: &Cx, row: MenuRow, chain: u32, list: u32) -> Result<(), EntryError> {
-    let f = facts();
-    match row {
-        MenuRow::Save => match variants::save(f.filename.as_deref()) {
-            variants::SaveStep::Keyboard => open_keyboard(cx, None).await?,
-            variants::SaveStep::Write { .. } => send(Choice::Save),
-        },
-        MenuRow::SaveAs => open_keyboard(cx, None).await?,
-        MenuRow::Load if variants::loadable(&f.variants).is_empty() => {
-            send(Choice::Notice(variants::NONE_SAVED.into()))
-        }
-        MenuRow::Load => {
-            let rows: Vec<variants::Row> = variants::loadable(&f.variants)
-                .into_iter()
-                .cloned()
-                .collect();
-            let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
-            let current = f
-                .filename
-                .as_deref()
-                .and_then(|n| rows.iter().position(|r| variants::same_name(&r.name, n)))
-                .unwrap_or(0);
-            let set = Arc::new(move |i: usize| -> String {
-                match rows.get(i) {
-                    Some(r) => {
-                        send(Choice::Load(r.file.clone()));
-                        format!("forge: load {}", r.name)
-                    }
-                    None => format!("forge: no map variant {i}"),
-                }
-            });
-            let pick = Pick::new(
-                "Load",
-                names,
-                current,
-                "A map variant of this map.",
-                set,
-            )
-            .over(screen::OPENER);
-            if picker::offer_list(pick).is_some() {
-                list_class::open(cx, chain, picker::NAME).await?;
-            }
-        }
-        MenuRow::Rebuild => send(Choice::Rebuild),
-        MenuRow::Options => match prepare(Kind::Options) {
-            Ok(()) => {
-                list_class::push(
-                    cx,
-                    chain,
-                    list.wrapping_sub(ui::LIST),
-                    Kind::Options.screen(),
-                )
-                .await?
-            }
-            Err(why) => send(Choice::Notice(why)),
-        },
-    }
-    Ok(())
-}
-
 struct Driver;
 
 fn manifest() -> Manifest {
     Manifest::new(
         "forge-screens",
-        "Forge screens and GAME MENU rows in the game",
+        "Forge screens in the game",
     )
     .doc("docs/game/forge-firefight-ui.md")
 }
@@ -645,7 +633,7 @@ impl Feature for Driver {
                 .source(s.kind().screen(), move |id| me.texts.address(id));
         }
         b.locale()
-            .source("forge game menu", |id| hub().menu_texts.address(id));
+            .source("forge menu tabs", |id| hub().tab_texts.address(id));
         hub().keyboard.store(
             b.guest_alloc((NAME_CHARS + 1) * 2, Permissions::RW)?,
             Ordering::SeqCst,
@@ -660,7 +648,7 @@ impl Feature for Driver {
                 for s in &hub().screens {
                     s.texts.rewrite_all();
                 }
-                hub().menu_texts.rewrite_all();
+                hub().tab_texts.rewrite_all();
                 Ok(())
             },
         ));
@@ -702,7 +690,7 @@ impl Feature for Driver {
                             }
                             Step::Close(s) => dialog_tag::close(&cx, s).await,
                             Step::Open(kind) => open_screen(&cx, kind).await,
-                            Step::Keyboard(spec) => open_keyboard(&cx, Some(spec)).await,
+                            Step::Keyboard(ask) => open_keyboard(&cx, ask).await,
                         };
                         if let Err(e) = done {
                             eprintln!("forge screens: {e}");
@@ -720,78 +708,8 @@ impl Feature for Driver {
             .after_feature("theater-link")
             .optional();
 
-        b.raw().before(
-            &points::MP_MENU_LIST_CTOR,
-            "add the Forge rows to GAME MENU",
-            |c| {
-                let list = c.cpu.esi;
-                if list == 0
-                    || hub()
-                        .passing_ctor
-                        .compare_exchange(list, 0, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                    || !lock(&hub().facts).active
-                {
-                    return Ok(Flow::Continue);
-                }
-                c.answer_async(move |cx| -> EntryFuture {
-                    Box::pin(async move {
-                        let a = cx.arg(0)?;
-                        hub().passing_ctor.store(list, Ordering::SeqCst);
-                        let out = cx
-                            .call(
-                                GuestCall::new(points::MP_MENU_LIST_CTOR.base)
-                                    .esi(list)
-                                    .args([a]),
-                            )
-                            .await;
-                        hub().passing_ctor.store(0, Ordering::SeqCst);
-                        let eax = out?.eax;
-                        let added = cx.write(|m| -> Result<usize, String> {
-                            let rows = ListHandler::at(list)
-                                .rows(m)
-                                .map_err(|e| format!("the GAME MENU list's rows: {e:?}"))?;
-                            game_menu::put_first(m, rows, &game_menu::actions())
-                        });
-                        match added {
-                            Ok(n) => eprintln!("forge screens: GAME MENU has {n} rows"),
-                            Err(why) => eprintln!("forge screens: GAME MENU rows not added: {why}"),
-                        }
-                        Ok(Ret::new(eax, 4))
-                    })
-                })
-            },
-        );
-
         b.raw()
-            .before(&points::MP_MENU_ROW_TEXT, "name the Forge rows", |c| {
-                let Some(item) = c.arg_u32("item") else {
-                    return Ok(Flow::Continue);
-                };
-                let row = {
-                    let mem = c.ctx.runtime().memory();
-                    crate::pause_menu::item_action(&*mem, c.cpu.ecx, item)
-                        .and_then(MenuRow::of_action)
-                };
-                let Some(row) = row else {
-                    return Ok(Flow::Continue);
-                };
-                let pending = lock(&hub().facts).pending_rebuild;
-                let id = hub().menu_texts.set(row.index() as u32, &row.text(pending));
-                c.answer_async(move |cx| -> EntryFuture {
-                    Box::pin(async move {
-                        cx.write(|m| hub().menu_texts.write(m))?;
-                        list_class::draw_texts(&cx, item, vec![(0, id)]).await?;
-                        Ok(Ret::new(0, 8))
-                    })
-                })
-            })
-            // Player Settings names its own row here too; each answers only
-            // for its own action words, so either order draws the same.
-            .after_feature("pause-mp-rows");
-
-        b.raw()
-            .before(&points::MP_MENU_ROW_CHOSEN, "press the Forge rows", |c| {
+            .before(&points::MP_MENU_ROW_CHOSEN, "ask before Leave Game in Forge", |c| {
                 let Some(at) = c.arg_u32("row") else {
                     return Ok(Flow::Continue);
                 };
@@ -800,31 +718,16 @@ impl Feature for Driver {
                     let mem = c.ctx.runtime().memory();
                     crate::pause_menu::chosen_action(&*mem, list, at)
                 };
-                let f = facts();
-                if !f.active {
+                // Every other row is the game's, as in any game.
+                if !asks_before_leaving(word, &facts()) {
                     return Ok(Flow::Continue);
                 }
-                if word == Some(game_menu::LEAVE_GAME) && f.dirty {
-                    // Leave Game with edits not saved asks first.
-                    if let Err(why) = screen(Kind::Question).show(sheet::question(Ask::Leave, "")) {
-                        eprintln!("forge screens: {why}");
-                        return Ok(Flow::Continue);
-                    }
-                    *lock(&hub().request) = Some(Kind::Question);
-                    return c.answer_async(|_| -> EntryFuture {
-                        Box::pin(async { Ok(Ret::new(0, 8)) })
-                    });
-                }
-                let Some(row) = word.and_then(MenuRow::of_action) else {
+                if let Err(why) = screen(Kind::Question).show(sheet::question(Ask::Leave, "")) {
+                    eprintln!("forge screens: {why}");
                     return Ok(Flow::Continue);
-                };
-                c.answer_async(move |cx| -> EntryFuture {
-                    Box::pin(async move {
-                        let chain = cx.arg(0)?;
-                        menu_press(&cx, row, chain, list).await?;
-                        Ok(Ret::new(0, 8))
-                    })
-                })
+                }
+                *lock(&hub().request) = Some(Kind::Question);
+                c.answer_async(|_| -> EntryFuture { Box::pin(async { Ok(Ret::new(0, 8)) }) })
             });
         Ok(())
     }

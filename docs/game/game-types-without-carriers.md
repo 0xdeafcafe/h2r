@@ -360,7 +360,7 @@ row picks one.
 
 Ground is built when it is asked for, never while placing:
 
-1. **Build AI ground** on the Forge options page (and **Test waves**,
+1. **Build AI ground** on the Forge menu's Waves tab (and **Test waves**,
    which builds first when the ground is stale or never built). The
    session marks the ground stale on any op that moves a label, or adds,
    moves or removes something with collision

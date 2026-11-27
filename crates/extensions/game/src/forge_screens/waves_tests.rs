@@ -465,16 +465,22 @@ fn the_first_problem_is_the_notice() {
     assert_eq!(p.rows[1].description.as_deref(), Some("Drop zone 3 is not placed."));
 }
 
-/// Forge options has Waves... while the session has waves to edit, and
-/// Enemy types... while the recipe names classes.
+/// The Forge menu's Waves tab has Waves... while the session has waves to
+/// edit, and Enemy types... while the recipe names classes.
 #[test]
-fn forge_options_open_the_waves() {
-    publish_sample();
-    crate::forge_screens::prepare(Kind::Options).unwrap();
-    let options = screen(Kind::Options).sheet();
-    let row = options.rows.iter().find(|r| r.label == "Waves...").unwrap();
+fn the_forge_menu_opens_the_waves() {
+    use crate::forge_screens::menu::{self, Tab};
+    let f = publish_sample();
+    let facts = |waves| ScreenFacts {
+        active: true,
+        monitor: true,
+        waves,
+        ..ScreenFacts::default()
+    };
+    let tab = menu::sheet(Tab::Waves, &facts(Some(f)));
+    let row = tab.rows.iter().find(|r| r.label == "Waves...").unwrap();
     assert_eq!(row.act, Act::Open(Kind::Waves));
-    assert!(!options.rows.iter().any(|r| r.label == "Enemy types..."));
+    assert!(!tab.rows.iter().any(|r| r.label == "Enemy types..."));
     crate::forge_screens::prepare(Kind::Waves).unwrap();
     assert_eq!(screen(Kind::Waves).sheet().title, "YARD");
     assert_eq!(shown(Kind::Waves), Some(Page::Waves));
@@ -482,9 +488,8 @@ fn forge_options_open_the_waves() {
         active: true,
         ..ScreenFacts::default()
     });
-    crate::forge_screens::prepare(Kind::Options).unwrap();
-    let options = screen(Kind::Options).sheet();
-    assert!(!options.rows.iter().any(|r| r.label == "Waves..."));
+    let tab = menu::sheet(Tab::Waves, &facts(None));
+    assert!(!tab.rows.iter().any(|r| r.label == "Waves..."));
     assert!(open(Page::Waves).is_err(), "no waves to edit");
     publish(ScreenFacts::default());
 }

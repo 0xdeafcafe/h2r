@@ -1,14 +1,14 @@
 use super::*;
 
-use engine::GuestMemory as _;
-use engine::datum::DatumArray;
 use engine::testing::FakeGuest;
 
 use crate::list_class::Rows;
 use crate::ui::Chosen;
 use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{ListEffect, Page, named, run};
+use crate::ui_kit::picker;
 use crate::ui_kit::{content, layout, preview, spec};
+use menu::Tab;
 use pages::SheetPage;
 use sheet::{Act, Group, Prop, Tool};
 
@@ -17,7 +17,7 @@ use sheet::{Act, Group, Prop, Tool};
 #[test]
 fn page_tables() {
     use Input::{A, B, Down, Left, Right, Up};
-    use ListEffect::{Action, Close, Focus, None as Nothing, Open, Stepped};
+    use ListEffect::{Action, Close, Focus, Hook, None as Nothing, Open, Stepped};
     struct Case {
         kind: Kind,
         from: &'static str,
@@ -118,23 +118,36 @@ fn page_tables() {
             effects: vec![Nothing, Focus(0), Action],
             after: "LEAVE GAME | focus 0 Yes",
         },
+        // The Forge menu's rows open their pages above it.
         Case {
-            kind: Kind::Options,
-            from: "open",
-            inputs: &[A, Down, A],
+            kind: Kind::Menu,
+            from: "options",
+            inputs: &[Down, A, Down, A],
             effects: vec![
-                Open(Kind::Settings.screen()),
                 Focus(1),
+                Open(Kind::Settings.screen()),
+                Focus(2),
                 Open(Kind::Controls.screen()),
             ],
-            after: "FORGE OPTIONS | focus 1 Controls",
+            after: "FORGE | focus 2 Controls",
         },
+        // Right and Left step its tabs, each from its first row; a row of
+        // the tab then opens its page.
         Case {
-            kind: Kind::Options,
-            from: "open",
-            inputs: &[Down, Down, Down, A],
-            effects: vec![Focus(1), Focus(2), Focus(3), Open(Kind::MapLimits.screen())],
-            after: "FORGE OPTIONS | focus 3 Map limits",
+            kind: Kind::Menu,
+            from: "options",
+            inputs: &[Down, Right, Right, Left, Down, Down, Down, A],
+            effects: vec![
+                Focus(1),
+                Hook,
+                Hook,
+                Hook,
+                Focus(1),
+                Focus(2),
+                Focus(3),
+                Open(Kind::Variants.screen()),
+            ],
+            after: "FORGE | focus 3 Map variants...",
         },
         Case {
             kind: Kind::MapLimits,
@@ -255,7 +268,7 @@ fn every_sample_fits_its_screen() {
     let wrong = ForgeScreen::new(Kind::Tools);
     assert!(
         wrong
-            .show(sheet::options())
+            .show(menu::sheet(Tab::Options, &Facts::default()))
             .unwrap_err()
             .contains("not this screen's")
     );
@@ -463,73 +476,378 @@ fn yes_to_leave_is_kept_here() {
     publish(Facts::default());
 }
 
-const LIST: u32 = 0x1000;
-const ARRAY: u32 = 0x2000;
-const NAME: u32 = 0x3000;
-
-/// A GAME MENU rows' array with `actions` live, room for `capacity`.
-fn menu(capacity: u32, actions: &[u16]) -> FakeGuest {
-    let mut g = FakeGuest::new();
-    g.map(LIST, 0x100).map(ARRAY, 0x1000).map(NAME, 0x20);
-    ListHandler::at(LIST).set_rows(&mut g, ARRAY).unwrap();
-    let rows = DatumArray::at(ARRAY);
-    rows.initialize_contiguous(&mut g, NAME, capacity as i32, 4, 0, 0)
-        .unwrap();
-    rows.make_valid(&mut g).unwrap();
-    for &action in actions {
-        let handle = rows.new_datum(&mut g).unwrap().unwrap();
-        let datum = rows.try_get(&g, handle).unwrap().unwrap();
-        g.set_u16(datum + 2, action).unwrap();
+/// A Forge session's facts while the player flies the monitor.
+fn flying() -> Facts {
+    Facts {
+        active: true,
+        monitor: true,
+        ..Facts::default()
     }
-    g
 }
 
-fn words(g: &FakeGuest) -> Vec<u16> {
-    let rows = DatumArray::at(ARRAY);
-    let high = rows
-        .header_field(g, engine::datum::layout::HIGH_WATER)
-        .unwrap();
-    (0..high)
-        .filter_map(|i| rows.get_absolute(g, i).unwrap())
-        .map(|e| g.u16(e + 2).unwrap())
-        .collect()
+fn labels(s: &Sheet) -> Vec<&str> {
+    s.rows.iter().map(|r| r.label.as_str()).collect()
 }
 
+/// GAME MENU is the game's in a Forge game: the driver adds no row to it
+/// and names none, and of its presses takes only Leave Game's while edits
+/// are not saved.
 #[test]
-fn game_menu_adds_five_rows() {
-    let labels: Vec<&str> = game_menu::ROWS.iter().map(|r| r.label()).collect();
-    assert_eq!(
-        labels,
-        ["Save", "Save as", "Load", "Rebuild map", "Forge options..."]
-    );
-    let retail = [0u16, 1, 2, 3];
-    // The room grows by our five, only for GAME MENU's array and only
-    // while a session runs.
-    let room = game_menu::list_count(game_menu::ARRAY_NAME, game_menu::RETAIL_ROOM, true);
-    assert_eq!(room, game_menu::RETAIL_ROOM + 5);
-    assert_eq!(game_menu::list_count(game_menu::ARRAY_NAME, 6, false), 6);
-    assert_eq!(game_menu::list_count(0x1234, 6, true), 6);
-    let mut g = menu(room, &retail);
-    let n = game_menu::put_first(&mut g, ARRAY, &game_menu::actions()).unwrap();
-    assert_eq!(n, 9);
-    let mut want = game_menu::actions();
-    want.extend(retail);
-    assert_eq!(
-        words(&g),
-        want,
-        "ours first, the retail rows after in order"
-    );
-    for (i, row) in game_menu::ROWS.iter().enumerate() {
-        assert_eq!(MenuRow::of_action(want[i]), Some(*row));
+fn game_menu_has_the_retail_rows_in_a_forge_game() {
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+    install(&mut registry).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap().text();
+    let ours = |point: &str| {
+        plan.lines()
+            .filter(|l| l.contains(&format!(" {point}: ")) && l.contains("forge-screens:"))
+            .count()
+    };
+    assert_eq!(ours("MP_MENU_LIST_CTOR"), 0, "no row is added\n{plan}");
+    assert_eq!(ours("MP_MENU_ROW_TEXT"), 0, "no row is named\n{plan}");
+    assert_eq!(ours("MP_MENU_ROW_CHOSEN"), 1, "Leave Game asks first\n{plan}");
+    let dirty = Facts {
+        dirty: true,
+        ..flying()
+    };
+    // Retail's action words: 0 Leave Game, 1 Settings, up to 5 End Game.
+    for word in 0..=5u16 {
+        assert_eq!(
+            asks_before_leaving(Some(word), &dirty),
+            word == LEAVE_GAME,
+            "row {word}"
+        );
+        assert!(!asks_before_leaving(Some(word), &flying()), "saved: row {word}");
+        let ended = Facts {
+            active: false,
+            ..dirty.clone()
+        };
+        assert!(!asks_before_leaving(Some(word), &ended), "no session: row {word}");
     }
-    assert_eq!(MenuRow::of_action(game_menu::LEAVE_GAME), None);
-    // Without the room grown, refused by name.
-    let mut small = menu(game_menu::RETAIL_ROOM, &retail);
-    let err = game_menu::put_first(&mut small, ARRAY, &game_menu::actions()).unwrap_err();
-    assert!(err.contains("room was not grown"), "{err}");
-    // Rebuild map carries the pending count.
-    assert_eq!(MenuRow::Rebuild.text(0), "Rebuild map");
-    assert_eq!(MenuRow::Rebuild.text(2), "Rebuild map  2");
+    assert!(!asks_before_leaving(None, &dirty));
+}
+
+/// Back's request opens the Forge menu only while the player flies the
+/// monitor; in their own body it is refused by name.
+#[test]
+fn back_opens_the_forge_menu_only_in_the_monitor() {
+    publish(Facts {
+        monitor: false,
+        ..flying()
+    });
+    let err = request(Kind::Menu).unwrap_err();
+    assert!(err.contains("monitor"), "{err}");
+    assert_eq!(requested(), None);
+    publish(flying());
+    request(Kind::Menu).unwrap();
+    assert_eq!(requested(), Some(Kind::Menu));
+    let shown = screen(Kind::Menu).sheet();
+    assert_eq!(shown.title, "FORGE");
+    assert_eq!(menu::tab_of(&shown), Tab::Options, "its first tab");
+    take_request();
+    publish(Facts::default());
+}
+
+/// A swap back to the player's body drops a Forge menu asked for and
+/// closes one that is up.
+#[test]
+fn swapping_to_the_biped_closes_the_forge_menu() {
+    let body = || Facts {
+        monitor: false,
+        ..flying()
+    };
+    publish(flying());
+    request(Kind::Menu).unwrap();
+    publish(body());
+    assert_eq!(requested(), None, "one asked for never opens");
+    // Up: the class asks its rows as the screen opens.
+    publish(flying());
+    request(Kind::Menu).unwrap();
+    take_request();
+    let menu = screen(Kind::Menu);
+    menu.describe(menu.count());
+    assert!(menu.is_up());
+    publish(flying());
+    assert!(!menu.take_close_after_pick(), "it stays up in the monitor");
+    publish(body());
+    assert!(menu.take_close_after_pick(), "it closes at the next UI update");
+    publish(Facts::default());
+}
+
+/// Another screen asked for is not the body swap's to drop.
+#[test]
+fn the_body_swap_leaves_other_screens_alone() {
+    publish(flying());
+    request(Kind::Tools).unwrap();
+    publish(Facts {
+        monitor: false,
+        ..flying()
+    });
+    assert_eq!(requested(), Some(Kind::Tools));
+    take_request();
+    publish(Facts::default());
+}
+
+/// The Forge menu holds every row GAME MENU and Forge options had for
+/// Forge, a tab at a time.
+#[test]
+fn the_forge_menu_lists_the_old_forge_rows() {
+    let f = menu::sample_facts();
+    assert_eq!(
+        labels(&menu::sheet(Tab::Options, &f)),
+        ["Rebuild map", "Tool settings...", "Controls", "Generate nav"]
+    );
+    assert_eq!(
+        labels(&menu::sheet(Tab::Variants, &f)),
+        ["Save", "Save as", "Load", "Map variants..."]
+    );
+    assert_eq!(
+        labels(&menu::sheet(Tab::Waves, &f)),
+        ["Test waves", "Waves...", "Enemy types...", "Build AI ground"]
+    );
+    assert_eq!(labels(&menu::sheet(Tab::Placed, &f)), ["Placed objects"]);
+    assert_eq!(
+        menu::sheet(Tab::Limits, &f).rows,
+        map_limits::sheet(&f.map_limits).rows,
+        "the Map limits page's rows"
+    );
+    let all: Vec<String> = Tab::ALL
+        .into_iter()
+        .flat_map(|t| menu::sheet(t, &f).rows)
+        .map(|r| r.label)
+        .collect();
+    for old in [
+        // GAME MENU's.
+        "Save",
+        "Save as",
+        "Load",
+        "Rebuild map",
+        // Forge options'.
+        "Tool settings...",
+        "Controls",
+        "Map variants...",
+        "Placed objects",
+        "Waves...",
+        "Enemy types...",
+        "Build AI ground",
+        "Test waves",
+        "Generate nav",
+    ] {
+        assert!(all.iter().any(|l| l == old), "{old} is on no tab");
+    }
+    // Rebuild map carries the pending count as its value.
+    let rebuild = |pending_rebuild| {
+        let f = Facts {
+            pending_rebuild,
+            ..flying()
+        };
+        menu::sheet(Tab::Options, &f).rows[0].clone()
+    };
+    assert_eq!(rebuild(2).value.as_deref(), Some("2"));
+    assert_eq!(rebuild(0).value, None);
+    assert_eq!(rebuild(0).act, Act::Choose(Choice::Rebuild));
+    // Every tab fits the menu's screen, and names its tab.
+    for tab in Tab::ALL {
+        let s = menu::sheet(tab, &f);
+        assert_eq!(s.title, "FORGE");
+        assert_eq!(menu::tab_of(&s), tab);
+        assert!(!s.rows.is_empty(), "{tab:?}");
+        assert!(ForgeScreen::new(Kind::Menu).show(s).is_ok(), "{tab:?}");
+    }
+}
+
+/// LB and RB (the game's White and Black) step the tabs, round the ends,
+/// as Left and Right do; the rows change in place and the list is sized
+/// again at the next draw.
+#[test]
+fn lb_and_rb_move_between_tabs() {
+    use crate::list_class::{BUTTON_EVENT, Button, DOWN_EVENT, LEFT_EVENT, RIGHT_EVENT};
+    const A: u32 = 0;
+    const BLACK: u32 = 4;
+    const WHITE: u32 = 5;
+    assert_eq!(menu::turn_of(BUTTON_EVENT, WHITE), Some(false), "LB");
+    assert_eq!(menu::turn_of(BUTTON_EVENT, BLACK), Some(true), "RB");
+    assert_eq!(menu::turn_of(LEFT_EVENT, 0), Some(false));
+    assert_eq!(menu::turn_of(RIGHT_EVENT, 0), Some(true));
+    assert_eq!(menu::turn_of(BUTTON_EVENT, A), None, "A is the list's");
+    assert_eq!(menu::turn_of(DOWN_EVENT, 0), None);
+    assert_eq!(Tab::Options.next(false), Tab::Limits, "round the left end");
+    assert_eq!(Tab::Limits.next(true), Tab::Options, "round the right end");
+    let mut seen = vec![Tab::Options];
+    while seen.len() < Tab::ALL.len() {
+        seen.push(seen[seen.len() - 1].next(true));
+    }
+    assert_eq!(seen, Tab::ALL);
+
+    publish(menu::sample_facts());
+    request(Kind::Menu).unwrap();
+    take_request();
+    let screen = screen(Kind::Menu);
+    let class = screen.class();
+    let hook = class.behaviour().hook.expect("the menu takes buttons");
+    assert_eq!(screen.growing_capacity(), Some(screen.max_rows()));
+    assert!(screen.shrink_growing_rows());
+    assert!(!screen.live_text().redraw, "nothing changed yet");
+    assert_eq!(hook(BUTTON_EVENT, BLACK), Button::Handled);
+    let shown = screen.sheet();
+    assert_eq!(menu::tab_of(&shown), Tab::Variants);
+    assert_eq!(labels(&shown)[0], "Save");
+    assert_eq!(screen.count(), shown.rows.len());
+    assert!(screen.live_text().redraw, "the list is sized again");
+    assert!(!screen.live_text().redraw, "once");
+    assert_eq!(hook(BUTTON_EVENT, WHITE), Button::Handled);
+    assert_eq!(hook(BUTTON_EVENT, WHITE), Button::Handled);
+    assert_eq!(menu::tab_of(&screen.sheet()), Tab::Limits);
+    assert_eq!(hook(RIGHT_EVENT, 0), Button::Handled);
+    assert_eq!(menu::tab_of(&screen.sheet()), Tab::Options);
+    assert_eq!(hook(BUTTON_EVENT, A), Button::Pass);
+    assert_eq!(hook(DOWN_EVENT, 0), Button::Pass);
+    // The next opening shows the tab it was left on.
+    assert_eq!(hook(BUTTON_EVENT, BLACK), Button::Handled);
+    request(Kind::Menu).unwrap();
+    assert_eq!(menu::tab_of(&screen.sheet()), Tab::Variants);
+    take_request();
+    // No other screen takes the bumpers.
+    let settings = super::screen(Kind::Settings).class();
+    assert!(settings.behaviour().hook.is_none());
+    publish(Facts::default());
+}
+
+/// The strip shows the open tab bright and in capitals, the others muted,
+/// with the bumpers at its ends; every name fits its cell and no cell
+/// lies on another.
+#[test]
+fn the_strip_shows_the_open_tab_bright() {
+    use crate::ui_kit::spec::fallback;
+    let panel = menu::panel();
+    assert_eq!(panel.texts.len(), menu::STRIP_TEXTS);
+    assert!(panel.texts.len() <= crate::list_class::MAX_PANEL_TEXTS);
+    for tab in Tab::ALL {
+        let strip = menu::strip(tab);
+        assert_eq!(strip.len(), menu::STRIP_TEXTS);
+        for t in Tab::ALL {
+            let (bright, muted) = (&strip[2 * t.index()], &strip[2 * t.index() + 1]);
+            if t == tab {
+                assert_eq!(*bright, t.label().to_uppercase());
+                assert!(muted.is_empty(), "{t:?}");
+            } else {
+                assert!(bright.is_empty(), "{t:?}");
+                assert_eq!(muted, t.label());
+            }
+        }
+        assert_eq!(strip[menu::STRIP_TEXTS - 2], "\u{e105}", "LB");
+        assert_eq!(strip[menu::STRIP_TEXTS - 1], "\u{e104}", "RB");
+        let texts = menu::pane_texts(tab);
+        assert_eq!(texts.len(), strip.len());
+        for (t, text) in texts.iter().zip(&strip) {
+            let [top, left, bottom, right] = t.rect;
+            assert!(top > bottom && right > left);
+            assert!(
+                fallback::width(text) <= i32::from(right - left),
+                "{text:?} is wider than its cell"
+            );
+            assert!(!text.contains("  ") && text.trim() == text, "{text:?}");
+        }
+    }
+    // A tab's two texts share a cell; cells of different tabs, and the
+    // bumpers', are apart, left to right.
+    let cells: Vec<[i16; 4]> = panel.texts.iter().map(|t| t.block.rect).collect();
+    for i in 0..Tab::ALL.len() {
+        assert_eq!(cells[2 * i], cells[2 * i + 1]);
+    }
+    let mut order = vec![cells[menu::STRIP_TEXTS - 2]];
+    order.extend((0..Tab::ALL.len()).map(|i| cells[2 * i]));
+    order.push(cells[menu::STRIP_TEXTS - 1]);
+    for pair in order.windows(2) {
+        assert!(pair[0][3] <= pair[1][1], "{pair:?} overlap");
+    }
+    // The strip is a screen text of the menu alone.
+    let spec = |kind| {
+        let screen = ForgeScreen::new(kind);
+        if kind == Kind::Menu {
+            screen
+                .show(menu::sheet(Tab::Waves, &menu::sample_facts()))
+                .unwrap();
+        }
+        crate::ui_kit::spec::Describe::spec(&screen)
+    };
+    let texts = spec(Kind::Menu).texts;
+    assert_eq!(texts[2 * Tab::Waves.index()].text, "WAVES");
+    assert!(spec(Kind::Settings).texts.is_empty());
+}
+
+/// Save writes a named session's variant and asks an unnamed one's name
+/// on the game's keyboard, as Save as does; either closes the menu.
+#[test]
+fn save_asks_for_a_name_until_the_session_has_one() {
+    let row = |f: &Facts, label: &str| {
+        menu::sheet(Tab::Variants, f)
+            .rows
+            .into_iter()
+            .find(|r| r.label == label)
+            .unwrap()
+    };
+    let named = Facts {
+        filename: Some("Courtyard".into()),
+        ..flying()
+    };
+    assert_eq!(row(&named, "Save").act, Act::Choose(Choice::Save));
+    assert_eq!(
+        row(&named, "Save").description.as_deref(),
+        Some("Save Courtyard.")
+    );
+    assert_eq!(row(&named, "Save as").act, Act::SaveAs);
+    assert_eq!(row(&flying(), "Save").act, Act::SaveAs);
+
+    publish(flying());
+    request(Kind::Menu).unwrap();
+    take_request();
+    let screen = screen(Kind::Menu);
+    while menu::tab_of(&screen.sheet()) != Tab::Variants {
+        screen.turn_tab(true);
+    }
+    assert_eq!(labels(&screen.sheet())[1], "Save as");
+    assert_eq!(screen.press(1), Chosen::Act, "the menu's action closes it");
+    assert!(matches!(
+        step(&FakeGuest::new()),
+        Some(Step::Keyboard(Keyboard::Name))
+    ));
+    assert!(
+        screen.take_choices().is_empty(),
+        "the name comes from the keyboard"
+    );
+    // While a keyboard is open another is refused by name.
+    hub().typing.store(true, Ordering::SeqCst);
+    assert_eq!(
+        screen.press(1),
+        Chosen::Stepped("A keyboard is already open.".into())
+    );
+    hub().typing.store(false, Ordering::SeqCst);
+    publish(Facts::default());
+}
+
+/// Load picks one of this map's variants that load and closes the menu
+/// with the pick; with none it is a fact.
+#[test]
+fn load_picks_a_variant_and_closes_the_menu() {
+    let f = menu::sample_facts();
+    let load = menu::sheet(Tab::Variants, &f).rows.remove(2);
+    let Act::Pick(p) = &load.act else {
+        panic!("Load picks");
+    };
+    assert_eq!(p.title, "Load");
+    assert!(p.closes, "its question needs no screen of ours up");
+    assert_eq!(
+        p.values,
+        ["Arena", "Courtyard", "Two Towers"],
+        "the ones that load"
+    );
+    assert_eq!(p.values[p.current], "Courtyard", "the open one");
+    assert_eq!(p.choices[0], Choice::Load("Arena".into()));
+    assert_eq!(p.choices.len(), p.values.len());
+    let none = menu::sheet(Tab::Variants, &flying()).rows.remove(2);
+    assert_eq!(none.act, Act::Info);
+    assert_eq!(none.value.as_deref(), Some("None"));
+    assert_eq!(none.description.as_deref(), Some(variants::NONE_SAVED));
 }
 
 /// Each screen's retail base resolves in `shared.map`, where a game's UI
@@ -550,19 +868,22 @@ fn each_base_resolves_in_shared() {
     }
 }
 
-/// Every Forge options row has its help, player copy that fits the
-/// settings dialog's help block in two lines.
+/// Every row of the Forge menu that acts has its help, player copy that
+/// fits the settings dialog's help block in two lines.
 #[test]
-fn every_forge_option_has_its_help() {
+fn every_forge_menu_row_has_its_help() {
     use crate::ui_kit::dialog::SETTINGS_HELP_TEXT;
     use crate::ui_kit::spec::{fallback, wrap};
     let [top, left, bottom, right] = SETTINGS_HELP_TEXT.rect;
     let (width, height) = (i32::from(right - left), i32::from(top - bottom));
-    let page = sheet::options();
-    // The options, then Placed objects, Build AI ground, Test waves and
-    // Generate nav.
-    assert_eq!(page.rows.len(), sheet::OPTIONS.len() + 4);
-    for r in &page.rows {
+    let f = menu::sample_facts();
+    let rows: Vec<sheet::SheetRow> = [Tab::Options, Tab::Variants, Tab::Waves, Tab::Placed]
+        .into_iter()
+        .flat_map(|t| menu::sheet(t, &f).rows)
+        .chain(menu::sheet(Tab::Variants, &flying()).rows)
+        .chain(menu::sheet(Tab::Placed, &flying()).rows)
+        .collect();
+    for r in &rows {
         let help = r.description.as_deref().unwrap_or_default();
         assert!(!help.trim().is_empty(), "{}: no help", r.label);
         let lines = wrap(help, width, &fallback::width).len() as i32;
@@ -664,13 +985,19 @@ fn the_page_is_alone_on_a_map_with_nothing_to_place_and_absent_with_no_labels() 
 }
 
 #[test]
-fn the_forge_options_build_the_ground_and_test_waves() {
-    let s = sheet::options();
-    let rows: Vec<(&str, &Act)> = s.rows.iter().map(|r| (r.label.as_str(), &r.act)).collect();
+fn the_forge_menu_builds_the_ground_and_tests_waves() {
+    let waves = menu::sheet(Tab::Waves, &flying());
+    let first = menu::sheet(Tab::Options, &flying());
+    let rows: Vec<(&str, &Act)> = waves
+        .rows
+        .iter()
+        .chain(&first.rows)
+        .map(|r| (r.label.as_str(), &r.act))
+        .collect();
     assert!(rows.contains(&("Build AI ground", &Act::Choose(Choice::BuildGround))));
     assert!(rows.contains(&("Test waves", &Act::Choose(Choice::TestWaves))));
     assert!(rows.contains(&("Generate nav", &Act::Choose(Choice::GenerateNav))));
-    assert!(ForgeScreen::new(Kind::Options).show(s).is_ok());
+    assert!(ForgeScreen::new(Kind::Menu).show(waves.clone()).is_ok());
 }
 
 /// While a wave test runs (or is starting) the Test waves row reads Stop
@@ -683,8 +1010,15 @@ fn the_row_reads_stop_waves_while_a_test_runs() {
             .map(|r| (r.label.clone(), r.act.clone()))
             .collect::<Vec<_>>()
     };
-    let idle = rows(&sheet::options_for(&[], &[], false));
-    let testing = rows(&sheet::options_for(&[], &[], true));
+    let on = |testing| {
+        let f = Facts {
+            testing,
+            ..flying()
+        };
+        menu::sheet(Tab::Waves, &f)
+    };
+    let idle = rows(&on(false));
+    let testing = rows(&on(true));
     let at = idle
         .iter()
         .position(|(label, _)| label == "Test waves")
@@ -692,8 +1026,7 @@ fn the_row_reads_stop_waves_while_a_test_runs() {
     assert_eq!(testing[at], ("Stop waves".into(), Act::Choose(Choice::StopWaves)));
     assert!(!testing.iter().any(|(label, _)| label == "Test waves"));
     assert_eq!(idle.len(), testing.len(), "one row in the other's place");
-    assert_eq!(rows(&sheet::options()), idle);
-    assert!(ForgeScreen::new(Kind::Options).show(sheet::options_for(&[], &[], true)).is_ok());
+    assert!(ForgeScreen::new(Kind::Menu).show(on(true)).is_ok());
 }
 
 /// The Overlays page has a row for each overlay of the table, showing On
@@ -769,7 +1102,11 @@ fn the_placed_objects_are_grouped_named_and_numbered() {
 #[test]
 fn the_placed_objects_row_picks_an_object_to_fly_to() {
     let rows = placed_sample();
-    let page = sheet::options_with(&rows);
+    let placed = Facts {
+        placed: rows.clone(),
+        ..flying()
+    };
+    let page = menu::sheet(Tab::Placed, &placed);
     let row = page
         .rows
         .iter()
@@ -782,8 +1119,8 @@ fn the_placed_objects_row_picks_an_object_to_fly_to() {
     assert_eq!(p.values, ["Arch", "Beacon 1", "Beacon 2", "Barrel"]);
     assert_eq!(p.details.len(), 4);
     assert_eq!(p.choices[1], Choice::FlyTo(forge_doc::OpId(7)));
-    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
-    let none = sheet::options();
+    assert!(ForgeScreen::new(Kind::Menu).show(page.clone()).is_ok());
+    let none = menu::sheet(Tab::Placed, &flying());
     let row = none
         .rows
         .iter()
@@ -816,7 +1153,12 @@ fn the_browser_lists_groups_first() {
     assert_eq!(folders[0].line, "Group. 3 objects.");
     assert_eq!(folders[1].line, "Group. 2 objects, locked.");
     let rows = placed_sample();
-    let page = sheet::options_with_groups(&folders, &rows);
+    let both = Facts {
+        folders: folders.clone(),
+        placed: rows.clone(),
+        ..flying()
+    };
+    let page = menu::sheet(Tab::Placed, &both);
     let row = page
         .rows
         .iter()
@@ -830,9 +1172,13 @@ fn the_browser_lists_groups_first() {
     assert_eq!(p.choices[0], Choice::FlyToGroup(forge_doc::OpId(3)));
     assert_eq!(p.choices[2], Choice::FlyTo(forge_doc::OpId(9)));
     assert_eq!(p.details.len(), p.values.len());
-    assert!(ForgeScreen::new(Kind::Options).show(page).is_ok());
+    assert!(ForgeScreen::new(Kind::Menu).show(page.clone()).is_ok());
     // Groups alone are enough to make the row a browser.
-    let only = sheet::options_with_groups(&folders, &[]);
+    let groups = Facts {
+        folders,
+        ..flying()
+    };
+    let only = menu::sheet(Tab::Placed, &groups);
     let row = only
         .rows
         .iter()

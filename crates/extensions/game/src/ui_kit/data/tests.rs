@@ -126,10 +126,11 @@ fn a_doc_naming_what_does_not_exist_is_a_named_error() {
 /// A HUD over the running game is the HUD kit's, never a screen of ours:
 /// no doc may say `kind: hud`, and the compositor's Forge pages are gone
 /// from the sheet (docs/game/forge-firefight-ui.md, slice U7).
+/// `forge.menu` is the game's Forge menu, a list page.
 #[test]
 fn no_screen_is_a_hud_and_the_forge_compositor_pages_are_gone() {
     assert_eq!(doc("screen: t\nkind: hud\nlayout: none\nbacking: none\n").unwrap_err().at, "kind");
-    for name in ["forge.hud", "forge.palette", "forge.menu", "layout.hud"] {
+    for name in ["forge.hud", "forge.palette", "layout.hud"] {
         assert!(!NAMES.contains(&name), "{name} is still in the sheet");
         assert!(screen(name).is_none(), "{name} still has a doc");
         assert!(screens::live(name).is_none(), "{name} still has a page");
@@ -138,6 +139,7 @@ fn no_screen_is_a_hud_and_the_forge_compositor_pages_are_gone() {
         let d = ScreenDoc::parse(name, text, design()).unwrap_or_else(|e| panic!("{e}"));
         assert_ne!(d.kind, "hud", "{name}");
     }
+    assert_eq!(screen("forge.menu").map(|d| d.kind.clone()).as_deref(), Some("list"));
 }
 
 #[test]

@@ -24,6 +24,8 @@ pub enum Key {
     Settings,
     /// The Overlays page.
     Overlays,
+    /// The Forge menu.
+    Menu,
     Undo,
     Redo,
 }

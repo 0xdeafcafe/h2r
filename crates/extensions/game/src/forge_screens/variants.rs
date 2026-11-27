@@ -1,10 +1,11 @@
 //! Save, Save as and Load on the map variant store
 //! (docs/game/forge-map-variants-ui.md, "Saving, loading and renaming").
 //!
-//! GAME MENU's **Save**, **Save as** and **Load** act on
+//! The Forge menu's **Save**, **Save as** and **Load** act on
 //! `forge::files::variants`; this module is their decisions, as plain
-//! functions the session's editor (`forge_glue::editing`) and GAME MENU
-//! ([`super::menu_press`]) call, so a table of flows can test them.
+//! functions the session's editor (`forge_glue::editing`) and the menu's
+//! Map variants tab ([`super::menu`]) call, so a table of flows can test
+//! them.
 //!
 //! - **Save** writes the open variant under its name; a session with no
 //!   name (opened from Original) opens the keyboard, as Save as does.

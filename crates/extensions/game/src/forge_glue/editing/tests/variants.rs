@@ -63,7 +63,7 @@ fn answer(e: &mut Editor, tick: u32, ask: Ask, yes: bool) {
 fn an_unnamed_save_is_refused_here_and_save_as_names_it() {
     let dir = Dir::new();
     let mut e = editor_in(&dir.0);
-    // GAME MENU opens the keyboard before it sends Save; one that arrives
+    // The Forge menu opens the keyboard before it sends Save; one that arrives
     // without a name is refused.
     assert_eq!(e.choose(1, Choice::Save).unwrap_err(), flows::UNNAMED);
     assert!(e.filename.is_none());

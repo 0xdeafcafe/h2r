@@ -219,13 +219,13 @@ not in the draws. A machine declares that it draws bodies
 ### Choosing it
 
 The entry is a row, **Monitor look**, in two places: the Forge menu
-(Start while a monitor: the game's GAME MENU with the Forge rows,
+(Back while a monitor: `forge.menu`, on its Options tab,
 [forge-firefight-ui.md](forge-firefight-ui.md), "The screens") and the
 Forge lobby (F14). Both open the same page, `forge.look`, a Forge screen
 of the game's on the large dialog (`forge_screens`), as the object menu
 and Link are ([ui-builder.md](ui-builder.md), "Screen kinds", "The
 value picker"). Not built: the row joins the Forge menu with the page
-(`forge_screens::sheet`).
+(`forge_screens::menu`).
 
 ```text
  +----------------------------------------------------------+
