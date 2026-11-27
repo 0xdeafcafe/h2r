@@ -1437,7 +1437,10 @@ fn far_leaf(
 /// Rust handler outside the module's text) through a register three times,
 /// and I calls it through a kernel import slot three times; once the runner
 /// has started the run nothing passes it again until the return to the
-/// harness. Every mode ends the same.
+/// harness. Every mode ends the same. Each caller holds the RAM gate at
+/// its call (the return address it pushes) and lends it with the view; the
+/// thunk releases it before the Rust handler's memory guard, which would
+/// otherwise wait for it forever.
 #[test]
 fn hle_return_keeps_callers_inline() {
     agree("host leaves", |m| {

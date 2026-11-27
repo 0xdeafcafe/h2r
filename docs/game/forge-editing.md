@@ -39,7 +39,7 @@ objects that are guest truth, tool state that is presentation
 | Movement and rotation snap | built | Tool state only: the frame is rounded before the op is made (`Tool::set_movement_step`, `Tool::set_rotation_step`) | none |
 | World or local axes | built | Tool state: which basis the snap, the nudge and the gizmo use (`Tool::set_axes`); Local is the pickup's basis | none |
 | Typed numbers, Coordinates | built | A frame is six `f32` values kept bit-exact in the document (`forge::Frame`), so a typed number is the number saved. Halo 3's variants quantise positions (**C**, [forge.md](forge.md) 1.1); ours do not. A typed or nudged value moves the held thing live, and closing writes one op (`Session::hold`, then `move_thing`) | none |
-| Duplicate | built | One `Placement::Add` with the source's tag from the placeable palette, at the frame in front of the monitor. The tool holds the copy at once (`Session::duplicate`, `Tool::take_up`). Kinds that require the kit are refused. | none |
+| Duplicate | built | One `Placement::Add` with the source's tag from the placeable palette, at the frame in front of the monitor. The tool holds the copy at once (`Session::duplicate`, `Tool::take_up`). In a kit session (`Session::duplicate_kit`) a spawner or starting point copies its editable fields, a teleporter keeps its role and takes the channel a new one takes, and a goal keeps its team and order with its own default area (a hill takes the next free hill); each is one undo step and takes a spare kit row, or is refused with the kit's sentence. A session without the kit refuses them ("Duplicating a goal needs a kit session."). | none |
 | Placed-object browser | built | A picker over `Session::objects`; choosing a row flies the monitor to it (`sheet::placed_rows`, `Camera::toward`) | none |
 | Limits by kind | built (P4) | **Map limits** on Forge options lists live object pool use and scenario block counts with their known engine limits ([forge-map-variants-ui.md](forge-map-variants-ui.md), "The budget") | none |
 | Selection, groups, group pivot | built (P5) | A selection is tool state (`Tool::toggle_selected`). A group is a Forge-family op naming its members by endpoint (`forge_doc::Group`); moving one is a batch of entry sets in one undo step, as a delete of a linked machine is one step (`Session::move_thing`). The pivot, centre or first member, is a field of the op (`pivot_first`); the local Properties page sets it with `Session::set_group_pivot` | none; the document format is 4 (`FORMAT_GROUPS`) |
@@ -186,7 +186,7 @@ persist and each has a picker.
   the validator's own rule, with its sentence as the HUD notice.
 - **Reset orientation** (Properties) sets pitch and roll to zero and
   rounds yaw to the rotation snap.
-- **Duplicate** (Properties) makes a copy of the object and holds it.
+- **Duplicate** (Properties) makes a copy of the thing and holds it; a spawner, starting point, goal or teleporter has the row in a kit session only.
 - **The gizmo** draws the three axes of the basis in force at the held
   or aimed object ([forge-firefight-ui.md](forge-firefight-ui.md),
   "Markers in the world").

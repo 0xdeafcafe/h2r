@@ -368,6 +368,69 @@ impl Session {
         self.add_entry(world, tick, block, fields)
     }
 
+    /// Duplicate a kit thing at `frame`, in one undo step: an item spawner
+    /// or a starting point takes the source's editable fields, a goal its
+    /// team and order (a hill takes the next free one), and a teleporter
+    /// its role with the channel a new one of that role takes.
+    pub(super) fn duplicate_kit(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        thing: &crate::Thing,
+        frame: Frame,
+    ) -> Result<OpId, String> {
+        let int_of = |name: &str| {
+            thing.fields.iter().find(|(n, _)| *n == name).and_then(|(_, v)| match v {
+                Value::Int(n) => Some(*n),
+                _ => None,
+            })
+        };
+        match thing.kind {
+            crate::ThingKind::Teleporter => {
+                let sender = int_of("type") == Some(forge_doc::TELEPORTER_SENDER.into());
+                self.place_teleporter(world, tick, sender, frame)
+            }
+            crate::ThingKind::Goal => {
+                let goal = match int_of("type") {
+                    Some(10) => crate::Goal::Territory,
+                    Some(11..=18) => crate::Goal::Hill,
+                    _ if self.labels()?.get(&thing.id).is_some_and(|l| {
+                        crate::Goal::of_label(&l.text) == Some(crate::Goal::Site)
+                    }) =>
+                    {
+                        crate::Goal::Site
+                    }
+                    _ => return Err("This goal cannot be duplicated.".into()),
+                };
+                let copy = (int_of("team").unwrap_or(8), int_of("identifier").unwrap_or(0));
+                self.place_goal_with(world, tick, goal, frame, Some(copy))
+            }
+            _ => {
+                let block = thing.block;
+                self.kit_check(block)?;
+                let mut fields = vec![vector("position", frame.position)?];
+                fields.push(if block == BlockKind::NetgameEquipment {
+                    vector("orientation", frame.rotation)?
+                } else {
+                    facing(frame)?
+                });
+                for def in layout::block(block).fields.iter() {
+                    if !def.editable || is_frame(def) {
+                        continue;
+                    }
+                    let value = value_of(&thing.fields, def);
+                    if value != kit::zero(def) {
+                        fields.push(FieldWrite {
+                            field: def.name.into(),
+                            value,
+                        });
+                    }
+                }
+                self.add_entry(world, tick, block, fields)
+            }
+        }
+    }
+
     /// The channel the next teleporter flag takes.
     fn teleporter_channel(&self, sender: bool) -> Result<i16, String> {
         let flags: Vec<(u16, i16, bool)> = self
