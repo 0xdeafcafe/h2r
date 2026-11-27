@@ -757,13 +757,10 @@ impl Pass {
         })
     }
 }
-impl ExternalPass for Pass {
-    fn replays_scene(&self) -> bool {
-        true
-    }
-
-    fn with_draw(&self, draw: Arc<d3d::ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
-        Some(Box::new(Self {
+impl Pass {
+    /// The same particle drawing `draw`, with nothing prepared.
+    fn drawing(&self, draw: Arc<d3d::ResolvedDraw>) -> Self {
+        Self {
             draw,
             id: self.id,
             color: self.color,
@@ -774,7 +771,124 @@ impl ExternalPass for Pass {
             renderer: Arc::clone(&self.renderer),
             prepared: Vec::new(),
             frame: self.frame,
-        }))
+        }
+    }
+
+    /// Whether `next` can follow this draw in one [`Run`]: the same
+    /// renderer, guest targets, frame and writes, and both drawable as
+    /// packets of the open pass (`record_draws` refuses a stencil
+    /// reference over 8 bits). State, constants, textures and blend stay
+    /// per draw: each is its own packet in the run, in order.
+    fn joins(&self, next: &Pass) -> bool {
+        let packet = |p: &Pass| u32::from(p.draw.state.render.stencil.reference) <= u32::from(u8::MAX);
+        Arc::ptr_eq(&self.renderer, &next.renderer)
+            && (self.color, self.depth, self.frame) == (next.color, next.depth, next.frame)
+            && self.writes() == next.writes()
+            && packet(self)
+            && packet(next)
+    }
+}
+
+/// Adjacent particle draws admitted as one queued pass
+/// (`ExternalPass::queued_run`, docs/graphics/native-particles.md, "One
+/// admission a run"): the render thread records every member's packet
+/// into the open pass in one call, in draw order, as the members would
+/// one by one. A member that does not record refuses the run, and the
+/// queue draws every member's fallback in order.
+struct Run {
+    members: Vec<Pass>,
+}
+
+impl ExternalPass for Run {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn extend_run(&mut self, next: &dyn ExternalPass) -> bool {
+        let Some(next) = next.as_any().and_then(|n| n.downcast_ref::<Pass>()) else { return false };
+        let Some(last) = self.members.last() else { return false };
+        if !last.joins(next) {
+            return false;
+        }
+        self.members.push(next.drawing(Arc::clone(&next.draw)));
+        true
+    }
+
+    fn encode(&mut self, _: ExternalTarget<'_>) {}
+
+    fn writes(&self) -> ExternalWrites {
+        self.members.first().map(|m| m.writes()).unwrap_or_default()
+    }
+
+    /// The queue holds each member's fallback; a run has no single one.
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        None
+    }
+
+    fn resolved_packets(&self) -> Vec<Arc<d3d::ResolvedDraw>> {
+        self.members.iter().map(|m| Arc::clone(&m.draw)).collect()
+    }
+
+    fn diagnostic_draw(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        self.members.first().map(|m| Arc::clone(&m.draw))
+    }
+
+    fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
+        self.members.iter_mut().try_for_each(|m| m.prepare_copy(target))
+    }
+
+    /// Every member's packet, in order. Members always draw as packets
+    /// ([`Pass::joins`]), so the isolated recording is never asked for.
+    fn record_draws(
+        &mut self,
+        t: &ExternalAttachments,
+        request: d3d::ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let mut all = ExternalDraws {
+            ranges: 0,
+            packets: Vec::with_capacity(self.members.len()),
+            discards: false,
+            writes: Vec::new(),
+        };
+        for member in &mut self.members {
+            let draws = match member.record_draws(t, request) {
+                Some(Ok(draws)) => draws,
+                Some(Err(why)) => return Some(Err(why)),
+                None => return Some(Err("particle run member left the open pass")),
+            };
+            all.ranges += draws.ranges;
+            all.packets.extend(draws.packets);
+            all.discards |= draws.discards;
+            all.writes.extend(draws.writes);
+        }
+        Some(Ok(all))
+    }
+
+    fn record_ranges(&mut self, _: ExternalTarget<'_>) -> usize {
+        0
+    }
+}
+
+impl ExternalPass for Pass {
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
+    fn with_draw(&self, draw: Arc<d3d::ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
+        Some(Box::new(self.drawing(draw)))
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// This particle, then the next, as one queued pass ([`Run`]).
+    fn queued_run(&self, next: &dyn ExternalPass) -> Option<Box<dyn ExternalPass>> {
+        let next = next.as_any()?.downcast_ref::<Pass>()?;
+        self.joins(next).then(|| {
+            Box::new(Run { members: vec![self.drawing(Arc::clone(&self.draw)), next.drawing(Arc::clone(&next.draw))] })
+                as Box<dyn ExternalPass>
+        })
     }
 
     fn encode(&mut self, _: ExternalTarget<'_>) {} // only transactional recording is supported
