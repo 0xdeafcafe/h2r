@@ -1234,11 +1234,18 @@ impl d3d::ExternalPass for WorldPass {
             }
             Some((&t.device, &level.view))
         } else { None };
+        // The pyramid's screen: this copy's lens into the request's
+        // rectangle, as the fixed stage draws the view.
+        let lens = native_render::camera::display_camera(self.camera, request.projection_factor(t.copy));
+        let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
+        let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }));
         let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,
-            selection, &view, &self.cull_camera, world_lighting(t.copy, t.lighting), accumulation);
-        Some(culled.and_then(|(draws, dispatch)| {
-            let draws = crate::native_layers_glue::clip_packets(draws, request, t.size)?;
-            Ok(encoded_world(t, draws, dispatch))
+            selection, &view, &self.cull_camera, world_lighting(t.copy, t.lighting), accumulation, occlusion);
+        Some(culled.and_then(|culled| {
+            let draws = crate::native_layers_glue::clip_packets(culled.draws, request, t.size)?;
+            let late = d3d::backend::ExternalDraws { ranges: 0, packets: culled.late, discards: true, writes: Vec::new() };
+            let late = crate::native_layers_glue::clip_packets(late, request, t.size)?.packets;
+            Ok(encoded_world(t, draws, late, culled.dispatch))
         }))
     }
 
@@ -1279,10 +1286,11 @@ impl d3d::ExternalPass for WorldPass {
 
 /// A game view's culled world parts as commands for the frame's encoder
 /// ([`WorldPass::record_encoded`]): the view rows staged now and copied in
-/// draw order, the guest cull, then the packets in one pass over the
-/// attachments, loaded and kept.
+/// draw order, the early cull, the early packets in a pass over the
+/// attachments (loaded and kept), then with the pyramid its build from
+/// that depth, the late cull and the late packets in a second pass.
 fn encoded_world(
-    t: &d3d::backend::ExternalAttachments, draws: d3d::backend::ExternalDraws,
+    t: &d3d::backend::ExternalAttachments, draws: d3d::backend::ExternalDraws, late: Vec<gfx::RecordedDraw>,
     dispatch: native_render::cull_gpu::GuestDispatch,
 ) -> d3d::backend::ExternalEncoded {
     let writes: Vec<_> = draws.writes.iter()
@@ -1293,12 +1301,10 @@ fn encoded_world(
     let size = t.size;
     let ranges = draws.ranges;
     let packets = draws.packets;
-    let count = packets.len();
-    let commands = move |encoder: &mut wgpu::CommandEncoder| {
-        for ((src, at), dst, offset, len) in &writes {
-            encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
-        }
-        dispatch.record(encoder);
+    let late = dispatch.has_late().then_some(late);
+    let count = packets.len() + late.as_ref().map_or(0, Vec::len);
+    let passes = 1 + usize::from(late.is_some());
+    let draw = move |encoder: &mut wgpu::CommandEncoder, packets: &[gfx::RecordedDraw]| {
         fn keep<T>() -> wgpu::Operations<T> { wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native world culled"),
@@ -1317,9 +1323,20 @@ fn encoded_world(
         pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
         // Checked when the packets were made: every pipeline bound, none
         // counted.
-        let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+        let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
     };
-    d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) }
+    let commands = move |encoder: &mut wgpu::CommandEncoder| {
+        for ((src, at), dst, offset, len) in &writes {
+            encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+        }
+        dispatch.record(encoder);
+        draw(encoder, &packets);
+        if let Some(late) = &late {
+            dispatch.record_late(encoder);
+            draw(encoder, late);
+        }
+    };
+    d3d::backend::ExternalEncoded { ranges, draws: count, passes, commands: Box::new(commands) }
 }
 
 static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

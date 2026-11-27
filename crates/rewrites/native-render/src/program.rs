@@ -4285,8 +4285,10 @@ mod tests {
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
             }));
             let draws = if culled {
-                let (draws, dispatch) = gpu.culled_selection_draws(&arena, &ctx.device, &ctx.queue, F::Rgba8Unorm,
-                    F::Depth32Float, (SIZE, SIZE), selection, &view, &camera, d3d::Lighting::Retail, None).unwrap();
+                let crate::gpu::CulledSelection { draws, late, dispatch } = gpu.culled_selection_draws(&arena,
+                    &ctx.device, &ctx.queue, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selection, &view, &camera,
+                    d3d::Lighting::Retail, None, None).unwrap();
+                assert!(late.is_empty() && !dispatch.has_late(), "no depth to test: the frustum's set");
                 assert_eq!((draws.ranges, draws.packets.len()), (4, 2), "slots 0..3 in one run, the repeat its own");
                 dispatch.record(&mut enc);
                 draws
@@ -4323,6 +4325,157 @@ mod tests {
         // A clip range above the wall clamps it up: the model follows.
         let clamped = crate::cull_gpu::DepthModel::program(&ViewInputs { w_clip: Some(([40.0, 1000.0], true)), ..view });
         assert_eq!(clamped.nearest(&gpu.world().draws[0].bounds), 40.0 / view.z_scale);
+    }
+
+    /// A game view's occlusion (`GpuWorld::culled_selection_draws` with
+    /// its depth): a box behind a wall drawn last view is drawn early and
+    /// found hidden, so the next view draws only the wall; the box is drawn
+    /// in the view the wall leaves, by the late run. A binding whose order
+    /// matters (here depth-equal) has no late packets and draws from the
+    /// frustum alone, early. A depth target the pass cannot read is a
+    /// named skip.
+    #[test]
+    fn game_view_occlusion_hides_what_the_wall_covers_and_keeps_ordered_draws_early() {
+        use crate::camera::RenderCamera;
+        use crate::gpu::{CulledSelection, GpuWorld, PassViewport, keeps_order};
+        use crate::world::{PartInput, Placement, SectionInput, WorldBuilder};
+        use wgpu::{TextureFormat as F, TextureUsages as U};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        const SIZE: u32 = 32;
+        let quad = |x: f32, half: f32, material: u16| SectionInput {
+            positions: vec![[x, half, -half], [x, -half, -half], [x, half, half], [x, -half, half]],
+            uvs: vec![[0.5; 2]; 4],
+            lightmap_uvs: vec![[0.5; 2]; 4],
+            normals: vec![[-1.0, 0.0, 0.0]; 4],
+            parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+            ..Default::default()
+        };
+        let key = LightmapKey { page: 0, palette: 0 };
+        let mut b = WorldBuilder::new();
+        // The wall fills the lens; both boxes lie behind it.
+        b.add_section(Owner::Cluster(0), &quad(10.0, 8.0, 0), &Placement::IDENTITY, Some(key));
+        b.add_section(Owner::Cluster(1), &quad(20.0, 1.0, 0), &Placement::IDENTITY, Some(key));
+        b.add_section(Owner::Cluster(2), &quad(20.0, 1.0, 1), &Placement::IDENTITY, Some(key));
+        let world = b.finish();
+        let opaque = compile(&plain_look(), &game_program()).unwrap();
+        let mut equal = opaque.clone();
+        equal.state = Some(PassState { depth_compare: wgpu::CompareFunction::Equal, ..world_pass(plain_look()).state });
+        let set = ProgramSet::new(&ctx.device, &ctx.queue, &world, [(0, opaque), (1, equal)].into(),
+            &mut |_| None, &mut |_| Some(Image::solid([10, 50, 90, 255])));
+        let mut gpu = GpuWorld::with_programs(&ctx.device, &ctx.queue, world, set);
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 60f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, SIZE as i16, SIZE as i16],
+            near: 0.0625,
+            far: 1024.0,
+        };
+        let view = ViewInputs::from_camera(&camera, (SIZE, SIZE));
+        let full = PassViewport { x: 0.0, y: 0.0, width: SIZE as f32, height: SIZE as f32 };
+        let texture = |format, usage| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+            usage, view_formats: &[],
+        });
+        let color = texture(F::Rgba8Unorm, U::RENDER_ATTACHMENT | U::COPY_SRC);
+        let frame = |gpu: &mut GpuWorld, guest: &[(Owner, u8)], depth: &wgpu::Texture| {
+            let selection = gpu.select_unculled(guest).unwrap();
+            assert!(gpu.prepare_selection(&ctx.device, F::Rgba8Unorm, F::Depth32Float, &selection));
+            let (cv, dv) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+            let target = gfx::RenderTarget {
+                color: &cv, color_format: F::Rgba8Unorm, depth: Some(&dv), depth_format: Some(F::Depth32Float),
+                size: (SIZE, SIZE), samples: 1,
+            };
+            let arena = gfx::ring::UploadPool::default().begin();
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &cv, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &dv, stencil_ops: None,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            }));
+            let CulledSelection { draws, late, dispatch } = gpu.culled_selection_draws(&arena, &ctx.device,
+                &ctx.queue, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selection, &view, &camera,
+                d3d::Lighting::Retail, None, Some((depth, &camera, full))).unwrap();
+            for (buffer, offset, bytes) in &draws.writes {
+                arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
+            }
+            dispatch.record(&mut enc);
+            gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::NONE, &draws.packets, None).unwrap();
+            dispatch.record_late(&mut enc);
+            if !late.is_empty() {
+                gfx::Renderer::encode_pass(&ctx, &mut enc, &target, gfx::Clear::NONE, &late, None).unwrap();
+            }
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let stats = gpu.read_guest_cull_stats(&ctx.device, &ctx.queue);
+            (draws.packets.len(), late.len(), gpu.read_guest_drawn(&ctx.device, &ctx.queue), stats.occluded)
+        };
+        let depth = texture(F::Depth32Float, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING);
+        let all = [(Owner::Cluster(0), 0), (Owner::Cluster(1), 0), (Owner::Cluster(2), 0)];
+        // The first view knows no history: all late but the ordered box.
+        // The second draws the last view's set early and finds the box
+        // hidden; the third leaves it out.
+        let first = frame(&mut gpu, &all, &depth);
+        assert_eq!(first, (2, 1, vec![true, true, true], 0), "one late packet: the opaque binding's");
+        frame(&mut gpu, &all, &depth);
+        for _ in 0..2 {
+            assert_eq!(frame(&mut gpu, &all, &depth), (2, 1, vec![true, false, true], 1), "the box is hidden");
+        }
+        // Without the wall the box is drawn the view it is revealed.
+        let open = [(Owner::Cluster(1), 0), (Owner::Cluster(2), 0)];
+        assert_eq!(frame(&mut gpu, &open, &depth), (2, 1, vec![false, true, true], 0), "revealed, drawn late");
+        assert_eq!(gpu.guest_occlusion_skips().depth_unsampled, 0);
+        // A depth the pyramid cannot read: the frustum's set, counted.
+        let unread = texture(F::Depth32Float, U::RENDER_ATTACHMENT);
+        assert_eq!(frame(&mut gpu, &all, &unread), (2, 0, vec![true, true, true], 0));
+        let skips = gpu.guest_occlusion_skips();
+        assert_eq!((skips.depth_unsampled, skips.depth_model), (1, 0));
+
+        let pipeline = |state: Option<&PassState>| described_pipeline(WORLD_CLUSTER_PROGRAM, F::Rgba8Unorm,
+            F::Depth32Float, state, None, wgpu::StencilState::default());
+        let opaque = world_pass(plain_look()).state;
+        assert!(!keeps_order(&pipeline(None)) && !keeps_order(&pipeline(Some(&opaque))));
+        let blended = PassState { blend: Some(wgpu::BlendState::ALPHA_BLENDING), ..opaque };
+        let equal = PassState { depth_compare: wgpu::CompareFunction::Equal, ..opaque };
+        let unwritten = PassState { depth_write: false, ..opaque };
+        for state in [blended, equal, unwritten] {
+            assert!(keeps_order(&pipeline(Some(&state))), "{state:?}");
+        }
+    }
+
+    /// The game's convention: the clip position divided by w, then
+    /// `c[10]` and `c[11]` to guest pixels (`ViewInputs::from_camera`);
+    /// `oPos.w` keeps w for the W-buffer. `dp4 r0, v0, c[0..3];
+    /// rcc r1.x, r0.w; mul r0.xyz, r0, c10; mad oPos.xyz, r0, r1.x, c11;
+    /// mov oPos.w, r0.w`, with `plain_program`'s texcoords.
+    fn game_program() -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{IluOp, MacOp, OutReg};
+        let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_temp(0, mask);
+        program(&[
+            row(0, 8),
+            row(1, 4),
+            row(2, 2),
+            row(3, 1),
+            Inst::ilu(IluOp::Rcc, O::r(0).swz("w")).ilu_to_temp(1, 8),
+            Inst::mac(MacOp::Mul, Some(O::r(0)), Some(O::c(10)), None).to_temp(0, 0xe),
+            Inst::mac(MacOp::Mad, Some(O::r(0)), Some(O::r(1).swz("x")), Some(O::c(11))).to_out(false, OutReg::Pos, 0xe),
+            Inst::mac(MacOp::Mov, Some(O::r(0)), None, None).to_out(false, OutReg::Pos, 1),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(6)), None, None).to_out(false, OutReg::T(1), 0xf),
+        ])
     }
 
     #[test]
