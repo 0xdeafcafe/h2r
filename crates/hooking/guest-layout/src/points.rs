@@ -771,6 +771,13 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// A starting location's weight for the spawn chooser: the influence
+    /// sum `0x23b060` over the context at its position, plus the random
+    /// term (the game seed's top 16 bits / 65535, times the multiplayer
+    /// globals' `+0x530` element's first float). Its one caller is
+    /// `PLAYER_SPAWN_LOCATION` (`0x14efb1`); EAX is the location
+    /// (`scnr+0x104` + `0x34` × index), ESI the seed.
+    SPAWN_LOCATION_WEIGHT @ 0x0023_ba90: [fn(location: eax, player: stack 0, flag: stack 1, context: stack 2) -> xmm0 ret 12], Optional; "docs/engine/notes/2026-11-27-forge-spawner-rows.md";
     /// The netgame item spawner: makes entry `index`'s object
     /// (`scnr+0x120`, stride `0x90`), stores its handle at the entry's
     /// state (`state + 8 * index`) and the index at the object's `+0xaf`.
