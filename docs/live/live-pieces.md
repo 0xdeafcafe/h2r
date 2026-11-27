@@ -21,41 +21,7 @@
 Implemented (crates/apps/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
 play_live.rs; `h2 live --help` has every flag):
 
-```
-h2 live serve [--db URL] [--blobs LOC] [--listen ADDR] [--data DIR] [--id HOST]
-              [--private] [--invite-only] [--admin GAMERTAG]...
-              [--game-art DIR] [--share-game-art]
-              [--tls-cert PEM --tls-key PEM | --insecure-http]
-              [--tunnel | --tunnel-name NAME | --public-url URL]
-h2 live account create <gamertag> [--server URL] [--invite CODE]
-h2 live account code [--as GAMERTAG] [--server URL]
-h2 live account recovery [--reset] [--as GAMERTAG] [--server URL]
-h2 live account recover <gamertag> [--code CODE] [--server URL]
-h2 live account import <file> [--server URL]
-h2 live account list [--server URL]
-h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
-h2 live motd set --file PATH [--server URL] [--data DIR]
-h2 live account export <gamertag> [--file PATH] [--server URL]
-h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
-h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
-h2 live hopper defaults --out FILE [--raw] [--force]
-h2 live friend add|accept|decline|remove|list ...
-h2 live team ...
-h2 live maps publish|list ...
-h2 live mods import INPUT --pack NAME --author NAME --source-url URL
-h2 live mods capture PACK_OR_MAP_ID
-h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
-h2 live assets check [--out DIR]
-h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]
-h2 live invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
-h2 live invite ungrant <gamertag> [--server URL] [--data DIR]
-h2 live invite create [--days N] [--code TEXT] [--as GAMERTAG] [--server URL] [--data DIR]
-h2 live invite list [--as GAMERTAG] [--server URL] [--data DIR]
-h2 live invite revoke <jti> --as GAMERTAG [--server URL]
-h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> [--live | --live-server URL | --live-local | --offline] [--live-listen ADDR] [--gamertag NAME] [--invite CODE] [--join URL]
-```
-
+`h2 live --help` lists every flag.
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
 `/`, with `index.html` for any path that is not a file or under `/v1/`; it
 prints a hint to run `cd web && bun run build` when there is none.
@@ -158,19 +124,7 @@ lists. Otherwise the player's identity moves with them: the gamertag is
 of that gamertag on another server lends its key, so the player keeps one
 key everywhere.
 
-If the gamertag is new to the server it is made there
-(on an invite-only server with `--invite CODE`, or an invite asked for on
-the terminal; long and 25-character codes both work). If the server has
-it already (made from the web or another device), `h2 play` does not ask
-on the terminal: it hands the game that gamertag marked `needs_code`, and
-the game asks for the current recovery code (Account on the server's
-`/dash`, or an authenticator app) when the player signs in to Xbox Live
-([In-game sign-in](live-client-hle-offline.md#in-game-sign-in)), then adds this machine's key
-([live-security.md](live-security.md) §1, Recovery). `--signin-terminal`
-asks on the terminal before the game starts instead, as before (and
-without a terminal stops with the `h2 live account recover <tag> --server
-URL` command); `h2 live account recover` still works on its own. On the embedded server (`--live-local`) a taken default name is
-numbered instead.
+If the gamertag is new to the server it is made there (on an invite-only server with `--invite CODE`, or an invite asked for on the terminal). If the server has it already (made from the web or another device), `h2 play` hands the game that gamertag marked `needs_code`, and the game asks for the current recovery code when the player signs in to Xbox Live ([In-game sign-in](live-client-hle-offline.md#in-game-sign-in)), then adds this machine's key ([live-security.md](live-security.md) §1, Recovery). `--signin-terminal` asks on the terminal before the game starts instead. On the embedded server (`--live-local`) a taken default name is numbered.
 
 It prints the gamertag and, for the embedded server, the web app's
 URL, then boots with `boot::LiveConfig {
@@ -300,22 +254,7 @@ compact table on a terminal. Lists follow every cursor, so they are whole.
 Failures exit non-zero with the server's
 `{error, message}` in the text.
 
-| Command | Output |
-|---|---|
-| `q accounts` | `[{xuid, gamertag, created_at, online}]` |
-| `q account <gamertag>` | `{xuid, gamertag, created_at, online, id, recent_games: [GameSummary], position}` |
-| `q presence` | `[{xuid, gamertag, state, game_id?, since}]` |
-| `q games [--live\|--ended]` | `[GameSummary]`, newest first: `{game_id, map, mode, variant, team_play, state, started_at, ended_at, players: [{index, name, xuid?, team, local?}], teams}` |
-| `q game <id>` | `GameSummary` plus `{console, host, score_limit, time_limit_s, tick, last_tick, scoreboard: [{index, score, kills, deaths, assists}], kills: [{tick, victim, killer?, weapon?, kind, pos?, position, at}], winner, end_reason, position}` |
-| `q game <id> --frames` | `[{game_id, tick, players: [{index, alive, pos, yaw, vehicle?}], source}]` (the 1 Hz recorded frames) |
-| `q sessions`, `q session <id>` | the open session advertisements, or one |
-| `q teams [gamertag]`, `q team <id>` | open teams (or one account's teams and pending recruits), or one team with members, properties and permissions |
-| `q friends <gamertag>` | `{friends: [{xuid, gamertag, friends_since, presence?}], requests_in, requests_out}` |
-| `q events [--from N] [--type T] [--stream S]` | `[{position, stream, version, type, at, data, author, kid, jws, jws_index?, hash}]` after position N |
-| `q events ... --follow` | the same, then one event per line as they are appended (JSONL, from `/v1/stream`) |
-| `q keys <gamertag>` | `{keys: [{kid, jwk, valid_from, valid_to}], position}` |
-| `q verify [--from N]` | `{checked, anchored, bad: [{position, stream, type, problem}], position}`; exits 1 if `bad` is not empty |
-| `q health` | `{ok, position}` |
+Each `q` command prints the matching [live-api.md](live-api.md) JSON: `accounts`, `account <gamertag>`, `presence`, `games [--live|--ended]`, `game <id> [--frames]`, `sessions`, `session <id>`, `teams`, `team <id>`, `friends <gamertag>`, `events [--from N] [--type T] [--stream S] [--follow]`, `keys <gamertag>`, `verify [--from N]` (exits 1 if `bad` is not empty) and `health`.
 
 `verify` re-checks the log on this side with `live_proto::audit`: each
 event's JWS opens to exactly its `stream`, `type`, `data`, `author`, `kid`

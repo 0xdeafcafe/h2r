@@ -42,114 +42,22 @@ percent | null }`. `lit` never goes down within one load. The plate is
 hidden for its first 150 ms (`animation-delay`), so a cached map never
 flashes it.
 
-**Tokens.** Declared on `.vo` in `web/src/viewer/overlay.css`.
+**Tokens** are declared on `.vo` in `web/src/viewer/overlay.css` (`--vo-veil` `#050d18`, `--vo-plate`, `--vo-line`, `--vo-ink` `#dfeeff`, `--vo-dim`, `--vo-accent` `#9fd8ff`, `--vo-on` `#17668a`, `--vo-warn` `#ffc857`, `--vo-bad` `#f26122`).
+**Type and plates.** Labels and values use `var(--font-tech)` (Michroma, in `web/src/styles/theme.css`), titles and body `var(--font-ui)`. A panel is two nested boxes with cut top-left and bottom-right corners (`.vo-plate`, `clip-path`). The veil (`.vo-veil`) is `--vo-veil` with the map's `MapThumb` picture blurred over it, or a CSS floor grid when there is none.
 
-| Token | Value | Use |
-|---|---|---|
-| `--vo-veil` | `#050d18` | the veil; the scene's background at the start of the reveal |
-| `--vo-plate` | `rgba(6, 18, 36, .92)` | panel fill |
-| `--vo-line` | `rgba(111, 182, 232, .55)` | keylines |
-| `--vo-ink` | `#dfeeff` | text |
-| `--vo-dim` | `#8fb0d0` | secondary text, load segments |
-| `--vo-accent` | `#9fd8ff` | values, the highlight bar |
-| `--vo-on` | `#17668a`, border `#9ad1ee` | a pressed control (as `.gv-buttons button.on`) |
-| `--vo-warn` | `#ffc857` | notices |
-| `--vo-bad` | `#f26122` | errors |
+**Loading** (`boot`, `loading`, `decoding`). A centred plate, up to 320px wide, over the veil.
 
-**Type.** Labels and values are `var(--font-tech)` (Michroma, already in
-`web/src/styles/theme.css`), 9px/12px, uppercase, `letter-spacing: .14em`
-by default. Titles are `var(--font-ui)` bold 20px/24px,
-uppercase, `letter-spacing: .02em`. Body copy is `var(--font-ui)`
-11px/15px.
-
-Numbers use `font-variant-numeric: tabular-nums`.
-
-**Plates.** A panel is two nested boxes with cut top-left and
-bottom-right corners:
-
-```css
-.vo-plate { padding: 1px; background: var(--vo-line);
-  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
-.vo-plate > div { background: var(--vo-plate);
-  clip-path: polygon(7.5px 0, 100% 0, 100% calc(100% - 7.5px), calc(100% - 7.5px) 100%, 0 100%, 0 7.5px); }
-```
-
-**The veil.** `.vo-veil` fills the stage with `--vo-veil`. Over it, when
-the art has the map's picture (the one `MapThumb` resolves,
-`web/src/stats/Side.tsx`, passed in as `backdrop`), that picture at `object-fit:
-cover; opacity: .28; filter: blur(6px) saturate(.7)`. Without one, a CSS
-floor grid: `repeating-linear-gradient` lines of `rgba(111, 182, 232,
-.16)` every 32px in both directions on a plane with `transform:
-perspective(600px) rotateX(62deg) scale(2)`, anchored to the bottom half,
-masked by `linear-gradient(transparent, #000 60%)`.
-
-**Loading** (`boot`, `loading`, `decoding`). The plate is centred and up to
-320px wide, with 10px by 12px padding and a subdued blue keyline. The
-eyebrow and status use 10px/13px UI type with .05em tracking, and the
-title uses 15px/19px semibold.
-
-```
-+--------------------------------------------------------------------+
-| (veil: blurred map picture, or the CSS floor grid)                 |
-|                                                                    |
-|            ,----------------------------------------.              |
-|           /  MAP UPLINK                             |              |
-|           |  SLAYER ON LOCKOUT                      |              |
-|           |                                         |              |
-|           |  //////////////////////////////////     |              |
-|           |  [#][#][#][#][#][#][#][#][#][ ][ ][ ]   |              |
-|           |  LOADING MAP GEOMETRY              63%  |              |
-|           '----------------------------------------/               |
-|                                                                    |
-+--------------------------------------------------------------------+
-```
-
-- Eyebrow `MAP UPLINK` in `--vo-dim`; the title is `GameViewer`'s
-  `title`.
-- The bar has 24 muted blue segments, 4px high with 2px gaps and a 12°
-  skew. Inactive segments sit at .18 opacity. Lit segments reach .78
-  opacity in 120 ms.
-- When the download size is unknown, the chase runs over 1800 ms with
-  75 ms between segments and a .6 opacity peak.
-- During decoding the 23rd segment pulses between .42 and .78 opacity
-  over 1100 ms.
-- A faint scan line with a 12px tail crosses the plate once, over
-  3200 ms.
-- Status text, left: `LOADING VIEWER` (`boot`), `LOADING MAP GEOMETRY`
-  (`loading`), `DECODING GEOMETRY` (`decoding`). Right: the percent, or the
-  size read, or nothing.
-- The bar is `role="progressbar"` with `aria-valuemin="0"`,
-  `aria-valuemax="100"` and `aria-valuenow` (left off when
-  indeterminate). The status text is `aria-live="polite"` and changes only
-  with the state.
-- The plate fades in over 180 ms with `cubic-bezier(0.2, 0.8, 0.2, 1)`.
-
+- Eyebrow `MAP UPLINK`; the title is `GameViewer`'s `title`. The bar has 24 segments. When the download size is unknown a chase runs along it; during decoding the 23rd segment pulses.
+- Status text, left: `LOADING VIEWER` (`boot`), `LOADING MAP GEOMETRY` (`loading`), `DECODING GEOMETRY` (`decoding`). Right: the percent, the size read, or nothing.
+- The bar is `role="progressbar"`; the status text is `aria-live="polite"` and changes only with the state.
 **Ready** (`reveal`, `ready`). The veil fades `opacity 1 → 0` in 420 ms
 `cubic-bezier(0.4, 0, 0.2, 1)` and is then `display: none`. The rail
 enters 300 ms after the reveal starts (`translateY(-8px) → 0` with
 opacity, 260 ms, the plate's curve); the status strip and the key hints
 500 ms after.
 
-```
-+--------------------------------------------------------------------+
-| [ORBIT|TOP|FLY] [FOLLOW: SPARTAN-117 v] [EYES]      [RESET] [VIEW] |
-|                                                                    |
-|                 [o Mendoza  BR]                                    |
-|                 ======----                                         |
-|                        *                  o   o                    |
-|          (the level)        [o SPARTAN-117  SMG]                   |
-|                             ==========                             |
-|                                                                    |
-| LOCKOUT · SURFACES 31/48          F FLY  V EYES  C CUT  M MENU     |
-+--------------------------------------------------------------------+
-```
 
-- The **rail** (`.vo-rail`) has an 8px inset from the top and sides and
-  4px gaps. `viewer.css` sets the buttons in regular 11px UI type with
-  sentence-case labels, a translucent navy fill and muted blue keylines.
-  They are 22px high on desktop and at least 36px by 32px under
-  `max-width: 640px` or `pointer: coarse`. An active button has a deeper
-  blue fill and a pale blue underline.
+- The **rail** (`.vo-rail`) holds the buttons in regular 11px UI type; they are at least 36px by 32px under `max-width: 640px` or `pointer: coarse`.
 - **Stays visible:** the camera tabs **Orbit**, **Top**, **Fly** (one
   segmented group); the **Follow** chip, which shows the followed
   player's name and opens a picker list of the roster (no arrows, no
@@ -162,104 +70,23 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
   sky, fog, weather, objects and their kinds. `Viewer3D` supplies the rows
   for the loaded level. The [combat-effects design](viewer-effects.md#the-effects)
   defines a separate **Combat effects** row.
-- **Becomes a key hint:** `F` fly, `V` eyes, `C` cut, `X` see-through,
-  `R` reset, `T` top-down, `M` menu, `H` hide the overlay. `R`, `T`, `M`
-  and `H` are added to `Viewer3D`'s `onKey`; none is a replay key
-  (`replayKey`, `web/src/viewer/Transport.tsx`). The hint row
-  (`.vo-keys`, bottom right) shows four of them, is hidden under
-  `pointer: coarse` and `max-width: 640px`, and drops to `opacity: .4`
-  four seconds after the last key or pointer move over the viewer.
-- **Status strip** (`.vo-status`, bottom left, `bottom: 8px; left: 8px`):
-  one line in the label type on `rgba(0, 0, 0, .55)`, padding `2px 7px`.
-  The map's name, then one of: `SURFACES <done>/<total>` while pictures
-  stream; `FLYCAM <speed>`; `CUTSCENE`; nothing. Notices that are
-  sentences (the stale-models note, the flycam's help) are a second line
-  in body type, `--vo-warn` for the stale-models note.
-- **Cut slider:** while the cut is on, a 140px range input sits at the
-  bottom centre, `bottom: 8px`, `accent-color: var(--vo-accent)`.
-- `H` adds `.vo--bare`: the rail, strip and hints are hidden and name
-  tags stay.
+- **Becomes a key hint:** `F` fly, `V` eyes, `C` cut, `X` see-through, `R` reset, `T` top-down, `M` menu, `H` hide the overlay. `R`, `T`, `M` and `H` are added to `Viewer3D`'s `onKey`; none is a replay key (`replayKey`, `web/src/viewer/Transport.tsx`). The hint row (`.vo-keys`) is hidden under `pointer: coarse` and `max-width: 640px`, and fades four seconds after the last key or pointer move.
+- **Status strip** (`.vo-status`, bottom left): the map's name, then one of `SURFACES <done>/<total>` while pictures stream, `FLYCAM <speed>`, `CUTSCENE` or nothing. Sentence notices (the stale-models note, the flycam's help) are a second line.
+- **Cut slider:** while the cut is on, a range input sits at the bottom centre.
+- `H` adds `.vo--bare`: the rail, strip and hints are hidden and name tags stay.
 
 **View menu** (`.vo-menu`). A plate 240px wide, right-aligned under
 **View**, `max-height: calc(100% - 48px)`, scrolling inside.
 
-```
-                                     ,--------------------------.
-                                    /  VIEW                     |
-                                    |  Ambient occlusion     ON |
-                                    |# See-through      IN FOCUS|
-                                    |  Height cut           OFF |
-                                    |  Textures              ON |
-                                    |  Lifts & teleporters   ON |
-                                    |  Damage              BARS |
-                                    |  Level layers           > |
-                                    '--------------------------/
-```
 
-- Rows are 24px (32px on touch): the name in body type on the left, the
-  value in the label type and `--vo-accent` on the right.
-- The row under the pointer or with focus has `background: rgba(47, 127,
-  208, .35)` and a 2px `--vo-accent` bar on its left edge (`#` above).
-- A two-value row toggles. A row with more values, and **Level layers**,
-  opens a picker dialog in the same plate: a `‹ SEE-THROUGH` title row and one
-  row per value, the current one marked. Escape or the title row goes
-  back.
-- Roles: `role="menu"`, rows `menuitemcheckbox` or `menuitemradio`. Up
-  and Down move, Enter and Space act, Escape closes and returns focus to
-  **View**. A click outside closes it.
-- The menu opens with `opacity 0 → 1` and `translateY(-4px) → 0` in
-  160 ms, the plate's curve.
+- Rows are 24px (32px on touch). A two-value row toggles; a row with more values, and **Level layers**, opens a picker dialog in the same plate (a `‹ SEE-THROUGH` title row, one row per value, the current one marked). Escape or the title row goes back.
+- Roles: `role="menu"`, rows `menuitemcheckbox` or `menuitemradio`. Up and Down move, Enter and Space act, Escape closes and returns focus to **View**.
 
-**No geometry** (`none`). The grid floor is drawn, framed by the opening
-camera rules. A notice plate sits above the status strip (`bottom: 34px;
-left: 8px; max-width: 320px`) for 6 s, then collapses to the strip's
-second line.
+**No geometry** (`none`). The grid floor is drawn, framed by the opening camera rules, with a notice plate ("NO 3D GEOMETRY FOR THIS MAP", **2D map**) above the status strip for 6 s.
 
-```
-+--------------------------------------------------------------------+
-| [ORBIT|TOP|FLY] [FOLLOW v]                          [RESET] [VIEW] |
-|                                                                    |
-|        .   .   .   .   o   .   .   .   .   .   .                   |
-|      .   .   .   o   .   .   .   o   .   .   .   .   (grid floor)  |
-|  ,-------------------------------------.                           |
-| /  NO 3D GEOMETRY FOR THIS MAP         |                           |
-| |  The floor grid is fitted to where   |                           |
-| |  players have been.      [ 2D MAP ]  |                           |
-| '-------------------------------------/                            |
-| LOCKOUT                                                            |
-+--------------------------------------------------------------------+
-```
+**Error** (`error`). The same plate with keyline `--vo-bad` and `role="alert"`, over the grid floor, with **Retry** (calls `loadMap` again) and **2D map**.
 
-**Error** (`error`). The same plate, centred, keyline `--vo-bad`, with
-`role="alert"`. The grid floor is drawn behind it so the game is still
-watchable. **Retry** calls `loadMap` again with the same address; **2D
-map** switches the viewer's mode.
-
-```
-+--------------------------------------------------------------------+
-| [ORBIT|TOP|FLY] [FOLLOW v]                          [RESET] [VIEW] |
-|                                                                    |
-|            ,----------------------------------------.              |
-|           /  UPLINK LOST                            |              |
-|           |  The map's geometry didn't load.        |              |
-|           |  The floor grid stands in for it.       |              |
-|           |                                         |              |
-|           |              [ RETRY ]   [ 2D MAP ]     |              |
-|           '----------------------------------------/               |
-|                                                                    |
-| LOCKOUT                                                            |
-+--------------------------------------------------------------------+
-```
-
-**Unsupported** (`unsupported`). The veil stays. The centred plate reads
-`3D VIEW UNAVAILABLE`, then the sentence `Viewer3D` sets in `failed`, then
-**2D map**. No rail.
-
-**Reduced motion.** Under `prefers-reduced-motion: reduce` every `.vo`
-transition and animation has `duration: 0.01ms`; the chase, pulse and
-scan line are `animation: none` (the bar shows its lit count, or all
-segments at `.5` when indeterminate); the veil cross-fades in 200 ms
-linear.
+**Unsupported** (`unsupported`). The veil stays; the plate reads `3D VIEW UNAVAILABLE`, then the sentence `Viewer3D` sets in `failed`, then **2D map**. No rail. Under `prefers-reduced-motion: reduce` all overlay transitions and animations are off and the veil cross-fades in 200 ms.
 
 ### Name tags
 
@@ -328,52 +155,7 @@ box. The radius runs `0 → reach + band` with `1 - (1 - t)^3`. `band =
 max(1.5, 0.06 × reach)`. The origin is the followed player's position for
 a player opening, else the frame box's centre at its floor.
 
-**Shader.** `patchReveal(vertex, fragment)` runs in `ViewerScene.cutaway`
-after `patchSeeThrough` and reuses its `vSeeWorld` varying (adding the
-varying itself for a material that does not take the see-through: vehicle
-placements). Uniforms, one shared object for the level and one for
-machines and objects:
-
-```glsl
-uniform vec4 uReveal;      // xyz origin (world), w radius; w < 0.0 is off
-uniform float uRevealBand; // width of the edge, world units
-uniform float uRevealCell; // grid cell, world units: the scene's marker scale
-uniform float uRevealHolo; // 0..1, the grid lines' strength
-const vec3 REVEAL_TINT = vec3(0.56, 0.83, 1.0);
-```
-
-After `#include <clipping_planes_fragment>` (derivatives are taken before
-any branch):
-
-```glsl
-vec3 revealQ = vSeeWorld / uRevealCell;
-vec3 revealW = max(fwidth(revealQ), vec3(1e-5));
-vec3 revealN = normalise(cross(dFdx(vSeeWorld), dFdy(vSeeWorld)));
-// A grid axis the surface is perpendicular to draws no lines on it.
-vec3 revealG = abs(fract(revealQ - 0.5) - 0.5) / revealW + step(0.9, abs(revealN)) * 1e3;
-float revealLine = 1.0 - clamp(min(min(revealG.x, revealG.y), revealG.z) - 0.5, 0.0, 1.0);
-float revealK = 1.0;
-if (uReveal.w >= 0.0) {
-  revealK = 1.0 - smoothstep(uReveal.w - uRevealBand, uReveal.w, distance(vSeeWorld, uReveal.xyz));
-  if (revealK <= 0.0 && revealLine * uRevealHolo < 0.5) discard;
-}
-```
-
-Before `#include <dithering_fragment>`:
-
-```glsl
-if (uReveal.w >= 0.0) {
-  vec3 revealHolo = REVEAL_TINT * (0.35 + 0.65 * revealLine) * uRevealHolo;
-  float revealEdge = revealK * (1.0 - revealK) * 4.0;
-  gl_FragColor.rgb = mix(revealHolo, gl_FragColor.rgb, revealK) + REVEAL_TINT * revealEdge * 0.6;
-}
-```
-
-Outside the radius only the grid lines are drawn (the rest is discarded,
-so the level is a see-through lattice); inside it the surface is its
-shaded self; the band between glows. The program's cache key gains
-`|reveal` on every map material from the start, so finishing the reveal
-sets `uReveal.w = -1` and compiles nothing.
+**Shader.** `patchReveal(vertex, fragment)` runs in `ViewerScene.cutaway` after `patchSeeThrough` and reuses its `vSeeWorld` varying. Two uniform objects (one for the level, one for machines and objects) hold the origin and radius (`uReveal`, `w < 0` is off), the band width, the grid cell (the scene's marker scale) and the grid lines' strength. Outside the radius only grid lines are drawn (the rest is discarded, so the level is a see-through lattice); inside it the surface is shaded as usual; the band between glows. Every map material carries `|reveal` in its program key from the start, so finishing the reveal sets `uReveal.w = -1` and compiles nothing.
 
 **The rest of the scene**, driven by `revealAt(ms, reach)` (`reveal.ts`,
 pure), which returns `{ holo, radius, objectsRadius, sky, shadows, done }`:
@@ -401,19 +183,7 @@ change do not replay it. `SceneOptions.reveal` is false for the banner's
 stills (`opts.bare`, `web/banner`) and under `?perf`
 (`web/bench/viewer.bench.ts`): the level is solid in its first frame.
 
-**Cost.** During the reveal: one distance, one `smoothstep` and three
-`fwidth` per level fragment, and no early depth rejection on those
-materials (the see-through's `discard` is already in the same shaders, so
-this is not a new class of cost). After it: one uniform comparison per
-fragment. CPU per frame: two uniform objects written and one distance per
-player.
-
-Memory: none (true wireframe geometry would add an index buffer
-the size of the level's; the grid is computed in the shader instead).
-
-**Reduced motion.** No lattice and no sweep: `uReveal.w` stays `-1`, the
-scene is complete in its first frame, and the veil cross-fades over it in
-200 ms linear. The camera is placed, not moved.
+**Cost.** During the reveal each level fragment does one distance, one `smoothstep` and three `fwidth`, with no early depth rejection (the see-through's `discard` is already in the same shaders). The grid is computed in the shader, so no wireframe index buffer is built. Under reduced motion there is no lattice and no sweep: `uReveal.w` stays `-1`, and the veil cross-fades over the finished scene in 200 ms.
 
 ### Damage and combat effects
 

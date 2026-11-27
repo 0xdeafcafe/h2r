@@ -61,29 +61,7 @@ interface Vitals {
 - `broken`: the shield reached 0 with the player alive. `recharging`: the
   shield is rising. `over`: the shield is above 1.
 
-**On the tag** (`viewer/vitals3d.ts`), under the name, the tag's width (44px at least):
-
-```
- [o Mendoza  BR]          [o Mendoza  BR]  62       [o Mendoza  BR]
- ==============           =====::::-----            --------------
-                          ########:::                ######
-   steady                   in a burst                shield broken
-```
-
-- Shield bar: 3px, `#8fd4ff` on `rgba(0, 0, 0, .6)`. An overshield adds a
-  2px `#9dffb0` bar above it, filled to `min(1, shield - 1)`.
-- Body bar: 2px under the shield bar, shown only when `body < 0.995` or
-  within 3 s of a body drop. `#ffd36b` above half, `#ff8a3d` to a
-  quarter, `#f2452e` under it.
-- **Chip:** on a drop the bar steps to its new value at once and the lost
-  part stays as a `rgba(223, 243, 255, .8)` chip. The chip holds while
-  the burst runs and for 350 ms after, then drains in 250 ms linear. A
-  burst's chips join: the chip's far edge is the value before the burst.
-- **Flare:** the tag's border is `#dff3ff` for 120 ms on each drop.
-- **Break:** the shield bar's track blinks `#f2452e` twice (90 ms on, 90
-  off).
-- With reduced motion the chip is removed at the burst's end without
-  draining, and the break is one 300 ms hold.
+**On the tag** (`viewer/vitals3d.ts`), under the name: a shield bar, an overshield bar above it filled to `min(1, shield - 1)`, and a body bar shown only when `body < 0.995` or within 3 s of a body drop. On a drop the bar steps to its new value at once and the lost part stays as a chip that holds for the burst plus 350 ms, then drains; a burst's chips join. The tag's border flares on each drop and the shield track blinks when it breaks. Reduced motion removes the chip without draining.
 
 **In the world.**
 
@@ -115,14 +93,8 @@ reads the same value.
 **2D maps** (`web/src/map/render.ts`, drawn by `MapCanvas` and
 `ViewMap`).
 
-- Each dot has a 270° ring, open at the bottom: the shield as a 1.5px
-  `#8fd4ff` arc at the dot's radius plus 3px; the body as a 1px arc
-  inside it, only when damaged. The chip is the same arc, paler.
-- A hit draws a 6px wedge on the ring towards the attacker for 450 ms.
-  The attacker-to-victim line follows the 3D rule (focus and kills).
-- A kill keeps the legend's knockout cross.
-- With numbers on, the burst's number sits after the dot's label.
-- Mini maps draw no damage (`MapCanvas`, `props.mini`).
+- Each dot has a 270° ring: the shield as an arc at the dot's radius plus 3px, the body as a thinner arc inside it, only when damaged; the chip is the same arc, paler. A hit draws a wedge towards the attacker for 450 ms; the attacker-to-victim line follows the 3D rule.
+- With numbers on, the burst's number sits after the dot's label. Mini maps draw no damage. The tools row (`.s-map-tools`, `TacticalMap.tsx`) has a **Damage** select.
 - The tools row (`.s-map-tools`, `TacticalMap.tsx`) has a **Damage**
   select with the three values.
 
@@ -178,18 +150,7 @@ hex-cell pattern computed from the fragment's object position, with no
 texture. Spartans' shells are warm (`#ffd98a`), elites' cool (`#8fd4ff`),
 by the frame's `species`.
 
-- *Flare:* opacity `0.9 → 0` over 280 ms with `1 - (1 - t)^2`, brightest
-  on the side facing the attacker (a lobe of `max(0, dot(n, hitDir))^2`).
-  A burst re-arms it at most every 90 ms.
-- *Break:* the flare at 1.6 times the brightness for 120 ms, then 10
-  sparks thrown outwards, living 350 ms. While the shield stays at 0, two
-  sparks every 400 ms at the shoulders.
-- *Recharge:* the shell at 0.35 opacity, shown below a line that rises
-  from the feet to the head as `shield` goes from its low value to full;
-  a 150 ms flash at full.
-- *Overshield:* the shell held at 0.22 opacity in `#9dffb0`, breathing
-  between 0.18 and 0.26 over 1200 ms, for as long as `shield > 1`.
-- Without `body` and `shield` in the frames, no shell is drawn.
+Shield states: a *flare* on each hit, brightest on the attacker's side; a *break* (a brighter flare and sparks, then sparks at the shoulders while the shield stays at 0); *recharge* (a shell revealed from feet to head as `shield` rises); *overshield* (a green shell for as long as `shield > 1`). Without `body` and `shield` in the frames, no shell is drawn.
 
 **Active camouflage.** The frames say nothing of it, and it is not
 guessed. With the new field (below), a camouflaged biped's materials go to
@@ -205,66 +166,15 @@ The point is its last position plus its velocity times the time to the
 later frame, stopped at the first piece of level on that line (the
 raycast `projectiles.ts` uses). A stuck one detonates at its parent.
 
-Three layers, sized by kind (a rocket 1.4 times a grenade):
+Three layers, sized by kind (a rocket 1.4 times a grenade): a camera-facing additive flash, a fireball of hash-eroded quads (14, or 6 at low quality) with a colour ramp from the projectile's `Look.colour`, and a ground shock ring with spark streaks. With a host film, a `blast` effect replaces the derived detonation at the same tick (a derived one within 4 ticks and 2 units of a `blast` is dropped).
 
-1. *Flash:* one camera-facing quad, a radial falloff in the shader,
-   additive, 2.2 units across, 90 ms.
-2. *Fireball:* 14 quads (6 at low quality) thrown 0.4 to 1.1 units,
-   their alpha eroded by a hash-noise threshold that rises with age. The
-   colour ramp is `#fff3c4 → #ff9a2e → #5a1d0a → #2a2a2a` over 550 ms.
-3. *Shock ring:* a ground ring from 0 to 3.5 units in 300 ms, `1 - (1 -
-   t)^3`, opacity `0.7 → 0`, with 10 spark streaks.
+**Plasma and needle impacts.** A `plasma` or `needle` projectile that leaves the frames, by the same extrapolation, draws a splash facing the surface's normal, in the shot's colour. Several needles leaving one parent on the same tick are one burst. A bullet's tracer end gets a puff. With a host film the `terminal` and `impact` effects give the point and direction, and the derived one is dropped.
 
-A plasma grenade's ramp starts from the projectile's `Look.colour` instead
-of the warm white, and so does the fuel rod's: the tint is the one its
-shot is already drawn in. With a host film, a `blast` effect replaces the
-derived detonation at the same tick (the derived one within 4 ticks and 2
-units of a `blast` is dropped).
+**Muzzle flashes, melee and the lunge.** The flash is one quad at the weapon's `muzzle` node, for the shot's tick and two more; tracers, bolts, needles and rockets fly as `projectiles.ts` draws them. A `melee` action draws a swept arc along the player's aim, plus a star and sparks on a `melee` hit within 3 ticks. A melee-kind weapon that moves the player more than 2 units in the 4 ticks around the action draws a streak along the path (when the frame carries `anim`, the animation's state decides instead).
 
-**Plasma and needle impacts.** A `plasma` or `needle` projectile that
-leaves the frames, by the same extrapolation, draws a splash: a 0.5 unit
-disc facing the surface's normal (from the raycast; facing the camera
-when there is no surface), additive, in the shot's colour, 180 ms, with 4
-sparks. Several needles leaving one parent on the same tick are one burst
-instead, in the needle's colour, sized by their count. A bullet's tracer
-end gets 2 sparks and a 120 ms puff.
+**Teleporter use.** A player whose position jumps (further than `SNAP_DISTANCE`, `web/src/state/frames.ts`) from within 1.5 units of a teleporter to within 2.5 units of one its `links` lead to has used it: a column closes at the entrance, a ring opens at the exit and the link's arc (`features3d.ts`) brightens once. A respawn jumps too, but not between a teleporter and its link.
 
-With a host film the `terminal` and
-`impact` effects give the point and the direction, and the derived one is
-dropped as for a blast.
-
-**Muzzle flashes and tracers.** The flash is one quad at the weapon's
-`muzzle` node: a three-bladed star in the shader, in the shot's colour,
-alive for the shot's tick and two more (about 50 ms). Tracers, bolts,
-needles and rockets fly as `projectiles.ts` draws them. No light is added
-to the scene for a flash.
-
-**Melee.** The `melee` action draws a swept arc in front of the player
-along their aim: a quarter ring 0.9 units out, 160 ms. A `melee` hit on
-someone within 3 ticks of it adds a star at the victim's chest and 8
-sparks.
-
-**Sword lunge.** When the action's weapon has the shot kind `melee` and
-the player moves more than 2 units in the 4 ticks around it, the path
-they covered is drawn as a streak in the weapon's colour, fading over 250
-ms. When the frame carries `anim`, the animation's state decides it
-instead of the distance.
-
-**Teleporter use.** A player whose position jumps between two frames
-(further than `SNAP_DISTANCE`, `web/src/state/frames.ts`) from within 1.5
-units of a teleporter to within 2.5 units of one its `links` lead to has
-used it. The entrance draws a column closing to a line over 300 ms, the
-exit a ring opening to 1.2 units with a flash over 350 ms, and the link's
-arc (`features3d.ts`) brightens once along its direction. A respawn jumps
-too, but not between a teleporter and its link.
-
-**Deaths.** No ragdoll: the frames carry no bones, and sending them would
-cost more than everything else in a player's entity put together (see
-[Rules and limits](#rules-and-limits)). A death is the body's `die` clip
-where the model has one (`viewer/bodies.ts`), a white flash on the model
-for 80 ms, the kill confirm ([Damage](#damage))
-and, for a kill whose kind is an explosion, the body's marker ring drawn
-1.5 times its size for the confirm's life.
+**Deaths.** No ragdoll: the frames carry no bones, and sending them would cost more than everything else in a player's entity put together (see [Rules and limits](#rules-and-limits)). A death is the body's `die` clip where the model has one (`viewer/bodies.ts`), a short flash, and the kill confirm ([Damage](#damage)).
 
 ### New telemetry
 
@@ -309,57 +219,13 @@ them.
 - `Effects3D.film` draws the host film's effects through the same pool,
   with the looks above, in place of its spheres.
 
-**Budget.**
+**Budget** (targets; `bun run bench:viewer` measures them, and the result goes in a dated note under `docs/live/notes/`): 1024 live quads, 32 shields and 64 rings and ribbons on `HIGH` (384, 16 and 32 on `LOW`); 0.5 ms CPU per frame with 16 players in a firefight (0.25 ms) and 1.0 ms GPU at 1080p on an integrated GPU (0.4 ms). A full pool reuses its oldest instance; a quad is never larger than 2.5 units and is drawn at half opacity within 3 units of the camera; at most three full-brightness flashes start in any second.
 
-| | High | Low |
-|---|---|---|
-| Live quads | 1024 | 384 |
-| Shields | 32 | 16 |
-| Rings and ribbons | 64 | 32 |
-| Fireball quads per explosion | 14 | 6 |
-| Sparks | as given | halved |
-| CPU per rendered frame, 16 players in a firefight | 0.5 ms | 0.25 ms |
-| GPU at 1080p on an integrated GPU | 1.0 ms | 0.4 ms |
+**The switch.** A **Combat effects** row in the [View menu](viewer-overlay-layers.md#the-overlay): `OFF`, `LOW`, `HIGH` (default; `LOW` under `pointer: coarse`). It is `?fx=` in the address and `h2.viewer.fx` in `localStorage`, and is not the **Show** menu's **Effects** row (the level's own glows and lift plasma). When frames run over 40 ms for two seconds with the ambient occlusion already off, the scene drops to `LOW` and tells the menu, as `onAoDropped` does.
 
-- A pool that is full reuses its oldest instance.
-- A quad is never larger than 2.5 units, and one within 3 units of the
-  camera is drawn at half its opacity, which bounds the overdraw of an
-  explosion in the viewer's face.
-- At most three full-brightness flashes start in any second, across the
-  whole view: later ones start at 0.4 of their brightness.
-- The numbers in the table are targets. The measured ones go in a dated
-  note under `docs/live/notes/` from `bun run bench:viewer`, and this
-  table then links to it.
+**Reduced motion.** Nothing moves, expands or flashes: shield hits are the tag's bar only, states are a still shell, explosions and teleports are still discs and rings, melee and the lunge draw nothing.
 
-**The switch.** The effects pool design adds a **Combat effects** row
-to the [View menu](viewer-overlay-layers.md#the-overlay): `OFF`, `LOW`,
-`HIGH`. `HIGH` is the default, `LOW` under `pointer: coarse`. It is
-`?fx=` in the address and `h2.viewer.fx` in `localStorage`. It is not the
-**Show** menu's **Effects** row, which is the level's own glows and lift
-plasma. When frames run over 40 ms for two seconds with the ambient
-occlusion already off, the scene drops to `LOW` and tells the menu, as
-`onAoDropped` does for the occlusion.
-
-**Reduced motion.** No particle moves, nothing expands and nothing
-flashes:
-
-- a shield hit is the tag's bar and border only;
-- a break, a recharge and an overshield are a still shell at 0.3 opacity
-  for as long as the state lasts;
-- an explosion is a still translucent disc of its final size for 400 ms;
-- an impact is a still dot for 200 ms;
-- a teleport is a still ring at each end for 400 ms;
-- melee and the lunge draw nothing more than the model's own pose;
-- a death is the kill confirm.
-
-**2D maps.** No particles. `drawFx` (`web/src/map/render.ts`) draws, from
-the same `FxWatch` events: a shield flare as a 250 ms pulse of the dot's
-shield ring; a break as the ring in `#f2452e` for 300 ms; an overshield
-as a second ring; an explosion as a circle outline growing to the blast's
-size in map pixels over 300 ms; a teleport as a ring at each end and the
-link's dashed curve brightened once; melee as a short arc ahead of the
-dot. Impacts, muzzle flashes and the lunge are not drawn in 2D: the shot
-lines already there say as much. Mini maps draw none.
+**2D maps.** No particles. `drawFx` (`web/src/map/render.ts`) draws, from the same `FxWatch` events, pulses and rings on the dot (shield flare, break, overshield), an expanding outline for an explosion, rings at both ends of a teleport and a short arc for melee. Impacts, muzzle flashes and the lunge are not drawn in 2D. Mini maps draw none.
 
 ## Interfaces
 
