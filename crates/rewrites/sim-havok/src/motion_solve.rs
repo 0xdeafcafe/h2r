@@ -256,10 +256,32 @@ pub fn accumulate(
     }
     let mut u = Units::new(j, fpu)?;
     let sphere = matches!(class, Sphere | StabilizedSphere);
-    let (force_at, torque_at) = if sphere { (SLOT_C0, SLOT_D0) } else { (SLOT_F0, BOX_TORQUE) };
     let dt_bits = j.get(step).ok_or(Fallback::Memory)?;
     let g = vector(j, gravity).ok_or(Fallback::Memory)?;
     let mut m = Motion { j, at: motion };
+    let (linear, angular) = integrate_forces(&mut u, &mut m, sphere, dt_bits, g)?;
+    let center = m.vector(CENTER)?;
+    let acc = if sphere {
+        let [r0, r1, r2] = identity();
+        let inertia = with_w(splat(m.word(INVERSE_INERTIA)?), m.word(INVERSE_MASS)?);
+        Accumulator { flag: Some(1), vectors: [linear, angular, inertia, center, r0, r1, r2] }
+    } else {
+        let rows = transpose(&m.basis()?);
+        let local = u.sse.rotate(&rows, angular);
+        let [r0, r1, r2] = rows;
+        Accumulator { flag: Some(0), vectors: [linear, local, m.vector(SLOT_E0)?, center, r0, r1, r2] }
+    };
+    u.done()?;
+    Ok(acc)
+}
+
+/// The pending force and torque integrated into the velocities, damped:
+/// the first half of the dynamic types' `vt[+0x0c]` and the whole of their
+/// `vt[+0x08]` (`0x00319cd0` for 2 and 3, `0x0031b1c0` for 4 and 5),
+/// instruction for instruction. Returns the stored velocities.
+fn integrate_forces(u: &mut Units, m: &mut Motion, sphere: bool, dt_bits: u32, g: u128) -> Result<(u128, u128), Fallback> {
+    use field::*;
+    let (force_at, torque_at) = if sphere { (SLOT_C0, SLOT_D0) } else { (SLOT_F0, BOX_TORQUE) };
     let dt = u.ld(dt_bits)?;
     let x = Fx { mode: u.x.mode };
 
@@ -298,20 +320,7 @@ pub fn accumulate(
     let damp = u.damping(dt, m.word(ANGULAR_DAMPING)?)?;
     let angular = u.sse.mul(splat(damp), angular);
     m.put_vector(ANGULAR, angular)?;
-
-    let center = m.vector(CENTER)?;
-    let acc = if sphere {
-        let [r0, r1, r2] = identity();
-        let inertia = with_w(splat(m.word(INVERSE_INERTIA)?), m.word(INVERSE_MASS)?);
-        Accumulator { flag: Some(1), vectors: [linear, angular, inertia, center, r0, r1, r2] }
-    } else {
-        let rows = transpose(&m.basis()?);
-        let local = u.sse.rotate(&rows, angular);
-        let [r0, r1, r2] = rows;
-        Accumulator { flag: Some(0), vectors: [linear, local, m.vector(SLOT_E0)?, center, r0, r1, r2] }
-    };
-    u.done()?;
-    Ok(acc)
+    Ok((linear, angular))
 }
 
 /// `0x0031af90`: a world impulse into the body frame (the basis's rows,
@@ -401,6 +410,90 @@ pub fn export(
     u.done()
 }
 
+/// A motion's unconstrained virtuals, which `0x00316a20` calls for each
+/// entity of an island with no constraint: `vt[+0x08]` (step, gravity;
+/// `ret 8`) integrates the pending forces, `vt[+0x04]` (step; `ret 4`)
+/// the pose. Types 2 and 3 share both targets, as do 4 and 5; the
+/// stabilised types differ only in their solver export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreeClass {
+    /// Types 2 and 3: `0x00319cd0`, `0x00319f70`.
+    Sphere,
+    /// Types 4 and 5: `0x0031b1c0`, `0x0031b060`.
+    Box,
+    /// Type 6: no forces (`0x0024dc50`, `ret 8`), the pose `0x003195d0`.
+    Keyframed,
+    /// Type 7: `0x0024dc50` and `0x00072c70`, both a bare `ret`.
+    Fixed,
+}
+
+pub const SPHERE_FORCES: u32 = 0x0031_9cd0;
+pub const SPHERE_POSE: u32 = 0x0031_9f70;
+pub const BOX_FORCES: u32 = 0x0031_b1c0;
+pub const BOX_POSE: u32 = 0x0031_b060;
+pub const NO_FORCES: u32 = 0x0024_dc50;
+pub const KEYFRAMED_POSE: u32 = 0x0031_95d0;
+pub const NO_POSE: u32 = 0x0007_2c70;
+
+impl FreeClass {
+    pub const ALL: [Self; 4] = [Self::Sphere, Self::Box, Self::Keyframed, Self::Fixed];
+
+    /// The `vt[+0x08]` (forces) and `vt[+0x04]` (pose) targets.
+    pub fn slots(self) -> (u32, u32) {
+        match self {
+            Self::Sphere => (SPHERE_FORCES, SPHERE_POSE),
+            Self::Box => (BOX_FORCES, BOX_POSE),
+            Self::Keyframed => (NO_FORCES, KEYFRAMED_POSE),
+            Self::Fixed => (NO_FORCES, NO_POSE),
+        }
+    }
+
+    pub fn of(forces: u32, pose: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.slots() == (forces, pose))
+    }
+}
+
+/// `vt[+0x08]` of `class`: the dynamic types integrate the pending force
+/// and torque into the velocities (the first half of their `vt[+0x0c]`);
+/// types 6 and 7 write nothing.
+pub fn forces(j: &mut Journal, class: FreeClass, motion: u32, step: u32, gravity: u32, fpu: Fpu) -> Result<(), Fallback> {
+    let sphere = match class {
+        FreeClass::Sphere => true,
+        FreeClass::Box => false,
+        FreeClass::Keyframed | FreeClass::Fixed => return Ok(()),
+    };
+    let mut u = Units::new(j, fpu)?;
+    let dt_bits = j.get(step).ok_or(Fallback::Memory)?;
+    let g = vector(j, gravity).ok_or(Fallback::Memory)?;
+    let mut m = Motion { j, at: motion };
+    integrate_forces(&mut u, &mut m, sphere, dt_bits, g)?;
+    u.done()
+}
+
+/// `vt[+0x04]` of `class`: the dynamic types save the velocities (`+0xe0`,
+/// `+0xf0` for 2 and 3; `+0xc0`, `+0xd0` for 4 and 5) and integrate the
+/// pose, the local centre taken off through the new basis; type 6
+/// integrates the pose through the quaternion; type 7 writes nothing.
+pub fn pose(j: &mut Journal, class: FreeClass, motion: u32, step: u32, fpu: Fpu) -> Result<(), Fallback> {
+    use field::*;
+    let saved = match class {
+        FreeClass::Sphere => Some((SLOT_E0, SLOT_F0)),
+        FreeClass::Box => Some((SLOT_C0, SLOT_D0)),
+        FreeClass::Keyframed => None,
+        FreeClass::Fixed => return Ok(()),
+    };
+    let mut u = Units::new(j, fpu)?;
+    let dt_bits = j.get(step).ok_or(Fallback::Memory)?;
+    let mut m = Motion { j, at: motion };
+    if let Some((linear_at, angular_at)) = saved {
+        let (linear, angular) = (m.vector(LINEAR)?, m.vector(ANGULAR)?);
+        m.put_vector(linear_at, linear)?;
+        m.put_vector(angular_at, angular)?;
+    }
+    integrate(&mut u, &mut m, dt_bits, saved.is_some())?;
+    u.done()
+}
+
 /// The pose step every exporting type shares: the previous centre and its
 /// swept radius, the centre, the orientation (rate, Newton-normalised),
 /// its basis, and the translation, the local centre taken off through the
@@ -440,6 +533,16 @@ fn integrate(u: &mut Units, m: &mut Motion, dt_bits: u32, by_basis: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_free_classes_are_told_apart_by_both_slots() {
+        for c in FreeClass::ALL {
+            let (f, p) = c.slots();
+            assert_eq!(FreeClass::of(f, p), Some(c));
+        }
+        assert_eq!(FreeClass::of(NO_FORCES, SPHERE_POSE), None);
+        assert_eq!(FreeClass::of(BOX_FORCES, SPHERE_POSE), None);
+    }
 
     #[test]
     fn the_transpose_moves_columns_to_rows_with_w_zero() {

@@ -16,6 +16,12 @@
 //! their processes before, cross the threshold and audit on the same
 //! calls. The `status` counts are totals since start and are never reset.
 //!
+//! The island integrate's arm (`0x316a20`) takes over the same way: its
+//! prediction is the whole entry, the island solve or each entity's
+//! unconstrained virtuals, run on a journal (`island_integrate`). Its
+//! declines are also counted by reason
+//! (`sim_havok::island_integrate::fallbacks`, read with `havok.islands`).
+//!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
 //! `0x110` bytes; what retail leaves in `eax`, `ecx`, `edx`, the XMM
@@ -23,7 +29,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, motion};
+use super::{broadphase, island_integrate, motion};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -103,8 +109,9 @@ pub static BROADPHASE: Arm = Arm::new("physics.broadphase");
 pub static MOTION_POSE: Arm = Arm::new("physics.motion.pose");
 pub static MOTION_FORCES: Arm = Arm::new("physics.motion.forces");
 pub static MOPP_BOX: Arm = Arm::new("physics.mopp.box");
+pub static ISLAND_INTEGRATE: Arm = Arm::new("physics.island.integrate");
 
-static ARMS: [&Arm; 4] = [&BROADPHASE, &MOTION_POSE, &MOTION_FORCES, &MOPP_BOX];
+static ARMS: [&Arm; 5] = [&BROADPHASE, &MOTION_POSE, &MOTION_FORCES, &MOPP_BOX, &ISLAND_INTEGRATE];
 
 pub(super) fn declined(arm: &Arm) {
     arm.declined.fetch_add(1, Ordering::Relaxed);
@@ -134,7 +141,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 4] {
+pub fn status() -> [(&'static str, u64, u64, u64); 5] {
     ARMS.map(|a| {
         (
             a.name,
@@ -157,9 +164,9 @@ pub struct Takeover {
 }
 
 /// The take-over state of the arms that answer calls: the broadphase
-/// batch update's.
-pub fn takeover() -> [Takeover; 1] {
-    [BROADPHASE.take_over()]
+/// batch update's and the island integrate's.
+pub fn takeover() -> [Takeover; 2] {
+    [BROADPHASE.take_over(), ISLAND_INTEGRATE.take_over()]
 }
 
 /// At each map load, before the match's first step: every arm proves
@@ -224,6 +231,40 @@ fn enter<P>(
     }
     arm.answered.fetch_add(1, Ordering::Relaxed);
     Step::Answered { target }
+}
+
+/// The island integrate's arm, at its entry: as [`broadphase_enter`]. A
+/// decline is counted by reason as well as on the arm.
+pub fn integrate_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<island_integrate::Prediction> {
+    use sim_havok::{island_integrate as model, island_solve};
+    enter(
+        &ISLAND_INTEGRATE,
+        cpu,
+        guest,
+        |cpu, guest| island_integrate::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            if !p.apply(cpu, guest) {
+                model::count(model::Fallback::Memory);
+                return false;
+            }
+            // The island's solve ran in Rust: `havok.islands` counts it.
+            if p.solved {
+                island_solve::count_solved();
+            }
+            true
+        },
+    )
+}
+
+/// At the guest's return from an audited integrate.
+pub fn integrate_compare(prediction: &island_integrate::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&ISLAND_INTEGRATE, prediction.matches(cpu, guest));
+}
+
+/// An audited integrate whose return could not be observed.
+pub fn integrate_uncompared() {
+    sim_havok::island_integrate::count(sim_havok::island_integrate::Fallback::Unobserved);
+    uncompared(&ISLAND_INTEGRATE);
 }
 
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
@@ -359,8 +400,11 @@ mod tests {
     #[test]
     fn status_and_takeover_name_the_arms_in_table_order() {
         let names = status().map(|(name, ..)| name);
-        assert_eq!(names, ["physics.broadphase", "physics.motion.pose", "physics.motion.forces", "physics.mopp.box"]);
-        assert_eq!(takeover().map(|t| t.name), ["physics.broadphase"]);
+        assert_eq!(
+            names,
+            ["physics.broadphase", "physics.motion.pose", "physics.motion.forces", "physics.mopp.box", "physics.island.integrate"]
+        );
+        assert_eq!(takeover().map(|t| t.name), ["physics.broadphase", "physics.island.integrate"]);
     }
 
     /// The arm's whole life on one synthetic arm: the guest answers below

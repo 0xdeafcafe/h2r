@@ -9,6 +9,7 @@ mod alloc;
 mod colors;
 mod havok;
 mod island_solve;
+pub mod island_integrate;
 mod solver_rows;
 mod solver_pairs;
 pub(crate) mod first_person;
@@ -79,16 +80,23 @@ pub const PORTS: &[Port] = {
     ]
 };
 
+/// The island integrate's frame replay: the guest's answer whenever the
+/// integrate arm (`parity::integrate_enter`) does not answer the call
+/// itself. Installed by the arm's implementation, not with
+/// [`PHYSICS_PORTS`], because both share the entry.
+pub const ISLAND_INTEGRATE: Port =
+    port(&points::HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island);
+
 /// The Havok world entries under `impl.sim.native.physics` phase 5
-/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper, the island
-/// collide and the island integrate. The world phases between them stay
-/// guest code and drive these entries through the dispatcher.
+/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper and the
+/// island collide, which replay the retail frame, and the leaves below.
+/// The world phases between them stay guest code and drive these entries
+/// through the dispatcher. The island integrate is [`ISLAND_INTEGRATE`].
 pub const PHYSICS_PORTS: &[Port] = {
     use points::*;
     &[
         port(&HAVOK_WORLD_STEP, "sim.native.physics", Controls::World, world::WORLD_SITES, world::step),
         port(&HAVOK_ISLAND_COLLIDE, "sim.native.physics", Controls::World, world::ISLAND_SITES, world::collide_island),
-        port(&HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island),
         // The island solve: no guest call inside; an island the model does
         // not cover runs the lifted entry and is counted
         // (`sim_havok::island_solve::fallbacks`).
@@ -193,7 +201,7 @@ fn call_arg(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, arg: u32, ta
 // A mapping can be an alias of another range of guest virtual addresses.
 // A bulk copy or a deferred store needs disjoint *physical* spans. Fall
 // back to ordered accesses for ranges that cross a mapping boundary.
-fn physical_span(g: &Guest, addr: u32, len: u32) -> Option<std::ops::Range<u32>> {
+pub(crate) fn physical_span(g: &Guest, addr: u32, len: u32) -> Option<std::ops::Range<u32>> {
     let maps = g.mappings();
     let end = maps.partition_point(|m| m.virtual_start <= addr);
     let mapping = maps.get(end.checked_sub(1)?)?;

@@ -8,13 +8,14 @@ pub struct NativePhysics;
 
 /// `impl.sim.native.physics`: the Havok world step, phase 5 of the
 /// simulation rewrite (docs/engine/sim-rewrite-havok.md). The step
-/// wrapper, the island collide and the island integrate replay the retail
-/// frame at their resume sites, the world phases and every leaf between
-/// them stay guest code, and the kernels they absorb run as capture arms
-/// (`engine::sim_physics::parity`): the broadphase batch update answers
-/// calls itself once proven, with one call in `AUDIT_EVERY` still
-/// compared with the guest; the two unconstrained-motion methods and the
-/// integer MOPP box query are compared with the guest at every call.
+/// wrapper and the island collide replay the retail frame at their resume
+/// sites, the world phases and most leaves between them stay guest code,
+/// and the kernels they absorb run as capture arms
+/// (`engine::sim_physics::parity`): the broadphase batch update and the
+/// island integrate answer calls themselves once proven, with one call in
+/// `AUDIT_EVERY` still compared with the guest (the integrate's guest
+/// answer is its frame replay); the two unconstrained-motion methods and
+/// the integer MOPP box query are compared with the guest at every call.
 /// Retires the per-function `native_havok_solver`,
 /// `native_havok_support_vertices`, `native_havok_weld` and
 /// `native_mopp_box` switches.
@@ -90,6 +91,19 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, resume: bool) -> Resul
     Ok(handler.invoke(cpu, ctx, selector))
 }
 
+/// A world entry's frame replay when its model takes the state, else the
+/// original.
+fn replay(port: &'static engine::sim_physics::Port, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, GuestFault> {
+    let resume = pc != port.point.base && port.resumes.contains(&pc);
+    if pc == port.point.base || resume {
+        let mut mem = ctx.memory();
+        if engine::sim_physics::supported(port, cpu, &mem) {
+            return port.invoke(cpu, &mut mem, pc);
+        }
+    }
+    original(cpu, ctx, pc, resume)
+}
+
 /// The map load each arm's take-over proof restarts at.
 const MAP_LOAD: &points::Point = &points::CACHE_TAGS_LOAD;
 
@@ -97,21 +111,43 @@ fn install_physics(b: &mut Builder) {
     use engine::sim_physics::parity::{self, Step};
     for port in engine::sim_physics::PHYSICS_PORTS {
         b.raw()
-            .implement(port.point, PHYSICS, move |cpu, ctx, pc| {
-                let resume = pc != port.point.base && port.resumes.contains(&pc);
-                if pc == port.point.base || resume {
-                    let mut mem = ctx.memory();
-                    if engine::sim_physics::supported(port, cpu, &mem) {
-                        return port.invoke(cpu, &mut mem, pc);
-                    }
-                }
-                original(cpu, ctx, pc, resume)
-            })
+            .implement(port.point, PHYSICS, move |cpu, ctx, pc| replay(port, cpu, ctx, pc))
             .resumes(port.resumes)
             .context_only()
             .after_feature("sim-observer-resources")
             .after_feature("sim-submix");
     }
+    // The island integrate: `parity::integrate_enter` decides who answers,
+    // as for the broadphase batch below. When the guest answers, the
+    // entry's frame replay runs it, its resume sites with it. Ordered as
+    // the other world entries.
+    let integrate = &engine::sim_physics::ISLAND_INTEGRATE;
+    b.raw()
+        .implement(integrate.point, PHYSICS, move |cpu, ctx, pc| {
+            if pc == integrate.point.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::integrate_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::island_integrate::ARGS, move |c, ctx| {
+                            parity::integrate_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::integrate_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            replay(integrate, cpu, ctx, pc)
+        })
+        .resumes(integrate.resumes)
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
     // The broadphase batch update: `parity::broadphase_enter` decides who
     // answers. Until the arm is proven since the map load, and at every
     // audit slot after, the guest answers and the prediction is compared
@@ -234,7 +270,7 @@ mod tests {
         for port in PORTS {
             assert!(!plan.chains.contains_key(&port.point.base), "{} installed", port.switch);
         }
-        for port in PHYSICS_PORTS {
+        for port in PHYSICS_PORTS.iter().chain([&engine::sim_physics::ISLAND_INTEGRATE]) {
             let chain = &plan.chains[&port.point.base];
             let hook = chain.implement.as_ref().unwrap();
             assert_eq!(hook.label, PHYSICS);
@@ -261,7 +297,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 5,
+            PHYSICS_PORTS.len() + 6,
             "unexpected extra chains"
         );
     }

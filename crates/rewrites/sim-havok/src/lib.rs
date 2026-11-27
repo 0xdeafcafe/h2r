@@ -4,6 +4,7 @@
 pub mod array;
 pub mod broadphase;
 pub mod fp;
+pub mod island_integrate;
 pub mod island_solve;
 pub mod jacobian;
 pub mod joint;

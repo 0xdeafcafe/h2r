@@ -1161,3 +1161,320 @@ fn joint_islands_match_the_lifted_entry() {
     }
     assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
 }
+
+// ---- the island integrate `0x00316a20` -------------------------------------
+
+use engine::sim_physics::island_integrate as arm;
+use engine::sim_physics::parity::{self, Step};
+use sim_havok::island_integrate::{self as integrate, Fallback as Decline};
+use sim_havok::motion_solve::FreeClass;
+
+const INTEGRATE: u32 = 0x0031_6a20;
+/// The world's step input: `{dt, 1/dt}` at `+0x10`, the solver's
+/// parameters at `+0x20`, the pair words at `+0x50`.
+const INPUT: u32 = WORLD + 0x140;
+
+fn integrate_code(image: &Image) -> lifted::Original {
+    let mut code = original(image);
+    let free = FreeClass::ALL.into_iter().flat_map(|c| <[u32; 2]>::from(c.slots()));
+    for f in std::iter::once(INTEGRATE).chain(free) {
+        code.prime(f);
+    }
+    code
+}
+
+/// The unconstrained virtuals of a solver class's motion type.
+fn free_class(class: SolverClass) -> FreeClass {
+    match class {
+        SolverClass::Sphere | SolverClass::StabilizedSphere => FreeClass::Sphere,
+        SolverClass::Box | SolverClass::StabilizedBox => FreeClass::Box,
+        SolverClass::Keyframed => FreeClass::Keyframed,
+        SolverClass::Fixed => FreeClass::Fixed,
+    }
+}
+
+/// Run a `thiscall` on `this` with `args` on the stack, under `fpu`.
+fn run_this(code: &mut lifted::Original, mem: &mut FlatMemory, eip: u32, this: u32, args: &[u32], fpu: Fpu) -> runtime::CpuAbi {
+    for (i, v) in std::iter::once(EXIT).chain(args.iter().copied()).enumerate() {
+        word(mem, STACK + 4 * i as u32, v);
+    }
+    let mut cpu = Cpu { gpr: [0, this, 0, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip, ..Cpu::default() };
+    cpu.mxcsr = fpu.mxcsr;
+    cpu.x87.control = fpu.control;
+    run(code, &mut cpu, mem);
+    abi_cpu(&cpu)
+}
+
+fn apply(m: &mut FlatMemory, j: Journal) {
+    for (a, v) in j.finish() {
+        word(m, a, v);
+    }
+}
+
+/// Each class's `vt[+0x08]` (forces) and `vt[+0x04]` (pose), one at a
+/// time: the motion equals the lifted virtual's, byte for byte, under
+/// every rounding mode.
+#[test]
+fn the_unconstrained_motion_virtuals_match_the_lifted_virtuals() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = integrate_code(image);
+    for seed in 0..512u64 {
+        let class = FreeClass::ALL[seed as usize % 4];
+        let pose = seed / 4 % 2 == 1;
+        let mut r = Rng(0x0f2e_0000 + seed);
+        let mut mem = base.clone();
+        seed_motion(&mut r, &mut mem, MOTION);
+        seed_world(&mut r, &mut mem);
+        let fpu = fpu(seed / 8);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let (forces_at, pose_at) = class.slots();
+        let (eip, args): (u32, &[u32]) = if pose {
+            motion_solve::pose(&mut j, class, MOTION, STEP, fpu)
+                .unwrap_or_else(|f| panic!("seed {seed} {class:?}: pose declined {f:?}"));
+            (pose_at, &[STEP])
+        } else {
+            motion_solve::forces(&mut j, class, MOTION, STEP, GRAVITY, fpu)
+                .unwrap_or_else(|f| panic!("seed {seed} {class:?}: forces declined {f:?}"));
+            (forces_at, &[STEP, GRAVITY])
+        };
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let after = run_this(&mut code, &mut mem, eip, MOTION, args, fpu);
+        assert_eq!(after.esp, STACK + 4 + 4 * args.len() as u32, "seed {seed} {class:?}: ret");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+        for (i, v) in std::iter::once(EXIT).chain(args.iter().copied()).enumerate() {
+            word(&mut expected, STACK + 4 * i as u32, v);
+        }
+        clear_dead_stack([&mut mem, &mut expected]);
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {class:?} pose {pose} {fpu:x?}: first different byte");
+    }
+}
+
+/// The island words the integrate reads, over the arrays `island()` lays.
+fn integrate_words(m: &mut FlatMemory, entities: u32, constraints: u32) {
+    for (off, v) in [
+        (integrate::ISLAND_WORLD, WORLD),
+        (integrate::ISLAND_ENTITIES, ENTITIES),
+        (integrate::ISLAND_ENTITY_COUNT, entities),
+        (integrate::ISLAND_ACTIONS, 0x0061_7f00),
+        (integrate::ISLAND_ACTION_COUNT, 0),
+        (integrate::ISLAND_CONSTRAINTS, CONSTRAINTS),
+        (integrate::ISLAND_CONSTRAINT_COUNT, constraints),
+    ] {
+        word(m, ISLAND + off, v);
+    }
+}
+
+/// Vtables for every solver class at `VTABLES + 0x200`, with both the
+/// solver slots and the unconstrained ones, and the fixed one `island()`
+/// lays at `VTABLES`.
+fn motion_vtables(m: &mut FlatMemory) {
+    for (k, class) in SolverClass::ALL.into_iter().enumerate() {
+        let vt = VTABLES + 0x200 + 0x40 * k as u32;
+        let (accumulate, export) = class.slots();
+        let (forces, pose) = free_class(class).slots();
+        for (slot, f) in [
+            (island::MOTION_ACCUMULATE_SLOT, accumulate),
+            (island::MOTION_EXPORT_SLOT, export),
+            (integrate::MOTION_FORCES_SLOT, forces),
+            (integrate::MOTION_POSE_SLOT, pose),
+        ] {
+            word(m, vt + slot, f);
+        }
+    }
+    let (forces, pose) = FreeClass::Fixed.slots();
+    word(m, VTABLES + integrate::MOTION_FORCES_SLOT, forces);
+    word(m, VTABLES + integrate::MOTION_POSE_SLOT, pose);
+}
+
+/// An island of `entities` motions of random classes and no constraint.
+fn free_island(r: &mut Rng, mem: &mut FlatMemory, entities: u32) {
+    island(r, mem, entities, 0, BUILD_STUB, BUFFER_BYTES);
+    seed_world(r, mem);
+    motion_vtables(mem);
+    for i in 0..entities {
+        let at = MOTION + 0x200 * i;
+        seed_motion(r, mem, at);
+        word(mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
+    }
+    integrate_words(mem, entities, 0);
+}
+
+/// Run the lifted integrate on `ISLAND` and check its frame: `ret 4`, ecx
+/// and the callee-saved registers as on entry.
+fn run_integrate(code: &mut lifted::Original, mem: &mut FlatMemory, fpu: Fpu, why: &str) {
+    let after = run_this(code, mem, INTEGRATE, ISLAND, &[INPUT], fpu);
+    assert_eq!(after.esp, STACK + 8, "{why}: ret 4");
+    assert_eq!((after.ecx, after.ebx, after.ebp, after.esi, after.edi), (ISLAND, 0x1111, 0x2222, 0x3333, 0x4444), "{why}");
+}
+
+fn clear_scratch(ms: [&mut FlatMemory; 2]) {
+    for m in ms {
+        m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+        m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+    }
+}
+
+/// Islands with no constraint, one to five bodies of every motion type:
+/// each entity's forces and pose, last to first. Memory outside the dead
+/// stack equals the lifted entry's.
+#[test]
+fn unconstrained_islands_match_the_lifted_integrate() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = integrate_code(image);
+    for seed in 0..256u64 {
+        let mut r = Rng(0x16a2_0000 + seed);
+        let entities = r.below(6);
+        let mut mem = base.clone();
+        free_island(&mut r, &mut mem, entities);
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, INPUT);
+        let fpu = fpu(seed);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let out = integrate::integrate(&mut j, ISLAND, INPUT, fpu).unwrap_or_else(|f| panic!("seed {seed}: declined {f:?}"));
+        assert!(!out.solved);
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} ({entities} bodies) {fpu:x?}");
+        run_integrate(&mut code, &mut mem, fpu, &why);
+        clear_scratch([&mut mem, &mut expected]);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+}
+
+/// Islands of every motion type joined by contacts: the integrate passes
+/// the solve its nine arguments, and memory outside the solver buffer and
+/// the dead stack equals the lifted entry's.
+#[test]
+fn contact_islands_match_the_lifted_integrate() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = integrate_code(image);
+    let (mut solved, mut declined) = (0, 0);
+    for seed in 0..192u64 {
+        let mut r = Rng(0x16a3_0000 + seed);
+        let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
+        let mut mem = base.clone();
+        contact_island(&mut r, &mut mem, entities, constraints);
+        motion_vtables(&mut mem);
+        integrate_words(&mut mem, entities, constraints);
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, INPUT);
+        let fpu = fpu(seed);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        match integrate::integrate(&mut j, ISLAND, INPUT, fpu) {
+            Ok(out) => assert!(out.solved),
+            Err(reason) => {
+                assert_eq!(reason, Decline::Solve, "seed {seed}");
+                declined += 1;
+                continue;
+            }
+        }
+        solved += 1;
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let why = format!("seed {seed} {fpu:x?}");
+        run_integrate(&mut code, &mut mem, fpu, &why);
+        clear_scratch([&mut mem, &mut expected]);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+    }
+    assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
+}
+
+fn integrate_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ecx: ISLAND, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+/// The arm end to end on islands of both paths: an audited call's
+/// prediction matches the lifted answer, and an applied prediction leaves
+/// memory and the registers as the lifted entry does.
+#[test]
+fn the_integrate_arm_answers_as_the_lifted_entry() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = integrate_code(image);
+    for seed in 0..32u64 {
+        let mut r = Rng(0x16a4_0000 + seed);
+        let mut mem = base.clone();
+        if seed % 2 == 0 {
+            let entities = 1 + r.below(4);
+            free_island(&mut r, &mut mem, entities);
+        } else {
+            let (entities, constraints) = (2, 1 + r.below(2));
+            contact_island(&mut r, &mut mem, entities, constraints);
+            motion_vtables(&mut mem);
+            integrate_words(&mut mem, entities, constraints);
+        }
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, INPUT);
+        // The arm's environment: nearest x87 rounding, any SSE rounding.
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f };
+        let cpu = integrate_cpu(fpu);
+        let g = guest(&mem);
+        let prediction = match arm::capture(&cpu, &g) {
+            Ok(p) => p,
+            Err(reason) => {
+                assert_eq!(reason, Decline::Solve, "seed {seed}");
+                continue;
+            }
+        };
+        let mut lifted = mem.clone();
+        run_integrate(&mut code, &mut lifted, fpu, &format!("seed {seed}"));
+        let mut answered = cpu;
+        answered.esp = STACK + 8;
+        assert!(prediction.matches(&answered, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        assert_eq!((regs.esp, regs.ecx, regs.ebx, regs.ebp, regs.esi, regs.edi), (STACK + 8, ISLAND, 0x1111, 0x2222, 0x3333, 0x4444));
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_scratch([&mut lifted, &mut model]);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+    }
+}
+
+/// An island with an action, one with a motion whose unconstrained slots
+/// are unported, one whose solve declines and one under the monitor
+/// stream: the arm declines with nothing written and counts each reason.
+#[test]
+fn integrates_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(Decline, fn(&mut FlatMemory)); 4] = [
+        (Decline::Action, |m| word(m, ISLAND + integrate::ISLAND_ACTION_COUNT, 1)),
+        (Decline::Motion, |m| word(m, VTABLES + 0x200 + integrate::MOTION_POSE_SLOT, 0x0012_3456)),
+        (Decline::Solve, |m| {
+            word(m, ISLAND + integrate::ISLAND_CONSTRAINT_COUNT, 1);
+            word(m, island::TABLES_READY & !3, 0);
+        }),
+        (Decline::Monitor, |m| word(m, MONITOR_END, 0x0060_0900)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec1_0000 + reason as u64);
+        let mut mem = base.clone();
+        free_island(&mut r, &mut mem, 3);
+        for i in 0..3 {
+            word(&mut mem, MOTION + 0x200 * i, VTABLES + 0x200);
+        }
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, INPUT);
+        spoil(&mut mem);
+        let mut cpu = integrate_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        let mut g = guest(&mem);
+        let index = Decline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = integrate::fallbacks()[index].1;
+        let declined = parity::status()[4].3;
+        assert!(matches!(parity::integrate_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(integrate::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[4].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}
