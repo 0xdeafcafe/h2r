@@ -466,7 +466,8 @@ Reading and converting Halo 1 data:
 - [live-api-theater-stats.md](live/live-api-theater-stats.md): theater, stats, medals and clanker training
 - [live-api-sessions.md](live/live-api-sessions.md): sessions, invites, sign-ins and hosts
 - [live-api-social.md](live/live-api-social.md): friends, teams, moderation, saves and the co-op relay
-- [live-api-content.md](live/live-api-content.md): custom maps, rules scripts and game variants
+- [live-api-content.md](live/live-api-content.md): custom maps and packages
+- [live-api-rules.md](live/live-api-rules.md): rules scripts and game variants
 - [live-api-details.md](live/live-api-details.md): game art, clarifications, account details, ranks and arbitration
 - [live-security.md](live/live-security.md): identity, signing, token checks, recovery, rate limits and the federation design
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules

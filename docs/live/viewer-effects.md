@@ -302,6 +302,6 @@ them.
 
 - [viewer-overlay.md](viewer-overlay.md): the opening camera, the
   overlay, the reveal and the damage presentation these effects sit in.
-- [web-viewer.md](web-viewer.md): the viewer as built.
+- [web-viewer.md](web-viewer.md): the viewer.
 - [live-telemetry.md](live-telemetry.md): the frames and the hooks.
 - [replay-fidelity.md](replay-fidelity.md): recording and playback.

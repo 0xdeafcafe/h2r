@@ -16,7 +16,7 @@ form, used by `/v1/events` and the stream:
 `data`, `type`, `stream` and `at` are copies of what the JWS signs, for
 convenience; a verifying reader uses the JWS (security §2).
 
-Event types so far (payload fields):
+Event types (payload fields):
 
 | stream | type | data |
 |---|---|---|
