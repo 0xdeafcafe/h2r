@@ -411,7 +411,7 @@ pub(crate) fn below(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Less
 }
 
-fn above(a: F80, b: F80) -> bool {
+pub(crate) fn above(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Greater
 }
 

@@ -801,15 +801,29 @@ fn dynamic_contact_islands_match_the_lifted_entry() {
 use sim_havok::joint::Joint;
 
 /// A joint at `c` between entities A and B: random pivots and axes in the
-/// bodies' frames, a rest length at `+0x40`, and each body's transform
+/// bodies' frames, limits, friction (zero or not, to reach each branch), a
+/// last angle within a turn or two, and each body's transform
 /// (`motion+0x80`).
 fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
     word(m, c + island::CONSTRAINT_ENTITY_A, ENTITY);
     word(m, c + island::CONSTRAINT_ENTITY_B, ENTITY + 0x100);
-    for off in (0x20..0x90).step_by(4) {
+    for off in (0x20..0xf0).step_by(4) {
         word(m, c + off, bits(r, -1.0, 1.0));
     }
     word(m, c + 0x40, bits(r, 0.0, 2.0));
+    // Friction: limited hinge `+0xd0`, ragdoll `+0x94`, prismatic `+0xa8`.
+    for off in [0xd0, 0x94, 0xa8] {
+        let f = if r.below(3) == 0 { 0.0 } else { float(r, -0.2, 1.0) };
+        word(m, c + off, f.to_bits());
+    }
+    word(m, c + 0xd4, bits(r, -9.0, 9.0));
+    // Sometimes the ragdoll's twist axes coincide, so a cone is skipped.
+    if r.below(4) == 0 {
+        for i in 0..4 {
+            let v = m.read_u32(c + 0x40 + 4 * i).unwrap();
+            word(m, c + 0x70 + 4 * i, v);
+        }
+    }
     for i in 0..2 {
         let (entity, motion) = (ENTITY + 0x100 * i, MOTION + 0x200 * i);
         word(m, entity + island::ENTITY_MOTION, motion);
@@ -827,7 +841,7 @@ fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
 fn the_joint_builders_match_the_lifted_builders() {
     let Some((image, base)) = ram() else { return };
     let mut code = original(image);
-    for seed in 0..384u64 {
+    for seed in 0..768u64 {
         let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
         let mut r = Rng(0x101e_0000 + seed);
         let mut mem = base.clone();
@@ -849,10 +863,11 @@ fn the_joint_builders_match_the_lifted_builders() {
         word(&mut mem, pairs, acc_a);
         word(&mut mem, pairs + 4, acc_b);
         pair_scales(&mut r, &mut mem, pairs);
+        word(&mut mem, pairs + 8, bits(&mut r, 0.0, 1.0));
         let (rows, schemas) = (BUFFER + 0x1000, BUFFER + 0x4000);
         word(&mut mem, CURSOR, rows);
         word(&mut mem, CURSOR + 4, schemas);
-        let fpu = fpu(seed / 3);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
 
         let before = mem.clone();
         let view = Flat(&before);
@@ -903,7 +918,7 @@ fn joint_islands_match_the_lifted_entry() {
     let Some((image, base)) = ram() else { return };
     let mut code = original(image);
     let (mut solved, mut declined) = (0, 0);
-    for seed in 0..192u64 {
+    for seed in 0..384u64 {
         let mut r = Rng(0x101f_0000 + seed);
         let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
         let mut mem = base.clone();
@@ -926,19 +941,20 @@ fn joint_islands_match_the_lifted_entry() {
         let builder = mem.read_u32(CONSTRAINT).unwrap();
         seed_joint(&mut r, &mut mem, CONSTRAINT);
         word(&mut mem, CONSTRAINT, builder);
-        let rows = match joint { Joint::BallSocket => 0x90, Joint::Hinge => 0xd0, Joint::StiffSpring => 0x30 };
-        let count = match joint { Joint::BallSocket => 3, Joint::Hinge => 5, Joint::StiffSpring => 1 };
-        for (off, v) in [(0x08u32, rows), (0x0c, rows), (0x10, 0x18 + 4 * count), (0x18, count)] {
+        // Room for the largest joint (prismatic and ragdoll: 0x150 bytes,
+        // nine rows, 0x5c bytes of schemas).
+        for (off, v) in [(0x08u32, 0x180), (0x0c, 0x180), (0x10, 0x80), (0x18, 12)] {
             word(&mut mem, ISLAND + off, v);
         }
         pair_scales(&mut r, &mut mem, args.pairs);
+        word(&mut mem, args.pairs + 8, bits(&mut r, 0.0, 1.0));
         let info = args.info;
         for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
             word(&mut mem, info + off, bits(&mut r, lo, hi));
         }
         word(&mut mem, info + 0x1c, 1 + r.below(3));
         push_args(&mut mem, &args);
-        let fpu = fpu(seed / 3);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
 
         let before = mem.clone();
         let view = Flat(&before);
