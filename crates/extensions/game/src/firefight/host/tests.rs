@@ -1943,6 +1943,7 @@ fn flood_drop(slot: u8) -> Command {
         zone: 0,
         weapon_tier: 2,
         arrival: Arrival::Pod,
+        ship: ShipKind::Phantom,
     }
 }
 

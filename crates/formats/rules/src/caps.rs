@@ -374,7 +374,7 @@ pub mod id {
     pub const PODS_FREE: u16 = 144;
     pub const POD_CLASS: u16 = 145;
     pub const POD_FLOOD: u16 = 146;
-    pub const SQUAD_SHIP: u16 = 148;
+    pub const SQUAD_SHIP: u16 = 147;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -746,8 +746,8 @@ pub const ENTRIES: &[Entry] = &[
     // `firefight::Arrival::number`.
     read(id::ZONE_FALL, "zone_fall", &[Int], Bool, Named),
     read(id::PODS_FREE, "pods_free", &[Class], Int, Named),
-    read(id::POD_FLOOD, "pod_flood", &[Class], Bool, Named),
     read(id::POD_CLASS, "pod_class", &[Class], Bool, Named),
+    read(id::POD_FLOOD, "pod_flood", &[Class], Bool, Named),
     read(id::SQUAD_SHIP, "squad_ship", &[Class], Int, Named),
 ];
 
