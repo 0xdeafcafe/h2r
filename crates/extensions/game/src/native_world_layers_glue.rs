@@ -40,7 +40,7 @@ pub struct DrawContext {
 
 thread_local! {
     static POOL: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
-    static SKY: RefCell<Option<Result<SkyItem, Refusal>>> = const { RefCell::new(None) };
+    static SKY: RefCell<Option<SkyIssue>> = const { RefCell::new(None) };
     static DRAW: Cell<Option<DrawContext>> = const { Cell::new(None) };
 }
 
@@ -117,7 +117,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                     pool = render_bridge::native_transparents::pool_issue(&mem, cpu.esp);
                     let return_address = mem.read_u32(cpu.esp)?;
                     let layer = if return_address == SKY_INDEXED_RETURN {
-                        sky = Some(SkyItem::read(&mem, cpu.esp, cpu.ebp));
+                        sky = Some(SkyIssue::read(&guest, &mem, cpu.esp, cpu.ebp));
                         Layer {
                             number: 15,
                             view: mem.read_u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX),
@@ -213,7 +213,27 @@ pub(crate) fn with_pool_issue<R>(issue: (u32, u32), f: impl FnOnce() -> R) -> R 
     f()
 }
 
-struct RestoreSky(Option<Result<SkyItem, Refusal>>);
+/// The sky strip at its issue: the item extracted, and its material's
+/// layer-15 pass evaluated from the plan (`native_sky_glue::evaluate`),
+/// which the strip's pass draws with.
+pub(crate) struct SkyIssue {
+    pub item: Result<SkyItem, Refusal>,
+    pub constants: Result<native_render::sky_material::SkyConstants, &'static str>,
+}
+
+impl SkyIssue {
+    fn read(guest: &runtime::Guest, mem: &Memory<'_>, esp: u32, pass: u32) -> Self {
+        let item = SkyItem::read(mem, esp, pass);
+        let constants = match &item {
+            Ok(item) => crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
+            // Not asked: the item's refusal is the strip's cause.
+            Err(_) => Err("extraction"),
+        };
+        Self { item, constants }
+    }
+}
+
+struct RestoreSky(Option<SkyIssue>);
 
 impl Drop for RestoreSky {
     fn drop(&mut self) {
@@ -225,7 +245,7 @@ impl Drop for RestoreSky {
 }
 
 /// Consume the item captured for this issue, only after checking its draw context.
-pub(crate) fn take_sky() -> Option<Result<SkyItem, Refusal>> {
+pub(crate) fn take_sky() -> Option<SkyIssue> {
     SKY.take()
 }
 

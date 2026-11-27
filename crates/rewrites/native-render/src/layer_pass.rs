@@ -985,7 +985,7 @@ pub(crate) mod tests {
         Library { material, instance: Instance::default(), asked: Vec::new() }
     }
 
-    fn own_inputs() -> EngineInputs {
+    pub(crate) fn own_inputs() -> EngineInputs {
         let mut i = EngineInputs::default();
         i.ints[4] = 2;
         i.scalars[21] = 0.5;

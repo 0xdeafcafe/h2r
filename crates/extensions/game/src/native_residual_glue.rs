@@ -69,10 +69,12 @@ impl d3d::DrawAdmission for ResidualDraws {
         if (call.layer.site, call.layer.number) != (Site::Sky, 15) {
             return None;
         }
-        let item = crate::native_world_layers_glue::take_sky()?;
+        let issue = crate::native_world_layers_glue::take_sky()?;
+        let constants = issue.constants;
         let plan = native_sky::admit(
-            item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
-            |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item),
+            issue.item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
+            // The plan's evaluated material, or the cause it has none.
+            |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item, constants?),
         );
         let (stage, pass) = match plan {
             Ok(pass) => {

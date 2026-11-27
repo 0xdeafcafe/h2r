@@ -761,6 +761,7 @@ fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
 fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
     use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
     use native_render::program::MODEL_ROWS;
+    use native_render::sky_material::SkyConstants;
     use scene_extract::layout::sky::SkyItem;
 
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -793,10 +794,10 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
         };
         let mut unmarked = draw.clone();
         unmarked.state.render.stencil.enable = false;
-        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone()).err(), Some("stencil"));
+        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone(), SkyConstants::default()).err(), Some("stencil"));
         backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
         assert!(after_compile(|| {
-            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone()).unwrap();
+            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone(), SkyConstants::default()).unwrap();
             assert!(pass.replays_scene());
             record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
         }));
@@ -815,13 +816,16 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
 }
 
 /// A sky strip draws with its own cull mode, and each strip the stage
-/// refuses names its cause (`scene_kept_sky_<cause>`). No GPU: admission
-/// reads the resolved draw only.
+/// refuses names its cause (`scene_kept_sky_<cause>`), `constants` for a
+/// bound register the plan's evaluated material does not hold. No GPU:
+/// admission reads the resolved draw only.
 #[test]
 fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
     use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
     use native_render::program::MODEL_ROWS;
+    use native_render::sky_material::SkyConstants;
     use scene_extract::layout::sky::SkyItem;
+    use tags::material::{Origin, Register};
 
     let cache = Arc::new(Cache::default());
     let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
@@ -829,8 +833,14 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
     draw.state.render.stencil = structure_stencil(STENCIL_MARK_REFERENCE);
     let rows = vec![[0.5; 4]; 3];
     Arc::make_mut(&mut draw.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
+    Arc::make_mut(&mut draw.shader.constants)[30] = [0.25; 4];
+    Arc::make_mut(&mut draw.shader.combiner_state)[10] = 0x1122_3344;
     let item = SkyItem { model: 3, section: 1, part: 0, shader: 5, pass: 0, rows, decompression: [[0.0; 4]; 3] };
-    let admit = |draw: &ResolvedDraw| IndexedPass::for_sky(draw, cache.clone(), 1, 9, item.clone()).err();
+    let material = SkyConstants {
+        vertex: vec![Register { index: 30, value: [0.25; 4], written: 0xf, origin: Origin::Instance }],
+        pixel: vec![(0, 0, 0x1122_3344)],
+    };
+    let admit = |draw: &ResolvedDraw| IndexedPass::for_sky(draw, cache.clone(), 1, 9, item.clone(), material.clone()).err();
     assert_eq!(admit(&draw), None, "an unculled strip");
     for (cull, name) in [(CullMode::Cw, "cw"), (CullMode::Ccw, "ccw")] {
         let mut culled = draw.clone();
@@ -846,6 +856,16 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
     cases.push(("transform", {
         let mut d = draw.clone();
         Arc::make_mut(&mut d.shader.constants)[MODEL_ROWS] = [9.0; 4];
+        d
+    }));
+    cases.push(("constants", {
+        let mut d = draw.clone();
+        Arc::make_mut(&mut d.shader.constants)[30] = [0.5; 4];
+        d
+    }));
+    cases.push(("constants", {
+        let mut d = draw.clone();
+        Arc::make_mut(&mut d.shader.combiner_state)[10] = 0x1122_3345;
         d
     }));
     cases.push(("decompression", {

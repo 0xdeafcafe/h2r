@@ -16,6 +16,7 @@ pub(super) enum StageReady {
     Water(Arc<WaterData>, StagePalettes, Box<WaterSet>),
     Layers(Arc<LayersView>, StagePalettes, Vec<(u8, FogSet)>),
     Decorators(Arc<DecoratorLooks>),
+    Sky(Arc<crate::native_sky_glue::SkyMaterials>),
 }
 
 #[derive(Default)]
@@ -97,6 +98,9 @@ impl MapState {
                 }
                 Ok(StageReady::Decorators(view)) => {
                     let _ = ready.decorators.set(view);
+                }
+                Ok(StageReady::Sky(view)) => {
+                    let _ = ready.sky.set(view);
                 }
                 Ok(StageReady::World(_)) => unreachable!("a BSP worker emits its world once"),
                 Err(mpsc::TryRecvError::Empty) => return,
