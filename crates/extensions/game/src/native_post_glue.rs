@@ -494,9 +494,9 @@ fn missing_name(m: Missing) -> &'static str {
     }
 }
 
-/// A call refused for `m`: counted, and logged once per reason. A HUD
-/// screen-effect widget's call keeps it as its cause
-/// (`scene_kept_overlay_screen_effect_<cause>`).
+/// A call refused for `m`: counted, and logged once per reason. The call
+/// keeps it as its cause (`scene_kept_post_screen_effect_<cause>`, or a
+/// HUD widget's `scene_kept_overlay_screen_effect_<cause>`).
 fn refused(m: Missing) {
     render_bridge::native_hud::kept::refuse(missing_name(m));
     let i = Missing::ALL.iter().position(|a| *a == m).unwrap_or(0);
@@ -1601,11 +1601,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         args: [u32; 7],
         fp: Fp,
     ) -> bool {
+        use render_bridge::native_hud::kept;
         self.interrupt();
         let plan = match plan(&*mem, args, fp) {
             Ok(Some(p)) => p,
-            Ok(None) => return false,
+            Ok(None) => {
+                // The glow is off: the call draws nothing.
+                kept::empty();
+                return false;
+            }
             Err(error) => {
+                kept::refuse("plan");
                 log_rejection(|| format!("glow plan: {error}"));
                 return false;
             }
@@ -1619,7 +1625,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             entry: Arc::clone(&self.entry),
         });
         let headers = glow_headers(mem);
-        self.arm(
+        let armed = self.arm(
             mem,
             d3d::Swallow {
                 call: Some(swallow_call(site)),
@@ -1632,7 +1638,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 drop: true,
                 pass,
             },
-        )
+        );
+        if !armed {
+            kept::refuse("arm");
+        }
+        armed
     }
 
     fn screen_effect(

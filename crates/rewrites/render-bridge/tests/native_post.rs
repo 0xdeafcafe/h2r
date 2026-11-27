@@ -5,6 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
+use render_bridge::native_hud::kept;
 use render_bridge::native_post::{self, CallSite, Fp, Host, NativePost, PostCall, ScreenEffect};
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
@@ -68,12 +69,20 @@ struct Stub {
 impl Host for Stub {
     fn colour_pass(&self, _mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp) -> bool {
         self.seen.lock().unwrap().push((site, args, fp));
-        *self.arm.lock().unwrap()
+        let arm = *self.arm.lock().unwrap();
+        if !arm {
+            kept::refuse("stub");
+        }
+        arm
     }
 
     fn screen_effect(&self, _mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
         self.effects.lock().unwrap().push((site, call, fp));
-        *self.arm.lock().unwrap()
+        let arm = *self.arm.lock().unwrap();
+        if !arm {
+            kept::refuse("stub");
+        }
+        arm
     }
 
     fn finish(&self, _: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
@@ -81,6 +90,12 @@ impl Host for Stub {
     }
 }
 
+fn kept_count(name: &str) -> u64 {
+    kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
+}
+
+/// Also: a call the host does not arm keeps its guest draws, counted
+/// `scene_kept_post_<kind>_<cause>`; an armed one counts nothing.
 #[test]
 fn the_host_gets_the_calls_words() {
     let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
@@ -94,19 +109,26 @@ fn the_host_gets_the_calls_words() {
     let before = native_post::counts();
 
     // No host: nothing armed, still counted.
+    let host_kept = kept_count("scene_kept_post_colour_host");
     assert!(!native_post::on_colour_pass(&mut m, ESP, fp));
+    assert_eq!(kept_count("scene_kept_post_colour_host"), host_kept + 1);
 
     let stub = Arc::new(Stub::default());
     native_post::set_host(stub.clone());
+    let refused = kept_count("scene_kept_post_colour_stub");
     assert!(!native_post::on_colour_pass(&mut m, ESP, fp));
     assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp)));
+    assert_eq!(kept_count("scene_kept_post_colour_stub"), refused + 1, "kept under the host's cause");
     *stub.arm.lock().unwrap() = true;
     assert!(native_post::on_colour_pass(&mut m, ESP, fp));
     assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp)));
+    assert_eq!(kept_count("scene_kept_post_colour_stub"), refused + 1, "armed: nothing kept");
     // An unreadable stack: the host is not asked.
     let asked = stub.seen.lock().unwrap().len();
+    let args_kept = kept_count("scene_kept_post_colour_args");
     assert!(!native_post::on_colour_pass(&mut m, 0x0001_0000, fp));
     assert_eq!(stub.seen.lock().unwrap().len(), asked);
+    assert_eq!(kept_count("scene_kept_post_colour_args"), args_kept + 1);
 
     // A screen effect: EAX the datum, then the four words.
     m.set_u32(ESP, 0x0001_3b0c).unwrap();
@@ -123,6 +145,13 @@ fn the_host_gets_the_calls_words() {
     };
     let site = CallSite { kind: PostCall::Screen, esp: ESP, ret: 0x0001_3b0c };
     assert_eq!(stub.effects.lock().unwrap().last().copied(), Some((site, want, fp)));
+    *stub.arm.lock().unwrap() = false;
+    let effect_kept = kept_count("scene_kept_post_screen_effect_stub");
+    let hud_kept = kept_count("scene_kept_overlay_screen_effect_stub");
+    assert!(!native_post::on_screen_effect(&mut m, 0xe001_0002, ESP, fp));
+    assert_eq!(kept_count("scene_kept_post_screen_effect_stub"), effect_kept + 1, "outside the HUD: the post's");
+    assert_eq!(kept_count("scene_kept_overlay_screen_effect_stub"), hud_kept);
+    *stub.arm.lock().unwrap() = true;
     native_post::finish(&mut m, PostCall::Colour, ESP + 32);
     native_post::finish(&mut m, PostCall::Screen, ESP + 20);
     assert_eq!(*stub.finished.lock().unwrap(), [(PostCall::Colour, ESP), (PostCall::Screen, ESP)]);
@@ -131,7 +160,7 @@ fn the_host_gets_the_calls_words() {
     let after = native_post::counts();
     assert!(after.calls >= before.calls + 4);
     assert!(after.armed > before.armed);
-    assert!(after.effects >= before.effects + 2);
+    assert!(after.effects >= before.effects + 3);
     assert!(after.effects_armed > before.effects_armed);
 }
 

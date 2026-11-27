@@ -38,6 +38,10 @@ a kept scene (framescene.md, "Slice 6"). The ownership rules and the gate
 for changing the default are in
 [FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game-view-frames).
 
+A colour pass or screen effect the host does not arm counts
+`scene_kept_post_colour_<cause>` or `scene_kept_post_screen_effect_<cause>`
+(`native_post`).
+
 ## How a frame flows
 
 ```mermaid
@@ -488,7 +492,7 @@ the count with inline NV2A methods, draws its callback and ends the test at
 timestamps for both. That report is separate from the previous-frame depth
 grid used for object culling.
 
-**Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A failed preparation leaves the original packet available. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
+**Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A fan left to the device (a refused check, a failed preparation or an undrained boundary) keeps its packet and counts `scene_kept_flare_<site>_<cause>`. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
 
 With a flare in view, sample `h2 agent render.scene` twice. An increase in
 `counters.scene_submitted_flares_reference_draws` or
@@ -512,10 +516,11 @@ The standard layer-2 geometry the plan leaves at the main-scene and alternate-sc
 The pass records the full range on both live target copies before the device
 drops the D3D draw.
 
-Other layer-2 and layer-17 callers stay on D3D, each item counted
-`scene_kept_<layer>_<kind>_caller` (`native_layers::UNTAKEN_CALLER`). Layer
-17's items the plan refuses keep their guest draw as layer 2's do, counted
-`scene_kept_17_*`.
+Layer 2, 17, 18, 19 and 21 draws from other callers stay on D3D, each item
+counted `scene_kept_<layer>_<kind>_caller` (`native_layers::UNTAKEN_CALLER`).
+Items the plan refuses in layer 17 and in the sorted handlers' 18, 19 and 21
+keep their guest draw, counted `scene_kept_{17,18,19,21}_*`
+(`native_layers::kept_counted`).
 
 **Sky.** At the indexed strip call in the sky model renderer (`0x0004c976`),
 `scene_extract::layout::sky::SkyItem` resolves the scenario sky for this

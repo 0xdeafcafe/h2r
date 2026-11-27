@@ -16,6 +16,12 @@
 //! widget, list, model, outline or blur the game keeps is counted where
 //! its producer refuses it ([`ui`], [`count`]). A UI item's guest draws
 //! are not `untraced`: that is the HUD's.
+//!
+//! A game view's post calls and flare fans (slice R5, retire-d3d.md,
+//! "R5's remainder") count the same way under `scene_kept_<kind>_<cause>`
+//! ([`LateKind`]): `native_post` offers each colour pass and each screen
+//! effect outside the HUD, and the flare admission counts a fan it leaves
+//! to the device ([`count`]).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -141,12 +147,41 @@ impl UiKind {
     }
 }
 
-/// A kept item's kind: the HUD's (`scene_kept_overlay_*`) or the menu
-/// frame's (`scene_kept_ui_*`).
+/// What a kept post call or flare fan is (`scene_kept_<kind>_<cause>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LateKind {
+    /// The colour pass `0x000214f0`.
+    PostColour,
+    /// A call of `0x0002d140` outside the HUD.
+    PostScreenEffect,
+    /// A flare fan (`native_render::flares::Site`, by its name).
+    Flare(&'static str),
+}
+
+impl LateKind {
+    /// Its counter for `cause`.
+    fn counter(self, cause: &str) -> String {
+        match self {
+            LateKind::PostColour => format!("scene_kept_post_colour_{cause}"),
+            LateKind::PostScreenEffect => format!("scene_kept_post_screen_effect_{cause}"),
+            LateKind::Flare(site) => format!("scene_kept_flare_{site}_{cause}"),
+        }
+    }
+}
+
+/// A kept item's kind: the HUD's (`scene_kept_overlay_*`), the menu
+/// frame's (`scene_kept_ui_*`) or a post call's or flare fan's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Overlay(OverlayKind),
     Ui(UiKind),
+    Late(LateKind),
+}
+
+impl From<LateKind> for Kind {
+    fn from(kind: LateKind) -> Self {
+        Kind::Late(kind)
+    }
 }
 
 impl From<OverlayKind> for Kind {
@@ -167,6 +202,7 @@ impl Kind {
         match self {
             Kind::Overlay(kind) => format!("scene_kept_overlay_{}_{cause}", kind.name()),
             Kind::Ui(kind) => format!("scene_kept_ui_{}_{cause}", kind.name()),
+            Kind::Late(kind) => kind.counter(cause),
         }
     }
 
@@ -264,12 +300,22 @@ fn kept() -> std::sync::MutexGuard<'static, Kept> {
     KEPT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A producer offers an item of `kind` to the host.
+/// A producer offers an item of `kind` to the host. A post call's offer
+/// leaves what the HUD's guest draws are owed as it is.
 pub fn begin(kind: impl Into<Kind>) {
+    let kind = kind.into();
     let mut k = kept();
-    k.pending = Some(Pending { kind: kind.into(), cause: None });
-    k.guest_next = false;
-    k.held = false;
+    k.pending = Some(Pending { kind, cause: None });
+    if !matches!(kind, Kind::Late(_)) {
+        k.guest_next = false;
+        k.held = false;
+    }
+}
+
+/// The offered item has nothing to draw (a colour pass whose glow is off):
+/// the offer ends with nothing kept.
+pub fn empty() {
+    kept().pending = None;
 }
 
 /// A menu-frame screen draw of `kind` is offered to the host, unless an
@@ -409,8 +455,8 @@ pub fn untraced(cause: &'static str) {
     *k.counts.entry((Kind::Overlay(OverlayKind::Untraced), cause)).or_default() += 1;
 }
 
-/// `scene_kept_overlay_<kind>_<cause>` and `scene_kept_ui_<kind>_<cause>`
-/// for every item kept so far.
+/// `scene_kept_overlay_<kind>_<cause>`, `scene_kept_ui_<kind>_<cause>`
+/// and the post's and flares' counters for every item kept so far.
 pub fn counters() -> Vec<(String, u64)> {
     kept()
         .counts
@@ -514,6 +560,42 @@ mod tests {
         let before = kept_count(name);
         ui(Ui::OutlineInputs);
         assert_eq!(kept_count(name), before + 1);
+    }
+
+    #[test]
+    fn a_kept_post_call_or_flare_fan_counts_its_cause_and_owes_the_hud_nothing() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        release();
+        let colour = kept_count("scene_kept_post_colour_arm");
+        let untraced_n = kept_count("scene_kept_overlay_untraced_packet");
+        begin(LateKind::PostColour);
+        refuse("arm");
+        end(false);
+        assert_eq!(kept_count("scene_kept_post_colour_arm"), colour + 1);
+        untraced("packet");
+        assert_eq!(kept_count("scene_kept_overlay_untraced_packet"), untraced_n + 1, "not the HUD's");
+        let total: u64 = counters().iter().map(|(_, n)| n).sum();
+        begin(LateKind::PostColour);
+        empty();
+        end(false);
+        assert_eq!(counters().iter().map(|(_, n)| n).sum::<u64>(), total, "a pass with nothing to draw keeps nothing");
+        let effect = kept_count("scene_kept_post_screen_effect_loading");
+        begin(LateKind::PostScreenEffect);
+        refuse("loading");
+        end(false);
+        assert_eq!(kept_count("scene_kept_post_screen_effect_loading"), effect + 1);
+        // A HUD screen effect's held strips stay held across a post offer.
+        begin(OverlayKind::ScreenEffect);
+        end(false);
+        hold();
+        begin(LateKind::PostColour);
+        end(true);
+        untraced("packet");
+        assert_eq!(kept_count("scene_kept_overlay_untraced_packet"), untraced_n + 1);
+        release();
+        let fan = kept_count("scene_kept_flare_composite_geometry");
+        count(LateKind::Flare("composite"), "geometry");
+        assert_eq!(kept_count("scene_kept_flare_composite_geometry"), fan + 1);
     }
 
     #[test]
