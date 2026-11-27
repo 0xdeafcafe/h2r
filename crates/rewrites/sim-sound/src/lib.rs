@@ -11,6 +11,7 @@ pub mod events;
 pub mod feed;
 pub mod impulse;
 pub mod instances;
+pub mod levels;
 pub mod listener;
 pub mod looping;
 pub mod loops;

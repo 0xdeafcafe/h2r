@@ -200,6 +200,10 @@ impl SourceParams {
     pub fn scale(&self) -> f32 {
         f32::from_bits(self.0[1])
     }
+    /// Word 2 (record `+0x14`): the level offset `0x1251e0` adds, in dB.
+    pub fn level_offset(&self) -> f32 {
+        f32::from_bits(self.0[2])
+    }
 }
 
 /// `0x1251e0`'s value for a sound the phase admits itself (loop segments,

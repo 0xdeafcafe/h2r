@@ -5,6 +5,8 @@
 use crate::sim_objects::Table;
 use std::sync::LazyLock;
 
+pub mod levels;
+
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
     let groups = [
         crate::native_sound_ambience::BODIES,
