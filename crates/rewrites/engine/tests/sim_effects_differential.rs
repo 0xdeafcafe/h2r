@@ -207,7 +207,9 @@ fn damage_parts_match_lifted() {
                     reached = true;
                     break;
                 }
-                Flow::Return { target } => panic!("case {case}: returned to {target:#x} before the area damage"),
+                // Only a return out of the switch is early: the callees the
+                // arm steps into (the damage data init `0xd6660`) return too.
+                Flow::Return { target: EXIT } => panic!("case {case}: returned from the switch before the area damage"),
                 _ => {}
             }
         }

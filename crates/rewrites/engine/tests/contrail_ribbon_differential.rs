@@ -34,6 +34,12 @@ const RAM: usize = 64 << 20;
 const HARNESS_EXIT: u32 = 0xFFFF_FFFC;
 const STACK_TOP: u32 = 0x03ff_0000;
 const STEP_LIMIT: u64 = 200_000;
+/// `_getptd` (`0x00326079`) reads the thread block through FS, which the
+/// harness leaves outside RAM: the CRT's `fmod` error paths (infinities,
+/// NaNs) call it, so it is stubbed to hand back a scratch zeroed block,
+/// as the screen-effects differential does.
+const GETPTD: u32 = 0x0032_6079;
+const PTD: u32 = 0x03d0_0000;
 
 const CTX: u32 = 0x0300_0000;
 const C: u32 = 0x0301_0000;
@@ -173,6 +179,15 @@ impl Lifted<'_> {
             steps += 1;
             if steps > STEP_LIMIT {
                 return Err("step limit".into());
+            }
+            if pc == GETPTD {
+                let esp = cpu.gpr[4];
+                let ret = mem.bytes[esp as usize..esp as usize + 4].try_into().unwrap();
+                pc = u32::from_le_bytes(ret);
+                cpu.gpr[0] = PTD;
+                cpu.gpr[4] = esp + 4;
+                cpu.eip = pc;
+                continue;
             }
             if !self.cache.contains_key(&pc) {
                 self.lift(pc);

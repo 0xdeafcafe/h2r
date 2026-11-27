@@ -268,9 +268,13 @@ fn projection_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             };
             c.mxcsr = mx;
             c.x87.control = cw;
-            lifted
-                .run(&mut c, &mut m)
-                .unwrap_or_else(|e| panic!("seed {seed} case {n}: {e}"));
+            // The x87 model stops (`Unmodelled`) on `fptan` under a directed
+            // rounding mode, as the game never runs one: there is no original
+            // to compare, so only a case the port refuses may end there.
+            if let Err(e) = lifted.run(&mut c, &mut m) {
+                let directed = cw & 0x0c00 != 0 && e.contains("Unmodelled");
+                assert!(directed && port.is_err(), "seed {seed} case {n}: {e}");
+            }
             let built = match port {
                 Ok(built) => built,
                 Err(why) => {
