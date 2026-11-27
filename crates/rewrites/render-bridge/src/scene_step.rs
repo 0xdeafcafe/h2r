@@ -414,6 +414,7 @@ pub fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) 
             },
         })
     });
+    crate::native_particle_walk::frame_begin();
     with_step(|step| {
         PRESENT_READY.store(presentation.is_some(), Ordering::Release);
         step.presentation = presentation;
@@ -1421,6 +1422,9 @@ fn part_event(e: sim_effects::scene::PartEvent) -> frame_scene::effect::PartEven
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
     SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+    // The frame's GPU particle systems, published before the frame graph
+    // plans this scene's slot 9 (docs/graphics/native-particles.md).
+    crate::native_particle_walk::frame_end();
     let sealed = with_step(|step| {
         let id = step.builder.scene()?.id;
         if id.map_epoch != crate::native_map_work::generation() {

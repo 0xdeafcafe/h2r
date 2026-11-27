@@ -44,7 +44,7 @@ use crate::native_lights_glue::DeviceMemory;
 /// A system's tag-built parts: its definition (the tag's; the callback's
 /// tint and size are the [`Key`]'s, [`nm::owned`]) and its sprites.
 #[derive(Debug, PartialEq)]
-pub(super) struct Built {
+pub(crate) struct Built {
     pub definition: Definition,
     pub sprites: Vec<Sprite>,
 }
@@ -53,7 +53,7 @@ pub(super) struct Built {
 /// bitmap `[draw + 4]`. A refusal is kept as well, so a tag that cannot
 /// be built is read once. A new map (`native_map_work::generation`) lets
 /// them all go: the addresses are the map's.
-pub(super) struct Definitions<T = Built> {
+pub(crate) struct Definitions<T = Built> {
     generation: Option<u64>,
     built: HashMap<(u32, u32), Result<Arc<T>, &'static str>>,
 }
@@ -66,7 +66,7 @@ impl<T> Default for Definitions<T> {
 
 impl<T> Definitions<T> {
     /// `key`'s system, built by `build` the first time this map.
-    pub(super) fn get(
+    pub(crate) fn get(
         &mut self,
         generation: u64,
         key: &Key,
@@ -99,7 +99,7 @@ const SPRITES: u32 = 1024;
 /// sequences at `+0x3c` (0x3c bytes each), each one's sprites at `+0x34`
 /// (0x20 bytes each, the window at `+8`, the registration at `+0x18`).
 /// `None`: no bitmap, or not a sprites bitmap.
-pub(super) fn sheet(m: &dyn GuestMemory, bitmap: u32) -> Result<Option<Sheet>, &'static str> {
+pub(crate) fn sheet(m: &dyn GuestMemory, bitmap: u32) -> Result<Option<Sheet>, &'static str> {
     if bitmap == 0 {
         return Ok(None);
     }
@@ -135,7 +135,7 @@ pub(super) fn sheet(m: &dyn GuestMemory, bitmap: u32) -> Result<Option<Sheet>, &
 
 /// `key`'s system from its tag and bitmap in guest memory, with the
 /// image's rotation scale and spin and the engine's function tables.
-pub(super) fn build(m: &dyn GuestMemory, key: &Key) -> Result<Built, &'static str> {
+pub(crate) fn build(m: &dyn GuestMemory, key: &Key) -> Result<Built, &'static str> {
     let tag = Particle::decode_at(&mut Ctx::new(&mut Guest(m)), key.definition).map_err(|_| "tag_unread")?;
     let sheet = sheet(m, key.bitmap)?;
     let image = Image {

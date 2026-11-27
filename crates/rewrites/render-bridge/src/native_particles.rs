@@ -310,6 +310,7 @@ impl Feature for NativeParticles {
                 .optional();
         }
         crate::effect_materials::build(b);
+        crate::native_particle_walk::build(b);
         crate::cut::build(b);
         crate::native_effects::build(b);
         crate::native_flares::build(b);

@@ -5,19 +5,24 @@ use hooks::{Registry, Switches};
 
 #[test]
 fn the_switch_off_and_no_parent_update_skip() {
+    use render_bridge::native_particle_walk::WALK;
     let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     r.add(&NativeParticles).unwrap();
-    assert!(!r.build(&Base).unwrap().text().contains("native_particles"));
+    let off = r.build(&Base).unwrap();
+    assert!(!off.text().contains("native_particles"));
+    assert!(!off.chains.contains_key(&WALK.base), "the switch off keeps the guest's walk");
     let mut r = Registry::new(Switches::defaults());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    // The 31 particle and effect chains, and the effect materials' three
-    // (particle material, particle setup, contrail material).
+    // The 31 particle and effect chains, the effect materials' three
+    // (particle material, particle setup, contrail material) and the walk.
     use render_bridge::effect_materials::{CONTRAIL_MATERIAL, PARTICLE_MATERIAL, PARTICLE_SETUP};
     for point in [PARTICLE_MATERIAL, PARTICLE_SETUP, CONTRAIL_MATERIAL] {
         assert!(plan.chains.contains_key(&point.base), "missing {}", point.name);
     }
-    assert_eq!(plan.chains.len(), 31 + 3);
+    assert_eq!(plan.chains.len(), 31 + 3 + 1);
+    let walk = plan.chains.get(&WALK.base).expect("the walk's chain");
+    assert_eq!(walk.point.base, engine::particle_walk::ENTRY);
     use engine::points::scene_effects::{EFFECT_LAYERED_A, EFFECT_LAYERED_B, EFFECT_QUERY};
     use engine::points::render_aspect::FLARE_QUERY_END;
     for point in [EFFECT_LAYERED_A, EFFECT_LAYERED_B] {

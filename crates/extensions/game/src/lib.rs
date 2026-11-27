@@ -182,6 +182,8 @@ pub mod native_particles_glue;
 #[cfg(feature = "gpu")]
 pub mod native_particles_admission;
 #[cfg(feature = "gpu")]
+pub mod native_particle_systems;
+#[cfg(feature = "gpu")]
 pub mod native_post_glue;
 #[cfg(feature = "gpu")]
 pub mod native_post_load;

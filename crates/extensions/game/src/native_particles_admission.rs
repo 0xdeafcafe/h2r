@@ -24,7 +24,7 @@ use timeline::native::{Metric, Stage};
 
 mod flare_pass;
 mod material_proof;
-mod mirror_host;
+pub(crate) mod mirror_host;
 mod refusal_samples;
 mod particle_capture;
 

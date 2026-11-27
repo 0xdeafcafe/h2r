@@ -3,7 +3,10 @@
 //! callback, as GPU particle system births
 //! ([`native_render::particle_mirror`]), batched by [`Key`] in the guest's
 //! order. The callback never runs: the host builds each batch's system
-//! from `particle_mirror::owned(definition, &batch.key)`. Pure.
+//! from `particle_mirror::owned(definition, &batch.key)`
+//! (`native_particle_walk`). Pure.
+
+use std::collections::BTreeMap;
 
 use engine::function_eval::constant::BYTE;
 use engine::memory::GuestMemory;
@@ -19,12 +22,21 @@ pub struct Batch {
     pub spawns: Vec<Spawn>,
 }
 
+/// One walk's batches and the input block's writes it makes
+/// (`particle_walk::Walk::writes`), for the guest to take in place of
+/// running it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Births {
+    pub batches: Vec<Batch>,
+    pub writes: BTreeMap<u32, u8>,
+}
+
 /// The walk entered as `call`, under `mxcsr` and `fcw`, as batches. `Err`
 /// names why not: the walk's refusal (`particle_walk::Refused::name`), the
 /// mirror's (`particle_mirror::Refused::name`) or `fault`.
-pub fn births(m: &dyn GuestMemory, call: Call, mxcsr: u32, fcw: u16) -> Result<Vec<Batch>, &'static str> {
+pub fn births(m: &dyn GuestMemory, call: Call, mxcsr: u32, fcw: u16) -> Result<Births, &'static str> {
     let w = pw::walk(m, call, mxcsr, fcw).map_err(pw::Refused::name)?;
-    batches(m, call.draw, &w.emitted)
+    Ok(Births { batches: batches(m, call.draw, &w.emitted)?, writes: w.writes })
 }
 
 /// `emitted`, drawn through `draw`, as batches: a run of particles with

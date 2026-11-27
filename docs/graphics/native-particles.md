@@ -458,7 +458,7 @@ flowchart LR
   frame they arrive, at their `Spawn::age` (0 for a new particle).
 - **Mirror.** `GpuParticles::mirror` keeps no survivor: the system is the
   staged births alone, a mirror of particles the guest owns. Its births
-  come from the guest's walk, modelled in Rust ("Walking a system's
+  come from the guest's walk, answered in Rust ("Walking a system's
   particles" below).
 - **Evaluation** is `0x00224550`'s, as `engine::particle_emission` models
   it, with the tag function baked:
@@ -523,6 +523,46 @@ callback, and the input block's writes; nothing is written to the guest.
 `particle_mirror::spawn` and batches a run of one `Key` (one tint and
 size); the host builds each batch's system with `particle_mirror::owned`.
 
+`render_bridge::native_particle_walk` hooks the walk's entry
+(`PARTICLE_WALK`, `0x00175610`) inside `native_particles`, so it is on
+with the native renderer (`impl.render.native`).
+
+```mermaid
+flowchart LR
+  W[walk entry] -->|callback 0x00224550| B[births]
+  W -->|other callback| G[guest walk]
+  B -->|Err name| G
+  B -->|Ok| A[host accept]
+  A -->|Err name| G
+  A -->|Ok| R[block writes, ret 0x10]
+  R --> F[frame's batches]
+  F -->|scene seal| P[host publish: particle_set]
+```
+
+| Step | What it does |
+|---|---|
+| births | `particle_births::births`: the batches and the block's writes, nothing written yet |
+| accept | the host (`native_particle_systems` in the game) builds each `Key`'s system once a map, or names why not |
+| answer | the writes go to the guest and the walk returns `ret 0x10` without running: the callback never runs, so nothing reaches the D3D emitter, the admission or the effects mirror |
+| refuse | any `Err` runs the guest's walk; nothing is written |
+| frame | at `scene_step::seal` the frame's batches go to the host's `publish`; a frame `render_views` opens again before a seal drops them |
+
+The host builds a system from the `prt3` tag and its bitmap in guest
+memory (`mirror_host::build`: `Definition` and sprites), the blend from the
+tag's shader template (`particle_alpha_blend` alpha, `particle_additive`
+additive) and the sprites' image from the running map, found by its tag
+data address (`SpriteBitmap`, one a bitmap and image).
+
+Counters, `layer_plan_15_particle_walk_<outcome>`:
+
+| Outcome | Counts |
+|---|---|
+| `taken`, `particles` | walks answered, and their births |
+| `refused_<name>` | the walk's, the mirror's or the host's refusal: `fault`, `no_host`, `no_bitmap`, `tag_unread`, `bitmap_unread`, `sprite_pages`, `map_name`, `map_unopened`, `template`, `template_unnamed`, `bitmap_tag`, `bitmap_decode`, or `particle_definition`'s |
+| `other_callback` | walks with another callback, left to the guest |
+| `write_fault` | a block write that faulted after the host took the batches |
+| `unpublished`, `unbuilt` | batches dropped unsealed, and batches whose system a map change let go |
+
 ```mermaid
 flowchart LR
   S[system: definition via 0x001751d0] --> E[emitters: location +4, then +8]
@@ -567,8 +607,9 @@ The frame graph draws GPU particle systems in each game view's slot 9
 (`ViewSlot::Transparents`, the transparents and effects), as it draws the
 markers and the Forge bodies: the game publishes a set, the graph plans a
 stage per view (`native_render::particle_set`,
-`frame_graph/particles.rs`). The births come from the game's model of the
-guest walk (`particle_mirror::spawn`); the stage takes them as input.
+`frame_graph/particles.rs`). The set is the frame's walks answered in
+Rust, published at the scene's seal (`native_particle_walk`,
+`native_particle_systems`); the stage takes it as input.
 
 | Published (`particle_set::System`) | Holds |
 |---|---|
@@ -607,7 +648,7 @@ the stage draws.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
-- GPU particle systems: the frame graph's particle stage on a running game (nothing publishes a set until the walk model lands), a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
+- GPU particle systems: the walk's answer and the frame graph's particle stage on a running game (which walks are taken, against the D3D draw), that the guest's bitmap pointer is the map tag's data address, that the two templates are every particle's, a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 
