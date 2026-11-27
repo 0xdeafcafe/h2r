@@ -1022,6 +1022,26 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         drawn
     }
 
+    /// Each object shadow of the open view is one sequence
+    /// ([`scene::object_ops`]): the mask cleared and drawn on target 10,
+    /// the filter, the mask frozen, its receivers on the view's target.
+    fn draw_object_shadows(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::object_shadow_scene::ObjectShadowDraw<'_>,
+    ) -> usize {
+        let mut drawn = 0;
+        for pass in draw.passes {
+            let result = self.scene_object_shadow(mem, pass, draw.view_target);
+            drawn += usize::from(result.is_ok());
+            let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+            for msg in t.count(result.map(drop)) {
+                eprintln!("{msg}");
+            }
+        }
+        drawn
+    }
+
     fn draw_host(
         &self,
         mem: &mut dyn GuestMemory,
