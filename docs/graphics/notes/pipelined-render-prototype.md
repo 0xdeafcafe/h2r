@@ -2,7 +2,9 @@
 
 Evidence for [second-executor.md](../../runtime/second-executor.md). Index and verdicts: [pipelined-render.md](pipelined-render.md); the census it was built from: [pipelined-render-census.md](pipelined-render-census.md).
 
-The prototype ran build plan steps 2, 3 and 7 of the index as `crates/rewrites/render-bridge/src/pipeline_render.rs`, wired by `d3d_glue::pipeline_render`. Both were deleted on 2026-11-22 (git history up to `1afa616a6`). Entries are from 2026-11-18, Old Mombasa and level 03a, headless, on the owner's disc. Commit: not recorded; the source page was last revised at `b8b163968`. Not re-run. It was off under lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with `render-census`, and needed a new `h2` binary only.
+The prototype ran build plan steps 2, 3 and 7 of the index as `crates/rewrites/render-bridge/src/pipeline_render.rs`, wired by `d3d_glue::pipeline_render`. Both were deleted on 2026-11-22 (git history up to `1afa616a6`). Entries are from 2026-11-18, Old Mombasa and level 03a, headless, on the owner's disc.
+
+Commit: not recorded; the source page was last revised at `b8b163968`. Not re-run. It was off under lockstep (`H2_LOCKSTEP`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`) and with `render-census`, and needed a new `h2` binary only.
 
 ## The frame
 
@@ -59,7 +61,9 @@ Before each serviced call everything the render wrote goes to live RAM (`SecondE
 
 ### Fallbacks
 
-A refused call does not rerun the frame (draws would repeat and device state cannot roll back). The render's writes, stack included, go to live RAM whole, the present counter loses its prediction, and the game thread makes the call with the render's CPU (`SecondExecutor::refused_cpu`) and finishes the render through the generated code's resume points. Its last `ret` lands in a continuation that restores the game thread. The frame wait inside it is skipped. Callbacks created by `Call::answer_render_async` move with the stack; other live Rust callbacks (a D3D push callback, a destroy delivery) stop a fallback with `unresumable:<call>`. A fallback runs against live RAM, a tick ahead of the render's frame, so it is unsound for state the tick changed.
+A refused call does not rerun the frame (draws would repeat and device state cannot roll back). The render's writes, stack included, go to live RAM whole, the present counter loses its prediction, and the game thread makes the call with the render's CPU (`SecondExecutor::refused_cpu`) and finishes the render through the generated code's resume points. Its last `ret` lands in a continuation that restores the game thread.
+
+The frame wait inside it is skipped. Callbacks created by `Call::answer_render_async` move with the stack; other live Rust callbacks (a D3D push callback, a destroy delivery) stop a fallback with `unresumable:<call>`. A fallback runs against live RAM, a tick ahead of the render's frame, so it is unsound for state the tick changed.
 
 ### I/O without stalls
 

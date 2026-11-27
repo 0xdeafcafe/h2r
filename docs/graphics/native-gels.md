@@ -45,44 +45,31 @@ The ordered handoff records each quad on both required target copies, then commi
   the generated target for this light. While that byte is set, texture
   10 instead takes the definition's bitmap, avoiding feedback.
 
-The feature hooks the template and quad helper (three hooks, all context-only), never a D3D-owned entry. The helper's exit hook runs after the body, so that chain stays off the render thread. At the helper the feature drains preceding commands through `begin_external_boundary` and arms admission for the helper's ordered mip draws. At exit it drains any queued last draw and clears the scope. An ownership mismatch clears the scope and retains D3D.
+The feature hooks the template and quad helper (three hooks, all context-only), never a D3D-owned entry. The helper's exit hook runs after the body, so that chain stays off the render thread. At the helper the feature drains preceding commands through `begin_external_boundary` and arms admission for the helper's ordered mip draws.
 
-`native_gels_replace` checks the bound surface, shape, declaration, four
-actual vertices, viewport/scissor, shader and all required resource views.
-Its `ExternalPlan` promises one gel range. `prepare_copy` validates every
-physical copy before recording. `record_ranges` returns one only after the
-complete native quad is recorded into **the real target-13 attachment**
-for that level.
-It declares colour writes and no depth/stencil writes, so the handoff
-maintains D3D surface coherency and aliases. No queue submission, queue
-write or update to a live texture escapes the isolated command encoder.
+At exit it drains any queued last draw and clears the scope. An ownership mismatch clears the scope and retains D3D.
+
+`native_gels_replace` checks the bound surface, shape, declaration, four actual vertices, viewport/scissor, shader and all required resource views. Its `ExternalPlan` promises one gel range. `prepare_copy` validates every physical copy before recording.
+
+`record_ranges` returns one only after the complete native quad is recorded into **the real target-13 attachment** for that level. It declares colour writes and no depth/stencil writes, so the handoff maintains D3D surface coherency and aliases. No queue submission, queue write or update to a live texture escapes the isolated command encoder.
+
 The commit and suppression belong to the ordered handoff, not to a hook-side boolean.
 
 Guest shader setup, geometry assembly and target and state effects continue, so consecutive native and D3D gel packets keep their original order. The actual target retains old pixels for blend, colour masks and fragment discard. Uniform and vertex buffers belong to each recording.
 
 ### Resources
 
-Replacement consumes the **resolved draw**: its live microcode, constant banks, combiner definition, defaults, render and sampler state, resident texture views and raw float4 vertices. Shader variants and bitmap identity animation therefore use their actual evaluated resources. Linear texture coordinate scale uses guest dimensions. Signed textures
-use the D3D path's already biased views. Clip range/clamp, stipple, blend
-constant, bump uniforms and two-sided lighting come from that packet.
+Replacement consumes the **resolved draw**: its live microcode, constant banks, combiner definition, defaults, render and sampler state, resident texture views and raw float4 vertices. Shader variants and bitmap identity animation therefore use their actual evaluated resources. Linear texture coordinate scale uses guest dimensions.
 
-At quad entry, `gels::Target::read` resolves target 13 when its presence
-word is set, its hiding byte is clear and its dimensions and level count
-are valid.
-Each level uses the embedded surface header that the guest resolver
-(`0x0001dcf0`) selects. Admission compares that header and the mip
-dimensions against each resolved draw. A packet needs a four-vertex
-non-indexed strip, complete float4 v0..v6 streams, full viewport/scissor,
-solid Gouraud shading and disabled depth, stencil, fog and alpha test.
-Depth textures, cube/volume stages, colour keying, border sampling,
-unknown inputs or missing copies retain the entire original packet.
+Signed textures use the D3D path's already biased views. Clip range/clamp, stipple, blend constant, bump uniforms and two-sided lighting come from that packet.
 
-Immutable resident programs, texture groups and pipelines are cached by
-map generation, exact resident view identity, shader/state/sampler key and
-target format. Resident identity includes D3D's palette/residency result.
-Repeated frames do not rebuild their pipelines. Per-recording buffers are never reused before submission.
-The resident program cache is bounded; eviction retains no live mutable
-GPU storage and recorded commands retain their resource references.
+At quad entry, `gels::Target::read` resolves target 13 when its presence word is set, its hiding byte is clear and its dimensions and level count are valid. Each level uses the embedded surface header that the guest resolver (`0x0001dcf0`) selects. Admission compares that header and the mip dimensions against each resolved draw.
+
+A packet needs a four-vertex non-indexed strip, complete float4 v0..v6 streams, full viewport/scissor, solid Gouraud shading and disabled depth, stencil, fog and alpha test. Depth textures, cube/volume stages, colour keying, border sampling, unknown inputs or missing copies retain the entire original packet.
+
+Immutable resident programs, texture groups and pipelines are cached by map generation, exact resident view identity, shader/state/sampler key and target format. Resident identity includes D3D's palette/residency result. Repeated frames do not rebuild their pipelines.
+
+Per-recording buffers are never reused before submission. The resident program cache is bounded; eviction retains no live mutable GPU storage and recorded commands retain their resource references.
 
 ### The gel from the scene
 

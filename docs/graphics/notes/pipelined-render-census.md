@@ -2,7 +2,9 @@
 
 Evidence for [second-executor.md](../../runtime/second-executor.md). Index and verdicts: [pipelined-render.md](pipelined-render.md).
 
-Two runs of the `render-census` feature on 2026-11-18, Old Mombasa, headless, on the owner's disc. Commit: not recorded (the source page was last revised at `b8b163968`). Method: below. Reproduce with the command under "Running it". Not re-run. The TSV and log stay outside the repository.
+Two runs of the `render-census` feature on 2026-11-18, Old Mombasa, headless, on the owner's disc. Commit: not recorded (the source page was last revised at `b8b163968`). Method: below.
+
+Reproduce with the command under "Running it". Not re-run. The TSV and log stay outside the repository.
 
 ## The census
 
@@ -17,7 +19,9 @@ flowchart LR
   E --> F[pair render scope with the next sim interval]
 ```
 
-Every inline guest access (generated C in `h2fastmem.h`, Rust `Guest::read_bytes`/`write_bytes`) checks the page's bit in the fast page table first. A guest hit re-opens that kind on that page, so a page costs at most one slow read and one slow write a scope. A host hit is logged and the page stays armed, so guest writes after our D3D layer are still seen. No `mprotect`, no fault handler. The write watch's dirty bits could not do this: no reads, no `pc`, no way to tell our D3D layer's stores from the game's.
+Every inline guest access (generated C in `h2fastmem.h`, Rust `Guest::read_bytes`/`write_bytes`) checks the page's bit in the fast page table first. A guest hit re-opens that kind on that page, so a page costs at most one slow read and one slow write a scope. A host hit is logged and the page stays armed, so guest writes after our D3D layer are still seen.
+
+No `mprotect`, no fault handler. The write watch's dirty bits could not do this: no reads, no `pc`, no way to tell our D3D layer's stores from the game's.
 
 Per frame the render scope's read and write sets are paired with the sim interval between two renders:
 
@@ -49,7 +53,9 @@ Version 2 fixed the three caveats of the first run's line data:
 
 The TSV keeps the first 20 columns and adds `rs_core`, `rs_other`, `host_writer`, `sr_lines_any`, `dep_lines_any`, `other_read_lines`, `dep_lines_other` and `sticky_frames`.
 
-Limits: raw RAM readers that bypass the accessors (`Guest::physical_ram`: the lockstep hash, snapshots) are not seen, and none is guest code. Atomics (`runtime::atomic`) count as the host. A hit from another guest thread consumes that page's arming for the scope, so the owner's first access is missed at page level. Without frame stats every host hit is `host`. The run is slower while the census is on; its numbers are page sets, not times.
+Limits: raw RAM readers that bypass the accessors (`Guest::physical_ram`: the lockstep hash, snapshots) are not seen, and none is guest code. Atomics (`runtime::atomic`) count as the host. A hit from another guest thread consumes that page's arming for the scope, so the owner's first access is missed at page level.
+
+Without frame stats every host hit is `host`. The run is slower while the census is on; its numbers are page sets, not times.
 
 Output: every `H2_RENDER_CENSUS_EVERY` frames (default 300) and at game end, `window` and `run` summary lines (per-frame averages), `region` counts, the top `rs`, `ww` and `sr` pages (`H2_RENDER_CENSUS_TOP`, default 20), and the version 2 lines. `H2_RENDER_CENSUS_OUT=<path>` rewrites the full per-page table as TSV at each report. A map activation reports the remaining window and starts a fresh census.
 

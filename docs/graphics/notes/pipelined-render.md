@@ -8,7 +8,9 @@ Evidence for [second-executor.md](../../runtime/second-executor.md) and [framesc
 | [pipelined-render-census.md](pipelined-render-census.md) | the `render-census` method and its two runs: every page and line the render writes that the next tick reads |
 | [pipelined-render-prototype.md](pipelined-render-prototype.md) | the prototype's mechanisms, the faults it hit and its measurements |
 
-The pipelined COW render worker (`impl.render.pipelined_frame`, `H2_PIPELINE_*`, `crates/rewrites/render-bridge/src/pipeline_*.rs`) was deleted on 2026-11-22 and is in git history up to `1afa616a6`. It was a research switch, not a speed-up. The `render-census` feature stays. The whole-frame design below was the first plan for a render one frame behind the simulation. The worker that shipped was the narrower frame-end split.
+The pipelined COW render worker (`impl.render.pipelined_frame`, `H2_PIPELINE_*`, `crates/rewrites/render-bridge/src/pipeline_*.rs`) was deleted on 2026-11-22 and is in git history up to `1afa616a6`. It was a research switch, not a speed-up. The `render-census` feature stays.
+
+The whole-frame design below was the first plan for a render one frame behind the simulation. The worker that shipped was the narrower frame-end split.
 
 Entries are from 2026-11-17 and 2026-11-18. Commit: not recorded; the source page was last revised at `b8b163968`. Method: `render-census` (`crates/rewrites/render-bridge/src/render_census.rs`) and the prototype (`pipeline_render.rs`, deleted) on the owner's disc, headless. Not re-run.
 

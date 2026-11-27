@@ -115,7 +115,9 @@ duplicate marker and runs the wrapper's final solid-offset reset.
 | `render-bridge/src/native_decals.rs` | callback scope and tallies |
 | `game/src/native_decals_glue.rs` | resolved-draw admission |
 
-All seven modes, with their depth, bias and blend configurations, are implemented. The vertex program, all 192 vertex constants, all 16 attribute defaults and the live 60-word combiner (including `PSTEXTUREMODES` and the final-combiner latch) come from the resolved draw and go through the shared NV2A compiler. Records and quad lists keep their order. The reference copy uses the original constants and guest scissors; the display copy uses the display lens or UI fit and its matching scissors. Both copies use immutable uniforms.
+All seven modes, with their depth, bias and blend configurations, are implemented. The vertex program, all 192 vertex constants, all 16 attribute defaults and the live 60-word combiner (including `PSTEXTUREMODES` and the final-combiner latch) come from the resolved draw and go through the shared NV2A compiler. Records and quad lists keep their order.
+
+The reference copy uses the original constants and guest scissors; the display copy uses the display lens or UI fit and its matching scissors. Both copies use immutable uniforms.
 
 | Input | Rule |
 |---|---|
