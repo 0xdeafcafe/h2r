@@ -2734,7 +2734,7 @@ impl<B: Backend> Device<B> {
     /// outside its enum.
     pub fn stencil_state(&self, mem: &dyn GuestMemory) -> Option<gfx::state::StencilState> {
         use gfx::state::RenderStateType as R;
-        let table = RenderStateTable::default();
+        let table = RenderStateTable::halo2();
         let mut rs = gfx::state::RenderState::default();
         for t in [
             R::StencilEnable,
@@ -2762,7 +2762,7 @@ impl<B: Backend> Device<B> {
         mem: &dyn GuestMemory,
     ) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
         use gfx::state::RenderStateType as R;
-        let table = RenderStateTable::default();
+        let table = RenderStateTable::halo2();
         let mut rs = gfx::state::RenderState::default();
         for t in [R::CullMode, R::FrontFace] {
             let guest = table.canonical_to_guest(t.index())?;
@@ -3800,7 +3800,7 @@ impl<B: Backend> Device<B> {
     /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
     /// guest's render-state array (unreadable: no clamp).
     pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
-        let slot = RenderStateTable::default().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
+        let slot = RenderStateTable::halo2().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
         let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
         crate::backend::DepthClip {
             range: crate::hw::w_clip_range(&self.hw, z_max),

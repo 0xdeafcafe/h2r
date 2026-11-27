@@ -108,9 +108,18 @@ impl RenderStateTable {
     }
 }
 
+impl RenderStateTable {
+    /// Halo 2's table, built once: per-draw code reads it without
+    /// rebuilding the two slot vectors each time.
+    pub fn halo2() -> &'static Self {
+        static TABLE: std::sync::LazyLock<RenderStateTable> = std::sync::LazyLock::new(|| RenderStateTable::for_build(HALO2_BUILD));
+        &TABLE
+    }
+}
+
 impl Default for RenderStateTable {
     fn default() -> Self {
-        Self::for_build(HALO2_BUILD)
+        Self::halo2().clone()
     }
 }
 
