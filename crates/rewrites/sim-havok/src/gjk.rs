@@ -1294,7 +1294,9 @@ impl<C: Calls> Run<'_, C> {
                 break self.stall(j)?;
             }
             let thr = self.x.st(self.x.mul(load(nn), load(tolerance)));
-            // Odd passes try A first, even ones B.
+            // Odd passes try A first, even ones B: the order is the
+            // short circuit's, which clippy reads as the same block.
+            #[allow(clippy::if_same_then_else)]
             let grew = if pass & 1 != 0 {
                 self.grow_a(j, thr)? || self.grow_b(j, thr)?
             } else {
