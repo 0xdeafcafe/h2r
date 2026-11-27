@@ -153,17 +153,17 @@ impl Left {
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static PLACED: AtomicBool = AtomicBool::new(false);
 /// What the last taken layer cleared, with each item as it was left
-/// ([`Left`]).
-static CLEARED: Mutex<Option<(Cleared, Vec<Left>)>> = Mutex::new(None);
+/// ([`ItemState`]).
+static CLEARED: Mutex<Option<(Cleared, Vec<ItemState>)>> = Mutex::new(None);
 
 /// An item as the skip left it: its mask (`+0x10`), shader (`+8`) and
 /// record argument (`+0xc`). A sorted handler's layer can be the last of
 /// its list (the next layer draw follows the next entry's rebuild of the
 /// same items), so the bit goes back only on an item that is still the
 /// one cleared.
-type Left = [u32; 3];
+type ItemState = [u32; 3];
 
-fn left_of(m: &dyn GuestRead, item: u32) -> Left {
+fn left_of(m: &dyn GuestRead, item: u32) -> ItemState {
     [0x10, 8, 0xc].map(|at| m.read_u32(item + at).unwrap_or(0))
 }
 static ASKED: AtomicU64 = AtomicU64::new(0);
