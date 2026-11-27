@@ -1022,6 +1022,12 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_post::NativePost)
             .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
+        // The scene's target select 0x0001cd30 and clear 0x00014b60 made
+        // on the device without their guest bodies, one call in 64 checked
+        // against the body (native_targets_glue, installed with the device).
+        features
+            .add(&render_bridge::native_targets::NativeTargets)
+            .map_err(|e| anyhow::anyhow!("native targets: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features
