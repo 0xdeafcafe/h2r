@@ -244,10 +244,10 @@ impl<'a> GuestDrawPass<'a> {
         existing: Option<&HashMap<TargetRef, SurfaceId>>,
         tiles: bool,
     ) -> Result<Self, String> {
-        if !scale.replayable(crate::MAX_SCALE) {
+        if !scale.replayable_display(crate::MAX_SCALE) {
             return Err(format!(
-                "scene grid {scale} is outside 1x to {}x",
-                crate::MAX_SCALE
+                "scene grid {scale} is outside the replayable grids (no minifying axis, up to {}x on one axis)",
+                crate::MAX_SCALE * 2
             ));
         }
         if !frame.refusals.is_empty() {
