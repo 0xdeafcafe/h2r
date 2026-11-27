@@ -1,8 +1,9 @@
 # Simulation rewrite, phase 2: the collision world
 
 The collision world answers A, B and F, J’s sphere pretest and
-state-exact exits in C, D, E, G and H. Other vector and spatial paths run
-their kernels alongside the lifted result. The instance and model rays
+state-exact exits in C, D, E, G and H. C and D's crossing exits answer
+after a clean shadow run ([Crossing exits](collision-queries.md#crossing-exits)).
+Other vector and spatial paths run their kernels alongside the lifted result. The instance and model rays
 feed the whole-query planner, which also supplies `collision.trace`.
 Entry I compares the general Havok ray against the guest VM and callback
 stream. Full promotion requires matching register, memory and callback

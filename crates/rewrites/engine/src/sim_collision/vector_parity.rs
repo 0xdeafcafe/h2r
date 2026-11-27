@@ -1,6 +1,8 @@
-//! Result parity for the vector test and the outer BSP context walk.
+//! Result parity for the vector test and the outer BSP context walk, and
+//! the shadow-then-answer gate for their crossing exits.
 use super::{
     Bail, CollisionMemory, CollisionWorld, Plan, Read,
+    crossing::{self, Exit},
     layout::{context, record},
     plan_context, plan_vector,
 };
@@ -9,10 +11,13 @@ use sim_collision::Entry;
 use sim_collision::GuestRead;
 
 pub struct Prediction {
+    entry: Entry,
     addr: u32,
     al: u8,
     record: Vec<u8>,
     context: Option<(u32, Vec<u8>)>,
+    /// A crossing walk's whole exit, compared as well as R and the context.
+    exit: Option<Exit>,
 }
 
 impl Prediction {
@@ -22,7 +27,8 @@ impl Prediction {
         world: &CollisionWorld,
     ) -> Result<Self, Bail> {
         let plan = plan_vector(c, g, world)?;
-        Self::from_plan(plan, g)
+        let exit = Exit::model(c, g, &plan);
+        Self::from_plan(plan, g, Entry::VectorTest, exit)
     }
 
     pub fn gather_context(
@@ -31,10 +37,16 @@ impl Prediction {
         world: &CollisionWorld,
     ) -> Result<Self, Bail> {
         let plan = plan_context(c, g, world)?;
-        Self::from_plan(plan, g)
+        let exit = Exit::model(c, g, &plan);
+        Self::from_plan(plan, g, Entry::VectorContext, exit)
     }
 
-    fn from_plan(plan: Plan, g: &impl CollisionMemory) -> Result<Self, Bail> {
+    fn from_plan(
+        plan: Plan,
+        g: &impl CollisionMemory,
+        entry: Entry,
+        exit: Option<Exit>,
+    ) -> Result<Self, Bail> {
         let context = if let Some(addr) = plan.context {
             let mut bytes = Read(g, (0, 0)).bytes(addr, context::SIZE as usize)?;
             plan.outcome.write_context(|offset, value| {
@@ -57,11 +69,41 @@ impl Prediction {
                 Ok::<_, Bail>(())
             })?;
         Ok(Self {
+            entry,
             addr: plan.record,
             al: u8::from(plan.outcome.hit.is_some()),
             record,
             context,
+            exit,
         })
+    }
+
+    /// The walk crossed a plane and skipped the matcher: the comparison
+    /// covers every register and frame byte.
+    pub fn has_exit(&self) -> bool {
+        self.exit.is_some()
+    }
+
+    /// Compare the crossing exit's registers and frame window; `None`
+    /// when there is no exit or it matched.
+    pub fn compare_exit(
+        &self,
+        c: &runtime::CpuAbi,
+        g: &impl CollisionMemory,
+    ) -> Result<Option<String>, Bail> {
+        match &self.exit {
+            Some(exit) => exit.difference(c, g),
+            None => Ok(None),
+        }
+    }
+
+    /// Compare at the lifted return and count the result towards the
+    /// entry's gate.
+    pub fn settle(self, c: &runtime::CpuAbi, g: &impl CollisionMemory, world: &CollisionWorld) {
+        let result = self
+            .compare(c.eax as u8, g)
+            .and_then(|d| if d.is_some() { Ok(d) } else { self.compare_exit(c, g) });
+        world.record_crossing(self.entry, result, self.exit.is_some());
     }
 
     pub fn compare(&self, al: u8, g: &impl CollisionMemory) -> Result<Option<String>, Bail> {
@@ -133,7 +175,14 @@ fn dispatch(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld, entry: Entry)
                 world.record(entry, &Ok(()));
                 return Ok((Some(ret), None));
             }
-            Prediction::from_plan(plan, g)
+            // D under the wrapper stays lifted: C's comparison owns it.
+            let exit = if can_answer { Exit::model(c, g, &plan) } else { None };
+            if let Some(exit) = exit.as_ref().filter(|_| world.answer_crossing(entry)) {
+                let ret = crossing::commit(c, g, &plan, exit)?;
+                world.record(entry, &Ok(()));
+                return Ok((Some(ret), None));
+            }
+            Prediction::from_plan(plan, g, entry, exit)
         }
         Err(why) => Err(why),
     };
@@ -212,10 +261,12 @@ mod tests {
         let mut g = Guest::new();
         g.map(addr, 0x1000, 0, Permissions::RW).unwrap();
         let p = Prediction {
+            entry: Entry::VectorContext,
             addr,
             al: 0,
             record: vec![0; record::SIZE as usize],
             context: Some((addr + 0x800, vec![0; context::SIZE as usize])),
+            exit: None,
         };
         world.record_vector(p.compare(0, &g));
         g.set_u8(addr + 0x800 + context::PREV_KIND + 1, 1).unwrap();
