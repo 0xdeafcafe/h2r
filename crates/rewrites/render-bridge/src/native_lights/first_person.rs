@@ -508,3 +508,51 @@ fn count(records: &SlotRecords) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::FlatMemory;
+
+    #[test]
+    fn a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels() {
+        let mut m = FlatMemory::new(0, 0x10000);
+        let definition = 0x1000;
+        m.set_u16(definition + 4, 3).unwrap();
+        m.set_u32(definition + engine::light_passes::DEFINITION_GEL, u32::MAX).unwrap();
+        m.set_u32(definition + engine::light_passes::DEFINITION_GEL_SHADER, 0x00e1_0007).unwrap();
+        let light = super::super::Light {
+            handle: 5,
+            definition: 6,
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            colour_a: [0.5; 3],
+            colour_b: [0.25; 3],
+            intensity: 2.0,
+            bounds: ([1.0, 2.0, 3.0], 4.0),
+            shadow: false,
+            weight: 1.0,
+            constants: None,
+        };
+        let constants = frame_scene::LightConstants {
+            frame: [0; 36],
+            flags: 3,
+            colour_a: [0; 3],
+            colour_b: [0; 3],
+            mode: 0,
+            definition_flags: 0,
+            definition_8a: 0,
+            definition_80: 0,
+            falloff_0: 0,
+            gel: None,
+            animated_gel: true,
+        };
+        let c = first_person_candidate(&m, &light, definition, constants);
+        assert_eq!((c.position, c.weight, c.definition_kind), ([1.0, 2.0, 3.0], 1.0, 3));
+        assert_eq!((c.gel_bitmap, c.gel_shader), (None, Some(0x00e1_0007)));
+        let v = c.constants.unwrap();
+        assert_eq!((v.unshadowed, v.shadowed), (constants, constants), "a first-person light casts no shadow");
+        assert!(v.projection.is_none());
+    }
+}
