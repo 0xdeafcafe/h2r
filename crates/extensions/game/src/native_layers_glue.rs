@@ -514,6 +514,9 @@ fn plan_objects<B: d3d::backend::Backend>(
             Err(why) => {
                 count_refusal(&why.to_string());
                 *outcomes.entry(why.name()).or_default() += 1;
+                if let Some(detail) = why.detail() {
+                    *outcomes.entry(detail).or_default() += 1;
+                }
                 continue;
             }
         };

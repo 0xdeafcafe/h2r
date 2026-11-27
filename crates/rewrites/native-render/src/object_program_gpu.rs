@@ -466,6 +466,32 @@ impl LayerPlanRefusal {
     }
 }
 
+impl LayerPlanRefusal {
+    /// For [`Self::NotCompiled`], which kind of compile error it keeps, as
+    /// `render.scene` counts it besides [`Self::name`]
+    /// (`layer_plan_<layer>_refused_object_plan_not_compiled_<kind>`):
+    /// `constant` (a live read of a constant the pass does not set),
+    /// `input` (a vertex register the streams do not supply), `object_function`
+    /// (an animated property an object function drives), `wave` (an engine
+    /// wave table), `cube` (a stage that needs a cube texture), or `other`.
+    pub fn detail(&self) -> Option<&'static str> {
+        let LayerPlanRefusal::NotCompiled(why) = self else { return None };
+        Some(if why.contains("which the object pass does not set") {
+            "object_plan_not_compiled_constant"
+        } else if why.contains("registers we do not supply") {
+            "object_plan_not_compiled_input"
+        } else if why.contains("object_animation") {
+            "object_plan_not_compiled_object_function"
+        } else if why.contains("wave: Wave") {
+            "object_plan_not_compiled_wave"
+        } else if why.contains("needs a Cube texture") {
+            "object_plan_not_compiled_cube"
+        } else {
+            "object_plan_not_compiled_other"
+        })
+    }
+}
+
 impl std::fmt::Display for LayerPlanRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1613,7 +1639,7 @@ impl LitObjects {
                 return Err(R::Level);
             }
             if let Some(why) = m.layer_refused.get(&(layer, item.key.shader)) {
-                return Err(R::NotCompiled(why.clone()));
+                return Err(R::NotCompiled(format!("shader {:#010x}: {why}", item.key.shader)));
             }
         }
         let view = scene.view_of_pass(pass);
@@ -3104,6 +3130,24 @@ mod tests {
     use super::*;
     use crate::object_lighting::Lighting;
     use gfx::state::RenderStateType;
+
+    /// A kept compile error counts by its kind besides `not_compiled`, so
+    /// one read of `render.scene` splits a layer's refusals by cause.
+    #[test]
+    fn a_kept_compile_error_names_its_kind() {
+        let kind = |why: &str| LayerPlanRefusal::NotCompiled(why.into()).detail();
+        for (why, expected) in [
+            ("pass 0 implementation 0: section 0: vertex program reads c[69], which the object pass does not set", "constant"),
+            ("pass 0 implementation 0: section 1: vertex program reads registers we do not supply (0x0400)", "input"),
+            ("pass 0 implementation 0: section 0: animated constants: object_animation: ObjectAnimation { property: 1 }", "object_function"),
+            ("pass 0 implementation 0: section 0: animated constants: wave: Wave { property: 0, wave: 9 }", "wave"),
+            ("pass 0 implementation 0: section 2: pixel shader: stage 3: dot_rflct_spec needs a Cube texture, bound D2", "cube"),
+            ("no layer 21 at level 0", "other"),
+        ] {
+            assert_eq!(kind(why), Some(format!("object_plan_not_compiled_{expected}")).as_deref(), "{why}");
+        }
+        assert_eq!(LayerPlanRefusal::Shader.detail(), None);
+    }
 
     #[test]
     fn prt_layout_changes_preserve_the_fourth_component() {
