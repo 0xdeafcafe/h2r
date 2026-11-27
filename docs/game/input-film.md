@@ -401,7 +401,7 @@ first update, and so does a recording started during a game.
   sizes. The caller compares `lockstep::hash_sim` after loading with
   `StartPoint::check_loaded`.
 - **Capture and load.** `theater.start_point.capture` and
-  `theater.start_point.load` ([agent-api.md](../runtime/agent-api.md#theater-transport))
+  `theater.start_point.load` ([agent-api.md](../runtime/agent-api-modes.md#theater-transport))
   take a start point from a running game and put one back, through
   `theater/start_point_state.rs`: the arena is the bytes behind
   `SimRegion::HALO2`'s pointer word and the records go through the

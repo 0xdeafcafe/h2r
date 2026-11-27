@@ -805,5 +805,5 @@ flight and turret take/leave decisions. Fixtures live under
   then idles. `bots::Brain` uses the loaded map's nav mesh and collision
   data. A closure taking `&Frame` can also implement `PadSource`.
 
-See [the agent API](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+See [the agent API](../runtime/agent-api-sim.md#sim-simulated-players-and-direct-state)
 for script, recording and brain sources.

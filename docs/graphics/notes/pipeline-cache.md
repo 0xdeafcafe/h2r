@@ -83,7 +83,7 @@ queued prewarm moving it to draw priority. The menu after a level is a
 scope of its own (`next_scope` in `nv2a.rs`).
 
 Not confirmed by a run yet. Reproduce with
-[`game.menu`](../../runtime/agent-api.md#returning-to-the-main-menu),
+[`game.menu`](../../runtime/agent-api-host.md#returning-to-the-main-menu),
 on the fix (branch `menu-return-slow`) and on `e0a0585`, and with the
 prewarm off as the control:
 

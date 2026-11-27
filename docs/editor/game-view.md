@@ -61,7 +61,7 @@ sealed scene at a tick, not whatever was last presented.
 |---|---|
 | Flag | `h2 play --editor [--window]` needs `--level` and refuses the Live flags, `--film` (and `H2_FILM_OUT`) and `--input-timeline`, before the disc is read (`play_cmd/editor.rs`). Only `h2 play` has it; `h2 serve` takes no level |
 | Start | the level boot straight into `--level`, a disc level or an installed package, with one default player; no attract film, no main menu, no sign-in ([level-boot.md](../runtime/level-boot.md)) |
-| Window | none by default: `AppConfig::hidden` creates the window invisible and the picture goes to the ring. `--window` shows it as well. A hidden window, not `h2 serve --level` (which takes no level) or a window-less GPU target (not built), because the ring reads the frame handoff the guest fills, which the guest's own pacer drives whether or not the window is drawn ([agent-api.md](../runtime/agent-api.md#picture-feed-renderpicture)) |
+| Window | none by default: `AppConfig::hidden` creates the window invisible and the picture goes to the ring. `--window` shows it as well. A hidden window, not `h2 serve --level` (which takes no level) or a window-less GPU target (not built), because the ring reads the frame handoff the guest fills, which the guest's own pacer drives whether or not the window is drawn ([agent-api.md](../runtime/agent-api-render.md#picture-feed-renderpicture)) |
 | Session | a local game; Live, System Link, film and input recording are off, so every edit method is allowed |
 | Edits | the pairing starts in Edit, as a game Studio launches does |
 | Socket | the private socket Studio names (`H2_AGENT=<cache>/editor-<pid>-<n>.sock`), which other clients do not discover as the shared game |
@@ -122,7 +122,7 @@ Input goes to the own game only, and only while the panel holds it.
 - `play::input` turns the captured devices into the game's pad at the
   game's tick rate, with the same bindings as the game's window
   (`crates/apps/app`'s mapping, moved to a crate both use), and sends
-  each state with `input.pad` ([agent-api.md](../runtime/agent-api.md#input-act-like-a-player)).
+  each state with `input.pad` ([agent-api.md](../runtime/agent-api-input.md#input-act-like-a-player)).
   Mouse movement is sent as look deltas, as the window sends them.
 - In **Free** and **Editor** cameras the captured input flies the view
   and the player gets none.
@@ -173,12 +173,12 @@ Studio ([agent-api.md](agent-api.md)):
   over a synthetic frame source (**Code**,
   `crates/extensions/agent/src/render/picture/tests.rs`,
   `crates/extensions/agent/src/exec/picture.rs`); `h2 agent picture` is the
-  client ([agent-api.md](../runtime/agent-api.md#picture-feed-renderpicture)).
+  client ([agent-api.md](../runtime/agent-api-render.md#picture-feed-renderpicture)).
 - Studio starts `h2 play --level` with a private agent socket and a
   play copy, and restores the player's place after a reload (**Code**,
   `crates/apps/studio/src/play/launch.rs`, `play/playtest.rs`).
 - `input.pad` drives a player on a headless or windowed game (**Code**,
-  [agent-api.md](../runtime/agent-api.md#input-act-like-a-player)).
+  [agent-api.md](../runtime/agent-api-input.md#input-act-like-a-player)).
 - The panel reads the ring, counts its frames and drops, and shows a
   stall, over an invented ring (**Code**,
   `crates/apps/studio/src/play/picture/tests.rs`,

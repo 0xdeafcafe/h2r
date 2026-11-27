@@ -249,7 +249,7 @@ The trace history holds the newest 512 queries from the owning simulation
 executor. Trace colours fade over 1–300 guest ticks (default 30). The traces
 row gives a reason if the query entry is unavailable or lockstep, film
 recording or film playback is active. Repeated images retain their sampled
-lines. See [Drawing world-space lines over the frame](agent-api.md#drawing-world-space-lines-over-the-frame).
+lines. See [Drawing world-space lines over the frame](agent-api-edit.md#drawing-world-space-lines-over-the-frame).
 
 ## Cheats
 
@@ -405,7 +405,7 @@ from the method's implementation, not its doc).
 
 Hold Back and D-pad down for half a second; that works on any pad. If it
 doesn't, `h2 agent hostpads` (`input.host`,
-[agent-api.md](agent-api.md#inputhost-the-host-controllers)) shows each
+[agent-api.md](agent-api-input.md#inputhost-the-host-controllers)) shows each
 controller three ways. Run it while the buttons are held:
 
 - `devices`: the controller as GameController reads it. Back must show as

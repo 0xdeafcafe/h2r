@@ -155,7 +155,7 @@ The game copies the resolved text into the widget. A text widget embeds the
 text interface at `+0x74` (`0x0022f561`, `0x0022f583`), a pane button at
 `+0x70` (`0x00253c8b`). Both interfaces store UTF-16 at `+0x44`,
 with 32 or 256 units including the terminator (`0x0022f50d`, `0x0022f545`).
-[The UI audit](../runtime/agent-api.md#ui-what-the-menus-show) reads these
+[The UI audit](../runtime/agent-api-host.md#ui-what-the-menus-show) reads these
 buffers after row binding and localization.
 
 ### Substitution units

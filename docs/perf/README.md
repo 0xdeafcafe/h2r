@@ -67,7 +67,7 @@ content and movie settings. Capture the startup log and use `h2 agent loads`
 with frame stats enabled. Compare the boot stall's duration, presents,
 `read_bytes` and `file_io_us` with and without `H2_FEATURES=-map-copy.boot`.
 The agent's interval starts when the agent starts. Time launch separately to
-include the earlier host setup. [Load timeline](../runtime/agent-api.md#load-timeline)
+include the earlier host setup. [Load timeline](../runtime/agent-api-host.md#load-timeline)
 
 ## Experiments not adopted
 

@@ -533,7 +533,7 @@ paired game's `hs.eval`, which compiles it against the loaded map and runs
 it at a tick boundary over a snapshot of the map's globals; the last answer
 shows under the box. It does not run builtins that act on the game's
 objects, and it writes nothing back
-([runtime/agent-api.md](../runtime/agent-api.md#hseval)).
+([runtime/agent-api.md](../runtime/agent-api-input.md#hseval)).
 
 **Write** (`crates/apps/studio/src/app/script_edit.rs`,
 `crates/formats/hs/src/table_writes.rs`). `App::script_compile(source,

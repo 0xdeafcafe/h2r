@@ -182,7 +182,7 @@ same sealed scene, in `retail` and in `e3` lighting
   world view at the layout's eye (`render.view {eye, yaw, pitch, fov}`,
   on the same `spectator_view` camera as `render.spawn_view`), then
   `render.capture`
-  ([agent-api.md](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes)).
+  ([agent-api.md](../runtime/agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes)).
 - `first`: the player's own view holding the item, with the HUD.
 - `hud-full`, `hud-low`, `hud-empty`: `first` with the shield and ammo
   set by `sim.state.set`, for HUD kit elements and `nhdt` edits.

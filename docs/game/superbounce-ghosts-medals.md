@@ -107,7 +107,7 @@ it faces (`marks`).
 
 `superbounce.ghosts` lists the map's runs, the one looked at, the prompt
 and the playback; `superbounce.ghost_show` plays one by its index or
-stops it ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type));
+stops it ([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type));
 with the feature off it refuses to play one.
 
 No game has recorded or shown a run yet. To check one on the lab: turn
@@ -406,7 +406,7 @@ they are shown, as kill medals are worked out from kills.
 
 ### The agent API
 
-`superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+`superbounce.state` ([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type))
 has `medals`:
 
 | Field | Meaning |
@@ -545,7 +545,7 @@ there are, and the pulse, the fades and the growth run on the wall clock.
 spots marked and how many are behind a wall, the tracker's blips and the
 map's counts. `superbounce.view_test {"mode": "pulse"|"hold"|"none"}`
 (act) drives it with no pad
-([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+([agent-api.md](../runtime/agent-api-world.md#superbounce-the-superbounce-game-type)).
 
 ### Checking the bounce view on the lab
 

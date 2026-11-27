@@ -79,7 +79,7 @@ the window and the API stay one path.
   **Playing (rich editors K2).** `recording.play {name, unit?, mode?}`
   asks the paired game to play the recording on `unit` (`player.<n>`,
   default `player.0`; `mode` `play`, `delete` or `hover`) through the
-  game's [`recording.play`](../runtime/agent-api.md#recordingplay), on a
+  game's [`recording.play`](../runtime/agent-api-input.md#recordingplay), on a
   connection of its own, and starts the path: the unit's position from
   each streamed tick (`play::recording_path`), which the Scene viewport
   draws. It is `REFUSED` with no pairing, a paused game, a game that

@@ -56,7 +56,7 @@ The dialog then blurs the screen under it with `SCREEN_CONVOLUTION_BLUR` (called
 
 A screen-space quad whose positions reach both edges of the frame along the axis the fit shrinks is a full-frame pass: the cutscene tints, the title screen's backdrop fill, the wide convolution's grid rows, the colour pass's quads, and any menu fill a submission site did not read. The device takes the window position of each unindexed vertex and drops the widget fit for the draw (`device.rs`, `spans_the_fitted_frame`).
 
-A vertex program's vertices go through the program, so positions from constant rows, passed through, or written as inline Begin/End words and `D3DDevice_End` strips (the title screen's backdrop blur and tint) land where the GPU puts them. Pre-transformed vertices are read as given. The reading is `crates/platform/d3d/src/screen_rect.rs`, the same one [`render.frame_layout`](../runtime/agent-api.md#renderframe_layout) reports as `window_xy`. Tests in `crates/platform/d3d/tests/passes.rs`: `full_frame_quads_span_the_display_in_a_fitted_ui_scope`, `immediate_program_quads_over_the_frame_span_the_display_in_a_fitted_ui_scope`.
+A vertex program's vertices go through the program, so positions from constant rows, passed through, or written as inline Begin/End words and `D3DDevice_End` strips (the title screen's backdrop blur and tint) land where the GPU puts them. Pre-transformed vertices are read as given. The reading is `crates/platform/d3d/src/screen_rect.rs`, the same one [`render.frame_layout`](../runtime/agent-api-render.md#renderframe_layout) reports as `window_xy`. Tests in `crates/platform/d3d/tests/passes.rs`: `full_frame_quads_span_the_display_in_a_fitted_ui_scope`, `immediate_program_quads_over_the_frame_span_the_display_in_a_fitted_ui_scope`.
 
 A quad that covers the cinema window (full width, letterboxed height) spans the display along the fitted axis and keeps the fit on the other.
 
@@ -108,7 +108,7 @@ A placement or cluster is also left out when any of its parts is not loaded or s
 
 For objects, the supplement builds the model sections and node palettes on a private copy of the record writes. Materials without native layer-3 support, fades, attachments and objects that need guest animation code can still leave gaps at the sides. The guest's flare visibility count comes from its own reference depth and query.
 
-To locate a missing BSP cluster, compare its ID in the guest visibility list, the structure list and the layer-3 list for the same view. The sealed scene includes all three and its camera. The display frame recorder includes the final scissor and projection factor. See [FrameScene reads](../runtime/agent-api.md#framescene-checks-compare-capture-scene-parity-hashes) and [display raster](../runtime/agent-api.md#renderframe_layout).
+To locate a missing BSP cluster, compare its ID in the guest visibility list, the structure list and the layer-3 list for the same view. The sealed scene includes all three and its camera. The display frame recorder includes the final scissor and projection factor. See [FrameScene reads](../runtime/agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes) and [display raster](../runtime/agent-api-render.md#renderframe_layout).
 
 ## Other views
 

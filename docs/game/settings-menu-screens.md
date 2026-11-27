@@ -322,7 +322,7 @@ off is left out.
   game ends.
 
 `ui.screen` and `ui.stack` show GAME MENU's rows and the Game Setup
-screens ([agent-api.md](../runtime/agent-api.md#ui-what-the-menus-show)),
+screens ([agent-api.md](../runtime/agent-api-host.md#ui-what-the-menus-show)),
 so the API needs no new method for this.
 
 ### In a game, our screens use screen 200
@@ -375,7 +375,7 @@ the Controls row and persistence.
 ### To check in game
 
 Use `H2_UI_WATCH=1`, `h2 agent press` for buttons and
-[`h2 agent ui`](../runtime/agent-api.md#ui-what-the-menus-show) to check the
+[`h2 agent ui`](../runtime/agent-api-host.md#ui-what-the-menus-show) to check the
 screen after each step.
 
 1. Start in campaign or multiplayer, select **Player Settings** and press

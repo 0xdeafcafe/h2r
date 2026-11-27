@@ -917,7 +917,7 @@ out in `0xfe618`.
   takes cover, targets the player and uses the selected weapons and grenades.
   The agent method `world.ai` reports squad, cached sector, behavior, focus
   object and combat status. Match its unit ID to positions across ticks in
-  `world.object`. [Agent API](../runtime/agent-api.md#worldai)
+  `world.object`. [Agent API](../runtime/agent-api-world.md#worldai)
 - That the chosen characters, pulled into a Halo 1 level from other maps,
   load with their units, weapons and animations.
 - How squads behave under orders with no endings, and how closely the generated command scripts reproduce H1 movement and timing.

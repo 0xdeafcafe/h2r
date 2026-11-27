@@ -11,7 +11,7 @@ on its own run sockets. The agents directory is a field of the host's
 configuration (`HostConfig::agents`, the cache directory's `agents/` in
 production), so tests point it at a temp directory and never see a game
 the user is playing. It also checks the local process list for
-recognizable game launches, including the bundled macOS app.
+recognisable game launches, including the bundled macOS app.
 A headless serve and jobs already running under this host leave the Mac
 available for new lab jobs. An open player game window whose agent cannot
 show the prompt leaves the job skipped.

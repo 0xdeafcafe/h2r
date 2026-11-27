@@ -217,7 +217,7 @@ fields = { team = 1 }
 
 ## Related
 
-- [agent-api.md](../runtime/agent-api.md#test-maps): the methods in the API's index
+- [agent-api.md](../runtime/agent-api-checks.md#test-maps): the methods in the API's index
 - [maps.md](maps.md): packages, offers and slots
 - [scenario-editor.md](../editor/scenario-editor.md): the placement blocks and their checks
 - [level-boot.md](../runtime/level-boot.md): the options a load builds

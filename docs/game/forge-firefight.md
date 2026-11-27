@@ -261,7 +261,7 @@ the test never ends with everyone dead while a seat is in the monitor.
 D-pad Up puts the player in the fight.
 
 `firefight.state` reports `test: true`, and `forge.waves.test {stop?}`
-starts and stops one ([agent-api.md](../runtime/agent-api.md#local-forge-session)).
+starts and stops one ([agent-api.md](../runtime/agent-api-modes.md#local-forge-session)).
 
 ### Enemy classes
 

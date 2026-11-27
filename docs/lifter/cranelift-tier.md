@@ -283,7 +283,7 @@ asks.** No hot swap.
   the text is `game_code::banner_text`). The debug menu's Game > Game code
   page and `game.code` show the same state, and `game.code.restart`
   starts `h2 play` again in place (same executable and arguments) once the
-  full-speed module is built ([agent-api.md](../runtime/agent-api.md#game-code-full-speed-or-the-slower-start)). `--tier fast` runs the fast
+  full-speed module is built ([agent-api.md](../runtime/agent-api-host.md#game-code-full-speed-or-the-slower-start)). `--tier fast` runs the fast
   tier only; `--tier clang` is `auto` by name. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack

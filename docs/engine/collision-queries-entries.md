@@ -257,7 +257,7 @@ result bytes and the visit state. `collision.trace` runs the same planner
 read-only and returns the ordered mark lists. Trace and return comparison
 both decline on unsupported arithmetic or data. See the
 [query order](sim-rewrite-collision.md#54-the-collision-query-entry-j-e) and the
-[agent methods](../runtime/agent-api.md#collision-the-native-collision-world).
+[agent methods](../runtime/agent-api-checks.md#collision-the-native-collision-world).
 
 ### Object-reference sphere pretest
 

@@ -280,7 +280,7 @@ hour on one Mac, and a nine-number block converges in a few tens of
 generations. Numbers for a design decision come from the quiet laptop
 through `h2 lab` ([lab.md](../runtime/lab.md)), as a dated note in
 `docs/game/notes/`, with `wall.speedup` from the reports and `rss_bytes`
-and `cpu_percent` from [`host.metrics`](../runtime/agent-api.md#hostmetrics).
+and `cpu_percent` from [`host.metrics`](../runtime/agent-api-host.md#hostmetrics).
 
 ### What is reused
 
@@ -441,7 +441,7 @@ table decides what a skill and a seed mean.
 
 - **Sim processes do not talk to Live.** A training child is `h2 sim run`
   with no upload: it makes no account, no session and no game
-  ([agent-api.md, "Live"](../runtime/agent-api.md#live)). Only the trainer
+  ([agent-api.md, "Live"](../runtime/agent-api-sim.md#live)). Only the trainer
   posts, and only summaries. The one sample match per generation goes
   through the existing `--upload` path, which is private, flags every
   player as a bot with no account xuid, and is excluded from public lists,

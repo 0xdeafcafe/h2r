@@ -17,7 +17,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | Namespace | Methods |
 |---|---|
 | `session` | `status`, `methods`, `log` |
-| `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
+| `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api-host.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](agent-api-workspace.md#the-tag-workspace)); `import {map \| path, name}` (planned) |
 | `project` | `list`, `read {project, closure?}`, `build {project}`: projects over the tree ([Projects and edit files](agent-api-workspace.md#projects-and-edit-files)) |
@@ -114,7 +114,7 @@ Notes on some:
   `script.undo {redo?}` takes back (or redoes) the last applied compile:
   `{changed, free_nodes, depth}`.
   `script.eval {expression, type?}` sends an expression to the paired
-  game's `hs.eval` ([runtime/agent-api.md](../runtime/agent-api.md#hseval))
+  game's `hs.eval` ([runtime/agent-api.md](../runtime/agent-api-input.md#hseval))
   and returns `{ok: true, type, type_index, value, bits}`. Problems in the
   text are an answer, as in `script.compile`: `{ok: false, errors: [{line,
   column, code, text}], error}`, counted in the expression; so is the
@@ -164,7 +164,7 @@ Notes on some:
   `rules.get`'s `reload`: `{state: sending}`, then `{state: done, mode:
   in_place | restarted, hash, tick, reasons}` or `{state: refused, why}`
   (not paired, a game without `rules.reload`, or the game's refusal;
-  [Rules scripts](../runtime/agent-api.md#rules-scripts)).
+  [Rules scripts](../runtime/agent-api-modes.md#rules-scripts)).
   `rules.reload {path}` is an outside editor's save: when `path` is the
   open script's file it is read first (`UNSAVED` when Studio has other
   unsaved edits; the window then asks which to keep); another file is

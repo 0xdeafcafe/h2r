@@ -34,9 +34,9 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | A paired editor with no window | Built: `h2-editor --serve` runs the game link between requests | `Api::serve_once` (`crates/apps/studio/src/api/mod.rs`) |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
 | Geometry and painted pixels sent live | Built: a diff of the Modeling tool's patches and the Textures tool's encoded tiles against `raw_sync::RawBaseline`, sent as `edit.batch` `raw` entries with the bounds as `writes`; a grown section as `edit.raw.append`, then the batch with `evict`; shows on the next frame ([realtime-edits.md](realtime-edits.md)) | `play/raw_sync.rs` |
-| Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api.md#object-edits) |
-| Add and remove placements live | In Edit an added, removed, undone or redone entry is one `world.placement.edit` on its block; the receipt advances the loaded layout | `crates/apps/studio/src/play/objects/drive/placements.rs`, `play/sync.rs` (`Baseline::transaction`), [Placement edits](../runtime/agent-api.md#placement-edits) |
-| Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api.md#test-maps) |
+| Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api-sim.md#object-edits) |
+| Add and remove placements live | In Edit an added, removed, undone or redone entry is one `world.placement.edit` on its block; the receipt advances the loaded layout | `crates/apps/studio/src/play/objects/drive/placements.rs`, `play/sync.rs` (`Baseline::transaction`), [Placement edits](../runtime/agent-api-sim.md#placement-edits) |
+| Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api-checks.md#test-maps) |
 | Tag field writes in the game | Built: View/Edit, field effects, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
@@ -327,7 +327,7 @@ frame follows its scenario field acknowledgement.
 Adding or removing a placement, and undoing or redoing either, changes the
 block's layout revision. When the game offers `world.placement.edit`
 (design: [realtime-edits.md](realtime-edits.md), "Placements"; the
-method: [Placement edits](../runtime/agent-api.md#placement-edits)), the
+method: [Placement edits](../runtime/agent-api-sim.md#placement-edits)), the
 editor sends that block as one transaction instead of putting it behind
 reload (`play/objects/drive/placements.rs`). `sync::Baseline` holds what
 the game's block holds: its records, the document placement in each slot,
@@ -543,7 +543,7 @@ event `epoch {from, to, why}`.
 
 The in-game check that a placed object changes cluster after a move is
 pending. The game API documents the object ids, placement blocks and peer
-confirmation for these writes. [Object edits](../runtime/agent-api.md#object-edits)
+confirmation for these writes. [Object edits](../runtime/agent-api-sim.md#object-edits)
 
 ### The editor's socket API
 

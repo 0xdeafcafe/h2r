@@ -123,7 +123,7 @@ each fused chain. During a run, `shadow.status` reports the samples,
 skips and mismatches for each named point. A point with zero checked
 samples still needs a gameplay case that reaches it.
 
-Methods ([agent-api.md](../runtime/agent-api.md#shadow-checks)):
+Methods ([agent-api.md](../runtime/agent-api-checks.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
 ```sh

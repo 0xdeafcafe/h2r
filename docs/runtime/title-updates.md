@@ -146,7 +146,7 @@ with offline DLC installers. Installer provenance matters: a 2023 release
 explicitly included spoofed regional substitutes for then-missing original
 TU5 files. A matching title ID or displayed 1.5 is therefore insufficient
 proof of an authentic localized release. Archive completeness changes;
-consult the current missing-content inventory. Pinecone recognizes local
+consult the current missing-content inventory. Pinecone recognises local
 dumps; XCAT scans and uploads preservation contributions and console
 identifiers, so it is a separate opt-in activity from private extraction.
 [Maintainer's installer thread](https://digiex.net/threads/xbox-offline-xbox-live-downloadable-content-dlc-installers.675/),
@@ -186,7 +186,7 @@ the expanded importer and timestamp reporting remain design work.
 
 Keep provenance and integrity fingerprints in a private manifest, pairing
 the exact local base and update for the address-map design below. If future
-tooling accepts a user-supplied delta, it must first recognize its actual
+tooling accepts a user-supplied delta, it must first recognise its actual
 format and validate the source, reconstruct into a new local output, then
 check output structure, metadata and independently trusted local integrity
 evidence. The complete resulting XBE is the input to image matching;
@@ -362,7 +362,7 @@ after files arrive.
 | A | `ImageId`, one base hash, replace the three title-ID + entry gates and the duplicate hashes | 0.5 d |
 | B | `Anchor` + `ImageAddrs` refactor across d3d, dsound, xwma, xapi, bink-hle, boot glue, engine, `GuestLayout`, `FrameWait`, `dsound::Layout`, `CacheGlobals`, loader arena. Identity map, no behaviour change | 2-3 d |
 | C | Fill in `xdk` names, add the symbols cross-check test, derive `GuestLayout` globals from symbols' data votes, remove the duplicate addresses | 1-2 d |
-| D | `imagemap`: normalizer, passes 1-6, one-to-one solver, report, synthetic and property tests | 4-6 d |
+| D | `imagemap`: normaliser, passes 1-6, one-to-one solver, report, synthetic and property tests | 4-6 d |
 | E | Byte check at registration, `HookClass` audit for every entry | 1 d |
 | F | Structural location for the `hs` catalog and the retail dispatch tables; the WMA range-equality path | 1-2 d |
 | G | CLI: `h2 image list/map`, `--image`, per-image out and data dirs, launch-path mapping | 1-2 d |

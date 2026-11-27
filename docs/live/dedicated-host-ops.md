@@ -347,7 +347,7 @@ Only remote players should appear in the roster.
 
 The supervisor uses the agent API for these repeatable operations. The
 guest boundaries above come from static traces. The two-console lifecycle
-and the first refusal still need a game run. [Agent methods](../runtime/agent-api.md#hostlobby)
+and the first refusal still need a game run. [Agent methods](../runtime/agent-api-host.md#hostlobby)
 
 ## Fly Machines provider
 

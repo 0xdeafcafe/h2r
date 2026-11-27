@@ -120,7 +120,7 @@ and shader readers share ordinary tag metadata within a model load, and sun
 caster and receiver lookup holds weak references to the owning map state.
 
 Memory probes and loader scopes are listed in
-[Explain memory growth](../runtime/agent-api.md#explain-memory-growth). The
+[Explain memory growth](../runtime/agent-api-host.md#explain-memory-growth). The
 play-run measurements are in [Map-load memory](notes/2026-11-24-map-load-memory.md).
 
 ## Admission

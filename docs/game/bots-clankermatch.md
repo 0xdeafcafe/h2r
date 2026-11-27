@@ -429,7 +429,7 @@ lobby never started.
   map status (`0x6e0f0`) and arbitration status (`0x72140`). For a full
   lobby that returns to the party, `live.matchmaking.trace` retains these
   inputs, the guest matchmaking result and the target key release.
-  [Agent API](../runtime/agent-api.md#matchmaking-transitions)
+  [Agent API](../runtime/agent-api-host.md#matchmaking-transitions)
 - **Arbitration starts when the lobby fills.** Only a full, map-ready
   lobby reaches `0x71ac2`: it makes the round (`0x73ae0`,
   `XOnlineArbitrationCreateRoundID`) and sets it on the target

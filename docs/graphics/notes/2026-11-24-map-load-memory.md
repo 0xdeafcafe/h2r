@@ -62,7 +62,7 @@ caused the load peak.
 
 **Reproduction.** Repeat the same menu-to-match sequence and return to the
 menu. Sample process footprint and the named cache probes through
-[`host.memory`](../../runtime/agent-api.md#explain-memory-growth) across
+[`host.memory`](../../runtime/agent-api-host.md#explain-memory-growth) across
 activation and steady play. Collect heap stacks at the load peak and once
 the footprint settles. Compare the return-to-menu counts after the
 retirement worker drains and repeat the map switch to measure accumulation.

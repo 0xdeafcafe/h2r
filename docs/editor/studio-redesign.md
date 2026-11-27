@@ -1067,7 +1067,7 @@ any block it displaces. See [realtime-edits.md](realtime-edits.md),
 "Tag-write notices".
 `pair.preview {what: "animation", target, animation}` spawns the
 object (`sim.spawn`), plays the animation on it through the game's
-`world.object.animate` ([agent-api.md](../runtime/agent-api.md#worldobjectanimate))
+`world.object.animate` ([agent-api.md](../runtime/agent-api-input.md#worldobjectanimate))
 and captures the frame after `ticks`
 ([agent-api.md](agent-api.md), "Previewing content in the paired game"). The game method
 points the object's first animation channel at the named animation of its
@@ -1188,7 +1188,7 @@ does while a call makes the sound. **In game** on a sound document runs
 reaches the game, the sound plays at the player and `pair.audio`'s
 readings come back with the editor's own measure beside them. The
 game's `audio.play` starts a sound tag at a player's unit through the
-engine's own sound start ([agent-api.md](../runtime/agent-api.md#audioplay)).
+engine's own sound start ([agent-api.md](../runtime/agent-api-input.md#audioplay)).
 
 | Method | Does |
 |---|---|

@@ -666,7 +666,7 @@ on.
 #### Reloading a running script
 
 The agent API's `rules.reload`
-([agent-api.md](../runtime/agent-api.md#rules-scripts)), and Studio's
+([agent-api.md](../runtime/agent-api-modes.md#rules-scripts)), and Studio's
 script editor through it
 ([editor-guide.md](../editor/editor-guide.md#game-type-scripts)), put a
 new blob into the running game. `crates/extensions/game/src/rules/reload.rs`

@@ -244,7 +244,7 @@ builtins (`sleep` with a named script target, `sleep_forever`,
 scheduler and the individual VM comparisons also observe calls made by
 those scripts.
 
-Read [`hs.parity`](../runtime/agent-api.md#hsparity) before and after a
+Read [`hs.parity`](../runtime/agent-api-input.md#hsparity) before and after a
 campaign encounter. A counter needs observed matches to establish coverage.
 Record the change in each counter and the first mismatch. The guest still
 supplies the answer on every call, including a mismatch.

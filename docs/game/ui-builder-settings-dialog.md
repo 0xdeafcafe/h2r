@@ -430,7 +430,7 @@ fit. When all five rows are filled, each enabled line replaces a bottom
 row (`lobby_options::plan`). The hook sets each extra
 text widget through `TEXT_SET` and the shared locale table
 (`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
-[`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
+[`ui.lobby_options` agent method](../runtime/agent-api-host.md#ui-what-the-menus-show)
 reads those widgets in display order.
 
 ## Behaviour
