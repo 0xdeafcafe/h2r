@@ -2048,6 +2048,7 @@ name = "emit"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "clif",
  "hostfault",
  "iced-x86",
  "ir",
