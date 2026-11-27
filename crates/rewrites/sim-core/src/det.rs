@@ -64,6 +64,15 @@ impl Fp {
         self.ok &= lanes::ordinary1(x);
     }
 
+    /// Record an operand that is only compared (`comiss`, `fcom`) and
+    /// never enters arithmetic. Zero, normal and infinite magnitudes
+    /// compare without raising a flag, so even `FLT_MAX` stays on the fast
+    /// path; a NaN (invalid) or a subnormal (denormal) does not.
+    #[inline]
+    pub fn check_compared(&mut self, x: u32) {
+        self.ok &= lanes::compared1(x);
+    }
+
     #[inline]
     fn scalar(&mut self, op: Op, a: u32, b: u32) -> u32 {
         self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b);

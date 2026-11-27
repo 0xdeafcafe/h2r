@@ -385,6 +385,12 @@ compare:
 zero or have a magnitude in `[2^-63, 2^63)`. Anything else (NaN, infinity,
 subnormal, huge) bails with `float`. These bounds keep each add, subtract and multiply within binary32 range. Each operation rounds once under nearest-even on both host architectures. The entry checks host rounding and exception masks.
 
+A value the walk only compares is held to the compare's rule instead
+(`Fp::check_compared`): zero, any normal and infinity raise no flag, NaN
+and subnormals decline. The segment limit and R's fraction are such
+values. J passes the image's `FLT_MAX` limit (`0x44aed4`), and the walk
+computes only with the ordinary `min(limit, 1)`.
+
 The matcher loads normal components, takes absolute values and compares them in x87. Those steps are exact on the accepted range. The split's divide, sign change and binary32 store can round.
 `det::x87_neg_quotient` computes it as a host f32 division. That gives the
 same bits in all three precision controls: the quotient is rounded once to
