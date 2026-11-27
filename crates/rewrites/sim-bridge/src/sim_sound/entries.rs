@@ -111,6 +111,10 @@ pub enum Body {
     Stop,
     /// `0x126400`: every sound finished with [`Reason::Cleared`].
     StopAll,
+    /// `0x126660`: the guest's blend of the two background ambience slots
+    /// (sound globals `+0x1a8`, `0x1c` bytes each) toward the candidates;
+    /// it reads no pool or channel global, and the listener math reads the
+    /// slots.
     Ambience,
     /// `0x1272c0`: the environment words of the sound globals.
     Environment,
@@ -146,14 +150,13 @@ impl Body {
             Body::StartsUpdate | Body::StartLayerNew | Body::StartLayerPlay | Body::StartLayerRun => {
                 Some("the start layer's records ([0x51ebe0]) are not in the table")
             }
-            Body::Ambience => Some("the background ambience (sound globals +0x1ac) is not in the table"),
             _ => None,
         }
     }
 
     /// The body calls the guest function it replaces (pool-free work).
     fn calls_original(self) -> bool {
-        matches!(self, Body::Create | Body::Drop | Body::Listeners)
+        matches!(self, Body::Create | Body::Drop | Body::Listeners | Body::Ambience)
     }
 }
 
@@ -934,7 +937,7 @@ fn empty(point: &Point) -> Ret {
 }
 
 /// The guest function a body replaces, run with the hook let through: its
-/// stack arguments passed on as they came.
+/// registers and stack arguments passed on as they came.
 async fn original(cx: &Cx, table: &Shared, entry: &Entry, busy: &AtomicBool) -> EntryResult {
     let pop = match entry.point.sig {
         points::Sig::Fn { pop, .. } => u32::from(pop),
@@ -945,7 +948,9 @@ async fn original(cx: &Cx, table: &Shared, entry: &Entry, busy: &AtomicBool) -> 
         args.push(cx.arg(n)?);
     }
     busy.store(true, Ordering::SeqCst);
-    let r = cx.call(GuestCall::new(entry.point.base).args(args)).await;
+    let e = cx.entry();
+    let call = GuestCall::new(entry.point.base).eax(e.eax).ecx(e.ecx).edx(e.edx).ebx(e.ebx).esi(e.esi).edi(e.edi);
+    let r = cx.call(call.args(args)).await;
     busy.store(false, Ordering::SeqCst);
     lock(table).ledger.entry_guest_calls += 1;
     r.map(|regs| Ret::new(regs.eax, 0))
@@ -975,6 +980,10 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         Body::Listeners => {
             original(&cx, &table, entry, &busy).await?;
             Ok(Ret::new(0, 4))
+        }
+        Body::Ambience => {
+            original(&cx, &table, entry, &busy).await?;
+            Ok(Ret::new(0, 0))
         }
         Body::Service => {
             let mut t = lock(&table);
@@ -1022,8 +1031,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         Body::StartsUpdate
         | Body::StartLayerNew
         | Body::StartLayerPlay
-        | Body::StartLayerRun
-        | Body::Ambience => unreachable!("refused above"),
+        | Body::StartLayerRun => unreachable!("refused above"),
     }
 }
 

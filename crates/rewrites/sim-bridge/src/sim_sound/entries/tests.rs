@@ -301,17 +301,17 @@ fn a_stop_fades_the_sound_and_stop_all_clears_the_table() {
 #[test]
 fn a_refused_entry_is_counted_by_its_address() {
     let t = table(Arc::new(Flat(10.0)));
-    let r = run_body(&t, Body::Ambience, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
+    let r = run_body(&t, Body::StartsUpdate, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     let r = run_body(&t, Body::StartLayerNew, guest(0), regs(), |_, _| panic!("a refusal calls nothing"));
     assert_eq!(r.result, Ok(Ret::new(NONE, 4)));
     let c = lock(&t).counters();
     assert_eq!(c["sound.refused_entry"], 2);
-    assert_eq!(c["sound.refused_entry.0x126660"], 1);
+    assert_eq!(c["sound.refused_entry.0x21d390"], 1);
     for e in ENTRIES {
         assert!(!(e.body.refusal().is_some() && e.body.calls_original()), "{}", e.point.name);
     }
-    for body in [Body::HistoryLast, Body::LoopUpdate, Body::LoopSource] {
+    for body in [Body::HistoryLast, Body::LoopUpdate, Body::LoopSource, Body::Ambience] {
         assert_eq!(body.refusal(), None, "{body:?}");
     }
 }
@@ -434,4 +434,17 @@ fn a_stop_frees_a_loop_that_holds_no_sound_at_once() {
     lock(&t).sounds.finish(primary, Reason::PlayedOut, 1, &mut NullOwners);
     assert_eq!(loop_update(&t, loop_call(1, LOOP_TAG, 0x55, 2, 0, 0.0, 0)), Ret::new(1, 32));
     assert!(lock(&t).sounds.loops().is_empty());
+}
+
+#[test]
+fn the_ambience_runs_the_guests_blend_with_its_candidates() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut called = Vec::new();
+    let r = run_body(&t, Body::Ambience, guest(0), Regs { eax: RECORD, ..regs() }, |call, _| {
+        called.push((call.target, call.eax));
+        Regs::default()
+    });
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert_eq!(called, [(0x0012_6660, Some(RECORD))]);
+    assert_eq!(lock(&t).ledger.entry_guest_calls, 1);
 }
