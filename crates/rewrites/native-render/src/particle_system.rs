@@ -202,7 +202,8 @@ pub struct Particle {
     pub corners: [f32; 4],
 }
 
-/// A particle to be born at the next update.
+/// A particle to be born at the next update, at `age` (0 for a new one;
+/// a mirrored particle's own age).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Spawn {
@@ -213,7 +214,8 @@ pub struct Spawn {
     pub random: [f32; 4],
     pub words: u32,
     pub tint: u32,
-    pub _pad: [u32; 2],
+    pub age: f32,
+    pub _pad: u32,
 }
 
 /// The update's uniform.
@@ -223,7 +225,9 @@ pub struct Step {
     pub dt: f32,
     pub spawns: u32,
     pub capacity: u32,
-    pub _pad: u32,
+    /// Non-zero: no particle survives; the system is the births alone
+    /// ([`crate::particle_compute::GpuParticles::mirror`]).
+    pub mirror: u32,
 }
 
 /// The draw's view uniform: clip from world, and the billboard axes.

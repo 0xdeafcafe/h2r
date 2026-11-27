@@ -8,6 +8,9 @@
 //!   writes (the input cache, the sequence) are made in the guest and the
 //!   callback returns. The emitter `0x0023ed30` never runs, so no particle
 //!   quad of the sorted dispatch reaches D3D.
+//!   With a mirror host ([`mirror`]) the particle is held as a GPU
+//!   particle system's birth and its system draws when `0x002243c0`
+//!   returns.
 //! - **Contrails.** At `0x00042cf0`'s entry the ribbon is made in Rust
 //!   ([`engine::contrail_ribbon`]), written where the builder writes it,
 //!   and the builder returns its AL; the polygon handler's draw of it is
@@ -23,7 +26,7 @@ use engine::contrail_ribbon as cr;
 use engine::memory::GuestMemory;
 use engine::particle_emission as pe;
 
-use super::{answering, count, emission, ribbon, view_update, with_gate};
+use super::{answering, count, emission, mirror, ribbon, view_update, with_gate};
 
 /// Whether this call is the answer's: the gate answers and the frame is
 /// not sampled. A sampled frame opens `arm` instead.
@@ -67,6 +70,12 @@ pub(super) fn particle(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) 
             return false;
         }
     };
+    // The mirror holds it for the draw's batch, or draws its batch so
+    // this one's direct draw keeps the guest's order.
+    if mirror::take(m, esp, &p) {
+        apply(m, &p.writes);
+        return true;
+    }
     // The emitter's frame, where the callback would push it (below ESP).
     let e = &p.emission;
     let at = esp.wrapping_sub(pe::EMIT_DEPTH);
