@@ -14,6 +14,8 @@ use engine::entry::{Cx, EntryError, GuestCall, Regs};
 use engine::{GuestMemory, MemFault, points};
 
 use super::host::{AiGlobals, Kit};
+use ::firefight::ShipKind;
+
 use super::ship::ShipPath;
 use crate::actor_net::squads::Placement;
 
@@ -114,10 +116,11 @@ pub const HUNT_PREFIX: &str = "ff_hunt_";
 /// The orders a kit authors for an allied squad: `ff_hold_NN` keeps it at
 /// base NN.
 pub const HOLD_PREFIX: &str = "ff_hold_";
-/// The kit's parked drop ship, an object name, and a zone's flight path,
-/// the point set `ff_path_NN` for `ff_drop_NN`, with the points
-/// `run_in`, `hover` and `run_out` (`crates/tools/firefight-kit/src/ship.rs`).
-const SHIP_NAME: &str = "ff_ship";
+/// The kit's parked drop ships, one object name `ff_ship_<kind>` each, and a
+/// zone's flight path, the point set `ff_path_NN` for `ff_drop_NN`, with the
+/// points `run_in`, `run_out` and a `hover_<kind>` for each kind it is
+/// cleared for (`crates/tools/firefight-kit/src/ship.rs`).
+const SHIP_PREFIX: &str = "ff_ship_";
 const PATH_PREFIX: &str = "ff_path_";
 /// The kit's drop pods (`crates/tools/firefight-kit/src/sky.rs`): parked
 /// vehicles `ff_pod_NN` for squads and `ff_ppod_NN` for players, a zone's
@@ -194,9 +197,10 @@ pub struct KitLayout {
     pub hunt_orders: Vec<Option<u16>>,
     /// Each base's hold order, `ff_hold_NN`, the same way.
     pub hold_orders: Vec<Option<u16>>,
-    /// The parked drop ship, `ff_ship`: its index among the scenario's
-    /// vehicle placements. None on a map whose kit carries no ship.
-    pub ship: Option<i16>,
+    /// The parked drop ships, `ff_ship_<kind>`, by [`ShipKind::index`]: each
+    /// one's index among the scenario's vehicle placements. None for a kind
+    /// the kit does not carry.
+    pub ships: [Option<i16>; ShipKind::ALL.len()],
     /// Each drop zone's flight path, by position in `zones`: none for a
     /// zone with no `ff_path_NN` point set, or one missing a point.
     pub paths: Vec<Option<ShipPath>>,
@@ -391,7 +395,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         }
         orders[base].get_or_insert(index as u16);
     }
-    let ship = read_ship(m, scnr)?;
+    let ships = read_ships(m, scnr)?;
     let found = read_paths(m, scnr)?;
     let paths = numbers.iter().map(|n| found.get(n).copied()).collect();
     let pods = read_pool(m, scnr, POD_PREFIX)?;
@@ -413,7 +417,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         team,
         hunt_orders,
         hold_orders,
-        ship,
+        ships,
         paths,
         pods,
         flood_pods,
@@ -423,14 +427,22 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     }))
 }
 
-/// `ff_ship`: the vehicle placement the object name points at.
-fn read_ship(m: &dyn GuestMemory, scnr: u32) -> Result<Option<i16>, MemFault> {
+/// `ff_ship_<kind>`: the vehicle placement each object name points at.
+fn read_ships(m: &dyn GuestMemory, scnr: u32) -> Result<[Option<i16>; ShipKind::ALL.len()], MemFault> {
+    let mut found = [None; ShipKind::ALL.len()];
     for at in block(m, scnr, scenario::OBJECT_NAMES)? {
-        if name(m, at)? == SHIP_NAME && m.u16(at + scenario::OBJECT_NAME_TYPE)? == scenario::OBJECT_TYPE_VEHICLE {
-            return Ok(Some(m.u16(at + scenario::OBJECT_NAME_PLACEMENT)? as i16));
+        let text = name(m, at)?;
+        let Some(kind) = text
+            .strip_prefix(SHIP_PREFIX)
+            .and_then(|k| ShipKind::ALL.into_iter().find(|kind| kind.name() == k))
+        else {
+            continue;
+        };
+        if m.u16(at + scenario::OBJECT_NAME_TYPE)? == scenario::OBJECT_TYPE_VEHICLE {
+            found[kind.index()].get_or_insert(m.u16(at + scenario::OBJECT_NAME_PLACEMENT)? as i16);
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// The scenario's `ff_path_NN` point sets by zone number: each with its
@@ -445,18 +457,33 @@ fn read_paths(
             let Some(number) = ordinal(&name(m, set)?, PATH_PREFIX) else {
                 continue;
             };
-            let mut points: [Option<[f32; 3]>; 3] = [None; 3];
+            let mut run_in = None;
+            let mut run_out = None;
+            let mut hovers = [None; ShipKind::ALL.len()];
             for point in block(m, set, scenario::POINTS)? {
                 let at = m.vec3(point + scenario::POINT_POSITION)?;
-                match name(m, point)?.as_str() {
-                    "run_in" => points[0].get_or_insert(at),
-                    "hover" => points[1].get_or_insert(at),
-                    "run_out" => points[2].get_or_insert(at),
-                    _ => continue,
-                };
+                let text = name(m, point)?;
+                match text.as_str() {
+                    "run_in" => {
+                        run_in.get_or_insert(at);
+                    }
+                    "run_out" => {
+                        run_out.get_or_insert(at);
+                    }
+                    _ => {
+                        if let Some(kind) = text
+                            .strip_prefix("hover_")
+                            .and_then(|k| ShipKind::ALL.into_iter().find(|kind| kind.name() == k))
+                        {
+                            hovers[kind.index()].get_or_insert(at);
+                        }
+                    }
+                }
             }
-            if let [Some(run_in), Some(hover), Some(run_out)] = points {
-                found.entry(number).or_insert(ShipPath { run_in, hover, run_out });
+            if let (Some(run_in), Some(run_out)) = (run_in, run_out)
+                && hovers.iter().any(Option::is_some)
+            {
+                found.entry(number).or_insert(ShipPath { run_in, hovers, run_out });
             }
         }
     }

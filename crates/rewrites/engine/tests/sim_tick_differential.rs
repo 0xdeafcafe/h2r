@@ -53,6 +53,9 @@ struct Seen {
 
 const RECORD: u32 = 0xdead_0000;
 
+/// `_chkstk`, which the lifted body calls to allocate its frame.
+const STACK_PROBE: u32 = 0x0032_0560;
+
 fn is_envelope(target: u32) -> bool {
     [
         sim_tick::CONTROL_WORD_FN,
@@ -103,6 +106,15 @@ fn lifted_calls() -> Option<(Vec<Seen>, u32, FlatMemory)> {
             Flow::Return { .. } => {
                 let tick = mem.read_u32(TIME + 8).unwrap();
                 return Some((seen, tick, mem));
+            }
+            Flow::Call { target, .. } if target == STACK_PROBE => {
+                // `_chkstk` (0x320560): it probes the frame's pages and
+                // lowers ESP by EAX bytes under its own return address. It
+                // is the frame's allocation, not a phase.
+                let sp = cpu.gpr[4];
+                let next = mem.read_u32(sp).unwrap();
+                cpu.gpr[4] = (sp + 4).wrapping_sub(cpu.gpr[0]);
+                cpu.eip = next;
             }
             Flow::Call { target, .. } => {
                 let sp = cpu.gpr[4];

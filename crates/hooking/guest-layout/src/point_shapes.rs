@@ -97,6 +97,9 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     (&points::SIM_EVENT_GENERATE, &[]),
     (&points::GAME_SETUP_EVENT, &[]),
     (&points::WEAPON_UPDATE, &[]),
+    // `hud_seats_update` follows the previous function's tail jump at
+    // 0x1391e8 (`jmp 0x13ac30`); it opens with `push ebx; push esi; push edi`.
+    (&points::HUD_SEATS_UPDATE, &[]),
     // After a `jmp $` (eb fe).
     (&points::UI_ATTRACT_TIMER, &[Frame]),
     // A vtable slot body (0x45c948 +0x48) right after the previous

@@ -106,9 +106,9 @@ fn a_scripted_match_issues_the_golden_command_list() {
 #[test]
 fn a_map_without_a_ship_places_squads_as_today() {
     for ship in [
-        ShipSeen { ready: false, paths: vec![true, true] },
-        ShipSeen { ready: true, paths: vec![false, false] },
-        ShipSeen { ready: true, paths: Vec::new() },
+        ShipSeen::phantom(false, vec![true, true]),
+        ShipSeen::phantom(true, vec![false, false]),
+        ShipSeen::phantom(true, Vec::new()),
     ] {
         let run = golden_match(ship.clone());
         assert_eq!(run.commands, golden(), "{ship:?}");

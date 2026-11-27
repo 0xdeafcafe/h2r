@@ -26,6 +26,8 @@ guest-layout = { path = "../../hooking/guest-layout" }
 # The simulation's typed object views (src/sim/objects.rs, `sim.objects`).
 sim-state.workspace = true
 live-telemetry = { path = "../../live/live-telemetry" }
+# The island solve's fallback counters (src/havok.rs, `havok.islands`).
+sim-havok.workspace = true
 live-proto.workspace = true
 timeline = { path = "../../runtime/timeline" }
 xapi = { path = "../../platform/xapi" }

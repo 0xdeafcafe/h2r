@@ -91,9 +91,11 @@
 //!   byte changes no render state, constant or binding of the draw. The
 //!   item's `+0x15` and `+0x14` bytes are the draw's third and fifth
 //!   arguments (`0x0003bc7b`..`0x0003bc8d`), the shader level and the
-//!   pass within the layer `0x00016b90` selects; the scene's passes are
-//!   the first level's from the layer's first pass
-//!   ([`frame_scene::LayerObjectRefusal::Argument`]).
+//!   pass within the layer `0x00016b90` selects (`[template+0x5c]+4`
+//!   indexed by the level, its layer's first pass plus the pass), so
+//!   each item draws one pass at one level: the scene item carries them
+//!   (`frame_scene::LayerItem::level`, `pass`). A low byte other than the
+//!   key's part refuses ([`frame_scene::LayerObjectRefusal::Argument`]).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -444,8 +446,10 @@ fn read_part(
 ///   flagged record with a structure lightmap index refuses
 ///   ([`LayerObjectRefusal::ShaderFlag`]).
 /// - The argument's high byte reaches only the residency the stage
-///   resolve asks for; its `+0x14` and `+0x15` and a low byte other than
-///   the key's part refuse ([`LayerObjectRefusal::Argument`]).
+///   resolve asks for; a low byte other than the key's part refuses
+///   ([`LayerObjectRefusal::Argument`]). The item's `+0x14` and `+0x15`
+///   (the pass and level its draw sets up) are the scene item's
+///   `pass` and `level`, read by `extract::layer_item`.
 /// - Bits 9 and 6 as in layer 3 ([`record_flags`], [`visible_subparts`]).
 ///
 /// [`LayerObjectRefusal::ShaderFlag`]: frame_scene::LayerObjectRefusal::ShaderFlag
@@ -473,7 +477,7 @@ pub fn layer_part(
             return Err(R::ShaderFlag);
         }
     }
-    if packed as u8 != key.part || half(mem, item, 0x14).ok_or(R::Unread)? != 0 {
+    if packed as u8 != key.part {
         return Err(R::Argument);
     }
     let flags = word(mem, record, 0).ok_or(R::Unread)?;
@@ -977,16 +981,17 @@ mod tests {
         mem.w(shader + 0x14, 0);
         mem.w(target_ready, 0);
         // The argument's high byte (the projected size) changes nothing
-        // the draw sets; another pass, level or part does.
+        // the draw sets; another part does. The pass and level the item
+        // names are the scene item's to draw, not a refusal.
         mem.w(item + 0xc, 0x80 << 24 | 1 << 8 | 2);
         assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)));
         mem.w(item + 0xc, 1 << 8 | 3);
         assert_eq!(at(&mem, 7), Err(R::Argument), "another part");
         mem.w(item + 0xc, 1 << 8 | 2);
         mem.w(item + 0x14, 1);
-        assert_eq!(at(&mem, 7), Err(R::Argument), "another pass");
+        assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)), "another pass");
         mem.w(item + 0x14, 1 << 8);
-        assert_eq!(at(&mem, 7), Err(R::Argument), "another level");
+        assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)), "another level");
         mem.w(item + 0x14, 0);
         // A part that is not a triangle list draws as a strip only with
         // bit 9.

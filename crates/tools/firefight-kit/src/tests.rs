@@ -146,7 +146,7 @@ fn a_map_without_headroom_is_refused_with_the_cost() {
     let base = fixture();
     let mut map = Map::from_reader(Cursor::new(&base)).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let max = max_metadata_size(crate::KIT_METADATA_BUDGET).unwrap();
     let pin = set.pinned.as_mut().unwrap();
     pin.metadata_size += max - map.header().meta_size;
     let (full, layout) = set.build().unwrap();
@@ -249,7 +249,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         &Labels::default(),
         None,
         0,
-        false,
+        0,
         false,
         fit,
         u32::MAX,
@@ -513,8 +513,10 @@ fn the_built_in_layouts_keep_their_drops_and_a_zone_has_a_column_for_the_ship() 
             .unwrap_or_else(|e| panic!("{name}: {e:#}"));
         assert!(nav.refused.is_empty(), "{name}: {:?}", nav.refused);
         assert_eq!(nav.snapped.len(), drops, "{name}: every drop snapped");
+        let walls = nav.ship_walls.as_ref().expect("the arena's walls");
+        let phantom = crate::ship::Dims::default_for(firefight::ShipKind::Phantom);
         assert!(
-            nav.ship_runs.iter().any(Option::is_some),
+            crate::ship::plan(walls, &nav.zones, phantom.radius, phantom.hover).iter().any(Option::is_some),
             "{name}: no zone has a clear column for the ship"
         );
     }

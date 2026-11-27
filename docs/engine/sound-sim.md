@@ -1,10 +1,10 @@
 # The sound simulation
 
-Status: Partly built. The schedule, the events, the host feed, the guest hooks, the tag duration reader and the marker start's parameter layout are written; the mixer's clip source is open, and `h2 sim diff` has not been run on it.
-Code: `crates/rewrites/sim-sound/src/{events,schedule,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{mixer_feed,tag_durations}.rs`. Tests: the same files (`sound_phase_ledger_is_zero`, `script_wait_ends_on_computed_tick`, `null_sink_host_hash_equals_audible`, and the schedule's unit tests).
+Status: Partly built. The schedule, the events, the host feed and the instance-based guest hooks are written; the mixer's clip source is open, and `h2 sim diff` has not been run on it.
+Code: `crates/rewrites/sim-sound/src/{events,schedule,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{mixer_feed,owners}.rs`. Tests: the same files (`sound_phase_ledger_is_zero`, `script_wait_ends_on_computed_tick`, `null_sink_host_hash_equals_audible`, and the schedule's unit tests).
 Switch: `impl.sim.sound-events` (off), listed in [switches.md](../runtime/switches.md).
 
-A sound started in the sim is a record: id, source, tag, start tick and an end tick computed from the tag. There are no voices, channels, priorities or culling in the sim. The host mixer is fed from the sim's events and cannot change anything the sim reads. The rule that must hold: the sim's sound state, [`Schedule::hash`], is the same with any host or none.
+A sound started in the sim is a record: id, source, tag, start tick and an end tick computed from the engine's own instance for it. There are no voices, channels, priorities or culling in the sim. The host mixer is fed from the sim's events and cannot change anything the sim reads. The rule that must hold: the sim's sound state, [`Schedule::hash`], is the same with any host or none.
 
 ## How it works
 
@@ -19,47 +19,48 @@ A sound started in the sim is a record: id, source, tag, start tick and an end t
 
 ## Where the sound runs
 
-The 29 phases of the tick ([sim-rewrite.md](sim-rewrite.md), "The tick driver") hold no sound phase, so the tick driver's ledger (`sim.ledger`) does not see sound. Two retail paths carry it:
+The 29 phases of the tick ([sim-rewrite.md](sim-rewrite.md), "The tick driver") hold no sound phase, so the tick driver's ledger (`sim.ledger`) does not see sound. The sim keeps the engine's own instances: the guest pool holds every sound, and the sim holds the schedule that says when each ends.
 
 | Path | Where | Under the switch |
 |---|---|---|
-| Sound service `SOUND_UPDATE` (`0x125b40`) | the main loop `12b450`, once a frame, outside the tick | implemented in Rust: delivers events to the host, no guest call |
-| Game sound `GAME_SOUND_UPDATE` (`0x18c060`) | inside the tick, under a guest phase | not replaced: its sources still run as guest code and start sounds through the two start entries below |
-| Stop `SOUND_STOP_INSTANCE` (`0x126360`, instance in EBX) | called by a script stop, a retrigger of a playing line (`0x189f1f`) and the object code | a `before` hook: a sim handle ends its sound on the schedule and the guest's stop is skipped; a guest instance runs the guest's stop |
-| Starts `SOUND_IMPULSE_ALLOCATE` (`0x126000`), `SOUND_START_AT_MARKER` (`0x1891d0`) | called from both paths and from the object code | implemented in Rust: the start goes to the schedule and the caller gets a sim handle (`0x7000_0000 | id`) in place of a guest instance |
+| Admission `SOUND_IMPULSE_ALLOCATE` (`0x126000`) | called from both paths and from the object code | wrapped (`sim_sound::admit`): a `before` hook calls the engine's admission as a guest call, so its random draws (`0x125260`, `0x1252f0`, `0x219070`) and rejections are the engine's, then enters the returned instance in the schedule with the end tick from its permutation length (`owners::read_admitted`, u16 at the permutation record `+6`, via `0x218c60`) |
+| Sound service `SOUND_UPDATE` (`0x125b40`) | the main loop `12b450`, once a frame, outside the tick | implemented (`sim_sound::service`): events to the host, then the lip-sync update `+8` (`0x18c6a0`) for each running owned instance, with the six arguments of `0x129593` and the seconds since its start |
+| Tick start `GAME_TICK`, before, first in its chain | inside the main loop | `sim_sound::deliver`: sets the mixer clock `[[0x4e6380] + 0x84]` from the tick, polls each ramping instance, runs the finishes, then calls the tick again (the hook finds nothing due for that tick number) |
 | The schedule's step | after `GAME_TICK`, an observer | no guest call |
+| Game sound `GAME_SOUND_UPDATE` (`0x18c060`), the marker start, the stop | inside the tick and the object code | not touched: they run as guest code against the engine's real instances |
 
-The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_calls` counts the guest calls its hooks make, and none of its entry points holds a guest-call capability, so it is 0. `service_runs` counts the main-loop runs, which fall with the frame rate and not the tick count, so the step that decides ends runs in the tick and the service only delivers. Test: `sound_phase_ledger_is_zero`. The ledger cannot show the win: the cost removed is the service and its HLE (about a tenth of the loop on a phantom host), which a whole-loop ms/tick bench shows.
+The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_calls` counts the guest calls the finish, ramp and update make, so it is 0 until an instance is entered. `service_runs` counts the main-loop runs, which fall with the frame rate and not the tick count, so the step that decides ends runs in the tick and the service only delivers. Test: `sound_phase_ledger_is_zero`.
+
+## Instances
+
+An entered sound is the engine's record (`SOUND_INSTANCES`, `0xBC` bytes, salted datum handle; `owners::record`). The sim reads its tag (`+0xC`), owner (`+0x10`), callback table (`+0x14`), payload (`+0x5C`), pitch range (`+0x9C`), permutation (`+0x9D`) and, for a stop, the fade fields (`+0x20`, `+0xB4`, `+0xB8`).
+
+- **End.** On the end tick the sim calls the engine's finish `0x127320` with reason `owners::ENDED_REASON` (2, the engine's reason for a one-shot whose channel has stopped: the service `0x128040` at `0x12810f`), if the guest has not freed the record already (`SoundLedger::stale`). The engine's finish runs the owner's `+0x10` callback (`0x18c8c0`, `0x18c910`), so the dialogue word and slot are cleared by the engine's code.
+- **Stop ramp.** `0x126360` starts the ramp; the sim polls each instance with the ramp flag (`+4` bit 7) through `0x12a810` and ends it when `[+0x20] + ramp` is at or under the floor (`0x44a0b4`) and `[+0xB4] > [+0xB8]` (signed), with reason 4 (`owners::ramp_done`). The mixer clock the ramp reads is milliseconds in retail and wall-clock driven; the sim writes `tick * 1000 / 30` each tick (`sim_sound::clock_ms`).
+- **Update.** `+8` is called from the service, once per running owned instance per main-loop run, the way `0x129593` calls it; its audio time is the ticks since the start over 30 (`owners::seconds`). The engine's value is the channel's `+0x10`, which `0x12a450` accumulates per service run (`0x12a5c6`) as the format's playback ratio (`0x21f650`) times the run's wall-clock step (`[mixer + 0x1e0]`, from the timer at `0x126a34`). That step is wall time and differs between runs of the engine itself, so no sim value can equal it bit for bit; the sim's is the sim time elapsed, the engine's at ratio 1. The only reader is the lip-sync update (`0x18c720`).
+
+Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start_sets_the_clock_polls_ramps_and_finishes_then_runs_the_tick`, `an_instance_the_guest_freed_is_not_finished_twice`, `the_service_makes_the_owners_update_with_the_seconds_since_the_start`, `an_ended_sounds_finish_is_due_on_the_tick_after_its_end_event`, `running_sounds_survive_a_save` (`sim_sound.rs`); the instance readers in `owners.rs`.
 
 ## Interfaces
 
-- Reads from guest memory: the tick (`GAME_TIME` + 8), the start entries' stack arguments (tag, source), and for a marker start the tag from the parameter block (`Durations::marker_tag`).
-- `Durations` (`sim_sound.rs`) is what the sim reads of a tag: `guest_def(guest, tag) -> SoundDef` at a start. `GuestDurations` (`sim_sound/tag_durations.rs`) is the install's reader; `NoDurations` (every sound ends on its start tick) is for tests.
-
-## Tag durations
-
-The engine takes a sound's length from one word: the `snd!` metadata's `+0x10`, the maximum play time in milliseconds ([sound.md](../formats/sound.md)), read at `0x18a13b` (the dialogue tracker a start feeds) and `0x18a1c0`. It reads no permutation or pitch range; the word already holds the longest permutation's length. `tag_durations::read_def` finds the tag through the entry table (`0x10` bytes per entry, group `+0`, metadata address `+8`, indexed by the datum's low 16 bits) and reads that word. A `snd!` does not loop; a tag of the looping sound group `lsnd` is a loop and has no end tick. A tag of any other group, with no metadata or no datum has no duration. Tests: `durations_equal_the_engines_for_a_fixture_of_tags`, `ticks_round_to_nearest_as_the_engine_does`.
-
-`SOUND_START_AT_MARKER`'s one stack argument points to a block of four words (`0x1890c0` reads them): `+0` a datum resolved through `0x18d5b0` (`u32::MAX` for a dialogue line), `+4` the sound tag, `+8` an `f32` scale (`1.0`), `+0xc` a word (`0`). The start's tag is `+4`. Test: `the_marker_block_names_its_tag_at_word_one`.
+- Reads from guest memory: the tick (`GAME_TIME` + 8), the admission's stack arguments and returned instance, and the instance records above.
+- Writes guest memory: the mixer clock.
+- `Durations` (`sim_sound.rs`) is what the sim reads of a tag when a sound is started without an instance (tests); `NoDurations` ends every such sound on its start tick.
 - `Clips` (`mixer_feed.rs`) is what the mixer plays for a tag. It is presentation: the permutation choice is the host's.
 - With the switch on, the exact port `impl.sim.native.sound` stands down (`crates/apps/boot/src/registration.rs`).
 
 ## Rules and limits
 
-- Sounds the guest still starts see a sim handle where they expect a guest instance. A stop by handle is routed to the schedule (`SOUND_STOP_INSTANCE`). A line with an owner (a unit's dialogue) is not simulated beyond its end tick, for two reasons read from the engine:
-  - The owner's callback table is the `0x58` word of the start's request block (flag `0x20` of its first word), and the mixer calls it for each instance: `+0` and `+4` at start, `+8` (`0x18c6a0`, which reaches the lip-sync sampler `0x18c720` with the chunk's permutation and the audio time) on every update, and `+0x10` (`0x18c8c0` or `0x18c910`: with the owner datum, the instance and a reason it clears the unit's current-dialogue word when it holds this sound's tag, and the dialogue-table slot holding the instance) at the finish `0x127320`. `BIPED_DIALOGUE_LIP_SYNC` (`0x109220`) only stores the instance in the unit's face state (`0x114710`, `+0x54`). With the sim, none of these run: the mouth does not move and the finish does not clear the unit's dialogue word.
-  - The table slot self-expires on time (`0x189ee0` reuses a slot whose start plus the permutation's length has passed), so a script wait and a retrigger are not blocked by the missing finish.
-  Design. Deliver the callbacks from the schedule by a `before` hook on `GAME_TICK` that makes the calls and re-enters the tick, as `coop_probe::run_calls` does: the finish at the tick after the end event, and `+8` once a tick per running owned sound with the elapsed ticks. The `+8` arguments are the mixer's own (`0x127f10`) and are not read yet.
-- **Script waits** (`sound_impulse_time`, `sound_impulse_language_time` at `0x2a9f70`, `0x18a2f0`) read the guest's own line table (`[0x4ed288] + 0x128`, 16 slots of tag, start tick, instance, chosen permutation), which `0x189ee0` stamps at the start of a script line from the tag and the chosen permutation's length (`0x20b140`, `0x20b3c0`): `(start - now + length_ticks) * tick_seconds`, floored at 0. The wait never reads a voice, so it is the same with the switch on or off. The sim does not touch the table; the schedule's end tick (`snd!` `+0x10`, the longest permutation) can pass the table's end for a line whose permutation is shorter, and nothing in the guest reads it.
+- **Script waits** (`sound_impulse_time`, `sound_impulse_language_time` at `0x2a9f70`, `0x18a2f0`) read the guest's own line table (`[0x4ed288] + 0x128`, 16 slots of tag, start tick, instance, chosen permutation), which `0x189ee0` stamps at the start of a script line from the tag and the chosen permutation's length (`0x20b140`, `0x20b3c0`). The wait never reads a voice, so it is the same with the switch on or off.
 - Which sounds are culled under load, and when a sound ends relative to the audio device, no longer match retail. These are what `h2 sim diff` can flag.
 - The step runs once per tick number; a tick run twice steps once.
 
 ## Not verified
 
-- The marker block's `+0` and `+0xc` words: named by use only. The retail tag-table walk (`0x221810` and the datum-index check) is not salt-checked here.
-- That the tag durations match the engine's end on a running map (`h2 sim diff`); the readers are tested on fixtures.
-- That `h2 sim diff` matches over a run with the switch on.
-- Which guest callers of the two start entries use the returned instance, and what they do with a handle that is not in the guest pool.
+- That every natural end is the engine's reason 2: a stopped channel with flag bits 9 and 6 unset, or a looping source, leaves the instance to another path (reason 3 when the owner's `+0` callback returns false, 0xF).
+- The playback ratio of the sound formats (`0x21f650`): the sim assumes 1.
+- That a guest call to `SOUND_IMPULSE_ALLOCATE` and `GAME_TICK` from a hook re-enters the chain (the admission guards with a busy flag, the tick with the per-tick delivery).
+- That `h2 sim diff` matches over a run with the switch on, on a map with dialogue.
 - The mixer wiring at boot (`MixerHost` needs a `Clips` over the decoded sound data).
 
 ## Related

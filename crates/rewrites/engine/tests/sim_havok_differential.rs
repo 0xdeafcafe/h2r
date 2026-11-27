@@ -24,6 +24,7 @@ use sim_havok::island_solve::{self as island, Args, Body, Fallback, Island, Layo
 use sim_havok::jacobian::{self, ContactArgs, Cursor, Fpu, Scratch};
 use sim_havok::mem::{Journal, Words};
 use sim_havok::motion::{self, Accumulator, SolverClass};
+use sim_havok::motion_solve::{self, Solved};
 
 const RAM: usize = 8 << 20;
 const STACK: u32 = 0x007f_0000;
@@ -66,7 +67,9 @@ fn ram() -> Option<(&'static Image, FlatMemory)> {
 
 fn original(image: &Image) -> lifted::Original {
     let mut code = image.original();
-    for f in [0x31c100, 0x31c940, 0x31a770, 0x31a6a0, 0x319430, 0x31bdf0, 0x31f620] {
+    let motions = SolverClass::ALL.into_iter().flat_map(|c| <[u32; 2]>::from(c.slots()));
+    let joints = sim_havok::joint::Joint::ALL.into_iter().map(|j| j.build_address());
+    for f in [0x31c100, 0x31c940, 0x31bdf0, 0x31f620].into_iter().chain(motions).chain(joints) {
         code.prime(f);
     }
     code
@@ -239,7 +242,7 @@ fn the_frame_writes_match_the_lifted_entry() {
             buffer: BUFFER_OBJECT,
             layout,
             bodies: (0..entities)
-                .map(|i| Body { motion: MOTION + 0x200 * i, class: SolverClass::Fixed, accumulator: motion::fixed_accumulator() })
+                .map(|i| Body { motion: MOTION + 0x200 * i, class: SolverClass::Fixed })
                 .collect(),
             constraints: vec![],
         };
@@ -278,8 +281,9 @@ fn guest(m: &FlatMemory) -> Guest {
     g
 }
 
-/// An unported builder and an island too large for the buffer: the port
-/// declines, writes nothing and counts why.
+/// An unported builder and an island past the buffer whose LIFO block
+/// would come through an uncovered `vt[+0x24]`: the port declines, writes
+/// nothing and counts why.
 #[test]
 fn islands_the_model_does_not_cover_are_declined_and_counted() {
     let Some((_, base)) = ram() else { return };
@@ -290,6 +294,7 @@ fn islands_the_model_does_not_cover_are_declined_and_counted() {
         let mut r = Rng(0xfa11_0000 + u64::from(buffer));
         let mut mem = base.clone();
         let args = island(&mut r, &mut mem, 3, 2, build, buffer);
+        seed_lifo(&mut mem, 0);
         push_args(&mut mem, &args);
         let g = guest(&mem);
         let cpu = runtime::CpuAbi { esp: STACK, ..runtime::CpuAbi::default() };
@@ -573,4 +578,565 @@ fn the_port_solves_a_contact_island() {
     let mut cpu = runtime::CpuAbi { esp: STACK, mxcsr: 0x1f80, ..runtime::CpuAbi::default() };
     cpu.x87.control = 0x027f;
     assert!(supported(port(), &cpu, &g));
+}
+
+// ---- the motion virtuals `vt[+0x0c]` and `vt[+0x10]` ------------------------
+
+const STEP: u32 = WORLD + 0x150;
+const GRAVITY: u32 = WORLD + 0xe0;
+
+/// A motion of `class` at `at`: every field the virtuals read, in ranges
+/// a body holds, some damping past `1 / dt` (the clamp), the box torque
+/// pending or not, the rest of the object random.
+fn seed_motion(r: &mut Rng, m: &mut FlatMemory, at: u32) {
+    use motion_solve::field::*;
+    for off in (0..0x120).step_by(4) {
+        word(m, at + off, bits(r, -2.0, 2.0));
+    }
+    word(m, at + SWEEP, bits(r, 0.0, 1.0));
+    word(m, at + INVERSE_INERTIA, bits(r, 0.0, 2.0));
+    for off in [LINEAR_DAMPING, ANGULAR_DAMPING] {
+        let d = if r.below(4) == 0 { float(r, 20.0, 60.0) } else { float(r, 0.0, 0.5) };
+        word(m, at + off, d.to_bits());
+    }
+    word(m, at + INVERSE_MASS, bits(r, 0.0, 2.0));
+    let q = [float(r, -1.0, 1.0), float(r, -1.0, 1.0), float(r, -1.0, 1.0), float(r, -1.0, 1.0)];
+    let l = (q.iter().map(|v| v * v).sum::<f32>()).sqrt().max(1e-3);
+    put_lanes(m, at + ORIENTATION, q.map(|v| v / l));
+    for off in [LINEAR, ANGULAR] {
+        put_lanes(m, at + off, [float(r, -3.0, 3.0), float(r, -3.0, 3.0), float(r, -3.0, 3.0), float(r, -0.1, 0.1)]);
+    }
+    put_lanes(m, at + CENTER, [float(r, -10.0, 10.0), float(r, -10.0, 10.0), float(r, -10.0, 10.0), 1.0]);
+    for off in [SLOT_C0, SLOT_D0, SLOT_F0] {
+        put_lanes(m, at + off, [float(r, -5.0, 5.0), float(r, -5.0, 5.0), float(r, -5.0, 5.0), float(r, -1.0, 1.0)]);
+    }
+    put_lanes(m, at + SLOT_E0, [float(r, 0.0, 2.0), float(r, 0.0, 2.0), float(r, 0.0, 2.0), float(r, 0.0, 2.0)]);
+    let pending = if r.below(2) == 0 { 0.0 } else { 1.0 };
+    put_lanes(m, at + BOX_TORQUE, [float(r, -5.0, 5.0), float(r, -5.0, 5.0), float(r, -5.0, 5.0), pending]);
+}
+
+fn seed_world(r: &mut Rng, m: &mut FlatMemory) {
+    let dt = [1.0 / 30.0, 1.0 / 60.0, float(r, 0.001, 0.1)][r.below(3) as usize];
+    word(m, STEP, dt.to_bits());
+    word(m, STEP + 4, (1.0 / dt).to_bits());
+    put_lanes(m, GRAVITY, [float(r, -1.0, 1.0), float(r, -10.0, -5.0), float(r, -1.0, 1.0), 0.0]);
+}
+
+/// Run a `thiscall` virtual with three stack arguments.
+fn run_virtual(code: &mut lifted::Original, mem: &mut FlatMemory, eip: u32, this: u32, args: [u32; 3], fpu: Fpu) -> runtime::CpuAbi {
+    for (i, v) in [EXIT, args[0], args[1], args[2]].into_iter().enumerate() {
+        word(mem, STACK + 4 * i as u32, v);
+    }
+    let mut cpu = Cpu { gpr: [0, this, 0, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip, ..Cpu::default() };
+    cpu.mxcsr = fpu.mxcsr;
+    cpu.x87.control = fpu.control;
+    run(code, &mut cpu, mem);
+    abi_cpu(&cpu)
+}
+
+fn check_virtual(after: &runtime::CpuAbi, seed: u64, class: SolverClass) {
+    assert_eq!(after.eax, BUFFER + 0x100, "seed {seed} {class:?}: the next accumulator");
+    assert_eq!(after.esp, STACK + 16, "seed {seed} {class:?}: ret 0xc");
+    assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+}
+
+fn clear_dead_stack(ms: [&mut FlatMemory; 2]) {
+    for m in ms {
+        m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+    }
+}
+
+/// Every class's `vt[+0x0c]`: the motion's force integration and the
+/// accumulator equal the lifted builder's, byte for byte, under every
+/// rounding mode.
+#[test]
+fn the_motion_accumulators_match_the_lifted_builders() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for seed in 0..384u64 {
+        let class = SolverClass::ALL[seed as usize % 6];
+        let mut r = Rng(0x0acc_0000 + seed);
+        let mut mem = base.clone();
+        seed_motion(&mut r, &mut mem, MOTION);
+        seed_world(&mut r, &mut mem);
+        random_bytes(&mut r, &mut mem, BUFFER, 0x200);
+        let fpu = fpu(seed / 6);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let a = motion_solve::accumulate(&mut j, class, MOTION, STEP, GRAVITY, fpu)
+            .unwrap_or_else(|f| panic!("seed {seed} {class:?}: declined {f:?}"));
+        let mut expected = before.clone();
+        for (at, v) in j.finish() {
+            word(&mut expected, at, v);
+        }
+        lay(&mut expected, BUFFER + 0x80, &a);
+        let after = run_virtual(&mut code, &mut mem, class.slots().0, MOTION, [STEP, GRAVITY, BUFFER + 0x80], fpu);
+        check_virtual(&after, seed, class);
+        for (i, v) in [EXIT, STEP, GRAVITY, BUFFER + 0x80].into_iter().enumerate() {
+            word(&mut expected, STACK + 4 * i as u32, v);
+        }
+        clear_dead_stack([&mut mem, &mut expected]);
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {class:?}: first different byte");
+    }
+}
+
+/// Every class's `vt[+0x10]`: the velocities from the solved accumulator
+/// and the pose integration equal the lifted export's, byte for byte,
+/// under every rounding mode.
+#[test]
+fn the_motion_exports_match_the_lifted_exports() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for seed in 0..384u64 {
+        let class = SolverClass::ALL[seed as usize % 6];
+        let mut r = Rng(0x0e8b_0000 + seed);
+        let mut mem = base.clone();
+        seed_motion(&mut r, &mut mem, MOTION);
+        seed_world(&mut r, &mut mem);
+        random_bytes(&mut r, &mut mem, BUFFER, 0x200);
+        for off in [0x10, 0x20, 0x40, 0x50] {
+            put_lanes(&mut mem, BUFFER + 0x80 + off, [float(&mut r, -3.0, 3.0), float(&mut r, -3.0, 3.0), float(&mut r, -3.0, 3.0), float(&mut r, -0.1, 0.1)]);
+        }
+        let scale = bits(&mut r, 0.5, 1.5);
+        let fpu = fpu(seed / 6);
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let solved = Solved::read(|at| before.read_u32(at), BUFFER + 0x80).unwrap();
+        motion_solve::export(&mut j, class, MOTION, STEP, scale, &solved, fpu)
+            .unwrap_or_else(|f| panic!("seed {seed} {class:?}: declined {f:?}"));
+        let mut expected = before.clone();
+        for (at, v) in j.finish() {
+            word(&mut expected, at, v);
+        }
+        let after = run_virtual(&mut code, &mut mem, class.slots().1, MOTION, [STEP, scale, BUFFER + 0x80], fpu);
+        check_virtual(&after, seed, class);
+        for (i, v) in [EXIT, STEP, scale, BUFFER + 0x80].into_iter().enumerate() {
+            word(&mut expected, STACK + 4 * i as u32, v);
+        }
+        clear_dead_stack([&mut mem, &mut expected]);
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {class:?}: first different byte");
+    }
+}
+
+/// Bodies of every motion class joined by contacts, the island's sizes
+/// their bounds, random solver parameters.
+fn contact_island(r: &mut Rng, mem: &mut FlatMemory, entities: u32, constraints: u32) -> Args {
+    random_bytes(r, mem, BUFFER, 0x400);
+    let args = island(r, mem, entities, constraints, jacobian::CONTACT_BUILD, BUFFER_BYTES);
+    seed_world(r, mem);
+    for (k, class) in SolverClass::ALL.into_iter().enumerate() {
+        let vt = VTABLES + 0x200 + 0x40 * k as u32;
+        let (accumulate, export) = class.slots();
+        word(mem, vt + island::MOTION_ACCUMULATE_SLOT, accumulate);
+        word(mem, vt + island::MOTION_EXPORT_SLOT, export);
+    }
+    for i in 0..entities {
+        let at = MOTION + 0x200 * i;
+        let offset = mem.read_u32(at + island::MOTION_ACCUMULATOR).unwrap();
+        seed_motion(r, mem, at);
+        word(mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
+        word(mem, at + island::MOTION_ACCUMULATOR, offset);
+    }
+    let (mut rows, mut schemas, mut impulses, mut widest) = (0, 0, 0, 0);
+    for i in 0..constraints {
+        let n = r.below(5);
+        contact(r, mem, CONSTRAINT + 0x100 * i, POINTS + 0x100 * i, PROPS + 0x100 * i, n);
+        rows += 0x30 * n + 0x80;
+        schemas += 0x30 + 4 * n;
+        impulses += n + 3;
+        widest = widest.max(0x30 * n + 0x80);
+    }
+    for (off, v) in [(0x08u32, widest), (0x0c, rows), (0x10, schemas), (0x18, impulses)] {
+        word(mem, ISLAND + off, v);
+    }
+    pair_scales(r, mem, args.pairs);
+    let info = args.info;
+    for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
+        word(mem, info + off, bits(r, lo, hi));
+    }
+    word(mem, info + 0x1c, r.below(4));
+    args
+}
+
+/// Islands of bodies of every motion class joined by contacts, run whole:
+/// the force integration, the builder, the solve, the write-back and the
+/// exports. Memory outside the solver buffer and the dead stack equals the
+/// lifted entry's, and no island declines for its motions.
+#[test]
+fn dynamic_contact_islands_match_the_lifted_entry() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    let (mut solved, mut declined) = (0, 0);
+    for seed in 0..192u64 {
+        let mut r = Rng(0xd1a0_0000 + seed);
+        let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
+        let mut mem = base.clone();
+        let args = contact_island(&mut r, &mut mem, entities, constraints);
+        push_args(&mut mem, &args);
+        let fpu = fpu(seed);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let eax = match island::solve(&mut j, &args, fpu) {
+            Ok(eax) => eax,
+            Err(reason) => {
+                assert!(!matches!(reason, Fallback::Motion | Fallback::Tables), "seed {seed}: {reason:?}");
+                declined += 1;
+                continue;
+            }
+        };
+        solved += 1;
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
+        assert_eq!(after.eax, eax, "seed {seed}: eax");
+        assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed}: first different byte");
+    }
+    assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
+}
+
+/// The memory system's LIFO descriptor and the block it hands out.
+const LIFO_DESCRIPTOR: u32 = 0x0060_1000;
+const LIFO_BLOCK: u32 = 0x0064_0000;
+const LIFO_BYTES: u32 = 0x1_0000;
+
+/// `[0x00480118]` with `remaining` inline bytes at [`LIFO_BLOCK`] in a
+/// chunk whose payload lies before it, and no vtable.
+fn seed_lifo(m: &mut FlatMemory, remaining: u32) {
+    use sim_havok::layout as l;
+    word(m, l::MEMORY_SYSTEM, LIFO_DESCRIPTOR);
+    word(m, LIFO_DESCRIPTOR, 0);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_CURSOR, LIFO_BLOCK);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_REMAINING, remaining);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_BLOCK, LIFO_BLOCK - 0x110);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_PAYLOAD, LIFO_BLOCK - 0x100);
+}
+
+/// Contact islands past the solver buffer's end, run whole: the rows
+/// starting past it (every area in the block), only the impulses and
+/// schemas past it, and the rows' tail past it (the cursor moving to the
+/// block). The block is taken and given back inline; memory outside the
+/// buffer, the block and the dead stack equals the lifted entry's, and
+/// `eax` is the block.
+#[test]
+fn islands_past_the_buffer_spill_into_a_lifo_block_as_the_lifted_entry_does() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    spill_islands(&mut code, &base, 0x5b11_0000, false);
+}
+
+// The class pool's builder and the directory pools, as the allocator's
+// differential (`sim_physics_differential.rs`) lays them out.
+const HEAP_DIR: u32 = 0x0020_0000;
+const HEAP_CLASSES: u32 = 0x0021_5040;
+const HEAP_BORROWED: u32 = 0x0040_0000;
+
+fn directory_pool(m: &mut FlatMemory, at: u32) {
+    for (off, v) in [(0, 0x4576a4), (4, 1), (8, 0), (0xc, 0), (0x10, 0), (0x14, u32::MAX), (0x18, at + 0x30), (0x1c, 0x15000), (0x20, 0)] {
+        word(m, at + off, v);
+    }
+}
+
+/// The memory system with its pools built by the lifted `0x0022c3e0`, in
+/// `mode` (1: the directory pool alone; else the class pool first), and
+/// an empty LIFO descriptor, so a block is pushed and popped through
+/// `0x002d7020` and `0x002d7090`.
+fn heap(code: &mut lifted::Original, m: &mut FlatMemory, mode: u32) {
+    use sim_havok::layout as l;
+    directory_pool(m, HEAP_DIR);
+    directory_pool(m, HEAP_BORROWED);
+    let mut cpu = Cpu { gpr: [0, 0, 0, 0, STACK, 0, HEAP_CLASSES, 0], eip: 0x22c3e0, eflags: 0xa93, ..Cpu::default() };
+    word(m, STACK, EXIT);
+    run(code, &mut cpu, m);
+    for (a, v) in [(l::POOL_MODE, mode), (l::DIRECTORY_POOL, HEAP_DIR), (l::CLASS_POOL, HEAP_CLASSES), (l::BORROWED_POOL, HEAP_BORROWED), (l::MEMORY_SYSTEM, l::DISPATCH_OBJECT)] {
+        word(m, a, v);
+    }
+    // The dispatcher's vtable: allocate `+0x10`, free `+0x14`, the LIFO
+    // push `+0x24` and pop `+0x28`.
+    word(m, l::DISPATCH_OBJECT, 0x0045_378c);
+    for off in [l::POOL_LIFO_CURSOR, l::POOL_LIFO_REMAINING, l::POOL_LIFO_BLOCK, l::POOL_LIFO_PAYLOAD] {
+        word(m, l::DISPATCH_OBJECT + off, 0);
+    }
+}
+
+/// Spilled islands whose block comes from the allocator: the descriptor
+/// has no inline bytes, so the entry calls `vt[+0x24]` for a new chunk and,
+/// the block being that chunk's payload, `vt[+0x28]` to give it back, in
+/// both pool modes.
+#[test]
+fn spilled_islands_take_their_block_through_the_allocator_as_the_lifted_entry_does() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for f in [0x2d7020, 0x2d7090, 0x1472c0, 0x147320, 0x22c3e0] {
+        code.prime(f);
+    }
+    for mode in [1, 2] {
+        let mut heaped = base.clone();
+        heap(&mut code, &mut heaped, mode);
+        spill_islands(&mut code, &heaped, 0x5b12_0000 + 0x1000 * u64::from(mode), true);
+    }
+}
+
+/// Seeded contact islands past the buffer in each layout, model against
+/// the lifted entry. `from_heap`: the block comes from the built pools;
+/// else inline from [`seed_lifo`]'s descriptor.
+fn spill_islands(code: &mut lifted::Original, base: &FlatMemory, salt: u64, from_heap: bool) {
+    let (mut solved, mut declined) = ([0; 3], 0);
+    for seed in 0..96u64 {
+        let mut r = Rng(salt + seed);
+        let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
+        let mut mem = base.clone();
+        let args = contact_island(&mut r, &mut mem, entities, constraints);
+        if !from_heap {
+            random_bytes(&mut r, &mut mem, LIFO_BLOCK, 0x400);
+            seed_lifo(&mut mem, LIFO_BYTES);
+        }
+        let at = |off: u32| mem.read_u32(ISLAND + off).unwrap();
+        let rows = 0x80 * entities + 0x90;
+        let impulses = rows + at(island::ISLAND_ROWS);
+        let end = impulses + 4 * at(island::ISLAND_IMPULSES) + 8 + at(island::ISLAND_SCHEMAS) + 4;
+        let case = (seed % 3) as usize;
+        let size = match case {
+            0 => r.below(rows + 1),
+            1 => impulses + 1 + r.below(end - impulses - 1),
+            _ => rows + 1 + r.below(impulses - rows),
+        };
+        word(&mut mem, BUFFER_OBJECT + island::BUFFER_SIZE, size);
+        push_args(&mut mem, &args);
+        let fpu = fpu(seed);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let eax = match island::solve(&mut j, &args, fpu) {
+            Ok(eax) => eax,
+            Err(reason) => {
+                assert!(
+                    !matches!(reason, Fallback::Motion | Fallback::Tables | Fallback::Overflow | Fallback::Memory),
+                    "seed {seed} case {case}: {reason:?}"
+                );
+                declined += 1;
+                continue;
+            }
+        };
+        solved[case] += 1;
+        if !from_heap {
+            assert_eq!(eax, LIFO_BLOCK, "seed {seed} case {case}: the block");
+        }
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        let after = run_cpu(code, &mut mem, 0x31c100, fpu);
+        assert_eq!(after.eax, eax, "seed {seed} case {case}: eax");
+        assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
+        // The block is scratch: the inline one, or the chunk's payload
+        // (`max(request, 0x1000)` bytes; these islands ask for less).
+        let (block, bytes) = if !from_heap { (LIFO_BLOCK, LIFO_BYTES) } else { (eax, 0x1000) };
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[block as usize..(block + bytes) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} case {case}: first different byte");
+    }
+    assert!(solved.iter().all(|&n| n > 0), "solved by case {solved:?}");
+    assert!(declined <= solved.iter().sum(), "{declined} declined, solved {solved:?}");
+}
+
+// ---- the joint builders `vt[+0x24]` ---------------------------------------
+
+use sim_havok::joint::Joint;
+
+/// A joint at `c` between entities A and B: random pivots and axes in the
+/// bodies' frames, limits, friction (zero or not, to reach each branch), a
+/// last angle within a turn or two, and each body's transform
+/// (`motion+0x80`).
+fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
+    word(m, c + island::CONSTRAINT_ENTITY_A, ENTITY);
+    word(m, c + island::CONSTRAINT_ENTITY_B, ENTITY + 0x100);
+    for off in (0x20..0xf0).step_by(4) {
+        word(m, c + off, bits(r, -1.0, 1.0));
+    }
+    word(m, c + 0x40, bits(r, 0.0, 2.0));
+    // Friction: limited hinge `+0xd0`, ragdoll `+0x94`, prismatic `+0xa8`.
+    for off in [0xd0, 0x94, 0xa8] {
+        let f = if r.below(3) == 0 { 0.0 } else { float(r, -0.2, 1.0) };
+        word(m, c + off, f.to_bits());
+    }
+    word(m, c + 0xd4, bits(r, -9.0, 9.0));
+    // Sometimes the ragdoll's twist axes coincide, so a cone is skipped.
+    if r.below(4) == 0 {
+        for i in 0..4 {
+            let v = m.read_u32(c + 0x40 + 4 * i).unwrap();
+            word(m, c + 0x70 + 4 * i, v);
+        }
+    }
+    for i in 0..2 {
+        let (entity, motion) = (ENTITY + 0x100 * i, MOTION + 0x200 * i);
+        word(m, entity + island::ENTITY_MOTION, motion);
+        for off in (0x80..0xc0).step_by(4) {
+            word(m, motion + off, bits(r, -1.0, 1.0));
+        }
+        put_lanes(m, motion + 0xb0, [float(r, -5.0, 5.0), float(r, -5.0, 5.0), float(r, -5.0, 5.0), 1.0]);
+    }
+}
+
+/// Each joint's `vt[+0x24]`: the header, rows, schemas and cursor equal
+/// the lifted builder's, word for word, under every rounding mode, and
+/// nothing outside the buffer differs.
+#[test]
+fn the_joint_builders_match_the_lifted_builders() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for seed in 0..768u64 {
+        let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
+        let mut r = Rng(0x101e_0000 + seed);
+        let mut mem = base.clone();
+        random_bytes(&mut r, &mut mem, BUFFER, 0x800);
+        let (acc_a, acc_b) = match r.below(6) {
+            0 => (BUFFER + 0x80, BUFFER),
+            _ => (BUFFER + 0x80, BUFFER + 0x100),
+        };
+        for acc in [BUFFER, BUFFER + 0x80, BUFFER + 0x100] {
+            mem.bytes[(acc + 0x0c) as usize] = if r.below(2) == 0 { 0 } else { r.u32() as u8 | 1 };
+            put_lanes(&mut mem, acc + 0x30, [float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 2.0), float(&mut r, 0.0, 1.0)]);
+            for v in [0x40, 0x50, 0x60, 0x70] {
+                put_lanes(&mut mem, acc + v, [float(&mut r, -2.0, 2.0), float(&mut r, -1.0, 1.0), float(&mut r, -1.0, 1.0), float(&mut r, -1.0, 1.0)]);
+            }
+        }
+        let c = CONSTRAINT;
+        seed_joint(&mut r, &mut mem, c);
+        let pairs = WORLD + 0x190;
+        word(&mut mem, pairs, acc_a);
+        word(&mut mem, pairs + 4, acc_b);
+        pair_scales(&mut r, &mut mem, pairs);
+        word(&mut mem, pairs + 8, bits(&mut r, 0.0, 1.0));
+        let (rows, schemas) = (BUFFER + 0x1000, BUFFER + 0x4000);
+        word(&mut mem, CURSOR, rows);
+        word(&mut mem, CURSOR + 4, schemas);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let mut s = Scratch::new(BUFFER, BUFFER + BUFFER_BYTES).unwrap();
+        for at in (BUFFER..BUFFER + 0x180).step_by(4) {
+            s.put(at, before.read_u32(at).unwrap()).unwrap();
+        }
+        let mut cursor = Cursor { rows, schemas, limit: u32::MAX, overflow: 0 };
+        sim_havok::joint::build(&mut j, &mut s, fpu, joint, c, pairs, &mut cursor)
+            .unwrap_or_else(|f| panic!("seed {seed} {joint:?}: declined {f:?}"));
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        for (i, v) in [EXIT, pairs, CURSOR].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * i as u32, v);
+            word(&mut expected, STACK + 4 * i as u32, v);
+        }
+        let mut cpu = Cpu { gpr: [0, c, 0, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip: joint.build_address(), ..Cpu::default() };
+        cpu.mxcsr = fpu.mxcsr;
+        cpu.x87.control = fpu.control;
+        run(&mut code, &mut cpu, &mut mem);
+        let after = abi_cpu(&cpu);
+        assert_eq!(after.esp, STACK + 12, "seed {seed} {joint:?}: ret 8");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444));
+        assert_eq!((mem.read_u32(CURSOR), mem.read_u32(CURSOR + 4)), (Some(cursor.rows), Some(cursor.schemas)), "seed {seed} {joint:?}: cursor");
+        for (from, to) in [(rows, cursor.rows), (schemas, cursor.schemas)] {
+            for at in (from..to).step_by(4) {
+                assert_eq!(mem.read_u32(at), s.get(at), "seed {seed} {joint:?}: buffer word {at:#x}");
+            }
+        }
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        word(&mut expected, CURSOR, cursor.rows);
+        word(&mut expected, CURSOR + 4, cursor.schemas);
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {joint:?}: first different byte");
+    }
+}
+
+/// Islands of dynamic bodies joined by joints and contacts, run whole:
+/// the solve over the joints' free rows, the write-back to each joint's
+/// outputs and the exports equal the lifted entry's.
+#[test]
+fn joint_islands_match_the_lifted_entry() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    let (mut solved, mut declined) = (0, 0);
+    for seed in 0..384u64 {
+        let mut r = Rng(0x101f_0000 + seed);
+        let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
+        let mut mem = base.clone();
+        random_bytes(&mut r, &mut mem, BUFFER, 0x400);
+        let args = island(&mut r, &mut mem, 2, 1, joint.build_address(), BUFFER_BYTES);
+        seed_world(&mut r, &mut mem);
+        for (k, class) in SolverClass::ALL.into_iter().enumerate() {
+            let vt = VTABLES + 0x200 + 0x40 * k as u32;
+            let (accumulate, export) = class.slots();
+            word(&mut mem, vt + island::MOTION_ACCUMULATE_SLOT, accumulate);
+            word(&mut mem, vt + island::MOTION_EXPORT_SLOT, export);
+        }
+        for i in 0..2 {
+            let at = MOTION + 0x200 * i;
+            let offset = mem.read_u32(at + island::MOTION_ACCUMULATOR).unwrap();
+            seed_motion(&mut r, &mut mem, at);
+            word(&mut mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
+            word(&mut mem, at + island::MOTION_ACCUMULATOR, offset);
+        }
+        let builder = mem.read_u32(CONSTRAINT).unwrap();
+        seed_joint(&mut r, &mut mem, CONSTRAINT);
+        word(&mut mem, CONSTRAINT, builder);
+        // Room for the largest joint (prismatic and ragdoll: 0x150 bytes,
+        // nine rows, 0x5c bytes of schemas).
+        for (off, v) in [(0x08u32, 0x180), (0x0c, 0x180), (0x10, 0x80), (0x18, 12)] {
+            word(&mut mem, ISLAND + off, v);
+        }
+        pair_scales(&mut r, &mut mem, args.pairs);
+        word(&mut mem, args.pairs + 8, bits(&mut r, 0.0, 1.0));
+        let info = args.info;
+        for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
+            word(&mut mem, info + off, bits(&mut r, lo, hi));
+        }
+        word(&mut mem, info + 0x1c, 1 + r.below(3));
+        push_args(&mut mem, &args);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let eax = match island::solve(&mut j, &args, fpu) {
+            Ok(eax) => eax,
+            Err(reason) => {
+                assert!(!matches!(reason, Fallback::Motion | Fallback::Constraint | Fallback::Tables), "seed {seed} {joint:?}: {reason:?}");
+                declined += 1;
+                continue;
+            }
+        };
+        solved += 1;
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
+        assert_eq!(after.eax, eax, "seed {seed}: eax");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {joint:?}: first different byte");
+    }
+    assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
 }

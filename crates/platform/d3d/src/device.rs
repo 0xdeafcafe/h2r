@@ -2734,7 +2734,7 @@ impl<B: Backend> Device<B> {
     /// outside its enum.
     pub fn stencil_state(&self, mem: &dyn GuestMemory) -> Option<gfx::state::StencilState> {
         use gfx::state::RenderStateType as R;
-        let table = RenderStateTable::default();
+        let table = RenderStateTable::halo2();
         let mut rs = gfx::state::RenderState::default();
         for t in [
             R::StencilEnable,
@@ -2762,7 +2762,7 @@ impl<B: Backend> Device<B> {
         mem: &dyn GuestMemory,
     ) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
         use gfx::state::RenderStateType as R;
-        let table = RenderStateTable::default();
+        let table = RenderStateTable::halo2();
         let mut rs = gfx::state::RenderState::default();
         for t in [R::CullMode, R::FrontFace] {
             let guest = table.canonical_to_guest(t.index())?;
@@ -3478,12 +3478,22 @@ impl<B: Backend> Device<B> {
         // entry textures; such a pass takes its entry from its slots
         // ([`SwallowPass::entry_samples`]).
         if replays && self.backend.can_commit_carried() {
-            let stage = crate::SceneStage {
+            let stage = || crate::SceneStage {
                 surfaces: surfaces.clone(),
                 request,
                 plan: plan.clone(),
                 pass: Arc::clone(&pass),
             };
+            // Queued as the world's stages are, the render thread prepares
+            // and records it in order and the game thread does not wait for
+            // that thread to drain. What it cannot record is dropped and
+            // counted, and the stage then stands down to the sealed path
+            // below ([`crate::scene_stage`]).
+            if self.queues_scene_stages(Stage::Post) && self.backend.queue_scene_stage(stage()) {
+                self.swallow_committed(&s.surfaces, s.packets, plan.ranges);
+                return Ok(());
+            }
+            let stage = stage();
             if let Ok(Some(copies)) = self.backend.prepare_carried_stage(&stage)
                 && complete_recordings(&plan, &copies)
             {
@@ -3790,7 +3800,7 @@ impl<B: Backend> Device<B> {
     /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
     /// guest's render-state array (unreadable: no clamp).
     pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
-        let slot = RenderStateTable::default().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
+        let slot = RenderStateTable::halo2().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
         let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
         crate::backend::DepthClip {
             range: crate::hw::w_clip_range(&self.hw, z_max),
@@ -6620,6 +6630,12 @@ impl<B: Backend> Device<B> {
                 });
             }
             if let Some(fallback) = fallback {
+                // A retaining replay keeps a native producer's pass as its
+                // carried packets: begun before queuing, so the sink takes
+                // the queued draw, and recorded in its slot once queued. The
+                // game thread then never waits on the render thread for it.
+                let carry = native.is_some()
+                    && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
                 let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
                 let queued = crate::backend::QueuedExternalDraw {
@@ -6645,6 +6661,10 @@ impl<B: Backend> Device<B> {
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
+                    if carry {
+                        self.backend.record_native_carry(color, depth, textures);
+                        self.backend.end_native_carry();
+                    }
                     if writes_color {
                         self.color_surface_written(color);
                         self.mark_color_written(self.render_target);
@@ -6658,6 +6678,9 @@ impl<B: Backend> Device<B> {
                     }
                     *streams = draw.streams;
                     return Ok(());
+                }
+                if carry {
+                    self.backend.end_native_carry();
                 }
             }
             // A native producer has no guest draw to carry its pass into a

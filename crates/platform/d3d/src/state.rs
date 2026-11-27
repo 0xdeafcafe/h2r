@@ -188,7 +188,7 @@ impl StateWords {
     /// The D3D defaults, encoded as the guest stores them, for a device with
     /// (`auto_depth`) or without an automatic depth buffer.
     pub fn defaults(auto_depth: bool) -> Self {
-        let table = RenderStateTable::default();
+        let table = RenderStateTable::halo2();
         let mut render = [0u32; RENDER_STATE_SLOTS];
         let mut set = |canonical: u32, v: u32| {
             if let Some(g) = table.canonical_to_guest(canonical) {

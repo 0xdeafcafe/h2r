@@ -643,7 +643,7 @@ impl LayerConstants {
     }
 
     /// `base` with the sampled vertex constants and attribute defaults.
-    pub(crate) fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
+    pub fn vertex(&self, base: &VertexUniforms) -> VertexUniforms {
         let mut vertex = base.clone();
         for r in &self.vertex {
             crate::program::put(&mut vertex.constants, r);
@@ -656,7 +656,7 @@ impl LayerConstants {
 
     /// `base` with the sampled combiner constants (C0 and C1, the final
     /// combiner's included); fog and the view's words stay `base`'s.
-    pub(crate) fn pixel(&self, base: &psh::PixelUniforms) -> psh::PixelUniforms {
+    pub fn pixel(&self, base: &psh::PixelUniforms) -> psh::PixelUniforms {
         let mut pixel = *base;
         (pixel.c0, pixel.c1) = (self.c0, self.c1);
         pixel

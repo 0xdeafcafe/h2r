@@ -140,8 +140,8 @@ pub(crate) struct Copied {
     /// Each class's faction, in palette order.
     pub factions: Vec<Faction>,
     pub costs: Vec<ClassCost>,
-    /// The dropship's `vehi` tag and what it added.
-    pub ship: Option<(TagId, ClassCost)>,
+    /// The ships' `vehi` tags and what each added, in the order asked.
+    pub ships: Vec<(TagId, ClassCost)>,
     /// The drop pod's `vehi` tag and what it added.
     pub pod: Option<(TagId, ClassCost)>,
 }
@@ -255,8 +255,8 @@ impl<'a> Copier<'a, '_> {
 }
 
 /// Copy the first `keep` classes of `all` into `set`, in order, then the
-/// `ship` (a `vehi` tag's name, from the first donor that has it) when
-/// asked: a ship the donors cannot give, or the schema cannot copy, is
+/// `ships` (`vehi` tags' names, each from the first donor that has it)
+/// when asked: a ship the donors cannot give, or the schema cannot copy, is
 /// a [`ShipRefused`]; then the drop `pod` the same way ([`PodRefused`]).
 /// Nothing is undone on an error: the caller drops the
 /// set.
@@ -264,7 +264,7 @@ pub(crate) fn add(
     set: &mut TagSet,
     all: &Classes<'_>,
     keep: usize,
-    ship: Option<&str>,
+    ships: &[&str],
     pod: Option<&str>,
 ) -> Result<Copied> {
     let mut copier = Copier {
@@ -280,22 +280,24 @@ pub(crate) fn add(
         out.factions.push(spec.faction);
         out.costs.push(cost);
     }
-    if let Some(path) = ship {
-        let refused = |e: anyhow::Error| anyhow::Error::from(ShipRefused(format!("dropship: {e:#}")));
+    for (n, path) in ships.iter().enumerate() {
+        // The Phantom is the first of the ships; a later one is optional.
+        let (what, refuse): (&str, fn(String) -> anyhow::Error) = if n == 0 {
+            ("dropship", |m| ShipRefused(m).into())
+        } else {
+            ("pelican", |m| PelicanRefused(m).into())
+        };
+        let refused = |e: anyhow::Error| refuse(format!("{what}: {e:#}"));
         let donor = copier
             .donor_of(VEHI, path)
             .map_err(refused)?
             .ok_or_else(|| {
-                ShipRefused(format!(
-                    "no donor map carries the dropship {path} ({} donors)",
+                refuse(format!(
+                    "no donor map carries the {what} {path} ({} donors)",
                     all.donors.len()
                 ))
             })?;
-        out.ship = Some(
-            copier
-                .copy(set, "dropship", donor, VEHI, path)
-                .map_err(refused)?,
-        );
+        out.ships.push(copier.copy(set, what, donor, VEHI, path).map_err(refused)?);
     }
     if let Some(path) = pod {
         let refused = |e: anyhow::Error| anyhow::Error::from(PodRefused(format!("drop pod: {e:#}")));
@@ -333,6 +335,18 @@ impl std::fmt::Display for ShipRefused {
 }
 
 impl std::error::Error for ShipRefused {}
+
+/// The Pelican cannot be copied in. The build goes without it, and says why.
+#[derive(Debug)]
+pub(crate) struct PelicanRefused(pub String);
+
+impl std::fmt::Display for PelicanRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PelicanRefused {}
 
 /// The drop pod cannot be copied in: no donor has it, or a donor's copy is
 /// refused. The build goes without pods, and says why.

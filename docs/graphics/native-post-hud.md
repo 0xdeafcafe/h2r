@@ -739,8 +739,12 @@ strips also carry the live W clip range and window-depth scale.
 
    The glow and the screen effects record again on any copy once
    `validate` has frozen their raster (`replays_scene`), so the return
-   commits them as a carried scene stage of `Stage::Post`
-   (`prepare_carried_stage`, then `commit_carried_stage`). Under a
+   commits them as a carried scene stage of `Stage::Post`. Behind a
+   render thread that takes scene stages the stage is queued
+   (`queue_scene_stage`), so the game thread does not wait for the render
+   thread; one it cannot record is dropped and counted, and Post then
+   stands down to sealing every copy (`prepare_carried_stage`, then
+   `commit_carried_stage`, [`scene_stage`](../../crates/platform/d3d/src/scene_stage.rs)). Under a
    scene sink that keeps the frame for the display's replay (two-copy
    mode), the sink retains it as a `ReplayOp::Stage` and the display
    copy records it again at window resolution

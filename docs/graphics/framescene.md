@@ -1040,9 +1040,11 @@ to the guest's draws (**Code**):
     lighting `0x00023690` under the object setup (`0x0004b5d0`). So the
     cycle reaches a layer's draws only through the object items'
     lighting, read after it; the world's items draw without one.
-  - **The plan** (`native_render::layer_pass`). Per item: the passes
-    the layer draws for its shader at the first level of detail
-    (`0x00016610` draws each implementation with a vertex shader), the
+  - **The plan** (`native_render::layer_pass`). Per item: the one pass
+    the item names, its `+0x14` at the shader level its `+0x15` names
+    (`frame_scene::LayerItem::pass`, `level`; the guest's list holds an
+    item per pass, and `0x00016b90` sets up that pass alone; one without
+    a vertex shader draws nothing), the
     implementation (the only one, or the item's), the engine inputs
     (the view's, the lighting's from the item's owner, none for the
     structure's, and the shader's own) with the material resolved again
@@ -1482,9 +1484,10 @@ device's swallow. What is built (**Code**):
   raster (`replays_scene`): their slots and stages come from the copy
   being recorded. At the call's return `Device::swallow_commit` builds a
   `SceneStage` of `Stage::Post` from the call's surfaces and plan and,
-  when the backend can commit one (`can_commit_carried`), seals every
-  copy (`prepare_carried_stage`) and commits them
-  (`commit_carried_stage`); a replaying sink retains the stage as a
+  when the backend can commit one (`can_commit_carried`), queues it to
+  a render thread that takes scene stages (`queue_scene_stage`; a drop
+  stands Post down), or else seals every copy (`prepare_carried_stage`)
+  and commits them (`commit_carried_stage`); a replaying sink retains the stage as a
   `ReplayOp::Stage` in place of the call's packets, so the display copy
   replays the glow and the effects on its own attachments. A stage
   carries no entry textures: the glow takes its down-sample's entry from

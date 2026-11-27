@@ -43,7 +43,7 @@ connection to hold `session.claim`.
 | `actors.net` | read | [`actors.net`](#actorsnet) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
-| `havok.bodies`, `havok.agents`, `havok.contacts`, `havok.digest` | read | [`havok`](#havok-the-physics-world) |
+| `havok.bodies`, `havok.agents`, `havok.contacts`, `havok.digest`, `havok.islands` | read | [`havok`](#havok-the-physics-world) |
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
@@ -842,6 +842,7 @@ boundary. Layout and evidence: [havok-runtime.md](../engine/havok-runtime.md).
 | `havok.agents` | `{object}` | collision pairs and cached state ([below](#havokagents)) |
 | `havok.contacts` | `{object?}` | contact constraints: `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
 | `havok.digest` | `{}` (any field is refused) | the ordered heap walk ([havok-step.md](../engine/havok-step.md#the-digest) lists what it covers): `digest` (16 hex digits, FNV-1a over every live byte and address), `bodies`, `constraints`, `pairs`, and `heap_used` (bytes in occupied pool slots). The arena hash does not cover the Havok heap, so this digest is what proves a physics rewrite; the sim report carries the same walk as its `havok.world` component |
+| `havok.islands` | `{}` (any field is refused) | the island solve's counters since the process started ([havok-step.md](../engine/havok-step.md#the-island-solve)): `solved` (islands the native model answered), `declined` (islands sent to the lifted entry) and `fallbacks`, every reason in order with its `count`: `memory`, `overflow`, `motion`, `constraint`, `tables`, `solver`, `float` |
 
 ```sh
 h2 agent havok.agents '{"object":"player.0"}'

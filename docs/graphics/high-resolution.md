@@ -217,7 +217,9 @@ it. At `OCEAN_GRID_ASPECT` (`0x0003cbf8`, where the setup's two paths
 meet after storing the aspect), a view the fit applied to divides the
 stored aspect by the projection's factor (`widen_ocean_grid` in
 `crates/extensions/game/src/render_aspect.rs`), so the grid spans the
-window with retail's margin at 4:3. A view the fit left retail keeps
+window with retail's margin at 4:3 and `OCEAN_GRID_SPARE` (1.25) on top,
+because the grid's far corners showed inside a 2560x1440 picture at the
+retail margin. A view the fit left retail keeps
 the retail grid. `render.scene` counts the setup's calls as
 `scene_guest_lens_ocean_widened` and `scene_guest_lens_ocean_retail`
 (tests `the_ocean_grid_reaches_the_sides_of_every_window`,

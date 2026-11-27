@@ -86,7 +86,8 @@ pub fn stood_down(stage: Stage) -> bool {
 
 /// `scene_stages_<stage>` and `scene_dropped_<stage>` of the stages that
 /// queue scene stages: the world and the objects (slice 2), the fog and
-/// the water (slice 5) (`render.scene`'s counters), and the flares' committed
+/// the water (slice 5), native post's carried stage (`render.scene`'s
+/// counters), and the flares' committed
 /// draws: `scene_submitted_flares_reference_draws` and
 /// `scene_submitted_flares_display_draws`.
 pub fn counters() -> Vec<(String, u64)> {
@@ -96,7 +97,7 @@ pub fn counters() -> Vec<(String, u64)> {
         ("scene_submitted_flares_reference_draws".to_owned(), FLARE_DRAWS[0].load(Ordering::Relaxed)),
         ("scene_submitted_flares_display_draws".to_owned(), FLARE_DRAWS[1].load(Ordering::Relaxed)),
     ];
-    for stage in [Stage::World, Stage::Objects, Stage::Fog, Stage::Water] {
+    for stage in [Stage::World, Stage::Objects, Stage::Fog, Stage::Water, Stage::Post] {
         let i = index(stage);
         out.push((format!("scene_stages_{}", stage.name()), QUEUED[i].load(Ordering::Relaxed)));
         out.push((format!("scene_dropped_{}", stage.name()), DROPPED[i].load(Ordering::Relaxed)));

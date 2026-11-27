@@ -1,7 +1,7 @@
 # Native shader gels
 
 Status: Built. Replaces supported gel quad packets through `DrawAdmission`; parity with D3D is not verified.
-Code: `crates/rewrites/render-bridge/src/native_gels.rs`, `crates/extensions/game/src/native_gels_glue.rs`, `native_gels_replace.rs`, `crates/rewrites/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_gels.rs`, `crates/rewrites/native-render/tests/gels_gpu.rs`, `gels::tests` in `native-render`, and `native_gels_replace::tests` and `native_gels_glue::tests` in `game`.
+Code: `crates/rewrites/render-bridge/src/native_gels.rs`, `crates/extensions/game/src/native_gels_glue.rs`, `native_gels_scene.rs`, `native_gels_replace.rs`, `crates/rewrites/native-render/src/gels.rs`, `gels_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_gels.rs`, `crates/rewrites/native-render/tests/gels_gpu.rs`, `gels::tests` in `native-render`, and `native_gels_replace::tests` and `native_gels_glue::tests` in `game`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 A light's gel is a shader drawn into render target 13 before the light passes sample it as engine texture 10. The stage replaces its quad draws, one per mip level. The ordered handoff records each quad on both required target copies, then commits before it suppresses the original packet. Any preparation, resource, validation or range-count failure retains that packet. Part of [native-renderer.md](native-renderer.md).
@@ -88,6 +88,35 @@ target format. Resident identity includes D3D's palette/residency result.
 Repeated frames do not rebuild their pipelines. Per-recording buffers are never reused before submission.
 The resident program cache is bounded; eviction retains no live mutable
 GPU storage and recorded commands retain their resource references.
+
+### The gel from the scene
+
+Under the cut light frame (native-lights.md, "The light frame under the
+cut") `0x0004a1e0` never runs, so its producer `0x0003a5ab` does not
+draw the gel. The light's sequence draws it instead
+(`native_lights_glue/scene.rs`, `Op::Gel` and `GelPass`), as its first
+step on target 13's attachments:
+
+- At map load `game::native_gels_scene::load` takes each `ligh` tag's gel
+  shader (`+0xe0`), every pass of its template layer 1 with
+  implementation 0, looks at each as a full-target template pass
+  (`native_render::screen_look::template_look`), translates it with its
+  vertex shader's first program and decodes its stage bitmaps. A pass
+  that is animated, reads a call's values or an engine texture, or does
+  not translate keeps the whole shader out, and a light with that gel is
+  refused by name.
+- The quad is the helper `0x00015ec0`'s for level 0
+  (`native_render::gels::quad`): corners `(0, 0)` to the level's size,
+  coordinates `(0, 0)` to `(1, 1)` on attributes 1..4, and z and w from
+  `[0x00485ad4]`, `[0x00485ad8]` and the depth scale
+  (`gels::quad_depth`). Only level 0 is drawn: the light's layers sample
+  mip 0.
+- The light's layers after it take `Binding` for target 13's level-0
+  header as a read-only slot and sample it as engine texture 10.
+
+`gels::tests::the_gel_quad_covers_its_level_in_strip_order_at_the_helpers_depth`
+and `scene::tests::a_gel_light_draws_its_gel_into_target_13_before_any_layer`
+check the quad and the order.
 
 ## Interfaces
 

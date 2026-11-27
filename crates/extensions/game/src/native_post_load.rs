@@ -68,18 +68,19 @@ pub fn template_implementations(material: &Material) -> Vec<(usize, usize)> {
 }
 
 /// The engine vertex constants of implementation `implementation` of
-/// `material`'s layer-15 pass `layer_pass` (its `spas`'s, which the
-/// resolved material does not keep).
-fn vertex_externals(
+/// `material`'s template layer `layer` pass `layer_pass` (its `spas`'s,
+/// which the resolved material does not keep).
+pub(crate) fn vertex_externals(
     lib: &mut ShaderLibrary,
     material: &Material,
+    layer: usize,
     layer_pass: usize,
     implementation: usize,
 ) -> Result<Vec<EngineVertexConstant>, String> {
     let pass = material
         .layers
         .iter()
-        .filter(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
+        .filter(|l| l.lod == 0 && l.layer == layer)
         .flat_map(|l| &l.passes)
         .find(|p| p.index == layer_pass)
         .ok_or("no such layer pass")?
@@ -127,7 +128,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut asse
         };
         let mut e = EffectPrograms { shader, programs: HashMap::new(), refused: HashMap::new() };
         for key @ (layer_pass, implementation) in template_implementations(&material) {
-            let externals = match vertex_externals(&mut lib, &material, layer_pass, implementation) {
+            let externals = match vertex_externals(&mut lib, &material, TEMPLATE_LAYER, layer_pass, implementation) {
                 Ok(x) => x,
                 Err(r) => {
                     e.refused.insert(key, r);

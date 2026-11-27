@@ -83,7 +83,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 {
                     return Err(Keep::Unsupported("light group lost entries or pose rows"));
                 }
-                draws.extend(self.scene_light_draws(&device, mem, &ready, group, run.constants)?);
+                draws.extend(self.scene_light_draws(&device, mem, &ready, group, run.constants, false)?);
             }
             let [color, depth, x, y, w, h, _, _] = batch.view_target;
             let targets = d3d::ExternalTargets {

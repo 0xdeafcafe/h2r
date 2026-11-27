@@ -19,7 +19,7 @@ pub fn resolve(
     caps: gfx::translate::Capabilities,
     scale: impl Into<crate::scaled::RenderScale>,
 ) -> Result<ResolvedProgram, String> {
-    let table = RenderStateTable::default();
+    let table = RenderStateTable::halo2();
     let KeyParts {
         key,
         def,

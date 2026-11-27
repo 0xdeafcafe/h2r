@@ -43,12 +43,14 @@ pub fn build(
 }
 
 /// A constraint class with a ported `vt[+0x24]` (docs/engine/havok-step.md,
-/// "Constraints"), told apart by that slot's target. The six joint classes
-/// are not ported: their islands fall back to the guest.
+/// "Constraints"), told apart by that slot's target: the contact class
+/// and the joint classes [`crate::joint`] covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// `0x0031bdf0`, which calls [`contact`] (`0x0031f620`).
     Contact,
+    /// A joint class ([`crate::joint`]).
+    Joint(crate::joint::Joint),
 }
 
 /// The contact class's `vt[+0x24]`.
@@ -64,7 +66,7 @@ impl Class {
     pub fn of(build: u32) -> Option<Self> {
         match build {
             CONTACT_BUILD => Some(Self::Contact),
-            _ => None,
+            _ => crate::joint::Joint::of(build).map(Self::Joint),
         }
     }
 
@@ -90,6 +92,7 @@ impl Class {
                 };
                 contact(j, s, fpu, &args, cursor)
             }
+            Self::Joint(joint) => crate::joint::build(j, s, fpu, joint, constraint, pairs, cursor),
         }
     }
 }
@@ -111,38 +114,56 @@ impl Fpu {
 
 /// The solver buffer while one island solves (accumulators, rows,
 /// impulses, schemas), addressed as the guest's but owned by Rust: the
-/// guest's copy is scratch and is never written.
+/// guest's copy is scratch and is never written. An island that spills
+/// into a LIFO block covers two ranges, the buffer's and the block's.
 #[derive(Clone, Debug)]
 pub struct Scratch {
-    base: u32,
-    words: Vec<u32>,
+    segments: Vec<(u32, Vec<u32>)>,
 }
 
 impl Scratch {
     /// Zeroed words covering `base..end`.
     pub fn new(base: u32, end: u32) -> Option<Self> {
-        let bytes = end.checked_sub(base)?;
-        if base & 15 != 0 || bytes > MAX_SCRATCH {
-            return None;
-        }
-        Some(Self { base, words: vec![0; bytes.div_ceil(4) as usize] })
+        Self::of(&[(base, end)])
     }
 
-    fn index(&self, addr: u32) -> Option<usize> {
+    /// Zeroed words covering each `base..end`, 16-byte aligned bases,
+    /// ranges apart.
+    pub fn of(ranges: &[(u32, u32)]) -> Option<Self> {
+        let mut total = 0u32;
+        let mut segments = Vec::with_capacity(ranges.len());
+        for (i, &(base, end)) in ranges.iter().enumerate() {
+            let bytes = end.checked_sub(base)?;
+            total = total.checked_add(bytes)?;
+            if base & 15 != 0 || total > MAX_SCRATCH {
+                return None;
+            }
+            if ranges[..i].iter().any(|&(b, e)| base < e && b < end) {
+                return None;
+            }
+            segments.push((base, vec![0; bytes.div_ceil(4) as usize]));
+        }
+        Some(Self { segments })
+    }
+
+    fn index(&self, addr: u32) -> Option<(usize, usize)> {
         if addr & 3 != 0 {
             return None;
         }
-        let i = (addr.checked_sub(self.base)? / 4) as usize;
-        (i < self.words.len()).then_some(i)
+        self.segments.iter().enumerate().find_map(|(k, (base, words))| {
+            let i = (addr.checked_sub(*base)? / 4) as usize;
+            (i < words.len()).then_some((k, i))
+        })
     }
 
     pub fn get(&self, addr: u32) -> Option<u32> {
-        Some(self.words[self.index(addr)?])
+        let (k, i) = self.index(addr)?;
+        Some(self.segments[k].1[i])
     }
 
     pub fn put(&mut self, addr: u32, value: u32) -> Option<()> {
-        let i = self.index(addr)?;
-        self.words[i] = value;
+        let (k, i) = self.index(addr)?;
+        self.segments[k].1[i] = value;
         Some(())
     }
 
@@ -239,17 +260,17 @@ pub mod constant {
 
 /// One body's side as the builder reads its accumulator.
 #[derive(Clone, Copy, Debug)]
-struct Side {
+pub(crate) struct Side {
     /// `+0x0c`: nonzero when the basis is the identity.
-    flag: u8,
+    pub(crate) flag: u8,
     /// `+0x30`: inverse inertia, inverse mass in `w`.
-    inertia: u128,
-    center: u128,
-    basis: [u128; 3],
+    pub(crate) inertia: u128,
+    pub(crate) center: u128,
+    pub(crate) basis: [u128; 3],
 }
 
 impl Side {
-    fn read(s: &Scratch, acc: u32) -> Option<Self> {
+    pub(crate) fn read(s: &Scratch, acc: u32) -> Option<Self> {
         Some(Self {
             flag: s.get(acc.checked_add(0x0c)?)? as u8,
             inertia: s.vector(acc + 0x30)?,
@@ -258,18 +279,18 @@ impl Side {
         })
     }
 
-    fn inverse_mass(&self) -> u32 {
+    pub(crate) fn inverse_mass(&self) -> u32 {
         lane(self.inertia, 3)
     }
 
-    fn finite(&self) -> bool {
+    pub(crate) fn finite(&self) -> bool {
         [self.inertia, self.center, self.basis[0], self.basis[1], self.basis[2]]
             .into_iter()
             .all(|v| (0..4).all(|i| finite(lane(v, i))))
     }
 
     /// Into the body's frame unless the flag says it is the world's.
-    fn local(&self, sse: &mut Sse, v: u128) -> u128 {
+    pub(crate) fn local(&self, sse: &mut Sse, v: u128) -> u128 {
         if self.flag == 0 { sse.rotate(&self.basis, v) } else { v }
     }
 }
@@ -278,11 +299,11 @@ pub(crate) fn lane(v: u128, i: usize) -> u32 {
     (v >> (32 * i)) as u32
 }
 
-fn splat(x: u32) -> u128 {
+pub(crate) fn splat(x: u32) -> u128 {
     u128::from(x) * (u128::MAX / u128::from(u32::MAX))
 }
 
-fn with_w(v: u128, w: u32) -> u128 {
+pub(crate) fn with_w(v: u128, w: u32) -> u128 {
     (v & (u128::MAX >> 32)) | u128::from(w) << 96
 }
 
@@ -291,13 +312,13 @@ fn with_lane(v: u128, i: usize, x: u32) -> u128 {
 }
 
 /// `shufps x, x, imm`.
-fn shuf(v: u128, imm: u8) -> u128 {
+pub(crate) fn shuf(v: u128, imm: u8) -> u128 {
     (0..4).fold(0, |r, i| r | u128::from(lane(v, usize::from(imm >> (2 * i) & 3))) << (32 * i))
 }
 
 /// Packed and scalar SSE under one MXCSR.
-struct Sse {
-    e: Exact,
+pub(crate) struct Sse {
+    pub(crate) e: Exact,
 }
 
 impl Sse {
@@ -307,21 +328,21 @@ impl Sse {
             0
         })
     }
-    fn mul(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn mul(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::mulps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
-    fn add(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn add(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::addps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
-    fn sub(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn sub(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::subps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
 
     /// `y + x` then `z + that`, the builder's horizontal sum.
-    fn hsum(&mut self, v: u128) -> u32 {
+    pub(crate) fn hsum(&mut self, v: u128) -> u32 {
         let xy = self.e.add(lane(v, 1), lane(v, 0));
         self.e.add(lane(v, 2), xy)
     }
@@ -334,7 +355,7 @@ impl Sse {
     }
 
     /// `b0 x + b1 y + b2 z` over the accumulator's last three vectors.
-    fn rotate(&mut self, basis: &[u128; 3], v: u128) -> u128 {
+    pub(crate) fn rotate(&mut self, basis: &[u128; 3], v: u128) -> u128 {
         let z = self.mul(basis[2], splat(lane(v, 2)));
         let y = self.mul(basis[1], splat(lane(v, 1)));
         let x = self.mul(basis[0], splat(lane(v, 0)));
@@ -356,7 +377,7 @@ impl Sse {
     }
 
     /// `|a|^2 A + |b|^2 B` over the two inverse inertias.
-    fn quad(&mut self, a: &Side, b: &Side, ang_a: u128, ang_b: u128) -> u32 {
+    pub(crate) fn quad(&mut self, a: &Side, b: &Side, ang_a: u128, ang_b: u128) -> u32 {
         let bb = self.mul(ang_b, ang_b);
         let bb = self.mul(bb, b.inertia);
         let aa = self.mul(ang_a, ang_a);
@@ -382,33 +403,33 @@ impl Sse {
 }
 
 /// x87 arithmetic under the guest's control word.
-struct Fx {
-    mode: Mode,
+pub(crate) struct Fx {
+    pub(crate) mode: Mode,
 }
 
 impl Fx {
-    fn add(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn add(&self, a: F80, b: F80) -> F80 {
         x87::add(a, b, self.mode).0
     }
-    fn sub(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn sub(&self, a: F80, b: F80) -> F80 {
         x87::sub(a, b, self.mode).0
     }
-    fn mul(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn mul(&self, a: F80, b: F80) -> F80 {
         x87::mul(a, b, self.mode).0
     }
-    fn div(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn div(&self, a: F80, b: F80) -> F80 {
         x87::div(a, b, self.mode).0
     }
-    fn st(&self, a: F80) -> u32 {
+    pub(crate) fn st(&self, a: F80) -> u32 {
         a.to_f32_bits(self.mode).0
     }
 }
 
-fn below(a: F80, b: F80) -> bool {
+pub(crate) fn below(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Less
 }
 
-fn above(a: F80, b: F80) -> bool {
+pub(crate) fn above(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Greater
 }
 
@@ -484,14 +505,14 @@ impl Constants {
     }
 }
 
-fn vector(j: &Journal, at: u32) -> Option<u128> {
+pub(crate) fn vector(j: &Journal, at: u32) -> Option<u128> {
     if at & 15 != 0 {
         return None;
     }
     (0..4).try_fold(0, |v, i| Some(v | u128::from(j.get(at.checked_add(4 * i)?)?) << (32 * i)))
 }
 
-fn put_vector(j: &mut Journal, at: u32, v: u128) -> Option<()> {
+pub(crate) fn put_vector(j: &mut Journal, at: u32, v: u128) -> Option<()> {
     (0..4).try_for_each(|i| j.put(at.checked_add(4 * i as u32)?, lane(v, i)))
 }
 

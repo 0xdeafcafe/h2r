@@ -128,7 +128,7 @@ pub fn tight(base: &[u8], room: u32) -> Vec<u8> {
     let kit = crate::build(base, NAME, Mode::Kit, &Config::default()).unwrap();
     let mut map = Map::from_reader(Cursor::new(base)).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    let max = max_metadata_size(CacheType::Multiplayer).unwrap();
+    let max = max_metadata_size(crate::KIT_METADATA_BUDGET).unwrap();
     let spare = (max - map.header().meta_size - kit.costs.tag_growth - room) & !0xfff;
     set.pinned.as_mut().unwrap().metadata_size += spare;
     set.add_group(FourCC(*b"fill"), None, None);
@@ -158,6 +158,14 @@ pub const SHARED_WEAPON: &str = r"objects\weapons\rifle\plasma_rifle\plasma_rifl
 /// hunter 0x10000. Every biped (0x10 bytes) points at one `rail` weapon,
 /// so the second class pays only for its char and biped.
 pub fn donor() -> Vec<u8> {
+    donor_with(false)
+}
+
+/// The size of the donor's Pelican data block.
+pub const PELICAN_BULK: usize = 0x3000;
+
+/// [`donor`], with the Pelican as well when `pelican`.
+pub fn donor_with(pelican: bool) -> Vec<u8> {
     let mut set = TagSet::new(CacheType::Multiplayer, DONOR, r"invented\donor");
     for group in [b"matg", b"scnr", b"char", b"bipd", b"weap", b"vehi"] {
         set.add_group(FourCC(*group), None, None);
@@ -195,6 +203,12 @@ pub fn donor() -> Vec<u8> {
         TagPayload::Built(phantom),
     )
     .unwrap();
+    if pelican {
+        let mut ship = Block::zeroed(0x20);
+        ship.data(0x10, Block::new(vec![8; PELICAN_BULK]).aligned(1));
+        set.add_tag(FourCC(*b"vehi"), crate::ship::PELICAN, TagPayload::Built(ship))
+            .unwrap();
+    }
     for (name, bulk) in [("grunt", 0x20usize), ("jackal", 0x20), ("hunter", 0x10000)] {
         let mut unit = Block::zeroed(0x10);
         unit.tag_ref(0, rail);

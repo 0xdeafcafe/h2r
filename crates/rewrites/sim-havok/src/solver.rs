@@ -477,7 +477,7 @@ pub fn export(rhs: u32, scale: u32, control: u16) -> u32 {
 
 // ---- the schema stream `0x0031c940` reads -----------------------------------
 //
-// A contact island's schemas, as `jacobian::contact` writes them, decoded
+// An island's schemas, as the contact and joint builders write them, decoded
 // into a [`Stream`]: each header names the rows that follow and the two
 // accumulators; each command its rows. The write-back pass after the
 // iterations (`0x0031e4da` to `0x0031e696`) stores each row's impulse and
@@ -492,6 +492,16 @@ use crate::jacobian::{
 
 /// The end schema (id 0, size 4, pass 0), after the last constraint's.
 pub const SCHEMA_END: u32 = 0x0000_0400;
+/// The joint builders' single-row schemas: id (the solver's handler,
+/// `0x0031e6a4`), size, correction pass (`0x0031e6e8`: 3 linear, 4
+/// angular). The kernel test (`engine/tests/sim_physics_kernel.rs`) holds
+/// each handler to [`Stream::solve`].
+pub const SCHEMA_FREE_LINEAR: u32 = 0x0003_040d;
+pub const SCHEMA_FREE_ANGULAR: u32 = 0x0004_040c;
+pub const SCHEMA_CAPPED_LINEAR: u32 = 0x0003_0806;
+pub const SCHEMA_CAPPED_ANGULAR: u32 = 0x0004_0809;
+pub const SCHEMA_RANGE_LINEAR: u32 = 0x0003_0c0b;
+pub const SCHEMA_RANGE_ANGULAR: u32 = 0x0004_100a;
 const ACCUMULATOR_BYTES: u32 = 0x80;
 
 /// The solver parameters `W+0x160` the solve reads.
@@ -552,14 +562,19 @@ pub struct Areas {
     /// ends at or before `rows_end`.
     pub rows: u32,
     pub rows_end: u32,
+    /// The rows' continuation in a LIFO block, start and end: one header
+    /// may point at its start, and the rows from there on end at or
+    /// before its end.
+    pub overflow: Option<(u32, u32)>,
     /// How many impulse words the frame zeroes (`I+0x18`).
     pub impulse_words: u32,
 }
 
 /// Decode the schemas from `start`. `None` for a stream the kernel does
-/// not cover: an id other than the contact builder's, rows that are not
-/// one run from the row area's start, an accumulator outside the island,
-/// or more rows than zeroed impulse words.
+/// not cover: an id other than the builders', rows that are not one run
+/// from the row area's start (or two, the second from the overflow
+/// block's start), an accumulator outside the island, or more rows than
+/// zeroed impulse words.
 pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<Decoded> {
     let mut d = Decoded { stream: Stream::default(), accumulators: Vec::new(), outputs: Vec::new() };
     let body = |d: &mut Decoded, addr: u32| -> Option<usize> {
@@ -582,6 +597,8 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
     };
     let mut p = start;
     let mut row_at = areas.rows;
+    let mut rows_end = areas.rows_end;
+    let mut overflow = areas.overflow;
     let mut bodies = [0; 2];
     let mut out = Output { dest: 0, stride: 0 };
     // The first schema is read as a header whatever its id (`0x0031c9a0`
@@ -594,8 +611,11 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
         let (constraint, linear, angular, size) = match tag {
             SCHEMA_END => break,
             SCHEMA_CONTACT_HEADER => {
-                if s.get(p.checked_add(4)?)? != row_at {
-                    return None;
+                let first = s.get(p.checked_add(4)?)?;
+                if first != row_at {
+                    // The cursor moved to the overflow block (`0x0031c37d`).
+                    let (start, end) = overflow.take().filter(|&(start, _)| start == first)?;
+                    (row_at, rows_end) = (start, end);
                 }
                 bodies = [body(&mut d, s.get(p + 0x0c)?)?, body(&mut d, s.get(p + 0x10)?)?];
                 out = Output { dest: s.get(p + 8)?, stride: s.get(p + 0x14)? };
@@ -603,6 +623,21 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
                 continue;
             }
             SCHEMA_CONTACT => (Constraint::Single(Limit::Positive), 1, 0, 4),
+            SCHEMA_FREE_LINEAR => (Constraint::Single(Limit::Free), 1, 0, 4),
+            SCHEMA_FREE_ANGULAR => (Constraint::Single(Limit::Free), 0, 1, 4),
+            SCHEMA_CAPPED_LINEAR | SCHEMA_CAPPED_ANGULAR => {
+                let magnitude = s.get(p.checked_add(4)?)?;
+                let linear = u32::from(tag == SCHEMA_CAPPED_LINEAR);
+                (Constraint::Single(Limit::Capped { magnitude }), linear, 1 - linear, 8)
+            }
+            SCHEMA_RANGE_LINEAR => {
+                let w = |off: u32| s.get(p.checked_add(off)?);
+                (Constraint::Single(Limit::Range { high: w(4)?, low: w(8)?, angular_scale: 0 }), 1, 0, 12)
+            }
+            SCHEMA_RANGE_ANGULAR => {
+                let w = |off: u32| s.get(p.checked_add(off)?);
+                (Constraint::Single(Limit::Range { high: w(4)?, low: w(8)?, angular_scale: w(0x0c)? }), 0, 1, 16)
+            }
             SCHEMA_CONTACT_PAIR => (Constraint::PositivePair { cross: s.get(p.checked_add(4)?)? }, 2, 0, 8),
             SCHEMA_FRICTION | SCHEMA_FRICTION_TWIST => {
                 let w = |off: u32| s.get(p.checked_add(off)?);
@@ -624,11 +659,11 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
             Constraint::Friction { .. } => Output { dest: s.get(p + 4)?, stride: s.get(p + 0x10)? },
             _ => {
                 let o = out;
-                out.dest = out.dest.wrapping_add(out.stride.wrapping_mul(linear));
+                out.dest = out.dest.wrapping_add(out.stride.wrapping_mul(linear + angular));
                 o
             }
         };
-        if angular == 1 {
+        if tag == SCHEMA_FRICTION_TWIST {
             // The three-row write-back leaves the header's pointer zero
             // (`0x0031e631`).
             out.dest = 0;
@@ -654,7 +689,7 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
                 row_at += 0x20;
                 r
             };
-            if row_at > areas.rows_end {
+            if row_at > rows_end {
                 return None;
             }
             d.stream.rows.push(row);

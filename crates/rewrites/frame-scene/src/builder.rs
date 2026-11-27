@@ -997,7 +997,7 @@ mod tests {
         let entry = |slot, owner| LayerItem {
             slot,
             key: item(1),
-            owner,
+            level: 0, pass: 0, owner,
             model: u32::MAX,
             rows: 0..0,
             lighting: None,

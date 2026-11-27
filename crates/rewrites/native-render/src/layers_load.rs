@@ -380,7 +380,7 @@ pub fn plan_without_game(
                 part: 0,
                 implementation: 0,
             },
-            owner: LayerOwner::Cluster(0),
+            level: 0, pass: 0, owner: LayerOwner::Cluster(0),
             model: u32::MAX,
             rows: 0..0,
             lighting: None,
