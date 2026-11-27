@@ -39,14 +39,7 @@ pub const ID: &str = "native-first-person";
 
 pub(crate) use crate::native_transparents::FIRST_PERSON_ITEMS;
 
-/// The cut: `0x0003fdf0` takes the view in `eax` and the call (0 or 1) on
-/// the stack, `ret 4`; its answer is `al = 1`, which no caller reads.
-pub const CUT: Cut = Cut {
-    name: "first_person",
-    entry: 0x0003_fdf0,
-    abi_result: 1,
-    pop: 4,
-};
+pub use crate::cut::FIRST_PERSON as CUT;
 
 /// The view slot the first person draws in: slot 10, after the world's
 /// transparents (slot 9).

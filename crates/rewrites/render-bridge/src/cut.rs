@@ -59,8 +59,18 @@ pub const CUTS: &[Cut] = &[
         pop: 4,
     },
     // Both calls, argument 0 and 1; no caller reads its answer.
-    crate::native_first_person::CUT,
+    FIRST_PERSON,
 ];
+
+/// The first person's cut: `0x0003fdf0` takes the view in `eax` and the call
+/// (0 or 1) on the stack, `ret 4`; its answer is `al = 1`, which no caller
+/// reads. `native_first_person` is its producer.
+pub const FIRST_PERSON: Cut = Cut {
+    name: "first_person",
+    entry: 0x0003_fdf0,
+    abi_result: 1,
+    pop: 4,
+};
 
 /// Cuts whose producer is a feature that builds the call's whole output
 /// from the call's registers (the first person: `native_first_person`,
