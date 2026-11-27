@@ -320,6 +320,7 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Coordinates...",
             "Heading",
             "Respawn time",
+            "Team",
             "Reset orientation",
             "Delete",
         ]
