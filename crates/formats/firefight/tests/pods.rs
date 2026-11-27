@@ -41,3 +41,19 @@ fn a_zone_without_a_fall_places_the_squad_on_foot() {
     let c = first_arrival(pods(2, vec![false, false]));
     assert!(matches!(c, Command::PlaceSquad { .. }), "{c:?}");
 }
+
+#[test]
+fn a_flood_squad_needs_a_free_flood_pod_not_an_insertion_pod() {
+    // The class is a Flood class: the one free pod is an insertion pod.
+    let seen = PodsSeen {
+        free: 2,
+        free_flood: 0,
+        falls: vec![true, true],
+        classes: ["elite".to_string()].into(),
+        flood_classes: ["elite".to_string()].into(),
+    };
+    let c = first_arrival(seen.clone());
+    assert!(matches!(c, Command::PlaceSquad { .. }), "{c:?}");
+    let c = first_arrival(PodsSeen { free_flood: 1, ..seen });
+    assert!(matches!(c, Command::DropSquad { arrival: Arrival::Pod, .. }), "{c:?}");
+}

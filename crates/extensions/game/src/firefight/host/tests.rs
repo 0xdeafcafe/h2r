@@ -35,6 +35,7 @@ struct FakeGame {
     ship: Option<Ship>,
     paths: Vec<Option<ShipPath>>,
     pods: Vec<Option<u32>>,
+    flood_pods: usize,
     falls: Vec<Option<PodFall>>,
 }
 
@@ -54,6 +55,7 @@ impl FakeGame {
             ship: None,
             paths: Vec::new(),
             pods: Vec::new(),
+            flood_pods: 0,
             falls: Vec::new(),
         }
     }
@@ -151,6 +153,9 @@ impl Game for FakeGame {
     }
     fn squad_pods(&self) -> Vec<Option<u32>> {
         self.pods.clone()
+    }
+    fn flood_pod_count(&self) -> usize {
+        self.flood_pods
     }
     fn falls(&self) -> Vec<Option<PodFall>> {
         self.falls.clone()
@@ -1870,4 +1875,66 @@ fn a_wreck_is_reparked_after_its_ticks() {
         }
     }
     assert_eq!(game.calls.iter().filter(|c| **c == Call::Park(POD)).count(), 1);
+}
+
+const FLOOD: u16 = 0x22;
+const FPOD: u32 = 0x778;
+
+/// An insertion pod and a Flood pod, and a Flood class beside the Elite.
+fn two_pod_game(flood_pod: Option<u32>) -> FakeGame {
+    let mut game = pod_game();
+    game.pods = vec![Some(POD), flood_pod];
+    game.flood_pods = 1;
+    let kit = game.kit.as_mut().unwrap();
+    kit.classes.insert("flood".to_string(), FLOOD);
+    kit.pod_classes = ["flood".to_string()].into();
+    kit.flood_classes = ["flood".to_string()].into();
+    game
+}
+
+fn flood_drop(slot: u8) -> Command {
+    Command::DropSquad {
+        slot,
+        class: "flood".into(),
+        count: 2,
+        zone: 0,
+        weapon_tier: 2,
+        arrival: Arrival::Pod,
+    }
+}
+
+fn flown(game: &FakeGame) -> Vec<u32> {
+    game.calls
+        .iter()
+        .filter_map(|c| if let Call::Fly(l) = c { Some(l.ship) } else { None })
+        .collect()
+}
+
+#[test]
+fn a_flood_squad_falls_in_a_flood_pod_and_the_others_in_the_insertion_pod() {
+    let mut game = two_pod_game(Some(FPOD));
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, flood_drop(1)), (1, pod_command(0))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(flown(&game), [FPOD, POD]);
+}
+
+#[test]
+fn a_flood_squad_never_takes_the_insertion_pod_and_goes_on_foot_without_a_flood_pod() {
+    let mut game = two_pod_game(None);
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, flood_drop(1))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert!(flown(&game).is_empty());
+    assert!(matches!(game.calls[..], [Call::Squad(SquadOp::Place(p))] if p.slot == 1));
+    assert_eq!(host.squad_pod_counts().fallbacks.get(&Fallback::NoFreePod), Some(&1));
+}
+
+#[test]
+fn the_director_sees_each_faction_pool_apart() {
+    let game = two_pod_game(Some(FPOD));
+    let host = start(Role::Host, &game);
+    let seen = observe(host.kit(), &BTreeMap::new(), 1, &SquadPods::new(1, 1), &game);
+    assert_eq!((seen.pods.free, seen.pods.free_flood), (1, 1));
+    assert!(seen.pods.flood_classes.contains("flood"));
 }
