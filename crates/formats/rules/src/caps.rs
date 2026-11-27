@@ -370,6 +370,8 @@ pub mod id {
     pub const FF_SHIP_UNLOAD: u16 = 140;
     pub const FF_SHIP_LEAVE: u16 = 141;
     pub const FF_ALLY: u16 = 142;
+    // 143 to 147 belong to the pod lane.
+    pub const SQUAD_SHIP: u16 = 148;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -714,23 +716,32 @@ pub const ENTRIES: &[Entry] = &[
     // `firefight::Command::Bonus`: the bonus round begins (`on`, for `ticks`)
     // or ends. A director rule's host log entry, queued like the rest.
     act(id::FF_BONUS, "ff_bonus", &[Bool, Int], Some("firefight.director"), Queued, Named),
-    // Firefight's drop ship (docs/game/firefight.md, "The drop ship"):
-    // whether the kit's zone `n` has a path (`firefight::director::ShipSeen`)
-    // and whether the kit's ship is in the world; `ff_drop_squad` is
-    // `firefight::Command::DropSquad` (a squad flown in), and the ship's
-    // hover hold, unloading and flight out are the commands of the same
-    // names. The host makes the flights and the loads
-    // (`game::firefight::ship`).
-    read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
-    read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
-    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int], Some("firefight.director"), Queued, Named),
-    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
-    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
-    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
+    // Firefight's drop ships (docs/game/firefight.md, "The drop ship"),
+    // each by its kind (0 the Phantom, 1 the Pelican; `firefight::ShipKind`):
+    // whether the kit's zone `n` has a path for the kind
+    // (`firefight::director::ShipSeen`) and whether the kit's ship of the
+    // kind is in the world; `ff_drop_squad` is `firefight::Command::DropSquad`
+    // (a squad flown in by the kind), and the ship's hover hold, unloading
+    // and flight out are the commands of the same names. `squad_ship(class)`
+    // is the kind the class's faction arrives by, -1 for none (the Flood).
+    // The host makes the flights and the loads (`game::firefight::ship`).
+    read(id::ZONE_PATH, "zone_path", &[Int, Int], Bool, Named),
+    read(id::SHIP_READY, "ship_ready", &[Int], Bool, Named),
+    act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Int, Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int, Int], Some("firefight.director"), Queued, Named),
     // Right after the `place_squad_at` of an allied squad
     // (`Command::Ally`): the player team it serves, whose team the actors
     // join and whose `ff_hold_NN` order they are given (`game::firefight`).
     act(id::FF_ALLY, "ff_ally", &[Squad, Team], Some("firefight.director"), Queued, Named),
+    // 143 to 147 are the pod lane's: placeholders until it lands, replaced by its entries.
+    read(143, "reserved_143", &[], Int, Named),
+    read(144, "reserved_144", &[], Int, Named),
+    read(145, "reserved_145", &[], Int, Named),
+    read(146, "reserved_146", &[], Int, Named),
+    read(147, "reserved_147", &[], Int, Named),
+    read(id::SQUAD_SHIP, "squad_ship", &[Class], Int, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

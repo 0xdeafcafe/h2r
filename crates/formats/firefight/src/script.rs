@@ -14,8 +14,8 @@ use crate::director::{
 };
 use crate::scoring::ScoreReason;
 use crate::{
-    BONUS_SKULLS, Def, Difficulty, Drop, MAX_BONUS_ROWS, MULTIPLIER_SCALE, Outcome, Refusal, Skull,
-    WAVES_PER_ROUND,
+    BONUS_SKULLS, Def, Difficulty, Drop, MAX_BONUS_ROWS, MULTIPLIER_SCALE, Outcome, Refusal, ShipKind,
+    Skull, WAVES_PER_ROUND,
 };
 
 /// The index of `skull` in [`SKULLS`]: its bit, and its row in the tables.
@@ -660,6 +660,12 @@ struct Host<'a> {
     out: Vec<Command>,
 }
 
+impl Host<'_> {
+    fn kind_seen(&self, kind: i32) -> Option<&crate::director::KindSeen> {
+        self.seen.ship.kinds.get(ShipKind::from_index(kind)?.index())
+    }
+}
+
 impl Game for Host<'_> {
     fn players(&self) -> Vec<u8> {
         self.present.keys().copied().collect()
@@ -708,14 +714,22 @@ impl Game for Host<'_> {
             // A mask of 0 names no role: every zone fits.
             (id::ZONE_HAS_ROLE, [Arg::Object(Some(z)), Arg::Int(mask)]) => zone(z)
                 .map_or(0, |z| i32::from(*mask == 0 || i32::from(z.roles) & *mask != 0)),
-            (id::ZONE_PATH, [Arg::Int(z)]) => i32::from(
-                usize::try_from(*z)
-                    .ok()
-                    .and_then(|z| self.seen.ship.paths.get(z))
+            (id::ZONE_PATH, [Arg::Int(z), Arg::Int(kind)]) => i32::from(
+                self.kind_seen(*kind)
+                    .zip(usize::try_from(*z).ok())
+                    .and_then(|(seen, z)| seen.paths.get(z))
                     .copied()
                     .unwrap_or(false),
             ),
-            (id::SHIP_READY, []) => i32::from(self.seen.ship.ready),
+            (id::SHIP_READY, [Arg::Int(kind)]) => {
+                i32::from(self.kind_seen(*kind).is_some_and(|seen| seen.ready))
+            }
+            // The kind the class arrives by, -1 for none.
+            (id::SQUAD_SHIP, [Arg::Class(Some(class))]) => self
+                .seen
+                .ship
+                .ship_of(class)
+                .map_or(-1, |kind| kind.index() as i32),
             (id::ZONE_SEEN, [Arg::Object(Some(z))]) => zone(z).map_or(0, |z| i32::from(z.seen)),
             (id::ZONE_DISTANCE, [Arg::Object(Some(z))]) => {
                 zone(z).map_or(0, |z| i32::try_from(z.distance).unwrap_or(i32::MAX))
@@ -765,6 +779,7 @@ fn command(call: &Call) -> Option<Command> {
                 Arg::Int(count),
                 Arg::Int(zone),
                 Arg::Int(tier),
+                Arg::Int(ship),
             ],
         ) => Command::DropSquad {
             slot: *slot,
@@ -772,10 +787,17 @@ fn command(call: &Call) -> Option<Command> {
             count: narrow_u16(*count)?,
             zone: narrow_u8(*zone)?,
             weapon_tier: narrow_u8(*tier)?,
+            ship: ShipKind::from_index(*ship)?,
         },
-        (id::FF_SHIP_HOVER, [Arg::Bool(on)]) => Command::ShipHover { on: *on },
-        (id::FF_SHIP_UNLOAD, []) => Command::ShipUnload,
-        (id::FF_SHIP_LEAVE, [Arg::Int(zone)]) => Command::ShipLeave {
+        (id::FF_SHIP_HOVER, [Arg::Int(ship), Arg::Bool(on)]) => Command::ShipHover {
+            ship: ShipKind::from_index(*ship)?,
+            on: *on,
+        },
+        (id::FF_SHIP_UNLOAD, [Arg::Int(ship)]) => Command::ShipUnload {
+            ship: ShipKind::from_index(*ship)?,
+        },
+        (id::FF_SHIP_LEAVE, [Arg::Int(ship), Arg::Int(zone)]) => Command::ShipLeave {
+            ship: ShipKind::from_index(*ship)?,
             zone: narrow_u8(*zone)?,
         },
         (id::HUNT, [Arg::Squad(slot)]) => Command::Hunt { slot: *slot },

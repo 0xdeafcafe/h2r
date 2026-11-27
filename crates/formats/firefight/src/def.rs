@@ -221,6 +221,50 @@ pub enum Faction {
     Human,
 }
 
+/// A kind of drop ship the kit parks, `ff_ship_<kind>` (docs/game/firefight.md,
+/// "The drop ship"). A squad arrives by the kind its faction rides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShipKind {
+    /// The Covenant ship: the Phantom, or the Spirit on a Halo 1 map.
+    Phantom,
+    /// The human ship.
+    Pelican,
+}
+
+impl ShipKind {
+    /// Every kind, in the order the rules script numbers them.
+    pub const ALL: [Self; 2] = [Self::Phantom, Self::Pelican];
+
+    /// The kind's number in the script (`ship_ready(kind)`).
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The kind a script number names.
+    pub fn from_index(index: i32) -> Option<Self> {
+        usize::try_from(index).ok().and_then(|i| Self::ALL.get(i).copied())
+    }
+
+    /// The kind's word in object and point names.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Phantom => "phantom",
+            Self::Pelican => "pelican",
+        }
+    }
+
+    /// The ship a faction's squads arrive by: Covenant by Phantom, humans
+    /// by Pelican; the Flood have none.
+    pub const fn for_faction(faction: Faction) -> Option<Self> {
+        match faction {
+            Faction::Covenant => Some(Self::Phantom),
+            Faction::Human => Some(Self::Pelican),
+            Faction::Flood => None,
+        }
+    }
+}
+
 /// The engine's own team numbers (docs/halo1/ai.md, **S**).
 pub mod teams {
     /// Enemy humans (allied humans take the player team they serve).
