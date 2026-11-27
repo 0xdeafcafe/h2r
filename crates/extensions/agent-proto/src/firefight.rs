@@ -217,6 +217,7 @@ pub enum Arrival {
 impl Arrival {
     fn is_auto(&self) -> bool {
         *self == Self::Auto
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
