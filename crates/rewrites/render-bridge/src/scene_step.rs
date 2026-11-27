@@ -2282,6 +2282,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(native_render::weather_scene::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_lights::scene_frame::counters())
+    .chain(native_render::light_tiles::counters())
     .chain([
         ("scene_first_person_cut_slots", crate::native_lights::first_person_scene_slots()),
         ("scene_first_person_kept_host", crate::native_lights::first_person_kept_host_slots()),

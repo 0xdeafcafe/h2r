@@ -332,6 +332,11 @@ fn model_part(
 const LIGHT_PROGRAM: ShaderId = ShaderId(u32::MAX - 5);
 
 impl LightGpu {
+    /// The texture group's layout (group 1 of the pass's pipelines).
+    pub(crate) fn textures_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.textures_layout
+    }
+
     pub fn retain(&mut self) -> Arc<Mutex<Self>> {
         if let Some(snapshot) = &self.retained {
             return Arc::clone(snapshot);
@@ -823,6 +828,78 @@ impl LightSet {
             .insert(datum, texture(device, queue, image, "native light gel"));
     }
 
+    /// The texture group `d` draws with: its pass's bitmaps, the engine
+    /// textures, its gel and its frozen shadow map, made once and kept;
+    /// `true` when made now. `None` when a sampled stage has nothing.
+    pub(crate) fn texture_group(
+        &self,
+        device: &wgpu::Device,
+        d: &LightDraw<'_>,
+        pass: &mut LightGpu,
+    ) -> Option<(wgpu::BindGroup, bool)> {
+        let mut made = false;
+        let reads_gel = d
+            .program
+            .stages
+            .iter()
+            .zip(d.program.dims)
+            .any(|(stage, dim)| *stage == LightStage::Gel && dim.is_some());
+        let static_gel = if reads_gel && d.gel_view.is_none() {
+            Some(d.gel?)
+        } else {
+            None
+        };
+        let gel_view = static_gel.and_then(|g| self.gels.get(&g));
+        let group = if let Some(map) = d.shadow_map {
+            let key = (map.view.clone(), gel_view.cloned());
+            if let Some((_, group)) = pass
+                .shadow_groups
+                .iter()
+                .find(|(cached, _)| cached == &key)
+            {
+                group.clone()?
+            } else {
+                made = true;
+                let gel = static_gel.and_then(|gel| self.gels.get(&gel));
+                let group = pass.textures(device, &self.textures, gel, Some(map));
+                if pass.shadow_groups.len() == 2 {
+                    pass.shadow_groups.remove(0);
+                }
+                pass.shadow_groups.push((key, group.clone()));
+                group?
+            }
+        } else if let Some(view) = d.gel_view.filter(|_| reads_gel) {
+            if let Some((_, group)) = pass
+                .gel_target_groups
+                .iter()
+                .find(|(cached, _)| cached == view)
+            {
+                group.clone()?
+            } else {
+                made = true;
+                let group = pass.textures(device, &self.textures, Some(view), None);
+                if pass.gel_target_groups.len() == 2 {
+                    pass.gel_target_groups.remove(0);
+                }
+                pass.gel_target_groups.push((view.clone(), group.clone()));
+                group?
+            }
+        } else if let Some((_, group)) = pass.static_groups.get(&static_gel)
+            .filter(|(cached, _)| cached.as_ref() == gel_view) {
+            group.clone()?
+        } else {
+            made = true;
+            let gel = match static_gel {
+                Some(g) => Some(self.gels.get(&g)?),
+                None => None,
+            };
+            let group = pass.textures(device, &self.textures, gel, None);
+            pass.static_groups.insert(static_gel, (gel_view.cloned(), group.clone()));
+            group?
+        };
+        Some((group, made))
+    }
+
     /// Resolve pipelines and texture groups (made once, kept) before
     /// taking the run's resident uniform slot. `None` when any draw cannot
     /// be issued.
@@ -841,17 +918,6 @@ impl LightSet {
             if d.ranges.is_empty() {
                 continue;
             }
-            let reads_gel = d
-                .program
-                .stages
-                .iter()
-                .zip(d.program.dims)
-                .any(|(stage, dim)| *stage == LightStage::Gel && dim.is_some());
-            let static_gel = if reads_gel && d.gel_view.is_none() {
-                Some(d.gel?)
-            } else {
-                None
-            };
             let mut resident = true;
             let mut pass = if self.retained { d.gpu.lock().ok()? } else { d.gpu.try_lock().ok()? };
             let model = d.model.as_ref().map(|m| m.layout);
@@ -860,54 +926,8 @@ impl LightSet {
                 .contains_key(&(color, depth, d.cull, model.map(|m| m.id)));
             let pipeline = pass.pipeline(device, color, depth, d.cull, model).clone();
             pipeline.1.previous_frame()?.as_ref()?;
-            let gel_view = static_gel.and_then(|g| self.gels.get(&g));
-            let textures = if let Some(map) = d.shadow_map {
-                let key = (map.view.clone(), gel_view.cloned());
-                if let Some((_, group)) = pass
-                    .shadow_groups
-                    .iter()
-                    .find(|(cached, _)| cached == &key)
-                {
-                    group.clone()?
-                } else {
-                    resident = false;
-                    let gel = static_gel.and_then(|gel| self.gels.get(&gel));
-                    let group = pass.textures(device, &self.textures, gel, Some(map));
-                    if pass.shadow_groups.len() == 2 {
-                        pass.shadow_groups.remove(0);
-                    }
-                    pass.shadow_groups.push((key, group.clone()));
-                    group?
-                }
-            } else if let Some(view) = d.gel_view.filter(|_| reads_gel) {
-                if let Some((_, group)) = pass
-                    .gel_target_groups
-                    .iter()
-                    .find(|(cached, _)| cached == view)
-                {
-                    group.clone()?
-                } else {
-                    resident = false;
-                    let group = pass.textures(device, &self.textures, Some(view), None);
-                    if pass.gel_target_groups.len() == 2 {
-                        pass.gel_target_groups.remove(0);
-                    }
-                    pass.gel_target_groups.push((view.clone(), group.clone()));
-                    group?
-                }
-            } else if let Some((_, group)) = pass.static_groups.get(&static_gel)
-                .filter(|(cached, _)| cached.as_ref() == gel_view) {
-                group.clone()?
-            } else {
-                resident = false;
-                let gel = match static_gel {
-                    Some(g) => Some(self.gels.get(&g)?),
-                    None => None,
-                };
-                let group = pass.textures(device, &self.textures, gel, None);
-                pass.static_groups.insert(static_gel, (gel_view.cloned(), group.clone()));
-                group?
-            };
+            let (textures, made) = self.texture_group(device, d, &mut pass)?;
+            resident &= !made;
             ready.push(Prepared {
                 draw: d,
                 pipeline,

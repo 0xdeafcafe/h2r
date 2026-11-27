@@ -185,6 +185,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [Campaign frame time and retained render state](graphics/notes/2026-11-24-campaign-frame-time.md): play-run observations and source audit
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
 - [native-lights-constants.md](graphics/native-lights-constants.md): the light constants and lights over the native world
+- [native-light-tiles.md](graphics/native-light-tiles.md): a run of lights' layers 12 and 13 binned into screen tiles and drawn as one instanced pass
 - [native-light-gather.md](graphics/native-light-gather.md): the light gather, the first-person lights, the object shadows and the light passes as Rust bodies (design, retire-d3d R3): the model, the guest state per step, the slices and their checks
 - [native-light-gather-checks.md](graphics/native-light-gather-checks.md): light gather counters, tests, live checks and refusals
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
