@@ -3,19 +3,23 @@
 //! Two arms. `impl.sim.native.sound` ([`SimSound`]) is the exact port: the
 //! guest records carry all persistent state across mixer callbacks and
 //! checkpoints. `impl.sim.sound-events` ([`SimSoundEvents`]) is the sound
-//! simulation of docs/engine/sound-sim.md: a sound started in the sim ends
-//! on a tick computed from its tag, there is no voice state, and the host
-//! mixer is fed from the sim's events. It makes no guest call.
+//! simulation of docs/engine/sound-sim.md: the engine's own admission makes
+//! each instance, the sim decides when it ends, and the engine's finish
+//! runs on that tick. The host mixer is fed from the sim's events.
 
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::points;
-use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use engine::entry::{Cx, EntryResult, GuestCall, Ret};
+use engine::{GuestMemory, MemFault, points};
+use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::events::{SoundDef, SoundEvent, SoundId, Source};
 use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
 pub mod mixer_feed;
+pub mod owners;
 
 pub const SOUND: &str = "sim.native.sound";
 /// The sound simulation's switch (`impl.sim.sound-events`, default off until
@@ -24,30 +28,11 @@ pub const EVENTS: &str = "sim.sound-events";
 const ID: &str = "impl.sim.native.sound";
 const EVENTS_ID: &str = "impl.sim.sound-events";
 
-/// What the sim hands out in place of a guest sound instance: the high bits
-/// mark it, the low bits are the [`SoundId`].
-pub const SIM_HANDLE: u32 = 0x7000_0000;
-
-pub fn handle(id: SoundId) -> u32 {
-    SIM_HANDLE | (id.0 & 0x0fff_ffff)
-}
-
-/// The id behind a handle the sim gave out.
-pub fn from_handle(h: u32) -> Option<SoundId> {
-    (h & 0xf000_0000 == SIM_HANDLE).then_some(SoundId(h & 0x0fff_ffff))
-}
-
-/// What the sim reads of a sound tag. The tag's duration and loop flag are
-/// the whole of what decides when the sound ends.
+/// What the sim reads of a sound tag when it is started without an
+/// instance (tests, and the headless default).
 pub trait Durations: Send + Sync {
     /// The definition of the sound tag `tag`.
     fn def(&self, tag: u32) -> SoundDef;
-    /// The tag of a marker start, from its parameter block in guest memory.
-    /// `None` when the block's layout is not known: the start then has tag 0
-    /// and ends on the tick it starts.
-    fn marker_tag(&self, _g: &runtime::Guest, _params: u32) -> Option<u32> {
-        None
-    }
 }
 
 /// No tag knowledge: every sound ends on the tick it starts.
@@ -60,10 +45,11 @@ impl Durations for NoDurations {
 }
 
 /// Guest calls and runs of the sound simulation. `guest_calls` is the number
-/// of guest calls its hooks made: none of its entry points holds a guest-call
-/// capability, so it stays 0 (`sound_phase_ledger_is_zero`). It is not a
-/// phase of the tick driver's ledger ([`crate::tick::LEDGER`]): the 29 phases
-/// hold no sound phase (docs/engine/sound-sim.md, "Where the sound runs").
+/// of guest calls its hooks made (the finishes, the ramp polls and the
+/// owners' lip-sync updates): a sim that starts no instance makes none
+/// (`sound_phase_ledger_is_zero`). It is not a phase of the tick driver's
+/// ledger ([`crate::tick::LEDGER`]): the 29 phases hold no sound phase
+/// (docs/engine/sound-sim.md, "Where the sound runs").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundLedger {
     pub guest_calls: u64,
@@ -73,10 +59,30 @@ pub struct SoundLedger {
     pub tick_steps: u64,
     pub starts: u64,
     pub events: u64,
+    /// Finishes of instances the sim made, by end tick or by a ramp.
+    pub finishes: u64,
+    /// Finishes skipped because the guest had freed the instance already.
+    pub stale: u64,
 }
 
-/// The sound simulation: the schedule, the events waiting for the host, and
-/// the host. Nothing in it reads guest memory.
+/// A running sound: the engine's instance and the tick it started on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Live {
+    pub instance: u32,
+    pub start: u32,
+}
+
+/// What is due at the start of a tick.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Due {
+    /// Sounds that ended since the last delivery: `(id, instance, reason)`.
+    pub finishes: Vec<(SoundId, u32, u32)>,
+    /// Sounds still running, in start order.
+    pub running: Vec<(SoundId, Live)>,
+}
+
+/// The sound simulation: the schedule, the events waiting for the host, the
+/// running instances and the host.
 pub struct SoundSim {
     schedule: Schedule,
     outbox: Vec<SoundEvent>,
@@ -84,6 +90,10 @@ pub struct SoundSim {
     durations: Arc<dyn Durations>,
     ledger: SoundLedger,
     last_step: Option<u32>,
+    live: BTreeMap<SoundId, Live>,
+    finishes: Vec<(SoundId, u32, u32)>,
+    /// The tick the instances were last delivered for.
+    last_delivery: Option<u32>,
 }
 
 impl SoundSim {
@@ -95,6 +105,9 @@ impl SoundSim {
             durations,
             ledger: SoundLedger::default(),
             last_step: None,
+            live: BTreeMap::new(),
+            finishes: Vec::new(),
+            last_delivery: None,
         }
     }
 
@@ -109,8 +122,23 @@ impl SoundSim {
         self.schedule.start(def, source, tick)
     }
 
+    /// A start the engine admitted: `instance` is its record.
+    pub fn start_instance(&mut self, def: SoundDef, source: Source, tick: u32, instance: u32) -> SoundId {
+        let id = self.start_def(def, source, tick);
+        self.live.insert(id, Live { instance, start: tick });
+        id
+    }
+
     pub fn stop(&mut self, id: SoundId, tick: u32) -> bool {
         self.schedule.stop(id, tick)
+    }
+
+    /// A stop whose ramp finished: the sound leaves the schedule and the
+    /// running set; the caller finishes the instance it returns.
+    pub fn end_ramp(&mut self, id: SoundId, tick: u32) -> Option<u32> {
+        let live = self.live.remove(&id)?;
+        self.schedule.stop(id, tick);
+        Some(live.instance)
     }
 
     /// The tick's sound step, from the game thread inside the tick. A tick
@@ -123,7 +151,34 @@ impl SoundSim {
         self.ledger.tick_steps += 1;
         let events = self.schedule.step(tick);
         self.ledger.events += events.len() as u64;
+        for e in &events {
+            if let SoundEvent::Ended { id, .. } = e
+                && let Some(live) = self.live.remove(id)
+            {
+                self.finishes.push((*id, live.instance, owners::ENDED_REASON));
+            }
+        }
         self.outbox.extend(events);
+    }
+
+    /// What is due at the start of `tick`: once per tick number, so the tick
+    /// entered again after the calls delivers once. None when nothing runs
+    /// and nothing ended.
+    pub fn due(&mut self, tick: u32) -> Option<Due> {
+        if self.last_delivery == Some(tick) {
+            return None;
+        }
+        self.last_delivery = Some(tick);
+        let due = Due {
+            finishes: std::mem::take(&mut self.finishes),
+            running: self.live.iter().map(|(id, l)| (*id, *l)).collect(),
+        };
+        (!due.finishes.is_empty() || !due.running.is_empty()).then_some(due)
+    }
+
+    /// The running sounds, in start order.
+    pub fn running(&self) -> Vec<(SoundId, Live)> {
+        self.live.iter().map(|(id, l)| (*id, *l)).collect()
     }
 
     /// The main-loop service: hands what the ticks since the last run made to
@@ -156,16 +211,69 @@ impl SoundSim {
         self.ledger
     }
 
+    pub fn ledger_mut(&mut self) -> &mut SoundLedger {
+        &mut self.ledger
+    }
+
     pub fn durations(&self) -> &Arc<dyn Durations> {
         &self.durations
     }
 
+    /// The schedule (length-prefixed), then the running sounds, the ended
+    /// sounds whose finish is due, and the tick the instances were last
+    /// delivered for.
     fn save(&self) -> Vec<u8> {
-        self.schedule.save()
+        let schedule = self.schedule.save();
+        let mut out = Vec::with_capacity(schedule.len() + 16);
+        out.extend((schedule.len() as u32).to_le_bytes());
+        out.extend(schedule);
+        out.extend((self.live.len() as u32).to_le_bytes());
+        for (id, l) in &self.live {
+            for w in [id.0, l.instance, l.start] {
+                out.extend(w.to_le_bytes());
+            }
+        }
+        out.extend((self.finishes.len() as u32).to_le_bytes());
+        for (id, instance, reason) in &self.finishes {
+            for w in [id.0, *instance, *reason] {
+                out.extend(w.to_le_bytes());
+            }
+        }
+        out.extend(self.last_delivery.unwrap_or(u32::MAX).to_le_bytes());
+        out
     }
 
     fn load(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.schedule = Schedule::restore(bytes).map_err(|e| format!("sound schedule: {e:?}"))?;
+        let mut at = 0usize;
+        let mut take = |n: usize| -> Result<&[u8], String> {
+            let end = at.checked_add(n).filter(|&e| e <= bytes.len()).ok_or("sound save: short")?;
+            let r = &bytes[at..end];
+            at = end;
+            Ok(r)
+        };
+        let word = |take: &mut dyn FnMut(usize) -> Result<Vec<u8>, String>| -> Result<u32, String> {
+            Ok(u32::from_le_bytes(take(4)?.try_into().expect("4 bytes")))
+        };
+        let mut owned = |n: usize| take(n).map(<[u8]>::to_vec);
+        let len = word(&mut owned)? as usize;
+        let schedule = Schedule::restore(&owned(len)?).map_err(|e| format!("sound schedule: {e:?}"))?;
+        let mut live = BTreeMap::new();
+        for _ in 0..word(&mut owned)? {
+            let id = SoundId(word(&mut owned)?);
+            live.insert(id, Live { instance: word(&mut owned)?, start: word(&mut owned)? });
+        }
+        let mut finishes = Vec::new();
+        for _ in 0..word(&mut owned)? {
+            finishes.push((SoundId(word(&mut owned)?), word(&mut owned)?, word(&mut owned)?));
+        }
+        let last = word(&mut owned)?;
+        if at != bytes.len() {
+            return Err("sound save: trailing bytes".into());
+        }
+        self.schedule = schedule;
+        self.live = live;
+        self.finishes = finishes;
+        self.last_delivery = (last != u32::MAX).then_some(last);
         self.outbox.clear();
         self.last_step = None;
         Ok(())
@@ -180,15 +288,101 @@ fn game_tick(g: &runtime::Guest) -> Result<u32, runtime::GuestFault> {
     g.u32(g.u32(points::GAME_TIME.base)?.wrapping_add(8))
 }
 
+fn tick_of(m: &dyn GuestMemory) -> Result<u32, MemFault> {
+    m.u32(m.u32(points::GAME_TIME.base)?.wrapping_add(8))
+}
+
+/// The mixer's clock for a tick, in milliseconds: the sim's copy of what the
+/// engine advances from the wall clock (`0x126a34`).
+pub fn clock_ms(tick: u32) -> u32 {
+    (u64::from(tick) * 1000 / 30) as u32
+}
+
+/// The engine's admission (`SOUND_IMPULSE_ALLOCATE`) run as the engine
+/// does, then the instance it returned entered in the schedule.
+pub async fn admit(cx: Cx, sim: Arc<Mutex<SoundSim>>, busy: Arc<AtomicBool>, args: [u32; 4]) -> EntryResult {
+    busy.store(true, Ordering::SeqCst);
+    let called = cx.call(GuestCall::new(points::SOUND_IMPULSE_ALLOCATE.base).args(args)).await;
+    busy.store(false, Ordering::SeqCst);
+    let instance = called?.eax;
+    if instance != owners::NONE {
+        let read = cx.read(|m| Ok::<_, MemFault>((tick_of(m)?, owners::read_admitted(m, instance))));
+        if let (Ok((tick, Some(a))), true) = (read, true) {
+            let def = SoundDef { tag: a.tag, duration_ms: a.duration_ms, looping: false };
+            lock(&sim).start_instance(def, Source(a.owner), tick, instance);
+        }
+    }
+    Ok(Ret::new(instance, 16))
+}
+
+/// The start of a tick: the mixer clock, the stops whose ramp is done, the
+/// finishes of what ended, then the tick itself (the hook's chain runs again
+/// for it, finds nothing due, and continues into the body).
+pub async fn deliver(cx: Cx, sim: Arc<Mutex<SoundSim>>, tick: u32, due: Due) -> EntryResult {
+    cx.write(|m| {
+        if let Ok(mixer) = m.u32(owners::MIXER) {
+            let _ = m.set_u32(mixer.wrapping_add(owners::MIXER_CLOCK), clock_ms(tick));
+        }
+    });
+    let mut finishes = due.finishes;
+    let mut calls = 0u64;
+    for (id, live) in &due.running {
+        if !cx.read(|m| owners::ramping(m, live.instance)) {
+            continue;
+        }
+        let ramp = cx.call(GuestCall::new(owners::RAMP).eax(live.instance)).await?.eax;
+        calls += 1;
+        if cx.read(|m| owners::ramp_done(m, live.instance, ramp))
+            && let Some(instance) = lock(&sim).end_ramp(*id, tick)
+        {
+            finishes.push((*id, instance, owners::FADE_REASON));
+        }
+    }
+    for (_, instance, reason) in finishes {
+        if !cx.read(|m| owners::record(m, instance).is_some()) {
+            lock(&sim).ledger_mut().stale += 1;
+            continue;
+        }
+        cx.call(GuestCall::new(owners::FINISH).eax(instance).args([reason])).await?;
+        calls += 1;
+        lock(&sim).ledger_mut().finishes += 1;
+    }
+    cx.call(GuestCall::new(points::GAME_TICK.base)).await?;
+    lock(&sim).ledger_mut().guest_calls += calls;
+    Ok(Ret::new(0, 0))
+}
+
+/// The main loop's update: the events to the host, then the owners'
+/// lip-sync updates the mixer's loop makes (`0x129593`), one for each
+/// running sound whose owner has one, with the seconds since its start.
+pub async fn service(cx: Cx, sim: Arc<Mutex<SoundSim>>) -> EntryResult {
+    let running = {
+        let mut s = lock(&sim);
+        s.service();
+        s.running()
+    };
+    let calls: Vec<_> = cx.read(|m| {
+        let tick = tick_of(m).unwrap_or(0);
+        running
+            .iter()
+            .filter_map(|(_, l)| owners::update_call(m, l.instance, owners::seconds(tick.saturating_sub(l.start))))
+            .collect()
+    });
+    lock(&sim).ledger_mut().guest_calls += calls.len() as u64;
+    for (function, args) in calls {
+        cx.call(GuestCall::new(function).args(args)).await?;
+    }
+    Ok(Ret::new(0, 0))
+}
+
 /// The sound simulation as hooks (`impl.sim.sound-events`).
 ///
 /// - `GAME_TICK`, after the body: steps the schedule at the tick that ran
-///   (an observer; no guest call).
-/// - `SOUND_UPDATE` (`0x125b40`, the main-loop service): implemented here;
-///   it hands the events to the host and returns, with no guest call.
-/// - `SOUND_IMPULSE_ALLOCATE` and `SOUND_START_AT_MARKER`: implemented
-///   here; the start goes to the schedule and the caller gets a sim handle
-///   ([`handle`]) in place of a guest instance.
+///   (an observer).
+/// - `GAME_TICK`, before the body, first in the chain: [`deliver`].
+/// - `SOUND_IMPULSE_ALLOCATE`: [`admit`] runs the engine's admission and
+///   enters the instance it returns.
+/// - `SOUND_UPDATE` (`0x125b40`, the main-loop service): [`service`].
 pub struct SimSoundEvents {
     sim: Arc<Mutex<SoundSim>>,
 }
@@ -231,29 +425,37 @@ impl Feature for SimSoundEvents {
             }
         });
         let sim = Arc::clone(&self.sim);
-        b.raw().implement(&points::SOUND_UPDATE, "sound service", move |cpu, ctx, _| {
-            lock(&sim).service();
-            ctx.memory().ret(cpu, 0)
+        b.raw().implement_async(&points::SOUND_UPDATE, "sound service", move |cx| {
+            Box::pin(service(cx, Arc::clone(&sim)))
         });
+        // The engine's admission, called from the hook: the inner call finds
+        // `busy` set and runs the original.
         let sim = Arc::clone(&self.sim);
-        b.raw().implement(&points::SOUND_IMPULSE_ALLOCATE, "sound impulse", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
-            let tag = mem.u32(cpu.esp.wrapping_add(4))?;
-            let source = mem.u32(cpu.esp.wrapping_add(12))?;
-            let tick = game_tick(&mem)?;
-            cpu.eax = handle(lock(&sim).start(tag, Source(source), tick));
-            mem.ret(cpu, 16)
+        let busy = Arc::new(AtomicBool::new(false));
+        b.raw().before(&points::SOUND_IMPULSE_ALLOCATE, "sound admission", move |call| {
+            if busy.load(Ordering::SeqCst) {
+                return Ok(Flow::Continue);
+            }
+            let esp = call.cpu.esp;
+            let g = call.ctx.runtime().memory();
+            let args = [g.u32(esp.wrapping_add(4))?, g.u32(esp.wrapping_add(8))?, g.u32(esp.wrapping_add(12))?, g.u32(esp.wrapping_add(16))?];
+            drop(g);
+            let (sim, busy) = (Arc::clone(&sim), Arc::clone(&busy));
+            call.answer_async(move |cx| Box::pin(admit(cx, sim, busy, args)))
         });
+        // The mixer clock, the ramps and the finishes, before the tick.
         let sim = Arc::clone(&self.sim);
-        b.raw().implement(&points::SOUND_START_AT_MARKER, "sound at marker", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
-            let params = mem.u32(cpu.esp.wrapping_add(4))?;
-            let tick = game_tick(&mem)?;
-            let mut sim = lock(&sim);
-            let tag = sim.durations().marker_tag(&mem, params).unwrap_or(0);
-            cpu.eax = handle(sim.start(tag, Source(cpu.esi), tick));
-            mem.ret(cpu, 4)
-        });
+        b.raw()
+            .before(&points::GAME_TICK, "sound instances", move |call| {
+                let rt = Arc::clone(call.ctx.runtime());
+                let tick = game_tick(&rt.memory())?;
+                let Some(due) = lock(&sim).due(tick) else {
+                    return Ok(Flow::Continue);
+                };
+                let sim = Arc::clone(&sim);
+                call.answer_async(move |cx| Box::pin(deliver(cx, sim, tick, due)))
+            })
+            .first();
         Ok(())
     }
 }
@@ -284,7 +486,7 @@ mod tests {
     use super::*;
     use hooks::{Base, Registry, Switches};
     use sim_sound::events::SoundDef;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
 
     /// Ticks per second the end ticks are computed at.
     const SECOND: u32 = 30;
@@ -392,32 +594,185 @@ mod tests {
         assert_eq!(ledger.starts, 300);
         assert_eq!(ledger.tick_steps, 300);
         assert_eq!(ledger.service_runs, 300);
+        assert!(sim.due(1).is_none(), "a sound with no instance has nothing to finish");
 
-        // The hooks: with the switch on, the service and both starts are
-        // implemented in Rust; no table body (a guest continuation) and no
-        // other entry is installed.
+        // The hooks: with the switch on, the service is implemented here and
+        // the admission and the tick's start are `before` hooks; the marker
+        // start and the stop are the engine's own.
         for (spec, on) in [("", false), ("impl.sim.sound-events", true)] {
             let mut registry = Registry::new(Switches::parse(spec).unwrap());
             registry.add(&SimSoundEvents::headless()).unwrap();
             let plan = registry.build(&Base).unwrap();
             assert!(!plan.save_sections().is_empty(), "the schedule is saved");
-            for point in [&points::SOUND_UPDATE, &points::SOUND_IMPULSE_ALLOCATE, &points::SOUND_START_AT_MARKER] {
-                let chain = plan.chains.get(&point.base);
-                assert_eq!(chain.is_some_and(|c| c.implement.is_some()), on, "{}", point.name);
-                if let Some(hook) = chain.and_then(|c| c.implement.as_ref()) {
-                    assert!(hook.continuation_sites().0.is_empty(), "{}: no guest continuation", point.name);
-                }
+            let chain = |p: &engine::points::Point| plan.chains.get(&p.base);
+            assert_eq!(chain(&points::SOUND_UPDATE).is_some_and(|c| c.implement.is_some()), on);
+            let labels = |p: &engine::points::Point| {
+                chain(p).map(|c| c.before.iter().map(|h| h.label).collect::<Vec<_>>()).unwrap_or_default()
+            };
+            assert_eq!(labels(&points::SOUND_IMPULSE_ALLOCATE), if on { vec!["sound admission"] } else { vec![] });
+            assert_eq!(labels(&points::GAME_TICK), if on { vec!["sound instances"] } else { vec![] });
+            assert!(chain(&points::SOUND_IMPULSE_ALLOCATE).is_none_or(|c| c.implement.is_none()), "the engine's admission runs");
+            assert!(chain(&points::SOUND_START_AT_MARKER).is_none(), "the marker start is the engine's");
+            assert!(chain(&points::SOUND_STOP_INSTANCE).is_none(), "the stop is the engine's");
+        }
+    }
+
+    fn instance(n: u32) -> u32 {
+        0x1234_0000 | n
+    }
+
+    #[test]
+    fn an_ended_sounds_finish_is_due_on_the_tick_after_its_end_event() {
+        let mut sim = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let a = sim.start_instance(SoundDef { tag: 1000, duration_ms: Some(1000), looping: false }, Source(1), 0, instance(2));
+        let due = sim.due(1).unwrap();
+        assert_eq!((due.finishes.len(), due.running.len()), (0, 1));
+        assert_eq!(due.running[0], (a, Live { instance: instance(2), start: 0 }));
+        assert!(sim.due(1).is_none(), "a tick delivers once");
+        for t in 1..30 {
+            sim.step(t);
+            assert_eq!(sim.due(t + 1).unwrap().running.len(), 1);
+        }
+        sim.step(30);
+        let due = sim.due(31).unwrap();
+        assert_eq!(due.finishes, vec![(a, instance(2), owners::ENDED_REASON)]);
+        assert!(due.running.is_empty());
+        assert!(sim.due(32).is_none(), "nothing left to deliver");
+        // A ramp's end takes the sound out of the schedule at once and gives
+        // the instance back.
+        let b = sim.start_instance(SoundDef { tag: 1, duration_ms: None, looping: true }, Source::NONE, 40, instance(3));
+        assert_eq!(sim.end_ramp(b, 45), Some(instance(3)));
+        assert_eq!(sim.end_ramp(b, 45), None);
+        sim.step(45);
+        assert!(sim.due(46).is_none(), "its end is not a second finish");
+        assert!(sim.wait_done(b, 45));
+    }
+
+    #[test]
+    fn running_sounds_survive_a_save() {
+        let mut a = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let id = a.start_instance(SoundDef { tag: 900, duration_ms: Some(900), looping: false }, Source(1), 0, instance(1));
+        a.start_instance(SoundDef { tag: 1, duration_ms: Some(1), looping: false }, Source(1), 0, instance(2));
+        a.step(1);
+        a.due(2);
+        let mut b = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        b.load(&a.save()).unwrap();
+        assert_eq!(a.hash(), b.hash());
+        assert_eq!(a.due(3), b.due(3));
+        let due = b.due(4).unwrap();
+        assert_eq!(due.running.iter().map(|r| r.0).collect::<Vec<_>>(), vec![id]);
+        assert!(b.load(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn the_clock_is_the_ticks_in_milliseconds() {
+        assert_eq!([clock_ms(0), clock_ms(1), clock_ms(3), clock_ms(30)], [0, 33, 100, 1000]);
+    }
+
+    mod fixture {
+        pub use crate::sim_sound::owners::fixture::*;
+    }
+
+    /// The fixture's guest with the clock and the tick the sim reads.
+    fn world() -> engine::testing::FakeGuest {
+        let mut g = fixture::guest();
+        g.put_u32(points::GAME_TIME.base, fixture::TIME).put_u32(fixture::TIME + 8, 40);
+        g.put_u32(owners::MIXER, fixture::MIXER_AT);
+        g
+    }
+
+    fn calls_of(r: &engine::entry::testing::Run) -> Vec<(u32, Option<u32>, Vec<u32>)> {
+        r.calls.iter().map(|c| (c.target, c.eax, c.args.clone())).collect()
+    }
+
+    #[test]
+    fn the_admission_is_the_engines_and_its_instance_is_entered() {
+        use engine::entry::{self, Regs};
+        for (returned, entered) in [(fixture::HANDLE, true), (u32::MAX, false)] {
+            let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
+            let busy = Arc::new(AtomicBool::new(false));
+            let args = [fixture::TAG, 1, 0x0060_0000, 3];
+            let (s, bz) = (Arc::clone(&sim), Arc::clone(&busy));
+            let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(admit(cx, Arc::clone(&s), Arc::clone(&bz), args)) };
+            let r = entry::testing::run(&f, world(), Regs { esp: 0x0030_0000, ..Default::default() }, move |c, _| {
+                assert_eq!(c.target, points::SOUND_IMPULSE_ALLOCATE.base);
+                Regs { eax: returned, ..Default::default() }
+            });
+            assert_eq!(r.result, Ok(Ret::new(returned, 16)));
+            assert_eq!(calls_of(&r), vec![(points::SOUND_IMPULSE_ALLOCATE.base, None, args.to_vec())]);
+            assert!(!busy.load(Ordering::SeqCst), "the guard is released");
+            let s = lock(&sim);
+            assert_eq!(s.running().len(), usize::from(entered));
+            if entered {
+                // The 1741 ms permutation of the fixture ends 52 ticks on.
+                let (id, l) = s.running()[0];
+                assert_eq!((l.instance, l.start), (fixture::HANDLE, 40));
+                assert_eq!(s.schedule().ends_at(id), Some(40 + 52));
             }
-            assert_eq!(plan.chains.contains_key(&points::GAME_TICK.base), on);
         }
     }
 
     #[test]
-    fn handles_round_trip() {
-        for n in [1, 2, 0x0fff_ffff] {
-            assert_eq!(from_handle(handle(SoundId(n))), Some(SoundId(n)));
-        }
-        assert_eq!(from_handle(0x0012_3456), None);
+    fn a_tick_start_sets_the_clock_polls_ramps_and_finishes_then_runs_the_tick() {
+        use engine::entry::{self, Regs};
+        let mut g = world();
+        // The instance is ramping and its ramp has reached the floor.
+        g.put_u8(fixture::REC + 4, 1 << 7).put_u32(fixture::REC + 0xb4, 400).put_u32(fixture::REC + 0xb8, 100);
+        g.put_u32(fixture::FLOOR, (-64.0f32).to_bits()).put_u32(fixture::REC + 0x20, 0);
+        let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
+        let ramping = lock(&sim).start_instance(SoundDef { tag: 1, duration_ms: Some(60_000), looping: false }, Source(1), 0, fixture::HANDLE);
+        let due = lock(&sim).due(40).unwrap();
+        let s = Arc::clone(&sim);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(deliver(cx, Arc::clone(&s), 40, due.clone())) };
+        let r = entry::testing::run(&f, g, Regs { esp: 0x0030_0000, ..Default::default() }, |c, _| {
+            Regs { eax: if c.target == owners::RAMP { (-64.0f32).to_bits() } else { 0 }, ..Default::default() }
+        });
+        assert_eq!(r.result, Ok(Ret::new(0, 0)));
+        assert_eq!(
+            calls_of(&r),
+            vec![
+                (owners::RAMP, Some(fixture::HANDLE), vec![]),
+                (owners::FINISH, Some(fixture::HANDLE), vec![owners::FADE_REASON]),
+                (points::GAME_TICK.base, None, vec![]),
+            ]
+        );
+        // The clock: tick 40 is 1333 ms.
+        assert_eq!(r.guest.u32(fixture::MIXER_AT + owners::MIXER_CLOCK), Ok(1333));
+        let s = lock(&sim);
+        assert!(s.running().is_empty());
+        assert_eq!(s.ledger().finishes, 1);
+        assert_eq!(s.ledger().guest_calls, 2);
+        assert!(s.wait_done(ramping, 40));
+    }
+
+    #[test]
+    fn an_instance_the_guest_freed_is_not_finished_twice() {
+        use engine::entry::{self, Regs};
+        let mut g = world();
+        g.put_u16(fixture::REC, 0);
+        let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
+        let due = Due { finishes: vec![(SoundId(1), fixture::HANDLE, owners::ENDED_REASON)], running: vec![] };
+        let s = Arc::clone(&sim);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(deliver(cx, Arc::clone(&s), 40, due.clone())) };
+        let r = entry::testing::run(&f, g, Regs { esp: 0x0030_0000, ..Default::default() }, |_, _| Regs::default());
+        assert_eq!(calls_of(&r), vec![(points::GAME_TICK.base, None, vec![])]);
+        assert_eq!(lock(&sim).ledger().stale, 1);
+    }
+
+    #[test]
+    fn the_service_makes_the_owners_update_with_the_seconds_since_the_start() {
+        use engine::entry::{self, Regs};
+        let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
+        lock(&sim).start_instance(SoundDef { tag: 1, duration_ms: Some(60_000), looping: false }, Source(1), 10, fixture::HANDLE);
+        let s = Arc::clone(&sim);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(service(cx, Arc::clone(&s))) };
+        let r = entry::testing::run(&f, world(), Regs { esp: 0x0030_0000, ..Default::default() }, |_, _| Regs::default());
+        assert_eq!(r.result, Ok(Ret::new(0, 0)));
+        // Tick 40, started on 10: one second.
+        let want = vec![(owners::UPDATE_LIP_SYNC, None, vec![0xaaaa_0001, fixture::REC + 0x5c, fixture::TAG, 1, fixture::PERMS + 7 * 16, 1.0f32.to_bits()])];
+        assert_eq!(calls_of(&r), want);
+        let s = lock(&sim);
+        assert_eq!((s.ledger().service_runs, s.ledger().guest_calls), (1, 1));
     }
 
     #[test]

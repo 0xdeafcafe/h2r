@@ -1,0 +1,13 @@
+[package]
+name = "sim-effects"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Effect part dispatch for the native simulation: damage parts as sim state, visual-only parts as events for the renderer"
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/effects-parts.md", "engine/sim-rewrite.md"]
+
+[lints]
+workspace = true

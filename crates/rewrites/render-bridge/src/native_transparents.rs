@@ -16,6 +16,10 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::abi::TransferAbi;
 use timeline::native::{Metric, ReservationCause, Stage};
 
+/// The first-person list the guest built at `0x004c8740` (the transparent
+/// stage still tells it apart from the world's).
+pub const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+
 pub const ID: &str = "native-transparents";
 
 use points::scene_effects::{
@@ -174,7 +178,7 @@ fn walk_stage(mem: &dyn GuestRead, esp: u32) -> Option<Stage> {
             let list = mem.read_u32(native_render::skip::CURRENT_LIST)?;
             if list == 0 { return None; }
             let items = mem.read_u32(list.checked_add(0x14)?)?;
-            if items == crate::native_first_person::FIRST_PERSON_ITEMS {
+            if items == FIRST_PERSON_ITEMS {
                 return (site == Site::FirstPerson).then_some(Stage::FirstPerson);
             }
             // Resident plans consume their ranges before the emitter.
@@ -817,7 +821,7 @@ mod walk_tests {
         for (at, invalid) in [
             (sp + 0x18, 0), (sp + 0x68, 0), (sp + LAYER_ENTRIES_FRAME, 0), (sp + LAYER_DRAW_FRAME, 0),
             (CURRENT_LAYER, 1), (sp + 8, RENDER_RECORDS), (0x004c_0b78, 1),
-            (sp + 0x64, u32::MAX), (record + 4, u32::MAX), (list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS),
+            (sp + 0x64, u32::MAX), (record + 4, u32::MAX), (list + 0x14, FIRST_PERSON_ITEMS),
         ] {
             let original = mem.u32(at).unwrap();
             mem.set_u32(at, invalid).unwrap();
@@ -836,7 +840,7 @@ mod walk_tests {
         mem.set_u32(stack + 0x68, LAYER_DRAW_CALLER).unwrap();
 
         mem.set_u32(CURRENT_LIST, list).unwrap();
-        mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
+        mem.set_u32(list + 0x14, FIRST_PERSON_ITEMS).unwrap();
         let classify = |mem: &FlatMemory| walk_stage(&ReadMemory(mem), stack);
         let args = stack - 12;
         for (layer, caller) in [(1, 0x0004_00ab), (2, 0x0004_0289), (3, 0x0004_0136),
@@ -852,7 +856,7 @@ mod walk_tests {
         }
         mem.set_u32(list + 0x14, 0x0050_0000).unwrap();
         assert_eq!(classify(&mem), None);
-        mem.set_u32(list + 0x14, crate::native_first_person::FIRST_PERSON_ITEMS).unwrap();
+        mem.set_u32(list + 0x14, FIRST_PERSON_ITEMS).unwrap();
         mem.set_u32(stack + LAYER_DRAW_FRAME, 0x0002_c039).unwrap();
         assert_eq!(classify(&mem), None);
     }

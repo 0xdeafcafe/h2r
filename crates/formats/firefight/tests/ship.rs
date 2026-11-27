@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use firefight::director::ShipSeen;
-use firefight::{Command, Outcome, ScriptDirector};
+use firefight::{Arrival, Command, Outcome, ScriptDirector};
 
 /// A ship, and a path for the first of `two_zones`.
 fn ship() -> ShipSeen {
@@ -54,6 +54,7 @@ fn a_squad_arrives_by_ship_when_the_zone_has_a_path() {
                     count: 1,
                     zone: 0,
                     weapon_tier: 0,
+                    arrival: Arrival::Auto,
                 }
             ),
             (242, Command::ShipUnload),

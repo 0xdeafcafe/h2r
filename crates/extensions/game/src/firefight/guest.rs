@@ -125,6 +125,7 @@ const PATH_PREFIX: &str = "ff_path_";
 /// location's, `ff_pfall_NN` for start NN, with the points `top` and
 /// `ground`.
 const POD_PREFIX: &str = "ff_pod_";
+const FLOOD_POD_PREFIX: &str = "ff_fpod_";
 const PLAYER_POD_PREFIX: &str = "ff_ppod_";
 const FALL_PREFIX: &str = "ff_fall_";
 const PLAYER_FALL_PREFIX: &str = "ff_pfall_";
@@ -202,6 +203,9 @@ pub struct KitLayout {
     /// The parked squad pods, `ff_pod_NN` in order: each one's index among
     /// the scenario's vehicle placements. Empty on a kit with no pod.
     pub pods: Vec<i16>,
+    /// The parked Flood squad pods, `ff_fpod_NN`, the same way: the Flood
+    /// squads fall in these, the others in `pods`.
+    pub flood_pods: Vec<i16>,
     /// The parked player pods, `ff_ppod_NN`, the same way.
     pub player_pods: Vec<i16>,
     /// Each drop zone's fall, by position in `zones`: none for a zone with
@@ -221,6 +225,22 @@ impl KitLayout {
             bases: self.bases.iter().map(|z| z.point).collect(),
             classes: self.classes.iter().cloned().collect(),
             team: self.team,
+            pod_classes: self
+                .classes
+                .iter()
+                .filter(|(_, character)| {
+                    self.factions
+                        .get(character)
+                        .is_some_and(|f| *f != Faction::Covenant)
+                })
+                .map(|(name, _)| name.clone())
+                .collect(),
+            flood_classes: self
+                .classes
+                .iter()
+                .filter(|(_, character)| self.factions.get(character) == Some(&Faction::Flood))
+                .map(|(name, _)| name.clone())
+                .collect(),
         }
     }
 }
@@ -376,6 +396,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     let paths = numbers.iter().map(|n| found.get(n).copied()).collect();
     let pods = read_pool(m, scnr, POD_PREFIX)?;
     let player_pods = read_pool(m, scnr, PLAYER_POD_PREFIX)?;
+    let flood_pods = read_pool(m, scnr, FLOOD_POD_PREFIX)?;
     let zone_falls = read_falls(m, scnr, FALL_PREFIX)?;
     let falls = numbers.iter().map(|n| zone_falls.get(n).copied()).collect();
     let player_falls = read_falls(m, scnr, PLAYER_FALL_PREFIX)?
@@ -395,6 +416,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         ship,
         paths,
         pods,
+        flood_pods,
         player_pods,
         falls,
         player_falls,

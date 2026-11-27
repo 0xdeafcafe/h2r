@@ -19,6 +19,7 @@ fn squad(class: &str, drop: Drop) -> SquadSpec {
         drop,
         weapon_tier: 0,
         side: Side::Enemy,
+        arrival: ::firefight::Arrival::Auto,
     }
 }
 
@@ -360,6 +361,7 @@ fn seeded_fuzz_of_documents_with_waves() {
                         },
                         weapon_tier: rng.below(5) as u8,
                         side: Side::Enemy,
+                        arrival: ::firefight::Arrival::Auto,
                     })
                     .collect();
                 let mut def = set_of("Fuzz", rng.below(3), &squads);

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use d3d::backend::{ExternalAttachments, ExternalEncoded};
+use d3d::backend::ExternalAttachments;
 use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPassRequest, ExternalPlan};
 use engine::memory::GuestMemory;
 use frame_scene::{
@@ -396,11 +396,16 @@ fn raster_position(window: f32, size: u32, shift: f32) -> f32 {
 }
 
 impl WidgetPass {
-    fn record(
+    /// The run's quads as one overlay plan on this copy, prepared by
+    /// `prepare` on the device's overlay renderer with the run's bound
+    /// textures; the quads all drew or the run is refused, so a refused
+    /// quad sends the run back to its packets, in order.
+    fn prepare<R>(
         &self,
         t: &ExternalAttachments,
         request: ExternalPassRequest,
-    ) -> Result<ExternalEncoded, &'static str> {
+        prepare: impl FnOnce(&mut OverlayGpu, &OverlayPlan, &Bound<'_>) -> Result<(R, native_render::overlay::OverlayStats), &'static str>,
+    ) -> Result<R, &'static str> {
         for (sampled, view) in self.sampled.iter().zip(&t.stages) {
             if *sampled && view.as_ref().is_some_and(|v| {
                 v.texture() == t.color.texture() || v.texture() == t.depth.texture()
@@ -465,21 +470,40 @@ impl WidgetPass {
             samplers,
             first: self.sampled.iter().position(|&v| v),
         };
-        let (encoded, stats) = renderer
-            .gpu
-            .prepare(&t.device, &t.color, &plan, &textures)?;
-        // Every quad of the run drew, or none did: a refused one sends
-        // the run back to its packets, in order.
+        let (prepared, stats) = prepare(&mut renderer.gpu, &plan, &textures)?;
         let quads = u32::try_from(self.members.len()).map_err(|_| "HUD run length")?;
         if stats.batches as usize != plan.batches.len() || stats.items != quads || stats.refused_material + stats.refused_texture != 0 {
             return Err("HUD material refused");
         }
-        let mut encoded = encoded;
-        encoded.ranges = self.members.len();
         if t.copy == d3d::TargetCopy::Display {
             native_render::ui_gpu::count_overlay(&stats);
         }
-        Ok(encoded)
+        Ok(prepared)
+    }
+
+    /// The run as packets for the frame's open pass on the bound colour
+    /// (no depth: the pass is `colour_only`), so adjacent quads and runs
+    /// share one render pass instead of opening one each.
+    fn record_packets(
+        &self,
+        t: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let packets = self.prepare(t, request, |gpu, plan, textures| {
+            gpu.prepare_packets(&t.device, &t.queue, &t.uploads, t.color_format, t.size, plan, textures)
+        })?;
+        if packets.is_empty() {
+            return Err("HUD run drew nothing");
+        }
+        // An alpha test or kill discards fragments, which some drivers
+        // need a pass boundary for (`d3d`'s `GfxBackend`).
+        let discards = self.members.iter().flat_map(|m| &m.overlay.items).any(|i| i.alpha_kill != 0 || i.alpha_test.is_some());
+        Ok(d3d::backend::ExternalDraws {
+            ranges: self.members.len(),
+            packets,
+            discards,
+            writes: Vec::new(),
+        })
     }
 }
 
@@ -545,12 +569,12 @@ impl ExternalPass for WidgetPass {
         true
     }
 
-    fn record_encoded(
+    fn record_draws(
         &mut self,
         t: &ExternalAttachments,
         request: ExternalPassRequest,
-    ) -> Option<Result<ExternalEncoded, &'static str>> {
-        let result = self.record(t, request);
+    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
+        let result = self.record_packets(t, request);
         if result.is_err() {
             timeline::native::Ui::OverlayHudTagRecordFailed.count();
         } else if t.copy == d3d::TargetCopy::Display {

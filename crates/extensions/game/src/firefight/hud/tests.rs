@@ -29,6 +29,7 @@ fn small_def(shared: bool, rounds: usize) -> Def {
                         drop: Drop::Edge,
                         weapon_tier: 0,
                         side: Side::Enemy,
+                        arrival: ::firefight::Arrival::Auto,
                     })
                     .collect(),
                 boss: wave == 4,
@@ -118,6 +119,7 @@ fn seen(players: &[u8], alive: [u16; SQUAD_SLOTS], kills: Vec<Kill>) -> Observed
         kills,
         player_kills: Vec::new(),
         ship: Default::default(),
+        pods: Default::default(),
     }
 }
 

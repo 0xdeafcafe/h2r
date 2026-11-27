@@ -20,27 +20,24 @@
 //! `0x00040010` jumps to the draw at `0x00040284`). Layer 16 is
 //! [`LATE_LAYER`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use engine::render::light_gather::first_person_items;
+use engine::entry::{Cx, EntryError, EntryFuture, EntryResult, Ret};
+use engine::render::light_gather::{first_person_effects, first_person_items};
 use scene_extract::layout::skip::{CURRENT_LAYER, CURRENT_LIST};
 use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
-use runtime::guest::{Access, FaultReason};
-use runtime::GuestFault;
 use timeline::native::{Metric, Stage};
 
 use crate::cut::{self, Cut};
 use crate::frame_step;
 use crate::native_objects::NativeSet;
-use hooks::{BuildError, Builder, Feature, Flow, Manifest};
+use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
 
-/// The first-person list the guest built at `0x004c8740` (the transparent
-/// stage still tells it apart from the world's).
-pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+pub(crate) use crate::native_transparents::FIRST_PERSON_ITEMS;
 
 /// The cut: `0x0003fdf0` takes the view in `eax` and the call (0 or 1) on
 /// the stack, `ret 4`; its answer is `al = 1`, which no caller reads.
@@ -63,11 +60,83 @@ pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
-/// The cut is held: until the scene's first person equals the guest's
-/// (its items, [`engine::render::light_gather::first_person_items`], and
-/// their draws), `0x0003fdf0`'s body runs and draws them, and this
-/// feature installs nothing.
-pub const HELD: bool = true;
+/// Whether the cut is held: until a frame's check passes ([`Gate`]),
+/// `0x0003fdf0`'s body runs and draws the first person, and each call is
+/// checked against the native path ([`check`]). Once released, every call
+/// is cut for the rest of the run.
+pub fn held() -> bool {
+    !RELEASED.load(Ordering::Relaxed)
+}
+
+/// Holds the cut again (a test's reset; the game never holds a released
+/// cut).
+pub fn hold() {
+    RELEASED.store(false, Ordering::Relaxed);
+    *GATE.lock().unwrap_or_else(|e| e.into_inner()) = Gate::default();
+}
+
+/// One held call's check: the parts the guest draws in it (its items,
+/// [`first_person_items::make`], in the layers the call draws,
+/// [`guest_parts`]), the view's parts the call draws once the body
+/// extracted them, and how many of those the native path would draw
+/// ([`Host::plan`]) or drops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Check {
+    pub guest: usize,
+    pub view: usize,
+    pub native: usize,
+    pub dropped: usize,
+}
+
+impl Check {
+    /// The native path draws every part the guest does, and drops none.
+    pub fn passed(&self) -> bool {
+        self.view == self.guest && self.native == self.guest && self.dropped == 0
+    }
+}
+
+/// The release gate: a frame passes when both of its calls pass their
+/// [`Check`] and draw at least one part between them. The first passing
+/// frame releases the cut.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gate {
+    first: Option<Check>,
+}
+
+impl Gate {
+    /// Records call `call`'s check; `true` when it completes a passing
+    /// frame. Call 0 opens a frame, call 1 closes it; a call 1 without its
+    /// call 0 passes nothing.
+    pub fn record(&mut self, call: u32, check: Check) -> bool {
+        if call & 0xff == 0 {
+            self.first = Some(check);
+            return false;
+        }
+        let Some(first) = self.first.take() else {
+            return false;
+        };
+        first.passed() && check.passed() && first.guest + check.guest > 0
+    }
+}
+
+/// The parts the guest's layer draws make of a call's items: each list-0
+/// item once per layer the call draws that it holds (a layer is drawn when
+/// its gate byte is set and list 0 holds it).
+pub fn guest_parts(mem: &dyn GuestMemory, items: &first_person_items::Items, call: u32) -> usize {
+    let mut drawn = 0u32;
+    for &(layer, gate) in first_person_items::layers(call) {
+        let gated = gate.is_none_or(|at| mem.u8(at).is_ok_and(|g| g != 0));
+        if items.layers & (1 << layer) != 0 && gated {
+            drawn |= 1 << layer;
+        }
+    }
+    items
+        .made
+        .iter()
+        .filter(|m| m.item.is_some())
+        .map(|m| (m.layers & drawn).count_ones() as usize)
+        .sum()
+}
 
 /// Why a part is not drawn. Each is a named count, never a D3D draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,10 +156,13 @@ pub enum Dropped {
     /// The call's item build refused (a record or shader it does not
     /// read): the call adds no part.
     Items,
+    /// The first-person effects (`0x00174220`) stopped at a system they
+    /// do not read: the systems after it are not updated this call.
+    Effects,
 }
 
 impl Dropped {
-    pub const ALL: [Dropped; 7] = [
+    pub const ALL: [Dropped; 8] = [
         Dropped::NoView,
         Dropped::NoHost,
         Dropped::Unreadable,
@@ -98,6 +170,7 @@ impl Dropped {
         Dropped::Unsupported,
         Dropped::Reservation,
         Dropped::Items,
+        Dropped::Effects,
     ];
 
     /// The cause's name in `render.scene`.
@@ -110,6 +183,7 @@ impl Dropped {
             Dropped::Unsupported => "unsupported",
             Dropped::Reservation => "reservation",
             Dropped::Items => "items",
+            Dropped::Effects => "effects",
         }
     }
 
@@ -158,12 +232,31 @@ pub trait Host: Send + Sync {
         mode: u32,
         parts: &[u32],
     ) -> Outcome;
+    /// Plans `parts` as [`Host::draw`] would, reserving and drawing
+    /// nothing (the held cut's [`check`]): `drawn` the parts it would
+    /// draw.
+    fn plan(
+        &self,
+        _mem: &mut dyn GuestMemory,
+        _scene: &FrameScene,
+        _view: &View,
+        parts: &[u32],
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        out.drop(Dropped::Reservation, parts.len());
+        out
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
-static DROPS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+static DROPS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static RELEASED: AtomicBool = AtomicBool::new(false);
+static CHECKS: AtomicU64 = AtomicU64::new(0);
+static PASSED: AtomicU64 = AtomicU64::new(0);
+
+static GATE: Mutex<Gate> = Mutex::new(Gate { first: None });
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
@@ -179,6 +272,43 @@ pub(crate) fn retire_map() {
 /// Calls answered, and parts drawn.
 pub fn counts() -> (u64, u64) {
     (CALLS.load(Ordering::Relaxed), DRAWN.load(Ordering::Relaxed))
+}
+
+/// The stage's counters for `render.scene`: calls answered, parts drawn,
+/// parts dropped by cause, held calls checked and passed, and whether the
+/// cut is still held.
+pub fn counters() -> Vec<(String, u64)> {
+    let (calls, drawn) = counts();
+    let (checked, passed) = checks();
+    let mut out = vec![
+        ("first_person_calls".to_owned(), calls),
+        ("first_person_drawn".to_owned(), drawn),
+        ("first_person_checked".to_owned(), checked),
+        ("first_person_check_passed".to_owned(), passed),
+        ("first_person_held".to_owned(), u64::from(held())),
+    ];
+    out.extend(drops().into_iter().map(|(name, n)| (format!("first_person_dropped_{name}"), n)));
+    out
+}
+
+/// Held calls checked, and those whose check passed
+/// (`render.scene`: `first_person_checked`, `first_person_check_passed`).
+pub fn checks() -> (u64, u64) {
+    (CHECKS.load(Ordering::Relaxed), PASSED.load(Ordering::Relaxed))
+}
+
+/// Records a held call's check in this thread's gate; releases the cut
+/// when it completes a passing frame. Answers whether the cut is released.
+pub fn check(call: u32, check: Check) -> bool {
+    CHECKS.fetch_add(1, Ordering::Relaxed);
+    if check.passed() {
+        PASSED.fetch_add(1, Ordering::Relaxed);
+    }
+    let frame = GATE.lock().unwrap_or_else(|e| e.into_inner()).record(call, check);
+    if frame {
+        RELEASED.store(true, Ordering::Relaxed);
+    }
+    !held()
 }
 
 /// Parts dropped, by cause (`render.scene`: `first_person_dropped_<cause>`).
@@ -203,6 +333,42 @@ pub fn offer(
     scene: &FrameScene,
     view: &View,
     mode: u32,
+) -> Outcome {
+    offer_by(host, mem, scene, view, mode, &mut |host, mem, parts| host.draw(mem, scene, view, SLOT, mode, parts))
+}
+
+/// [`offer`] planning only ([`Host::plan`]): what the native path would
+/// draw of the call's parts, and what it would drop.
+pub fn probe(
+    host: &dyn Host,
+    mem: &mut dyn GuestMemory,
+    scene: &FrameScene,
+    view: &View,
+    mode: u32,
+) -> Outcome {
+    offer_by(host, mem, scene, view, mode, &mut |host, mem, parts| host.plan(mem, scene, view, parts))
+}
+
+/// The parts of `view` call `mode` draws, in the view's order.
+pub fn call_parts(scene: &FrameScene, view: &View, mode: u32) -> usize {
+    let range = view.order.start as usize..view.order.end as usize;
+    scene.order.get(range).map_or(0, |order| {
+        order
+            .iter()
+            .filter(|&&i| scene.parts.get(i as usize).is_some_and(|p| draws_layer(mode, p.layer)))
+            .count()
+    })
+}
+
+type Draw<'a> = dyn FnMut(&dyn Host, &mut dyn GuestMemory, &[u32]) -> Outcome + 'a;
+
+fn offer_by(
+    host: &dyn Host,
+    mem: &mut dyn GuestMemory,
+    scene: &FrameScene,
+    view: &View,
+    mode: u32,
+    draw: &mut Draw<'_>,
 ) -> Outcome {
     let mut out = Outcome::default();
     let range = view.order.start as usize..view.order.end as usize;
@@ -241,20 +407,27 @@ pub fn offer(
     if offered.is_empty() {
         return out;
     }
-    let drawn = host.draw(mem, scene, view, SLOT, mode, &offered);
+    let drawn = draw(host, mem, &offered);
     out.drawn += drawn.drawn;
     out.dropped.extend(drawn.dropped);
     out
 }
 
-/// The call's items into the scene, as `0x0003fdf0`'s body makes them up
-/// to its draws: the item build's writes
-/// ([`first_person_items::make`]), then each layer the call draws, with
-/// the current layer and list the guest's layer draw reads, into the
-/// first person's view, then the epilogue. `false` when the build
-/// refuses or its writes fault: the view holds no part of this call.
+/// The prologue of `0x0003fdf0` ([`first_person_items::prologue`]),
+/// before the first-person effects: `false` when it does not read.
+pub fn begin(mem: &mut dyn GuestMemory) -> bool {
+    first_person_items::prologue(&*mem).is_ok_and(|w| w.apply(mem).is_ok())
+}
+
+/// The call's items into the scene, as `0x0003fdf0`'s body makes them
+/// after its prologue and effects, up to its draws: the record loop's
+/// writes ([`first_person_items::records`]), then each layer the call
+/// draws, with the current layer and list the guest's layer draw reads,
+/// into the first person's view, then the epilogue. `false` when the
+/// build refuses or its writes fault: the view holds no part of this
+/// call.
 pub fn build(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> bool {
-    let Ok(items) = first_person_items::make(&*mem, eax) else {
+    let Ok(items) = first_person_items::records(&*mem, eax) else {
         return false;
     };
     if items.writes.apply(mem).is_err() {
@@ -276,11 +449,23 @@ pub fn build(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> bool {
 }
 
 /// Answers one call of `0x0003fdf0` (EAX `eax`, the stack argument
-/// `call`): builds its items into the first person's view ([`build`]),
-/// offers the view's parts, and counts what was drawn and what was
-/// dropped. The view's camera is the render camera the game view drew
-/// with: `0x0003fdf0` and its call site set none of their own.
+/// `call`) where the first-person effects change nothing: [`begin`],
+/// then [`finish`].
 pub fn answer(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> Outcome {
+    if !begin(mem) {
+        let mut out = Outcome::default();
+        out.drop(Dropped::Items, 1);
+        count(&out);
+    }
+    finish(mem, eax, call)
+}
+
+/// The rest of a call after its prologue and effects: builds its items
+/// into the first person's view ([`build`]), offers the view's parts, and
+/// counts what was drawn and what was dropped. The view's camera is the
+/// render camera the game view drew with: `0x0003fdf0` and its call site
+/// set none of their own.
+pub fn finish(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> Outcome {
     CALLS.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let _ = crate::scene_step::open_kind(&*mem, ViewKind::FirstPerson);
@@ -329,43 +514,122 @@ impl Feature for NativeFirstPerson {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
-        if HELD || !on(b.switches()) {
+        if !on(b.switches()) {
             return Ok(());
         }
-        // A cut (`crate::cut::OWN_PRODUCER`): every call is answered here,
-        // after the frame step's writes for it, and the body never runs.
+        // A cut (`crate::cut::OWN_PRODUCER`) once released: every call is
+        // answered here, after the frame step's writes for it, and the
+        // body never runs. Held, the body runs as a guest call of this
+        // entry ([`held_call`]) and the call is checked after it.
         let point = cut::point(&CUT);
         b.raw()
-            .before(point, "native_first_person_skip", move |c| {
-                if c.addr != point.base {
-                    return Ok(Flow::Continue);
+            .implement(point, "native_first_person_skip", move |cpu, ctx, addr| {
+                if addr != point.base || REENTER.swap(false, Ordering::Relaxed) {
+                    return original(cpu, ctx, addr);
                 }
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                frame_step::before(&mut *mem, CUT.name).map_err(|f| GuestFault {
-                    addr: f.addr,
-                    len: f.len as usize,
-                    access: if f.write { Access::Write } else { Access::Read },
-                    reason: FaultReason::Unmapped,
-                })?;
-                // The call is the stack's first argument; one that does not
-                // read is a drop, never a guest draw.
-                match mem.u32(c.cpu.esp.wrapping_add(4)) {
-                    Ok(mode) => {
-                        answer(&mut *mem, c.cpu.eax, mode);
-                    }
-                    Err(_) => count(&Outcome {
-                        drawn: 0,
-                        dropped: vec![(Dropped::Unreadable, 1)],
-                    }),
+                if held() {
+                    let guest = {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mem = rt.memory();
+                        mem.u32(cpu.esp.wrapping_add(4)).ok().map(|call| {
+                            let parts = first_person_items::make(&*mem, cpu.eax).ok().map(|items| guest_parts(&*mem, &items, call));
+                            (call, parts)
+                        })
+                    };
+                    return hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
+                        Box::pin(held_call(cx, guest))
+                    });
                 }
-                let transfer = mem.ret(c.cpu, u32::from(CUT.pop))?;
-                c.cpu.eax = CUT.abi_result;
-                Ok(Flow::Return(transfer))
+                hooks::entry::start_render(cpu, ctx, addr, |cx: Cx| -> EntryFuture { Box::pin(cut_call(cx)) })
             })
             .optional()
-            .context_only()
-            .last();
+            .context_only();
         Ok(())
     }
+}
+
+/// Set for the one guest call [`held_call`] makes of `0x0003fdf0`, whose
+/// entry then runs the body.
+static REENTER: AtomicBool = AtomicBool::new(false);
+
+/// The original body at `addr`.
+fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    if let Some(original) = ctx.runtime().resolve_original(addr) {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
+    let event = ctx.emit(runtime::Event::UnsupportedTarget {
+        pc: cpu.eip,
+        target: addr,
+        kind: runtime::abi::JUMP,
+        route: runtime::abi::ENTRY,
+    });
+    Ok(runtime::TransferAbi::fault(event))
+}
+
+/// One held call: the body runs (a guest call of `0x0003fdf0` with the
+/// entry's registers and argument), its layer draws put its parts in the
+/// first person's view, and then the native path plans them
+/// ([`probe`]) against the guest's count read before the body (`guest`:
+/// the call and its [`guest_parts`]) for the gate ([`check`]).
+async fn held_call(cx: Cx, guest: Option<(u32, Option<usize>)>) -> EntryResult {
+    let entry = cx.entry();
+    let call = match guest {
+        Some((call, _)) => call,
+        None => cx.arg(0)?,
+    };
+    REENTER.store(true, Ordering::Relaxed);
+    let made = cx
+        .call(
+            engine::entry::GuestCall::new(CUT.entry)
+                .eax(entry.eax)
+                .ecx(entry.ecx)
+                .edx(entry.edx)
+                .args([call]),
+        )
+        .await;
+    REENTER.store(false, Ordering::Relaxed);
+    let made = made?;
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let parts = guest.and_then(|(_, parts)| parts);
+    let result = cx.write(|m| {
+        crate::scene_step::with_open(|open| match (host.as_deref(), open, parts) {
+            (Some(host), Some((scene, view)), Some(guest)) if view.key.kind == ViewKind::FirstPerson => {
+                let out = probe(host, m, scene, view, call);
+                Check { guest, view: call_parts(scene, view, call), native: out.drawn, dropped: out.dropped_total() }
+            }
+            // No host, view or item build: nothing is proven.
+            _ => Check { guest: parts.unwrap_or(0), view: 0, native: 0, dropped: 1 },
+        })
+    });
+    check(call, result);
+    Ok(Ret::new(made.eax, CUT.pop))
+}
+
+/// One released call of `0x0003fdf0` (the view in EAX, the call on the
+/// stack): the frame step's writes, the prologue, the first-person effects
+/// (`0x00174220`, [`first_person_effects::run`], whose particle updates
+/// are guest calls), then the items and their draws ([`finish`]).
+async fn cut_call(cx: Cx) -> EntryResult {
+    let entry = cx.entry();
+    let ret = Ret::new(CUT.abi_result, CUT.pop);
+    cx.write(|m| frame_step::before(m, CUT.name))?;
+    // The call is the stack's first argument; one that does not read is
+    // a drop, never a guest draw.
+    let Ok(call) = cx.arg(0) else {
+        count(&Outcome { drawn: 0, dropped: vec![(Dropped::Unreadable, 1)] });
+        return Ok(ret);
+    };
+    if !cx.write(|m| begin(m)) {
+        count(&Outcome { drawn: 0, dropped: vec![(Dropped::Items, 1)] });
+    } else {
+        match first_person_effects::run(&cx, entry.esp).await {
+            Ok(_) => {}
+            Err(first_person_effects::Stop::Entry(e)) => return Err(e),
+            Err(first_person_effects::Stop::Refused(_)) => {
+                count(&Outcome { drawn: 0, dropped: vec![(Dropped::Effects, 1)] });
+            }
+        }
+    }
+    cx.write(|m| finish(m, entry.eax, call));
+    Ok::<_, EntryError>(ret)
 }
