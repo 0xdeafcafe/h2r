@@ -258,7 +258,7 @@ The method for comparing the walk with `impl.render.native=off` is in
 | record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails uses the geometry handler. Code; Test on synthetic memory. |
 | `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
-| `0x00040136` | The return address of the other layer-3 caller: `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With the native renderer on, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
+| `0x00040136` | The return address of the other layer-3 caller: `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. The call is cut ("First person" below): its body never runs, so this return address is never reached. |
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
@@ -440,76 +440,61 @@ the viewer does (S: some may be hidden in game).
 
 ### First person versus third person
 
-The first-person weapon and arms are drawn by the player chain after the
-transparents (`0x0002afa0`, `FIRST_PERSON_RENDER`) with their own
-projection, not by the base layers' layer-3 call, which the caller check
-pins. With the native renderer on (the default),
-`feature::native_first_person` plans the layer-3 call returning to
-`0x00040136` in each of the two `0x0003fdf0` invocations when it has one
-in-layer item. The native path reserves the draw before clearing its flag
-and restores the flag at the next layer draw. Mixed lists can issue native
-contiguous ranges after the guest sort, as described below. The `0x000404b0` light step's layers 12 and 13 draw from the scene when it holds their groups whole ([native-lights.md](native-lights.md), "First-person lights from the scene"); its other layers and the transparent call
-after the second model draw stay on their original paths. The local
-player's third-person body draws natively like any biped when the game
-queues it.
+The first-person weapon and arms are drawn by `0x0003fdf0`, called twice
+from `render_scene_passes` (`0x0002c2b3` with argument 0, `0x0002c2c2`
+with argument 1, the first-person lights `0x000404b0` between them), after
+the transparents and with their own projection (camera `0x0023c110`, FOV
+`0x00187130`), not by the base layers' layer-3 call, which the caller
+check pins. The local player's third-person body draws natively like any
+biped when the game queues it.
 
-`native_first_person_glue` and `native_first_person_load` are separate from
-the objects stage's cache, but use its public model, stream and object
-program code. A utility-priority worker opens the map, waits for requested
-record models and uploads each one into private GPU storage. It publishes
-the completed model and adds its parts to the admission set for the next
-swap. The draw hook requests the exact target pipelines before applying
-any masks. A cold pipeline leaves the first-person draw on D3D.
-`begin_external_boundary` drains preceding packets before the
-entry states and first-person view constants are read (the camera itself is
-built by `0x0023c110` upstream), rather than copying the scene camera. The
-pass requires a known W-buffered depth mode and a single clip equal to the viewport with
-a `0.0..1.0` depth range. Each copy clips the packets to its scaled viewport. The pass uses the
-device's W-clip and per-call inherited cull, and loads depth/stencil: first person's flag
-disables stencil writes, so no scene stencil is replaced. Record `+4`,
-not the owner definition's third-person model, names the `mode` to load;
-every section of that mode is built because the record key selects the
-permutation and LOD. The observer pins the item array `0x004c8740` and
-bounds each record index by `[0x0050943c]`; the records themselves use the
-same `0x004ba138` array as the other geometry draws. The owner's lighting
-and the record's node rows are resolved as for native objects, without
-requiring the body and mode node counts to match. Admission is per item:
-`ItemKey` selects the exact section, geometry part, shader and
-implementation. Each item's record is read as the world layers read
-theirs (`object_walk::layer_part` with layer 3, `ItemDraw::flags` and
-`ItemDraw::subparts`). A record with a fade byte draws only where the
-device's stipple is off and holds what its epilogue leaves, and a flagged
-shader and the argument's projected size as "Fade, the shader flag and
-the item's argument" says; a record marking the stencil keeps the item on
-D3D, which this draw does not reproduce. A record toggling
-the auxiliary state (bit 11) draws with what the toggle sets for the first
-person's view (`aux_depth::read` at the call, `with_aux_depth`), taken only
-when the device holds the toggle off at the call
-(`native_objects_glue::aux_depth_at_rest`, layer 3's rule), so skipping the
-item leaves what its epilogue would; otherwise it keeps its D3D draw.
-`LitObjects::plan_item` draws the topology and subparts
-the record picks as a scene part does (`part_ranges`; the first-person
-models keep each part's subparts, its strip decoded as a list and a
-strip part's subparts as the list draw joins them), and
-resolves every constant and every inherited `EntryStates` field before
-`Host::draw` returns. The mask walk
-runs on a `MaskPreview`, leaving guest RAM untouched while each required
-copy is prepared. `prepare_external_bound` validates every model and index
-range; only then does `ItemMasks::apply` select the planned items and
-`ready.commit` release the copies. A refused copy, changed generation or
-failed mask application restores the entire candidate list. Mixed record
-models under one owner are therefore independent draws. Mixed lists request record models for the six first-person layers and retain the guest sort. A material or layer with a compiled pass can draw even if a sibling fails. A part sampling the texture accumulation target (engine texture 3) binds its level as layer 3's objects do (`native_objects_glue::sampled_texaccum`, `texaccum_level`); where the guest has no target to bind or the device does not sample render-to-texture levels in place, the part retains its guest draw. Loader
-publication is pinned to a map generation, including A → B → A transitions.
-The first-person lights are the lights stage's
-([native-lights.md](native-lights.md)).
+#### First person
 
-The path logs native draws,
-objects, skipped items and queue refusals every 1,800 first-person layer-3
-calls; a failed reservation leaves every candidate on D3D rather than
-dropping a planned item. Synthetic tests cover caller selection, record/body
-model divergence, per-item masks and rows, mixed record modes,
-incomplete-list refusal, immediate and next-layer restoration,
-and rebuilt-list handling. 
+`0x0003fdf0` is a cut producer (`render_bridge::cut::CUTS`, row
+`first_person`, entry `0x0003fdf0`, `ret 4`, AL = 1; the view is in `eax`
+and the call, 0 or 1, is the stack argument). Its guest body never runs for
+either argument, so it issues no D3D draw, writes no mask and builds no
+list. Its producer is `feature::native_first_person`
+(`cut::OWN_PRODUCER`): it makes the frame step's writes for the row, answers
+the call, and draws from the scene.
+
+- **Source.** The first-person `View` of the frame step's scene
+  (`ViewKind::FirstPerson`). Its parts, in the view's order, are the arms and
+  weapon. A part is readable when its instance and rows are in the scene.
+- **Slot.** `native_first_person::SLOT`, `ViewSlot::FirstPerson` (slot 10),
+  after the world's transparents (slot 9) and before the flare query. The
+  first-person lights (`0x000404b0`, `native-lights.md`) and the sorted pass
+  `0x00040870` have their own slot-10 entries.
+- **Calls.** The split is the guest's (`0x0003fdf0` tests the stack
+  argument at `0x0003ffa0`). Argument 0 draws layers 1, 3, 8, 20 and 7, then
+  layer 2 when `0x00044370` says so (`0x00040284`). Argument 1 draws layer 16
+  only (`0x0003ffbf` sets it, `0x00040010` jumps to the same draw at
+  `0x00040284`). `native_first_person::LATE_LAYER` is 16.
+- **No fallback.** There is no D3D draw and no mask edit. A part that does
+  not draw is a named drop (`native_first_person::Dropped`): `no_view`,
+  `no_host`, `unreadable` (its instance, rows or order range are not in the
+  scene), `unresident` (its model is asked for), `unsupported` (the model
+  is resident, not this part or implementation) and `reservation` (the
+  host's). Each is counted as `first_person_dropped_<cause>`
+  (`native_first_person::drops`) and in the stage's `scene_dropped`.
+- **Host.** `native_first_person_glue` loads the models
+  (`native_first_person_load`: a utility-priority worker opens the map,
+  waits for requested record models, and uploads each into private GPU
+  storage) and implements `Host::draw` for the offered parts. Record `+4`,
+  not the owner definition's third-person model, names the `mode` to load;
+  every section of that mode is built because the record key selects the
+  permutation and LOD. The device pass for a scene's first-person parts is
+  not built: `Host::draw` drops every part it is offered as `reservation`.
+- **Per-part rules** the pass keeps, as for scene objects: the topology and
+  subparts the record picks (`part_ranges`), the fade byte and the flagged
+  shader ("Fade, the shader flag and the item's argument"), the auxiliary
+  depth state (`aux_depth::read`) and the texture accumulation target
+  (`sampled_texaccum`).
+
+Tests: `first_person_draws_after_the_world_transparents`,
+`each_call_draws_its_layers`, `an_unreadable_part_is_a_named_drop` and the
+cut row's (`render-bridge/tests/native_first_person.rs`). The first-person
+lights are the lights stage's ([native-lights.md](native-lights.md)).
 
 ### Shading
 
