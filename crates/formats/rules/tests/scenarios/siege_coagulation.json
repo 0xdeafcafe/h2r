@@ -92,12 +92,6 @@
     },
     {
       "label": "siege_attack",
-      "object": 2083,
-      "number": 1,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
       "object": 2068,
       "number": 1,
       "class": "spawn"
@@ -128,31 +122,7 @@
     },
     {
       "label": "siege_attack",
-      "object": 2086,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
       "object": 2094,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2030,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2079,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2031,
       "number": 2,
       "class": "spawn"
     },

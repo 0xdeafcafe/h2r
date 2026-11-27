@@ -301,8 +301,12 @@ pub fn fixture_with_textured_level() -> Vec<u8> {
     let root = meta_file + TEX_SBSP;
     let bsp = textured_level_room();
     let plane = bsp.planes.len() as u32 - 1;
-    let (materials, cluster, element, leaves, mopp_at, portal, portal_vertices) =
-        (base, base + 0x40, base + 0x100, base + 0x1900, base + 0x2000, base + 0x3000, base + 0x3040);
+    // The cluster stays inside the structure's payload (the render reader
+    // follows it there); the rest lies past it, where the level readers look.
+    let cluster = META + (TEX_SBSP + 0x340) as u32;
+    assert!(0x340 + 0xb0 <= TEX_SBSP_SIZE);
+    let (materials, element, leaves, mopp_at, portal, portal_vertices) =
+        (base, base + 0x100, base + 0x1900, base + 0x2000, base + 0x3000, base + 0x3040);
     let old = root + 0x180;
     let cluster_bytes = b[old..old + 0xb0].to_vec();
     b[file(cluster)..file(cluster) + 0xb0].copy_from_slice(&cluster_bytes);

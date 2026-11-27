@@ -841,8 +841,8 @@ fn load_picks_a_variant_and_closes_the_menu() {
     assert!(p.closes, "its question needs no screen of ours up");
     assert_eq!(
         p.values,
-        ["Arena", "Courtyard", "Two Towers"],
-        "the ones that load"
+        ["Arena", "Courtyard"],
+        "the ones that load: not the Xbox Live one (Two Towers) nor the one that fails a check (Old Arena)"
     );
     assert_eq!(p.values[p.current], "Courtyard", "the open one");
     assert_eq!(p.choices[0], Choice::Load("Arena".into()));

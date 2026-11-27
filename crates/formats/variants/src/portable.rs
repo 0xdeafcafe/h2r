@@ -1627,7 +1627,9 @@ settings {
         let ir = compiled(SWAT);
         let got = record_for(&ir, &[]).unwrap();
 
-        let mut want = GameVariant::stock(GameType::Script).unwrap();
+        // SWAT plays teams, so its record stays on Slayer's index
+        // ([`settings_record`]).
+        let mut want = GameVariant::stock(GameType::Slayer).unwrap();
         for (s, value) in [
             (91, 1),
             (2, 50),
@@ -1990,7 +1992,8 @@ settings {
         assert_eq!(a.id(), b.id());
         assert_eq!(a.name, "SWAT");
         assert_eq!(a.description, ir.header.about);
-        assert_eq!(a.engine, record::SCRIPT_INDEX);
+        // SWAT plays teams: Slayer's index, not the script index.
+        assert_eq!(a.engine, GameType::Slayer.engine());
         assert_eq!(a.variant().unwrap(), record_for(&ir, &[]).unwrap());
         let s = a.script.as_ref().unwrap();
         assert_eq!(s.name, "SWAT");

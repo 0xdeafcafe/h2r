@@ -384,6 +384,20 @@ pub fn scenario(plan: &Plan) -> Value {
     for b in &plan.barriers {
         map.push(json!({"label": "siege_barrier", "object": SCENARIO_OBJECT + b.index, "number": b.phase, "class": "object"}));
     }
+    // A flag or a start has one label ([`document`]): a later entry for it
+    // replaces an earlier one. A barrier's id is shared by the solid
+    // blocks, so those stay as planned.
+    let key = |k: usize, e: &Value| match e["class"].as_str() {
+        Some("object") => (u64::MAX, k as u64),
+        _ => (0, e["object"].as_u64().unwrap_or_default()),
+    };
+    let last: BTreeMap<(u64, u64), usize> = map.iter().enumerate().map(|(k, e)| (key(k, e), k)).collect();
+    let map: Vec<Value> = map
+        .iter()
+        .enumerate()
+        .filter(|(k, e)| last[&key(*k, e)] == *k)
+        .map(|(_, e)| e.clone())
+        .collect();
     let fronts: Vec<u32> = (0..plan.phases)
         .filter_map(|k| plan.sites.iter().find(|s| s.1 == k).map(|s| SCENARIO_FLAG + s.0))
         .chain([SCENARIO_FLAG + plan.goal])

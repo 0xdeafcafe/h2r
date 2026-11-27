@@ -435,9 +435,16 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::MESH_APPLY
         | m::MESH_SCULPT => {
             // The invented textured map: one BSP (e1000004) whose one
-            // cluster is a 4 by 4 floor quad in a local raw block.
+            // cluster is a 4 by 4 floor quad in a local raw block. A stroke
+            // rebuilds the structure's level, so `mesh.sculpt` gets the map
+            // that has one.
             let map = t.path("textured.map");
-            std::fs::write(&map, fixture::fixture_with_textured_bsp()).unwrap();
+            let bytes = if name == m::MESH_SCULPT {
+                fixture::fixture_with_textured_level()
+            } else {
+                fixture::fixture_with_textured_bsp()
+            };
+            std::fs::write(&map, bytes).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
             if !matches!(name, m::GEOMETRY_LIST | m::GEOMETRY_OPEN) {
                 c(m::GEOMETRY_OPEN, json!({"target": "cluster:e1000004:0"}));

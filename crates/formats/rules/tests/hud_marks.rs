@@ -366,6 +366,16 @@ fn a_mark_names_its_audience_and_the_view_hides_the_rest() {
     assert_eq!(view(&held, vm.ir(), other), view(vm.show(), vm.ir(), other));
 }
 
+/// [`ticks`] with the queued calls made at each tick's boundary, as the
+/// host makes them: a sound is a queued call.
+fn ticks_flushing(vm: &mut Vm, g: &mut FakeGame, from: u32, n: u32) {
+    for t in from..from + n {
+        vm.begin_tick(t);
+        assert_ne!(vm.update(g), Fired::Stopped);
+        vm.flush_queue(g);
+    }
+}
+
 /// The announcer lines (`announcer/<clip>`) the script has played, each
 /// with its audience, in order.
 fn said(g: &FakeGame) -> Vec<(String, u16)> {
@@ -381,18 +391,20 @@ fn siege_says_attack_and_defend_to_each_side_and_the_final_round() {
     // Round one of two: each side hears its own word, nobody a final round.
     let mut g = siege_game();
     let mut vm = start(builtin::SIEGE, &mut g, &[("phase_time", 60)]);
+    vm.flush_queue(&mut g);
     assert_eq!(
         said(&g),
         [("attack".to_string(), player(0)), ("defend".to_string(), player(1))]
     );
     // The clock runs out: the defenders hold, the round is over for all.
-    ticks(&mut vm, &mut g, 2, 1900);
+    ticks_flushing(&mut vm, &mut g, 2, 1900);
     let at = said(&g);
     assert!(at.contains(&("round-over".to_string(), EVERYONE)), "{at:?}");
     // The second round of two is the final one, and the sides swap.
     g.sounds.clear();
     vm.begin_tick(2000);
     assert_eq!(vm.fire(&mut g, Input::RoundStart), Fired::Ran);
+    vm.flush_queue(&mut g);
     assert_eq!(
         said(&g),
         [
@@ -409,14 +421,14 @@ fn siege_says_a_site_captured_the_round_over_and_each_sides_reinforcements() {
     let mut g = siege_game();
     let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
     g.inside.insert((0, 600));
-    ticks(&mut vm, &mut g, 2, 60);
+    ticks_flushing(&mut vm, &mut g, 2, 60);
     let at = said(&g);
     assert!(at.contains(&("site-captured".to_string(), EVERYONE)), "{at:?}");
     // A defender dies: the side's wave lands after its time, with a line to
     // that side alone.
     g.players.get_mut(&1).unwrap().alive = false;
     vm.fire(&mut g, Input::Death(1));
-    ticks(&mut vm, &mut g, 62, 400);
+    ticks_flushing(&mut vm, &mut g, 62, 400);
     let at = said(&g);
     assert!(at.contains(&("reinforcements".to_string(), player(1))), "{at:?}");
     assert!(!at.contains(&("reinforcements".to_string(), player(0))), "{at:?}");
