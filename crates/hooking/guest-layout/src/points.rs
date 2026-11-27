@@ -1068,6 +1068,13 @@ points! { ALL;
     SCENE_CLEAR @ 0x0001_4b60: [opaque]; "docs/graphics/native-renderer.md";
     /// Selects the colour and depth targets, including cached selections.
     SCENE_TARGET_SELECT @ 0x0001_cd30: [opaque]; "docs/graphics/native-renderer.md";
+    /// The flare array's walker: for each entry of a view and class mask,
+    /// polls, draws and ends its visibility test (the query pass's call),
+    /// or draws it (the draw pass's). Six stack arguments, `ret 0x18`.
+    VISIBILITY_WALK @ 0x0002_0bb0: [opaque]; "docs/graphics/d3d-visibility.md";
+    /// The flare array's reader: each entry's byte from its test two
+    /// frames back. No arguments, `ret`.
+    VISIBILITY_READ @ 0x0002_0770: [opaque]; "docs/graphics/d3d-visibility.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.

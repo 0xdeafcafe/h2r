@@ -1035,6 +1035,14 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_targets::NativeTargets)
             .map_err(|e| anyhow::anyhow!("native targets: {e}"))?;
+        // The flares' visibility walker call 0x00020bb0 (from the query
+        // pass 0x0002dd30) and reader 0x00020770 made in Rust: one count
+        // pass on the device, the bytes carried from it two frames later;
+        // one query in 64 checked against the bodies
+        // (native_flare_query_glue, installed with the device).
+        features
+            .add(&render_bridge::native_flare_query::NativeFlareQuery)
+            .map_err(|e| anyhow::anyhow!("native flare query: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features
