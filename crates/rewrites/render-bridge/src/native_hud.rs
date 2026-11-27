@@ -11,6 +11,7 @@ pub mod kept;
 pub mod modal_blur;
 mod model;
 mod outline;
+pub mod sensor;
 mod ui;
 pub mod ui_overlay;
 pub mod walk;
@@ -566,6 +567,71 @@ fn place_definitions(b: &mut Builder) {
     }).optional();
 }
 
+/// The motion sensor's check ([`sensor`]): Rust's point and draws at the
+/// HUD render's call of `HUD_SENSOR_DRAW`, the guest's blip draws and
+/// composite as they come, the verdict at the return. Observers only: the
+/// guest draws the sensor, and the Halo 1 HUD's hook on the call stays
+/// free to skip it.
+fn place_sensor(b: &mut Builder) {
+    b.raw().observe_before(&points::HUD_SENSOR_DRAW, "native_hud_sensor_enter", |o| {
+        let mem = o.guest();
+        if mem.u32(o.cpu.esp).ok() != Some(sensor::DRAW_RETURN) {
+            return;
+        }
+        let (user, mxcsr, control) = (o.cpu.ecx, o.cpu.mxcsr, o.cpu.x87.control);
+        let at = o.cpu.eax;
+        let point = (|| Some([mem.u16(at).ok()? as i16, mem.u16(at.checked_add(2)?).ok()? as i16]))();
+        let expected = engine::hud_sensor::point(&*mem, mxcsr)
+            .and_then(|p| Ok((p, engine::hud_sensor::draw(&*mem, mxcsr, control, user, p)?)))
+            .ok();
+        sensor::enter(user, point, expected);
+    }).optional();
+    b.raw().observe_after(&points::HUD_SENSOR_DRAW, "native_hud_sensor_leave", |_| sensor::leave()).optional();
+    b.raw().observe_before(&points::HUD_SENSOR_BLIP, "native_hud_sensor_blip", |o| {
+        if !sensor::checking() {
+            return;
+        }
+        let mem = o.guest();
+        let esp = o.cpu.esp;
+        let arg = |n: u32| mem.u32(esp.wrapping_add(4 + 4 * n)).ok();
+        if mem.u32(esp).ok() != Some(sensor::BLIP_RETURN) {
+            return;
+        }
+        let blip = (|| {
+            let at = arg(0)?;
+            Some(engine::hud_sensor::Blip {
+                position: [mem.u32(at).ok()?, mem.u32(at.wrapping_add(4)).ok()?],
+                shade: arg(1)?,
+                size: arg(2)?,
+                colour: arg(3)?,
+                pulse: arg(4)? as u8 != 0,
+            })
+        })();
+        match blip {
+            Some(b) => sensor::blip(b),
+            None => sensor::unread(),
+        }
+    }).optional();
+    b.raw().observe_before(&points::HUD_SENSOR_COMPOSITE, "native_hud_sensor_composite", |o| {
+        if !sensor::checking() {
+            return;
+        }
+        let mem = o.guest();
+        let esp = o.cpu.esp;
+        if mem.u32(esp).ok() != Some(sensor::COMPOSITE_RETURN) {
+            return;
+        }
+        let read = || {
+            let at = mem.u32(esp.wrapping_add(4)).ok()?;
+            Some(([mem.u32(at).ok()?, mem.u32(at.wrapping_add(4)).ok()?], mem.u32(esp.wrapping_add(8)).ok()?))
+        };
+        match read() {
+            Some((centre, value)) => sensor::composite(centre, value),
+            None => sensor::unread(),
+        }
+    }).optional();
+}
+
 /// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
 /// loop at the walk's entry; the guest's widget calls for the check; and
 /// each widget's draw.
@@ -746,6 +812,7 @@ impl Feature for NativeHud {
         if hud_walk_on(b.switches()) {
             place_walk(b);
             place_definitions(b);
+            place_sensor(b);
         }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());

@@ -6,7 +6,9 @@
 //! [`OverlayKind::Blur`] of what is under it or a
 //! [`OverlayKind::ModelView`] (a menu's model widget), with a material key
 //! and a clip rectangle; `native_render::ui_gpu` draws the list in its
-//! order. Positions are the guest target's pixels, window coordinates on
+//! order. Each item names its overlay slot ([`OverlayItem::slot`]): `Ui`
+//! unless its producer tags its part ([`Overlay::set_slot`]), as the
+//! HUD's are tagged `Hud`. Positions are the guest target's pixels, window coordinates on
 //! pixel edges (`(0, 0)` the top left corner of the top left pixel), so a
 //! producer writes what the guest's screen transform would have made and
 //! the renderer scales to its own target.
@@ -21,6 +23,7 @@ use serde::Serialize;
 
 use crate::builder::{BuildError, SceneBuilder};
 use crate::scene::FrameScene;
+use crate::view_slot::ViewSlot;
 
 /// A rectangle of the overlay's target, in guest pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
@@ -291,6 +294,9 @@ pub struct OverlayItem {
     /// A blur's index in [`Overlay::blurs`] or a model view's in
     /// [`Overlay::model_views`]; `None` for the other kinds.
     pub detail: Option<u32>,
+    /// The overlay slot the item draws in: [`ViewSlot::Hud`],
+    /// [`ViewSlot::Fade`] or [`ViewSlot::Ui`] (the default).
+    pub slot: ViewSlot,
 }
 
 impl OverlayItem {
@@ -436,6 +442,7 @@ impl Overlay {
             shader_stages: [None; 4],
             stage_uv: None,
             detail: None,
+            slot: ViewSlot::Ui,
         });
         Ok(self.items.len() as u32 - 1)
     }
@@ -501,6 +508,7 @@ impl Overlay {
             shader_stages: [None; 4],
             stage_uv: None,
             detail: None,
+            slot: ViewSlot::Ui,
         });
         Ok(self.items.len() as u32 - 1)
     }
@@ -526,6 +534,7 @@ impl Overlay {
             shader_stages: [None; 4],
             stage_uv: None,
             detail: Some(detail),
+            slot: ViewSlot::Ui,
         });
         self.items.len() as u32 - 1
     }
@@ -580,7 +589,24 @@ impl Overlay {
         (item.kind == OverlayKind::MovieFrame).then(|| self.movies.get(item.detail? as usize)).flatten()
     }
 
-    /// Adds `other`'s items after this list's, in their order: a producer
+    /// Tags every item of the list with overlay slot `slot`: a producer
+    /// that builds its part apart (one HUD's widgets, [`ViewSlot::Hud`])
+    /// names the part's slot before it joins the scene's list. `slot` is
+    /// one of the overlay's ([`ViewSlot::is_overlay`]).
+    pub fn set_slot(&mut self, slot: ViewSlot) {
+        debug_assert!(slot.is_overlay(), "{slot:?} is not an overlay slot");
+        for item in &mut self.items {
+            item.slot = slot;
+        }
+    }
+
+    /// The items of overlay slot `slot`, in list order.
+    pub fn in_slot(&self, slot: ViewSlot) -> impl Iterator<Item = &OverlayItem> {
+        self.items.iter().filter(move |item| item.slot == slot)
+    }
+
+    /// Adds `other`'s items after this list's, in their order, each with
+    /// its slot: a producer
     /// that builds its part apart (one HUD's widgets) and then joins the
     /// scene's list. A list with no size takes `other`'s; one of another
     /// size refuses it ([`OverlayError::NoTarget`]), as it does an `other`
@@ -863,6 +889,25 @@ mod tests {
 
     fn quad(x: f32, y: f32) -> [OverlayVertex; 4] {
         [corner(x, y, 0.0, 0.0), corner(x + 8.0, y, 1.0, 0.0), corner(x + 8.0, y + 8.0, 1.0, 1.0), corner(x, y + 8.0, 0.0, 1.0)]
+    }
+
+    #[test]
+    fn a_hud_part_keeps_its_slot_in_the_scenes_list() {
+        let all = ClipRect::full([640, 480]);
+        let mut menu = Overlay::new([640, 480]);
+        menu.push_quad(sprite(), all, quad(0.0, 0.0)).unwrap();
+        let mut hud = Overlay::new([640, 480]);
+        hud.push_quad(sprite(), all, quad(20.0, 20.0)).unwrap();
+        hud.push_fill(all, [0.0, 0.0, 10.0, 10.0], [0.0; 4], OverlayBlend::ALPHA).unwrap();
+        hud.set_slot(ViewSlot::Hud);
+        let mut scene = Overlay::default();
+        scene.append(&hud).unwrap();
+        scene.append(&menu).unwrap();
+        let slots: Vec<ViewSlot> = scene.items.iter().map(|i| i.slot).collect();
+        assert_eq!(slots, [ViewSlot::Hud, ViewSlot::Hud, ViewSlot::Ui]);
+        assert_eq!(scene.in_slot(ViewSlot::Hud).count(), 2);
+        assert_eq!(scene.in_slot(ViewSlot::Ui).map(|i| i.kind).collect::<Vec<_>>(), [OverlayKind::Quad]);
+        assert_eq!(scene.in_slot(ViewSlot::Fade).count(), 0);
     }
 
     #[test]

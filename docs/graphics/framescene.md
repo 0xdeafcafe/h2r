@@ -92,7 +92,7 @@ pub struct FrameScene {
     pub shadows: Vec<ShadowMap>,
     pub carried: Carried,       // ordered guest ops per slot (4.4)
     pub uploads: Vec<TextureUpload>, // guest-made textures changed this frame (Bink, glyph pages)
-    pub overlay: Overlay,       // one ordered list over the views: Quad, TextRun, Fill, MovieFrame, Blur, ModelView items, each with its clip rectangle (frame-scene/src/overlay.rs)
+    pub overlay: Overlay,       // one ordered list over the views: Quad, TextRun, Fill, MovieFrame, Blur, ModelView items, each with its clip rectangle and overlay slot (frame-scene/src/overlay.rs)
 }
 
 pub struct View {
@@ -142,7 +142,8 @@ Bounds come from the guest's own tables (850 render records, 2,560 layer entries
 - `ViewSlot::decal(mode)` maps decal mode 0 to slot 2, mode 1 to slot 5 and modes 2 to 6 to slot 7 (`DecalsLate(mode)`, in mode order); other modes have no slot.
 - `Ord` is draw order.
 - Layers 18, 19 and 21 have no slot of their own: they draw at their sorted entry in slot 9, or 10 for the first person (`ViewSlot::sorted_layer`), each after the view snapshot its handler takes (`native_render::snapshot_gpu`; [notes/2026-11-27-snapshot-slot.md](notes/2026-11-27-snapshot-slot.md)).
-- Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`, `the_snapshot_layers_draw_in_their_sorted_lists_slot`, `the_overlay_draws_hud_then_fade_then_ui`.
+- Each overlay item names its slot (`OverlayItem::slot`, `Ui` unless its producer tags its part with `Overlay::set_slot`; `Overlay::in_slot` lists one slot's items). The HUD's parts are `Hud` (`game::hud_overlay`: `place_hud`, `place_text`, and a captured tag quad, glyph or screen draw inside the HUD's scope).
+- Tests: `view_slots_follow_the_traced_order`, `every_decal_mode_has_a_slot`, `the_snapshot_layers_draw_in_their_sorted_lists_slot`, `the_overlay_draws_hud_then_fade_then_ui`, `a_hud_part_keeps_its_slot_in_the_scenes_list`.
 
 A text run is shaped in Rust (`native-render/src/text.rs`: `FontFace::from_tag` reads the font tag, its glyph metrics give the pens, its bitmaps are packed once into `GlyphPages`, never the guest's glyph cache) and is one `TextRun` item, so one draw under its clip's scissor.
 

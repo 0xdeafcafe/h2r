@@ -103,7 +103,7 @@ fn tbyte(mem: &dyn GuestMemory, a: u32) -> Result<[u8; 10], Error> {
 
 // ---- x87 forms the light-constant helpers do not have ----
 
-fn fld_m64(x: &mut X87, bits: u64) -> Result<(), Error> {
+pub(crate) fn fld_m64(x: &mut X87, bits: u64) -> Result<(), Error> {
     X87::ok(x87::abi::ld_f64(&mut x.0, bits))
 }
 
@@ -798,6 +798,45 @@ pub(crate) fn evaluate(
     sse.clamp(v, 0, one)
 }
 
+/// The constants the evaluator, `fmod` and `pow` read, as IEEE values,
+/// written into `m`: for the tests of a caller of [`pow`].
+#[cfg(test)]
+pub(crate) fn put_constants(m: &mut dyn GuestMemory) {
+    for (a, v) in [
+        (ONE, 1.0f32),
+        (ZERO, 0.0),
+        (SMALL, 1e-4),
+        (SHAPE_SCALE, 1023.0),
+        (SHAPE_BIAS, 0.1),
+        (WAVE_SCALE, 1024.0 / 28.0),
+        (BYTE, 1.0 / 255.0),
+        (WRAP_HIGH, 0.75),
+        (WRAP_LOW, 0.25),
+    ] {
+        m.set_f32(a, v).unwrap();
+    }
+    for (a, v) in [
+        (HALF_64, 0.5f64),
+        (DBL_MAX, f64::MAX),
+        (DBL_MIN, f64::MIN_POSITIVE),
+        (DOWN, -1536.0),
+        (UP, 1536.0),
+        (OVER, f64::INFINITY),
+        (UNDER, 0.0),
+        (INFINITY_64, f64::INFINITY),
+        (MAX_64, f64::MAX),
+        (ZERO_64, 0.0),
+        (ONE_64, 1.0),
+        (NEGATIVE_ZERO_64, -0.0),
+    ] {
+        m.write(a, &v.to_bits().to_le_bytes()).unwrap();
+    }
+    m.write(INDEFINITE_64, &0xfff8_0000_0000_0000u64.to_le_bytes()).unwrap();
+    // The extended indefinite and +infinity.
+    m.write(INDEFINITE, &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff]).unwrap();
+    m.write(INFINITY_80, &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f]).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,47 +845,11 @@ mod tests {
     const DATA: u32 = 0x0048_8000;
     const REF: u32 = 0x0048_7ff0;
 
-    fn put64(m: &mut FlatMemory, a: u32, v: u64) {
-        m.write(a, &v.to_le_bytes()).unwrap();
-    }
-
     /// The constants the evaluator reads, as IEEE values; the tables'
     /// first sub-types filled with ramps.
     fn image() -> FlatMemory {
         let mut m = FlatMemory::new(0x0041_0000, 0x0008_0000);
-        for (a, v) in [
-            (ONE, 1.0f32),
-            (ZERO, 0.0),
-            (SMALL, 1e-4),
-            (SHAPE_SCALE, 1023.0),
-            (SHAPE_BIAS, 0.1),
-            (WAVE_SCALE, 1024.0 / 28.0),
-            (BYTE, 1.0 / 255.0),
-            (WRAP_HIGH, 0.75),
-            (WRAP_LOW, 0.25),
-        ] {
-            m.set_f32(a, v).unwrap();
-        }
-        for (a, v) in [
-            (HALF_64, 0.5f64),
-            (DBL_MAX, f64::MAX),
-            (DBL_MIN, f64::MIN_POSITIVE),
-            (DOWN, -1536.0),
-            (UP, 1536.0),
-            (OVER, f64::INFINITY),
-            (UNDER, 0.0),
-            (INFINITY_64, f64::INFINITY),
-            (MAX_64, f64::MAX),
-            (ZERO_64, 0.0),
-            (ONE_64, 1.0),
-            (NEGATIVE_ZERO_64, -0.0),
-        ] {
-            put64(&mut m, a, v.to_bits());
-        }
-        put64(&mut m, INDEFINITE_64, 0xfff8_0000_0000_0000);
-        // The extended indefinite and +infinity.
-        m.write(INDEFINITE, &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff]).unwrap();
-        m.write(INFINITY_80, &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x7f]).unwrap();
+        put_constants(&mut m);
         for k in 0..=10u32 {
             m.set_u8(SET_WORDS + k, [0, 1, 2, 4, 6, 0x14, 0x20, 12, 4, 3, 12][k as usize]).unwrap();
         }
