@@ -13,7 +13,7 @@ use crate::error::MeshError;
 use crate::ids::{EdgeId, FaceId, VertId};
 use crate::math::{self, Vec3};
 use crate::mesh::{Mesh, Poly};
-use crate::ops::Affine;
+use crate::ops::{Affine, Stroke};
 use crate::select::{SelectHow, SelectMode};
 
 /// Which elements `MeshOp::Delete` removes.
@@ -174,6 +174,10 @@ pub enum MeshOp {
     /// along the neighbouring edges.
     Bevel { width: f32 },
     SetMaterial { material: u16 },
+    /// One sculpt brush stroke (`ops/sculpt.rs`): refines the faces it
+    /// reaches, then raises, lowers, smooths, flattens or cuts. It ignores
+    /// the selection and keeps it, less what a cut removes.
+    Sculpt(Stroke),
     /// Replace the mesh with unskinned polygons, restarting its element
     /// ids and clearing its selection. GeometrySession uses this on collision BSPs.
     ReplacePolygons { faces: Vec<PolygonFace> },
@@ -283,6 +287,7 @@ impl Mesh {
             MeshOp::TrisToQuads { angle } => self.tris_to_quads(*angle)?,
             MeshOp::Inset { thickness, depth, individual } => self.inset(*thickness, *depth, *individual)?,
             MeshOp::Bevel { width } => self.bevel(*width)?,
+            MeshOp::Sculpt(stroke) => self.sculpt(stroke)?,
             MeshOp::ReplacePolygons { faces } => {
                 let mut mesh = Mesh::new();
                 let mut vertices = HashMap::new();

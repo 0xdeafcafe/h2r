@@ -173,12 +173,86 @@ selected face on one side only), `Vb` the verts on `B`.
 | `Inset` | the selected faces as one region (or with `individual`, each alone) are rewired to copies of their border verts, as `ExtrudeFaces` does, and a quad joins each border edge to its copy; the copies then move into the face by `thickness` (measured across the plane from each border edge, so a corner runs along its bisector, at most four times as far) and the region's verts move along its normal by `depth`. Coordinates stay on the faces: the inset face keeps its own, a side takes the border's. Refuses a region with no border (`ops/inset.rs`) | V +\|Vb\|, E +\|B\|+\|Vb\|, F +\|B\| per region |
 | `Bevel` | each selected edge with two faces that run it in opposite directions is replaced by one strip face. At each end the two faces' other edges are cut `width` from the end (at most half the edge, new verts interpolating position, coordinates and skin); a face round the end between the cuts takes them in place of the end, an end no face is left on goes, and any other end stays with the strip passing through it. The strip takes material and group from the first face and a flat normal. The bevelled edges may not share an end, and no edge may be cut by two of them (`ops/bevel.rs`) | edge whose ends each have three edges: V +2, E +3, F +1 |
 
+| `Sculpt` | one brush stroke: refine the faces it reaches, then raise, lower, smooth, flatten or cut ("Sculpting" below; `ops/sculpt.rs`) | refine: V +1 per split edge and per split face, an n-corner face becomes ⌈n/2⌉ faces; deform: none; cut: V +1 per rim edge split, then as `Delete` `faces` |
+
 `ExtrudeFaces` on one face of a closed cube: V 8 to 12, E 12 to 20, F 6
 to 10, and V - E + F stays 2. That, and the count column for every row,
 is a test.
 
 Halo's meshes are triangles, and loops and rings need quads, so
 `TrisToQuads` is part of the loop slice, not an extra.
+
+### Sculpting
+
+`MeshOp::Sculpt(Stroke)` is one brush stroke: one op in the log, one
+undo step (`crates/tools/mesh-edit/src/ops/sculpt.rs`). It ignores the
+selection and keeps it, less what a cut removes.
+
+| `Stroke` field | Default | Meaning |
+|---|---|---|
+| `brush` | | `raise`, `lower`, `smooth`, `flatten`, `cut` |
+| `points` | | brush centres in order; one point is a dab |
+| `radius` | | world units, measured across `axis` |
+| `strength` | 1 | world units at the centre (raise, lower); a fraction 0 to 1 (smooth, flatten); unused (cut) |
+| `falloff` | `smooth` | weight from 1 at the centre to 0 at the rim |
+| `height` | first centre's | flatten's target, along `axis` |
+| `axis` | +z | the brush's up; a wall takes its normal |
+| `detail` | radius / 4 | the longest edge the stroke leaves; at least radius / 64 |
+
+The **footprint** is the path swept by the radius, seen down the axis. A
+point's weight is the falloff of its distance from the path over the
+radius, so a stroke is its path, not its dabs summed.
+
+| Falloff | Weight at `t` = distance / radius |
+|---|---|
+| `smooth` | 1 - (3t² - 2t³) |
+| `linear` | 1 - t |
+| `sphere` | sqrt(1 - t²) |
+| `constant` | 1 |
+
+| Brush | Moves each vertex along the axis by |
+|---|---|
+| `raise` | strength · w |
+| `lower` | -strength · w |
+| `smooth` | (mean height of its edge neighbours - its height) · strength · w, every vertex reading the heights before the stroke |
+| `flatten` | (height - its height) · strength · w |
+| `cut` | nothing: the faces inside go |
+
+```
+stroke ─► refine ─► raise | lower | smooth | flatten ─► refresh fans
+                └─► cut: split rim edges ─► split faces on the rim ─► delete inside
+```
+
+- **Refine.** A face the footprint reaches with an edge longer than
+  `detail` has each long edge split at its midpoint, then becomes quads
+  round a new centre vert (a corner and its two neighbours each, a
+  triangle closing an odd count), so a quad grid stays a quad grid.
+  New corners interpolate; new faces are lightmap-stale. At most eight
+  passes (`MAX_PASSES`). Raise, lower, smooth and flatten refine only
+  faces that face along the axis; cut refines every face.
+- **Deform.** Only verts of a face facing along the axis move, and only
+  along it, so a terrain's plan and its underside stay. The fans of the
+  moved faces are recomputed.
+- **Cut.** Each edge crossing the rim is split on it; each face's run of
+  inside corners between two rim corners becomes its own face; every
+  face with no corner outside goes, with its loose edges and verts. The
+  hole's edge is on the brush circle, and it goes through every layer
+  under the path, whichever way the faces face.
+
+Refused, with `MeshError::Stroke` and the mesh unchanged: no points, a
+point not finite, a radius not above 0, a zero axis, a strength not above
+0 (or above 1 for smooth and flatten), a detail under radius / 64, a
+stroke that moves no vertex or a cut that reaches no face, and a stroke
+that would leave more than 65,535 vertices (`MAX_VERTS`).
+
+`GeometrySession::apply` sends a mesh a stroke changed through the
+collision compiler before it keeps it (`stroke_collision`): a `coll` BSP
+compiles as its save compiles it (`CollSource::writes`), and a structure
+cluster or instanced definition compiles as its level collision would
+(`from_render`, `collision_build::build`, `verify::check`). A stroke the
+compiler refuses is refused as `Error::Refused` naming the target and
+the compiler's reason; nothing is logged or stepped. A model section has
+no collision of its own and is not compiled.
 
 ### Import and stable export
 
@@ -579,6 +653,15 @@ pages open read-only.
   viewport shows what a save writes. The inspector's Modeling section
   has buttons for `Bevel`, `Inset` and `TrisToQuads`, each with its
   width, thickness, depth or angle, applying one op to the selection.
+  Its **Sculpt** part sets the brush (a picker), radius, strength,
+  falloff (a picker), flatten's height and the detail, and turns
+  **Brush in the viewport** on.
+- **Brush** (`viewport/sculpt.rs`). On, over a structure cluster in edit
+  mode, the cursor's hit on the edit mesh (`Mesh::raycast`) carries the
+  brush ring, falloff rings where the weight is 0.75, 0.5 and 0.25
+  (`Falloff::radius_at`), and a dot at the centre. A left drag collects
+  the path, a point each quarter radius, drawn as it goes; the release
+  applies one `Sculpt` op as one undo step. Alt+drag still orbits.
 - **Selection.** Click, Cmd/Ctrl+click and Shift+click as the outliner's
   rules; box (drag), circle (C) and lasso (Ctrl+drag); through-mesh
   selection in wireframe only. The viewport turns a pick into ids and
@@ -638,7 +721,8 @@ answers `geometry.list {model?}`, `geometry.open`, `geometry.close`,
 {structure, lo, hi, material?}`, `geometry.collision.clear {structure}`,
 `mesh.mode`, `mesh.select {ids, op |
 all | none | invert}`, `mesh.transform {translate | matrix, pivot?,
-merge?}`, `mesh.ops` and `mesh.apply`, each with a target id
+merge?}`, `mesh.ops`, `mesh.apply` and `mesh.sculpt {brush, centre |
+points, radius, strength?, falloff?, height?, axis?, detail?}`, each with a target id
 `kind:tag:index` (`cluster:e1000004:0`) or the target in edit mode.
 There is no `geometry` document: while a target is in edit mode the
 map's undo (`doc.undo {"doc":"map"}`, Cmd+Z) is the geometry session's,
@@ -691,6 +775,7 @@ namespace (player models and looks) is separate and unchanged.
 | `mesh.loop_cut {edge, cuts?, factor?}` | returns the new verts |
 | `mesh.fill`, `mesh.flip`, `mesh.recalc_normals`, `mesh.triangulate`, `mesh.tris_to_quads {angle?}` | |
 | `mesh.set_material {material}`, `mesh.uv {matrix \| project}` | |
+| `mesh.sculpt {brush, centre \| points, radius, strength?, falloff?, height?, axis?, detail?}` | one brush stroke, one undo step, one `sculpt` op; answers class, moved, verts and faces; a stroke the kernel or the collision compiler refuses is `REFUSED` with the reason |
 | `mesh.ops {target}` | the op log |
 | `mesh.apply {ops}` | a list of `MeshOp`s as one undo step: how a recorded log is replayed, and the way to run any op above (`{"op": "bevel", "width": 0.1}`, `{"op": "inset", "thickness": 0.1}`, `{"op": "tris_to_quads"}`) |
 | `bitmap.list {name?}`, `bitmap.read {bitmap, image?}` | images with size, format, mips, where the pixels are, write class (`in_place`, `appended`, `new`, `none`), any reshape, and the sequences; `grown` and `movable` say whether a save moves the tag |
@@ -801,6 +886,7 @@ more. Every acceptance test is on invented data; a disc test is
 | 11 | **Level collision, adding solids**: compile, `merge`, the leaf block, MOPP, checksum; grown blocks in ordinary metadata | L | 7, 8 | merged level validates; every old segment query gives its old answer away from the solid, and hits the solid inside it; added leaves have their stand-in's cluster; the MOPP returns every touching surface on sampled boxes |
 | 12 | **Lightmaps**: stale marks are in slice 3; here the `Relighter` trait, chart packing and the sun-plus-ambient implementation | M | 6, 7 | new charts do not overlap used texels (a coverage mask from the page's `1f` triangles); a lit quad facing the sun is brighter than one facing away; the page's other texels are unchanged |
 | 13 | **Level collision, rebuild**, converted maps first | L | 10, 11 | the converter's collision and flood tests on a fixture with a wall moved and a wall deleted; for retail, the disc survey of index holders first |
+| 14 | **Sculpt brushes**: `Sculpt` with refine, raise, lower, smooth, flatten and cut; the collision compile per stroke; the viewport brush; `mesh.sculpt` | M | 1, 2, 8 | in `crates/tools/mesh-edit/tests/sculpt.rs`: each brush's shape on a grid against its falloff, a path swept not summed, refinement to the detail with interpolated corners, a cut whose rim is on the circle and one through a closed slab, the op's JSON replaying to the same mesh, every refusal changing nothing; in `geometry-edit`: a sculpted `coll` BSP saved and read back with `verify::check`, a stroke the compiler refuses not kept, a cluster stroke and cut each one undo step; `mesh.sculpt` through the API with `doc.undo` |
 
 Slices 4 and 5 need nothing from 2 and 3 and can run beside them.
 

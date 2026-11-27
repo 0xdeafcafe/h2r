@@ -6,12 +6,12 @@
 
 use dear_imgui_rs::{TreeNodeFlags, Ui};
 use geometry_edit::{Target, TargetInfo, TargetKind};
-use geometry_edit::mesh_edit::{MeshOp, SelectMode};
+use geometry_edit::mesh_edit::{Brush, Falloff, MeshOp, SelectMode};
 
 use crate::App;
 use crate::app::Action;
 use crate::app::Doc;
-use crate::app::modeling::ModelAction;
+use crate::app::modeling::{BrushSettings, ModelAction};
 use crate::theme;
 
 mod physics;
@@ -224,6 +224,8 @@ pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec
         actions.push(apply(vec![MeshOp::TrisToQuads { angle: st.quad_angle }]));
     }
     ui.separator();
+    sculpt(ui, &mut app.modeling.brush, t.kind);
+    ui.separator();
     // The map document's own stack, as Cmd+Z takes it in edit mode: every
     // editor's steps are steps of its document (docs/editor/studio-flow.md,
     // "Shared patterns").
@@ -295,4 +297,62 @@ fn collision_box(ui: &Ui, app: &App, st: &mut ModelingPanel, structure: map::Tag
         }
     }
     ui.separator();
+}
+
+/// The sculpt brush's settings (docs/editor/modeling.md, "Sculpting"):
+/// on, it turns a left drag in the viewport into a stroke
+/// (`viewport::sculpt`). Brush and falloff are pickers.
+fn sculpt(ui: &Ui, b: &mut BrushSettings, kind: TargetKind) {
+    ui.text("Sculpt");
+    ui.checkbox("Brush in the viewport##sculpt-on", &mut b.on);
+    if b.on && kind != TargetKind::Cluster {
+        ui.text_disabled("The viewport brush draws on structure clusters; mesh.sculpt takes any target.");
+    }
+    if let Some(_c) = ui.begin_combo("Brush##sculpt-brush", b.brush.name()) {
+        for brush in Brush::ALL {
+            if ui.selectable_config(brush.name()).selected(brush == b.brush).build() {
+                b.brush = brush;
+                if brush.fractional() {
+                    b.strength = b.strength.min(1.0);
+                }
+            }
+        }
+    }
+    let mut radius = b.radius;
+    if ui.input_float("Radius##sculpt-radius", &mut radius) && radius.is_finite() && radius > 0.0 {
+        b.radius = radius;
+    }
+    if b.brush != Brush::Cut {
+        let label = if b.brush.fractional() { "Strength (0 to 1)##sculpt-strength" } else { "Strength (world units)##sculpt-strength" };
+        let mut strength = b.strength;
+        if ui.input_float(label, &mut strength) && strength.is_finite() && strength > 0.0 {
+            b.strength = if b.brush.fractional() { strength.min(1.0) } else { strength };
+        }
+    }
+    if let Some(_c) = ui.begin_combo("Falloff##sculpt-falloff", b.falloff.name()) {
+        for falloff in Falloff::ALL {
+            if ui.selectable_config(falloff.name()).selected(falloff == b.falloff).build() {
+                b.falloff = falloff;
+            }
+        }
+    }
+    if b.brush == Brush::Flatten {
+        let mut set = b.height.is_some();
+        if ui.checkbox("Flatten to a set height##sculpt-height-on", &mut set) {
+            b.height = set.then_some(0.0);
+        }
+        if let Some(h) = &mut b.height {
+            let mut v = *h;
+            if ui.input_float("Height##sculpt-height", &mut v) && v.is_finite() {
+                *h = v;
+            }
+        } else {
+            ui.text_disabled("The stroke's first point sets the height.");
+        }
+    }
+    let mut detail = b.detail.unwrap_or(b.radius / 4.0);
+    if ui.input_float("Detail (longest edge)##sculpt-detail", &mut detail) && detail.is_finite() && detail > 0.0 {
+        b.detail = Some(detail);
+    }
+    ui.text_disabled("Drag over the mesh: the stroke applies when the button lifts, one undo step.");
 }

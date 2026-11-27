@@ -344,6 +344,7 @@ pub mod method {
     pub const MESH_TRANSFORM: &str = "mesh.transform";
     pub const MESH_OPS: &str = "mesh.ops";
     pub const MESH_APPLY: &str = "mesh.apply";
+    pub const MESH_SCULPT: &str = "mesh.sculpt";
 
     // The Textures tool (docs/editor/modeling.md, "Texture editing").
     pub const BITMAP_LIST: &str = "bitmap.list";

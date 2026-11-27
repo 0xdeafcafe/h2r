@@ -413,7 +413,8 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::MESH_SELECT
         | m::MESH_TRANSFORM
         | m::MESH_OPS
-        | m::MESH_APPLY => {
+        | m::MESH_APPLY
+        | m::MESH_SCULPT => {
             // The invented textured map: one BSP (e1000004) whose one
             // cluster is a 4 by 4 floor quad in a local raw block.
             let map = t.path("textured.map");
@@ -4297,6 +4298,64 @@ fn geometry_lists_the_floor_cluster_and_an_unedited_target_saves_nothing() {
     assert_eq!(check["targets"][0]["class"], "unchanged");
     assert_eq!(check["save_refusal"], Value::Null);
     assert!(!app.session.is_dirty());
+}
+
+#[test]
+fn mesh_sculpt_is_one_logged_undo_step_and_a_bad_stroke_is_refused_by_name() {
+    let t = Temp::new("mesh-sculpt");
+    let (mut api, mut app, _) = textured(&t);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::MESH_SCULPT,
+        json!({"brush": "raise", "centre": [2.0, 2.0, 0.0], "radius": 1.5, "strength": 0.5, "detail": 0.5}),
+    );
+    // Refined where the brush is, so the floor is a grown write.
+    assert_eq!(r["class"], "grown_raw");
+    assert!(r["verts"].as_u64().unwrap() > 4, "{r}");
+    let read = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    let top = read["verts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["position"][2].as_f64().unwrap())
+        .fold(f64::MIN, f64::max);
+    assert!((top - 0.5).abs() < 1e-4, "the centre is raised by the strength: {top}");
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"].as_array().unwrap().len(), 1);
+    assert_eq!((ops["ops"][0]["op"].clone(), ops["ops"][0]["brush"].clone()), (json!("sculpt"), json!("raise")));
+    // The same stroke through mesh.apply is the same mesh.
+    let log = ops["ops"].clone();
+    // A path, a cut and a falloff by name.
+    call(
+        &mut api,
+        &mut app,
+        m::MESH_SCULPT,
+        json!({"brush": "cut", "points": [[0.5, 3.0, 0.0], [1.0, 3.0, 0.0]], "radius": 0.4, "falloff": "constant", "detail": 0.5}),
+    );
+    // Each stroke is one step of the map's undo.
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"], log);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+    let read = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(read["verts"].as_array().unwrap().len(), 4);
+    call(&mut api, &mut app, m::MESH_APPLY, json!({"ops": log}));
+    let again = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(again["verts"].as_array().unwrap().len() as u64, r["verts"].as_u64().unwrap());
+    // Refused with the kernel's reason, and nothing logged.
+    for (params, why) in [
+        (json!({"brush": "raise", "centre": [2.0, 2.0, 0.0], "radius": 0.0}), "the radius must be above 0"),
+        (json!({"brush": "cut", "centre": [40.0, 40.0, 0.0], "radius": 1.0}), "the cut reaches no face"),
+    ] {
+        let e = api.call(&mut app, m::MESH_SCULPT, params).unwrap_err();
+        assert_eq!(e.code, code::REFUSED, "{e}");
+        assert!(e.message.contains(why), "{e}");
+    }
+    let e = api.call(&mut app, m::MESH_SCULPT, json!({"brush": "pinch", "centre": [0.0, 0.0, 0.0], "radius": 1.0})).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"].as_array().unwrap().len(), 1);
 }
 
 #[test]

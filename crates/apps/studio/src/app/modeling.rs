@@ -3,7 +3,7 @@
 //! preview the viewport redraws.
 
 use super::App;
-use geometry_edit::mesh_edit::MeshOp;
+use geometry_edit::mesh_edit::{Brush, Falloff, MeshOp, Stroke};
 use geometry_edit::{GeometrySession, Preview, Target, TargetInfo};
 use scenario_edit::geometry::RawFiles;
 use scenario_edit::{BspPatch, GeometryChanges, GeometryGrown, RawPatch};
@@ -28,8 +28,55 @@ pub struct Modeling {
     pub level_collision: std::collections::BTreeMap<map::TagId, geometry_edit::level_collision::LevelEdit>,
     /// Bumped on every change to [`Self::level_collision`].
     pub level_collision_rev: u64,
+    /// The sculpt brush's settings (docs/editor/modeling.md, "Sculpting").
+    pub brush: BrushSettings,
     /// The map the session is over (`Session::world_rev`).
     for_rev: Option<u64>,
+}
+
+/// The viewport brush's settings: while `on`, a left drag over the target
+/// in edit mode is one stroke, applied when the button lifts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrushSettings {
+    pub on: bool,
+    pub brush: Brush,
+    pub radius: f32,
+    pub strength: f32,
+    pub falloff: Falloff,
+    /// Flatten's height; `None` is the stroke's first point's.
+    pub height: Option<f32>,
+    /// The longest edge a stroke leaves; `None` is a quarter of the radius.
+    pub detail: Option<f32>,
+}
+
+impl Default for BrushSettings {
+    fn default() -> Self {
+        BrushSettings {
+            on: false,
+            brush: Brush::Raise,
+            radius: 2.0,
+            strength: 0.5,
+            falloff: Falloff::Smooth,
+            height: None,
+            detail: None,
+        }
+    }
+}
+
+impl BrushSettings {
+    /// A stroke along `points` with these settings, the brush's up +z.
+    pub fn stroke(&self, points: Vec<[f32; 3]>) -> Stroke {
+        Stroke {
+            brush: self.brush,
+            points,
+            radius: self.radius,
+            strength: self.strength,
+            falloff: self.falloff,
+            height: self.height,
+            axis: None,
+            detail: self.detail,
+        }
+    }
 }
 
 /// One Modeling command.
