@@ -158,6 +158,11 @@ pub enum Property {
     /// An item spawner's team, `0..8`, or none. A rules script reads it as
     /// it reads a label; no retail game type does.
     Team(Option<u8>),
+    /// A weapon spawner's spare clips, `0..=SPARE_CLIPS_MAX`, or none for
+    /// the weapon's own reserve. The game writes it to the reserve of each
+    /// weapon the spawner makes
+    /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
+    SpareClips(Option<u8>),
     /// The game types an object is in ([`OBJECT_BLOCKS`]), or none for
     /// every game type. A retail object has no game-type field: the
     /// materialiser leaves the placement out of a map built for an engine
@@ -168,6 +173,10 @@ pub enum Property {
 
 /// How many teams a team property names.
 pub const PROPERTY_TEAMS: u8 = 8;
+
+/// The most spare clips a spawner gives its weapon. The engine caps the
+/// reserve at the weapon's own maximum all the same.
+pub const SPARE_CLIPS_MAX: u8 = 10;
 
 /// The blocks whose entries carry a `games` property: scenery, crates and
 /// machines, the placements with no game-type field.
@@ -276,6 +285,15 @@ fn check_property(block: BlockKind, property: Property, what: &'static str) -> R
             }
             if team.is_some_and(|t| t >= PROPERTY_TEAMS) {
                 return Err(Refusal::invalid(what, "a team is 0 to 7"));
+            }
+            Ok(())
+        }
+        Property::SpareClips(clips) => {
+            if block != BlockKind::NetgameEquipment {
+                return Err(Refusal::invalid(what, "spare clips are an item spawner's"));
+            }
+            if clips.is_some_and(|c| c > SPARE_CLIPS_MAX) {
+                return Err(Refusal::invalid(what, "spare clips are 0 to 10"));
             }
             Ok(())
         }
@@ -392,21 +410,42 @@ pub fn for_game(
 /// told apart here: resolve its identity to a final index to find out
 /// ([`crate::resolve`]).
 pub fn teams(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
+    last_property(ops, |p| match p {
+        Property::Team(team) => Some(*team),
+        _ => None,
+    })
+}
+
+/// The spare clips each spawner has by the document's ops, by identity, as
+/// [`teams`] reads teams.
+pub fn spare_clips(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
+    last_property(ops, |p| match p {
+        Property::SpareClips(clips) => Some(*clips),
+        _ => None,
+    })
+}
+
+/// The value of one property each entry has: the last op `pick` reads (a
+/// set, or a clear as `Some(None)`) of an entry not covered by a later
+/// reset.
+fn last_property<T: Copy>(
+    ops: &[Op],
+    pick: impl Fn(&Property) -> Option<Option<T>>,
+) -> std::collections::BTreeMap<Endpoint, T> {
     let covered = covered(ops);
     let mut out = std::collections::BTreeMap::new();
     for op in ops {
-        let Edit::Entry(EntryOp::Property {
-            target,
-            property: Property::Team(team),
-        }) = &op.edit
-        else {
+        let Edit::Entry(EntryOp::Property { target, property }) = &op.edit else {
+            continue;
+        };
+        let Some(value) = pick(property) else {
             continue;
         };
         if covered.contains(&op.id) {
             continue;
         }
-        match team {
-            Some(t) => out.insert(target.identity(), *t),
+        match value {
+            Some(v) => out.insert(target.identity(), v),
             None => out.remove(&target.identity()),
         };
     }
