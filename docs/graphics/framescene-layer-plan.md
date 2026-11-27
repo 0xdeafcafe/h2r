@@ -118,7 +118,7 @@ Everything else keeps its D3D draws and so the indexed-draw admission: per-draw 
 | `stencil` | the device's stencil does not read, tests or writes on a depth with no stencil aspect, or layer 1's stencil is off and the device is not in mode 1 |
 | `palettes`, `device`, `program` | no material of the layer compiled |
 | `first_person_structure`, `sorted_structure` | structure items at those sites |
-| `order` | planned, but after a kept item the reordering does not commute with |
+| `order` | planned, but after a kept item the reordering does not commute with; at the scene and the alternate view its structure items draw between the kept sorted entries instead ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from the plan") |
 | `set` | planned, but the sets hold no compiled part or fog for it |
 | `unread` | the layer's pass did not read |
 
