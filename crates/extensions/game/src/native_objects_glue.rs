@@ -919,6 +919,14 @@ pub(crate) fn stipple_at_rest<B: d3d::backend::Backend>(device: &d3d::Device<B>,
 pub(crate) fn structure_at_rest<B: d3d::backend::Backend>(
     device: &d3d::Device<B>, mem: &dyn GuestMemory, p: &frame_scene::StructureParameters,
 ) -> bool {
+    structure_at_rest_with(device, mem, p, crate::native_fog_glue::device_fog_words(device, mem)[6])
+}
+
+/// [`structure_at_rest`] with the fog colour `fog_colour` (a run's, as the
+/// restore leaves it).
+pub(crate) fn structure_at_rest_with<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, p: &frame_scene::StructureParameters, fog_colour: Option<u32>,
+) -> bool {
     use engine::render_loop::structure_parameters::SCRATCH;
     const BUMPENVMAT00: u32 = 22;
     let layout = &device.config().layout;
@@ -930,7 +938,7 @@ pub(crate) fn structure_at_rest<B: d3d::backend::Backend>(
     });
     let first = frame_scene::StructureParameters::FIRST_CONSTANT;
     let constants = (0..5).all(|n| device.constant(first + n).map(f32::to_bits) == p.constants[n]);
-    let fog = crate::native_fog_glue::device_fog_words(device, mem)[6] == Some(p.fog_colour);
+    let fog = fog_colour == Some(p.fog_colour);
     let scratch = (0..13u32).all(|n| mem.u32(SCRATCH + 4 * n).ok() == Some(p.scratch[n as usize]));
     stages && constants && fog && scratch
 }
@@ -1193,23 +1201,50 @@ pub(crate) fn specular_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<u32> 
     STATE_TABLE.canonical_to_guest(SPECULAR_ENABLE).and_then(states)
 }
 
-/// The guest slots of the render states an object's checks read outside
-/// the state array a restore list overlays: the stencil
-/// (`Device::stencil_state`), the stipple switch (`device_stipple`, which
-/// takes the pushed control first), `ZENABLE` (the W buffer is the pushed
-/// control's) and the fog colour (`structure_at_rest`).
-pub(crate) fn read_outside_states() -> Vec<u32> {
+/// The stencil a draw would take from `states`, by guest slot, decoded
+/// as `Device::stencil_state` decodes the guest's array: a device as a
+/// restore list leaves it (`native_render::sorted_entries::after_restore`).
+/// `None` when a slot does not read or holds a value outside its enum.
+pub(crate) fn stencil_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<gfx::state::StencilState> {
     use gfx::state::RenderStateType as R;
-    let typed = [
-        R::StencilEnable, R::StencilFail, R::StencilZFail, R::StencilPass, R::StencilFunc,
-        R::StencilRef, R::StencilMask, R::StencilWriteMask, R::ZEnable, R::FogColor,
-    ];
-    typed
-        .iter()
-        .map(|t| t.index())
-        .chain([STIPPLE_ENABLE])
-        .filter_map(|c| STATE_TABLE.canonical_to_guest(c))
-        .collect()
+    let mut rs = gfx::state::RenderState::default();
+    for t in [
+        R::StencilEnable, R::StencilFunc, R::StencilRef, R::StencilMask, R::StencilWriteMask,
+        R::StencilFail, R::StencilZFail, R::StencilPass,
+    ] {
+        let guest = STATE_TABLE.canonical_to_guest(t.index())?;
+        rs.set_raw(t, states(guest)?).ok()?;
+    }
+    Some(rs.stencil)
+}
+
+/// Whether the draws are W-buffered once `restore` is written: its
+/// `ZENABLE`, whose setter redoes `SET_CONTROL0`'s z-perspective, is
+/// `D3DZB_USEW`. `None` when it writes no `ZENABLE` (the device's
+/// control stands).
+pub(crate) fn w_buffered_after(restore: &[(u32, u32)]) -> Option<bool> {
+    let zenable = d3d::state::slot::ZENABLE;
+    restore.iter().rev().find(|&&(slot, _)| slot == zenable).map(|&(_, v)| v == LAYER_BEGIN_ZENABLE)
+}
+
+/// [`device_stipple`] once `restore` is written: its stipple switch, which
+/// its setter pushes, stands for the device's control.
+pub(crate) fn device_stipple_after<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, restore: &[(u32, u32)],
+) -> Result<Option<[u32; 32]>, ()> {
+    let slot = STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE);
+    match restore.iter().rev().find(|&&(s, _)| Some(s) == slot).map(|&(_, v)| v) {
+        None => device_stipple(device, mem),
+        Some(0) => Ok(None),
+        Some(_) if device.hw().display_stipple.is_some() => Err(()),
+        Some(_) => Ok(Some(*device.stipple_pattern())),
+    }
+}
+
+/// [`in_stencil_mode_1`] with the device's stencil `stencil` (a run's, as
+/// the restore leaves it: [`stencil_with`]).
+pub(crate) fn in_stencil_mode_1_with(mem: &dyn GuestMemory, stencil: Option<gfx::state::StencilState>) -> bool {
+    mem.u16(SCENE_STENCIL_MODE) == Ok(1) && stencil == Some(scene_stencil())
 }
 
 /// Puts the fog of `draw`'s pass in, as layer 3's walk does: the
@@ -2012,7 +2047,7 @@ pub(crate) fn sampled_texaccum<B: d3d::backend::Backend>(
 /// The texture accumulation target layer 1 draws into, read at the hook
 /// (`world_layers::Texaccum::read`): its passes that sample it bind a copy
 /// of the bound colour made before each such draw
-/// (`native_layers_glue::accumulation_segments`), so the levels need not
+/// (`native_layers_glue::layer_segments`), so the levels need not
 /// be sampled in place. `None` when the guest gives none.
 pub(crate) fn accumulation_target(mem: &dyn GuestMemory) -> Option<native_render::world_layers::Texaccum> {
     native_render::world_layers::Texaccum::read(&Ro(mem))

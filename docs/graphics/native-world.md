@@ -109,7 +109,7 @@ A part the lens cannot see is still the native pass's, and the guest does not dr
 
 A game view the pyramid cannot serve draws the frustum's whole set early and is counted (`GpuWorld::guest_occlusion_skips`): `depth_unsampled` as above, and `depth_model` when the view's `c[3]` row is not the lens's w row times a positive scale (`DepthModel::agrees_with`), so the programs' depth and the screen map would disagree.
 
-**Later layers.** The structure runs of a scene view's layers 1, 5, 7, 8 and 20 (`native_layers_glue`, `LayerViewPass::encoded_culled`) cull on the GPU too, as a stage of their own commands: the runs' uniform writes, one dispatch of the layer cull (`GpuWorld::culled_layer_draws`, a third `GpuCull`), then one pass that loads and keeps the attachments with every run's packets in the list's order, each part one indirect draw of its slot.
+**Later layers.** The structure runs of a scene view's layers 1, 5, 7, 8 and 20 (`native_layers_glue`, `LayerViewPass::encoded`) cull on the GPU too, as a stage of their own commands: the runs' uniform writes, one dispatch of the layer cull (`GpuWorld::culled_layer_draws`, a third `GpuCull`), then a pass per segment (`layer_segments`: one, unless an object draw reads the bound colour or makes the refraction copy) that loads and keeps the attachments with the runs' packets in the list's order, each part one indirect draw of its slot.
 
 | Step | What |
 |---|---|

@@ -220,14 +220,14 @@ after the cached implementation's restore list is written
 structure parameter block the pass copies the bound colour into
 the refraction target before its first draw
 (`snapshot_gpu::Snapshots::into_target`); a restore list the device does
-not take keeps the guest's handler.
-A copy beside a draw sampling the view is
-refused `object_shader_flag_target_view`.
+not take keeps the guest's handler. The stencil, like the plan's
+states, is read as the cached restore leaves it
+(`native_objects_glue::stencil_with`).
 
 The other refusals are the
 object plan's (extraction's cause, `object_model`, `object_texaccum`, the
 plan's names) and `object_scene`, `object_item`, `object_layer_begin`,
-`object_restore`, `object_shader_flag_target`.
+`object_shader_flag_target`.
 
 Not built: the handler's other side effects (the lightmap page `0x15c90`
 sets for a BSP record) are not made, as the layer's other skipped draws do
