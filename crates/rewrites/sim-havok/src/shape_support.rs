@@ -12,6 +12,11 @@
 //! - [`polygon`] `0x001ee350`, type `0x18`: the vertex with the largest
 //!   dot product.
 //!
+//! And two shapes' `vt[+0x34]`, which seed the query's simplex from the
+//! cached vertex IDs (thiscall `(ids, count, out)`, `ret 0xc`):
+//! [`capsule_vertices`] `0x002dddb0` and [`polygon_vertices`]
+//! `0x001ee3d0`.
+//!
 //! On a [`Fallback`] the journal is discarded and the MXCSR and the x87
 //! state are left as they came.
 use crate::convex::Fallback;
@@ -25,6 +30,8 @@ use x87::abi::{self, X87Abi, src_kind, status};
 pub const CAPSULE_SUPPORT: u32 = 0x002d_dd30;
 pub const BIPED_SUPPORT: u32 = 0x002d_bd40;
 pub const POLYGON_SUPPORT: u32 = 0x001e_e350;
+pub const CAPSULE_VERTICES: u32 = 0x002d_ddb0;
+pub const POLYGON_VERTICES: u32 = 0x001e_e3d0;
 /// The `0.0` the x87 compares the dot product with, and `-FLT_MAX`, the
 /// polygon's starting best.
 pub const ZERO: u32 = 0x0045_dbd8;
@@ -215,6 +222,52 @@ pub fn polygon(j: &mut Journal, this: u32, dir: u32, out: u32, mxcsr: &mut u32) 
     Ok(Exit { eax: out, ecx: this, edx: count })
 }
 
+/// `movzx r32, word ptr [at]`.
+fn half(j: &Journal, at: u32) -> Result<u32, Fallback> {
+    let lo = j.byte(at).ok_or(Fallback::Memory)?;
+    let hi = j.byte(at.wrapping_add(1)).ok_or(Fallback::Memory)?;
+    Ok(u32::from(lo) | u32::from(hi) << 8)
+}
+
+/// The vertex count a `vt[+0x34]` loops over: `count - 1` not below zero
+/// runs `count` times, else none.
+fn ids(count: u32) -> Result<u32, Fallback> {
+    if (count.wrapping_sub(1) as i32) < 0 {
+        return Ok(0);
+    }
+    if count > structure::MAX_RING {
+        return Err(Fallback::Memory);
+    }
+    Ok(count)
+}
+
+/// Type 7's `vt[+0x34]`, `0x002dddb0`: for each 16-bit ID in turn, the
+/// end at `+0x10 + id` to the next slot of `out`, its `w` the ID with
+/// [`FEATURE_BITS`] (the ID read again after the vector's store). No
+/// float work; the query reads no register it leaves.
+pub fn capsule_vertices(j: &mut Journal, this: u32, ids_at: u32, count: u32, out: u32) -> Result<(), Fallback> {
+    for i in 0..ids(count)? {
+        let id_at = ids_at.wrapping_add(2 * i);
+        let slot = out.wrapping_add(16 * i);
+        let v = vec(j, this.wrapping_add(half(j, id_at)?).wrapping_add(0x10))?;
+        put(j, slot, v)?;
+        let id = half(j, id_at)?;
+        j.put(slot.wrapping_add(0xc), id | FEATURE_BITS).ok_or(Fallback::Memory)?;
+    }
+    Ok(())
+}
+
+/// Type `0x18`'s `vt[+0x34]`, `0x001ee3d0`: from the last ID to the
+/// first, the whole vertex `id` (`+0x20 + 16 id`) to its slot of `out`.
+pub fn polygon_vertices(j: &mut Journal, this: u32, ids_at: u32, count: u32, out: u32) -> Result<(), Fallback> {
+    for i in (0..ids(count)?).rev() {
+        let id = half(j, ids_at.wrapping_add(2 * i))?;
+        let v = vec(j, this.wrapping_add(id.wrapping_add(2) << 4))?;
+        put(j, out.wrapping_add(16 * i), v)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +364,30 @@ mod tests {
             assert_eq!(got[3], if moved { snan | 0x0040_0000 } else { snan }, "{dz}: w through the x87");
             assert_eq!(exit.eax & CC, cc, "{dz}");
         }
+    }
+
+    #[test]
+    fn cached_ids_name_the_vertices() {
+        let mut h = heap();
+        put4(&mut h, SHAPE + CAPSULE_A, [0.0, 0.0, -1.0, 0.25]);
+        put4(&mut h, SHAPE + CAPSULE_B, [0.0, 0.0, 1.0, 0.25]);
+        // IDs 0x10 then 0: end B, then end A.
+        h.0.insert(DIR, 0x0000_0010);
+        let mut j = Journal::new(&h);
+        capsule_vertices(&mut j, SHAPE, DIR, 2, OUT).unwrap();
+        assert_eq!(get4(&j, OUT), [0, 0, 1.0f32.to_bits(), 0x3f00_0010]);
+        assert_eq!(get4(&j, OUT + 0x10), [0, 0, (-1.0f32).to_bits(), 0x3f00_0000]);
+        // A count below one reads nothing.
+        let mut j = Journal::new(&h);
+        capsule_vertices(&mut j, SHAPE, DIR, 0, OUT).unwrap();
+        assert_eq!(get4(&j, OUT), [0; 4]);
+        let v = SHAPE + structure::field::VERTICES;
+        put4(&mut h, v + 0x20, [5.0, 6.0, 7.0, 2.0]);
+        h.0.insert(DIR, 0x0002_0002);
+        let mut j = Journal::new(&h);
+        polygon_vertices(&mut j, SHAPE, DIR, 2, OUT).unwrap();
+        assert_eq!(get4(&j, OUT + 0x10), get4(&j, v + 0x20));
+        assert_eq!(polygon_vertices(&mut Journal::new(&h), SHAPE, DIR, 1, OUT + 8), Err(Fallback::Memory));
     }
 
     #[test]

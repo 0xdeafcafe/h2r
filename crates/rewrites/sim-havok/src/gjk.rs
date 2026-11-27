@@ -14,10 +14,12 @@
 //!   tetrahedron the point lies beyond.
 //! - [`edge`] `0x003037a0`: a segment against a triangle, which of the
 //!   two simplices loses a vertex.
+//! - [`query`] `0x003048a0`: the query itself, on the leaves above, with
+//!   the shapes' virtuals and the triangle case `0x00303dd0` through
+//!   [`Calls`].
 //!
-//! The query itself (`0x003048a0` and its case `0x00303dd0`) and the
-//! shapes' support virtuals are not ported. On a [`Fallback`] the journal
-//! is discarded and nothing has been written.
+//! On a [`Fallback`] the journal is discarded and nothing has been
+//! written.
 use crate::convex::Fallback;
 use crate::fp::{Arith, Exact};
 use crate::jacobian::{lane, put_vector, splat, vector, Fpu, Fx, Sse};
@@ -54,6 +56,25 @@ pub mod state {
     /// The word [`super::edge`] sets when the segment drops to its
     /// second vertex.
     pub const FEATURE: u32 = 0x10;
+    /// [`super::query`]'s other words: B's count when the loop last left
+    /// a case, the byte that says a stalled query ends without the
+    /// triangle case, A's parallel array, and B's vertices in B's own
+    /// frame (`SUPPORT_B` holds them in A's).
+    pub const LAST_B: u32 = 0x08;
+    pub const SETTLE: u32 = 0x0c;
+    pub const PARALLEL_A: u32 = 0x60;
+    pub const LOCAL_B: u32 = 0xe0;
+}
+
+/// The feature cache [`query`] seeds from and writes back: the vertex IDs
+/// (16 bits each, A's then B's), the two simplex sizes and the largest
+/// each may grow to, signed bytes.
+pub mod cache {
+    pub const IDS: u32 = 0x00;
+    pub const COUNT_A: u32 = 0x08;
+    pub const COUNT_B: u32 = 0x09;
+    pub const MAX_A: u32 = 0x0a;
+    pub const MAX_B: u32 = 0x0b;
 }
 
 /// [`contact`]'s fields in its output.
@@ -691,6 +712,620 @@ pub fn edge(j: &mut Journal, st: u32, esp: u32, seg: u32, tri: u32, seg_count: u
     Ok(Edge { eax: 2, ecx: k << 4, edx: second.distance })
 }
 
+/// `FLT_EPSILON`, which scales [`query`]'s stall test, and the tolerance
+/// the query starts from (about `1e-10`), doubled on every pass.
+pub const STALL: u32 = 0x0041_359c;
+const TOLERANCE_BITS: u32 = 0x2edb_e6ff;
+/// `0x004136a8`: [`triangle`]'s edge mask to the vertex the point lies
+/// beyond; below zero, `8 + e` names the vertex to drop (past 3, the
+/// second).
+const OFF: [i8; 8] = [-1, 0, 1, -6, 2, -7, -8, -1];
+/// `0x004136b0` and `0x004136b2`: a triangle vertex's two neighbours.
+const SECOND: [u32; 3] = [2, 0, 1];
+const FIRST: [u32; 3] = [1, 2, 0];
+/// More than this many vertices in a simplex declines.
+const MAX_COUNT: u32 = 256;
+
+/// [`query`]'s arguments after the state: the two shapes, B's transform
+/// in A's frame, the feature cache and the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Args {
+    pub a: u32,
+    pub b: u32,
+    pub transform: u32,
+    pub cache: u32,
+    pub out: u32,
+}
+
+/// [`query`]'s answer: eax (0 separated, 3 stalled, or the triangle
+/// case's), and ecx and edx at the return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Query {
+    pub eax: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}
+
+/// The calls [`query`] makes out: each shape's two virtuals, and the
+/// triangle case. `esp` is the stack pointer at the call's entry (at the
+/// return address). The query reads no register a call leaves.
+pub trait Calls {
+    /// The shape's `vt[+0x34]`, thiscall `(ids, count, out)`, `ret 0xc`:
+    /// the vertices the cached IDs name.
+    fn vertices(&mut self, j: &mut Journal, shape: u32, ids: u32, count: u32, out: u32, esp: u32) -> Result<(), Fallback>;
+    /// The shape's `vt[+0x30]`, thiscall `(direction, out)`, `ret 8`: the
+    /// support point along the direction.
+    fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, esp: u32) -> Result<(), Fallback>;
+    /// `0x00303dd0`, thiscall on the state, `(shape A, shape B,
+    /// transform, cache)`, `ret 0x10`: its eax becomes the query's.
+    fn triangle_case(&mut self, j: &mut Journal, st: u32, args: Args, esp: u32) -> Result<u32, Fallback>;
+}
+
+/// Which simplex is the larger in a `(1, n)` or `(n, 1)` case.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Big {
+    A,
+    B,
+}
+
+impl Big {
+    /// The larger simplex's vertices, and the single vertex's.
+    fn base(self) -> u32 {
+        match self {
+            Big::A => state::SUPPORT_A,
+            Big::B => state::SUPPORT_B,
+        }
+    }
+    fn point(self) -> u32 {
+        match self {
+            Big::A => state::SUPPORT_B,
+            Big::B => state::SUPPORT_A,
+        }
+    }
+    fn count(self) -> u32 {
+        match self {
+            Big::A => state::COUNT_A,
+            Big::B => state::COUNT_B,
+        }
+    }
+}
+
+/// Where a case leaves the loop: back to the dispatch (`0x00304d2b`), or
+/// out to the support step with `0x00304d40`'s 1 or `0x003051d8`'s 0.
+enum Flow {
+    Dispatch,
+    Out(bool),
+}
+
+fn set(j: &mut Journal, at: u32, v: u32) -> Result<(), Fallback> {
+    j.put(at, v).ok_or(Fallback::Memory)
+}
+
+fn put_byte(j: &mut Journal, at: u32, v: u8) -> Result<(), Fallback> {
+    let w = word(j, at & !3)?;
+    let s = 8 * (at & 3);
+    set(j, at & !3, w & !(0xff << s) | u32::from(v) << s)
+}
+
+/// `mov [at], r16`.
+fn put_half(j: &mut Journal, at: u32, v: u32) -> Result<(), Fallback> {
+    put_byte(j, at, v as u8)?;
+    put_byte(j, at.wrapping_add(1), (v >> 8) as u8)
+}
+
+/// `movsx r32, byte ptr [at]`.
+fn signed_byte(j: &Journal, at: u32) -> Result<u32, Fallback> {
+    Ok(j.byte(at).ok_or(Fallback::Memory)? as i8 as i32 as u32)
+}
+
+struct Run<'c, C> {
+    st: u32,
+    /// The frame's esp after the three register pushes.
+    f: u32,
+    args: Args,
+    fpu: Fpu,
+    sse: Sse,
+    x: Fx,
+    calls: &'c mut C,
+}
+
+impl<C: Calls> Run<'_, C> {
+    fn at(&self, off: u32) -> u32 {
+        self.st.wrapping_add(off)
+    }
+
+    fn slot(&self, base: u32, i: u32) -> u32 {
+        self.at(base).wrapping_add(i.wrapping_mul(16))
+    }
+
+    fn frame(&self, off: u32) -> u32 {
+        self.f.wrapping_add(off)
+    }
+
+    /// `c0 x + c1 y + (c2 z + c3)` over the transform's columns: a vertex
+    /// of B into A's frame (`0x00304920`, `0x0030537b`).
+    fn place(&mut self, j: &Journal, v: u128) -> Result<u128, Fallback> {
+        let t = self.args.transform;
+        let c0 = vec(j, t)?;
+        let c1 = vec(j, t.wrapping_add(0x10))?;
+        let c2 = vec(j, t.wrapping_add(0x20))?;
+        let c3 = vec(j, t.wrapping_add(0x30))?;
+        let x = self.sse.mul(c0, splat(lane(v, 0)));
+        let y = self.sse.mul(c1, splat(lane(v, 1)));
+        let z = self.sse.mul(c2, splat(lane(v, 2)));
+        let zt = self.sse.add(z, c3);
+        let xy = self.sse.add(x, y);
+        Ok(self.sse.add(xy, zt))
+    }
+
+    /// `0x003051d8`: B's count to `+0x08`, out with 0.
+    fn settle(&self, j: &mut Journal) -> Result<Flow, Fallback> {
+        let n = word(j, self.at(state::COUNT_B))?;
+        set(j, self.at(state::LAST_B), n)?;
+        Ok(Flow::Out(false))
+    }
+
+    /// `0x003051c3`: the normal from A's first vertex to B's.
+    fn between(&mut self, j: &mut Journal) -> Result<Flow, Fallback> {
+        let b0 = vec(j, self.at(state::SUPPORT_B))?;
+        let a0 = vec(j, self.at(state::SUPPORT_A))?;
+        let n = self.sse.sub(b0, a0);
+        put(j, self.at(state::NORMAL), n)?;
+        self.settle(j)
+    }
+
+    /// `(1, 2)` `0x00304fd6`, `(2, 1)` `0x003050e5`: the point against the
+    /// segment. Its ends' projections on opposite sides: the normal is
+    /// the segment's perpendicular toward the point. Otherwise the
+    /// segment drops to its first end, or to its second (both arrays)
+    /// when both projections are below zero.
+    fn segment(&mut self, j: &mut Journal, big: Big) -> Result<Flow, Fallback> {
+        let base = big.base();
+        let v1 = vec(j, self.slot(base, 1))?;
+        let v0 = vec(j, self.slot(base, 0))?;
+        let p = vec(j, self.at(big.point()))?;
+        let e = self.sse.sub(v1, v0);
+        let u0 = self.sse.sub(v0, p);
+        let u1 = self.sse.sub(v1, p);
+        let m = self.sse.mul(u1, e);
+        let d1 = self.sse.hsum(m);
+        let m = self.sse.mul(u0, e);
+        let d0 = self.sse.hsum(m);
+        if d1 >> 31 != d0 >> 31 {
+            let c = cross(&mut self.sse, u1, u0);
+            let n = match big {
+                Big::B => cross(&mut self.sse, c, e),
+                Big::A => cross(&mut self.sse, e, c),
+            };
+            put(j, self.at(state::NORMAL), n)?;
+            return self.settle(j);
+        }
+        if d1 >> 31 != 0 {
+            let par = vec(j, self.slot(base + 0x40, 1))?;
+            put(j, self.slot(base, 0), v1)?;
+            put(j, self.slot(base + 0x40, 0), par)?;
+        }
+        dec(j, self.at(big.count()))?;
+        self.between(j)
+    }
+
+    /// `(1, 3)` `0x00304ae6`, `(3, 1)` `0x00304c43`: the point against the
+    /// triangle ([`triangle`], B's normal toward A). Inside: out with 0.
+    /// Beyond one edge only: the vertex [`OFF`] names drops and the
+    /// segment case runs. Beyond a vertex: the triangle drops to that
+    /// vertex's edge the point projects onto, or to the vertex alone.
+    /// Only B's parallel array follows.
+    fn face(&mut self, j: &mut Journal, big: Big) -> Result<Flow, Fallback> {
+        let base = big.base();
+        let follow = big == Big::B;
+        let orient = if follow { 1 } else { u32::MAX };
+        let mask = triangle(j, self.st, self.at(big.point()), self.at(base), orient, self.fpu)?.mask;
+        if mask == 7 {
+            return self.settle(j);
+        }
+        let count = self.at(big.count());
+        let e = OFF[mask as usize];
+        if e < 0 {
+            let k = if e + 8 > 3 { 1 } else { (e + 8) as u32 };
+            let v2 = vec(j, self.slot(base, 2))?;
+            dec(j, count)?;
+            put(j, self.slot(base, k), v2)?;
+            if follow {
+                moved(j, self.slot(base + 0x40, k), self.slot(base + 0x40, 2))?;
+            }
+            return self.segment(j, big);
+        }
+        let i = e as u32;
+        let (far, near) = (SECOND[i as usize], FIRST[i as usize]);
+        let p = vec(j, self.at(big.point()))?;
+        let vi = vec(j, self.slot(base, i))?;
+        let vn = vec(j, self.slot(base, near))?;
+        let vf = vec(j, self.slot(base, far))?;
+        let to_far = self.sse.sub(vf, vi);
+        let to_p = self.sse.sub(p, vi);
+        let to_near = self.sse.sub(vn, vi);
+        let m = self.sse.mul(to_p, to_far);
+        let s = self.sse.hsum(m);
+        let v2 = vec(j, self.slot(base, 2))?;
+        set(j, count, 2)?;
+        if s >> 31 == 0 {
+            self.third(j, base, near, v2, follow)?;
+            return Ok(Flow::Dispatch);
+        }
+        self.third(j, base, far, v2, follow)?;
+        let m = self.sse.mul(to_p, to_near);
+        if self.sse.hsum(m) >> 31 == 0 {
+            return Ok(Flow::Dispatch);
+        }
+        let n = word(j, count)?;
+        let k = if near == n { far } else { near };
+        let n = n.wrapping_sub(1);
+        set(j, count, n)?;
+        moved(j, self.slot(base, k), self.slot(base, n))?;
+        if follow {
+            let n = word(j, count)?;
+            moved(j, self.slot(base + 0x40, k), self.slot(base + 0x40, n))?;
+        }
+        Ok(Flow::Dispatch)
+    }
+
+    /// The third vertex `v` into slot `k`, and its parallel twin.
+    fn third(&self, j: &mut Journal, base: u32, k: u32, v: u128, follow: bool) -> Result<(), Fallback> {
+        put(j, self.slot(base, k), v)?;
+        if follow {
+            moved(j, self.slot(base + 0x40, k), self.slot(base + 0x40, 2))?;
+        }
+        Ok(())
+    }
+
+    /// `(1, 4)` `0x00304aa1`, `(4, 1)` `0x00304c12`: [`tetrahedron`]
+    /// (`s` -1 for B's, 1 for A's). No face: out with 1. A face: its
+    /// opposite vertex takes the fourth's place (B's both arrays) and the
+    /// triangle case runs.
+    fn tetra(&mut self, j: &mut Journal, big: Big) -> Result<Flow, Fallback> {
+        let base = big.base();
+        let s = if big == Big::B { MINUS_ONE_BITS } else { ONE_BITS };
+        let face = tetrahedron(j, self.at(base), self.at(big.point()), s, self.fpu)?;
+        if (face.eax as i32) < 0 {
+            return Ok(Flow::Out(true));
+        }
+        let v3 = vec(j, self.slot(base, 3))?;
+        dec(j, self.at(big.count()))?;
+        put(j, self.slot(base, face.eax), v3)?;
+        if big == Big::B {
+            moved(j, self.slot(base + 0x40, face.eax), self.slot(base + 0x40, 3))?;
+        }
+        self.face(j, big)
+    }
+
+    /// `(2, 2)` `0x003049fe`: the two segments' closest points
+    /// ([`segments`] into `+0x130`). Neither end clamped: the normal is
+    /// the edges' cross product, turned toward B. Otherwise each clamped
+    /// segment drops to the end it clamped at.
+    fn pair(&mut self, j: &mut Journal) -> Result<Flow, Fallback> {
+        let (da, db) = (self.frame(0x60), self.frame(0x50));
+        let (a0, b0) = (self.at(state::SUPPORT_A), self.at(state::SUPPORT_B));
+        let (a1, b1) = (self.slot(state::SUPPORT_A, 1), self.slot(state::SUPPORT_B, 1));
+        let ea = self.sse.sub(vec(j, a1)?, vec(j, a0)?);
+        put(j, da, ea)?;
+        let eb = self.sse.sub(vec(j, b1)?, vec(j, b0)?);
+        put(j, db, eb)?;
+        let flags = segments(j, a0, da, b0, db, self.at(state::MIDPOINT), self.fpu)?.flags;
+        if flags == 0 {
+            let eb = vec(j, db)?;
+            let ea = vec(j, da)?;
+            let n = cross(&mut self.sse, ea, eb);
+            let t = self.sse.sub(vec(j, a0)?, vec(j, b0)?);
+            let m = self.sse.mul(n, t);
+            let s = self.sse.hsum(m);
+            put(j, self.at(state::NORMAL), n)?;
+            if s >> 31 == 0 {
+                put(j, self.at(state::NORMAL), n ^ vec(j, SIGNS)?)?;
+            }
+            return self.settle(j);
+        }
+        if flags & 1 != 0 {
+            moved(j, a0, a1)?;
+        }
+        if flags & 3 != 0 {
+            set(j, self.at(state::COUNT_A), 1)?;
+        }
+        if flags & 4 != 0 {
+            moved(j, b0, b1)?;
+            moved(j, self.at(state::LOCAL_B), self.slot(state::LOCAL_B, 1))?;
+        }
+        if flags & 12 != 0 {
+            set(j, self.at(state::COUNT_B), 1)?;
+        }
+        Ok(Flow::Dispatch)
+    }
+
+    /// `(2, 3)` `0x003049ae` (A's segment, feature 1), `(3, 2)`
+    /// `0x003049cc` (B's, feature -1): [`edge`], fresh when B's count was
+    /// 2 when the loop last left a case. 1: out with 1; 2: the `(2, 2)`
+    /// case; 0: out with 0.
+    fn edge(&mut self, j: &mut Journal, big: Big) -> Result<Flow, Fallback> {
+        let fresh = u32::from(word(j, self.at(state::LAST_B))? == 2);
+        let (seg, tri, feature) = match big {
+            Big::B => (Big::A, Big::B, 1),
+            Big::A => (Big::B, Big::A, u32::MAX),
+        };
+        let (seg_at, tri_at) = (self.at(seg.base()), self.at(tri.base()));
+        let (seg_count, tri_count) = (self.at(seg.count()), self.at(tri.count()));
+        // Six arguments and the return address below the frame.
+        let esp = self.f.wrapping_sub(28);
+        match edge(j, self.st, esp, seg_at, tri_at, seg_count, tri_count, fresh, feature, self.fpu)?.eax {
+            1 => Ok(Flow::Out(true)),
+            2 => self.pair(j),
+            _ => self.settle(j),
+        }
+    }
+
+    /// The jump table at `0x00305650` by `(nA << 3 | nB) - 9`.
+    fn case(&mut self, j: &mut Journal) -> Result<Flow, Fallback> {
+        let na = word(j, self.at(state::COUNT_A))?;
+        let nb = word(j, self.at(state::COUNT_B))?;
+        match (na << 3 | nb).wrapping_sub(9) {
+            0 => self.between(j),
+            1 => self.segment(j, Big::B),
+            2 => self.face(j, Big::B),
+            3 => self.tetra(j, Big::B),
+            8 => self.segment(j, Big::A),
+            9 => self.pair(j),
+            10 => self.edge(j, Big::B),
+            16 => self.face(j, Big::A),
+            17 => self.edge(j, Big::A),
+            24 => self.tetra(j, Big::A),
+            _ => Ok(Flow::Out(true)),
+        }
+    }
+
+    /// The support tests: `|d| d`, `d` the new vertex less an old one
+    /// along the direction, against the threshold. The first (`test
+    /// ah,0x41; jne`) passes only above; the rest (`test ah,5; jnp`) fail
+    /// only below.
+    fn clear(&mut self, new: u128, old: u128, dir: u128, thr: u32, first: bool) -> bool {
+        let g = self.sse.sub(new, old);
+        let m = self.sse.mul(g, dir);
+        let d = self.sse.hsum(m);
+        let sq = self.x.mul(load(d).abs(), load(d));
+        match cmp(sq, load(thr)) {
+            Cmp::Greater => true,
+            Cmp::Less => false,
+            _ => !first,
+        }
+    }
+
+    /// The new vertex at `base[n]` against `base[0]`, then for a simplex
+    /// of two or three against `base[2]` and `base[1]`.
+    fn fresh_vertex(&mut self, j: &Journal, base: u32, n: u32, dir: u128, thr: u32) -> Result<bool, Fallback> {
+        let new = vec(j, self.slot(base, n))?;
+        let first = vec(j, self.slot(base, 0))?;
+        if !self.clear(new, first, dir, thr, true) {
+            return Ok(false);
+        }
+        let rest: &[u32] = match n {
+            2 => &[1],
+            3 => &[2, 1],
+            _ => &[],
+        };
+        for &k in rest {
+            let old = vec(j, self.slot(base, k))?;
+            if !self.clear(new, old, dir, thr, false) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// `0x00304df4`, `0x003053d4`: A's support point along the normal, kept
+    /// when it is new.
+    fn grow_a(&mut self, j: &mut Journal, thr: u32) -> Result<bool, Fallback> {
+        let n = word(j, self.at(state::COUNT_A))?;
+        if n == signed_byte(j, self.args.cache.wrapping_add(cache::MAX_A))? || word(j, self.at(state::FEATURE))? == 1 {
+            return Ok(false);
+        }
+        let (shape, normal, out, esp) = (self.args.a, self.at(state::NORMAL), self.slot(state::SUPPORT_A, n), self.f.wrapping_sub(12));
+        self.calls.support(j, shape, normal, out, esp)?;
+        let n = word(j, self.at(state::COUNT_A))?;
+        let dir = vec(j, self.at(state::NORMAL))?;
+        if !self.fresh_vertex(j, state::SUPPORT_A, n, dir, thr)? {
+            return Ok(false);
+        }
+        set(j, self.at(state::COUNT_A), n.wrapping_add(1))?;
+        Ok(true)
+    }
+
+    /// `0x003051e4`: B's support point along the negated normal in B's
+    /// frame (`+0x70` of the frame), kept, and placed into A's frame,
+    /// when it is new.
+    fn grow_b(&mut self, j: &mut Journal, thr: u32) -> Result<bool, Fallback> {
+        let n = word(j, self.at(state::COUNT_B))?;
+        if n == signed_byte(j, self.args.cache.wrapping_add(cache::MAX_B))? || word(j, self.at(state::FEATURE))? == u32::MAX {
+            return Ok(false);
+        }
+        let r = rows(j, self.args.transform)?;
+        let normal = vec(j, self.at(state::NORMAL))?;
+        let local = combine(&mut self.sse, &r, normal) ^ vec(j, SIGNS)?;
+        let dir = self.frame(0x70);
+        put(j, dir, local)?;
+        let (shape, out, esp) = (self.args.b, self.slot(state::LOCAL_B, n), self.f.wrapping_sub(12));
+        self.calls.support(j, shape, dir, out, esp)?;
+        let n = word(j, self.at(state::COUNT_B))?;
+        let d = vec(j, dir)?;
+        if !self.fresh_vertex(j, state::LOCAL_B, n, d, thr)? {
+            return Ok(false);
+        }
+        let v = vec(j, self.slot(state::LOCAL_B, n))?;
+        let placed = self.place(j, v)?;
+        put(j, self.slot(state::SUPPORT_B, n), placed)?;
+        let n = word(j, self.at(state::COUNT_B))?;
+        set(j, self.at(state::COUNT_B), n.wrapping_add(1))?;
+        Ok(true)
+    }
+
+    /// `0x003054f1`: a query out with 1, or whose distance has stalled.
+    /// With the `+0x0c` byte clear the triangle case answers; otherwise a
+    /// pair of simplices over four vertices becomes `(3, 1)` or `(1, 3)`,
+    /// the larger keeping three, and the answer is 3.
+    fn stall(&mut self, j: &mut Journal) -> Result<u32, Fallback> {
+        if j.byte(self.at(state::SETTLE)).ok_or(Fallback::Memory)? == 0 {
+            let (st, args, esp) = (self.st, self.args, self.f.wrapping_sub(20));
+            return self.calls.triangle_case(j, st, args, esp);
+        }
+        let nb = word(j, self.at(state::COUNT_B))?;
+        let na = word(j, self.at(state::COUNT_A))?;
+        if na.wrapping_add(nb) as i32 > 4 {
+            let (a, b) = if na as i32 > nb as i32 { (3, 1) } else { (1, 3) };
+            set(j, self.at(state::COUNT_A), a)?;
+            set(j, self.at(state::COUNT_B), b)?;
+        }
+        Ok(3)
+    }
+
+    /// `0x00305547`: the unit normal (one Newton step on `rsqrtss`) with
+    /// the distance along it in `w`, then the sizes and the vertex IDs
+    /// (each vertex's `w`, low 16 bits) back to the cache.
+    fn finish(&mut self, j: &mut Journal, eax: u32) -> Result<Query, Fallback> {
+        let a0 = vec(j, self.at(state::SUPPORT_A))?;
+        let b0 = vec(j, self.at(state::SUPPORT_B))?;
+        let n = vec(j, self.at(state::NORMAL))?;
+        let gap = self.sse.sub(b0, a0);
+        let sq = self.sse.mul(n, n);
+        let nn = self.sse.hsum(sq);
+        let r = self.sse.e.rsqrt(nn);
+        let sr = self.sse.e.mul(nn, r);
+        let srr = self.sse.e.mul(sr, r);
+        let three = self.sse.e.sub(3.0f32.to_bits(), srr);
+        let half = self.sse.e.mul(HALF_BITS, r);
+        let k = self.sse.e.mul(half, three);
+        let along = self.sse.mul(gap, n);
+        let unit = self.sse.mul(splat(k), n);
+        put(j, self.args.out, unit)?;
+        let s = self.sse.hsum(along);
+        let distance = self.sse.e.mul(s, k);
+        set(j, self.args.out.wrapping_add(0xc), distance)?;
+        let c = self.args.cache;
+        let na = word(j, self.at(state::COUNT_A))?;
+        put_byte(j, c.wrapping_add(cache::COUNT_A), na as u8)?;
+        let nb = word(j, self.at(state::COUNT_B))?;
+        put_byte(j, c.wrapping_add(cache::COUNT_B), nb as u8)?;
+        // Two do-while loops: one ID at least from each side.
+        let mut i = 0u32;
+        loop {
+            let id = word(j, self.slot(state::SUPPORT_A, i).wrapping_add(0xc))?;
+            put_half(j, c.wrapping_add(2 * i), id)?;
+            i += 1;
+            if i as i32 >= word(j, self.at(state::COUNT_A))? as i32 {
+                break;
+            }
+            if i >= MAX_COUNT {
+                return Err(Fallback::Memory);
+            }
+        }
+        let mut k = 0u32;
+        loop {
+            let id = word(j, self.slot(state::LOCAL_B, k).wrapping_add(0xc))?;
+            put_half(j, c.wrapping_add(2 * (i + k)), id)?;
+            let ecx = word(j, self.at(state::COUNT_B))?;
+            k += 1;
+            if k as i32 >= ecx as i32 {
+                return Ok(Query { eax, ecx, edx: k });
+            }
+            if k >= MAX_COUNT {
+                return Err(Fallback::Memory);
+            }
+        }
+    }
+
+    fn run(&mut self, j: &mut Journal) -> Result<Query, Fallback> {
+        let c = self.args.cache;
+        let na = signed_byte(j, c.wrapping_add(cache::COUNT_A))?;
+        set(j, self.at(state::COUNT_A), na)?;
+        let nb = signed_byte(j, c.wrapping_add(cache::COUNT_B))?;
+        set(j, self.at(state::COUNT_B), nb)?;
+        // Three arguments and the return address below the frame.
+        let esp = self.f.wrapping_sub(16);
+        let (a, b) = (self.args.a, self.args.b);
+        let (a_out, b_out) = (self.at(state::SUPPORT_A), self.at(state::LOCAL_B));
+        let na = word(j, self.at(state::COUNT_A))?;
+        self.calls.vertices(j, a, c, na, a_out, esp)?;
+        let nb = word(j, self.at(state::COUNT_B))?;
+        let na = word(j, self.at(state::COUNT_A))?;
+        self.calls.vertices(j, b, c.wrapping_add(na.wrapping_mul(2)), nb, b_out, esp)?;
+        let nb = word(j, self.at(state::COUNT_B))?;
+        if nb.wrapping_sub(1) as i32 >= 0 {
+            if nb > MAX_COUNT {
+                return Err(Fallback::Memory);
+            }
+            for i in 0..nb {
+                let v = vec(j, self.slot(state::LOCAL_B, i))?;
+                let placed = self.place(j, v)?;
+                put(j, self.slot(state::SUPPORT_B, i), placed)?;
+            }
+        }
+        let scale = load(word(j, STALL)?);
+        let (mut tolerance, mut pass) = (TOLERANCE_BITS, 0u32);
+        // The tolerance doubles each pass, so the support tests fail
+        // within a few hundred passes at most.
+        let eax = loop {
+            tolerance = self.x.st(self.x.add(load(tolerance), load(tolerance)));
+            pass = pass.wrapping_add(1);
+            set(j, self.at(state::FEATURE), 0)?;
+            let out = loop {
+                match self.case(j)? {
+                    Flow::Dispatch => continue,
+                    Flow::Out(out) => break out,
+                }
+            };
+            // 0x00304d45: |n|^2 and the gap along n.
+            let n = vec(j, self.at(state::NORMAL))?;
+            let m = self.sse.mul(n, n);
+            let nn = self.sse.hsum(m);
+            let (b0, a0) = (vec(j, self.at(state::SUPPORT_B))?, vec(j, self.at(state::SUPPORT_A))?);
+            let gap = self.sse.sub(b0, a0);
+            let m = self.sse.mul(gap, n);
+            let d = self.sse.hsum(m);
+            // `fcompp; test ah,1; je`: on, only while the cube of the gap
+            // is above the tolerance's share of |n|^2 (or unordered).
+            let cube = self.x.mul(self.x.mul(load(d), load(d)), load(d));
+            let floor = self.x.mul(self.x.mul(load(tolerance), scale), load(nn));
+            if out || !matches!(cmp(floor, cube), Cmp::Less | Cmp::Unordered) {
+                break self.stall(j)?;
+            }
+            let thr = self.x.st(self.x.mul(load(nn), load(tolerance)));
+            // Odd passes try A first, even ones B.
+            let grew = if pass & 1 != 0 {
+                self.grow_a(j, thr)? || self.grow_b(j, thr)?
+            } else {
+                self.grow_b(j, thr)? || self.grow_a(j, thr)?
+            };
+            if !grew {
+                break 0;
+            }
+        };
+        self.finish(j, eax)
+    }
+}
+
+/// `0x003048a0`, thiscall on the query state, `(shape A, shape B,
+/// transform, cache, out)`, `ret 0x14`; `esp` is the stack pointer at
+/// entry. The simplex sizes come from the cache, the vertices through
+/// each shape's `vt[+0x34]` (A's at `+0x20`, B's at `+0xe0` and placed
+/// into A's frame at `+0xa0`). Each pass doubles the tolerance and runs
+/// the case for the two sizes until one leaves the loop; then, unless the
+/// gap has stalled, a new support point of A (odd passes first) or B
+/// joins its simplex when it is not one already there, and the next pass
+/// runs. Out: the unit normal from A to B with the distance in `w`, the
+/// sizes and vertex IDs back in the cache, eax 0 (3 or the triangle
+/// case's on a stall), ecx B's size and edx the IDs B wrote.
+pub fn query(j: &mut Journal, st: u32, esp: u32, args: Args, fpu: Fpu, calls: &mut impl Calls) -> Result<Query, Fallback> {
+    let (sse, x) = units(fpu)?;
+    // `push ebp; and esp,-16; sub esp,0x74`, then three pushes.
+    let f = (esp.wrapping_sub(4) & !15).wrapping_sub(0x80);
+    Run { st, f, args, fpu, sse, x, calls }.run(j)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,6 +1477,75 @@ mod tests {
         assert_eq!(run(&h, 0x100).0.map(|e| e.ecx), Ok(st));
         let mut j = Journal::new(&h);
         assert_eq!(edge(&mut j, st, esp, seg + 8, tri, counts, counts + 4, 1, 9, FPU), Err(Fallback::Memory));
+    }
+
+    /// Capsules through the ported virtuals; the triangle case answers
+    /// a fixed eax.
+    struct Capsules {
+        triangle: u32,
+    }
+
+    impl Calls for Capsules {
+        fn vertices(&mut self, j: &mut Journal, shape: u32, ids: u32, count: u32, out: u32, _: u32) -> Result<(), Fallback> {
+            crate::shape_support::capsule_vertices(j, shape, ids, count, out)
+        }
+
+        fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, _: u32) -> Result<(), Fallback> {
+            let mut x = x87::abi::X87Abi::default();
+            x87::abi::init(&mut x);
+            x.control = FPU.control;
+            let mut m = FPU.mxcsr;
+            crate::shape_support::capsule(j, shape, dir, out, &mut m, &mut x).map(|_| ())
+        }
+
+        fn triangle_case(&mut self, _: &mut Journal, _: u32, _: Args, _: u32) -> Result<u32, Fallback> {
+            Ok(self.triangle)
+        }
+    }
+
+    #[test]
+    fn two_capsules_apart_give_the_gap_between_them() {
+        let mut h = Heap::default();
+        constants(&mut h);
+        h.0.insert(STALL, 0x3400_0000);
+        let (st, a, b, t, c, out, esp) = (0x1000, 0x2000, 0x2100, 0x2200, 0x2300, 0x2400, 0x8000);
+        for shape in [a, b] {
+            put4(&mut h, shape + 0x10, [0.0, 0.0, -1.0, 0.25]);
+            put4(&mut h, shape + 0x20, [0.0, 0.0, 1.0, 0.25]);
+        }
+        put4(&mut h, t, [1.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, t + 0x10, [0.0, 1.0, 0.0, 0.0]);
+        put4(&mut h, t + 0x20, [0.0, 0.0, 1.0, 0.0]);
+        put4(&mut h, t + 0x30, [5.0, 0.0, 0.0, 1.0]);
+        // One vertex each (end A, ID 0), each may grow to two.
+        h.0.insert(c + 8, 0x0202_0101);
+        h.0.insert(st + state::SETTLE, 1);
+        let args = Args { a, b, transform: t, cache: c, out };
+        let mut j = Journal::new(&h);
+        let q = query(&mut j, st, esp, args, FPU, &mut Capsules { triangle: 7 }).unwrap();
+        // Parallel capsules: the other ends are no nearer, so neither grows.
+        assert_eq!(q, Query { eax: 0, ecx: 1, edx: 1 });
+        let n = get4(&j, out);
+        assert!((n[0] - 1.0).abs() < 1e-3 && n[1] == 0.0 && n[2] == 0.0, "{n:?}");
+        assert!((n[3] - 5.0).abs() < 1e-2, "the distance in w: {n:?}");
+        assert_eq!((j.get(c), j.get(c + 8)), (Some(0), Some(0x0202_0101)));
+        assert_eq!(query(&mut Journal::new(&h), st + 8, esp, args, FPU, &mut Capsules { triangle: 7 }), Err(Fallback::Memory));
+    }
+
+    #[test]
+    fn a_query_with_no_case_stalls() {
+        let mut h = Heap::default();
+        constants(&mut h);
+        let (st, c, out) = (0x1000, 0x2300, 0x2400);
+        let args = Args { a: 0x2000, b: 0x2100, transform: 0x2200, cache: c, out };
+        // No vertices: no case, out with 1; the +0x0c byte says 3.
+        h.0.insert(st + state::SETTLE, 1);
+        let q = query(&mut Journal::new(&h), st, 0x8000, args, FPU, &mut Capsules { triangle: 7 }).unwrap();
+        assert_eq!(q, Query { eax: 3, ecx: 0, edx: 1 });
+        // Clear, the triangle case answers.
+        h.0.insert(st + state::SETTLE, 0);
+        let q = query(&mut Journal::new(&h), st, 0x8000, args, FPU, &mut Capsules { triangle: 7 }).unwrap();
+        assert_eq!(q.eax, 7);
     }
 
     #[test]
