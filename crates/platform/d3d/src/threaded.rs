@@ -122,6 +122,9 @@ enum Cmd<B: Backend> {
     /// allocation per draw.
     Draw(DrawBox),
     ExternalRun(Vec<ExternalRecording>),
+    /// Adjacent queued native producer draws admitted as one pass
+    /// ([`Backend::queue_external_draw`], [`QueuedRun`]).
+    QueuedRun(Box<QueuedRun>),
     /// Only emitted on the frame-owner path.
     Render(owner::RenderOp),
     OwnerPresent(Box<owner::Present<B>>),
@@ -171,6 +174,74 @@ impl std::ops::Deref for QueuedDraw {
     }
 }
 
+/// Native producer draws queued as one admission: the first draw's
+/// candidate, then each adjacent draw its pass took
+/// ([`crate::ExternalPass::queued_run`], [`crate::ExternalPass::extend_run`])
+/// on the same attachments, request, textures and stage. The render thread
+/// prepares the one pass; if any copy does not record, it draws every
+/// draw's fallback, in order, as N single admissions would have.
+struct QueuedRun {
+    head: crate::backend::QueuedExternalDraw<u32>,
+    textures: [Option<u64>; 4],
+    /// The joined draws after the head, in order: fallback and completion.
+    rest: Vec<(Arc<crate::ResolvedDraw>, QueuedFinished)>,
+    /// `head.pass` is the run's own copy, which `extend_run` may change.
+    owned: bool,
+}
+
+type QueuedFinished = Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>;
+
+/// Queued runs and the draws they hold, since start
+/// ([`queued_runs`]).
+static QUEUED_RUNS: AtomicU64 = AtomicU64::new(0);
+static QUEUED_RUN_DRAWS: AtomicU64 = AtomicU64::new(0);
+
+/// `(runs, draws)`: the queued native admissions the render thread was
+/// handed and the draws in them. Draws minus runs is the admissions a run
+/// saved (docs/graphics/native-particles.md, "One admission a run").
+pub fn queued_runs() -> (u64, u64) {
+    (QUEUED_RUNS.load(Ordering::Relaxed), QUEUED_RUN_DRAWS.load(Ordering::Relaxed))
+}
+
+impl QueuedRun {
+    /// Takes `next` into this run when it follows on the same
+    /// attachments and its pass can join; otherwise gives it back.
+    fn join(&mut self, next: Box<QueuedRun>) -> Result<(), Box<QueuedRun>> {
+        let (h, n) = (&self.head, &next.head);
+        let plain = |s: &crate::backend::ExternalSurfaces<u32>| {
+            s.sampled.is_empty() && s.slots.is_empty() && s.slot_sizes.is_empty()
+        };
+        if !next.rest.is_empty()
+            || h.plan.stage != n.plan.stage || h.plan.view != n.plan.view
+            || !h.plan.slots.is_empty() || !n.plan.slots.is_empty()
+            || h.surfaces.color != n.surfaces.color || h.surfaces.depth != n.surfaces.depth
+            || !plain(&h.surfaces) || !plain(&n.surfaces)
+            || h.request != n.request || h.fallback_depth != n.fallback_depth
+            || self.textures != next.textures
+        {
+            return Err(next);
+        }
+        let joined = {
+            let (Ok(mut head), Ok(tail)) = (h.pass.lock(), n.pass.lock()) else { return Err(next) };
+            if self.owned {
+                head.extend_run(&**tail).then_some(None)
+            } else {
+                head.queued_run(&**tail).map(Some)
+            }
+        };
+        let Some(fresh) = joined else { return Err(next) };
+        if let Some(run) = fresh {
+            // The device's pass (a replay may hold it) is never altered.
+            self.head.pass = Arc::new(Mutex::new(run));
+            self.owned = true;
+        }
+        let next = *next;
+        self.head.plan.ranges += next.head.plan.ranges;
+        self.rest.push((next.head.fallback, next.head.finished));
+        Ok(())
+    }
+}
+
 /// The pending batch, shared with the texture proxies so that their drops
 /// keep their place in the order.
 struct Queue<B: Backend> {
@@ -203,6 +274,26 @@ impl<B: Backend> Queue<B> {
             pending.commands.push(Cmd::ExternalRun(vec![recording]));
         }
         if pending.commands.len() >= BATCH { self.send(&mut pending.commands)?; }
+        Ok(())
+    }
+
+    /// Queues a native producer draw, joined to the run that ends the
+    /// pending batch when it can be ([`QueuedRun::join`]): nothing was
+    /// queued between them, so the order is the same either way.
+    fn push_queued(&self, run: Box<QueuedRun>) -> Result<(), ()> {
+        let mut p = self.pending.lock().unwrap();
+        p.order = p.order.wrapping_add(1);
+        let run = match p.commands.last_mut() {
+            Some(Cmd::QueuedRun(open)) => match open.join(run) {
+                Ok(()) => return Ok(()),
+                Err(run) => run,
+            },
+            _ => run,
+        };
+        p.commands.push(Cmd::QueuedRun(run));
+        if p.commands.len() >= BATCH {
+            return self.send(&mut p.commands);
+        }
         Ok(())
     }
 
@@ -470,6 +561,10 @@ impl<B: Backend> Worker<B> {
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
             }
+            Cmd::QueuedRun(run) => {
+                let run = *run;
+                self.run(|w| w.queued_run(run));
+            }
             Cmd::Draw(slot) => {
                 if let Err(e) = self.draw(slot.as_ref().as_ref().expect("a queued draw")) {
                     self.shared.latch(e);
@@ -477,6 +572,44 @@ impl<B: Backend> Worker<B> {
                 self.recycle_draw(slot);
             }
         }
+    }
+
+    /// A queued run ([`QueuedRun`]): its one pass recorded on every copy,
+    /// or each draw's fallback in order.
+    fn queued_run(&mut self, run: QueuedRun) -> Result<(), String> {
+        let QueuedRun { head, textures: ids, rest, .. } = run;
+        QUEUED_RUNS.fetch_add(1, Ordering::Relaxed);
+        QUEUED_RUN_DRAWS.fetch_add(1 + rest.len() as u64, Ordering::Relaxed);
+        let color = self.surface(head.surfaces.color)?;
+        let depth = self.depth(head.fallback_depth)?;
+        let mut textures = [None; 4];
+        for (slot, id) in textures.iter_mut().zip(ids) {
+            if let Some(id) = id {
+                *slot = Some(self.textures.get(&id).ok_or_else(|| format!("render thread: texture {id} is not live"))?);
+            }
+        }
+        if let Some(surfaces) = head.surfaces.try_map(|s| self.surfaces.get(s).copied())
+            && let Ok(Some(recordings)) = self.inner.prepare_external(
+                surfaces, head.request, textures, &head.plan, crate::TargetCopy::Reference, head.pass,
+            )
+            && crate::device::complete_recordings(&head.plan, &recordings)
+        {
+            for recording in recordings { self.inner.commit_external(recording); }
+            (head.finished)(None);
+            for (_, finished) in rest { finished(None); }
+            return Ok(());
+        }
+        crate::backend::note_declined(head.plan.stage, "threaded.rs", line!(), "the render thread did not record every copy");
+        for (draw, finished) in std::iter::once((head.fallback, head.finished)).chain(rest) {
+            let result = self.inner.draw(color, depth, &draw, textures);
+            finished(Some(&result));
+            let outcome = result?;
+            self.residency.guest_draw(&outcome);
+            if outcome != DrawOutcome::Drawn {
+                self.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
+            }
+        }
+        Ok(())
     }
 
     fn recycle_draw(&mut self, mut slot: DrawBox) {
@@ -1695,37 +1828,11 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         {
             return false;
         }
-        let ids = textures.map(|t| t.map(|t| t.id));
-        self.post(move |w| {
-            let draw = candidate.fallback;
-            let color = w.surface(candidate.surfaces.color)?;
-            let depth = w.depth(candidate.fallback_depth)?;
-            let mut textures = [None; 4];
-            for (slot, id) in textures.iter_mut().zip(ids) {
-                if let Some(id) = id {
-                    *slot = Some(w.textures.get(&id).ok_or_else(|| format!("render thread: texture {id} is not live"))?);
-                }
-            }
-            if let Some(surfaces) = candidate.surfaces.try_map(|s| w.surfaces.get(s).copied())
-                && let Ok(Some(recordings)) = w.inner.prepare_external(
-                    surfaces, candidate.request, textures, &candidate.plan, crate::TargetCopy::Reference, candidate.pass,
-                )
-                && crate::device::complete_recordings(&candidate.plan, &recordings)
-            {
-                for recording in recordings { w.inner.commit_external(recording); }
-                (candidate.finished)(None);
-                return Ok(());
-            }
-            crate::backend::note_declined(candidate.plan.stage, "threaded.rs", line!(), "the render thread did not record every copy");
-            let result = w.inner.draw(color, depth, &draw, textures);
-            (candidate.finished)(Some(&result));
-            let outcome = result?;
-            w.residency.guest_draw(&outcome);
-            if outcome != DrawOutcome::Drawn {
-                w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
-            }
-            Ok(())
-        });
+        let textures = textures.map(|t| t.map(|t| t.id));
+        let run = Box::new(QueuedRun { head: candidate, textures, rest: Vec::new(), owned: false });
+        if self.queue.push_queued(run).is_err() {
+            self.shared.latch("render thread: gone".into());
+        }
         true
     }
 
