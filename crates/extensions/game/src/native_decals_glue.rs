@@ -234,6 +234,19 @@ impl DrawAdmission for Glue {
             }
         };
         render_bridge::native_decals::note_candidate();
+        // The Rust material against this draw's own, 1 in 64.
+        if render_bridge::native_decals::proof_sample() {
+            let material = native_render::decal_material::material(
+                mode,
+                render_bridge::native_decals::offset_bits(),
+            );
+            let d = snapshot.draw;
+            let fields = d.shader.pixel_shader.as_ref().map_or_else(
+                || vec!["combiner_missing".to_owned()],
+                |pixel| native_render::decal_material::compare(&material, pixel, &d.raw.render),
+            );
+            render_bridge::native_decals::proof_record(&fields);
+        }
         Some((
             ExternalPlan {
                 stage: Stage::Decals,

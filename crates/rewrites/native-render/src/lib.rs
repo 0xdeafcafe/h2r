@@ -38,6 +38,7 @@ pub mod cone_shadows;
 pub mod cone_shadows_gpu;
 pub mod cull;
 pub mod decal;
+pub mod decal_material;
 pub mod decal_scene;
 #[cfg(feature = "gpu")]
 pub mod decal_gpu;
