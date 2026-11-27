@@ -498,9 +498,11 @@ no exact GPU form: an input the GPU lacks (4 to 13, 16 up, negative) or
 the mask leaves uncomputed, a function of the age that does not hold its
 value past 1 (only identity and transition do), a wave or shape not in the
 tables, a missing or unparsable function the callback reads, and sequences
-of different sprite counts. Two bakes are approximate: a ranged function
-whose sets leave 0..1 is clamped after the blend, not per curve, and three
-or four colour stops fall between gradient stops.
+of different sprite counts. An input the GPU lacks is counted by its
+index (`input_the_gpu_lacks_4` to `_13`, `_16`, else `_other`). Two bakes
+are approximate: a ranged function whose sets leave 0..1 is clamped after
+the blend, not per curve, and three or four colour stops fall between
+gradient stops.
 
 The draw (`ParticleDraw::draw`) is the entry a render pass calls: it binds
 the system's current buffer, the `View` uniform (clip from world, the
