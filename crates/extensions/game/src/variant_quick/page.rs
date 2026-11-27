@@ -5,13 +5,16 @@
 //! **The page** is the shared settings dialog
 //! (docs/game/ui-builder.md "The settings dialog") from
 //! `content/ui/screens/variant-quick.yaml`: Quick Options' own panel, the
-//! variant's name in the header (`settings.name: "{variant}"`), five row
-//! slots bound `quick.0` to `quick.4` and the focused row's help under
-//! the rows. Its Rust is its bindings ([`page`]): a slot is the script's
-//! mark of that place ([`super::QuickRow`]), its label, its value and its
-//! help ([`help`]: an option's description, else what the setting sets),
-//! and a slot past the last mark is not drawn. A opens the value picker
-//! on the row's values; there are no left and right steps.
+//! variant's name in the header (`settings.name: "{variant}"`), eight row
+//! slots bound `quick.0` to `quick.7` and the focused row's help under
+//! the rows. Its Rust is its bindings ([`page`]): a slot is the dialog's
+//! row of that place ([`super::dialog_rows_with`]: the script's marks,
+//! then its unmarked options when they all fit, so Siege's dialog is its
+//! whole options page), its label, its value and its help ([`help`]: an
+//! option's description, else what the setting sets), and a slot past
+//! the last row is not drawn. A opens the value picker on the row's
+//! values, a wide range as a ladder ([`super::ladder`]); there are no
+//! left and right steps.
 //!
 //! **Which Quick Options.** Game Setup's "Quick Options..." row (action
 //! [`QUICK_OPTIONS`]) opens this page for a script variant with marks,
@@ -54,7 +57,7 @@ use runtime::guest::Permissions;
 use variants::ext::Ext;
 use variants::record::{self, GameVariant, NAME_AT, SettingId};
 
-use super::{Mark, QuickRow, ROWS};
+use super::{DIALOG_ROWS, Mark, QuickRow, ROWS};
 use crate::h1_options_row::{self as h1row, QUICK_OPTIONS};
 use crate::list_class;
 use crate::ui_kit::ids::{self, Family};
@@ -72,7 +75,9 @@ pub const ROW_FEATURE: &str = "variant-quick-row";
 const IDS: Family = ids::family("variant-quick");
 
 /// The slots' bindings, in row order (the doc's `rows.row.N.bind`).
-pub const SLOTS: [&str; ROWS] = ["quick.0", "quick.1", "quick.2", "quick.3", "quick.4"];
+pub const SLOTS: [&str; DIALOG_ROWS] = [
+    "quick.0", "quick.1", "quick.2", "quick.3", "quick.4", "quick.5", "quick.6", "quick.7",
+];
 
 /// The header's name with no variant read (the preview's, before a press).
 const NO_VARIANT: &str = "Quick Options";
@@ -277,7 +282,7 @@ struct Open {
 impl Open {
     fn read(&mut self) {
         self.rows = match (&self.record, &self.ir) {
-            (Some(r), Some(ir)) => super::rows_with(r, ir, self.offered.as_ref()),
+            (Some(r), Some(ir)) => super::dialog_rows_with(r, ir, self.offered.as_ref()),
             _ => Vec::new(),
         };
     }
@@ -357,16 +362,17 @@ impl Dialog {
                 row.label
             ));
         }
-        let current = row
-            .values
+        // A wide range is offered as a ladder, the held value on it.
+        let offered = super::ladder(&row.values, row.value);
+        let current = offered
             .iter()
             .position(|(v, _)| *v == row.value)
             .unwrap_or(0);
-        let values: Vec<i32> = row.values.iter().map(|(v, _)| *v).collect();
+        let values: Vec<i32> = offered.iter().map(|(v, _)| *v).collect();
         let me = Arc::clone(self);
         Ok(Pick::new(
             &row.label,
-            row.values.iter().map(|(_, t)| t.clone()).collect(),
+            offered.iter().map(|(_, t)| t.clone()).collect(),
             current,
             &help(&row),
             Arc::new(move |i| match values.get(i) {
@@ -626,6 +632,15 @@ fn sample_dialog(marks: usize) -> Arc<Dialog> {
     d
 }
 
+/// Siege's record and script: its five marks and its two options more.
+fn siege_dialog() -> Arc<Dialog> {
+    let ir = ::rules::compile(::rules::builtin::SIEGE).expect("Siege compiles");
+    let record = variants::portable::record_for(&ir, &[]).expect("Siege's record");
+    let d = Arc::new(Dialog::new(Arc::default()));
+    d.open(record, Arc::new(ir), Some(HashMap::from([(17, vec![0, 3, 5, 10])])));
+    d
+}
+
 /// The page over `dialog`, as a list page.
 fn sample_list(dialog: &Arc<Dialog>) -> crate::ui_kit::page::ListPage {
     let s = Arc::new(page(dialog));
@@ -640,8 +655,9 @@ pub fn sample_page() -> crate::ui_kit::page::ListPage {
 
 /// Every state the preview draws: Superbounce's five rows focused on a
 /// setting (what it sets), on an option (its description) and on the last;
-/// a script with three marks (the two slots after them not drawn); and a
-/// refused change, said in the row's help.
+/// a script with three marks (the slots after them not drawn); a refused
+/// change, said in the row's help; and Siege's whole options page, its
+/// marks and the two options after them, focused on the first and the last.
 pub fn samples() -> Vec<(&'static str, crate::ui_kit::page::ListPage, usize)> {
     let refused = sample_dialog(ROWS);
     refused.choose(0, 7);
@@ -651,6 +667,8 @@ pub fn samples() -> Vec<(&'static str, crate::ui_kit::page::ListPage, usize)> {
         ("focus-4", sample_page(), 4),
         ("three-rows", sample_list(&sample_dialog(3)), 2),
         ("refused", sample_list(&refused), 0),
+        ("siege", sample_list(&siege_dialog()), 0),
+        ("siege-rounds", sample_list(&siege_dialog()), 6),
     ]
 }
 
