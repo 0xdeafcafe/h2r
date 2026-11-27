@@ -578,6 +578,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             report(&outcomes, 0);
             return None;
         }
+        drop(device_state);
         let device_words = device_fog_words(&d, mem);
         let mut fogs = HashMap::new();
         if let Some(data) = data {
@@ -1329,8 +1330,9 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             // the rest.
             let device = |slot: u32| d.render_state(&read, slot);
             let after = native_render::sorted_entries::after_restore(&restore, &device);
-            let device_stencil = crate::native_objects_glue::stencil_with(&after).ok_or("stencil")?;
-            (device_stencil, restore)
+            let device_stencil = crate::native_objects_glue::stencil_with(&after);
+            drop(after);
+            (device_stencil.ok_or("stencil")?, restore)
         };
         let unmarked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil;
         let (mut free, mut outcomes, mut left) = (HashMap::new(), BTreeMap::new(), Left::default());

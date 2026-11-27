@@ -923,7 +923,7 @@ mod tests {
         let sink = Arc::clone(&told);
         g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
         let built = g.prepare(&s, &ad).unwrap().unwrap();
-        assert_eq!(*seen.lock().unwrap(), [document.clone()], "the document the server holds");
+        assert_eq!(*seen.lock().unwrap(), std::slice::from_ref(&document), "the document the server holds");
         assert_eq!(g.package_of(&id), Some(built.clone()));
         assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&built), "the boot is told");
         assert_eq!(*s.counted.lock().unwrap(), [format!("/maps/{id}")]);

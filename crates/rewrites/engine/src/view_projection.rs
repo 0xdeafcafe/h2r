@@ -221,7 +221,7 @@ pub fn build(
         if display {
             let k = height * f(DISPLAY_EXTENT)?;
             e[2] *= k;
-            e[3] = k * e[3];
+            e[3] *= k;
         }
         t
     };
@@ -378,7 +378,7 @@ mod tests {
         m.put_u8(SETTINGS + 5, 1);
         let b = build(&m, call(0), 0x1f80, 0x027f).unwrap();
         let k = 480.0f32 * (1.0 / 480.0);
-        assert_eq!(word(&b, 8), -1.0 * k);
+        assert_eq!(word(&b, 8), -k);
         assert_eq!(word(&b, 0xc), k * 1.0);
         let t = tangent(1.2, 0.5).unwrap();
         assert_eq!(

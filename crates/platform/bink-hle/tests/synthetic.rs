@@ -1255,7 +1255,7 @@ fn a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone() {
             true
         }
     }
-    let (mut w, hle, reg, mode) = world(|c| {
+    let (mut w, _hle, reg, mode) = world(|c| {
         let hle = BinkHle::with_clock(Some(Arc::new(FakeSource { name: "intro_60", frames: 3 })), c);
         hle.use_native_display(true);
         hle

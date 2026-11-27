@@ -83,7 +83,7 @@ pub(super) fn supported(point: u32, c: &CpuAbi, g: &Guest) -> bool {
 }
 
 pub(super) fn run(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
-    let call = Call::read(c, g).ok_or_else(|| GuestFault {
+    let call = Call::read(c, g).ok_or(GuestFault {
         addr: c.esp, len: 4, access: runtime::guest::Access::Read,
         reason: runtime::guest::FaultReason::Unmapped,
     })?;

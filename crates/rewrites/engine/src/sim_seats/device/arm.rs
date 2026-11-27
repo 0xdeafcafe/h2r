@@ -224,10 +224,9 @@ impl Prediction {
 
     /// Record words the read changes.
     pub fn record_stores(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        (0..RECORD_WORDS).filter_map(move |i| {
-            (self.record[i] != self.record_before[i])
-                .then(|| (self.record_at.wrapping_add(4 * i as u32), self.record[i]))
-        })
+        (0..RECORD_WORDS)
+            .filter(move |&i| self.record[i] != self.record_before[i])
+            .map(move |i| (self.record_at.wrapping_add(4 * i as u32), self.record[i]))
     }
 
     /// The first thing the guest's state at the transfer differs from
