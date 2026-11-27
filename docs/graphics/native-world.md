@@ -42,7 +42,7 @@ The load runs at map load and on a BSP switch. The active BSP is `0x004e0348` an
 | Step | What happens |
 |---|---|
 | Camera | Reads the render camera record and builds the view and projection |
-| Cull | The guest's selected parts: frustum planes against each part's world bounds, on the CPU. The whole-world pass: compute passes on the GPU, frustum then depth pyramid |
+| Cull | On the GPU: the guest's whole layer-3 list by the frustum (a game view); the whole-world pass by the frustum then the depth pyramid |
 | Skip | Clears layer 3's bit on the BSP items the native pass draws |
 | Draw | One render pass into the game's colour target and depth with the game's viewport; per batch, bind textures, then `multi_draw_indexed_indirect` over its slot range |
 
@@ -52,7 +52,8 @@ The load runs at map load and on a BSP switch. The active BSP is `0x004e0348` an
 
 | Pass | Who uses it | Cull |
 |---|---|---|
-| Selected parts (`select_parts`, `selection_draws`) | the game: the guest's layer-3 list | On the CPU at admission: a part outside `Frustum::sides` refuses the list, so the D3D path draws it |
+| Game view (`select_unculled`, `culled_selection_draws`) | the game: the guest's layer-3 list, material programs | On the GPU by `Frustum::sides` of the admission lens: every loaded part of the list is claimed and its slot drawn indirect |
+| Selected parts (`select_parts`, `selection_draws`) | the fixed stage, tests | On the CPU: a part outside the frustum refuses the list |
 | Whole world (`prepare`, `encode`) | the theater's host view, the editor's native view | On the GPU ([`cull_gpu`](../../crates/rewrites/native-render/src/cull_gpu.rs), `cull.wgsl`): compute passes write each draw's `instance_count` into the indirect slots |
 
 The whole-world pass uploads each draw's world bounds once at load (again after `replace_section`) and, per frame, only the view: the planes, the view-projection, the depth rule and the viewport (`CullView`). Every draw owns one 20-byte slot in each of two indirect buffers, `early` and `late`, and each batch is a contiguous slot range drawn with one `multi_draw_indexed_indirect`.
@@ -74,7 +75,7 @@ flowchart LR
 
 A draw that comes into view is not in `early`, so the late phase draws it the same frame. Draw order changes only between the two runs: a draw revealed this frame draws after the early set.
 
-The pyramid test is conservative: it takes the box's nearest clip `w` and stored depth (`w_depth`, floored as the fixed stage writes it), the box's screen rectangle widened by a pixel and clamped to the viewport, and the largest pyramid depth over that rectangle at the level where it spans two texels. It culls only when the box's nearest depth is past that by more than `1e-5`, so every fragment would fail the `LessEqual` depth test anyway. A box across the eye's plane is never occluded.
+The pyramid test is conservative: it takes the box's least stored depth from the view's `DepthModel` (its nearest corner's W-buffer value, clamped and floored as the draws store it), the box's screen rectangle widened by a pixel and clamped to the viewport, and the largest pyramid depth over that rectangle at the level where it spans two texels. It culls only when the box's nearest depth is past that by more than `1e-5`, so every fragment would fail the `LessEqual` depth test anyway. A box across the eye's plane is never occluded.
 
 A view the pyramid cannot serve draws the frustum's whole set and is counted by why (`GpuWorld::occlusion_skips`):
 
@@ -86,7 +87,22 @@ A view the pyramid cannot serve draws the frustum's whole set and is counted by 
 
 `GpuWorld::read_cull_stats` (frustum kept, drawn, occluded) and `read_drawn` read the last view's results back, blocking: for tests and tools.
 
-The admission's frustum test keeps the selected-parts pass equal to the D3D path:
+**A game view.** The admission (`native_world_glue`) claims every part of the guest's list whose bounds the world holds, and selects them without a camera test (`GpuWorld::select_unculled`). The world pass is a stage that encodes its own commands (`WorldPass::record_encoded`, `gfx::external::ExternalEncoded`), in the frame's encoder after the pending pass:
+
+| Step | What |
+|---|---|
+| Copies | The programs' view rows and the cull's view and start set, staged at prepare and copied in draw order, so each view's slots are written just before its draws read them |
+| Cull | `early_frustum` over the guest cull's slots (`GuestDispatch::record`): a draw is drawn when the guest's list holds it (`start`) and `Frustum::sides` of the admission lens (the reference and display copies' union, `cull_camera`) may see it |
+| Draws | One pass that loads and keeps the attachments; one packet per run of consecutive slots under one binding, in the list's order, `multi_draw_indexed_indirect` over the whole index buffer (`RecordedDraw::with_indirect`). A part the list repeats is drawn again |
+
+A part the lens cannot see is still the native pass's, and the guest does not draw it; it was clipped on the D3D path too. The depth pyramid does not run for a game view yet. What it needs is in place:
+
+| Need | Where |
+|---|---|
+| The programs' depth, modelled | `DepthModel::program`: the W-buffer value is the device's `c[3]` row dotted with the world position, clamped to the pass's W clip range, floored, over `z_scale` (`xps_w_depth`; `program::frame_pixel` gives world passes no polygon offset). The fixed stage's is `DepthModel::fixed`. The late test takes a box's least value at its nearest corner. |
+| The guest's depth, sampleable | Guest depth surfaces are `TEXTURE_BINDING` (`gfx::surface`); a multisampled one is not served (`depth_servable`) |
+
+The admission's frustum test kept the selected-parts pass equal to the D3D path by these rules, which the GPU's `Frustum::sides` keeps:
 
 | Rule | Detail |
 |---|---|
