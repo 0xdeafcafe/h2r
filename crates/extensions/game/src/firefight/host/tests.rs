@@ -21,6 +21,7 @@ enum Call {
     Drop(Boarding),
     Hover(u32, bool),
     Unload(u32),
+    Park(u32),
 }
 
 struct FakeGame {
@@ -33,6 +34,8 @@ struct FakeGame {
     calls: Vec<Call>,
     ship: Option<Ship>,
     paths: Vec<Option<ShipPath>>,
+    pods: Vec<Option<u32>>,
+    falls: Vec<Option<PodFall>>,
 }
 
 impl FakeGame {
@@ -50,6 +53,8 @@ impl FakeGame {
             calls: Vec::new(),
             ship: None,
             paths: Vec::new(),
+            pods: Vec::new(),
+            falls: Vec::new(),
         }
     }
 
@@ -142,6 +147,16 @@ impl Game for FakeGame {
     }
     fn unload(&mut self, ship: u32) -> anyhow::Result<()> {
         self.calls.push(Call::Unload(ship));
+        Ok(())
+    }
+    fn squad_pods(&self) -> Vec<Option<u32>> {
+        self.pods.clone()
+    }
+    fn falls(&self) -> Vec<Option<PodFall>> {
+        self.falls.clone()
+    }
+    fn park_pod(&mut self, pod: u32) -> anyhow::Result<()> {
+        self.calls.push(Call::Park(pod));
         Ok(())
     }
 }
@@ -1754,4 +1769,104 @@ fn an_ally_squad_takes_the_home_team_and_the_hold_order() {
     feed(&mut host, [(3, Command::Ally { slot: 5, team: 1 })]);
     assert_eq!(host.pre_tick(3, &mut game).len(), 1);
     assert_eq!(game.calls.len(), 3);
+}
+
+const POD: u32 = 0x777;
+
+fn pod_game() -> FakeGame {
+    let mut game = FakeGame::new();
+    game.pods = vec![Some(POD)];
+    game.falls = vec![Some(PodFall { top: [40.0, 0.0, 40.0], ground: [40.0, 0.0, 0.0] })];
+    game
+}
+
+fn pod_command(zone: u8) -> Command {
+    Command::DropSquad {
+        slot: 3,
+        class: "elite".into(),
+        count: 2,
+        zone,
+        weapon_tier: 2,
+        arrival: Arrival::Pod,
+    }
+}
+
+#[test]
+fn a_pod_squad_falls_and_is_placed_on_arrival() {
+    let mut game = pod_game();
+    let mut host = start(Role::Host, &game);
+    host.append(1, pod_command(0)).unwrap();
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    // The pod flies the fall; nothing is placed yet.
+    assert_eq!(
+        game.calls,
+        [Call::Fly(Launch {
+            ship: POD,
+            path: vec![[40.0, 0.0, 40.0], [40.0, 0.0, 0.0]],
+            ticks: FALL_TICKS,
+        })]
+    );
+    let placed = |host: &Host| {
+        host.log()
+            .since(0)
+            .iter()
+            .filter(|e| matches!(&e.op, Command::PlaceSquad { slot: 3, .. }))
+            .map(|e| e.tick)
+            .collect::<Vec<_>>()
+    };
+    host.post_tick(1, &game).unwrap();
+    assert!(placed(&host).is_empty());
+    host.post_tick(1 + FALL_TICKS - 1, &game).unwrap();
+    assert_eq!(placed(&host), [1 + FALL_TICKS]);
+    // A film's replica, fed the log, makes the same calls.
+    let mut replica_game = pod_game();
+    let mut replica = start(Role::Replica, &replica_game);
+    for e in host.log().since(0) {
+        replica.receive(e.clone()).unwrap();
+    }
+    for tick in 1..=1 + FALL_TICKS {
+        assert!(replica.pre_tick(tick, &mut replica_game).is_empty());
+    }
+    let squads: Vec<_> = replica_game
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Call::Fly(_) | Call::Squad(SquadOp::Place(_))))
+        .collect();
+    assert_eq!(squads.len(), 2);
+    assert!(matches!(squads[1], Call::Squad(SquadOp::Place(p)) if p.slot == 3 && p.count == 2));
+}
+
+#[test]
+fn no_free_pod_places_the_squad_on_foot() {
+    let mut game = pod_game();
+    game.pods = vec![None];
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, pod_command(0))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(game.calls, [Call::Squad(SquadOp::Place(placement(2)))]);
+}
+
+#[test]
+fn a_zone_without_a_fall_places_the_squad_on_foot() {
+    let mut game = pod_game();
+    game.falls = vec![None];
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, pod_command(0))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(game.calls, [Call::Squad(SquadOp::Place(placement(2)))]);
+}
+
+#[test]
+fn a_wreck_is_reparked_after_its_ticks() {
+    use super::super::pods::WRECK_TICKS;
+    let mut game = pod_game();
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, pod_command(0)), (1 + FALL_TICKS, place(3, 2, 0, 2))]);
+    for tick in 1..=1 + FALL_TICKS + WRECK_TICKS {
+        host.pre_tick(tick, &mut game);
+        if tick < 1 + FALL_TICKS + WRECK_TICKS {
+            assert!(!game.calls.contains(&Call::Park(POD)), "tick {tick}");
+        }
+    }
+    assert_eq!(game.calls.iter().filter(|c| **c == Call::Park(POD)).count(), 1);
 }
