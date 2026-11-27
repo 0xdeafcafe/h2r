@@ -28,6 +28,9 @@ use crate::coop_drive::{SETTLE_MS, STEP_MS, TRIES};
 
 /// Game Setup's dialog id (screen 23).
 pub const GAME_SETUP: u32 = 0x17;
+/// Game Setup as the Live custom game lobby opens it: a screen, not a
+/// dialog (`ui: screen 0x0e (window 5, slot 4)` after A on its row).
+pub const GAME_SETUP_SCREEN: u32 = 0x0e;
 /// `map select: Select Map lists Categories (4 rows)`.
 const LISTS: &str = "map select: Select Map lists ";
 /// `map select: rows: a, b, c`.
@@ -182,6 +185,11 @@ impl Driver {
 
     /// Whether the driver waits on the focused list's rows (`ui.audit`),
     /// for the lobby's Game Setup row or Game Setup's Change Map row.
+    /// Game Setup is open: its dialog, or the lobby's screen of it.
+    fn in_game_setup(&self) -> bool {
+        self.dialog_id == Some(GAME_SETUP) || self.screen == Some(GAME_SETUP_SCREEN)
+    }
+
     pub fn wants_rows(&self) -> bool {
         matches!(
             self.step,
@@ -239,7 +247,7 @@ impl Driver {
                 tries,
                 pressed: true,
             } => {
-                if self.dialog_id == Some(GAME_SETUP) && self.quiet(now, SETTLE_MS) {
+                if self.in_game_setup() && self.quiet(now, SETTLE_MS) {
                     self.rows = None;
                     self.step = Step::Map(MapStep::Change {
                         at: now,
@@ -339,7 +347,7 @@ impl Driver {
             }
             MapStep::Leaving { at } => {
                 if self.queue.is_empty()
-                    && self.dialog_id != Some(GAME_SETUP)
+                    && !self.in_game_setup()
                     && self.quiet(now, SETTLE_MS)
                 {
                     self.map_done = true;

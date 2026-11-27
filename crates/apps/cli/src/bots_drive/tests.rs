@@ -797,6 +797,17 @@ fn change_map(d: &mut Driver) -> Vec<String> {
 }
 
 #[test]
+fn game_setup_opened_as_the_lobbys_screen_is_game_setup() {
+    let mut d = in_lobby_for("zanzibar");
+    assert!(presses(&mut d, 8300, 11_000).is_empty());
+    d.rows(rows(&LOBBY_ROWS, 0));
+    assert_eq!(presses(&mut d, 11_100, 13_000), ["down to Game Setup (row 1)", "a Game Setup"]);
+    d.line(13_100, "ui: screen 0x0e (window 5, slot 4)");
+    assert!(presses(&mut d, 13_200, 18_000).is_empty(), "nothing until its rows are read");
+    assert!(d.wants_rows(), "Game Setup's rows are read, not the lobby's pressed again");
+}
+
+#[test]
 fn the_lobby_map_is_picked_through_game_setup_before_start() {
     let mut d = in_lobby_for("zanzibar");
     // The lobby's focus is on Start Game: DOWN to Game Setup, A.
