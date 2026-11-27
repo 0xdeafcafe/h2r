@@ -216,7 +216,7 @@ A renderer that owns the world geometry (the native renderer) loads the same wel
 
 ### Which grids the native frame owner draws
 
-The frame owner draws a sealed scene on the display's own grid when `RenderScale::replayable_display` accepts it (`crates/platform/gfx/src/raster.rs`): no axis minifies, none magnifies past twice `MAX_SCALE` (12x), and the pixel count is at most `MAX_SCALE` squared times the guest's. Whole numbers are not required; the final copy samples the fractional grid. 3440x1440 is 43/8 across and 3 down, and 5120x1440 is 8 across and 3 down. Both are owned; a window under 640x480 on an axis, or 8x8 or beyond, runs the guest's commands. Test: `ultrawide_outputs_are_replayable_displays`.
+The frame owner draws a sealed scene on the display's own grid when `RenderScale::replayable_display` accepts it (`crates/platform/gfx/src/raster.rs`): no axis minifies, none magnifies past twice `MAX_SCALE` (12x), and the pixel count is at most `MAX_SCALE` squared times the guest's. Whole numbers are not required; the final copy samples the fractional grid. 3440x1440 is 43/8 across and 3 down, and 5120x1440 is 8 across and 3 down. Both are owned; a window under 640x480 on an axis, or 8x8 or beyond, runs the guest's commands. Private PNG capture (`render.capture`) and `render.parity` draw on the same grid: `DisplaySize::scale` (`crates/extensions/game/src/frame_owner.rs`) takes the grid from the guest's present target to the Swap's surface and applies the same test, so 3440x1440 and 5120x1440 capture. Tests: `ultrawide_outputs_are_replayable_displays`, `captures_accept_the_ultrawide_display_grids`.
 
 ### Scissor, clears and viewport
 

@@ -11,6 +11,7 @@ use agent::compare::Rgba;
 use agent::render::{PrivateCaptureScene, PrivateCaptureWrite, set_private_capture_source};
 use agent_proto::{CaptureLighting, FrameCaptureParams, RpcError, code};
 use d3d::scene_sink::ReplayFrame;
+use gfx::raster::RenderScale;
 use frame_scene::mailbox::{self, Mode, Publisher};
 use frame_scene::{Cut, FrameScene, SceneId, ViewKind};
 use native_render::frame_graph;
@@ -71,27 +72,24 @@ impl DisplaySize {
         self.extent.get().is_some() || self.failed.load(Ordering::Acquire)
     }
 
-    fn scale(&self, guest: Option<frame_scene::AuxTarget>) -> Result<u32, String> {
+    /// The grid this Swap's display surface sits on over the guest's
+    /// present target: any `RenderScale::replayable_display` grid, whole
+    /// or fractional, so ultrawide windows capture too.
+    fn scale(&self, guest: Option<frame_scene::AuxTarget>) -> Result<RenderScale, String> {
         self.check()?;
         let &[width, height] = self
             .extent
             .get()
             .ok_or("display size unavailable for this Swap")?;
         let guest = guest.ok_or("no guest present target descriptor")?;
-        let scale = width
-            .checked_div(guest.width)
-            .ok_or("guest present target has zero width")?;
-        if !(1..=d3d::MAX_SCALE).contains(&scale)
-            || guest.width.checked_mul(scale) != Some(width)
-            || guest.height == 0
-            || guest.height.checked_mul(scale) != Some(height)
-        {
-            return Err(format!(
-                "display target {width}x{height} is not an integer scale of {}x{}",
-                guest.width, guest.height
-            ));
-        }
-        Ok(scale)
+        RenderScale::between((guest.width, guest.height), (width, height))
+            .filter(|grid| grid.replayable_display(d3d::MAX_SCALE))
+            .ok_or_else(|| {
+                format!(
+                    "display target {width}x{height} is not a replayable grid of {}x{}",
+                    guest.width, guest.height
+                )
+            })
     }
 }
 
@@ -111,7 +109,7 @@ impl Inputs {
     fn pixels(
         &self,
         backend: &mut d3d::GfxBackend,
-        scale: u32,
+        scale: RenderScale,
         lighting: d3d::Lighting,
         capture: Option<&PrivateCaptureWrite>,
     ) -> Result<Rgba, String> {
@@ -905,7 +903,7 @@ mod tests {
         scenes.parity_wait = Some(Arc::clone(&first));
         assert!(scenes.ready_parity().is_none());
         second.display.extent.set([32, 16]).unwrap();
-        assert_eq!(second.display.scale(guest), Ok(4));
+        assert_eq!(second.display.scale(guest), Ok(RenderScale::from(4)));
         assert!(
             scenes.ready_parity().is_none(),
             "the later Swap is not the armed reference"
@@ -916,7 +914,7 @@ mod tests {
         assert_eq!(reference.replay.present, first.replay.present);
         assert_eq!(
             reference.display.scale(guest),
-            Ok(1),
+            Ok(RenderScale::ONE),
             "a presented reference can be 1x"
         );
         assert!(
@@ -927,7 +925,29 @@ mod tests {
         assert!(reference.display.scale(guest).is_err());
         let anisotropic = DisplaySize::default();
         anisotropic.extent.set([16, 4]).unwrap();
-        assert!(anisotropic.scale(guest).is_err());
+        assert_eq!(anisotropic.scale(guest), Ok(RenderScale::between((8, 4), (16, 4)).unwrap()));
+    }
+
+    /// Private PNG capture and parity share this grid: ultrawide windows
+    /// are not whole multiples of 640x480 and still replay.
+    #[test]
+    fn captures_accept_the_ultrawide_display_grids() {
+        let guest = Some(frame_scene::AuxTarget {
+            width: 640,
+            height: 480,
+            ..Default::default()
+        });
+        for (w, h) in [(3440, 1440), (5120, 1440), (1280, 960)] {
+            let display = DisplaySize::default();
+            display.extent.set([w, h]).unwrap();
+            let grid = display.scale(guest).unwrap_or_else(|e| panic!("{w}x{h}: {e}"));
+            assert_eq!(grid.size(640, 480), (w, h));
+        }
+        for (w, h) in [(320, 240), (640, 400), (7680, 4320)] {
+            let display = DisplaySize::default();
+            display.extent.set([w, h]).unwrap();
+            assert!(display.scale(guest).is_err(), "{w}x{h}");
+        }
     }
 
     #[test]
