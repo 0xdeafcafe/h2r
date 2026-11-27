@@ -1154,22 +1154,13 @@ impl UiFit {
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
     pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
-        let (w, h) = output;
-        if w == 0 || h == 0 || u64::from(w) * 3 == u64::from(h) * 4 {
-            return None;
-        }
-        let sx = w as f32 / 640.0;
-        let sy = h as f32 / 480.0;
-        Self::from_pixel_ratio(1.0 / (sx / sy), pivot)
+        Self::from_pixel_ratio(canvas_fit::stretch_ratio(output)?.recip(), pivot)
     }
 
     /// Guest pixel width/height divided by displayed pixel width/height.
     /// For anamorphic Xbox artwork the numerator already includes its lens.
     pub fn from_pixel_ratio(ratio: f32, pivot: [f32; 2]) -> Option<Self> {
-        if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
-        let x = ratio.min(1.0);
-        let y = ratio.recip().min(1.0);
-        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true, screen_input: None })
+        canvas_fit::fit_about(ratio, pivot).map(Self::from_transform)
     }
 
     /// A CPU-projected sprite or query retains its player's scissor.

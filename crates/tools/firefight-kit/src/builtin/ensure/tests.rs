@@ -136,3 +136,44 @@ fn a_headroom_refusal_reads_in_kilobytes_and_the_biggest_part() {
         "Coagulation: no flag stands"
     );
 }
+
+#[test]
+fn the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for() {
+    assert_eq!(
+        MAPS,
+        [
+            "coagulation", "zanzibar", "ascension", "beavercreek", "burial_mounds",
+            "colossus", "foundation", "headlong", "lockout", "midship",
+        ]
+    );
+    let targets = targets();
+    assert_eq!(targets.len(), MAPS.len(), "every built-in map has a target");
+    for (t, m) in targets.iter().zip(MAPS) {
+        assert_eq!(t.map, m);
+        // The authored two keep their layout; the rest are generated.
+        assert_eq!(t.config.layout.is_some(), m == "coagulation" || m == "zanzibar", "{m}");
+    }
+    for (m, _) in REFUSED {
+        assert!(!MAPS.contains(&m), "{m} is both built in and refused");
+    }
+}
+
+#[test]
+fn a_refused_retail_map_is_named_with_its_reason_and_never_read() {
+    assert_eq!(refusal("Cyclotron"), Some("no six drop zones: the bases' area has room for 5"));
+    assert_eq!(refusal("waterworks"), Some("164 KB over the tag headroom, sectors"));
+    assert_eq!(refusal("midship"), None);
+    let dir = scratch("retail-refused");
+    let _ = std::fs::remove_dir_all(&dir);
+    let disc = Disc::new(&[]);
+    let reports = ensure(&disc, &dir);
+    let lines: Vec<_> = reports.iter().filter_map(Report::line).collect();
+    // Every built-in is refused here (the disc is empty); the two refused
+    // maps come last and say why, in the panel's form.
+    assert!(lines.contains(&"Cyclotron: no six drop zones: the bases' area has room for 5".to_owned()), "{lines:?}");
+    assert!(lines.contains(&"Waterworks: 164 KB over the tag headroom, sectors".to_owned()), "{lines:?}");
+    assert!(!disc.reads.borrow().iter().any(|m| refusal(m).is_some()), "refused maps are not read");
+    let order: Vec<_> = reports.iter().map(|r| r.map.as_str()).collect();
+    assert_eq!(&order[..MAPS.len()], MAPS);
+    let _ = std::fs::remove_dir_all(&dir);
+}

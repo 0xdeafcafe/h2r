@@ -15,6 +15,8 @@ native-render = ["dep:native-render", "dep:frame-scene", "dep:scene-extract"]
 
 [dependencies]
 hooks = { path = "../../hooking/hooks" }
+# The one widescreen rule (docs/graphics/high-resolution.md).
+canvas-fit = { path = "../../platform/canvas-fit" }
 runtime.workspace = true
 tags.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }

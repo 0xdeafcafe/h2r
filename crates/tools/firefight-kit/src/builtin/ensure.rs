@@ -14,7 +14,39 @@ use content::MapId;
 use crate::{Config, Fit, KIT_VERSION, Mode};
 
 /// The built-in maps' base names, in the order the lobby prefers them.
-pub const MAPS: [&str; 2] = ["coagulation", "zanzibar"];
+/// Coagulation and Zanzibar have authored layouts; the rest are built by
+/// the kit's generator from their own flags and starts, and every one of
+/// them was built by `h2 firefight kit` on the retail disc with six or
+/// more drop zones, a path to both bases and the tag headroom to spare
+/// (docs/game/firefight.md, "Built-in kits").
+pub const MAPS: [&str; 10] = [
+    "coagulation",
+    "zanzibar",
+    "ascension",
+    "beavercreek",
+    "burial_mounds",
+    "colossus",
+    "foundation",
+    "headlong",
+    "lockout",
+    "midship",
+];
+
+/// The retail multiplayer maps the builder refuses, each with the reason
+/// it gives. They are not built at start; `h2 firefight kit MAP` still
+/// tries one and says the same.
+pub const REFUSED: [(&str, &str); 2] = [
+    ("cyclotron", "no six drop zones: the bases' area has room for 5"),
+    ("waterworks", "164 KB over the tag headroom, sectors"),
+];
+
+/// Why the built-in set leaves `map` out, if it does.
+pub fn refusal(map: &str) -> Option<&'static str> {
+    REFUSED
+        .iter()
+        .find(|(m, _)| m.eq_ignore_ascii_case(map))
+        .map(|(_, why)| *why)
+}
 
 /// Where the disc's multiplayer maps are read from.
 pub trait DiscMaps {
@@ -87,13 +119,21 @@ fn current(t: &Target<'_>, maps_dir: &Path) -> bool {
 }
 
 /// The built-in kits' targets, from their layouts (`builtin::for_map`). A
-/// map without a layout is left out here and refused by [`ensure`].
+/// map without one is built by the generator.
 pub fn targets() -> Vec<Target<'static>> {
     MAPS.iter().filter_map(|m| target(m)).collect()
 }
 
 fn target(map: &str) -> Option<Target<'static>> {
-    let layout = super::for_map(map)?;
+    let Some(layout) = super::for_map(map) else {
+        // Generated: the kit's own spawns, drops and nav, home team red.
+        let map = MAPS.iter().copied().find(|m| *m == map)?;
+        return Some(Target {
+            map,
+            config: Config::default(),
+            layout_hash: 0,
+        });
+    };
     Some(Target {
         map: layout.map,
         config: Config {
@@ -127,13 +167,11 @@ pub fn pending_with<'a>(targets: &[Target<'a>], maps_dir: &Path) -> Vec<&'a str>
 /// order. One map's refusal does not stop the others.
 pub fn ensure(disc: &dyn DiscMaps, maps_dir: &Path) -> Vec<Report> {
     let mut reports = ensure_with(&targets(), disc, maps_dir);
-    for map in MAPS {
-        if target(map).is_none() {
-            reports.push(Report {
-                map: map.to_owned(),
-                outcome: Outcome::Refused("it has no built-in layout".to_owned()),
-            });
-        }
+    for (map, why) in REFUSED {
+        reports.push(Report {
+            map: map.to_owned(),
+            outcome: Outcome::Refused(why.to_owned()),
+        });
     }
     reports.sort_by_key(|r| MAPS.iter().position(|m| *m == r.map).unwrap_or(MAPS.len()));
     reports

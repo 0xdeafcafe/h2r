@@ -103,10 +103,10 @@ fn retail_lens(mem: &impl GuestMemory) -> f32 {
 // The horizontal clip scale that shows the guest's lens on `output` with
 // square pixels. The display lens changes only X.
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
-    let Some(pixel) = ui_layout::stretch_ratio(output) else {
-        return 1.0;
-    };
-    retail_lens(mem) / pixel
+    // The projection carries a horizontal factor only, so a window narrower
+    // than 4:3 takes its vertical lens as the equivalent horizontal one
+    // (`Lens::horizontal_only`) until the pipeline has a vertical term.
+    retail_lens(mem) * canvas_fit::Lens::for_window(output).horizontal_only()
 }
 
 /// The aspect of the lens a fitted guest camera gathers through, whatever
