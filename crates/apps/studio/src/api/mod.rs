@@ -31,6 +31,7 @@ mod bitmaps;
 mod blockout;
 pub(crate) mod checks;
 mod problems;
+mod projects;
 mod collision;
 mod colours;
 mod shader;

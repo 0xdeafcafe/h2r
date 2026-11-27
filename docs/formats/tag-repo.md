@@ -362,11 +362,28 @@ text, shared-cache pointers by place) and every local raw resource byte for
 byte (the disc's length, read at the new pointer). A tag with losses is
 compared without its loss lines (both sides lose the same fields).
 
-**A project** (`h2 tags build --project art/stage/project.toml [--disc
-ISO | --repo DIR] [--data DIR]`): the map a project file names, built
-`fresh` over its base map read from the disc or from an extracted tree,
-and written as a map package. The one project it builds is the content
-stage (`stage_kit::map`, [content-stage.md](../editor/content-stage.md)).
+**A project over the tree** (`h2 tags project build NAME`, Studio's
+`project.build`; [tag-workspace.md](../editor/tag-workspace.md),
+"Projects"): the same two builds on the project's stack, its edit files
+over its import layers over the tree:
+
+| Mode | Over the tree | What it needs from the tree |
+|---|---|---|
+| `fresh` | `closure` from the globals, the scenario and the kept roots, then `to_tag_set`; a lossy tag in the closure refuses it by name | the base's manifest (globals, cache type, `index_word_14`, low-detail hash), header and `strings.txt` |
+| `onto` | `onto_retail` over the changed tags only; one the base keeps pinned (BSP region, `scnr`, lossy, not movable) refuses it by name | the base's skeleton and extent table, to reassemble the disc map |
+
+An edit's `was` is a hash of the tag's canonical bytes
+(`tags::defs::canonical`), so a re-extraction that changes a tag
+(`--update`, "Versions") makes the edit stale and stops the build with
+its line; one that changes only the file format or the tree's layout of
+files does not.
+
+**The stage** (`h2 tags build --project art/stage/project.toml [--disc
+ISO | --repo DIR] [--data DIR]`): the content stage built `fresh` over
+its base map read from the disc or from an extracted tree, and written as
+a map package (`stage_kit::map`,
+[content-stage.md](../editor/content-stage.md)). Over the tree the same
+build is the stage kit of `h2 tags project build stage`.
 
 ## Proof
 

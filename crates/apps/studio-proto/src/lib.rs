@@ -118,6 +118,14 @@ pub mod method {
     pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
     pub const WORKSPACE_IMPORT: &str = "workspace.import";
     pub const WORKSPACE_PRUNE: &str = "workspace.prune";
+    // The workspace's projects and edit files (docs/editor/tag-workspace.md,
+    // "Projects", "Edits are data"; api/projects.rs).
+    pub const PROJECT_LIST: &str = "project.list";
+    pub const PROJECT_READ: &str = "project.read";
+    pub const PROJECT_BUILD: &str = "project.build";
+    pub const EDITS_LIST: &str = "edits.list";
+    pub const EDITS_CHECK: &str = "edits.check";
+    pub const EDITS_SET: &str = "edits.set";
 
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
