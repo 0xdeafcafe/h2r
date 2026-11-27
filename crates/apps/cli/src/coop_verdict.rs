@@ -1321,7 +1321,7 @@ mod tests {
         for i in 2..n {
             add(
                 &host,
-                format!("coop-players: player {i} placed next to the anchor"),
+                format!("coop-players: player {i} placed at starting location {}, ring 1 (0 0 0)", i % 2),
             );
         }
         (roles, l)
@@ -1435,7 +1435,7 @@ mod tests {
             at,
             (
                 "G00".into(),
-                "coop-players: player 7 placed next to the anchor: REFUSED (it stays where it spawned)"
+                "coop-players: player 7: REFUSED: no free spot in any ring"
                     .into(),
             ),
         );
@@ -1444,7 +1444,7 @@ mod tests {
         assert_eq!(failing(&roles, &l), Vec::<usize>::new());
         l.push((
             "G01".into(),
-            "coop-players: player 2 placed next to the anchor: REFUSED (it stays where it spawned)"
+            "coop-players: player 2: REFUSED: no free spot in any ring"
                 .into(),
         ));
         assert_eq!(failing(&roles, &l), vec![17]);
