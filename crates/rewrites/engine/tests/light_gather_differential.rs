@@ -1191,9 +1191,16 @@ fn stub_effect(seed: u64, k: usize, c: &Callout, m: &mut FlatMemory) -> (u32, u3
 }
 
 /// The frame's private spills, which the port does not keep: the saved
-/// registers, the row cursor and S+0x1c..S+0x34.
-fn private(s: u32) -> [std::ops::Range<u32>; 3] {
-    [s..s + 0x10, s + 0x14..s + 0x18, s + 0x1c..s + 0x34]
+/// registers, the row cursor, S+0x1c..S+0x34, and the stack probe's own
+/// two words at the top (its return address and saved ECX; the body
+/// makes no probe call).
+fn private(s: u32) -> [std::ops::Range<u32>; 4] {
+    [
+        s..s + 0x10,
+        s + 0x14..s + 0x18,
+        s + 0x1c..s + 0x34,
+        s + frame::FRAME - 8..s + frame::FRAME,
+    ]
 }
 
 /// The first byte where `a` and `b` differ, outside the dead stack below
@@ -1471,6 +1478,15 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                     continue;
                 }
             };
+            // The rows the list hands the frame drawn. Each passes stub
+            // rewrites a later row's weight, so fewer can be drawn by the
+            // time the frame reaches them.
+            let listed = plan
+                .list
+                .ranked()
+                .iter()
+                .filter(|row| f32::from_bits(row.weight) > threshold)
+                .count();
             let port_cpu = c.clone();
             let (port_calls, result, light_frame, port) =
                 port_frame(&mut lifted, w.mem.clone(), port_cpu, esp, plan, case_seed);
@@ -1501,8 +1517,7 @@ fn frame_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             }
             tally.add("native");
             let light_frame = light_frame.expect("the frame");
-            let drawn = light_frame.lights.iter().filter(|l| l.drawn).count();
-            tally.add(format!("{drawn} drawn"));
+            tally.add(format!("{listed} drawn"));
             for g in light_frame
                 .lights
                 .iter()
@@ -4547,6 +4562,10 @@ fn first_person_items_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let label = format!("seed {seed} case {n} (mode {mode}, call {call})");
             let mut c = cpu(&mut r);
             let esp = c.gpr[4] - 8;
+            // The return address and the argument the original is entered
+            // with, in both runs: the port never writes them.
+            put(&mut w.mem, esp, HARNESS_EXIT);
+            put(&mut w.mem, esp + 4, call);
 
             let mut port = Ram(w.mem.clone());
             let made = match fp_items::make(&port, mode) {

@@ -41,9 +41,13 @@ pub const FRAME: u32 = 0x1518;
 
 /// Offsets in the frame from its bottom, `S` = entry `ESP` - [`FRAME`].
 pub mod slot {
+    /// The visible list's argument (`0x00031c91`): the probe leaves `ESP`
+    /// at [`SHADOW`], so the push lands just below it. With lights to
+    /// draw, the saved `EBX` (`0x00031c9f`) overwrites it.
+    pub const LIST_ARGUMENT: u32 = 0xc;
     /// The shadow byte; `0x00031660` is handed its address and
-    /// `0x00031170` its dword, whose upper bytes are the visible list's
-    /// argument pushed there (`0x00031c91`).
+    /// `0x00031170` its dword, whose upper bytes are whatever the stack
+    /// held: nothing in the frame writes them.
     pub const SHADOW: u32 = 0x10;
     /// The frusta count `0x000c1d90` writes (i16).
     pub const FRUSTA_COUNT: u32 = 0x18;
@@ -400,11 +404,10 @@ pub async fn run_with(
     on_passes: &mut OnPasses<'_>,
 ) -> Result<(Ret, LightFrame), EntryError> {
     let bottom = plan.bottom();
-    // 0x00031c91: the list's argument is pushed where the shadow byte
-    // goes, so the dword `0x00031170` is handed carries its upper bytes.
+    // 0x00031c91: the list's argument, pushed below the probed frame.
     cx.write(|m| {
         m.set_u32(
-            bottom.wrapping_add(slot::SHADOW),
+            bottom.wrapping_add(slot::LIST_ARGUMENT),
             bottom.wrapping_add(slot::ROWS),
         )
     })?;

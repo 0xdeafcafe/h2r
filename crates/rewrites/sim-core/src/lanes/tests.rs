@@ -43,6 +43,32 @@ fn ordinary_matches_the_scalar_check_on_every_edge() {
 }
 
 #[test]
+fn compared_operands_take_every_flagless_magnitude() {
+    for x in [
+        0,
+        0x8000_0000,
+        0x0080_0000,
+        0x3f80_0000,
+        0x7f7f_ffff,
+        0x7f80_0000,
+        0xff80_0000,
+    ] {
+        assert!(compared1(x), "{x:#010x}");
+    }
+    // Subnormals raise denormal, NaNs invalid.
+    for x in [
+        1,
+        0x007f_ffff,
+        0x8000_0001,
+        0x7f80_0001,
+        0x7fc0_0000,
+        0xffc0_0000,
+    ] {
+        assert!(!compared1(x), "{x:#010x}");
+    }
+}
+
+#[test]
 fn host_lanes_match_one_scalar_operation_per_lane() {
     let mut state = 0x1234_5678;
     for _ in 0..20_000 {

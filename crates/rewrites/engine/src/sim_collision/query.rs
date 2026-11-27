@@ -200,8 +200,10 @@ fn plan(
     let index = m.u16(layout::BSP_INDEX)? as i16;
     let one = m.u32(layout::ONE)?;
     let limit = m.u32(SEGMENT_LIMIT)?;
+    // The image's limit is `FLT_MAX`: it is only compared, and the walk
+    // runs to the ordinary `min(limit, 1)`.
     let mut fp = Fp::new();
-    fp.check(limit);
+    fp.check_compared(limit);
     fp.check(one);
     if !fp.exact() {
         return Err(Bail::Float);
@@ -221,6 +223,10 @@ fn plan(
     } else {
         fraction
     };
+    fp.check(t1);
+    if !fp.exact() {
+        return Err(Bail::Float);
+    }
     let query = Segment {
         flags: ray.filter(),
         start: ray.start,

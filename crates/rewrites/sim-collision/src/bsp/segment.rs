@@ -243,7 +243,8 @@ impl Bsp {
                 ..Outcome::default()
             },
         };
-        w.fp.check(q.fraction);
+        // R's fraction is only compared with splits: J passes `FLT_MAX`.
+        w.fp.check_compared(q.fraction);
         w.visit(node, t0, t1, 0)?;
         if !w.fp.exact() {
             return Err(Bail::Float);
