@@ -4,8 +4,6 @@ mod display;
 pub(super) use display::install as install_display;
 
 use super::*;
-use native_render::transparent_sort::{Keys, Refusal as SortRefusal, SortItem, Sorted, form_keys};
-use std::{collections::BTreeMap, sync::Mutex};
 
 const LIST_END: u32 = 0x004b_6280;
 const LIST_FIRST: u32 = 0x004b_6284;
@@ -270,7 +268,7 @@ fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     }
     ptr(m, LIST_ENTRIES)?;
     let order = ptr(m, LIST_ORDER)?;
-    let indices = sorted(m, first, end, true)?;
+    let indices = sorted(m, first, end)?;
     output.array(
         order,
         indices.into_iter().flat_map(u16::to_le_bytes).collect(),
@@ -279,10 +277,8 @@ fn build_order(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
 }
 
 /// The live rows `first..end` in the order `TRANSPARENT_SORT` with the
-/// comparator `0x0001e700` leaves them. With `gpu`, a list the GPU sorts
-/// exactly takes the GPU's order, one in [`COMPARE_EVERY`] checked against
-/// the CPU sort; `order` (the shadow arm's reference) never uses it.
-fn sorted(m: &dyn GuestMemory, first: u32, end: u32, gpu: bool) -> Result<Vec<u16>> {
+/// comparator `0x0001e700` leaves them.
+fn sorted(m: &dyn GuestMemory, first: u32, end: u32) -> Result<Vec<u16>> {
     let mut indices: Vec<_> = (first as u16..end as u16).collect();
     if indices.len() > 1 {
         let entries = ptr(m, LIST_ENTRIES)?;
@@ -290,86 +286,11 @@ fn sorted(m: &dyn GuestMemory, first: u32, end: u32, gpu: bool) -> Result<Vec<u1
             .map(|i| Key::read(m, at(entries, i * STRIDE)?))
             .collect::<Result<Vec<_>>>()?;
         let camera = m.vec3(CAMERA)?;
-        let cpu = |indices: &mut [u16]| {
-            sort(indices, &|a, b| {
-                keys[a as usize - first as usize].after(&keys[b as usize - first as usize], camera)
-            })
-        };
-        let native = if gpu { gpu_order(&keys) } else { None };
-        let Some(native) = native else {
-            cpu(&mut indices);
-            return Ok(indices);
-        };
-        let native: Vec<u16> = native.into_iter().map(|i| first as u16 + i as u16).collect();
-        if count("scene_sort_gpu") % COMPARE_EVERY != 1 {
-            return Ok(native);
-        }
-        cpu(&mut indices);
-        if indices != native {
-            count("scene_sort_gpu_mismatch");
-        }
+        sort(&mut indices, &|a, b| {
+            keys[a as usize - first as usize].after(&keys[b as usize - first as usize], camera)
+        });
     }
     Ok(indices)
-}
-
-/// One GPU order in this many is compared with the CPU sort; a difference
-/// uses the CPU order and is counted `scene_sort_gpu_mismatch`.
-const COMPARE_EVERY: u64 = 64;
-
-type GpuSorter = std::sync::Arc<dyn Fn(&Keys) -> Option<Sorted> + Send + Sync>;
-
-static SORTER: Mutex<Option<GpuSorter>> = Mutex::new(None);
-static COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
-
-/// Registers the GPU sort (the game glue, once it has a device); `None`
-/// leaves every list to the CPU sort.
-pub fn set_gpu_sorter(sorter: Option<GpuSorter>) {
-    *SORTER.lock().unwrap_or_else(|e| e.into_inner()) = sorter;
-}
-
-/// `scene_sort_gpu` (lists the GPU ordered), `scene_sort_gpu_mismatch`
-/// (compared against the CPU and different), `scene_sort_gpu_unavailable`
-/// (the GPU gave no answer) and `scene_sort_gpu_refused_<cause>`.
-pub fn sort_counters() -> Vec<(&'static str, u64)> {
-    COUNTS.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, v)| (*k, *v)).collect()
-}
-
-/// Adds one to a counter; returns its new value.
-fn count(name: &'static str) -> u64 {
-    let mut counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = counts.entry(name).or_default();
-    *n += 1;
-    *n
-}
-
-/// The item offsets (from `first`) in ascending key order, from the GPU,
-/// for a list it can sort exactly: none with a plane, a non-finite depth
-/// or a tie. `None` is the CPU sort's (counted by cause when a sorter is
-/// registered).
-fn gpu_order(keys: &[Key]) -> Option<Vec<u32>> {
-    let sorter = SORTER.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let items: Vec<_> = keys
-        .iter()
-        .map(|k| SortItem { class: k.class, depth: k.depth, tie: k.tie, plane: k.plane.is_some() })
-        .collect();
-    let formed = match form_keys(&items) {
-        Ok(formed) => formed,
-        Err(why) => {
-            count(why.metric());
-            return None;
-        }
-    };
-    match sorter(&formed) {
-        Some(sorted) if sorted.tied => {
-            count(SortRefusal::Ties.metric());
-            None
-        }
-        Some(sorted) if sorted.order.len() == keys.len() => Some(sorted.order),
-        _ => {
-            count("scene_sort_gpu_unavailable");
-            None
-        }
-    }
 }
 
 /// The order the guest's sort gives the live list now, as `build`
@@ -381,7 +302,7 @@ pub(crate) fn order(m: &dyn GuestMemory) -> Option<Vec<u16>> {
     if first > end || end > CAPACITY {
         return None;
     }
-    sorted(m, first, end, false).ok()
+    sorted(m, first, end).ok()
 }
 
 #[cfg(test)]
@@ -390,9 +311,6 @@ mod tests {
     use engine::memory::FlatMemory;
 
     use engine::testing::FakeGuest;
-
-    /// The registered sorter is global: tests that build an order take turns.
-    static SORTER_TESTS: Mutex<()> = Mutex::new(());
 
     #[test]
     fn effect_queue_publishes_callback_payload_and_camera_depth() {
@@ -430,7 +348,6 @@ mod tests {
 
     #[test]
     fn active_entries_sort_by_class_depth_and_tie_with_guest_swaps() {
-        let _turn = SORTER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut m = FlatMemory::new(LIST_END, 0x7000);
         let entries = 0x004b_a000;
         let order = 0x004b_b000;
@@ -484,46 +401,5 @@ mod tests {
         assert!(!other.after(&plane, [0.0; 3]));
         assert!(!plane.after(&other, [3.0, 0.0, 0.0]));
         assert!(other.after(&plane, [3.0, 0.0, 0.0]));
-    }
-
-    #[test]
-    fn a_gpu_order_is_used_for_distinct_keys_and_refused_for_ties_and_planes() {
-        use std::sync::Arc;
-        let _turn = SORTER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let build = |depths: &[(f32, bool)]| {
-            let mut m = FlatMemory::new(LIST_END, 0x7000);
-            let (entries, order) = (0x004b_a000, 0x004b_b000);
-            m.set_u32(LIST_ENTRIES, entries).unwrap();
-            m.set_u32(LIST_ORDER, order).unwrap();
-            m.set_u32(LIST_FIRST, 0).unwrap();
-            m.set_u32(LIST_END, depths.len() as u32).unwrap();
-            for (i, (d, plane)) in depths.iter().enumerate() {
-                let row = entries + i as u32 * STRIDE;
-                m.set_f32(row + 4, *d).unwrap();
-                m.set_u8(row + 0xc, *plane as u8).unwrap();
-            }
-            build_order(&m, &CpuAbi::default()).unwrap().writes[0].bytes.slice().to_vec()
-        };
-        let counter = |name| sort_counters().iter().find(|c| c.0 == name).map_or(0, |c| c.1);
-        // Test-only sorter: ascending depth word, answering the true order.
-        let answer = |tied| -> GpuSorter {
-            Arc::new(move |k: &Keys| {
-                let mut order: Vec<u32> = (0..k.words.len() as u32).collect();
-                order.sort_by_key(|&i| k.words[i as usize][1]);
-                Some(Sorted { order, tied })
-            })
-        };
-        set_gpu_sorter(Some(answer(false)));
-        let used = counter("scene_sort_gpu");
-        assert_eq!(build(&[(3.0, false), (1.0, false), (2.0, false)]), [1, 0, 2, 0, 0, 0]);
-        assert_eq!(counter("scene_sort_gpu"), used + 1);
-        let planes = counter("scene_sort_gpu_refused_plane");
-        build(&[(3.0, true), (1.0, false)]);
-        assert_eq!(counter("scene_sort_gpu_refused_plane"), planes + 1);
-        set_gpu_sorter(Some(answer(true)));
-        let ties = counter("scene_sort_gpu_refused_ties");
-        build(&[(3.0, false), (3.0, false)]);
-        assert_eq!(counter("scene_sort_gpu_refused_ties"), ties + 1);
-        set_gpu_sorter(None);
     }
 }

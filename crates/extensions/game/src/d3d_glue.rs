@@ -1847,7 +1847,6 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         crate::native_world_layers_glue::install(rt, &device);
         crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
         crate::native_residual_glue::install(&device);
-        crate::native_transparent_sort_glue::install(&device);
     }
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));

@@ -188,8 +188,6 @@ mod native_refusals;
 #[cfg(feature = "gpu")]
 pub mod native_residual_glue;
 #[cfg(feature = "gpu")]
-pub mod native_transparent_sort_glue;
-#[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
 #[cfg(feature = "gpu")]
 pub mod native_water_glue;
