@@ -14,6 +14,7 @@ mod lighting;
 mod markers;
 mod private;
 mod sun;
+pub mod passes;
 pub mod targets;
 pub use cones::ConeDraws;
 pub use lighting::{E3Report, PassWork};
@@ -68,6 +69,9 @@ pub struct FrameReport {
     /// The targets the frame's ops draw, read or present
     /// ([`targets::declare`]).
     pub targets: u32,
+    /// The graph's passes for the frame, thirteen per game view and the
+    /// overlay's three ([`passes::plan`]).
+    pub passes: u32,
 }
 
 impl FrameReport {
@@ -79,11 +83,13 @@ impl FrameReport {
         before: BatchStats,
         after: BatchStats,
     ) -> Self {
+        let declared = targets::declare(replay);
         Self {
             id,
             lighting,
             e3,
-            targets: targets::declare(replay).len() as u32,
+            targets: declared.len() as u32,
+            passes: passes::plan(replay, &declared).len() as u32,
             render_passes: after.render_passes - before.render_passes,
             draws: after.draws - before.draws,
             submits: after.submits - before.submits,

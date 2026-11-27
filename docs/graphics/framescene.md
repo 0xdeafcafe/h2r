@@ -440,6 +440,17 @@ The large one. A census comes first: the coordinator runs the census corpus and 
 
 The graph declares the targets each replayed frame touches (`native_render::frame_graph::targets::declare`): per target its size, its load (`Clear` when its first op clears every aspect, `Seeded` from an earlier clear or upload, else `Keep`), its uses, ops and slots, and the presented one. `FrameReport::targets` counts them. The replay still binds what the guest bound; owning the targets drops those binds. Tests: `the_graph_declares_every_target_it_draws`, `a_partial_clear_keeps_and_a_seed_is_named`.
 
+Each game view is one pass per traced slot (`frame_graph::passes::plan`; `frame_scene::ViewSlot::PASSES`): the thirteen in order, view after view, then the overlay's HUD, fade and UI once. A pass names the declared targets its ops touch and their load there: the declared load in the first pass that touches a target, `Keep` after. The replay's five carried slots each span a run of traced slots (`ViewSlot::carried`), and an op goes in the first pass of its span, so no load is late. `FrameReport::passes` counts them; the replay's binds and clears still draw. Tests: `a_game_view_is_one_pass_per_slot`, `a_target_loads_in_its_first_pass_only`, `each_carried_slot_spans_its_traced_slots`.
+
+| Carried slot | Traced slots |
+|---|---|
+| `Opaque` | 1 to 3 |
+| `AfterOpaque` | 4 |
+| `AfterLights` | 5 to 9 |
+| `Transparents` | 9 to 13 |
+| `AfterPost` | 13 |
+| `Overlay` | HUD, fade, UI |
+
 The scene's target select `0x0001cd30` and clear `0x00014b60` make no guest D3D entry (`render_bridge::native_targets`, switch `native-targets`). Each is a thin wrapper; the cut makes its decision in Rust and calls the device through the host (`game::native_targets_glue`):
 
 | Call | Decision | Device |

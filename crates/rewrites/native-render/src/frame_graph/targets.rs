@@ -151,26 +151,32 @@ pub fn undeclared(frame: &ReplayFrame, declared: &[Declared]) -> Vec<(usize, Tar
     let mut out = Vec::new();
     let mut bound = None;
     for (i, (_, op)) in frame.ops.iter().enumerate() {
-        let targets: Vec<TargetRef> = match op {
-            ReplayOp::Bind { colour, depth } => {
-                bound = Some((*colour, *depth));
-                continue;
-            }
-            ReplayOp::Draw { .. } => bound.map(|(c, d)| vec![c, d]).unwrap_or_default(),
-            ReplayOp::Stage(stage) => [stage.surfaces.color, stage.surfaces.depth]
-                .into_iter()
-                .chain(stage.surfaces.sampled.iter().copied())
-                .chain(stage.surfaces.slots.iter().flatten().copied())
-                .collect(),
-            ReplayOp::Clear { colour, depth, .. } | ReplayOp::ClearRects { colour, depth, .. } => vec![*colour, *depth],
-            ReplayOp::Copy { from, to } => vec![*from, *to],
-            ReplayOp::Upload { to, .. } => vec![*to],
-            ReplayOp::Sample { of, .. } => vec![*of],
-            ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) | ReplayOp::ObjectShadow(_) => Vec::new(),
-        };
+        let targets = op_targets(op, &mut bound);
         out.extend(targets.into_iter().filter(|t| !named(*t)).map(|t| (i, t)));
     }
     out
+}
+
+/// The targets `op` touches, as [`undeclared`] names them; a bind touches
+/// none and moves `bound`, which the draws after it use.
+pub(super) fn op_targets(op: &ReplayOp, bound: &mut Option<(TargetRef, TargetRef)>) -> Vec<TargetRef> {
+    match op {
+        ReplayOp::Bind { colour, depth } => {
+            *bound = Some((*colour, *depth));
+            Vec::new()
+        }
+        ReplayOp::Draw { .. } => bound.map(|(c, d)| vec![c, d]).unwrap_or_default(),
+        ReplayOp::Stage(stage) => [stage.surfaces.color, stage.surfaces.depth]
+            .into_iter()
+            .chain(stage.surfaces.sampled.iter().copied())
+            .chain(stage.surfaces.slots.iter().flatten().copied())
+            .collect(),
+        ReplayOp::Clear { colour, depth, .. } | ReplayOp::ClearRects { colour, depth, .. } => vec![*colour, *depth],
+        ReplayOp::Copy { from, to } => vec![*from, *to],
+        ReplayOp::Upload { to, .. } => vec![*to],
+        ReplayOp::Sample { of, .. } => vec![*of],
+        ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) | ReplayOp::ObjectShadow(_) => Vec::new(),
+    }
 }
 
 fn describe(frame: &ReplayFrame, target: TargetRef) -> (Option<(u32, u32)>, bool) {

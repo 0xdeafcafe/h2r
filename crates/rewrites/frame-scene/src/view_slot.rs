@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 
+use frame_types::carried::Slot;
 use serde::Serialize;
 
 /// A place in the draw order: the thirteen per-view slots, then the
@@ -57,6 +58,57 @@ pub enum ViewSlot {
 }
 
 impl ViewSlot {
+    /// The pass graph's passes in draw order, one per slot: slots 1 to 13
+    /// (slot 7 as `DecalsLate(2)`, its modes drawing in it in mode order),
+    /// then the overlay's three.
+    pub const PASSES: &[ViewSlot; 16] = &[
+        Self::OpaqueBase,
+        Self::DecalsMode0,
+        Self::ShadowsAndLayer7,
+        Self::LightAccumulation,
+        Self::DecalsMode1,
+        Self::Layer2,
+        Self::DecalsLate(2),
+        Self::Late,
+        Self::Transparents,
+        Self::FirstPerson,
+        Self::FlareQuery,
+        Self::Layer17,
+        Self::Post,
+        Self::Hud,
+        Self::Fade,
+        Self::Ui,
+    ];
+
+    /// The pass this slot draws in ([`Self::PASSES`]): itself, and slot 7's
+    /// decal modes all in one.
+    pub fn pass(self) -> Self {
+        match self {
+            Self::DecalsLate(_) => Self::DecalsLate(2),
+            other => other,
+        }
+    }
+
+    /// The passes a carried slot spans, in order. The frame step moves the
+    /// carried slot on five entries (frame-types `SlotTracker`), so each
+    /// spans the traced slots between them: the view's entry to the light
+    /// pass is slots 1 to 3, the light pass 4, its exit to the sorted
+    /// transparents 5 to 9 (layer 15 and the late passes draw before
+    /// `0x0001e370`), the sorted transparents to the post's exit 9 to 13,
+    /// after the post 13 (the flare draw is late in it). Outside a game
+    /// view there is none.
+    pub fn carried(slot: Slot) -> &'static [ViewSlot] {
+        match slot {
+            Slot::Opaque => &Self::PASSES[0..3],
+            Slot::AfterOpaque => &Self::PASSES[3..4],
+            Slot::AfterLights => &Self::PASSES[4..9],
+            Slot::Transparents => &Self::PASSES[8..13],
+            Slot::AfterPost => &Self::PASSES[12..13],
+            Slot::Overlay => &Self::PASSES[13..16],
+            Slot::Outside => &[],
+        }
+    }
+
     /// The slot a decal mode draws in: mode 0 in slot 2, mode 1 in slot 5,
     /// modes 2 to 6 in slot 7. `None` for a mode the guest does not have.
     pub fn decal(mode: u8) -> Option<Self> {
@@ -155,6 +207,25 @@ mod tests {
         }
         assert_eq!(ViewSlot::Post.number(), Some(13));
         assert!(ViewSlot::DecalsLate(2) < ViewSlot::DecalsLate(6));
+    }
+
+    #[test]
+    fn each_carried_slot_spans_its_traced_slots() {
+        let numbers = |slot| ViewSlot::carried(slot).iter().map(|s| s.number()).collect::<Vec<_>>();
+        assert_eq!(numbers(Slot::Opaque), [Some(1), Some(2), Some(3)]);
+        assert_eq!(numbers(Slot::AfterOpaque), [Some(4)]);
+        assert_eq!(numbers(Slot::AfterLights), [Some(5), Some(6), Some(7), Some(8), Some(9)]);
+        assert_eq!(numbers(Slot::Transparents), [Some(9), Some(10), Some(11), Some(12), Some(13)]);
+        assert_eq!(numbers(Slot::AfterPost), [Some(13)]);
+        assert_eq!(ViewSlot::carried(Slot::Overlay), [ViewSlot::Hud, ViewSlot::Fade, ViewSlot::Ui]);
+        assert!(ViewSlot::carried(Slot::Outside).is_empty());
+        // Every pass is in some game view's or the overlay's span, in order.
+        let spanned: Vec<ViewSlot> = Slot::ALL.iter().flat_map(|s| ViewSlot::carried(*s).iter().copied()).collect();
+        assert!(ViewSlot::PASSES.iter().all(|p| spanned.contains(p)));
+        assert!(ViewSlot::PASSES.windows(2).all(|w| w[0] < w[1]));
+        for mode in 2..=6 {
+            assert_eq!(ViewSlot::DecalsLate(mode).pass(), ViewSlot::PASSES[6], "mode {mode} draws in slot 7's pass");
+        }
     }
 
     #[test]
