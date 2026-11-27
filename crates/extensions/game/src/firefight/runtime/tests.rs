@@ -72,12 +72,16 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         .put_u32(points::SCENARIO.base, SCNR);
     m.map(SCNR, 0x300).map(SCRATCH, 0x20);
     if kit {
-        pair(&mut m, SCNR + 0x160, 2, SQUADS);
-        m.map(SQUADS, 2 * 0x74);
+        pair(&mut m, SCNR + 0x160, 3, SQUADS);
+        m.map(SQUADS, 3 * 0x74);
         named(&mut m, SQUADS, "ff_slot_00");
         // The kit's class record: the Elite on palette row 0.
         named(&mut m, SQUADS + 0x74, "ff_class_elite");
         m.put_u16(SQUADS + 0x74 + 0x36, 0);
+        // Endless's Marine allies: a second record on the same row, UNSC.
+        named(&mut m, SQUADS + 2 * 0x74, "ff_class_marine");
+        m.put_u16(SQUADS + 2 * 0x74 + 0x36, 0);
+        m.put_u16(SQUADS + 2 * 0x74 + 0x24, 1);
         // Its team is its faction's: Covenant, 3.
         m.put_u16(SQUADS + 0x74 + 0x24, 3);
         m.put_u16(SQUADS + 0x24, 3);

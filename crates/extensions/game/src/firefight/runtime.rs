@@ -869,7 +869,12 @@ impl Runtime {
             o.map = on_map.clone();
             o
         });
-        let kit = guest::read_kit(&*m).ok().flatten().is_some();
+        let kit_layout = guest::read_kit(&*m).ok().flatten();
+        if let (Some(layout), Some(map)) = (&kit_layout, &on_map) {
+            // The lobby's Wave set row gates by these next time.
+            crate::lobby_start::learn_kit_classes(map, layout.classes.iter().map(|(name, _)| name.clone()).collect());
+        }
+        let kit = kit_layout.is_some();
         // Every multiplayer start: a game that is not Firefight clears the
         // last one's.
         (self.session)(chosen.as_ref().and_then(|o| session_firefight(o, kit)));

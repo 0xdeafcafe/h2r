@@ -454,6 +454,23 @@ pub fn set_kit_classes(classes: Option<Vec<String>>) {
     with_state(|s| s.kit_classes = classes);
 }
 
+/// The classes each kit map was seen to carry, by its base name: a game
+/// on the map reads its kit ([`learn_kit_classes`]), and a later lobby on
+/// it gates the Wave set row by what was read ([`known_kit_classes`]).
+static KITS_SEEN: Mutex<std::collections::BTreeMap<String, Vec<String>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// A game on `map` read a kit with these classes.
+pub fn learn_kit_classes(map: &str, classes: Vec<String>) {
+    KITS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(map.to_owned(), classes);
+}
+
+/// The classes `map`'s kit was seen with; `None` until a game has played
+/// on it, when every set is offered ([`State::kit_classes`]).
+pub fn known_kit_classes(map: &str) -> Option<Vec<String>> {
+    KITS_SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(map).cloned()
+}
+
 /// Keeps the lobby's kit map's base name ([`kit_map`]).
 pub fn set_kit_map(map: Option<String>) {
     with_state(|s| s.kit_map = map);
@@ -520,6 +537,16 @@ mod tests {
             sort: 0,
             path: path.into(),
         }
+    }
+
+    /// A game's kit read is remembered per map: the lobby on that map
+    /// knows its classes, a map never played on does not.
+    #[test]
+    fn a_kit_map_is_known_by_the_classes_a_game_read_from_it() {
+        assert_eq!(known_kit_classes("lobbytest-map"), None);
+        learn_kit_classes("lobbytest-map", vec!["elite".into(), "marine".into()]);
+        assert_eq!(known_kit_classes("lobbytest-map"), Some(vec!["elite".into(), "marine".into()]));
+        assert_eq!(known_kit_classes("lobbytest-other"), None);
     }
 
     #[test]

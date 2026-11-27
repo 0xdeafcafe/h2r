@@ -539,7 +539,12 @@ fn map_waves_in_lobby(m: &dyn GuestMemory) -> Option<::firefight::Def> {
 pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, MemFault> {
     // The Firefight page's Wave set row reads the lobby's kit map between
     // redraws (`lobby_start::kit_map`); this is where the memory is.
-    lobby_start::set_kit_map(lobby_start::kit_map_name(&*m));
+    let kit_map = lobby_start::kit_map_name(&*m);
+    if let Some(map) = &kit_map {
+        // The classes a game on this map read from its kit, once one has.
+        lobby_start::set_kit_classes(lobby_start::known_kit_classes(map));
+    }
+    lobby_start::set_kit_map(kit_map);
     let state = lobby_start::state();
     let no_map = (state.mode == Mode::Firefight)
         .then(|| firefight_map_lines(KitMaps::now(&*m)))

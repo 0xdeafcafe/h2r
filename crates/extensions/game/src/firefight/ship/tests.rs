@@ -195,23 +195,24 @@ fn world(riders: u8, pool: usize) -> World {
     World { m, ship: ship.raw(), pool }
 }
 
-/// The engine as the callee: `AI_SQUAD_PLACE` turns the first `eax` pool
-/// actors of its first call into the squad's; `VEHICLE_LOAD` attaches the
+/// The engine as the callee: each `AI_SQUAD_PLACE` turns the next `eax` pool
+/// actors into the squad's (the on-foot rest is a second call); `VEHICLE_LOAD` attaches the
 /// first `seats` of them to the ship and answers how many it did.
 struct Engine {
     pool: Vec<(Actor, Obj, u32)>,
     ship: u32,
     seats: u16,
-    placed: bool,
+    placed: usize,
 }
 
 impl Engine {
     fn answer(&mut self, c: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
-        let eax = if c.target == points::AI_SQUAD_PLACE.base && !self.placed {
-            self.placed = true;
-            for (actor, _, _) in self.pool.iter().take(c.eax.unwrap() as usize) {
+        let eax = if c.target == points::AI_SQUAD_PLACE.base {
+            let take = c.eax.unwrap() as usize;
+            for (actor, _, _) in self.pool.iter().skip(self.placed).take(take) {
                 actor.set_squad(m, u32::from(SQUAD)).unwrap();
             }
+            self.placed += take;
             0
         } else if c.target == points::OBJECT_LIST_FROM_AI.base {
             0x1234
@@ -241,7 +242,7 @@ fn boarding(count: u16, capacity: u8, ship: u32) -> Boarding {
 
 fn run(w: World, b: Boarding, seats: u16, whole: bool) -> (anyhow::Result<u8>, Vec<GuestCall>, FakeGuest) {
     let kit = read_kit(&w.m).unwrap().expect("the kit");
-    let mut engine = Engine { pool: w.pool, ship: w.ship, seats, placed: false };
+    let mut engine = Engine { pool: w.pool, ship: w.ship, seats, placed: 0 };
     drive(
         w.m,
         move |cx| {

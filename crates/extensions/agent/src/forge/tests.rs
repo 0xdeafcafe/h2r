@@ -2488,6 +2488,7 @@ mod ground {
             "format": 2,
             "name": "Two Zones",
             "teams": 1,
+            "set": {"endless": false, "scale": 0, "skulls": []},
             "rounds": [{"waves": waves, "skulls_on": []}],
             "lives": {"pool_start": 5, "per_round_bonus": 1, "shared": true},
             "caps": {"live_actors_by_players": [[4, 32]]},
