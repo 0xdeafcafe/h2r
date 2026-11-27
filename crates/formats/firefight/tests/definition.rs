@@ -53,6 +53,71 @@ fn golden_hash_for_the_builtin_defs() {
     }
 }
 
+/// Outbreak runs Flood rounds with Covenant boss waves and Marine allies,
+/// so it validates only on a kit that kept every class it names; the
+/// Elite-only kit (Zanzibar) is refused for it by class name.
+#[test]
+fn outbreak_validates_on_a_full_kit() {
+    let outbreak = builtin::definitions()
+        .into_iter()
+        .find(|def| def.name == "Outbreak")
+        .expect("Outbreak is a built-in set");
+    validate(&outbreak, &full_kit()).unwrap();
+    assert!(
+        validate(&outbreak, &elite_kit()).is_err(),
+        "an Elite-only kit cannot play Outbreak"
+    );
+    for class in [
+        "flood_combat_human",
+        "flood_combat_elite",
+        "flood_carrier",
+        "marine",
+    ] {
+        let kit = Limits::new(
+            [
+                "elite",
+                "marine",
+                "flood_combat_human",
+                "flood_combat_elite",
+                "flood_carrier",
+            ]
+            .into_iter()
+            .filter(|c| *c != class),
+        );
+        assert!(
+            validate(&outbreak, &kit).is_err(),
+            "cutting {class} refuses Outbreak"
+        );
+    }
+}
+
+/// Every class a wave of a built-in set sends has a score, the Flood
+/// classes included; allies never do (a kill by or of one scores nothing).
+#[test]
+fn every_new_class_has_a_score() {
+    for def in builtin::definitions() {
+        for round in &def.rounds {
+            for squad in round.waves.iter().flat_map(|wave| &wave.squads) {
+                let points = def.scoring.by_class.get(&squad.class);
+                assert!(
+                    points.is_some_and(|p| *p > 0),
+                    "{}: {} has no score",
+                    def.name,
+                    squad.class
+                );
+            }
+            for ally in &round.allies {
+                assert!(
+                    !def.scoring.by_class.contains_key(&ally.class),
+                    "{}: ally {} must not score",
+                    def.name,
+                    ally.class
+                );
+            }
+        }
+    }
+}
+
 /// A mode-1 variant names its set by the first eight bytes of its id:
 /// each built-in is found by its own, an unknown prefix by none.
 #[test]
@@ -60,7 +125,12 @@ fn each_builtin_is_found_by_its_hash_prefix() {
     for def in builtin::definitions() {
         let id = def.id().unwrap();
         let prefix: [u8; 8] = id.0[..8].try_into().unwrap();
-        assert_eq!(builtin::by_prefix(prefix).as_ref(), Some(&def), "{}", def.name);
+        assert_eq!(
+            builtin::by_prefix(prefix).as_ref(),
+            Some(&def),
+            "{}",
+            def.name
+        );
     }
     assert_eq!(builtin::by_prefix([0x5a; 8]), None);
 }
