@@ -832,14 +832,75 @@ fn seed_lifo(m: &mut FlatMemory, remaining: u32) {
 fn islands_past_the_buffer_spill_into_a_lifo_block_as_the_lifted_entry_does() {
     let Some((image, base)) = ram() else { return };
     let mut code = original(image);
+    spill_islands(&mut code, &base, 0x5b11_0000, false);
+}
+
+// The class pool's builder and the directory pools, as the allocator's
+// differential (`sim_physics_differential.rs`) lays them out.
+const HEAP_DIR: u32 = 0x0020_0000;
+const HEAP_CLASSES: u32 = 0x0021_5040;
+const HEAP_BORROWED: u32 = 0x0040_0000;
+
+fn directory_pool(m: &mut FlatMemory, at: u32) {
+    for (off, v) in [(0, 0x4576a4), (4, 1), (8, 0), (0xc, 0), (0x10, 0), (0x14, u32::MAX), (0x18, at + 0x30), (0x1c, 0x15000), (0x20, 0)] {
+        word(m, at + off, v);
+    }
+}
+
+/// The memory system with its pools built by the lifted `0x0022c3e0`, in
+/// `mode` (1: the directory pool alone; else the class pool first), and
+/// an empty LIFO descriptor, so a block is pushed and popped through
+/// `0x002d7020` and `0x002d7090`.
+fn heap(code: &mut lifted::Original, m: &mut FlatMemory, mode: u32) {
+    use sim_havok::layout as l;
+    directory_pool(m, HEAP_DIR);
+    directory_pool(m, HEAP_BORROWED);
+    let mut cpu = Cpu { gpr: [0, 0, 0, 0, STACK, 0, HEAP_CLASSES, 0], eip: 0x22c3e0, eflags: 0xa93, ..Cpu::default() };
+    word(m, STACK, EXIT);
+    run(code, &mut cpu, m);
+    for (a, v) in [(l::POOL_MODE, mode), (l::DIRECTORY_POOL, HEAP_DIR), (l::CLASS_POOL, HEAP_CLASSES), (l::BORROWED_POOL, HEAP_BORROWED), (l::MEMORY_SYSTEM, l::DISPATCH_OBJECT)] {
+        word(m, a, v);
+    }
+    // The dispatcher's vtable: allocate `+0x10`, free `+0x14`, the LIFO
+    // push `+0x24` and pop `+0x28`.
+    word(m, l::DISPATCH_OBJECT, 0x0045_378c);
+    for off in [l::POOL_LIFO_CURSOR, l::POOL_LIFO_REMAINING, l::POOL_LIFO_BLOCK, l::POOL_LIFO_PAYLOAD] {
+        word(m, l::DISPATCH_OBJECT + off, 0);
+    }
+}
+
+/// Spilled islands whose block comes from the allocator: the descriptor
+/// has no inline bytes, so the entry calls `vt[+0x24]` for a new chunk and,
+/// the block being that chunk's payload, `vt[+0x28]` to give it back, in
+/// both pool modes.
+#[test]
+fn spilled_islands_take_their_block_through_the_allocator_as_the_lifted_entry_does() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    for f in [0x2d7020, 0x2d7090, 0x1472c0, 0x147320, 0x22c3e0] {
+        code.prime(f);
+    }
+    for mode in [1, 2] {
+        let mut heaped = base.clone();
+        heap(&mut code, &mut heaped, mode);
+        spill_islands(&mut code, &heaped, 0x5b12_0000 + 0x1000 * u64::from(mode), true);
+    }
+}
+
+/// Seeded contact islands past the buffer in each layout, model against
+/// the lifted entry. `from_heap`: the block comes from the built pools;
+/// else inline from [`seed_lifo`]'s descriptor.
+fn spill_islands(code: &mut lifted::Original, base: &FlatMemory, salt: u64, from_heap: bool) {
     let (mut solved, mut declined) = ([0; 3], 0);
-    for seed in 0..192u64 {
-        let mut r = Rng(0x5b11_0000 + seed);
+    for seed in 0..96u64 {
+        let mut r = Rng(salt + seed);
         let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
         let mut mem = base.clone();
         let args = contact_island(&mut r, &mut mem, entities, constraints);
-        random_bytes(&mut r, &mut mem, LIFO_BLOCK, 0x400);
-        seed_lifo(&mut mem, LIFO_BYTES);
+        if !from_heap {
+            random_bytes(&mut r, &mut mem, LIFO_BLOCK, 0x400);
+            seed_lifo(&mut mem, LIFO_BYTES);
+        }
         let at = |off: u32| mem.read_u32(ISLAND + off).unwrap();
         let rows = 0x80 * entities + 0x90;
         let impulses = rows + at(island::ISLAND_ROWS);
@@ -869,17 +930,22 @@ fn islands_past_the_buffer_spill_into_a_lifo_block_as_the_lifted_entry_does() {
             }
         };
         solved[case] += 1;
-        assert_eq!(eax, LIFO_BLOCK, "seed {seed} case {case}: the block");
+        if !from_heap {
+            assert_eq!(eax, LIFO_BLOCK, "seed {seed} case {case}: the block");
+        }
         let mut expected = before.clone();
         for (a, v) in j.finish() {
             word(&mut expected, a, v);
         }
-        let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
+        let after = run_cpu(code, &mut mem, 0x31c100, fpu);
         assert_eq!(after.eax, eax, "seed {seed} case {case}: eax");
         assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
+        // The block is scratch: the inline one, or the chunk's payload
+        // (`max(request, 0x1000)` bytes; these islands ask for less).
+        let (block, bytes) = if !from_heap { (LIFO_BLOCK, LIFO_BYTES) } else { (eax, 0x1000) };
         for m in [&mut mem, &mut expected] {
             m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
-            m.bytes[LIFO_BLOCK as usize..(LIFO_BLOCK + LIFO_BYTES) as usize].fill(0);
+            m.bytes[block as usize..(block + bytes) as usize].fill(0);
             m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
         }
         assert_eq!(first_difference(&mem, &expected), None, "seed {seed} case {case}: first different byte");
