@@ -2515,7 +2515,14 @@ the window and the API stay one path.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
   step each (`mesh.transform` with a `merge` key joins a drag), and
-  `mesh.apply` replays a `mesh.ops` log as one step. While a target is in
+  `mesh.apply` replays a `mesh.ops` log as one step. `mesh.sculpt
+  {brush, centre | points, radius, strength?, falloff?, height?, axis?,
+  detail?}` is one brush stroke (`raise`, `lower`, `smooth`, `flatten`,
+  `cut`) as one step and one `sculpt` op: it subdivides where the brush
+  needs vertices, goes through the collision compiler, and answers
+  `class`, `moved`, `verts` and `faces`; a stroke the kernel or the
+  compiler refuses is `REFUSED` with the reason, and nothing is kept
+  (docs/editor/modeling.md, "Sculpting"). While a target is in
   edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry

@@ -10,6 +10,7 @@ pub(crate) mod area;
 pub(crate) mod mirror;
 pub(crate) mod nav;
 pub(crate) mod playtest;
+pub(crate) mod sculpt;
 mod paint;
 
 use std::collections::BTreeSet;
@@ -181,6 +182,8 @@ pub struct ViewportView {
     hovered: bool,
     /// The handles on the selected flag's area.
     area: area::AreaHandles,
+    /// The sculpt brush over the target in edit mode.
+    sculpt: sculpt::SculptBrush,
     /// Where the last frame showed the image: origin and size in points.
     shown: Option<[f32; 4]>,
 }
@@ -221,6 +224,7 @@ impl ViewportView {
             placing_label: None,
             hovered: false,
             area: Default::default(),
+            sculpt: Default::default(),
             shown: None,
         }
     }
@@ -397,7 +401,12 @@ impl ViewportView {
         let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect, &live.linked);
         // The area's handles, on the selected netgame flag.
         let (over_area, using_area) = self.area.run(ui, app, origin, size, aspect);
-        let (over_gizmo, using_gizmo) = (over_gizmo || over_area, using_gizmo || using_area);
+        // The sculpt brush, while Modeling's brush is on.
+        let (over_brush, using_brush) = self.sculpt.run(ui, app, origin, size, aspect);
+        let (over_gizmo, using_gizmo) = (
+            over_gizmo || over_area || over_brush,
+            using_gizmo || using_area || using_brush,
+        );
 
         let io = ui.io();
         let alt = io.key_alt();
