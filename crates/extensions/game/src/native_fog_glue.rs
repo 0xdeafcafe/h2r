@@ -289,8 +289,14 @@ pub(crate) fn stencil_disabled(read: impl FnOnce(u32) -> Option<u32>) -> bool {
 /// The device's fog words at the layer-16 call, by [`FOG_WORD_SLOTS`]
 /// (`None` a slot that does not read).
 pub fn device_fog_words<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> [Option<u32>; 7] {
+    fog_words_with(&|guest| d.render_state(&ReadMemory(mem), guest))
+}
+
+/// [`device_fog_words`] from `states`, by guest state slot (a device as a
+/// restore list leaves it: `native_render::sorted_entries::after_restore`).
+pub fn fog_words_with(states: &dyn Fn(u32) -> Option<u32>) -> [Option<u32>; 7] {
     let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-    FOG_WORD_SLOTS.map(|slot| table.canonical_to_guest(slot).and_then(|guest| d.render_state(&ReadMemory(mem), guest)))
+    FOG_WORD_SLOTS.map(|slot| table.canonical_to_guest(slot).and_then(states))
 }
 
 /// The fog unit and colour of resolved words, as the D3D commit programs

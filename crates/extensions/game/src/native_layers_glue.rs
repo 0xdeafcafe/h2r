@@ -189,6 +189,23 @@ pub(crate) const TARGET_COPIED: u32 = 0x0050_9430;
 /// (`LitObjects::structure_copy`).
 pub(crate) const STRUCTURE_COPY_TARGET: u32 = 0x16;
 
+/// A run's planned objects (`Glue::commit_run`): the models they draw
+/// from, their draws by slot, and the accumulation target they sample.
+struct RunObjects {
+    models: Option<Arc<dyn LayerModels>>,
+    draws: HashMap<u32, ObjectItem>,
+    texaccum: Option<native_render::world_layers::Texaccum>,
+}
+
+/// Whether `restore` writes, with a value other than `device`'s, a render
+/// state an object's checks read outside the state array
+/// (`native_objects_glue::read_outside_states`): its objects then keep
+/// their guest draws (`object_sorted_restore`).
+fn restore_moves_outside(restore: &[(u32, u32)], device: &dyn Fn(u32) -> Option<u32>) -> bool {
+    let outside = crate::native_objects_glue::read_outside_states();
+    restore.iter().any(|&(slot, value)| outside.contains(&slot) && device(slot) != Some(value))
+}
+
 /// The object draw, counted over the drawn object items in order (each
 /// whether it copies and its draw count), before which the structure
 /// target copy is made: the first of the first item that copies.
@@ -283,10 +300,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// docs/graphics/retire-d3d-r5.md, "Layer 2 from the plan"): the
     /// structure items the plan draws up to the first entry the guest
     /// keeps, drawn there and set in `run`. A run counts no outcome (the
-    /// layer call's ask has), checks the skip against the device as the
-    /// shader draw's cached restore leaves it, and leaves the objects to
-    /// the guest (`object_sorted`: their checks read the device at the
-    /// layer call).
+    /// layer call's ask has), sets no device state, and plans its items
+    /// against the device as the shader draw's cached restore leaves it:
+    /// the objects' entry states, fog and skip with the restore over the
+    /// state array, kept `object_sorted_restore` when it moves a state
+    /// their checks read elsewhere (`restore_moves_outside`), and
+    /// `object_sorted_target` or `object_sorted_view` for a copy flag or
+    /// a copy of the bound colour the run does not make.
     #[allow(clippy::too_many_arguments)]
     fn ask_at(
         &self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left, at: Option<&RunAt<'_>>,
@@ -377,8 +397,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             if let Some(why) = item.refusal {
                 *outcomes.entry(why.name()).or_default() += 1;
                 left.item(item.slot, why.name());
-            } else if running {
-                left.item(item.slot, "object_sorted");
             } else if !OBJECT_LAYERS.contains(&l) {
                 *outcomes.entry("object_layer").or_default() += 1;
                 left.item(item.slot, "object_layer");
@@ -408,7 +426,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         // (`native_objects_glue::apply_layer_begin_zenable`). Set before
         // the drain, the objects' W check (`object_w_buffer`) and the
         // pass's view constants and clip read the state the draws run with.
-        if !objects.is_empty() && crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
+        // A run is inside the layer's body, past its begin: it sets
+        // nothing, and its objects read the device as it is.
+        if !running && !objects.is_empty() && crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
             refuse_all(&mut outcomes, &mut *left, "object_layer_begin", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;
@@ -459,6 +479,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         } else {
             Vec::new()
         };
+        // A run's objects plan with the device as the restore leaves it
+        // (`plan_objects`), which holds only for the render states read
+        // from the state array: a restore that moves one read elsewhere
+        // keeps them.
+        if running && !objects.is_empty() && restore_moves_outside(&restore, &|slot| d.render_state(&read, slot)) {
+            *outcomes.entry("object_sorted_restore").or_default() += objects.len() as u64;
+            objects.drain(..).for_each(|item| left.item(item.slot, "object_sorted_restore"));
+        }
         if let Some(plan) = &plan {
             let device = |slot: u32| d.render_state(&read, slot);
             let device_state = native_render::sorted_entries::after_restore(&restore, &device);
@@ -480,7 +508,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let planned = if objects.is_empty() {
             None
         } else {
-            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, &mut free, &mut outcomes, left)
+            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, running.then_some(restore.as_slice()), &mut free, &mut outcomes, left)
         };
         let (models, mut object_draws, texaccum) = match planned {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
@@ -584,7 +612,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             }
         }
         if let Some(at) = at {
-            return self.commit_run(&mut d, mem, l, caller, &ready, data, &taken, &fogs, samples, stencil, at, left, run);
+            let objects = RunObjects { models, draws: object_draws, texaccum };
+            return self.commit_run(&mut d, mem, l, caller, &ready, data, &taken, objects, &fogs, samples, stencil, at, left, run);
         }
         let read = ReadMemory(mem);
         let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else {
@@ -748,15 +777,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     #[allow(clippy::too_many_arguments)]
     fn commit_run(
         &self, d: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, l: u8, caller: LayerCaller, ready: &Option<Arc<Ready>>, data: Option<&LayerData>,
-        taken: &HashMap<u32, u32>, fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>, samples: LayerSamples, stencil: gfx::state::StencilState,
-        at: &RunAt<'_>, left: &mut Left, run: &mut Run,
+        taken: &HashMap<u32, u32>, objects: RunObjects, fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>, samples: LayerSamples,
+        stencil: gfx::state::StencilState, at: &RunAt<'_>, left: &mut Left, run: &mut Run,
     ) -> Option<native_render::skip::Cleared> {
+        let RunObjects { models, draws: mut object_draws, texaccum } = objects;
         let take = |item: ListItem| match item {
             ListItem::World(item) => data.is_some_and(|data| {
                 taken.get(&item.slot) == Some(&item.shader)
                     && data.part_set.get(&(item.owner, item.part)).is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
             }),
-            ListItem::Object { .. } => false,
+            ListItem::Object { slot, shader } => object_draws.get(&slot).is_some_and(|o| o.shader == shader),
         };
         let Some(found) = layer_pass::sorted_layer_run(&ReadMemory(mem), u32::from(l), &at.sorted, at.from, &take) else {
             left.all("list");
@@ -773,25 +803,45 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if found.drawn.is_empty() {
             return None;
         }
+        // One range per structure item, one per object pass draw, as the
+        // layer call's.
         let mut runs: Vec<LayerRun> = Vec::new();
+        let mut ranges = 0;
         for item in &found.drawn {
-            let ListItem::World(i) = *item else { continue };
-            match runs.last_mut() {
-                Some(LayerRun::World(parts)) => parts.push((i.owner, i.part)),
-                _ => runs.push(LayerRun::World(vec![(i.owner, i.part)])),
+            match *item {
+                ListItem::World(i) => {
+                    ranges += 1;
+                    match runs.last_mut() {
+                        Some(LayerRun::World(parts)) => parts.push((i.owner, i.part)),
+                        _ => runs.push(LayerRun::World(vec![(i.owner, i.part)])),
+                    }
+                }
+                ListItem::Object { slot, .. } => {
+                    let o = object_draws.remove(&slot)?;
+                    ranges += o.draws.len();
+                    match runs.last_mut() {
+                        Some(LayerRun::Objects(draws)) => draws.extend(o.draws),
+                        _ => runs.push(LayerRun::Objects(o.draws)),
+                    }
+                }
             }
         }
+        if ranges == 0 {
+            return None;
+        }
+        // Bound only when a drawn object samples it.
+        let texaccum = texaccum.filter(|_| runs.iter().any(|r| matches!(r, LayerRun::Objects(draws) if draws.iter().any(|(_, draw)| draw.texaccum))));
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let stage = match caller {
             LayerCaller::Scene | LayerCaller::AlternateView => timeline::native::Stage::World,
             LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
             LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
-        let plan = d3d::ExternalPlan { stage, view: view_index, ranges: found.drawn.len(), slots: Vec::new() };
+        let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: Vec::new() };
         let pass = Box::new(LayerViewPass {
             ready: ready.clone(),
-            objects: None,
-            texaccum: None,
+            objects: models,
+            texaccum,
             layer: l,
             runs,
             samples,
@@ -830,7 +880,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 #[allow(clippy::too_many_arguments)]
 fn plan_objects<B: d3d::backend::Backend>(
     d: &d3d::Device<B>, mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
-    items: &[&LayerItem], stencil: &gfx::state::StencilState, free: &mut HashMap<u32, u32>, outcomes: &mut BTreeMap<&'static str, u64>, left: &mut Left,
+    items: &[&LayerItem], stencil: &gfx::state::StencilState, restore: Option<&[(u32, u32)]>, free: &mut HashMap<u32, u32>,
+    outcomes: &mut BTreeMap<&'static str, u64>, left: &mut Left,
 ) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>, Option<native_render::world_layers::Texaccum>)> {
     let mut all = |why: &'static str| {
         *outcomes.entry(why).or_default() += items.len() as u64;
@@ -845,13 +896,18 @@ fn plan_objects<B: d3d::backend::Backend>(
     };
     let Some(models) = models else { return all("object_models") };
     let read = ReadMemory(mem);
-    let (entry, w_buffered) = crate::native_objects_glue::entry_states(d, mem);
+    // The render states the items' draws start from: the device's at the
+    // layer call; in a run (`restore`) as the shader draw's restore of its
+    // cached implementation leaves them before the next entry, which the
+    // caller has checked moves nothing read elsewhere.
+    let device = |slot: u32| d.render_state(&read, slot);
+    let device_state = native_render::sorted_entries::after_restore(restore.unwrap_or(&[]), &device);
+    let (entry, w_buffered) = crate::native_objects_glue::entry_states_with(d, mem, &device_state);
     if !w_buffered {
         return all("object_w_buffer");
     }
-    let fog_words = device_fog_words(d, mem);
-    let specular = crate::native_objects_glue::device_specular(d, mem);
-    let device_state = |slot: u32| d.render_state(&read, slot);
+    let fog_words = crate::native_fog_glue::fog_words_with(&device_state);
+    let specular = crate::native_objects_glue::specular_with(&device_state);
     let mut prt_formats: Option<Option<StreamFormats>> = None;
     // Whether the device holds the auxiliary state toggle off: the view's
     // values are one per layer call, so asked once.
@@ -902,6 +958,22 @@ fn plan_objects<B: d3d::backend::Backend>(
         // item's draw.
         let sets_copied = object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw)));
         let copies = sets_copied && item.flags.contains(PartFlags::STRUCTURE_PARAMETERS);
+        // In a run the commit sets no copy flag and makes no copy, and its
+        // pass binds no copy of the bound colour.
+        if restore.is_some() {
+            let why = if sets_copied {
+                Some("object_sorted_target")
+            } else if draws.iter().any(|d| d.view || d.scene_copy || (layer == 1 && d.texaccum)) {
+                Some("object_sorted_view")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                *outcomes.entry(why).or_default() += 1;
+                left.item(item.slot, why);
+                continue;
+            }
+        }
         if copies && crate::native_shadows_glue::target_header(mem, STRUCTURE_COPY_TARGET).is_none() {
             *outcomes.entry("object_shader_flag_target").or_default() += 1;
             left.item(item.slot, "object_shader_flag_target");
@@ -1700,6 +1772,24 @@ mod target_copy_tests {
         assert_eq!(copy_point([(true, 1), (false, 4)]), Some(0), "the layer's first draw");
         assert_eq!(copy_point([(false, 2), (false, 1)]), None, "nothing copies");
         assert_eq!(STRUCTURE_COPY_TARGET, 0x16, "0x000352e0(0x16, 1) at 0x0003bed4");
+    }
+
+    /// A run's objects plan with the restore over the state array; a
+    /// restore that changes a state their checks read elsewhere (here the
+    /// stencil function) keeps them, one that writes the value the device
+    /// already holds or a state of the array alone does not.
+    #[test]
+    fn a_restore_moving_a_state_read_outside_the_array_keeps_a_runs_objects() {
+        use gfx::state::RenderStateType as R;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let stencil = table.canonical_to_guest(R::StencilFunc.index()).expect("a guest slot");
+        let blend = table.canonical_to_guest(R::AlphaBlendEnable.index()).expect("a guest slot");
+        assert!(crate::native_objects_glue::read_outside_states().contains(&stencil));
+        let device = |slot: u32| Some(if slot == stencil { 8 } else { 0 });
+        assert!(restore_moves_outside(&[(stencil, 4)], &device));
+        assert!(!restore_moves_outside(&[(stencil, 8)], &device), "the value the device holds");
+        assert!(!restore_moves_outside(&[(blend, 1)], &device), "in the array: overlaid");
+        assert!(!restore_moves_outside(&[], &device), "nothing cached");
     }
 
     /// Beside structure draws, or another copy of the bound colour, an
