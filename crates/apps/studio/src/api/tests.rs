@@ -256,7 +256,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::write(&map, super::sound::tests::mouth_map()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
-        m::FUNCTION_READ | m::FUNCTION_SET | m::FUNCTION_SAMPLE => {
+        m::FUNCTION_READ | m::FUNCTION_SET | m::FUNCTION_SAMPLE | m::FUNCTION_COLOURS => {
             // A map whose weapon tag has invented function fields.
             let map = t.path("curve.map");
             std::fs::write(&map, super::curves::tests::curve_map()).unwrap();

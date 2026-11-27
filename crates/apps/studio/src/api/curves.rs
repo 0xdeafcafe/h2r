@@ -1,6 +1,6 @@
 //! Curve functions as the agent API ([`super::Provider`], registered in
 //! [`super::seams`]): `function.read`, `function.set` and
-//! `function.sample`, over a `view=function` data field's blob, written
+//! `function.sample` and `function.colours`, over a `view=function` data field's blob, written
 //! through the Tags tool's own command (`Action::Tag` with
 //! `App::perform`), so the window's curve editor and the API are one
 //! path: the same undo step and the same saved patch. A write that
@@ -50,6 +50,47 @@ const SAMPLE: MethodDef = def(
     r#"{"outputs":"[number]"}"#,
     r#"{"tag":"weap","path":"curve","inputs":[0,0.5,1]}"#,
 );
+
+const COLOURS: MethodDef = def(
+    m::FUNCTION_COLOURS,
+    "The colours a function blends, read as a shader colour property (the engine's reader at 0x0013bc00, `Function::output_colour`): `mode` from the flags' high nibble (`grey`, `single`, `two`, `three`, `four`, `white`), the `stops` as `#aarrggbb` (the range words and the two words of header +0xc), and the gradient strip: `samples` colours (default 16, 2 to 256) at the function input 0 to 1 left to right. Only meaningful on a colour-valued property; the blob does not say which it is",
+    r#"{"tag":"string|integer","path":"string (a tag.set path)","samples?":"integer (2..256, default 16)"}"#,
+    r#"{"mode":"string","stops":"[string]","gradient":"[{at:number, colour:string}]"}"#,
+    r#"{"tag":"weap","path":"curve","samples":8}"#,
+);
+
+/// A packed ARGB word as `#aarrggbb`.
+fn hex(c: u32) -> String {
+    format!("#{c:08x}")
+}
+
+/// The gradient a function's header colours make.
+fn colours_json(f: &Function, samples: usize) -> Value {
+    let (mode, stops) = f.colour_stops();
+    let gradient: Vec<Value> = (0..samples)
+        .map(|i| {
+            let at = i as f32 / (samples - 1) as f32;
+            json!({ "at": at, "colour": hex(f.output_colour(at)) })
+        })
+        .collect();
+    json!({
+        "mode": mode,
+        "stops": stops.into_iter().map(hex).collect::<Vec<_>>(),
+        "gradient": gradient,
+    })
+}
+
+fn colours(app: &mut App, p: &P) -> Reply {
+    let c = curve_field(app, p)?;
+    let samples = p.opt_usize("samples")?.unwrap_or(16);
+    if !(2..=256).contains(&samples) {
+        return Err(err(
+            code::INVALID_PARAMS,
+            format!("samples: 2..256, not {samples}"),
+        ));
+    }
+    Ok(colours_json(&c.function, samples))
+}
 
 /// A finite number of a JSON value.
 fn number(v: &Value) -> Result<f32, agent_proto::RpcError> {
@@ -455,7 +496,7 @@ fn merge_set(
 
 impl Provider for Curves {
     fn methods(&self) -> Vec<MethodDef> {
-        vec![READ, SET, SAMPLE]
+        vec![READ, SET, SAMPLE, COLOURS]
     }
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
@@ -464,6 +505,7 @@ impl Provider for Curves {
             m::FUNCTION_READ => read(app, &p),
             m::FUNCTION_SET => set(app, &p),
             m::FUNCTION_SAMPLE => sample(app, &p),
+            m::FUNCTION_COLOURS => colours(app, &p),
             _ => return None,
         })
     }
