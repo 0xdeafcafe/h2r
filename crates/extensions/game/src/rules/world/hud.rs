@@ -2,7 +2,7 @@
 //! docs/game/game-types-without-carriers.md, "The display"): the show
 //! state the VM keeps (`rules::vm::RulesExt::show`) feeds the objective
 //! HUDs (`hud_kit_core::views::objective`: `ctf`, `assault`, `oddball`,
-//! `koth`, `territories`) for each local user.
+//! `koth`, `territories`, `siege`) for each local user.
 //!
 //! A script declares widgets at the elements of those HUDs
 //! (`hud hill: text at koth.hill`) and waypoints at their navpoints
@@ -46,22 +46,24 @@ use super::zones::{self, Body, Zones};
 use crate::hud_kit::{self, Handle, USERS};
 
 /// The objective HUDs a script feeds, by name.
-pub const HUDS: [&str; 5] = [
+pub const HUDS: [&str; 6] = [
     objective::ctf::NAME,
     objective::assault::NAME,
     objective::oddball::NAME,
     objective::koth::NAME,
     objective::territories::NAME,
+    objective::siege::NAME,
 ];
 
 /// The first word of a slot (`odd` in `odd.holder`, the prefix the kit's
 /// element ids carry) and the objective HUD it belongs to.
-const SLOT_WORDS: [(&str, &str); 5] = [
+const SLOT_WORDS: [(&str, &str); 6] = [
     ("ctf", objective::ctf::NAME),
     ("asl", objective::assault::NAME),
     ("odd", objective::oddball::NAME),
     ("koth", objective::koth::NAME),
     ("ter", objective::territories::NAME),
+    ("siege", objective::siege::NAME),
 ];
 
 /// Metres in a world unit: 304.8 cm, 10 feet
@@ -73,12 +75,13 @@ const METRES_PER_UNIT: f32 = 3.048;
 fn handles() -> &'static [(&'static str, Handle)] {
     static HANDLES: OnceLock<Vec<(&'static str, Handle)>> = OnceLock::new();
     HANDLES.get_or_init(|| {
-        let all: [(&'static str, Arc<dyn Describe + Send + Sync>); 5] = [
+        let all: [(&'static str, Arc<dyn Describe + Send + Sync>); 6] = [
             (objective::ctf::NAME, Arc::new(objective::Ctf)),
             (objective::assault::NAME, Arc::new(objective::Assault)),
             (objective::oddball::NAME, Arc::new(objective::Oddball)),
             (objective::koth::NAME, Arc::new(objective::Koth)),
             (objective::territories::NAME, Arc::new(objective::Territories)),
+            (objective::siege::NAME, Arc::new(objective::Siege)),
         ];
         all.into_iter().map(|(name, d)| (name, hud_kit::register(d))).collect()
     })
@@ -412,6 +415,64 @@ mod tests {
         for state in [vm.show(), &held] {
             assert_eq!(text(state, 0), "Territories 3 of 5");
             assert_eq!(text(state, 1), "Territories 1 of 5");
+        }
+    }
+
+    /// The built-in Siege feeds the Siege HUD and no other: after the
+    /// round's start each side reads its own role, the clock, the open
+    /// site, the sites to take and the round and phase, from the VM's
+    /// state and from its bytes alike.
+    #[test]
+    fn the_built_in_siege_feeds_the_siege_hud_for_each_side() {
+        use ::rules::vm::Placed;
+        let (ir, _) = ::rules::build(::rules::builtin::SIEGE).unwrap();
+        assert_eq!(huds_of(&ir), ["siege"]);
+        let bits = ir.default_options();
+        let mut vm = Vm::new(ir, bits, 0).unwrap();
+        let mut g = FakeGame::with_players(2);
+        g.players.get_mut(&1).unwrap().team = 1;
+        g.variant.insert("team_play".into(), 1);
+        g.labelled.insert(
+            "territory".into(),
+            vec![Placed { placement: 0, object: 600 }, Placed { placement: 1, object: 601 }],
+        );
+        g.labelled.insert(
+            "ctf_flag_spawn".into(),
+            vec![Placed { placement: 0, object: 20 }, Placed { placement: 1, object: 21 }],
+        );
+        g.object_teams.extend([(20, 0), (21, 1)]);
+        vm.begin_tick(0);
+        vm.fire(&mut g, Input::RoundStart);
+        vm.begin_tick(1);
+        vm.update(&mut g);
+        assert_eq!(g.script_error, None);
+        let held = State::decode(&vm.show().encode()).unwrap();
+        assert!(vm.show().encode().len() <= MAX_STATE_BYTES);
+        let rows = |state: &State, slot: u8, team: u8| -> Vec<Option<String>> {
+            let viewer = Viewer { slot: Some(slot), team: Some(team) };
+            let shown = view(state, vm.ir(), viewer);
+            let values = objective::feed("siege", &fed(&shown, viewer, &[], &|_| Some(30))).unwrap();
+            objective::siege::hud()
+                .elements
+                .iter()
+                .map(|e| {
+                    let v = values.get(e.id).unwrap();
+                    v.shown.then(|| v.text.clone())
+                })
+                .collect()
+        };
+        for state in [vm.show(), &held] {
+            let attack = rows(state, 0, 0);
+            let defend = rows(state, 1, 1);
+            // The clock is the phase's 180 s, less the tick that ran.
+            assert!(attack[0].as_deref().is_some_and(|t| t.starts_with("ATTACK 2:5") || t == "ATTACK 3:00"), "{attack:?}");
+            assert!(defend[0].as_deref().is_some_and(|t| t.starts_with("DEFEND ")), "{defend:?}");
+            assert_eq!(attack[1].as_deref(), Some("SITE OPEN"));
+            assert_eq!(attack[2].as_deref(), Some("SITES 0 OF 2"));
+            // Two rounds by default; two sites and the stand are three phases.
+            assert_eq!(attack[3].as_deref(), Some("ROUND 1 OF 2 PHASE 1 OF 3"));
+            assert_eq!(attack[4].as_deref(), Some("30"));
+            assert_eq!(&attack[1..], &defend[1..]);
         }
     }
 

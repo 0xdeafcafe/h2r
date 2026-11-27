@@ -75,6 +75,7 @@ def root_exports():
             "content/modes/huds/koth.hud.yaml",
             "content/modes/huds/oddball.hud.yaml",
             "content/modes/huds/script-objective.hud.yaml",
+            "content/modes/huds/siege.hud.yaml",
             "content/modes/huds/territories.hud.yaml",
             "content/modes/package.toml",
             "content/modes/playlists/default.toml",

@@ -104,6 +104,7 @@ pub fn feed(name: &str, fed: &Fed) -> Option<Values> {
         oddball::NAME => oddball::feed(fed),
         koth::NAME => koth::feed(fed),
         territories::NAME => territories::feed(fed),
+        siege::NAME => siege::feed(fed),
         _ => return None,
     })
 }
@@ -565,6 +566,173 @@ pub mod territories {
     }
 }
 
+/// The Siege HUD ([`Siege`]): the block above the score plate, laid out
+/// as an attack-and-defend game's is (the side and the clock, the
+/// objective's state, the objectives taken, the round and phase).
+pub mod siege {
+    use super::*;
+
+    pub const NAME: &str = "siege";
+    /// The viewer's side and the phase's clock.
+    pub const CLOCK: &str = "siege.clock";
+    /// The front's state: the site the mark is over, or the final stand.
+    pub const FRONT: &str = "siege.front";
+    /// The sites taken of those the attackers need.
+    pub const SITES: &str = "siege.sites";
+    /// The round and the phase.
+    pub const ROUND: &str = "siege.round";
+    pub const MARK: &str = "siege.mark";
+    pub const BANNER: &str = "siege.banner";
+    /// The script's widgets that are no element of their own: the phase's
+    /// number (in the value, of the total in the style), read into
+    /// [`ROUND`], and the attacking side (in the value), read into
+    /// [`CLOCK`] and [`FRONT`].
+    pub const PHASE: &str = "siege.phase";
+    pub const SIDE: &str = "siege.side";
+
+    /// Who is on the front.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Front {
+        Open,
+        /// The attackers alone: they are taking it.
+        Attackers,
+        /// The defenders alone: they hold it.
+        Defenders,
+        Contested,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct State {
+        /// Whether the viewer attacks, when the script says who does.
+        pub attack: Option<bool>,
+        /// Seconds left on the phase's clock.
+        pub clock: Option<u32>,
+        pub front: Option<Front>,
+        /// Sites taken, of those needed.
+        pub sites: Option<(u8, u8)>,
+        /// The round, of the game's rounds.
+        pub round: Option<(u8, u8)>,
+        /// The phase, of the round's phases.
+        pub phase: Option<(u8, u8)>,
+        pub mark: Option<u16>,
+        pub banner: Option<&'static str>,
+    }
+
+    pub fn hud() -> Hud {
+        crate::data::builtin(NAME)
+    }
+
+    /// Whether the front is the final stand: every site needed is taken
+    /// (a map with no site goes straight to the stand).
+    fn at_the_stand(s: &State) -> bool {
+        s.sites.is_some_and(|(taken, needed)| taken >= needed)
+    }
+
+    fn front_text(s: &State, front: Front) -> String {
+        let thing = if at_the_stand(s) { "STAND" } else { "SITE" };
+        match (front, s.attack) {
+            (Front::Open, _) => format!("{thing} OPEN"),
+            (Front::Contested, _) => format!("{thing} CONTESTED"),
+            (Front::Attackers, Some(false)) => format!("{thing} UNDER ATTACK"),
+            (Front::Attackers, _) => format!("TAKING {thing}"),
+            (Front::Defenders, Some(false)) => format!("HOLDING {thing}"),
+            (Front::Defenders, _) => format!("{thing} DEFENDED"),
+        }
+    }
+
+    /// `n OF total`, each at most `most` (the widest the element fits).
+    fn of(label: &str, (n, total): (u8, u8), most: u8) -> String {
+        let total = total.min(most);
+        format!("{label} {} OF {total}", n.min(total))
+    }
+
+    pub fn values(s: &State) -> Values {
+        let mut v = Values::default();
+        let side = match s.attack {
+            Some(true) => "ATTACK",
+            Some(false) => "DEFEND",
+            None => "PHASE",
+        };
+        v.set(CLOCK, row(s.clock.map(|t| format!("{side} {}", clock(t)))));
+        v.set(FRONT, row(s.front.map(|f| front_text(s, f))));
+        let sites = s.sites.map(|sites| {
+            if at_the_stand(s) {
+                "FINAL ASSAULT".to_string()
+            } else {
+                of("SITES", sites, 4)
+            }
+        });
+        v.set(SITES, row(sites));
+        // A game of one round has no round to count.
+        let round = s.round.filter(|r| r.1 > 1).map(|r| of("ROUND", r, 8));
+        let phase = s.phase.filter(|p| p.1 > 0).map(|p| of("PHASE", p, 5));
+        let line = match (round, phase) {
+            (Some(r), Some(p)) => Some(format!("{r} {p}")),
+            (r, p) => r.or(p),
+        };
+        v.set(ROUND, row(line));
+        v.set(MARK, mark(s.mark));
+        v.set(BANNER, banner(s.banner));
+        v
+    }
+
+    /// The HUD a script feeds. `siege.side` holds the attacking side in
+    /// its value, so the viewer attacks when it is on that side.
+    /// `siege.clock` counts the seconds the phase has left. `siege.front`
+    /// is style 0 open, 1 held by the side in its value or 2 contested.
+    /// `siege.sites`, `siege.round` and `siege.phase` each hold a count in
+    /// the value and its total in the style. A widget the script leaves
+    /// hidden has no row.
+    pub fn feed(f: &Fed) -> Values {
+        let count = |id| f.widget(id).map(|w| (w.value.clamp(0, 255) as u8, w.style));
+        let side = f.widget(SIDE);
+        let front = f.widget(FRONT).map(|w| match w.style {
+            1 if side.is_some_and(|s| s.value == w.value) => Front::Attackers,
+            1 if side.is_some() => Front::Defenders,
+            // With no side said, the holder is told from the viewer alone.
+            1 if w.mine => Front::Attackers,
+            1 => Front::Defenders,
+            2 => Front::Contested,
+            _ => Front::Open,
+        });
+        let state = State {
+            attack: side.map(|s| s.mine),
+            clock: f.seconds(CLOCK),
+            front,
+            sites: count(SITES),
+            round: count(ROUND),
+            phase: count(PHASE),
+            mark: f.distance(MARK),
+            banner: None,
+        };
+        let mut v = values(&state);
+        v.set(BANNER, f.banner(BANNER));
+        v
+    }
+
+    pub(super) fn views() -> Vec<(&'static str, State)> {
+        let s = |attack, clock, front, sites, round, phase, mark, banner| State {
+            attack: Some(attack),
+            clock: Some(clock),
+            front: Some(front),
+            sites: Some(sites),
+            round: Some(round),
+            phase: Some(phase),
+            mark,
+            banner,
+        };
+        vec![
+            ("attack-open", s(true, 179, Front::Open, (0, 2), (1, 2), (1, 3), Some(150), Some("ROUND 1"))),
+            ("attack-taking", s(true, 141, Front::Attackers, (0, 2), (1, 2), (1, 3), Some(0), None)),
+            ("defend-under-attack", s(false, 141, Front::Attackers, (0, 2), (1, 2), (1, 3), Some(4), None)),
+            ("defend-holding", s(false, 96, Front::Defenders, (1, 2), (2, 2), (2, 3), Some(2), Some("SITE TAKEN"))),
+            ("contested", s(true, 30, Front::Contested, (1, 2), (2, 2), (2, 3), Some(3), Some("30 SECONDS"))),
+            ("final-assault", s(true, 180, Front::Open, (2, 2), (2, 2), (3, 3), Some(75), Some("FINAL ASSAULT"))),
+            ("one-round", s(false, 12, Front::Contested, (4, 4), (1, 1), (5, 5), Some(1), Some("OVERTIME"))),
+        ]
+    }
+}
+
 macro_rules! describe {
     ($(#[$doc:meta])* $name:ident, $m:ident) => {
         $(#[$doc])*
@@ -605,6 +773,10 @@ describe!(
     /// The Territories HUD's description.
     Territories, territories
 );
+describe!(
+    /// The Siege HUD's description.
+    Siege, siege
+);
 
 #[cfg(test)]
 mod tests {
@@ -619,6 +791,7 @@ mod tests {
             Box::new(Oddball),
             Box::new(Koth),
             Box::new(Territories),
+            Box::new(Siege),
         ]
     }
 
@@ -655,7 +828,7 @@ mod tests {
     #[test]
     fn the_hud_names_are_the_yaml_files_and_are_registered() {
         let names: Vec<_> = all().iter().map(|d| d.hud().name).collect();
-        assert_eq!(names, ["base", "ctf", "assault", "oddball", "koth", "territories"]);
+        assert_eq!(names, ["base", "ctf", "assault", "oddball", "koth", "territories", "siege"]);
         for n in names {
             assert!(crate::views::find(n).is_some(), "{n}");
         }
@@ -687,6 +860,75 @@ mod tests {
         assert_eq!(text(&Koth, "contested", koth::HILL).as_deref(), Some("Hill: Contested"));
         assert_eq!(text(&Koth, "contested", koth::MARK).as_deref(), Some("3"));
         assert_eq!(text(&Territories, "two", territories::OWNED).as_deref(), Some("Territories 2 of 5"));
+        assert_eq!(text(&Siege, "attack-open", siege::CLOCK).as_deref(), Some("ATTACK 2:59"));
+        assert_eq!(text(&Siege, "attack-open", siege::SITES).as_deref(), Some("SITES 0 OF 2"));
+        assert_eq!(text(&Siege, "attack-open", siege::ROUND).as_deref(), Some("ROUND 1 OF 2 PHASE 1 OF 3"));
+        assert_eq!(text(&Siege, "defend-under-attack", siege::FRONT).as_deref(), Some("SITE UNDER ATTACK"));
+        assert_eq!(text(&Siege, "final-assault", siege::SITES).as_deref(), Some("FINAL ASSAULT"));
+        assert_eq!(text(&Siege, "final-assault", siege::FRONT).as_deref(), Some("STAND OPEN"));
+        assert_eq!(text(&Siege, "one-round", siege::ROUND).as_deref(), Some("PHASE 5 OF 5"));
+    }
+
+    /// The Siege HUD reads each side its own way from one state: the side
+    /// widget names the attackers, so the same front is "taking" to them
+    /// and "under attack" to the defenders; the final stand follows the
+    /// sites taken; a game of one round counts no round; and a script that
+    /// feeds nothing shows nothing.
+    #[test]
+    fn the_siege_hud_reads_the_side_the_front_and_the_counts() {
+        let fed = |team: u8, widgets: &[(&str, Widget)]| Fed {
+            team: Some(team),
+            widgets: widgets.iter().map(|(s, w)| (s.to_string(), w.clone())).collect(),
+            names: Vec::new(),
+            distances: vec![(siege::MARK.to_string(), 42)],
+        };
+        // Team 1 attacks; an attacker is alone on the front.
+        let state = |team: u8, sites: i32, rounds: u8| {
+            let on = team == 1;
+            fed(
+                team,
+                &[
+                    (siege::SIDE, widget(1, 0, on)),
+                    (siege::CLOCK, widget(179, 0, false)),
+                    (siege::FRONT, widget(1, 1, on)),
+                    (siege::SITES, widget(sites, 2, false)),
+                    (siege::ROUND, widget(2, rounds, false)),
+                    (siege::PHASE, widget(sites + 1, 3, false)),
+                    (siege::BANNER, banner_widget("SITE TAKEN")),
+                ],
+            )
+        };
+        let attack = feed("siege", &state(1, 1, 2)).unwrap();
+        assert_eq!(at(&attack, siege::CLOCK).as_deref(), Some("ATTACK 2:59"));
+        assert_eq!(at(&attack, siege::FRONT).as_deref(), Some("TAKING SITE"));
+        assert_eq!(at(&attack, siege::SITES).as_deref(), Some("SITES 1 OF 2"));
+        assert_eq!(at(&attack, siege::ROUND).as_deref(), Some("ROUND 2 OF 2 PHASE 2 OF 3"));
+        assert_eq!(at(&attack, siege::MARK).as_deref(), Some("42"));
+        assert_eq!(at(&attack, siege::BANNER).as_deref(), Some("SITE TAKEN"));
+        let defend = feed("siege", &state(0, 1, 2)).unwrap();
+        assert_eq!(at(&defend, siege::CLOCK).as_deref(), Some("DEFEND 2:59"));
+        assert_eq!(at(&defend, siege::FRONT).as_deref(), Some("SITE UNDER ATTACK"));
+        // Every site taken: the front is the stand.
+        let last = feed("siege", &state(0, 2, 1)).unwrap();
+        assert_eq!(at(&last, siege::SITES).as_deref(), Some("FINAL ASSAULT"));
+        assert_eq!(at(&last, siege::FRONT).as_deref(), Some("STAND UNDER ATTACK"));
+        assert_eq!(at(&last, siege::ROUND).as_deref(), Some("PHASE 3 OF 3"));
+        // The defenders alone on it, and both sides.
+        let mut held = state(0, 0, 2);
+        held.widgets[2].1 = widget(0, 1, true);
+        assert_eq!(at(&feed("siege", &held).unwrap(), siege::FRONT).as_deref(), Some("HOLDING SITE"));
+        held.team = Some(1);
+        held.widgets[0].1.mine = true;
+        held.widgets[2].1.mine = false;
+        assert_eq!(at(&feed("siege", &held).unwrap(), siege::FRONT).as_deref(), Some("SITE DEFENDED"));
+        held.widgets[2].1 = widget(0, 2, false);
+        assert_eq!(at(&feed("siege", &held).unwrap(), siege::FRONT).as_deref(), Some("SITE CONTESTED"));
+        // Every state a feed makes fits the layout, and nothing fed is nothing shown.
+        for v in [&attack, &defend, &last] {
+            assert_eq!(v.layout_problems(&siege::hud()), Vec::<String>::new());
+        }
+        let none = feed("siege", &Fed::default()).unwrap();
+        assert!(siege::hud().elements.iter().all(|e| at(&none, e.id).is_none()));
     }
 
     fn widget(value: i32, style: u8, mine: bool) -> Widget {

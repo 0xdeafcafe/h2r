@@ -168,14 +168,14 @@ fn siege_game() -> FakeGame {
 /// What viewer 0 reads of the Siege front row: (shown, style, value).
 fn front(vm: &Vm) -> Option<(bool, u8, i32)> {
     let viewer = Viewer { slot: Some(0), team: None };
-    view(vm.show(), vm.ir(), viewer).at("koth.hill").map(|w| (w.shown, w.style, w.value))
+    view(vm.show(), vm.ir(), viewer).at("siege.front").map(|w| (w.shown, w.style, w.value))
 }
 
 /// The banner viewer 0 reads, when it is shown.
 fn banner(vm: &Vm) -> Option<String> {
     let viewer = Viewer { slot: Some(0), team: None };
     let v = view(vm.show(), vm.ir(), viewer);
-    v.at("koth.banner").filter(|w| w.shown).and_then(|w| w.text.clone())
+    v.at("siege.banner").filter(|w| w.shown).and_then(|w| w.text.clone())
 }
 
 #[test]
@@ -186,14 +186,14 @@ fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
     // Nobody on a site: the row is open and the mark is over the first one.
     ticks(&mut vm, &mut g, 2, 1);
     assert_eq!(front(&vm), Some((true, 0, 0)));
-    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+    assert_eq!(marked(&vm, "siege.mark", 0), Some(600));
 
     // An attacker alone on the second site: held by side 0, and the mark
     // follows the site they are on.
     g.inside.insert((0, 601));
     ticks(&mut vm, &mut g, 3, 2);
     assert_eq!(front(&vm), Some((true, 1, 0)));
-    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+    assert_eq!(marked(&vm, "siege.mark", 0), Some(601));
 
     // A defender on it too: contested.
     g.inside.insert((1, 601));
@@ -208,20 +208,20 @@ fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
     // The front stays on the occupied site even as attackers move elsewhere.
     g.inside.insert((0, 600));
     ticks(&mut vm, &mut g, 7, 1);
-    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+    assert_eq!(marked(&vm, "siege.mark", 0), Some(601));
 
     // Once empty, the old front's accumulated capture time does not keep
     // the mark there.
     g.inside.remove(&(1, 601));
     g.inside.insert((1, 600));
     ticks(&mut vm, &mut g, 8, 1);
-    assert_eq!(marked(&vm, "koth.mark", 0), Some(600));
+    assert_eq!(marked(&vm, "siege.mark", 0), Some(600));
 
     // The front can follow attackers onto a contested site immediately.
     g.inside.clear();
     g.inside.extend([(0, 601), (1, 601)]);
     ticks(&mut vm, &mut g, 9, 1);
-    assert_eq!(marked(&vm, "koth.mark", 0), Some(601));
+    assert_eq!(marked(&vm, "siege.mark", 0), Some(601));
     assert_eq!(front(&vm).map(|(shown, style, _)| (shown, style)), Some((true, 2)));
 }
 
@@ -235,7 +235,7 @@ fn first_banner(options: &[(&str, i64)]) -> (String, Option<u32>, bool) {
     for t in 2..800 {
         ticks(&mut vm, &mut g, t, 1);
         if let Some(text) = banner(&vm).filter(|b| b != "ROUND 1") {
-            let mark = marked(&vm, "koth.mark", 0);
+            let mark = marked(&vm, "siege.mark", 0);
             ticks(&mut vm, &mut g, t + 1, 2);
             return (text, mark, banner(&vm).is_none());
         }
@@ -268,6 +268,55 @@ fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
     }
     // The round's number opens it (two rounds by default).
     assert_eq!(said, ["ROUND 1", "30 SECONDS", "10 SECONDS"]);
+}
+
+/// What a viewer reads of the Siege widget at `slot`: (value, style), when
+/// it is shown.
+fn count(vm: &Vm, slot: &str) -> Option<(i32, u8)> {
+    let viewer = Viewer { slot: Some(0), team: Some(0) };
+    view(vm.show(), vm.ir(), viewer).at(slot).filter(|w| w.shown).map(|w| (w.value, w.style))
+}
+
+/// The counts the Siege HUD reads: the sites taken of those to take, the
+/// phase of the round's phases, the round of the game's and the side that
+/// attacks. A site taken moves the first two.
+#[test]
+fn the_siege_counts_follow_the_sites_the_phases_and_the_rounds() {
+    let mut g = siege_game();
+    let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
+    ticks(&mut vm, &mut g, 2, 1);
+    assert_eq!(count(&vm, "siege.sites"), Some((0, 2)));
+    // Two sites and the final assault are three phases.
+    assert_eq!(count(&vm, "siege.phase"), Some((1, 3)));
+    assert_eq!(count(&vm, "siege.round"), Some((1, 2)));
+    assert_eq!(count(&vm, "siege.side").map(|c| c.0), Some(0), "team 0 attacks first");
+    let left = count(&vm, "siege.clock").map(|c| c.0);
+    assert!(left.is_some_and(|s| (179..=180).contains(&s)), "{left:?}");
+
+    // An attacker takes the first site.
+    g.inside.insert((0, 600));
+    for t in 3..800 {
+        ticks(&mut vm, &mut g, t, 1);
+        if count(&vm, "siege.sites") != Some((0, 2)) {
+            break;
+        }
+    }
+    assert_eq!(count(&vm, "siege.sites"), Some((1, 2)));
+    assert_eq!(count(&vm, "siege.phase"), Some((2, 3)));
+    assert_eq!(count(&vm, "siege.round"), Some((1, 2)));
+
+}
+
+/// A map with one site and no flag stand has one phase; a game of one
+/// round still says its round, which the HUD leaves out.
+#[test]
+fn the_siege_counts_fit_a_map_with_no_stand_and_a_game_of_one_round() {
+    let mut g = siege_game();
+    g.labelled.remove("ctf_flag_spawn");
+    let vm = start(builtin::SIEGE, &mut g, &[("sites", 1), ("round_count", 1)]);
+    assert_eq!(count(&vm, "siege.sites"), Some((0, 1)));
+    assert_eq!(count(&vm, "siege.phase"), Some((1, 1)));
+    assert_eq!(count(&vm, "siege.round"), Some((1, 1)));
 }
 
 /// `mark(wp, at)` is every viewer, `mark(wp, at, all)` is the same, and

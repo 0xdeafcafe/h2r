@@ -1813,6 +1813,34 @@ settings {
         assert_eq!(record_for(&ffa, &[]).unwrap().game_type(), GameType::Script);
     }
 
+    /// Every built-in list entry the lobby can hold builds its rows: one
+    /// that plays teams is on its carrier's retail index (Slayer's for a
+    /// type of ours), never on the script index, with team play on; the
+    /// matchmaking scripts the same. Siege, VIP and the team Slayer
+    /// variants are among them.
+    #[test]
+    fn no_built_in_team_script_is_on_the_script_index_in_the_lobby() {
+        let listed = rules::builtin::LISTED.iter().map(|b| (b.name, b.source));
+        let matchmaking = rules::builtin::MATCHMAKING.iter().map(|m| (m.key, m.source));
+        let mut teams = Vec::new();
+        for (name, source) in listed.chain(matchmaking) {
+            let ir = compiled(source);
+            let v = record_for(&ir, &[]).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            if !plays_teams(&ir) {
+                continue;
+            }
+            let carrier = GameType::from_engine(i32::from(ir.header.engine()));
+            assert_ne!(carrier, GameType::Script, "{name}");
+            assert_eq!(v.game_type(), carrier, "{name}");
+            assert!(v.team_play(), "{name}");
+            assert_eq!(v.ext().script.prefix[..], ir.id().0[..8], "{name}");
+            teams.push(name);
+        }
+        for name in ["Siege", "VIP", "SWAT", "Zombies", "Tower of Power", "Cops and Robbers"] {
+            assert!(teams.contains(&name), "{name} plays teams: {teams:?}");
+        }
+    }
+
     #[test]
     fn only_slayer_scripts_without_type_area_writes_move_to_the_script_index() {
         // A category and the game whose rules it uses can differ. An hx
