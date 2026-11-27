@@ -11,8 +11,18 @@
 //! | per node | `0x0003ebd0`'s loop | the rest matrix, its position plus `[0x004687a4]`, under the sky matrix (`0x00142a60`) |
 //! | rows | `0x001376c0` | the node matrix under the node's inverse bind (`mode` node `+0x28`, nodes at `mode +0x4c`, `0x60` each), as three rows `(s·forward_i, s·left_i, s·up_i, position_i)` |
 //!
-//! Only a section drawn by one node (`SECTION_NODE` not -1) is made; a
-//! region palette (`0x00137800`'s weighted blend) is declined, `palette`.
+//! A section drawn by one node (`SECTION_NODE` not -1) takes that node's
+//! rows. Any other takes its node map's palette as `0x00137800` builds it
+//! (called by `0x0003e380` from `0x0004c690` at detail level 4):
+//!
+//! | Step | `0x00137800` | What it makes |
+//! |---|---|---|
+//! | base | `0x0013787a` (`0x001376c0`) | every node's rows, in node order |
+//! | compound | `0x001378b0`..`0x00137a73` | per compound node of the section group `[mode +0x38][byte mode +0x3c + 4]` (`+0x4` count, `+0x8` records of 16 bytes): up to four matrix indices (`0xff` ends), weights at `+0x4`, `+0x8`, `+0xc` and `1 - sum` for the fourth; the weighted sum of the matrices so far, appended |
+//! | palette | `0x00137ac0`..`0x00137b7e` | the loaded section's (`section +0x34`) node map (`+0x64` count, `+0x68` bytes), each entry the matrix it names |
+//!
+//! A model with flag bit 2 (`mode +0x4`, one matrix only) is declined,
+//! `palette`.
 
 use super::decorators::SCENARIO;
 use super::object_nodes::{MODEL_SECTIONS, Row, SECTION_NODE, SECTION_STRIDE, TAG_INSTANCES};
@@ -36,6 +46,21 @@ const MODE_NODE_COUNT: u32 = 0x48;
 const MODE_NODES: u32 = 0x4c;
 const NODE_SIZE: u32 = 0x60;
 const NODE_INVERSE_BIND: u32 = 0x28;
+const MODE_FLAGS: u32 = 0x4;
+/// `mode +0x4` bit 2: `0x00137800` keeps one matrix.
+const ONE_MATRIX: u32 = 0x4;
+/// The section groups block (count, pointer) and the per-level group byte.
+const MODE_GROUPS: u32 = 0x34;
+const MODE_GROUP_OF_LEVEL: u32 = 0x3c;
+const GROUP_SIZE: u32 = 0xc;
+const COMPOUND_SIZE: u32 = 0x10;
+/// The detail level `0x0004c690` passes `0x0003e380` (its `push 4`).
+const SKY_LEVEL: u32 = 4;
+/// The loaded section struct and its node map (count, pointer).
+const SECTION_LOADED: u32 = 0x34;
+const NODE_MAP: u32 = 0x64;
+/// Matrices a u8 node map index can name.
+const MAX_MATRICES: usize = 256;
 
 /// A `real_matrix4x3`: scale, forward, left, up, position (13 floats).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -170,13 +195,9 @@ pub fn rows_of(mem: &dyn GuestRead, section: u32) -> Result<Vec<Row>, &'static s
     let sections = field(mem, model, MODEL_SECTIONS).ok_or("sky")?;
     let section = sections.checked_add(section * SECTION_STRIDE).ok_or("sky")?;
     let node = field(mem, section, SECTION_NODE).ok_or("sky")? as i16;
-    let Ok(node) = u32::try_from(node) else { return Err("palette") };
     let count = field(mem, model, MODE_NODE_COUNT).ok_or("node")?;
     if mem.read_u32(REST_MADE).is_none_or(|w| w & 0xff == 0) || mem.read_u32(REST_COUNT) != Some(count) {
         return Err("rest");
-    }
-    if node >= count {
-        return Err("node");
     }
     let constants = || -> Option<_> {
         let elevation = f64::from_bits(u64::from(mem.read_u32(SKY_ELEVATION)?) | u64::from(mem.read_u32(SKY_ELEVATION + 4)?) << 32);
@@ -189,14 +210,80 @@ pub fn rows_of(mem: &dyn GuestRead, section: u32) -> Result<Vec<Row>, &'static s
         Some((sky_matrix(scale, translation, angle, elevation, up, camera), offset))
     };
     let (matrix, offset) = constants().ok_or("constants")?;
-    let rest = Matrix::read(mem, REST_MATRICES + node * MATRIX_SIZE).ok_or("rest")?;
     let nodes = field(mem, model, MODE_NODES).ok_or("node")?;
-    let bind = Matrix::read(mem, nodes.checked_add(node * NODE_SIZE + NODE_INVERSE_BIND).ok_or("node")?).ok_or("node")?;
-    let rows = node_rows(&matrix, &rest, offset, &bind);
+    let node_at = |n: u32| -> Result<[Row; 3], &'static str> {
+        let rest = Matrix::read(mem, REST_MATRICES + n * MATRIX_SIZE).ok_or("rest")?;
+        let bind = Matrix::read(mem, nodes.checked_add(n * NODE_SIZE + NODE_INVERSE_BIND).ok_or("node")?).ok_or("node")?;
+        Ok(node_rows(&matrix, &rest, offset, &bind))
+    };
+    let rows: Vec<Row> = match u32::try_from(node) {
+        Ok(node) if node >= count => return Err("node"),
+        Ok(node) => node_at(node)?.to_vec(),
+        Err(_) => {
+            if field(mem, model, MODE_FLAGS).ok_or("palette")? & ONE_MATRIX != 0 {
+                return Err("palette");
+            }
+            if count as usize > MAX_MATRICES {
+                return Err("node");
+            }
+            let mut matrices = (0..count).map(node_at).collect::<Result<Vec<_>, _>>()?;
+            compound(mem, model, &mut matrices)?;
+            let loaded = field(mem, section, SECTION_LOADED).filter(|&a| a != 0).ok_or("map")?;
+            let (entries, map) = (field(mem, loaded, NODE_MAP).ok_or("map")?, field(mem, loaded, NODE_MAP + 4).ok_or("map")?);
+            if entries == 0 || entries as usize > super::object_nodes::MAX_PALETTE {
+                return Err("map");
+            }
+            let mut rows = Vec::with_capacity(entries as usize * 3);
+            for j in 0..entries {
+                let index = mem.read_u32(map.checked_add(j).ok_or("map")?).ok_or("map")? & 0xff;
+                rows.extend(matrices.get(index as usize).ok_or("map")?);
+            }
+            rows
+        }
+    };
     if !rows.iter().flatten().all(|v| v.is_finite()) {
         return Err("constants");
     }
-    Ok(rows.to_vec())
+    Ok(rows)
+}
+
+/// Appends the compound nodes of the sky's section group to `matrices`
+/// (`0x00137800`'s second loop): each the weighted sum of up to four of
+/// the matrices so far, in the guest's order of operations (`m·w + sum`,
+/// the fourth weight `1 - (w0 + w1 + w2)`). `blend` when the group or a
+/// record does not read or names a matrix not yet made.
+fn compound(mem: &dyn GuestRead, model: u32, matrices: &mut Vec<[Row; 3]>) -> Result<(), &'static str> {
+    let group = (mem.read_u32(model.checked_add(MODE_GROUP_OF_LEVEL + SKY_LEVEL).ok_or("blend")?).ok_or("blend")? & 0xff) as i8;
+    let Ok(group) = u32::try_from(group) else { return Err("blend") };
+    if group >= field(mem, model, MODE_GROUPS).ok_or("blend")? {
+        return Err("blend");
+    }
+    let at = field(mem, model, MODE_GROUPS + 4).ok_or("blend")?.checked_add(group * GROUP_SIZE).ok_or("blend")?;
+    let (records, first) = (field(mem, at, 4).ok_or("blend")?, field(mem, at, 8).ok_or("blend")?);
+    for k in 0..records {
+        if matrices.len() >= MAX_MATRICES {
+            break;
+        }
+        let record = first.checked_add(k * COMPOUND_SIZE).ok_or("blend")?;
+        let indices = mem.read_u32(record).ok_or("blend")?.to_le_bytes();
+        let mut sum = [[0.0f32; 4]; 3];
+        let mut weights = 0.0f32;
+        for (c, &index) in indices.iter().enumerate() {
+            if index == 0xff {
+                break;
+            }
+            let weight = if c < 3 { mem.read_f32(record + 4 + 4 * c as u32).ok_or("blend")? } else { 1.0 - weights };
+            let m = *matrices.get(usize::from(index)).ok_or("blend")?;
+            for (row, source) in sum.iter_mut().zip(&m) {
+                for (value, &x) in row.iter_mut().zip(source) {
+                    *value = x * weight + *value;
+                }
+            }
+            weights = weight + weights;
+        }
+        matrices.push(sum);
+    }
+    Ok(())
 }
 
 /// How the made rows compare with the guest's: `exact` bit for bit,
@@ -318,6 +405,37 @@ mod tests {
         assert_eq!(native_rows(&mem, esp), Err("rest"), "the rest pose is another model's");
         mem.w(REST_COUNT, 2);
         mem.w(section + SECTION_NODE, 0xffff);
+        assert_eq!(native_rows(&mem, esp), Err("palette"), "the model's flags do not read");
+        // A palette: the section's node map over the nodes and the sky
+        // group's compound node, 0.25 of node 0 and 0.75 of node 1.
+        let (groups, records, loaded, map) = (0xa000, 0xa100, 0xa200, 0xa300);
+        mem.w(model + MODE_FLAGS, 0);
+        assert_eq!(native_rows(&mem, esp), Err("rest"), "node 0's rest pose is unread");
+        put(&mut mem, REST_MATRICES, &Matrix { position: [1.0, 0.0, 0.0], ..Matrix::IDENTITY });
+        put(&mut mem, nodes + NODE_INVERSE_BIND, &Matrix::IDENTITY);
+        assert_eq!(native_rows(&mem, esp), Err("blend"));
+        for (at, value) in [
+            (model + MODE_GROUP_OF_LEVEL + SKY_LEVEL, 0),
+            (model + MODE_GROUPS, 1),
+            (model + MODE_GROUPS + 4, groups),
+            (groups + 4, 1),
+            (groups + 8, records),
+            (records, 0xffff_0100),
+        ] {
+            mem.w(at, value);
+        }
+        mem.f(records + 4, 0.25);
+        mem.f(records + 8, 0.75);
+        assert_eq!(native_rows(&mem, esp), Err("map"), "the section is not loaded");
+        for (at, value) in [(section + SECTION_LOADED, loaded), (loaded + NODE_MAP, 2), (loaded + NODE_MAP + 4, map), (map, 2), (map + 1, 0)] {
+            mem.w(at, value);
+        }
+        let node0 = [[2.0, 0.0, 0.0, 12.0], [0.0, 2.0, 0.0, 20.0], [0.0, 0.0, 2.0, 30.0]];
+        let blend = [[2.0, 0.0, 0.0, 10.5], [0.0, 2.0, 0.0, 20.0], [0.0, 0.0, 2.0, 30.0]];
+        assert_eq!(native_rows(&mem, esp), Ok([blend, node0].concat()));
+        mem.w(map + 1, 3);
+        assert_eq!(native_rows(&mem, esp), Err("map"), "past the matrices made");
+        mem.w(model + MODE_FLAGS, ONE_MATRIX);
         assert_eq!(native_rows(&mem, esp), Err("palette"));
         mem.w(esp + 0xcc, 0);
         assert_eq!(native_rows(&mem, esp), Err("site"));

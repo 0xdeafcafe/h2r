@@ -126,6 +126,8 @@ fn declined_name(why: &'static str) -> &'static str {
         "rest" => "rows_declined_rest",
         "palette" => "rows_declined_palette",
         "node" => "rows_declined_node",
+        "blend" => "rows_declined_blend",
+        "map" => "rows_declined_map",
         _ => "rows_declined_constants",
     }
 }
