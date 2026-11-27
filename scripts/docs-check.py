@@ -387,6 +387,7 @@ MAX_SENTENCES = 4
 def prose_only(line):
     """A line without inline code, link targets and URLs."""
     line = re.sub(r"`[^`]*`", "", line)
+    line = re.sub(r"\[[^\]]*\.md\]", "[]", line)  # a file name used as link text
     line = re.sub(r"\]\([^)]*\)", "]", line)
     return re.sub(r"https?://\S+", "", line)
 
