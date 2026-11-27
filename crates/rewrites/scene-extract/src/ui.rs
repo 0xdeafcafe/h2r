@@ -183,11 +183,19 @@ pub trait UiText {
         }
         self.shape(font, text, rect, justify)
     }
+
+    /// The glyph index engine font `font` gives the character `unit`.
+    /// `None` when the fonts do not say.
+    fn glyph(&self, font: u16, unit: u16) -> Option<u32> {
+        let _ = (font, unit);
+        None
+    }
 }
 
 /// The button glyphs a string holds as characters: the entries of the
-/// string draw's table (`0x00470204`) with no handler.
-pub const BUTTON_GLYPHS: std::ops::RangeInclusive<u16> = 0xe100..=0xe12b;
+/// string draw's table (`0x00470204`) with no handler, to `0xe12b`, and
+/// the two sticks' three frames a control's handler writes (`0x0022e1ed`).
+pub const BUTTON_GLYPHS: std::ops::RangeInclusive<u16> = 0xe100..=0xe131;
 
 /// No fonts: no text is listed.
 pub struct NoText;

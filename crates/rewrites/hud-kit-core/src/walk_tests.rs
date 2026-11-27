@@ -482,12 +482,26 @@ fn the_shadow_takes_the_lesser_alpha_and_is_left_out_at_none() {
 #[test]
 fn each_glyphs_shadow_is_drawn_before_it_one_pixel_right_and_down() {
     let glyphs = [(7, [10.0, 20.0, 15.0, 30.0]), (9, [16.0, 22.0, 20.0, 30.0])];
-    let quads = text_quads(&glyphs, 0xffff_ffff, Some(0x8000_0000));
+    let quads = text_quads(&glyphs, &[], 0xffff_ffff, Some(0x8000_0000));
     assert_eq!(quads.len(), 4);
     assert_eq!(quads[0], GlyphQuad { index: 7, rect: [11.0, 21.0, 16.0, 31.0], colour: 0x8000_0000 });
     assert_eq!(quads[1], GlyphQuad { index: 7, rect: [10.0, 20.0, 15.0, 30.0], colour: 0xffff_ffff });
     assert_eq!(quads[3].index, 9);
-    assert_eq!(text_quads(&glyphs, 0xffff_ffff, None).len(), 2);
+    assert_eq!(text_quads(&glyphs, &[], 0xffff_ffff, None).len(), 2);
+}
+
+#[test]
+fn a_coloured_buttons_glyph_is_white_at_the_strings_alpha_and_its_shadow_is_the_strings() {
+    // The coloured buttons, not the sticks and triggers after them, nor the smileys.
+    for unit in [0xe100, 0xe105, 0xe003, 0xe009, 0xe132, 0xe3ff] {
+        assert!(untinted(unit), "{unit:#x}");
+    }
+    for unit in [0x41, 0xe000, 0xe002, 0xe004, 0xe008, 0xe106, 0xe12b, 0xe131, 0xe400, 0xe446] {
+        assert!(!untinted(unit), "{unit:#x}");
+    }
+    let glyphs = [(7, [10.0, 20.0, 15.0, 30.0]), (9, [16.0, 22.0, 20.0, 30.0])];
+    let quads = text_quads(&glyphs, &[9], 0x8040_c0ff, Some(0x8000_0000));
+    assert_eq!(quads.iter().map(|q| q.colour).collect::<Vec<_>>(), [0x8000_0000, 0x8040_c0ff, 0x8000_0000, 0x80ff_ffff]);
 }
 
 #[test]

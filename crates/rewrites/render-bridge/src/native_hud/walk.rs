@@ -705,13 +705,15 @@ fn lay_out_text(mem: &dyn GuestMemory, fp: Fp, fonts: &dyn UiText, record: u32, 
     let glyphs: Vec<(u32, [f32; 4])> = shape([left, top, right, bottom])?.iter().map(|g| (g.index, g.rect)).collect();
     let (main, shadow) = hud::text_colours(mem).ok_or("read")?;
     let (main, shadow) = walk::text_colours(&main, shadow.as_ref()).ok_or("colour")?;
+    // `0x0013f9c2`: a coloured button's glyph is white, not the string's colour.
+    let white: Vec<u32> = units.iter().filter(|&&u| walk::untinted(u)).map(|&u| fonts.glyph(font, u).ok_or("shape")).collect::<Result<_, _>>()?;
     let writes = walk::text_globals(inputs, hud::text_tint(mem).ok_or("read")?);
     Ok(Some(WalkText {
         anchor: u32::from(place.anchor),
         point: place.point,
         shader: place.shader,
         font,
-        quads: walk::text_quads(&glyphs, main, shadow),
+        quads: walk::text_quads(&glyphs, &white, main, shadow),
         origin: [f32::from(screen.window[1]), f32::from(screen.window[0])],
         writes,
     }))

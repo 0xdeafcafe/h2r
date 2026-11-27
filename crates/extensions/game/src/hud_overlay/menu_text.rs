@@ -29,6 +29,10 @@ impl UiText for MenuText {
         let face = self.0.font(i16::try_from(font).ok()?)?;
         shape(&face, units, rect, alignment, true)
     }
+
+    fn glyph(&self, font: u16, unit: u16) -> Option<u32> {
+        Some(self.0.font(i16::try_from(font).ok()?)?.glyph_index(unit))
+    }
 }
 
 fn origin(left: i32, room: i32, line: i32, alignment: Justify) -> f32 {

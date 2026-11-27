@@ -1,6 +1,7 @@
 //! Reads the final widget inputs and image at the shader quad before Begin.
 
 use engine::memory::GuestMemory;
+use scene_extract::hud;
 
 /// Material inputs at the completed shader quad, after the guest has selected
 /// the widget image and evaluated its (possibly animated) shader parameters.
@@ -117,6 +118,66 @@ const SUBSTITUTED: std::ops::RangeInclusive<u16> = 0xe000..=0xf8ff;
 const GLYPHS: u32 = 0x0047_0204;
 const GLYPH_COUNT: u32 = 131;
 const GLYPH_STRIDE: u32 = 12;
+/// The handler of the controls bound to an action, and of a stick's frame.
+const BOUND_CONTROL: u32 = 0x0022_dcbc;
+const STICK_FRAME: u32 = 0x0022_e1ed;
+/// The user the view is drawn for, each controller's 0x1c bytes of
+/// bindings (its 16 actions' buttons from `+8`) and the clock a stick's
+/// frame is taken from.
+const VIEW_USER: u32 = 0x004b_9ed8;
+const BINDINGS: u32 = 0x0051_ea18;
+const BINDING_BYTES: u32 = 0x1c;
+const FRAME_CLOCK: u32 = 0x0054_d5b8;
+
+/// `0x0022e1ed`: the frame of the left (`0xe459`) or right (`0xe45a`)
+/// stick's press, three to each 500 of the clock.
+fn stick_frame(mem: &dyn GuestMemory, token: u16) -> Option<u16> {
+    let frame = match mem.u32(FRAME_CLOCK).ok()? % 500 {
+        0..=0xa5 => 0,
+        0xa6..=0x14c => 1,
+        _ => 2,
+    };
+    Some(match token {
+        0xe459 => 0xe12c + frame,
+        0xe45a => 0xe12f + frame,
+        _ => u16::from(b'?'),
+    })
+}
+
+/// `0x0022dcbc`: the button the view's player has bound to the action
+/// of `token` (`0xe446`..`0xe455`: actions 0 to 15; `0xe45e`: one of two
+/// triggers by the binding byte `+0xf`). `?` with no player, nothing with
+/// no controller.
+fn bound_control(mem: &dyn GuestMemory, token: u16) -> Option<Vec<u16>> {
+    let Some(player) = hud::player_record(mem, mem.u32(VIEW_USER).ok()?)? else { return Some(vec![u16::from(b'?')]) };
+    let controller = mem.u32(player.checked_add(0x24)?).ok()?;
+    if controller == u32::MAX {
+        return Some(Vec::new());
+    }
+    let bindings = mem.bytes(BINDINGS.checked_add(controller.checked_mul(BINDING_BYTES)?)?, BINDING_BYTES as usize).ok()?;
+    let button = match token {
+        0xe45e if bindings[0xf] == 7 => 6,
+        0xe45e => 7,
+        _ => bindings[8 + usize::from(token.checked_sub(0xe446).filter(|&action| action < 16)?)],
+    };
+    Some(vec![match button {
+        0..=13 => 0xe100 + u16::from(button),
+        14 => stick_frame(mem, 0xe459)?,
+        15 => stick_frame(mem, 0xe45a)?,
+        _ => u16::from(b'?'),
+    }])
+}
+
+/// What the glyph table's `handler` writes in place of `token`
+/// (`0x0022d43b`); `None` for a handler that is not read: the session's,
+/// the variant's and the clock's.
+fn handled(mem: &dyn GuestMemory, token: u16, handler: u32) -> Option<Vec<u16>> {
+    match handler {
+        BOUND_CONTROL => bound_control(mem, token),
+        STICK_FRAME => Some(vec![stick_frame(mem, token)?]),
+        _ => None,
+    }
+}
 /// The lookup's output holds 0xff units (`0x1a0379`).
 const MAX_UNITS: usize = 0xff;
 
@@ -162,10 +223,11 @@ pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
 
 /// The string draw's changes to `units` (`0x22d2ee`, on a buffer of 0x100
 /// units). At each unit in turn: a character of the glyph table with a
-/// handler is replaced by what the handler writes, which is not read
-/// (`None`); otherwise the last replacement pattern that starts there is
-/// replaced by its character, when the result fits. A button glyph with
-/// no handler stays a character of the string.
+/// handler is replaced by what the handler writes ([`handled`]; `None`
+/// when that is not read); otherwise the last replacement pattern that
+/// starts there is replaced by its character. Either is made only when
+/// the result fits. A button glyph with no handler stays a character of
+/// the string.
 fn substituted(mem: &dyn GuestMemory, mut units: Vec<u16>) -> Option<Vec<u16>> {
     let mut patterns = Vec::new();
     for entry in 0..REPLACEMENT_COUNT {
@@ -185,16 +247,28 @@ fn substituted(mem: &dyn GuestMemory, mut units: Vec<u16>) -> Option<Vec<u16>> {
     let mut at = 0;
     while at < units.len() {
         let unit = units[at];
+        let mut handler = 0;
         if SUBSTITUTED.contains(&unit) {
             for entry in 0..GLYPH_COUNT {
                 let glyph = GLYPHS + entry * GLYPH_STRIDE;
                 if mem.u32(glyph).ok()? == u32::from(unit) {
-                    if mem.u32(glyph + 4).ok()? != 0 {
-                        return None;
-                    }
+                    handler = mem.u32(glyph + 4).ok()?;
                     break;
                 }
             }
+        }
+        if handler != 0 {
+            let put = handled(mem, unit, handler)?;
+            // The draw steps one unit on whatever it wrote: past the
+            // string's end when it wrote nothing for the last unit.
+            if put.is_empty() && at + 1 == units.len() {
+                return None;
+            }
+            if units.len() - 1 + put.len() <= MAX_UNITS {
+                drop(units.splice(at..=at, put));
+            }
+            at += 1;
+            continue;
         }
         let hit = patterns.iter().rev().find(|(wide, _)| units[at..].starts_with(wide));
         if let Some(&(ref wide, with)) = hit {
@@ -314,6 +388,37 @@ mod tests {
         assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("a<]b"));
         m.put(0x6008, b"x][x\0");
         assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("><"));
+    }
+
+    #[test]
+    fn a_controls_token_is_the_button_the_views_player_bound() {
+        let mut m = tables();
+        m.put_u32(GLYPHS + 2 * GLYPH_STRIDE, 0xe447).put_u32(GLYPHS + 2 * GLYPH_STRIDE + 4, BOUND_CONTROL);
+        m.put_u32(GLYPHS + 3 * GLYPH_STRIDE, 0xe45a).put_u32(GLYPHS + 3 * GLYPH_STRIDE + 4, STICK_FRAME);
+        m.put(0x6008, "A\u{e447}\u{e45a}\0".as_bytes());
+        let text = |m: &FakeGuest| localized(m, 0x0500_0abc);
+        // No player: "?". The right stick's second frame of three.
+        m.put_u32(VIEW_USER, u32::MAX).put_u32(FRAME_CLOCK, 500 + 0xa6);
+        assert_eq!(text(&m).as_deref(), Some("A?\u{e130}"));
+        // User 0's player is slot 1, on controller 2, whose action 1 is button 3.
+        m.put_u32(VIEW_USER, 0).put_u32(0x004e_8c20, 0x8000).put_u32(0x8000 + 0xc, 0xec70_0001);
+        m.put_u32(0x004e_8c24, 0x8100).put_u32(0x8100 + 0x44, 0x9000);
+        let (player, bindings) = (0x9000 + 0x21c, BINDINGS + 2 * BINDING_BYTES);
+        m.map(player, 0x30).map(bindings, BINDING_BYTES);
+        m.put_u32(player + 0x24, 2).put_u8(bindings + 9, 3);
+        assert_eq!(text(&m).as_deref(), Some("A\u{e103}\u{e130}"));
+        // Buttons 14 and 15 are the sticks' frames; past 15 is "?".
+        m.put_u8(bindings + 9, 15);
+        assert_eq!(text(&m).as_deref(), Some("A\u{e130}\u{e130}"));
+        m.put_u8(bindings + 9, 16);
+        assert_eq!(text(&m).as_deref(), Some("A?\u{e130}"));
+        // No controller: nothing takes the token's place, and the draw
+        // steps over the unit that moved into it.
+        m.put_u32(player + 0x24, u32::MAX);
+        assert_eq!(text(&m).as_deref(), Some("A\u{e45a}"));
+        // Nothing in place of the string's last unit is not read.
+        m.put(0x6008, "A\u{e447}\0".as_bytes());
+        assert_eq!(text(&m), None);
     }
 
     #[test]
