@@ -301,6 +301,7 @@ impl Feature for NativeParticles {
                 .context_only()
                 .optional();
         }
+        crate::effect_materials::build(b);
         crate::cut::build(b);
         crate::native_effects::build(b);
         crate::native_flares::build(b);
