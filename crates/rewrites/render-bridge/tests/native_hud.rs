@@ -20,13 +20,31 @@ fn the_native_ui_defaults_on_and_the_master_disables_it() {
     assert!(plan("impl.render.native=off").chains.is_empty());
 }
 
+/// The Rust HUD material is on with the native UI; its own switch turns
+/// only its setup hook off, and the master switch turns everything off.
+#[test]
+fn the_rust_hud_defaults_on_and_its_switch_only_turns_it_off() {
+    for (spec, expected) in [
+        ("", true),
+        ("impl.render.native-hud=off", false),
+        ("impl.render.native=off", false),
+        ("impl.render=off", true),
+    ] {
+        assert_eq!(native_hud::rust_hud_on(&Switches::parse(spec).unwrap()), expected, "{spec}");
+    }
+    let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == "HUD_QUAD_SETUP");
+    assert!(placed(""));
+    assert!(!placed("impl.render.native-hud=off"));
+    assert!(plan("impl.render.native-hud=off").chains.values().any(|c| c.point.name == "HUD_QUAD_READY"));
+}
+
 #[test]
 fn the_ui_hooks_can_run_on_the_render_thread() {
     let plan = plan("");
     let points = [
         "UI_RENDER_LAYERS", "UI_ITEM_CALL", "UI_ITEM_RETURN", "UI_SCREEN_QUAD_READY",
         "UI_LOADING_SPINNER_READY", "UI_LOADING_BITMAP_READY",
-        "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY",
+        "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY", "HUD_QUAD_SETUP",
         "UI_LIST_READY", "UI_LIST_DONE",
     ];
     for point in points {

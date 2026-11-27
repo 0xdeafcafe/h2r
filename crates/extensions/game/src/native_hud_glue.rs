@@ -342,6 +342,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::hud_overlay::draw_tag_quad(&self.device, mem, at, vertices)
     }
 
+    fn rust_hud_quad(&self, mem: &mut dyn GuestMemory, at: &HudTagQuad, vertices: &HudVertices) -> bool {
+        self.permits_draw() && crate::hud_native::draw(&self.device, mem, at, vertices)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
         SCOPES.with(|s| s.borrow().screen_source(self.admission.owner))
             .is_some_and(|source| self.screen_overlay(mem, source, vertices))
@@ -366,7 +370,7 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             }
             let hud_input = render_bridge::native_hud::hud_overlay::inputs(mem)?;
             Some(HudTagQuad {
-                bitmap: texture, image: 0, shader, hud_input,
+                bitmap: texture, image: 0, shader, hud_input, widget: false,
             })
         };
         cache().is_some_and(|at| crate::hud_overlay::draw_text_quad(&self.device, mem, &at, vertices))

@@ -81,6 +81,15 @@ pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a9
 pub const WATER_INDEX_ARG_BYTES: u32 = 0xc;
 
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
+/// In the shader quad `0x0022a664`, the call to `0x0001be50` that starts
+/// the widget's state setup (`0x0001bd50` twice, the shader begin
+/// `0x0001bbf0`, `0x0001cf50`, `0x0001cc30`, `0x0001cd90`, then the draw at
+/// [`HUD_QUAD_READY`]): the four vertices are in the frame (`[ebp - 0x70]`)
+/// and the bitmap is set (`[0x004e6978]`, `[0x004e697c]`), but no setup
+/// has run. ESP is the tail's (`0x0022a854` pops EDI, ESI and EBX and
+/// leaves), so a quad drawn here resumes there with nothing to pop
+/// (docs/graphics/native-hud-overlay.md, "The material in Rust").
+pub const HUD_QUAD_SETUP: Point = Point::new("HUD_QUAD_SETUP", 0x0022_a7b3, Sig::Site, RENDERER);
 
 /// The screen strip's BEGIN is published and its current row is known.
 pub const SCREEN_STRIP_READY: Point = Point::new("SCREEN_STRIP_READY", 0x0002_d565, Sig::Site, RENDERER);
@@ -194,6 +203,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         PORTAL_WINDOW_RESUME,
         PORTAL_WINDOW_READY.base,
         HUD_QUAD_READY.base,
+        HUD_QUAD_SETUP.base,
         SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
         PARTICLE_PUBLISH.base,
