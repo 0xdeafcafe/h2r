@@ -10,6 +10,7 @@ use d3d::{
 };
 use d3d::backend::{ExternalAttachments, ExternalDraws};
 use engine::memory::GuestMemory;
+use render_bridge::effect_materials::Kind;
 use render_bridge::native_particles::{Call, Host, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
@@ -167,6 +168,28 @@ impl native_render::camera::GuestRead for Read<'_> {
     }
 }
 impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
+    /// A draw under a cut setup, from the material held at the cut
+    /// (docs/graphics/retire-d3d-r2.md, "The cut"). Its guest setup did
+    /// not run, so the guest must not draw it: a draw the device refuses
+    /// is dropped, counted `<kind>_material_dropped_<cause>`, and the gate
+    /// closes so the next setup runs the guest's. Always `true`.
+    #[allow(clippy::too_many_arguments)]
+    fn supplied_draw(
+        &self, mem: &mut dyn GuestMemory, kind: Kind, primitive: PrimitiveType, data: Vec<u8>,
+        carried: &[Option<[f32; 4]>; 16], supplied: &d3d::SuppliedState, candidate: &Direct<'_>,
+    ) -> bool {
+        let outcome = match self.device.lock() {
+            Ok(mut device) => device
+                .try_native_supplied_draw(&mut DeviceMemory(mem), primitive, data, carried, supplied, candidate)
+                .unwrap_or(Err("device_error")),
+            Err(_) => Err("device_lock"),
+        };
+        if let Err(cause) = outcome {
+            render_bridge::effect_materials::dropped(kind, cause);
+        }
+        true
+    }
+
     fn arm(&self, source: Source) -> bool {
         let mut s = self
             .admission
@@ -190,6 +213,10 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             source: Source::Particle(call.clone()),
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
+        if let Some(supplied) = material_proof::held(Kind::Particle) {
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof: Mutex::new(None) };
+            return self.supplied_draw(mem, Kind::Particle, PrimitiveType::QuadList, data, &carried, &supplied, &candidate);
+        }
         let proof = Mutex::new(material_proof::particle(mem, call.return_address));
         let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof };
         self.device.lock().is_ok_and(|mut device| {
@@ -222,6 +249,18 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             return false;
         };
         *bytes = Some(generated.as_slice().into());
+        let held = match call.kind {
+            effect_geometry::Kind::Contrail => material_proof::held(Kind::Contrail),
+            effect_geometry::Kind::EffectQuad => None,
+        };
+        if let Some(supplied) = held {
+            render_bridge::effect_materials::take_contrail_inputs(call.context);
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(None) };
+            let drawn = self.supplied_draw(mem, Kind::Contrail, primitive, generated, &[None; 16], &supplied, &candidate);
+            self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).waiting = None;
+            Stage::Effects.count(Metric::WalkSuppressed, 1);
+            return drawn;
+        }
         let proof = match call.kind {
             effect_geometry::Kind::Contrail => material_proof::contrail(mem, call.context),
             effect_geometry::Kind::EffectQuad => None,
@@ -239,10 +278,12 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         drawn
     }
 
-    fn material_cut(
-        &self, mem: &mut dyn GuestMemory, kind: render_bridge::effect_materials::Kind,
-    ) -> Result<(), &'static str> {
-        material_proof::cut(mem, kind)
+    fn material_cut(&self, mem: &mut dyn GuestMemory, kind: Kind) -> Result<(), &'static str> {
+        let supplied = material_proof::cut(mem, kind)?;
+        let device = self.device.lock().map_err(|_| "device_lock")?;
+        device.check_supplied(&DeviceMemory(&mut *mem), &supplied)?;
+        material_proof::hold(kind, supplied);
+        Ok(())
     }
 
     fn arm(&self, _: &mut dyn GuestMemory, call: &Call) -> bool {
@@ -1479,5 +1520,62 @@ pub(super) mod tests {
         assert!(p.vertex_uniforms.w_clip.is_some());
         assert!(!p.pixel_options.w_buffer);
         assert_eq!(p.vertex_uniforms.shift, [gfx::renderer::window_shift(1, 2); 2]);
+    }
+
+    fn cut_material() -> (native_render::effect_material::Material, native_render::effect_material::Resolved) {
+        use native_render::effect_material::{Material, Resolved, Texture};
+        let mut combiner = [0u32; 60];
+        combiner[0] = 0x0102_0304;
+        let m = Material {
+            states: vec![(0x53, 0), (0x3b, 1)],
+            stages: vec![(1, 2, 5)],
+            combiner,
+            combiner_driven: 0,
+            textures: [Some(Texture::Bitmap { bitmap: 2, image: 0 }), Some(Texture::Empty), None, None],
+            constants: vec![(0x12, [1.0, 2.0, 3.0, 4.0]), (0xae, [0.5; 4])],
+            program: (5, 7),
+        };
+        let mut program = vec![0x78, 0x20, 2, 0];
+        program.extend((0u8..32).map(|b| b + 1));
+        let r = Resolved { textures: [Some(Some(0xb000)), Some(None), None, None], program };
+        (m, r)
+    }
+
+    /// A cut setup's draw takes exactly its material: the states, combiner,
+    /// whole constant rows, the tag's program without its header, and the
+    /// textures (an empty stage unbinds, an unset one keeps the device's).
+    #[test]
+    fn a_cut_setups_material_is_the_state_its_draw_is_supplied() {
+        let (m, r) = cut_material();
+        let s = material_proof::supplied(&m, &r).unwrap();
+        assert_eq!(s.render, [(0x53, 0), (0x3b, 1)]);
+        assert_eq!(s.stages, [(1, 2, 5)]);
+        assert_eq!(s.pixel_shader, m.combiner);
+        assert_eq!(s.constants, [(0x12, [1.0, 2.0, 3.0, 4.0], 0xf), (0xae, [0.5; 4], 0xf)]);
+        assert_eq!(s.microcode.len(), 8);
+        assert_eq!(s.microcode[0], u32::from_le_bytes([1, 2, 3, 4]));
+        assert_eq!(s.textures, [Some(0xb000), Some(0), None, None]);
+        assert_eq!(s.vertex_format, None);
+    }
+
+    /// What the material does not hold is refused by name, so the guest's
+    /// setup runs: a combiner word the draw drives, a program whose length
+    /// is not its header's.
+    #[test]
+    fn a_material_the_supplied_draw_cannot_hold_keeps_the_guest_setup_by_name() {
+        let (m, r) = cut_material();
+        let driven = native_render::effect_material::Material { combiner_driven: 1 << 10, ..m.clone() };
+        assert_eq!(material_proof::supplied(&driven, &r).err(), Some("combiner_driven"));
+        let mut short = r.clone();
+        short.program.pop();
+        assert_eq!(material_proof::supplied(&m, &short).err(), Some("vertex_program_size"));
+    }
+
+    /// The particle walk's vertices as the admission takes them: `v0`
+    /// four shorts in 8 bytes, nothing else.
+    #[test]
+    fn a_cut_particle_draw_names_the_walks_vertex_format() {
+        assert_eq!(material_proof::PARTICLE_FORMATS[0], 0x0845);
+        assert!(material_proof::PARTICLE_FORMATS[1..].iter().all(|&f| (f >> 4) & 0xf == 0));
     }
 }

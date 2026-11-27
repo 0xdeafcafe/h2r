@@ -108,6 +108,8 @@ impl<B: Backend> Device<B> {
 }
 
 mod admission_scope;
+mod supplied;
+pub use supplied::{SuppliedState, refusal_name as supplied_refusal_name};
 mod inline_run;
 mod projection;
 #[cfg(feature = "gpu")]
@@ -1144,6 +1146,9 @@ pub struct Device<B: Backend> {
     /// The last draw's PSDEF and combiner words, shared with the next
     /// draws while they read the same.
     draw_pixel_shader: Option<Arc<[u32; 60]>>,
+    /// A supplied draw's combiner, over the bound pixel shader's for that
+    /// draw only ([`SuppliedState`]).
+    supplied_pixel: Option<[u32; 60]>,
     draw_combiner: Option<Arc<[u32; 57]>>,
     viewport: Viewport,
     transforms: HashMap<u32, [f32; 16]>,
@@ -1526,6 +1531,7 @@ impl<B: Backend> Device<B> {
             constants_generation: 0,
             draw_constants: None,
             draw_pixel_shader: None,
+            supplied_pixel: None,
             draw_combiner: None,
             viewport: Viewport {
                 x: 0,
@@ -5790,7 +5796,9 @@ impl<B: Backend> Device<B> {
             .iter()
             .flat_map(|s| &s.attributes)
             .fold(0u16, |m, a| m | 1 << (a.register.0 & 15));
-        let pixel_shader = if self.pixel_shader != 0 {
+        let pixel_shader = if let Some(words) = self.supplied_pixel {
+            Some(Self::shared_words(&mut self.draw_pixel_shader, &words))
+        } else if self.pixel_shader != 0 {
             let def = mem.read_u32(at(self.pixel_shader, 8)?)?;
             let words = crate::guest::read_array::<60>(mem, def)?;
             Some(Self::shared_words(&mut self.draw_pixel_shader, &words))

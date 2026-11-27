@@ -10,17 +10,22 @@
 //! native admission compares one admitted draw in [`SAMPLE`] of each kind
 //! and records the outcome here: `render.scene` carries
 //! `<kind>_material_{sampled,matched,mismatched,open,fallback,cut}`,
-//! `<kind>_material_mismatched_<field>` and
-//! `<kind>_material_refused_<reason>`.
+//! `<kind>_material_mismatched_<field>`,
+//! `<kind>_material_refused_<reason>` and
+//! `<kind>_material_dropped_<cause>`. At the setup of the draw compared
+//! next the guest's state arrays are read ([`take_state`]): the
+//! comparison covers the whole render and stage state a cut draw takes.
 //!
 //! Each kind has a gate: [`CLEAN`] matched comparisons in a row open it,
 //! any mismatch or refusal closes it (`fallback` counts the closings of
 //! an open gate). While it is open the setup itself is the cut's: at the
 //! setup's call (`0x0023ea80` from `0x00224419`, `0x00043720` from
 //! `0x00035b21`) one call in [`SAMPLE`] runs the guest's setup and its
-//! first draw is compared; the others are cut when the host draws from
-//! the Rust material (`Host::material_cut`), and what it refuses keeps
-//! the guest's setup, counted `scene_kept_15_<kind>_material_<cause>`.
+//! first draw is compared; the others are cut when the host holds the
+//! Rust material for the device's supplied draw (`Host::material_cut`),
+//! and what it refuses keeps the guest's setup, counted
+//! `scene_kept_15_<kind>_material_<cause>`. A cut setup's draw the device
+//! then refuses is dropped ([`dropped`]) and closes the gate.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -28,7 +33,7 @@ use std::sync::Mutex;
 use engine::memory::GuestMemory;
 use engine::points::{Point, Sig};
 use hooks::Builder;
-use native_render::{contrail_material, particle_material};
+use native_render::{contrail_material, effect_material, particle_material};
 
 /// One admitted draw in this many is compared (the first, then every
 /// 64th); with the gate open, one setup call in this many runs the guest.
@@ -88,6 +93,8 @@ pub struct Proof {
     /// compared.
     compare_next: bool,
     pub cut: u64,
+    /// Draws under a cut setup the supplied draw refused, by cause.
+    pub dropped: BTreeMap<&'static str, u64>,
 }
 
 impl Proof {
@@ -106,6 +113,7 @@ impl Proof {
             under_cut: false,
             compare_next: false,
             cut: 0,
+            dropped: BTreeMap::new(),
         }
     }
 
@@ -125,6 +133,20 @@ impl Proof {
 
     pub fn open(&self) -> bool {
         self.open
+    }
+
+    /// Whether the next draw is to be compared ([`Self::sample`] without
+    /// its count), read at the setup before it.
+    fn compares_next(&self) -> bool {
+        !self.under_cut && if self.open { self.compare_next } else { self.seen % SAMPLE == 0 }
+    }
+
+    /// A draw under a cut setup the device did not draw from the
+    /// material: the gate closes, and the draw, whose guest setup did not
+    /// run, is dropped by name.
+    fn dropped(&mut self, cause: &'static str) {
+        *self.dropped.entry(cause).or_default() += 1;
+        self.close();
     }
 
     /// At a setup's call: whether it is cut. A closed gate or the sampled
@@ -199,6 +221,7 @@ impl Proof {
         ];
         out.extend(self.fields.iter().map(|(f, n)| (format!("{prefix}_mismatched_{f}"), *n)));
         out.extend(self.refused.iter().map(|(r, n)| (format!("{prefix}_refused_{r}"), *n)));
+        out.extend(self.dropped.iter().map(|(r, n)| (format!("{prefix}_dropped_{r}"), *n)));
         out
     }
 }
@@ -206,6 +229,9 @@ impl Proof {
 static PROOFS: Mutex<[Proof; 2]> = Mutex::new([Proof::new(), Proof::new()]);
 static PARTICLE: Mutex<Option<particle_material::Inputs>> = Mutex::new(None);
 static CONTRAIL: Mutex<Option<(u32, contrail_material::Inputs)>> = Mutex::new(None);
+/// The guest's state arrays at the call of the setup whose draw is
+/// compared next, by kind.
+static BEFORE: Mutex<[Option<effect_material::State>; 2]> = Mutex::new([None, None]);
 
 fn with<T>(kind: Kind, f: impl FnOnce(&mut Proof) -> T) -> T {
     let mut p = PROOFS.lock().unwrap_or_else(|e| e.into_inner());
@@ -220,6 +246,25 @@ pub fn sample(kind: Kind) -> bool {
 /// Records a compared draw ([`Proof::record`]).
 pub fn record(kind: Kind, outcome: Result<&[String], &'static str>) {
     with(kind, |p| p.record(outcome));
+}
+
+/// Whether the setup of `kind` running now was cut: its draws are drawn
+/// from the material the host made at the cut ([`Host::material_cut`]).
+///
+/// [`Host::material_cut`]: crate::native_particles::Host::material_cut
+pub fn under_cut(kind: Kind) -> bool {
+    with(kind, |p| p.under_cut)
+}
+
+/// A draw under a cut setup that the device's supplied draw refused
+/// (`<kind>_material_dropped_<cause>`); the gate closes.
+pub fn dropped(kind: Kind, cause: &'static str) {
+    with(kind, |p| p.dropped(cause));
+}
+
+/// The state arrays at the setup of the draw compared now, taken.
+pub fn take_state(kind: Kind) -> Option<effect_material::State> {
+    BEFORE.lock().unwrap_or_else(|e| e.into_inner())[kind as usize].take()
 }
 
 /// The inputs of the particle draw running now; `None` before the first
@@ -273,9 +318,12 @@ fn cut(mem: &mut dyn GuestMemory, kind: Kind, esp: u32, from: u32) -> bool {
         return false;
     }
     let host = crate::native_particles::HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let decided = with(kind, |p| {
-        p.setup(|| host.as_ref().map_or(Err("no_host"), |h| h.material_cut(&mut *mem, kind)))
+    let (decided, compares) = with(kind, |p| {
+        let d = p.setup(|| host.as_ref().map_or(Err("no_host"), |h| h.material_cut(&mut *mem, kind)));
+        (d, p.compares_next())
     });
+    let state = compares.then(|| effect_material::State::read(&|a| mem.u32(a).ok())).flatten();
+    BEFORE.lock().unwrap_or_else(|e| e.into_inner())[kind as usize] = state;
     match decided {
         Ok(cut) => cut,
         Err(cause) => {
@@ -406,6 +454,32 @@ mod tests {
         let mut p = proven();
         p.record(Err("tags"));
         assert_eq!((p.open(), p.fallback), (false, 1));
+    }
+
+    #[test]
+    fn a_cut_draw_the_device_refuses_is_dropped_by_name_and_closes_the_gate() {
+        let mut p = proven();
+        assert_eq!(p.setup(|| Ok(())), Ok(false));
+        assert_eq!(p.setup(|| Ok(())), Ok(true));
+        assert!(p.under_cut);
+        p.dropped("admission");
+        assert_eq!((p.open(), p.fallback), (false, 1));
+        assert!(p.counters("particle_material").contains(&("particle_material_dropped_admission".to_owned(), 1)));
+        assert_eq!(p.setup(|| Ok(())), Ok(false), "the next setup runs the guest's");
+        assert!(!p.under_cut);
+    }
+
+    #[test]
+    fn the_state_is_read_at_the_setup_of_the_draw_compared_next_only() {
+        let mut p = Proof::new();
+        assert!(p.compares_next(), "a closed gate compares its first draw");
+        assert!(p.sample());
+        assert!(!p.compares_next());
+        let mut p = proven();
+        assert_eq!(p.setup(|| Ok(())), Ok(false));
+        assert!(p.compares_next(), "the sampled guest setup");
+        assert_eq!(p.setup(|| Ok(())), Ok(true));
+        assert!(!p.compares_next(), "a cut setup's draws are not compared");
     }
 
     #[test]

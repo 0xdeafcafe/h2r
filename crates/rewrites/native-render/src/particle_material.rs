@@ -19,7 +19,7 @@
 //! not model.
 
 #[cfg(feature = "gpu")]
-use crate::effect_material::{MATRIX_REGISTER, Texture, WORDS};
+use crate::effect_material::{MATRIX_SLOT, Texture, WORDS};
 pub use crate::effect_material::Material;
 use crate::effect_material::TAG_TABLE;
 
@@ -36,6 +36,9 @@ pub const VERTEX_OVERRIDE: [u32; 2] = [0x0047_0a38, 0x0047_0a39];
 pub const PROGRAM_BASE: u32 = 7;
 /// `STIPPLEENABLE`, which the setup turns off.
 pub const STIPPLE_ENABLE: u8 = 0x53;
+/// The hardware slot of the implementation's vertex constant 0
+/// (`lea ecx, [edi + 0x12]` at `0x00018eab`).
+pub const VERTEX_CONSTANT_BASE: usize = 0x12;
 
 const SHAD: u32 = u32::from_be_bytes(*b"shad");
 const PARTICLE_MODELS: [u32; 2] = [u32::from_be_bytes(*b"PRTM"), u32::from_be_bytes(*b"prt3")];
@@ -110,6 +113,15 @@ pub enum Refused {
     EngineTexture,
     /// Implementation 0 has no vertex shader.
     NoVertexShader,
+    /// Vertex attribute defaults (`SET_VERTEX_DATA4F_M`, `0x00018e3b`),
+    /// which a material does not carry.
+    VertexDefaults,
+    /// A vertex constant `0x00018eab` writes whole from lanes the
+    /// resolver did not all write: the rest are the setup's buffer's.
+    VertexConstantLanes,
+    /// A vertex constant from the engine's inputs or a stage's size
+    /// (`0x00019be0`): its value is the draw's, not the tag's.
+    VertexConstantDriven,
 }
 
 impl Refused {
@@ -126,6 +138,9 @@ impl Refused {
             Self::EngineState => "engine_state",
             Self::EngineTexture => "engine_texture",
             Self::NoVertexShader => "no_vertex_shader",
+            Self::VertexDefaults => "vertex_defaults",
+            Self::VertexConstantLanes => "vertex_constant_lanes",
+            Self::VertexConstantDriven => "vertex_constant_driven",
         }
     }
 }
@@ -232,13 +247,34 @@ pub fn material(lib: &mut tags::material::ShaderLibrary, i: &Inputs) -> Result<M
         };
     }
     let vrtx = imp.vertex_shader.ok_or(Refused::NoVertexShader)?;
+    if !imp.vertex_defaults.is_empty() {
+        return Err(Refused::VertexDefaults);
+    }
+    let driven = imp.per_draw_inputs
+        && imp.vector_bindings.iter().chain(&imp.scalar_bindings).any(|b| matches!(b.target, VectorTarget::Vertex { .. }));
+    if driven || !imp.dimension_bindings.is_empty() {
+        return Err(Refused::VertexConstantDriven);
+    }
+    // `0x00018eab`: `c[18 + i]` in hardware numbering (`0x003f7230` loads
+    // ECX as the slot), the four lanes of the resolver's row.
+    let mut constants = Vec::with_capacity(imp.vertex_constants.len() + 3);
+    for r in &imp.vertex_constants {
+        if r.origin != tags::material::Origin::Instance {
+            return Err(Refused::VertexConstantDriven);
+        }
+        if r.written != 0xf {
+            return Err(Refused::VertexConstantLanes);
+        }
+        constants.push((VERTEX_CONSTANT_BASE + usize::from(r.index), r.value));
+    }
+    constants.extend(i.matrix.iter().enumerate().map(|(n, row)| (MATRIX_SLOT + n, *row)));
     Ok(Material {
         states,
         stages,
         combiner,
         combiner_driven,
         textures,
-        constants: i.matrix.iter().enumerate().map(|(n, row)| (MATRIX_REGISTER + n, *row)).collect(),
+        constants,
         program: (vrtx.0, u32::from(i.class) + PROGRAM_BASE),
     })
 }

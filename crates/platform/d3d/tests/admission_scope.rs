@@ -454,3 +454,94 @@ fn a_state_change_between_particles_resolves_the_next_in_full() {
     assert_eq!(fast, full);
     assert_ne!(fast[2].state, fast[3].state);
 }
+
+/// A material other than the particle device's: alpha blend on, its own
+/// combiner, one constant and a program that colours from v0.
+fn supplied_material() -> d3d::SuppliedState {
+    use shaders::vsh::encode::{Inst, Operand, program};
+    use shaders::vsh::{MacOp, OutReg};
+    let code = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::D0, 0xF).last(),
+    ]);
+    let mut pixel_shader = [0u32; 60];
+    pixel_shader[0] = 0x0123_4567;
+    pixel_shader[57] = 0x89ab_cdef;
+    d3d::SuppliedState {
+        render: vec![(RS_ALPHABLENDENABLE, 1)],
+        pixel_shader,
+        constants: vec![(96 + 18, [1.0, 2.0, 3.0, 4.0], 0b0101)],
+        microcode: code[4..].chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect(),
+        ..Default::default()
+    }
+}
+
+/// Particles 0 and 1 through `device`, a supplied draw of particle 9
+/// between them when `cut`: the draws offered and the guest's render word.
+fn around_a_cut(cut: bool) -> (Vec<d3d::ResolvedDraw>, u32) {
+    let (mut device, mut mem) = particle_device();
+    device.set_inline_runs(true);
+    let owner = Particles::default();
+    let (data, carried) = particle(0);
+    assert!(device.try_native_inline_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, data, &carried, &owner).unwrap());
+    if cut {
+        let (data, carried) = particle(9);
+        let drawn = device
+            .try_native_supplied_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, data, &carried, &supplied_material(), &owner)
+            .unwrap();
+        assert_eq!(drawn, Ok(()));
+    }
+    let (data, carried) = particle(1);
+    assert!(device.try_native_inline_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, data, &carried, &owner).unwrap());
+    let offered = owner.0.lock().unwrap().iter().map(|d| (**d).clone()).collect();
+    let word = mem.read_u32(d3d::GuestLayout::HALO2.render_state_slot(RS_ALPHABLENDENABLE)).unwrap();
+    (offered, word)
+}
+
+/// A cut draw takes its render words, combiner, constants and program
+/// from the supplied material, not from the draw before it.
+#[test]
+fn a_cut_draw_uses_the_supplied_state_not_the_previous_draws() {
+    let (offered, _) = around_a_cut(true);
+    let (before, cut) = (&offered[0], &offered[1]);
+    let s = supplied_material();
+    assert_eq!(before.raw.render[RS_ALPHABLENDENABLE as usize], 0);
+    assert_eq!(cut.raw.render[RS_ALPHABLENDENABLE as usize], 1);
+    assert_eq!(cut.shader.pixel_shader.as_deref(), Some(&s.pixel_shader));
+    // SetPixelShader's copy: definition words 0..56 are render slots 0..56.
+    assert_eq!(cut.raw.render[..57], s.pixel_shader[..57]);
+    assert_eq!(cut.shader.combiner_state[..], s.pixel_shader[..57]);
+    let c = cut.shader.constants[96 + 18];
+    let b = before.shader.constants[96 + 18];
+    assert_eq!([c[0], c[1], c[2], c[3]], [1.0, b[1], 3.0, b[3]], "the mask writes x and z");
+    let d3d::shader::VertexProcessing::Program { start, microcode } = &cut.shader.vertex else { panic!("a program") };
+    assert_eq!((*start, &microcode[..]), (0, &s.microcode[..]));
+    assert_ne!(cut.shader.vertex, before.shader.vertex);
+}
+
+/// After a cut draw the device's state is the guest's: the next draw
+/// resolves exactly as it does with no cut draw before it, and the
+/// guest's render array is untouched.
+#[test]
+fn the_device_state_after_a_cut_draw_is_the_guests() {
+    let (with, word) = around_a_cut(true);
+    let (without, plain) = around_a_cut(false);
+    assert_eq!((word, plain), (0, 0));
+    assert_eq!(with.len(), 3);
+    assert_eq!(with[2], without[1]);
+}
+
+/// A cut draw the device cannot draw from its material alone is refused
+/// by name, offers nothing and leaves the device as it was.
+#[test]
+fn a_cut_draw_without_a_program_is_refused_by_name() {
+    let (mut device, mut mem) = particle_device();
+    let owner = Particles::default();
+    let (data, carried) = particle(0);
+    let s = d3d::SuppliedState { microcode: Vec::new(), ..supplied_material() };
+    let drawn = device
+        .try_native_supplied_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, data, &carried, &s, &owner)
+        .unwrap();
+    assert_eq!(drawn, Err("program"));
+    assert!(owner.0.lock().unwrap().is_empty());
+}

@@ -334,15 +334,15 @@ compared with the draw the native admission takes, one in 64 of each kind
 | Render and stage states | the implementation's, in set order; stage states as `0x000189a0` writes them | cull, colour write, blend, alpha test, stencil, depth, z bias; stage 0's addressing and filters |
 | Combiner | the implementation's 60 words; constants its draw-time inputs drive are not compared | the 60 words built at `0x00484f68` |
 | Textures | each bound stage's bitmap image (`0x000143c0`) | stage 0's bitmap image |
-| Constants | `c78..c80`, the view matrix | `c78..c80`, the identity |
+| Constants (hardware slots, register + 96) | implementation 0's `c[18 + i]` (`0x00018eab`), then `0xae..0xb0`, the view matrix | `0xae..0xb0`, the identity |
 | Vertex program | program `class + 7` of implementation 0's `vrtx` | engine slot 4's program 0 |
 
 `compare` names each differing field: `render_<index>`, `stage<n>_<index>`,
-`combiner_w<n>`, `texture<n>`, `constant<register>`, `vertex_program`. A
+`combiner_w<n>`, `texture<n>`, `constant<slot>`, `vertex_program`. A
 state set twice is compared at its last value. `render.scene` carries
 `<kind>_material_{sampled,matched,mismatched,open,fallback,cut}`,
-`<kind>_material_mismatched_<field>` and `<kind>_material_refused_<reason>`
-for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
+`<kind>_material_mismatched_<field>`, `<kind>_material_refused_<reason>`
+and `<kind>_material_dropped_<cause>` for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
 
 Refused, by name, rather than approximated:
 
@@ -353,14 +353,17 @@ Refused, by name, rather than approximated:
 | `vertex_override` | particle | `0x0001ccb0(0x2b)` (`[0x00470a38]` and `[0x00470a39]` set) |
 | `animated`, `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | animated parameters, a combiner variant or a state the draw's inputs choose, an engine texture or the lightmap, the frame copy |
 | `tags`, `no_vertex_shader`, `library_loading`, `library_unread` | particle | the shader does not resolve, or the map's library is not read yet |
+| `vertex_defaults`, `vertex_constant_driven`, `vertex_constant_lanes` | particle | vertex defaults, a vertex constant from the engine's inputs or a stage's size, a constant row not written whole |
+| `state_unread` | both | the state arrays were not read at the draw's setup |
 | `kind`, `blend_mode`, `view_matrix` | contrail | a block type other than 1, a blend mode past the tables, option bit 5 |
 | `texture_streaming`, `texture_unbound` | both | a bitmap image that is not resident, or a bitmap with no images |
 | `vertex_builtin`, `vertex_not_vrtx`, `vertex_program_index` | both | a program not in a `vrtx` tag |
 | `no_setup` | both | no setup read for the draw |
 
-Not compared: the stipple pattern (`0x003f8cc0`), the polygon offsets
-`SetRenderState_ZBias` derives (slots 77 to 81), the vertex declaration
-and the other vertex constants.
+Not compared field by field: the stipple pattern (`0x003f8cc0`), the
+polygon offsets `SetRenderState_ZBias` derives (slots 77 to 81), the
+vertex declaration and the other vertex constants. The whole-state check
+in "The cut" covers the render slots.
 
 ### The cut
 
@@ -369,10 +372,41 @@ Built (**Code**): `render-bridge/src/effect_materials.rs`. A gate per kind:
 | | |
 |---|---|
 | Opens | 8 matched comparisons in a row |
-| Closes | any mismatch or refusal; closing an open gate counts `<kind>_material_fallback` |
+| Closes | any mismatch, refusal or dropped draw; closing an open gate counts `<kind>_material_fallback` |
 | Open | at the setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720` returning to `0x00035b23`) one call in 64 runs the guest's setup and its first draw is compared; the others ask the host (`Host::material_cut`) |
-| Cut | the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); its draws are not compared; `<kind>_material_cut` |
-| Kept | the host's refusal, `scene_kept_15_<kind>_material_<cause>`, closes the gate |
+| Cut | the host holds the material as a supplied state and the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); `<kind>_material_cut` |
+| Kept | the host's refusal, `scene_kept_15_<kind>_material_<cause>`, runs the guest's setup and closes the gate |
+| Dropped | a cut setup's draw the device refuses: its setup did not run, so the guest does not draw it either; `<kind>_material_dropped_<cause>`, and the gate closes |
+
+A compared draw is checked against its whole state, not only the
+material's fields. At the call of the setup whose draw is compared next,
+the guest's arrays (`D3D__RenderState` `0x00407498`, 166 words;
+`D3D__TextureState` `0x00404dd0`, 4 x 32) are read; the draw's render and
+stage words must be those arrays with the material over them
+(`effect_material::compare_state`, fields `state_render_<n>`,
+`state_stage<s>_<n>`). A setup write the material does not carry (the
+restore of the implementation before, a state the tag does not list) so
+keeps the gate shut. The draw's program must start at slot 0 and a
+particle's vertex must be 8 bytes.
+
+The cut draw (`d3d::Device::try_native_supplied_draw`,
+`d3d/src/device/supplied.rs`):
+
+| Takes | From |
+|---|---|
+| render words | the device's pushed state, then render slots 0..56 from the combiner (`SetPixelShader` copies them, `rep movsd` at `0x003fa4d5`), then the material's states |
+| stage words | the device's, then the material's |
+| combiner | the material's definition |
+| constants | the device's, the material's rows over them (`c[18 + i]` from `0x00018eab`, the matrix at `0xae`) |
+| program | the tag's, at slot 0 (`LoadVertexShader(program, 0)` at `0x0001c5c7`) |
+| textures | the material's headers (an empty stage unbinds), the device's elsewhere |
+| vertex format | particles: `v0` four `S32K` shorts in 8 bytes (`PARTICLE_FORMATS`); contrails: the device's, which the kept declaration sets |
+
+After it the device's constants, textures, combiner and inline run are as
+before, so the guest's later draws find the state they left; only the
+carried attributes stay, as the guest's emitter writes them too. The
+host asks `Device::check_supplied` before it cuts: what it names keeps
+the guest's setup.
 
 Kept on every call, by name:
 
@@ -380,13 +414,37 @@ Kept on every call, by name:
 |---|---|
 | `0x0002c3b0`, `0x0001bd50` | they write no device state, but later draws read their writes: `0x0001bd50`'s environment cache `[0x00485a58]` and dirty words, and `0x00016b90`'s engine inputs from `0x0055edd8` |
 | `0x00035b00`'s own setup (`0x00016b10`, the declaration from entry `+0x10`, `0x0001c6b0`, `0x0001c710`, `0x0001cf50`) | the declaration is not in the material |
-| `material_device_state` | the game's host refuses every cut after the material, its textures and program are made: the device resolves a draw's program, vertex format, combiner, textures and constants from its own state, and no admission draws from a supplied one, so a cut setup's draw would take the state the draw before it left |
+
+Refused, keeping the guest's setup (`scene_kept_15_<kind>_material_<cause>`):
+
+| Cause | Why |
+|---|---|
+| `combiner_driven` | a combiner word the draw's inputs drive |
+| `vertex_defaults` | `SET_VERTEX_DATA4F_M` defaults (`0x00018e3b`) |
+| `vertex_constant_driven` | a vertex constant from the engine's inputs or a stage's size |
+| `vertex_constant_lanes` | a constant row the resolver did not write whole |
+| `vertex_program_size` | a program whose length is not its header's |
+| `program`, `render_slot`, `stage_slot`, `constant_slot`, `vertex_format`, `texture_unread`, `texture_format`, `palette` | `check_supplied`: a palettized texture would take the device's palette |
 
 The material's own refusals reach the same counter
 (`scene_kept_15_particle_material_tags`, `..._library_loading`, ...).
+R2's answer (`effects_shadow/answer.rs`) reaches the cut draw through
+`native_particles::draw_emission` and the host's `try_emit`.
+
 Tests: `effect_materials.rs` (`a_proven_material_cuts_the_handler_setup`,
 `one_draw_in_64_keeps_the_guest_setup_and_compares`,
-`a_refused_material_keeps_the_guest_setup_by_name`).
+`a_refused_material_keeps_the_guest_setup_by_name`,
+`a_cut_draw_the_device_refuses_is_dropped_by_name_and_closes_the_gate`,
+`the_state_is_read_at_the_setup_of_the_draw_compared_next_only`),
+`d3d/tests/admission_scope.rs`
+(`a_cut_draw_uses_the_supplied_state_not_the_previous_draws`,
+`the_device_state_after_a_cut_draw_is_the_guests`,
+`a_cut_draw_without_a_program_is_refused_by_name`),
+`effect_material.rs` (`a_setup_write_the_material_does_not_carry_is_named_by_its_slot`),
+`native_particles_admission.rs`
+(`a_cut_setups_material_is_the_state_its_draw_is_supplied`,
+`a_material_the_supplied_draw_cannot_hold_keeps_the_guest_setup_by_name`,
+`a_cut_particle_draw_names_the_walks_vertex_format`).
 
 Tests: `effect_material.rs`
 (`a_resident_image_binds_its_texture_and_others_fall_back_as_the_binder_does`,

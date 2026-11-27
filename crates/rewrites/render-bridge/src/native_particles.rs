@@ -53,8 +53,10 @@ pub trait Host: Send + Sync {
     fn try_emit(&self, _mem: &mut dyn GuestMemory, _call: &Call) -> bool { false }
     fn try_dynamic(&self, _mem: &mut dyn GuestMemory, _esp: u32, _data: Option<u32>) -> bool { false }
     /// Whether the next draws of `kind` are drawn from the Rust material,
-    /// so the guest's setup may be cut (`effect_materials`); `Err` names
-    /// why not, and the setup runs.
+    /// so the guest's setup may be cut (`effect_materials`): `Ok` holds it
+    /// as the state the device's supplied draw takes, for `try_emit` and
+    /// `try_dynamic` to draw the setup's draws from; `Err` names why not,
+    /// and the setup runs.
     fn material_cut(&self, _mem: &mut dyn GuestMemory, _kind: crate::effect_materials::Kind) -> Result<(), &'static str> {
         Err("no_host")
     }
