@@ -52,7 +52,6 @@ pub struct Exit {
 /// x87 status bits a compare sets: C3, C2, C0.
 const CC: u32 = 0x4500;
 const LESS: u32 = 0x0100;
-const EQUAL: u32 = 0x4000;
 
 fn sse(mxcsr: u32) -> Result<Sse, Fallback> {
     if mxcsr & 0x1f80 != 0x1f80 {

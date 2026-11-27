@@ -520,7 +520,7 @@ fn place_definitions(b: &mut Builder) {
         let caller_ebx = c.cpu.ebx.to_le_bytes();
         let step = {
             let mut mem = rt.memory();
-            if mem.write(frame, &caller_ebx).is_err() {
+            if mem.write(frame, caller_ebx).is_err() {
                 walk::count("definitions_frame");
                 definitions::leave();
                 return Ok(Flow::Continue);
@@ -532,7 +532,7 @@ fn place_definitions(b: &mut Builder) {
                 definitions::leave();
                 return Ok(Flow::Continue);
             };
-            if mem.write(at, &record.to_le_bytes()).is_err() {
+            if mem.write(at, record.to_le_bytes()).is_err() {
                 walk::count("definitions_read");
                 definitions::leave();
                 return Ok(Flow::Continue);

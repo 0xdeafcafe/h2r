@@ -30,14 +30,13 @@ use scene_extract::layout::skip::{CURRENT_LAYER, CURRENT_LIST};
 use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
 use timeline::native::{Metric, Stage};
 
-use crate::cut::{self, Cut};
+use crate::cut;
 use crate::frame_step;
 use crate::native_objects::NativeSet;
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
 
-pub(crate) use crate::native_transparents::FIRST_PERSON_ITEMS;
 
 pub use crate::cut::FIRST_PERSON as CUT;
 
