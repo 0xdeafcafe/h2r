@@ -1,34 +1,37 @@
-//! Co-op with more than two players (docs/live/live-coop.md section 12):
-//! where players 3 to 16 start, and keeping them with the others when the
-//! level's scripts move only the first two.
+//! Co-op with more than two players (docs/live/live-coop-join.md section
+//! 13): where players 3 to 16 start, respawn and stand when the level's
+//! scripts move only the first two.
 //!
 //! The engine already spawns, respawns and ends the game over all 16
 //! player slots. What holds at two is the levels' data and scripts:
 //!
-//! * **Starting locations.** Every campaign scenario has two (00a has one).
-//!   `PLAYER_SPAWN_LOCATION` (`0x14ef00`) skips a spot a biped already
-//!   stands on and answers `0xffff`, so a third player's first spawn fails
-//!   and is retried each tick until P1 or P2 steps off a spot. Here, for a
-//!   player of index 2 or more, a `0xffff` becomes the spot `index % count`,
-//!   and the spawn is followed by retail's co-op placement
-//!   (`PLAYER_PLACE_NEAR`, `0x14e970`) next to player 0, as the co-op
-//!   respawn does after its own spawn (`0x14cfeb`, `0x14cffd`). Both happen
-//!   inside the one spawn call, so the new unit never stands a tick on the
-//!   occupied spot.
-//! * **Script teleports.** The scripts name `player0` and `player1` only:
-//!   `object_teleport` (`SCRIPT_TELEPORT`, `0x29ffb0`) moves those two to a
-//!   cutscene flag and leaves the rest behind. (`volume_teleport_players_not_inside`
-//!   already walks every player.) After a teleport of player 0's or 1's
-//!   unit, a BSP switch, or the end of a cinematic, the next player update
-//!   moves every player of index 2 or more who is on foot and more than
-//!   [`LEASH`] world units from the anchor next to it, with the same
-//!   placement. Never during a cinematic.
+//! * **Level start.** Every campaign scenario has two starting locations
+//!   (00a one), and `PLAYER_SPAWN_LOCATION` (`0x14ef00`) skips a spot a
+//!   biped stands on. For a first spawn of a player of index 2 or more,
+//!   when retail finds no free spot, the pick tries the grid of
+//!   [`spots::start_candidates`] (rings around starting locations 0 and 1)
+//!   with retail's own free-spot test (`SPAWN_LOCATION_FREE`, `0x23bb70`)
+//!   at the spot, and spawns the player there. No spot is nearer than
+//!   [`spots::MIN_GAP`] to another player. With no spot on any ring the
+//!   spawn fails, and the engine retries it next tick, as retail does.
+//! * **Gathers.** A teleport (`SCRIPT_TELEPORT`, `0x29ffb0`) of the
+//!   scripts' `player0` or `player1`, a BSP switch, the end of a cinematic,
+//!   or a scripts' player entering a trigger volume ([`volumes`]) brings
+//!   every player of index 2 or more past [`LEASH`] to a grid spot around
+//!   the anchor, each its own. A player 3+ past the leash inside a volume
+//!   neither scripts' player is in comes back the same way. Never during a
+//!   cinematic.
+//! * **Respawn.** Retail's co-op respawn places a dead player next to the
+//!   last player in table order; with players 3+ it is placed on a grid
+//!   spot around [`spots::group_anchor`] instead.
+//! * **Checkpoints** ([`save`]): a majority rule over the squad near the
+//!   anchor.
 //!
-//! The hooks act only while co-op over Live is armed ([`Arm`]), and only on
-//! players of index 2 or more, who exist only when the host's
-//! `coop.max_players` let a third console in. They are part of the
+//! The hooks act only while co-op over Live is armed ([`Arm`]), and only
+//! when a player of index 2 or more exists, which happens only when the
+//! host's `coop.max_players` let a third console in. They are part of the
 //! simulation, so they must run alike on every console: they never read a
-//! per-console setting.
+//! per-console setting, only the game.
 //!
 //! The decisions are pure functions over guest memory, tested on a fake
 //! guest; the guest calls are async entries run by the engine's test
@@ -49,15 +52,25 @@ use crate::coop_probe::Arm;
 pub const FEATURE: &str = "coop-players";
 
 /// How far (world units) a player of index 2 or more may be from the
-/// anchor before a teleport, BSP switch or cinematic's end brings them
-/// over. [guess] A world unit is about three metres; 8 keeps a squad in
-/// one room and does not chase someone a few steps away.
+/// anchor before a gather brings them over, and how near one counts for a
+/// checkpoint. [guess] A world unit is about three metres; 8 keeps a squad
+/// in one room and does not chase someone a few steps away.
 pub const LEASH: f32 = 8.0;
 
 /// The first player index the scripts do not name.
 pub const FIRST_EXTRA: u16 = 2;
 
-/// Guest layouts (docs/live/live-coop.md section 12, all read in the
+/// How far below a level-start spot the free-spot test is asked first: a
+/// spot whose capsule is blocked there has ground under it. [guess] that
+/// the test sees the structure; spots with no ground found are tried only
+/// when none has it.
+pub const GROUND_PROBE: f32 = 0.5;
+
+/// The co-op respawn's call of `PLAYER_PLACE_NEAR` (`0x14cffd`, a 5-byte
+/// `call rel32`): the return address its placement is known by.
+pub const RESPAWN_PLACE_RETURN: u32 = 0x0014_cffd + 5;
+
+/// Guest layouts (docs/live/live-coop-join.md section 13, all read in the
 /// disassembly).
 pub mod layout {
     /// Datum array header: element data, the index limit, the in-use bits.
@@ -77,8 +90,10 @@ pub mod layout {
     pub const OBJECT_ADDRESS: u32 = 8;
     pub const OBJECT_PARENT: u32 = 0x14;
     pub const OBJECT_POSITION: u32 = 0x30;
-    /// Scenario: starting-location count.
+    /// Scenario: starting locations (count, then the address of the
+    /// first); `0x34` each, the position at `+0` (docs/editor/scenario-editor.md).
     pub const SCENARIO_STARTS: u32 = 0x100;
+    pub const START_STRIDE: u32 = 0x34;
     /// Game globals: the options' mode (1 campaign) at `+8`.
     pub const OPTIONS_MODE: u32 = 8;
     pub const CAMPAIGN: u32 = 1;
@@ -144,6 +159,11 @@ pub fn index_of(handle: u32) -> u16 {
     handle as u16
 }
 
+/// Whether a player of index 2 or more is in the game.
+pub fn has_extras(ps: &[Player]) -> bool {
+    ps.iter().any(|p| p.index >= FIRST_EXTRA)
+}
+
 /// An object, read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Object {
@@ -168,6 +188,16 @@ pub fn object<M: GuestMemory + ?Sized>(m: &M, handle: u32) -> Option<Object> {
     })
 }
 
+/// Where a unit is in the world: its own position on foot, its vehicle's
+/// (the parent's) when it rides.
+pub fn world_position<M: GuestMemory + ?Sized>(m: &M, unit: u32) -> Option<[f32; 3]> {
+    let o = object(m, unit)?;
+    if o.parent == NONE {
+        return Some(o.position);
+    }
+    object(m, o.parent).map(|v| v.position)
+}
+
 /// A campaign is running (options mode 1).
 pub fn is_campaign<M: GuestMemory + ?Sized>(m: &M) -> bool {
     m.u32(points::GAME_GLOBALS.base)
@@ -182,18 +212,32 @@ pub fn start_count<M: GuestMemory + ?Sized>(m: &M) -> u32 {
         .unwrap_or(0)
 }
 
-// ---- decisions ----
-
-/// The location a spawn of player `index` gets when the retail pick
-/// answered `picked`: retail's, unless every spot was blocked for a player
-/// of index 2 or more, then spot `index % count` (it is moved next to the
-/// anchor at once).
-pub fn location_fallback(index: u16, picked: u16, count: u32) -> Option<u16> {
-    if picked != NO_LOCATION || index < FIRST_EXTRA || count == 0 {
-        return None;
-    }
-    Some((u32::from(index) % count) as u16)
+/// The scenario's starting locations: the first's address and each
+/// position, at most [`MAX_STARTS`]. `None` when they do not read.
+pub fn starts<M: GuestMemory + ?Sized>(m: &M) -> Option<Starts> {
+    let s = m.u32(points::SCENARIO.base).ok().filter(|&s| s != 0)?;
+    let n = m
+        .i32(s.wrapping_add(SCENARIO_STARTS))
+        .ok()?
+        .clamp(0, MAX_STARTS);
+    let base = m.u32(s.wrapping_add(SCENARIO_STARTS + 4)).ok()?;
+    let at = (0..n as u32)
+        .map(|i| m.vec3(base.wrapping_add(i * START_STRIDE)).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some(Starts { base, at })
 }
+
+/// More starting locations than a scenario holds; a bad count reads no
+/// further.
+pub const MAX_STARTS: i32 = 256;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Starts {
+    pub base: u32,
+    pub at: Vec<[f32; 3]>,
+}
+
+// ---- decisions ----
 
 /// Whether the spawn of `p` is one this module takes over: a first spawn
 /// of a player of index 2 or more.
@@ -201,15 +245,23 @@ pub fn takes_spawn(p: &Player) -> bool {
     p.index >= FIRST_EXTRA && p.flags & FIRST_SPAWN != 0
 }
 
-/// The anchor the others gather at: player 0's unit when it stands on its
-/// own (not in a vehicle), else player 1's. `(unit, position)`.
-pub fn anchor<M: GuestMemory + ?Sized>(m: &M, ps: &[Player]) -> Option<(u32, [f32; 3])> {
+/// The scripts' `player0` and `player1`: the first two players with a
+/// unit, in table order (`(list_get (players) n)`).
+pub fn script_players(ps: &[Player]) -> Vec<Player> {
     ps.iter()
-        .filter(|p| p.index < FIRST_EXTRA && p.unit != NONE)
-        .find_map(|p| {
-            let o = object(m, p.unit)?;
-            (o.parent == NONE).then_some((p.unit, o.position))
-        })
+        .filter(|p| p.unit != NONE)
+        .take(usize::from(FIRST_EXTRA))
+        .copied()
+        .collect()
+}
+
+/// The anchor a gather comes to: the scripts' `player0` when it stands on
+/// its own (not in a vehicle), else their `player1`. `(unit, position)`.
+pub fn anchor<M: GuestMemory + ?Sized>(m: &M, ps: &[Player]) -> Option<(u32, [f32; 3])> {
+    script_players(ps).iter().find_map(|p| {
+        let o = object(m, p.unit)?;
+        (o.parent == NONE).then_some((p.unit, o.position))
+    })
 }
 
 pub fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -229,15 +281,9 @@ pub fn stragglers<M: GuestMemory + ?Sized>(m: &M, ps: &[Player], at: [f32; 3]) -
         .collect()
 }
 
-/// Whether a teleported object is player 0's or 1's unit: the scripts'
-/// `player0` and `player1` (the first two players with a unit).
+/// Whether a teleported object is the scripts' `player0` or `player1`.
 pub fn is_named_player_unit(ps: &[Player], object: u32) -> bool {
-    object != NONE
-        && ps
-            .iter()
-            .filter(|p| p.unit != NONE)
-            .take(usize::from(FIRST_EXTRA))
-            .any(|p| p.unit == object)
+    object != NONE && script_players(ps).iter().any(|p| p.unit == object)
 }
 
 // ---- the feature ----
@@ -246,10 +292,19 @@ pub fn is_named_player_unit(ps: &[Player], object: u32) -> bool {
 pub struct State {
     /// The player whose spawn this module is running (handle).
     spawning: Option<u32>,
+    /// A starting location the level-start pick moved for that spawn:
+    /// (its address, its own position), put back when the spawn returns.
+    moved_start: Option<(u32, [f32; 3])>,
+    /// Players (bit per index) whose level-start refusal is logged, so a
+    /// spawn retried each tick says it once.
+    refused: u16,
     /// Stragglers are to be brought over at the next player update.
     pending: bool,
     /// Between `cinematic_start` and `cinematic_stop`.
     cinematic: bool,
+    /// The gate volumes the scripts' players stood in at the last player
+    /// update; `None` before the first.
+    named_volumes: Option<Vec<u16>>,
 }
 
 pub struct CoopPlayers {
@@ -272,10 +327,10 @@ fn lock(s: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
 
 /// Why `coop-players` can't be snapshotted now
 /// (docs/runtime/snapshots.md): armed ([`Arm::snapshot_live`]), or a
-/// spawn of ours is running. Disarmed, the gather and cinematic flags are
-/// read only while armed, and a load starts them fresh as a new session
-/// would; the spawn and gather calls themselves are continuations the
-/// machine check sees.
+/// spawn of ours is running. Disarmed, the gather, cinematic and volume
+/// state is read only while armed, and a load starts it fresh as a new
+/// session would; the spawn and gather calls themselves are continuations
+/// the machine check sees.
 pub fn players_live(arm: &Arm, st: &Mutex<State>) -> Option<String> {
     if let Some(why) = arm.snapshot_live() {
         return Some(why);
@@ -289,8 +344,34 @@ fn say(s: &str) {
     eprintln!("coop-players: {s}");
 }
 
-/// Moves `who` next to the anchor: the position into `scratch`, then
-/// `PLAYER_PLACE_NEAR`. The number placed.
+async fn place_near(
+    cx: &Cx,
+    player: u32,
+    at: [f32; 3],
+    anchor: u32,
+    scratch: u32,
+) -> Result<bool, EntryError> {
+    cx.write(|m| -> Result<(), engine::memory::MemFault> {
+        for (i, v) in at.iter().enumerate() {
+            m.set_f32(scratch + 4 * i as u32, *v)?;
+        }
+        Ok(())
+    })?;
+    let r = cx
+        .call(
+            GuestCall::new(points::PLAYER_PLACE_NEAR.base)
+                .ebx(player)
+                .esi(scratch)
+                .args([anchor]),
+        )
+        .await?;
+    Ok(r.eax & 0xff != 0)
+}
+
+/// Moves each of `who` to its own grid spot around the anchor
+/// ([`spots::spots_around`], clear of every other player, read afresh
+/// after each placement) with `PLAYER_PLACE_NEAR`, the next spot when the
+/// game refuses one. The number placed.
 async fn place(
     cx: &Cx,
     who: &[u32],
@@ -299,43 +380,39 @@ async fn place(
 ) -> Result<usize, EntryError> {
     let mut placed = 0;
     for &p in who {
-        cx.write(|m| -> Result<(), engine::memory::MemFault> {
-            for (i, v) in anchor.1.iter().enumerate() {
-                m.set_f32(scratch + 4 * i as u32, *v)?;
+        let spots =
+            cx.read(|m| spots::spots_around(anchor.1, &spots::unit_positions(m, &players(m), p)));
+        let mut ring = None;
+        for &(r, at) in &spots {
+            if place_near(cx, p, at, anchor.0, scratch).await? {
+                ring = Some(r);
+                break;
             }
-            Ok(())
-        })
-        .map_err(EntryError::Fault)?;
-        let r = cx
-            .call(
-                GuestCall::new(points::PLAYER_PLACE_NEAR.base)
-                    .ebx(p)
-                    .esi(scratch)
-                    .args([anchor.0]),
-            )
-            .await?;
-        let ok = r.eax & 0xff != 0;
-        say(&format!(
-            "player {} placed next to the anchor{}",
-            index_of(p),
-            if ok {
-                ""
-            } else {
-                ": REFUSED (it stays where it spawned)"
-            }
-        ));
-        placed += usize::from(ok);
+        }
+        match ring {
+            Some(r) => say(&format!(
+                "player {} placed next to the anchor (ring {r})",
+                index_of(p)
+            )),
+            None => say(&format!(
+                "player {} placed next to the anchor: REFUSED ({} spots on rings 1 to {}; it stays where it is)",
+                index_of(p),
+                spots.len(),
+                spots::RINGS
+            )),
+        }
+        placed += usize::from(ring.is_some());
     }
     Ok(placed)
 }
 
 /// `PLAYER_SPAWN` for a first spawn of a player of index 2 or more: the
-/// original (with the location fallback armed), then the placement.
+/// original with the level-start pick ([`pick`]) armed, then the starting
+/// location it moved put back.
 pub async fn spawn(
     cx: Cx,
     state: Arc<Mutex<State>>,
     reentry: Arc<AtomicBool>,
-    scratch: u32,
 ) -> Result<Ret, EntryError> {
     let player = cx.arg(0).map_err(EntryError::Fault)?;
     lock(&state).spawning = Some(player);
@@ -344,47 +421,197 @@ pub async fn spawn(
         .call(GuestCall::new(points::PLAYER_SPAWN.base).args([player]))
         .await;
     reentry.store(false, Ordering::SeqCst);
-    lock(&state).spawning = None;
-    let eax = r?.eax;
-    if eax & 0xff == 0 {
-        return Ok(Ret::new(eax, 4));
+    let moved = {
+        let mut s = lock(&state);
+        s.spawning = None;
+        s.moved_start.take()
+    };
+    if let Some((at, pos)) = moved {
+        cx.write(|m| -> Result<(), engine::memory::MemFault> {
+            for (i, v) in pos.iter().enumerate() {
+                m.set_f32(at + 4 * i as u32, *v)?;
+            }
+            Ok(())
+        })?;
     }
-    let anchor = cx.read(|m| anchor(m, &players(m)));
-    match anchor {
-        Some(a) => {
-            say(&format!(
-                "player {} spawned; placing it next to the anchor",
-                index_of(player)
-            ));
-            place(&cx, &[player], a, scratch).await?;
-        }
-        None => say(&format!(
-            "player {} spawned; no anchor on foot, it stays on its starting location",
-            index_of(player)
-        )),
+    let eax = r?.eax;
+    if eax & 0xff != 0 {
+        lock(&state).refused &= !(1 << index_of(player));
     }
     Ok(Ret::new(eax, 4))
 }
 
-/// `PLAYER_UPDATE` with stragglers pending: bring them over, then the
-/// original.
-pub async fn gather(cx: Cx, reentry: Arc<AtomicBool>, scratch: u32) -> Result<Ret, EntryError> {
+fn set_pos(m: &mut dyn GuestMemory, at: u32, p: [f32; 3]) -> Result<(), engine::memory::MemFault> {
+    for (i, v) in p.iter().enumerate() {
+        m.set_f32(at + 4 * i as u32, *v)?;
+    }
+    Ok(())
+}
+
+async fn spot_free(
+    cx: &Cx,
+    entry: u32,
+    at: [f32; 3],
+    unit: u32,
+    player: u32,
+) -> Result<bool, EntryError> {
+    cx.write(|m| set_pos(m, entry, at))?;
+    let r = cx
+        .call(
+            GuestCall::new(points::SPAWN_LOCATION_FREE.base)
+                .ecx(entry)
+                .eax(unit)
+                .edi(player),
+        )
+        .await?;
+    Ok(r.eax & 0xff != 0)
+}
+
+/// `PLAYER_SPAWN_LOCATION` inside [`spawn`]: retail's pick, and when it
+/// found every spot taken, the first level-start grid spot
+/// ([`spots::start_candidates`]) clear of every player that retail's
+/// free-spot test passes, ground under it first. The starting location the
+/// spot belongs to is moved to the spot for the spawn (put back by
+/// [`spawn`]) and is the answer. No spot: `0xffff`, and the spawn waits a
+/// tick as retail.
+pub async fn pick(
+    cx: Cx,
+    state: Arc<Mutex<State>>,
+    reentry: Arc<AtomicBool>,
+) -> Result<Ret, EntryError> {
+    let player = cx.entry().ecx;
+    let (unit, a, b) = (cx.arg(0)?, cx.arg(1)?, cx.arg(2)?);
+    reentry.store(true, Ordering::SeqCst);
+    let r = cx
+        .call(
+            GuestCall::new(points::PLAYER_SPAWN_LOCATION.base)
+                .ecx(player)
+                .args([unit, a, b]),
+        )
+        .await;
+    reentry.store(false, Ordering::SeqCst);
+    let eax = r?.eax;
+    let index = index_of(player);
+    if eax as u16 != NO_LOCATION {
+        say(&format!(
+            "player {index} placed on starting location {} (free)",
+            eax as u16
+        ));
+        return Ok(Ret::new(eax, 12));
+    }
+    let (starts, candidates) = cx.read(|m| {
+        let Some(st) = starts(m) else {
+            return (None, Vec::new());
+        };
+        let units = spots::unit_positions(m, &players(m), player);
+        let c = spots::start_candidates(&st.at)
+            .into_iter()
+            .filter(|c| spots::clear_of(c.at, &units))
+            .collect();
+        (Some(st), c)
+    });
+    let Some(starts) = starts.filter(|s| !s.at.is_empty()) else {
+        return Ok(Ret::new(eax, 12));
+    };
+    let entry = |s: u16| starts.base + u32::from(s) * START_STRIDE;
+    let mut found = None;
+    'passes: for ground in [true, false] {
+        for c in &candidates {
+            if ground {
+                let below = [c.at[0], c.at[1], c.at[2] - GROUND_PROBE];
+                if spot_free(&cx, entry(c.start), below, unit, player).await? {
+                    continue;
+                }
+            }
+            if spot_free(&cx, entry(c.start), c.at, unit, player).await? {
+                found = Some(*c);
+                break 'passes;
+            }
+        }
+    }
+    // Every starting location tried goes back but the one spawned on.
+    let tried: Vec<u16> = (0..starts.at.len().min(2) as u16).collect();
+    cx.write(|m| -> Result<(), engine::memory::MemFault> {
+        for &s in &tried {
+            if found.is_none_or(|c| c.start != s) {
+                set_pos(m, entry(s), starts.at[usize::from(s)])?;
+            }
+        }
+        Ok(())
+    })?;
+    match found {
+        Some(c) => {
+            lock(&state).moved_start = Some((entry(c.start), starts.at[usize::from(c.start)]));
+            say(&format!(
+                "player {index} placed at starting location {}, ring {} ({:.2} {:.2} {:.2})",
+                c.start, c.ring, c.at[0], c.at[1], c.at[2]
+            ));
+            Ok(Ret::new((eax & 0xffff_0000) | u32::from(c.start), 12))
+        }
+        None => {
+            let first = {
+                let mut s = lock(&state);
+                let first = s.refused & (1 << index) == 0;
+                s.refused |= 1 << index;
+                first
+            };
+            if first {
+                say(&format!(
+                    "player {index}: REFUSED: no free spot on rings 1 to {} of starting locations 0 and 1 ({} clear of the others); it waits and retries each tick",
+                    spots::RINGS,
+                    candidates.len()
+                ));
+            }
+            Ok(Ret::new(eax, 12))
+        }
+    }
+}
+
+/// `PLAYER_UPDATE` with a gather due: bring over the stragglers (`all`)
+/// and the players past the leash inside a volume the scripts' players are
+/// not in, then the original.
+pub async fn gather(
+    cx: Cx,
+    reentry: Arc<AtomicBool>,
+    scratch: u32,
+    all: bool,
+) -> Result<Ret, EntryError> {
     let update = cx.arg(0).map_err(EntryError::Fault)?;
-    let (anchor, who) = cx.read(|m| {
+    let (anchor, behind, ahead) = cx.read(|m| {
         let ps = players(m);
         match anchor(m, &ps) {
-            Some(a) => (Some(a), stragglers(m, &ps, a.1)),
-            None => (None, Vec::new()),
+            Some(a) => {
+                let behind = if all {
+                    stragglers(m, &ps, a.1)
+                } else {
+                    Vec::new()
+                };
+                let ahead = volumes::ahead(m, &ps, &volumes::gates(m), a.1);
+                (Some(a), behind, ahead)
+            }
+            None => (None, Vec::new(), Vec::new()),
         }
     });
-    if let Some(a) = anchor
-        && !who.is_empty()
-    {
-        say(&format!(
-            "{} player(s) of index 2 or more left behind; bringing them over",
-            who.len()
-        ));
-        place(&cx, &who, a, scratch).await?;
+    if let Some(a) = anchor {
+        if !behind.is_empty() {
+            say(&format!(
+                "{} player(s) of index 2 or more left behind; bringing them over",
+                behind.len()
+            ));
+        }
+        let ahead: Vec<u32> = ahead.into_iter().filter(|p| !behind.contains(p)).collect();
+        if !ahead.is_empty() {
+            say(&format!(
+                "{} player(s) of index 2 or more past the leash in a trigger volume player0 and player1 are not in; bringing them back",
+                ahead.len()
+            ));
+        }
+        let mut who = behind;
+        who.extend(ahead);
+        who.sort_by_key(|&h| index_of(h));
+        if !who.is_empty() {
+            place(&cx, &who, a, scratch).await?;
+        }
     }
     reentry.store(true, Ordering::SeqCst);
     let r = cx
@@ -394,11 +621,61 @@ pub async fn gather(cx: Cx, reentry: Arc<AtomicBool>, scratch: u32) -> Result<Re
     Ok(Ret::new(r?.eax, 4))
 }
 
+/// The co-op respawn's `PLAYER_PLACE_NEAR` with players 3+: a grid spot
+/// around the group's anchor ([`spots::group_anchor`]); retail's own call
+/// when there is none or every spot is refused.
+pub async fn respawn_place(
+    cx: Cx,
+    reentry: Arc<AtomicBool>,
+    scratch: u32,
+) -> Result<Ret, EntryError> {
+    let e = cx.entry();
+    let (player, retail_at, retail_anchor) = (e.ebx, e.esi, cx.arg(0)?);
+    let (anchor, spots) = cx.read(|m| {
+        let ps = players(m);
+        match spots::group_anchor(m, &ps, player) {
+            Some(a) => (
+                Some(a),
+                spots::spots_around(a.1, &spots::unit_positions(m, &ps, player)),
+            ),
+            None => (None, Vec::new()),
+        }
+    });
+    reentry.store(true, Ordering::SeqCst);
+    let out = async {
+        if let Some(a) = anchor {
+            for &(r, at) in &spots {
+                if place_near(&cx, player, at, a.0, scratch).await? {
+                    say(&format!(
+                        "player {} respawned next to player {} (the nearest the squad's middle), ring {r}",
+                        index_of(player),
+                        cx.read(|m| players(m).iter().find(|p| p.unit == a.0).map_or(0, |p| p.index))
+                    ));
+                    return Ok::<u32, EntryError>(1);
+                }
+            }
+        }
+        let r = cx
+            .call(
+                GuestCall::new(points::PLAYER_PLACE_NEAR.base)
+                    .ebx(player)
+                    .esi(retail_at)
+                    .args([retail_anchor]),
+            )
+            .await?;
+        Ok(r.eax)
+    }
+    .await;
+    reentry.store(false, Ordering::SeqCst);
+    Ok(Ret::new(out?, 4))
+}
+
 /// Every point the feature hooks.
 pub static HOOKED: &[&points::Point] = &[
     &points::PLAYER_SPAWN,
     &points::PLAYER_SPAWN_LOCATION,
     &points::PLAYER_UPDATE,
+    &points::PLAYER_PLACE_NEAR,
     &points::SCRIPT_TELEPORT,
     &points::BSP_SWITCH,
     &points::CINEMATIC_START,
@@ -410,17 +687,18 @@ impl hooks::Feature for CoopPlayers {
     fn manifest(&self) -> hooks::Manifest {
         hooks::Manifest::new(
             FEATURE,
-            "Co-op over Live: players 3 to 16 start next to player 0 and follow the scripts' teleports",
+            "Co-op over Live: players 3 to 16 start on spots around the starting locations, follow the scripts' players and count for checkpoints by majority",
         )
-        .doc("docs/live/live-coop.md")
+        .doc("docs/live/live-coop-join.md")
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
-        let scratch = b.guest_alloc(0x10, Permissions::RW)?;
+        // +0 a gather's spot, +0x10 a respawn's.
+        let scratch = b.guest_alloc(0x20, Permissions::RW)?;
 
-        // The spawn of a third (or later) player: original, then placement.
-        let reentry = Arc::new(AtomicBool::new(false));
+        // The first spawn of a third (or later) player.
         {
+            let reentry = Arc::new(AtomicBool::new(false));
             let (arm, st, reentry) = (
                 Arc::clone(&self.arm),
                 Arc::clone(&self.state),
@@ -428,7 +706,7 @@ impl hooks::Feature for CoopPlayers {
             );
             b.raw().before(
                 &points::PLAYER_SPAWN,
-                "players 3+: spawn next to player 0",
+                "players 3+: spawn on a free spot",
                 move |c| {
                     if reentry.load(Ordering::SeqCst) || !arm.active() {
                         return Ok(Flow::Continue);
@@ -446,31 +724,53 @@ impl hooks::Feature for CoopPlayers {
                         return Ok(Flow::Continue);
                     }
                     let (st, reentry) = (Arc::clone(&st), Arc::clone(&reentry));
-                    c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(spawn(cx, st, reentry, scratch))
-                    })
+                    c.answer_async(move |cx| -> EntryFuture { Box::pin(spawn(cx, st, reentry)) })
                 },
             );
         }
-        // Its location: a blocked pick becomes a spot (it moves at once).
+        // Its location: retail's, else a grid spot.
         {
             let st = Arc::clone(&self.state);
-            b.raw()
-                .after(&points::PLAYER_SPAWN_LOCATION, "players 3+: a spot even when blocked", move |c| {
-                    let Some(player) = lock(&st).spawning else {
-                        return Ok(());
-                    };
-                    let rt = Arc::clone(c.ctx.runtime());
-                    let count = start_count(&*rt.memory());
-                    if let Some(spot) = location_fallback(index_of(player), c.cpu.eax as u16, count) {
-                        say(&format!(
-                            "player {}: every starting location is taken; spawning on {spot} and moving it",
-                            index_of(player)
-                        ));
-                        c.cpu.eax = u32::from(spot);
+            let reentry = Arc::new(AtomicBool::new(false));
+            b.raw().before(
+                &points::PLAYER_SPAWN_LOCATION,
+                "players 3+: a grid spot when the starts are taken",
+                move |c| {
+                    if reentry.load(Ordering::SeqCst) || lock(&st).spawning.is_none() {
+                        return Ok(Flow::Continue);
                     }
-                    Ok(())
-                });
+                    let (st, reentry) = (Arc::clone(&st), Arc::clone(&reentry));
+                    c.answer_async(move |cx| -> EntryFuture { Box::pin(pick(cx, st, reentry)) })
+                },
+            );
+        }
+        // The co-op respawn's placement.
+        {
+            let arm = Arc::clone(&self.arm);
+            let reentry = Arc::new(AtomicBool::new(false));
+            b.raw().before(
+                &points::PLAYER_PLACE_NEAR,
+                "players 3+: respawn by the squad's middle",
+                move |c| {
+                    if reentry.load(Ordering::SeqCst) || !arm.active() {
+                        return Ok(Flow::Continue);
+                    }
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let take = {
+                        let m = rt.memory();
+                        m.u32(c.cpu.esp)? == RESPAWN_PLACE_RETURN
+                            && is_campaign(&*m)
+                            && has_extras(&players(&*m))
+                    };
+                    if !take {
+                        return Ok(Flow::Continue);
+                    }
+                    let reentry = Arc::clone(&reentry);
+                    c.answer_async(move |cx| -> EntryFuture {
+                        Box::pin(respawn_place(cx, reentry, scratch + 0x10))
+                    })
+                },
+            );
         }
 
         // What leaves the others behind.
@@ -486,9 +786,7 @@ impl hooks::Feature for CoopPlayers {
                         return;
                     };
                     let ps = players(&*m);
-                    if ps.iter().any(|p| p.index >= FIRST_EXTRA)
-                        && is_named_player_unit(&ps, object)
-                    {
+                    if has_extras(&ps) && is_named_player_unit(&ps, object) {
                         lock(&st).pending = true;
                     }
                 })
@@ -518,41 +816,43 @@ impl hooks::Feature for CoopPlayers {
                 .optional();
         }
 
-        // Checkpoints: players 2+ who are dead or far do not count.
+        // Checkpoints: a majority of the squad near the anchor.
         {
             let arm = Arc::clone(&self.arm);
             let reentry = Arc::new(AtomicBool::new(false));
             let last = Arc::new(Mutex::new(None));
+            let verdict = Arc::new(Mutex::new(None));
             b.raw().before(
                 &points::SAVE_SAFE,
-                "players 3+: only those near count for a checkpoint",
+                "players 3+: a checkpoint by the squad's majority",
                 move |c| {
                     if reentry.load(Ordering::SeqCst) || !arm.active() {
                         return Ok(Flow::Continue);
                     }
                     let rt = Arc::clone(c.ctx.runtime());
-                    let hidden = {
+                    let squad = {
                         let m = rt.memory();
                         if !is_campaign(&*m) {
                             return Ok(Flow::Continue);
                         }
-                        save::not_counted(&*m, &players(&*m))
+                        save::squad(&*m, &players(&*m))
                     };
-                    if hidden.is_empty() {
+                    let Some(squad) = squad else {
                         return Ok(Flow::Continue);
-                    }
-                    if let Some(line) = save::note(&last, &hidden) {
+                    };
+                    if let Some(line) = save::note(&last, &squad.left_out) {
                         eprintln!("{line}");
                     }
-                    let reentry = Arc::clone(&reentry);
+                    let (reentry, verdict) = (Arc::clone(&reentry), Arc::clone(&verdict));
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(save::safe_to_save(cx, hidden, reentry))
+                        Box::pin(save::safe_to_save(cx, squad, reentry, verdict))
                     })
                 },
             );
         }
 
-        // Bring them over at the next player update, outside a cinematic.
+        // Each player update: the volume gates, then a gather when one is
+        // due, outside a cinematic.
         {
             let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
             let reentry = Arc::new(AtomicBool::new(false));
@@ -563,26 +863,45 @@ impl hooks::Feature for CoopPlayers {
                     if reentry.load(Ordering::SeqCst) || !arm.active() {
                         return Ok(Flow::Continue);
                     }
-                    {
-                        let mut s = lock(&st);
-                        if !s.pending || s.cinematic {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let all = {
+                        let m = rt.memory();
+                        if !is_campaign(&*m) {
                             return Ok(Flow::Continue);
                         }
-                        s.pending = false;
-                    }
-                    let rt = Arc::clone(c.ctx.runtime());
-                    if !is_campaign(&*rt.memory()) {
-                        return Ok(Flow::Continue);
-                    }
+                        let ps = players(&*m);
+                        if !has_extras(&ps) {
+                            return Ok(Flow::Continue);
+                        }
+                        let vols = volumes::gates(&*m);
+                        let now = volumes::named_inside(&*m, &ps, &vols);
+                        let mut s = lock(&st);
+                        if volumes::entered(s.named_volumes.as_deref(), &now) {
+                            s.pending = true;
+                        }
+                        s.named_volumes = Some(now);
+                        if s.cinematic {
+                            return Ok(Flow::Continue);
+                        }
+                        let ahead = anchor(&*m, &ps)
+                            .is_some_and(|a| !volumes::ahead(&*m, &ps, &vols, a.1).is_empty());
+                        let all = std::mem::take(&mut s.pending);
+                        if !all && !ahead {
+                            return Ok(Flow::Continue);
+                        }
+                        all
+                    };
                     let reentry = Arc::clone(&reentry);
                     c.answer_async(move |cx| -> EntryFuture {
-                        Box::pin(gather(cx, reentry, scratch))
+                        Box::pin(gather(cx, reentry, scratch, all))
                     })
                 },
             );
         }
         let (arm, st) = (Arc::clone(&self.arm), Arc::clone(&self.state));
-        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || players_live(&arm, &st)));
+        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
+            players_live(&arm, &st)
+        }));
         Ok(())
     }
 }
@@ -595,6 +914,8 @@ pub fn install(registry: &mut hooks::Registry, arm: Arc<Arm>) -> anyhow::Result<
 }
 
 pub mod save;
+pub mod spots;
+pub mod volumes;
 
 #[cfg(test)]
 mod tests;

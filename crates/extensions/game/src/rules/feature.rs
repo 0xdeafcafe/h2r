@@ -418,7 +418,8 @@ impl hooks::Feature for Rules {
 /// test `SPAWN_LOCATION_FREE`, which only that chooser calls, answers AL 0
 /// ("something stands there") for a location the filter does not keep,
 /// so the chooser keeps its best of the rest. No other feature answers
-/// the test; `coop_players`' `after` on the chooser only runs in co-op.
+/// the test; `coop_players`' answer on the chooser only runs in a co-op
+/// campaign.
 fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     use hooks::Flow;
     let s = Arc::clone(shared);
