@@ -162,7 +162,7 @@ Text and screen-effect widgets take the bitmap widget's rules, with these differ
 | Text | each guest glyph quad at the screen quad (`native_ui_screen_fan`): corners and packed colour, bit for bit, in order; the globals at the return | `Host::rust_hud_text`: runs over the host's glyph pages (`OverlayTexture::Glyphs`) by the shader's words, the quad's colour as diffuse (`hud_native::build_text`, `hud_overlay::place_text`). The shader is proven on the guest's glyph captures (`hud_native::check_text`: words, state, stages) |
 | Screen effect | the guest's one call at `SCREEN_EFFECT`: effect, values, 3 by 3, the grid and the globals | `call_frame`: the saved registers, grid, globals and the call's words on the guest's stack, then `0x0002d140` entered with the return `0x0022bbc0`, whose code leaves the widget. The post draws the effect ([native-post-hud.md](native-post-hud.md)) |
 
-Text left to the guest: a name that is not read (`name`), a number whose input is not read or is past an `i32` (`number`), a string with a character a handler replaces (`string`: the player's control for an action, a name), one the fonts do not shape (`shape`: `menu_text::shape`'s characters and the button glyphs), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
+Text left to the guest: a name that is not read (`name`), a number whose input is not read or is past an `i32` (`number`), a string with a character a handler that is not read replaces (`string`: a session's or variant's name, a clock), one the fonts do not shape (`shape`: `menu_text::shape`'s characters and the button glyphs), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
 
 The string draw's changes (`0x0022d2ee`) are `hud_overlay::substituted`:
 
@@ -170,7 +170,11 @@ The string draw's changes (`0x0022d2ee`) are `hud_overlay::substituted`:
 |---|---|---|
 | A replacement pattern (`0x0044a3f0`, 18: `:)` and the like) | the last pattern that starts at a unit becomes its character, when the result fits 0x100 units | the same |
 | A glyph-table character (`0x00470204`, 131) with no handler: the buttons `0xe100`..`0xe12b` | stays, and the scanner lays it out as any character (`0x0013f5a0`: type 4) | stays; `UiText::shape_buttons` lays it out, and its page keeps the glyph's own colours ([Glyphs](#glyphs)) |
-| A glyph-table character with a handler (`0xe408`..`0xe45e`, 42 handlers) | the handler writes the player's control or a name in its place | not read: the string is the guest's |
+| Its colour | `0x0013f660` at `0x0013f9c2`: white at the string's alpha for `0xe100`..`0xe105` (the coloured buttons) and the rest of `0xe000`..`0xe3ff` but `0xe000`..`0xe002`, `0xe004`, `0xe008` and `0xe106`..`0xe131`; the shadow keeps its colour | `walk::untinted`, `walk::text_quads` by `UiText::glyph` |
+| Its line breaks | `0x0013fd20`: a break only after white space (`0x004536cc`) or beside a CJK character, never before closing or after opening punctuation; a button is neither | as a letter |
+| A bound control (`0xe446`..`0xe455`, `0xe45e`: handler `0x0022dcbc`) | the button the view's player's controller binds to the action (`0x0051ea18`, 0x1c bytes a controller, the 16 actions from `+8`): `0xe100` + button to 13, a stick's frame for 14 and 15, `?` past 15 or with no player, nothing with no controller | `hud_overlay::bound_control` |
+| A stick (`0xe459`, `0xe45a`: handler `0x0022e1ed`) | one of its three frames (`0xe12c`.., `0xe12f`..) by the clock `[0x0054d5b8]` in 500 | `hud_overlay::stick_frame` |
+| Any other glyph-table character with a handler (40 handlers: the session's and variant's names, clocks, profile strings) | the handler writes its text | not read: the string is the guest's (`string`) |
 
 Menus shape through `UiText::shape`, which takes no button glyph: only a caller that checks the glyph quads against the guest's uses `shape_buttons`.
 
@@ -218,7 +222,8 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 
 - That any retail widget's Rust layout proves (`shadow_differed`, `text_shadow_differed` and `screen_shadow_differed` count one that does not), and that `selection_differed` stays at zero on retail definitions.
 - That the walk's caller reads nothing the walk leaves in a register (**S**: `0x001394b9` loads EAX after each call), and that a widget drawing nothing writes no global (the loop gives such a widget back to the guest).
-- That a button glyph proves: the scanner's kerning callback `0x0013fd20` and the classifier `0x0013f660` (`0xe112`..`0xe12b` and four others) are not read, and a coloured glyph magnified in its page takes each pixel's colour unfiltered.
+- That a button glyph proves: a coloured glyph magnified in its page takes each pixel's colour unfiltered, and `text_layout::lines` breaks where `0x0013fd20` does for the characters `shape` takes.
+- That the clock `[0x0054d5b8]` does not move between the walk's entry and a widget's draw (a stick's frame is read at the layout).
 - That a name the fonts shape lands as the guest's `%s` does, and the UI values' layout (`hud_inputs::ui_value`: bytes 5 to 7 of the player's values at `+0x84`).
 - That a text shader resolves and proves (`predict_text` takes one whose only sampled stage is stage 0 with the widget's bitmap, **S**: the glyph cache is bound in its place), and that a run over the host's glyph pages lands on the pixels the guest's glyph cache gives: the pages are rasterised at the display's density and hold coverage alone.
 - That a string's quads, the window's pixels plus its corner (`WalkText::origin`), are the frame's pixels the overlay draws in (**S**).

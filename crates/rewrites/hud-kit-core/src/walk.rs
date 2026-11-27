@@ -862,15 +862,27 @@ pub struct GlyphQuad {
     pub colour: u32,
 }
 
+/// `0x0013f660`: whether the string draw gives the glyph of `unit` white
+/// in place of the string's colour (`0x0013f9c9`: `or edx, 0x00ffffff`
+/// before the glyph's call). The private-use characters `0xe000` to
+/// `0xe3ff` are, but for `0xe000` to `0xe002`, `0xe004`, `0xe008` and
+/// `0xe106` to `0xe131`: the coloured buttons `0xe100` to `0xe105` keep
+/// their own colours, the sticks and triggers after them take the string's.
+pub fn untinted(unit: u16) -> bool {
+    matches!(unit, 0xe003 | 0xe005..=0xe007 | 0xe009..=0xe105 | 0xe132..=0xe3ff)
+}
+
 /// `0x0001f490` over the laid-out glyphs: each glyph's shadow, one pixel
-/// right and down, then the glyph.
-pub fn text_quads(glyphs: &[(u32, [f32; 4])], main: u32, shadow: Option<u32>) -> Vec<GlyphQuad> {
+/// right and down, then the glyph. A glyph whose index is in `white`
+/// (an [`untinted`] character's) is white at the string's alpha.
+pub fn text_quads(glyphs: &[(u32, [f32; 4])], white: &[u32], main: u32, shadow: Option<u32>) -> Vec<GlyphQuad> {
     let mut out = Vec::with_capacity(glyphs.len() * 2);
     for &(index, rect) in glyphs {
         if let Some(colour) = shadow {
             out.push(GlyphQuad { index, rect: rect.map(|v| v + 1.0), colour });
         }
-        out.push(GlyphQuad { index, rect, colour: main });
+        let colour = if white.contains(&index) { main | 0x00ff_ffff } else { main };
+        out.push(GlyphQuad { index, rect, colour });
     }
     out
 }

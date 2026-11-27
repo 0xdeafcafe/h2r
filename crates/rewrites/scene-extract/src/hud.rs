@@ -54,7 +54,7 @@ fn player_of(mem: &dyn GuestMemory, user: u32) -> Option<u32> {
 }
 
 /// The player record of local user `user`; `Ok(None)` with no player.
-fn player_record(mem: &dyn GuestMemory, user: u32) -> Option<Option<u32>> {
+pub fn player_record(mem: &dyn GuestMemory, user: u32) -> Option<Option<u32>> {
     let player = player_of(mem, user)?;
     if player == u32::MAX {
         return Some(None);

@@ -468,7 +468,7 @@ Not built:
 
 - **The rest of the walk.** The loop is the guest's until the
   definition's selection and every widget it shows are proven, and
-  whenever a screen effect is shown; a string with a control's glyph (a handler's) is the
+  whenever a screen effect is shown; a string with a session, variant or clock token is the
   guest's ([the walk in Rust](native-hud-overlay.md#the-walk-in-rust)).
 - **Screen effects from the scene.** A HUD screen effect is drawn by the
   post's transaction at its call, as `render_screen_effects`' are; a
