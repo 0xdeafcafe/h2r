@@ -295,7 +295,7 @@ fn lock(m: &Mutex<SoundSim>) -> MutexGuard<'_, SoundSim> {
 
 /// The lip-sync updates of one tick, then the tick itself: the hook's chain
 /// runs again for it, finds nothing due, and continues into the body.
-pub async fn deliver(cx: hooks::Cx, calls: Vec<(u32, [u32; 6])>) -> hooks::EntryResult {
+pub async fn deliver(cx: hooks::Cx, calls: Vec<(u32, [u32; 6])>) -> engine::entry::EntryResult {
     for (function, args) in calls {
         cx.call(engine::entry::GuestCall::new(function).args(args)).await?;
     }
@@ -606,6 +606,86 @@ mod tests {
         assert!(sim.stop(id, 5));
         assert!(sim.wait_done(id, 5));
         assert!(!sim.stop(id, 6), "a second stop finds nothing");
+    }
+
+    fn owned(start: u32) -> Owned {
+        Owned { owner: 0x1234_0002, table: 0x0044_4afc, tag: 0xe1e1_0003, range: 0, permutation: 0x0060_4050, start }
+    }
+
+    #[test]
+    fn an_owned_sounds_finish_is_due_on_the_tick_after_its_end_event() {
+        let mut sim = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let a = sim.start_owned(SoundDef { tag: 1000, duration_ms: Some(1000), looping: false }, Source(1), 0, Some(owned(0)));
+        let plain = sim.start(1000, Source(2), 0);
+        // Running: updated each tick, once per tick number.
+        let due = sim.due(1).unwrap();
+        assert_eq!((due.finished.len(), due.running.len()), (0, 1));
+        assert_eq!(due.running[0].0, a);
+        assert!(sim.due(1).is_none(), "a tick delivers once");
+        for t in 1..30 {
+            sim.step(t);
+            assert_eq!(sim.due(t + 1).unwrap().running.len(), 1);
+        }
+        // The end event of tick 30 makes the finish due at tick 31, and the
+        // sound is no longer running.
+        sim.step(30);
+        let due = sim.due(31).unwrap();
+        assert_eq!(due.finished, vec![(a, owned(0))]);
+        assert!(due.running.is_empty());
+        assert!(sim.due(32).is_none(), "nothing left to deliver");
+        assert!(sim.wait_done(plain, 30));
+        // A stop is a finish too.
+        let b = sim.start_owned(SoundDef { tag: 1, duration_ms: None, looping: true }, Source::NONE, 40, Some(owned(40)));
+        assert!(sim.stop(b, 41));
+        sim.step(41);
+        assert_eq!(sim.due(42).unwrap().finished, vec![(b, owned(40))]);
+    }
+
+    #[test]
+    fn owners_survive_a_save() {
+        let mut a = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        let id = a.start_owned(SoundDef { tag: 900, duration_ms: Some(900), looping: false }, Source(1), 0, Some(owned(0)));
+        let gone = a.start_owned(SoundDef { tag: 1, duration_ms: Some(1), looping: false }, Source(1), 0, Some(owned(0)));
+        a.step(1);
+        a.due(2);
+        let mut b = SoundSim::new(Arc::new(Table), Box::new(NullHost));
+        b.load(&a.save()).unwrap();
+        assert_eq!(a.hash(), b.hash());
+        assert_eq!(a.due(3), b.due(3));
+        let due = b.due(4).unwrap();
+        assert_eq!(due.running.iter().map(|r| r.0).collect::<Vec<_>>(), vec![id]);
+        assert!(b.save().len() > 4 && b.load(&[1, 2, 3]).is_err());
+        let _ = gone;
+    }
+
+    #[test]
+    fn the_tick_hook_is_first_and_only_under_the_switch() {
+        for (spec, on) in [("", false), ("impl.sim.sound-events", true)] {
+            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+            registry.add(&SimSoundEvents::headless()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let chain = plan.chains.get(&points::GAME_TICK.base);
+            let before = chain.map(|c| c.before.iter().map(|h| h.label).collect::<Vec<_>>()).unwrap_or_default();
+            assert_eq!(before, if on { vec!["sound owner callbacks"] } else { vec![] });
+        }
+    }
+
+    #[test]
+    fn the_updates_are_called_in_order_with_their_arguments_then_the_tick() {
+        use engine::entry::{self, Regs};
+        use engine::testing::FakeGuest;
+        let calls = vec![
+            (owners::UPDATE_LIP_SYNC, [0x1234_0002, 0, 0xe1e1_0003, 0, 0x0060_4050, 0.5f32.to_bits()]),
+            (owners::UPDATE_LIP_SYNC, [0x1234_0009, 0, 0xe1e1_0004, 1, 0x0060_4060, 1.0f32.to_bits()]),
+        ];
+        let want = calls.clone();
+        let f = move |cx: engine::entry::Cx| -> hooks::EntryFuture { Box::pin(deliver(cx, calls.clone())) };
+        let r = entry::testing::run(&f, FakeGuest::new(), Regs { esp: 0x0030_0000, ..Default::default() }, |_, _| Regs::default());
+        assert_eq!(r.result, Ok(hooks::Ret::new(0, 0)));
+        let got: Vec<(u32, Vec<u32>)> = r.calls.iter().map(|c| (c.target, c.args.clone())).collect();
+        let mut expect: Vec<(u32, Vec<u32>)> = want.iter().map(|(f, a)| (*f, a.to_vec())).collect();
+        expect.push((points::GAME_TICK.base, vec![]));
+        assert_eq!(got, expect);
     }
 
     #[test]
