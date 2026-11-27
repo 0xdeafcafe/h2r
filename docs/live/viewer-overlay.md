@@ -190,7 +190,7 @@ Moved to [Viewer overlay: the overlay, name tags and reveal](viewer-overlay-laye
 
 ## Related
 
-- [web-viewer.md](web-viewer.md): the viewer as built.
+- [web-viewer.md](web-viewer.md): the viewer.
 - [viewer-effects.md](viewer-effects.md): damage and combat effects.
 - [web-app.md](web-app.md): the app, its pages and the mock server.
 - [live-art.md](live-art.md): the map glb, its placements and features.

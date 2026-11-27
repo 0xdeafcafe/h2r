@@ -243,11 +243,11 @@ Moved to [Live API: friends, teams, moderation, saves and relay](live-api-social
 
 ## Rules scripts
 
-Moved to [Live API: custom maps, rules scripts and variants](live-api-content.md#rules-scripts).
+Moved to [Live API: rules scripts and game variants](live-api-rules.md#rules-scripts).
 
 ## Game variants
 
-Moved to [Live API: custom maps, rules scripts and variants](live-api-content.md#game-variants).
+Moved to [Live API: rules scripts and game variants](live-api-rules.md#game-variants).
 
 ## Cloud saves
 

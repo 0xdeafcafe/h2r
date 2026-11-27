@@ -193,7 +193,7 @@ the light-host corpus and the lobby sequence.
 
 **Guest RAM from a snapshot.** `state.load` with `"cow": true` already
 maps a saved RAM image private copy-on-write
-([sim.md §6.2](../runtime/sim.md#62-sharing-guest-ram-with-machine-snapshots)).
+([sim.md §6.2](../runtime/sim-metrics.md#62-sharing-guest-ram-with-machine-snapshots)).
 The proposed template uses it for the menu state. A *loaded-level*
 template (one per map and variant, forked after load) only fits a lease
 that boots straight into its map: a `sim-<run_id>` lease.

@@ -133,7 +133,7 @@ events are described in [bots.md](../game/bots.md) §9.
 
 The user's rules (2026-11-18):
 
-1. Bot stats are recorded separately but counted together for now.
+1. Bot stats are recorded separately but counted together.
 2. Bot rank is matched to yours.
 
 #### Bots in ranks

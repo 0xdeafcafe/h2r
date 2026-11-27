@@ -282,10 +282,6 @@ Integration points:
    the Live mute list (3.6) when signed in, rather than keep its own list. I
    will raise this with that lane before either side builds it.
 
-At the time of writing the pause-settings branch has no commits beyond master,
-so these names are the ones agreed in the brief. They will be checked against
-the branch before voice code is written.
-
 ## 6. Decisions and open questions
 
 Decided by the user on 2026-11-18:
