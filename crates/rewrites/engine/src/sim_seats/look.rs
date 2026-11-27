@@ -875,9 +875,10 @@ fn publish(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
                 or_bit(c, m, 0x1c, 1, true)?;
             }
         }
+        // 0x186a76: only the released path clears both latches.
+        m.set_u8(at(c.ebp, 0x8e), 0)?;
+        m.set_u8(at(c.ebp, 0x8f), 0)?;
     }
-    m.set_u8(at(c.ebp, 0x8e), 0)?;
-    m.set_u8(at(c.ebp, 0x8f), 0)?;
     // 0x186a84: the action and the input record.
     c.ecx = m.u32(at(sp, 0x104))?;
     c.eax = at(sp, 0x6c);
