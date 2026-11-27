@@ -87,15 +87,15 @@ const MATERIAL_VIS: u32 = 0x004e_d280;
 const PART_PLANES: u32 = 0x0051_f400;
 const PLANE_HASH: u32 = 0x0001_e8c0;
 const PLANE_EQUAL: u32 = 0x0001_e8f0;
-const SCREEN_SCALE: u32 = 0x0046_70e4;
-const ALPHA_SCALE: u32 = 0x0045_dc10;
+pub(super) const SCREEN_SCALE: u32 = 0x0046_70e4;
+pub(super) const ALPHA_SCALE: u32 = 0x0045_dc10;
 const DOUBLE_LOD: u32 = 0x004b_a019;
 const LOD_SCALES: u32 = 0x0048_5b28;
 /// The item's build and draw functions (`0x0004132b`).
 const ITEM_BUILD: u32 = 0x0004_cbf0;
 const ITEM_DRAW: u32 = 0x0004_d0b0;
 const ITEM: u32 = 0x18;
-const PART: u32 = 0x48;
+pub(super) const PART: u32 = 0x48;
 /// The shader groups whose definition is reached through a virtual call.
 const VIRTUAL_GROUPS: [u32; 2] = [u32::from_be_bytes(*b"MTPR"), u32::from_be_bytes(*b"3trp")];
 /// The record walk's part selector (`0x00040f09`).
@@ -200,16 +200,16 @@ pub struct LightItems {
 
 /// One scene list's header, as the append `0x0003b9d0` reads it.
 #[derive(Clone, Copy)]
-struct List {
-    header: u32,
-    capacity: i32,
-    count: i32,
-    layers: u32,
-    items: u32,
+pub(super) struct List {
+    pub(super) header: u32,
+    pub(super) capacity: i32,
+    pub(super) count: i32,
+    pub(super) layers: u32,
+    pub(super) items: u32,
 }
 
 impl List {
-    fn read(m: &dyn GuestMemory, n: u32) -> Result<Self, MemFault> {
+    pub(super) fn read(m: &dyn GuestMemory, n: u32) -> Result<Self, MemFault> {
         let header = LISTS + LIST * n;
         Ok(Self {
             header,
@@ -230,7 +230,7 @@ impl List {
 
     /// `0x0003b9d0` with the and-mask -1 and the or-mask 0 `0x00041040`
     /// passes: nothing when the list is full.
-    fn append(&mut self, out: &mut Writes, shader: u32, level: u32, layers: u32, argument: u32) {
+    pub(super) fn append(&mut self, out: &mut Writes, shader: u32, level: u32, layers: u32, argument: u32) {
         if self.count >= self.capacity {
             return;
         }
@@ -252,14 +252,14 @@ impl List {
 
 /// A shader's level-of-detail table, as `0x0001bf50` and `0x00041040`
 /// read it.
-struct Lod {
-    classification: u32,
-    levels: u32,
-    count: i32,
+pub(super) struct Lod {
+    pub(super) classification: u32,
+    pub(super) levels: u32,
+    pub(super) count: i32,
 }
 
 impl Lod {
-    fn read(m: &dyn GuestMemory, shader: u32) -> Result<Self> {
+    pub(super) fn read(m: &dyn GuestMemory, shader: u32) -> Result<Self> {
         let index = shader & 0xffff;
         if index > 0x7fff {
             return Err(Refusal::Unsupported);
@@ -289,7 +289,7 @@ impl Lod {
 
     /// `0x0001bf50`: the first level whose threshold the scaled size
     /// reaches (`comiss`, `jae`: a NaN reaches none), at most the last.
-    fn level(&self, m: &dyn GuestMemory, pixels: f32) -> Result<u32, MemFault> {
+    pub(super) fn level(&self, m: &dyn GuestMemory, pixels: f32) -> Result<u32, MemFault> {
         let mut level = 0u32;
         if self.classification != 5 {
             let mut p = pixels;
@@ -307,7 +307,7 @@ impl Lod {
         Ok(level.min(self.count as u32 - 1))
     }
 
-    fn layers(&self, m: &dyn GuestMemory, level: u32) -> Result<u32, MemFault> {
+    pub(super) fn layers(&self, m: &dyn GuestMemory, level: u32) -> Result<u32, MemFault> {
         m.u32(self.levels.wrapping_add(level * 10 + 2))
     }
 }
@@ -333,7 +333,7 @@ fn material_visible(m: &dyn GuestMemory, bit: u8, placement: u32) -> Result<bool
 
 /// `0x000460d0` for a record with flag bit 6: any of the part's subparts
 /// set in the record's mask.
-fn part_visible(m: &dyn GuestMemory, part: u32, mask: u32) -> Result<bool, MemFault> {
+pub(super) fn part_visible(m: &dyn GuestMemory, part: u32, mask: u32) -> Result<bool, MemFault> {
     let first = i32::from(m.u16(part.wrapping_add(0xa))? as i16);
     let count = i32::from(m.u16(part.wrapping_add(0xc))? as i16);
     for d in first..first + count {
