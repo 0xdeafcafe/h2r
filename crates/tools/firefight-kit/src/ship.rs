@@ -95,7 +95,7 @@ pub(crate) fn dims_in<R: Read + Seek>(map: &mut Map<R>, path: &str) -> Option<Di
     let bounds = mv.block(mroot, MODE_COMPRESSION, MODE_COMPRESSION_STRIDE).ok()?;
     let low = f32::from_le_bytes(bounds.first()?[0x10..0x14].try_into().unwrap());
     let hover = (-low).max(0.0);
-    (radius > 0.0 && seats > 0 && hover > 0.0).then_some(Dims { radius, seats, hover, from_tag: true })
+    (radius > 0.0 && seats > 0).then_some(Dims { radius, seats, hover, from_tag: true })
 }
 
 /// The point of a path a kind hovers at: `hover_<kind>`.
