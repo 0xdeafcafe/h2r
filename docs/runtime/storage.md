@@ -250,7 +250,7 @@ content path for each generated offer that fits in the multiplayer list.
 The paths live under `T:\$c\<offer>\<name>.map`, with a placeholder
 file on the data partition. A retail-based mod's generated name keeps
 its path separate from the disc and Map Pack base paths.
-[Generated offers](../game/maps.md#package-offers)
+[Generated offers](../game/maps-new-maps.md#package-offers)
 
 The VFS resolves the manifest at the mod path against its base from the
 disc, installed Map Pack or a local whole-map layer. PPF and IPS reads

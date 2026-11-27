@@ -24,6 +24,7 @@ flowchart LR
 | Formats and tags | `formats/` | 22 | [map-format.md](formats/map-format.md) |
 | Engine | `engine/` | 40 | [engine-map.md](engine/engine-map.md) |
 | Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
+- [settings-menu-screens.md](game/settings-menu-screens.md): The pause menu, voice, profile and field-of-view screens, and settings as a schema.
 | Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
 | Xbox Live | `live/` | 34 | [live.md](live/live.md) |
 | Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
@@ -251,7 +252,12 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [skulls-ours.md](game/skulls-ours.md): The skulls we add, and what is not verified.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
+- [game-options-extension.md](game/game-options-extension.md): The option extension.
+- [game-options-names-tests.md](game/game-options-names-tests.md): Names with any character, tests and open items.
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
+- [maps-new-maps.md](game/maps-new-maps.md): New maps and the Map Pack.
+- [maps-sharing.md](game/maps-sharing.md): Sharing map layers through Live.
+- [maps-saving.md](game/maps-saving.md): Saving packages from the editor, and what is not verified.
 - [test-maps.md](game/test-maps.md): test maps from recipes (spawn grid, weapon range, superbounce patch...), built from the disc and loaded through the agent API's `maps.test.*`
 - [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
 - [bots-perception-navigation.md](game/bots-perception-navigation.md): Perception and navigation
@@ -273,14 +279,19 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness and display frames between two scenes (built, not yet run in game)
 - [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
+- [theater-research.md](game/theater-research.md): How Halo 3 Theater works and whether Halo 2 fits, recording, playback, event view, risks and research points.
 - [Theater seek measurements](game/notes/theater-seek.md): cold launch, keyframe capture and tape size procedure
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
+- [film-format-container.md](game/film-format-container.md): The version 3 container, keyframes, determinism, event records, size targets and live storage.
 - [forge.md](game/forge.md): what Halo 3's Forge is and what retail Halo 2 has for one to sit on: placement blocks, the netgame equipment spawner, object creation
 - [forge-design.md](game/forge-design.md): Forge documents, edit logs, local map builds and the design for in-game tools and sharing
+- [forge-design-features.md](game/forge-design-features.md): The Forge feature list, its UI, interfaces, rules and risks.
+- [forge-design-slices.md](game/forge-design-slices.md): The build slices, decisions, evidence and open items.
 - [Forge probes](game/notes/forge-probes.md) records the runtime measurement procedure and results for Forge.
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
 - [forge-monitor-appearance.md](game/forge-monitor-appearance.md): design for what a Forge monitor looks like: its model from the disc, colours, tint and light, the picker and preview, how a session agrees on it, and how Theater shows it (not built)
 - [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices
+- [ai-networking-budgets.md](game/ai-networking-budgets.md): Budgets, join in progress, Theater, determinism, Forge, interfaces, probes and slices.
 - [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the offline map kit, wave-set definitions and the design for scoring, lives, skulls and Live
 - [forge-nav.md](game/forge-nav.md): Forge's Generate nav: the bots' mesh with the placed objects merged in, its problems and their marks (partly built)
 - [forge-editing.md](game/forge-editing.md): what a Forge monitor can do, after Halo 3, Reach and Infinite: controls, tools, snapping and Coordinates, the object menu, properties by kind, groups and prefabs (partly built)
@@ -296,12 +307,17 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [game-types-without-carriers.md](game/game-types-without-carriers.md): design for game types as rules scripts with no retail game type under them: what the `carrier` supplies today and what replaces each part, the `type` line (menu row, start line, what a point is), one scoring model, objectives owned by the script, retail records, an index of ours with the four retail paths answered natively and no retail engine object, Firefight and Siege maps made in Forge or Studio with AI ground built on demand, the engine reads needed and the slices
 - [rules-engine.md](game/rules-engine.md): scripted game types: a typed rules language and Forge's logic graph compiled to one verified IR, a host-only VM over named engine entries, script ports of the seven retail engines (design)
 - [rules-language-types.md](game/rules-language-types.md): the rules language with Forge labels as declared, typed names and map requirements; nullable handles with narrowing, `time`, `zone` and `weapon` types, `match`, constants; diagnostics with fixes; the IR's label table; the slices (design)
+- [rules-language-types-tooling.md](game/rules-language-types-tooling.md): Diagnostics and the editor, the workbench, the IR and the implementation plan.
 - [rules-start-gate.md](game/rules-start-gate.md): a map that breaks a script's label requirements blocks the game: the check in the lobby, on the host at game start and on Live's hopper edits (design)
 - [rules-variants.md](game/rules-variants.md): a game variant as one rules script: the `settings` block for record settings, `quick` marks for the lobby's Quick Options, `type` and `uses`, the community variants as scripts in place of the Rust table, the slices (design)
 - [rules-world-api.md](game/rules-world-api.md): the world API for rules scripts: who runs a script in each session kind, the authenticated show channel for HUD, messages and sounds, entries for objects, drop ships, AI squads, bots, audio, HUD and physics, security and limits, per-entry costs and bench gates, splitting a script, the slices (design)
+- [rules-world-api-reference.md](game/rules-world-api-reference.md): The world API.
+- [rules-world-api-limits.md](game/rules-world-api-limits.md): Firefight and Superbounce as scripts, splitting a script, security, performance and the plan.
 - [rules-world-limits.md](game/rules-world-limits.md): the world API's security, limits and performance: what an attacker controls in each direction, verifier refusals, caps on every write, the show channel's validation, the hopper gate, a property test per entry, per-entry costs and bench gates (design)
 - [rules-world-modes.md](game/rules-world-modes.md): Firefight and Superbounce as plain scripts over the world API: what each needs, what is engine code today, a sketch of each, and when the Rust oracles go (design)
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from the session ring and the game start, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
+- [theater-design-recording-playback.md](game/theater-design-recording-playback.md): How a film is recorded and played back.
+- [theater-design-interfaces.md](game/theater-design-interfaces.md): Numbers, interfaces, slices, rules, evidence and risks.
 - [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
 - [Vehicle actions and Havok transforms](game/notes/2026-11-24-vehicle-actions.md) (retail traces for rules research R6 and R7)
 - Notes: [not-adopted.md](game/notes/not-adopted.md) (game designs built and removed), [2026-11-26-forge-loose-ends.md](game/notes/2026-11-26-forge-loose-ends.md) (static traces for the Forge loose ends: the arming bits, the weapon reserve, the spawn weight), [2026-11-24-game-type-engine-reads.md](game/notes/2026-11-24-game-type-engine-reads.md) (the engine reads for game types without carriers: the start line, the list's filing, the post-game, carried objectives, the four index paths, the clean-up's and protocol map's answers), [2026-11-26-firefight-class-census.md](game/notes/2026-11-26-firefight-class-census.md) (which retail maps hold each Firefight class's character, by tag name), [2026-11-23-firefight-kit-headroom.md](game/notes/2026-11-23-firefight-kit-headroom.md) (where the Firefight kit's tag memory goes on Zanzibar and the other large maps), [2026-11-22-retail-settings-dialogs.md](game/notes/2026-11-22-retail-settings-dialogs.md) (where retail's settings dialogs put the window's line and a setting's help), [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)

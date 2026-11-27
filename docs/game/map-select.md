@@ -73,7 +73,7 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-Installed mods appear in their own slots when space allows. See [generated offers](maps.md#package-offers) for slot
+Installed mods appear in their own slots when space allows. See [generated offers](maps-new-maps.md#package-offers) for slot
 allocation, IDs and load paths.
 
 ## Names, descriptions and pictures

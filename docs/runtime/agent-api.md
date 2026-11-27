@@ -3052,7 +3052,7 @@ or the game's UI state without UI watch. All are read-only except
   Settings and Voice children report classes `video` and `voice` on
   screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
   check that the previous screen returns on the same window and slot. See the
-  [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
+  [pause Settings walkthrough](../game/settings-menu-screens.md#to-check-in-game).
   The main menu's one row of ours, Theater, follows System Link, so
   Campaign, Xbox Live, Split Screen and System Link keep their retail rows
   0 to 3 and lobby scripts press them there. `main_menu_theater` and

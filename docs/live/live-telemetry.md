@@ -189,7 +189,7 @@ For a retail-based mod, the game start reports the retail base in
 entry named by the active cache slot (`crates/extensions/game/src/map_slots.rs`).
 A DVD override reports its own content ID even when an installed package
 shares its name. The join uses the content ID and the report can
-group with games on the same base. [Map packages](../game/maps.md#package-offers)
+group with games on the same base. [Map packages](../game/maps-new-maps.md#package-offers)
 
 Game starts say their `kind`: `campaign` for campaign mode, with
 `difficulty` from the active options' `+0x12a` word (0 easy to 3

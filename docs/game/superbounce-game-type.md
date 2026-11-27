@@ -63,7 +63,7 @@ any game with `superbounce.set`; it cannot force it on
 Each tick, what the medal chain saw of each player's physics goes to a
 running rules script first: `on touchdown(p, down, up)` for a landing,
 `on launch(p, spot, speed)` for a landing judged a bounce, `on
-grounded(p)` when a run ends ([rules-world-api.md](rules-world-api.md#physics)).
+grounded(p)` when a run ends ([rules-world-api.md](rules-world-api-reference.md#physics)).
 Then each bounce the chain files off a marked strip goes as
 `on bounce(p, spot, chain, monster)`, `spot` the strip's id
 (`superbounce_chain::spot_id`), `chain` its count and `monster` whether
