@@ -214,22 +214,13 @@ impl<R: Read + Seek> Seek for Region<'_, R> {
     }
 }
 
-/// The bytes of an areas record and its trailer at the end of the `len`
-/// bytes at `base` of `r`: none (0) when the file has no trailer.
+/// The bytes of the records of a map's tail (the areas record and the
+/// Forge record, `game_markers::record::TAIL_ENDS`) with their trailers, at
+/// the end of the `len` bytes at `base` of `r`: none (0) when the file has
+/// no trailer.
 fn tail_len<R: Read + Seek>(r: &mut R, base: u64, len: u64) -> u64 {
-    let trailer = game_markers::record::TRAILER as u64;
-    if len < trailer {
-        return 0;
-    }
-    let mut t = [0u8; game_markers::record::TRAILER];
-    let read = r
-        .seek(SeekFrom::Start(base + len - trailer))
-        .and_then(|_| r.read_exact(&mut t));
-    if read.is_err() || t[4..] != game_markers::record::END {
-        return 0;
-    }
-    let n = u64::from(u32::from_le_bytes([t[0], t[1], t[2], t[3]]));
-    if n + trailer > len { 0 } else { n + trailer }
+    let mut region = Region { inner: r, base, len, at: 0 };
+    game_markers::record::tail_len(&mut region, len)
 }
 
 /// Stream `map` with the scenario's patches applied into `out` (at its
