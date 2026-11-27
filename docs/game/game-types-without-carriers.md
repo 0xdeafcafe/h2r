@@ -276,11 +276,18 @@ area zero, and the rest stays. Three kinds of record move:
   before scripts that ride Slayer took the script index is one.
 
 Siege has no retail type and no disc record. Its record is the script's own
-(`variants::portable::record_for`), made on the script index with team play,
-one life and no starting weapon, so the swap leaves it where it is
-(`script_index.rs`, `the_listed_siege_record_is_on_the_script_index_and_a_slayer_copy_of_it_moves_there`);
-a copy of it on the Slayer index moves with its script reference, options and
-common settings whole.
+(`variants::portable::record_for`), made with team play, one life and no
+starting weapon. A team script's record stays on Slayer's index outside a
+game (`variants::portable::plays_teams`): the retail pregame lobby builds
+its Game Setup rows, its Quick Options and its team player list from the
+record's engine, and the script index has no engine object until a game
+starts, so a team record on index 6 gave the lobby an empty Game Setup
+list, an empty Quick Options and a broken player list. The swap moves it
+onto the script index at the start with its script reference, options and
+common settings whole (`script_index.rs`,
+`the_listed_siege_record_is_on_slayers_index_in_the_lobby_and_moves_at_the_start`).
+The lobby names a Game Setup list built with no rows on its log instead of
+showing it empty (`lobby_mode::rows_to_write`).
 
 A record with no script on Slayer, or on a type with no built-in, stays. A
 retail record whose type area holds a value the built-in's option cannot

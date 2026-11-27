@@ -828,7 +828,9 @@ the start line comes from (retail's announcer, one of ours, or none) and
 the retail settings layout. A retail type names its engine's
 index (ctf 1, slayer 2, oddball 3, koth 4, juggernaut 7, territories 8,
 assault 9); our types use Slayer's layout, 2. `Header::engine` reads
-it. Eligible Slayer-layout records use index 6 on disk and in play. The
+it. Eligible Slayer-layout records use index 6 on disk and in play, except
+a team script's, which stays on Slayer's index until the game's start
+moves it (the retail lobby builds its team rows from the engine). The
 type files a variant under its row of the game type list: `research`
 under Research and Devolution, `party` under Party Games, and the other
 nine under their named rows. At round start the authority posts the
