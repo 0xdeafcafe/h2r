@@ -263,6 +263,9 @@ pub enum Prop {
     /// A weapon spawner's spare clips, a property of the document: value 0
     /// the weapon's own reserve, then 0 to 10 clips.
     SpareClips,
+    /// A starting point's weight, a property of the document: Low,
+    /// Normal, High.
+    SpawnWeight,
     /// A goal's netgame flag type.
     Role,
     /// A goal's identifier.
@@ -1249,6 +1252,9 @@ pub struct Extras {
     /// for a thing with no such row, `Some(None)` for the weapon's own
     /// reserve.
     pub spare_clips: Option<Option<u8>>,
+    /// A starting point's weight, from the document's property: none for
+    /// a thing with no such row, `Some(None)` for Normal.
+    pub weight: Option<Option<forge_doc::SpawnWeight>>,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in

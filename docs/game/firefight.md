@@ -1299,7 +1299,43 @@ through a fresh script for the same commands.
   jumps past its byte when it is not the campaign; a hook at each of
   those thirteen jumps (`engine::points::skull_gates`) answers the gate
   "on" for the skulls the host runs, and the native active camouflage
-  asks `engine::skull_gate` ([skulls.md](skulls.md#the-campaign-gate)).
+  asks `engine::skull_gate` ([skulls.md](skulls-modes.md#the-campaign-gate)).
+
+### Which maps are built in
+
+A map is built in when `h2 firefight kit MAP` makes a package for it from the
+retail disc: six or more drop zones off both bases and the starts, a walkable
+path to both bases, and the tag headroom for the sectors, zones and squads.
+The two refused maps are listed in `builtin::REFUSED`; they are not built at
+start, report their reason in the lobby's kit line, and
+`builtin::refusal(map)` names it. Tests: `the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for`,
+`a_refused_retail_map_is_named_with_its_reason_and_never_read`
+(`firefight-kit/src/builtin/ensure/tests.rs`). The survey is the builder's
+own result on the retail disc, by `h2 firefight kit`; a map the disc does
+not hold (the Multiplayer Map Pack's) is left to the user's own kit.
+
+| Map (file) | Built in | Reason |
+| --- | --- | --- |
+| Coagulation (`coagulation`) | yes | authored layout, two teams |
+| Zanzibar (`zanzibar`) | yes | authored layout, one team, 4 base positions |
+| Ascension (`ascension`) | yes | generated, 12 drop zones |
+| Beaver Creek (`beavercreek`) | yes | generated, 12 drop zones |
+| Burial Mounds (`burial_mounds`) | yes | generated, 12 drop zones |
+| Colossus (`colossus`) | yes | generated, 12 drop zones |
+| Foundation (`foundation`) | yes | generated, 9 drop zones |
+| Headlong (`headlong`) | yes | generated, 12 drop zones; 340 KB of headroom left |
+| Lockout (`lockout`) | yes | generated, 12 drop zones |
+| Midship (`midship`) | yes | generated, 12 drop zones |
+| Ivory Tower (`cyclotron`) | no | no six drop zones: the bases' area has room for 5, and the area of 6 polygons with 2 starts has no walkable path |
+| Waterworks (`waterworks`) | no | 164 KB over the tag headroom, sectors, after every fit step |
+
+### Making your own kit
+
+| Tool | Command or screen | Output |
+| --- | --- | --- |
+| `h2 firefight kit` | `h2 firefight kit MAP [--home red\|blue] [--disc ISO] [--data DIR] [--replace]` | `<data>/maps/firefight-MAP`, a map package |
+| Studio | the map's ground: `ground.build`, then `ground.save {name?}` ([editor agent API](../editor/agent-api.md)) | `maps/<name>/map.toml` and `ground.yaml` in the edit target, and the built ground |
+| Forge | place drops, bases and cover, then save the map variant ([forge-firefight.md](forge-firefight.md)) | a map variant with a ground recipe, which Change Map lists for Firefight |
 
 ### Game Setup
 
@@ -1363,11 +1399,13 @@ team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
-**The built-in kits build themselves.** Coagulation and Zanzibar have
-authored layouts (`firefight_kit::builtin`), so no one runs `h2 firefight
-kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
+**The built-in kits build themselves.** Ten retail multiplayer maps are
+built in (`firefight_kit::builtin::MAPS`); Coagulation and Zanzibar have
+authored layouts (`firefight_kit::builtin`), the other eight are built by the
+kit's generator from their own flags and starts (`Config::default()`, home
+team red, no layout). No one runs `h2 firefight kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
 `crates/apps/cli/src/firefight_kits.rs` asks
-`firefight_kit::builtin::pending` which of the two packages
+`firefight_kit::builtin::pending` which of the ten packages
 (`<data>/maps/firefight-<map>`) is missing or stale and, if any is, runs
 `firefight_kit::builtin::ensure` on a worker thread while the game boots.
 A package is current when its manifest is on disk and the stamp beside it
@@ -1378,7 +1416,7 @@ are current. The kits carry the Elite only (no classes), and a map that
 does not fit its tag headroom takes the fit steps of "The kit" before it is
 refused. Each map's result is a report: current, built, or refused with a
 reason short enough for a panel line (`Zanzibar: 6 KB over, sectors`); one
-map's refusal does not stop the other. When the worker is done it reads
+map's refusal does not stop the others. When the worker is done it reads
 the map list again (`map_select::publish_packages`, which also has the VFS
 read the maps folder), so the packages join the catalogue as a Live
 download does.

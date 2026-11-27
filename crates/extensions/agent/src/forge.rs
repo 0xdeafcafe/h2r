@@ -20,6 +20,7 @@ pub mod nav;
 pub mod net;
 pub mod pieces;
 pub mod spare_clips;
+pub mod spawn_weight;
 pub mod test;
 pub mod waves;
 

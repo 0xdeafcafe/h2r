@@ -364,6 +364,12 @@ pub enum Command {
         id: Endpoint,
         clips: Option<u8>,
     },
+    /// Give a starting point a weight, or Normal
+    /// (`Session::set_spawn_weight`).
+    SetSpawnWeight {
+        id: Endpoint,
+        weight: Option<forge_doc::SpawnWeight>,
+    },
     /// Restore original: an own thing as the map has it
     /// (`Session::reset`).
     Reset {

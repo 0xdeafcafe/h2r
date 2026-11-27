@@ -127,7 +127,7 @@ record filled by `0x000b7930`, returns a salted object ID and rolls back on
 failure ([engine-map.md](../engine/engine-map.md)). The object pool is 2,048 headers
 and 1 MiB of bodies (`0x000b67c0`). 34 call sites call it directly.
 
-**HaloScript (E).** The VM and builtin catalog are decoded
+**HaloScript (E).** The VM and builtin catalogue are decoded
 ([haloscript.md](../formats/haloscript.md)), but builtin names are only known when a
 scenario calls them, and HaloScript's object creation works on *named*
 scenario placements. It is not a good way to place arbitrary objects; a
