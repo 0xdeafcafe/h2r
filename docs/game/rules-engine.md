@@ -415,7 +415,7 @@ keeps the flags' built-in labels. A label op on an entry the map lacks is
 skipped (`census::layout_doc`), so a layout never blocks a map it does
 not fit. Zanzibar's layout names the map's own flags and starts: the
 territory flags 17 and 15 are the phase 0 sites and 19 and 13 the phase 1
-sites (the final stand is the defenders' flag stand), and the starting
+sites (the final stand is blue's flag stand, flag 3, a `siege_goal`), and the starting
 locations are numbered by phase for each side, the attackers' from the
 south stand northward and the defenders' from mid-map northward. Readers that
 need only the flags' places (`world/walls.rs` on a client, the HUD
@@ -1344,15 +1344,15 @@ above). These maps have a built-in layout
 
 | Map | Layout source | Sites (phase 0, phase 1) | Final stand | Barriers |
 |---|---|---|---|---|
-| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | the defenders' CTF stand (`base[defenders]`) | none |
+| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | blue's stand, flag 3 (`siege_goal`) | none |
 | Coagulation | `h2 siege layout coagulation`, red attacks | territory flags 20, 19; 21, 53 | blue's stand, flag 6 (`siege_goal`) | none: the map has no loose solid object across a way |
 | Headlong | `h2 siege layout headlong --barrier crates:17=2 --barrier crates:70=2`, red attacks | territory flags 51; 62 | blue's stand, flag 0 (`siege_goal`) | two giant tech crates by blue's base, open in the final assault |
 | Waterworks | `h2 siege layout waterworks --barrier crates:41=2 --barrier crates:42=2`, red attacks | territory flags 26, 23; 17 | blue's stand, flag 4 (`siege_goal`) | two giant packing crates by blue's base, open in the final assault |
 
-A recipe layout labels the defenders' stand `siege_goal`, so the final
-stand stays at one end of the map when the sides swap; Zanzibar's reads
-`base[defenders]` and so moves to the other stand in the second round.
-Each recipe layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
+Each layout labels the defenders' stand `siege_goal`, so the final
+stand stays at one end of the map when the sides swap (a map with no
+`siege_goal` falls back to `base[defenders]`, which moves to the other
+stand in the second round). Each layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
 written by `--scenario`) that `rules/tests/modes.rs`
 (`siege_plays_each_recipe_layouts_phases`) runs: the scenario's labels are
 the layout's, an attacker standing on one site of each phase in turn takes

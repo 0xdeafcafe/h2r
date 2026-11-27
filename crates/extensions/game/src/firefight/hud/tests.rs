@@ -663,12 +663,12 @@ fn the_skulls_on_ride_in_the_blob() {
         | Skull::Catch
         | Skull::Mythic
         | Skull::Angry
+        | Skull::Iron
         | Skull::LowGravity => FIREFIGHT_SKULLS.contains(&s),
-        // Iron is a bonus-round rule, not a mode-blob skull.
-        Skull::Iron => !FIREFIGHT_SKULLS.contains(&s),
     };
     assert!(FIREFIGHT_SKULLS.iter().all(|s| listed(*s)));
-    assert_eq!(SKULL_BITS.count_ones(), 9);
+    assert_eq!(SKULL_BITS.count_ones(), 10);
+    assert_eq!(ENGINE_SKULL_BITS, SKULL_BITS & !(1 << 11));
     assert_eq!(skull_mask(&[Skull::Mythic, Skull::LowGravity]), 1 << 12 | 1 << 16);
     let m = Mode {
         skulls: skull_mask(&FIREFIGHT_SKULLS),
@@ -676,7 +676,7 @@ fn the_skulls_on_ride_in_the_blob() {
     };
     assert_eq!(m.skulls, SKULL_BITS);
     assert_eq!(Mode::decode(&m.encode()), Ok(m.clone()));
-    // The slots show the six of the nine that have a slot; Iron's has no skull.
+    // The slots show the six of the ten that have a slot; Iron's has no skull.
     let slots = state_of(&layout::layout(&m, 0, M, Screen::Full, None)).skulls;
     assert_eq!(slots, [true, true, true, true, true, true, false]);
     // The director's set reaches the blob.
@@ -735,6 +735,7 @@ fn each_event_says_its_announcer_line() {
         (Skull::Catch, "catch-on"),
         (Skull::Mythic, "mythic-on"),
         (Skull::Angry, "angry-on"),
+        (Skull::Iron, "iron-on"),
     ] {
         let on = Mode { skulls: skull_mask(&[skull]), ..fighting.clone() };
         assert_eq!(say(&fighting, &on), [clip], "{skull:?}");
@@ -747,6 +748,9 @@ fn each_event_says_its_announcer_line() {
     // Every skull on at once: one All Skulls On for the tick, not eight.
     let all = Mode { skulls: SKULL_BITS, ..fighting.clone() };
     assert_eq!(say(&fighting, &all), ["all-skulls-on"]);
+    // Iron is the bonus round's: the engine skulls alone are all of them.
+    let engine = Mode { skulls: ENGINE_SKULL_BITS, ..fighting.clone() };
+    assert_eq!(say(&fighting, &engine), ["all-skulls-on"]);
     // The last skull to switch on completes the set.
     let almost = Mode { skulls: SKULL_BITS & !skull_mask(&[Skull::Angry]), ..fighting.clone() };
     assert_eq!(say(&almost, &all), ["all-skulls-on"]);

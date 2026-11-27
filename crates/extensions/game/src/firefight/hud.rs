@@ -123,14 +123,19 @@ pub struct Mode {
 pub mod banners;
 pub mod layout;
 
-/// Every skull Firefight turns on, by its session skull index.
-pub const FIREFIGHT_SKULLS: [Skull; 9] = [
+/// Every skull Firefight turns on, by its session skull index: nine with an
+/// engine effect, and Iron, the bonus round's director rule. Envy, Grunt
+/// Birthday Party, IWHBYD, Blind, Sputnik and Bandana have no Halo 2 effect
+/// a Firefight match can apply (docs/game/skulls-modes.md, "In Firefight"),
+/// so none is in the set.
+pub const FIREFIGHT_SKULLS: [Skull; 10] = [
     Skull::Assassins,
     Skull::Thunderstorm,
     Skull::Famine,
     Skull::BlackEye,
     Skull::Ghost,
     Skull::Catch,
+    Skull::Iron,
     Skull::Mythic,
     Skull::Angry,
     Skull::LowGravity,
@@ -146,6 +151,11 @@ pub const SKULL_BITS: u32 = {
     }
     m
 };
+
+/// The bits of the skulls with an engine effect: [`SKULL_BITS`] without
+/// Iron, which only the bonus round turns on. All of these on is "all
+/// skulls on" (`banners::lines`).
+pub const ENGINE_SKULL_BITS: u32 = SKULL_BITS & !(1 << Skull::Iron as u8);
 
 /// The skulls in `on` as the blob's bits.
 pub fn skull_mask<'a>(on: impl IntoIterator<Item = &'a Skull>) -> u32 {

@@ -1464,7 +1464,7 @@ enemies left, a slot for each skull on and a banner for what begins
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
 wave with their totals, whether the wave is a boss wave, the actors
 alive plus those still in the reserve while a wave is on, the skulls on
-(a bit a session skull index, only the nine of `hud::FIREFIGHT_SKULLS`),
+(a bit a session skull index, only the ten of `hud::FIREFIGHT_SKULLS`: the nine with an engine effect and Iron),
 the set (and whether the definition is endless), the bonus round's ticks
 left, the wave's total actors (the enemies meter's full length; in a bonus
 round its length in ticks), the one-team score, the team count, and the
@@ -1601,10 +1601,14 @@ are `art/announcer/<id>.wav`, the owner's recordings.
 | The viewer is down to one life | Last Life (`last-life`) |
 | The match is lost | Game Over (`game-over`) |
 | Skulls switch off (a set or round's) | Skulls Off (`skulls-off`) |
-| A skull switches on | `<name>-on`: Assassins, Thunderstorm, Famine, Ghost, Black Eye, Catch, Mythic, Angry (the other skulls have clips too: Envy, Grunt Birthday Party, IWHBYD, Blind, Sputnik, Iron, Bandana) |
-| Every skull the blob carries is on | All Skulls On (`all-skulls-on`), in place of the tick's skull lines |
+| A skull switches on | `<name>-on`: Assassins, Thunderstorm, Famine, Ghost, Black Eye, Catch, Mythic, Angry, Iron (the bonus round's) |
+| Every skull with an engine effect is on | All Skulls On (`all-skulls-on`), in place of the tick's skull lines; Iron is not counted |
 
-Low Gravity has no line. Skulls on at the match's first blob are the
+Low Gravity has no line. Envy, Grunt Birthday Party, IWHBYD, Blind,
+Sputnik and Bandana have clips but are not Firefight skulls: Halo 2's
+readers for them are campaign-only, mid-function or local to a machine
+([skulls-modes.md](skulls-modes.md#in-firefight)), so the director has
+nothing to apply and they never switch on. Skulls on at the match's first blob are the
 lobby's and are not said. Siege's lines are in
 [rules-engine.md](rules-engine.md#siege-announcer-lines).
 
