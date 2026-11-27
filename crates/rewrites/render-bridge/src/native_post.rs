@@ -7,6 +7,11 @@
 //! the frame step's scene under the view's post passes
 //! (`scene_step::post_colour`, `post_effect`). Return hooks close that
 //! exact call before its caller can issue another draw.
+//!
+//! A call the host does not arm keeps its guest draws and is one
+//! `scene_kept_post_colour_<cause>` or `scene_kept_post_screen_effect_<cause>`
+//! (`native_hud::kept::LateKind`); a HUD widget's screen effect counts
+//! under the overlay's `scene_kept_overlay_screen_effect_<cause>`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -166,10 +171,12 @@ pub fn counts() -> Counts {
 /// The hook's body on any guest memory: `esp` at the entry (the return
 /// address, then the seven words). `true` when the host armed the device.
 pub fn on_colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
+    use crate::native_hud::kept::{self, LateKind};
     CALLS.fetch_add(1, Ordering::Relaxed);
     let mut args = [0u32; 7];
     for (i, a) in args.iter_mut().enumerate() {
         let Ok(v) = mem.u32(esp.wrapping_add(4 + 4 * i as u32)) else {
+            kept::count(LateKind::PostColour, "args");
             return false;
         };
         *a = v;
@@ -179,11 +186,19 @@ pub fn on_colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
     crate::scene_step::post_colour(&*mem, args);
     // HOST is only held to clone the host: never across its calls.
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        kept::count(LateKind::PostColour, "host");
         return false;
     };
-    let Ok(ret) = mem.u32(esp) else { return false };
+    let Ok(ret) = mem.u32(esp) else {
+        kept::count(LateKind::PostColour, "args");
+        return false;
+    };
     let site = CallSite { kind: PostCall::Colour, esp, ret };
+    // The host names why it refuses (`kept::refuse`), or that the call
+    // draws nothing (`kept::empty`).
+    kept::begin(LateKind::PostColour);
     let armed = host.colour_pass(mem, site, args, fp);
+    kept::end(armed);
     if armed {
         ARMED.fetch_add(1, Ordering::Relaxed);
     }
@@ -194,10 +209,21 @@ pub fn on_colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
 /// (the return address, then the four words). `true` when the host armed
 /// the device.
 pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -> bool {
+    use crate::native_hud::kept::{self, LateKind, OverlayKind};
     EFFECTS.fetch_add(1, Ordering::Relaxed);
+    let Ok(ret) = mem.u32(esp) else {
+        kept::count(LateKind::PostScreenEffect, "args");
+        return false;
+    };
+    // A HUD screen-effect widget's call (`0x0022bbbb`) is an overlay item:
+    // counted `scene_kept_overlay_screen_effect_<cause>` when it keeps
+    // its D3D draws; every other call `scene_kept_post_screen_effect_<cause>`.
+    let hud = ret == kept::SCREEN_EFFECT_RETURN;
+    let kind: kept::Kind = if hud { OverlayKind::ScreenEffect.into() } else { LateKind::PostScreenEffect.into() };
     let mut w = [0u32; 4];
     for (i, a) in w.iter_mut().enumerate() {
         let Ok(v) = mem.u32(esp.wrapping_add(4 + 4 * i as u32)) else {
+            kept::count(kind, "args");
             return false;
         };
         *a = v;
@@ -210,28 +236,17 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
         corners: w[3],
     };
     crate::scene_step::post_effect(&*mem, call.datum, call.values, call.columns, call.rows);
-    let Ok(ret) = mem.u32(esp) else { return false };
-    // A HUD screen-effect widget's call (`0x0022bbbb`) is an overlay item:
-    // counted `scene_kept_overlay_screen_effect_<cause>` when it keeps
-    // its D3D draws (`native_hud::kept`).
-    let hud = ret == crate::native_hud::kept::SCREEN_EFFECT_RETURN;
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        if hud {
-            crate::native_hud::kept::count(crate::native_hud::kept::OverlayKind::ScreenEffect, "host");
-        }
+        kept::count(kind, "host");
         return false;
     };
     let site = CallSite { kind: PostCall::Screen, esp, ret };
-    if hud {
-        crate::native_hud::kept::begin(crate::native_hud::kept::OverlayKind::ScreenEffect);
-    }
+    kept::begin(kind);
     let armed = host.screen_effect(mem, site, call, fp);
-    if hud {
-        crate::native_hud::kept::end(armed);
-        if !armed {
-            // Its strips reach the device as guest draws until it returns.
-            crate::native_hud::kept::hold();
-        }
+    kept::end(armed);
+    if hud && !armed {
+        // Its strips reach the device as guest draws until it returns.
+        kept::hold();
     }
     if armed {
         EFFECTS_ARMED.fetch_add(1, Ordering::Relaxed);

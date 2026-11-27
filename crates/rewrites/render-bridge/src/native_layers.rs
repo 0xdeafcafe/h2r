@@ -25,11 +25,13 @@
 //! keeps its guest draw, and is counted by layer, kind and the host's
 //! cause, `scene_kept_<site><layer>_<kind>_<cause>` ([`count_kept`]), until
 //! the scene draws it. No item is dropped: an object or a wall the pass
-//! refuses still draws. A layer 2 or 17 draw from a caller this stage does
-//! not take ([`UNTAKEN_CALLER`]) keeps every item, counted under the cause
-//! `caller`. The first person's layers count what they keep the same way
-//! under the site `fp`; the sorted handlers' keep what the host refuses
-//! to D3D, counted under `layer_plan_*`.
+//! refuses still draws. The sorted handlers' layers 18, 19 and 21 count
+//! what they keep the same way ([`kept_counted`]). A layer 2, 17, 18, 19
+//! or 21 draw from a caller this stage does not take ([`UNTAKEN_CALLER`])
+//! keeps every item, counted under the cause `caller`. The first person's
+//! layers count what they keep the same way under the site `fp`; the
+//! sorted handlers' keep what the host refuses to D3D, counted under
+//! `layer_plan_*`.
 //!
 //! The plan's outcomes are counted by cause for `render.scene`
 //! ([`counters`]).
@@ -73,8 +75,9 @@ pub const SCENE_ONLY: [u32; 7] = [1, 2, 5, 7, 8, 17, 20];
 
 /// The layers whose draws from a caller [`caller`] does not name keep
 /// every item, each counted `scene_kept_<layer>_<kind>_caller`: R5's
-/// overlay and late layers (docs/graphics/retire-d3d.md, "By caller").
-pub const UNTAKEN_CALLER: [u32; 2] = [2, 17];
+/// overlay, late, camouflage and hologram layers
+/// (docs/graphics/retire-d3d.md, "By caller").
+pub const UNTAKEN_CALLER: [u32; 5] = [2, 17, 18, 19, 21];
 
 /// The cause an untaken caller's items are counted under.
 pub const CALLER_CAUSE: &str = "caller";
@@ -82,6 +85,14 @@ pub const CALLER_CAUSE: &str = "caller";
 /// Whether `layer` of `caller` is cut to the scene: its kept guest draws are counted `scene_kept_*`.
 pub fn scene_only(layer: u32, caller: LayerCaller) -> bool {
     matches!(caller, LayerCaller::Scene | LayerCaller::AlternateView) && SCENE_ONLY.contains(&layer)
+}
+
+/// Whether the items `layer` of `caller` keeps are counted
+/// `scene_kept_<site><layer>_<kind>_<cause>`: the layers cut to the scene
+/// ([`scene_only`]) and the sorted handlers' 18, 19 and 21, which only
+/// those handlers take.
+pub fn kept_counted(layer: u32, caller: LayerCaller) -> bool {
+    scene_only(layer, caller) || (matches!(caller, LayerCaller::Sorted(_)) && SORTED_LAYERS.contains(&layer))
 }
 
 /// The first person's layers taken: `0x0003fdf0`'s calls besides layer
@@ -568,7 +579,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         // Counted when the layer is done (`crate::late_sorted`).
         return;
     }
-    if scene_only(layer, caller) || caller == LayerCaller::FirstPerson {
+    if kept_counted(layer, caller) || caller == LayerCaller::FirstPerson {
         count_kept(&Ro(&*mem), layer, site(caller), true, &left, extracted.as_ref());
     }
 }
@@ -975,9 +986,34 @@ mod tests {
         assert_eq!((mask(&m, 0), mask(&m, 1)), (1 << 2, 1 << 2));
         assert_eq!((kept("scene_kept_2_world_caller"), kept("scene_kept_2_object_caller")), (before.0 + 1, before.1 + 1));
         let other = kept("scene_kept_5_world_caller");
+        let mut m = list(21, &[(2, true)]);
+        let hologram = kept("scene_kept_21_object_caller");
+        before_layer(&mut m, 0x0002_c30b);
+        assert_eq!(kept("scene_kept_21_object_caller"), hologram + 1, "a layer 21 draw no handler made");
         let mut m = list(5, &[(1, false)]);
         before_layer(&mut m, 0x0002_c30b);
         assert_eq!(kept("scene_kept_5_world_caller"), other, "only R5's layers count an untaken caller");
+        *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// The camouflage handler's layers 18 and 19 and the hologram's 21
+    /// keep what the host does not draw, each item counted
+    /// `scene_kept_<layer>_<kind>_<cause>`; nothing goes undrawn.
+    #[test]
+    fn a_camouflage_or_hologram_item_the_host_does_not_draw_counts_scene_kept() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_host(Arc::new(Refuses));
+        for (layer, ret) in [(18, 0x0004_2015), (19, 0x0004_205f), (21, 0x0004_2721)] {
+            assert!(kept_counted(layer, caller(layer, ret).unwrap()), "{layer}");
+            let name = format!("scene_kept_{layer}_object_unread");
+            let before = kept(&name);
+            let mut m = list(layer, &[(2, true)]);
+            before_layer(&mut m, ret);
+            assert_eq!(mask(&m, 0), 1 << layer, "{layer}: keeps its guest draw");
+            assert_eq!(kept(&name), before + 1, "{name}");
+            restore_pending(&mut m);
+        }
+        assert!(!kept_counted(1, LayerCaller::FirstPerson), "the first person's are layer_plan_fp*");
         *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 

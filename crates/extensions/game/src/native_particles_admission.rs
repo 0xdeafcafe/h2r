@@ -260,6 +260,8 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         if device.drain_admission_boundary(&mut DeviceMemory(mem)).ok() == Some(true) {
             self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).issuing =
                 Some(Issuing::Flare(site));
+        } else {
+            flare_pass::kept(site, "boundary");
         }
     }
     fn publish(&self, mem: &mut dyn GuestMemory, producer: Producer, data: u32) {

@@ -28,6 +28,30 @@ pub enum Site {
 }
 
 impl Site {
+    /// Every site, in the order a frame issues them.
+    pub const ALL: [Site; 7] = [
+        Self::Visibility,
+        Self::Reflection,
+        Self::Mask,
+        Self::MaskSample,
+        Self::FilterSource,
+        Self::Filter,
+        Self::Composite,
+    ];
+
+    /// The site's part of a counter's name (`scene_kept_flare_<site>_*`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Visibility => "visibility",
+            Self::Reflection => "reflection",
+            Self::Mask => "mask",
+            Self::MaskSample => "mask_sample",
+            Self::FilterSource => "filter_source",
+            Self::Filter => "filter",
+            Self::Composite => "composite",
+        }
+    }
+
     /// The vertex registers written for the fan (bit `r` is register `r`).
     /// Registers outside it come from the carried defaults.
     pub const fn registers(self) -> u16 {
@@ -69,6 +93,20 @@ mod gpu {
         QueryState,
         /// The shared UI path refused.
         Ui(ui_gpu::Refusal),
+    }
+
+    impl Refusal {
+        /// The refusal's part of a kept fan's counter name
+        /// (`scene_kept_flare_<site>_<cause>`).
+        pub const fn cause(self) -> &'static str {
+            match self {
+                Self::Geometry => "geometry",
+                Self::Layout => "layout",
+                Self::Texture => "texture",
+                Self::QueryState => "query_state",
+                Self::Ui(_) => "ui",
+            }
+        }
     }
 
     const STRIDE: u32 = 256;
@@ -186,15 +224,23 @@ mod gpu {
         use super::*;
         use gfx::vertex::{StreamLayout, VertexAttribute, VertexRegister};
 
-        const SITES: [Site; 7] = [
-            Site::Visibility,
-            Site::Reflection,
-            Site::Mask,
-            Site::MaskSample,
-            Site::FilterSource,
-            Site::Filter,
-            Site::Composite,
-        ];
+        const SITES: [Site; 7] = Site::ALL;
+
+        #[test]
+        fn every_site_and_refusal_has_its_own_counter_name() {
+            let sites: std::collections::BTreeSet<_> = SITES.iter().map(|s| s.name()).collect();
+            assert_eq!(sites.len(), SITES.len());
+            let causes: std::collections::BTreeSet<_> = [
+                Refusal::Geometry,
+                Refusal::Layout,
+                Refusal::Texture,
+                Refusal::QueryState,
+            ]
+            .iter()
+            .map(|r| r.cause())
+            .collect();
+            assert_eq!(causes.len(), 4);
+        }
 
         fn layout(registers: &[u8]) -> VertexLayout {
             VertexLayout {

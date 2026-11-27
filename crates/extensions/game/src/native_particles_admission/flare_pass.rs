@@ -1,4 +1,5 @@
 //! One flare fan at its original targets, with a count pipeline for queries.
+//! A fan left to the device is `scene_kept_flare_<site>_<cause>` ([`kept`]).
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{ExternalAttachments, ExternalDraws};
@@ -16,10 +17,12 @@ pub(super) fn plan(
     if !matches!(snapshot.draw.entry, "D3DDevice_End" | "inline Begin/End")
         || snapshot.color_header == 0
     {
+        kept(site, "entry");
         return None;
     }
     if let Err(reason) = flares::check(site, snapshot.draw) {
         refuse_visibility(site, reason);
+        kept(site, reason.cause());
         return None;
     }
     Some((
@@ -36,6 +39,11 @@ pub(super) fn plan(
             frame: crate::d3d_diag::presents() as u32,
         }),
     ))
+}
+
+/// The fan at `site` keeps its guest draw for `cause`.
+pub(super) fn kept(site: Site, cause: &'static str) {
+    render_bridge::native_hud::kept::count(render_bridge::native_hud::kept::LateKind::Flare(site.name()), cause);
 }
 
 fn refuse_visibility(site: Site, reason: Refusal) {
@@ -85,6 +93,7 @@ impl ExternalPass for FlarePass {
                 .prepare(self.site, target, draw.as_ref(), self.frame)
                 .map_err(|reason| {
                     refuse_visibility(self.site, reason);
+                    kept(self.site, "preparation");
                     "flare fan preparation"
                 }),
         )
