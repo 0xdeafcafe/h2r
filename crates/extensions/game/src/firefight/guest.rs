@@ -116,6 +116,22 @@ pub const HUNT_PREFIX: &str = "ff_hunt_";
 /// `run_in`, `hover` and `run_out` (`crates/tools/firefight-kit/src/ship.rs`).
 const SHIP_NAME: &str = "ff_ship";
 const PATH_PREFIX: &str = "ff_path_";
+/// The kit's drop pods (`crates/tools/firefight-kit/src/sky.rs`): parked
+/// vehicles `ff_pod_NN` for squads and `ff_ppod_NN` for players, a zone's
+/// fall, the point set `ff_fall_NN` for `ff_drop_NN`, and a starting
+/// location's, `ff_pfall_NN` for start NN, with the points `top` and
+/// `ground`.
+const POD_PREFIX: &str = "ff_pod_";
+const PLAYER_POD_PREFIX: &str = "ff_ppod_";
+const FALL_PREFIX: &str = "ff_fall_";
+const PLAYER_FALL_PREFIX: &str = "ff_pfall_";
+
+/// A pod's way down: where it starts and where it lands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PodFall {
+    pub top: [f32; 3],
+    pub ground: [f32; 3],
+}
 
 /// The name of the order that hunts at `base`.
 pub fn hunt_order_name(base: u8) -> String {
@@ -174,6 +190,18 @@ pub struct KitLayout {
     /// Each drop zone's flight path, by position in `zones`: none for a
     /// zone with no `ff_path_NN` point set, or one missing a point.
     pub paths: Vec<Option<ShipPath>>,
+    /// The parked squad pods, `ff_pod_NN` in order: each one's index among
+    /// the scenario's vehicle placements. Empty on a kit with no pod.
+    pub pods: Vec<i16>,
+    /// The parked player pods, `ff_ppod_NN`, the same way.
+    pub player_pods: Vec<i16>,
+    /// Each drop zone's fall, by position in `zones`: none for a zone with
+    /// no `ff_fall_NN` point set, or one missing a point.
+    pub falls: Vec<Option<PodFall>>,
+    /// The starting locations under open sky: each one's number (its index
+    /// among the scenario's starting locations) and its fall, in number
+    /// order.
+    pub player_falls: Vec<(u16, PodFall)>,
 }
 
 impl KitLayout {
@@ -331,6 +359,14 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
     let ship = read_ship(m, scnr)?;
     let found = read_paths(m, scnr)?;
     let paths = numbers.iter().map(|n| found.get(n).copied()).collect();
+    let pods = read_pool(m, scnr, POD_PREFIX)?;
+    let player_pods = read_pool(m, scnr, PLAYER_POD_PREFIX)?;
+    let zone_falls = read_falls(m, scnr, FALL_PREFIX)?;
+    let falls = numbers.iter().map(|n| zone_falls.get(n).copied()).collect();
+    let player_falls = read_falls(m, scnr, PLAYER_FALL_PREFIX)?
+        .into_iter()
+        .filter_map(|(n, fall)| Some((u16::try_from(n).ok()?, fall)))
+        .collect();
     Ok(Some(KitLayout {
         squads,
         zones,
@@ -342,6 +378,10 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         hunt_orders,
         ship,
         paths,
+        pods,
+        player_pods,
+        falls,
+        player_falls,
     }))
 }
 
@@ -379,6 +419,51 @@ fn read_paths(
             }
             if let [Some(run_in), Some(hover), Some(run_out)] = points {
                 found.entry(number).or_insert(ShipPath { run_in, hover, run_out });
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// The vehicle placements of the objects named `prefix`NN, in NN order.
+fn read_pool(m: &dyn GuestMemory, scnr: u32, prefix: &str) -> Result<Vec<i16>, MemFault> {
+    let mut found = std::collections::BTreeMap::new();
+    for at in block(m, scnr, scenario::OBJECT_NAMES)? {
+        if let Some(n) = ordinal(&name(m, at)?, prefix)
+            && m.u16(at + scenario::OBJECT_NAME_TYPE)? == scenario::OBJECT_TYPE_VEHICLE
+        {
+            found
+                .entry(n)
+                .or_insert(m.u16(at + scenario::OBJECT_NAME_PLACEMENT)? as i16);
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+/// The scenario's `prefix`NN point sets by number: each with its `top` and
+/// `ground` points. The first set of a number wins.
+fn read_falls(
+    m: &dyn GuestMemory,
+    scnr: u32,
+    prefix: &str,
+) -> Result<std::collections::BTreeMap<usize, PodFall>, MemFault> {
+    let mut found = std::collections::BTreeMap::new();
+    for data in block(m, scnr, scenario::SCRIPTING_DATA)? {
+        for set in block(m, data, scenario::POINT_SETS)? {
+            let Some(number) = ordinal(&name(m, set)?, prefix) else {
+                continue;
+            };
+            let mut points: [Option<[f32; 3]>; 2] = [None; 2];
+            for point in block(m, set, scenario::POINTS)? {
+                let at = m.vec3(point + scenario::POINT_POSITION)?;
+                match name(m, point)?.as_str() {
+                    "top" => points[0].get_or_insert(at),
+                    "ground" => points[1].get_or_insert(at),
+                    _ => continue,
+                };
+            }
+            if let [Some(top), Some(ground)] = points {
+                found.entry(number).or_insert(PodFall { top, ground });
             }
         }
     }

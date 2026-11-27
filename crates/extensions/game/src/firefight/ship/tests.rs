@@ -85,6 +85,8 @@ fn scenario() -> FakeGuest {
     }
     for (squad, row) in [(3u32, 0u16), (4, 1), (5, 2), (6, 9)] {
         m.put_u16(SQUADS + 0x74 * squad + 0x36, row);
+        // Each record squad is on its class's faction's team (Covenant, 3).
+        m.put_u16(SQUADS + 0x74 * squad + 0x24, 3);
     }
     let slot0 = SQUADS + 0x74;
     m.put_u16(slot0 + 0x24, 3)

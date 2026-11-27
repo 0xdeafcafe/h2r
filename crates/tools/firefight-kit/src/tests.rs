@@ -247,6 +247,7 @@ fn roomy(base: &[u8], fit: &[Fit]) -> Built {
         None,
         0,
         false,
+        false,
         fit,
         u32::MAX,
     )
@@ -482,4 +483,36 @@ fn a_layout_that_cannot_place_a_drop_fails_the_build_by_name() {
     let text = format!("{err:#}");
     assert!(text.contains("drop 'west_cave'"), "{text}");
     assert!(text.contains("rocket_launcher"), "{text}");
+}
+
+/// The disc-tier check: Coagulation and Zanzibar keep every drop their
+/// built-in layout names, and the dropship has a column. Reads the disc at
+/// `H2_DISC` (`disc/halo2.iso`); run with
+/// `cargo xtask test -p firefight-kit -- --ignored built_in_layouts`.
+#[test]
+#[ignore = "needs the Halo 2 disc (H2_DISC)"]
+fn the_built_in_layouts_keep_their_drops_and_a_zone_has_a_column_for_the_ship() {
+    use std::io::{Read, Seek, SeekFrom};
+    let disc = std::env::var("H2_DISC").unwrap_or_else(|_| "disc/halo2.iso".into());
+    let mut disc = vfs::open_disc(std::path::Path::new(&disc)).expect("the disc opens");
+    for (name, drops) in [("coagulation", 7), ("zanzibar", 7)] {
+        let file = vfs::Backend::host_file(&mut disc, &format!("maps\\{name}.map")).expect("the map");
+        let mut reader = std::fs::File::open(&file.path).unwrap();
+        reader.seek(SeekFrom::Start(file.offset)).unwrap();
+        let mut bytes = vec![0; usize::try_from(file.len).unwrap()];
+        reader.read_exact(&mut bytes).unwrap();
+        let mut map = map::Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+        let config = Config {
+            layout: builtin::for_map(name),
+            ..Config::default()
+        };
+        let nav = nav::prepare(&mut map, &config, &Labels::default(), nav::Lean::default())
+            .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        assert!(nav.refused.is_empty(), "{name}: {:?}", nav.refused);
+        assert_eq!(nav.snapped.len(), drops, "{name}: every drop snapped");
+        assert!(
+            nav.ship_runs.iter().any(Option::is_some),
+            "{name}: no zone has a clear column for the ship"
+        );
+    }
 }

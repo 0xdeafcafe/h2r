@@ -641,6 +641,7 @@ that id, and each machine loads its own build.
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
 | Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship` placement, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
+| Drop pods | Halo 2's `insertion_pod` by stage-2 transplant when the map lacks it, pools `ff_pod_00..03` (squads) and `ff_ppod_00..07` (players), a point set `ff_fall_NN` per drop zone and `ff_pfall_NN` per starting location with an open column ("Drop pods", below) | cut after the ship, before any class |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
 
 Stage 1 runs against a map on the configured disc or extracted disc tree:
@@ -799,11 +800,15 @@ default, `firefight_kit::Config::dropship`):
   `ship::DROP_HEIGHT` (6 units) over the zone's first area's mean. The
   runs are at the sky height, 10 units over the tallest collision, and
   outside the collision's horizontal bounds by at least 20. `ship::plan`
-  casts rays on the arena BSP's collision (`bots::los::Walls::clear`):
+  casts rays on the arena BSP's collision without its sky shell
+  (`bots::cache::walls_without_sky`: the lid and walls that reach the
+  highest surface close the world and are no roof) (`bots::los::Walls::clear`):
   from just above the zone's floor to the sky (a roof over the zone
   fails it), and, for the first of eight compass directions (starting
   away from the map's middle) where both clear, from the run-in down to
   the hover and from the hover up to the run-out, which lie on opposite sides.
+  A zone with no clear long run is tried again with runs 80, 50 and 30 units
+  long, steeper dives for a canyon.
   A zone with no such direction gets no point set, and its squads spawn on foot.
   The paths are not placed by hand; a map keeps what the rays find.
 - **Fit.** The ship is cut before any class: with a map short of headroom
@@ -814,6 +819,33 @@ default, `firefight_kit::Config::dropship`):
   paths)` or `cut (reason)`: over the tag headroom, no donor, or no clear
   column; `Costs::ship` is the bytes (the copied tags, the placement, the
   palette row, the name and the point sets). A probe kit has no ship.
+
+**Drop pods.** A kit carries Halo 2's `insertion_pod` vehicle (`src/sky.rs`),
+copied in by stage two from a donor when the map lacks it
+(`transplant::add`; a donor without it, or a refused copy, is a
+`PodRefused` and the build goes on without pods). `Config::no_pods` leaves
+them out. The kit writes parked placements `ff_pod_00` to `ff_pod_03` for
+squads and `ff_ppod_00` to `ff_ppod_07` for players, and two kinds of point
+set with the points `top` and `ground`: `ff_fall_NN` for drop zone `ff_drop_NN`
+(its first area's mean) and `ff_pfall_NN` for starting location NN (its
+index in the scenario). The pods go in the same vehicle blocks as the ship
+(`sky::author` extends them) and the same scripting block as its paths.
+
+The sky test (`sky::plan`) is a kit-build flag, the same on every machine,
+with no runtime ray. From 0.2 above the ground, five rays go up to the top of
+the collision: one straight up and four on a 0.6 ring. A ray is open when it
+hits nothing, or when the first surface it hits is sky (`sky::Roof`: the
+solid surfaces and the sky ones, split by collision material index in
+`Config::sky_materials`). The fall is the lower of 40 and the way up to the
+top of the collision, and under 12 is no fall. Which materials mark sky is
+unverified (docs/game/firefight.md plan step P2); with the list empty every
+surface is solid, so only a start with nothing above it is open. With no open
+zone or start there are no pods. `Package::pods` (`PodReport`) says `kept
+(tag, tags copied, bytes, zone falls); pod starts: N of M open` or `cut
+(reason)`; `Costs::pods` is the bytes. The game reads them with the kit
+(`guest::read_kit`): `KitLayout::{pods, player_pods, falls, player_falls}`.
+Pods are cut right after the ship and before any class when headroom is
+short.
 
 The kit only places the ship parked and gives it the points to fly. The
 placement carries no hover flag: the director turns the hold on
@@ -898,8 +930,9 @@ it, not from the generator. Layouts are code in
 `Anchor` on the map's own data, never a coordinate: `Flag { kind, team,
 nth }` (netgame flags, `scnr+0x118`: CTF stand, oddball, teleporter source
 and exit, territory, hill corner), `Starts { team }` (the mean of a team's
-starting locations), `Item { suffix, nth }` (a weapon placement by the end
-of its tag name), `Between(a, b, t)` and `Or(a, b)` (the first that
+starting locations), `Item { suffix, nth }` (a weapon pad by the end of its
+tag name: a netgame equipment entry, `scnr+0x120`, where retail multiplayer
+maps place their weapons, then a scenario weapon placement), `Between(a, b, t)` and `Or(a, b)` (the first that
 resolves). A drop is its anchor, an offset, a snap radius, its `Roles` and
 its `Sides`. The base anchor replaces the home base's point and caps the
 base zone's firing positions (4 on Zanzibar, which is short of headroom).
@@ -967,21 +1000,22 @@ growth in tag memory. It compares the growth with the available space
 before anything is installed. A refusal says by how much the kit is over
 and names its biggest part.
 
-Available is `writer::max_metadata_size(Multiplayer)` (`0x62c000`)
-minus the map's `+0x1c`. That bound is the largest retail multiplayer
-map, not a loader constant: the loader takes `+0x1c` from the physical
-arena, and growth comes out of the pool that gets the arena's free pages
-after the load (map-format.md, "Growing the metadata"). How much that
-pool can lose is not measured, so the kit does not go past it. Before
-the kit, on the owner's disc (**V**, docs/halo1/notes/shared-map.md):
-Waterworks has no room, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation
-876 KiB, the others 0.9 to 1.5 MiB. The Map Pack maps' room is not
-measured. Zanzibar's sectors before trimming are 158 KiB; the numbers,
-and what a map needs, are in
+Available is `writer::max_metadata_size(Campaign)` (`0xc24000`, the
+kit's `KIT_METADATA_BUDGET`) minus the map's `+0x1c`. It is not a loader
+constant: the loader takes `+0x1c` from one physical arena that is the same
+size for every map type (`0x30e4000`), and growth comes out of the pool that
+gets the arena's free pages after the load (map-format.md, "Growing the
+metadata"). A campaign map loads that much beside its two shared maps,
+which is more than a multiplayer map at that total beside its one shared
+map, so the kit takes the retail campaign maximum rather than the
+multiplayer one (`0x62c000`, the largest retail multiplayer map, which
+the map editor keeps). Before the kit, on the owner's disc (**V**,
+docs/halo1/notes/shared-map.md), the room under the multiplayer maximum was:
+Waterworks none, Zanzibar 132 KiB, Headlong 340 KiB, Coagulation 876 KiB.
+Under the kit's budget Zanzibar has 6.1 MiB and keeps the Phantom with
+its drops (`h2 firefight kit zanzibar` reports the growth and the room).
+The numbers are in
 [notes/2026-11-23-firefight-kit-headroom.md](notes/2026-11-23-firefight-kit-headroom.md).
-By that estimate the trimmed kit fits Zanzibar with a few KB to spare,
-and the fit steps give more; the kit's run on the disc gives the real
-figure.
 
 Every machine in a session loads the kit map: the host's entities name
 tags by index, so the indices must agree (ai-networking.md, "Rules and
@@ -1270,12 +1304,14 @@ the set (and whether the definition is endless), the bonus round's ticks
 left, the wave's total actors (the enemies meter's full length; in a bonus
 round its length in ticks), the one-team score, the team count, and the
 lives (the shared pool, each player's own up to eight players, or each
-team's pool). With two teams the blob carries both scores and a mask of
-team 1's slots, so each viewer sees its own team's pool. Version 3
-encodes to 26 bytes with one shared pool, 49 with eight players' own
-lives, 34 with two team pools and 55 with two teams and eight players'
-own lives, inside the actor channel's 63-byte mode state
-(`blob_v3_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
+team's pool). Each player's own lives are a mask of their roster slots
+and a count each, in slot order. With two teams the blob carries both scores and a mask of
+team 1's slots, so each viewer sees its own team's pool. Version 4
+encodes to 26 bytes with one shared pool, 42 with eight players' own
+lives, 34 with two team pools and 48 with two teams and eight players'
+own lives, inside the 51 bytes left of the actor channel's 63-byte mode
+state by the script role's 12-byte header
+(`blob_v4_round_trips_at_every_size`). `Mode::of` leaves `bonus_left` at
 0 until the host runs a bonus round. The banners for the end are "RED TEAM WINS", "BLUE TEAM WINS"
 and "DRAW".
 

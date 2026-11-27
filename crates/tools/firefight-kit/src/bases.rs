@@ -56,6 +56,13 @@ pub struct Config {
     pub layout: Option<&'static crate::builtin::Layout>,
     /// Which dropship the kit carries ([`crate::Dropship`]).
     pub dropship: crate::Dropship,
+    /// Leave the drop pods out: no pod tag, no pools, no falls
+    /// (`crate::sky`).
+    pub no_pods: bool,
+    /// Collision material indices to count as sky besides the ones whose
+    /// shader is a sky (`crate::sky::sky_materials`); empty on the retail
+    /// maps, where no shader is.
+    pub sky_materials: &'static [u16],
 }
 
 /// Where the two base points came from.

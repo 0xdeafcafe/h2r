@@ -1,7 +1,7 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Rust gathers visible lights and their lists. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
-Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
+Status: Partly built. Rust gathers visible lights and their lists. Under the cut light frame each light's groups go into the scene with no guest pass, and the host draws all five layers from them on the single 1x backend; pixel parity is not verified. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
+Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `native_lights/scene_frame.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md). The dynamic lights are not layers of the scene list: after layer 7, `render_scene_passes` calls `render_dynamic_lights` (`0x00031c80`, `points::RENDER_DYNAMIC_LIGHTS`), which gathers each visible light's geometry into a list of its own and draws layers 10 to 14 over it, one light at a time. The game has two more shadow paths beside it: object shadows before layer 7, and the first-person view's lights after the scene. The pages for the other pieces are [native-shadows.md](native-shadows.md) (layers 10, 11 and 14) and [native-gels.md](native-gels.md) (target 13).
@@ -120,6 +120,74 @@ one listed from two clusters and the player-only tail, and compares the
 result with the guest's list as the test reads it from the guest's memory. `the_gather_stops_at_the_guests_cap` covers the capacity. The
 light frame is a cut producer (`render_bridge::cut::CUTS`, row
 `dynamic_lights`); the gather feeds the per-light passes of the scene.
+
+### The light frame under the cut
+
+When the host draws the scene's light layers
+(`render_bridge::native_lights::scene_path_ready`, the host's
+`draws_scene`), the guest's `0x00031c80` never runs. The Rust frame body
+(`native_lights/frame.rs`) still gathers every drawn light as the guest
+does: the visible list and history, the volume, frusta, visibility,
+records and part visibility. Each light's passes
+(`native_lights/passes.rs`, `scene_passes`) make only their first step,
+the item lists `0x00040e90` (the item body, `light_gather::items`), and
+stop: no constants, target, stencil or layer draw is made, and the call
+returns as `ret 0x10`. A frame or passes plan that refuses is answered as
+the cut, never by the guest's body.
+
+`native_lights::scene_frame` then puts what the remaining steps would draw
+into the scene. The light and its steps come from the hand-off at the
+item lists (or, when the guest made the lists, from memory at that
+point). The pass flags are computed as `0x0004a1e0` and the flag code
+would set them (`source_constants`). A shadowed light's projection is
+`shadow_constants::shadow_globals_for_light`: its block is the groups'
+projection, and its resize of target 9 is laid over memory for the read
+only. Each drawn layer of the steps is one group of the light,
+`typed_groups::plan` over the lists the item body just made: the entries
+the guest's layer build would keep, in its sorted order. A light whose
+groups cannot all be made puts none in, and the drop is counted by cause
+in `render.scene` (`scene_dropped_light_<cause>`: `unread`, `constants`,
+`projection`, `group`, `light`, `additional_casters`). The additional
+casters (`0x00030ed0`) are not made: their layers are a drop, and the
+light's own layers still go in. `scene_cut_lights` and
+`scene_cut_light_groups` count what went in.
+
+Once the view's light pass is over (at the decal mode that follows it),
+`native_lights::draw_scene` hands the open view's light layers to the host
+in the passes' order: per light 10, 11, 14, 12, 13 in slot 4, then slot
+10's. The game host (`native_lights_glue/scene.rs`) makes each light one
+external sequence (`d3d::Device::prepare_external_sequence`), each step on
+its own attachments with nothing rebound, and commits it whole with no
+light tail (`d3d::PreparedSequence::commit`), or drops the light. The
+guest's layer begin and end do not run; their device work is the steps:
+
+- layer 10: target 9's depth cleared to 1 and stencil 0, the casters
+  drawn into it at the size the shadow setup gives, then its depth frozen
+  (`native_shadows_draw::Gpu::freeze_depth_into`,
+  `gfx::depth_bits::DepthBits::convert_into`) into a map made before the
+  sequence, which the receivers bind;
+- layer 11: the receivers on the view's target, sampling that map;
+- layer 14: target 1;
+- layers 12 and 13: the view's target.
+
+A colour-mask caster (target 10), a shader gel, a first-person light
+(slot 10) and a scaled caster map refuse the light. The host's
+`draws_scene` is true where the caster maps can be frozen, the single 1x
+backend the shadow stage runs on (`native_shadows_glue::scene_gpu`);
+elsewhere the guest's light frame runs. The first-person lights
+(`0x000404b0`) are not cut; they replay the slots the frame body filled
+and draw as before.
+
+`a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`
+and the other tests in `native_lights_glue/scene.rs` check the steps.
+`the_cut_lights_groups_equal_the_guests_layer_builds`
+(`native_lights/walk.rs`) builds layers 10, 12 and 13 both ways from the
+same lists: as the guest's layer draw builds them, and as the cut frame
+plans them before any layer. The entries, poses and order are equal, and
+the casters' pass takes the shadow setup's map size with nothing written.
+`each_layer_of_a_cut_light_is_one_recorded_pass_in_order`
+(`native_lights.rs`) checks that the host is handed one pass per layer in
+that order.
 
 ### Gathered light and shadow geometry
 

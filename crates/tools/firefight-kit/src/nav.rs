@@ -49,6 +49,9 @@ pub(crate) struct Navigation {
     /// no clear column (`ship::plan`), and the BSP they were planned on.
     pub ship_runs: Vec<Option<crate::ship::Run>>,
     pub ship_bsp: i16,
+    /// The drop pods' falls over each drop zone and each starting
+    /// location (`sky::plan`), planned on the same BSP as the ship's runs.
+    pub falls: crate::sky::Falls,
 }
 
 const MIN_ZONES: usize = 6;
@@ -144,7 +147,12 @@ pub(crate) fn prepare<R: Read + Seek>(
         .collect();
 
     let mut generated = Vec::new();
+    // Each BSP's solid and sky surfaces, when the config names sky
+    // materials: the roof the pods' columns are tested against.
+    let mut roofs: Vec<Option<(bots::los::Walls, bots::los::Walls)>> = Vec::new();
     let mut best = None;
+    // The best arena's walls without the sky shell, for the ship's columns.
+    let mut open_walls: Option<bots::los::Walls> = None;
     let mut why = Vec::new();
     for (index, row) in metadata_block(map, &scnr, BSPS as usize, BSP)?
         .into_iter()
@@ -193,7 +201,24 @@ pub(crate) fn prepare<R: Read + Seek>(
             .is_none_or(|b: &Arena| arena.rank() > b.rank())
         {
             best = Some(arena);
+            open_walls = Some(bots::cache::walls_without_sky(&collision));
         }
+        // The materials whose shader is a sky, and those the config adds.
+        let (at, stride) = crate::sky::MATERIALS;
+        let shaders: Vec<Option<String>> = v
+            .block(root, at, stride)
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        let datum = TagId(u32::from_le_bytes(r[12..16].try_into().unwrap()));
+                        map.tag(datum).ok().and_then(|t| t.name.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut sky = crate::sky::sky_materials(shaders.iter().map(|n| n.as_deref()));
+        sky.extend_from_slice(config.sky_materials);
+        roofs.push((!sky.is_empty()).then(|| crate::sky::split(&collision, &sky)));
         generated.push((id, pf, data));
     }
     ensure!(!generated.is_empty(), "scenario has no structure BSP");
@@ -212,14 +237,35 @@ pub(crate) fn prepare<R: Read + Seek>(
         arena.zones.truncate(FEWEST_DROPS);
     }
     // The ship's way into each zone, from the arena's own collision.
-    let ship_runs = match usize::try_from(arena.bsp)
-        .ok()
-        .and_then(|i| generated.get(i))
-    {
-        Some((_, _, data)) => crate::ship::plan(&data.walls, &arena.zones),
+    let ship_runs = match &open_walls {
+        Some(walls) => crate::ship::plan(walls, &arena.zones),
         None => vec![None; arena.zones.len()],
     };
     let ship_bsp = arena.bsp;
+    // The pods' falls: over each drop zone's first area's mean and each
+    // start, where the column to the top of the collision is open.
+    let falls = match usize::try_from(arena.bsp)
+        .ok()
+        .and_then(|i| generated.get(i).map(|g| (i, g)))
+    {
+        Some((i, (_, _, data))) => {
+            let none = bots::los::Walls::default();
+            let roof = match roofs.get(i).and_then(Option::as_ref) {
+                Some((solid, sky)) => crate::sky::Roof { solid, sky },
+                None => crate::sky::Roof { solid: &data.walls, sky: &none },
+            };
+            let means: Vec<V3> = arena
+                .zones
+                .iter()
+                .map(|z| z.areas.first().map_or([f32::NAN; 3], |a| a.mean))
+                .collect();
+            crate::sky::Falls {
+                zones: crate::sky::plan(&roof, &means),
+                starts: crate::sky::plan(&roof, &starts),
+            }
+        }
+        None => crate::sky::Falls::default(),
+    };
     // Keep only the sectors the AI can use, then encode each BSP's.
     let mut bsps = Vec::with_capacity(generated.len());
     let mut trim = Trim::default();
@@ -274,6 +320,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         snapped,
         ship_runs,
         ship_bsp,
+        falls,
     })
 }
 

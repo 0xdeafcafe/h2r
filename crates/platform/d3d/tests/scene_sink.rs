@@ -977,15 +977,16 @@ mod retained_admission {
     fn other_native_stages_and_any_guest_reference_are_not_carried() {
         // Post's glow and screen effects are carried as sealed scene
         // stages, not admitted draws; the rest are carried only as the
-        // guest's own admitted draws.
+        // guest's own admitted draws. A transparent range is carried by
+        // `a_transparent_run_replays_on_the_display_copy`.
         for (stage, reference) in [
             (Stage::Post, false),
-            (Stage::Transparents, false),
             (Stage::Particles, false),
             (Stage::Sky, false),
             (Stage::Water, true),
             (Stage::Flares, true),
             (Stage::Ui, true),
+            (Stage::Transparents, true),
         ] {
             let (begun, ops, _) = native_water(stage, reference);
             assert!(!begun, "{stage:?} reference={reference}");

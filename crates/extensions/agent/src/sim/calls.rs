@@ -1581,7 +1581,23 @@ async fn run_call(
                         {
                             return Ok(Err(refused(why)));
                         }
-                        let r = cx.call(c).await?;
+                        // The default variant's name lookup reads the running map's
+                        // globals; a map without the multiplayer tag it reads
+                        // would fault, so that lookup is skipped for the call.
+                        let hidden = if *target == 0x0019_d220
+                            && cx.read(|m| variant_name_lookup_faults(m))
+                        {
+                            let matg = cx.read(|m| m.u32(GLOBALS_TAG))?;
+                            cx.write(|m| m.write(GLOBALS_TAG, &0u32.to_le_bytes()))?;
+                            Some(matg)
+                        } else {
+                            None
+                        };
+                        let r = cx.call(c).await;
+                        if let Some(matg) = hidden {
+                            cx.write(|m| m.write(GLOBALS_TAG, &matg.to_le_bytes()))?;
+                        }
+                        let r = r?;
                         calls += 1;
                         if let Some(name) = report {
                             out.insert((*name).into(), json!(r.eax & 0xff != 0));
@@ -1839,6 +1855,32 @@ fn settle_reload(
 fn recover_before(c: &mut hooks::Call<'_>, queue: &Shared) -> Result<hooks::Flow, runtime::GuestFault> {
     reconcile_reload(queue, |options| pending_options(&*c.ctx.runtime().memory(), options));
     Ok(hooks::Flow::Continue)
+}
+
+/// The globals tag pointer (`matg`), null before a map's tags load.
+const GLOBALS_TAG: u32 = 0x004e_034c;
+/// The tag table: `0x10`-byte entries, a tag's data at `+8`.
+const TAG_TABLE: u32 = 0x004e_3b44;
+
+/// Whether `VARIANT_DEFAULTS`'s name lookup (`0x19d2d7`) would read a null
+/// pointer in the running map: it follows `matg +0x16c` to a tag and reads
+/// `[[data + 4] + 0x1c]`. A campaign map's tags don't hold what a
+/// multiplayer map's do, so `game.load` from a campaign would fault.
+pub(crate) fn variant_name_lookup_faults(m: &dyn GuestMemory) -> bool {
+    let chain = || -> Result<bool, engine::MemFault> {
+        let matg = m.u32(GLOBALS_TAG)?;
+        if matg == 0 {
+            return Ok(false);
+        }
+        let tag = m.u32(matg.wrapping_add(0x16c))?;
+        if tag == u32::MAX {
+            return Ok(false);
+        }
+        let entry = m.u32(TAG_TABLE)?.wrapping_add((tag & 0xffff) << 4);
+        let data = m.u32(entry.wrapping_add(8))?;
+        Ok(data == 0 || m.u32(data.wrapping_add(4))? == 0)
+    };
+    chain().unwrap_or(true)
 }
 
 mod activation;

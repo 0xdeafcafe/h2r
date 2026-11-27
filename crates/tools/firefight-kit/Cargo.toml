@@ -29,3 +29,7 @@ testkit = []
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The disc-tier tests read the maps off the disc.
+vfs.workspace = true
