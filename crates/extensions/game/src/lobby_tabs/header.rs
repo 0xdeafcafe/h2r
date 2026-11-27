@@ -34,8 +34,10 @@ use super::{Avail, Facts, Place, Present, RetailMode, Tab, look, row, seen_mode}
 use crate::layout_glue::ReadGm;
 use crate::lobby_start::Mode;
 
-/// The lobby's header rectangle (`[204 -270 180 70]`, font 2).
-pub const HEADER: [i16; 4] = [204, -270, 180, 70];
+/// The lobby's header rectangle as the disc's tag has it: pane 0's text
+/// block 0 (`[135 -258 61 45]`, font 4). The tag edit shortens it to
+/// `[135 -258 95 45]` to make room for the prompt line; its width stays.
+pub const HEADER: [i16; 4] = [135, -258, 61, 45];
 /// The prompt line's block index in the lobby's pane 0: the first after
 /// the tag's 48 text blocks, where the tag edit appends it.
 pub const PROMPT_BLOCK: u16 = 48;

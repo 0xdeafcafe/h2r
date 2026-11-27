@@ -118,8 +118,9 @@ CUSTOM GAMES and CO-OP are retail's lobby modes and always present
 
 ### The header and the prompt
 
-**The header** is the lobby tag's own title widget (`[204 -270 180
-70]`, font 2), the first text widget of the screen
+**The header** is the lobby tag's own title widget (pane 0's text
+block 0, `[135 -258 61 45]` on the disc, font 4; the tag edit below
+shortens it to `[135 -258 95 45]`), the first text widget of the screen
 (`lobby_tabs::header::find`). Retail's panel update writes its text;
 then the party lobby's update sets it to the lobby's mode with
 `TEXT_SET` (`Tab::label`): CUSTOM GAMES, FORGE, MULTIPLAYER
