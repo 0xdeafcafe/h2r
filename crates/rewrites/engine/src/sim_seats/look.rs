@@ -370,7 +370,8 @@ fn blend(c: &mut CpuAbi, m: &mut impl Memory, assist: bool) -> Unit {
             let ceiling = m.u32(ceiling)?;
             if sse::comiss(c, floor, lane0(c, reg)) & 0x41 == 0 {
                 load(c, reg, floor);
-            } else if sse::comiss(c, lane0(c, reg), ceiling) & 0x41 != 0 {
+            } else if sse::comiss(c, lane0(c, reg), ceiling) & 0x41 == 0 {
+                // `jbe` keeps the value; above the ceiling takes the ceiling.
                 load(c, reg, ceiling);
             }
         }
