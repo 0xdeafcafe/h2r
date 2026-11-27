@@ -552,7 +552,7 @@ fn build_onto(
 
 const PROJECT_USAGE: &str = "usage:
   h2 tags build --project FILE [--disc ISO | --repo DIR] [--data DIR] [--out FILE.map] [--report FILE.json] [--force]
-      the map a project file names (art/stage/project.toml: the content
+      the map a map.toml names (content/stage/map.toml: the content
       stage, docs/editor/content-stage.md), built fresh over its base map,
       read from the disc (default: the default disc) or from a tag tree
       `h2 tags extract` wrote (--repo); written as the map package

@@ -47,8 +47,9 @@ or tag of the stage comes from a disc.
 
 `stage-kit` is a `ContentKit`: `install` adds the stage's own tags (the
 scenario, the `sbsp` and `ltmp`, the sky, the bitmaps and shaders) to
-the set and gives the layout back. The map is the project
-`art/stage/project.toml` (`mode = "fresh"`, `kits = ["stage", ...]`),
+the set and gives the layout back. The map is the `map` item
+`content/stage/map.toml` (`mode = "fresh"`, `kits = ["stage", ...]`),
+also the tag workspace's project,
 built by `workspace::build` like any other: a pure function of the base
 map's tags, the sources, `stage_kit::VERSION` and the kits, so two
 builds make the same bytes. It writes a `derived` map package
@@ -66,7 +67,7 @@ test holds the two equal). The game builds it at boot, with every other
 `stage_kit::VERSION` are what built it.
 
 Until the workspace lands, the build is `stage_kit::map::build`, for the
-stage kit alone (`h2 tags build --project art/stage/project.toml`, from
+stage kit alone (`h2 tags build --project content/stage/map.toml`, from
 the disc's base map or a tag tree). It edits the base's scenario into
 the stage's: the base's placements, netgame flags, light fixtures, decorators and
 BSP switch volumes cleared,
@@ -244,7 +245,7 @@ repository.
 - **`maps.load`** rescans the packages when it is given an id it does
   not know, so a package Studio wrote while the game runs loads
   (`map_select::packages_changed`, as `maps.test.create` publishes).
-- **`h2 tags build --project art/stage/project.toml`** builds the
+- **`h2 tags build --project content/stage/map.toml`** builds the
   package offline and prints the report, for the coordinator and for
   the disc test.
 
@@ -328,7 +329,7 @@ Pogo as a `ContentKit`, sources from a directory) is its W4.
 | # | Slice | Owns | Tests | Accepted when |
 |---|---|---|---|---|
 | S1 | Layout and geometry: `Layout` from YAML (bays, pads, cameras, references), the meshes, the collision polygons, the textures | `crates/tools/stage-kit/{Cargo.toml, src/lib.rs, layout.rs, mesh.rs, texture.rs, tests.rs}`, `art/stage/stage.yaml`, `art/stage/README.md` | the layout parses and refuses overlaps; every camera sees its bay's subject pad (a ray test on the mesh); the collision compiles (`collision_build::verify::check`); the grid's digits read back from the texture; the build is the same bytes twice | the tests pass; `Layout` serialises as the report's `layout` |
-| S2 | The map, flat-lit: `sbsp`, collision, MOPP, `scnr` with the placements, a constant lightmap, the base's sky, as tags added to a set; a `fresh` build over a `TagSource` (the disc map, or the tree) and the package; `h2 tags build --project` for this one project | `stage-kit/src/{map.rs, kit.rs}`, `stage-kit/tests/disc.rs`, `art/stage/project.toml`, `crates/apps/h2-tools/src/tag_repo_cmd.rs` | synthetic: the set has one BSP, the placements at the layout's points, and reads back through `map` and `scenario_edit`. Disc (`#[ignore]`): built on the user's base, the package resolves, the references resolve, tag memory is under the bound | Studio opens the package and `view.snapshot` shows the grid; the coordinator loads it in the game with `maps.load` and stands on the floor |
+| S2 | The map, flat-lit: `sbsp`, collision, MOPP, `scnr` with the placements, a constant lightmap, the base's sky, as tags added to a set; a `fresh` build over a `TagSource` (the disc map, or the tree) and the package; `h2 tags build --project` for this one project | `stage-kit/src/{map.rs, kit.rs}`, `stage-kit/tests/disc.rs`, `content/stage/map.toml`, `crates/apps/h2-tools/src/tag_repo_cmd.rs` | synthetic: the set has one BSP, the placements at the layout's points, and reads back through `map` and `scenario_edit`. Disc (`#[ignore]`): built on the user's base, the package resolves, the references resolve, tag memory is under the bound | Studio opens the package and `view.snapshot` shows the grid; the coordinator loads it in the game with `maps.load` and stands on the floor |
 | S3 | Lighting and sky: `stage_kit::light`, the three bays' lightmaps, the sky dome and its install (built) | `stage-kit/src/{light.rs, sky.rs}` | the day bay's lightmap is brighter toward the sun's side of the references and the dark bay's is under its bar; the sky model converts and the scenario names it | the three bays' `ground` shots differ as designed in the game |
 | S4 | `render.view` (built) | `crates/extensions/game/src/agent_spawn_view.rs`, `crates/extensions/agent-proto/src/render.rs`, [agent-api.md](../runtime/agent-api.md) | params checked; the pose reaches the private view; reset; interrupted by a map change | a capture from a given eye matches the pose |
 | S5 | `audio.meter` (built) | the host mixer's tap in `crates/extensions/game` beside `medal_announcer`, `agent-proto`, the audio page, [agent-api.md](../runtime/agent-api.md) | a synthetic sine through the tap gives its peak, RMS and loudness; `play` starts a named cue; the null sink runs with no device | the Pogo's three cues meter on a headless game |

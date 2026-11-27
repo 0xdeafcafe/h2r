@@ -101,10 +101,10 @@ fn cleared() -> Vec<(u32, &'static str)> {
 
 // The project.
 
-/// `art/stage/project.toml`: which map to build from what
+/// The stage's `map` item (`content/stage/map.toml`, a
+/// [`workspace::MapSpec`]) as this build makes it
 /// (docs/editor/tag-workspace.md, "Projects").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Project {
     /// The package directory and map name (`maps\<name>.map`).
     pub name: String,
@@ -116,11 +116,6 @@ pub struct Project {
     pub scenario: String,
     /// Content kits, in order.
     pub kits: Vec<String>,
-    /// Tag edit files.
-    #[serde(default)]
-    pub edits: Vec<String>,
-    /// `package`: a map package under `<data>/maps/`.
-    pub output: String,
 }
 
 fn plain_name(s: &str) -> bool {
@@ -131,60 +126,56 @@ fn plain_name(s: &str) -> bool {
 }
 
 impl Project {
-    /// Parses a project this build can make: the stage kit alone, `fresh`,
-    /// to a package, no edit files. Anything else is an error naming it.
+    /// A `map.toml`'s text, as [`Project::from_spec`] takes it.
     pub fn parse(text: &str) -> Result<Project> {
-        let p: Project = toml::from_str(text).map_err(|e| Error::Project(e.to_string()))?;
-        if !plain_name(&p.name) {
+        let spec = workspace::MapSpec::parse(text.as_bytes()).map_err(Error::Project)?;
+        Self::from_spec(&spec)
+    }
+
+    /// The map item this build can make: the stage kit alone, `fresh`.
+    /// Anything else is an error naming it. Its edit files and import
+    /// layers are the tree build's stack, not this build's.
+    pub fn from_spec(spec: &workspace::MapSpec) -> Result<Project> {
+        if !plain_name(&spec.name) {
             return Err(Error::Project(format!(
                 "name {:?}: letters, digits, '_' and '-', at most 31",
-                p.name
+                spec.name
             )));
         }
-        if !plain_name(&p.base) {
+        if !plain_name(&spec.base) {
             return Err(Error::Project(format!(
                 "base {:?} is not a map name",
-                p.base
+                spec.base
             )));
         }
-        if p.mode != "fresh" {
-            return Err(Error::Project(format!(
-                "mode {:?}: the stage builds \"fresh\"",
-                p.mode
-            )));
+        if spec.mode != workspace::Mode::Fresh {
+            return Err(Error::Project(
+                "mode \"onto\": the stage builds \"fresh\"".into(),
+            ));
         }
-        if p.kits != ["stage"] {
+        if spec.kits != ["stage"] {
             return Err(Error::Project(format!(
                 "kits {:?}: this build runs the stage kit alone",
-                p.kits
+                spec.kits
             )));
         }
-        if !p.edits.is_empty() {
-            return Err(Error::Project(format!(
-                "edits {:?}: edit files are not applied by this build",
-                p.edits
-            )));
-        }
-        if p.output != "package" {
-            return Err(Error::Project(format!(
-                "output {:?}: the stage is written as a \"package\"",
-                p.output
-            )));
-        }
-        let ok = !p.scenario.is_empty()
-            && p.scenario.len() < 256
-            && !p.scenario.contains('/')
-            && p.scenario
-                .rsplit('\\')
-                .next()
-                .is_some_and(|n| !n.is_empty());
+        let scenario = spec.scenario.clone().unwrap_or_default();
+        let ok = !scenario.is_empty()
+            && scenario.len() < 256
+            && !scenario.contains('/')
+            && scenario.rsplit('\\').next().is_some_and(|n| !n.is_empty());
         if !ok {
             return Err(Error::Project(format!(
-                "scenario {:?} is not a tag path",
-                p.scenario
+                "scenario {scenario:?} is not a tag path"
             )));
         }
-        Ok(p)
+        Ok(Project {
+            name: spec.name.clone(),
+            mode: "fresh".into(),
+            base: spec.base.clone(),
+            scenario,
+            kits: spec.kits.clone(),
+        })
     }
 
     /// The project shipped with the repository ([`crate::PROJECT`]).

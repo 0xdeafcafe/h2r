@@ -1759,24 +1759,28 @@ example runs in `every_method_in_methods_has_a_test`.
 
 ### Projects and edit files
 
-A project names one map to build from the tree, its import layers, its
-edit files and its kits (docs/editor/tag-workspace.md, "Projects"; code
+A project is a package's `map` item: one map to build from the tree, its
+import layers, the authored layer (the `tag` items the map takes), its
+edit files, its kits and the other items it takes
+(docs/editor/tag-workspace.md, "Projects"; code
 `workspace::project`, `workspace::project_build`, `api/projects.rs`).
 Each call reads the files again. The roots are the `tags_root` setting,
 the data root and the checkout Studio was built from.
 
 | Method | Does | Answers |
 |---|---|---|
-| `project.list` | every `art/*/project.toml`, then `<data>/workspace/projects/*.toml` | `{projects: [{name, path, origin, mode, base, error}]}` |
-| `project.read {project, closure?}` | resolves a project (a name, or a path to its `.toml`) without building it | `{project, file, origin, layers, edit_files, edited, kits, scenario_from, lossy, problems}` |
-| `project.build {project}` | builds and writes `<data>/maps/<name>/` with `receipt.json` | `{dir, map_id, file, took_ms, receipt}` |
+| `project.list` | every `map` item of the packages `content/*/` in the checkout, then `<data>/packages/*/` | `{projects: [{name, path, origin, package, item, mode, base, error}]}` |
+| `project.read {project, closure?}` | resolves a project (a map's name, or a package directory with one map item) without building it or writing anything | `{project, file, package, item, origin, layers, authored, edit_files, edited, kits, scenario_from, lossy, problems}` |
+| `project.build {project}` | builds and writes the map package `<data>/maps/<name>/` with `receipt.json`; the authored layer is kept under `<data>/workspace/generated/` | `{dir, map_id, file, unchanged, took_ms, receipt}` |
 | `edits.list` | every `assets/tag-edits/*.yaml`, then `<data>/workspace/edits/*.yaml` | `{files: [{name, origin, path, entries, tags, problems}]}` |
 | `edits.check {project}` | applies every edit of the project once over its layers | `{project, files, edited, problems: [{file, line, tag, why}], overrides}` |
 | `edits.set {file, tag, path, value, project?}` | writes one `set` line into local file `file`; `project` records the tag's hash as `was` | `{file, path, line, replaced, was}` |
 
 `problems` in `project.read` are what would stop the build: a missing
-tree, base map, import layer or edit file, an edit that does not apply, a
-kit this build lacks. `lossy` (with `closure`, a fresh project whose
+tree, base map, import layer or edit file, an authored tag a lower layer
+holds or two items add, an edit that does not apply, a kit this build
+lacks, a `ground` file. A package that does not load stops every call
+that loads a project, named. `lossy` (with `closure`, a fresh project whose
 scenario is in the layers) lists the closure's tags the tree does not
 hold exactly. `project.build` fails (`FAILED`) with the same words; an
 unknown project is `INVALID_PARAMS`; `edits.set` refuses (`REFUSED`) a

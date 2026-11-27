@@ -26,6 +26,11 @@ impl Layered {
         self.layers.push(layer);
     }
 
+    /// `layer` goes above every layer already here.
+    pub fn put_top(&mut self, layer: Box<dyn TagSource>) {
+        self.layers.insert(0, layer);
+    }
+
     pub fn len(&self) -> usize {
         self.layers.len()
     }

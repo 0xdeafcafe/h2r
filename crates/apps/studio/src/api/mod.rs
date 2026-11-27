@@ -415,9 +415,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::WORKSPACE_PRUNE,
-        "Remove what the workspace no longer needs: raw resources no tag file or manifest names, generated layers no project asks for and build caches unused for a week; `dry_run` reports without removing",
+        "Remove what the workspace no longer needs: raw resources no tag file or manifest names, authored layers (<data>/workspace/generated/) no project's stack asks for, and build caches unused for a week; when the projects' layers cannot be worked out every layer is kept and generated_why says why; `dry_run` reports without removing",
         r#"{"dry_run?":"boolean"}"#,
-        r#"{"dry_run":"boolean","raw_removed":"integer","raw":"[hash]","generated_removed":"[string]","generated_kept":"[string]","caches_removed":"[{name,unused_days}]","outputs_removed":"[string]","bytes":"integer"}"#,
+        r#"{"dry_run":"boolean","raw_removed":"integer","raw":"[hash]","generated_removed":"[string]","generated_kept":"[string]","generated_why":"string|null","caches_removed":"[{name,unused_days}]","outputs_removed":"[string]","bytes":"integer"}"#,
         r#"{"dry_run": true}"#,
     ),
     def(

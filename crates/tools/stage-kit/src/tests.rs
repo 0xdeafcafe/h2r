@@ -457,7 +457,10 @@ fn the_project_parses_and_refuses_what_it_cannot_build() {
     for (from, to) in [
         ("mode = \"fresh\"", "mode = \"onto\""),
         ("kits = [\"stage\"]", "kits = [\"stage\", \"pogo\"]"),
-        ("output = \"package\"", "output = \"map\""),
+        (
+            "kits = [\"stage\"]",
+            "kits = [\"stage\"]\nedits = [\"x\", \"x\"]",
+        ),
         ("name = \"stage\"", "name = \"a stage\""),
     ] {
         let text = crate::PROJECT.replace(from, to);

@@ -323,20 +323,22 @@ fn prune_removes_unnamed_raws_unused_caches_and_unasked_for_layers() {
     assert!(fresh.exists());
     // The named raw stays across another prune.
     assert_eq!(app.workspace_prune(false).unwrap()["raw_removed"], json!(0));
-    // With a project file, generated layers are kept: which ones it asks
-    // for is the project's (W2's projects).
-    std::fs::create_dir_all(t.path("data/workspace/projects")).unwrap();
-    std::fs::write(
-        t.path("data/workspace/projects/stage.toml"),
-        "name = \"stage\"\n",
-    )
-    .unwrap();
+    assert_eq!(report["generated_why"], json!(null));
+    // When which layers the projects ask for cannot be worked out (a
+    // package that does not load), every layer is kept, and why is said.
+    std::fs::create_dir_all(t.path("data/packages/broken")).unwrap();
+    std::fs::write(t.path("data/packages/broken/package.toml"), "[package]\n").unwrap();
     let again = t.path("data/workspace/generated/f2");
     std::fs::create_dir_all(&again).unwrap();
     std::fs::write(again.join("tag"), [0; 5]).unwrap();
     let report = app.workspace_prune(false).unwrap();
     assert_eq!(report["generated_removed"], json!([]));
     assert_eq!(report["generated_kept"], json!(["f2"]));
+    let why = report["generated_why"].as_str().unwrap();
+    assert!(
+        why.contains("broken") && why.contains("does not load"),
+        "{why}"
+    );
     assert!(again.exists());
 }
 

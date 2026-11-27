@@ -298,3 +298,98 @@ pub fn apply(cx: &mut Cx<'_>, job: &Job<'_>) -> Result<(), Failure> {
     }
     Ok(())
 }
+
+/// A `tag` item made a loose tag over the layers below it, for the tag
+/// workspace's authored layer (docs/editor/tag-workspace.md, "Layers"):
+/// `like` reads the tag from `below`, `borrow` looks at `candidates` (the
+/// base map's tags of the group, in its order). A reference names a tag by
+/// key, so the closure finds it. `replaces` (an override of an asset whole,
+/// checked by its asset hash) is not built on loose tags: it is refused by
+/// name.
+pub(crate) fn loose(
+    job: &Job<'_>,
+    below: &mut dyn tags::repo::TagSource,
+    candidates: &[tags::repo::TagKey],
+) -> Result<tags::repo::LooseTag, Failure> {
+    let (group, path, file) = parse(job)?;
+    let key = Cx::key(group, &path);
+    if job.item.replaces.is_some() {
+        return Err(format!(
+            "tag {key}: `replaces` overrides an asset by its asset hash, which the tree build does not check yet: build this package's map from the disc"
+        )
+        .into());
+    }
+    let def = def_of(group)?;
+    let read = |below: &mut dyn tags::repo::TagSource, k: &tags::repo::TagKey| {
+        below
+            .read(k)
+            .map_err(|e| format!("reading {k}: {e}"))?
+            .ok_or_else(|| format!("no layer holds {k}"))
+            .and_then(|t| tags::defs::decode(def, &t).map_err(|e| format!("reading {k}: {e}")))
+    };
+    let mut rec = match &file.like {
+        Some(like) => {
+            let (g, p) = parse_group_ref(like)?;
+            if g != group {
+                return Err(format!("`like` is a {} tag, this tag is not", fourcc(g)).into());
+            }
+            read(&mut *below, &Cx::key(g, &p)).map_err(|why| format!("`like`: {why}"))?
+        }
+        None => default_record(def),
+    };
+    let sets = sets(&file)?;
+    change(def, &mut rec, &file.block, &sets).map_err(|why| format!("tag {key}: {why}"))?;
+    for b in &file.borrow {
+        let records: Vec<Record> = candidates
+            .iter()
+            .filter(|k| k.group == group)
+            .filter_map(|k| read(&mut *below, k).ok())
+            .collect();
+        borrow_from(&records, &[], &mut rec, b).map_err(|why| format!("tag {key}: {why}"))?;
+    }
+    tags::defs::encode(def, key.clone(), &rec, tags::repo::Region::Metadata)
+        .map_err(|e| Failure::from(format!("writing tag {key}: {e}")))
+}
+
+/// [`borrow`]'s choice over records already read: the first alternative
+/// some record matches, its `take` fields copied into `rec`.
+fn borrow_from(
+    candidates: &[Record],
+    strings: &[Option<String>],
+    rec: &mut Record,
+    b: &Borrow,
+) -> Result<(), String> {
+    let empty = Mapping::new();
+    let tries: Vec<&Mapping> = if b.matching.is_empty() {
+        vec![&empty]
+    } else {
+        b.matching.iter().collect()
+    };
+    for alt in tries {
+        let pairs: Vec<(&str, &str)> = alt
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str()?, v.as_str()?)))
+            .collect();
+        let found = candidates.iter().find(|r| {
+            pairs.iter().all(|(k, v)| text_is(r, k, v, strings))
+                && b.take.iter().all(|p| match r.at(p) {
+                    Some(Val::Block(e)) => !e.is_empty(),
+                    Some(_) => true,
+                    None => false,
+                })
+        });
+        if let Some(from) = found {
+            for p in &b.take {
+                let v = from.at(p).cloned().expect("checked above");
+                *rec.at_mut(p)
+                    .ok_or_else(|| format!("borrow take {p:?}: no such element"))? = v;
+            }
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "borrow from {}: no tag of the base matches ({} read)",
+        b.from,
+        candidates.len()
+    ))
+}
