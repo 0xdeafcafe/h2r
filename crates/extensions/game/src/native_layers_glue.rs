@@ -249,7 +249,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             left.all("device");
             return None;
         };
-        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
+        if !d.can_external_pass() {
+            refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
+            report(&outcomes, 0);
+            return None;
+        }
+        // The layer's draws run W-buffered whatever the device holds at the
+        // call: its first shader begin sets ZENABLE first
+        // (`native_objects_glue::apply_layer_begin_zenable`). Set before
+        // the drain, the objects' W check (`object_w_buffer`) and the
+        // pass's view constants and clip read the state the draws run with.
+        if !objects.is_empty() && crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
+            refuse_all(&mut outcomes, &mut *left, "object_layer_begin", taken.len(), objects.len());
+            report(&outcomes, 0);
+            return None;
+        }
+        if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
             refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;

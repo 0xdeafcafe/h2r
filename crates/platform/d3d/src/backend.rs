@@ -2366,6 +2366,9 @@ pub struct RecordingBackend {
     pub external: Vec<(u32, u32)>,
     /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
     pub external_sampled: Vec<Vec<Option<u32>>>,
+    /// Per pass taken, how many [`calls`](Self::calls) were recorded
+    /// before it: its place in the stream among the D3D path's work.
+    pub external_at: Vec<usize>,
     /// Whether it queues independently resolved draws
     /// ([`Backend::queue_external_draw`]) as a threaded backend does; off by
     /// default. Queued, a draw commits at once and is recorded in
@@ -2753,6 +2756,7 @@ impl Backend for RecordingBackend {
         if self.external_passes {
             self.external.push((color, depth));
             self.external_sampled.push(sampled);
+            self.external_at.push(self.calls.len());
         }
         Ok(self.external_passes)
     }
