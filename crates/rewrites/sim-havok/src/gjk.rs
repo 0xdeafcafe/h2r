@@ -12,12 +12,14 @@
 //! - [`contact`] `0x003032c0`: the contact from the query's final state.
 //! - [`tetrahedron`] `0x00303540` with `0x00303110`: which face of a
 //!   tetrahedron the point lies beyond.
+//! - [`edge`] `0x003037a0`: a segment against a triangle, which of the
+//!   two simplices loses a vertex.
 //!
-//! The query itself (`0x003048a0` and its cases `0x003037a0` and
-//! `0x00303dd0`) and the shapes' support virtuals are not ported. On a [`Fallback`] the journal
+//! The query itself (`0x003048a0` and its case `0x00303dd0`) and the
+//! shapes' support virtuals are not ported. On a [`Fallback`] the journal
 //! is discarded and nothing has been written.
 use crate::convex::Fallback;
-use crate::fp::Exact;
+use crate::fp::{Arith, Exact};
 use crate::jacobian::{lane, put_vector, splat, vector, Fpu, Fx, Sse};
 use crate::mem::Journal;
 use crate::solver::load;
@@ -34,6 +36,8 @@ pub const SIGNS: u32 = 0x0041_24a0;
 pub const ABS: u32 = 0x0045_5940;
 pub const TINY: u32 = 0x0045_df1c;
 pub const MARGIN: u32 = 0x0045_dc80;
+/// `1.0` in every lane: [`edge`]'s `1 - t`.
+pub const ONES: u32 = 0x0041_2420;
 
 /// The query state's words [`triangle`] writes: the normal and the three
 /// edge tests; and the two support points it compares the normal with.
@@ -47,6 +51,9 @@ pub mod state {
     pub const COUNT_A: u32 = 0x00;
     pub const COUNT_B: u32 = 0x04;
     pub const MIDPOINT: u32 = 0x130;
+    /// The word [`super::edge`] sets when the segment drops to its
+    /// second vertex.
+    pub const FEATURE: u32 = 0x10;
 }
 
 /// [`contact`]'s fields in its output.
@@ -507,6 +514,183 @@ fn drop_edge(j: &Journal, verts: u32, p: u32, w: &mut [u32; 3], fpu: Fpu) -> Res
     Ok((0..3).find(|&k| cmp(load(w[k]), zero) == Cmp::Greater).map_or(u32::MAX, |k| k as u32))
 }
 
+/// [`edge`]'s answer: eax (`1` the segment meets the triangle inside it,
+/// `0` the segment drops to one vertex, `2` the triangle to an edge), and
+/// ecx and edx at the return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edge {
+    pub eax: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}
+
+/// `dec dword ptr [at]`.
+fn dec(j: &mut Journal, at: u32) -> Result<(), Fallback> {
+    let n = word(j, at)?;
+    j.put(at, n.wrapping_sub(1)).ok_or(Fallback::Memory)
+}
+
+/// `movaps` from one slot to another.
+fn moved(j: &mut Journal, to: u32, from: u32) -> Result<(), Fallback> {
+    let v = vec(j, from)?;
+    put(j, to, v)
+}
+
+/// [`edge`]'s x87 tie-break between two edges: `(new[b] - old[b]) old[a]`
+/// below `(new[a] - old[a]) old[b]`, `old` the sides at entry and `new`
+/// the state's after the second vertex's test (`fcompp; test ah,5; jnp`).
+fn skew(x: &Fx, j: &Journal, st: u32, old: u128, a: u32, b: u32) -> Result<bool, Fallback> {
+    let new = |i: u32| word(j, st.wrapping_add(state::SIDES + 4 * i)).map(load);
+    let old = |i: u32| load(lane(old, i as usize));
+    let first = x.mul(x.sub(new(a)?, old(a)), old(b));
+    let second = x.mul(x.sub(new(b)?, old(b)), old(a));
+    Ok(cmp(second, first) == Cmp::Less)
+}
+
+/// Where the segment from `a` (test `da`) to `b` (test `db`) crosses the
+/// plane: `t = da / (da - db)`, then `(1 - t) a + t b`.
+fn crossing(j: &Journal, sse: &mut Sse, a: u128, b: u128, da: u32, db: u32) -> Result<u128, Fallback> {
+    let span = sse.e.sub(da, db);
+    let t = splat(sse.e.div(da, span));
+    let rest = sse.sub(vec(j, ONES)?, t);
+    let far = sse.mul(t, b);
+    let near = sse.mul(rest, a);
+    Ok(sse.add(near, far))
+}
+
+/// `n . (v - t0)`, the guest's horizontal sum.
+fn height(sse: &mut Sse, n: u128, v: u128, t0: u128) -> u32 {
+    let d = sse.sub(v, t0);
+    let m = sse.mul(n, d);
+    sse.hsum(m)
+}
+
+/// `0x003037a0`, thiscall on the query state, `(segment, triangle,
+/// segment count, triangle count, fresh, feature)`, `ret 0x18`; `esp` is
+/// the stack pointer at entry, for the frame the calls below read their
+/// vectors from. The segment is two vertices at `+0x00`, `+0x10`, the
+/// triangle three at `+0x00` to `+0x20`, each with a parallel array at
+/// `+0x40`. Only `fresh`'s low byte is tested.
+///
+/// Fresh: the triangle's normal is `(t1 - t2) x (t0 - t2)`. A segment
+/// whose ends lie either side of the plane meets it at a point, and a
+/// point [`triangle`] finds inside answers `1`. Ends on one side: the
+/// nearer goes first (both arrays swap) and is tested with `orient`;
+/// inside, the segment count drops and the answer is `0`. Otherwise the
+/// segment's closest approach ([`segments`]) to the edges `t2 t1` and
+/// `t2 t0` chooses the nearer, `t2` (both arrays) overwrites the vertex
+/// off it, the triangle count drops, and the answer is `2`.
+///
+/// Not fresh: the state's normal and sides stand. A crossing inside
+/// answers `1`; the second vertex inside drops the segment to it (both
+/// arrays) and stores `feature` at `+0x10`, answer `0`; else the second
+/// vertex's edge mask, against the old sides where two edges compete,
+/// names the vertex `t2` overwrites (or none), the triangle count drops,
+/// and the answer is `2`.
+#[allow(clippy::too_many_arguments)]
+pub fn edge(j: &mut Journal, st: u32, esp: u32, seg: u32, tri: u32, seg_count: u32, tri_count: u32, fresh: u32, feature: u32, fpu: Fpu) -> Result<Edge, Fallback> {
+    let (mut sse, x) = units(fpu)?;
+    let at = |off: u32| st.wrapping_add(off);
+    // `push ebp; and esp,-16; sub esp,0xa4`, then three pushes.
+    let frame = |off: u32| (esp.wrapping_sub(4) & !15).wrapping_sub(0xb0).wrapping_add(off);
+    let s_at = |i: u32| seg.wrapping_add(16 * i);
+    let t_at = |i: u32| tri.wrapping_add(16 * i);
+    if fresh & 0xff == 0 {
+        let sides = vec(j, at(state::SIDES))?;
+        let t0 = vec(j, t_at(0))?;
+        let b1 = vec(j, s_at(1))?;
+        let n = vec(j, at(state::NORMAL))?;
+        let d1 = height(&mut sse, n, b1, t0);
+        let b0 = vec(j, s_at(0))?;
+        let d0 = height(&mut sse, n, b0, t0);
+        let across = sse.e.mul(d0, d1) >> 31 != 0;
+        let p = if across { Some(crossing(j, &mut sse, b0, b1, d0, d1)?) } else { None };
+        done(&sse)?;
+        if let Some(p) = p {
+            put(j, frame(0x30), p)?;
+            let s = triangle(j, st, frame(0x30), tri, 0, fpu)?;
+            if s.mask == 7 {
+                return Ok(Edge { eax: 1, ecx: st, edx: s.edx });
+            }
+        }
+        let s = triangle(j, st, s_at(1), tri, 0, fpu)?;
+        if s.mask == 7 {
+            dec(j, seg_count)?;
+            moved(j, s_at(0), s_at(1))?;
+            moved(j, s_at(4), s_at(5))?;
+            j.put(at(state::FEATURE), feature).ok_or(Fallback::Memory)?;
+            return Ok(Edge { eax: 0, ecx: st, edx: feature });
+        }
+        // 0x00303a89: the vertex off the edge the second vertex lies past.
+        let view: &Journal = j;
+        let below = |a, b| skew(&x, view, st, sides, a, b);
+        let off = match s.mask {
+            3 => None,
+            5 => Some(1),
+            6 => Some(0),
+            1 => (!below(1, 2)?).then_some(1),
+            2 => below(2, 0)?.then_some(0),
+            4 => Some(if below(0, 1)? { 1 } else { 0 }),
+            _ => Some(0),
+        };
+        dec(j, tri_count)?;
+        if let Some(k) = off {
+            moved(j, t_at(k), t_at(2))?;
+            moved(j, t_at(k + 4), t_at(6))?;
+        }
+        return Ok(Edge { eax: 2, ecx: st, edx: s.edx });
+    }
+    let t0 = vec(j, t_at(0))?;
+    let t2 = vec(j, t_at(2))?;
+    let t1 = vec(j, t_at(1))?;
+    let u = sse.sub(t1, t2);
+    let w = sse.sub(t0, t2);
+    let n = cross(&mut sse, u, w);
+    put(j, frame(0x30), w)?;
+    put(j, frame(0x40), u)?;
+    let s0 = vec(j, s_at(0))?;
+    let d0 = height(&mut sse, n, s0, t0);
+    let s1 = vec(j, s_at(1))?;
+    let d1 = height(&mut sse, n, s1, t0);
+    // `movmskps` both, `xor`, `test al,1`.
+    let p = if (d0 ^ d1) >> 31 != 0 { Some(crossing(j, &mut sse, s0, s1, d0, d1)?) } else { None };
+    done(&sse)?;
+    if let Some(p) = p {
+        put(j, frame(0x10), p)?;
+        let s = triangle(j, st, frame(0x10), tri, 0, fpu)?;
+        if s.mask == 7 {
+            return Ok(Edge { eax: 1, ecx: st, edx: s.edx });
+        }
+    } else {
+        // `fabs` both, `fcompp; test ah,5; jp`: only a nearer second end swaps.
+        if cmp(load(d1).abs(), load(d0).abs()) == Cmp::Less {
+            moved(j, s_at(0), s_at(1))?;
+            put(j, s_at(1), s0)?;
+            let a = vec(j, s_at(4))?;
+            let b = vec(j, s_at(5))?;
+            put(j, s_at(4), b)?;
+            put(j, s_at(5), a)?;
+        }
+        let s = triangle(j, st, seg, tri, 1, fpu)?;
+        if s.mask == 7 {
+            dec(j, seg_count)?;
+            return Ok(Edge { eax: 0, ecx: st, edx: s.edx });
+        }
+    }
+    // 0x0030390f: the segment against the edges from t2 the frame holds.
+    let along = sse.sub(vec(j, s_at(1))?, vec(j, s_at(0))?);
+    done(&sse)?;
+    put(j, frame(0x10), along)?;
+    let first = segments(j, seg, frame(0x10), t_at(2), frame(0x40), frame(0x50), fpu)?;
+    let second = segments(j, seg, frame(0x10), t_at(2), frame(0x30), frame(0x80), fpu)?;
+    // `fcomp; test ah,0x41; jne`: only a farther first edge keeps t0.
+    let k = u32::from(cmp(load(first.distance), load(second.distance)) == Cmp::Greater);
+    moved(j, t_at(k), t_at(2))?;
+    moved(j, t_at(k + 4), t_at(6))?;
+    dec(j, tri_count)?;
+    Ok(Edge { eax: 2, ecx: k << 4, edx: second.distance })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,6 +803,45 @@ mod tests {
         assert!(face.eax < 3, "{face:?}");
         assert_eq!(face.eax, face.ecx);
         assert_eq!(tetrahedron(&Journal::new(&h), verts + 8, p, one, FPU), Err(Fallback::Memory));
+    }
+
+    #[test]
+    fn a_segment_through_a_triangle_meets_it_and_one_beside_it_drops_a_vertex() {
+        let mut h = Heap::default();
+        constants(&mut h);
+        for i in 0..4 {
+            h.0.insert(ONES + 4 * i, ONE_BITS);
+        }
+        let (st, seg, tri, counts, esp) = (0x1000, 0x2000, 0x3000, 0x4000, 0x8000);
+        put4(&mut h, tri, [0.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, tri + 0x10, [1.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, tri + 0x20, [0.0, 1.0, 0.0, 0.0]);
+        h.0.insert(counts, 2);
+        h.0.insert(counts + 4, 3);
+        let run = |h: &Heap, fresh: u32| {
+            let mut j = Journal::new(h);
+            let e = edge(&mut j, st, esp, seg, tri, counts, counts + 4, fresh, 9, FPU);
+            (e, j.get(counts).unwrap(), j.get(counts + 4).unwrap())
+        };
+        // Through the middle: it meets the plane inside.
+        put4(&mut h, seg, [0.25, 0.25, 1.0, 0.0]);
+        put4(&mut h, seg + 0x10, [0.25, 0.25, -1.0, 0.0]);
+        assert_eq!(run(&h, 1), (Ok(Edge { eax: 1, ecx: st, edx: tri }), 2, 3));
+        // Above the triangle, nearer end first: the segment drops to it.
+        put4(&mut h, seg + 0x10, [0.25, 0.25, 2.0, 0.0]);
+        assert_eq!(run(&h, 1).0.map(|e| e.eax), Ok(0));
+        assert_eq!(run(&h, 1).1, 1);
+        // Off to the side: the triangle loses a vertex to t2.
+        put4(&mut h, seg, [3.0, 3.0, 1.0, 0.0]);
+        put4(&mut h, seg + 0x10, [4.0, 4.0, 1.0, 0.0]);
+        let (e, a, b) = run(&h, 1);
+        let e = e.unwrap();
+        assert_eq!((e.eax, e.ecx & !0x10, a, b), (2, 0, 2, 2), "{e:?}");
+        // Only the low byte says fresh; a zero normal never crosses.
+        assert_eq!(run(&h, 0x100).0.map(|e| e.eax), Ok(2));
+        assert_eq!(run(&h, 0x100).0.map(|e| e.ecx), Ok(st));
+        let mut j = Journal::new(&h);
+        assert_eq!(edge(&mut j, st, esp, seg + 8, tri, counts, counts + 4, 1, 9, FPU), Err(Fallback::Memory));
     }
 
     #[test]

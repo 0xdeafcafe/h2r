@@ -2432,7 +2432,7 @@ const GJK_OUT: u32 = 0x0077_2000;
 
 fn gjk_code(image: &Image) -> lifted::Original {
     let mut code = image.original();
-    for f in [0x2da4d0, 0x2da6e0, 0x303360, 0x308590, 0x3032c0, 0x303540, 0x303110] {
+    for f in [0x2da4d0, 0x2da6e0, 0x303360, 0x308590, 0x3032c0, 0x303540, 0x303110, 0x3037a0] {
         code.prime(f);
     }
     code
@@ -2645,4 +2645,55 @@ fn the_tetrahedron_face_matches_the_lifted_choice() {
         *seen.entry((face.eax, face.ecx == verts + 0x30)).or_insert(0) += 1;
     }
     assert!(seen.len() >= 6, "{seen:?}");
+}
+
+/// Seeded segments against seeded triangles, fresh (the triangle's own
+/// normal) or not (the state's normal and sides, the fresh byte sometimes
+/// only above the low one), a quarter of them through the triangle's
+/// middle: eax, ecx and edx equal the lifted function's, and the vertices,
+/// counts and state words it moves match byte for byte outside its frame.
+#[test]
+fn the_edge_case_matches_the_lifted_case() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    let mut seen = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x3037_0000 + seed);
+        let mut mem = base.clone();
+        let (seg, tri, counts) = (GJK_IN, GJK_IN + 0x100, GJK_IN + 0x200);
+        for i in 0..6 {
+            seed_vector(&mut r, &mut mem, seg + 16 * i);
+        }
+        let t: Vec<[f32; 4]> = (0..7).map(|i| seed_vector(&mut r, &mut mem, tri + 16 * i)).collect();
+        for off in [gjk::state::SUPPORT_A, gjk::state::SUPPORT_B, gjk::state::NORMAL, gjk::state::SIDES] {
+            seed_vector(&mut r, &mut mem, GJK_STATE + off);
+        }
+        if seed % 4 == 1 {
+            // Through the middle, with the state's normal the triangle's own.
+            let mid: [f32; 4] = std::array::from_fn(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
+            let dir = [coord(&mut r), coord(&mut r), 1.0 + coord(&mut r).abs(), 0.0];
+            put_lanes(&mut mem, seg, std::array::from_fn(|k| mid[k] + dir[k]));
+            put_lanes(&mut mem, seg + 0x10, std::array::from_fn(|k| mid[k] - dir[k]));
+            let sub = |a: [f32; 4], b: [f32; 4]| -> [f32; 4] { std::array::from_fn(|k| a[k] - b[k]) };
+            let (u, w) = (sub(t[1], t[2]), sub(t[0], t[2]));
+            put_lanes(&mut mem, GJK_STATE + gjk::state::NORMAL, [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0], 0.0]);
+        }
+        word(&mut mem, counts, 2);
+        word(&mut mem, counts + 4, 3);
+        let fresh = [0, 0x100, 1, 0x5a][(seed % 8 / 2) as usize];
+        let feature = r.u32();
+        let args = [seg, tri, counts, counts + 4, fresh, feature];
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} fresh {fresh:#x} {fpu:x?}");
+        let mut answer = None;
+        let after = gjk_compare(&mut code, &mut mem, 0x3037a0, GJK_STATE, &args, fpu, |j| {
+            answer = Some(gjk::edge(j, GJK_STATE, STACK, seg, tri, counts, counts + 4, fresh, feature, fpu)?);
+            Ok(())
+        }, &why);
+        let edge = answer.unwrap();
+        assert_eq!((after.eax, after.ecx, after.edx, after.esp), (edge.eax, edge.ecx, edge.edx, STACK + 0x1c), "{why}: eax, ecx, edx, ret 0x18");
+        assert_eq!((after.ebx, after.esi, after.edi), (0x1111, 0x3333, 0x4444), "{why}");
+        *seen.entry((fresh & 0xff != 0, edge.eax)).or_insert(0) += 1;
+    }
+    assert!(seen.len() >= 5, "{seen:?}");
 }

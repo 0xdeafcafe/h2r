@@ -1,6 +1,6 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; six leaves of the closest-feature query are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; seven leaves of the closest-feature query are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
 Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query's leaves), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
@@ -84,7 +84,8 @@ frame and runs the closest-feature query. **E**
 |---|---|---|
 | `0x002da4d0` (thiscall out; A, B; `ret 8`) | B's four columns by A's transposed rotation, then A's translation taken off | `gjk::relative` |
 | `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` | no |
-| `0x003037a0`, `0x00303dd0` | the query's edge and triangle cases (`0x00303dd0` with the penetration path `0x00303b80`, `0x0030a6b0`) | no |
+| `0x003037a0` (thiscall state; segment, triangle, segment count, triangle count, fresh, feature; `ret 0x18`) | the edge case, a segment against a triangle: fresh, the triangle's own normal, else the state's normal and sides; a crossing inside answers 1; the nearer end (fresh) or the second vertex inside drops the segment to it, 0; else `t2` overwrites the vertex off the nearer edge (by `gjk::segments` fresh, by the edge mask and the old sides otherwise), 2 | `gjk::edge` |
+| `0x00303dd0` | the query's triangle case, with the penetration path `0x00303b80`, `0x0030a6b0` | no |
 | `0x00303540` (eax the four vertices, ebx the point, one stack word `s`; `ret`), with `0x00303110` (edi the vertices; point, tests) | the tetrahedron face the point lies beyond: each face's `n . s (p - v3)` signed-squared over `\|n\|^2`; `-1` below `1e-6`, the largest past `1.1` times the next, else `0x00303110` strikes edges by projection | `gjk::tetrahedron` |
 | `0x00303360` (thiscall state; point, triangle, orient; `ret 0xc`) | the triangle's normal and the point's three edge signs (mask in eax); with `orient`, the normal faces the support difference, swapping the first two vertices to do it | `gjk::triangle` |
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
