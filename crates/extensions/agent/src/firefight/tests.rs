@@ -100,6 +100,7 @@ impl Source for Fake {
             errors: Vec::new(),
             refused: None,
             placements_unseen: 0,
+            pods: None,
         }
     }
     fn command(&self, params: CommandParams) -> Result<CommandReply, Refused> {
