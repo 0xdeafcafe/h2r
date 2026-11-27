@@ -194,7 +194,7 @@ fn objects_the_walk_keeps_are_counted_by_cause() {
     keep(kept_site(ViewKind::Alternate), ObjectWalk::Reservation, 3);
     keep(kept_site(ViewKind::Game), ObjectWalk::State, 0);
     assert!(kept("scene_kept_3_object_unsupported") >= part + 2);
-    assert!(kept("scene_kept_3_object_order") >= order + 1);
+    assert!(kept("scene_kept_3_object_order") > order);
     assert!(kept("scene_kept_alt3_object_reservation") >= alt + 3);
     assert_eq!(ObjectWalk::PartLayout.name(), "part_layout");
 }
