@@ -138,6 +138,7 @@ pub mod native_first_person_load;
 pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
+#[cfg(feature = "gpu")]
 pub mod native_gels_scene;
 #[cfg(feature = "gpu")]
 pub mod native_layers_glue;
