@@ -258,6 +258,8 @@ pub enum Prop {
     Coordinates,
     /// A spawn or goal's team.
     Team,
+    /// An item spawner's team, a property of the document.
+    SpawnerTeam,
     /// A goal's netgame flag type.
     Role,
     /// A goal's identifier.
@@ -1238,6 +1240,8 @@ pub struct Extras {
     /// The session runs on a map with the kit, so a spawner, a starting
     /// point, a goal and a teleporter can be duplicated.
     pub kit: bool,
+    /// An item spawner's team, from the document's property.
+    pub team: Option<u8>,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in

@@ -1133,6 +1133,7 @@ impl Editor {
             label: self.session.label_of(id).map(|l| (l.text, l.number)),
             savable: self.prefab_members(id).len(),
             kit: self.session.has_kit(),
+            team: self.session.team(id),
         }
     }
 
@@ -2488,6 +2489,11 @@ impl Editor {
                     },
                 );
             }
+            Choice::Set(Prop::SpawnerTeam, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at an item spawner.")?;
+                let team = i.checked_sub(1).and_then(|t| u8::try_from(t).ok());
+                return self.command(tick, Command::SetTeam { id, team });
+            }
             Choice::Set(Prop::Role, i) => {
                 let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
                 return self.command(
@@ -2888,6 +2894,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Duplicate { id, frame } => s.duplicate(w, tick, id, frame).map(|_| ()),
         Remove { id } => s.remove(w, tick, id),
         Reset { id } => s.reset(w, tick, id),
+        SetTeam { id, team } => s.set_team(w, tick, id, team),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),

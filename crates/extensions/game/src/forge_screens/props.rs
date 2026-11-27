@@ -73,6 +73,12 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             let current = if team < 0 { 0 } else { (team + 1) as usize };
             picker(p, help, Prop::Team, values, current.min(last))
         }
+        // The spawner's team is the document's property, not a field: None
+        // first, then the teams in order.
+        ("picker", "spawner team") => {
+            let current = extras.team.map_or(0, |team| usize::from(team) + 1);
+            picker(p, help, Prop::SpawnerTeam, values, current.min(last))
+        }
         ("picker", "role") => {
             let current = int_of(thing, "type").clamp(0, last as i64) as usize;
             picker(p, help, Prop::Role, values, current)
