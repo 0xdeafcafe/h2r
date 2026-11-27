@@ -558,7 +558,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 if layer == CASTER_LAYER {
                     draws.extend(world.resolve_shadow_parts(std::mem::take(&mut run))?);
                 } else {
-                    draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run))?);
+                    draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run), gel.is_some())?);
                 }
             }
             let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
@@ -574,11 +574,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             if layer == CASTER_LAYER {
                 draws.extend(world.resolve_shadow_parts(run)?);
             } else {
-                draws.extend(world.resolve_receiver_parts(layer, run)?);
+                draws.extend(world.resolve_receiver_parts(layer, run, gel.is_some())?);
             }
         }
         let constants = match light {
-            Some(constants) if constants.animated_gel => {
+            // A scene light's gel is drawn into target 13 ahead of its
+            // layers (`scene::Op::Gel`): its receivers sample it.
+            Some(constants) if constants.animated_gel && gel.is_none() => {
                 return Err(Keep::Unsupported(
                     "an animated gel keeps the receiver on D3D",
                 ));
@@ -2066,6 +2068,7 @@ impl LightsWorld {
         &self,
         layer: usize,
         parts: Vec<(usize, WorldDraw)>,
+        produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
@@ -2092,7 +2095,7 @@ impl LightsWorld {
                     "cluster lacks a vertex stream read by its receiver program",
                 ));
             }
-            self.binds(&compiled.program, None, false, &self.images)?;
+            self.binds(&compiled.program, None, produced_gel, &self.images)?;
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
