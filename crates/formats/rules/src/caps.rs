@@ -742,8 +742,8 @@ pub const ENTRIES: &[Entry] = &[
     // is the arrival, `firefight::Arrival::number`.
     read(id::ZONE_FALL, "zone_fall", &[Int], Bool, Named),
     read(id::PODS_FREE, "pods_free", &[Class], Int, Named),
-    read(id::POD_FLOOD, "pod_flood", &[Class], Bool, Named),
     read(id::POD_CLASS, "pod_class", &[Class], Bool, Named),
+    read(id::POD_FLOOD, "pod_flood", &[Class], Bool, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
