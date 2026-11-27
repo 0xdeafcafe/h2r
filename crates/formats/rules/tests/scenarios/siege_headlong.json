@@ -86,18 +86,6 @@
     },
     {
       "label": "siege_attack",
-      "object": 2101,
-      "number": 1,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2102,
-      "number": 1,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
       "object": 2103,
       "number": 1,
       "class": "spawn"
@@ -110,19 +98,7 @@
     },
     {
       "label": "siege_attack",
-      "object": 2062,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
       "object": 2138,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2096,
       "number": 2,
       "class": "spawn"
     },
@@ -135,12 +111,6 @@
     {
       "label": "siege_attack",
       "object": 2135,
-      "number": 2,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_attack",
-      "object": 2112,
       "number": 2,
       "class": "spawn"
     },
@@ -159,12 +129,6 @@
     {
       "label": "siege_defend",
       "object": 2102,
-      "number": 0,
-      "class": "spawn"
-    },
-    {
-      "label": "siege_defend",
-      "object": 2099,
       "number": 0,
       "class": "spawn"
     },

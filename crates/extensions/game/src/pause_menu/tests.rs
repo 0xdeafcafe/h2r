@@ -269,9 +269,11 @@ fn a_host_full_of_devices_fits_the_models_string_ids() {
 }
 
 #[test]
-fn player_settings_and_the_forge_rows_share_the_multiplayer_row_text() {
-    // Both name their own rows at MP_MENU_ROW_TEXT; the plan needs an order
-    // between them or boot refuses it (video or voice on adds Settings).
+fn the_forge_driver_leaves_the_multiplayer_row_text_to_player_settings() {
+    // GAME MENU keeps the retail rows in a Forge game: the Forge driver
+    // names none of them (forge_screens' game_menu_has_the_retail_rows),
+    // so Player Settings is the only plan entry at MP_MENU_ROW_TEXT and
+    // the plan needs no order between the two.
     let mut registry = hooks::Registry::new(hooks::Switches::defaults());
     assert!(registry.add(&Settings(Mode::Multiplayer)).unwrap());
     crate::forge_screens::install(&mut registry).unwrap();
@@ -280,7 +282,6 @@ fn player_settings_and_the_forge_rows_share_the_multiplayer_row_text() {
         .lines()
         .find(|l| l.contains(" MP_MENU_ROW_TEXT: "))
         .unwrap_or_else(|| panic!("no MP_MENU_ROW_TEXT line\n{plan}"));
-    let settings = line.find("pause-mp-rows:").unwrap();
-    let forge = line.find("forge-screens:").unwrap();
-    assert!(settings < forge, "{line}");
+    assert!(line.contains("pause-mp-rows:"), "{line}");
+    assert!(!line.contains("forge-screens:"), "{line}");
 }
