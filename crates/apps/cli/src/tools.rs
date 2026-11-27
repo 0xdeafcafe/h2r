@@ -29,6 +29,7 @@ const TOOLS: &[&str] = &[
     "tag",
     "collision",
     "superbounce",
+    "siege",
     "hud",
     "object",
     "strings",

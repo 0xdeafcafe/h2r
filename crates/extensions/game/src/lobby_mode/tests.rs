@@ -1409,3 +1409,18 @@ fn a_failed_build_names_its_reason_in_the_panel() {
     lobby_start::kit_build_started();
     assert_eq!(lobby_start::kit_build(), KitBuild::Building);
 }
+
+/// A custom game's Game Setup list keeps its map and game type rows in
+/// every mode the game type row shows in, and a list the game built empty
+/// is named, not written: Siege's lobby once showed an empty Game Setup.
+#[test]
+fn the_setup_list_keeps_its_rows_and_an_empty_list_is_named() {
+    for mode in [Mode::Multiplayer, Mode::Forge] {
+        let rows = rows_to_write(mode, ALL, &CUSTOM).unwrap().unwrap_or_else(|| CUSTOM.to_vec());
+        assert!(rows.contains(&CHANGE_MAP) && rows.contains(&CHANGE_RULES), "{mode:?}: {rows:?}");
+    }
+    let firefight = rows_to_write(Mode::Firefight, ALL, &CUSTOM).unwrap().unwrap_or_else(|| CUSTOM.to_vec());
+    assert!(firefight.contains(&CHANGE_MAP), "{firefight:?}");
+    let e = rows_to_write(Mode::Multiplayer, ALL, &[]).unwrap_err();
+    assert!(e.contains("no rows"), "{e}");
+}

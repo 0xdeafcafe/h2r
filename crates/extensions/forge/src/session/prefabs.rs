@@ -52,10 +52,10 @@ impl Session {
         let target = self.thing(id).ok_or(NO_THING)?.id.identity();
         let have = self.label_of(target);
         // A barrier is a label on an object: it is set here as any
-        // other, and by `label_barrier` from the AI and objectives page.
+        // other, and by `label_barrier` from the Siege page.
         let ground = |l: &Label| GroundLabel::of(&l.text).is_some_and(GroundLabel::on_flag);
         if label.as_ref().is_some_and(ground) || have.as_ref().is_some_and(ground) {
-            return Err("A ground marker's label is set on the AI and objectives page.".into());
+            return Err("A ground marker's label is set on the AI and objectives page or the Siege page.".into());
         }
         if let Some(label) = &label {
             label.check().map_err(reason)?;
