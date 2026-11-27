@@ -245,7 +245,7 @@ impl Feature for SimSoundEvents {
         });
         let sim = Arc::clone(&self.sim);
         b.raw().implement(&points::SOUND_IMPULSE_ALLOCATE, "sound impulse", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
+            let mem = ctx.memory();
             let tag = mem.u32(cpu.esp.wrapping_add(4))?;
             let source = mem.u32(cpu.esp.wrapping_add(12))?;
             let tick = game_tick(&mem)?;
@@ -256,7 +256,7 @@ impl Feature for SimSoundEvents {
         });
         let sim = Arc::clone(&self.sim);
         b.raw().implement(&points::SOUND_START_AT_MARKER, "sound at marker", move |cpu, ctx, _| {
-            let mut mem = ctx.memory();
+            let mem = ctx.memory();
             let params = mem.u32(cpu.esp.wrapping_add(4))?;
             let tick = game_tick(&mem)?;
             let durations = Arc::clone(lock(&sim).durations());
