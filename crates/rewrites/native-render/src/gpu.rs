@@ -1,6 +1,6 @@
 //! World geometry and materials live on the GPU for the BSP. Guest-selected
-//! parts draw their index ranges in list order. Whole-world rendering uses
-//! frustum-culled indirect slots.
+//! parts draw their index ranges in list order. Whole-world rendering draws
+//! indirect slots the GPU culls ([`crate::cull_gpu`]).
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -9,7 +9,8 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 
 use crate::camera::{Mat4, RenderCamera};
-use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::cull::{CullStats, Frustum};
+use crate::cull_gpu::{GpuCull, OcclusionSkips, SLOT_SIZE};
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
@@ -205,6 +206,15 @@ pub struct PassViewport {
     pub height: f32,
 }
 
+/// Which draws a recorded run issues: the selection's index ranges, or
+/// the early or late indirect slots of the GPU cull.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slots {
+    Selected,
+    Early,
+    Late,
+}
+
 /// The stencil test and write the layer's draws take on the D3D path, as
 /// the device holds them when the native pass is asked for, and the
 /// sections the game draws in its mode 2 (`skip::StencilPlan::marked`):
@@ -318,8 +328,9 @@ pub struct GpuWorld {
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    indirect: wgpu::Buffer,
-    slots: Vec<IndirectSlot>,
+    /// The whole-world pass's indirect slots and the compute cull that
+    /// writes them.
+    cull: GpuCull,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
@@ -609,9 +620,6 @@ impl GpuWorld {
         let empty_vertex = [WorldVertex::default()];
         let verts = if world.vertices.is_empty() { &empty_vertex[..] } else { &world.vertices[..] };
         let idx = if world.indices.is_empty() { &[0][..] } else { &world.indices[..] };
-        let slots = indirect_slots(&world);
-        let empty_slot = [IndirectSlot::default()];
-        let slot_bytes = if slots.is_empty() { &empty_slot[..] } else { &slots[..] };
         // COPY_DST: an editor moves a section's vertices in place
         // ([`GpuWorld::set_section_vertices`]).
         let vertex_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
@@ -626,11 +634,7 @@ impl GpuWorld {
             vertices.clone()
         };
         let indices = init("native world indices", bytemuck::cast_slice(idx), wgpu::BufferUsages::INDEX);
-        let indirect = init(
-            "native world indirect",
-            bytemuck::cast_slice(slot_bytes),
-            wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-        );
+        let cull = GpuCull::new(device, &world);
         let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native world frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
@@ -767,8 +771,7 @@ impl GpuWorld {
             light_mesh_device: None,
             program_vertices,
             indices,
-            indirect,
-            slots,
+            cull,
             frame,
             frame_group,
             batch_groups,
@@ -826,6 +829,7 @@ impl GpuWorld {
     ) -> Result<crate::world::SectionRun, crate::world::SectionRefusal> {
         let run = self.world.replace_section(owner, section)?;
         self.write_run(queue, run);
+        self.cull.write_bounds(queue, &self.world);
         Ok(run)
     }
 
@@ -1563,19 +1567,38 @@ impl GpuWorld {
         if programs { Frustum::sides(vp) } else { Frustum::from_view_projection(vp) }
     }
 
-    /// The frame's camera: culls on the CPU and writes the uniform and the slots' instance counts.
-    pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
-        let stats = self.cull_stats(camera);
+    /// The frame's view for the whole-world pass ([`GpuWorld::encode`],
+    /// next in the same encoder, with the same `viewport`): writes the
+    /// uniform and the view the GPU culls against, and records the early
+    /// cull ([`crate::cull_gpu`]). The fixed stage's views take the depth
+    /// pyramid; a world with material programs culls by the frustum alone
+    /// (counted, [`GpuWorld::occlusion_skips`]).
+    pub fn prepare(
+        &mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, viewport: PassViewport,
+        depth: DepthRule,
+    ) {
+        let vp = camera.view_projection();
+        let frustum = Self::draw_frustum(&vp, self.has_programs());
         self.write_frame(uploads, camera, depth);
-        if !self.slots.is_empty() {
-            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
-        }
-        stats
+        let occlusion = !self.has_programs();
+        self.cull.early(uploads, &vp, &frustum, depth, camera.far, viewport, occlusion);
     }
 
-    pub fn cull_stats(&mut self, camera: &RenderCamera) -> CullStats {
-        let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
-        cull(&self.world, &frustum, &mut self.slots)
+    /// The last view's cull counts, read back from the GPU (blocking; for
+    /// tests and tools).
+    pub fn read_cull_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> CullStats {
+        self.cull.read_stats(device, queue)
+    }
+
+    /// Whether each draw ([`World::draws`]) was drawn in the last view,
+    /// read back from the GPU (blocking; for tests and tools).
+    pub fn read_drawn(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<bool> {
+        self.cull.read_drawn(device, queue)
+    }
+
+    /// Views whose late cull ran without the depth pyramid, by why.
+    pub fn occlusion_skips(&self) -> OcclusionSkips {
+        self.cull.skips()
     }
 
     fn write_frame(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) {
@@ -1601,43 +1624,15 @@ impl GpuWorld {
         viewport: PassViewport,
         target_size: (u32, u32),
     ) {
-        self.encode_parts(device, encoder, color, color_format, depth, depth_format, viewport, target_size, None);
-    }
-
-    /// Record precisely the guest's ordered part sequence, including repeated
-    /// parts. Adjacent slots in the same batch may share a multi-draw.
-    pub fn encode_parts(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
-        depth_format: wgpu::TextureFormat,
-        viewport: PassViewport,
-        target_size: (u32, u32),
-        parts: Option<&[(Owner, u8)]>,
-    ) -> usize {
-        let mut spans = Vec::<(usize, usize, usize)>::new();
-        if let Some(parts) = parts {
-            for part in parts {
-                let Some(&slot) = self.part_slots.get(part) else { return 0 };
-                if self.slots[slot].instance_count == 0 { return 0; }
-                let batch = self.world.draws[slot].batch as usize;
-                if let Some((last_batch, _, end)) = spans.last_mut() && *last_batch == batch && *end == slot {
-                    *end += 1;
-                } else {
-                    spans.push((batch, slot, slot + 1));
-                }
-            }
-        } else {
-            spans.extend(self.world.batches.iter().enumerate().map(|(i, b)| {
-                let first = b.first_draw as usize;
-                (i, first, first + b.draw_count as usize)
-            }));
-        }
+        let spans: Vec<_> = self.world.batches.iter().enumerate().map(|(i, b)| {
+            let first = b.first_draw as usize;
+            (i, first, first + b.draw_count as usize)
+        }).collect();
         self.prepare_pipelines(device, color_format, depth_format);
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, false, d3d::Lighting::Retail)
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Early, d3d::Lighting::Retail);
+        if self.cull.late(device, encoder, depth, viewport) {
+            self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Late, d3d::Lighting::Retail);
+        }
     }
 
     /// All selected draws passed the owner and frustum checks before admission.
@@ -1656,7 +1651,7 @@ impl GpuWorld {
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
         selection: &WorldSelection, lighting: d3d::Lighting,
     ) -> usize {
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, true, lighting)
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, Slots::Selected, lighting)
     }
 
     /// [`GpuWorld::write_selection`] and [`GpuWorld::encode_selection`] as
@@ -1808,7 +1803,7 @@ impl GpuWorld {
     fn record_spans(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
-        spans: &[(usize, usize, usize)], selected: bool, lighting: d3d::Lighting,
+        spans: &[(usize, usize, usize)], slots: Slots, lighting: d3d::Lighting,
     ) -> usize {
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1837,7 +1832,7 @@ impl GpuWorld {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        if self.slots.is_empty() {
+        if self.world.draws.is_empty() {
             return 0;
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -1850,16 +1845,20 @@ impl GpuWorld {
         let mut bound_program = None;
         let mut pending_indices = None;
         let issue = |pass: &mut wgpu::RenderPass<'_>, pending: &mut Option<std::ops::Range<u32>>, first: usize, end: usize| {
-            if selected {
-                for d in &self.world.draws[first..end] {
-                    let next = d.first_index..d.first_index + d.index_count;
-                    if let Some(previous) = append_triangles(pending, next) {
-                        pass.draw_indexed(previous, 0, 0..1);
+            let indirect = match slots {
+                Slots::Early => &self.cull.early,
+                Slots::Late => &self.cull.late,
+                Slots::Selected => {
+                    for d in &self.world.draws[first..end] {
+                        let next = d.first_index..d.first_index + d.index_count;
+                        if let Some(previous) = append_triangles(pending, next) {
+                            pass.draw_indexed(previous, 0, 0..1);
+                        }
                     }
+                    return;
                 }
-            } else {
-                pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (end - first) as u32);
-            }
+            };
+            pass.multi_draw_indexed_indirect(indirect, first as u64 * SLOT_SIZE, (end - first) as u32);
         };
         for &(i, first, last) in spans {
             let b = &self.world.batches[i];

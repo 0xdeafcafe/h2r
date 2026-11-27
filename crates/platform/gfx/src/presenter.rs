@@ -29,7 +29,10 @@ pub struct RenderTarget<'a> {
     pub samples: u32,
 }
 
-fn create_depth(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
+/// `usage` beyond `RENDER_ATTACHMENT`: an offscreen target's depth is
+/// also `TEXTURE_BINDING`, so the native world's depth pyramid can read it
+/// (docs/graphics/native-world.md, "Cull").
+fn create_depth(device: &wgpu::Device, size: (u32, u32), usage: wgpu::TextureUsages) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("gfx depth"),
@@ -38,7 +41,7 @@ fn create_depth(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
             view_formats: &[],
         })
         .create_view(&Default::default())
@@ -68,7 +71,7 @@ impl OffscreenTarget {
             view_formats: &[],
         });
         let color_view = texture.create_view(&Default::default());
-        Self { texture, color_view, depth_view: create_depth(device, size), format, size }
+        Self { texture, color_view, depth_view: create_depth(device, size, wgpu::TextureUsages::TEXTURE_BINDING), format, size }
     }
 
     /// Borrows as a [`RenderTarget`].
@@ -140,7 +143,7 @@ impl Presenter {
             view_formats: vec![],
         };
         surface.configure(&ctx.device, &config);
-        let depth_view = create_depth(&ctx.device, size);
+        let depth_view = create_depth(&ctx.device, size, wgpu::TextureUsages::empty());
         Ok(Self { surface, config, depth_view })
     }
 
@@ -162,7 +165,7 @@ impl Presenter {
         self.config.width = size.0;
         self.config.height = size.1;
         self.surface.configure(&ctx.device, &self.config);
-        self.depth_view = create_depth(&ctx.device, size);
+        self.depth_view = create_depth(&ctx.device, size, wgpu::TextureUsages::empty());
     }
 
     /// Gets the next frame, reconfiguring the surface if it was lost.
