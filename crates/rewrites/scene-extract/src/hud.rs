@@ -292,6 +292,44 @@ impl Bitmap for GuestBitmap<'_> {
     }
 }
 
+/// `0x0016bae0` on the players' table: the record of player `datum`, or
+/// `Some(None)` when the datum is none, past the table or not its slot's.
+pub fn player_by_datum(mem: &dyn GuestMemory, datum: u32) -> Option<Option<u32>> {
+    if datum == u32::MAX {
+        return Some(None);
+    }
+    let table = mem.u32(PLAYERS).ok()?;
+    let index = datum & 0xffff;
+    if index as i32 >= mem.i32(table.checked_add(0x38)?).ok()? {
+        return Some(None);
+    }
+    let size = mem.u32(table.checked_add(0x24)?).ok()?;
+    let at = mem.u32(table.checked_add(0x44)?).ok()?.checked_add(size.checked_mul(index)?)?;
+    let salt = mem.u16(at).ok()? as i16;
+    Some((salt != 0 && i32::from(salt) == (datum as i32) >> 16).then_some(at))
+}
+
+/// The longest player name read: the record holds 16 characters.
+const NAME_UNITS: u32 = 32;
+
+/// A name widget's string (`0x0022a931`): the name of the player the HUD
+/// record at `record` names (`+0x228`, while its byte `+0x224` is set),
+/// or the empty string. `None`: not read, or a name with no end.
+pub fn player_name(mem: &dyn GuestMemory, record: u32) -> Option<Vec<u16>> {
+    if mem.u8(record.checked_add(0x224)?).ok()? == 0 {
+        return Some(Vec::new());
+    }
+    let Some(player) = player_by_datum(mem, mem.u32(record.checked_add(0x228)?).ok()?)? else { return Some(Vec::new()) };
+    let mut name = Vec::new();
+    for i in 0..NAME_UNITS {
+        match mem.u16(player.checked_add(0x44 + 2 * i)?).ok()? {
+            0 => return Some(name),
+            unit => name.push(unit),
+        }
+    }
+    None
+}
+
 /// The player's HUD record at `at`, as the walk reads it.
 pub fn record(mem: &dyn GuestMemory, at: u32) -> Option<Vec<u8>> {
     mem.bytes(at, walk::RECORD_SIZE).ok()
@@ -343,6 +381,33 @@ pub fn blocks(mem: &dyn GuestMemory, datum: u32) -> Option<Blocks> {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn a_name_widget_reads_the_name_of_the_player_the_record_names() {
+        let mut m = FakeGuest::new();
+        // Players of 0x21c bytes at 0x9000, two of them; the second's salt is 0x7001.
+        m.put_u32(PLAYERS, 0x8000).put_u32(0x8000 + 0x24, PLAYER_SIZE).put_u32(0x8000 + 0x38, 2).put_u32(0x8000 + 0x44, 0x9000);
+        let player = 0x9000 + PLAYER_SIZE;
+        m.put(player, &[0u8; 0x90]);
+        m.put_u16(player, 0x7001);
+        for (i, unit) in "Chief".encode_utf16().enumerate() {
+            m.put_u16(player + 0x44 + 2 * i as u32, unit);
+        }
+        m.put(0x6000, &[0u8; walk::RECORD_SIZE]);
+        m.put_u8(0x6000 + 0x224, 1).put_u32(0x6000 + 0x228, 0x7001_0001);
+        assert_eq!(player_by_datum(&m, 0x7001_0001), Some(Some(player)));
+        assert_eq!(player_name(&m, 0x6000), Some("Chief".encode_utf16().collect()));
+        // Another salt, a slot past the table, no player and an unset byte: the empty string.
+        for datum in [0x7002_0001, 0x7001_0002, u32::MAX] {
+            m.put_u32(0x6000 + 0x228, datum);
+            assert_eq!(player_name(&m, 0x6000), Some(Vec::new()), "{datum:#x}");
+        }
+        m.put_u8(0x6000 + 0x224, 0).put_u32(0x6000 + 0x228, 0x7001_0001);
+        assert_eq!(player_name(&m, 0x6000), Some(Vec::new()));
+        // A free slot (salt 0) is no player.
+        m.put_u8(0x6000 + 0x224, 1).put_u16(player, 0);
+        assert_eq!(player_by_datum(&m, 0x0000_0001), Some(None));
+    }
 
     #[test]
     fn a_definitions_blocks_read_whole_with_their_addresses() {
