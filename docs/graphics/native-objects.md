@@ -805,7 +805,14 @@ bindings use the same values, including the view's disabled-fog defaults.
   `stencil_texture`), and their layer 1 and 7 passes bind only the rows
   of the stages they sample: the unbound rows hold what an earlier
   upload left on the device (`0x00018e80` writes only a pass's dirty
-  rows), which those coordinates carry unused.
+  rows), which those coordinates carry unused. The device's `c[18]` and
+  the structure rows `c[21..25]` are taken only for live reads, so such
+  a pass records no structure read for the `c[21]` of an unsampled
+  `oT2`. A vertex register the object streams do not supply is read
+  only where it reaches a live output (`program::translate_object_pass`,
+  `only_dead_outputs`): those programs copy the vertex colours `v10`
+  and `v11` into `oD0`, which a pixel shader with its own final
+  combiner, plain fetches and no `v0` input leaves unread.
 
 - **The vertex streams** (`object_streams`, Code). The draw sets its
   streams through `0x0001caa0`: the section's `vrtx` classification
