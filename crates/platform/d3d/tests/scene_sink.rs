@@ -870,6 +870,78 @@ mod retained_admission {
         (begun, frame.ops.into_iter().map(|(_, op)| op).collect(), refusals)
     }
 
+    /// A menu UI quad from a native producer in a replaying frame, offered
+    /// to a sink over a backend that queues as the threaded one does:
+    /// `carry` begins the native carry first, as the device does. What the
+    /// sink answered, what its backend queued and the replay's carried
+    /// stages.
+    fn queued_ui_quad(carry: bool) -> (bool, Vec<(Stage, usize)>, Vec<Option<Stage>>) {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF40_8020);
+        let draw = Arc::new(device.backend.draws().pop().unwrap().clone());
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = frames.clone();
+        let inner = RecordingBackend { queue_external_draws: true, ..RecordingBackend::new() };
+        let mut sink = SceneSink::new(inner, slot).with_replay(move |frame| output.lock().unwrap().push(frame));
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let shown = sink.create_surface(fmt, 32, 32, false).unwrap();
+        let surfaces = ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+        let request = ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 };
+        let plan = ExternalPlan { stage: Stage::Ui, view: 4, ranges: 1, slots: vec![] };
+        let pass: d3d::backend::SharedReplacement = Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>));
+        let admission = RetainedAdmission {
+            packets: Arc::from([Arc::clone(&draw)]),
+            surfaces: surfaces.clone(),
+            request,
+            plan: plan.clone(),
+            pass: Arc::clone(&pass),
+        };
+        let begun = carry && sink.begin_native_carry(colour, None, &admission);
+        let queued = sink.queue_external_draw(
+            d3d::backend::QueuedExternalDraw {
+                surfaces, request, plan, pass, fallback: draw, fallback_depth: None, finished: Box::new(|_| {}),
+            },
+            [None; 4],
+        );
+        if begun && queued {
+            sink.record_native_carry(colour, None, [None; 4]);
+        }
+        sink.end_native_carry();
+        assert!(sink.copy_surface(colour, shown).unwrap());
+        let held = sink.inner().queued.clone();
+        sink.present(shown, 0).unwrap();
+        let frame = frames.lock().unwrap().pop().unwrap();
+        let carried = frame.ops.into_iter().filter_map(|(_, op)| match op {
+            ReplayOp::Draw { external, .. } => Some(external.map(|e| e.plan.stage)),
+            _ => None,
+        }).collect();
+        (queued, held, carried)
+    }
+
+    /// The game thread hands a menu quad to the render thread and moves
+    /// on: with its carry begun, a replaying sink queues it and keeps the
+    /// carried quad in its slot, so the device need not prepare it in a
+    /// round trip (`ThreadedBackend::prepare_external` blocks for one).
+    #[test]
+    fn a_ui_quad_in_a_replay_is_queued_with_its_carry() {
+        let (queued, held, carried) = queued_ui_quad(true);
+        assert!(queued);
+        assert_eq!(held, [(Stage::Ui, 1)]);
+        assert_eq!(carried, [Some(Stage::Ui)]);
+    }
+
+    /// Without a carry a replaying sink would lose the quad from its frame,
+    /// so it declines to queue it and the device prepares it instead.
+    #[test]
+    fn a_ui_quad_in_a_replay_without_a_carry_is_not_queued() {
+        let (queued, held, carried) = queued_ui_quad(false);
+        assert!(!queued);
+        assert!(held.is_empty());
+        assert!(carried.is_empty());
+    }
+
     #[test]
     fn a_native_water_commit_is_retained_as_an_admitted_draw() {
         let (begun, ops, refusals) = native_water(Stage::Water, false);
