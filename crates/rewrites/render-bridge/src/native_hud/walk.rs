@@ -16,6 +16,12 @@
 //! the guest's call; a proven widget's body is left out and the guest
 //! runs the call alone, on a frame Rust fills ([`call_frame`]).
 //!
+//! The loop itself is Rust's once the guest's widget calls matched
+//! Rust's selection on [`PROOF_DRAWS`] walks of the definition and every
+//! widget it shows is proven ([`plan_loop`]): the widgets are laid out
+//! and drawn in the guest's order and the guest's walk is left out. One
+//! walk in [`RECHECK`] is the guest's, with every widget checked again.
+//!
 //! A widget is the guest's until [`PROOF_DRAWS`] of its draws matched
 //! Rust's quad for quad (the vertices, the bitmap, image and shader and
 //! the globals, bit for bit, at `HUD_QUAD_SETUP`). After that Rust draws
@@ -112,6 +118,11 @@ impl Proof {
         if self.seen % RECHECK == 0 { Arm::Shadow } else { Arm::Own }
     }
 
+    /// Whether Rust draws it, asked without counting a draw.
+    fn proven(&self) -> bool {
+        !self.failed && self.clean >= PROOF_DRAWS
+    }
+
     /// A shadowed draw's answer. True when this one proved the widget.
     fn checked(&mut self, matched: bool) -> bool {
         if !matched {
@@ -128,17 +139,51 @@ struct State {
     generation: Option<u64>,
     /// By the widget's address.
     proofs: HashMap<u32, Proof>,
+    /// The loop's, by the definition's datum.
+    walks: HashMap<u32, Proof>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
 
-fn proof<T>(widget: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+fn state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let generation = crate::native_map_work::generation();
     if s.generation != Some(generation) {
-        *s = State { generation: Some(generation), proofs: HashMap::new() };
+        *s = State { generation: Some(generation), ..State::default() };
     }
-    f(s.proofs.entry(widget).or_default())
+    f(&mut *s)
+}
+
+fn proof<T>(widget: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+    state(|s| f(s.proofs.entry(widget).or_default()))
+}
+
+fn walk_proof<T>(definition: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+    state(|s| f(s.walks.entry(definition).or_default()))
+}
+
+/// The loop's side of the walk the guest is in.
+#[derive(Default)]
+struct Loop {
+    /// The definition walked: its datum.
+    definition: u32,
+    /// The guest loops as the loop's check: each widget is checked too.
+    shadow: bool,
+    /// The widgets Rust drew before it gave the loop back.
+    done: Vec<(Kind, u32)>,
+}
+
+thread_local! {
+    static LOOP: RefCell<Loop> = const { RefCell::new(Loop { definition: 0, shadow: false, done: Vec::new() }) };
+}
+
+/// Whose a widget's draw is: a proven widget is checked again on a walk
+/// the guest loops as a check.
+fn arm(widget: u32) -> Arm {
+    match proof(widget, Proof::arm) {
+        Arm::Own if LOOP.with(|l| l.borrow().shadow) => Arm::Shadow,
+        other => other,
+    }
 }
 
 static COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
@@ -270,6 +315,109 @@ pub fn enter(mem: &dyn GuestMemory, definition: u32, player: u32, record: u32, s
         count("read");
     }
     ACTIVE.with(|a| *a.borrow_mut() = active);
+    LOOP.with(|l| *l.borrow_mut() = Loop { definition, ..Loop::default() });
+}
+
+/// What the walk's entry does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoopPlan {
+    /// The guest loops.
+    Guest,
+    /// Rust loops: the widgets shown, in the guest's order, each with
+    /// its address and inputs.
+    Own(Vec<(Kind, u32, [f32; 4])>),
+}
+
+/// `HUD_WALK`'s entry, after [`enter`]: whose the loop is. Rust's when
+/// the definition's selection is proven, no feature changes a widget of
+/// it, no screen effect is shown (its call is the guest's) and every
+/// widget shown is proven.
+pub fn plan_loop() -> LoopPlan {
+    let refused = |why: &'static str| {
+        count(why);
+        LoopPlan::Guest
+    };
+    let read = |a: &Active| (a.foreign, a.shown.iter().map(|s| (s.kind, a.blocks.address(s.kind, s.index), s.inputs)).collect::<Vec<_>>());
+    let Some((foreign, shown)) = ACTIVE.with(|a| a.borrow().as_ref().map(read)) else { return LoopPlan::Guest };
+    if foreign {
+        return refused("loop_feature");
+    }
+    let definition = LOOP.with(|l| l.borrow().definition);
+    match walk_proof(definition, Proof::arm) {
+        Arm::Guest => return refused("loop_differed"),
+        Arm::Shadow => {
+            LOOP.with(|l| l.borrow_mut().shadow = true);
+            return LoopPlan::Guest;
+        }
+        Arm::Own => {}
+    }
+    if shown.iter().any(|s| s.0 == Kind::Screen) {
+        return refused("loop_screen");
+    }
+    if !shown.iter().all(|s| proof(s.1, |p| p.proven())) {
+        return refused("loop_unproven");
+    }
+    LoopPlan::Own(shown)
+}
+
+/// A bitmap widget of a loop Rust runs, laid out as at its draw. `None`:
+/// the loop goes back to the guest at this widget.
+pub fn own_bitmap(mem: &dyn GuestMemory, fp: Fp, player: u32, record: u32, widget: u32, inputs: &[f32; 4]) -> Option<(WalkWidget, Vec<(u32, u32)>)> {
+    match lay_out(mem, fp, player, record, widget, inputs) {
+        Ok(Some(laid)) => Some(laid),
+        Ok(None) => {
+            count("empty");
+            None
+        }
+        Err(why) => {
+            count(why);
+            None
+        }
+    }
+}
+
+/// A text widget of a loop Rust runs, as [`own_bitmap`].
+pub fn own_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, record: u32, widget: u32, inputs: &[f32; 4]) -> Option<WalkText> {
+    let Some(fonts) = fonts else {
+        count("text_fonts");
+        return None;
+    };
+    match lay_out_text(mem, fp, fonts, record, widget, inputs) {
+        Ok(Some(laid)) => Some(laid),
+        Ok(None) => {
+            count("text_empty");
+            None
+        }
+        Err(why) => {
+            count("text_refused");
+            count(why);
+            None
+        }
+    }
+}
+
+/// Rust drew `widget` in its loop.
+pub fn drew(kind: Kind, widget: u32) {
+    LOOP.with(|l| l.borrow_mut().done.push((kind, widget)));
+}
+
+/// Whether Rust drew `widget` in this walk before it gave the loop back:
+/// the guest's draw of it is left out.
+pub fn done(kind: Kind, widget: u32) -> bool {
+    LOOP.with(|l| l.borrow().done.contains(&(kind, widget)))
+}
+
+/// Rust's loop drew every widget: the guest's walk is left out.
+pub fn looped() {
+    ACTIVE.with(|a| *a.borrow_mut() = None);
+    LOOP.with(|l| *l.borrow_mut() = Loop::default());
+    count("loop_owned");
+}
+
+/// Rust's loop met a widget that is not Rust's: the guest loops, and
+/// the widgets in [`done`] are left out of it.
+pub fn gave_back() {
+    count("loop_gave_back");
 }
 
 /// The walk's selection as the guest's calls would be.
@@ -279,13 +427,18 @@ fn expected_calls(active: &Active) -> Vec<(Kind, u32, [u32; 4])> {
 
 /// `HUD_WALK`'s return: the guest's widget draws against Rust's selection.
 pub fn leave() {
+    let walked = LOOP.with(|l| std::mem::take(&mut *l.borrow_mut()));
     let Some(active) = ACTIVE.with(|a| a.borrow_mut().take()) else { return };
     if active.foreign {
         count("selection_foreign");
-    } else if expected_calls(&active) == active.calls {
-        count("selection_matched");
-    } else {
+    } else if expected_calls(&active) != active.calls {
         count("selection_differed");
+        walk_proof(walked.definition, |p| p.checked(false));
+    } else {
+        count("selection_matched");
+        if walked.shadow && walk_proof(walked.definition, |p| p.checked(true)) {
+            count("loop_proven");
+        }
     }
 }
 
@@ -493,7 +646,7 @@ pub fn plan(mem: &dyn GuestMemory, fp: Fp, player: u32, record: u32, widget: u32
         Ok(None) => return refused("empty"),
         Err(why) => return refused(why),
     };
-    match proof(widget, Proof::arm) {
+    match arm(widget) {
         Arm::Guest => refused("differed"),
         Arm::Shadow => {
             let e = expect(widget, &laid, &last);
@@ -523,26 +676,26 @@ const MEASURE: [f32; 4] = [0.0, 0.0, 1000.0, 1000.0];
 
 /// The text widget at `widget` laid out in Rust with `inputs`.
 /// `Ok(None)`: it draws nothing. `Err`: why Rust does not lay it out.
-fn lay_out_text(mem: &dyn GuestMemory, fp: Fp, fonts: &dyn UiText, widget: u32, inputs: &[f32; 4]) -> Result<Option<WalkText>, &'static str> {
+fn lay_out_text(mem: &dyn GuestMemory, fp: Fp, fonts: &dyn UiText, record: u32, widget: u32, inputs: &[f32; 4]) -> Result<Option<WalkText>, &'static str> {
     let w = mem.bytes(widget, walk::TEXT_SIZE).map_err(|_| "read")?;
     let screen = hud::screen(mem).ok_or("read")?;
     let aim = hud::aim(mem).ok_or("read")?;
     let run = |block: (u32, u32), inputs: &[f32; 4], basis: &mut walk::Basis| effects(mem, fp, block, inputs, basis);
     let Some(place) = walk::text_widget(&w, inputs, &screen, aim, &run).map_err(Refusal::cause)? else { return Ok(None) };
     let font = place.font.and_then(|f| u16::try_from(f).ok()).ok_or("font")?;
-    let string = if place.flags & walk::TEXT_NUMBER != 0 {
+    let units: Vec<u16> = if place.flags & walk::TEXT_NUMBER != 0 {
         // `0x0022a8b5`: the callback's value, through `_ftol`.
         let value = input(mem, inputs, place.string).ok_or("number")?;
         if !(value.abs() < 2_147_483_648.0) {
             return Err("number");
         }
-        walk::number_text(place.flags, value as i32)
+        walk::number_text(place.flags, value as i32).encode_utf16().collect()
     } else if place.flags & walk::TEXT_NAME != 0 {
-        return Err("name");
+        // `0x0022a931`: the record's player's name, or nothing.
+        hud::player_name(mem, record).ok_or("name")?
     } else {
-        super::hud_overlay::localized(mem, place.string).ok_or("string")?
+        super::hud_overlay::localized(mem, place.string).ok_or("string")?.encode_utf16().collect()
     };
-    let units: Vec<u16> = string.encode_utf16().collect();
     let shape = |rect: [f32; 4]| fonts.shape(font, &units, rect, Justify::Left).ok_or("shape");
     let measured: Vec<[f32; 4]> = shape(MEASURE)?.iter().map(|g| g.rect).collect();
     let Some(bounds) = walk::text_bounds(&measured) else { return Ok(None) };
@@ -573,7 +726,7 @@ pub enum TextPlan {
 
 /// `HUD_TEXT_WIDGET`'s entry: whose the draw is, as [`plan`] for a
 /// bitmap widget. `fonts` lays the string out; with none the guest does.
-pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, widget: u32, inputs: u32) -> TextPlan {
+pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, record: u32, widget: u32, inputs: u32) -> TextPlan {
     let refused = |why: &'static str| {
         count(why);
         TextPlan::Guest
@@ -588,7 +741,7 @@ pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, widg
         return refused("text_feature");
     }
     let Some(fonts) = fonts else { return refused("text_fonts") };
-    let laid = match lay_out_text(mem, fp, fonts, widget, &given) {
+    let laid = match lay_out_text(mem, fp, fonts, record, widget, &given) {
         Ok(Some(laid)) => laid,
         Ok(None) => return refused("text_empty"),
         Err(why) => {
@@ -596,7 +749,7 @@ pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, widg
             return refused(why);
         }
     };
-    match proof(widget, Proof::arm) {
+    match arm(widget) {
         Arm::Guest => refused("text_differed"),
         Arm::Shadow => {
             let e = ExpectText { widget, quads: laid.quads, globals: laid.writes, next: 0, matched: true };
@@ -697,7 +850,7 @@ pub fn plan_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: u32)
             return refused(why);
         }
     };
-    match proof(widget, Proof::arm) {
+    match arm(widget) {
         Arm::Guest => refused("screen_differed"),
         Arm::Shadow => {
             let e = ExpectScreen { widget, draw, calls: 0, matched: true };
@@ -1053,11 +1206,13 @@ mod tests {
     }
 
     const FP: Fp = Fp { mxcsr: 0x1f80, control: 0x027f };
+    /// The player's HUD record: not mapped until a test maps it.
+    const RECORD: u32 = 0x000a_0000;
 
     #[test]
     fn a_number_widget_is_laid_out_ending_at_its_point_with_each_glyphs_shadow_first() {
         let m = number_widget();
-        let t = lay_out_text(&m, FP, &Cells, TEXT, &[7.9, 0.0, 0.0, 0.0]).unwrap().unwrap();
+        let t = lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[7.9, 0.0, 0.0, 0.0]).unwrap().unwrap();
         assert_eq!((t.anchor, t.point, t.shader, t.font), (3, [592.0, 444.0], 0xe200_0009, 8));
         // "07": 19 wide by the measure, so it starts at 580 - 19.
         let quad = |index: char, x: f32, y: f32, colour: u32| GlyphQuad { index: index as u32, rect: [x, y, x + 8.0, y + 10.0], colour };
@@ -1076,15 +1231,33 @@ mod tests {
     }
 
     #[test]
-    fn a_name_widget_and_a_number_past_an_int_are_the_guests() {
+    fn a_name_that_is_not_read_and_a_number_past_an_int_are_the_guests() {
         let mut m = number_widget();
-        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[f32::INFINITY, 0.0, 0.0, 0.0]), Err("number"));
+        assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[f32::INFINITY, 0.0, 0.0, 0.0]), Err("number"));
         m.put_u8(TEXT + 0x1e, walk::TEXT_NAME as u8);
-        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[1.0; 4]), Err("name"));
+        assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]), Err("name"));
         // A colour the font renderer does not take.
         let mut m = number_widget();
         m.put_f32(0x6000, 1.5);
-        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[1.0; 4]), Err("colour"));
+        assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]), Err("colour"));
+    }
+
+    #[test]
+    fn a_name_widget_draws_the_name_of_the_records_player() {
+        let mut m = number_widget();
+        m.put_u8(TEXT + 0x1e, walk::TEXT_NAME as u8);
+        // The record names player 0x7001_0000, whose name is "Al".
+        m.map(RECORD, walk::RECORD_SIZE as u32);
+        m.put_u8(RECORD + 0x224, 1).put_u32(RECORD + 0x228, 0x7001_0000);
+        m.put_u32(0x004e_8c24, 0x8000).put_u32(0x8000 + 0x24, 0x21c).put_u32(0x8000 + 0x38, 1).put_u32(0x8000 + 0x44, 0x9000);
+        m.map(0x9000, 0x21c);
+        m.put_u16(0x9000, 0x7001).put_u16(0x9000 + 0x44, u16::from(b'A')).put_u16(0x9000 + 0x46, u16::from(b'l'));
+        let t = lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]).unwrap().unwrap();
+        // Each glyph's shadow, then the glyph.
+        assert_eq!(t.quads.iter().map(|q| q.index).collect::<Vec<u32>>(), [b'A', b'A', b'l', b'l'].map(u32::from));
+        // No player named: the empty string, which draws nothing.
+        m.put_u8(RECORD + 0x224, 0);
+        assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]), Ok(None));
     }
 
     /// The guest's glyph quad for `quad` at `at` (`0x0001f3a0`).
@@ -1147,14 +1320,14 @@ mod tests {
         let shown = vec![Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
         let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
         ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
-        assert_eq!(plan_text(&m, FP, None, TEXT, 0x7800), TextPlan::Guest);
+        assert_eq!(plan_text(&m, FP, None, RECORD, TEXT, 0x7800), TextPlan::Guest);
         // Selected, with fonts: an unproven widget is shadowed.
-        assert_eq!(plan_text(&m, FP, Some(&Cells), TEXT, 0x7800), TextPlan::Guest);
+        assert_eq!(plan_text(&m, FP, Some(&Cells), RECORD, TEXT, 0x7800), TextPlan::Guest);
         assert_eq!(text_answer().quads.len(), 4);
         // Other inputs than Rust's walk gave: not laid out.
         ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
         m.put_f32(0x7800, 0.5);
-        assert_eq!(plan_text(&m, FP, Some(&Cells), TEXT, 0x7800), TextPlan::Guest);
+        assert_eq!(plan_text(&m, FP, Some(&Cells), RECORD, TEXT, 0x7800), TextPlan::Guest);
         assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().text.is_none()));
         ACTIVE.with(|a| *a.borrow_mut() = None);
     }
@@ -1226,6 +1399,107 @@ mod tests {
             assert!(e.calls == 1 && !e.matched, "change {change}");
             ACTIVE.with(|a| *a.borrow_mut() = None);
         }
+    }
+
+    /// A walk of `definition` showing `shown`, as [`enter`] leaves it.
+    fn walking(definition: u32, blocks: &Blocks, shown: &[Shown]) {
+        let active = Active { blocks: blocks.clone(), shown: shown.to_vec(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
+        ACTIVE.with(|a| *a.borrow_mut() = Some(active));
+        LOOP.with(|l| *l.borrow_mut() = Loop { definition, ..Loop::default() });
+    }
+
+    /// The guest's draw of a widget, as [`called`] keeps it.
+    fn guest_call(call: (Kind, u32, [u32; 4])) {
+        ACTIVE.with(|a| a.borrow_mut().as_mut().unwrap().calls.push(call));
+    }
+
+    #[test]
+    fn the_loop_is_rusts_once_the_selection_and_every_shown_widget_are_proven() {
+        let (definition, widget) = (0xe300_0101, 0x0031_0000);
+        let mut blocks = Blocks::default();
+        blocks.bitmaps = (widget, vec![0; walk::BITMAP_SIZE]);
+        let inputs = [1.0, 0.0, 0.0, 0.5];
+        let shown = [Shown { kind: Kind::Bitmap, index: 0, inputs }];
+        let call = (Kind::Bitmap, widget, bits(&inputs));
+        // The guest loops while its calls are checked against Rust's.
+        for n in 0..PROOF_DRAWS {
+            walking(definition, &blocks, &shown);
+            assert_eq!(plan_loop(), LoopPlan::Guest, "walk {n}");
+            guest_call(call);
+            leave();
+        }
+        // The selection is proven, the widget is not: the guest loops.
+        walking(definition, &blocks, &shown);
+        assert_eq!(plan_loop(), LoopPlan::Guest);
+        guest_call(call);
+        leave();
+        proof(widget, |p| p.clean = PROOF_DRAWS);
+        walking(definition, &blocks, &shown);
+        assert_eq!(plan_loop(), LoopPlan::Own(vec![(Kind::Bitmap, widget, inputs)]));
+        looped();
+        assert!(ACTIVE.with(|a| a.borrow().is_none()));
+    }
+
+    #[test]
+    fn a_walk_whose_calls_differ_keeps_the_loop_on_the_guest() {
+        let (definition, widget) = (0xe300_0102, 0x0032_0000);
+        walk_proof(definition, |p| p.clean = PROOF_DRAWS);
+        proof(widget, |p| p.clean = PROOF_DRAWS);
+        let mut blocks = Blocks::default();
+        blocks.texts = (widget, vec![0; walk::TEXT_SIZE]);
+        let shown = [Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
+        walking(definition, &blocks, &shown);
+        assert!(matches!(plan_loop(), LoopPlan::Own(_)));
+        // Rust gave the loop back and the guest drew nothing.
+        gave_back();
+        leave();
+        walking(definition, &blocks, &shown);
+        assert_eq!(plan_loop(), LoopPlan::Guest);
+        leave();
+    }
+
+    #[test]
+    fn one_proven_walk_in_64_is_the_guests_with_each_widget_checked_again() {
+        let (definition, widget) = (0xe300_0103, 0x0033_0000);
+        walk_proof(definition, |p| *p = Proof { clean: PROOF_DRAWS, failed: false, seen: RECHECK - 2 });
+        proof(widget, |p| p.clean = PROOF_DRAWS);
+        let blocks = Blocks::default();
+        walking(definition, &blocks, &[]);
+        assert_eq!(plan_loop(), LoopPlan::Own(Vec::new()));
+        assert_eq!(arm(widget), Arm::Own);
+        walking(definition, &blocks, &[]);
+        assert_eq!(plan_loop(), LoopPlan::Guest);
+        assert_eq!(arm(widget), Arm::Shadow);
+        leave();
+        assert_eq!(arm(widget), Arm::Own);
+    }
+
+    #[test]
+    fn a_walk_showing_a_screen_effect_or_a_features_widget_is_the_guests_loop() {
+        let (definition, widget) = (0xe300_0104, 0x0034_0000);
+        walk_proof(definition, |p| p.clean = PROOF_DRAWS);
+        proof(widget, |p| p.clean = PROOF_DRAWS);
+        let mut blocks = Blocks::default();
+        blocks.screens = (widget, vec![0; walk::SCREEN_SIZE]);
+        walking(definition, &blocks, &[Shown { kind: Kind::Screen, index: 0, inputs: [1.0; 4] }]);
+        assert_eq!(plan_loop(), LoopPlan::Guest);
+        // With nothing shown the loop is Rust's, unless a feature has a widget in the definition.
+        walking(definition, &blocks, &[]);
+        assert_eq!(plan_loop(), LoopPlan::Own(Vec::new()));
+        ACTIVE.with(|a| a.borrow_mut().as_mut().unwrap().foreign = true);
+        assert_eq!(plan_loop(), LoopPlan::Guest);
+        looped();
+    }
+
+    #[test]
+    fn widgets_rust_drew_before_it_gave_the_loop_back_are_left_out_of_the_guests_walk() {
+        LOOP.with(|l| *l.borrow_mut() = Loop::default());
+        drew(Kind::Bitmap, 0x3500);
+        assert!(done(Kind::Bitmap, 0x3500));
+        assert!(!done(Kind::Text, 0x3500) && !done(Kind::Bitmap, 0x3564));
+        // The next walk starts with none.
+        leave();
+        assert!(!done(Kind::Bitmap, 0x3500));
     }
 
     #[test]

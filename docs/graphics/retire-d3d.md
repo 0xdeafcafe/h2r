@@ -100,7 +100,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target (`scene_kept_post_*`); a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans (`scene_kept_flare_*`) | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_17_*`); other callers (`scene_kept_17_*_caller`) | none |
-| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | every HUD caller's tag-shader quad through the overlay (widgets, crosshair, training frame, navpoints, waypoints, indicator), HUD glyphs, motion sensor compositing fans; a proven shader's quads with no shader draw; a proven bitmap widget with no guest draw | the shader draw `0x0001bbf0` per quad of an unproven or refused shader and one proven quad in 32; what "R6's remainder" counts; the built-in diffuse shader; the walk's loop, an unproven widget's draw, a screen effect's call | none: the HUD is outside the timed scene-pass sites |
+| HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | every HUD caller's tag-shader quad through the overlay (widgets, crosshair, training frame, navpoints, waypoints, indicator), HUD glyphs, motion sensor compositing fans; a proven shader's quads with no shader draw; a proven bitmap or text widget with no guest draw; a proven definition's walk with no guest loop | the shader draw `0x0001bbf0` per quad of an unproven or refused shader and one proven quad in 32; what "R6's remainder" counts; the built-in diffuse shader; an unproven definition's loop, an unproven widget's draw, a screen effect's call | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890` | full-screen overlay | all six fade modes through the native overlay | guest state setup and draws refused by the overlay | not measured |
 | Menu rectangles and bars (`0x0004b252` from `0x00052ce7`), outlines `0x0001ed98` | immediate fans, a line strip | the geometry | state setup, the line state | none |
@@ -466,10 +466,10 @@ A kept item's own guest draw is not counted again as `untraced`, nor are a kept 
 
 Not built:
 
-- **The rest of the walk.** The guest's loop still gates each widget and
-  gives its inputs; a bitmap or text widget is the guest's until its
-  layout and its shader are proven
-  ([the walk in Rust](native-hud-overlay.md#the-walk-in-rust)).
+- **The rest of the walk.** The loop is the guest's until the
+  definition's selection and every widget it shows are proven, and
+  whenever a screen effect is shown; a string with a button glyph is the
+  guest's ([the walk in Rust](native-hud-overlay.md#the-walk-in-rust)).
 - **Screen effects from the scene.** A HUD screen effect is drawn by the
   post's transaction at its call, as `render_screen_effects`' are; a
   proven widget's call is Rust's, on a frame Rust fills.

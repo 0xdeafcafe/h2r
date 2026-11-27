@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use runtime::abi::TransferAbi;
+use scene_extract::hud::walk::Kind;
 use timeline::native::{Metric, Stage, Ui};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
@@ -425,18 +426,72 @@ fn own_widget(mem: &mut dyn GuestMemory, widget: &WalkWidget, last: &[(u32, u32)
     true
 }
 
-/// The walk's hooks ([`walk`]): Rust's selection at the walk's entry,
-/// the guest's widget calls for its check, and the bitmap widget's draw.
+/// A proven text widget's draw: the host's glyph quads.
+fn own_text(mem: &mut dyn GuestMemory, text: &WalkText) -> bool {
+    let drawn = host().is_some_and(|host| host.rust_hud_text(mem, text));
+    walk::owned_text(drawn);
+    if drawn {
+        Ui::OverlayHudTextQuads.count_n(text.quads.len() as u64);
+        Stage::Ui.count(Metric::BuildsSkipped, text.quads.len() as u64);
+        ui::record(true);
+    }
+    drawn
+}
+
+/// A walk Rust loops ([`walk::plan_loop`]): each widget shown is laid
+/// out and drawn in the guest's order, after the widgets before it.
+/// False when a widget is not Rust's to draw: the guest loops, and its
+/// draws of the widgets already drawn are left out ([`walk::done`]).
+fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, player: u32, record: u32, shown: &[(Kind, u32, [f32; 4])]) -> bool {
+    for &(kind, widget, inputs) in shown {
+        let drawn = match kind {
+            Kind::Screen => false,
+            Kind::Bitmap => match walk::own_bitmap(&*mem, fp, player, record, widget, &inputs) {
+                Some((laid, last)) => own_widget(mem, &laid, &last),
+                None => false,
+            },
+            Kind::Text => {
+                let fonts = host().and_then(|host| host.ui_text(&*mem));
+                match walk::own_text(&*mem, fp, fonts.as_deref(), record, widget, &inputs) {
+                    Some(text) => own_text(mem, &text),
+                    None => false,
+                }
+            }
+        };
+        if !drawn {
+            walk::gave_back();
+            return false;
+        }
+        walk::drew(kind, widget);
+    }
+    walk::looped();
+    true
+}
+
+/// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
+/// loop at the walk's entry; the guest's widget calls for the check; and
+/// each widget's draw.
 fn place_walk(b: &mut Builder) {
-    use scene_extract::hud::walk::Kind;
     b.raw().before(&points::HUD_WALK, "native_hud_walk_enter", |c| {
         let rt = Arc::clone(c.ctx.runtime());
-        let mem = rt.memory();
-        let esp = c.cpu.esp;
-        if let (Some(player), Some(record), Some(slot)) = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2)) {
+        let owned = {
+            let mut mem = rt.memory();
+            let esp = c.cpu.esp;
+            let (Some(player), Some(record), Some(slot)) = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2)) else {
+                return Ok(Flow::Continue);
+            };
             walk::enter(&*mem, c.cpu.eax, player, record, slot);
+            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+            match walk::plan_loop() {
+                walk::LoopPlan::Guest => false,
+                walk::LoopPlan::Own(shown) => own_loop(&mut *mem, fp, player, record, &shown),
+            }
+        };
+        if !owned {
+            return Ok(Flow::Continue);
         }
-        Ok(Flow::Continue)
+        // The walk is left out: its widgets are drawn.
+        c.ret(12).map(Flow::Return)
     }).context_only().optional();
     b.raw().after(&points::HUD_WALK, "native_hud_walk_leave", |_| {
         walk::leave();
@@ -472,24 +527,19 @@ fn place_walk(b: &mut Builder) {
         let rt = Arc::clone(c.ctx.runtime());
         let owned = {
             let mut mem = rt.memory();
-            let (Some(widget), Some(inputs)) = (argument(&*mem, c.cpu.esp, 2), argument(&*mem, c.cpu.esp, 3)) else {
+            let esp = c.cpu.esp;
+            let (Some(record), Some(widget), Some(inputs)) = (argument(&*mem, esp, 1), argument(&*mem, esp, 2), argument(&*mem, esp, 3)) else {
                 return Ok(Flow::Continue);
             };
             walk::called(&*mem, Kind::Text, widget, inputs);
-            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-            let host = host();
-            let fonts = host.as_ref().and_then(|host| host.ui_text(&*mem));
-            match walk::plan_text(&*mem, fp, fonts.as_deref(), widget, inputs) {
-                walk::TextPlan::Guest => false,
-                walk::TextPlan::Own(text) => {
-                    let drawn = host.is_some_and(|host| host.rust_hud_text(&mut *mem, &text));
-                    walk::owned_text(drawn);
-                    if drawn {
-                        Ui::OverlayHudTextQuads.count_n(text.quads.len() as u64);
-                        Stage::Ui.count(Metric::BuildsSkipped, text.quads.len() as u64);
-                        ui::record(true);
-                    }
-                    drawn
+            if walk::done(Kind::Text, widget) {
+                true
+            } else {
+                let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+                let fonts = host().and_then(|host| host.ui_text(&*mem));
+                match walk::plan_text(&*mem, fp, fonts.as_deref(), record, widget, inputs) {
+                    walk::TextPlan::Guest => false,
+                    walk::TextPlan::Own(text) => own_text(&mut *mem, &text),
                 }
             }
         };
@@ -513,10 +563,14 @@ fn place_walk(b: &mut Builder) {
                 return Ok(Flow::Continue);
             };
             walk::called(&*mem, Kind::Bitmap, widget, inputs);
-            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-            match walk::plan(&*mem, fp, player, record, widget, inputs) {
-                walk::Plan::Guest => false,
-                walk::Plan::Own(laid, last) => own_widget(&mut *mem, &laid, &last),
+            if walk::done(Kind::Bitmap, widget) {
+                true
+            } else {
+                let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+                match walk::plan(&*mem, fp, player, record, widget, inputs) {
+                    walk::Plan::Guest => false,
+                    walk::Plan::Own(laid, last) => own_widget(&mut *mem, &laid, &last),
+                }
             }
         };
         if !owned {
