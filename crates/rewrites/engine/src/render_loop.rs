@@ -26,6 +26,7 @@ pub mod structure_parameters;
 pub mod world_walk;
 pub mod occlusion;
 pub mod states;
+pub mod tick_writes;
 
 /// The registers a port sets and reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

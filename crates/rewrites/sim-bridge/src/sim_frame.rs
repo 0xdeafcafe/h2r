@@ -10,20 +10,24 @@
 //!    the caches as always. A world frame runs the original too on every
 //!    `render_every`th one (0: never).
 //! 2. Otherwise **skip**: run the frame wait `0x0012b2e0` here (frame timing
-//!    turns the vblanks it counts into the tick's `dt`), then the stubs the
-//!    render's dependency census asks for ([`after_wait`]: the 64-bit
-//!    present counter and the render-frame counter one on, the one-shot byte
-//!    cleared), and return to the game.
+//!    turns the vblanks it counts into the tick's `dt`), then the frame's
+//!    tick writes ([`after_wait`]: `engine::render_loop::tick_writes`, the
+//!    one source the render frame step uses too), and return to the game.
+//! 3. **Check**: a world frame the original renders is checked after it
+//!    returns: the guest's three words against the Rust prediction. A
+//!    difference is counted by word and falls back for the session: every
+//!    later world frame renders.
 //!
 //! The other features' hooks on the point (the bots' pads before it and
 //! their views back after it) run around this one as they would around the
 //! original.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
+use engine::render_loop::tick_writes::{self, Word, Words};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
@@ -43,12 +47,9 @@ pub struct Addrs {
     pub ui_state: (u32, u32, u32),
     /// Resource-cache countdowns: running ones mean loading.
     pub cache_countdowns: (u32, u32),
-    /// The 64-bit present counter `rasterizer_present` adds to.
-    pub present_counter: u32,
-    /// The render-frame counter `render_views` adds to.
-    pub frame_counter: u32,
-    /// The byte the render clears per view and the sim sets.
-    pub launch_clear: u32,
+    /// The frame's tick writes: the present counter, the render frame
+    /// counter and the one-shot byte.
+    pub ticks: tick_writes::Addrs,
 }
 
 impl Addrs {
@@ -57,9 +58,7 @@ impl Addrs {
         engine_globals: 0x004e_6948,
         ui_state: (0x004c_f770, 0x004c_f772, 0x004c_f77c),
         cache_countdowns: (0x004e_6470, 0x004e_64a0),
-        present_counter: 0x0048_5aa0,
-        frame_counter: 0x004b_a034,
-        launch_clear: 0x004e_6098,
+        ticks: tick_writes::Addrs::HALO2,
     };
 }
 
@@ -119,19 +118,16 @@ pub fn skip(kind: FrameKind, world_index: u64, render_every: u32) -> bool {
 }
 
 /// The stubs after the frame wait of a skipped frame: what the render
-/// would have left that the sim reads (docs/runtime/sim.md §2).
+/// would have left that the sim reads (docs/runtime/sim.md §2), and nothing
+/// else. A fault writes nothing.
 pub fn after_wait(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    // The 64-bit present counter, one present on.
-    let lo = g.u32(a.present_counter)?;
-    let hi = g.u32(a.present_counter.wrapping_add(4))?;
-    let v = (u64::from(hi) << 32 | u64::from(lo)).wrapping_add(1);
-    g.write(a.present_counter, &v.to_le_bytes())?;
-    // One view counted.
-    let f = g.u32(a.frame_counter)?;
-    g.write(a.frame_counter, &f.wrapping_add(1).to_le_bytes())?;
-    // The one-shot byte the render clears.
-    g.write(a.launch_clear, &[0])?;
-    Ok(())
+    tick_writes::frame(&a.ticks, g)
+}
+
+/// Whether the caches are idle after a frame, so it presented.
+fn idle_after(a: &Addrs, g: &dyn GuestMemory) -> bool {
+    let (c0, c1) = a.cache_countdowns;
+    matches!((g.i32(c0), g.i32(c1)), (Ok(x), Ok(y)) if x <= 0 && y <= 0)
 }
 
 /// Frames so far.
@@ -145,6 +141,15 @@ pub struct Stats {
     pub other: u64,
     /// Skipped frames whose stubs could not be written.
     pub stub_faults: u64,
+    /// Rendered world frames whose guest words were checked against
+    /// [`Words::predict`].
+    pub checked: u64,
+    /// Checked frames whose guest word differed, by word.
+    pub mismatch_frame_counter: u64,
+    pub mismatch_one_shot: u64,
+    pub mismatch_present_counter: u64,
+    /// A check differed: every later world frame renders.
+    pub fell_back: bool,
 }
 
 #[derive(Default)]
@@ -154,6 +159,11 @@ struct Shared {
     rendered_world: AtomicU64,
     other: AtomicU64,
     stub_faults: AtomicU64,
+    checked: AtomicU64,
+    mismatch: [AtomicU64; 3],
+    fell_back: AtomicBool,
+    /// The words before a rendered world frame, for the check after it.
+    pending: Mutex<Option<Words>>,
     said_skipping: AtomicBool,
     said_fault: AtomicBool,
 }
@@ -202,6 +212,11 @@ impl SimFrame {
             rendered_world: s.rendered_world.load(Ordering::Relaxed),
             other: s.other.load(Ordering::Relaxed),
             stub_faults: s.stub_faults.load(Ordering::Relaxed),
+            checked: s.checked.load(Ordering::Relaxed),
+            mismatch_frame_counter: s.mismatch[0].load(Ordering::Relaxed),
+            mismatch_one_shot: s.mismatch[1].load(Ordering::Relaxed),
+            mismatch_present_counter: s.mismatch[2].load(Ordering::Relaxed),
+            fell_back: s.fell_back.load(Ordering::Relaxed),
         }
     }
 
@@ -209,16 +224,47 @@ impl SimFrame {
     pub fn decide(&self, g: &dyn GuestMemory) -> bool {
         let kind = frame_kind(&self.addrs, g);
         let s = &self.shared;
+        *s.pending.lock().unwrap() = None;
         if kind != FrameKind::World {
             s.other.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         let i = s.world.fetch_add(1, Ordering::Relaxed);
-        let skipping = skip(kind, i, self.render_every);
+        let skipping = !s.fell_back.load(Ordering::Relaxed) && skip(kind, i, self.render_every);
         if !skipping {
             s.rendered_world.fetch_add(1, Ordering::Relaxed);
+            *s.pending.lock().unwrap() = Words::read(&self.addrs.ticks, g).ok();
         }
         skipping
+    }
+
+    /// After a frame: a rendered world frame's guest words against the
+    /// prediction from the words before it. Reads only. A frame that left
+    /// the caches loading did not present and is not checked.
+    pub fn check(&self, g: &dyn GuestMemory) {
+        let s = &self.shared;
+        let Some(before) = s.pending.lock().unwrap().take() else {
+            return;
+        };
+        if !idle_after(&self.addrs, g) {
+            return;
+        }
+        let Ok(after) = Words::read(&self.addrs.ticks, g) else {
+            return;
+        };
+        s.checked.fetch_add(1, Ordering::Relaxed);
+        let diff = after.diff(before.predict());
+        for w in &diff {
+            let at = Word::ALL.iter().position(|x| x == w).expect("a word");
+            s.mismatch[at].fetch_add(1, Ordering::Relaxed);
+        }
+        if !diff.is_empty() && !s.fell_back.swap(true, Ordering::Relaxed) {
+            let names: Vec<_> = diff.iter().map(|w| w.name()).collect();
+            eprintln!(
+                "sim: a rendered frame's tick writes differ from the skip's ({}); every world frame renders from here",
+                names.join(", ")
+            );
+        }
     }
 
     /// The stubs, counted, and the callback.
@@ -264,18 +310,20 @@ impl Feature for SimFrame {
                 move || {
                     let mut bytes = Vec::from(cadence);
                     bytes.extend(save.world.load(Ordering::Relaxed).to_le_bytes());
+                    bytes.push(u8::from(save.fell_back.load(Ordering::Relaxed)));
                     bytes
                 },
                 move |bytes, _| {
                     let suffix = bytes
                         .strip_prefix(cadence.as_slice())
                         .ok_or("snapshot world render cadence differs")?;
+                    let (&fell_back, index) =
+                        suffix.split_last().ok_or("invalid world frame cursor")?;
                     let index = u64::from_le_bytes(
-                        suffix
-                            .try_into()
-                            .map_err(|_| "invalid world frame cursor")?,
+                        index.try_into().map_err(|_| "invalid world frame cursor")?,
                     );
                     load.world.store(index, Ordering::Relaxed);
+                    load.fell_back.store(fell_back != 0, Ordering::Relaxed);
                     Ok(())
                 },
             ));
@@ -287,6 +335,12 @@ impl Feature for SimFrame {
             &points::RENDER_FRAME,
             "sim: world frames skip the render",
             move |cpu, ctx, addr| frame(&me, cpu, ctx, addr),
+        );
+        let me = self.clone();
+        b.raw().observe_after(
+            &points::RENDER_FRAME,
+            "sim: a rendered frame's tick writes against the skip's",
+            move |o| me.check(&*o.guest()),
         );
         Ok(())
     }
@@ -346,10 +400,13 @@ mod tests {
         engine_globals: 0x2000,
         ui_state: (0x2010, 0x2011, 0x2014),
         cache_countdowns: (0x2020, 0x2024),
-        present_counter: 0x2030,
-        frame_counter: 0x2038,
-        launch_clear: 0x203c,
+        ticks: tick_writes::Addrs {
+            present_counter: 0x2030,
+            frame_counter: 0x2038,
+            one_shot: 0x203c,
+        },
     };
+    const T: tick_writes::Addrs = A.ticks;
     const GLOBALS: u32 = 0x3000;
     const UI_REC: u32 = 0x5000;
 
@@ -453,15 +510,15 @@ mod tests {
     #[test]
     fn stubs_after_the_wait() {
         let mut g = world();
-        g.put_u32(A.present_counter, 0xffff_ffff)
-            .put_u32(A.present_counter + 4, 7)
-            .put_u32(A.frame_counter, 41)
-            .put_u8(A.launch_clear, 1);
+        g.put_u32(T.present_counter, 0xffff_ffff)
+            .put_u32(T.present_counter + 4, 7)
+            .put_u32(T.frame_counter, 41)
+            .put_u8(T.one_shot, 1);
         after_wait(&A, &mut g).unwrap();
-        assert_eq!(g.u32(A.present_counter), Ok(0));
-        assert_eq!(g.u32(A.present_counter + 4), Ok(8));
-        assert_eq!(g.u32(A.frame_counter), Ok(42));
-        assert_eq!(g.u8(A.launch_clear), Ok(0));
+        assert_eq!(g.u32(T.present_counter), Ok(0));
+        assert_eq!(g.u32(T.present_counter + 4), Ok(8));
+        assert_eq!(g.u32(T.frame_counter), Ok(42));
+        assert_eq!(g.u8(T.one_shot), Ok(0));
         // Unmapped: a fault, nothing half written.
         let mut empty = FakeGuest::new();
         assert!(after_wait(&A, &mut empty).is_err());
@@ -487,14 +544,14 @@ mod tests {
         }
         assert_eq!(skips, 3);
         assert_eq!(skipped.load(Ordering::Relaxed), 3);
-        assert_eq!(g.u32(A.frame_counter), Ok(3));
+        assert_eq!(g.u32(T.frame_counter), Ok(3));
         assert_eq!(
             f.stats(),
             Stats {
                 skipped: 3,
                 rendered_world: 3,
                 other: 1,
-                stub_faults: 0
+                ..Stats::default()
             }
         );
         // A clone shares the counts.
@@ -502,5 +559,88 @@ mod tests {
         let mut empty = FakeGuest::new();
         f.skipped(&mut empty);
         assert_eq!(f.stats().stub_faults, 1);
+    }
+
+    /// The words the headless step may write: the three tick words, nothing
+    /// else on their pages or elsewhere.
+    #[test]
+    fn the_headless_step_makes_only_tick_writes() {
+        let mut g = world();
+        g.put_u32(T.present_counter, 9)
+            .put_u32(T.frame_counter, 4)
+            .put_u8(T.one_shot, 1);
+        let mut before = Vec::new();
+        for page in [0x2000u32, GLOBALS, GLOBALS + 0x1000, UI_REC] {
+            before.push(g.bytes(page, 0x1000).unwrap());
+        }
+        let f = SimFrame::with(A, 0);
+        assert!(f.decide(&g));
+        f.skipped(&mut g);
+        let ticks = [
+            (T.present_counter, 8),
+            (T.frame_counter, 4),
+            (T.one_shot, 1),
+        ];
+        for (page, was) in [0x2000u32, GLOBALS, GLOBALS + 0x1000, UI_REC]
+            .into_iter()
+            .zip(before)
+        {
+            let now = g.bytes(page, 0x1000).unwrap();
+            for (at, (a, b)) in was.iter().zip(&now).enumerate() {
+                let addr = page + at as u32;
+                let tick = ticks.iter().any(|&(w, len)| (w..w + len).contains(&addr));
+                assert!(tick || a == b, "the step wrote {addr:#x}, not a tick word");
+            }
+        }
+        assert_eq!(
+            Words::read(&T, &g).unwrap(),
+            Words {
+                frame_counter: 5,
+                one_shot: 0,
+                present_counter: 10
+            }
+        );
+    }
+
+    /// A rendered world frame is checked: equal words pass, a word the guest
+    /// left otherwise is counted by name and every later world frame renders.
+    #[test]
+    fn a_rendered_frame_that_differs_falls_back_for_the_session() {
+        let f = SimFrame::with(A, 2);
+        let mut g = world();
+        // Frame 0 renders: the guest makes the three writes.
+        assert!(!f.decide(&g));
+        tick_writes::frame(&T, &mut g).unwrap();
+        f.check(&g);
+        assert_eq!((f.stats().checked, f.stats().fell_back), (1, false));
+        // Frame 1 skips; frame 2 renders and the guest presents twice.
+        assert!(f.decide(&g));
+        f.skipped(&mut g);
+        f.check(&g);
+        assert_eq!(f.stats().checked, 1, "a skipped frame is not checked");
+        assert!(!f.decide(&g));
+        tick_writes::frame(&T, &mut g).unwrap();
+        tick_writes::present_counter(&T, &mut g).unwrap();
+        f.check(&g);
+        let s = f.stats();
+        assert_eq!(
+            (
+                s.checked,
+                s.mismatch_present_counter,
+                s.mismatch_frame_counter,
+                s.mismatch_one_shot,
+                s.fell_back
+            ),
+            (2, 1, 0, 0, true)
+        );
+        assert!((0..4).all(|_| !f.decide(&g)), "every world frame renders");
+        // A frame that leaves the caches loading did not present: unchecked.
+        let f = SimFrame::with(A, 0);
+        let mut g = world();
+        f.shared.fell_back.store(true, Ordering::Relaxed);
+        assert!(!f.decide(&g));
+        g.put_u32(A.cache_countdowns.0, 5);
+        f.check(&g);
+        assert_eq!(f.stats().checked, 0);
     }
 }

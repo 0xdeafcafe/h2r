@@ -10,24 +10,10 @@
 
 use engine::memory::{GuestMemory, MemFault};
 
-/// The guest words the frame step writes.
-#[derive(Clone, Copy, Debug)]
-pub struct Addrs {
-    /// The 64-bit present counter `rasterizer_present` (`0x00013f10`) adds to.
-    pub present_counter: u32,
-    /// The render frame counter `render_views` adds to.
-    pub frame_counter: u32,
-    /// The one-shot byte `render_views` (`0x00223080`) clears per view.
-    pub one_shot: u32,
-}
-
-impl Addrs {
-    pub const HALO2: Addrs = Addrs {
-        present_counter: 0x0048_5aa0,
-        frame_counter: 0x004b_a034,
-        one_shot: 0x004e_6098,
-    };
-}
+/// The guest words the frame step writes: the frame's tick writes, one
+/// source for this frame step and the headless one (`sim_frame`).
+pub use engine::render_loop::tick_writes::Addrs;
+use engine::render_loop::tick_writes;
 
 /// Who runs a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,19 +46,15 @@ fn nothing(_: &Addrs, _: &mut dyn GuestMemory) -> Result<(), MemFault> {
 }
 
 fn frame_counter(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    let f = g.u32(a.frame_counter)?;
-    g.set_u32(a.frame_counter, f.wrapping_add(1))
+    tick_writes::frame_counter(a, g)
 }
 
 fn one_shot(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    g.set_u8(a.one_shot, 0)
+    tick_writes::one_shot(a, g)
 }
 
 fn present_counter(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    let lo = g.u32(a.present_counter)?;
-    let hi = g.u32(a.present_counter.wrapping_add(4))?;
-    let v = (u64::from(hi) << 32 | u64::from(lo)).wrapping_add(1);
-    g.write(a.present_counter, &v.to_le_bytes())
+    tick_writes::present_counter(a, g)
 }
 
 /// The residency requests are the object setup's: its own producer
