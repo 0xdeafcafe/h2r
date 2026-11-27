@@ -15,7 +15,7 @@ fn rust_hud(name: &str) -> Option<Hud> {
         "forge-readout" => expected::forge_readout::hud(),
         "firefight" => expected::firefight::hud(),
         // The display HUDs are YAML first (`views::objective`'s tests).
-        "base" | "ctf" | "assault" | "oddball" | "koth" | "territories" | "script-objective" => return None,
+        "base" | "ctf" | "assault" | "oddball" | "koth" | "territories" | "siege" | "script-objective" => return None,
         other => panic!("no expected HUD {other}"),
     })
 }

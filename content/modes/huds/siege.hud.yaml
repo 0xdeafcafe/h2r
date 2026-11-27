@@ -1,0 +1,42 @@
+# The Siege HUD (docs/game/rules-engine.md, "The Siege HUD"): the block at
+# the bottom right above Halo 2's score plate, in the HUD font, as the
+# Firefight HUD's is. Offsets are from the frame's bottom right corner, up
+# from the plate's top edge (44) in 14 pixel lines: the viewer's side and
+# the phase's clock, the front's state, the sites taken, and the round and
+# phase. The quarter screen draws the clock and the sites alone. The
+# navpoint is over the front, and the banner is the timed centred line.
+# Elements in draw order.
+name: siege
+elements:
+  - id: siege.clock
+    kind: text
+    font: hud
+    justify: end
+    longest: "DEFEND 99:59"
+    at: {anchor: bottom-right, full: [0, -58], half: [0, -58], quarter: [0, -58]}
+  - id: siege.front
+    kind: text
+    font: hud
+    justify: end
+    longest: "STAND UNDER ATTACK"
+    at: {anchor: bottom-right, full: [0, -72], half: [0, -72]}
+  - id: siege.sites
+    kind: text
+    font: hud
+    justify: end
+    longest: "FINAL ASSAULT"
+    at: {anchor: bottom-right, full: [0, -86], half: [0, -86], quarter: [0, -72]}
+  - id: siege.round
+    kind: text
+    font: hud
+    justify: end
+    longest: "ROUND 8 OF 8 PHASE 5 OF 5"
+    at: {anchor: bottom-right, full: [0, -100], half: [0, -100]}
+  - id: siege.mark
+    kind: navpoint
+    longest: "999"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
+  - id: siege.banner
+    kind: banner
+    longest: "FINAL ASSAULT"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0], quarter: [0, 0]}
