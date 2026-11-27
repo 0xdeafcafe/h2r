@@ -29,7 +29,8 @@
 //! `prt3`, a virtual call) are refused by name and left to R2's particle
 //! lane.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::memory::GuestMemory;
 
@@ -259,7 +260,22 @@ struct OpenHandler {
     wrong_pass: bool,
 }
 
+/// The pass of the handler's latest build, for the draw that follows it:
+/// the draw's material is `layer 15, pass `selector`, implementation `imp``
+/// of the shader's template.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pass {
+    pub shader: u32,
+    pub selector: u8,
+    pub imp: u8,
+    frame: u32,
+}
+
+/// Material samples in a row that matched the device.
+static MATERIAL_STREAK: AtomicU32 = AtomicU32::new(0);
+
 thread_local! {
+    static CURRENT: Cell<Option<Pass>> = const { Cell::new(None) };
     static BUILD: RefCell<Option<OpenBuild>> = const { RefCell::new(None) };
     static HANDLER: RefCell<Option<OpenHandler>> = const { RefCell::new(None) };
 }
@@ -319,6 +335,7 @@ pub(crate) fn build(m: &mut dyn GuestMemory, esp: u32) -> Option<bool> {
         count("geometry_build_unbalanced", 1);
     }
     let answer = !sampled && with_proof(|p| p.answering());
+    CURRENT.set(None);
     let built = match predict(&*m, &a) {
         Ok(built) => built,
         Err(why) => {
@@ -330,6 +347,10 @@ pub(crate) fn build(m: &mut dyn GuestMemory, esp: u32) -> Option<bool> {
             return None;
         }
     };
+    if built.al && built.slot[4] != u8::MAX {
+        let frame = m.u32(view_update::FRAME).unwrap_or(0);
+        CURRENT.set(Some(Pass { shader: a.shader, selector: a.selector, imp: built.slot[4], frame }));
+    }
     if answer {
         if m.write(a.slot, &built.slot).is_err() {
             count("answer_fault", 1);
@@ -367,8 +388,52 @@ pub(super) fn end_build(m: &dyn GuestMemory, esp: u32, eax: u32) {
     });
 }
 
+/// At a transparent geometry draw (the indexed call after the build): the
+/// pass whose material is compared with the device's, on a sampled frame,
+/// once. `None` on any other frame, or when no build of this frame made one.
+pub fn material_sample(m: &dyn GuestMemory) -> Option<Pass> {
+    if sampled(m)? != true {
+        return None;
+    }
+    let pass = CURRENT.take()?;
+    (m.u32(view_update::FRAME).ok()? == pass.frame).then_some(pass)
+}
+
+/// A sampled draw whose material the tags did not give, named
+/// (`geometry_material_refused_<why>`).
+pub fn material_refused(why: &str) {
+    count(&format!("geometry_material_refused_{why}"), 1);
+}
+
+/// The comparison of a sampled draw's material (`transparent_material::compare`):
+/// `fields` where the device differs, `skipped` what was not compared. A
+/// difference ends the streak; [`material_proven`] holds after [`CLEAN`]
+/// matches in a row. Counted `geometry_material_{matched,mismatched_<field>,skipped_<part>,proven}`.
+pub fn material_record(fields: &[String], skipped: &[&str]) {
+    for part in skipped {
+        count(&format!("geometry_material_skipped_{part}"), 1);
+    }
+    if fields.is_empty() {
+        count("geometry_material_matched", 1);
+        if MATERIAL_STREAK.fetch_add(1, Ordering::Relaxed) + 1 == CLEAN {
+            count("geometry_material_proven", 1);
+        }
+        return;
+    }
+    MATERIAL_STREAK.store(0, Ordering::Relaxed);
+    for field in fields {
+        count(&format!("geometry_material_mismatched_{field}"), 1);
+    }
+}
+
+/// Whether the last [`CLEAN`] sampled draws' materials matched the device.
+pub fn material_proven() -> bool {
+    MATERIAL_STREAK.load(Ordering::Relaxed) >= CLEAN
+}
+
 /// A snapshot load: an open handler or build never returns.
 pub(super) fn forget() {
+    CURRENT.set(None);
     HANDLER.with(|h| h.borrow_mut().take());
     BUILD.with(|b| b.borrow_mut().take());
 }
