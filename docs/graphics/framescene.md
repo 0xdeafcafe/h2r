@@ -437,6 +437,8 @@ The late passes are in the scene; fog and water draw from it on the render threa
 
 The large one. A census comes first: the coordinator runs the census corpus and reports every guest readback and every side target still bound in a game view. The slice starts when section 8.3's table covers the list. The carried census, the sink, private draws and the display owner are built; the gates are not measured. [framescene-owner.md](framescene-owner.md).
 
+The graph declares the targets each replayed frame touches (`native_render::frame_graph::targets::declare`): per target its size, its load (`Clear` when its first op clears every aspect, `Seeded` from an earlier clear or upload, else `Keep`), its uses, ops and slots, and the presented one. `FrameReport::targets` counts them. The replay still binds what the guest bound; owning the targets drops those binds. Tests: `the_graph_declares_every_target_it_draws`, `a_partial_clear_keeps_and_a_seed_is_named`.
+
 ### Slice 7: frames outside a game view
 
 Menus, loading screens and movies through `SceneSink` into `Outside` and `Overlay`. Design. [framescene-display-rate.md](framescene-display-rate.md).
