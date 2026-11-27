@@ -291,6 +291,36 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let committed = !plan.draws.is_empty() && self.commit(mem, &gpu, generation, &entry, &plan.draws);
         settle(plan.refused, plan.draws.len(), committed)
     }
+
+    /// The held cut's check (`render_bridge::native_first_person::check`):
+    /// the parts planned as [`Host::draw`] plans them, with their
+    /// pipelines warm, reserving and drawing nothing.
+    fn plan(
+        &self,
+        mem: &mut dyn GuestMemory,
+        scene: &frame_scene::FrameScene,
+        _view: &frame_scene::View,
+        parts: &[u32],
+    ) -> Outcome {
+        let reserved = || settle(0, parts.len(), false);
+        if self.native(mem, true).is_none() {
+            return reserved();
+        }
+        let Some(entry) = self.entry.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            return reserved();
+        };
+        let Some(gpu) = self.state.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| Arc::clone(&s.models)) else {
+            return reserved();
+        };
+        let time = native_render::layer_pass::render_time(&Ro(mem));
+        let plan = plan_parts(&gpu, scene, parts, &entry, time);
+        let warm = !plan.draws.is_empty() && self.device.lock().ok().and_then(|device| {
+            let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
+            let mut lit = gpu.lit.try_lock().ok()?;
+            Some(lit.as_mut()?.prewarm_draws(&gpu_device, color, depth, &plan.draws))
+        }) == Some(true);
+        settle(plan.refused, plan.draws.len(), warm)
+    }
 }
 
 /// What a call's draw comes to: the parts the plan refused are

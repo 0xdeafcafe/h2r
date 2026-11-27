@@ -1,20 +1,26 @@
 //! The view's object shadows handed to the host from the scene, in slot 3
 //! before layer 7 (docs/graphics/native-shadows.md, "The object shadows
 //! from the scene"). Each is the caster's layer 10 and 11 groups with the
-//! filter between them, as `0x00032350` made them. The hand-off is held
-//! ([`HELD`]) while the guest's `0x00032350` still draws: the cut keeps the
-//! guest's tail until the host's draw is proven on the lab.
+//! filter between them. Under the scene path the caster `0x00032350`
+//! stops after its item lists ([`cut`]): its layers, filter and tail do
+//! not run, and the groups are planned from those lists as the cut light
+//! passes plan theirs. The host draws only what the cut planned
+//! ([`draw`]), so a shadow is drawn once.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use engine::light_constants::Fpu;
+use engine::light_passes as lp;
 use engine::memory::GuestMemory;
-use frame_scene::{FrameScene, ShadowFilter, View, ViewSlot};
+use frame_scene::{FrameScene, GroupSite, LightStep, LightTarget, ShadowFilter, View, ViewSlot};
+use native_render::shadows::{CASTERS, RECEIVERS};
+use scene_extract::light_groups;
 
-use super::{HOST, SceneGroup, VIEW_TARGET};
+use super::{HOST, Ro, SceneGroup, VIEW_TARGET, typed_groups};
 use crate::native_map_work::Stage;
 
 /// While true the host is not asked and the guest's tail draws.
-pub const HELD: bool = true;
+pub const HELD: bool = false;
 
 /// The slot the object shadows draw in; layer 7 follows them.
 pub const SLOT: ViewSlot = ViewSlot::ShadowsAndLayer7;
@@ -65,6 +71,81 @@ pub fn gather(scene: &FrameScene, view: &View) -> Vec<ObjectShadowPass> {
         .collect()
 }
 
+/// The steps of the mask branch's layers (`0x000329e3`'s caller): layer 10
+/// into the colour mask, then 11 on the view's target. The branch draws
+/// them only when the casters hold layer 10 and the receivers layer 11.
+const STEPS: [LightStep; 2] = [
+    LightStep { layer: 10, target: LightTarget::ShadowMap, stencil: None, draws: true },
+    LightStep { layer: 11, target: LightTarget::View, stencil: Some(0), draws: true },
+];
+
+/// What the cut caster puts into its object shadow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Planned {
+    pub groups: Vec<SceneGroup>,
+    pub weight: Option<f32>,
+    pub filter: Option<ShadowFilter>,
+}
+
+/// The object shadow's groups from the lists the mask branch's item body
+/// just made, before its layer 10 begins, with the pass flags and
+/// definition its layer builds would read and the projection its shadow
+/// setup stored. Empty when the branch draws no layer; `None` when a
+/// group does not read. Reads only.
+pub fn groups(mem: &dyn GuestMemory) -> Option<Vec<SceneGroup>> {
+    let casters = mem.u32(CASTERS + 8).ok()?;
+    let receivers = mem.u32(RECEIVERS + 8).ok()?;
+    if casters & (1 << 10) == 0 || receivers & (1 << 11) == 0 {
+        return Some(Vec::new());
+    }
+    let flags = mem.u32(lp::global::PASS_FLAGS).ok()?;
+    let definition_flags = mem.u32(mem.u32(lp::global::DEFINITION).ok()?).ok()?;
+    let projection = light_groups::projection(&Ro(mem))?;
+    typed_groups::plan(
+        mem,
+        GroupSite::ObjectShadow,
+        &STEPS,
+        flags,
+        definition_flags,
+        Some(projection),
+    )
+}
+
+/// [`groups`], the weight the branch published and the filter
+/// `0x000222a0` would draw between its layers.
+pub fn plan(mem: &dyn GuestMemory, fpu: Fpu) -> Option<Planned> {
+    let groups = groups(mem)?;
+    if groups.is_empty() {
+        return Some(Planned { groups, weight: None, filter: None });
+    }
+    let weight = mem.u32(light_groups::OBJECT_SHADOW_WEIGHT).ok().map(f32::from_bits);
+    let filter = Some(light_groups::shadow_filter(mem, fpu.mxcsr, fpu.x87_control)?);
+    Some(Planned { groups, weight, filter })
+}
+
+static CUT: AtomicU64 = AtomicU64::new(0);
+
+/// Object shadows the cut caster put into the scene.
+pub fn cut_count() -> u64 {
+    CUT.load(Ordering::Relaxed)
+}
+
+/// The cut caster's item lists are made: its groups into the open object
+/// shadow. A shadow that does not plan, or that the scene refuses, is
+/// `scene_dropped_object_shadows`: nothing of it draws.
+pub fn cut(mem: &dyn GuestMemory, fpu: Fpu) {
+    let planned = plan(mem, fpu);
+    let put = planned.is_some_and(|p| {
+        crate::scene_step::object_shadow_groups(p.groups, p.weight, p.filter)
+    });
+    if put {
+        CUT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        crate::scene_step::object_shadow_end();
+        crate::native_shadows::dropped_object_shadows();
+    }
+}
+
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 
 /// Object shadows the host drew from the scene.
@@ -73,9 +154,10 @@ pub fn drawn() -> u64 {
 }
 
 /// Draw the open view's object shadows, called before layer 7's draw.
-/// Returns the shadows drawn; none while [`HELD`].
+/// Returns the shadows drawn; none while [`HELD`], and none off the scene
+/// path, where the guest's caster drew its own layers.
 pub fn draw(mem: &mut dyn GuestMemory, passes: &[ObjectShadowPass]) -> usize {
-    draw_with(mem, passes, HELD)
+    draw_with(mem, passes, HELD || !super::scene_path_ready())
 }
 
 fn draw_with(mem: &mut dyn GuestMemory, passes: &[ObjectShadowPass], held: bool) -> usize {
@@ -171,7 +253,7 @@ mod tests {
         set_host(host.clone());
         VIEW_TARGET.set(Some([1; 8]));
         let mut m = FlatMemory::new(0, 0x1000);
-        assert_eq!(draw(&mut m, &passes), 0, "held: the guest's tail draws");
+        assert_eq!(draw(&mut m, &passes), 0, "off the scene path the guest's caster draws");
         assert_eq!(draw_with(&mut m, &passes, false), 1);
         assert_eq!(*host.0.lock().unwrap(), [3]);
     }

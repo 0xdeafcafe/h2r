@@ -29,6 +29,7 @@
 
 pub mod extra_caster;
 pub mod first_person;
+pub mod first_person_effects;
 pub mod first_person_items;
 pub mod frame;
 pub mod geometry;
