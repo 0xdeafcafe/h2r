@@ -45,7 +45,7 @@ impl<B: Backend> Device<B> {
 }
 
 impl<B: Backend> Device<B> {
-    fn native_producer_ready(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
+    pub(super) fn native_producer_ready(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
         Ok(self.native_boundary_ready(mem)? && !self.immediate.is_open())
     }
 
@@ -60,7 +60,7 @@ impl<B: Backend> Device<B> {
 
     /// Submit only the native recording. Refusal leaves the caller's retail
     /// emission in charge of issuing the draw.
-    fn try_native_producer(
+    pub(super) fn try_native_producer(
         &mut self,
         mem: &mut dyn GuestMemory,
         mut parts: DrawParts,

@@ -688,6 +688,9 @@ impl<B: Backend> Device<B> {
             // live state; a load drops it.
             inline_run: _,
             inline_capture: _,
+            // The supplied draw's pixel words, set and cleared around
+            // one draw; never live at a save.
+            supplied_pixel: _,
             api_calls: _,
             // Switch.
             inline_runs: _,
