@@ -1744,6 +1744,8 @@ pub(crate) fn set_native_visibility(on: bool) {
 /// A new map, or a snapshot restore: every arm learns again.
 fn visibility_arms_new_map() {
     with_arms(|arms| arms.shadow.iter_mut().for_each(|a| a.new_map()));
+    crate::native_scene_lists::view_records::new_map();
+    engine::light_frusta::arm::new_map();
 }
 
 /// `render.scene`'s counters of each arm, in [`Kind::ALL`]'s order: its
@@ -2186,6 +2188,8 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             .zip(VISIBILITY_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
     )
     .chain(visibility_arm_counters())
+    .chain(crate::native_scene_lists::view_records::counters())
+    .chain(engine::light_frusta::arm::counters())
     .chain(scene_extract::decorators::PlacementSource::ALL.map(|source| {
         (source.counter(), DECORATOR_PLACEMENTS[source as usize].load(Ordering::Relaxed))
     }))

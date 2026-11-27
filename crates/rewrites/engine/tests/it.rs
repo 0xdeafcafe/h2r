@@ -19,6 +19,8 @@ mod layer_differential;
 mod light_constants;
 #[path = "light_constants_differential.rs"]
 mod light_constants_differential;
+#[path = "light_frusta_differential.rs"]
+mod light_frusta_differential;
 #[path = "light_gather.rs"]
 mod light_gather;
 #[path = "light_gather_differential.rs"]
@@ -71,6 +73,8 @@ mod states_differential;
 mod variant_record_differential;
 #[path = "view_projection_differential.rs"]
 mod view_projection_differential;
+#[path = "view_records_differential.rs"]
+mod view_records_differential;
 #[path = "views.rs"]
 mod views;
 

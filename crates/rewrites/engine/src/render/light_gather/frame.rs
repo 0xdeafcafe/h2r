@@ -35,6 +35,9 @@ use crate::light_constants::Fpu;
 use crate::memory::{GuestMemory, MemFault};
 use crate::render_loop::world_walk::{self, Walk};
 
+/// The render frame counter the shadow arms sample by.
+const RENDER_FRAME: u32 = 0x004b_a034;
+
 /// The frame below the entry `ESP`: the probe's `0x1508` and the four
 /// saved registers.
 pub const FRAME: u32 = 0x1518;
@@ -552,15 +555,47 @@ async fn light(
         Ok((flags, shadow, source, cluster))
     })?;
 
-    // Step 10: the frusta.
+    // Step 10: the frusta, Rust's once its shadow arm is proven
+    // (`crate::light_frusta`); a sampled call is the guest's and is
+    // compared, and a refusal is the guest's for that call.
     let bits = (flags >> 12) & 0x400;
-    let request = GuestCall::new(call::LIGHT_FRUSTA)
-        .eax(frusta_at)
-        .ecx(volume_at)
-        .edx(count_at)
-        .esi(bits)
-        .args([position, volume_at, frusta_at, count_at]);
-    guest(cx, site::LIGHT_FRUSTA, request).await?;
+    let frusta_call = crate::light_frusta::Call::from_registers(
+        frusta_at,
+        volume_at,
+        count_at,
+        bits,
+        [position, volume_at, frusta_at, count_at],
+    );
+    let frame_now = cx.read(|m| m.u32(RENDER_FRAME)).unwrap_or(0);
+    let frusta_plan = crate::light_frusta::arm::plan(frame_now);
+    let built = match frusta_plan {
+        crate::shadow_arm::Plan::Guest => None,
+        _ => match cx.read(|m| crate::light_frusta::build(m, &frusta_call, fpu.mxcsr, fpu.x87_control)) {
+            Ok(built) => Some(built),
+            Err(why) => {
+                crate::light_frusta::arm::refuse(why.name());
+                None
+            }
+        },
+    };
+    match (frusta_plan, built) {
+        (crate::shadow_arm::Plan::Answer, Some(built)) => {
+            cx.write(|m| built.proposal.apply(m))?;
+            crate::light_frusta::arm::answered();
+        }
+        (plan, built) => {
+            let request = GuestCall::new(call::LIGHT_FRUSTA)
+                .eax(frusta_at)
+                .ecx(volume_at)
+                .edx(count_at)
+                .esi(bits)
+                .args([position, volume_at, frusta_at, count_at]);
+            guest(cx, site::LIGHT_FRUSTA, request).await?;
+            if let (crate::shadow_arm::Plan::Compare, Some(built)) = (plan, built) {
+                cx.read(|m| crate::light_frusta::arm::compare(&built.proposal, m, frame_now, datum));
+            }
+        }
+    }
 
     // Step 11: the light's visibility.
     let (frusta, extent) = cx.read(|m| -> Result<_, MemFault> {

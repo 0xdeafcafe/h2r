@@ -51,6 +51,7 @@ pub mod scene_list_math;
 pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
+pub mod shadow_arm;
 pub mod shadow_constants;
 pub mod skull_gate;
 pub mod hs_actions;
@@ -61,6 +62,8 @@ pub mod hs_syntax;
 mod squad_pool;
 pub mod ui_backdrop;
 pub mod view_projection;
+pub mod light_frusta;
+pub mod view_records;
 pub mod ui_model;
 pub mod ui_sprite;
 
