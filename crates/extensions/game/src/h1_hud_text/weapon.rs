@@ -665,6 +665,7 @@ pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
     );
     // A marked widget's draw is changed at these hooks: it stays the
     // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+    #[cfg(feature = "desktop-runtime")]
     render_bridge::native_hud::walk::add_foreign(|mem, widget| marked(mem, widget).unwrap_or(true));
     b.raw()
         .before(

@@ -1895,6 +1895,7 @@ impl hooks::Feature for HudKit {
         // widgets through, so the order between them only has to exist.
         // A kit widget's draw is changed at these hooks: it stays the
         // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+        #[cfg(feature = "desktop-runtime")]
         render_bridge::native_hud::walk::add_foreign(|_, widget| in_region(widget));
         b.raw()
             .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {

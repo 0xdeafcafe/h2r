@@ -65,6 +65,14 @@ pub mod fov_row;
 pub mod render_rng;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
+/// Without a window (the headless host) the UI lays out at the guest's
+/// own 640x480.
+#[cfg(not(feature = "gpu"))]
+pub mod render_aspect {
+    pub fn layout_output() -> (u32, u32) {
+        (640, 480)
+    }
+}
 pub mod game_code;
 pub mod game_load;
 pub mod game_menu;

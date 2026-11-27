@@ -111,6 +111,7 @@ fn scripted(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
 pub(super) fn register(b: &mut Builder) {
     // While a script hides widgets the walk and its widgets stay the
     // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+    #[cfg(feature = "desktop-runtime")]
     render_bridge::native_hud::walk::add_foreign(|mem, _| scripted(mem).unwrap_or(false));
     b.raw().before(
         &HS_UNUSED_EVALUATOR,
