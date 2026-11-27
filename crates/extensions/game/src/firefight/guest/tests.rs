@@ -275,6 +275,7 @@ fn the_kit_is_read_from_the_scenario_ai_blocks() {
             ]
             .into(),
             team: 3,
+            pod_classes: Default::default(),
         }
     );
 }

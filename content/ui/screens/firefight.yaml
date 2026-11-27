@@ -60,3 +60,9 @@ rows:
     help: "Whether each round switches on a skull."
     setting: firefight.skulls
     explain: "Each round switches on another skull, and Endless adds one each new set, which makes the fight harder and scores a little more. Off keeps every round plain."
+  row.6:
+    kind: value
+    text: "Drop pods"
+    help: "Whether players fall to the ground in drop pods."
+    setting: firefight.pods
+    explain: "On drops each player to their spawn in an insertion pod where the map has open sky over a start. Off spawns players where they stand. A map with no open start has no pods."

@@ -22,6 +22,7 @@ fn round(skulls_on: Vec<Skull>) -> Round {
                 drop: Drop::Edge,
                 weapon_tier: 0,
                 side: Side::Enemy,
+                arrival: ::firefight::Arrival::Auto,
             }],
             boss: wave == 4,
             gap_ticks: 2,
@@ -135,6 +136,7 @@ fn play(def: Def, skulls: BTreeSet<Skull>) -> Vec<(u32, Command)> {
             kills,
             player_kills: Vec::new(),
             ship: Default::default(),
+            pods: Default::default(),
         };
         let out = director.step(tick, &seen);
         all.extend(out.iter().cloned().map(|c| (tick, c)));

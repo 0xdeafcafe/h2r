@@ -557,6 +557,7 @@ fn every_wire_command_is_the_directors_own() {
                 count: 3,
                 zone: 0,
                 weapon_tier: 2,
+                arrival: ::firefight::Arrival::Auto,
             },
         ),
         (json!({"ship_hover": {"on": true}}), Command::ShipHover { on: true }),

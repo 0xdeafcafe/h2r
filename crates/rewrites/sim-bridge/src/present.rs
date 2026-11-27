@@ -56,9 +56,9 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_off_by_default() {
-        assert_eq!(mode(&Switches::defaults()), Present::Always);
-        assert_eq!(mode(&Switches::defaults().with("impl.sim.present", true)), Present::LocalOnly);
+    fn the_switch_is_on_by_default() {
+        assert_eq!(mode(&Switches::defaults()), Present::LocalOnly);
+        assert_eq!(mode(&Switches::defaults().with("impl.sim.present", false)), Present::Always);
     }
 
     #[test]

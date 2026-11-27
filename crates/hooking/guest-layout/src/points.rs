@@ -444,6 +444,12 @@ points! { ALL;
     /// accepted count occupies the low word of EAX. The stack layout and
     /// the pop are read from the call at `0x2a411c`, not yet confirmed by a run.
     VEHICLE_LOAD @ 0x0011_b0c0: [fn(vehicle: edx, mapping: stack 0, list: stack 1) -> eax ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// `unit_enter_vehicle`'s body: the unit enters the seat of the vehicle
+    /// whose label (a string ID) matches. The vehicle is in EBX; the unit
+    /// datum and the seat label are on the stack. A unit already in another
+    /// vehicle leaves it first (action `0x1e` of `0xe68c0`). Read from the
+    /// disassembly of the caller at `0x2a3ad0`, not yet confirmed by a run.
+    UNIT_ENTER_VEHICLE @ 0x0011_ade0: [fn(vehicle: ebx, unit: stack 0, label: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
     /// The HS cast of an AI reference to an object list of its actors; EAX
     /// the reference (a plain squad's index), the list datum returned in
     /// EAX. The register convention is read from the cast table
@@ -1758,6 +1764,10 @@ points! { ALL;
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
     SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Stops the sound instance in EBX: it runs the owner's callback and starts the fade
+    /// (`+0xb0`..`+0xb8`). Called by the script stop, the retrigger of a playing line
+    /// (`0x189f1f`) and the object code. A handle that is not in the pool is ignored.
+    SOUND_STOP_INSTANCE @ 0x0012_6360: [fn(instance: ebx) ret 0]; "docs/engine/sound-sim.md";
     /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
     SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
     /// Unbinds the channel and notifies the owner before freeing the instance.
