@@ -374,8 +374,9 @@ mod tests {
         // An unread register may be anything.
         c[9] = [5.0; 4];
         assert!(compare_constants(&reads(&[0, 3]), Some(0), Some(&view), at, &c).is_empty());
-        // A differing row, a scaled one, another viewport.
-        c[1][1] = 2.5;
+        // A differing row (a lane the row has at 0, so no one factor makes
+        // it the expected one), a scaled one, another viewport.
+        c[1][0] = 0.5;
         c[2] = rows[2].map(|v| v * 0.5);
         let got = compare_constants(&reads(&[0, 1, 2]), Some(0), Some(&view), [0, 0, 320, 480], &c);
         assert_eq!(got, ["constant_c1", "constant_c2_scaled", "constant_viewport"]);

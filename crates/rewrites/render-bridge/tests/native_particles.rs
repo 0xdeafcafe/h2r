@@ -11,7 +11,13 @@ fn the_switch_off_and_no_parent_update_skip() {
     let mut r = Registry::new(Switches::defaults());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();
-    assert_eq!(plan.chains.len(), 31);
+    // The 31 particle and effect chains, and the effect materials' three
+    // (particle material, particle setup, contrail material).
+    use render_bridge::effect_materials::{CONTRAIL_MATERIAL, PARTICLE_MATERIAL, PARTICLE_SETUP};
+    for point in [PARTICLE_MATERIAL, PARTICLE_SETUP, CONTRAIL_MATERIAL] {
+        assert!(plan.chains.contains_key(&point.base), "missing {}", point.name);
+    }
+    assert_eq!(plan.chains.len(), 31 + 3);
     use engine::points::scene_effects::{EFFECT_LAYERED_A, EFFECT_LAYERED_B, EFFECT_QUERY};
     use engine::points::render_aspect::FLARE_QUERY_END;
     for point in [EFFECT_LAYERED_A, EFFECT_LAYERED_B] {
