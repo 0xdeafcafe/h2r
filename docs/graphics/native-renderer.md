@@ -4,28 +4,49 @@ Status: Built. Every stage draws in the default configuration.
 Code: `crates/rewrites/native-render/src` (wgpu passes and loaders), `crates/rewrites/render-bridge/src/native_*.rs` (the hooks that hand guest draws to them), `crates/platform/d3d/src/backend.rs` and `crates/platform/d3d/src/device.rs` (admission). Tests: `crates/rewrites/render-bridge/tests/native_defaults.rs`, `crates/hooking/hooks/src/switches.rs`, and the per-module tests in `crates/rewrites/native-render`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The native renderer draws the frame from GPU-resident data: the static world, objects, transparents, lights, effects, fog, post and the HUD. It does not
-replace the recompiled front-end wholesale. The guest's render code still
-runs and still fills the push buffer. At each draw, a hook offers the draw to
-a stage; a stage that can reproduce it records a wgpu packet into the same
-frame as the D3D draws and the device drops the original draw. Anything a
-stage refuses stays a D3D draw. Every stage must give the same pixels on
-the reference copy and the display copy of the frame, and a refusal must
-leave the guest exactly as if the hook had not run. Evidence labels as in
-[feature-engine.md](../engine/feature-engine.md): **Code**, **Test**, **S**.
-Addresses and offsets are research points; no game data is in the repo.
+```mermaid
+flowchart LR
+  G[guest front-end: still runs, fills the push buffer] --> H[stage hook at a draw]
+  H --> Q{stage can reproduce it?}
+  Q -- yes --> N[wgpu packet in the same frame, D3D draw dropped]
+  Q -- no --> D[D3D draw]
+```
 
-This page describes the default stage-by-stage renderer. On the opted-in
-GPU path, the scene sink retains repeatable typed stages and resolved guest
-draws at their original slots. The display worker can present a complete
-game view from that seal, and the capture worker can draw the same inputs
-into private targets. A native producer's commit has no guest draw to
+The native renderer draws the frame from GPU-resident data: the static
+world, objects, transparents, lights, effects, fog, post and the HUD. It
+does not replace the recompiled front-end wholesale. The guest's render code
+still runs and still fills the push buffer, and a hook offers each draw to a
+stage.
+
+A stage that can reproduce a draw records a wgpu packet into the same frame
+as the D3D draws and the device drops the original. Anything a stage refuses
+stays a D3D draw. Every stage gives the same pixels on the reference copy
+and the display copy of the frame, and a refusal leaves the guest exactly as
+if the hook had not run.
+
+Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
+**Code**, **Test**, **S**. Addresses and offsets are research points; no
+game data is in the repo.
+
+On the opted-in GPU path, the scene sink retains repeatable typed stages and
+resolved guest draws at their original slots. The display worker presents a
+complete game view from that seal, and the capture worker draws the same
+inputs into private targets. A native producer's commit has no guest draw to
 ride, so the sink carries the commit itself for the water composite, the
 flares and the UI; post's glow and screen effects stay on the guest path in
-a kept scene (framescene.md, "Slice 6"). The ownership rules and the gate for changing the
-default are in [FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game-view-frames).
+a kept scene (framescene.md, "Slice 6"). The ownership rules and the gate
+for changing the default are in
+[FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game-view-frames).
 
 ## How a frame flows
+
+```mermaid
+flowchart LR
+  A["1. Scene lists (Rust)"] --> B["2. Walks at guest layer loops"]
+  B --> C["3. Admission at d3d"]
+  C -->|plan and pass| D[commit: splice sealed command buffers]
+  C -->|refusal| E["4. Fallback: D3D draw"]
+```
 
 1. **Scene lists** ([Scene list builders](#scene-list-builders)). The
    engine's visibility lists and render records are built in Rust from the
@@ -45,10 +66,10 @@ default are in [FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game
    final display stay on D3D ([Residual render callers](#residual-render-callers)).
 
 `impl.render.native=off` returns every stage, walk and scene list to the D3D
-path together. `crates/hooking/hooks/src/switches.rs` (`NATIVE`, `native_render_on`)
-reads it, looked up exactly: the `impl.render` group does not reach it.
-`the_native_master_switch_gates_every_stage_and_walk` checks that every
-stage gate follows it. There are no per-stage switches.
+path together. `crates/hooking/hooks/src/switches.rs` (`NATIVE`,
+`native_render_on`) reads it, looked up exactly: the `impl.render` group does
+not reach it. `the_native_master_switch_gates_every_stage_and_walk` checks
+that every stage gate follows it. There are no per-stage switches.
 
 ## Stages
 
@@ -65,150 +86,41 @@ stage gate follows it. There are no per-stage switches.
 
 Shared modules: `native-render`: `program`, `look`, `pass_state`, `instances`. Sections that code comments cite and on the stage pages: "Object lighting" and "Object programs" in [native-objects.md](native-objects.md); "Skip only the replaced work" in [native-world.md](native-world.md). "What a world pass reads" is a subsection of "Next: matching the look" in the same page.
 
-Stage 1: the static world, Stage 2: objects and skinning, Stage 3:
-  transparents, Stage 4: lights and shadows, Stage 4b: water, fog and
-  camouflage, Stage 5: post and HUD are the table rows above.
 ## Map resource lifetime
 
-`render_bridge::native_map_work::reset` invalidates the prior generation and
-detaches its BSP, object, light-model, viewmodel, screen-effect and indexed
-draw caches before requesting the next BSP. A same-map BSP switch or revert
-also detaches the old BSP and its indexed and packed draw caches through
-`reload_bsp`. Object and screen data for the map remain available. The packed
-transparent binding cache holds up to 4,096 bindings and 16 MiB of payload
-(`game::native_transparents_glue::Cache`). A queued draw can retain its own resources
-until it finishes. A late loader can publish only to its own generation
-and mailbox.
+A load is a generation. `render_bridge::native_map_work::reset` invalidates
+the prior generation and detaches its BSP, object, light-model, viewmodel,
+screen-effect and indexed draw caches before requesting the next BSP. A
+same-map BSP switch or revert also detaches the old BSP and its indexed and
+packed draw caches through `reload_bsp`.
 
-The native map loader workers serialize their bulk decode and upload work
-through `game::native_map::begin_load`. They wait for queued retirement on
-the worker thread. First-person loading opens the map for a batch of model
+Object and screen data for the map remain available. The packed transparent
+binding cache holds up to 4,096 bindings and 16 MiB of payload
+(`game::native_transparents_glue::Cache`). A queued draw can retain its own
+resources until it finishes, and a late loader can publish only to its own
+generation and mailbox.
+
+The native map loader workers serialise their bulk decode and upload work
+through `game::native_map::begin_load`, and wait for queued retirement on the
+worker thread. First-person loading opens the map for a batch of model
 requests and releases its map readers and decoded images when the batch
-ends. Material images share their backing allocation across passes. Object
-and shader readers share ordinary tag metadata within a model load. Sun
+ends. Material images share their backing allocation across passes, object
+and shader readers share ordinary tag metadata within a model load, and sun
 caster and receiver lookup holds weak references to the owning map state.
 
 Memory probes and loader scopes are listed in
-[Explain memory growth](../runtime/agent-api.md#explain-memory-growth).
-The play-run measurements are in
-[Map-load memory](notes/2026-11-24-map-load-memory.md).
+[Explain memory growth](../runtime/agent-api.md#explain-memory-growth). The
+play-run measurements are in [Map-load memory](notes/2026-11-24-map-load-memory.md).
 
 ## Admission
 
-World and objects use the device reservation below. Held post packets can pass their saved slots and viewport to the same transaction. Geometry
-hooks for particles, decals, HUD, gel producers and world layers can register
-`Device::add_draw_admission(Arc<dyn DrawAdmission>)`. The device calls admissions
-in registration order at the resolved draw, for immediate, inline, indexed and
-array geometry. Scope ownership to the current producer and match the complete
-state. Returning `None` leaves the draw available to the next admission. A
-failed preparation of a claimed draw falls through to the original D3D draw.
-
-The decal callback at `0x00044040` owns list order, duplicate stamps,
-bitmap selection and attribute defaults. Each array draw enters
-`crates/extensions/game/src/native_decals_glue.rs` once through
-`DrawAdmission`. An admitted packet uses the live depth comparison and
-write state, the resolved W clip and polygon offset, and the live sampler's
-border addressing. Reference and display copies select their
-own vertex constants, UI transform and scissors. A refusal draws the
-same ordered packet through D3D.
-
-For a helper that emits one quad, call
-`Device::begin_draw_scope(mem, Arc<dyn DrawAdmission>) -> Result<Option<DrawScope>, D3dError>`
-on entry. Keep the handle across the guest call. At return,
-`Device::end_draw_scope(mem, scope) -> Result<bool, D3dError>` drains that
-call's pending packets and reports whether the replacement committed. Earlier
-packets drain before entry. Refusal consumes the candidate, and dropping the
-handle disarms it. Nesting supersedes the outer candidate. A persistent
-admission is appropriate for an ordered stream of independently owned draws.
-
-```rust
-trait DrawAdmission: Send + Sync {
-    fn admit(&self, snapshot: &DrawSnapshot<'_>)
-        -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
-}
-
-// At a hook outside draw submission, drain the preceding guest commands.
-let reservation = device.prepare_external_pass(mem, plan, pass)?;
-if let Some(reservation) = reservation {
-    // Apply reversible mask edits here. Drop the reservation to cancel.
-    reservation.commit();
-}
-```
-
-`DrawSnapshot::draw` borrows the exact `ResolvedDraw` that D3D can still issue.
-It includes vertex declaration, streams, indices, shader inputs (microcode,
-constants, defaults, pixel definition and combiner state), raw and translated
-render and stage state, texture headers and formats, viewport and scissors.
-The snapshot adds raw shader handles, bound texture headers, the sampled-stage mask, bound colour/depth headers and palette headers and entries.
-The device replaces only the draw packet. The guest's shader setup and
-stencil tail still run, including when adjacent draws have different owners.
-
-`ExternalPlan { stage, view, ranges, slots }` promises a positive number of
-geometry or effect ranges on **each** participating copy. `slots` is an indexed
-`Vec<Option<ExternalSlot>>`; each populated slot names a guest colour surface
-header and whether it will be written. `ExternalPass::writes()` declares writes
-to the bound colour and depth/stencil. In `record_ranges(ExternalTarget) -> usize`,
-`target.copy` is `Reference` or `Display`, `target.stages` holds the four resident
-stage views for a resolved draw, and `target.slots[i]` supplies the live surface's
-attachment, sample view, format and texel size for this copy. Record only in
-the supplied encoder. A queue submission or write to a live texture would
-escape cancellation. A declared sampled header or intermediate surface that
-cannot be resolved on one required copy refuses the entire replacement.
-
-Recording takes place during prepare. Partial recordings are discarded.
-Commit splices only previously sealed command buffers into the D3D submission
-order. Commit has no remaining stage callbacks or target lookups.
-
-A confirmed admission on the threaded backend needs a synchronous worker
-round trip. `encode_pending` closes the preceding merged D3D pass, and each
-physical copy gets a private command buffer. World and object hooks batch a
-view into one reservation. When the render thread takes scene stages
-(`Device::queues_scene_stages`), the world, objects, fog and water queue
-one instead (`Device::reserve_scene_stage`): no round trip, and their
-preparation and recording run on the render thread
-([framescene.md](framescene.md), "Slice 2" and "Slice 5"). A draw whose
-pass retains its resolved D3D packet (`ExternalPass::resolved_fallback`)
-and makes the same colour and depth writes as that packet is queued too
-(`Backend::queue_external_draw`): the render thread records the pass or
-draws the packet in its queue slot. A native producer
-(`Device::try_native_*_draw`) commits at the queue, so the guest skips its
-own emission without waiting; the particle, effect, single-draw UI and
-transparent producers work this way ([render-thread.md](render-thread.md), "Keeping
-guest-visible semantics exact"). A packet holder can batch consecutive native draws
-on the same targets in a single `ExternalPlan` and encode their ranges in
-guest order. End the batch before any guest-owned draw, target/state change
-that the batch does not reproduce, or guest-visible read. A one-draw helper
-pays the full admission cost.
-
-At a drained boundary, the held-packet entry is
-`Device::prepare_external_bound_at(mem, plan, pass, slots, rect)`. It compares
-each saved `Option<B::Surface>` against its slot's current guest header. The
-rectangle is `(x, y, width, height)` in guest pixels. Each `ExternalColor`
-provides both `guest_size` and this copy's physical `size`. A scaled frame
-whose intermediate bloom slot exists only at 1× keeps the entire guest
-sequence. With the display copy asleep, the 1× reference can run alone.
-
-`Backend::prepare_external(surfaces, request, textures, &plan, copy, pass)`
-returns `Result<Option<Vec<ExternalRecording>>, String>`. Each copy first
-calls `ExternalPass::prepare_copy(&ExternalTarget) -> Result<(), &'static str>`.
-Only when every copy agrees does the backend call `record_ranges` on private
-encoders. Validation scopes include resource lookup, native preparation,
-recording and encoder finish. A failed recording discards every copy.
-`Backend::commit_external(recording)` takes one sealed copy. The device
-reservation also preserves deferred display copies and invalidates guest
-colour, depth and alias caches for the declared writes. Code that holds guest
-packets should use the device entry for those effects. A private gel producer
-or probe can use the default read-only `writes()` while using `colour_only()`
-to request a scratch depth attachment.
-
-Use `ExternalTarget::encoder_uploads()` for per-view constants, dynamic rows
-and indirect arguments. Its upload arena reserves a fresh source range for
-each write and records a copy immediately before the consuming draw. Target
-copies and multiple runs may share a submission. The queue completion callback
-returns the leased storage to its pool after the last submission using it.
-World placement transforms and layer-3 lighting implementations are resolved
-at map load. The accumulation texture sampled by combined materials is
-resolved on each target copy at the draw. See [the static world](native-world.md).
+Admission is how a native stage takes a guest draw: the device shows each
+resolved draw to the registered `d3d::DrawAdmission`s in registration order,
+records a wgpu pass on every participating copy, and drops the D3D packet
+only when every copy recorded. The device replaces only the draw packet, so
+the guest's shader setup and stencil tail still run. The entry points, the
+plan and pass contract, the threaded backend path and the refusal rules are
+in [native-renderer-admission.md](native-renderer-admission.md).
 
 ## Frame counters
 
@@ -252,10 +164,12 @@ target copies).
 
 `V` is player view `0` through `3`, or `other`. `C` is `reference` or
 `display`. Confirmed passes account for both physical copies and count a
-suppressed guest item once. Stage ownership filters count items they reject
-before calling the device. Single-stage draw admissions can override
-`DrawAdmission::stage() -> Option<timeline::native::Stage>` to meter their
-selection time and ownership refusals automatically. New stage implementations use
+suppressed guest item once, and stage ownership filters count the items they
+reject before calling the device.
+
+Single-stage draw admissions can override `DrawAdmission::stage() ->
+Option<timeline::native::Stage>` to meter their selection time and ownership
+refusals automatically. New stage implementations use
 `gfx::churn::{create_buffer, create_buffer_init, create_bind_group, create_render_pipeline, upload_bytes}`
 for resource accounting. Legacy enqueues have no suppression promise.
 
@@ -298,22 +212,22 @@ ordinals are not `0, 1, 2, ...`. `render.stats` counts each built queue as
 The display water pass consumes the queue from inside the sorted dispatch
 (`render-bridge/src/native_water/display_runs.rs`). The layer-6 draw
 (`0x0002c11b`) runs before the dispatch (`0x0002c19a`) builds the queue, so
-it keeps drawing its lone display part there. At the queue's build
-(`TRANSPARENT_ORDER_READY`, after the sort and before the loop) the
-display runs plan the queue's parts the water set holds, less the part the
-layer-6 draw already took, with `runs`, and draw the head run
-(`after: None`). The loop (`0x0001e370`) then calls each entry's handler
-or skips a null one, and both fall to `TRANSPARENT_DISPATCH_NEXT`
-(`0x0001e3f9`), where `esi` is the ordinal just done: the run that sorts
-after it is drawn on the display copy. The loop's return from the handler
-(`0x0001e3f3`) is a call's continuation, where a return resumes the
-generated code and no hook runs, so the site is the next instruction.
-`SCENE_TRANSPARENTS_END` drops what the loop did not reach. A run is one
-display pass over the part list (`native_water_glue::Glue::draw_display`),
-with the gates of the layer-6 display branch; the reference view and every
-guest handler are untouched. A queue `runs` refuses draws nothing at the
-hook, so the layer-6 path is then the only display water draw, as without
-the hook. `render.stats` counts the hook as
+it keeps drawing its lone display part there.
+
+| Hook | Site | What the display runs do |
+|---|---|---|
+| queue build (`TRANSPARENT_ORDER_READY`) | after the sort, before the loop | plan the queue's parts the water set holds, less the part the layer-6 draw took, with `runs`; draw the head run (`after: None`) |
+| `TRANSPARENT_DISPATCH_NEXT` (`0x0001e3f9`) | after each entry's handler (`0x0001e370` loop) or a skipped null one; `esi` is the ordinal just done | draw the run that sorts after it on the display copy |
+| `SCENE_TRANSPARENTS_END` | loop exit | drop what the loop did not reach |
+
+The loop's return from the handler (`0x0001e3f3`) is a call's continuation,
+where a return resumes the generated code and no hook runs, so the hook is
+the next instruction. A run is one display pass over the part list
+(`native_water_glue::Glue::draw_display`), with the gates of the layer-6
+display branch; the reference view and every guest handler are untouched.
+
+A queue `runs` refuses draws nothing at the hook, so the layer-6 path is
+then the only display water draw. `render.stats` counts the hook as
 `layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`:
 `old_path` is each refused queue, `runs_refused` a run the host did not
 draw, `hook_foreign_frame` a hook whose `esp` is not the dispatch's.
@@ -344,32 +258,36 @@ frusta, live datum arrays and current tag definitions.
 The object walk uses the live salt, original partition order and visit
 epoch. It writes the accepted object and placement stamps, light record
 stamps, cluster ordinals, visibility bits and masks in guest memory.
+
 The callers still advance the epochs. The light history retains its
-candidate mask, removal swaps, protected entries and fade accumulators.
-The transparent queue retains the guest's depth calculation, handlers
-and payloads. Consumers read the same addresses and counts.
+candidate mask, removal swaps, protected entries and fade accumulators. The
+transparent queue retains the guest's depth calculation, handlers and
+payloads, so consumers read the same addresses and counts.
 
 Object setup touches the requested sections in region order before
 consulting the previous permutations. It tries the cached LOD without
-requesting I/O when selection at the desired LOD fails. It preserves
-the guest's per-view permutation bytes, LOD and palette tokens, resource
-epochs, miss counts, lighting cache data, and object render stamps. New
-palettes use the same transposed node matrices and per-section remaps.
-The object walk emits each parent's sections before descending through
-its child and sibling links. The no-draw exit updates the low byte of
-the original visibility column. The existing caller uses AL to process
-a kind-1 retry, including the retry call's different render flags.
+requesting I/O when selection at the desired LOD fails. It preserves the
+guest's per-view permutation bytes, LOD and palette tokens, resource epochs,
+miss counts, lighting cache data, and object render stamps.
 
-Setup stages writes across the entire object tree. A refusal restarts at
-the original entry with the incoming registers and memory. New resource
-I/O, synchronous waits, request reprioritization, resource relocation,
-live light-probe work, animated pose evaluation, and auxiliary model
-materials use that path. The Rust single-frustum portal walk, sphere gather and PVS gather supply
-regions after comparison with the original producers. Each hook checks
-its inputs and preserves the guest path for an unverified call. Dynamic
-light frustum setup at `0x000c1d90` supplies the light lenses.
-[Visibility in Rust](native-visibility.md).
-Effect producers decide when effects are ready to queue.
+New palettes use the same transposed node matrices and per-section remaps.
+The object walk emits each parent's sections before descending through its
+child and sibling links. The no-draw exit updates the low byte of the
+original visibility column, and the existing caller uses AL to process a
+kind-1 retry, including the retry call's different render flags.
+
+Setup stages writes across the entire object tree. A refusal restarts at the
+original entry with the incoming registers and memory. New resource I/O,
+synchronous waits, request reprioritisation, resource relocation, live
+light-probe work, animated pose evaluation, and auxiliary model materials
+use that path.
+
+The Rust single-frustum portal walk, sphere gather and PVS gather supply
+regions after comparison with the original producers. Each hook checks its
+inputs and preserves the guest path for an unverified call. Dynamic light
+frustum setup at `0x000c1d90` supplies the light lenses
+([Visibility in Rust](native-visibility.md)). Effect producers decide when
+effects are ready to queue.
 
 Frame stats record `native_scene_lists_<stage>_native`, `_fallback` and
 the associated `_memory`, `_layout` or `_unsupported` reason. Object
@@ -378,23 +296,25 @@ setup also reports `_residency`, `_lighting`, `_palette` and
 per list, setup or append, depending on the stage.
 
 For timing, compare `impl.render.native=off` with the default, using
-`H2_FEATURES=render-timing` in both captures. Include the
-`game_view` stage for the main-camera object gather, and sites
-`0x0002bd2d`, `0x0002c03e` and `0x0002c19a` for transparent production,
-dynamic lights and the sorted dispatch. The Old Mombasa census measured
-1.88 ms/frame for the entire dynamic-light bookkeeping site and about
-0.01 ms/frame for the two old sort leaves combined. The census does not
-isolate the object setup or transparent allocation costs. A net saving
-needs a matching A/B. See [render-loop.md](render-loop.md).
+`H2_FEATURES=render-timing` in both captures. Include the `game_view` stage
+for the main-camera object gather, and sites `0x0002bd2d`, `0x0002c03e` and
+`0x0002c19a` for transparent production, dynamic lights and the sorted
+dispatch.
 
-The world stands down when its BSP loads yield no drawable native parts.
-The lights stand down when the native world is disabled or its BSPs yield
-no native lit parts. Fog and the layer-6 water edge blend stand down when their
-translated passes yield no drawable parts. This applies to whole-list
-replacement. Indexed fog ranges stay eligible at
+The Old Mombasa census measured 1.88 ms/frame for the entire dynamic-light
+bookkeeping site and about 0.01 ms/frame for the two old sort leaves
+combined. It does not isolate the object setup or transparent allocation
+costs, so a net saving needs a matching A/B ([render-loop.md](render-loop.md)).
+
+The world stands down when its BSP loads yield no drawable native parts. The
+lights stand down when the native world is disabled or its BSPs yield no
+native lit parts. Fog and the layer-6 water edge blend stand down when their
+translated passes yield no drawable parts.
+
+This applies to whole-list replacement. Indexed fog ranges stay eligible at
 their indexed draws, using the live shader and geometry after the guest
-handler sets them up. Planar world passes sample the current view’s combiner
-colour and fade weights. A BSP-backed stage stays eligible while any BSP
+handler sets them up. Planar world passes sample the current view's combiner
+colour and fade weights, and a BSP-backed stage stays eligible while any BSP
 has work or has yet to be checked.
 
 Objects stand down only when the map's tag index contains no object
@@ -405,10 +325,12 @@ atomic flag check until the next map activation or snapshot restore.
 The structure's layer-3 pass accepts an explicit One/Zero/Add blend as
 opaque. Layer-3 object and first-person draws also accept that combination
 when the live device supplies its inherited fields. Scene object packets
-carry the resolved stencil reference. Object templates can leave blend and
-depth writes to the live state check. They take render and
-sampler bindings driven by the shader instance's scalar input. The model
-loader retains the effective state writes for the device-state checks.
+carry the resolved stencil reference.
+
+Object templates can leave blend and depth writes to the live state check.
+They take render and sampler bindings driven by the shader instance's scalar
+input, and the model loader retains the effective state writes for the
+device-state checks.
 
 Structure, scene layer-3 objects, decorators, water and fog can issue a
 pass with all colour writes masked even when its blend enable or factors
@@ -436,12 +358,14 @@ The walks are on whenever the native renderer is. The effects walk shares the pa
 
 A direct native draw drains preceding work and resolves the same streams,
 program, sampler inputs, depth and colour attachment as the guest issue
-path. Native recordings for every participating copy must be sealed
-before the hook skips guest instructions. A refused draw returns to the
-guest at the same place in the list. The inline paths retain the last
-effective register values on commit and restore their old values on
-refusal. Post retains the assembled original strips for exact D3D replay
-if its complete call fails validation or recording.
+path. Native recordings for every participating copy are sealed before the
+hook skips guest instructions, and a refused draw returns to the guest at
+the same place in the list.
+
+The inline paths retain the last effective register values on commit and
+restore their old values on refusal. Post retains the assembled original
+strips for exact D3D replay if its complete call fails validation or
+recording.
 
 `world_layers_gpu::IndexedPass` translates each distinct resolved shader
 and creates its GPU module on a compile worker. The frame requests the
@@ -457,16 +381,18 @@ ribbon construction stay in the guest.
 
 ### Post colour state and framebuffer aliases
 
-A load-time screen program does not capture the inherited raster state
-at issue, so the strip pipeline uses the resolved blend, blend constant, colour writes, winding, cull and scissor.
-It still requires the compiled alpha test to match, and checks the actual
-strip attributes against the plan by bits. Each strip in one pass must
-have the same raster state. Other shaders, effects and raster states keep
-their original draws when the native pass cannot reproduce them.
-The replacement uses one depth scale across its pinned targets. A change
-in scale between held draws replays the call, including its side-target writes.
-A call that only writes side targets can run without a framebuffer slot when
-its stages and convolutions are independent of framebuffer pixels and size.
+A load-time screen program does not capture the inherited raster state at
+issue, so the strip pipeline uses the resolved blend, blend constant,
+colour writes, winding, cull and scissor. It still requires the compiled
+alpha test to match, and checks the actual strip attributes against the plan
+by bits. Each strip in one pass must have the same raster state, and other
+shaders, effects and raster states keep their original draws.
+
+The replacement uses one depth scale across its pinned targets. A change in
+scale between held draws replays the call, including its side-target
+writes. A call that only writes side targets can run without a framebuffer
+slot when its stages and convolutions are independent of framebuffer pixels
+and size.
 
 A linear X8 alias of the framebuffer samples alpha as one. The native
 feedback copy applies that alpha rule on its own scratch texture, as
@@ -540,11 +466,13 @@ counted once; runtime counts depend on visibility and admissions):
 | Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
 | Outside game views | fallback-view call `0x0022326a`, 2 frame-finish calls, present `0x00223296` |
 
-The frame tail at `0x00013b90` conditionally copies the view target and composites it.
-The bridge scopes each helper by its caller and drains pending draws at entry and
-return. Its four-vertex pushed fans use the native screen-space pass with the
-resolved shader, textures, viewport and target. Refused draws use the original
-packet. State setup, optional surface readback and `Swap` run on the guest path.
+The frame tail at `0x00013b90` conditionally copies the view target and
+composites it. The bridge scopes each helper by its caller and drains pending
+draws at entry and return. Its four-vertex pushed fans use the native
+screen-space pass with the resolved shader, textures, viewport and target.
+
+Refused draws use the original packet. State setup, optional surface
+readback and `Swap` run on the guest path.
 
 The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
 `0x0002bf7f` and `0x0002bfe3`. The direct clear is `0x0002be01`; the clear
@@ -562,7 +490,14 @@ grid used for object culling.
 
 **Lens-flare colour draws.** At each researched End call the bridge checks the saved caller and admits one fan. The guest supplies the projected corners, visibility fade, shader state and target order. The native pass uses the resolved stream and bindings for that draw, including the alternating filter targets. A failed preparation leaves the original packet available. There is no separate scene-list extraction. The [retail trace](notes/2026-11-24-lens-flares.md) identifies the six colour draw sites and the visibility callback.
 
-With a flare in view, sample `h2 agent render.scene` twice. An increase in `counters.scene_submitted_flares_reference_draws` or `counters.scene_submitted_flares_display_draws` counts committed native colour fans on that copy. One flare can contribute several fans. Private captures also contribute, so take the live samples during ordinary gameplay. The same stage also submits the position-only visibility fan to the GPU sample counter inside the guest's query.
+With a flare in view, sample `h2 agent render.scene` twice. An increase in
+`counters.scene_submitted_flares_reference_draws` or
+`counters.scene_submitted_flares_display_draws` counts committed native
+colour fans on that copy, and one flare can contribute several fans.
+
+Private captures also contribute, so take the live samples during ordinary
+gameplay. The same stage also submits the position-only visibility fan to
+the GPU sample counter inside the guest's query.
 
 **Alternate scene.** The layer planner draws admitted structure and object items in layers 1, 5 and 2. Layer 3 uses the BSP mask reservation and the sorted object walk with an alternate view key and the current render camera. First-person calls use the render camera and their own models. View setup, target selection, composition and finish still run in guest order.
 
@@ -578,37 +513,43 @@ The pass records the full range on both live target copies before the device
 drops the D3D draw. Other layer-2 handlers and unknown callers stay on D3D.
 
 **Sky.** At the indexed strip call in the sky model renderer (`0x0004c976`),
-`scene_extract::layout::sky::SkyItem` resolves the scenario sky for this view,
-its model section, part, shader and pass ordinal. It reads the section's rigid
-node or the region's remapped palette from the current view's node block, and
-reconstructs position and UV decompression from the model bounds and section flags.
+`scene_extract::layout::sky::SkyItem` resolves the scenario sky for this
+view: its model section, part, shader and pass ordinal. It reads the
+section's rigid node or the region's remapped palette from the current
+view's node block, and reconstructs position and UV decompression from the
+model bounds and section flags.
+
 `IndexedPass::for_sky` checks those rows against the draw's vertex constants
 and supplies them to the vertex program. The material uses the program,
-textures and other evaluated constants bound at issue. The scene sets stencil
-mode 2 before the sky call at `0x0002c0bc` and restores mode 0 afterwards.
-The native strip requires the mode-2 state and a stencil attachment, and
-replaces stencil on passing fragments. Replay retains the sky pass beside its
-original strip and records it against the replay's own attachments and textures.
-If extraction, admission or recording fails, the original strip draws in order.
+textures and other evaluated constants bound at issue.
+
+The scene sets stencil mode 2 before the sky call at `0x0002c0bc` and
+restores mode 0 afterwards. The native strip requires the mode-2 state and a
+stencil attachment, and replaces stencil on passing fragments. Replay
+retains the sky pass beside its original strip and records it against the
+replay's own attachments and textures. If extraction, admission or recording
+fails, the original strip draws in order.
 
 **Clears, binds and visibility.** A whole-viewport, unmasked clear uses an
 attachment load. For up to eight explicit colour rectangles, the native
-planner clips their union to the viewport and target. A full union can use
-a load, and a masked clear writes only its selected channels. Depth and
-stencil tiles keep their individual scissors because the depth surface may
-extend beyond the colour target. Longer lists use the linear rectangle path.
+planner clips their union to the viewport and target: a full union can use a
+load, and a masked clear writes only its selected channels.
+
+Depth and stencil tiles keep their individual scissors because the depth
+surface may extend beyond the colour target. Longer lists use the linear
+rectangle path.
 
 Device-owned targets skip reference staging. Title-owned surfaces reuse
 transaction storage while reading current guest reference counts, parent
 links and GPU lock stamps on each bind. Final releases queue the original
-resource destructor. Both bind forms retain their viewport behaviour.
-Visibility issuance and results
-use the GPU pixel counter and report slots; the inline begin still drains
-before the counted draw, and finish and result calls keep index validation,
-pending answers, timestamps and write order. A one-use marker lets these
-handlers consume the runtime's drain rather than read the push cursor again.
-Callbacks, dirty ranges, deferred destruction and ABI return writes run
-through the common adapter.
+resource destructor, and both bind forms retain their viewport behaviour.
+
+Visibility issuance and results use the GPU pixel counter and report slots.
+The inline begin still drains before the counted draw, and finish and result
+calls keep index validation, pending answers, timestamps and write order. A
+one-use marker lets these handlers consume the runtime's drain rather than
+read the push cursor again. Callbacks, dirty ranges, deferred destruction
+and ABI return writes run through the common adapter.
 
 ## Not verified
 
@@ -627,6 +568,7 @@ through the common adapter.
 
 ## Related
 
+[native-renderer-admission.md](native-renderer-admission.md) (how a stage takes a draw),
 [framescene.md](framescene.md) (the forward design),
 [retire-d3d.md](retire-d3d.md) (retiring the D3D path),
 [render-loop.md](render-loop.md) (the retail front-end and where its time

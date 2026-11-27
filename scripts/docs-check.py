@@ -15,7 +15,7 @@ Checks:
   paths   backticked crates/, platform/, scripts/, deploy/ and web/ paths exist
   style   headings that record history instead of the design
   voice   an em dash, a banned word, an American spelling, connective filler
-          or a manufactured contrast (docs/meta/docs-style.md rule 13)
+          or a manufactured contrast (docs/meta/docs-style.md rule 14)
   length  a paragraph over MAX_SENTENCES sentences (rule 12)
   code    docs/*.md paths cited in code comments exist (always fails), and
           the section they cite (`§ 5.2` or "Title") is still a heading
@@ -356,7 +356,7 @@ def check_style(files):
     return bad
 
 
-# Voice rules: docs/meta/docs-style.md rule 13.
+# Voice rules: docs/meta/docs-style.md rule 14.
 BANNED = re.compile(
     r"\b(?:delve[sd]?|leverag(?:e|es|ed|ing)|utili[sz](?:e|es|ed|ing)|robust(?:ly|ness)?"
     r"|seamless(?:ly)?|unlock(?:s|ed|ing)?|elevat(?:e|es|ed|ing)|empower(?:s|ed|ing)?"
@@ -456,6 +456,21 @@ def check_length(files):
     return bad
 
 
+MAX_LINES = 600
+
+
+def check_pagelen(files):
+    bad = []
+    for path in files:
+        if not path.startswith("docs/") or path.startswith("docs/meta/"):
+            continue
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            count = sum(1 for _ in f)
+        if count > MAX_LINES:
+            bad.append(f"{path}:1: page of {count} lines (over {MAX_LINES}: split by topic)")
+    return bad
+
+
 def changed_pages():
     """Pages changed in this branch against origin/master, or uncommitted."""
     base = git_lines("merge-base", "HEAD", "origin/master")
@@ -495,7 +510,7 @@ def main(argv):
         ("style", check_style(files), False),
     ]
     touched = changed_pages()
-    soft = [("voice", check_voice(files)), ("length", check_length(files))]
+    soft = [("voice", check_voice(files)), ("length", check_length(files)), ("pagelen", check_pagelen(files))]
     failed = False
     for name, found, hard in checks:
         for line in found:

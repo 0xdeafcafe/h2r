@@ -4,14 +4,21 @@ Status: Built.
 Code: `crates/platform/d3d/src/threaded.rs` (`d3d::ThreadedBackend`), `crates/extensions/game/src/d3d_glue.rs` (`render_thread_requested`, `render_thread_from`). Tests: `crates/platform/d3d/tests/threaded.rs`, `threaded_frame_stats.rs`, `depth_textures.rs`.
 Switch: `H2_RENDER_THREAD=0` turns it off (on by default), listed in [switches.md](../runtime/switches.md).
 
+```mermaid
+flowchart LR
+  R[runner thread: guest code, push-buffer decode, device model] -- batches of Backend calls --> Q[queue]
+  Q --> W[d3d-render thread: GfxBackend record, encode, submit, present]
+  W -. replies for reads, waits .-> R
+```
+
 On the Xbox the NV2A consumes the push buffer while the CPU goes on with the
 next frame. `d3d::ThreadedBackend` gives the host the same overlap: it
 wraps the `GfxBackend` and runs every `d3d::Backend` call on a thread named
 `d3d-render`, in the order issued. The rule that must hold: the guest sees
 the same values, in the same order, whatever the render thread's timing.
-With `H2_RENDER_THREAD=0` the backend runs on the guest's thread and the
-guest's CPU work and the host's rendering add up instead of overlapping;
-that synchronous path is the reference the tests compare against.
+With `H2_RENDER_THREAD=0` the backend runs on the guest's thread, so CPU
+work and rendering add up instead of overlapping. That synchronous path is
+the reference the tests compare against.
 
 ## How it works
 
@@ -34,41 +41,42 @@ override, holding the guest memory lock and then the device lock.
 | the present hook (PNG or the app's frame copy) | `GfxBackend::present_with_gamma` | render thread |
 | the `D3DSWAP_FINISH` GPU wait | `GfxBackend` (`SwapFinish`) | render thread |
 
-The hook publishes into a shared frame slot (`crates/apps/app/src/frame.rs`).
-The `h2 play` window thread redraws the latest slot whenever the window
-size changes, independently of guest frame publication
-(`crates/apps/app/src/shell.rs`). On macOS, the window thread reconfigures
-and presents the Metal drawable during the resize callback
+The present hook publishes into a shared frame slot
+(`crates/apps/app/src/frame.rs`). The `h2 play` window thread redraws the
+latest slot whenever the window size changes, independently of guest frame
+publication (`crates/apps/app/src/shell.rs`). On macOS it reconfigures and
+presents the Metal drawable during the resize callback
 (`crates/apps/app/src/surface.rs`, `crates/apps/app/src/metal_resize.rs`).
-The persistent pipeline cache and its compile workers belong to the backend
-and move with it.
+The persistent pipeline cache and its compile workers move with the backend.
 
 The boot glue wraps the backend when `d3d_glue::render_thread_requested()`
-holds (only the value `0` turns it off, `render_thread_from`): the
-headless one with `H2_BOOT_GFX`, the window's in `h2 play`
-(`boot::Host::render_thread`), and the one behind the in-between frames.
-`H2_RENDER_THREAD_STATS` prints the waits when the backend is dropped.
-Frame stats forward the worker's counters and timers through a queued
-marker at the device's `Swap` boundary, so frame numbers hold without
-`Swap` waiting; `render-wait_us` measures the guest thread's reply and
-throttle waits apart from `cpu`
-(`crates/platform/d3d/tests/threaded_frame_stats.rs`). `menu_cpu`
-(`crates/apps/boot/examples/menu_cpu.rs`) prints
-`guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time, which is
-the guest's critical path.
+holds (only the value `0` turns it off, `render_thread_from`): the headless
+one with `H2_BOOT_GFX`, the window's in `h2 play` (`boot::Host::render_thread`),
+and the one behind the in-between frames. `H2_RENDER_THREAD_STATS` prints
+the waits when the backend is dropped.
+
+Frame stats forward the worker's counters and timers through a queued marker
+at the device's `Swap` boundary, so frame numbers hold without `Swap`
+waiting. `render-wait_us` measures the guest thread's reply and throttle
+waits apart from `cpu` (`crates/platform/d3d/tests/threaded_frame_stats.rs`).
+`menu_cpu` (`crates/apps/boot/examples/menu_cpu.rs`) prints
+`guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time and so the
+guest's critical path.
 
 **Batches.** Calls collect in one pending list and cross the channel
 together: one send and one wake per batch. A batch goes at every call that
-waits (before the wait), at every present, every `threaded::BATCH` (64) calls and on drop. Texture-proxy drops
-go into the same list, so they keep their place. The render thread runs a
-batch in order, so the calls and their order are the synchronous ones; they
-only start later. The device hands each draw over with
-`Backend::draw_owned`, so the render thread takes the `ResolvedDraw`
-(streams, indices, state, shader inputs) without a copy and frees it there.
-The stream buffers come back through a bounded pool (`SPARE_DRAWS`) for the
-device to refill; vertex-cache snapshots ([d3d.md](d3d.md), "Vertex cache")
-are shared, not copied. Wrappers forward `draw_owned` (`DiagBackend`,
-`Headless`, `SceneSink`); one that does not falls back to `draw`, which copies.
+waits (before the wait), at every present, every `threaded::BATCH` (64)
+calls and on drop. Texture-proxy drops go into the same list, so they keep
+their place. The render thread runs a batch in order, so the calls and their
+order are the synchronous ones; they only start later.
+
+**Draws.** The device hands each draw over with `Backend::draw_owned`, so the
+render thread takes the `ResolvedDraw` (streams, indices, state, shader
+inputs) without a copy and frees it there. The stream buffers come back
+through a bounded pool (`SPARE_DRAWS`) for the device to refill, and
+vertex-cache snapshots ([d3d.md](d3d.md), "Vertex cache") are shared, not
+copied. Wrappers forward `draw_owned` (`DiagBackend`, `Headless`,
+`SceneSink`); one that does not falls back to `draw`, which copies.
 
 ## What can move
 
@@ -89,16 +97,13 @@ indices and translated the state.
 - **Moves to the render thread:** every `Backend` call, run in the order
   issued on one queue.
 
-The push buffer is decoded on the runner. The drain reads the state arrays
+The push buffer is decoded on the runner: the drain reads the state arrays
 and resource memory at the moment of the draw (game code changes them right
-after), and decoding it elsewhere would need real asynchronous fences, which
-Halo would then wait on. Likewise the parts of a draw that read guest
-memory (state arrays, vertex attribute format, stream and texture headers,
-index lists, vertex bytes not in the vertex cache, the PSDEF and device
-fields) stay at the call: the game rewrites all of them right after it
-returns, and the device answers every fence as complete when it hands it
-out, so a deferred copy would need every fence, `Lock`, `BlockOnResource`
-and busy check to wait for it.
+after), and decoding elsewhere would need real asynchronous fences, which
+Halo would then wait on. The parts of a draw that read guest memory (state
+arrays, vertex attribute format, stream and texture headers, index lists,
+vertex bytes not in the vertex cache, the PSDEF and device fields) stay at
+the call for the same reason: the game rewrites them right after it returns.
 
 Where the guest waits on the GPU, all on the runner:
 
@@ -123,13 +128,23 @@ Where the guest waits on the GPU, all on the runner:
 
 ## Keeping guest-visible semantics exact
 
+| Class | Methods | What the guest side does |
+|---|---|---|
+| 1. Reads | `read_surface`, `read_depth`, `read_pixel_count` | queues, waits for the answer |
+| 2. Handles | `create_surface`, `create_texture_target`, `upload_texture`, `snapshot_surface`, `surface_texture`, `report_pixel_count` | hands out a proxy id at once |
+| 3. Draw outcomes | `draw` | answers from `Backend::judge` |
+| 4. Other outcomes | `clear_rects`, `write_surface`, `copy_surface`, `snapshot_surface`, `surface_texture`, `report_pixel_count`, `depth_alias_texture` | answers at once with `GfxBackend`'s answer for a valid call |
+| 5. Checks | any speculated answer | latches a mismatch, fails the next call |
+| 6. Device-internal reads | depth-alias textures | made at a queue position, no guest wait |
+| 7. Native draws | `queue_external_draw`, `prepare_external` | queues, or waits for the recording |
+
 Each `Backend` method falls in one of these classes
 (`crates/platform/d3d/src/threaded.rs`):
 
 1. **Reads** (`read_surface`, `read_depth`, `read_pixel_count`): queued,
    and the runner waits for the answer. Everything queued before has run,
    so the bytes are what a synchronous backend returns. These were full
-   GPU round trips already, so the wait adds the queue's backlog, no more.
+   GPU round trips already.
    `try_pixel_count` is the exception: it answers from the counts already
    landed and never waits. A count is the same either way; only whether it
    is back yet depends on timing, and the device turns that into
@@ -205,16 +220,17 @@ Against the requirements:
   view on the render thread, after the draws into it.
 - **Guest reads of GPU-written memory, pixel counters.** Class 1.
 - **Vblank and present pacing.** Vblanks, the frame wait and the swap count
-  are the device's and the kernel's, on logical time. The render thread
-  finishes presents in order. On the original stack, `Swap` waits on wall
+  are the device's and the kernel's, on logical time, and the render thread
+  finishes presents in order. On the original stack `Swap` waits on wall
   time when the guest is more than two completed presents ahead
-  (`MAX_FRAMES_IN_FLIGHT`). With the scene owner installed, the producer
-  can enqueue two waiting transactions. An adopted transaction releases
-  its slot as soon as the worker takes it for drawing. A declined
-  transaction releases its slot when the original present completes. That wait, like every class-1 wait, is on host wall
-  time and never charges logical time, so it changes no guest-visible
-  value. `H2_BOOT_REALTIME` makes logical time follow wall time; the render
-  thread only lets the runner reach a vblank sooner.
+  (`MAX_FRAMES_IN_FLIGHT`). Like every class-1 wait it never charges logical
+  time, so it changes no guest-visible value. `H2_BOOT_REALTIME` makes
+  logical time follow wall time; the render thread only lets the runner
+  reach a vblank sooner.
+- **Scene owner.** With it installed the producer can enqueue two waiting
+  transactions. An adopted transaction releases its slot as soon as the
+  worker takes it for drawing, and a declined one when the original present
+  completes.
 - **Determinism.** The render thread never reads or writes guest memory,
   the logical clock or the scheduler. The guest sees the same values in the
   same order whatever the render thread's timing, so slices, preemption and
@@ -244,7 +260,7 @@ Against the requirements:
   every test with `Device::set_visibility_poll(false)`, waits for the queue.
 - Depth levels (shadow maps) are lazy like colour levels and sampled
   through a texture the render thread makes on the GPU
-  (`Backend::depth_level_texture`, [d3d.md](d3d.md), "Lazy depth levels").
+  (`Backend::depth_level_texture`, [d3d-render-targets.md](d3d-render-targets.md), "Depth levels").
 
 ## Rules and limits
 
@@ -264,39 +280,20 @@ Against the requirements:
 
 ## Evidence
 
-- Test: `crates/platform/d3d/tests/threaded.rs` runs one device sequence through a
-  backend and through the render thread. The sequence clears an RTT level,
-  samples it in place, has the guest store into it, writes it back with
-  `BlockOnResource`, then runs `EndVisibilityTest`, `SetFence`,
-  `BlockOnTime`, the busy check, `GetVisibilityTestResult`, `Swap` and
-  `KickOff`, over three frames. Both paths give the same observed values
-  (entry results, the level's bytes after each wait, 8 KiB of device words),
-  the same backend calls, device stats, events and guest memory, and on the
-  GPU the same back-buffer bytes
-  (`the_render_thread_makes_the_same_backend_calls`,
-  `the_render_thread_draws_the_same_pixels`).
-- Test: the render thread lagging by seeded random amounts gives the same
-  results, which is the determinism check
-  (`render_thread_timing_changes_nothing_the_guest_sees`).
-- Test: an untranslatable draw between two drawn ones is skipped with the
-  same event, stats and pixels
-  (`an_untranslatable_draw_is_skipped_the_same_way`); a wrong speculation
-  stops the next call (`a_wrong_speculation_stops_the_next_call`); reads
-  wait for the work queued before them
-  (`reads_wait_for_the_work_before_them_and_textures_are_freed`).
-- Test: a sequence several batches long gives the synchronous backend's
-  calls in its order and the same answers
-  (`batched_commands_run_in_order_and_reads_see_everything_before_them`).
-- Test: depth-alias textures made on the render thread give the same
-  read-backs, uploads, draws, skips and stats
-  (`crates/platform/d3d/tests/depth_textures.rs`).
-- Test: a native producer whose pass retains its packet commits without
-  waiting for the render thread, which draws the same packet the guest's
-  own draw resolves to when the recording is refused
-  (`crates/platform/d3d/tests/admission_scope.rs`,
-  `a_native_fan_with_a_retained_packet_commits_without_waiting_for_the_render_thread`).
-- Test: the persistent pipeline cache builds the same pipelines behind the
-  render thread.
+All are Test evidence, in `crates/platform/d3d/tests/` unless noted.
+
+| Claim | Test |
+|---|---|
+| One device sequence (RTT clear, in-place sample, guest store, write-back with `BlockOnResource`, `EndVisibilityTest`, `SetFence`, `BlockOnTime`, the busy check, `GetVisibilityTestResult`, `Swap`, `KickOff`, over three frames) gives the same observed values (entry results, level bytes after each wait, 8 KiB of device words), backend calls, device stats, events and guest memory on both paths | `threaded.rs`: `the_render_thread_makes_the_same_backend_calls` |
+| ...and the same back-buffer bytes on the GPU | `the_render_thread_draws_the_same_pixels` |
+| A render thread lagging by seeded random amounts changes nothing the guest sees | `render_thread_timing_changes_nothing_the_guest_sees` |
+| An untranslatable draw between two drawn ones is skipped with the same event, stats and pixels | `an_untranslatable_draw_is_skipped_the_same_way` |
+| A wrong speculation stops the next call | `a_wrong_speculation_stops_the_next_call` |
+| Reads wait for the work queued before them, and textures are freed in order | `reads_wait_for_the_work_before_them_and_textures_are_freed` |
+| A sequence several batches long gives the synchronous calls in order and the same answers | `batched_commands_run_in_order_and_reads_see_everything_before_them` |
+| Depth-alias textures made on the render thread give the same read-backs, uploads, draws, skips and stats | `depth_textures.rs` |
+| A native producer whose pass retains its packet commits without waiting, and the render thread draws the packet the guest's own draw resolves to when the recording is refused | `admission_scope.rs`: `a_native_fan_with_a_retained_packet_commits_without_waiting_for_the_render_thread` |
+| The persistent pipeline cache builds the same pipelines behind the render thread | `threaded.rs` |
 
 ## Measurements
 

@@ -5,15 +5,15 @@ Status: Built (research). A reading of published tags and a decision; it states 
 A companion to [e3-lighting.md](e3-lighting.md). That page has the design
 and the retail light record and render path ("Phase 0 findings");
 the history of the cut renderer is in [pstencil-history.md](pstencil-history.md)
-and the shadowlab prototype results in [notes/e3-lighting.md](notes/e3-lighting.md). This page adds what a
-study of the Digsite crew's published tag set says about lights, corrects
-some readings of it, and records why the shadow technique stays shadow maps
-when the study notes argued for stencil volumes.
+and the shadowlab prototype results in [notes/e3-lighting.md](notes/e3-lighting.md).
 
-It folds in two research notes written by another session on 2026-11-16 (a
-history of pstencil and a design for "pstencil-class lighting"). They were
-not committed. What was new in them is here; what pstencil-history.md already had
-is not repeated.
+| Section | What it settles |
+|---|---|
+| What the E3 tag set holds | The Digsite tagset's light inventory |
+| The light tag, checked | The study tags share the retail `ligh` layout; three misreadings corrected |
+| The retail kit's shader names | `stencil_*` and `lightaccum_*` name shipped passes, not a dormant volume path |
+| Sev's shadow-apply contract | The restoration's hard edge is a filtered edge made steep |
+| The technique: why shadow maps | Cast shadows stay shadow maps, for four reasons |
 
 ## Provenance
 
@@ -29,31 +29,29 @@ repositories:
 - `777Sev777/Halo-2-Custom-Shaders`: Sev's public replacement shadow shaders
   for the MCC Halo 2 kit.
 
-Rules for these, which the notes followed and this page keeps:
+Rules for these:
 
-- Nothing comes from the December 2024 and December 2025 leaks. The history
-  note discussed them through news coverage only and drew no technical
-  fact from them; that discussion is not carried over beyond the paragraph
-  pstencil-history.md section 12 has.
+- Nothing comes from the December 2024 and December 2025 leaks. They are
+  discussed through news coverage only, as in pstencil-history.md
+  section 12, and no technical fact is drawn from them.
 - Study copies only. Tag files and shaders are fetched into a temporary
   directory outside the repository, read, and not committed or shipped. This
   page states layouts as encoding semantics ("flags dword, bit 3 = no
   shadow") and quotes no tag bytes or shader code.
 - The fetch commands are at the end.
 
-Checked: every technical claim in the design note traces to those three
-repositories or to public documentation. The history note's quotes are from
-Vice's oral history, the Bernie Freidin profile, Halopedia and the Steam
-Workshop Q&A, all cited in pstencil-history.md.
+Every technical claim here traces to those three repositories or to public
+documentation. The quotes in pstencil-history.md are from VICE's oral
+history, the Bernie Freidin profile, Halopedia and the Steam Workshop Q&A.
 
 ## What the E3 tag set holds
 
-Read 2026-11-16 from the `digsite/H2E3` tree listing and eight study copies.
+Read from the `digsite/H2E3` tree listing and eight study copies.
 Labels as in e3-lighting.md; **D** below means read from a Digsite study copy
 by this project.
 
-- About 120 `.light` tags and 7 `.light_volume` tags (**C**, the notes' count
-  of the tree).
+- About 120 `.light` tags and 7 `.light_volume` tags (**C**, counted from
+  the tree).
 - **Paired variants.** `frustum_white` sits beside `frustum_white_no_shadow`,
   `light_tunnel` beside `light_tunnel_noshadow`. Shadow casting was chosen
   per light, in the tag (**D**: the pair differs in the no-shadow bit alone).
@@ -87,7 +85,9 @@ paths of the tags it references. The definition's fields are in the same
 order as the cache's 0xe4-byte root; only tag references (16 bytes in a file,
 8 in a cache) and blocks (12 against 8) are wider. So file offset 0x50 is
 `ligh +0`, and the layout in [effects.md](../formats/effects.md) ("ligh")
-applies to both. One value changes form: the cone angle is degrees in the
+applies to both.
+
+One value changes form: the cone angle is degrees in the
 file and radians in the cache. Checked on the eight study tags and on all
 1,596 retail records (`h2 lights --all`).
 
@@ -98,9 +98,9 @@ explosion is timed (just under a second). Retail Old Mombasa still places
 lights named for the E3 level (`scenarios\objects\lights\solo\earthcity\`,
 street lamps among them), and six of its eight have the no-shadow bit clear.
 
-The design note made three readings that do not hold:
+Three readings of the study tags do not hold:
 
-| The note said | What the bytes say |
+| Earlier reading | What the bytes say |
 |---|---|
 | Size classes: 352 bytes for sphere and effect lights, 409 for frustum, 413 for the sun, "the tail is type-specific". | The definition is the same size in every file. The tail is the referenced tags' paths, so file size follows path length. `x03_sun` is 352 bytes and a frustum. |
 | `x03_sun`'s `0x00100004` at file 0x50 is "a sun/directional marker". | That word is the flags (bits 2 and 20). Its shape field says frustum, like the other cones; it is a wide, long-range cone. |
@@ -116,7 +116,7 @@ code").
 `stencil_*` (`stencil_env_bumped_tangentspace_transparent`,
 `stencil_texture_secondary_detail_full_xform`), `lightaccum_frustum_*`,
 `lightaccum_sphere_*`, `lightmap_perpixel` and `lightmap_dynamic_*` (**C**,
-names only; the notes call them fossils of the cut pipeline).
+names only; they read as fossils of the cut pipeline).
 
 What retail does with that vocabulary is already read off the Xbox code: the
 dynamic lights are additive per-light passes on layers 12 and 13 over a shadow
@@ -136,7 +136,9 @@ one-sample and three-sample slots). Read as documentation of that pass
 [notes/e3-lighting.md](notes/e3-lighting.md), "Sev's shadow-apply
 shaders"): it compares a projected shadow depth map with a small constant
 bias, multiplies by a fog term from a second texture, fades by a constant
-and is gated by vertex alpha. Neither mode is a single tap. Both filter a
+and is gated by vertex alpha.
+
+Neither mode is a single tap. Both filter a
 wide footprint of the map; the sharp mode ("stencil-like" in the README)
 then steepens the filtered result around half coverage, and the soft mode
 leaves it. The E3 variants are the same two files in the other slots.
@@ -150,7 +152,7 @@ the D3D path uses one nearest tap instead
 
 ## The technique: why shadow maps
 
-The design note recommended true depth-fail stencil volumes for cast
+A reading of the study tags recommended true depth-fail stencil volumes for cast
 shadows, per shadow-casting light, as "historically accurate" with fill rate
 "free on modern GPUs", keeping shadow maps only for compositing. This
 project's decision stays **shadow maps**, for four reasons:
@@ -186,7 +188,7 @@ e3-lighting.md answers that with a map fitted to each caster and the Sharp
 edge, adds the reasons the native renderer brings (blended frames, the
 stencil buffer, the baked sun), and keeps no volume fallback.
 
-The rest of the design note's plan is not followed where retail already
+The rest of that plan is not followed where retail already
 has the answer: per-pixel dynamic lights are the materials' own light
 passes, not a new shading path (e3-lighting.md, "What retail already
 has"). One point from it is kept: MCC's dimness came from culling lights
@@ -230,8 +232,8 @@ if needed. Delete the directory when done.
 
 ## Sources
 
-Added 2026-11-16, all cited, nothing copied, no leaked file opened. The rest
-are in pstencil-history.md.
+All cited, nothing copied, no leaked file opened. The rest are in
+[notes/2026-11-pstencil-research.md](notes/2026-11-pstencil-research.md).
 
 - Digsite, `H2E3` (tags, `H2E3_builder.py`, README): <https://github.com/digsite/H2E3>
 - Digsite, `h2` (MCC editing kit tag set): <https://github.com/digsite/h2>

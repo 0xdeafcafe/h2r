@@ -1,626 +1,119 @@
 # E3 lighting: stencil shadows and dynamic lighting
 
-Status: Partly built. The scaled D3D backend draws harder retail shadows. The native frame graph accepts the Lighting mode and draws sealed scenes into private targets. Both native modes use the guest's light passes. In E3 mode the graph draws the guest's shadow maps as tiles and compares them with the Sharp edge. The renderer plans, caches and draws sun tiles from objects onto their receivers (objects, structure clusters and placements), including nearby offscreen roots extracted from the object pool. L8 has synthetic coverage and awaits a live capture and timing. The renderer chooses its own lights from the scene's candidates and reports the choice; drawing the chosen lights beyond the guest's, and one atlas shared with the local lights, are Design.
-Code: `crates/rewrites/native-render/src/frame_graph.rs` (display and private lighting), `crates/platform/d3d/src/gfx_backend/guest_draw_pass/tiles.rs` (the tile plan), `crates/platform/d3d/src/scaled/private_scene.rs` (tiles at render scale), `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native), `crates/rewrites/native-render/src/sun_tiles.rs` (the sun tile plan and cache), `crates/rewrites/native-render/src/sun_tiles_gpu.rs` (the sun atlas, tiles and receivers), `crates/rewrites/native-render/src/sun_casters.rs` (the sun's casters and receivers from the scene, the world receivers), `crates/rewrites/native-render/src/light_choice.rs` (the renderer's choice of lights). Tests: `crates/rewrites/native-render/tests/world_layers_gpu/frame_graph.rs`, `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/d3d/src/gfx_backend/guest_draw_pass/tiles.rs`, `crates/formats/shaders/tests/shadow.rs`, `crates/rewrites/native-render/tests/world_layers_gpu/sun_tiles.rs`, `crates/rewrites/native-render/src/sun_tiles.rs`, `crates/rewrites/native-render/src/sun_casters.rs`, `crates/rewrites/native-render/src/light_choice.rs`.
+Status: Partly built. The native frame graph accepts the Lighting mode, draws the guest's shadow maps as tiles with the Sharp edge, plans and draws sun tiles from objects onto their receivers, chooses its own lights and draws those beyond the guest's. One atlas shared by the sun and the local lights is Design. The scaled D3D backend draws harder retail shadows.
+Code: `crates/rewrites/native-render/src/frame_graph.rs` (display and private lighting), `crates/platform/d3d/src/gfx_backend/guest_draw_pass/tiles.rs` (the tile plan), `crates/platform/d3d/src/scaled/private_scene.rs` (tiles at render scale), `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (the shadow comparison), `crates/rewrites/engine/src/render.rs` (views of the light record), `crates/rewrites/native-render/src/light_look.rs` (retail's light passes, native). The sun, light-choice and cone files are named on the sub-pages. Tests: `crates/rewrites/native-render/tests/world_layers_gpu/frame_graph.rs`, `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
-An opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo: hard-edged
-shadows cast by and onto everything, objects shadowing themselves under the
-sun, every lamp, headlight and muzzle flash lighting the scene per pixel. It
-is a mode of the native renderer ([native-renderer.md](native-renderer.md))
-drawing from `FrameScene` ([framescene.md](framescene.md)). The rule that
-must hold: the mode is read on the render thread only, and the scene, the
-guest and the simulation are the same with it on and off.
+An opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo: hard-edged shadows cast by and onto everything, objects shadowing themselves under the sun, every lamp, headlight and muzzle flash lighting the scene per pixel. It is a mode of the native renderer ([native-renderer.md](native-renderer.md)) drawing from `FrameScene` ([framescene.md](framescene.md)). The rule that must hold: the mode is read on the render thread only, and the scene, the guest and the simulation are the same with it on and off.
 
-It is not a recovery of Bungie's renderer. Retail has no shadow-volume
-path ("Stencil: every use, named"), the original maths is not public, and
-only the retail disc's content is in scope: not the demo's level, scripts
-or assets. What retail does keep is the cut renderer's lighting half: every
-lit material carries per-pixel, bump-mapped light passes ("What retail
-already has"). So the mode is mostly a different use of passes the content
-already has, plus one new shadow path for the sun.
+It is not a recovery of Bungie's renderer. Retail has no shadow-volume path ("Stencil: every use, named"), the original maths is not public, and only the retail disc's content is in scope: not the demo's level, scripts or assets. What retail keeps is the cut renderer's lighting half: every lit material carries per-pixel, bump-mapped light passes ("What retail already has"). So the mode is mostly a different use of passes the content already has, plus one new shadow path for the sun.
 
-The setting is `[graphics] lighting = "retail" | "e3"`, the Video screen's
-**Lighting** row ([settings-menu.md](../game/settings-menu.md)), default
-Retail and live. `H2_LIGHTING` locks it. The history of the cut renderer is
-in [pstencil-history.md](pstencil-history.md), the Digsite tag set's lights
-in [pstencil.md](pstencil.md), measurements and research records in
-[notes/e3-lighting.md](notes/e3-lighting.md), and the review this design
-answers in [2026-11-20-e3-lighting.md](../reviews/2026-11-20-e3-lighting.md).
-No leaked build, source or archive is used for this work, and none may be.
+| Page | What it holds |
+|---|---|
+| this page | the technique, what retail has, the mode's rules, the interfaces, the budget, the slices, the retail findings (Phase 0) |
+| [e3-lighting-target.md](e3-lighting-target.md) | the target look with its sources, and the evidence labels |
+| [e3-lighting-sun.md](e3-lighting-sun.md) | sun shadows from objects |
+| [e3-lighting-lights.md](e3-lighting-lights.md) | the renderer's choice of lights, the flashlight and the first-person pass |
+| [e3-lighting-cones.md](e3-lighting-cones.md) | shadows from local lights: the guest's tiles and the renderer's cones |
+| [e3-lighting-setting.md](e3-lighting-setting.md) | the Lighting row on the D3D path |
+| [notes/e3-lighting.md](notes/e3-lighting.md) | measurements and research records |
 
-## Evidence labels
+The setting is `[graphics] lighting = "retail" | "e3"`, the Video screen's **Lighting** row ([settings-menu.md](../game/settings-menu.md)), default Retail and live. `H2_LIGHTING` locks it. The history of the cut renderer is in [pstencil-history.md](pstencil-history.md), the Digsite tag set's lights in [pstencil.md](pstencil.md), and the review this design answers in [2026-11-20-e3-lighting.md](../reviews/2026-11-20-e3-lighting.md). No leaked build, source or archive is used for this work, and none may be.
 
-- **P**: a developer's own statement, with the source. **P\*** means we read
-  it through a secondary quotation (a wiki, a mirror or a search excerpt)
-  because the original was unreachable, so the wording is unverified.
-- **C**: a community finding or a secondary characterisation.
-- **R**: read from the retail image or disc by this project, in the doc
-  named.
-- **S**: our inference or speculation.
-- **Design**: our choice, not a fact about the game.
-- **Estimate**: arithmetic on a measurement taken elsewhere, to be replaced
-  by a measurement in a frame.
-
-## Target look
-
-What the pictures of every slice are judged against. Each item has its source;
-the footage times are rows of the table in [pstencil-history.md](pstencil-history.md), section 12.
-
-1. **Hard shadow edges, no visible filtering**, from the sun and from local
-   lights, on large and small casters. Halopedia's "sharp rather than
-   softened" (**C**); Steam commenter's "razor sharp" (**C**); footage 2:00,
-   5:24, 7:12 (**S**).
-2. **Characters and vehicles cast onto the world and onto themselves under
-   the sun**, not only under dynamic lights. Staten (**P\***), Halopedia
-   (**C**), Beyond3D (**C**).
-3. **Large vehicles cast large shadows** (the Pelican). Jones (**P\***),
-   footage 1:07 (**S**).
-4. **Several shadows per object where several lights reach it.** Beyond3D on
-   the Ghost (**C**).
-5. **Lamps cast shadows and throw pools of light** that read as discrete
-   shapes on the ground. Halopedia (**C**), footage 5:00, 7:12 (**S**).
-6. **Vehicle headlights light the road in front** and move with the vehicle.
-   Halopedia (**C**), footage 5:44-5:49 (**S**).
-7. **Weapon fire and explosions light their surroundings**, including the
-   firer. Perez via Halopedia (**P\***), Halopedia on the turret (**C**),
-   footage 3:19 (**S**).
-8. **Shadowed areas are very dark**: low ambient, high contrast, characters
-   close to silhouettes in shade. Footage 2:00-2:09, 6:27 (**S**) only; no
-   statement.
-9. **The level's own sun shadows are baked, and sharp.** Halopedia: the
-   demo's lightmap shadows are sharp and retail's were softened (**C**).
-   Perez's "combine lightmaps for ambient lighting with stencil for
-   directional sources" (**P**)
-   is the plan the demo's level did not show. Not met: retail's bake is
-   what the disc has ("The lightmap problem").
-10. **Dynamic lights shade per pixel through normal maps**, so armour and
-    walls show relief under a moving light. Freidin (**P**), normal maps
-    everywhere (**C**), footage 6:33, 8:36 (**S**).
-11. **Specular highlights from dynamic lights** on armour and visors. Staten
-    on the visor (**P\***), footage 8:36-8:42 (**S**).
-12. **Coloured, projected lights (gels)** where a light has one. Digsite
-    (**C**).
-13. **Out of scope but part of the look:** the demo's different bloom
-    (Halopedia, **C**).
+Evidence labels (**P**, **C**, **R**, **S**, **Design**, **Estimate**) are defined in [e3-lighting-target.md](e3-lighting-target.md).
 
 ## What this means for the technique
 
-**Shadow maps, not stencil volumes** (**Design**). Nothing public argues
-that the look needs volumes: every description of it is of properties a
-dense shadow map with a steep edge also has (hard edges, everything
-casting, self-shadowing). Whether the stage demo itself still ran volumes
-is not settled in the public record (pstencil-history.md, section 5), so
-the look is the target and the mechanism is ours. The reasons:
+**Shadow maps, not stencil volumes** (**Design**). Every public description of the look is of properties a dense shadow map with a steep edge also has (hard edges, everything casting, self-shadowing). Whether the stage demo itself still ran volumes is not settled in the public record ([pstencil-history.md](pstencil-history.md), section 5), so the look is the target ([e3-lighting-target.md](e3-lighting-target.md)) and the mechanism is ours.
 
-1. **Cost.** The prototype put volumes at or above a one-tap map at every
-   scale, and volume fill grows with the pixels while a map grows with its
-   edge ([notes/e3-lighting.md](notes/e3-lighting.md), "shadow prototype").
-2. **Open meshes.** 37% of the casters' triangles lie in closed pieces and
-   none of the level's clusters do (the same note). Bungie's own reasons for
-   leaving volumes are these two: Perez's "geometry/lighting fidelity
-   compromises" (**P**), Jones on the Pelican's volumes filling the screen
-   (**P\***), Griesemer on exteriors (**P\***).
-3. **Blended frames.** At 60 and 120 fps the renderer draws poses blended
-   between two scenes. A map is the caster drawn again with the vertex
-   program it has. A volume needs a silhouette per light, per caster, per
-   display frame from skinned positions, and wgpu has no geometry stage.
-4. **The stencil buffer is taken.** Retail's marks write 0 or `0xff` over
-   whole draws ("Stencil: every use, named"); counting volumes would need a
-   second depth-stencil at the display scale.
-5. **The content.** Ordinary lit templates can supply the depth and
-   receiver programs. The census below measures coverage per LOD. Where
-   a caster has an alpha-tested depth pass, its material can punch holes
-   in the map.
-6. **The sun is baked.** It is not a light in retail data, so a volume
-   would end in the same multiply over baked light that a map ends in.
+| # | Reason | Detail |
+|---:|---|---|
+| 1 | Cost | the prototype put volumes at or above a one-tap map at every scale; volume fill grows with the pixels, a map with its edge ([notes/e3-lighting.md](notes/e3-lighting.md), "shadow prototype") |
+| 2 | Open meshes | 37% of the casters' triangles lie in closed pieces and none of the level's clusters do (same note). Bungie's own reasons for leaving volumes are these two: Perez's "geometry/lighting fidelity compromises" (**P**), Jones on the Pelican's volumes filling the screen (**P\***), Griesemer on exteriors (**P\***) |
+| 3 | Blended frames | at 60 and 120 fps the renderer draws poses blended between two scenes. A map is the caster drawn again with the vertex program it has. A volume needs a silhouette per light, per caster, per display frame from skinned positions, and wgpu has no geometry stage |
+| 4 | The stencil buffer is taken | retail's marks write 0 or `0xff` over whole draws ("Stencil: every use, named"); counting volumes would need a second depth-stencil at the display scale |
+| 5 | The content | ordinary lit templates can supply the depth and receiver programs, and a caster's alpha-tested depth pass can punch holes in the map (census per LOD in the notes) |
+| 6 | The sun is baked | it is not a light in retail data, so a volume would end in the same multiply over baked light that a map ends in |
 
-What volumes would still give is an exact edge at any magnification and no
-bias. On maps that is met by density (a map fitted to each caster, "Sun
-shadows from objects") and by the edge ("The edge"). No volume fallback is
-kept; the experiment's row is in [notes/not-adopted.md](notes/not-adopted.md).
-Ray queries are not used: wgpu's support is not something to depend on.
+What volumes would still give is an exact edge at any magnification and no bias. On maps that is met by density (a map fitted to each caster, [e3-lighting-sun.md](e3-lighting-sun.md)) and by "The edge". No volume fallback is kept; the experiment's row is in [notes/not-adopted.md](notes/not-adopted.md). Ray queries are not used.
 
-One community claim to discount: that retail still has true stencil lights
-(Zanzibar's swinging lights, Foundation's fan room; ResetEra, 2018, **C**).
-The retail reading found no shadow-volume path (**R**); those are lights
-without the no-shadow flag, drawn with shadow maps.
+One community claim to discount: that retail still has true stencil lights (Zanzibar's swinging lights, Foundation's fan room; ResetEra, 2018, **C**). The retail reading found no shadow-volume path (**R**); those are lights without the no-shadow flag, drawn with shadow maps.
 
 ## What retail already has
 
-Read from the retail image and the disc ("Phase 0 findings",
-[native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md)):
+Read from the retail image and the disc ("Phase 0 findings", [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md)).
 
-- **Per-pixel light passes on every lit material** (**R**). Layer 12 is a
-  diffuse pass per light: the base map, a normalization cube, the
-  material's bump map, and a gel or a distance-attenuation volume, added to
-  the frame. Layer 13 is a tangent-space specular pass. There are 10,137
-  resolved lists on each against 16,622 on the lightmap layer ("Pass
-  taxonomy: the layers"). `native_render::light_look` translates them and
-  the native lights stage draws them.
-- **Shadow maps for dynamic lights** (**R**). A shadowed light draws its
-  casters' depth (layer 10) and then its receivers (layer 11), which write
-  the shadow term into the frame's alpha (**S**: the light passes that
-  follow read it from there).
-- **Object shadows** (**R**). Before layer 7, up to 32 candidates enter
-  a history targeting four. Ordinary caster draws use a silhouette mask
-  filtered twice and multiplied onto receivers. A mask has no depth, so
-  it cannot self-shadow. Creatures have a separate ground-shadow draw.
-- **A first-person light pass** (**R**): up to eight of the frame's lights
-  drawn again over the first-person view.
-- **A history of selected lights** (**R**). Up to 128 eligible lights feed
-  a 32-entry view history and a fade targeting three ordinary lights.
-  Fading and exempt entries can take the draw count above three.
-  1,275 of the disc's 1,596 light definitions have shadows flagged off
-  ("The light render path", "Definition flags read off the code").
+| What | Detail (**R** unless marked) |
+|---|---|
+| Per-pixel light passes on every lit material | Layer 12 is a diffuse pass per light: the base map, a normalisation cube, the material's bump map, and a gel or a distance-attenuation volume, added to the frame. Layer 13 is a tangent-space specular pass. 10,137 resolved lists on each against 16,622 on the lightmap layer ("Pass taxonomy: the layers"). `native_render::light_look` translates them and the native lights stage draws them |
+| Shadow maps for dynamic lights | A shadowed light draws its casters' depth (layer 10) and then its receivers (layer 11), which write the shadow term into the frame's alpha (**S**: the light passes that follow read it from there) |
+| Object shadows | Before layer 7, up to 32 candidates enter a history targeting four. Ordinary caster draws use a silhouette mask filtered twice and multiplied onto receivers. A mask has no depth, so it cannot self-shadow. Creatures have a separate ground-shadow draw |
+| A first-person light pass | Up to eight of the frame's lights drawn again over the first-person view |
+| A history of selected lights | Up to 128 eligible lights feed a 32-entry view history and a fade targeting three ordinary lights. Fading and exempt entries can take the draw count above three. 1,275 of the disc's 1,596 light definitions have shadows flagged off ("The light render path", "Definition flags read off the code") |
 
-What retail does not have: volumes, the sun as a light, depth in object
-shadows. So the mode is four changes to how the renderer draws one scene:
-a depth map per caster for the sun, the renderer's own choice of lights,
-shadows from every cone light, and a different edge.
+What retail does not have: volumes, the sun as a light, depth in object shadows. So the mode is four changes to how the renderer draws one scene:
+
+| Change | Section |
+|---|---|
+| a depth map per caster for the sun | "Sun shadows from objects" |
+| the renderer's own choice of lights | "Lights: which, and how many" |
+| shadows from every cone light | "Shadows from local lights" |
+| a different edge | "The edge" |
 
 ## How it works
 
-The frame graph, candidate extraction and the tiles of the guest's shadowed lights are built. The sun's tiles and receivers are built in the renderer and consume the scene’s marked shadows and nearby offscreen roots. The renderer's own choice of lights is built and counted, and the chosen lights beyond the guest's are drawn over the structure, the cones among them that the renderer shadows over their own cone tiles, and the first-person lights retail's pass did not record are drawn over the first-person parts.
+| Part | State |
+|---|---|
+| Frame graph, candidate extraction, the guest's shadowed lights as tiles | Built |
+| Sun tiles and receivers (marked shadows and nearby offscreen roots) | Built on invented scenes; live check pending |
+| The renderer's choice of lights, counted | Built |
+| Chosen lights beyond the guest's, over the structure; cones the renderer shadows on their own tiles | Built |
+| First-person lights retail's pass did not record, over the first-person parts | Built |
+| Chosen lights on object (model) parts; one atlas for the sun and the local lights | Design |
 
 ### The scene does not know the mode
 
-`FrameScene` holds what both modes need, extracted the same way whatever
-the setting: every live light that can reach the view, not only those the
-guest chose to draw; each instance's node matrices and lighting record; the
-guest's own shadow lists. The lighting mode is a parameter of the render
-thread's frame (`native_render`, per display frame). Retail mode draws the
-lights the guest drew and its shadow lists as they are. E3 mode makes its
-own choices from the same scene. `scene-extract`, `feature` and `boot`'s
-frame step never read the setting.
+`FrameScene` holds what both modes need, extracted the same way whatever the setting: every live light that can reach the view, not only those the guest chose to draw; each instance's node matrices and lighting record; the guest's own shadow lists. The lighting mode is a parameter of the render thread's frame (`native_render`, per display frame). Retail mode draws the lights the guest drew and its shadow lists as they are. E3 mode makes its own choices from the same scene. `scene-extract`, `feature` and `boot`'s frame step never read the setting.
 
-So one sealed scene can be drawn both ways, which is how pictures are
-compared ("Interfaces"), and the scene's summary hash is the same with the
-mode on and off, which is how "render-only" is checked.
+So one sealed scene can be drawn both ways, which is how pictures are compared ("Interfaces"), and the scene's summary hash is the same with the mode on and off, which is how "render-only" is checked.
 
 ### Sun shadows from objects
 
-One depth map per caster, in place of retail's object-shadow masks
-(**Design**).
+One depth map per caster, in place of retail's object-shadow masks (**Design**). Detail and what is built: [e3-lighting-sun.md](e3-lighting-sun.md).
 
-- **Casters.** Start with the ordinary object-mask draws in the guest's
-  shadow list. **R**. With an active lightmap and the shadow mode enabled,
-  `0x000335e0` calls `0x00033400`. The gather applies the view-mode bits
-  and `0x0003d7f0`'s object, definition, distance and fade tests. It
-  admits up to 32 objects, then ranks them with history and a target
-  of four. The draw at `0x00032350` requires a root object and a valid
-  visible hierarchy. Creature roots take a separate ground-shadow path
-  at `0x00032ce0`. L8 keeps that path for creatures. Once per game view at layer 3,
-  `scene_extract::layout::nearby_casters` walks live root objects in slot
-  order. It keeps up to 32 outside-frustum spheres whose sweep away
-  from the light intersects the view within eight world units. It checks
-  the definition’s shadow policy and uses the default or owner-checked
-  cache sample from `0x0003dc90`. Unranked roots use the sample strength
-  directly. Their node matrices are copied only after the sweep passes.
-  The extra instances live in `FrameScene::nearby_casters`. Each caster
-  without a drawn guest mask draws on opaque parts of visible BSP clusters
-  after that view’s opaque slot, using the same atlas and W-depth test.
-- **Direction and strength.** **R**. The ordinary draw resolves its
-  lighting sample at `0x0003dc90` from a valid object lighting-cache
-  entry or the default lighting. It normalizes the vector at sample
-  `+0x0c`. Strength is the positive scalar at sample `+0x1c` times
-  the current object fade and the ranked entry's faded weight. The
-  product must clear the draw threshold. The renderer uses the selected
-  direction and final strength for the tile. [Object chain](native-shadows.md#object-chain).
-- **The map.** An orthographic depth tile fitted to the caster's bounding
-  sphere along that direction. Its edge is the next power of two above 1.5
-  times the sphere's diameter in display pixels, between 128 and 2048, so a
-  texel is never larger than a pixel on the caster. Tiles live in one
-  4096-square depth atlas shared with the local lights, packed each frame
-  by size; if they do not fit, the largest class halves and a counter
-  says so.
-- **Drawing the caster.** Select the material's layer-10 depth writer
-  at the LOD actually drawn, with the blended palette rows and its alpha
-  test. **Design**. Retain the retail shadow for a caster whose visible
-  silhouette includes a part with no supported depth writer.
-- **Receivers.** The caster itself, the instances whose spheres meet the
-  tile's box swept along the direction, and the cluster parts that do.
-  Each is drawn with its material's layer-11 receiver pass that samples a
-  depth map and multiplies the frame (**R**: implementation 3 in
-  native-shadows.md's table), at equal depth. That pass exists for retail's
-  own shadows. **R**. Across 165 distinct template names, 72 have a
-  layer-10 depth writer and 69 have it and the multiplying receiver in
-  the same LOD. Only 15 have the pair in every LOD. At the selected LOD,
-  a missing receiver uses an E3 receiver based on the material's depth
-  vertex path, with the same position, normal and coverage rules. Admit
-  the replacement only when it can reproduce those inputs.
-  [Counts per map](notes/e3-lighting.md).
-- **Where.** At retail's object-shadow point, before layer 7, so
-  self-illumination and environment maps are added over the shadow as they
-  are in retail. Retail's own mask chain is not drawn for a caster that has
-  a tile.
-- **Self-shadowing** is the caster receiving its own tile. **R**.
-  Implementation 3 writes the vertex normal dotted with hardware
-  `c[41]` to diffuse RGB. Its six populated vertex classifications use
-  the normal in world space, transformed by the rigid or skinning rows
-  where needed. The shadow setup at `0x00048f85` supplies the direction
-  towards the light. The pixel combiner interpolates between unity and the
-  depth comparison using that vertex colour. A triangle whose three
-  vertex terms clamp to zero preserves destination RGB. At a terminator
-  the interpolated gate can be fractional. The alpha-only receivers have
-  a different gate. [Program evidence](notes/e3-lighting.md).
-- **Not done:** the first-person model neither casts into tiles nor
-  receives them; it has its own projection.
-
-**Built: tiles, receivers, the cache, the casters and the frame graph's
-stage** (`native_render::sun_tiles`, `native_render::sun_tiles_gpu`,
-`native_render::sun_casters`, `crates/rewrites/native-render/src/frame_graph/sun.rs`).
-Under E3 the frame graph skips an admitted object shadow's ops and draws
-its sun tile in their place. Retail replays every op, marks included, as
-it does with no marks.
-
-- **The replay's marks.** The scene sink writes a
-  `ReplayOp::ObjectShadow(Some(index))` before the first op the guest
-  records inside an object shadow, and `ObjectShadow(None)` before the
-  first op after it (`SceneSink::with_object_shadows`,
-  `render_bridge::scene_step::object_shadow_at`). A shadow runs from its
-  `0x00032350` call to the end of its layer 11 (the `Site::Object` layer
-  end), or to the next shadow, the next light's passes or the scene's
-  seal. The index is the shadow's place in the scene's `object_shadows`.
-  The marks are written in both modes, since a capture picks its lighting
-  per frame, and they draw nothing: every replay pass treats them as
-  no-ops, and they do not cut the frame graph's pass rows. Tests:
-  `object_shadow_marks_wrap_each_shadows_ops_and_change_nothing_else`
-  (`crates/platform/d3d/tests/scene_sink.rs`) and
-  `object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged`
-  (`tests/world_layers_gpu/frame_graph.rs`).
-
-- **The scene's casters.** Each call to `0x00032350` the hook matches is
-  an `ObjectShadow` of its view, with its caster's handle and ranked fade
-  (`identity`), its layers 10 and 11 as groups with the projection they
-  read, whether the caster is a creature (object type 12, header `+3`,
-  which takes the ground-shadow branch), and the light weight read at its
-  layer 11. **R**. The mask branch stores the weight at `0x00032912`
-  (`movss [0x00485a30], xmm0`, the product loaded from `[esp+0x14]` at
-  `0x0003290a`; `h2 disasm 0x00032905 40`), the word the material inputs
-  call the light's weight. `ObjectShadow::towards_light` is `c[41]`
-  of layer 11's projection (**R**, `0x00048f85`).
-- **The models.** The game's object loader
-  (`crates/extensions/game/src/native_objects_glue.rs`, `CasterSet`)
-  builds each loaded definition's model with its default variant
-  (`model_load::default_model`, the rules `load_object_model` uses: one
-  section per region, the highest LOD, a run-time permutation refused)
-  from the geometry it reads for the native object path, and offers them
-  for the map's epoch (`sun_casters::set_models`). The render thread
-  reads them for a scene of that epoch only (`sun_casters::models_for`).
-  They are keyed by object definition, since definitions sharing a
-  render model can choose different regions. Retail never reads them.
-- **The receivers.** `sun_casters::receivers` takes what the shadow's
-  layer 11 draws on, each once: an object skinned like a caster, and a
-  structure cluster's or instanced placement's part (the entry's owner
-  and part index) from the world receivers. The layer must be in the
-  scene whole.
-- **The world receivers.** The world loader
-  (`crates/extensions/game/src/native_world_glue.rs`, `load_ready`)
-  builds `sun_casters::SunWorld` from every opaque part of the BSP,
-  placed, before the native layer-3 filter, and offers it for the map's
-  epoch (`sun_casters::set_world`). The render thread reads it for a
-  scene of that epoch while the BSP it was loaded for is the guest's
-  (`sun_casters::world_for`, `WorldReceivers::current`), so a BSP switch
-  withdraws it until the next world loads. A part's mesh is built at its
-  first ask and kept; the frame graph uploads it once per device and
-  drops the upload when its world is gone. A structure part the world
-  does not hold (a transparent part, or another BSP's), or no world for
-  the scene, refuses the shadow (`CasterRefusal::WorldReceiver`) and it
-  keeps retail's mask. Tests:
-  `world_entries_receive_from_the_loaded_structure` and
-  `world_receivers_serve_only_their_maps_current_bsp` (`sun_casters.rs`),
-  `a_box_shadows_the_structure_it_stands_on`
-  (`tests/world_layers_gpu/sun_tiles.rs`) and
-  `e3_draws_a_shadow_on_the_structure_and_keeps_the_mask_without_its_world`
-  (`tests/world_layers_gpu/frame_graph.rs`).
-- **The frame graph's stage.** For an E3 draw on the guest-draw pass
-  (`draw_private`, `draw_display`, `draw_display_on`), `frame_graph::sun`
-  takes each marked shadow with its caster admitted, its receivers drawn,
-  a 24-bit scene depth, a viewport, ops that end on the scene's colour
-  and depth, and nothing they write or sample read after them. The
-  planner places the admitted casters' tiles. For each shadow with a
-  tile, its marked ops are not applied, except binds, samples and flare
-  queries, and a scene stage after its last op multiplies the scene's
-  colour by its receivers against its tile. The frame's first stage also
-  draws the tiles that changed. Receivers write the guest's W-buffer
-  depth for their view depth (full scale, `1 / far`, floored), less
-  `RECEIVER_DEPTH_BIAS` (0.005 world units) towards the eye, and test it
-  `LessEqual` against the guest's depth. Each device keeps its atlas and
-  planner. A draw that fails, or a plan no stage drew, invalidates the
-  atlas. Every other shadow keeps its ops and retail's mask, its cause
-  named (`frame_graph::SunSkip`). The scaled display and the mixed-size
-  private draw take no sun stage yet: their shadows keep retail's mask.
-  Test: `e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged`
-  (`tests/world_layers_gpu/frame_graph.rs`).
-- **The gather.** `sun_casters::gather` admits an object shadow whose
-  caster is an instance of the view with node matrices and a loaded
-  model, with a direction and a weight above retail's 0.09. Its mesh is
-  the model's opaque parts skinned on the CPU with the instance's nodes.
-  The tile's strength is the weight and its rows hash is over the node
-  matrices. A creature or a caster missing any of
-  these is refused by name (`CasterRefusal`) and keeps retail's mask.
-
-- **The plan.** `SunTilePlanner::plan` takes each caster's sphere, screen
-  diameter, direction towards the light, strength and a hash of its
-  blended rows (`rows_hash`). It sorts the tiles largest first, then by
-  caster, and places them along a Morton curve of 128-texel cells, so
-  they never overlap and the same casters get the same rectangles each
-  frame. While their area exceeds the atlas, every tile of the largest
-  class halves (`atlas_halved`). A caster with no usable sphere,
-  direction or strength, or with no room at 128, is refused, counted in
-  `tiles_refused`, and keeps retail's shadow.
-- **The cache.** The atlas (`Depth32Float`) persists. A tile is cleared
-  and drawn again only when its rows hash, its direction or its
-  rectangle or bounding sphere changed (`sun_tiles_redrawn`). `SunShadows::draw_tiles`
-  refuses a redraw whose caster mesh is missing and forgets the atlas's
-  contents, so the next frame draws every tile.
-- **The caster draw.** Depth only, the caster's world-space triangles
-  through the tile's rows, under a viewport and scissor on its
-  rectangle. The positions are the blended, skinned ones; the material's
-  layer-10 depth writer and its alpha test are not used yet.
-- **The receiver** is E3's own program, the fallback this section names
-  where a material has no layer-11 receiver. Its vertex gate is the world
-  normal dotted with the direction towards the light, clamped to `[0, 1]`.
-  The pixel term is `1 - gate * strength * (1 - lit)`, with `lit` the
-  Sharp comparison kept inside the tile's rectangle. It multiplies the
-  frame's RGB and does not write alpha. A triangle whose three gates are
-  zero multiplies by exactly one. The lookup is offset 1.5 texels along
-  the normal with one texel of depth bias, so a caster does not shade its
-  own lit faces. Receivers draw with `LessEqual` and no depth write over
-  the frame's depth, through the same invariant vertex transform that
-  laid it. A receiver is drawn once for each tile whose box it meets.
-- **Counted.** `E3Report::add_sun`: caster draws are `e3.sun_tiles`,
-  receivers are `e3.sun`, and `sun_tiles`, `sun_tiles_redrawn` and
-  `atlas_halved` are the plan's.
+| Rule | Value |
+|---|---|
+| Casters | ordinary object-mask draws in the guest's shadow list, plus up to 32 nearby offscreen roots (`scene_extract::layout::nearby_casters`); creatures keep retail's ground shadow |
+| Direction and strength | the object's lighting sample (`0x0003dc90`), strength above retail's 0.09 |
+| Map | orthographic depth tile fitted to the caster's sphere, 128 to 2048 texels, in a 4096-square atlas |
+| Receivers | the caster, the instances and the structure parts the tile's box meets |
+| Where | at retail's object-shadow point, before layer 7 |
+| Refused | a creature, or a caster with no model, direction or world receiver, keeps retail's mask, its cause named |
 
 ### Lights: which, and how many
 
-The lights are retail's: 428 scenario placements, 1,033 object attachments
-(headlights, the flashlight, projectiles) and 834 effect parts (muzzle
-flashes, explosions) over the disc's 30 maps, of 1,349 sphere and 245 cone
-definitions ([effects.md](../formats/effects.md), "ligh"). At most 350 are
-live at once ("The light record").
+The renderer chooses the lit lights from the scene's candidates. Detail and what is built: [e3-lighting-lights.md](e3-lighting-lights.md).
 
-- **Candidates.** Every active light reaching the view that passes its
-  owner and camera tests, before retail's ranking. In particular, the two
-  flashlight attachments are mutually exclusive for a given owner and view.
-- **Score** (**Design**). Multiply retail's projected sphere radius by
-  the light's intensity and break ties by lower datum index. Retail itself
-  stores projected size and fade weight separately
-  ([The light render path](#the-light-render-path)).
-- **Lit.** The 16 highest scores in a frame (**Design**; split screen
-  shares the 16 between views). A light whose owner chain reaches the
-  view's own unit (its flashlight, its weapon's flash) is placed first.
-  The Xbox drew a handful and the MCC restoration reads dark for culling
-  early (**C**, pstencil.md); 16 is set by the budget, not by taste.
-- **Shading.** The material's own layer-12 and layer-13 passes, the
-  implementation picked by retail's choosers (`engine::light_passes`) with
-  the renderer's shadow decision in place of the guest's. Specular is drawn
-  where retail would draw it. No new shading maths, and the bump map is
-  whatever the material's pass binds, so there is no table of normal maps
-  to build.
-- **Extent.** Receivers are the instances and cluster parts that meet the
-  light's bounds, under a scissor from the sphere's screen rectangle.
-- **Constants.** `engine::light_constants` and `engine::shadow_constants`
-  are pure. Extraction runs them for every candidate, so the scene carries
-  each light's constants for both shadow decisions.
+| Rule | Value |
+|---|---|
+| Candidates | every active light reaching the view that passes its owner and camera tests |
+| Score | retail's projected radius times intensity, ties by lower datum index (**Design**) |
+| Lit | the 16 highest scores a frame (`LIT_CAP`), shared between split-screen views; the view's own lights first |
+| Shading | the material's own layer-12 and 13 passes; no new shading maths |
+| Host lights | Forge monitors' lights rank after every game light, unshadowed |
 
-Retail mode draws the candidates the guest drew, in its order.
-
-**Built: the choice** (`native_render::light_choice`). For each view of
-the scene, `light_choice::choose` takes the lights with a candidate
-record that the view test admitted (`view_eligible`) or that the guest
-drew. A light's score is its candidate's projected-size priority times
-its intensity. A missing, negative or non-finite product scores zero.
-The view's own lights come first, then the highest scores, ties by
-lower datum index, then by handle, then the host lights by seat. This is a total order, so a scene
-gives the same lights in the same order whatever the candidates'
-order. The views of split screen share `LIT_CAP` (16) equally, the
-remainder going one each to the first views (`view_caps`: three views
-take 6, 5 and 5). A second record of a view is chosen alike and counted
-once. The first `FIRST_PERSON_CAP` (8, retail's recorded-light count) of
-a view's lit lights are its first-person set. Under E3 the frame graph
-reports the choice as `lights_lit`, `lights_over_cap` and
-`lights_beyond_guest` (the lit game lights the guest did not draw,
-`ViewChoice::beyond_guest`).
-
-- **Host lights** (`frame_scene::Light::host_light`, `host: Some(seat)`)
-  have no datum and no `ligh` tag: the Forge monitors' lights
-  ([forge-monitor-appearance.md](../game/forge-monitor-appearance.md),
-  "Colours, tint and light"). The frame step adds them to each game view
-  after the game's candidates (`render_bridge::scene_step::set_host_lights`).
-  They rank after every game light whatever their score, so they are the
-  first a full view leaves unlit, and they carry no steps and no shadow. The light passes draw them from
-  `render_bridge::native_lights::host` (constants) and
-  `native_lights_glue::host` (layers 12 and 13 over the structure the
-  sphere meets), once the main view's light pass is over.
-- **The view's own lights** are its first-person lights (definition bit
-  5), which the view test admits only for the view's local first-person
-  owner. The scene carries neither the view's unit nor an owner chain, so
-  a light attached to the view's weapon takes its place by score.
-- **Drawing the lights beyond the guest's**
-  (`render_bridge::native_lights::chosen`). Once the main view's light
-  pass is over and its candidates are in the scene, the frame step
-  chooses the open view as the render thread does
-  (`light_choice::choose_view`), its share of the cap from the views of
-  this scene so far and the scene before (`light_choice::share_of`). A
-  frame whose views change chooses on the render thread from the views
-  it has, so its counters and its drawn lights can differ for that frame.
-  Each lit game light the guest did not draw is drawn from the constants
-  extraction made for it without a shadow (`LightCandidate::constants`,
-  `unshadowed`), or with one when the renderer shadows it (below), as a
-  sphere of its bounds: `native_lights_glue::host`
-  draws its layers 12 and 13 over the structure and placement parts the
-  sphere meets, as it draws a host light. Each light is a scene stage
-  with its materials, gel and geometry retained, of E3 alone
-  (`d3d::ExternalPass::lighting_only`): the frame graph records it in an
-  E3 draw and skips it in any other, and the render thread's live
-  recording, on the retail reference, takes it and draws nothing. The
-  guest's own work and the scene are the same in both modes. Where the
-  render thread takes no scene stage, no chosen light is drawn.
-  `e3.lights` counts the ranges of the stages an E3 draw recorded;
-  `scene_e3_lights_drawn`, `scene_e3_lights_kept`,
-  `scene_e3_lights_unread` and `scene_e3_lights_shadowed` count the frame
-  step's outcomes.
-- **Shadowed.** The frame step also chooses the view's shadowed cones as
-  the render thread does (`cone_shadows::view_shadows`, its share of the
-  four slots from `cone_shadows::slot_share_of`). A chosen light among
-  them is drawn from its shadowed constants (`LightVariants::shadowed`)
-  with the shadow flags set (`chosen::SHADOW_FLAGS`): the guest's flag
-  code clears them for a light the content flagged no-shadow. Its parts
-  then take the shadowed implementations (layer 12's implementation 2),
-  which read layer 11's term from the destination alpha, and its stage
-  names the light (`d3d::ExternalPass::cone_shadow`). The frame graph
-  writes the cone's term just before it ("Built: the shadowed cones").
-  `scene_e3_lights_shadowed` counts the lights handed to the host so.
-- **Not drawn yet.** A chosen light lights no object (model) part, and
-  is left undrawn when its candidate holds no constants or its gel is
-  drawn by a shader into target 13 (the guest's passes produce that gel,
-  and they did not run for it). A cone the guest draws unshadowed (its
-  no-shadow lamps in the guest's own choice) keeps retail's unshadowed
-  implementation, so its tile is not drawn. The first-person set retail
-  did not record draws over the first-person parts ("The flashlight and
-  the first-person pass").
-
-Tests: `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run`,
-`ties_take_the_lower_index_and_only_candidates_are_lit`,
-`the_views_own_light_is_lit_first` and `split_screen_shares_the_cap`
-`the_lights_beyond_the_guests_are_the_lit_ones_it_did_not_draw`,
-`a_views_choice_from_its_slice_matches_the_frames` and
-`a_views_share_counts_the_keys_seen_and_itself` (`light_choice.rs`),
-`the_lit_lights_the_guest_did_not_draw_are_drawn_unshadowed`,
-`the_cone_the_renderer_shadows_is_drawn_shadowed` and
-`a_light_without_constants_or_with_a_shader_gel_is_unread`
-(`render-bridge/src/native_lights/chosen.rs`), and
-`e3_reports_its_choice_of_sixteen_lights_from_twenty`
-(`tests/world_layers_gpu/frame_graph.rs`).
+Retail mode draws the candidates the guest drew, in its order. The renderer's lights beyond the guest's are E3-only scene stages (`d3d::ExternalPass::lighting_only`).
 
 ### Shadows from local lights
 
-- **Cone lights cast; sphere lights do not** (**Design**). A cone has one
-  projection, which is what retail's shadow block builds. A sphere needs
-  six maps (2.9 ms for one in the prototype at 4x,
-  [notes/e3-lighting.md](notes/e3-lighting.md)), and nothing in the record
-  describes shadows from a muzzle flash.
-- **The no-shadow flag is ignored for cones** (**Design**). This is the
-  demo's lamps and headlights casting again (target look, items 5 and 6).
-  It is a choice made on the render thread about a scene; no tag or guest
-  memory changes.
-- **At most four shadowed lights in a frame**, by score. The view's own
-  flashlight holds a slot while it is on.
-- **The map** is a tile at `d3d::scaled::shadow_scale` times the guest's
-  level: the render scale, and at least 2. Retail's 512-square level gives
-  1024 at 1x and 2x and 2048 at 4x. The flashlight's tile (L7) is at least
-  2048.
-- **Casters.** The guest's list for a light the guest shadowed. Otherwise
-  the renderer gathers the instances and cluster parts inside the cone.
-  The level casts here; open meshes are no trouble for a map.
-- **Passes.** Retail's: layer 10 into the tile, layer 11 with the sharp
-  edge, then 14, 12 and 13.
+Cone lights cast and sphere lights do not (**Design**); the no-shadow flag is ignored for cones, at most four shadowed lights a frame. Detail and what is built: [e3-lighting-cones.md](e3-lighting-cones.md).
 
-**Built: the guest's shadowed lights** (`d3d::gfx_backend::guest_draw_pass::tiles`).
-A guest shadow map is a `D24S8` depth level not of the frame's size. For
-each shadowed light the guest clears it, draws the casters into it and
-draws receivers that compare against it. In E3 mode the graph replays the
-same commands in the same order. It draws the level and the colour levels
-bound with it at the tile factor, and turns on
-`ShaderProvider::set_sharp_shadows` for each draw that samples a tile.
-Every other draw is the guest's, byte for byte.
-
-- **Where.** On the graph's own attachments, `GuestDrawPass` allocates the
-  level at the tile factor. At render scale, the mixed-size private pass
-  keeps the guest-size level, repeats each of its draws and clears into a
-  copy at the tile factor (`ScaledBackend::scene_tile`), and has receivers
-  sample the copy. The display on the guest device's live attachments
-  (`draw_display_on`, `draw_scaled_display_on`) keeps the guest's maps.
-- **One tile per light.** A tile is counted at the first caster after
-  each whole depth clear of its level, so `lights_shadowed` is the number
-  of the guest's shadowed lights. Each tile is drawn into its level's own
-  image in the guest's order. The sun's tiles have their own atlas
-  ("Sun shadows from objects"); moving these tiles into it, drawn ahead
-  of the light pass, waits for the graph to draw both.
-- **Refused.** A level that a frame copies, uploads, aliases, seeds from
-  earlier contents, reads in a typed stage or through an earlier frame's
-  view, or binds with a frame-sized attachment, cannot be redrawn at
-  another size. It keeps the guest's size and retail's comparison, and
-  `tiles_refused` counts it. So does a tile sample that fell back to the
-  guest-size level (a stale copy at render scale).
-
-**Built: the shadowed cones** (`native_render::cone_shadows`, the
-choice; `cone_shadows_gpu`, the programs). `cone_shadows::choose` takes
-each view's lit lights from `light_choice::choose`:
-
-- **Which.** A light whose effective volume is a frustum (shape code 2)
-  with a finite apex, axis and far extents. A sphere, another projected
-  shape and a host light do not cast. The no-shadow bit (definition bit
-  3) is not read except to count it.
-- **Order.** In a view, the view's own flashlight (definition bit 5)
-  first, then the lights the guest shadowed, then the rest in the lit
-  order, which is score order. `SHADOW_CAP` (4) slots a frame are shared
-  between the views of split screen as the lit lights are (`slot_caps`:
-  three views take 2, 1 and 1). A second record of a view is chosen alike,
-  shares the first's tiles and is counted once.
-- **Whose tile.** A light the guest shadowed keeps its own replayed tile
-  ("Built: the guest's shadowed lights") and keeps its shadow past the
-  cap, since the guest draws it whatever the renderer chooses. Every
-  other light gets a slot of the local lights' atlas: 4096 square, four
-  2048 slots. Its tile is `shadow_scale` times 512, at most 2048; the
-  flashlight's is 2048.
-- **Projection.** The volume's origin is the frustum's apex. The far
-  centre is the light's position plus the axis times the far depth, and
-  the far extents are half the width and height there. The tile's rows
-  are a perspective from the apex along the axis, with the light's up
-  across it (`Cone::rows`).
-- **Casters and receivers.** The view's instances whose bounding sphere
-  meets the frustum (`Cone::meets`), and the structure parts of the view's
-  clusters that do (`WorldReceivers::cone_parts`). The light's owner does
-  not cast into its own tile, nor does an instance whose sphere holds the
-  apex: the flashlight's holder stands there. Both still receive.
-- **Drawing.** `ConeShadows` clears each slot and draws its casters'
-  world-space triangles, depth only, every frame, since cones move with
-  their owners. Each receiver then writes its shadow term into the
-  frame's destination alpha, keeping RGB, as retail's layer 11 writes it
-  for the light's later passes to read. Writing, not multiplying, keeps
-  an earlier shadowed light's term out of the next one's. The term is the sun
-  receiver's: the normal gated towards the apex, and the Sharp edge's
-  taps kept inside the slot. The comparison is in linear depth from the
-  apex, with a bias of one texel at the receiver's depth.
-- **Counters.** Under E3 the frame graph reports the choice as
-  `cones_shadowed` (the renderer's own tiles), `cones_flagged_off`,
-  `flashlight_shadowed`, `shadows_over_cap` and `cones_refused` (a lit
-  frustum that makes no projection).
-- **In a game frame** (`frame_graph::cones`). Retail's unshadowed
-  implementations of layers 12 and 13 do not read the destination alpha
-  (**S**), so a cone's term is drawn only for a light whose passes read
-  it: a chosen light the renderer draws shadowed ("Drawing the lights
-  beyond the guest's"), whose E3 stage names it
-  (`d3d::ExternalPass::cone_shadow`). Under E3, just before each such
-  stage the graph applies a cone stage: the frame's first draws the tiles
-  of every named cone, at the target's `shadow_scale`, and each writes its
-  own receivers' term on the light's attachments, at the guest's
-  W-buffer depth, as the sun's receivers do. A named light whose cone the
-  graph cannot draw (no renderer cone of its handle in the render
-  thread's choice, a depth that is not a 24-bit W-buffer, an empty
-  rectangle, or nothing under the cone to receive) is kept: its stage is
-  not applied, since its passes would read an alpha nobody wrote for
-  them. The caster draws join `e3.tiles`, the receivers `e3.marks`;
-  `cones_drawn` counts the tiles and `cones_kept` the kept lights.
-
-Tests: `a_no_shadow_cone_casts_and_a_sphere_does_not`,
-`four_slots_by_score`, `the_flashlight_holds_a_slot`,
-`the_guests_shadowed_lights_keep_their_tiles`,
-`split_screen_shares_the_slots`, `the_projection_spans_the_cone` and
-`the_owner_does_not_cast_in_its_own_light` (`cone_shadows.rs`);
-`a_cone_gathers_the_structure_under_it` (`sun_casters.rs`);
-`a_views_shadows_from_its_slice_match_the_frames` (`cone_shadows.rs`);
-`a_no_shadow_cone_shadows_the_ground_in_e3_and_not_in_retail`,
-`a_tile_reads_only_its_own_slot` and
-`a_receivers_term_replaces_the_alpha_before_it`
-(`tests/world_layers_gpu/cone_shadows.rs`);
-`a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail`
-(`tests/world_layers_gpu/frame_graph.rs`); `cone_draws_join_the_tile_rows`
-(`frame_graph/lighting.rs`).
+| Rule | Value |
+|---|---|
+| The map | a tile at `d3d::scaled::shadow_scale` times the guest's level (1024 at 1x and 2x, 2048 at 4x); the flashlight's is at least 2048 |
+| Passes | retail's: layer 10 into the tile, layer 11 with the Sharp edge, then 14, 12 and 13 |
+| The guest's shadowed lights | their maps replay as tiles at the tile factor; a level the graph cannot redraw keeps retail's size and comparison (`tiles_refused`) |
+| The renderer's cones | its own slots of a 4096-square atlas, `SHADOW_CAP` (4) |
 
 ### The edge
 
@@ -632,119 +125,25 @@ The shadow comparison in `shaders::psh::shadow` has three forms:
 | Hard | one nearest tap (`PixelOptions::hard_shadow`) | the Lighting setting on the D3D path |
 | Sharp | four bilinear comparison taps over a 3x3 texel tent, then a ramp centred on half coverage and one screen pixel wide (from the term's screen derivative) | E3 lighting on the native frame graph: every receiver of a tile (`ShaderProvider::set_sharp_shadows`) |
 
-A nearest tap is hard but stepped wherever a map texel is larger than a
-pixel, and a lamp's cone at 4x always has such texels. Filtering and then
-steepening gives a crisp, anti-aliased edge at any density and rounds off
-only features under about a texel and a half. The community restoration's
-"stencil-like" shaders make their edge the same way, with a far wider
-filter ([notes/e3-lighting.md](notes/e3-lighting.md), "Sev's shadow-apply
-shaders"). Sun tiles are dense enough that the two forms differ by less
-than a pixel there.
+A nearest tap is hard but stepped wherever a map texel is larger than a pixel, and a lamp's cone at 4x always has such texels. Filtering and then steepening gives a crisp, anti-aliased edge at any density and rounds off only features under about a texel and a half. The community restoration's "stencil-like" shaders make their edge the same way, with a far wider filter ([notes/e3-lighting.md](notes/e3-lighting.md), "Sev's shadow-apply shaders"). Sun tiles are dense enough that the two forms differ by less than a pixel there.
 
 ### The flashlight and the first-person pass
 
-**R**. The Chief's `flashlight` marker carries both `flashlight_1p` and
-`flashlight_3p`. The Warthog attaches `warthog_headlights` at
-`headlights_light` and the Scorpion attaches `scorpion_headlight` at
-`headlight`. All four are frusta with bitmap gels and the no-shadow bit.
-The unsuffixed flashlight definition in two maps has no attachment.
-[Disc counts](notes/e3-lighting.md).
-
-**R**. The view test at `0x00031520` requires the local first-person
-owner for definition bit 5 (the first-person light) and excludes that
-owner for bit 6 (the third-person light). `0x0003e9c0` tests camera type
-and the root biped's player against the view user. **Design**. Reserve
-one lit and shadowed slot for the view's active flashlight (built in the
-choices: `light_choice` lights it first and `cone_shadows` shadows it
-first, at 2048). Drawing
-the lit set over first-person parts follows retail's recorded-light pass.
-The first-person model stays outside the shadow maps.
-
-Retail's first-person pass (`0x000404b0`) replays the recorded
-lights' slots over the first-person view's parts. The scene holds that
-view as its own `ViewKind::FirstPerson` view, with its layer items, and
-a recorded light's layers 12 and 13 as groups of `GroupSite::FirstPerson`.
-A chosen light the guest did not record has no slot and no groups.
-
-**Built: the chosen first-person lights**
-(`render_bridge::native_lights::chosen::first_person`). When retail's
-pass begins (its entry hook, before any slot), the frame step reads the
-slots' datums (`light_gather::first_person::recorded`) and chooses the
-game view of the guest's view as `chosen_lights` does, with the same
-share of the cap. Of the view's first-person set
-(`ViewChoice::first_person`), a light is drawn when it has no slot, is
-not a host light, has constants, and its sphere comes within its radius
-and `REACH` (0.5 world units) of the first-person camera. It draws from
-its unshadowed constants with the flags retail's pass sets: bit 0 as
-the light's own pass found it, bit 1 for a colour B component above
-zero, the shadow bits clear. Its parts are the first-person view's
-object items, each once in the order its layers first list it, with
-its node rows (`first_person::parts`). An item drawn as subparts or
-with auxiliary depth, or without rows, is left out. The glue
-(`native_lights_glue::host::first_person`) makes each part a gathered
-object entry of the map's model parts (its section's one vertex
-classification, its held part's range) and resolves its layer 12 and
-13 passes as a group's object entry resolves
-(`LightsWorld::resolve_model`), the implementation the engine's for the
-light's flags and the material's integer input 4. Each light is one
-scene stage of E3 alone over the whole view. A section whose buffers
-differ in classification, or a material with no pass in the layer,
-draws nothing for that part. The counters are
-`scene_e3_first_person_lights_drawn`, `_kept`, `_unread`, `_far`,
-`scene_e3_first_person_parts` and `scene_e3_first_person_parts_left`.
-
-- **Weight.** The constants are the candidate's, at its weight; retail's
-  pass sets weight one.
-- **Order.** The stages queue before the recorded slots' passes. Both
-  add to the target, so the order does not change the colour.
-
-Tests: `the_first_person_set_the_guest_did_not_record_is_drawn_over_the_eye`,
-`retails_first_person_flags_keep_the_sphere_and_take_colour_b_above_zero`,
-`a_light_reaches_the_eye_within_its_radius_and_the_reach` and
-`the_first_person_parts_are_its_object_parts_once_with_their_rows`
-(`render-bridge/src/native_lights/chosen/first_person.rs`),
-`a_first_person_light_draws_layer_12_over_its_parts_then_13`,
-`a_sections_classification_is_the_one_its_buffers_share` and
-`a_first_person_entry_finds_its_held_part`
-(`native_lights_glue/host/first_person.rs`), and
-`the_recorded_lights_are_the_tables_slots_up_to_its_count`
-(`engine/src/render/light_gather/first_person.rs`).
-
-### Weapon fire, plasma and explosions
-
-These are effect-part lights (timed spheres) and lights attached to
-projectiles. They are unshadowed and take their place by score, so a
-firefight lights the street and the firer (target look, item 7). The
-fade of a timed light is in its record's intensity.
+The view's active flashlight holds one lit and one shadowed slot (**Design**), and the chosen first-person lights retail's pass did not record draw over the first-person parts. The first-person model stays outside the shadow maps. Disc facts on flashlights and headlights, the definition bits the view test reads, and the first-person pass: [e3-lighting-lights.md](e3-lighting-lights.md).
 
 ### Blended frames
 
-At 60 and 120 fps the renderer draws between two scenes
-([framescene.md](framescene.md), section 7). Lights are matched by datum
-and blended; a light with no match is drawn as the newer scene has it, so
-a flash appears on its tick. A tile is drawn again only when its caster's
-blended rows or its direction changed, so still casters cost nothing after
-their first frame. Each view's lit set is chosen from the newer scene.
+At 60 and 120 fps the renderer draws between two scenes ([framescene.md](framescene.md), section 7). Lights are matched by datum and blended; a light with no match is drawn as the newer scene has it, so a flash appears on its tick. A tile is drawn again only when its caster's blended rows or its direction changed, so still casters cost nothing after their first frame. Each view's lit set is chosen from the newer scene.
 
 ### The lightmap problem
 
-Retail lightmaps hold the sun, its shadows and the bounce together. The
-mode leaves them alone: the level's own shadows stay baked and soft, and a
-dynamic sun is not added over them. What that costs is target item 9, and
-a visible difference between a hard object shadow and the soft building
-shadow beside it.
+Retail lightmaps hold the sun, its shadows and the bounce together. The mode leaves them alone: the level's own shadows stay baked and soft, and a dynamic sun is not added over them. What that costs is target item 9, and a visible difference between a hard object shadow and the soft building shadow beside it.
 
-An object shadow can fall where the bake is already dark. **R**.
-The ordinary shadow's strength depends on the caster's lighting scalar
-and two fades. The sample producer can use a function of the caster's
-weighted colour or set the scalar to one (`0x000d3e92`, `0x000d4682`).
-The computation at `0x00032426` has no receiver-lightmap input. **Design**. Apply this strength to the tile shadow. A bright
-caster can still darken a receiver already in baked shade.
+An object shadow can fall where the bake is already dark. **R**. The ordinary shadow's strength depends on the caster's lighting scalar and two fades. The sample producer can use a function of the caster's weighted colour or set the scalar to one (`0x000d3e92`, `0x000d4682`).
 
-Sharpening the baked shadows is research and not scheduled. The two
-routes are a static depth map of the level along the sun, used to steepen
-the lightmap's penumbra where the two agree, and a re-bake on the host,
-which is a lightmapper.
+The computation at `0x00032426` has no receiver-lightmap input. **Design**. The tile shadow takes the same strength, so a bright caster can still darken a receiver already in baked shade.
+
+Sharpening the baked shadows is research and not scheduled. The two routes are a static depth map of the level along the sun, used to steepen the lightmap's penumbra where the two agree, and a re-bake on the host, which is a lightmapper.
 
 ## Interfaces
 
@@ -811,18 +210,10 @@ The display worker samples the Lighting row at the frame boundary.
 serve with a settings store. A capture with an explicit mode leaves the
 row untouched.
 
+
 ## Budget
 
-At render scale 4 (2560x1920), one view, per display frame, on the M3 lab
-laptop. All **Estimate**: scaled from the prototype's M1 Max timings
-([notes/e3-lighting.md](notes/e3-lighting.md), "Budget arithmetic"), and
-replaced by slice L4's first measurement.
-
-Slice L4 builds the local-light tiles and the marks. Their two rows wait
-for its first lab A/B ("Measurements"). The stages have no timestamp
-queries, so the first numbers are the difference in render-thread and
-frame time between the retail and E3 runs, at 1x and 4x. The other rows
-wait for their slices.
+At render scale 4 (2560x1920), one view, per display frame, on the M3 lab laptop. All **Estimate**: scaled from the prototype's M1 Max timings ([notes/e3-lighting.md](notes/e3-lighting.md), "Budget arithmetic"), to be replaced by the first lab A/B ("Measurements"). The stages have no timestamp queries, so the first numbers are the difference in render-thread and frame time between the retail and E3 runs, at 1x and 4x.
 
 | Part | GPU ms |
 |---|---:|
@@ -834,67 +225,45 @@ wait for their slices.
 | Margin | 0.2 |
 | **Total** | **3.0** |
 
-That is 18% of a 60 fps frame. The render thread's own time is under 0.5
-ms (gather, pack, encode) and the sim thread's under 0.1 ms (the candidate
-lights and their constants, paid in both modes).
+That is 18% of a 60 fps frame. The render thread's own time is under 0.5 ms (gather, pack, encode) and the sim thread's under 0.1 ms (the candidate lights and their constants, paid in both modes).
 
-The caps are constants, not a governor: a picture must not depend on how
-fast the last frame was. If a measurement is over, they give way in this
-order: shadowed lights four to two, lit lights 16 to 8, the largest tile
-2048 to 1024. At 120 fps the mode is offered only if the measured p99
-fits, the rule FrameScene slice 8 uses for the rate itself.
-
-Memory: the atlas is 64 MB as 32-bit depth.
+The caps are constants, not a governor: a picture must not depend on how fast the last frame was. If a measurement is over, they give way in this order: shadowed lights four to two, lit lights 16 to 8, the largest tile 2048 to 1024. At 120 fps the mode is offered only if the measured p99 fits, the rule FrameScene slice 8 uses for the rate itself. The sun atlas is 64 MB as 32-bit depth.
 
 ## Opt-in, and the simulation untouched
 
-- **Off by default**, and retail mode draws what the guest drew.
-- **The mode is read on the render thread only.** No guest memory, tag,
-  scene list, guest entry or tick-visible write depends on it. The scene's
-  summary hash is the same with it on and off.
-- **Nothing returns.** The mode adds nothing to the render thread's
-  feedback channel.
-- **Films, snapshots and co-op** do not record the mode. Peers may differ.
-- **A failure is local.** A light or tile the mode cannot draw is drawn as
-  retail would, and counted.
-- **No game data in the repo.** Passes are tested on invented scenes.
+| Rule | Meaning |
+|---|---|
+| Off by default | retail mode draws what the guest drew |
+| Render thread only | no guest memory, tag, scene list, guest entry or tick-visible write depends on the mode; the scene's summary hash is the same with it on and off |
+| Nothing returns | the mode adds nothing to the render thread's feedback channel |
+| Not recorded | films, snapshots and co-op do not record the mode; peers may differ |
+| A failure is local | a light or tile the mode cannot draw is drawn as retail would, and counted |
+| No game data in the repo | passes are tested on invented scenes |
 
-The checks: `sim.hashes` identical between two launches with `H2_LIGHTING`
-`retail` and `e3`; `render.scene`'s hash identical at every compared tick;
-a test in `scene-extract` that its inputs do not include the setting.
+The checks: `sim.hashes` identical between two launches with `H2_LIGHTING` `retail` and `e3`; `render.scene`'s hash identical at every compared tick; a test in `scene-extract` that its inputs do not include the setting.
 
 ## Slices
 
-One lane each, in this order. L0 and L1 depend on nothing and can start
-at once. L2 starts after FrameScene slice 3, and L3 onward after FrameScene
-slice 6, when the renderer owns the frame. Nothing is built on the tenant
-path or on `d3d::scaled`. Every picture check is a `render.capture` pair
-through `render.compare`; lanes write code and tests and the coordinator
-runs the game.
+One lane each. L0 and L1 depend on nothing. L2 starts after FrameScene slice 3, and L3 onward after FrameScene slice 6, when the renderer owns the frame.
 
-| Slice | Work | Testable result | Measure |
-|---|---|---|---|
-| L0 | Static research (`h2 disasm`, `h2 shader`, `h2 lights`): the object-shadow chain's direction, strength and caster tests (`0x000335e0`, `0x00032350`, `0x00033400`); how many templates have a depth-map receiver on layer 11 and a depth pass on layer 10; the receiver programs' vertex gate; the context `0x000c17f0` returns; the candidate list and its trim; which attachment lights are flashlights and headlights | Each **S** in "How it works" becomes **R** or the design changes. Readers of any new record, tested on invented bytes | Counts per map, in the notes |
-| L1 | `shaders::psh::shadow` provides Sharp beside Retail and Hard. `PixelOptions::sharp_shadow` selects it per stage | Golden WGSL for the three forms; a GPU test with a slanted caster at map-to-screen ratios 1:1, 1:2 and 1:4: the lit-to-dark ramp is at most 1.5 pixels wide and its centre within a texel of the caster's outline; retail's golden file unchanged | none |
-| L2 | `frame_scene::Light` holds each candidate and both constant sets. `scene_extract::lights` reads the view's visibility gather, and `render.scene` reports the counts | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
-| L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
-| L4 | Built. Local-light shadows: the guest's shadow maps drawn as tiles at `shadow_scale`, the Sharp edge on layer 11 ("Shadows from local lights") | Synthetic: `render_scale::e3_tiles_give_a_replayed_shadow_the_sharp_edge`, a replayed tile's shadow with the L1 edge at 1x and 2x and retail's map in retail mode; the plan's tests in `tiles.rs`. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, `e3.tiles` and `e3.marks` have draws, `lights_shadowed` is one per shadowed light and `tiles_refused` is 0 | Frame and render-thread time of E3 against retail at 1x and 4x; the first numbers for the budget |
-| L5 | Built on invented scenes: the tile plan, the cache, the atlas, the caster and receiver draws, the casters and receivers gathered from the scene's object shadows (objects, structure clusters and placements), the replay's marks, the models and the world receivers on the render thread, and the frame graph's stage that skips an admitted shadow's mask. The materials' layer-10 and layer-11 programs are not used yet | Synthetic, built (`tests/world_layers_gpu/sun_tiles.rs`): `a_box_on_a_plane_casts_a_hard_shadow`, `a_box_shadows_the_structure_it_stands_on`, `an_l_shaped_caster_shadows_itself`, `nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate`, `a_still_casters_tile_is_not_redrawn_and_a_moved_one_is`; the plan's tests in `sun_tiles.rs`; the frame graph's in `tests/world_layers_gpu/frame_graph.rs`. Game, pending: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
-| L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass. Partly built: the choice, its first-person set and its counters ("Built: the choice"), and the chosen lights beyond the guest's drawn over the structure as E3-only stages, shadowed where L7 shadows them, and the first-person lights retail did not record drawn over the first-person parts ("The flashlight and the first-person pass"); those lights on third-person objects are not | Synthetic, built: `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run` (`light_choice.rs`), 20 candidates give the 16 highest in score order, the same every run; `the_lit_lights_the_guest_did_not_draw_are_drawn_unshadowed` and `the_cone_the_renderer_shadows_is_drawn_shadowed` (`native_lights/chosen.rs`), `the_first_person_set_the_guest_did_not_record_is_drawn_over_the_eye` (`native_lights/chosen/first_person.rs`). Game, pending: `scene_e3_lights_drawn` above zero, `e3.lights` draws in the E3 capture and none in retail. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
-| L7 | Shadows from cones the content flagged off, with the renderer's caster gather; four slots; the flashlight. Built: the choice, the projection, the gather, the atlas and its programs, the counters, and the tiles drawn in a game frame for the chosen lights the renderer draws shadowed ("Built: the shadowed cones"). A cone the guest draws unshadowed keeps retail's passes | Synthetic, built: `a_no_shadow_cone_casts_and_a_sphere_does_not` (`cone_shadows.rs`), `a_no_shadow_cone_shadows_the_ground_in_e3_and_not_in_retail` (`tests/world_layers_gpu/cone_shadows.rs`), `a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail` (`tests/world_layers_gpu/frame_graph.rs`). Game, pending: a lamp placement and the flashlight cast in the E3 capture; `cones_shadowed`, `cones_drawn` and `scene_e3_lights_shadowed` above zero, `cones_kept` zero | The flashlight frame: all of the mode's passes at 4x. This is the worst case the budget must hold |
-| L8 | Implemented: extract nearby offscreen casters and shadow visible ground | Seeded pool and lifted lighting-sample differentials, GPU pixel test `a_caster_behind_the_camera_shadows_the_ground_in_view`. Live check pending: on one outdoor tick with the caster behind the camera, compare 1x retail and E3 captures. Check `render.stats` → `private_frame.e3.sun_tiles_offscreen > 0` and `e3.sun` draws | Lab sim-thread frame-step increase under 0.1 ms, pending |
-| L9 | Tuning against "Target look" on captures at pstencil-history.md's footage times; then the D3D-path row's code goes with `scaled.rs` (FrameScene slice 10) | A table in the notes: each target item, met or not, with the capture's tick | The laptop A/B below, three pairs |
+Nothing is built on the tenant path or on `d3d::scaled`. Every picture check is a `render.capture` pair through `render.compare`; lanes write code and tests and the coordinator runs the game.
 
-E3 L8 extends the set of caster instances. The light-gather sequence uses
-L8 for submitting typed passes for lights the guest has already gathered
-([native-light-gather.md](native-light-gather.md#l8-the-passes-typed-l)).
+| Slice | Work | State | Testable result | Measure |
+|---|---|---|---|---|
+| L0 | Static research (`h2 disasm`, `h2 shader`, `h2 lights`): the object-shadow chain, template coverage on layers 10 and 11, the receiver programs' vertex gate, `0x000c17f0`'s context, the candidate list and its trim, which attachment lights are flashlights and headlights | Built | each **S** becomes **R** or the design changes; readers of any new record tested on invented bytes | counts per map, in the notes |
+| L1 | `shaders::psh::shadow` provides Sharp beside Retail and Hard; `PixelOptions::sharp_shadow` selects it per stage | Built | golden WGSL for the three forms; a GPU test with a slanted caster at map-to-screen ratios 1:1, 1:2 and 1:4: the lit-to-dark ramp is at most 1.5 pixels wide and its centre within a texel of the caster's outline; retail's golden file unchanged | none |
+| L2 | `frame_scene::Light` holds each candidate and both constant sets; `scene_extract::lights` reads the view's visibility gather; `render.scene` reports the counts | Built | a synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
+| L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | Built | with no E3 pass, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
+| L4 | Local-light shadows: the guest's shadow maps as tiles at `shadow_scale`, the Sharp edge on layer 11 ([e3-lighting-cones.md](e3-lighting-cones.md)) | Built | `render_scale::e3_tiles_give_a_replayed_shadow_the_sharp_edge`; the plan's tests in `tiles.rs`. Game: the E3 capture differs from retail's only within eight pixels of retail's shadow edges, `e3.tiles` and `e3.marks` have draws, `lights_shadowed` is one per shadowed light, `tiles_refused` is 0 | frame and render-thread time of E3 against retail at 1x and 4x; the first numbers for the budget |
+| L5 | Sun tiles: plan, cache, atlas, caster and receiver draws, the scene's marks, the models and world receivers, the frame graph's stage ([e3-lighting-sun.md](e3-lighting-sun.md)). The materials' layer-10 and layer-11 programs are not used yet | Built on invented scenes | `a_box_on_a_plane_casts_a_hard_shadow`, `a_box_shadows_the_structure_it_stands_on`, `an_l_shaped_caster_shadows_itself`, `nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate`, `a_still_casters_tile_is_not_redrawn_and_a_moved_one_is` (`tests/world_layers_gpu/sun_tiles.rs`). Game, pending: an outdoor tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
+| L6 | The renderer's light choice and the first-person pass ([e3-lighting-lights.md](e3-lighting-lights.md)). Lights on third-person objects are not drawn | Partly built | `twenty_candidates_draw_the_sixteen_highest_in_score_order_every_run`, `the_lit_lights_the_guest_did_not_draw_are_drawn_unshadowed`, `the_cone_the_renderer_shadows_is_drawn_shadowed`, `the_first_person_set_the_guest_did_not_record_is_drawn_over_the_eye`. Game, pending: `scene_e3_lights_drawn` above zero, `e3.lights` draws in the E3 capture and none in retail; firing in a dark street (`input.pad`) lights the firer and the ground | GPU ms of `e3.lights` against `lights_lit` |
+| L7 | Shadows from cones the content flagged off: choice, projection, gather, atlas and programs, counters, tiles in a game frame for the chosen lights drawn shadowed; four slots; the flashlight. A cone the guest draws unshadowed keeps retail's passes | Built | `a_no_shadow_cone_casts_and_a_sphere_does_not`, `a_no_shadow_cone_shadows_the_ground_in_e3_and_not_in_retail`, `a_shadowed_chosen_light_reads_its_cone_in_e3_and_not_in_retail`. Game, pending: a lamp placement and the flashlight cast in the E3 capture; `cones_shadowed`, `cones_drawn` and `scene_e3_lights_shadowed` above zero, `cones_kept` zero | the flashlight frame: all of the mode's passes at 4x, the worst case the budget must hold |
+| L8 | Extract nearby offscreen casters and shadow visible ground | Built; live check pending | seeded pool and lifted lighting-sample differentials; GPU test `a_caster_behind_the_camera_shadows_the_ground_in_view`. Live: `render.stats` `private_frame.e3.sun_tiles_offscreen > 0` and `e3.sun` draws on an outdoor tick with the caster behind the camera | lab sim-thread frame-step increase under 0.1 ms |
+| L9 | Tuning against the target look on captures at pstencil-history.md's footage times; then the D3D-path row's code goes with `scaled.rs` (FrameScene slice 10) | Design | a table in the notes: each target item, met or not, with the capture's tick | the laptop A/B below, three pairs |
 
-Split screen and 120 fps are checked in L6 and L7 with the caps shared.
+L8 extends the set of caster instances. The light-gather sequence uses its own L8 for submitting typed passes for lights the guest has already gathered ([native-light-gather.md](native-light-gather.md#l8-the-passes-typed-l)). Split screen and 120 fps are checked in L6 and L7 with the caps shared.
 
-**Measurements.** Numbers come from the lab laptop
-([lab.md](../runtime/lab.md)). Both arms use the native game-frame
-owner. Its completed game-view counters in `render.scene` identify the
-frames the native graph presented. Local runs supply the pictures.
+**Measurements.** Numbers come from the lab laptop ([lab.md](../runtime/lab.md)). Both arms use the native game-frame owner; its completed game-view counters in `render.scene` identify the frames the native graph presented. Local runs supply the pictures.
 
 ```sh
 for mode in retail e3; do
@@ -905,9 +274,7 @@ for mode in retail e3; do
 done
 ```
 
-Read fps, p50 and p99 frame time and the render thread's time per display
-frame; repeat at `H2_RENDER_SCALE=1` and with `--env H2_FPS=60`. For one
-frame, on a serve:
+Read fps, p50 and p99 frame time and the render thread's time per display frame; repeat at `H2_RENDER_SCALE=1` and with `--env H2_FPS=60`. For one frame, on a serve:
 
 ```sh
 retail=$(h2 agent render.capture '{"lighting":"retail"}')
@@ -921,25 +288,17 @@ h2 agent render.frame '{"source":"private"}'   # frame.private_frame.e3.passes
 h2 agent render.stats                        # private_frame.e3
 ```
 
-Each slice adds a dated entry to [notes/e3-lighting.md](notes/e3-lighting.md)
-with its commit and these numbers.
+Each slice adds a dated entry to [notes/e3-lighting.md](notes/e3-lighting.md) with its commit and these numbers.
 
 ## The Lighting setting
 
-The row also selects the shadow treatment on the [D3D path](e3-lighting-setting.md). With E3 chosen, the scaled backend keeps a copy of each of the guest's shadow maps at the
-nearest integral vertical render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
-translator compares it with one nearest tap
-(`shaders::psh::PixelOptions::hard_shadow`). The guest sees retail. It
-changes the edge of retail's own dynamic-light shadows and nothing else,
-and it is the Hard form of "The edge".
+| Where the row is read | Effect |
+|---|---|
+| D3D path ([e3-lighting-setting.md](e3-lighting-setting.md)) | the scaled backend keeps a copy of each guest shadow map at the nearest integral vertical render scale (at least 2x, `d3d::scaled::shadow_scale`) and compares it with one nearest tap (`PixelOptions::hard_shadow`): the Hard form of "The edge". The guest sees retail; only the edge of retail's own dynamic-light shadows changes |
+| Native frame graph, at the display frame | the row supplies the mode; a scaled display hands the frame to the graph only at a uniform integer render scale (`RenderScale::uniform_integer`), otherwise the D3D path draws it |
+| An explicit private capture | supplies its own mode |
 
-Where the native frame graph owns the game view, the row supplies its
-mode at the display frame. A scaled display hands the frame to the graph
-only at a uniform integer render scale (`RenderScale::uniform_integer`);
-at any other resolution the D3D path draws it. An explicit private
-capture supplies its own mode. In E3 mode the graph's draws on fresh
-attachments draw the guest's shadow maps as tiles with the Sharp edge
-("Shadows from local lights").
+In E3 mode the graph's draws on fresh attachments draw the guest's shadow maps as tiles with the Sharp edge ([e3-lighting-cones.md](e3-lighting-cones.md)).
 
 ## Phase 0 findings
 
@@ -1116,22 +475,14 @@ sky, transparents, fog and the rest. The view can tag every draw with
   scissor) and the engine vector inputs ([shader-instances.md](../formats/shader-instances.md)).
 - Engine-driven render states (`0x00467020`).
 
+
 ## Not verified
 
-- Every number under "Budget". Only a frame on the lab laptop can give
-  them.
-- That retail's layer-11 receiver pass gives an acceptable terminator when
-  a caster receives its own tile. Slice L5's captures show it; the
-  fallback is the receiver program of ours (`sun_tiles_gpu`), whose
-  terminator the L-shaped test checks on an invented caster only.
-- That 16 lit lights are enough for a firefight to read as the footage
-  does, and that four shadowed ones are.
-- That a game frame's shadow maps reach the replay in a form the tile plan
-  admits. A refused level stays retail; `tiles_refused` on a capture says
-  whether any is.
-- The Lighting setting's pictures in a level: the runs so far caught no
-  frame where the two modes differ on screen
-  ([notes/e3-lighting.md](notes/e3-lighting.md)).
+- Every number under "Budget". Only a frame on the lab laptop can give them.
+- That retail's layer-11 receiver pass gives an acceptable terminator when a caster receives its own tile ([e3-lighting-sun.md](e3-lighting-sun.md)).
+- That 16 lit lights are enough for a firefight to read as the footage does, and that four shadowed ones are.
+- That a game frame's shadow maps reach the replay in a form the tile plan admits. A refused level stays retail; `tiles_refused` on a capture says whether any is.
+- The Lighting setting's pictures in a level: the runs so far caught no frame where the two modes differ on screen ([notes/e3-lighting.md](notes/e3-lighting.md)).
 
 ## Related
 
@@ -1140,6 +491,8 @@ sky, transparents, fog and the rest. The view can tag every draw with
 [native-gels.md](native-gels.md), [high-resolution.md](high-resolution.md),
 [shaders.md](shaders.md), [effects.md](../formats/effects.md),
 [pstencil.md](pstencil.md), [pstencil-history.md](pstencil-history.md),
+[e3-lighting-target.md](e3-lighting-target.md), [e3-lighting-sun.md](e3-lighting-sun.md),
+[e3-lighting-lights.md](e3-lighting-lights.md), [e3-lighting-cones.md](e3-lighting-cones.md),
 [notes/e3-lighting.md](notes/e3-lighting.md),
 [notes/not-adopted.md](notes/not-adopted.md),
 [the review](../reviews/2026-11-20-e3-lighting.md).
