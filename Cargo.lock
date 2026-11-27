@@ -6718,6 +6718,7 @@ dependencies = [
  "sim-effects",
  "sim-ext",
  "sim-sound",
+ "x87",
 ]
 
 [[package]]

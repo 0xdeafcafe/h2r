@@ -7,7 +7,7 @@
 //! `EFFECT_PART_CREATE` (`0x17a8a0`) that decodes each part and hands it to
 //! [`sim_effects::dispatch::Parts`]:
 //!
-//! - `jpt!`, `obje` and `snd!` parts each have an arm. Until an arm is
+//! - every class the switch handles has an arm. Until an arm is
 //!   proven the guest's arm runs and observers at its leaves compare what
 //!   the guest passes with Rust's prediction. Once proven Rust makes the
 //!   leaf calls itself, and one part in 64 is still the guest's and
@@ -19,23 +19,33 @@
 //!     `0x17ac3a`). Rust's answer calls all seven leaves in retail's order.
 //!   - sound: `SOUND_START_ON_OBJECT` (`0x189060`, from `0x17ad24`) or
 //!     `SOUND_START_AT_POINT` (`0x1895f0`, from `0x17ad9a`).
+//!   - character: `EFFECT_PART_CHARACTER` (`0x1ca290`, from `0x17a93d`),
+//!     an early return at the switch's return.
+//!   - `coln`: the switch's return (the stream, `EAX`, the x87 state).
+//!   - decal: `EFFECT_PART_PLACE` from `0x17aad4` at entry and return,
+//!     `DECAL_CREATE` (`0x17e670`, from `0x17ab0b`), a gated-out part at
+//!     the switch's return.
+//!   - light: `LIGHT_CREATE` (`0xc0350`, from `0x17acab` and `0x17acdd`).
 //! - `lens`, `MGS2` and `tdtl` return from Rust: retail's arm is the epilogue.
-//! - decal, light and lens flare parts become scene events
+//! - decal, light and lens flare parts also become scene events
 //!   ([`sim_effects::scene`]) the frame step puts in the renderer's scene.
-//! - every other part runs the guest's arm, counted by its class.
+//! - any other group runs the guest's arm, a named refusal.
 //!
-//! No RNG draw moves: the damage and sound arms draw nothing, the object
-//! arm's two draws are inside `0x177d10` and `0x177f60`, which Rust calls
-//! in retail's order with retail's arguments, and every other arm that
-//! draws (decal, coln) is still the guest's.
+//! No RNG draw moves: the damage, sound, light and character arms draw
+//! nothing in the switch; the object arm's draws are inside `0x177d10` and
+//! `0x177f60`, which Rust calls in retail's order; the `coln` and decal
+//! draws are Rust's ([`sim_effects::random`]), made where retail makes
+//! them.
 //!
 //! Hooks this adds, and their order: the implementation of
 //! `EFFECT_PART_CREATE` (the only one there; `host_audit`'s observers stay
-//! outside it); an `observe_before` on `DAMAGE_AREA_APPLY`,
-//! `EFFECT_PART_VELOCITY`, `SOUND_START_ON_OBJECT` and
-//! `SOUND_START_AT_POINT`, and an `observe_before` and an `observe_after`
-//! on `EFFECT_PART_PLACE` (each point's only hooks); and an
-//! `observe_before` on `CACHE_TAGS_LOAD` beside the other arms' resets.
+//! outside it) and an `observe_after` there, which runs after it through
+//! the chain's shadow; an `observe_before` on `DAMAGE_AREA_APPLY`,
+//! `EFFECT_PART_VELOCITY`, `SOUND_START_ON_OBJECT`, `SOUND_START_AT_POINT`,
+//! `EFFECT_PART_CHARACTER`, `DECAL_CREATE` and `LIGHT_CREATE`, and an
+//! `observe_before` and an `observe_after` on `EFFECT_PART_PLACE` (each
+//! point's only hooks); and an `observe_before` on `CACHE_TAGS_LOAD`
+//! beside the other arms' resets.
 //! Observers need no order: each filters on its caller's return address.
 
 use std::sync::{Mutex, MutexGuard};
@@ -47,7 +57,7 @@ use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use sim_effects::damage::{self, Record};
 use sim_effects::dispatch::{Action, Arms, Inputs, Parts, Stats};
-use sim_effects::{object, sound, Part, PartClass};
+use sim_effects::{character, coln, decal, light, object, random, sound, Part, PartClass};
 
 /// The switch, without its `impl.` prefix. On by default; off, the guest
 /// runs the effects phase and every part.
@@ -79,6 +89,26 @@ fn parts() -> MutexGuard<'static, Parts> {
 pub fn status() -> (Stats, Arms) {
     let p = parts();
     (p.stats(), p.arms())
+}
+
+fn to_x87(r: &runtime::cpu::X87Abi) -> x87::abi::X87Abi {
+    x87::abi::X87Abi {
+        st: r.st,
+        control: r.control,
+        status: r.status,
+        tag: r.tag,
+        opcode: r.opcode,
+        instruction_pointer: r.instruction_pointer,
+        data_pointer: r.data_pointer,
+        instruction_selector: r.instruction_selector,
+        data_selector: r.data_selector,
+    }
+}
+
+/// The registers, tag, status and control of `x` over `cpu`'s
+/// last-instruction pointers, which the helpers leave to generated code.
+fn set_x87(cpu: &mut CpuAbi, x: &x87::abi::X87Abi) {
+    (cpu.x87.st, cpu.x87.control, cpu.x87.status, cpu.x87.tag) = (x.st, x.control, x.status, x.tag);
 }
 
 fn vec3(g: &Guest, at: u32) -> Result<[u32; 3], GuestFault> {
@@ -172,6 +202,83 @@ fn decode(g: &Guest, cpu: &CpuAbi) -> Result<(Part, Option<Inputs>), GuestFault>
                 };
             }
             Inputs::Sound(i)
+        }
+        PartClass::Character => {
+            let mut i = character::Inputs {
+                entry: esp,
+                effect,
+                group,
+                tag,
+                object: g.u32(effect.wrapping_add(0x48))?,
+                seconds: g.u32(effect.wrapping_add(0x64))?,
+                location: cpu.ecx,
+                a: g.u32(record.wrapping_add(0x14))?,
+                b: g.u32(record.wrapping_add(0x18))?,
+                source: cpu.eax,
+                ..character::Inputs::default()
+            };
+            if tag != u32::MAX {
+                i.node = g.u16(cpu.ecx.wrapping_add(2))?;
+            }
+            Inputs::Character(i)
+        }
+        PartClass::Coln => {
+            let seed_at = g.u32(random::STREAM)?.wrapping_add(4);
+            Inputs::Coln(coln::Inputs {
+                entry: esp,
+                seed_at,
+                seed: g.u32(seed_at)?,
+                lo: g.u32(record.wrapping_add(0x28))?,
+                hi: g.u32(record.wrapping_add(0x2c))?,
+                scale: g.u32(random::SCALE)?,
+                fpu: to_x87(&cpu.x87),
+            })
+        }
+        PartClass::Decal => {
+            let rng = g.u32(random::STREAM)?;
+            let mut part = [0; 7];
+            for (w, &o) in part.iter_mut().zip(&decal::PART_WORDS) {
+                *w = g.u32(record.wrapping_add(o))?;
+            }
+            Inputs::Decal(decal::Inputs {
+                entry: esp,
+                effect,
+                tag,
+                flags: g.u8(record.wrapping_add(6))?,
+                rng,
+                seed: g.u32(rng.wrapping_add(4))?,
+                position_ptr: arg(2)?,
+                direction_ptr,
+                source: cpu.eax,
+                ecx: cpu.ecx,
+                edx: cpu.edx,
+                part,
+                scale: g.u32(random::SCALE)?,
+                limit: g.u32(decal::LIMIT)?,
+                radius: g.u32(decal::RADIUS)?,
+                fpu: to_x87(&cpu.x87),
+            })
+        }
+        PartClass::Light => {
+            let object = g.u32(effect.wrapping_add(0x48))?;
+            let dl = cpu.edx as u8;
+            let mut i = light::Inputs {
+                group,
+                tag,
+                object,
+                dl,
+                location: cpu.ecx,
+                edx: cpu.edx,
+                source: cpu.eax,
+                position_ptr: arg(2)?,
+                direction_ptr,
+                scale,
+                ..light::Inputs::default()
+            };
+            if object != u32::MAX && dl == 0 {
+                i.node = g.u16(cpu.ecx.wrapping_add(2))?;
+            }
+            Inputs::Light(i)
         }
         _ => return Ok((part, None)),
     };
@@ -323,6 +430,87 @@ async fn answer_sound(cx: Cx, call: sound::Call, i: sound::Inputs) -> EntryResul
     Ok(Ret::new(r.eax, POP as u16))
 }
 
+/// A `char` part that makes its calls: `0x1469f0(seconds)` with the other
+/// five arguments already pushed under it, as retail's arm pushes them,
+/// then `0x1ca290(ticks, ...)` with `ESI` = the tag.
+async fn answer_character(cx: Cx, i: character::Inputs, node: u32) -> EntryResult {
+    let e = cx.entry();
+    save_regs(&cx)?;
+    let rest = i.start_args(node);
+    let below = e.esp.wrapping_sub(FRAME + 4 * rest.len() as u32);
+    cx.write(|m: &mut dyn GuestMemory| put_words(m, below, &rest))?;
+    let [eax, ecx, edx] = i.ticks_regs();
+    let r = cx
+        .call(
+            GuestCall::new(character::TICKS)
+                .args([i.seconds])
+                .reserve(FRAME + 4 * rest.len() as u32)
+                .eax(eax)
+                .ecx(ecx)
+                .edx(edx)
+                .ebx(i.effect)
+                .edi(i.source),
+        )
+        .await?;
+    let ticks = r.eax;
+    let start = std::iter::once(ticks).chain(rest);
+    let r = cx
+        .call(GuestCall::new(points::EFFECT_PART_CHARACTER.base).args(start).reserve(FRAME).eax(ticks).ebx(i.effect).esi(i.tag).edi(i.source))
+        .await?;
+    Ok(Ret::new(r.eax, POP as u16))
+}
+
+/// The answer's x87 work cannot refuse: the dispatch takes a decal part
+/// only when no exception is pending and all are masked.
+fn quiet<T>(r: Result<T, random::Refused>) -> Result<T, EntryError> {
+    r.map_err(|_| EntryError::IsolatedCall("effect decal arm: an x87 step refused under a quiet x87 state".into()))
+}
+
+fn read_u32(cx: &Cx, at: u32) -> Result<u32, MemFault> {
+    cx.read(|m: &dyn GuestMemory| m.u32(at))
+}
+
+/// A decal part: retail's leaves in order, the draws between them in Rust
+/// on a copy of the entry's x87 state (docs/engine/effects-parts.md "How it
+/// works", step 9). The stream's seed is read where retail's draws read it.
+async fn answer_decal(cx: Cx, i: decal::Inputs) -> EntryResult {
+    save_regs(&cx)?;
+    let mut fpu = i.fpu;
+    if i.gated() {
+        let r = cx.call(leaf(decal::NEAR, &[], i.near_regs()).xmm0(u128::from(i.radius))).await?;
+        if r.eax & 0xff == 0 {
+            let (seed, on) = quiet(i.gate(&mut fpu, read_u32(&cx, i.seed_at())?))?;
+            cx.write(|m: &mut dyn GuestMemory| m.set_u32(i.seed_at(), seed))?;
+            if !on {
+                return Ok(Ret::new(seed >> 16, POP as u16));
+            }
+        }
+    }
+    cx.call(leaf(object::PLACE, &i.place_args(), i.place_regs())).await?;
+    let (seed, value) = quiet(i.draw(&mut fpu, read_u32(&cx, i.seed_at())?))?;
+    cx.write(|m: &mut dyn GuestMemory| m.set_u32(i.seed_at(), seed))?;
+    let decals = read_u32(&cx, decal::DECALS)?;
+    let r = cx.call(leaf(decal::CREATE, &i.create_args(value), i.create_regs(decals))).await?;
+    Ok(Ret::new(r.eax, POP as u16))
+}
+
+/// A light part: one call, as [`light::Call`] built it.
+async fn answer_light(cx: Cx, call: light::Call) -> EntryResult {
+    save_regs(&cx)?;
+    let r = cx.call(leaf(light::CREATE, &call.args, call.regs).xmm0(u128::from(call.xmm0))).await?;
+    Ok(Ret::new(r.eax, POP as u16))
+}
+
+/// Return from the switch with `eax` (and the other registers as they
+/// are): retail's arm made no call, or only draws Rust made itself.
+fn return_now(cpu: &mut CpuAbi, ctx: &mut ExecCtx, eax: u32) -> Result<TransferAbi, GuestFault> {
+    let target = ctx.memory().u32(cpu.esp)?;
+    cpu.eax = eax;
+    cpu.esp = cpu.esp.wrapping_add(4 + POP);
+    cpu.eflags_defined &= !ARITH;
+    Ok(TransferAbi::ret(target))
+}
+
 /// The original switch.
 fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, GuestFault> {
     let handler = ctx.runtime().resolve_original(pc).ok_or(GuestFault {
@@ -351,13 +539,7 @@ fn enter(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, Gu
     };
     match action {
         Action::Guest => original(cpu, ctx, pc),
-        Action::Return => {
-            let target = ctx.memory().u32(cpu.esp)?;
-            cpu.eax = group;
-            cpu.esp = cpu.esp.wrapping_add(4 + POP);
-            cpu.eflags_defined &= !ARITH;
-            Ok(TransferAbi::ret(target))
-        }
+        Action::Return => return_now(cpu, ctx, group),
         Action::Damage(call) => {
             hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_damage(cx, call.record)))
         }
@@ -365,6 +547,21 @@ fn enter(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, Gu
         Action::Sound(call, i) => {
             hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_sound(cx, call, i)))
         }
+        Action::Character(call, i) => match call.plan {
+            character::Plan::Return(eax) => return_now(cpu, ctx, eax),
+            character::Plan::Start { node } => {
+                hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_character(cx, i, node)))
+            }
+        },
+        Action::Coln(call) => {
+            // 0x259d0's `push ecx` scratch is dead stack below the frame.
+            ctx.memory().set_u32(call.seed_at, call.seed)?;
+            set_x87(cpu, &call.fpu);
+            (cpu.ecx, cpu.edx) = (call.ecx, call.edx);
+            return_now(cpu, ctx, call.eax)
+        }
+        Action::Decal(i) => hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_decal(cx, i))),
+        Action::Light(call) => hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_light(cx, call))),
     }
 }
 
@@ -415,6 +612,9 @@ fn compare_damage(g: &Guest, esp: u32) {
 /// At `0x177d10`'s entry from the object arm: the copies, the arguments
 /// and the registers. `S` is `ESP + 0x28` (nine arguments and the return).
 fn compare_place(g: &Guest, cpu: &CpuAbi) {
+    if g.u32(cpu.esp).ok() == Some(decal::PLACE_RETURN) {
+        return compare_decal_place(g, cpu);
+    }
     let Ok(object::PLACE_RETURN) = g.u32(cpu.esp) else { return };
     let frame = cpu.esp.wrapping_add(0x28);
     let mut p = parts();
@@ -443,6 +643,7 @@ fn compare_place(g: &Guest, cpu: &CpuAbi) {
 /// At `0x177d10`'s return to the object arm (`ESP` back at `S`): the sums
 /// the arm will make from what it placed.
 fn predict_sums(g: &Guest, cpu: &CpuAbi) {
+    predict_decal_draw(g, cpu);
     let mut p = parts();
     let Some(plan) = p.object.pending_mut().filter(|plan| plan.placed && plan.sums.is_none()) else { return };
     if plan.inputs.frame != cpu.esp {
@@ -486,6 +687,163 @@ fn compare_velocity(g: &Guest, cpu: &CpuAbi) {
     }
 }
 
+/// At `0x177d10`'s entry from the decal arm (`S` = `ESP + 0x28`): the
+/// stream after the gate, the arguments and the registers.
+fn compare_decal_place(g: &Guest, cpu: &CpuAbi) {
+    let entry = cpu.esp.wrapping_add(0x28 + FRAME);
+    let mut p = parts();
+    let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry && !plan.placed) else {
+        return;
+    };
+    let seen = (|| -> Result<decal::Seen<9>, GuestFault> {
+        Ok(decal::Seen {
+            seed: g.u32(plan.inputs.seed_at())?,
+            args: words(g, cpu.esp.wrapping_add(4))?,
+            regs: regs(cpu),
+        })
+    })();
+    let Ok(seen) = seen else {
+        p.decal.declined_fault();
+        return;
+    };
+    if let Some(at) = plan.place(&seen) {
+        let first = p.decal.stats().mismatched == 0;
+        p.decal.verdict(Some(at));
+        mismatch("decal", first, Some(at));
+    }
+}
+
+/// At `0x177d10`'s return to the decal arm (`ESP` back at `S`): the draw
+/// the arm makes next, from the stream `0x177d10` left.
+fn predict_decal_draw(g: &Guest, cpu: &CpuAbi) {
+    let mut p = parts();
+    let Some(plan) = p
+        .decal
+        .pending_mut()
+        .filter(|plan| plan.placed && plan.draw.is_none() && plan.inputs.entry == cpu.esp.wrapping_add(FRAME))
+    else {
+        return;
+    };
+    match g.u32(plan.inputs.seed_at()).map(|seed| plan.predict_draw(seed)) {
+        Ok(Ok(())) => {}
+        // Left pending: the switch's return names it.
+        _ => p.decal.declined_fault(),
+    }
+}
+
+/// At `0x17e670`'s entry from the decal arm (`S` = `ESP + 0x1c`).
+fn compare_decal_create(g: &Guest, cpu: &CpuAbi) {
+    let Ok(decal::CREATE_RETURN) = g.u32(cpu.esp) else { return };
+    let entry = cpu.esp.wrapping_add(0x1c + FRAME);
+    let mut p = parts();
+    let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry && plan.placed) else {
+        return;
+    };
+    let seen = (|| -> Result<(decal::Seen<6>, u32), GuestFault> {
+        let seen =
+            decal::Seen { seed: g.u32(plan.inputs.seed_at())?, args: words(g, cpu.esp.wrapping_add(4))?, regs: regs(cpu) };
+        Ok((seen, g.u32(decal::DECALS)?))
+    })();
+    let Ok((seen, decals)) = seen else {
+        p.decal.declined_fault();
+        return;
+    };
+    let at = plan.create_difference(&seen, decals);
+    let first = p.decal.stats().mismatched == 0;
+    if !p.decal.verdict(at) {
+        mismatch("decal", first, at);
+    }
+}
+
+/// At `0x1ca290`'s entry from the `char` arm (`S` = `ESP + 0x1c`).
+fn compare_character(g: &Guest, cpu: &CpuAbi) {
+    let Ok(character::START_RETURN) = g.u32(cpu.esp) else { return };
+    let entry = cpu.esp.wrapping_add(0x1c + FRAME);
+    let mut p = parts();
+    let Some(want) = p.character.pending_mut().filter(|c| c.entry == entry).copied() else { return };
+    let Ok(args) = words::<5>(g, cpu.esp.wrapping_add(8)) else {
+        p.character.declined_fault();
+        return;
+    };
+    let seen = character::Call {
+        plan: character::Plan::Start { node: args[1] },
+        esi: cpu.esi,
+        ebx: cpu.ebx,
+        edi: cpu.edi,
+        args,
+        ..want
+    };
+    let first = p.character.stats().mismatched == 0;
+    if p.character.seen(&seen) == Some(false) {
+        mismatch("character", first, p.character.stats().first_mismatch_at);
+    }
+}
+
+/// At `0xc0350`'s entry from the `ligh` arm, on the object or at a point.
+fn compare_light(g: &Guest, cpu: &CpuAbi) {
+    let on_object = match g.u32(cpu.esp) {
+        Ok(light::ON_OBJECT_RETURN) => true,
+        Ok(light::AT_POINT_RETURN) => false,
+        _ => return,
+    };
+    let Ok(args) = words::<4>(g, cpu.esp.wrapping_add(4)) else {
+        parts().light.declined_fault();
+        return;
+    };
+    let xmm0 = u32::from_le_bytes(cpu.xmm[0][..4].try_into().expect("four bytes"));
+    let seen = light::Call { on_object, args, regs: regs(cpu), xmm0 };
+    let mut p = parts();
+    let first = p.light.stats().mismatched == 0;
+    if p.light.seen(&seen) == Some(false) {
+        mismatch("light", first, p.light.stats().first_mismatch_at);
+    }
+}
+
+/// At the switch's return (`ESP` = entry `+ 0x18`): the arms whose guest
+/// path may end without a leaf call. A `char` part that returned early, a
+/// `coln` part (the stream, `EAX` and the x87 state it left) and a decal
+/// part the gate stopped, or one that placed but never created.
+fn compare_exit(g: &Guest, cpu: &CpuAbi) {
+    let entry = cpu.esp.wrapping_sub(4 + POP);
+    let mut p = parts();
+    if let Some(want) = p.character.pending_mut().filter(|c| c.entry == entry).copied() {
+        let seen = character::Call { plan: character::Plan::Return(cpu.eax), ..want };
+        let first = p.character.stats().mismatched == 0;
+        if p.character.seen(&seen) == Some(false) {
+            mismatch("character", first, p.character.stats().first_mismatch_at);
+        }
+    }
+    if let Some(want) = p.coln.pending_mut().filter(|c| c.entry == entry).copied() {
+        match g.u32(want.seed_at) {
+            Ok(seed) => {
+                let seen = coln::Call { seed, eax: cpu.eax, fpu: to_x87(&cpu.x87), ..want };
+                let first = p.coln.stats().mismatched == 0;
+                if p.coln.seen(&seen) == Some(false) {
+                    mismatch("coln", first, p.coln.stats().first_mismatch_at);
+                }
+            }
+            Err(_) => p.coln.declined_fault(),
+        }
+    }
+    if let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry).copied() {
+        let at = if plan.placed {
+            Some(31)
+        } else {
+            match g.u32(plan.inputs.seed_at()) {
+                Ok(seed) => plan.gated_out_difference(seed, cpu.eax),
+                Err(_) => {
+                    p.decal.declined_fault();
+                    return;
+                }
+            }
+        };
+        let first = p.decal.stats().mismatched == 0;
+        if !p.decal.verdict(at) {
+            mismatch("decal", first, at);
+        }
+    }
+}
+
 /// At `0x189060` or `0x1895f0` from the sound arm: compare the call.
 fn compare_sound(g: &Guest, cpu: &CpuAbi, on_object: bool) {
     let want = if on_object { sound::ON_OBJECT_RETURN } else { sound::AT_POINT_RETURN };
@@ -524,7 +882,7 @@ pub struct SimEffectsParts;
 
 impl Feature for SimEffectsParts {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The effects phase in Rust: the effect walk and the damage, object and sound part arms")
+        Manifest::new(ID, "The effects phase in Rust: the effect walk and an arm for each part class")
             .doc("docs/engine/effects-parts.md")
     }
 
@@ -542,12 +900,12 @@ impl Feature for SimEffectsParts {
             })
             .optional();
         b.raw()
-            .observe_before(&points::EFFECT_PART_PLACE, "effect object arm: compare the placing", |o| {
+            .observe_before(&points::EFFECT_PART_PLACE, "effect object and decal arms: compare the placing", |o| {
                 compare_place(&o.guest(), o.cpu)
             })
             .optional();
         b.raw()
-            .observe_after(&points::EFFECT_PART_PLACE, "effect object arm: predict the sums", |o| {
+            .observe_after(&points::EFFECT_PART_PLACE, "effect object and decal arms: predict the sums and the draw", |o| {
                 predict_sums(&o.guest(), o.cpu)
             })
             .optional();
@@ -565,6 +923,23 @@ impl Feature for SimEffectsParts {
             .observe_before(&points::SOUND_START_AT_POINT, "effect sound arm: compare at a point", |o| {
                 compare_sound(&o.guest(), o.cpu, false)
             })
+            .optional();
+        b.raw()
+            .observe_after(&points::EFFECT_PART_CREATE, "effect part arms: compare at the return", |o| {
+                compare_exit(&o.guest(), o.cpu)
+            });
+        b.raw()
+            .observe_before(&points::EFFECT_PART_CHARACTER, "effect character arm: compare", |o| {
+                compare_character(&o.guest(), o.cpu)
+            })
+            .optional();
+        b.raw()
+            .observe_before(&points::DECAL_CREATE, "effect decal arm: compare the create", |o| {
+                compare_decal_create(&o.guest(), o.cpu)
+            })
+            .optional();
+        b.raw()
+            .observe_before(&points::LIGHT_CREATE, "effect light arm: compare", |o| compare_light(&o.guest(), o.cpu))
             .optional();
         b.raw().observe_before(&points::CACHE_TAGS_LOAD, "effect part arm: reset", |_| {
             parts().reset();
@@ -592,6 +967,9 @@ mod tests {
                 &points::EFFECT_PART_VELOCITY,
                 &points::SOUND_START_ON_OBJECT,
                 &points::SOUND_START_AT_POINT,
+                &points::EFFECT_PART_CHARACTER,
+                &points::DECAL_CREATE,
+                &points::LIGHT_CREATE,
             ] {
                 assert_eq!(plan.chains.contains_key(&p.base), on, "{spec:?} {}", p.name);
             }
@@ -605,6 +983,9 @@ mod tests {
         assert_eq!(points::EFFECT_PART_VELOCITY.base, object::VELOCITY);
         assert_eq!(points::SOUND_START_ON_OBJECT.base, sound::ON_OBJECT);
         assert_eq!(points::SOUND_START_AT_POINT.base, sound::AT_POINT);
+        assert_eq!(points::EFFECT_PART_CHARACTER.base, character::START);
+        assert_eq!(points::DECAL_CREATE.base, decal::CREATE);
+        assert_eq!(points::LIGHT_CREATE.base, light::CREATE);
     }
 
     const STACK: u32 = 0x0030_0000;
@@ -777,5 +1158,139 @@ mod tests {
         assert_eq!((c.ebx, c.edi), (Some(0x0070_0000), Some(0x11)));
         let saved: Vec<u32> = (0..4).map(|n| run.guest.u32(STACK - 0x104 - 4 * n).unwrap()).collect();
         assert_eq!(saved, [0x22, 0x33, 0x44, 0x55]);
+    }
+    /// The `char` answer: the ticks call with the other five arguments
+    /// pushed under it, as retail's arm pushes them, then the start with
+    /// the ticks first and `ESI` the tag.
+    #[test]
+    fn the_character_answer_pushes_as_retail() {
+        use engine::entry::{self, Regs};
+        let i = character::Inputs {
+            entry: STACK,
+            effect: EFFECT,
+            tag: 0xe100_0003,
+            object: 0x0004_0007,
+            seconds: 2.0f32.to_bits(),
+            location: 0x0060_0000,
+            a: 0x14,
+            b: 0x18,
+            source: 0x66,
+            ..character::Inputs::default()
+        };
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(STACK - 0x1000, 0x2000);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_character(cx, i, 5)) };
+        let regs = Regs { esp: STACK, eax: 0x66, ..Default::default() };
+        let run = entry::testing::run(&f, g, regs, |c, m| {
+            if c.target == character::TICKS {
+                assert_eq!(c.esp(STACK), STACK - 0x110 - 0x18 - 4, "retail's depth");
+                let under: Vec<u32> = (0..5).map(|n| m.u32(STACK - 0x110 - 0x14 + 4 * n).unwrap()).collect();
+                assert_eq!(under, i.start_args(5));
+                return Regs { eax: 60, ..Default::default() };
+            }
+            Regs { eax: 0x99, ..Default::default() }
+        });
+        assert_eq!(run.result, Ok(Ret::new(0x99, 0x14)));
+        let c = &run.calls;
+        assert_eq!((c[0].args.as_slice(), [c[0].eax, c[0].ecx, c[0].edx]), ([i.seconds].as_slice(), i.ticks_regs().map(Some)));
+        assert_eq!(c[1].target, character::START);
+        assert_eq!(c[1].args, [60, 0x0004_0007, 5, 0x14, 0x18, 0x0060_0008]);
+        assert_eq!((c[1].esi, c[1].ebx, c[1].edi), (Some(i.tag), Some(EFFECT), Some(0x66)));
+    }
+
+    fn decal_inputs() -> decal::Inputs {
+        decal::Inputs {
+            entry: STACK,
+            effect: EFFECT,
+            tag: 0xe100_0005,
+            flags: 0,
+            rng: 0x0070_0000,
+            seed: 0,
+            position_ptr: VECS,
+            direction_ptr: VECS + 0x10,
+            source: 0x66,
+            ecx: 0,
+            edx: 0,
+            part: [0x14, 0x18, 0x1c, 0x30, 0x34, 0, 1.0f32.to_bits()],
+            scale: 0x3780_0000,
+            limit: 0.5f32.to_bits(),
+            radius: 4.0f32.to_bits(),
+            fpu: x87::abi::X87Abi { control: 0x027f, ..x87::abi::X87Abi::default() },
+        }
+    }
+
+    /// The decal answer: near, the gate's draw and its stop, the place, the
+    /// draw from what the place left, the create with that `f32`; the
+    /// stream word holds each seed where retail's draws leave it.
+    #[test]
+    fn the_decal_answer_draws_between_the_leaves() {
+        use engine::entry::{self, Regs};
+        let stream = 0x0070_0004;
+        for (near, limit, want) in [
+            (1, 0.5f32, vec![decal::NEAR, object::PLACE, decal::CREATE]),
+            (0, 0.5, vec![decal::NEAR, object::PLACE, decal::CREATE]),
+            (0, 0.1, vec![decal::NEAR]),
+        ] {
+            let i = decal::Inputs { limit: limit.to_bits(), ..decal_inputs() };
+            let mut g = engine::testing::FakeGuest::new();
+            g.map(STACK - 0x1000, 0x2000).map(0x0070_0000, 0x1000).map(decal::DECALS & !0xfff, 0x1000);
+            g.put_u32(stream, 0).put_u32(decal::DECALS, 0x0080_0000);
+            let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_decal(cx, i)) };
+            let regs = Regs { esp: STACK, eax: 0x66, ..Default::default() };
+            let gate = if near == 0 { random::next(0) } else { 0 };
+            let run = entry::testing::run(&f, g, regs, |c, m| {
+                assert_eq!(c.esp(STACK), STACK - 0x110 - 4 * c.args.len() as u32 - 4);
+                match c.target {
+                    decal::NEAR => Regs { eax: 0xab00 | near, ..Default::default() },
+                    object::PLACE => {
+                        assert_eq!(m.u32(stream).unwrap(), gate, "the gate drew before the place");
+                        m.set_u32(stream, 77).unwrap();
+                        Regs::default()
+                    }
+                    decal::CREATE => {
+                        let seed = random::next(77);
+                        assert_eq!(m.u32(stream).unwrap(), seed);
+                        assert_eq!(c.args, i.create_args(((seed >> 16) as f32 / 65536.0).to_bits()));
+                        assert_eq!(c.ecx, Some(0x0080_0000));
+                        Regs { eax: 0x99, ..Default::default() }
+                    }
+                    t => panic!("{t:#x}"),
+                }
+            });
+            let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
+            assert_eq!(targets, want, "near {near}, limit {limit}");
+            if want.len() == 1 {
+                assert_eq!(run.result, Ok(Ret::new(random::next(0) >> 16, 0x14)));
+                assert_eq!(run.guest.u32(stream).unwrap(), random::next(0));
+            } else {
+                assert_eq!(run.result, Ok(Ret::new(0x99, 0x14)));
+            }
+            let c = &run.calls[0];
+            assert_eq!((c.eax, c.edi, c.xmm0), (Some(1), Some(VECS), Some(u128::from(4.0f32.to_bits()))));
+        }
+        // Not gated: no near call, EDI the entry EAX.
+        let i = decal::Inputs { flags: 0x10, ..decal_inputs() };
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(STACK - 0x1000, 0x2000).map(0x0070_0000, 0x1000).map(decal::DECALS & !0xfff, 0x1000);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_decal(cx, i)) };
+        let run = entry::testing::run(&f, g, Regs { esp: STACK, eax: 0x66, ..Default::default() }, |_, _| Regs::default());
+        assert_eq!(run.calls.iter().map(|c| (c.target, c.edi)).collect::<Vec<_>>(), [(object::PLACE, Some(0x66)), (decal::CREATE, Some(0x66))]);
+    }
+
+    #[test]
+    fn the_light_answer_makes_retails_call() {
+        use engine::entry::{self, Regs};
+        let call = light::Call::predict(&light::Inputs { object: u32::MAX, tag: 4, scale: 0.5f32.to_bits(), ..light::Inputs::default() });
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(STACK - 0x1000, 0x2000);
+        let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_light(cx, call)) };
+        let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |c, _| {
+            assert_eq!(c.esp(STACK), STACK - 0x110 - 0x14);
+            Regs { eax: 0x99, ..Default::default() }
+        });
+        assert_eq!(run.result, Ok(Ret::new(0x99, 0x14)));
+        let c = &run.calls[0];
+        assert_eq!((c.target, c.args.as_slice(), c.xmm0), (light::CREATE, call.args.as_slice(), Some(u128::from(0.5f32.to_bits()))));
+        assert_eq!([c.eax, c.ecx, c.edx, c.ebx, c.esi, c.edi], call.regs.map(Some));
     }
 }
