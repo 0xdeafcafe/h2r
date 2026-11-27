@@ -2,7 +2,7 @@ use super::*;
 use engine::entry::{self, EntryFuture, Regs};
 use engine::testing::FakeGuest;
 use hooks::{Base, Registry, Switches};
-use sim_sound::instances::{Flat, Request, SoundTag, TagTable};
+use sim_sound::instances::{Flat, Permutation, PitchRange, Request, SoundTag, SourceParams, TagTable};
 use sim_sound::owners::{NullOwners, Owner};
 
 const STACK: u32 = 0x0030_0000;
@@ -11,6 +11,18 @@ const SEEDS: u32 = 0x0052_0100;
 const GLOBALS: u32 = TIME + 0x2800;
 const RECORD: u32 = 0x0060_0000;
 const TAG: TagIndex = TagIndex(0xe100_0001);
+
+/// Levels that name their source as not ready.
+struct Refusing;
+
+impl Levels for Refusing {
+    fn level(&self, _: TagIndex, _: &SourceParams) -> f32 {
+        f32::NAN
+    }
+    fn refused(&self) -> Option<&'static str> {
+        Some("test")
+    }
+}
 
 fn tags() -> TagTable {
     let mut t = TagTable::default();
@@ -101,7 +113,7 @@ fn every_outside_entry_has_a_rust_body() {
     // with it off.
     for (spec, on) in [("", false), ("impl.sim.sound-events.table", true), ("-impl.sim.sound-events,impl.sim.sound-events.table", false)] {
         let mut r = Registry::new(Switches::parse(spec).unwrap());
-        r.add(&SoundTable::new(table(Arc::new(UnportedLevels)))).unwrap();
+        r.add(&SoundTable::new(table(Arc::new(Refusing)))).unwrap();
         let plan = r.build(&Base).unwrap();
         for e in ENTRIES {
             let chain = plan.chains.get(&e.point.base);
@@ -124,7 +136,7 @@ fn the_table_is_off_by_default_and_needs_the_events_switch() {
 
 #[test]
 fn the_pool_global_is_zero_after_start() {
-    let t = table(Arc::new(UnportedLevels));
+    let t = table(Arc::new(Refusing));
     lock(&t).sounds.admit(&mut Rng::new(1), &tags(), Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
     let r = run_body(&t, Body::Create, guest(0), regs(), |c, m| {
         assert_eq!(c.target, points::SOUND_MANAGER_CREATE.base, "the guest's create runs once");
@@ -162,6 +174,7 @@ fn the_sound_phase_runs_once_per_tick_number() {
 fn the_hash_is_the_same_with_any_host() {
     // Object 5 is live: index 5 of a 16-row array, salt 1.
     const UNIT: u32 = 0x0001_0005;
+    const PERMS: u32 = TIME + 0x3c00;
     let t = table(Arc::new(Flat(10.0)));
     let mut plain = Sounds::new();
     for s in [&mut lock(&t).sounds, &mut plain] {
@@ -174,14 +187,23 @@ fn the_hash_is_the_same_with_any_host() {
         let objects = TIME + 0x2000;
         g.put_u32(objects + 0x38, 16).put_u32(objects + 0x24, 12).put_u32(objects + 0x44, TIME + 0x3000);
         g.put_u16(TIME + 0x3000 + 5 * 12, 1);
-        run_phase(&t, g);
+        // The tag's first range is 0, its permutation row at PERMS.
+        g.put_u32(points::TAG_ENTRIES.base, TIME + 0x3800).put_u32(TIME + 0x3800 + 16 + 8, TIME + 0x3900);
+        g.put_u32(GESTALT, TIME + 0x3a00).put_u32(TIME + 0x3a00 + 0x24, TIME + 0x3b00).put_u32(TIME + 0x3a00 + 0x2c, PERMS);
+        let r = run_phase(&t, g);
+        let mouths: Vec<_> = r.calls.iter().filter(|c| c.target == UNIT_MOUTH).map(|c| c.args.clone()).collect();
+        if tick < 3 {
+            assert_eq!(mouths, [vec![UNIT, 0, TAG.0, 0, PERMS, super::super::owners::seconds(tick).to_bits()]]);
+        } else {
+            assert!(mouths.is_empty());
+        }
         plain.step(tick, &mut NullOwners);
     }
     // The guest host and the null one end the same sounds on the same
     // ticks: the table hashes the same.
     assert_eq!(lock(&t).sounds.section_hash(), plain.section_hash());
     assert!(lock(&t).sounds.instances().is_empty());
-    assert_eq!(lock(&t).ledger.mouth_unported, 2, "ticks 1 and 2 queued the unit's mouth");
+    assert_eq!(lock(&t).ledger.mouth_calls, 2, "ticks 1 and 2 made the unit's mouth");
     // The service hands the events over and changes nothing hashed.
     let before = lock(&t).sounds.section_hash();
     run_body(&t, Body::Service, guest(5), regs(), |_, _| Regs::default());
@@ -247,8 +269,8 @@ fn a_start_record_is_admitted_into_the_table() {
 }
 
 #[test]
-fn a_start_refuses_by_name_without_levels() {
-    let (t, r) = start(Arc::new(UnportedLevels), 1);
+fn a_start_refuses_by_name_when_its_levels_do() {
+    let (t, r) = start(Arc::new(Refusing), 1);
     assert_eq!(r.result.unwrap().eax, NONE);
     let t = lock(&t);
     assert_eq!(t.ledger.refused_no_level, 1);
@@ -288,6 +310,7 @@ fn a_refused_entry_is_counted_by_its_address() {
     for e in ENTRIES {
         assert!(!(e.body.refusal().is_some() && e.body.calls_original()), "{}", e.point.name);
     }
+    assert_eq!(Body::HistoryLast.refusal(), None);
 }
 
 #[test]
@@ -308,4 +331,23 @@ fn the_environment_and_the_first_listener_are_the_guests_words() {
     g.put_u8(listener + sg::LISTENER_ACTIVE, 1);
     let r = run_body(&t, Body::FirstListener, g, regs(), |_, _| Regs::default());
     assert_eq!(r.result, Ok(Ret::new(listener, 0)));
+}
+
+#[test]
+fn the_range_word_is_read_only_for_a_class_with_flag_bit_5() {
+    let t = table(Arc::new(Flat(10.0)));
+    // The tag's class 0 row in the sound globals tag's classes.
+    let (tag, range, classes) = (TIME + 0x3000, TIME + 0x3100, TIME + 0x3200);
+    let mut g = guest(0);
+    g.put_u32(points::GLOBALS_TAG.base, TIME + 0x3300).put_u32(TIME + 0x3300 + 0xc0, 1).put_u32(TIME + 0x3300 + 0xc4, TIME + 0x3400);
+    g.put_u32(TIME + 0x3404, 2).put_u32(points::TAG_ENTRIES.base, TIME + 0x3500).put_u32(TIME + 0x3500 + 2 * 16 + 8, TIME + 0x3600);
+    g.put_u32(TIME + 0x3604, classes).put_u16(range + 6, 12);
+    let mut stack = g.clone();
+    stack.put_u32(STACK + 4, range).put_u32(STACK + 8, tag);
+    let r = run_body(&t, Body::HistoryLast, stack.clone(), regs(), |_, _| panic!("no guest call"));
+    assert_eq!(r.result, Ok(Ret::new(NONE, 8)), "flag bit 5 clear");
+    stack.put_u8(classes + 0xa, 1 << 5);
+    let r = run_body(&t, Body::HistoryLast, stack, regs(), |_, _| panic!("no guest call"));
+    assert_eq!(r.result, Ok(Ret::new(12, 8)));
+    let _ = tag;
 }

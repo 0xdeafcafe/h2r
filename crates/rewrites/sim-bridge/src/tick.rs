@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn the_sound_phase_runs_after_the_phases_once_per_tick_number() {
         use crate::sim_sound::entries::{Table, lock};
-        let table = Arc::new(Mutex::new(Table::headless()));
+        let table = Arc::new(Mutex::new(Table::guest()));
         let regs = Regs { esp: STACK, ..Default::default() };
         let mut g = guest(5);
         g.map(0x004e_0000, 0x1_0000).put_u32(points::RANDOM_SEEDS.base, TIME + 0x200);
