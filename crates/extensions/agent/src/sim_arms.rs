@@ -9,7 +9,9 @@
 //!   `checked` is their sum, and `answered` is 0;
 //! * `anim.manager` reports `differed` for `mismatched`;
 //! * the shadow ports (`seats`, `effects`) count `skipped` for `declined`
-//!   and `answered` 0.
+//!   and `answered` 0;
+//! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
+//!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
 
 use crate::{Access, Agent};
 use agent_proto::sim_arms::{Arm, SimArms, Subsystem, method};
@@ -21,6 +23,7 @@ use engine::sim_physics::parity as physics;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
 use sim_bridge::shadow::{SHADOW, Shadow};
+use sim_bridge::sim_sound::voice_arm as voices;
 
 /// Registers `sim.arms` on `agent`.
 pub fn install(agent: &Agent) {
@@ -55,6 +58,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             subsystem(switches, "collision", collision_arms(&world::stats())),
             subsystem(switches, "seats", group(sim_bridge::sim_seats::GROUP)),
             subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
+            subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
         ],
     }
 }
@@ -124,6 +128,18 @@ fn anim_wire(arm: &walk::ArmStats, body: &walk::Stats, segments: Vec<(u32, manag
     arms
 }
 
+/// Sampled ticks with voices are checked; quiet and skipped ticks are not.
+fn sound_wire(s: &voices::Stats) -> Arm {
+    Arm {
+        name: "sound.voices".to_owned(),
+        checked: s.matched + s.mismatched,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined,
+    }
+}
+
 fn collision_arms(s: &world::Stats) -> Vec<Arm> {
     let vector = |name: &str, p: &world::VectorParity| Arm {
         name: name.to_owned(),
@@ -175,7 +191,7 @@ mod tests {
         shadow.register("sim.seats_a", sim_bridge::sim_seats::GROUP, "A", 0x1000, true);
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects"]);
+        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound"]);
         for s in &r.subsystems {
             assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
             assert!(!s.clean, "{}", s.name);
@@ -251,6 +267,8 @@ mod tests {
         let c = collision_arms(&stats);
         assert_eq!(c.len(), 7);
         assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
+        let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
+        assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));
     }
 
     #[test]
@@ -293,6 +311,6 @@ mod tests {
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
         let arms: SimArms = serde_json::from_value(reply["result"].clone()).unwrap();
-        assert_eq!(arms.subsystems.len(), 6);
+        assert_eq!(arms.subsystems.len(), 7);
     }
 }
