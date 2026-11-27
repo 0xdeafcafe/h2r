@@ -644,8 +644,11 @@ Game Setup has **Map Variant...** under **Change Map...** in the
 CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it picks
 the map variant the session opens.
 
-1. **Change Map...** picks the map as today
-   ([map-select.md](map-select.md)). A new map clears the variant.
+1. **Change Map...** picks the map
+   ([map-select.md](map-select.md)). A map with saved variants opens
+   its page, the map itself and then each variant
+   ([map-select.md](map-select.md#a-map-with-variants)). A new map
+   picked without a variant clears the variant.
 2. **Map Variant...** opens a picker dialog on top of Game Setup
    (`kit.picker.map-variant`):
    **Original**, then this map's variants by name. The description

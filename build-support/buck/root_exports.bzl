@@ -208,6 +208,7 @@ def root_exports():
             "content/ui/screens/map.picker.firefight.yaml",
             "content/ui/screens/map.picker.siege.yaml",
             "content/ui/screens/map.picker.slayer.yaml",
+            "content/ui/screens/map.picker.variants.yaml",
             "content/ui/screens/mods.detail.yaml",
             "content/ui/screens/mods.pack.yaml",
             "content/ui/screens/mods.yaml",

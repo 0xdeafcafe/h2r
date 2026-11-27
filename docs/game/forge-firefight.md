@@ -167,8 +167,9 @@ needs no change. The lobby is what stands between.
   the maps that play Firefight first. A base map plays it when it has at
   least one saved map variant with a ground recipe
   (`forge::files::variants::list`, the entry's `ground`;
-  `map_modes::firefight_support`). Choosing a base map sets the lobby's
-  map; the Map Variant row then picks its variant.
+  `map_modes::analyse`). Choosing a base map with variants opens its
+  page ([map-select.md](map-select.md#a-map-with-variants)), where the
+  variant is picked with the map; the Map Variant row changes it later.
 - **Map Variant** in a Firefight lobby
   (`lobby_mode::map_variant_pick_for`) lists the variants with ground;
   Original and a variant without ground are listed with "No AI ground."

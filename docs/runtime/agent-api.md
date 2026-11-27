@@ -3103,8 +3103,8 @@ or the game's UI state without UI watch. All are read-only except
   (`history`, nearest parent first). Each screen has `id`, `instance`
   (a guest address valid for that screen's lifetime), and `parent` where
   a return is known. The map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`, `pack`), with the open
-  category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
+  distinct `mode` values (`folders`, `maps`, `pack`, `variants`), with the open
+  category, pack or map named in `folder`. A map's page of variants has its category's maps as its parent. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). Game-type and variant lists also expose their focused row.
   A custom variant list identifies its group in `variant_category` and a kit
   screen identifies its class in `class`. Both fields are null elsewhere.
