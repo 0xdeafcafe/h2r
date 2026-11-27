@@ -8,7 +8,7 @@ use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 mod alloc;
 mod colors;
 mod havok;
-mod island;
+mod island_solve;
 mod solver_rows;
 mod solver_pairs;
 pub(crate) mod first_person;
@@ -91,8 +91,8 @@ pub const PHYSICS_PORTS: &[Port] = {
         port(&HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island),
         // The island solve: no guest call inside; an island the model does
         // not cover runs the lifted entry and is counted
-        // (`sim_havok::island::fallbacks`).
-        port(&HAVOK_ISLAND_SOLVE, "sim.native.physics", Controls::Island, &[], island::run),
+        // (`sim_havok::island_solve::fallbacks`).
+        port(&HAVOK_ISLAND_SOLVE, "sim.native.physics", Controls::Island, &[], island_solve::run),
         // The memory system's virtuals: Halo's builders call them too
         // (docs/engine/havok-step.md, "Allocator"). No guest call inside.
         port(&HAVOK_ALLOC, "sim.native.physics", Controls::Memory, &[], alloc::run),
@@ -216,7 +216,7 @@ pub fn supported(port: &Port, cpu: &CpuAbi, guest: &Guest) -> bool {
         Integer => true,
         Memory => alloc::supported(port.point.base, cpu, guest),
         // The entry appends a monitor record while the stream is on.
-        Island => world::monitor_off(guest) && island::supported(cpu, guest),
+        Island => world::monitor_off(guest) && island_solve::supported(cpu, guest),
         Sse => cpu.mxcsr & 0x1f80 == 0x1f80,
         Weld => x87_masked && weld::supported(guest),
         World => {
