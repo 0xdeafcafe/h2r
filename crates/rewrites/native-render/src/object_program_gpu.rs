@@ -798,50 +798,16 @@ pub struct LitObjects {
     /// The scratch copies of the bound colour the view stages sample, one
     /// per target copy (reference, display; [`LitObjects::view_copy`]).
     view_copies: [Option<wgpu::TextureView>; 2],
-    /// The scene copies ([`LitObjects::scene_copy`]), one per target copy.
-    scene_copies: [Option<wgpu::TextureView>; 2],
-    /// The downsample's pipeline, shared by the copies recorded later on
-    /// the frame's encoder.
-    blitter: Arc<std::sync::Mutex<Option<gfx::blit::Blitter>>>,
+    /// The scene copies ([`LitObjects::scene_copy`]): the view snapshots.
+    snapshots: crate::snapshot_gpu::Snapshots,
 }
 
-/// The size of the scene copy for a target drawn at `size` whose guest
-/// surface is `guest`: [`crate::object_program::SCENE_COPY_SIZE`] times the
-/// render scale, at least one texel a side.
-pub fn scene_copy_extent(guest: (u32, u32), size: (u32, u32)) -> (u32, u32) {
-    let side = |copy: u32, size: u32, guest: u32| -> u32 {
-        ((u64::from(copy) * u64::from(size) + u64::from(guest.max(1)) / 2) / u64::from(guest.max(1))).max(1) as u32
-    };
-    (
-        side(crate::object_program::SCENE_COPY_SIZE.0, size.0, guest.0),
-        side(crate::object_program::SCENE_COPY_SIZE.1, size.1, guest.1),
-    )
-}
+/// The size of the scene copy: [`crate::snapshot_gpu::extent`].
+pub use crate::snapshot_gpu::extent as scene_copy_extent;
 
-/// The scene copy of one sorted-handler call ([`LitObjects::scene_copy`]):
-/// the downsample of the bound colour `from` into `view`, recorded before
-/// the handler's layers draw.
-pub struct SceneCopy {
-    pub from: wgpu::TextureView,
-    pub view: wgpu::TextureView,
-    pub format: wgpu::TextureFormat,
-    pub extent: (u32, u32),
-    blitter: Arc<std::sync::Mutex<Option<gfx::blit::Blitter>>>,
-}
-
-impl SceneCopy {
-    /// Records the downsample into `encoder`: a linear read of the whole
-    /// colour into the copy, which is [`Self::extent`] texels (the guest's
-    /// four-stage copy averages the same neighbourhood).
-    pub fn record(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
-        let mut guard = self.blitter.lock().unwrap_or_else(|e| e.into_inner());
-        let blitter = guard.get_or_insert_with(|| gfx::blit::Blitter::on_device(device));
-        blitter.blit_on(
-            device, encoder, &self.from, &self.view, self.format,
-            gfx::blit::BlitOptions { linear: true, ..Default::default() },
-        );
-    }
-}
+/// The scene copy of one sorted-handler call: the view snapshot
+/// ([`crate::snapshot_gpu`]).
+pub use crate::snapshot_gpu::ViewSnapshot as SceneCopy;
 
 /// A copy of the bound colour for the stages that sample the view's own
 /// target ([`LitObjects::view_copy`]): record `from` into `to` (`extent`)
@@ -1174,8 +1140,7 @@ impl LitObjects {
             normalization: None,
             shared: Shared::default(),
             view_copies: [None, None],
-            scene_copies: [None, None],
-            blitter: Default::default(),
+            snapshots: Default::default(),
         }
     }
 
@@ -1197,8 +1162,7 @@ impl LitObjects {
             normalization: None,
             shared: Shared::default(),
             view_copies: [None, None],
-            scene_copies: [None, None],
-            blitter: Default::default(),
+            snapshots: Default::default(),
         }
     }
 
@@ -1264,34 +1228,7 @@ impl LitObjects {
     pub fn scene_copy(
         &mut self, device: &wgpu::Device, color: &wgpu::TextureView, guest: (u32, u32), copy: gfx::external::TargetCopy,
     ) -> SceneCopy {
-        let texture = color.texture();
-        let format = texture.format();
-        let extent = scene_copy_extent(guest, (texture.width(), texture.height()));
-        let scratch = match copy {
-            gfx::external::TargetCopy::Reference => &mut self.scene_copies[0],
-            gfx::external::TargetCopy::Display => &mut self.scene_copies[1],
-        };
-        if scratch.as_ref().is_some_and(|view| {
-            let t = view.texture();
-            (t.width(), t.height()) != extent || t.format() != format
-        }) {
-            *scratch = None;
-        }
-        let view = scratch.get_or_insert_with(|| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("native object scene copy"),
-                    size: wgpu::Extent3d { width: extent.0, height: extent.1, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
-        });
-        SceneCopy { from: color.clone(), view: view.clone(), format, extent, blitter: self.blitter.clone() }
+        self.snapshots.take(device, color, guest, copy)
     }
 
     /// Uploads the normalization cube the programs' normalization stages
@@ -4021,14 +3958,6 @@ mod tests {
         assert_eq!((program, buffer), (0, 0));
         assert!(build.input.programs[program].pass.program.state.as_ref().unwrap().blend.is_some(), "its blend kept");
         assert!(build.input.valid_draw_references());
-    }
-
-    #[test]
-    fn the_scene_copy_is_the_guests_size_times_the_render_scale() {
-        assert_eq!(scene_copy_extent((640, 480), (640, 480)), (320, 240));
-        assert_eq!(scene_copy_extent((640, 480), (1280, 960)), (640, 480));
-        assert_eq!(scene_copy_extent((640, 480), (1920, 1080)), (960, 540));
-        assert_eq!(scene_copy_extent((640, 480), (1, 1)), (1, 1), "never empty");
     }
 
     #[test]

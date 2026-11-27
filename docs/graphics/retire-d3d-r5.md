@@ -109,8 +109,9 @@ Counters: `layer_plan_{2,17}_sorted_views`, `_sorted_taken`,
 - **The flare passes, the post and layers 18, 19 and 21 from the scene.**
   `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
   passes draw into the device's live targets at the guest's calls. Cutting
-  them needs the graph to own the view's targets; the snapshot layers' slot
-  also needs research item R-a.
+  them needs the graph to own the view's targets. Layers 18, 19 and 21
+  draw at their sorted entry in slot 9 or 10, after the view snapshot
+  (`native_render::snapshot_gpu`).
 
 ## Not verified
 
