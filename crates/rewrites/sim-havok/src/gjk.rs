@@ -94,7 +94,7 @@ fn shuf2(d: u128, s: u128, imm: u8) -> u128 {
 }
 
 /// `shufps v, v, imm`.
-fn shuf1(v: u128, imm: u8) -> u128 {
+pub(crate) fn shuf1(v: u128, imm: u8) -> u128 {
     shuf2(v, v, imm)
 }
 
@@ -103,36 +103,36 @@ fn signs(v: u128) -> u32 {
     (0..4).fold(0, |m, i| m | (lane(v, i) >> 31) << i)
 }
 
-fn vec(j: &Journal, at: u32) -> Result<u128, Fallback> {
+pub(crate) fn vec(j: &Journal, at: u32) -> Result<u128, Fallback> {
     vector(j, at).ok_or(Fallback::Memory)
 }
 
 /// `movaps` store: 16-byte aligned, or the guest would fault.
-fn put(j: &mut Journal, at: u32, v: u128) -> Result<(), Fallback> {
+pub(crate) fn put(j: &mut Journal, at: u32, v: u128) -> Result<(), Fallback> {
     if at & 15 != 0 {
         return Err(Fallback::Memory);
     }
     put_vector(j, at, v).ok_or(Fallback::Memory)
 }
 
-fn word(j: &Journal, at: u32) -> Result<u32, Fallback> {
+pub(crate) fn word(j: &Journal, at: u32) -> Result<u32, Fallback> {
     j.get(at).ok_or(Fallback::Memory)
 }
 
-fn units(fpu: Fpu) -> Result<(Sse, Fx), Fallback> {
+pub(crate) fn units(fpu: Fpu) -> Result<(Sse, Fx), Fallback> {
     if !fpu.masked() {
         return Err(Fallback::Float);
     }
     Ok((Sse { e: Exact::new(fpu.mxcsr) }, Fx { mode: Mode::from_cw(fpu.control) }))
 }
 
-fn done(sse: &Sse) -> Result<(), Fallback> {
+pub(crate) fn done(sse: &Sse) -> Result<(), Fallback> {
     if sse.e.trapped { Err(Fallback::Float) } else { Ok(()) }
 }
 
 /// The transposed rotation of the transform at `m`: three rows, each
 /// with its `w` lane the row's `z` (`0x002da4d0`'s shuffles).
-fn rows(j: &Journal, m: u32) -> Result<[u128; 3], Fallback> {
+pub(crate) fn rows(j: &Journal, m: u32) -> Result<[u128; 3], Fallback> {
     let c2 = vec(j, m.wrapping_add(0x20))?;
     let c0 = vec(j, m)?;
     let c1 = vec(j, m.wrapping_add(0x10))?;
@@ -143,7 +143,7 @@ fn rows(j: &Journal, m: u32) -> Result<[u128; 3], Fallback> {
 }
 
 /// `(r0 x + r1 y) + r2 z`, each product row times the splat.
-fn combine(sse: &mut Sse, r: &[u128; 3], v: u128) -> u128 {
+pub(crate) fn combine(sse: &mut Sse, r: &[u128; 3], v: u128) -> u128 {
     let z = sse.mul(r[2], splat(lane(v, 2)));
     let y = sse.mul(r[1], splat(lane(v, 1)));
     let x = sse.mul(r[0], splat(lane(v, 0)));
@@ -191,7 +191,7 @@ pub fn rotate(j: &mut Journal, out: u32, m: u32, v: u32, fpu: Fpu) -> Result<(),
 }
 
 /// `u.yzx * v.zxy - u.zxy * v.yzx`, `w` included: the query's cross product.
-fn cross(sse: &mut Sse, u: u128, v: u128) -> u128 {
+pub(crate) fn cross(sse: &mut Sse, u: u128, v: u128) -> u128 {
     let left = sse.mul(shuf1(u, 0xc9), shuf1(v, 0xd2));
     let right = sse.mul(shuf1(u, 0xd2), shuf1(v, 0xc9));
     sse.sub(left, right)
@@ -277,7 +277,7 @@ pub struct Closest {
     pub distance: u32,
 }
 
-fn cmp(a: F80, b: F80) -> Cmp {
+pub(crate) fn cmp(a: F80, b: F80) -> Cmp {
     x87::compare(a, b, false).0
 }
 
@@ -800,7 +800,7 @@ enum Flow {
     Out(bool),
 }
 
-fn set(j: &mut Journal, at: u32, v: u32) -> Result<(), Fallback> {
+pub(crate) fn set(j: &mut Journal, at: u32, v: u32) -> Result<(), Fallback> {
     j.put(at, v).ok_or(Fallback::Memory)
 }
 
@@ -1353,7 +1353,8 @@ pub mod tri_frame {
     pub const EAX: u32 = 0x1c;
 }
 
-/// The call [`triangle_case`] makes out.
+/// The call [`triangle_case`] makes out; [`crate::penetration::Port`]
+/// answers it in Rust up to the expanding polytope.
 pub trait Penetration {
     /// `0x0030a6b0`, cdecl `(shape A, shape B, transform, simplex,
     /// differences, direction)`: the simplex at entry is up to four

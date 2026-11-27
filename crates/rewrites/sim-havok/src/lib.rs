@@ -17,6 +17,7 @@ pub mod manifold;
 pub mod mem;
 pub mod motion;
 pub mod motion_solve;
+pub mod penetration;
 pub mod shape_support;
 pub mod solver;
 pub mod structure;
