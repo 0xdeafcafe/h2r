@@ -15,6 +15,7 @@
 use engine::points;
 use engine::sim_physics::{PHYSICS_PORTS, Port, supported};
 use ir::interp::{Cpu, FlatMemory};
+use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
 use lifted::image::{Image, Rng};
 use runtime::{Guest, guest::Permissions};
