@@ -89,7 +89,10 @@
 //! - **The pass** ([`LayerViewPass`]): the device's view constants and W
 //!   clip at the issue, then per run of the list `GpuWorld::layer_draws`
 //!   or `LitObjects::draws` in the D3D pass open on the bound
-//!   attachments. A sorted handler's layer whose passes sample the view's
+//!   attachments. A scene view's structure runs are culled on the GPU
+//!   instead (`LayerViewPass::encoded_culled`, `GpuWorld::culled_layer_draws`;
+//!   docs/graphics/native-world.md, "Cull"): recorded as commands, the
+//!   layer cull, then one pass with every run's packets. A sorted handler's layer whose passes sample the view's
 //!   own target (engine texture 5) is recorded as commands instead: the
 //!   bound colour copied (`LitObjects::view_copy`), then a render pass of
 //!   its own on the same attachments with the draws binding the copy
@@ -115,6 +118,8 @@ use native_render::fog_gpu::{LayerSamples, sampled_constants};
 use native_render::layer_pass::{self, ItemSkip, ListItem};
 use native_render::object_program_gpu::{self, LitObjects, OBJECT_LAYERS, PlannedDraw};
 use native_render::object_streams::StreamFormats;
+use native_render::camera::RenderCamera;
+use native_render::gpu::PassViewport;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
 use render_bridge::late_sorted::{Run, RunAt};
@@ -615,6 +620,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
         };
         let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: Vec::new() };
+        // The lens the structure is culled by, as layer 3's admission takes
+        // it: the union of both copies' (`native_world_glue`).
+        let camera = scene.views.first().map(|v| v.camera);
+        let cull_camera = match (camera, d.external_ready(&ReadMemory(mem), false)) {
+            (Some(camera), Ok(target)) => {
+                Some(native_render::camera::display_camera(camera, d.projection_factor_for_target(target.surface_size)))
+            }
+            _ => None,
+        };
         // Bound only when a surrendered draw samples it.
         let texaccum = texaccum.filter(|_| runs.iter().any(|r| matches!(r, LayerRun::Objects(draws) if draws.iter().any(|(_, draw)| draw.texaccum))));
         let pass = Box::new(LayerViewPass {
@@ -630,6 +644,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             writes_depth: data.is_some_and(|d| d.writes_depth),
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
+            camera,
+            cull_camera,
+            token: crate::native_world_glue::view_token(u64::from(d.swap_count()).wrapping_add(1), view_index),
         });
         let Some(reservation) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten() else {
             left.all("reservation");
@@ -718,6 +735,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             writes_depth: data.is_some_and(|d| d.writes_depth),
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
+            // Layer 2's sorted runs are not the cull's: drawn unculled.
+            camera: None,
+            cull_camera: None,
+            token: 0,
         });
         let Some(reservation) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten() else {
             left.all("reservation");
@@ -1019,9 +1040,24 @@ struct LayerViewPass {
     /// `fog_gpu::layer_stencil`).
     stencil: gfx::state::StencilState,
     run: u64,
+    /// The scene view's camera, and the lens its structure is culled by
+    /// on the GPU: the union of the reference and display copies'
+    /// (`display_camera` at the target's projection factor), as layer 3's
+    /// admission takes it. Without them the structure runs draw unculled.
+    camera: Option<RenderCamera>,
+    cull_camera: Option<RenderCamera>,
+    /// This view in this frame (`native_world_glue::view_token`): the
+    /// pyramid its layer 3 built, which the structure's cull may read.
+    token: u64,
 }
 
 impl LayerViewPass {
+    /// Whether the structure runs are culled on the GPU
+    /// ([`LayerViewPass::encoded_culled`]).
+    fn culls(&self) -> bool {
+        self.world_runs().next().is_some() && self.cull_camera.is_some() && self.camera.is_some() && !self.samples_view()
+    }
+
     fn world_runs(&self) -> impl Iterator<Item = &[(Owner, u8)]> {
         self.runs.iter().filter_map(|r| match r {
             LayerRun::World(parts) => Some(parts.as_slice()),
@@ -1107,7 +1143,7 @@ impl d3d::ExternalPass for LayerViewPass {
     fn record_draws(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        if self.samples_view() {
+        if self.samples_view() || self.culls() {
             return None;
         }
         Some(self.record(t, request))
@@ -1118,6 +1154,9 @@ impl d3d::ExternalPass for LayerViewPass {
     fn record_encoded(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        if self.culls() {
+            return Some(self.encoded_culled(t, request));
+        }
         if !self.samples_view() {
             return None;
         }
@@ -1391,18 +1430,7 @@ impl LayerViewPass {
                         &self.fogs, &self.stencil, &self.samples,
                     )?
                 }
-                LayerRun::Objects(draws) => {
-                    let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
-                    let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
-                    let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
-                    if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
-                        return Err("layer object geometry or material unavailable");
-                    }
-                    lit.draws(
-                        &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-                        request.projection_factor(t.copy), draws, crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
-                    )?
-                }
+                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws)?,
             };
             out.ranges += draws.ranges;
             out.packets.extend(draws.packets);
@@ -1410,6 +1438,85 @@ impl LayerViewPass {
             out.writes.extend(draws.writes);
         }
         clip_packets(out, request, t.size)
+    }
+
+    /// One run of object pass draws, from the models.
+    fn object_run(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest, view: &ViewInputs,
+        draws: &[(u32, PlannedDraw)],
+    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
+        let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
+        let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
+        if draws.iter().any(|(model, d)| !lit.has_draw_assets(*model, d) || d.indices.is_empty()) {
+            return Err("layer object geometry or material unavailable");
+        }
+        lit.draws(
+            &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, view,
+            request.projection_factor(t.copy), draws, crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
+        )
+    }
+
+    /// The runs as commands, the structure culled on the GPU
+    /// (`GpuWorld::culled_layer_draws`): the runs' uniform writes copied
+    /// in draw order, the layer cull by `cull_camera` (and, where this
+    /// view's layer 3 built one on this target, its pyramid), then one
+    /// render pass on the bound attachments (loaded and kept) with every
+    /// run's packets in the list's order.
+    fn encoded_culled(
+        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
+    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        let view = self.view_inputs(t, request)?;
+        let (camera, cull_camera) = self.camera.zip(self.cull_camera).ok_or("layer camera unavailable")?;
+        let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
+        let lens = native_render::camera::display_camera(camera, request.projection_factor(t.copy));
+        let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
+        let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
+        let world_runs: Vec<&[(Owner, u8)]> = self.world_runs().collect();
+        let (world, dispatch) = {
+            let mut guard = ready.gpu();
+            let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+            gpu.culled_layer_draws(
+                self.layer, &t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size, &world_runs, &view,
+                &self.fogs, &self.stencil, &self.samples, &cull_camera, occlusion,
+            )?
+        };
+        let mut world = world.into_iter();
+        let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
+        for run in &self.runs {
+            let draws = match run {
+                LayerRun::World(_) => world.next().ok_or("a structure run drew nothing")?,
+                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws)?,
+            };
+            out.ranges += draws.ranges;
+            out.packets.extend(draws.packets);
+            out.discards |= draws.discards;
+            out.writes.extend(draws.writes);
+        }
+        let out = clip_packets(out, request, t.size)?;
+        let writes: Vec<(wgpu::Buffer, u64, wgpu::Buffer, u64, u64)> = out
+            .writes
+            .into_iter()
+            .map(|(dst, offset, bytes)| {
+                let (src, at) = t.uploads.stage(&t.device, &t.queue, &bytes);
+                (src, at, dst, offset, bytes.len() as u64)
+            })
+            .collect();
+        let packets = out.packets;
+        let (ranges, count) = (out.ranges, packets.len());
+        let (color, depth) = (t.color.clone(), t.depth.clone());
+        let stencil = t.depth_format.has_stencil_aspect();
+        let commands = move |encoder: &mut wgpu::CommandEncoder| {
+            for (src, at, dst, offset, len) in &writes {
+                encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
+            }
+            dispatch.record(encoder);
+            let mut pass = load_pass(encoder, &color, &depth, stencil);
+            // Checked when the packets were made: every pipeline bound, no
+            // counted draw.
+            let _ = gfx::renderer::encode_in_pass(&mut pass, &packets);
+        };
+        Ok(d3d::backend::ExternalEncoded { ranges, draws: count, passes: 1, commands: Box::new(commands) })
     }
 }
 

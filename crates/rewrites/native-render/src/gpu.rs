@@ -334,6 +334,9 @@ pub struct GpuWorld {
     /// The game views' cull of the guest's selected parts
     /// ([`GpuWorld::culled_selection_draws`]).
     guest_cull: GpuCull,
+    /// The later world layers' cull of their structure items
+    /// ([`GpuWorld::culled_layer_draws`]).
+    layer_cull: GpuCull,
     frame: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
     batch_groups: Vec<wgpu::BindGroup>,
@@ -639,6 +642,7 @@ impl GpuWorld {
         let indices = init("native world indices", bytemuck::cast_slice(idx), wgpu::BufferUsages::INDEX);
         let cull = GpuCull::new(device, &world);
         let guest_cull = GpuCull::new(device, &world);
+        let layer_cull = GpuCull::new(device, &world);
         let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native world frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
@@ -777,6 +781,7 @@ impl GpuWorld {
             indices,
             cull,
             guest_cull,
+            layer_cull,
             frame,
             frame_group,
             batch_groups,
@@ -836,6 +841,7 @@ impl GpuWorld {
         self.write_run(queue, run);
         self.cull.write_bounds(queue, &self.world);
         self.guest_cull.write_bounds(queue, &self.world);
+        self.layer_cull.write_bounds(queue, &self.world);
         Ok(run)
     }
 
@@ -1043,7 +1049,55 @@ impl GpuWorld {
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
         }
-        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, gfx::ScissorRect::full(target_size.0, target_size.1), selected, view, fogs, stencil, samples)
+        set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size, gfx::ScissorRect::full(target_size.0, target_size.1), selected, view, fogs, stencil, samples, None)
+    }
+
+    /// [`GpuWorld::layer_draws`] for a later layer's structure runs, culled
+    /// on the GPU (docs/graphics/native-world.md, "Cull"): each run's
+    /// packets draw their parts' slots of the layer cull, which
+    /// [`GuestDispatch::record`] writes from `Frustum::sides` of `camera`
+    /// over every run's parts. With `occlusion` (the depth target, the
+    /// copy's lens and rectangle, and the game view's token) an item every
+    /// pass of which draws nothing where hidden (`hidden_draws_nothing`)
+    /// is also tested against the pyramid that game view's layer 3 built
+    /// on this target ([`GpuWorld::culled_selection_draws`] with the same
+    /// token, screen and depth model); without one the frustum alone
+    /// culls (`OcclusionSkips::layer_view`). The caller records `record`,
+    /// then the runs' packets, in one encoder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn culled_layer_draws(
+        &mut self, layer: u8, uploads: &gfx::ring::SubmissionUploads, device: &wgpu::Device, queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
+        runs: &[&[(Owner, u8)]], view: &ViewInputs, fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+        stencil: &gfx::state::StencilState, samples: &crate::fog_gpu::LayerSamples, camera: &RenderCamera,
+        occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport, u64)>,
+    ) -> Result<(Vec<gfx::external::ExternalDraws>, GuestDispatch), &'static str> {
+        let Self { layers, packet_pipelines, program_vertices, indices, part_slots, layer_cull, guest_cull, world, .. } = self;
+        let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
+        let pipeline_stencil =
+            crate::fog_gpu::layer_stencil(stencil, depth_format).ok_or("the layer's stencil needs a stencil attachment")?;
+        set.prepare_pipelines_stencil(device, color_format, depth_format, &pipeline_stencil, PipelineUse::Direct);
+        if packet_pipelines.len() > 4096 {
+            packet_pipelines.clear();
+        }
+        let mut start = vec![0u32; world.draws.len()];
+        let mut out = Vec::with_capacity(runs.len());
+        for selected in runs {
+            let slots = crate::fog_gpu::LayerSlots { early: &layer_cull.early, slots: &*part_slots, start: &mut start[..] };
+            out.push(set.draws_stencil(packet_pipelines, program_vertices, indices, color_format, depth_format, target_size,
+                gfx::ScissorRect::full(target_size.0, target_size.1), selected, view, fogs, stencil, samples, Some(slots))?);
+        }
+        let vp = camera.view_projection();
+        // The game view's pyramid, as its layer 3 tested it.
+        let scale = target_size.0 as f32 / view.guest_size.0.max(1) as f32;
+        let occlusion = occlusion.and_then(|(depth, lens, viewport, token)| {
+            let map = ScreenMap::viewport(&lens.view_projection(), viewport).with_margin(2.0 + scale);
+            let model = DepthModel::program(view);
+            let served = guest_cull.served_pyramid(depth, token, &map, &model)?;
+            Some((model, map, served))
+        });
+        let dispatch = layer_cull.layer_dispatch(device, queue, uploads, &vp, &Frustum::sides(&vp), &start, occlusion);
+        Ok((out, dispatch))
     }
 
     /// Draws the water edge blend of `set`'s materials from now on.
@@ -1721,7 +1775,7 @@ impl GpuWorld {
         color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs, camera: &RenderCamera, lighting: d3d::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
-        occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport)>,
+        occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport, u64)>,
     ) -> Result<CulledSelection, &'static str> {
         let slots = (self.guest_cull.early.clone(), self.guest_cull.late.clone());
         let (draws, late, start) = self.selection_packets(color_format, depth_format, target_size, selection, view,
@@ -1730,9 +1784,9 @@ impl GpuWorld {
         // The copy's lens into its rectangle; a scaled copy's sample shift
         // within one guest pixel of the margin.
         let scale = target_size.0 as f32 / view.guest_size.0.max(1) as f32;
-        let occlusion = occlusion.map(|(t, lens, viewport)| {
+        let occlusion = occlusion.map(|(t, lens, viewport, token)| {
             let map = ScreenMap::viewport(&lens.view_projection(), viewport).with_margin(2.0 + scale);
-            (DepthModel::program(view), map, t)
+            (DepthModel::program(view), map, t, token)
         });
         let dispatch = self.guest_cull.guest_dispatch(device, queue, uploads, &vp, &Frustum::sides(&vp), &start, occlusion);
         let late = if dispatch.has_late() { late } else { Vec::new() };
@@ -1742,6 +1796,23 @@ impl GpuWorld {
     /// Views of a game whose guest cull ran without the pyramid, by why.
     pub fn guest_occlusion_skips(&self) -> OcclusionSkips {
         self.guest_cull.skips()
+    }
+
+    /// Later layers' views culled without a game view's pyramid
+    /// (`layer_view`).
+    pub fn layer_occlusion_skips(&self) -> OcclusionSkips {
+        self.layer_cull.skips()
+    }
+
+    /// The last later layer's cull counts, read back (blocking): for tests
+    /// and tools.
+    pub fn read_layer_cull_stats(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> CullStats {
+        self.layer_cull.read_stats(device, queue)
+    }
+
+    /// Whether each draw was drawn by the last later layer's cull.
+    pub fn read_layer_drawn(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<bool> {
+        self.layer_cull.read_drawn(device, queue)
     }
 
     /// The last game view's guest cull counts (`visible` is what its
@@ -2154,6 +2225,18 @@ pub fn keeps_order(key: &gfx::pipeline::PipelineKey) -> bool {
         || !matches!(ds.depth_compare, Some(C::Less | C::LessEqual))
         || ds.stencil.write_mask != 0
             && [ds.stencil.front, ds.stencil.back].iter().any(|f| f.depth_fail_op != S::Keep)
+}
+
+/// Whether a draw under this pipeline draws nothing at a fragment its
+/// depth test hides: a `Less`, `LessEqual` or `Equal` test (blending or
+/// not), and no stencil write when the test fails. A later layer's item
+/// every pass of which holds this may be culled by a game view's pyramid
+/// ([`GpuWorld::culled_layer_draws`]).
+pub fn hidden_draws_nothing(key: &gfx::pipeline::PipelineKey) -> bool {
+    use wgpu::{CompareFunction as C, StencilOperation as S};
+    let Some(ds) = &key.depth_stencil else { return false };
+    matches!(ds.depth_compare, Some(C::Less | C::LessEqual | C::Equal))
+        && !(ds.stencil.write_mask != 0 && [ds.stencil.front, ds.stencil.back].iter().any(|f| f.depth_fail_op != S::Keep))
 }
 
 /// [`append_triangles`] for runs of slots: `next` joins a run it follows.
