@@ -18,9 +18,6 @@
 //! comparator is not a total order), a non-finite depth, or a class or tie
 //! whose guest subtraction could wrap.
 
-use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
-
 /// The most items one sort takes (the guest list's capacity, `0x400`).
 pub const CAPACITY: usize = 1024;
 
@@ -121,97 +118,107 @@ pub struct Sorted {
     pub tied: bool,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Params {
-    n: u32,
-    passes: u32,
-    pad: [u32; 2],
-}
+#[cfg(feature = "gpu")]
+pub use device::GpuSort;
 
-/// The sort's pipeline.
-pub struct GpuSort {
-    pipeline: wgpu::ComputePipeline,
-}
+#[cfg(feature = "gpu")]
+mod device {
+    use super::{Keys, Sorted};
+    use bytemuck::{Pod, Zeroable};
+    use wgpu::util::DeviceExt;
 
-impl GpuSort {
-    pub fn new(device: &wgpu::Device) -> Self {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native transparent sort"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("transparent_sort.wgsl").into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("native transparent sort"),
-            layout: None,
-            module: &module,
-            entry_point: Some("sort"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        Self { pipeline }
+    #[repr(C)]
+    #[derive(Clone, Copy, Pod, Zeroable)]
+    struct Params {
+        n: u32,
+        passes: u32,
+        pad: [u32; 2],
     }
 
-    /// Records the sort of `keys` and returns the buffer `order` holds on
-    /// the GPU: `n` item indices, then the tie flag. The renderer's
-    /// indirect draws read it in place.
-    pub fn encode(&self, device: &wgpu::Device, enc: &mut wgpu::CommandEncoder, keys: &Keys) -> wgpu::Buffer {
-        let n = keys.words.len();
-        let storage = |label, bytes: &[u8]| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                // A binding cannot be empty.
-                contents: if bytes.is_empty() { &[0; 16] } else { bytes },
-                usage: wgpu::BufferUsages::STORAGE,
-            })
-        };
-        let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("native transparent sort params"),
-            contents: bytemuck::bytes_of(&Params { n: n as u32, passes: keys.passes.len() as u32, pad: [0; 2] }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let words = storage("native transparent sort keys", bytemuck::cast_slice(&keys.words));
-        let bits = storage("native transparent sort bits", bytemuck::cast_slice(&keys.passes));
-        let order = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("native transparent sort order"),
-            size: (n as u64 + 1) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: words.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: bits.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: order.as_entire_binding() },
-            ],
-        });
-        let mut pass = enc.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.dispatch_workgroups(1, 1, 1);
-        drop(pass);
-        order
+    /// The sort's pipeline.
+    pub struct GpuSort {
+        pipeline: wgpu::ComputePipeline,
     }
 
-    /// Sorts and reads the answer back (tests, and the shadow compare).
-    pub fn sort(&self, device: &wgpu::Device, queue: &wgpu::Queue, keys: &Keys) -> Sorted {
-        let n = keys.words.len();
-        let mut enc = device.create_command_encoder(&Default::default());
-        let order = self.encode(device, &mut enc, keys);
-        let read = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: order.size(),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        enc.copy_buffer_to_buffer(&order, 0, &read, 0, order.size());
-        queue.submit([enc.finish()]);
-        read.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let words: Vec<u32> = bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
-        Sorted { order: words[..n].to_vec(), tied: words[n] != 0 }
+    impl GpuSort {
+        pub fn new(device: &wgpu::Device) -> Self {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native transparent sort"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("transparent_sort.wgsl").into()),
+            });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("native transparent sort"),
+                layout: None,
+                module: &module,
+                entry_point: Some("sort"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            Self { pipeline }
+        }
+
+        /// Records the sort of `keys` and returns the buffer `order` holds on
+        /// the GPU: `n` item indices, then the tie flag. The renderer's
+        /// indirect draws read it in place.
+        pub fn encode(&self, device: &wgpu::Device, enc: &mut wgpu::CommandEncoder, keys: &Keys) -> wgpu::Buffer {
+            let n = keys.words.len();
+            let storage = |label, bytes: &[u8]| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    // A binding cannot be empty.
+                    contents: if bytes.is_empty() { &[0; 16] } else { bytes },
+                    usage: wgpu::BufferUsages::STORAGE,
+                })
+            };
+            let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("native transparent sort params"),
+                contents: bytemuck::bytes_of(&Params { n: n as u32, passes: keys.passes.len() as u32, pad: [0; 2] }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let words = storage("native transparent sort keys", bytemuck::cast_slice(&keys.words));
+            let bits = storage("native transparent sort bits", bytemuck::cast_slice(&keys.passes));
+            let order = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("native transparent sort order"),
+                size: (n as u64 + 1) * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: words.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: bits.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: order.as_entire_binding() },
+                ],
+            });
+            let mut pass = enc.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+            drop(pass);
+            order
+        }
+
+        /// Sorts and reads the answer back (tests, and the shadow compare).
+        pub fn sort(&self, device: &wgpu::Device, queue: &wgpu::Queue, keys: &Keys) -> Sorted {
+            let n = keys.words.len();
+            let mut enc = device.create_command_encoder(&Default::default());
+            let order = self.encode(device, &mut enc, keys);
+            let read = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: order.size(),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            enc.copy_buffer_to_buffer(&order, 0, &read, 0, order.size());
+            queue.submit([enc.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let words: Vec<u32> = bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
+            Sorted { order: words[..n].to_vec(), tied: words[n] != 0 }
+        }
     }
 }
 

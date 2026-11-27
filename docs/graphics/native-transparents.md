@@ -90,6 +90,8 @@ The guest's quicksort leaves equal keys in an order of its own, and its plane co
 | `count` | more than `0x400` items |
 | `ties` | the sort reports two equal keys |
 
+The sort runs from the transparent dispatch (`render_bridge::native_scene_lists::transparents`, `build_order`) when the game glue has registered it (`native_transparent_sort_glue`, on the game's upload device, with the native renderer on). A list with no plane, no bad depth and no tie takes the GPU order; one list in 64 is also sorted on the CPU and a difference counts `scene_sort_gpu_mismatch` and uses the CPU order. `scene_sort_gpu` counts lists the GPU ordered and `scene_sort_gpu_unavailable` a sort that gave no answer. The shadow arm's reference (`order`) is always the CPU sort.
+
 Tests: `crates/rewrites/native-render/tests/transparent_sort_gpu.rs` (10,000 random keys with many ties against the stable CPU order, equal keys in input order, an empty list, one item).
 
 ### GPU submission

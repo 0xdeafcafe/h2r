@@ -149,7 +149,6 @@ pub mod text;
 #[cfg(feature = "gpu")]
 pub mod texture_groups;
 pub mod transparent;
-#[cfg(feature = "gpu")]
 pub mod transparent_sort;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;

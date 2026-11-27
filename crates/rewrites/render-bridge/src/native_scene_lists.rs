@@ -17,6 +17,7 @@ pub use setup::{DisplayGeometry, DisplaySection, display_model};
 mod regions;
 mod sphere_regions;
 mod transparents;
+pub use transparents::{set_gpu_sorter, sort_counters};
 pub(crate) mod view_records;
 mod window;
 pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key, order as transparent_order};
