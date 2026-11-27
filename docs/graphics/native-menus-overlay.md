@@ -1,6 +1,6 @@
 # The menus, the fade and the blur on the overlay
 
-Status: Partly built. Containers, plain bitmap widgets, meters, supported text, lists and buttons, the fade, the bars, the loading screen and the blur under a dialog draw from the overlay; scrolling bitmaps and unsupported widget states keep the guest's draws.
+Status: Partly built. Containers, plain and scrolling bitmap widgets, meters, supported text, lists and buttons, the fade, the bars, the loading screen and the blur under a dialog draw from the overlay; unsupported widget states keep the guest's draws.
 Code: `crates/rewrites/render-bridge/src/native_hud/ui_overlay.rs`, `ui_overlay/bitmaps.rs`, `modal_blur.rs`, `crates/extensions/game/src/hud_overlay.rs`, `modal_blur_glue.rs`, `crates/rewrites/scene-extract/src/ui` (`collect`, `compare`, `sort_widgets`, `read_widget`, `draw_list`), `crates/rewrites/native-render/src/ui_gpu.rs`, `glow.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -60,8 +60,7 @@ The remaining guest draws count by reason in `render.stats`:
 
 | Reason | Draw | What keeps it on the guest |
 |---|---|---|
-| `bitmap_scroll` | `0x00235f31` | the scrolling quad's coordinates from the widget's `+0x7c` state |
-| `bitmap_state` | `0x002b0565`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
+| `bitmap_state` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set from elsewhere, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
 | `text` | text or button label | interface overrides, reveal updates, substitution, custom tabs or an unsupported transform |
 | `model` | model scene | active nested view, light processing or unresolved selection semantics |
 | `draw` | list, button or custom draw | unsupported class-specific lookup, placement or guest side effects |
@@ -75,9 +74,25 @@ The bitmap widget's draw `0x002b0540` (Code, `h2 disasm`) draws nothing without 
 2. The tint: the alpha at `+0x64` and the colour at `+0x28` to `+0x30`, each times `[0x0045dc38]` and rounded by `fistp` (nearest, ties to even), packed ARGB by shifting left 8 and or-ing the next, with no masks, so a channel past 255 runs into the one above it.
 3. The image (`0x002b0b19`): the pointer at `+0x8c` when set, else the bitmap tag's image at `+0x88` when in range (the tag's count at `+0x44`, its images from `+0x48`, `0x74` bytes each), the first otherwise.
 4. The rectangle (`0x0022ea81`): the header's, plus the animated offset's X and Y, both corners projected at the offset's Z (`0x0023618e`, `0x002360c3`). The projection depth is the depth plus the camera's distance `[0x0054d5b0]` (1 when under `[0x0045dbdc]` in magnitude), kept at least 1 when not below `[0x0045dbd8]` and at most `[0x0045dbcc]` when below. X is times one over the depth over the distance, plus half the view's width; Y is half the view's height less Y times that. Then the view's offset is added (Y negated).
-5. A definition that scrolls (`+0x10` or `+0x14` not 0) draws through `0x00235f31`. Otherwise `0x00235e5e` takes coordinates from 0 to the image's size over that size (at least 1), at most 1, in texels for a linear image. `0x0023675a` makes the four corners (the far ones as the near plus the extent) and a screen-quad record of the image (clamped, linear filtering), with blend mode 1 when the definition's `+0x08` is 1, else 0. It draws through `0x00052040` when the image is resident (`0x00012360`: its `+0x70` past `[0x004e6488]` and its texture set).
+5. A definition that scrolls (`+0x10` or `+0x14` not 0, or either unordered) draws through `0x00235f31` ([Scrolling bitmaps](#scrolling-bitmaps)). Otherwise `0x00235e5e` takes coordinates from 0 to the image's size over that size (at least 1), at most 1, in texels for a linear image. `0x0023675a` makes the four corners (the far ones as the near plus the extent) and a screen-quad record of the image (clamped, linear filtering), with blend mode 1 when the definition's `+0x08` is 1, else 0. It draws through `0x00052040` when the image is resident (`0x00012360`: its `+0x70` past `[0x004e6488]` and its texture set).
 
 For a record of one image and no colour pointers, `0x00052040` writes a two-stage combiner: stage 0 multiplies the image by its first constant, stage 1 multiplies that by the vertex colour, and the final combiner outputs it. The constant is the colour `[0x00468710]` points at with alpha 1; when that colour is white, the combiner is `Combiner::Texture`. The begin's screen transform with its half pixel puts a guest pixel coordinate on the overlay's pixel edge of the same number.
+
+### Scrolling bitmaps
+
+`0x00235f31` (`ui_overlay::bitmaps::scrolled`) cuts the step 4 rectangle (`x0`, `x1`, `y0`, `y1`) at the widget's scroll state (`+0x7c`: two fractions `su`, `sv`, read as they are): `xm = (x1 - x0) * su + x0`, `ym = (y1 - y0) * sv + y0`. It draws up to four quads, in this order, through `0x0023675a` with the plain quad's tint, image and blend; the image wraps by the fractions (`cu = 1 - su`, `cv = 1 - sv`):
+
+| Piece | X | Y | U | V |
+|---|---|---|---|---|
+| 0 | `x0` to `xm` | `y0` to `ym` | `cu` to 1 | `cv` to 1 |
+| 1 | `xm` to `x1` | `y0` to `ym` | 0 to `cu` | `cv` to 1 |
+| 2 | `x0` to `xm` | `ym` to `y1` | `cu` to 1 | 0 to `cv` |
+| 3 | `xm` to `x1` | `ym` to `y1` | 0 to `cu` | 0 to `cv` |
+
+- A piece under one pixel wide or high (`comiss; jb`, so an unordered one too) is not drawn.
+- A linear image's coordinates are times its size. There is no clamp and no size floor, as `0x00235e5e` has.
+- The overlay lists the drawn pieces as one `UiDraw::Bitmap` each, in that order, under the widget's one draw. With none drawn the widget draws nothing.
+- The residency, stage constant and quads-off checks of step 5 hold for every piece: a refused scroll is `bitmap_state`.
 
 ### Meters
 
@@ -91,7 +106,7 @@ A meter's draw `0x002b07e2` is one filled rectangle (`ui_overlay::bitmaps::meter
 
 The overlay draws it as a `UiContent::Bitmap` of that image at texel 0. An image that is not resident, a bitmap with one image, or the debug labels on is `bitmap_state`.
 
-`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or refuses the widget: a scrolling bitmap, or any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads, or when the image does not decode, the run is not placed and the game draws it.
+`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or a scrolling bitmap's quads (`bitmaps::Drawn::Quads`), or refuses the widget: any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads, or when the image does not decode, the run is not placed and the game draws it.
 
 ## The fade, the bars and the loading screen
 

@@ -272,7 +272,14 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
         _ => match walk::read_widget(mem, e.widget, e.depth) {
             Ok(widget) => widget,
             Err(Unread::Bitmap) => {
-                bitmaps::read(mem, e.widget, e.depth, viewport).map_err(MenuRefusal::Bitmap)?
+                match bitmaps::read(mem, e.widget, e.depth, viewport).map_err(MenuRefusal::Bitmap)? {
+                    bitmaps::Drawn::Widget(widget) => widget,
+                    // A scrolling bitmap: its quads, in its draw's order.
+                    bitmaps::Drawn::Quads(quads) => {
+                        frame.draws.extend(quads.into_iter().map(UiDraw::Bitmap));
+                        return Ok(frame);
+                    }
+                }
             }
             Err(why) => return Err(MenuRefusal::Widget(why)),
         },
@@ -737,7 +744,7 @@ mod tests {
     }
 
     /// A bitmap widget lists as the quad its draw makes, in a run of its
-    /// own; a scrolling one is the game's, counted by its reason.
+    /// own; a scrolling one as its quads, one draw left out.
     #[test]
     fn a_bitmap_widget_is_claimed_with_its_quad() {
         use bitmaps::tests::{DATUM, DEF, VIEW, WIDGET, bitmap_widget};
@@ -767,13 +774,15 @@ mod tests {
             }
         );
         mem.w(DEF + 0x14, 0.5f32.to_bits());
+        mem.w(WIDGET + 0x7c, 0.25f32.to_bits());
+        mem.w(WIDGET + 0x80, 0.5f32.to_bits());
         let (claim, refused) = plan(&mem, &list);
-        assert!(claim.runs.is_empty());
-        assert_eq!(refused, [(0, MenuRefusal::Bitmap(bitmaps::Refusal::Scroll))]);
-        assert_eq!(
-            MenuRefusal::Bitmap(bitmaps::Refusal::Scroll).counter() as usize,
-            Ui::OverlayMenuRefusedBitmapScroll as usize
-        );
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(claim.claimed(), 1, "one draw, whatever its quads");
+        let part = &claim.runs[0].part;
+        assert_eq!(part.items.len(), 4);
+        assert!(part.items.iter().all(|i| i.material.texture
+            == frame_scene::OverlayTexture::Bitmap { tag: DATUM, image: 1 }));
     }
 
     /// A meter is claimed as its one rectangle, in a run of its own.

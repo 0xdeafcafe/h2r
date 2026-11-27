@@ -23,13 +23,29 @@
 //!    about the view's centre (`0x0023618e`, `0x002360c3`, [`project`]);
 //!    then the view's offset added.
 //! 6. A definition that scrolls (`+0x10` or `+0x14` not 0) draws through
-//!    `0x00235f31`: refused. Else `0x00235e5e`: coordinates 0 to the
-//!    image's size over that size (at least 1), at most 1, in texels for
-//!    a linear image ([`coordinates`]); then `0x0023675a` makes the four
-//!    corners and a screen-quad record of the image (clamped, linear
-//!    filtering) with blend mode 1 when the definition's `+0x08` is 1,
-//!    else 0, and draws it through `0x00052040` when the image is
-//!    resident (`0x00012360`).
+//!    `0x00235f31` ([`scrolled`]): up to four quads. Else `0x00235e5e`:
+//!    coordinates 0 to the image's size over that size (at least 1), at
+//!    most 1, in texels for a linear image ([`coordinates`]). Either way
+//!    `0x0023675a` makes each quad's four corners and a screen-quad
+//!    record of the image (clamped, linear filtering) with blend mode 1
+//!    when the definition's `+0x08` is 1, else 0, and draws it through
+//!    `0x00052040` when the image is resident (`0x00012360`).
+//!
+//! `0x00235f31` cuts the rectangle at the widget's scroll state (`+0x7c`,
+//! two fractions `su`, `sv`, read as they are): `xm = (x1 - x0) * su +
+//! x0`, `ym` likewise, and draws four pieces in this order, wrapping the
+//! image by the fractions (`c = 1 - s`):
+//!
+//! | Piece | X | Y | U | V |
+//! |---|---|---|---|---|
+//! | 0 | `x0..xm` | `y0..ym` | `cu..1` | `cv..1` |
+//! | 1 | `xm..x1` | `y0..ym` | `0..cu` | `cv..1` |
+//! | 2 | `x0..xm` | `ym..y1` | `cu..1` | `0..cv` |
+//! | 3 | `xm..x1` | `ym..y1` | `0..cu` | `0..cv` |
+//!
+//! A piece under one pixel wide or high (`comiss; jb`, unordered too) is
+//! not drawn; a linear image's coordinates are times its size. There is
+//! no clamp and no size floor (`0x00235e5e`'s).
 //!
 //! `0x00052040`'s combiner for a record of one image and no colour
 //! pointers is the image times the vertex colour times stage 0's first
@@ -71,8 +87,6 @@ use timeline::native::Ui;
 /// Why a bitmap widget's draw is the game's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// A scrolling bitmap (`0x00235f31`).
-    Scroll,
     /// The draw is not the overlay's quad: the debug labels on, an image
     /// set from elsewhere (`+0x8c`), an image not resident, a tint
     /// constant not white, the quads turned off, a blend mode past the
@@ -86,11 +100,20 @@ pub enum Refusal {
 impl Refusal {
     pub fn counter(self) -> Ui {
         match self {
-            Refusal::Scroll => Ui::OverlayMenuRefusedBitmapScroll,
             Refusal::State => Ui::OverlayMenuRefusedBitmapState,
             Refusal::Unreadable => Ui::OverlayMenuRefusedUnreadable,
         }
     }
+}
+
+/// What a bitmap widget's draw makes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Drawn {
+    /// The widget, its content the one quad ([`UiContent::Bitmap`]) or
+    /// nothing ([`UiContent::None`]).
+    Widget(UiWidget),
+    /// A scrolling bitmap's quads, in the draw's order (at least one).
+    Quads(Vec<UiBitmap>),
 }
 
 /// The bitmap widget (Code, `0x002b01eb` builds it).
@@ -99,6 +122,8 @@ mod widget {
     pub const OFFSET: u32 = 0x58;
     pub const ALPHA: u32 = 0x64;
     pub const DEFINITION: u32 = 0x70;
+    /// The scroll state `0x00235f31` cuts at: two fractions, U then V.
+    pub const SCROLL_STATE: u32 = 0x7c;
     /// The `i16` image index (the word at `+0x88`).
     pub const IMAGE: u32 = 0x88;
     pub const IMAGE_POINTER: u32 = 0x8c;
@@ -328,6 +353,47 @@ pub fn coordinates([w, h]: [i16; 2], linear: bool, one: f32) -> [f32; 4] {
     [texels[0] / w, texels[1] / h, texels[2] / w, texels[3] / h]
 }
 
+/// `0x00235f31`: a scrolling bitmap's rectangle `[x0, x1, y0, y1]` cut
+/// at the scroll state `[su, sv]` into the pieces it draws, each its
+/// rectangle and its coordinates `[u0, v0, u1, v1]` over an image `size`
+/// (normalised, as [`coordinates`]'s), in the draw's order. A piece under
+/// `one` wide or high is not drawn.
+pub fn scrolled(
+    [x0, x1, y0, y1]: [f32; 4],
+    [su, sv]: [f32; 2],
+    [w, h]: [i16; 2],
+    linear: bool,
+    one: f32,
+) -> Vec<([f32; 4], [f32; 4])> {
+    let xm = (x1 - x0) * su + x0;
+    let ym = (y1 - y0) * sv + y0;
+    let (cu, cv) = (one - su, one - sv);
+    let (w, h) = (f32::from(w), f32::from(h));
+    [
+        ([x0, xm, y0, ym], [cu, cv, one, one]),
+        ([xm, x1, y0, ym], [0.0, cv, cu, one]),
+        ([x0, xm, ym, y1], [cu, 0.0, one, cv]),
+        ([xm, x1, ym, y1], [0.0, 0.0, cu, cv]),
+    ]
+    .into_iter()
+    // `comiss; jb`: under one, or unordered, is not drawn.
+    .filter(|&([x0, x1, y0, y1], _)| x1 - x0 >= one && y1 - y0 >= one)
+    .map(|(rect, [u0, v0, u1, v1])| {
+        if !linear {
+            return (rect, [u0, v0, u1, v1]);
+        }
+        let texels = [w * u0, h * v0, w * u1, h * v1];
+        (rect, [texels[0] / w, texels[1] / h, texels[2] / w, texels[3] / h])
+    })
+    .collect()
+}
+
+/// `0x0023675a`'s corners of a rectangle `[x0, x1, y0, y1]`, as the
+/// overlay's `[x0, y0, x1, y1]`: the far ones as the near plus the extent.
+fn corners([x0, x1, y0, y1]: [f32; 4]) -> [f32; 4] {
+    [x0, y0, x0 + (x1 - x0), y0 + (y1 - y0)]
+}
+
 /// `0x00052040`'s stage 0 constant for a record with no colour: the
 /// colour `[0x00468710]` points at, alpha 1. The combiner is the
 /// texture times the vertex colour only when it is white.
@@ -539,14 +605,14 @@ pub fn meter(
 /// The bitmap widget at `widget` (`depth` the list entry's), drawn in
 /// the view at `view_at` (the draw's argument): its header and the quad
 /// its draw makes ([`UiContent::Bitmap`]; [`UiContent::None`] when it
-/// makes none), or why the game draws it. The refusals come in the
-/// draw's order.
+/// makes none), a scrolling bitmap's quads, or why the game draws it.
+/// The refusals come in the draw's order.
 pub fn read(
     mem: &dyn GuestRead,
     widget: u32,
     depth: f32,
     view_at: u32,
-) -> Result<UiWidget, Refusal> {
+) -> Result<Drawn, Refusal> {
     use Refusal::Unreadable;
     let mut header = walk::read_header(mem, widget, depth).map_err(|_: Unread| Unreadable)?;
     let off = |base: u32, o: u32| base.checked_add(o).ok_or(Unreadable);
@@ -555,17 +621,17 @@ pub fn read(
     let i16_at = |a: u32| short(mem, a).ok_or(Unreadable);
     let def = w32(off(widget, widget::DEFINITION)?)?;
     if def == 0 {
-        return Ok(header);
+        return Ok(Drawn::Widget(header));
     }
     if w32(def)? & definition::METER != 0 {
-        return meter(mem, header, widget, view_at);
+        return meter(mem, header, widget, view_at).map(Drawn::Widget);
     }
     if byte(mem, at::DEBUG_LABELS).ok_or(Unreadable)? != 0 {
         return Err(Refusal::State);
     }
     let datum = w32(off(def, definition::BITMAP)?)?;
     if datum == u32::MAX {
-        return Ok(header);
+        return Ok(Drawn::Widget(header));
     }
     let view = view(mem, view_at).ok_or(Unreadable)?;
     let argb = tint(
@@ -605,16 +671,27 @@ pub fn read(
     let [px, py] = view_offset(view);
     let (px, py) = (f32::from(px), -i32::from(py) as f32);
     let r = [x0 + px, x1 + px, y0 + py, y1 + py];
-    // The definition's scrolling.
+    let mode = u32::from(i16_at(off(def, definition::BLEND_WORD)?)? == 1);
+    // The definition's scrolling (`ucomiss`: unordered scrolls).
     let scroll = [
         f32_at(off(def, definition::SCROLL)?)?,
         f32_at(off(def, definition::SCROLL + 4)?)?,
     ];
-    if scroll != [0.0, 0.0] {
-        return Err(Refusal::Scroll);
-    }
-    let mode = u32::from(i16_at(off(def, definition::BLEND_WORD)?)? == 1);
-    // `0x00052040` and `0x00012360`.
+    let scrolls = scroll != [0.0, 0.0];
+    let pieces = if scrolls {
+        let state = [
+            f32_at(off(widget, widget::SCROLL_STATE)?)?,
+            f32_at(off(widget, widget::SCROLL_STATE + 4)?)?,
+        ];
+        let pieces = scrolled(r, state, size, linear, lens.one);
+        if pieces.is_empty() {
+            return Ok(Drawn::Widget(header));
+        }
+        pieces
+    } else {
+        vec![(r, coordinates(size, linear, lens.one))]
+    };
+    // `0x00052040` and `0x00012360`, the same for each piece.
     if i16_at(at::QUADS_OFF)? != 0 || !white_tint(mem).ok_or(Unreadable)? {
         return Err(Refusal::State);
     }
@@ -622,15 +699,13 @@ pub fn read(
         return Err(Refusal::State);
     }
     let blend = blend(mem, mode).ok_or(Unreadable)?;
-    // `0x0023675a`'s corners: the far ones as the near plus the extent.
-    let rect = [r[0], r[2], r[0] + (r[1] - r[0]), r[2] + (r[3] - r[2])];
-    header.content = UiContent::Bitmap(UiBitmap {
+    let mut quads = pieces.into_iter().map(|(r, uv)| UiBitmap {
         texture: OverlayTexture::Bitmap {
             tag: datum,
             image: index,
         },
-        rect,
-        uv: coordinates(size, linear, lens.one),
+        rect: corners(r),
+        uv,
         color: rgba(argb),
         combiner: Combiner::Texture,
         sampler: Sampler {
@@ -639,7 +714,11 @@ pub fn read(
         },
         blend,
     });
-    Ok(header)
+    if scrolls {
+        return Ok(Drawn::Quads(quads.collect()));
+    }
+    header.content = quads.next().map_or(UiContent::None, UiContent::Bitmap);
+    Ok(Drawn::Widget(header))
 }
 
 #[cfg(test)]
@@ -671,7 +750,8 @@ pub(super) mod tests {
 
     /// A bitmap widget (header rectangle top 100, left -50, bottom 60,
     /// right 30; offset (5, 10, 0); alpha 0.5, tint (1, 0.5, 0)) of image
-    /// 1 of a two-image bitmap, linear 64 by 32 and resident, in the full
+    /// 1 of a two-image bitmap, linear 64 by 32 and resident, scroll state
+    /// (0, 0), in the full
     /// screen view, with the constants and tables an image would hold
     /// (invented, not the retail values).
     pub fn bitmap_widget(m: &mut Mem) {
@@ -691,6 +771,8 @@ pub(super) mod tests {
         m.f(WIDGET + 0x64, 0.5);
         m.w(WIDGET + 0x68, 0);
         m.w(WIDGET + 0x70, DEF);
+        m.f(WIDGET + 0x7c, 0.0);
+        m.f(WIDGET + 0x80, 0.0);
         m.w(WIDGET + 0x88, 1);
         m.w(WIDGET + 0x8c, 0);
         m.w(DEF, 0);
@@ -777,7 +859,7 @@ pub(super) mod tests {
         m.f(WIDGET + 0x58, 5.75);
         // A top-half view: centre (320, 120), offset (0, -16).
         half(&mut m, VIEW + 4, 240);
-        let w = read(&m, WIDGET, 0.0, VIEW).unwrap();
+        let w = widget_of(&m, 0.0);
         let UiContent::Bitmap(b) = w.content else {
             panic!("not a bitmap: {:?}", w.content)
         };
@@ -871,7 +953,103 @@ pub(super) mod tests {
     }
 
     fn content(m: &Mem) -> Result<UiContent, Refusal> {
-        read(m, WIDGET, 0.0, VIEW).map(|w| w.content)
+        read(m, WIDGET, 0.0, VIEW).map(|d| match d {
+            Drawn::Widget(w) => w.content,
+            Drawn::Quads(q) => panic!("scrolled: {q:?}"),
+        })
+    }
+
+    fn widget_of(m: &Mem, depth: f32) -> UiWidget {
+        match read(m, WIDGET, depth, VIEW) {
+            Ok(Drawn::Widget(w)) => w,
+            other => panic!("not a widget: {other:?}"),
+        }
+    }
+
+    fn quads(m: &Mem) -> Result<Vec<UiBitmap>, Refusal> {
+        read(m, WIDGET, 0.0, VIEW).map(|d| match d {
+            Drawn::Quads(q) => q,
+            Drawn::Widget(w) => panic!("not scrolled: {w:?}"),
+        })
+    }
+
+    /// A widget whose definition scrolls in U and V, its scroll state
+    /// (0.25, 0.75): the rectangle 275 to 355 by 130 to 170 cuts at x 295
+    /// and y 160 into four quads in `0x00235f31`'s order, the image
+    /// wrapped by the fractions; the plain quad's tint, image and blend.
+    #[test]
+    fn a_scrolling_bitmap_reads_as_its_four_wrapped_quads() {
+        let mut m = Mem::default();
+        bitmap_widget(&mut m);
+        m.f(DEF + 0x10, 0.1);
+        m.f(DEF + 0x14, 0.2);
+        m.f(WIDGET + 0x7c, 0.25);
+        m.f(WIDGET + 0x80, 0.75);
+        let q = quads(&m).unwrap();
+        let got: Vec<_> = q.iter().map(|b| (b.rect, b.uv)).collect();
+        assert_eq!(
+            got,
+            [
+                ([275.0, 130.0, 295.0, 160.0], [0.75, 0.25, 1.0, 1.0]),
+                ([295.0, 130.0, 355.0, 160.0], [0.0, 0.25, 0.75, 1.0]),
+                ([275.0, 160.0, 295.0, 170.0], [0.75, 0.0, 1.0, 0.25]),
+                ([295.0, 160.0, 355.0, 170.0], [0.0, 0.0, 0.75, 0.25]),
+            ]
+        );
+        let plain = {
+            let mut m = Mem::default();
+            bitmap_widget(&mut m);
+            let UiContent::Bitmap(b) = widget_of(&m, 0.0).content else {
+                panic!()
+            };
+            b
+        };
+        for b in &q {
+            assert_eq!(
+                (b.texture, b.color, b.blend, b.sampler, b.combiner),
+                (plain.texture, plain.color, plain.blend, plain.sampler, plain.combiner)
+            );
+        }
+    }
+
+    /// A piece under a pixel wide or high is not drawn: a state of 0 is
+    /// the plain quad alone; a scroll with every piece cut away draws
+    /// nothing, and its state is not checked.
+    #[test]
+    fn a_scrolling_bitmap_drops_its_pieces_under_a_pixel() {
+        let mut m = Mem::default();
+        bitmap_widget(&mut m);
+        m.f(DEF + 0x10, 0.5);
+        let q = quads(&m).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!((q[0].rect, q[0].uv), ([275.0, 130.0, 355.0, 170.0], [0.0, 0.0, 1.0, 1.0]));
+        // 80 wide: 0.99 leaves 0.8 of a pixel on the right.
+        m.f(WIDGET + 0x7c, 0.99);
+        assert_eq!(quads(&m).unwrap().len(), 1);
+        m.f(WIDGET + 0x7c, f32::NAN);
+        m.w(at::RESIDENT_AFTER, 5);
+        assert_eq!(content(&m), Ok(UiContent::None));
+    }
+
+    /// `0x00235f31`'s cuts, in its float order, and a linear image's
+    /// coordinates through its texels.
+    #[test]
+    fn scrolled_cuts_in_the_guests_order() {
+        // Cut at x 20 and y 0: the top pieces are empty.
+        let r = [10.0, 30.0, 0.0, 4.0];
+        assert_eq!(
+            scrolled(r, [0.5, 0.0], [64, 32], false, 1.0),
+            [
+                ([10.0, 20.0, 0.0, 4.0], [0.5, 0.0, 1.0, 1.0]),
+                ([20.0, 30.0, 0.0, 4.0], [0.0, 0.0, 0.5, 1.0]),
+            ]
+        );
+        let cu = 1.0f32 - 0.3;
+        let lin = scrolled(r, [0.3, 0.0], [3, 7], true, 1.0);
+        assert_eq!(lin[0].1, [cu * 3.0 / 3.0, 0.0, 1.0, 1.0]);
+        assert_eq!(lin[1].1, [0.0, 0.0, cu * 3.0 / 3.0, 1.0]);
+        // An unordered fraction cuts nothing the draw keeps.
+        assert!(scrolled(r, [f32::NAN, 0.0], [64, 32], false, 1.0).is_empty());
     }
 
     /// The draw's quad: the header's rectangle at depth 0 is where the
@@ -881,7 +1059,7 @@ pub(super) mod tests {
     fn a_bitmap_widget_reads_as_the_quad_its_draw_makes() {
         let mut m = Mem::default();
         bitmap_widget(&mut m);
-        let w = read(&m, WIDGET, 0.25, VIEW).unwrap();
+        let w = widget_of(&m, 0.25);
         assert_eq!((w.kind, w.depth, w.alpha), (8, 0.25, 0.5));
         let UiContent::Bitmap(b) = w.content else {
             panic!("not a bitmap")
@@ -951,9 +1129,16 @@ pub(super) mod tests {
 
     /// Each draw the overlay does not make is the game's, by its reason.
     #[test]
-    fn meters_scrolling_and_other_state_are_refused() {
+    fn a_bitmap_the_overlay_cannot_draw_is_refused() {
         let cases: [(&str, fn(&mut Mem), Refusal); 8] = [
-            ("scrolls", |m| m.f(DEF + 0x14, 0.5), Refusal::Scroll),
+            (
+                "scrolls, not resident",
+                |m| {
+                    m.f(DEF + 0x14, 0.5);
+                    m.w(at::RESIDENT_AFTER, 5);
+                },
+                Refusal::State,
+            ),
             (
                 "debug labels",
                 |m| m.w(at::DEBUG_LABELS & !3, 1 << 24),

@@ -415,7 +415,6 @@ pub fn ui_kept(counter: Ui) -> Option<(UiKind, &'static str)> {
         Ui::OutlineReservation => (Outline, "reservation"),
         Ui::OverlayMenuRefusedFrame => (List, "frame"),
         Ui::OverlayMenuRefusedMismatched => (List, "mismatched"),
-        Ui::OverlayMenuRefusedBitmapScroll => (Widget, "bitmap_scroll"),
         Ui::OverlayMenuRefusedBitmapState => (Widget, "bitmap_state"),
         Ui::OverlayMenuRefusedText => (Widget, "text"),
         Ui::OverlayMenuRefusedModel => (Widget, "model"),
