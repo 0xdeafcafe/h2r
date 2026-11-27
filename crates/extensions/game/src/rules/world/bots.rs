@@ -13,6 +13,7 @@
 //! pad plays; `rules::runtime`'s film gate).
 
 use ::bots::brain::{Order, Vec3};
+use ::bots::objective::script::{Aim, ScriptGoal};
 use ::rules::caps::id;
 use ::rules::vm::{Arg, Call as VmCall};
 use engine::GuestMemory;
@@ -88,6 +89,57 @@ fn zone(m: &dyn GuestMemory, table: Option<&Table>, handle: u32) -> Option<(Vec3
         })
         .fold(HOLD_RADIUS, f32::max);
     Some((centre, radius))
+}
+
+/// What a bot-goal call does: the team and the place set for it, or
+/// `None` to clear the team's. The place is the zone the script's
+/// `inside` tests (`super::zones::Zones`), its shape included, so a bot
+/// stands where the script counts it in. A call through `none`, or to a
+/// thing with no zone (not a netgame flag, or not on the map), makes
+/// nothing, as a write through `none` does.
+pub fn goal(m: &dyn GuestMemory, table: Option<&Table>, call: &VmCall) -> Option<(u8, Option<ScriptGoal>)> {
+    let team = match call.args.first() {
+        Some(Arg::Team(Some(t))) => *t,
+        _ => return None,
+    };
+    let aim = match call.entry.id {
+        id::BOT_GOAL_ATTACK => Aim::Attack,
+        id::BOT_GOAL_DEFEND => Aim::Defend,
+        id::BOT_GOAL_HOLD => Aim::Hold,
+        id::BOT_GOAL_CLEAR => return Some((team, None)),
+        _ => return None,
+    };
+    let handle = match call.args.get(1) {
+        Some(Arg::Object(Some(o))) => *o,
+        _ => return None,
+    };
+    let zones = super::zones::Zones::read(m, table?);
+    Some((team, Some(place(team, aim, handle, zones.get(handle)?))))
+}
+
+fn place(team: u8, aim: Aim, handle: u32, zone: &super::zones::Zone) -> ScriptGoal {
+    let super::zones::Shape::Area { at, yaw, area } = &zone.shape;
+    ScriptGoal {
+        team: i16::from(team),
+        aim,
+        zone: handle,
+        at: *at,
+        yaw: *yaw,
+        area: area.clone(),
+    }
+}
+
+/// Sets a place in its team's bot goals, or clears the team's (`None`).
+/// A refusal ([`bots::objective::script::Refused`]) is the call's error,
+/// recorded by its text.
+pub fn set_goal(team: u8, goal: Option<ScriptGoal>) -> anyhow::Result<()> {
+    match goal {
+        Some(g) => ::bots::objective::script::set(g).map_err(anyhow::Error::from),
+        None => {
+            ::bots::objective::script::clear(Some(i16::from(team)));
+            Ok(())
+        }
+    }
 }
 
 /// Delivers an order to the seat's phantom brain ([`bots::phantom`]);
@@ -182,6 +234,35 @@ mod tests {
             plan(&m, Some(&table), &call("bot_hold", vec![Arg::Player(Some(1)), Arg::Object(None)])),
             None
         );
+    }
+
+    #[test]
+    fn a_team_goal_takes_the_zone_the_script_counts_in() {
+        let at = [15.0, 5.0, 1.0];
+        let m = flag_map(at);
+        let table = table(&m);
+        let handle = table.labelled("territory")[0].object;
+        let args = |t| vec![Arg::Team(Some(t)), Arg::Object(Some(handle))];
+        let (team, g) = goal(&m, Some(&table), &call("bot_goal_attack", args(0))).unwrap();
+        let g = g.unwrap();
+        assert_eq!((team, g.team, g.aim, g.zone), (0, 0, Aim::Attack, handle));
+        // The zone's own shape: the bot is in it where `inside` says so.
+        let zone = super::super::zones::Zones::read(&m, &table);
+        let shape = &zone.get(handle).unwrap().shape;
+        assert_eq!(g.middle(), shape.middle());
+        assert!(g.contains(at) && shape.contains(at));
+        assert_eq!(
+            goal(&m, Some(&table), &call("bot_goal_defend", args(1))).unwrap().1.unwrap().aim,
+            Aim::Defend
+        );
+        assert_eq!(
+            goal(&m, Some(&table), &call("bot_goal_clear", vec![Arg::Team(Some(1))])),
+            Some((1, None))
+        );
+        // A thing with no zone, and a call through `none`, make nothing.
+        let none = vec![Arg::Team(Some(0)), Arg::Object(Some(0))];
+        assert_eq!(goal(&m, Some(&table), &call("bot_goal_hold", none)), None);
+        assert_eq!(goal(&m, Some(&table), &call("bot_goal_clear", vec![Arg::Team(None)])), None);
     }
 
     #[test]

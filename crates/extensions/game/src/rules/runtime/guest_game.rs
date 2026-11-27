@@ -390,6 +390,14 @@ impl Game for GuestGame<'_> {
                         .map(|(player, order)| Call::BotOrder { player, order })
                 }
             }
+            id::BOT_GOAL_ATTACK | id::BOT_GOAL_DEFEND | id::BOT_GOAL_HOLD | id::BOT_GOAL_CLEAR => {
+                if self.film {
+                    None
+                } else {
+                    crate::rules::world::bots::goal(self.m, self.table, call)
+                        .map(|(team, goal)| Call::BotGoal { team, goal })
+                }
+            }
             _ => None,
         };
         if let Some(c) = made {

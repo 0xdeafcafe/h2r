@@ -1329,3 +1329,43 @@ fn siege_names_the_side_that_won_the_more_rounds() {
     assert_eq!(r.game.players[&0].score, 2);
     assert_eq!(r.game.players[&1].score, 1);
 }
+
+/// Siege sends each side's bots at the front the HUD marks: when it moves
+/// the sides' goals are cleared, then the attackers' bots are sent to take
+/// it (`bot_goal_attack`) and the defenders' bots to hold it
+/// (`bot_goal_defend`), and in the final assault both go to the flag
+/// stand. The bots' side of it is `bots::objective::script`.
+#[test]
+fn siege_sends_the_attackers_bots_at_the_site_and_the_defenders_to_hold_it() {
+    let (ir, _) = siege(&[]);
+    let s: Scenario = serde_json::from_str(SIEGE_PHASES_ORDERED).unwrap();
+    let r = one_round(ir, &s);
+    assert_eq!(r.script_error, None);
+    let goals: Vec<(u32, String, Vec<Arg>)> = r
+        .ticks
+        .iter()
+        .flat_map(|t| {
+            t.calls
+                .iter()
+                .filter(|c| c.entry.starts_with("bot_goal_"))
+                .map(move |c| (t.tick, c.entry.to_string(), c.args.clone()))
+        })
+        .collect();
+    let front = |zone: u32| {
+        vec![
+            ("bot_goal_clear".to_string(), vec![Arg::Team(Some(0))]),
+            ("bot_goal_clear".to_string(), vec![Arg::Team(Some(1))]),
+            ("bot_goal_attack".to_string(), vec![Arg::Team(Some(0)), Arg::Object(Some(zone))]),
+            ("bot_goal_defend".to_string(), vec![Arg::Team(Some(1)), Arg::Object(Some(zone))]),
+        ]
+    };
+    let made: Vec<(String, Vec<Arg>)> = goals.iter().map(|(_, e, a)| (e.clone(), a.clone())).collect();
+    // The phase-0 site; once it falls the first phase-1 site, then the one
+    // the attacker stands on; then the flag stand.
+    assert_eq!(made, [front(10), front(12), front(13), front(22)].concat(), "{goals:?}");
+    // Set at the round's first tick, and again only as the front moves.
+    assert!(goals[0].0 <= 1, "{goals:?}");
+    assert!(goals[4].0 > 500 && goals[4].0 < 960, "{goals:?}");
+    assert!((960..=961).contains(&goals[8].0), "{goals:?}");
+    assert!(goals[12].0 > 960, "{goals:?}");
+}

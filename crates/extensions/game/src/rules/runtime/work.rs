@@ -54,6 +54,7 @@ pub async fn make_calls(cx: &Cx, work: &Work) -> (Option<bool>, Vec<Refused>) {
                     Err(anyhow::anyhow!("player {player} is no bot"))
                 }
             }
+            Call::BotGoal { team, ref goal } => crate::rules::world::bots::set_goal(team, goal.clone()),
             Call::End => crate::firefight::guest::end_game(cx).await,
             Call::NextRound => guest::next_round(cx).await,
             // Messages are made at the boundary by `Runtime::pre_tick`

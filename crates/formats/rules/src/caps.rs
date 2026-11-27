@@ -377,6 +377,10 @@ pub mod id {
     pub const POD_FLOOD: u16 = 146;
     pub const SQUAD_SHIP: u16 = 147;
     pub const NEXT_ROUND: u16 = 148;
+    pub const BOT_GOAL_ATTACK: u16 = 149;
+    pub const BOT_GOAL_DEFEND: u16 = 150;
+    pub const BOT_GOAL_HOLD: u16 = 151;
+    pub const BOT_GOAL_CLEAR: u16 = 152;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -757,6 +761,15 @@ pub const ENTRIES: &[Entry] = &[
     // runs again (docs/engine/notes/2026-11-27-next-round.md). The winner is
     // the script's to score; the engine is not told it.
     act(id::NEXT_ROUND, "next_round", &[Team], Some("game.rounds"), Now, Named),
+    // A team's bot goals (docs/game/rules-world-api.md, "Bots"): the
+    // places a script says matter to a side, which every phantom of the
+    // team plays as its objective (`bots::objective::script`). The host
+    // keeps the table (`game::rules::world::bots::goal`); like an order it
+    // is a hint, and its zone is a labelled thing's handle.
+    act(id::BOT_GOAL_ATTACK, "bot_goal_attack", &[Team, Object], Some("bots.orders"), Queued, Named),
+    act(id::BOT_GOAL_DEFEND, "bot_goal_defend", &[Team, Object], Some("bots.orders"), Queued, Named),
+    act(id::BOT_GOAL_HOLD, "bot_goal_hold", &[Team, Object], Some("bots.orders"), Queued, Named),
+    act(id::BOT_GOAL_CLEAR, "bot_goal_clear", &[Team], Some("bots.orders"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -1189,7 +1202,17 @@ mod tests {
 
     #[test]
     fn bot_orders_are_queued_hostable_and_gated() {
-        for name in ["bot_go", "bot_hold", "bot_follow", "bot_attack", "bot_free"] {
+        for name in [
+            "bot_go",
+            "bot_hold",
+            "bot_follow",
+            "bot_attack",
+            "bot_free",
+            "bot_goal_attack",
+            "bot_goal_defend",
+            "bot_goal_hold",
+            "bot_goal_clear",
+        ] {
             let e = entry_named(name).unwrap();
             assert_eq!(e.kind, Kind::Action, "{name}");
             assert_eq!(e.order, Order::Queued, "{name}");
@@ -1199,6 +1222,8 @@ mod tests {
         assert_eq!(entry(id::BOT_HOLD, API_VERSION).unwrap().args, &[Player, Object]);
         assert_eq!(entry(id::BOT_FOLLOW, API_VERSION).unwrap().args, &[Player, Player]);
         assert_eq!(entry(id::BOT_FREE, API_VERSION).unwrap().args, &[Player]);
+        assert_eq!(entry(id::BOT_GOAL_DEFEND, API_VERSION).unwrap().args, &[Team, Object]);
+        assert_eq!(entry(id::BOT_GOAL_CLEAR, API_VERSION).unwrap().args, &[Team]);
         let c = capability("bots.orders", API_VERSION).unwrap();
         assert!(!c.grantable);
         assert_eq!(

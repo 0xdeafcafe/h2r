@@ -188,6 +188,10 @@ pub const ACTIONS: &[u16] = &[
     id::BOT_FOLLOW,
     id::BOT_ATTACK,
     id::BOT_FREE,
+    id::BOT_GOAL_ATTACK,
+    id::BOT_GOAL_DEFEND,
+    id::BOT_GOAL_HOLD,
+    id::BOT_GOAL_CLEAR,
     // Shown to this machine's local users and sent as show cues
     // (`super::world::show`).
     id::MESSAGE,
@@ -358,6 +362,13 @@ pub enum Call {
         player: u8,
         order: Option<bots::brain::Order>,
     },
+    /// `bot_goal_attack`, `bot_goal_defend`, `bot_goal_hold` and
+    /// `bot_goal_clear`: a place set in a team's bot goals, or the team's
+    /// cleared (`None`) (`super::world::bots::goal`).
+    BotGoal {
+        team: u8,
+        goal: Option<bots::objective::script::ScriptGoal>,
+    },
     /// `end_round`, or the round end of a script error.
     End,
     /// `next_round`: the round ends and the game goes on
@@ -412,6 +423,10 @@ impl Call {
                 Some(bots::brain::Order::Follow(_)) => "bot_follow",
                 Some(bots::brain::Order::Attack(_)) => "bot_attack",
                 None => "bot_free",
+            },
+            Call::BotGoal { goal, .. } => match goal {
+                Some(g) => g.aim.entry(),
+                None => "bot_goal_clear",
             },
             Call::End => "end_round",
             Call::NextRound => "next_round",
@@ -1122,6 +1137,8 @@ impl Runtime {
         }
         let census = census::census(&things);
         let zones = Zones::read(m, &table);
+        // A new game's script starts with no bot goals.
+        ::bots::objective::script::clear(None);
         // The bots read a hill from the same areas (`bots::objective`),
         // a box turned onto the world's axes with its flag's facing, as
         // the zone scores it.
@@ -1247,6 +1264,7 @@ impl Runtime {
         let hash = self.hash();
         eprintln!("rules: stopped: {why}");
         self.store.remove();
+        ::bots::objective::script::clear(None);
         self.status = Status::Refused { hash, why };
         self.show_cue.forget();
     }
@@ -1653,6 +1671,8 @@ impl Runtime {
         };
         eprintln!("rules: {name} ended with the game");
         self.store.remove();
+        // The script's bot goals end with it (`bots::objective::script`).
+        ::bots::objective::script::clear(None);
         self.status = Status::Idle("the game ended");
         self.wall_cue = None;
         self.pick_cue = None;
