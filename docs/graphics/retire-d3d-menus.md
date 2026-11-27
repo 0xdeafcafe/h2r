@@ -1,7 +1,7 @@
 # Retiring the guest D3D path: the menus (R7)
 
 Status: Partly built. The menu frame's widgets, text, fade, bars, loading screen and blur draw from the scene's overlay where they read; every UI draw that does not is counted kept by kind and cause. Unread text and draw classes and active model widgets keep guest packets.
-Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `ui_overlay::bitmaps::tests::a_scrolling_bitmap_reads_as_its_four_wrapped_quads`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test).
+Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `ui_overlay::bitmaps::tests::a_scrolling_bitmap_reads_as_its_four_wrapped_quads`, `ui_overlay::bitmaps::tests::an_image_set_from_elsewhere_is_named_by_its_bitmap_tag`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay stage (`frame_scene::Overlay`, `FrameScene::overlay`) with the HUD of slice R6; R7 adds no stage of its own. The rule: a UI draw draws from the overlay or is counted `scene_kept_ui_<kind>_<cause>` at the first producer that refuses it. Nothing is dropped.
@@ -13,6 +13,7 @@ Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay s
 | Containers, plain bitmap widgets, supported text, lists and buttons | the sorted list `0x002353a5`, one pass per run | [native-menus-overlay.md](native-menus-overlay.md#the-menus-on-the-overlay) |
 | Meters: one rectangle of the UI globals' meter colour | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#meters) |
 | Scrolling bitmaps: up to four wrapped quads | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#scrolling-bitmaps) |
+| Bitmaps whose image is set at `+0x8c`: named by the bitmap tag that holds it | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#bitmap-widgets) |
 | Shader bitmaps | the shader quad `0x0022a664` | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | Fade, all six modes | `0x00040d86` | [native-menus-overlay.md](native-menus-overlay.md#the-fade-the-bars-and-the-loading-screen) |
 | Bars: fans, quads, polygons and strips | the uploader `0x0004b252` from `0x00052ce7` | this page, "Bars" |
