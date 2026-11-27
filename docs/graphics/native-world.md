@@ -109,6 +109,16 @@ A part the lens cannot see is still the native pass's, and the guest does not dr
 
 A game view the pyramid cannot serve draws the frustum's whole set early and is counted (`GpuWorld::guest_occlusion_skips`): `depth_unsampled` as above, and `depth_model` when the view's `c[3]` row is not the lens's w row times a positive scale (`DepthModel::agrees_with`), so the programs' depth and the screen map would disagree.
 
+**Later layers.** The structure runs of a scene view's layers 1, 5, 7, 8 and 20 (`native_layers_glue`, `LayerViewPass::encoded_culled`) cull on the GPU too, as a stage of their own commands: the runs' uniform writes, one dispatch of the layer cull (`GpuWorld::culled_layer_draws`, a third `GpuCull`), then one pass that loads and keeps the attachments with every run's packets in the list's order, each part one indirect draw of its slot.
+
+| Step | What |
+|---|---|
+| Frustum | `Frustum::sides` of the lens layer 3's admission takes (the union of both copies', `display_camera` at the target's factor), over every run's parts |
+| Pyramid | `layer_occlusion`: an item every pass of which draws nothing where hidden (`gpu::hidden_draws_nothing`: a `Less`, `LessEqual` or `Equal` test, blended or not, and no stencil write on depth fail) is tested against the pyramid this view's layer 3 built on the same target. Its depth is at least the view's final depth at every pixel, as later draws only lower it. Any other item is `ORDERED`: the frustum's alone |
+| Token | The pyramid is read only for the same view and frame (`native_world_glue::view_token`: the swap's run and the guest's view index), screen and depth model (`GpuCull::served_pyramid`). Its build stamps the token on the GPU after it runs (`PyramidBuild::stamp`), and the layer cull compares it there (`pyramid_token`), so a build planned but never recorded culls nothing |
+
+Layer 1 draws before its view's layer 3, so it finds no pyramid: the frustum alone culls it, counted with every other such view as `layer_view` (`GpuWorld::layer_occlusion_skips`). A layer whose objects sample the view or the accumulation target, layer 2's sorted runs, and a view without a camera draw their structure unculled.
+
 The admission's frustum test kept the selected-parts pass equal to the D3D path by these rules, which the GPU's `Frustum::sides` keeps:
 
 | Rule | Detail |

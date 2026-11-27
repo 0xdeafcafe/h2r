@@ -236,6 +236,10 @@ pub struct OcclusionSkips {
     /// scale ([`DepthModel::agrees_with`]): the programs' depth is not the
     /// lens the screen map is.
     pub depth_model: u64,
+    /// A later layer's view drew no game view's pyramid this frame: none
+    /// was built from this target for the same view, screen and depth
+    /// model ([`GpuCull::served_pyramid`]), so the frustum alone culls it.
+    pub layer_view: u64,
 }
 
 /// What [`GpuCull::early`] dispatched, for [`GpuCull::late`].
@@ -253,6 +257,15 @@ struct Pyramid {
     depth: wgpu::Texture,
     build: PyramidBuild,
     late: wgpu::BindGroup,
+    /// Every level, for another cull's group ([`GpuCull::served_pyramid`]).
+    whole: wgpu::TextureView,
+    /// Two words: the token of the game view whose build last ran on the
+    /// GPU (`PyramidBuild::stamp`), which a later layer's cull compares
+    /// with the one it expects (`cull.wgsl`'s `pyramid_token`).
+    token: wgpu::Buffer,
+    /// The game view whose early draws it was last built from: the
+    /// caller's token, the screen and the depth model it was tested with.
+    served: Option<(u64, ScreenMap, DepthModel)>,
 }
 
 /// The passes that build one pyramid, for recording later.
@@ -263,6 +276,9 @@ struct PyramidBuild {
     seed: wgpu::BindGroup,
     reduce: Vec<wgpu::BindGroup>,
     sizes: Vec<(u32, u32)>,
+    /// The game view's token, staged, and the pyramid's token buffer:
+    /// copied after the build, so the token names a build that ran.
+    stamp: Option<((wgpu::Buffer, u64), wgpu::Buffer)>,
 }
 
 impl PyramidBuild {
@@ -278,6 +294,10 @@ impl PyramidBuild {
         for (group, &(w, h)) in self.reduce.iter().zip(&self.sizes[1..]) {
             pass.set_bind_group(0, group, &[]);
             pass.dispatch_workgroups(w.div_ceil(TILE), h.div_ceil(TILE), 1);
+        }
+        drop(pass);
+        if let Some(((src, at), dst)) = &self.stamp {
+            encoder.copy_buffer_to_buffer(src, *at, dst, 0, 8);
         }
     }
 }
@@ -300,6 +320,7 @@ pub(crate) struct GpuCull {
     early_history: wgpu::ComputePipeline,
     late_occlusion: wgpu::ComputePipeline,
     late_frustum: wgpu::ComputePipeline,
+    layer_occlusion: wgpu::ComputePipeline,
     pyramid_layout: wgpu::BindGroupLayout,
     seed_layout: wgpu::BindGroupLayout,
     reduce_layout: wgpu::BindGroupLayout,
@@ -458,7 +479,7 @@ impl GpuCull {
         });
         let pyramid_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("native world cull pyramid"),
-            entries: &[texture_entry(0, wgpu::TextureSampleType::Float { filterable: false })],
+            entries: &[texture_entry(0, wgpu::TextureSampleType::Float { filterable: false }), storage(1, true)],
         });
         let seed_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("native world pyramid seed"),
@@ -482,6 +503,7 @@ impl GpuCull {
             early_history: pipeline(device, &module, &[&layout], "early_history"),
             late_occlusion: pipeline(device, &module, &[&layout, &pyramid_layout], "late_occlusion"),
             late_frustum: pipeline(device, &module, &[&layout], "late_frustum"),
+            layer_occlusion: pipeline(device, &module, &[&layout, &pyramid_layout], "layer_occlusion"),
             seed: pipeline(device, &pyramid_module, &[&seed_layout], "seed"),
             reduce: pipeline(device, &pyramid_module, &[&reduce_layout], "reduce"),
             early,
@@ -590,7 +612,7 @@ impl GpuCull {
     }
 
     /// `depth`'s pyramid, made on first use, kept as the newest.
-    fn pyramid_for(&mut self, device: &wgpu::Device, depth: &wgpu::Texture) -> &Pyramid {
+    fn pyramid_for(&mut self, device: &wgpu::Device, depth: &wgpu::Texture) -> &mut Pyramid {
         if let Some(at) = self.pyramids.iter().position(|p| p.depth == *depth) {
             let p = self.pyramids.remove(at);
             self.pyramids.push(p);
@@ -601,7 +623,7 @@ impl GpuCull {
             let p = self.make_pyramid(device, depth);
             self.pyramids.push(p);
         }
-        self.pyramids.last().expect("pushed above")
+        self.pyramids.last_mut().expect("pushed above")
     }
 
     fn make_pyramid(&self, device: &wgpu::Device, depth: &wgpu::Texture) -> Pyramid {
@@ -652,13 +674,23 @@ impl GpuCull {
             })
             .collect();
         let whole = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let token = gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
+            label: Some("native world pyramid token"),
+            contents: bytemuck::cast_slice(&[u32::MAX; 2]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
         let late = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native world cull pyramid"),
             layout: &self.pyramid_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&whole) }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&whole) },
+                wgpu::BindGroupEntry { binding: 1, resource: token.as_entire_binding() },
+            ],
         });
-        let build = PyramidBuild { seed_pipeline: self.seed.clone(), reduce_pipeline: self.reduce.clone(), seed, reduce, sizes };
-        Pyramid { depth: depth.clone(), build, late }
+        let build = PyramidBuild {
+            seed_pipeline: self.seed.clone(), reduce_pipeline: self.reduce.clone(), seed, reduce, sizes, stamp: None,
+        };
+        Pyramid { depth: depth.clone(), build, late, whole, token, served: None }
     }
 
     /// A game view's cull of the guest's selected parts, for a stage that
@@ -674,9 +706,9 @@ impl GpuCull {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn guest_dispatch(
         &mut self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view_proj: &Mat4,
-        frustum: &Frustum, start: &[u32], occlusion: Option<(DepthModel, ScreenMap, &wgpu::Texture)>,
+        frustum: &Frustum, start: &[u32], occlusion: Option<(DepthModel, ScreenMap, &wgpu::Texture, u64)>,
     ) -> GuestDispatch {
-        let occlusion = occlusion.filter(|(model, map, depth)| {
+        let occlusion = occlusion.filter(|(model, map, depth, _)| {
             if !sampleable(depth) {
                 self.skips.depth_unsampled += 1;
                 false
@@ -687,9 +719,28 @@ impl GpuCull {
                 true
             }
         });
-        let (depth, w_row) = occlusion.as_ref().map_or(([1.0, 0.0, 0.0, 0.0], [0.0; 4]), |(m, ..)| m.uniform());
-        let map = occlusion.as_ref().map(|(_, map, _)| *map);
-        let view = CullView {
+        let view = self.dispatch_view(view_proj, frustum, occlusion.as_ref().map(|(model, map, ..)| (model, map)));
+        let late = occlusion.map(|(model, map, depth, token)| {
+            let words = token_words(token);
+            let staged = uploads.stage(device, queue, bytemuck::cast_slice(&words));
+            let p = self.pyramid_for(device, depth);
+            p.served = Some((token, map, model));
+            let mut build = p.build.clone();
+            build.stamp = Some((staged, p.token.clone()));
+            (build, p.late.clone())
+        });
+        let pipeline = if late.is_some() { self.early_history.clone() } else { self.early_frustum.clone() };
+        let mut dispatch = self.staged(device, queue, uploads, &view, start, pipeline, None);
+        dispatch.late = late.map(|(build, pyramid)| (build, self.late_occlusion.clone(), pyramid));
+        dispatch
+    }
+
+    /// The view a dispatch tests against, with the pyramid's depth and
+    /// screen when it reads one.
+    fn dispatch_view(&self, view_proj: &Mat4, frustum: &Frustum, occlusion: Option<(&DepthModel, &ScreenMap)>) -> CullView {
+        let (depth, w_row) = occlusion.map_or(([1.0, 0.0, 0.0, 0.0], [0.0; 4]), |(m, _)| m.uniform());
+        let map = occlusion.map(|(_, map)| *map);
+        CullView {
             planes: frustum.planes,
             view_proj: *view_proj,
             depth,
@@ -699,25 +750,77 @@ impl GpuCull {
             clamp_px: map.map_or([0.0; 4], |m| m.clamp),
             margin: [map.map_or(0.0, |m| m.margin), 0.0, 0.0, 0.0],
             counts: [self.count, 0, 0, 0],
-        };
+        }
+    }
+
+    /// `view` and `start` staged for [`GuestDispatch::record`].
+    #[allow(clippy::too_many_arguments)]
+    fn staged(
+        &self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view: &CullView,
+        start: &[u32], pipeline: wgpu::ComputePipeline, early_pyramid: Option<wgpu::BindGroup>,
+    ) -> GuestDispatch {
         let mut words = vec![0u32; self.count.max(1) as usize];
         for (w, &s) in words.iter_mut().zip(start) {
             *w = s;
         }
-        let late = occlusion.map(|(_, _, depth)| {
-            let p = self.pyramid_for(device, depth);
-            (p.build.clone(), p.late.clone())
-        });
         GuestDispatch {
-            view: (uploads.stage(device, queue, bytemuck::bytes_of(&view)), self.view.clone()),
+            view: (uploads.stage(device, queue, bytemuck::bytes_of(view)), self.view.clone()),
             start: (uploads.stage(device, queue, bytemuck::cast_slice(&words)), self.start.clone()),
             start_len: words.len() as u64 * 4,
             stats: self.stats.clone(),
-            pipeline: if late.is_some() { self.early_history.clone() } else { self.early_frustum.clone() },
-            late: late.map(|(build, pyramid)| (build, self.late_occlusion.clone(), pyramid)),
+            pipeline,
+            early_pyramid,
+            late: None,
             group: self.group.clone(),
             count: self.count,
         }
+    }
+
+    /// The pyramid of `depth` and its token buffer when the game view
+    /// `token` planned its build last, tested with this screen and depth
+    /// model: what a later layer of that view may test against
+    /// ([`GpuCull::layer_dispatch`]). Planned is not run: the layer's cull
+    /// also compares the token the build stamped on the GPU.
+    pub(crate) fn served_pyramid(
+        &self, depth: &wgpu::Texture, token: u64, map: &ScreenMap, model: &DepthModel,
+    ) -> Option<ServedPyramid> {
+        let p = self.pyramids.iter().find(|p| p.depth == *depth)?;
+        (p.served == Some((token, *map, *model))).then(|| ServedPyramid { token, view: p.whole.clone(), stamp: p.token.clone() })
+    }
+
+    /// A later layer's cull of its structure items in one run, staged as
+    /// [`GpuCull::guest_dispatch`]'s is: the frustum's set of `start`
+    /// (0, [`OCCLUDABLE`] or [`ORDERED`]), less, with `occlusion` (the
+    /// layer's depth model and screen and a game view's pyramid,
+    /// [`GpuCull::served_pyramid`]), the occludable items that pyramid
+    /// hides. The early slots are the layer's; no late run follows.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn layer_dispatch(
+        &mut self, device: &wgpu::Device, queue: &wgpu::Queue, uploads: &gfx::ring::SubmissionUploads, view_proj: &Mat4,
+        frustum: &Frustum, start: &[u32], occlusion: Option<(DepthModel, ScreenMap, ServedPyramid)>,
+    ) -> GuestDispatch {
+        if occlusion.is_none() {
+            self.skips.layer_view += 1;
+        }
+        let mut view = self.dispatch_view(view_proj, frustum, occlusion.as_ref().map(|(model, map, _)| (model, map)));
+        let (pipeline, group) = match &occlusion {
+            Some((_, _, pyramid)) => {
+                let words = token_words(pyramid.token);
+                view.counts[1] = words[0];
+                view.counts[2] = words[1];
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("native layer cull pyramid"),
+                    layout: &self.pyramid_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&pyramid.view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: pyramid.stamp.as_entire_binding() },
+                    ],
+                });
+                (self.layer_occlusion.clone(), Some(group))
+            }
+            None => (self.early_frustum.clone(), None),
+        };
+        self.staged(device, queue, uploads, &view, start, pipeline, group)
     }
 
     /// The last view's counts, read back (blocking): for tests and tools.
@@ -746,6 +849,21 @@ impl GpuCull {
     }
 }
 
+/// A game view's pyramid a later layer may test against
+/// ([`GpuCull::served_pyramid`]).
+pub(crate) struct ServedPyramid {
+    token: u64,
+    view: wgpu::TextureView,
+    stamp: wgpu::Buffer,
+}
+
+/// A token as the pyramid's two words: low, high. Never both `u32::MAX`,
+/// the words of a pyramid no game view built.
+fn token_words(token: u64) -> [u32; 2] {
+    let token = token.min(u64::MAX - 1);
+    [token as u32, (token >> 32) as u32]
+}
+
 /// One game view's cull, recorded in draw order ([`GpuCull::guest_dispatch`]).
 #[derive(Clone)]
 pub struct GuestDispatch {
@@ -754,6 +872,9 @@ pub struct GuestDispatch {
     start_len: u64,
     stats: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
+    /// The early run's pyramid group: a later layer's, which reads a game
+    /// view's ([`GpuCull::layer_dispatch`]).
+    early_pyramid: Option<wgpu::BindGroup>,
     /// The pyramid build, the late cull and the pyramid's group.
     late: Option<(PyramidBuild, wgpu::ComputePipeline, wgpu::BindGroup)>,
     group: wgpu::BindGroup,
@@ -777,6 +898,9 @@ impl GuestDispatch {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.group, &[]);
+        if let Some(pyramid) = &self.early_pyramid {
+            pass.set_bind_group(1, pyramid, &[]);
+        }
         pass.dispatch_workgroups(self.count.div_ceil(GROUP), 1, 1);
     }
 
@@ -823,4 +947,115 @@ fn read_back<T: Pod>(device: &wgpu::Device, queue: &wgpu::Queue, src: &wgpu::Buf
     buffer.slice(..).map_async(wgpu::MapMode::Read, |r| r.expect("map the cull read back"));
     device.poll(wgpu::PollType::wait_indefinitely()).expect("poll the cull read back");
     bytemuck::pod_collect_to_vec(&buffer.slice(..).get_mapped_range().expect("mapped"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::RenderCamera;
+    use crate::world::{LightmapKey, Owner, PartInput, Placement, SectionInput, WorldBuilder};
+
+    /// A later layer's cull reads a game view's pyramid only when that
+    /// view's build ran on the GPU for the token it expects: a box behind
+    /// the depth is hidden then, an `ORDERED` one is not, and a token whose
+    /// build was planned but never recorded culls by the frustum alone.
+    #[test]
+    fn a_later_layer_reads_the_pyramid_its_game_view_built() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        const SIZE: u32 = 32;
+        let quad = |x: f32| SectionInput {
+            positions: vec![[x, 1.0, -1.0], [x, -1.0, -1.0], [x, 1.0, 1.0], [x, -1.0, 1.0]],
+            uvs: vec![[0.5; 2]; 4],
+            lightmap_uvs: vec![[0.5; 2]; 4],
+            normals: vec![[-1.0, 0.0, 0.0]; 4],
+            parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
+            ..Default::default()
+        };
+        let key = LightmapKey { page: 0, palette: 0 };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &quad(20.0), &Placement::IDENTITY, Some(key));
+        b.add_section(Owner::Cluster(1), &quad(20.0), &Placement::IDENTITY, Some(key));
+        let world = b.finish();
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 60f32.to_radians(),
+            projection_xy: None,
+            viewport: [0, 0, SIZE as i16, SIZE as i16],
+            near: 0.0625,
+            far: 1024.0,
+        };
+        let vp = camera.view_projection();
+        let frustum = Frustum::sides(&vp);
+        let map = ScreenMap::viewport(&vp, PassViewport { x: 0.0, y: 0.0, width: SIZE as f32, height: SIZE as f32 });
+        // The W-buffer value is the view depth, over 100: the boxes store 0.2.
+        let k = 1.0 / vp[0][3];
+        let model = DepthModel {
+            w_row: [vp[0][3] * k, vp[1][3] * k, vp[2][3] * k, vp[3][3] * k],
+            full_scale: 100.0,
+            floor: false,
+            range: [0.0, 100.0],
+        };
+        assert!(model.agrees_with(&vp));
+        let depth = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        });
+        let mut guest = GpuCull::new(&ctx.device, &world);
+        let mut layer = GpuCull::new(&ctx.device, &world);
+        let run = |record: &dyn Fn(&mut wgpu::CommandEncoder), arena: gfx::ring::SubmissionUploads| {
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            record(&mut enc);
+            let front = arena.upload_commands(&ctx.queue);
+            ctx.queue.submit(front.into_iter().chain([enc.finish()]));
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        // The game view: its depth nearer than the boxes everywhere, the
+        // pyramid built from it for token 7.
+        let arena = gfx::ring::UploadPool::default().begin();
+        let view = guest.guest_dispatch(&ctx.device, &ctx.queue, &arena, &vp, &frustum, &[OCCLUDABLE; 2],
+            Some((model, map, &depth, 7)));
+        assert!(view.has_late());
+        let dv = depth.create_view(&Default::default());
+        run(&|enc| {
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &dv, stencil_ops: None,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.1), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            }));
+            view.record(enc);
+            view.record_late(enc);
+        }, arena);
+        let start = [OCCLUDABLE, ORDERED];
+        let layer_run = |layer: &mut GpuCull, served: Option<ServedPyramid>| {
+            let arena = gfx::ring::UploadPool::default().begin();
+            let d = layer.layer_dispatch(&ctx.device, &ctx.queue, &arena, &vp, &frustum, &start,
+                served.map(|s| (model, map, s)));
+            run(&|enc| d.record(enc), arena);
+            (layer.read_drawn(&ctx.device, &ctx.queue), layer.read_stats(&ctx.device, &ctx.queue).occluded)
+        };
+        let served = guest.served_pyramid(&depth, 7, &map, &model);
+        assert!(served.is_some(), "token 7 planned the build");
+        assert_eq!(layer_run(&mut layer, served), (vec![false, true], 1), "hidden, the ordered box kept");
+        assert!(guest.served_pyramid(&depth, 8, &map, &model).is_none(), "another view's token");
+        assert!(guest.served_pyramid(&depth, 7, &map.with_margin(5.0), &model).is_none(), "another screen");
+        assert_eq!(layer_run(&mut layer, None), (vec![true, true], 0), "no pyramid: the frustum's set");
+        assert_eq!(layer.skips().layer_view, 1);
+        // Planned for token 9 and never recorded: the GPU still holds 7.
+        let arena = gfx::ring::UploadPool::default().begin();
+        let _ = guest.guest_dispatch(&ctx.device, &ctx.queue, &arena, &vp, &frustum, &[OCCLUDABLE; 2],
+            Some((model, map, &depth, 9)));
+        drop(arena);
+        let served = guest.served_pyramid(&depth, 9, &map, &model);
+        assert!(served.is_some());
+        assert_eq!(layer_run(&mut layer, served), (vec![true, true], 0), "the build that ran was 7's");
+    }
 }

@@ -4406,7 +4406,7 @@ mod tests {
             }));
             let CulledSelection { draws, late, dispatch } = gpu.culled_selection_draws(&arena, &ctx.device,
                 &ctx.queue, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selection, &view, &camera,
-                d3d::Lighting::Retail, None, Some((depth, &camera, full))).unwrap();
+                d3d::Lighting::Retail, None, Some((depth, &camera, full, 1))).unwrap();
             for (buffer, offset, bytes) in &draws.writes {
                 arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
             }

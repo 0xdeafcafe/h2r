@@ -24,7 +24,8 @@ struct View {
     // x: pixels the rectangle is widened by on each side (rounding, a
     // copy's sub-pixel shift).
     margin: vec4<f32>,
-    // x: the draw count, yzw: unused.
+    // x: the draw count; yz: for a later layer's cull, the token of the
+    // game view whose pyramid it reads (`pyramid_token`); w: unused.
     counts: vec4<u32>,
 };
 
@@ -51,6 +52,8 @@ struct Bounds {
 const ORDERED: u32 = 2u;
 
 @group(1) @binding(0) var pyramid: texture_2d<f32>;
+// The token of the game view whose build last ran (low, high).
+@group(1) @binding(1) var<storage, read> pyramid_token: array<u32, 2>;
 
 fn may_see(i: u32) -> bool {
     let b = bounds[i];
@@ -203,5 +206,34 @@ fn late_frustum(@builtin(global_invocation_id) id: vec3<u32>) {
     late[i * 5u + 1u] = u32(drawn);
     if (drawn) {
         atomicAdd(&stats[2], 1u);
+    }
+}
+
+// A later layer's items over a game view's depth (`GpuCull::layer_dispatch`):
+// the frustum's set less what the pyramid built after that view's early
+// draws hides; one run, no history. The pyramid's depth is at least the
+// view's final depth at every pixel (the later draws only lower it), so a
+// box it hides fails a `Less`, `LessEqual` or `Equal` test at every
+// fragment. An `ORDERED` item is the frustum's alone, and so is every
+// item when the pyramid's last build was not the expected view's.
+@compute @workgroup_size(64)
+fn layer_occlusion(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= view.counts.x) {
+        return;
+    }
+    var kept = may_see(i);
+    if (kept) {
+        atomicAdd(&stats[0], 1u);
+    }
+    let served = pyramid_token[0] == view.counts.y && pyramid_token[1] == view.counts.z;
+    if (kept && served && start[i] != ORDERED && occluded(bounds[i])) {
+        kept = false;
+        atomicAdd(&stats[3], 1u);
+    }
+    early[i * 5u + 1u] = u32(kept);
+    late[i * 5u + 1u] = 0u;
+    if (kept) {
+        atomicAdd(&stats[1], 1u);
     }
 }

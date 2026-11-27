@@ -569,6 +569,18 @@ fn fog_parity(look: &PassLook) -> Result<(), FogParity> {
     Ok(())
 }
 
+/// A later layer's parts drawn from the cull's slots
+/// (`GpuWorld::culled_layer_draws`): each packet one indirect draw of its
+/// part's slot in `early`, and the part's start value written into
+/// `start` ([`crate::cull_gpu::OCCLUDABLE`] when every pass's hidden
+/// fragments draw nothing, `gpu::hidden_draws_nothing`; else
+/// [`crate::cull_gpu::ORDERED`]).
+pub(crate) struct LayerSlots<'a> {
+    pub early: &'a wgpu::Buffer,
+    pub slots: &'a HashMap<(Owner, u8), usize>,
+    pub start: &'a mut [u32],
+}
+
 /// The stencil a world layer's native draws take: the device's at the
 /// layer call, as it is (`0x00015370`'s mode there: 0, the test off, or 1,
 /// `ALWAYS` writing reference 0 on pass, which the scene's layers 1 and 3
@@ -937,7 +949,7 @@ impl FogSet {
         samples: &LayerSamples,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let off = gfx::state::StencilState::default();
-        self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples)
+        self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples, None)
     }
 
     /// [`FogSet::draws`] under the device's stencil at the layer call
@@ -960,6 +972,7 @@ impl FogSet {
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         device_stencil: &gfx::state::StencilState,
         samples: &LayerSamples,
+        mut culled: Option<LayerSlots<'_>>,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw};
         let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
@@ -985,6 +998,12 @@ impl FogSet {
                 return Err("a selected fog material has no resolved fog");
             }
             let slots = used.entry(material).or_default();
+            let slot = match &culled {
+                Some(c) => Some(*c.slots.get(&(owner, part)).ok_or("a selected layer part has no cull slot")?),
+                None => None,
+            };
+            // Occludable while every pass's hidden fragments draw nothing.
+            let mut occludable = true;
             for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
                 let (shader, pipeline, uniforms, offsets) = match owner {
                     Owner::Instance(n) => {
@@ -1000,24 +1019,38 @@ impl FogSet {
                     }
                 };
                 let key = described_pipeline(shader, color, depth, Some(state), None, stencil.clone());
+                occludable &= crate::gpu::hidden_draws_nothing(&key);
                 let pipeline = cache
                     .entry(pipeline.clone())
                     .or_insert_with(|| gfx::compile::Pending::ready(Some(pipeline.clone())))
                     .clone();
-                packets.push(
-                    RecordedDraw::prepared_indexed(
+                let groups = vec![BoundGroup { index: 0, group: uniforms, offsets }, BoundGroup::new(1, textures.clone())];
+                let packet = match (&culled, slot) {
+                    // The slot's own range of the whole index buffer.
+                    (Some(c), Some(slot)) => RecordedDraw::prepared_indexed(
+                        &key, pipeline, vec![(vertices.clone(), 0, vertices.size())], (indices.clone(), 0, indices.size()),
+                        0, groups, &render, target_size, scissor,
+                    )
+                    .with_indirect(c.early.clone(), slot as u64 * crate::cull_gpu::SLOT_SIZE, 1),
+                    _ => RecordedDraw::prepared_indexed(
                         &key,
                         pipeline,
                         vec![(vertices.clone(), 0, vertices.size())],
                         (indices.clone(), u64::from(first_index) * 4, u64::from(index_count) * 4),
                         index_count,
-                        vec![BoundGroup { index: 0, group: uniforms, offsets }, BoundGroup::new(1, textures.clone())],
+                        groups,
                         &render,
                         target_size,
                         scissor,
-                    )
-                    .with_blend_constant(state.blend_constant),
-                );
+                    ),
+                };
+                packets.push(packet.with_blend_constant(state.blend_constant));
+            }
+            if let (Some(c), Some(slot)) = (culled.as_mut(), slot) {
+                let value = if occludable { crate::cull_gpu::OCCLUDABLE } else { crate::cull_gpu::ORDERED };
+                // A part in two runs, or under two values: the frustum's alone.
+                let at = &mut c.start[slot];
+                *at = if *at == 0 || *at == value { value } else { crate::cull_gpu::ORDERED };
             }
         }
         if packets.is_empty() {

@@ -417,6 +417,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             stencil: stencil.clone(),
             cull,
             run,
+            token: view_token(run, view),
         };
         if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && (!visibility.clusters.is_empty() || !visibility.placements.is_empty()) {
             let sections = visibility.clusters.iter().map(|&id| Owner::Cluster(u32::from(id)))
@@ -1115,6 +1116,17 @@ struct WorldPass {
     /// The swap's run, shared with the object runs: adjacent reservations
     /// reuse one pin of the attachments (`d3d::ExternalPass::batch_key`).
     run: u64,
+    /// This game view in this frame ([`view_token`]): its later layers'
+    /// culls read the pyramid its cull builds.
+    token: u64,
+}
+
+/// A game view in one frame, for the pyramid its layer 3 builds
+/// (`GpuWorld::culled_selection_draws`) and its later layers read
+/// (`GpuWorld::culled_layer_draws`): the swap's run and the guest's view
+/// index.
+pub(crate) fn view_token(run: u64, view: u32) -> u64 {
+    (run << 32) | u64::from(view)
 }
 
 /// `CULLMODE` and `FRONTFACE` as the D3D path's pipeline takes them
@@ -1238,7 +1250,7 @@ impl d3d::ExternalPass for WorldPass {
         // rectangle, as the fixed stage draws the view.
         let lens = native_render::camera::display_camera(self.camera, request.projection_factor(t.copy));
         let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
-        let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }));
+        let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
         let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,
             selection, &view, &self.cull_camera, world_lighting(t.copy, t.lighting), accumulation, occlusion);
         Some(culled.and_then(|culled| {
