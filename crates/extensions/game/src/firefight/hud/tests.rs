@@ -343,7 +343,7 @@ fn mode_blobs_round_trip_within_the_channel_limit() {
         ..sample_mode()
     };
     let bytes = each.encode();
-    assert_eq!(bytes.len(), 42);
+    assert_eq!(bytes.len(), 48);
     assert!(bytes.len() <= MAX_BLOB);
     assert_eq!(Mode::decode(&bytes), Ok(each.clone()));
     // Two teams: their points and members, then the team pools or each

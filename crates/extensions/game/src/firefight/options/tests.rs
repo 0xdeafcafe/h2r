@@ -295,6 +295,7 @@ fn the_settings_are_kept_with_every_other_setting() {
             None,
             None,
             None,
+            None,
             None
         ]
     );

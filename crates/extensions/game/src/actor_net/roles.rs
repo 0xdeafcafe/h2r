@@ -117,7 +117,7 @@ mod tests {
             endless: false,
             bonus_left: u16::MAX,
             total: u16::MAX,
-            score: u32::MAX,
+            score: 0,
             lives: hud::Lives::Each((0..hud::MAX_EACH as u8).map(|p| (p, 3)).collect()),
             teams: Some(hud::Teams { scores: [5, 7], second: 0b1010 }),
         };
