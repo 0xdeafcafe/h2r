@@ -2007,6 +2007,34 @@ gated by inventory at `0x150dd0`. In Assault the pickup predicate
 belonging to another team. A bot returning its own CTF flag just
 touches it. Once possession changes the carrier releases X.
 
+#### A script's goals
+
+A rules script's objectives are not in the engine's globals, so a
+script names them: `bot_goal_attack`, `bot_goal_defend` and
+`bot_goal_hold` put a zone in a team's goals and `bot_goal_clear`
+clears them (rules-world-api.md, "Bots"). The host keeps the table
+(`crates/live/bots/src/objective/script.rs`), each place with its
+zone's area; every phantom's perception carries a copy
+(`Perception::goals`, filled in `guest.rs` beside the objective read).
+While the bot's team has a place, `objective::script::plan` gives its
+goal in place of the retail objective's (`mind/strategy.rs`, after an
+outside order), and the mind plays it as any objective goal:
+
+- `hold`: the whole team stands in the first such place.
+- `attack` and `defend` both: the team splits by role (`role_of`, as in
+  CTF); attackers take, defenders guard. One kind only: the whole team
+  plays it.
+- Taking: every attacker goes to the first `attack` place the script set
+  (`Go` its middle) and, once in its area, keeps about the middle as on a
+  hill (`Hold`, `HILL_KEEP` plus the name's caution).
+- Guarding: defenders spread over the `defend` places by rank; each
+  hunts the enemy nearest the middle within `DEFEND_REACH` (2) reaches
+  of it, else takes the place as above, so it stands in and contests it.
+
+Siege sets one `attack` for the attackers and one `defend` for the
+defenders on the front its HUD marks, and sets them again when the front
+moves (`content/modes/rules/siege.rules`, `show_front`).
+
 ### 3.8 Glitches (built, not checked in a game)
 
 The user asked: "add setting so that clankers can do glitches (super

@@ -477,6 +477,20 @@ capture volume is read.
 | `bot_go(p, at)`, `bot_hold(p, zone)` | `bot_go`, `bot_hold` | the order as the goal (`Go`, `Hold`), walked by the mind's nav follower over the map's nav mesh (`crates/live/bots/src/mind.rs`) | named |
 | `bot_follow(p, q)`, `bot_attack(p, q)` | `bot_follow`, `bot_attack` | the brain's own escort and target choice (`crates/live/bots/src/decisions.rs`), with the order as its goal (`Escort`, `Hunt`) | named |
 | `bot_free(p)` | `bot_free` | clears the order | named |
+| `bot_goal_attack(t, zone)`, `bot_goal_defend(t, zone)`, `bot_goal_hold(t, zone)` | the same three | a place in team `t`'s goal table (`bots::objective::script`): every phantom of the team plays it as its objective ([bots.md](bots.md) section 3.7, "A script's goals") | named |
+| `bot_goal_clear(t)` | `bot_goal_clear` | clears team `t`'s places | named |
+
+A goal is a team's, not a seat's: one call a place for each side is
+enough, and it lasts until the team's places are cleared or the game
+ends (`Runtime::ended`, `stop` and a new game's start clear the table).
+The host resolves the zone through `world::zones::Zones`, so a bot's
+"in it" is the zone the script's `inside` tests, its own area or
+corners included. Setting a zone a team already has changes its aim. A
+team holds at most 8 places (`objective::script::TEAM_GOALS`, the
+engine's objective records); a ninth is a refused call, recorded with
+its text (`bot goal refused: team N has 8 goals already ...`). A call
+through `none`, or with a zone that is no netgame flag, makes nothing.
+An outside order still comes first for its seat.
 
 An order returns nothing. Whether the bot got there is a world read
 (`inside(p, zone)`, `distance`), so a script's state never depends on a
