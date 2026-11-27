@@ -22,8 +22,9 @@
 //!   on the BSP items whose part it draws, by cluster or placement and
 //!   part index, with the part's shader ([`native_render::skip::clear_parts`]):
 //!   the layer then builds no entry for them. A structure item the native
-//!   pass does not draw loses the bit as well and is a named drop
-//!   (`scene_dropped_world_*`): the world draws only from the scene.
+//!   pass does not draw keeps its guest draw and is counted by cause
+//!   (`scene_kept_3_world_<cause>`) until the scene draws it: no wall is
+//!   left undrawn.
 //!
 //! Nothing runs after the body, so the chain needs no Rust continuation,
 //! and the observer is context-only: it reads and writes the memory its
@@ -221,9 +222,10 @@ pub trait Host: Send + Sync {
     /// the stencil. Asks for the native pass when a world for `bsp` is
     /// ready and the device can draw it. When `claim_guest` is false
     /// only the extra display clusters can draw, with no guest masks.
-    /// Returns the guest parts it draws, or `None` when it draws none:
-    /// the structure items are then dropped by name.
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan, claim_guest: bool) -> Option<Cleared>;
+    /// Returns the guest parts it draws, or why it draws none: the
+    /// structure items then keep their guest draw, counted
+    /// `scene_kept_3_world_<cause>` ([`crate::native_layers::count_kept`]).
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan, claim_guest: bool) -> Result<Cleared, &'static str>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -262,7 +264,7 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-/// Removes the host: layer 3 is left alone, nothing is dropped.
+/// Removes the host: layer 3 is left alone.
 pub fn clear_host() {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
@@ -276,7 +278,7 @@ pub fn counts() -> (u64, u64, u64) {
     )
 }
 
-/// Layer-3 views dropped because the items' stencil switches do not read.
+/// Layer-3 views left to the guest because the items' stencil switches do not read.
 pub fn stencil_views() -> u64 {
     STENCIL.load(Ordering::Relaxed)
 }
@@ -353,12 +355,12 @@ pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8)
 }
 
 /// The observer before the layer draw, on any guest memory: the last layer
-/// 3's bits back, then this layer's skip. The world draws only from the
-/// scene: a structure item the native pass does not draw loses layer 3's
-/// bit too, so the guest builds no entry for it, and is counted
-/// `scene_dropped_world_<cause>` ([`crate::native_layers::count_dropped`]).
-/// Only the resolved-scene arm, whose guest entries are consumed one by one
-/// by the opaque handler hooks, still reaches those hooks' own refusals.
+/// 3's bits back, then this layer's skip. A structure item the native pass
+/// does not draw keeps its guest draw and is counted
+/// `scene_kept_3_world_<cause>` ([`crate::native_layers::count_kept`]):
+/// the host's cause, `part` for a part outside the drawn set. Only the
+/// resolved-scene arm, whose guest entries are consumed one by one by the
+/// opaque handler hooks, is counted by those hooks instead.
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let m = Mem(mem);
@@ -366,81 +368,67 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
-    if claim_layer(mem, ret) {
-        drop_unclaimed(mem);
+    if let Some(left) = claim_layer(mem, ret) {
+        crate::native_layers::count_kept(&Mem(mem), LIGHTMAP_LAYER, "", false, &left, None);
     }
 }
 
-/// The world's layer 3 asks the host for the native pass. `true` when the
-/// view is the world's and the guest's own draws of its structure items are
-/// ours to drop: whatever the host did not clear.
-fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> bool {
+/// The world's layer 3 asks the host for the native pass. `Some` when the
+/// view is the world's and its structure items are the scene's: why the
+/// ones the host did not clear keep their guest draw.
+fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> Option<crate::native_layers::Left> {
     let m = Mem(mem);
-    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return false;
-    };
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
     use native_render::world_layers::{Site, layer_site};
     let site = layer_site(LIGHTMAP_LAYER, ret);
-    let Some(bsp) = m.read_u32(ACTIVE_BSP) else { return false; };
+    let bsp = m.read_u32(ACTIVE_BSP)?;
     let resolved = site == Site::Scene && host.use_resolved_scene(m.0, bsp);
     let has_world = !resolved && skip::has_structure_items(&m, LIGHTMAP_LAYER) == Some(true);
     if !has_world && site != Site::Scene {
         WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
-        return false;
+        return None;
     }
+    let mut left = crate::native_layers::Left::default();
     let kind = if site == Site::AlternateView { frame_scene::ViewKind::Alternate } else { frame_scene::ViewKind::Game };
-    let Some(mut view) = crate::scene_step::open_kind(&*m.0, kind) else { return has_world; };
+    let Some(mut view) = crate::scene_step::open_kind(&*m.0, kind) else {
+        left.all("view");
+        return has_world.then_some(left);
+    };
     if site != Site::Scene { view.display_visibility = None; }
     let claim_guest = has_world && !resolved;
     if !claim_guest && view.display_visibility.as_ref().is_none_or(|v| v.clusters.is_empty() && v.placements.is_empty()) {
-        return false;
+        return None;
     }
     // How the layer's items switch the stencil (0x0004d640/0x0004d720):
-    // unreadable, the view is a named drop.
+    // unreadable, the items keep their guest draw.
     let Some(stencil) = skip::stencil_plan(&m, LIGHTMAP_LAYER) else {
         let n = STENCIL.fetch_add(1, Ordering::Relaxed);
         if n % 1800 == 0 {
-            eprintln!("native-world: {} layer-3 views dropped: the items' stencil switches do not read", n + 1);
+            eprintln!("native-world: {} layer-3 views left to the guest: the items' stencil switches do not read", n + 1);
         }
-        return claim_guest;
+        left.all("stencil_plan");
+        return claim_guest.then_some(left);
     };
-    if let Some(c) = host.ask(m.0, bsp, &view, &stencil, claim_guest) {
-        DRAWN.fetch_add(1, Ordering::Relaxed);
-        ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
-        let views = VIEWS.load(Ordering::Relaxed);
-        if views % 1800 == 1 {
-            let (v, d, i) = counts();
-            let w = views_without_world();
-            eprintln!(
-                "native-world: {d} of {v} layer-3 views drawn natively ({w} without BSP items: first person), {i} world items skipped"
-            );
+    match host.ask(m.0, bsp, &view, &stencil, claim_guest) {
+        Ok(c) => {
+            DRAWN.fetch_add(1, Ordering::Relaxed);
+            ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
+            let views = VIEWS.load(Ordering::Relaxed);
+            if views % 1800 == 1 {
+                let (v, d, i) = counts();
+                let w = views_without_world();
+                eprintln!(
+                    "native-world: {d} of {v} layer-3 views drawn natively ({w} without BSP items: first person), {i} world items skipped"
+                );
+            }
+            let left_masks = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+            *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left: left_masks });
+            // What the host did not clear: a part outside its drawn set.
+            left.all("part");
         }
-        let left = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
-        *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left });
+        Err(why) => left.all(why),
     }
-    claim_guest
-}
-
-/// The structure items of layer 3 the native pass did not clear lose the
-/// bit as well: nothing of the world reaches the device but the scene's
-/// draw. The objects are the sorted walk's (`native_objects`) and stay.
-fn drop_unclaimed(mem: &mut dyn GuestMemory) {
-    let mut m = Mem(mem);
-    let Some(skip) = native_render::layer_items::clear_scene_layer(&mut m, LIGHTMAP_LAYER, false, &|_| false) else {
-        crate::native_layers::count_dropped("unreadable", 1);
-        return;
-    };
-    crate::native_layers::count_dropped("refused", skip.refused as u64);
-    crate::native_layers::count_dropped("unreadable", skip.unreadable as u64);
-    if skip.cleared.items.is_empty() {
-        return;
-    }
-    let mut pending = CLEARED.lock().unwrap_or_else(|e| e.into_inner());
-    let p = pending.get_or_insert_with(|| Pending { cleared: Cleared { layer: LIGHTMAP_LAYER, items: Vec::new() }, left: Vec::new() });
-    for item in skip.cleared.items {
-        p.left.push(m.read_u32(item + 0x10).unwrap_or(0));
-        p.cleared.items.push(item);
-    }
+    claim_guest.then_some(left)
 }
 
 pub(crate) fn has_claim() -> bool {

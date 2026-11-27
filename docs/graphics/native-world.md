@@ -80,7 +80,8 @@ A structure item in layer 3 is therefore: build `0x0004cbf0`, `[0x004ba138 + 0x2
 
 | When | What |
 |---|---|
-| Before the layer draw `0x00044550` with the current layer `[0x00467130] == 3` | Walk the current list (`[0x00467138]`; `+4` count, `+0xc` first, `+0x14` items), clear bit 3 of every structure item's mask, remember them, and ask `d3d` for the native pass. The list's OR word `+8` stays, so the layer still walks its items and finds the world's masks clear. |
+| Before the layer draw `0x00044550` with the current layer `[0x00467130] == 3` | Walk the current list (`[0x00467138]`; `+4` count, `+0xc` first, `+0x14` items), clear bit 3 of each structure item the native pass draws, remember them, and ask `d3d` for the native pass. The list's OR word `+8` stays, so the layer still walks its items and finds the drawn parts' masks clear. |
+| Same, for an item the pass does not draw | Leave its bit: the guest draws it. Counted `scene_kept_3_world_<cause>` ([native-world-walk.md](native-world-walk.md), "What the scene cannot draw keeps its guest draw"). |
 | Before the next layer draw (5 and up follow 3 on the scene list, in the same view) | Set the bits back, on each item that still holds the mask the skip left. It is not done after the layer itself, because the chain calls the body's tail through a Rust continuation that a second executor cannot run. |
 
 The layer draw then builds no entry for the world: no build call, no shader draw, no geometry submission, no push-buffer words. Objects, transparents, lights and the HUD keep their entries. Guest memory after the layer matches the run without the switch except for what the skipped draws would have written (the shader draw's state cache, D3D's shadows). That is render state only: the simulation never reads it, co-op lockstep hashes none of it, and the native renderer never writes guest memory.
@@ -95,7 +96,7 @@ The layer draw then builds no entry for the world: no build call, no shader draw
 
 Bit 14 is the item's visibility flag `0x200` moved up (`0x001332f0`), the same for clusters and placements. An item with neither draws with the stencil as the layer found it.
 
-The feature reads how layer 3's items switch the stencil before asking the host (`skip::stencil_plan`: the flags, the marked BSP sections by cluster or placement, whether any item switches). Unreadable, the view's structure items are dropped by name (`native_world::stencil_views`). The native pass draws its parts before the layer's items and clears their items, so their switches do not run. `native_world_glue::pass_stencil` makes that exact:
+The feature reads how layer 3's items switch the stencil before asking the host (`skip::stencil_plan`: the flags, the marked BSP sections by cluster or placement, whether any item switches). Unreadable, the view's structure items keep their guest draw, counted `scene_kept_3_world_stencil_plan` (`native_world::stencil_views`). The native pass draws its parts before the layer's items and clears their items, so their switches do not run. `native_world_glue::pass_stencil` makes that exact:
 
 | Case | The native pass draws with |
 |---|---|

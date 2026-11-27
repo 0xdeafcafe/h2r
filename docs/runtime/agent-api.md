@@ -2319,7 +2319,10 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
   the alternate view's as `layer_plan_alt<layer>_*`, the first person's as `layer_plan_fp<layer>_*`, object items' causes
   named `object_*` (`render_bridge::native_layers`; framescene.md,
-  slice 4); a later slice adds
+  slice 4), and the cut world layers' items left to their guest draw,
+  `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
+  `world`, `object` or `unreadable`; causes in
+  [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
