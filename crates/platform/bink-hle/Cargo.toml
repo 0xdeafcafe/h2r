@@ -10,6 +10,8 @@ playback = ["dep:movies", "dep:audio"]
 
 [dependencies]
 runtime.workspace = true
+# The native display's counters (`display.rs`).
+timeline = { path = "../../runtime/timeline" }
 movies = { workspace = true, optional = true }
 # Movie sound goes into the game's own mixer (audio_out.rs); no device code.
 audio = { path = "../audio", default-features = false, optional = true }

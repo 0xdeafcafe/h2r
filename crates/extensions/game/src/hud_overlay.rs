@@ -923,7 +923,26 @@ pub fn place<B: d3d::Backend + Send + 'static>(
         // The run draws with the layout rule the placed draw sits in: the
         // same fit the guest's own draws carry at this point in the frame.
         let fit = d.ui_fit().map(|f| f.transform);
-        let pass = OverlayPass { overlay, assets, fit };
+        let pass = OverlayPass { overlay, assets: Some(assets), movie: None, fit };
+        matches!(
+            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            Ok(true)
+        )
+    })
+}
+
+/// A movie's frame (`render_bridge::native_movie`): its overlay placed at
+/// this point in the frame with the UI fit the guest's own draws carry
+/// here, `movie` uploaded as the pass records. Whether it was placed.
+pub fn place_movie<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    overlay: Overlay,
+    movie: native_render::overlay::MovieImage,
+) -> bool {
+    device.lock().ok().is_some_and(|mut d| {
+        let fit = d.ui_fit().map(|f| f.transform);
+        let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), fit };
         matches!(
             d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
             Ok(true)
@@ -1001,7 +1020,11 @@ fn fit_overlay(overlay: &mut Overlay, fit: Option<[f32; 4]>) {
 /// placement the guest's own draws carry at this point in the frame.
 struct OverlayPass {
     overlay: Arc<Overlay>,
-    assets: Arc<Mutex<OverlayAssets>>,
+    /// The map's images and glyph pages; `None` for a list that names
+    /// neither (a movie's frame).
+    assets: Option<Arc<Mutex<OverlayAssets>>>,
+    /// The movie frame the list's movie item shows, uploaded first.
+    movie: Option<native_render::overlay::MovieImage>,
     fit: Option<[f32; 4]>,
 }
 
@@ -1020,8 +1043,11 @@ impl d3d::ExternalPass for OverlayPass {
             *r = Some((t.device.clone(), OverlayGpu::new(t.device, t.queue), OverlayResidency::default()));
         }
         let Some((_, gpu, residency)) = r.as_mut() else { return };
-        let assets = self.assets.lock().unwrap_or_else(|e| e.into_inner());
-        residency.sync(t.device, t.queue, &assets);
+        if let Some(movie) = &self.movie {
+            // A frame that does not upload leaves its item refused
+            // (`refused_movie`).
+            residency.sync_movie(t.device, t.queue, movie);
+        }
         // Only a fitted pass moves its items: an unfitted one plans the
         // shared items as they are, with no copy a frame.
         let fitted = self.fit.map(|fit| {
@@ -1031,8 +1057,14 @@ impl d3d::ExternalPass for OverlayPass {
         });
         let overlay: &Overlay = fitted.as_ref().unwrap_or(&*self.overlay);
         let size = t.color.texture().size();
-        let plan = OverlayPlan::new(overlay, [size.width, size.height], &assets.glyphs);
-        drop(assets);
+        let plan = match &self.assets {
+            Some(assets) => {
+                let assets = assets.lock().unwrap_or_else(|e| e.into_inner());
+                residency.sync(t.device, t.queue, &assets);
+                OverlayPlan::new(overlay, [size.width, size.height], &assets.glyphs)
+            }
+            None => OverlayPlan::new(overlay, [size.width, size.height], &NoGlyphs),
+        };
         if let Ok((encoded, stats)) = gpu.prepare(t.device, t.color, &plan, residency) {
             (encoded.commands)(&mut *t.encoder);
             if t.copy == d3d::TargetCopy::Display {

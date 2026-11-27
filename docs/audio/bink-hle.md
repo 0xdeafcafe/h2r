@@ -61,9 +61,9 @@ Call sites `0x156256` / `0x156278` target sound setup / open;
 `0x1562de` and `0x156316` target mix bins; `0x15632f` targets mix-bin
 volumes; `0x155eb9` targets memory setup; and `0x156573` / `0x1566d3`
 target close. Wait is called at `0x155faa` and `0x155fc9`. The decode wrapper calls DoFrame at `0x1568da`, NextFrame at
-`0x1568e6`, then CopyToBuffer at `0x156949`. Only addresses and behavioral
+`0x1568e6`, then CopyToBuffer at `0x156949`. Only addresses and behavioural
 observations are recorded here, not instruction bytes. Function names are
-inferences from calling convention, call shape and public API behavior,
+inferences from calling convention, call shape and public API behaviour,
 not symbols recovered from the stripped executable.
 
 ## What the game calls
@@ -115,8 +115,8 @@ Functions:
 | `0x155ea0` / `0x155ed0` | init (calls `BinkSetMemory`) / dispose; referenced from a table at `0x440f64` / `0x440f68` |
 | `0x156090` | start movie `(path, flags)` ret 8: allocates a buffer, opens Bink, sets mixbins, creates the texture |
 | `0x156040` | per-frame tick: wait, decode and blit, draw, service |
-| `0x1568d0` | `BinkDoFrame`, `BinkNextFrame`, lock texture, `BinkCopyToBuffer`, unlock |
-| `0x156960` | draw the texture as a quad |
+| `0x1568d0` | `BinkDoFrame`, `BinkNextFrame`, lock texture, `BinkCopyToBuffer` |
+| `0x156960` | draw the texture as one screen quad (record `0x4e91c4`, rectangle `0x485a8a`) |
 | `0x155f80` | service: finished check (current frame == frames), polls skip input via `0x156ab0` |
 | `0x156ab0` | true if any of ten controller buttons (ids 0..7, 0xc, 0xd) is down |
 | `0x1565a0` / `0x156560` / `0x155f10` / `0x1566c0` | stop variants: `BinkClose`, release texture, clear flags |
@@ -126,7 +126,8 @@ Functions:
 
 Start flags (`0x4e9190`): bit 0 loop (never finishes), bit 1 skippable by
 button, bit 2 and bit 5 extra mode bits (bit 5 restores state on stop), bit 4
-unscaled draw, bit 8 large preload buffer.
+draws the movie stretched over the screen rectangle (clear: centred at its
+own size, `0x00156982`), bit 8 large preload buffer.
 
 Name strings: `attract` `0x4575e4`, `credits` `0x4575ec`, `intro` `0x4575f4`.
 
@@ -187,7 +188,11 @@ needs nothing else of the boot. If the wrapper's state page is not mapped it
 leaves it alone.
 
 **Playback (a source is present).** Ten overrides, one per row in the table
-above. The wrapper runs as compiled. `BinkOpen` asks the source for the
+above. The wrapper runs as compiled, except with the native renderer on
+(`BinkHle::use_native_display`, set by `movies_glue`): then its decode and
+blit `0x1568d0` and its draw `0x156960` are replaced too, and the picture
+goes to the overlay without touching the guest's texture
+([retire-d3d-display.md](../graphics/retire-d3d-display.md#movies)). `BinkOpen` asks the source for the
 movie's stream and returns a fake HBINK; if it declines (movie not
 transcoded or not current, unreadable, nonsense dimensions, no free handle)
 it returns 0, which the wrapper already handles as a failed open, so a

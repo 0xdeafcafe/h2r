@@ -390,6 +390,15 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "outside",
     },
+    // The movie's tick (docs/graphics/retire-d3d-display.md, "Movies"):
+    // its decode and draw are native with a native display; the stop path
+    // its service runs releases the guest's texture.
+    Row {
+        name: "movie",
+        entry: 0x0015_6040,
+        status: Status::Partial,
+        slot: "outside",
+    },
 ];
 
 /// The index of `name` in [`REGISTRY`].

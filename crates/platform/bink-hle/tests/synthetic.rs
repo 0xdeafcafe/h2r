@@ -73,6 +73,8 @@ fn world(
         .unwrap();
     // Wrapper state.
     g.map_zeroed(0x004e_9000, 0x1000, Permissions::RW).unwrap();
+    // The movie draw's rectangle (`bink_hle::display::MOVIE_RECT`).
+    g.map_zeroed(0x0048_5000, 0x1000, Permissions::RW).unwrap();
     g.map_zeroed(STACK - 0x1000, 0x2000, Permissions::RW)
         .unwrap();
     g.map_zeroed(SCRATCH, 0x1_0000, Permissions::RW).unwrap();
@@ -1236,4 +1238,66 @@ fn decode_and_blit_cost_per_frame() {
             "{w_}x{h_} copy {c:?}"
         );
     }
+}
+
+/// The native display: the tick's decode and blit never lock or copy into
+/// the guest's texture, and its draw hands the host the guest's quad and
+/// the decoded picture (docs/graphics/retire-d3d-display.md, "Movies").
+#[test]
+fn a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone() {
+    use bink_hle::{MovieDisplay, MovieDraw, display::MOVIE_RECORD, set_display};
+    use std::sync::Mutex;
+
+    struct Host(Mutex<Vec<MovieDraw>>);
+    impl MovieDisplay for Host {
+        fn show(&self, _mem: &mut Guest, draw: &MovieDraw) -> bool {
+            self.0.lock().unwrap().push(draw.clone());
+            true
+        }
+    }
+    let (mut w, hle, reg, mode) = world(|c| {
+        let hle = BinkHle::with_clock(Some(Arc::new(FakeSource { name: "intro_60", frames: 3 })), c);
+        hle.use_native_display(true);
+        hle
+    });
+    assert_eq!(mode, Mode::Playback);
+    let addrs: Vec<u32> = reg.iter().map(|r| r.addr).collect();
+    assert!(addrs.contains(&MOVIE_DECODE_AND_BLIT) && addrs.contains(&MOVIE_DRAW));
+    let host = Arc::new(Host(Mutex::new(Vec::new())));
+    set_display(Some(host.clone()));
+
+    w.put_str(SCRATCH, "d:\\bink\\intro_60.bik");
+    let (h, _) = w.call(BINK_OPEN, &[SCRATCH, 0]);
+    assert_ne!(h, 0);
+    {
+        let mut m = w.ctx.memory();
+        m.set_u32(ST_BINK, h).unwrap();
+        m.set_u8(ST_FLAGS, 0xc6).unwrap();
+        m.set_u16(ST_WIDTH, 4).unwrap();
+        m.set_u16(ST_HEIGHT, 2).unwrap();
+        // A texture pointer the native path must never write through.
+        m.set_u32(ST_TEXTURE, SCRATCH + 0x100).unwrap();
+        for (i, v) in [0i16, 0, 480, 640].into_iter().enumerate() {
+            m.set_u16(0x0048_5a8a + 2 * i as u32, v as u16).unwrap();
+        }
+    }
+    let before = w.bytes(SCRATCH + 0x100, 64);
+    assert_eq!(w.call(MOVIE_DECODE_AND_BLIT, &[]), (0, 0), "no arguments; EAX as after a copy");
+    assert_eq!(w.u32(h + 0x0c), 2, "NextFrame ran after DoFrame");
+    assert_eq!(w.call(MOVIE_DRAW, &[]), (0, 0));
+    assert_eq!(w.bytes(SCRATCH + 0x100, 64), before, "the guest's texture is untouched");
+    let draws = host.0.lock().unwrap().clone();
+    assert_eq!(draws.len(), 1);
+    let d = &draws[0];
+    assert_eq!(d.record, MOVIE_RECORD);
+    assert_eq!((d.picture.movie, d.picture.frame, d.picture.width, d.picture.height), (h, 0, 4, 2));
+    assert_eq!(&d.picture.bgra[..8], &[0, 0, 0, 0xff, 0, 1, 0, 0xff], "frame 0's texels as decoded");
+    assert_eq!(d.quad.corners[0], [318.0, 239.0, 0.0, 0.0], "centred at its own size");
+    assert_eq!(d.quad.corners[2], [322.0, 241.0, 4.0, 2.0]);
+    // The next frame's picture is a new one; the one shown stays as it was.
+    w.call(MOVIE_DECODE_AND_BLIT, &[]);
+    w.call(MOVIE_DRAW, &[]);
+    let draws = host.0.lock().unwrap().clone();
+    assert_eq!((draws[1].picture.frame, draws[0].picture.bgra[0], draws[1].picture.bgra[0]), (1, 0, 1));
+    set_display(None);
 }

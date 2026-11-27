@@ -1546,6 +1546,15 @@ fn run_configured(
             "light host requires sim-frame (H2_FEATURES)"
         );
     }
+    // The frame step (docs/graphics/retire-d3d-display.md, "The frame
+    // step"): render_frame_and_present as Rust, with the native renderer
+    // on. A light host's sim-frame owns the point.
+    #[cfg(feature = "gpu")]
+    if !host_light {
+        features
+            .add(&render_bridge::render_frame::RenderFrame::default())
+            .map_err(anyhow::Error::msg)?;
+    }
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
         host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;

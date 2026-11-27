@@ -6,8 +6,10 @@
 //!
 //! Consecutive items with the same material key and clip draw as one
 //! batch; nothing is reordered, so blended items keep the guest's order.
-//! A blur ends the batch before it: it reads what was drawn. A model view
-//! is refused until a stage draws a model widget's view.
+//! A blur ends the batch before it: it reads what was drawn. A movie
+//! frame draws as a quad over its movie's upload
+//! (`frame_scene::OverlayTexture::Movie`). A model view is refused until
+//! a stage draws a model widget's view.
 //! An item the renderer cannot draw is dropped and counted by its reason
 //! ([`OverlayStats`]): the overlay has no guest draw to fall back to.
 
@@ -209,6 +211,19 @@ pub struct OverlayImage {
     pub rgba: std::sync::Arc<[u8]>,
 }
 
+/// A movie's current frame on the host, as its decoder left it: `width`
+/// by `height` texels, four bytes each in B, G, R, A order, row-major.
+/// `ui_gpu::OverlayResidency::sync_movie` uploads it when `frame` moves;
+/// a `frame_scene::OverlayTexture::Movie` names it by `movie`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MovieImage {
+    pub movie: u32,
+    pub frame: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bgra: std::sync::Arc<[u8]>,
+}
+
 /// What an overlay's textures are made from on the host: the bitmap
 /// images its quads name, by (bitmap datum, image index), and the glyph
 /// pages its text runs sample. `ui_gpu::OverlayResidency` uploads them,
@@ -274,6 +289,8 @@ pub struct OverlayStats {
     pub glyphs: u32,
     pub blurs: u32,
     pub model_views: u32,
+    /// Movie frames: drawn as quads over their movie's upload.
+    pub movie_frames: u32,
     /// Draws recorded (one per batch the GPU took).
     pub batches: u32,
     /// Items whose tag shader has no supported definition.
@@ -287,7 +304,8 @@ pub struct OverlayStats {
     pub refused_texture: u32,
     /// Model views: no stage draws a model widget's view yet.
     pub refused_model_view: u32,
-    /// Movie frames: no stage samples a movie's upload yet.
+    /// Movie frames whose movie the renderer holds no upload of
+    /// (`ui_gpu`).
     pub refused_movie: u32,
     /// Blurs over a target the GPU cannot copy or sample (`ui_gpu`).
     pub refused_blur: u32,
@@ -296,7 +314,7 @@ pub struct OverlayStats {
 impl OverlayStats {
     /// Items the plan kept.
     pub fn drawn(&self) -> u32 {
-        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view - self.refused_movie
+        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view
     }
 }
 
@@ -352,13 +370,10 @@ impl OverlayPlan {
         plan.stats.glyphs = counts.glyphs;
         plan.stats.blurs = counts.blurs;
         plan.stats.model_views = counts.model_views;
+        plan.stats.movie_frames = counts.movie_frames;
         for item in &overlay.items {
             if item.kind == OverlayKind::ModelView {
                 plan.stats.refused_model_view += 1;
-                continue;
-            }
-            if item.kind == OverlayKind::MovieFrame {
-                plan.stats.refused_movie += 1;
                 continue;
             }
             if matches!(item.material.program, Program::Shader { .. })
@@ -388,7 +403,7 @@ impl OverlayPlan {
             let base = plan.vertices.len() as u32;
             let start = plan.indices.len() as u32;
             match item.kind {
-                OverlayKind::Quad | OverlayKind::Fill => {
+                OverlayKind::Quad | OverlayKind::Fill | OverlayKind::MovieFrame => {
                     let corners = overlay.vertices_of(item);
                     plan.vertices.extend(corners.iter().enumerate().map(|(n, v)| {
                         let [uv, t1, t2, t3] = item.stage_uv.as_ref().map_or([v.uv; 4], |uv| uv[n]);
@@ -399,7 +414,7 @@ impl OverlayPlan {
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
-                OverlayKind::Blur | OverlayKind::ModelView | OverlayKind::MovieFrame => unreachable!("planned above"),
+                OverlayKind::Blur | OverlayKind::ModelView => unreachable!("planned above"),
                 OverlayKind::TextRun => {
                     let font = match item.material.texture {
                         frame_scene::OverlayTexture::Glyphs { font } => font,
@@ -664,6 +679,25 @@ mod tests {
         assert!(pages.insert(8, 1, 1, 1, &[7]), "another font, its own page");
         assert_eq!(pages.added_since(8, 0).unwrap().2, &[(1, GlyphRect { x: 1, y: 1, width: 1, height: 1 })]);
         assert_eq!(pages.added_since(7, 0), None, "no page");
+    }
+
+    #[test]
+    fn a_movie_frame_draws_as_a_quad_over_its_movies_upload() {
+        use frame_scene::OverlayMovie;
+        let mut o = Overlay::new([640, 480]);
+        o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
+        o.push_movie_frame(sprite(1), all(), quad(8.0), OverlayMovie { movie: 3, frame: 7 }).unwrap();
+        o.push_movie_frame(sprite(1), all(), quad(16.0), OverlayMovie { movie: 3, frame: 7 }).unwrap();
+        let p = OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
+        let batches: Vec<_> = p.batches.iter().map(|b| (b.items, b.material.texture)).collect();
+        assert_eq!(
+            batches,
+            [(1, OverlayTexture::Bitmap { tag: 1, image: 0 }), (2, OverlayTexture::Movie { movie: 3 })],
+            "the movie's frames batch apart from the bitmap's quad"
+        );
+        assert_eq!(p.vertices.len(), 12);
+        assert_eq!(p.vertices[4].position, [8.0 / 320.0 - 1.0, 1.0], "corners as a quad's");
+        assert_eq!((p.stats.movie_frames, p.stats.refused_movie, p.stats.drawn()), (2, 0, 3));
     }
 
     #[test]

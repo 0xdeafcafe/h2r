@@ -147,6 +147,8 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [framescene-deletion.md](graphics/framescene-deletion.md): the deletion table and risks
 - [retire-d3d.md](graphics/retire-d3d.md): design for retiring the guest D3D path: what the native stages leave on D3D by caller, the residual census (`render.residual`), what replaces each guest render subsystem, the slices and the zero-residual gate before `crates/platform/d3d` is deleted
 - [retire-d3d-menus.md](graphics/retire-d3d-menus.md): retire-d3d R7: which menu-frame draws come from the overlay, bars as strips, and the `scene_kept_ui_<kind>_<cause>` counts of the UI draws that do not
+- [retire-d3d-display.md](graphics/retire-d3d-display.md): retire-d3d R8: `0x00223240` as the Rust frame step, the movie's picture drawn from the overlay, the frames outside a game view and the display
+- [retire-d3d-remainders.md](graphics/retire-d3d-remainders.md): what the built retire-d3d slices leave on the guest's draws by counter, the inventory's missing data, and what R10 and R11 delete
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
 - [shaders-pixel.md](graphics/shaders-pixel.md): the pixel side: combiners, final combiner, texture modes, HILO, COLORSIGN
 - [shaders-fog.md](graphics/shaders-fog.md): the NV2A fog unit and how D3D state maps to it
