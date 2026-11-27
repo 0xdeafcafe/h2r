@@ -358,6 +358,12 @@ pub enum Command {
         id: Endpoint,
         team: Option<u8>,
     },
+    /// Give an item spawner spare clips, or none
+    /// (`Session::set_spare_clips`).
+    SetSpareClips {
+        id: Endpoint,
+        clips: Option<u8>,
+    },
     /// Restore original: an own thing as the map has it
     /// (`Session::reset`).
     Reset {

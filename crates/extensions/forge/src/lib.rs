@@ -94,6 +94,14 @@ pub trait World {
         let _ = (flag, channel);
         Err("This game cannot change teleporter channels.".into())
     }
+    /// Give netgame item entry `index` of the loaded scenario spare clips,
+    /// or none: each weapon the entry makes from now on, and the one it has
+    /// out, takes `clips` clips in reserve
+    /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
+    fn spare_clips(&mut self, index: u32, clips: Option<u8>) -> Result<(), String> {
+        let _ = (index, clips);
+        Err("This game cannot give a spawner spare clips.".into())
+    }
     /// Move and turn own entry `index` of `block`: its position and
     /// orientation in the loaded scenario, and its live object when the
     /// block makes objects.

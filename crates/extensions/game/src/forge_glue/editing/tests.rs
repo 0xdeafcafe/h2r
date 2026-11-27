@@ -2113,3 +2113,64 @@ mod rebuild {
         std::fs::remove_dir_all(data).unwrap();
     }
 }
+
+/// A collection spawner's Spare clips row writes the document's property
+/// and stages the game's `SpareClips` step for the entry's row; Weapon's
+/// own stages the clear.
+#[test]
+fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let mut spawner = vec![Value::Int(0)];
+    spawner.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+    spawner.extend([
+        Value::Int(0),
+        Value::Vec3([0., 6., 0.].map(|c| F32::new(c).unwrap())),
+        Value::Vec3([0.; 3].map(|c| F32::new(c).unwrap())),
+        Value::Tag(Some(TagKey {
+            group: "itmc".into(),
+            path: r"test\rifles".into(),
+        })),
+    ]);
+    let block = BlockKind::NetgameEquipment;
+    let stride = map::scenario_layout::block(block).stride as usize;
+    let row = BaseRow {
+        block,
+        index: 0,
+        raw: vec![1; stride],
+        print: forge_doc::print(block, &spawner).unwrap(),
+        fields: spawner,
+    };
+    let opened = opened_with(Some(BaseRows {
+        rows: vec![row],
+        left_out: vec![],
+    }));
+    let mut e = Editor::new(opened, Path::new("."), 1, calls::shared());
+    calls::lock(&e.calls).arm();
+    let id = Endpoint::base(block, 0);
+    assert_eq!(e.spare_clips_row(id), Some(None), "an itmc spawner has the row");
+    e.tool.aimed_thing = Some(id);
+    e.choose(1, Choice::Set(Prop::SpareClips, 3)).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::SpareClips { index: 0, clips: Some(2) },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(2);
+    assert_eq!(e.session.spare_clips(id), Some(2));
+    assert_eq!(e.spare_clips_row(id), Some(Some(2)));
+    e.choose(3, Choice::Set(Prop::SpareClips, 0)).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        matches!(&call, calls::Call::Forge { steps, .. } if *steps == [
+            calls::ForgeStep::SpareClips { index: 0, clips: None },
+        ]),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(4);
+    assert_eq!(e.session.spare_clips(id), None);
+}

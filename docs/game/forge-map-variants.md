@@ -258,13 +258,13 @@ between it and a row.
 | Item spawner | item: a collection or an object tag | `item` | **E** | nothing |
 | Item spawner | respawn time; 0 is the collection's own | `respawn time` | **E** | nothing |
 | Item spawner | return time: how long an object may be away from its spot | `abandon limit` | **E** | nothing |
-| Item spawner | place at start | none: the reset `0x15ad30` spawns every matching entry at the start, whatever its mode | **E** (scenario-editor.md section 2) | left out |
+| Item spawner | place at start | none: the reset `0x15ad30` spawns every matching entry at the start, whatever its mode; a countdown of 0 after `ENGINE_ROUND_RESET` would make the first spawn wait its respawn time (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) | **E** (scenario-editor.md section 2) | left out: no document property reaches the round reset of the game that plays it |
 | Item spawner | respawn trigger: what starts the countdown while the object is out | `respawn mode`: 0 the object moved from its spot or an object bit set, 1 another object bit set; the bits are not named (where each is written is in [notes/2026-11-26-forge-loose-ends.md](notes/2026-11-26-forge-loose-ends.md)) | **E** for the paths; **S** for the bits' meaning | a row in D3 once the bits are named |
 | Item spawner | game types | `game type 1` to `game type 4` (`+0x04`), read by the matcher `0x15a090` | **E** (scenario-editor.md section 2, `map::scenario_layout::game_types`) | nothing |
-| Item spawner | spare clips, team | none in the entry (**C**: the public layout has neither) | **S** | a Forge property; team is built (D4), spare clips waits for D5 |
+| Item spawner | spare clips, team | none in the entry (**C**: the public layout has neither) | **S** | Forge properties, both built (D4, D5) |
 | Starting point | team | `team` | **V**, **C** | nothing |
 | Starting point | game types | none read; the public layout's slots after the team (**C**) are kept, not typed | **E**: no reader of the block found reads those bytes, and the spawn chooser `0x14ef00` weighs every entry (scenario-editor.md section 2); that no other code reads them is **S** | left out |
-| Starting point | weight | none in the entry (**C**); the engine's weight is its position's, with a random term, so a property is a bias added to it | **E** for the routine (notes/2026-11-26-forge-loose-ends.md) | a hook on the chooser (D5) |
+| Starting point | weight | none in the entry (**C**); the engine's weight is its position's, with a random term, so a property is a bias added to it | **E** for the routine (notes/2026-11-26-forge-loose-ends.md) | left out: the size a Low or High bias needs is not read ([2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) |
 | Goal | role: the netgame flag's type | `type` | **V**, **C**; the roles traced are in `forge_doc::builtin_label` | nothing |
 | Goal | team | `team` | **V**, **C** | nothing |
 | Goal | order: the hill corner or territory number | the type for a hill corner, `identifier` otherwise | **V** for the identifier; **Code** for the corner (`builtin_label`) | nothing |
@@ -281,8 +281,7 @@ each with the kinds it is on, how it reads a thing and the one
 `EntryOp::Set` it writes. The game types of an item spawner are not a
 row of that table, which is one field a row: `props::games` reads the
 four slots as a set and `Session::set_games` writes the slots that
-change in one undo step. The rows a Forge property backs come in D4 and
-D5. A teleporter's channel is its link's
+change in one undo step. The rows a Forge property backs are Team (D4) and Spare clips (D5). A teleporter's channel is its link's
 (the Links tool), not a row. `Session::set_field` takes a row's name
 and refuses one the thing's kind does not have.
 
@@ -296,9 +295,9 @@ scenario bytes (`forge_doc::Labels`).
 
 | Property | On | Reaches the game by | State |
 |---|---|---|---|
-| `spare_clips` | item spawner of a weapon | a write to the new weapon's reserve after the spawner makes it. The spawner stores the entry's index on the object (`+0xaf`, **E**); the reserve is the weapon's first magazine's `i16` at `+0x22a` (**E**, `guest_layout::Weapon::MAGAZINE_RESERVE`, written for a held weapon by `sim.state.set`), and a clip is the definition magazine's `+0x0a` rounds, the reserve's cap its `+0x0c` (**E**, notes/2026-11-26-forge-loose-ends.md). No call writes the reserve of a weapon on the ground | not shown until slice D5 proves the write |
+| `spare_clips` | item spawner of an item collection | a write to the new weapon's reserve after the spawner makes it: an observer after `NETGAME_ITEM_SPAWN` (`0x15aad0`) reads the entry's index from the popped arguments and its weapon from the spawner's state (`[GAME_ENGINE]+0x7dc`, 8 bytes an entry), and sets the first magazine's reserve (`+0x22a`) to the clips times the definition magazine's clip (`+0x0a`), capped at its `+0x0c` (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)). The clips are host state by entry (`agent::forge::spare_clips::TABLE`), set by the session's `World::spare_clips` (`ForgeStep::SpareClips`, which also fills the weapon the entry has out) and emptied at `GAME_ACTIVATE` (`game::forge_spare_clips`). Only a Forge session's game has them: a match on a built variant has no document | `Session::{spare_clips, set_spare_clips}`; the Properties row Spare clips |
 | `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | `Session::{team, set_team}`; `forge_doc::labelled` reports it for a labelled spawner |
-| `weight` | starting point | a bias added to the weight the chooser (`PLAYER_SPAWN_LOCATION`) gives the location. The weight is the position's sum of influence spheres plus a random term (`0x23ba90`, `0x23b060`, **E**, notes/2026-11-26-forge-loose-ends.md); the free-spot test `spawn_areas` answers is a different hook ([rules-engine.md](rules-engine.md)). A bias needs a hook after `0x14efb1` that no feature has | not shown until slice D5 |
+| `weight` | starting point | a bias added to the weight the chooser (`PLAYER_SPAWN_LOCATION`) gives the location. The weight is the position's sum of influence spheres plus a random term (`0x23ba90`, its one caller `0x14efb1`, EAX the location, XMM0 the weight; `0x23b060`; **E**, notes/2026-11-26-forge-loose-ends.md); an after-hook on `0x23ba90` could add it. The size a bias needs is not read: the influence weights per game type and the random term's scale (**S**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) | not shown |
 | `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | `Property::Games`, `forge_doc::object_games`; no session call or tool row sets it |
 
 A property that reaches the game through a hook is host state in

@@ -120,8 +120,9 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                 .expect("rows"),
             ),
             (
-                // An own item spawner the document changes, in a kit
-                // session: its Team, Restore original and Duplicate rows.
+                // An own item spawner of a collection the document changes,
+                // in a kit session: its Team, Spare clips, Restore original
+                // and Duplicate rows.
                 "spawner",
                 sheet::properties_sheet_with(
                     "Rifles",
@@ -144,6 +145,7 @@ pub fn samples(kind: Kind) -> Vec<(&'static str, Sheet)> {
                     &sheet::Extras {
                         kit: true,
                         team: Some(1),
+                        spare_clips: Some(Some(2)),
                         ..sheet::Extras::default()
                     },
                 )

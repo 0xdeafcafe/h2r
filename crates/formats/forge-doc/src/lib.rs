@@ -26,8 +26,8 @@ pub use area::{Area, MarkerArea};
 pub use content::{MapId, Sha256};
 pub use document::*;
 pub use entry::{
-    EntryOp, OBJECT_BLOCKS, PROPERTY_TEAMS, Print, Property, check_print, for_game, object_games,
-    print, teams,
+    EntryOp, OBJECT_BLOCKS, PROPERTY_TEAMS, Print, Property, SPARE_CLIPS_MAX, check_print,
+    for_game, object_games, print, spare_clips, teams,
 };
 pub use ground::*;
 pub use groups::*;

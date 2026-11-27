@@ -595,6 +595,11 @@ pub(crate) fn register_core_film(
         .add(&crate::data_salts::ObjectPoolClear)
         .map_err(|e| anyhow::anyhow!("object pool clear: {e}"))?;
     precision::install(features, i.packages).context("installing the precision swaps")?;
+    // A Forge spawner's spare clips (docs/game/forge-map-variants.md): each
+    // weapon the spawner makes takes the session's clips in reserve.
+    features
+        .add(&game::forge_spare_clips::SpareClips)
+        .map_err(|e| anyhow::anyhow!("forge spare clips: {e}"))?;
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;

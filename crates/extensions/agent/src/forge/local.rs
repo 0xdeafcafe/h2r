@@ -227,6 +227,8 @@ enum Staged {
     Move(ForgeTarget, Frame),
     Delete(ForgeTarget),
     Channel(u32, i16),
+    /// A netgame item entry's spare clips.
+    SpareClips(u32, Option<u8>),
     /// An own entry's step that needs no tag resolved.
     Base(BaseStep),
     /// An own entry's field write, its value still a document value.
@@ -293,6 +295,7 @@ impl ForgeWorld {
                         Staged::Move(target, frame) => ForgeStep::Move { target, frame },
                         Staged::Delete(target) => ForgeStep::Delete { target },
                         Staged::Channel(flag, channel) => ForgeStep::Channel { flag, channel },
+                        Staged::SpareClips(index, clips) => ForgeStep::SpareClips { index, clips },
                         Staged::Base(step) => ForgeStep::Base(step),
                         Staged::Field {
                             block,
@@ -393,6 +396,16 @@ impl World for ForgeWorld {
     /// scenario, after the batch's objects.
     fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
         self.steps.push(Staged::Channel(flag, channel));
+        Ok(())
+    }
+
+    /// A netgame item entry's spare clips: the game's table, and the weapon
+    /// the entry has out, after the batch's objects.
+    fn spare_clips(&mut self, index: u32, clips: Option<u8>) -> Result<(), String> {
+        if clips.is_some_and(|c| c > forge_doc::SPARE_CLIPS_MAX) {
+            return Err("Spare clips are 0 to 10.".into());
+        }
+        self.steps.push(Staged::SpareClips(index, clips));
         Ok(())
     }
 

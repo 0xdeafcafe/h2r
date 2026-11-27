@@ -546,3 +546,57 @@ fn duplicate_refuses_a_kind_the_session_cannot_add_and_a_full_budget() {
     );
     assert_eq!(w.calls.len(), 4);
 }
+
+#[test]
+fn a_spawners_spare_clips_are_a_property_op_the_world_follows_by_row() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake::default();
+    assert_eq!(s.spare_clips(spawner), None);
+    s.set_spare_clips(&mut w, 1, spawner, Some(2)).unwrap();
+    assert_eq!(s.spare_clips(spawner), Some(2));
+    assert_eq!(
+        entry_ops(&s),
+        [EntryOp::Property {
+            target: spawner_target(),
+            property: forge_doc::Property::SpareClips(Some(2)),
+        }]
+    );
+    assert_eq!(w.calls, [Call::SpareClips(0, Some(2))]);
+    // The same clips write nothing; a change is one call; undo puts the
+    // last back, and undoing the first leaves the weapon's own reserve.
+    s.set_spare_clips(&mut w, 2, spawner, Some(2)).unwrap();
+    assert_eq!(w.calls.len(), 1);
+    s.set_spare_clips(&mut w, 3, spawner, Some(0)).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::SpareClips(0, Some(0))));
+    s.undo(&mut w, 4).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::SpareClips(0, Some(2))));
+    s.undo(&mut w, 5).unwrap();
+    assert_eq!(w.calls.last(), Some(&Call::SpareClips(0, None)));
+    assert_eq!(s.spare_clips(spawner), None);
+    // Another kind has none, and more than ten is refused.
+    assert_eq!(
+        s.set_spare_clips(&mut w, 6, weapon(0), Some(1)).unwrap_err(),
+        "This object has no spare clips."
+    );
+    assert!(s.set_spare_clips(&mut w, 6, spawner, Some(11)).is_err());
+    assert_eq!(w.calls.len(), 4);
+}
+
+#[test]
+fn a_refused_spare_clips_call_leaves_the_document_as_it_was() {
+    let spawner = Endpoint::base(BlockKind::NetgameEquipment, 0);
+    let mut s = open(rows());
+    let mut w = Fake {
+        refuse_at: Some(0),
+        ..Fake::default()
+    };
+    assert_eq!(
+        s.set_spare_clips(&mut w, 1, spawner, Some(3)).unwrap_err(),
+        "named engine refusal"
+    );
+    assert!(s.document().ops.is_empty());
+    assert_eq!(s.spare_clips(spawner), None);
+    s.set_spare_clips(&mut w, 2, spawner, Some(3)).unwrap();
+    assert_eq!(w.calls, [Call::SpareClips(0, Some(3))]);
+}

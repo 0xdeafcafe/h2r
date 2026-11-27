@@ -79,6 +79,13 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             let current = extras.team.map_or(0, |team| usize::from(team) + 1);
             picker(p, help, Prop::SpawnerTeam, values, current.min(last))
         }
+        // Spare clips are the document's property, on a spawner of an item
+        // collection: the weapon's own reserve first, then 0 to 10 clips.
+        ("picker", "spare clips") => {
+            let clips = extras.spare_clips?;
+            let current = clips.map_or(0, |c| usize::from(c) + 1);
+            picker(p, help, Prop::SpareClips, values, current.min(last))
+        }
         ("picker", "role") => {
             let current = int_of(thing, "type").clamp(0, last as i64) as usize;
             picker(p, help, Prop::Role, values, current)

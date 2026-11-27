@@ -258,6 +258,7 @@ fn every_row_of_the_shipped_doc_binds() {
             savable: 2,
             kit: true,
             team: None,
+            spare_clips: Some(None),
         };
         let t = Thing {
             own: true,
@@ -406,6 +407,7 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         savable: 2,
         kit: false,
         team: None,
+        spare_clips: None,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
@@ -581,4 +583,32 @@ fn a_spawner_has_a_team_picker_over_the_documents_property() {
         panic!("a picker")
     };
     assert_eq!(blue.values[blue.current], "Blue");
+}
+
+#[test]
+fn a_collection_spawner_has_a_spare_clips_picker_over_the_documents_property() {
+    let d = doc();
+    let spawner = thing(BlockKind::NetgameEquipment, ThingKind::ItemSpawner, &[]);
+    let clips_row = |spare_clips| {
+        let extras = Extras {
+            spare_clips,
+            ..Extras::default()
+        };
+        rows_with(&d, &spawner, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Spare clips")
+    };
+    // A spawner the row is not for (a vehicle's) has none.
+    assert!(clips_row(None).is_none());
+    let Some(SheetRow { act: Act::Pick(own), .. }) = clips_row(Some(None)) else {
+        panic!("a picker")
+    };
+    assert_eq!(own.values.len(), 12);
+    assert_eq!(own.values[own.current], "Weapon's own");
+    assert_eq!(own.choices[own.current], Choice::Set(Prop::SpareClips, 0));
+    let Some(SheetRow { act: Act::Pick(two), .. }) = clips_row(Some(Some(2))) else {
+        panic!("a picker")
+    };
+    assert_eq!(two.values[two.current], "2");
+    assert_eq!(two.choices[two.current], Choice::Set(Prop::SpareClips, 3));
 }
