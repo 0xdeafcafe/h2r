@@ -97,6 +97,9 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     (&points::SIM_EVENT_GENERATE, &[]),
     (&points::GAME_SETUP_EVENT, &[]),
     (&points::WEAPON_UPDATE, &[]),
+    // `ui_language` (`mov eax, [0x47ff38]`) follows the preceding function's
+    // jump table (its last entries, 0x11caa5..0x11cadc, come right before).
+    (&points::UI_LANGUAGE, &[]),
     // `hud_seats_update` follows the previous function's tail jump at
     // 0x1391e8 (`jmp 0x13ac30`); it opens with `push ebx; push esi; push edi`.
     (&points::HUD_SEATS_UPDATE, &[]),
