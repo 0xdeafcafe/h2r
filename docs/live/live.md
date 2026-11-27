@@ -150,32 +150,6 @@ Moved to [Live: the pieces](live-pieces.md#4-pieces).
 
 ### 4.3 Service
 
-## 5. Order of work
-
-1. **Name the boundary.** Done statically: [live-boundary.md](live-boundary.md)
-   lists 130 entry points (62 confirmed, 68 likely), the sign-in sequence and
-   how each logon result routes to a dialog or the dashboard. Sign-in also
-   needs `XOnlineLogonTaskGetResults` (connected = `0x001510f0`, separate
-   from task success `0x001500f0`), `XOnlineGetServiceInfo` for 13 services,
-   and an `XNetQosServiceLookup` that completes; the logon task must stay
-   open while signed in.
-2. **Signed in, offline service.** Link up, XNet startup, `XOnlineStartup`,
-   `XOnlineGetUsers`, `XOnlineLogon` succeed for a CLI account with a fixed
-   in-process stub. Success is the game showing the gamertag as online.
-3. **Service and MOTD.** Done: `h2 live serve`, accounts, title storage
-   serving files by name, the `message_of_the_day.dat` and
-   `multiplayer_hopper.dat` formats ([live-motd.md](live-motd.md),
-   [live-admin.md](live-admin.md)) and the client HLE that fetches them.
-4. **Friends and presence.** Done (server and HLE; [live-api.md](live-api-social.md#friends)).
-5. **System Link over XNet HLE** (two local instances). Done
-   ([Client HLE: sockets and System Link](live-client-hle.md#client-hle-sockets-and-system-link)).
-6. **Matchmaking and custom games over Live**, then stats and clans. Done
-   on tests ([live-matchmaking.md](live-matchmaking.md),
-   [live-custom-games.md](live-custom-games.md), [live-telemetry.md](live-telemetry.md),
-   [Teams](live-client-hle-offline.md#client-hle-teams)); co-op over Live too
-   ([live-coop.md](live-coop.md)). The HLE has been run in the game only
-   where those pages say so.
-
 ## 6. Open questions
 
 - The `.data` tables at `0x004672b8` and `0x0046dd5c` are answered in

@@ -133,22 +133,6 @@ stay in sync (`OUT OF SYNC`, `h2 coop-probe diff` on three hash files,
 pairwise), and do 03a's and 05a's opening cutscenes leave anyone behind.
 Players 3+ are the same character as player 1.
 
-### 13.4 Staged plan
-
-1. **2 to 4 (now).** Stage 1a and 1b. Run 13.3 on 01a, 03a, 05a.
-   The harness's `h2 coop test --players` (section 12) can allow up to `coop.max_players` once this lands.
-2. **4, done properly.** Script handling for players 3+: for each
-   level, the cutscene teleports of `player0`/`player1` and the
-   `bridge_`/`boss_` flags (04b, 05a, 05b, 08b) get a third and fourth
-   flag generated beside the first two (or the hook teleports players 3+
-   to the same flag through `0x14e970`, which searches around it). The
-   checkpoint rule (13.5, built). Which of the two characters each player is
-   (a per-player representation, `player+0x88` read by `0x14f040`).
-3. **8 to 16.** Measure the synchronous update's encoded size at 16
-   (the encoder `0xb2710`); the host's upstream decides the cap. Pace:
-   the slowest console gates every tick. AI targeting with many players
-   (unread). Respawn anchors and leash in big open levels.
-
 ### 13.5 Risks and open items
 
 - **Checkpoints with more players (built, option (a)).** `0x226190`

@@ -361,26 +361,6 @@ link's dashed curve brightened once; melee as a short arc ahead of the
 dot. Impacts, muzzle flashes and the lunge are not drawn in 2D: the shot
 lines already there say as much. Mini maps draw none.
 
-## Build order
-
-The shared pool supports the derived effects. Vehicle destruction and
-camouflage also depend on new telemetry.
-
-| # | Slice | Files | Tests that prove it |
-|---|---|---|---|
-| 6 | The pool and the switch | new `viewer/fx.ts` (types, the pref), `viewer/fx3d.ts`; `viewer/scene.ts` (update section: one `FxPool`, the auto-drop); `Viewer3D.tsx` (the menu row, `?fx=`) | `fx.test.ts`: the pref reads the address before storage and defaults by pointer; the ring buffer reuses its oldest; the flash limiter passes three a second; a JS mirror of the vertex shader's placement gives `pos + vel × age` and ends at `life` |
-| 7 | Shields | `viewer/fx.ts` (shield events from `VitalsTrack`), `viewer/fx3d.ts` (the shell), `viewer/scene.ts` | `fx.test.ts`: a drop gives one flare with the attacker's direction and re-arms no sooner than 90 ms; reaching 0 gives one break; rising gives a recharge that ends at full; above 1 an overshield; frames without vitals give nothing |
-| 8 | Muzzle, tracer ends, film effects | `viewer/fx3d.ts`, `viewer/effects3d.ts` (`film` through the pool), `viewer/scene.ts` (shots) | `fx.test.ts`: a `fire` mask gives a flash per set tick; a film `blast`, `impact` and `terminal` each map to their look; `film-poses.test.ts` stays green |
-| 9 | Explosions and impacts from projectiles | `viewer/fx.ts` (`FxWatch` projectile matching), `viewer/fx3d.ts` | `fx.test.ts`: a grenade id that leaves detonates at `pos + vel × dt`; a stuck one at its parent; frames 0.3 s apart, a seek and a cut detonate nothing; a plasma bolt is an impact, not an explosion; needles leaving one parent together are one burst; a derived detonation beside a film `blast` is dropped |
-| 10 | Melee, lunge, teleporters, deaths | `viewer/fx.ts`, `viewer/fx3d.ts`, `viewer/features3d.ts` (the link's pulse), `viewer/scene.ts` (the death flash) | `fx.test.ts`: a melee action gives an arc and, with a hit in 3 ticks, a star; a 3 unit dash with a melee-kind weapon is a lunge and a 1 unit one is not; a jump from a teleporter to its link is a teleport, to anywhere else is not, and a respawn is not |
-| 11 | 2D maps | `map/render.ts` (`drawFx`), `components/MapCanvas.tsx`, `map/ViewMap.tsx` | `fx.test.ts` against a recording canvas context: each 2D effect's calls, none with `fx` off, none on a mini map, the still forms with reduced motion |
-| 12 | Reduced motion and low quality, across all of them | `viewer/fx3d.ts`, `viewer/fx.ts` | `fx.test.ts`: every effect kind has a still form with no velocity and no growth; low quality halves the counts in the budget table |
-| 13 | Vehicle `destroyed` | `crates/live/live-telemetry/src/hooks.rs` and `event.rs`, `crates/live/live-proto/src/game.rs` and `pack.rs`, `web/src/api/pack.ts` and `types.ts`, `viewer/fx.ts`; [live-telemetry.md](live-telemetry.md) | `live-proto` pack round-trip and frame-size tests with an `fx` list; `pack.test.ts` reads it and an older reader skips it; `fx.test.ts`: a `destroyed` event is an explosion at the vehicle, 1.8 times a grenade's |
-| 14 | `camo` | the research point first; then the same files as 13, `viewer/players3d.ts` (the material) | the same pack tests for the field; `fx.test.ts`: a biped with `camo` is drawn at its opacity and its tag reads `CAMO` |
-
-Shield effects read `VitalsTrack`. Vehicle destruction and camouflage
-are the only effects that require changes in the game.
-
 ## Interfaces
 
 - `FxWatch.observe(frame, now, opts): Fx[]` and `FxWatch.clear()`, as

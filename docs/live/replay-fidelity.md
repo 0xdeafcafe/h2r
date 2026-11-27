@@ -309,57 +309,6 @@ denser track; the rest don't.
    detail recording" in the corner. A debug toggle that draws the raw
    samples as dots shows how much of the motion is interpolated.
 
-## Plan, after review
-
-Each step is test-first and runs in both homes.
-
-1. **Done:** the game clock, the origin fix and the viewer guard.
-2. **Done, viewer on today's data:** frames read once (`/frames` packed,
-   events with `exclude=GameFrame`, so the browser does not verify the
-   server's `GameFrame` signatures; the chunk events will be signed),
-   kills, deaths, cuts and zone changes on the scrubber, frame and mark
-   stepping (`,` `.` `<` `>`), 0.25×, a first-person camera (`Eyes`, key
-   `v`), and a killcam (click a kill or death mark, or `k`): 5 s before, at
-   0.5×, through the killer's eyes, opening the 3D view if it is closed and
-   reaching a popped-out one.
-3. **Done, protocol:** `vel`, `seat`, `body` and `shield`, `fire` (a
-   32-tick mask), `actions_ago` and hits' `ago`, and the frame's `cut`, in
-   JSON and packed format version 3 (versions 2 and 1 still read; a v2
-   golden stream proves it on both sides). Dropped frames' one-shots are
-   placed again against the delivering frame's tick. The telemetry session
-   sends `cut` on the first frame after a revert; the other fields wait for
-   capture (step 4). Filled, they cost about 25% on the sample frames
-   before any of the compression work.
-   **Done, research:** the animation state is found ([Animation
-   state](#animation-state-found-static-reading)). It goes out as `anim` in
-   packed version 4, because version 3 frames may already be recorded.
-   Hits now carry the tick the damage hook saw them on (`ago`).
-   **Research, alongside (decided):** find each unit's animation state in
-   guest memory (the animation graph, its current state and frame) by
-   static reading and the existing memory fixtures, and record it in the
-   protocol as `anim`. The viewer stops inferring once senders have it.
-4. **Capture:** players every tick, actor rates by distance, projectiles
-   and grenades as entities, and the animation state from step 3's reader.
-   **Done (2026-11-19, packed version 6):** projectiles slower than 100
-   units a second (grenades, rockets, plasma, needles; stuck ones with
-   their parent) and loose weapons and equipment (dropped guns, the flag,
-   ball and bomb) as entities, vehicles' velocity, and position
-   prediction from velocity in deltas (step 1 of Compression, in the live
-   format itself, so chunks get it too). The animation state went out in
-   version 4. Left: players every tick (the `partial` frame in
-   [live-telemetry.md](live-telemetry.md), "Rate"), actor rates by
-   distance, projectile owners (not traced).
-5. **Server:** `FrameChunk` recording to the `BlobStore`, read through the
-   API with the same visibility check as `/frames` (decided), the chunk
-   list endpoint, the compressed chunk codec and its benches, and the
-   parity case. **First cut done** ([Chunk container, index and reads](replay-fidelity-spectator.md#chunk-container-index-and-reads)):
-   recording, the index, reads, codec 1 (deflate) and chunk playback.
-   New recordings use chunks. H2AR now provides the separate compressed,
-   seekable format for finished games. The legacy `/frames` read still
-   serves older recordings. [Archive migration](replay-migration.md)
-6. **Viewer:** the chunk reader, Hermite sampling, one-shots on their tick,
-   and live extrapolation.
-
 ## Decisions
 
 - **Retention:** keep every game at full detail. Put the effort into

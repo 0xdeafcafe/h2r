@@ -463,44 +463,6 @@ crypto.
 
 Presentation follows the web app's established Live-side style.
 
-## 4. Phased plan
-
-**Phase 0 - confirm the retail contracts** (§1.5's table; parallel, no
-server work). The HLE result records can't be finalized before this.
-
-**Phase 1 - custom games listed and joinable by invite** (implemented and
-synthetically tested; retail play confirmation pending). Server: `session-*` streams, `POST /v1/sessions` and
-`/events`, `GET /v1/sessions{,/{id}}`, the sweeper, the `mailbox-*`
-invite pair, `sessions.write`, `q sessions`; web: the session list. HLE
-(replaces these stops): `XOnlineMatchSessionCreate`, `SessionUpdate`,
-`SessionGetInfo`, `SessionDelete`, `SessionFindFromID`,
-`XOnlineGameInviteSend`, `XOnlineGameInviteAnswer`,
-`XOnlineFriendsGameInvite`/`AnswerGameInvite`/`JoinGame`, and a real
-`XOnlineFriendsGetAcceptedGameInvite` (E_FAIL stays the no-invite answer,
-which the poll already handles).
-
-Success: two local instances, one invites
-the other over the server, they play - the System Link recipe with the
-server in place of the broadcast. Tests: router tests over the in-memory
-store and synthetic guest tests through `start_embedded`, in the style of
-the sign-in/message tests; no game build.
-
-**Phase 2 - search and hoppers.** HLE: `XOnlineMatchSearch`,
-`SearchGetResults`, `SearchParse`, `SearchResultsLen` over
-`GET /v1/sessions` (in-game custom-game browse), QoS probing of candidates
-over the existing side protocol. Server: the matcher, `matchmaking-*` and
-`match-*` streams, hopper populations on the web, and our own authored
-hopper file so game and server agree on playlists.
-
-**Phase 3 - ranked results.** Arbitration (`Register`/`ExtendRound`/
-`Report`) checked against the games log the consoles already write, stat
-writes, and leaderboards through the query service - at which point the
-`XNetTsAddrToInAddr` stop and the stats stops retire.
-
-The HLE halves of each phase belong to `crates/live/live-hle` (Codex's lane);
-the server halves to `crates/live/live-server`/`crates/live/live-proto` and the web
-app.
-
 ## 5. Open questions
 
 - The complete retail invite UI/confirmation transition remains untested.

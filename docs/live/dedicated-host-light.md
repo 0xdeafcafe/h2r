@@ -295,7 +295,6 @@ exit reports `Crashed`.
 
 ### Compare against ordinary headless serve
 
-Use the image, profile and port setup from the [Mac spike](dedicated-host.md#mac-system-link-spike).
 Use the same prebuilt image and map, matching warm cache state, roster and
 telemetry configuration for both trials. Stop both processes between trials
 and start the same client again.

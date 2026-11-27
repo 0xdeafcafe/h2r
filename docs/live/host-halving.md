@@ -453,18 +453,6 @@ allowed the count.
 Cloudflare is cheaper when packs are part full, Fly
 when they are full, and Fly has no tunnel leg.
 
-## Build order
-
-The table lists outstanding implementation work. Measurement results go in a dated entry in
-`docs/live/notes/host-halving.md` with the commit and the command.
-
-| # | Slice | Files it owns | Tests | Measurement gate |
-|---|---|---|---|---|
-| 6 | Template process | new `host_cmd/template.rs`, `host_cmd/pack.rs`, `crates/extensions/game/src/snapshot_glue.rs`, the clock-only audio section in `crates/platform/dsound`, `crates/live/host-data` (the bundle entry) | fork of a fake template in `pack_tests.rs`; two children differ in nonce and time base; a mismatched snapshot is a named error; audio section round trip | Allocation to joinable under 2 s at p95 over 50 warm starts; a forked match equals a booted one in hashes from the same seed |
-| 10 | Historical region RTT fallback | Match-end telemetry and matchmaking | Synthetic peer-to-account and network attribution, expiry and median fallback | Probe RTT within 10 ms of in-match RTT for the same remote client and region |
-| 12 | Packs on Fly | `hosts/fly.rs` | the fake-API tests: windows per slot, a stopped pool, destroy on silence | One packed Machine, four matches, UDP |
-| – | Sound, effects, Havok | the rewrite plan's phases 4, 6 and 5 | their ladders | Their exit criteria; the CPU table above is re-read after each |
-
 ## Evidence
 
 | Fact | Label | Source |

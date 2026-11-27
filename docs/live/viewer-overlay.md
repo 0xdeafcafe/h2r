@@ -129,11 +129,6 @@ Moved to [Viewer overlay: the overlay, name tags and reveal](viewer-overlay-laye
 
 Moved to [Viewer overlay: the overlay, name tags and reveal](viewer-overlay-layers.md#damage-and-combat-effects).
 
-## Build order
-
-Damage and combat effects share the viewer overlay. Their build order is
-in [viewer-effects.md](viewer-effects.md#build-order).
-
 ## Interfaces
 
 - **Address:** `?player=<gamertag|xuid>` (opening camera), `?dmg=off|bars|numbers`,

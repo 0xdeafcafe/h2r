@@ -317,8 +317,7 @@ export H2_XNET_LOOPBACK_PEERS=192.168.1.50:31000
 Launch each through a host that passes enabled LiveConfig to the boot entry
 points above. The environment variables select transport settings; they do not
 enable Live by themselves. For headless LAN play, `h2 serve --system-link`
-enables the boundary with no account or service URL. See the
-[dedicated host experiment](dedicated-host.md#mac-system-link-spike).
+enables the boundary with no account or service URL. 
 
 Choose System Link, host on one instance and search on the other. No server URL
 or account signing key participates in LAN traffic. An embedding host can avoid

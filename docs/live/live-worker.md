@@ -396,9 +396,6 @@ Game ingest and the stream add to this:
 The paid plan is the one to use. On the free plan, an evening of co-op uses a
 large share of the day's requests.
 
-## Slices (serial, about 2 hours each)
-
-Moved to [Live Worker: build slices and results](live-worker-slices.md#slices-serial-about-2-hours-each).
 
 ## Deploy
 
