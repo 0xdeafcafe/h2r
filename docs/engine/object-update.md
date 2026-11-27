@@ -959,7 +959,7 @@ lights with `16bc00`), and frees the light (`16ba40`).
 
 On the look path of `cba50`, `sim_objects::unit::look_up` completes
 `frame_up × aim` and evaluates `aim × left` in packed binary32 lanes.
-The adapter reconstructs the six XMM outputs at the normalizer call.
+The adapter reconstructs the six XMM outputs at the normaliser call.
 The scalar SSE path handles exceptional operands, out-of-range
 intermediates and float environments outside the packed path’s proof.
 

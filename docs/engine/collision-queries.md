@@ -52,7 +52,7 @@ pages (including stores through aliases), a remap, a RAM replacement or a
 map epoch change require a fresh decode. If the count, range or watch is
 unusable, B reads the selected cluster word directly.
 
-### Entry E — instance trace of one cluster
+### Entry E - instance trace of one cluster
 
 Entry E answers the signed count ≤ 0 exit in Rust. It replays the saved
 frame, scratch registers and final compare flags without reading any query
@@ -72,7 +72,7 @@ volatile-state obligations at its own ABI.
 
 With a positive count, E uses the code object at cluster +0xac. It sets
 the ray endpoints to start and start + delta (one binary32 add per axis),
-and initializes the collector's limit from result +4. The collector path
+and initialises the collector's limit from result +4. The collector path
 in `0x301800` uses the stack-local collection, child and collector methods
 `0x244bb0`, `0x244be0` and `0x244c10`. The early-out fraction feeds back
 into the walk after each terminal.
@@ -128,7 +128,7 @@ below that address. A successful native E therefore needs a depth bound
 for its actual traversal and an alias check spanning both walks. E's
 three argument words are read-only. The status-save sites are catalogued below. The precision controls reached in a running match require an entry histogram.
 
-### Entry F — MOPP box query
+### Entry F - MOPP box query
 
 The only direct caller is the MOPP shape's slot `+0x30` (`0x2df640`,
 call at `0x2df659`), which passes its code pointer, the AABB and the
@@ -177,7 +177,7 @@ dirty page does not drop the trees: it moves a generation, and a held
 tree compares its bytes with the guest's before its next use. A changed
 program decodes again.
 
-### Entry I — general MOPP ray
+### Entry I - general MOPP ray
 
 The tree shape's ray slot (`0x2df720`) builds the ray VM on its stack and
 calls I with the shape's collection and code and its own three arguments.
@@ -228,7 +228,7 @@ method and reloads the collector fraction. A callback can mutate guest
 state. A decline after that boundary requires a continuation at the
 matching interpreter state before this candidate can answer live calls.
 
-### Entries G and H — cluster flood and object visit
+### Entries G and H - cluster flood and object visit
 
 G floods from a cluster through the portals a sphere reaches, depth first.
 The cluster record is `[[0x4e0348]+0xa0] + 0xb0c·i`: `+0x8c` portal
@@ -291,7 +291,7 @@ words, flags and output writes. Other admitted paths compare the lifted
 return register, list and mark tables. H also compares the generations
 and active bytes. Recursive G calls belong to their outer prediction.
 
-### Entry J — whole segment query
+### Entry J - whole segment query
 
 `engine::sim_collision::query` follows the structure BSP, liquid boundaries,
 instance terminals and live object references in guest order. In
@@ -572,7 +572,7 @@ reports the gate under `vector` and `context`.
 
 ### Status-instruction census
 
-The census counts instruction starts claimed by the static analyzer
+The census counts instruction starts claimed by the static analyser
 (`h2 fpstats --root 0x12190`). A linear decode also interprets embedded
 data and unclaimed section bytes as instructions. For example, the apparent
 x87 saves at `0x397565` and `0x39a8b0` in WMADEC have no instruction claim
@@ -591,7 +591,7 @@ The saved bits reach guest memory at each store. Preserving MXCSR at A–D
 keeps those writes exact. The FTZ sites establish that code can enable
 flush-to-zero. Only a run can say which MXCSR reaches a collision query.
 
-The analyzer claims two `fnsave` and no `fnstenv` or `fxsave`. Both CRT
+The analyser claims two `fnsave` and no `fnstenv` or `fxsave`. Both CRT
 paths allocate a local record with an eight-byte result followed by a
 108-byte save area. At `0x372e7c` and `0x373825` the preceding x87 stores
 supply the last-instruction and operand addresses. The helper at `0x3738a8`

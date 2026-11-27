@@ -19,7 +19,7 @@ are included.
   Its 99.90% *known* coverage includes data and padding. This is not proof of
   function boundaries or complete dynamic reachability.
 - The existing Ghidra 12.1.4 project/export has 13,654 functions. It misses
-  several table-referenced initialization functions and truncates some switch
+  several table-referenced initialisation functions and truncates some switch
   bodies. For example, Ghidra shows only the dispatch prefix of `0x0018eaa0`;
   direct disassembly reveals its cache-load branch at `0x0018eade`.
 - `h2 symbols --list --no-xcheck`: 315 matches at 311 distinct addresses.
@@ -66,7 +66,7 @@ arguments omitted from the displayed parameter list.
 | `0x0012b400` `physical_arena_initialize` | Confirmed | Calls XPhysicalAlloc for `0x30e4000` bytes with preferred address `0x61000`; establishes opposing arena cursors. Preserve physical/virtual alias semantics. Our `tag-arena` feature grows both by 8 MiB ([map-format.md](../formats/map-format.md#the-tag-arena)). |
 | `0x00012000` `platform_bootstrap` | Confirmed | Allocates a small arena, configures FP, then calls async I/O init, preferences, fonts, cache services, animation cache, game-state arena, rasterizer, input, and sound setup. Semantic names of some children remain likely. |
 | `0x00120a90` `async_io_initialize` | Likely | Initializes a request pool, mutexes, worker state; creates a thread at `0x00120c30`. Cache reads and preferences wait on completion flags. |
-| `0x00137c20` `engine_systems_initialize` | Confirmed | Allocates/clears game globals, stores the pointer at `0x004e6948`, then calls 68 initialization slots at `0x00440dd8 + n*0x24`. |
+| `0x00137c20` `engine_systems_initialize` | Confirmed | Allocates/clears game globals, stores the pointer at `0x004e6948`, then calls 68 initialisation slots at `0x00440dd8 + n*0x24`. |
 | `0x0012b690` `main_loop_run` | Confirmed | Initializes timing and systems, repeatedly calls `0x0012b450` until exit byte `0x00547f2b` changes, then walks disposal callbacks backwards. |
 | `0x0012b450` `main_loop_iteration` | Confirmed | Reached from that back edge. |
 
@@ -77,11 +77,11 @@ The ordered bootstrap children in `0x00012000` are useful stopping points:
 `0x001248b0` input, `0x001253d0` sound. Fonts are identified by file-path
 xrefs at `0x00453390`; the animation-cache diagnostic is at `0x00453454`.
 
-The lifecycle table has 36-byte records, with the first initialization pointer
+The lifecycle table has 36-byte records, with the first initialisation pointer
 at `0x00440dd8`; do not treat every word as a function. Inspected entries include
 time `0x00146550`, players `0x0014b4b0`, objects `0x000b67c0`, rasterizer
 `0x00012560`, script nodes `0x0020a700`, AI `0x001c7790`, and physics
-`0x001c25a0`. Map/BSP lifecycle columns are separate from initialization and
+`0x001c25a0`. Map/BSP lifecycle columns are separate from initialisation and
 per-tick updates. Shared no-op callbacks are common. The table is not a list
 of 68 independent rewrite modules.
 
@@ -150,7 +150,7 @@ release path inlines `(datum & 0xffff) * 0x10`, loads `0x004e3b44`, then takes
 entry `+8`. This survey found 995 distinct Ghidra function owners directly
 referencing that global. A Rust override must keep the published guest index
 and guest metadata addresses valid until those consumers are replaced. Do not
-silently replace engine behavior with the stricter host parser: the checked
+silently replace engine behaviour with the stricter host parser: the checked
 accessor here sign-extends the low 16-bit slot, whereas the fast inline path
 masks it. Capture the actual contract for each entry.
 
@@ -181,7 +181,7 @@ is at `matg + 0x190`.
 | Address / assigned name | Confidence | Evidence / rewrite boundary |
 |---|---|---|
 | `0x00123b30` `game_state_arena_initialize` | Confirmed | Gets backing from `0x00214f10`, clears `0x3fe000` bytes, sets header/global allocations using base `0x004e6080` and cursor `0x004e6084`. |
-| `0x00123dd0` `game_state_pool_new` | Confirmed | Bump-allocates a pool plus header from that arena and initializes it with `0x0018e250`. |
+| `0x00123dd0` `game_state_pool_new` | Confirmed | Bump-allocates a pool plus header from that arena and initialises it with `0x0018e250`. |
 | `0x0018e1f0` / `0x0018e2b0` `memory_pool_new` / `memory_pool_allocate` | Confirmed | Allocator-backed pool construction; aligned block allocation, owner pointer/backlinks and free-byte accounting. Shared by objects/UI. |
 | `0x0016b570` / `0x0016b5f0` / `0x0016b650` `data_new` / `data_initialize_contiguous` / `data_initialize` | Confirmed | Allocation and construction of named arrays with capacity, element stride, salt and occupancy bitmap. `0x0011cc20` is another arena-backed constructor. |
 | `0x0016b840` `datum_new` | Confirmed | Finds free bitmap slot, clears element, assigns/increments salt, returns `(salt << 16) | slot`; failure is all ones. |
@@ -190,9 +190,9 @@ is at `matg + 0x190`.
 | `0x0013d170` `lruv_cache_new` | Likely | Shared named animation/texture/geometry/sound-cache constructor over a data array. |
 
 These are good small Rust candidates once guest allocation identity and failure
-behavior are reproduced. Array data and occupancy pointers are at `+0x44` and
+behaviour are reproduced. Array data and occupancy pointers are at `+0x44` and
 `+0x48`; the many inlined consumers make immediate conversion to Rust-owned
-collections unsafe for compatibility. Maintain generation/salt behavior and
+collections unsafe for compatibility. Maintain generation/salt behaviour and
 allocation order before changing ownership.
 
 ## Game state, objects, players, AI, and HaloScript
@@ -204,7 +204,7 @@ allocation order before changing ownership.
 | `0x00146660` `game_time_budget_ticks` | Confirmed | Pause/state/speed checks, fractional accumulator, bounded whole-tick count and elapsed simulation time. |
 | `0x00137f70` / `0x00137fe0` `game_update_ticks` / `game_tick` | Confirmed | Loop over budgeted ticks; latter updates subsystems and increments `game_time +8`. Time step is `+4`, tick rate is `+2`, speed is `+0xc`. |
 | `0x000b67c0` `objects_initialize` | Confirmed | Allocates 2,048 twelve-byte object headers and a one-MiB object pool; name references at `0x0045322c`/`0x00453224`; stores `0x004e0300` and `0x004de2ec`. |
-| `0x000b7b40` `object_new` | Confirmed | Resolves definition tag, chooses type descriptor at `0x00468630`, allocates datum/body, initializes transform/attachments/vitality/physics, invokes type initialization, rolls back on failure. Returns salted object ID. |
+| `0x000b7b40` `object_new` | Confirmed | Resolves definition tag, chooses type descriptor at `0x00468630`, allocates datum/body, initialises transform/attachments/vitality/physics, invokes type initialisation, rolls back on failure. Returns salted object ID. |
 | `0x000bc280` `object_header_and_body_allocate` | Confirmed | Calls datum allocator and memory-pool allocator, stores body pointer at object-header `+8`, zeros body; rollback deletes header. |
 | `0x000badc0` `object_get_with_type_mask` | Likely | Used by player-from-unit and camera/object helpers with allowed-type masks. Verify failure/salt checks before overriding. |
 | `0x00108a90` `object_type_new_dispatch` | Confirmed | Called from object_new after common allocation; walks the descriptor ancestry list at `+0x84` and invokes callback `+0x2c`. |
@@ -214,7 +214,7 @@ allocation order before changing ownership.
 | `0x0014b4b0` `players_initialize` | Confirmed | Allocates 16 entries of stride `0x21c`; players-name xref `0x00453984`, published pointer `0x004e8c24`. |
 | `0x0014de70` / `0x0014de90` `local_player_get_player_index` / `player_index_from_unit_index` | Confirmed | Local-player mapping and unit-to-player access. The latter reads unit `+0x13c` here. |
 | `0x001c7790` / `0x001c79e0` `ai_initialize` / `ai_initialize_for_new_map` | Likely | Lifecycle-table slots. |
-| `0x001c83c0` `ai_update` | Confirmed | Called per tick, gates on AI globals `0x004f55d0`, invokes actor/squad/behavior work. Actor array at `0x004f55f0` has extensive local consumers. |
+| `0x001c83c0` `ai_update` | Confirmed | Called per tick, gates on AI globals `0x004f55d0`, invokes actor/squad/behaviour work. Actor array at `0x004f55f0` has extensive local consumers. |
 | `0x00257d00` `ai_command_scripts_initialize` | Confirmed | Allocates command-script and joint-command-script arrays; diagnostic-name xrefs `0x0045a690`/`0x0045a678`. |
 | `0x0020a700` / `0x00208ff0` `hs_initialize` / `hs_runtime_initialize` | Confirmed | Script-node array has stride `0x14`; runtime creates named thread/global arrays and publishes pointers. |
 | `0x00209310` `hs_update` | Confirmed | Walks script-thread datums, compares wake tick with `game_time +8`, executes ready threads via `0x00209850`. |
@@ -225,7 +225,7 @@ options, and this survey does not hard-code
 30 Hz as a universally valid runtime contract.
 
 Object headers and variable-size object bodies are separate. The local common
-body initializes type at `+0xaa`; type descriptors fan out to biped, vehicle,
+body initialises type at `+0xaa`; type descriptors fan out to biped, vehicle,
 weapon and other behaviors. Type slot zero at `0x00468630` points to the biped
 descriptor. Its ancestry list is object (`0x004678e8`, `obje`), unit
 (`0x004679b0`, `unit`), biped (`0x00467a78`, `bipd`), then null. The FourCC
@@ -240,9 +240,9 @@ HaloScript globals are `0x004f9394` nodes, `0x004f9384` threads,
 is not a console text parser.
 
 **Rewrite order:** datums first, common object identity next, type-specific
-behavior later. Keep the scheduler and reached script opcodes working for menu
-camera/UI behavior. A blank AI state is not proof that all AI lifecycle hooks
-can be removed; retain generated initialization until a menu trace proves which
+behaviour later. Keep the scheduler and reached script opcodes working for menu
+camera/UI behaviour. A blank AI state is not proof that all AI lifecycle hooks
+can be removed; retain generated initialisation until a menu trace proves which
 work is unnecessary.
 
 ## Rendering, camera, and UI
@@ -258,8 +258,8 @@ work is unnecessary.
 | `0x0002b790` / `0x0002ba10` `render_game_view` / `render_view_scene` | Likely | Camera/player preparation, render-state setup, scene passes, then UI composition `0x00147af1`. |
 | `0x00013680` / `0x0002bcd0` `select_scene_passes` / `render_scene_passes` | Likely | Repeated scene-pass dispatch with render-target/state changes; exact pass taxonomy is not recovered. |
 | `0x00041040` `submit_structure_or_model_geometry` | Likely | Branches between active BSP cluster/instance records and render-model tag geometry, then shader/material and vertex/index submission callbacks. Strong choke point for separating asset interpretation from D3D. |
-| `0x0003d270` `object_render_cache_initialize` | Confirmed | Cached-object-render-state diagnostic xref at `0x004508c0`, data-array initialization. |
-| `0x001554b0` `director_update` | Confirmed | Dispatches camera callbacks per local player; explicitly recognizes scripted and first-person callback addresses. |
+| `0x0003d270` `object_render_cache_initialize` | Confirmed | Cached-object-render-state diagnostic xref at `0x004508c0`, data-array initialisation. |
+| `0x001554b0` `director_update` | Confirmed | Dispatches camera callbacks per local player; explicitly recognises scripted and first-person callback addresses. |
 | `0x0016c840` / `0x0023c110` `scripted_camera_update` / `first_person_camera_update` | Confirmed | Local director references. Following/dead cameras at `0x0023cbb0`/`0x0023de50` are unverified (not inspected). |
 | `0x00187130` `player_control_get_field_of_view` | Confirmed | Observer default `[0x54e854]`, else the unit definition's camera FOV (`+0xcc`) divided by the zoom magnification (`0xc8880`). Only caller `0x23c202`; hooked for the FOV setting ([settings-menu.md](../game/settings-menu.md) "Field of view"). |
 | `0x0023bd70` | Likely | Following (vehicle) camera: sets its FOV from `[0x54e854]`. |
@@ -283,21 +283,21 @@ FourCC test exists in each path.
 For the menu, `wgtz`/`wigl`/
 `wgit`, `unic`, bitmaps, fonts and scenario background assets are the relevant
 public tag families, but this survey has not assigned all their constructors.
-The font initialization at `0x00121fc0`, localized resolver above, and per-layer
+The font initialisation at `0x00121fc0`, localized resolver above, and per-layer
 virtual calls are concrete entry points. Profile-list constructor `0x00249f0d`
 has a diagnostic xref at `0x00459efc`; it is not the entire main-menu constructor.
 
 **The D3D boundary is more than CreateDevice and Swap.** State setters,
 resource methods and GPU push-buffer work are linked/inlined into engine code.
 The D3D section
-has 237 analyzer starts and 57,105 decoded code bytes; the section's virtual
+has 237 analyser starts and 57,105 decoded code bytes; the section's virtual
 size is 78,948 bytes, including data/tails. [LTCG and boundary design](../lifter/LIFTER.md)
 
 ## Sound, physics, networking, and persistence
 
 | Subsystem / anchors | Confidence | Evidence |
 |---|---|---|
-| Sound initialization `0x001253d0` → `0x0021e4b0` → `0x0037d797` | Confirmed | Named source/cache/controller arrays; DirectSoundCreate match, capabilities, distance/rolloff/doppler settings, buffer creation/play. |
+| Sound initialisation `0x001253d0` → `0x0021e4b0` → `0x0037d797` | Confirmed | Named source/cache/controller arrays; DirectSoundCreate match, capabilities, distance/rolloff/doppler settings, buffer creation/play. |
 | Sound frame service `0x00125b40`; looping `0x0021a0c0`; effects `0x0021d490` | Confirmed | Allocation names, shared sound globals, cache/listener helpers. `snd!` expected-group constant at `0x00188c03` is in an object-related sound path. |
 | Havok world setup `0x001c2d40` → `0x003101c0` | Confirmed | Publishes world pointer `0x0051e9a4`; constructor has Havok version-mismatch diagnostic and hkWorld source-file xref `0x00413978`. Presence of Havok is established; exact product/version is not inferred from the numeric compatibility token. |
 | Havok BSP integration `0x001c2910` | Confirmed | Diagnostic at `0x004558f0` describes building BSP physics; reads active BSP and creates collision representation. |
@@ -311,7 +311,7 @@ size is 78,948 bytes, including data/tails. [LTCG and boundary design](../lifter
 | Profile/config cache `0x0007fa40` / `0x0007fb50`; profile type naming `0x00216b60` | Likely cache read/write; confirmed type naming | Shared configuration-cache pathname at `0x00450c68`; profile/variant naming branches. UI and persistence are separate parts of the profile flow. |
 
 The linked middleware sizes are measurable even when engine ownership is not:
-DSOUND has 476 analyzer starts / 47,892 decoded bytes; WMADEC 144 / 45,803;
+DSOUND has 476 analyser starts / 47,892 decoded bytes; WMADEC 144 / 45,803;
 XONLINE 913 / 182,012; XNET 381 / 77,836. These are discovery/code-byte counts,
 not API counts. WMADEC contains substantial undecoded content. Havok is mixed
 into `.text`, not a convenient separately named section. Bink has its own
@@ -320,9 +320,9 @@ sections; a movie-only display must not be mistaken for the menu-map renderer.
 ## Size, coupling, and rewrite priority
 
 **Size estimates below are survey windows, not recovered module boundaries.**
-`functions` counts analyzer starts in the stated half-open address windows;
+`functions` counts analyser starts in the stated half-open address windows;
 `bytes` is their summed address span, including alignment, embedded tables and
-possibly neighboring systems. They exclude out-of-line code elsewhere. Window
+possibly neighbouring systems. They exclude out-of-line code elsewhere. Window
 ownership is **guess**; counts/spans are measured. This avoids pretending a
 partial symbol map establishes complete subsystem totals. Startup/frame is
 scattered; its row measures selected known bodies instead.
@@ -391,7 +391,7 @@ smallest safe rewrite is not always the earliest function executed.
 | 20 | `0x00209310` `hs_update` | Confirmed | Follow menu script scheduling and identify the reached builtin subset. |
 
 Next: `object_new` at `0x000b7b40`, tick budgeting `0x00146660`, async reader
-`0x00213760`, and sound initializer `0x0021e4b0`. They are central but larger or
+`0x00213760`, and sound initialiser `0x0021e4b0`. They are central but larger or
 more stateful than the first leaf overrides.
 
 ## Reproduce and extend
@@ -413,7 +413,7 @@ target/release/h2 symbols disc/default.xbe --list --no-xcheck
 The survey joined Ghidra instruction references to function owners and inspected
 selected decompilations, then used `h2 disasm` for absent entries/switch arms.
 Raw pointer scans were only candidate generators; relevant candidates were
-checked against instructions. Size-window counts use analyzer starts, while
+checked against instructions. Size-window counts use analyser starts, while
 coupling counts use unique Ghidra owners with direct references to the named
 global. Neither uses transitive call-graph reachability as subsystem ownership.
 
@@ -462,7 +462,7 @@ passes around. Names are assigned descriptions. No executable bytes are quoted.
 
 ## UI tag walkers
 
-Appended by the UI tag survey. Found with an `iced-x86` sweep of analyzer
+Appended by the UI tag survey. Found with an `iced-x86` sweep of analyser
 function starts and checked against the disc; field layouts are in
 [ui.md](../formats/ui.md). No UI group FourCC appears as an immediate in the XBE: these
 functions reach tags through the inline `(datum & 0xffff) * 16` index on

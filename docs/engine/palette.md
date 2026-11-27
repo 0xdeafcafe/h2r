@@ -14,8 +14,8 @@ Switch: `impl.sim.native.anim` (the first-person port's own
 [switches.md](../runtime/switches.md).
 
 Phase 1c of the [simulation rewrite](sim-rewrite.md). A first-person
-seat draws its weapon and arms from a palette of 32-byte node records —
-a rotation, a translation and a scale — addressed by slot. The palette
+seat draws its weapon and arms from a palette of 32-byte node records,
+a rotation, a translation and a scale - addressed by slot. The palette
 step of `16760c` fills the palette from the identity record, then walks
 two models' nodes and lays each over the slot its palette index names.
 The register-level port (`engine::sim_physics::first_person`) stays the
@@ -70,7 +70,7 @@ The step declines, writing nothing (the port's loops run), when:
 - a guest read faults (`Fault`: an unmapped identity, node or index
   address);
 - the fill count or a model's node count passes 4096 (`Count`: the
-  guest's loops would walk further than the kernel gathers — including
+  guest's loops would walk further than the kernel gathers - including
   the three-and-a-half turns the counter's signed-word compare takes
   past `0x7fff`);
 - a write overlaps another write or a read, as virtual addresses
@@ -85,13 +85,13 @@ The step declines, writing nothing (the port's loops run), when:
   layout, the sentinel, the later model winning, negative slots, the
   span without a fill.
 - `palette/tests.rs` (engine, no image): the port's step with the
-  kernel on against the port's own loops — RAM byte for byte and the
-  whole CPU — over fill counts (including negative), model counts,
+  kernel on against the port's own loops - RAM byte for byte and the
+  whole CPU - over fill counts (including negative), model counts,
   index tables and the direction flag; every decline equal to the
   kernel-off run; the switch.
 - `sim_physics_differential.rs` (`first_person_pose_palette_kernel`,
   `H2_XBE`): the port, with the kernel on, against the lifted `16760c`
-  at every boundary — all memory and registers — over twelve fixtures
+  at every boundary - all memory and registers - over twelve fixtures
   with varying fills, counts and indices. `first_person_pose_update`
   keeps the port itself equal to the lifted guest with the kernel off.
 
