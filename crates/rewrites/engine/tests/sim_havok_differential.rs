@@ -3318,3 +3318,111 @@ fn the_triangle_case_matches_the_lifted_triangle_case() {
     }
     assert!(sizes.len() >= 4, "{sizes:?}");
 }
+
+// The penetration call 0x0030a6b0 and its solver 0x00309b50
+// (sim_havok::penetration, docs/engine/havok-convex.md, "The penetration
+// call") against the lifted function, on capsules and convex polygons,
+// simplices of one to four vertex pairs, under every rounding mode. The
+// shapes' supports run through the ported virtuals; a simplex that
+// reaches the expanding polytope declines.
+
+use sim_havok::penetration;
+
+const PEN_SIMPLEX: u32 = 0x0077_5000;
+const PEN_DIFFERENCES: u32 = 0x0077_5100;
+const PEN_OUT: u32 = 0x0077_5180;
+
+impl penetration::Calls for QueryCalls {
+    fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, esp: u32) -> Result<(), sim_havok::convex::Fallback> {
+        gjk::Calls::support(self, j, shape, dir, out, esp)
+    }
+}
+
+/// Seeded pairs, some moved apart, with one to four vertex pairs from
+/// the shapes (sometimes one vertex repeated, sometimes all one) and the
+/// differences `A - B` taken on the host, the output seeded: eax equals
+/// the lifted call's, ebx, ebp, esi and edi are kept, and every byte
+/// outside the stack (the simplex, the differences, the output) matches.
+/// Declines are the polytope's (`closest`) or, with the monitor stream
+/// on, `monitor`.
+#[test]
+fn the_penetration_call_matches_the_lifted_penetration_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = query_code(image);
+    for f in [PENETRATION, 0x309b50] {
+        code.prime(f);
+    }
+    let (mut answers, mut declined) = (std::collections::BTreeMap::new(), 0);
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x30a6_0000 + seed);
+        let mut mem = base.clone();
+        seed_query_shape(&mut r, &mut mem, QUERY_A, seed & 1 != 0);
+        seed_query_shape(&mut r, &mut mem, QUERY_B, seed & 2 != 0);
+        let mut t = [[0f32; 4]; 4];
+        for (i, column) in t.iter_mut().enumerate() {
+            *column = seed_vector(&mut r, &mut mem, QUERY_T + 16 * i as u32);
+        }
+        if seed % 4 == 3 {
+            for (i, column) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]].into_iter().enumerate() {
+                put_lanes(&mut mem, QUERY_T + 16 * i as u32, column);
+                t[i] = column;
+            }
+        }
+        if seed % 3 == 1 {
+            t[3][0] += 24.0;
+            put_lanes(&mut mem, QUERY_T + 0x30, t[3]);
+        }
+        let n = 1 + (seed / 4 % 4) as u32;
+        let (start_a, start_b) = (r.below(8), r.below(8));
+        for i in 0..4u32 {
+            let k = match seed % 8 {
+                5 if i == 2 => 1,
+                6 => 0,
+                _ => i,
+            };
+            let a = shape_vertex(&mem, QUERY_A, start_a + k);
+            let l = shape_vertex(&mem, QUERY_B, start_b + k);
+            put_lanes(&mut mem, PEN_SIMPLEX + 16 * i, a);
+            put_lanes(&mut mem, PEN_SIMPLEX + 0x40 + 16 * i, l);
+            let placed: [f32; 4] = std::array::from_fn(|c| t[0][c] * l[0] + t[1][c] * l[1] + (t[2][c] * l[2] + t[3][c]));
+            put_lanes(&mut mem, PEN_DIFFERENCES + 16 * i, std::array::from_fn(|c| a[c] - placed[c]));
+        }
+        word(&mut mem, PEN_SIMPLEX + 0x80, n);
+        for i in 0..3 {
+            seed_vector(&mut r, &mut mem, PEN_OUT + 16 * i);
+        }
+        let monitor = seed % 64 == 63;
+        word(&mut mem, MONITOR_HEAD, 0);
+        word(&mut mem, MONITOR_END, if monitor { 0x100 } else { 0 });
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} ({n}) {fpu:x?}");
+        let args = [QUERY_A, QUERY_B, QUERY_T, PEN_SIMPLEX, PEN_DIFFERENCES, PEN_OUT];
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let mut calls = QueryCalls { fpu, triangle: false };
+        let eax = match penetration::penetration(&mut j, args, STACK, fpu, &mut calls) {
+            Ok(eax) => eax,
+            Err(f) => {
+                let expected = if monitor { sim_havok::convex::Fallback::Monitor } else { sim_havok::convex::Fallback::Closest };
+                assert_eq!(f, expected, "{why}: declined");
+                declined += 1;
+                continue;
+            }
+        };
+        assert!(!monitor, "{why}: answered with the monitor stream on");
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let after = run_this(&mut code, &mut mem, PENETRATION, 0, &args, fpu);
+        assert_eq!((after.eax, after.esp), (eax, STACK + 4), "{why}: eax, ret");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}: kept");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[(STACK - TRIANGLE_STACK) as usize..(STACK + 4 + 0x18) as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        let distance = mem.read_u32(PEN_OUT + 0x20).unwrap();
+        *answers.entry((eax, distance == 0)).or_insert(0) += 1;
+    }
+    let answered: u32 = answers.values().sum();
+    assert!(answered >= 64 && answers.len() >= 2, "{answers:?}, {declined} declined");
+}

@@ -1,7 +1,7 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so is the manifold refresh `0x00302eb0`; the triangle case's penetration call `0x0030a6b0`, the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs` and `manifold.rs`.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so are the manifold refresh `0x00302eb0` and the triangle case's penetration call `0x0030a6b0` up to its expanding polytope; the polytope, the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs` and `penetration.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -85,7 +85,7 @@ frame and runs the closest-feature query. **E**
 | `0x002da4d0` (thiscall out; A, B; `ret 8`) | B's four columns by A's transposed rotation, then A's translation taken off | `gjk::relative` |
 | `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` ("The query" below) | `gjk::query` |
 | `0x003037a0` (thiscall state; segment, triangle, segment count, triangle count, fresh, feature; `ret 0x18`) | the edge case, a segment against a triangle: fresh, the triangle's own normal, else the state's normal and sides; a crossing inside answers 1; the nearer end (fresh) or the second vertex inside drops the segment to it, 0; else `t2` overwrites the vertex off the nearer edge (by `gjk::segments` fresh, by the edge mask and the old sides otherwise), 2 | `gjk::edge` |
-| `0x00303dd0` (thiscall state; shape A, shape B, transform, cache; `ret 0x10`; the cache is not read), with `0x00303b80` (thiscall state; `ret`) | the query's triangle case, for a stalled query with the state's `+0x0c` byte clear ("The triangle case" below) | `gjk::triangle_case`; its call `0x0030a6b0` is not (`gjk::Penetration`) |
+| `0x00303dd0` (thiscall state; shape A, shape B, transform, cache; `ret 0x10`; the cache is not read), with `0x00303b80` (thiscall state; `ret`) | the query's triangle case, for a stalled query with the state's `+0x0c` byte clear ("The triangle case" below) | `gjk::triangle_case`; its call `0x0030a6b0` through `gjk::Penetration`, answered by `penetration::Port` ("The penetration call" below) |
 | `0x00303540` (eax the four vertices, ebx the point, one stack word `s`; `ret`), with `0x00303110` (edi the vertices; point, tests) | the tetrahedron face the point lies beyond: each face's `n . s (p - v3)` signed-squared over `\|n\|^2`; `-1` below `1e-6`, the largest past `1.1` times the next, else `0x00303110` strikes edges by projection | `gjk::tetrahedron` |
 | `0x00303360` (thiscall state; point, triangle, orient; `ret 0xc`) | the triangle's normal and the point's three edge signs (mask in eax); with `orient`, the normal faces the support difference, swapping the first two vertices to do it | `gjk::triangle` |
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
@@ -230,6 +230,65 @@ flowchart TD
 `sim_havok_differential.rs` compares it with the lifted function, 512
 seeds of capsules and polygons over every pair of sizes up to four, the
 penetration call run lifted for both sides.
+
+## The penetration call
+
+`penetration::penetration` runs `0x0030a6b0` on a journal. With the
+monitor stream off (else `monitor`) it builds the solver's state on its
+frame and calls the solver `0x00309b50` (thiscall state; out; `ret 4`),
+`penetration::solve`. The shapes' `vt[+0x30]` go through the caller's
+`penetration::Calls`. **E**
+
+| State | Holds |
+|---|---|
+| `+0x00` to `+0x30` | B's transform in A's frame, copied |
+| `+0x40`, `+0x44` | shape A, shape B |
+| `+0x48`, `+0x50` | the simplex (A's four, B's four in B's frame, the count at `+0x80`), the differences `A - B` |
+| `+0x4c` | the polytope's retry count, 0 |
+
+The solver's jump table (`0x0030a698`) picks a case by the simplex
+count. Each case either grows the simplex by a support point or, when
+its simplex is flat, drops the count and falls to the case below. `edi`
+remembers how far the simplex has grown.
+
+| Count | Flat when | Not flat |
+|---|---|---|
+| 4 | `\|(D3 - D0) . n\|` not above `0x0045dc70` | the expanding polytope `0x00309e2e`: declined (`closest`) |
+| 3 | `\|n\|^2` is 0, `n = (D0 - D1) x (D1 - D2)` | `0x003093e0` along `n`: below `0x0045dc70` over the plane, the plane exit; else the point joins, count 4 |
+| 2 | `\|D0 - D1\|^2` not above `1e-6` | `0x00309700`: count 3 |
+| 1 | `\|D0\|^2` not above `1e-6` | `0x00309610`: count 2 |
+| 0 | | `0x003094d0`, which can end the call with 0 |
+
+| Function | Does | Ported |
+|---|---|---|
+| `0x00309300` (thiscall state; direction, out; `ret 8`) | A's support along the direction, B's against it (rotated into B's frame), B's placed in A's frame | `Solver::support` |
+| `0x00309200` (thiscall state; triple; `ret 4`) | a triple joins: `A - B` to the differences, A's and B's own to the simplex, count up one | `Solver::append` |
+| `0x003093e0` (thiscall state; direction, triangle, out; `ret 0xc`) | the supports along and against the direction; the higher over the triangle's first difference stays, its height at `+0x30` | `Solver::tri_support` |
+| `0x00309610` (thiscall state; `ret`) | the supports along and against `D0`; the farther from `D0` joins | `Solver::grow_point` |
+| `0x00309700` (thiscall state; `ret`) | the edge's perpendicular (the smallest of `\|u\|`'s lanes zeroed, the other two swapped, one negated) and `u` crossed with it, both unit; the higher `0x003093e0` joins | `Solver::grow_segment` |
+| `0x003094d0` (thiscall state; flag, out; `ret 8`) | the support along the translation negated (`+y` when tiny) joins; a tiny `D0` ends the call: `out` gets the direction, A's point, `\|D0\|`, weight 0.5 | `Solver::first` |
+| `0x00308260` (cdecl; p, a, b, c, out) | `p`'s weights on the triangle: the plane solve on the x87 when the determinant is above 0, else the longest edge's projection | `penetration::barycentric` |
+
+- Flat after growing past its size, a simplex returns 2. A flat
+  triangle after a grown segment takes the line exit `0x0030a162`:
+  normal the edge's unit perpendicular, point between A's first two
+  vertices at `a / ((a + a) + c)`, `a` the taxicab length of `D0` and
+  `c` the word at `0x004136c4`.
+- The plane exit `0x0030a2f3`: normal the triangle's unit normal, point
+  A's vertices by `0x00308260`'s weights of the vector at `0x004801e0`
+  on the differences' triangle.
+- Both exits store distance 0 and weight 0.5 and return 0.
+- The units are one Newton step on `rsqrtss`. The perpendicular's `w` is
+  a frame word the guest never stores; only stack words see it.
+- Not ported: the polytope (`0x00309e2e` to `0x0030a150` and
+  `0x0030a440` to `0x0030a694`) with `0x00309a50`, `0x00309120`,
+  `0x002da730`, `0x0030abe0`, `0x0030ae70`, `0x00309270`, `0x0030aac0`,
+  `0x00309990` and the allocator's `vt[+0x14]`, and its retries, which
+  rerun the cases with a jittered translation.
+
+`sim_havok_differential.rs` compares the call with the lifted one, 1024
+seeds of capsules and polygons, one to four pairs, some repeated, some
+pairs apart; the polytope's seeds decline.
 
 ## Support virtuals
 

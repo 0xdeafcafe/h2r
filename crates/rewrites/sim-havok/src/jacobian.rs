@@ -376,7 +376,7 @@ impl Sse {
     }
 
     /// One Newton step on `rsqrtss` (`0x0031fa8a`, `0x0031fc67`).
-    fn normalize(&mut self, v: u128) -> u128 {
+    pub(crate) fn normalize(&mut self, v: u128) -> u128 {
         let squared = self.mul(v, v);
         let s = self.hsum(squared);
         let r = self.e.rsqrt(s);

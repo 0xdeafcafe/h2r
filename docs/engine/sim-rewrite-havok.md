@@ -25,7 +25,7 @@ suites) and the timing gate are open: the collide phase `30fcb0`, the
 integrate phase's declined paths (pending work, listeners, splits, island
 deactivation), the convex agent's closest-feature query (ported with
 its triangle case `303dd0` and compared, no arm; the penetration call
-`30a6b0` unported), manifold and contact commit and the other
+`30a6b0` ported up to its expanding polytope), manifold and contact commit and the other
 agent/narrowphase leaves still run lifted, and
 slice 3's runs, lanes and worker solves are not built (each island reads
 the solver buffer bytes the island before it left, so a run's islands
