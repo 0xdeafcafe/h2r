@@ -328,12 +328,13 @@ Tests: `answer.rs`
 ## R2's particle mirror
 
 Built (**Code**): `render-bridge/src/effects_shadow/mirror.rs`,
-`native_render::particle_mirror`. An answered particle is held as a GPU
-particle system's birth; when the particle draw `0x002243c0` returns, the
-host draws each held batch with `ParticleDraw`. The guest still owns and
-simulates the particle; the mirror is that frame's state alone
-(`GpuParticles::mirror`: nothing survives, each birth is evaluated at its
-own age).
+`native_render::particle_mirror`, the host
+`game/src/native_particles_admission/mirror_host.rs`. An answered particle
+is held as a GPU particle system's birth; when the particle draw
+`0x002243c0` returns, the host draws each held batch with `ParticleDraw`.
+The guest still owns and simulates the particle; the mirror is that
+frame's state alone (`GpuParticles::mirror`: nothing survives, each birth
+is evaluated at its own age).
 
 | Spawn | From the callback |
 |---|---|
@@ -346,21 +347,43 @@ own age).
 The guest's order holds: a particle the mirror does not take, or one of
 another `Key`, draws the held batch first, then its own direct draw.
 
+### The host
+
+The host (`mirror_host::Glue`, installed with the native particle path's)
+draws a batch under the cut setup: through the device's supplied draw
+(`Device::try_native_supplied_draw`) with the material held at the cut
+(`material_proof::held`), so the draw its admission is offered carries
+the setup's texture and render state and the view's constants. Its pass
+is the mirror's own: `GpuParticles::mirror`, then one
+`ParticleDraw::w_buffered` into the bound colour and depth.
+
+| Input | From |
+|---|---|
+| `Definition` | `particle_definition::definition` of the `prt3` at `[draw]` and the sprite sequences of the bitmap at `[draw + 4]` (read as the callback reads them), with `0x0043f17c`, `0x004123ec` and the engine's tables; then `particle_mirror::owned` for the `Key`'s tint and size. Built once a map per (definition, bitmap), refusals too (`Definitions`) |
+| view | the draw's view constants (`c[0]`, `c[1]`, `c[3]` and the pixel fix-up `c[10]`, `c[11]`, widened for the display copy) over the whole target; the billboard axes are the x and y rows less their part along the view |
+| depth | the W-buffer: `c[3]`'s W held to the draw's W clip (clamped or culled as `D3DRS_DEPTHCLIPCONTROL` says), floored, over the target's Z scale; tested less-equal, never written |
+| sprite | the stage 0 texture the cut material binds; a linear sampler |
+
 | Outcome | Counter |
 |---|---|
 | batch drawn | `layer_plan_15_effects_shadow_answer_mirrored` (particles) |
-| not taken: direct draw | `scene_kept_15_particle_mirror_<cause>`: `no_host`, `orientation` (`0x0023ea80`'s class, definition `+4`, not 0), `tint_scale` (flag `0x180` with `BYTE * TINT` not 1/255), `unreadable`, or the host's (`MirrorHost::accepts`) |
-| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took |
+| not taken: direct draw | `scene_kept_15_particle_mirror_<cause>`: `no_host`, `orientation` (`0x0023ea80`'s class, definition `+4`, not 0), `tint_scale` (flag `0x180` with `BYTE * TINT` not 1/255), `unreadable`, or the host's: `uncut` (no cut setup), `tag_unread`, `bitmap_unread`, `bitmap_sequences`, `bitmap_sprites`, or the `particle_definition::Refused` name |
+| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took. The host's: `uncut`, `capacity`, `no_colour`, `no_depth`, `clip_rects`, `z_buffered`, the state `ParticleDraw` does not draw (`depth_off`, `depth_write`, `depth_func`, `color_write`, `alpha_test`, `stencil`, `opaque`, `blend`: other than alpha or additive), or the supplied draw's (`boundary`, `admission`, ...) |
+| refused while recording | `native-particles` refusals, `Mirror/<cause>` (`texture`, `view_size`, `z_scale`, `view_rows`, `capacity`, `sprites`, `viewport`): the batch does not draw |
 
-The host (`MirrorHost`) is not installed yet: every answered particle is
-`mirror_no_host` and takes the direct draw. Its draw is a `ParticleDraw`
-pass in the bound target with the `Definition` from the tag
-(`particle_definition::definition`, cached per `prt3`).
+A batch's system is made for each recording (its births go through the
+queue, so two batches never share buffers in one submission); the
+pipelines, per colour format, depth format and blend, are kept per device.
 
 Tests: `mirror.rs`
 (`a_particle_draws_batched_at_the_draws_return_from_its_state_as_the_callback_leaves_it`,
 `a_particle_the_mirror_refuses_draws_the_held_batch_first_and_is_kept_by_name`,
 `a_batch_the_host_refuses_is_dropped_by_name_and_the_gate_stops_answering`),
+`mirror_host.rs` (`a_system_is_built_once_a_map_by_tag_and_its_refusal_is_kept`,
+`a_particle_without_a_cut_setup_or_whose_tag_does_not_build_is_refused_by_name`,
+`a_zeroed_tag_is_refused_for_its_missing_functions_and_a_bitmap_not_of_sprites_has_no_sheet`,
+`a_state_particle_draw_cannot_draw_is_refused_by_name`,
+`the_view_maps_the_guests_rows_to_the_target_and_refuses_a_degenerate_one`),
 `particle_mirror.rs` (four), `native-render/tests/particles_compute_gpu.rs`
 (`a_mirror_is_its_births_alone_each_evaluated_at_its_own_age`).
 

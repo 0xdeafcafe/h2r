@@ -618,8 +618,8 @@ pub fn install(b: &mut Builder) {
     // The particle draw's return: the mirror's held batch draws.
     b.raw()
         .observe_after(&crate::effect_materials::PARTICLE_MATERIAL, "effects_shadow_mirror_end", |o| {
-            let g = o.guest();
-            mirror::finish(&*g);
+            let mut g = o.guest();
+            mirror::finish(&mut *g);
         })
         .context_only()
         .optional();

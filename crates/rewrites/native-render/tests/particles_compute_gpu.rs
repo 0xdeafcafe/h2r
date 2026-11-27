@@ -310,6 +310,8 @@ fn the_draw_count_comes_from_the_gpu_buffer() {
         clip_from_world: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
         right: [1.0, 0.0, 0.0, 0.0],
         up: [0.0, 1.0, 0.0, 0.0],
+        w_row: [0.0; 4],
+        depth: [0.0; 4],
     };
     use wgpu::util::DeviceExt;
     let view = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

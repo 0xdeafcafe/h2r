@@ -300,6 +300,25 @@ pub struct DrawBinding {
 impl ParticleDraw {
     /// `depth`: the pass's depth format, tested (less-equal), never written.
     pub fn new(device: &wgpu::Device, color: wgpu::TextureFormat, depth: Option<wgpu::TextureFormat>, blend: Blend) -> Self {
+        Self::with_fragment(device, color, depth, blend, "fs")
+    }
+
+    /// The draw into a guest W-buffer of `depth`'s format: the depth each
+    /// fragment tests (less-equal, never written) is its W-buffer value
+    /// from the view's `w_row` and `depth` ([`crate::particle_system::View`]),
+    /// not the clip's z (docs/graphics/retire-d3d-r2.md, "R2's particle
+    /// mirror").
+    pub fn w_buffered(device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, blend: Blend) -> Self {
+        Self::with_fragment(device, color, Some(depth), blend, "fs_w")
+    }
+
+    fn with_fragment(
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: Option<wgpu::TextureFormat>,
+        blend: Blend,
+        fragment: &str,
+    ) -> Self {
         let module = module(device, "particle draw", include_str!("particle_draw.wgsl"));
         let blend = match blend {
             Blend::Alpha => wgpu::BlendState::ALPHA_BLENDING,
@@ -332,7 +351,7 @@ impl ParticleDraw {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("fs"),
+                entry_point: Some(fragment),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color,

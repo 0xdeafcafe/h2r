@@ -24,6 +24,7 @@ use timeline::native::{Metric, Stage};
 
 mod flare_pass;
 mod material_proof;
+mod mirror_host;
 mod refusal_samples;
 mod particle_capture;
 
@@ -392,6 +393,8 @@ pub fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevi
         device: device.clone(),
         admission,
     }));
+    // R2's particle mirror draws its batches on the same device.
+    mirror_host::install(device);
 }
 
 /// Exact source bytes and declaration, independently checked against the
