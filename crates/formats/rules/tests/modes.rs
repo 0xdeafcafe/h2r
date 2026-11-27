@@ -1422,6 +1422,7 @@ fn siege_sends_the_attackers_bots_at_the_site_and_the_defenders_to_hold_it() {
 /// docs/game/rules-engine.md, "Siege layouts"), each with the scenario
 /// `--scenario` wrote for it.
 const RECIPE_LAYOUTS: &[(&str, &str)] = &[
+    ("zanzibar", include_str!("scenarios/siege_zanzibar.json")),
     ("coagulation", include_str!("scenarios/siege_coagulation.json")),
     ("headlong", include_str!("scenarios/siege_headlong.json")),
     ("waterworks", include_str!("scenarios/siege_waterworks.json")),

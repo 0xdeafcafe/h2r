@@ -160,15 +160,15 @@ pub fn events(
 /// (docs/game/firefight.md, "The announcer"), in their order: the skulls
 /// that switched off, then each banner's line (a wave or boss wave is
 /// `new-wave`, a cleared wave `wave-complete`, and so on, [`banner_clip`]),
-/// and lives added to the player's pool. When every skull the blob carries
-/// is on, one `all-skulls-on` takes the place of the tick's skull lines. A
+/// and lives added to the player's pool. When every skull with an engine effect
+/// is on (Iron, the bonus round's, not counted), one `all-skulls-on` takes the place of the tick's skull lines. A
 /// banner or skull with no clip is silent.
 pub fn lines(before: Option<&Mode>, now: &Mode, local: u8, events: &[Banner]) -> Vec<&'static str> {
     let Some(b) = before.filter(|b| !b.stage.over()) else {
         return Vec::new();
     };
     let live = !now.stage.over();
-    let all = now.skulls & super::SKULL_BITS == super::SKULL_BITS;
+    let all = now.skulls & super::ENGINE_SKULL_BITS == super::ENGINE_SKULL_BITS;
     let mut out: Vec<&'static str> = Vec::new();
     if live && b.skulls & !now.skulls != 0 {
         out.push("skulls-off");
