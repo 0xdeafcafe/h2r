@@ -187,6 +187,33 @@ pub fn walls_of(bsp: &Bsp) -> Walls {
     Walls::new(tris).with_glass(crate::glass::panes(bsp))
 }
 
+/// The walls of `bsp` without its sky shell: every surface that reaches
+/// the highest point of any surface. A structure BSP closes its world in
+/// a lid at the sky height and walls rising to it (on Coagulation, 115
+/// units up, with sloped surfaces joining them to the level), which is no
+/// roof or wall of anything a ship flies through. Line of sight keeps them ([`walls_of`]); a vertical or aerial
+/// probe (the dropship's column, `firefight-kit`'s `ship::plan`) must not.
+pub fn walls_without_sky(bsp: &Bsp) -> Walls {
+    /// The lid's vertices differ in the fifth decimal place.
+    const SKY_TOLERANCE: f32 = 0.01;
+    let rings: Vec<Vec<[f32; 3]>> = (0..bsp.surfaces.len())
+        .map(|s| {
+            bsp.surface_ring(s)
+                .iter()
+                .filter_map(|&v| bsp.vertices.get(v).map(|v| v.point))
+                .collect()
+        })
+        .collect();
+    let top = rings.iter().flatten().map(|p| p[2]).fold(f32::MIN, f32::max);
+    let mut tris = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        if !ring.iter().any(|p| p[2] >= top - SKY_TOLERANCE) {
+            Walls::fan_polygon(ring.iter().copied(), &mut tris);
+        }
+    }
+    Walls::new(tris)
+}
+
 impl MapData {
     /// The file: magic, version, `stamp`, the mesh, the walls, the glass
     /// (a count, then per pane its breakable index, its vertex count and

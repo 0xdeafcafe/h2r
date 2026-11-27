@@ -424,13 +424,14 @@ fn a_flood_squad_is_placed_on_the_flood_team() {
     let m = scenario_with_team(1, 4);
     let kit = read_kit(&m).unwrap().unwrap();
     assert_eq!(kit.placement_team(1, 5).unwrap(), 4);
+    let (m, actor) = with_an_idle_actor(m);
     let (result, calls, _) = drive(
         m,
         move |cx| {
             let kit = kit.clone();
             Box::pin(async move { place_squad(&cx, &kit, placement(0, 1, 0)).await })
         },
-        returns(0),
+        joins_squad(actor, 1),
     );
     result.unwrap();
     assert_eq!(

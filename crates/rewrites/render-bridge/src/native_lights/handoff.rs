@@ -250,6 +250,13 @@ pub(super) fn at_constants(esp: u32) -> Option<(Entry, u64)> {
     }
 }
 
+/// The deferred light of the passes entered at `esp`, for a caller that
+/// makes no constants call (the cut frame, `super::scene_frame`).
+pub(super) fn take_deferred(esp: u32) -> Option<(Entry, u64)> {
+    let (entry, _) = OBSERVE.get()?;
+    (entry.esp == esp).then(|| OBSERVE.take()).flatten()
+}
+
 pub(super) fn guest_made(taken: &Taken, why: Refusal) {
     super::frame::refused(SceneList::LightHandoff, why);
     defer(taken.entry, taken.serial);

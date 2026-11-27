@@ -25,6 +25,7 @@ pub mod host;
 mod items;
 mod object_shadows;
 mod passes;
+pub mod scene_frame;
 mod typed;
 mod typed_groups;
 pub mod walk;
@@ -1036,6 +1037,8 @@ impl Feature for NativeLights {
 
 #[cfg(test)]
 mod tests {
+    /// The tests that install a host hold this: the host is global.
+    static HOST_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use super::*;
     use engine::FlatMemory;
 
@@ -1169,6 +1172,7 @@ mod tests {
 
     #[test]
     fn a_whole_scene_group_is_drawn_alone_only_for_a_layer_the_light_still_draws() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let group = SceneGroup {
             group: frame_scene::LightGroup {
                 light: 0,
@@ -1297,6 +1301,7 @@ mod tests {
 
     #[test]
     fn a_scene_with_one_dynamic_light_records_the_slot_4_pass() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
         use frame_scene::{GroupSite, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind};
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
@@ -1339,8 +1344,80 @@ mod tests {
         assert_eq!(*host.0.lock().unwrap(), [4], "the light's layer 12 in slot 4");
     }
 
+    /// The layers a host is handed, with their slots.
+    struct Layers(Mutex<Vec<(u8, u8)>>);
+
+    impl Host for Layers {
+        fn submit(&self, _: &mut dyn GuestMemory, _: Dispatch) -> bool {
+            false
+        }
+        fn clear_admission(&self) {}
+        fn checkpoint_gel(&self, _: u64) {}
+        fn target(&self) -> Option<[u32; 8]> {
+            None
+        }
+        fn draws_scene(&self) -> bool {
+            true
+        }
+        fn draw_scene(&self, _: &mut dyn GuestMemory, draw: SceneDraw<'_>) -> usize {
+            let mut seen = self.0.lock().unwrap();
+            seen.extend(draw.passes.iter().filter_map(|p| Some((p.slot.number()?, p.group.group.layer))));
+            draw.passes.len()
+        }
+    }
+
+    /// A cut light's groups, put into the scene in any order, reach the
+    /// host as one pass per layer in slot 4 in the passes' order 10, 11,
+    /// 14, 12, 13.
+    #[test]
+    fn each_layer_of_a_cut_light_is_one_recorded_pass_in_order() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        use frame_scene::{GroupSite, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind};
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(
+            ViewKey { kind: ViewKind::Game, player: 0, view: 0 },
+            frame_scene::RenderCamera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 480, 640],
+                near: 0.1,
+                far: 100.0,
+            },
+        )
+        .unwrap();
+        b.push_light(SceneLight { handle: 1, definition: 2, flags: 7, ..Default::default() }, &[]).unwrap();
+        for layer in [12, 10, 13, 11, 14] {
+            b.push_light_group(
+                frame_scene::LightGroup {
+                    light: 0,
+                    layer,
+                    site: GroupSite::Light,
+                    projection: matches!(layer, 10 | 11).then_some([[0; 4]; frame_scene::PROJECTION_ROWS]),
+                    pass: None,
+                    entries: 0..0,
+                    remainder: 0,
+                },
+                &[],
+            )
+            .unwrap();
+        }
+        let scene = b.seal(Stamp::default()).unwrap();
+        let passes = gather_scene_passes(&scene, &scene.views[0]);
+        let host = Arc::new(Layers(Mutex::new(Vec::new())));
+        set_host(host.clone());
+        VIEW_TARGET.set(Some([1; 8]));
+        let mut m = FlatMemory::new(0, 0x1000);
+        assert_eq!(draw_scene(&mut m, &passes), 5);
+        assert_eq!(*host.0.lock().unwrap(), [(4, 10), (4, 11), (4, 14), (4, 12), (4, 13)]);
+    }
+
     #[test]
     fn the_light_frame_is_cut_only_while_the_scene_path_runs() {
+        let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
         // One implementation at the point: the frame body answers the cut.
         assert!(crate::cut::OWN_PRODUCER.contains(&"dynamic_lights"));
         assert_eq!(crate::cut::cut("dynamic_lights").map(|c| c.entry), Some(0x0003_1c80));

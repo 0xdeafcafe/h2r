@@ -331,3 +331,41 @@ fn the_prefix_names_why_a_front_is_missing_or_too_big() {
     let big = Prefix::decode(&bytes).unwrap_err();
     assert!(big.contains(&format!("{} bytes", FRONT_CAPACITY + 1)), "{big}");
 }
+
+#[test]
+fn a_refreshed_front_names_the_game_so_far_and_the_seal_replaces_it() {
+    let mut h = crate::tests::header(10);
+    h.version = 3;
+    let mut out = Cursor::new(Vec::new());
+    let seat = blam::Seat { seat: 1, name: "one".into(), ..Default::default() };
+    let desc = blam::MatchHeader { roster: vec![seat], ..Default::default() };
+    let mut summary = blam::Summary { level: "zanzibar".into(), duration_ticks: 30, ..Default::default() };
+    {
+        let mut w = Writer::new(&mut out, &h).unwrap();
+        w.chronological_scene(1, 2, true, &[1, 2]).unwrap();
+        w.refresh_front(&desc, &summary).unwrap();
+        // The next refresh replaces the last, and writing goes on after it.
+        summary.duration_ticks = 60;
+        w.refresh_front(&desc, &summary).unwrap();
+        w.chronological_scene(3, 4, false, &[3, 2]).unwrap();
+        // Never finished: a crash.
+    }
+    let front = read_front(&mut out).unwrap();
+    assert_eq!((front.summary.level.as_str(), front.summary.duration_ticks), ("zanzibar", 60));
+    assert_eq!(front.roster[0].name, "one");
+
+    // The seal writes the final summary over it, and refresh stays callable
+    // for a film that is not v3 (it has no front).
+    let mut w = Writer::new(Cursor::new(Vec::new()), &h).unwrap();
+    w.refresh_front(&desc, &summary).unwrap();
+    w.chronological_scene(1, 2, true, &[1, 2]).unwrap();
+    summary.duration_ticks = 99;
+    w.chunk(blam::DESC, &desc).unwrap();
+    w.chunk(blam::SUMM, &summary).unwrap();
+    w.chunk(HEAD, &h).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    assert_eq!(read_front(&mut Cursor::new(&bytes)).unwrap().summary.duration_ticks, 99);
+    let mut old = crate::tests::header(11);
+    old.version = 2;
+    Writer::new(Cursor::new(Vec::new()), &old).unwrap().refresh_front(&desc, &summary).unwrap();
+}
