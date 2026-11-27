@@ -19,5 +19,6 @@ pub mod prt;
 pub mod skip;
 pub mod structure_parameters;
 pub mod sky;
+pub mod sky_rows;
 pub mod world_layers;
 pub mod world_ranges;

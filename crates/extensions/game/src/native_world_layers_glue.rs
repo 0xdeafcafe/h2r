@@ -224,6 +224,17 @@ pub(crate) struct SkyIssue {
 impl SkyIssue {
     fn read(guest: &runtime::Guest, mem: &Memory<'_>, esp: u32, pass: u32) -> Self {
         let item = SkyItem::read(mem, esp, pass);
+        // The rows arm: the rows made from the sky's transform beside the
+        // guest's (`native_sky::rows_outcome`). The strip draws the guest's
+        // rows until the cut draws the made ones.
+        if let Ok(item) = &item {
+            let generation = render_bridge::native_map_work::bsp_generation();
+            let outcome = render_bridge::native_sky::rows_compared(generation).then(|| {
+                native_render::sky_rows::native_rows(mem, esp)
+                    .map(|rows| native_render::sky_rows::compare(&rows, &item.rows))
+            });
+            render_bridge::native_sky::rows_outcome(outcome);
+        }
         let constants = match &item {
             Ok(item) => crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
             // Not asked: the item's refusal is the strip's cause.

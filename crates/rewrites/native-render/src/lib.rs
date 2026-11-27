@@ -168,6 +168,6 @@ pub mod world;
 pub mod world_layers_gpu;
 
 pub use scene_extract::layout::{
-    aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip,
+    aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip, sky_rows,
     structure_parameters, world_layers, world_ranges,
 };

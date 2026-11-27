@@ -124,16 +124,37 @@ Engine vertex registers (`Origin::Engine`) and the view's rows stay the
 draw's. Causes, as `scene_kept_sky_<cause>`: `unloaded`, `shader`,
 `layer`, `pass`, `animation`, `constants`.
 
+## The sky's node rows
+
+The rows arm (`scene_extract::layout::sky_rows`, `native_sky::rows_outcome`)
+makes the strip's rows from the sky's transform and compares them with the
+guest's (`SkyItem::rows`) at the strip.
+
+| Step | Guest | Made from |
+|---|---|---|
+| Rest pose | `0x0003ea60` | the guest's rest matrices at `0x004c5040` (made once per sky model) |
+| Sky matrix | `0x0003ebd0` | `sky +0x14` scale, `+0x80` angle, the elevation double at `0x0045dbe0`, the global up, `sky +0x18` times the camera |
+| Node | `0x0003ebd0`'s loop, `0x00142a60` | the rest matrix plus `[0x004687a4]`, under the sky matrix |
+| Rows | `0x001376c0` | under the node's inverse bind (`mode` node `+0x28`), three rows |
+
+| Arm state | What happens |
+|---|---|
+| Comparing | every strip; the guest's rows draw |
+| Answering | after 256 matches (`exact`, or `close`: within `1e-5` relative, the x87's trigonometry) and no difference; one strip in 64 compared |
+| Stopped | at a difference, until the next BSP |
+
+A section drawn through a region palette (`0x00137800`'s blend) is
+declined, `palette`. Counters: `sky_rows_{exact,close,differ,skipped,answering}`,
+`sky_rows_declined_<why>`. The strip draws the guest's rows in every state
+until the cut.
+
 ## Not built
 
 - **Cutting the guest's sky setup.** The strip is admitted at its
   resolved draw, so the guest's sky selection, its node palette upload and
-  the strip's setup still run. A cut needs the view's node rows from the
-  sky's transform natively (scale `+0x14`, rotation, camera translation
-  scale; checked against `SkyItem::rows` while the guest still runs), the
-  strip's program and textures from the material instead of the draw, and
-  the section's geometry from the load rather than the first strip's
-  capture.
+  the strip's setup still run. The rows are made in Rust beside the
+  guest's (below); the strip's program and textures from the material and
+  the section's geometry from the load are still to come.
 - **The flare passes, the post and layers 18, 19 and 21 from the scene.**
   `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
   passes draw into the device's live targets at the guest's calls. Cutting
@@ -161,6 +182,9 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `an_animated_sky_pass_is_sampled_at_the_render_clock`,
 `a_sky_without_the_pass_names_what_is_missing` (`sky_material`),
 `each_skys_model_names_its_shaders_once` (`native_sky_glue`),
+`the_strips_rows_are_made_from_the_skys_tag_and_the_rest_pose`,
+`the_product_is_the_guests_composition` (`sky_rows`),
+`the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,
 `the_cached_restore_list_reads_from_the_descriptor_table` (`sorted_entries`);
