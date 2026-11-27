@@ -84,9 +84,16 @@ step on target 13's attachments:
   implementation 0, looks at each as a full-target template pass
   (`native_render::screen_look::template_look`), translates it with its
   vertex shader's first program and decodes its stage bitmaps. A pass
-  that is animated, reads a call's values or an engine texture, or does
-  not translate keeps the whole shader out, and a light with that gel is
-  refused by name.
+  that samples an engine texture or does not translate keeps the whole
+  shader out, and a light with that gel is refused by name.
+- An animated pass compiles from its baseline (clock 0, targets cleared)
+  and its registers are sampled at the render clock `0x004858a0` for each
+  draw (`gels::pass_uniforms`). An animated gel with no clock refuses the
+  light as `the animated gel has no render clock` before it reserves the
+  step (`Gels::clock_refusal`).
+- A pass that reads the call values reads the four words at
+  `0x004c19b0` (`gels::CALL_VALUES`), where the last screen effect left
+  them.
 - The quad is the helper `0x00015ec0`'s for level 0
   (`native_render::gels::quad`): corners `(0, 0)` to the level's size,
   coordinates `(0, 0)` to `(1, 1)` on attributes 1..4, and z and w from
@@ -96,9 +103,9 @@ step on target 13's attachments:
 - The light's layers after it take `Binding` for target 13's level-0
   header as a read-only slot and sample it as engine texture 10.
 
-`gels::tests::the_gel_quad_covers_its_level_in_strip_order_at_the_helpers_depth`
-and `scene::tests::a_gel_light_draws_its_gel_into_target_13_before_any_layer`
-check the quad and the order.
+`gels::tests::the_gel_quad_covers_its_level_in_strip_order_at_the_helpers_depth`,
+`gels::tests::an_animated_gel_draws` and `scene::tests::a_gel_light_draws_its_gel_into_target_13_before_any_layer`
+check the quad, the sampled registers and the order.
 
 ## Interfaces
 
