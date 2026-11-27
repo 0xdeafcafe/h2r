@@ -227,6 +227,8 @@ impl Look {
 pub enum Ask {
     /// Delete an object that has links (its links go too).
     DeleteLinked,
+    /// Restore original: an own thing back to the map's.
+    Restore,
     /// Save as over a map variant of that name.
     Overwrite,
     /// Leave Game with unsaved edits.
@@ -446,6 +448,11 @@ pub enum Choice {
     /// rotation snap (docs/game/forge-map-variants-ui.md, "The Properties
     /// page").
     ResetOrientation,
+    /// **Delete** the thing (asks first when it has links).
+    Delete(forge::Endpoint),
+    /// **Restore original**: ask, then put the own thing back as the map
+    /// has it.
+    Restore(forge::Endpoint),
     /// **Duplicate** the object and hold the copy.
     Duplicate(forge::Endpoint),
     /// Place prefab `i` (the object menu's Prefabs row) in front of the
@@ -1874,6 +1881,10 @@ pub fn question(ask: Ask, name: &str) -> Sheet {
         Ask::DeleteLinked => (
             "DELETE OBJECT",
             "This object has links. Delete it and its links?".to_string(),
+        ),
+        Ask::Restore => (
+            "RESTORE ORIGINAL",
+            "Put this back as the map has it? Your changes to it are lost.".to_string(),
         ),
         Ask::Overwrite => ("SAVE AS", super::variants::replace_question(name)),
         Ask::Leave => (

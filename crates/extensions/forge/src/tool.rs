@@ -353,6 +353,11 @@ pub enum Command {
     Remove {
         id: Endpoint,
     },
+    /// Restore original: an own thing as the map has it
+    /// (`Session::reset`).
+    Reset {
+        id: Endpoint,
+    },
     Link {
         from: Linkable,
         to: Linkable,
@@ -928,6 +933,7 @@ impl Tool {
                 | Command::Delete { .. }
                 | Command::MoveThing { .. }
                 | Command::Remove { .. }
+                | Command::Reset { .. }
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Goal { .. }

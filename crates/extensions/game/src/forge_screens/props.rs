@@ -169,6 +169,14 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
                 SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)
             })
         }
+        // Remove the thing; a thing with links asks first.
+        ("act", "delete") => {
+            Some(SheetRow::new(&p.text, Act::Choose(Choice::Delete(thing.id))).describe(help))
+        }
+        // An own thing the document changes, put back as the map has it.
+        ("act", "restore original") if thing.own && thing.changed => {
+            Some(SheetRow::new(&p.text, Act::Choose(Choice::Restore(thing.id))).describe(help))
+        }
         ("keyboard", "prefab") if extras.savable > 0 => {
             let value = if extras.savable == 1 {
                 "1 object".to_string()

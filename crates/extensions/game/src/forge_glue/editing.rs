@@ -143,6 +143,8 @@ pub(super) struct Editor {
     link_dialog: Option<OpId>,
     /// The delete or removal the question is about.
     delete_asked: Option<Command>,
+    /// The own thing a Restore original question is about.
+    restore_asked: Option<Endpoint>,
     /// The name the overwrite question is about.
     overwrite_asked: Option<String>,
     /// The variant file the load question is about.
@@ -251,6 +253,7 @@ impl Editor {
             refusal: None,
             link_dialog: None,
             delete_asked: None,
+            restore_asked: None,
             overwrite_asked: None,
             load_asked: None,
             variant_asked: None,
@@ -2620,6 +2623,30 @@ impl Editor {
                     return self.stage(After::Tool(cmd.clone()), move |s, w| run(s, w, tick, cmd));
                 }
             }
+            Choice::Delete(id) => {
+                let object = self
+                    .session
+                    .thing(id)
+                    .is_some_and(|t| matches!(t.kind, ThingKind::Object | ThingKind::Piece));
+                let cmd = match id {
+                    Endpoint::Added(op) if object => Command::Delete { id: op },
+                    _ => Command::Remove { id },
+                };
+                return self.command(tick, cmd);
+            }
+            Choice::Restore(id) => {
+                screens::open(sheet::question(Ask::Restore, ""))?;
+                self.restore_asked = Some(id);
+            }
+            Choice::Answer {
+                ask: Ask::Restore,
+                yes,
+            } => {
+                let id = self.restore_asked.take().ok_or("The thing is gone.")?;
+                if yes {
+                    return self.command(tick, Command::Reset { id });
+                }
+            }
             Choice::Answer {
                 ask: Ask::Overwrite,
                 yes,
@@ -2860,6 +2887,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         SetField { id, name, value } => s.set_field(w, tick, id, name, value),
         Duplicate { id, frame } => s.duplicate(w, tick, id, frame).map(|_| ()),
         Remove { id } => s.remove(w, tick, id),
+        Reset { id } => s.reset(w, tick, id),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
