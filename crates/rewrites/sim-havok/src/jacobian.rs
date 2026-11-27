@@ -278,11 +278,11 @@ pub(crate) fn lane(v: u128, i: usize) -> u32 {
     (v >> (32 * i)) as u32
 }
 
-fn splat(x: u32) -> u128 {
+pub(crate) fn splat(x: u32) -> u128 {
     u128::from(x) * (u128::MAX / u128::from(u32::MAX))
 }
 
-fn with_w(v: u128, w: u32) -> u128 {
+pub(crate) fn with_w(v: u128, w: u32) -> u128 {
     (v & (u128::MAX >> 32)) | u128::from(w) << 96
 }
 
@@ -291,13 +291,13 @@ fn with_lane(v: u128, i: usize, x: u32) -> u128 {
 }
 
 /// `shufps x, x, imm`.
-fn shuf(v: u128, imm: u8) -> u128 {
+pub(crate) fn shuf(v: u128, imm: u8) -> u128 {
     (0..4).fold(0, |r, i| r | u128::from(lane(v, usize::from(imm >> (2 * i) & 3))) << (32 * i))
 }
 
 /// Packed and scalar SSE under one MXCSR.
-struct Sse {
-    e: Exact,
+pub(crate) struct Sse {
+    pub(crate) e: Exact,
 }
 
 impl Sse {
@@ -307,21 +307,21 @@ impl Sse {
             0
         })
     }
-    fn mul(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn mul(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::mulps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
-    fn add(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn add(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::addps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
-    fn sub(&mut self, a: u128, b: u128) -> u128 {
+    pub(crate) fn sub(&mut self, a: u128, b: u128) -> u128 {
         let r = simd::subps(&mut self.e.mxcsr, a, b);
         self.packed(r)
     }
 
     /// `y + x` then `z + that`, the builder's horizontal sum.
-    fn hsum(&mut self, v: u128) -> u32 {
+    pub(crate) fn hsum(&mut self, v: u128) -> u32 {
         let xy = self.e.add(lane(v, 1), lane(v, 0));
         self.e.add(lane(v, 2), xy)
     }
@@ -334,7 +334,7 @@ impl Sse {
     }
 
     /// `b0 x + b1 y + b2 z` over the accumulator's last three vectors.
-    fn rotate(&mut self, basis: &[u128; 3], v: u128) -> u128 {
+    pub(crate) fn rotate(&mut self, basis: &[u128; 3], v: u128) -> u128 {
         let z = self.mul(basis[2], splat(lane(v, 2)));
         let y = self.mul(basis[1], splat(lane(v, 1)));
         let x = self.mul(basis[0], splat(lane(v, 0)));
@@ -382,29 +382,29 @@ impl Sse {
 }
 
 /// x87 arithmetic under the guest's control word.
-struct Fx {
-    mode: Mode,
+pub(crate) struct Fx {
+    pub(crate) mode: Mode,
 }
 
 impl Fx {
-    fn add(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn add(&self, a: F80, b: F80) -> F80 {
         x87::add(a, b, self.mode).0
     }
-    fn sub(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn sub(&self, a: F80, b: F80) -> F80 {
         x87::sub(a, b, self.mode).0
     }
-    fn mul(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn mul(&self, a: F80, b: F80) -> F80 {
         x87::mul(a, b, self.mode).0
     }
-    fn div(&self, a: F80, b: F80) -> F80 {
+    pub(crate) fn div(&self, a: F80, b: F80) -> F80 {
         x87::div(a, b, self.mode).0
     }
-    fn st(&self, a: F80) -> u32 {
+    pub(crate) fn st(&self, a: F80) -> u32 {
         a.to_f32_bits(self.mode).0
     }
 }
 
-fn below(a: F80, b: F80) -> bool {
+pub(crate) fn below(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Less
 }
 
@@ -484,14 +484,14 @@ impl Constants {
     }
 }
 
-fn vector(j: &Journal, at: u32) -> Option<u128> {
+pub(crate) fn vector(j: &Journal, at: u32) -> Option<u128> {
     if at & 15 != 0 {
         return None;
     }
     (0..4).try_fold(0, |v, i| Some(v | u128::from(j.get(at.checked_add(4 * i)?)?) << (32 * i)))
 }
 
-fn put_vector(j: &mut Journal, at: u32, v: u128) -> Option<()> {
+pub(crate) fn put_vector(j: &mut Journal, at: u32, v: u128) -> Option<()> {
     (0..4).try_for_each(|i| j.put(at.checked_add(4 * i as u32)?, lane(v, i)))
 }
 
