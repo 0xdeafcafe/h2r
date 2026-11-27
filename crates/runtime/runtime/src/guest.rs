@@ -4,6 +4,8 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod journal;
+mod pages;
+pub use pages::{OutsideReason, OutsideRun, PageView};
 mod trial;
 pub use trial::TrialStores;
 mod state;
@@ -441,9 +443,12 @@ impl Guest {
 
     /// Allocate distinct page-aligned physical storage for a virtual range,
     /// congruent with `va` modulo [`crate::window::CONGRUENCE`] so the flat
-    /// RAM window can hold it ([`crate::window`]). Storage comes from
-    /// never-used RAM above every earlier mapping, skipping physical
-    /// reservations and up to 12 KiB to reach the residue (counted in
+    /// RAM window can hold it ([`crate::window`]). Storage beside a page
+    /// already mapped in the range's first or last host page comes first
+    /// ([`Guest::physical_beside`]), zeroed, so that host page has one
+    /// backing. Otherwise it comes from never-used RAM above every earlier
+    /// mapping, skipping physical reservations and up to 12 KiB to reach
+    /// the residue (counted in
     /// [`crate::window::WindowStats::congruence_skipped`]). When that runs
     /// out, the lowest free gap left by [`Guest::unmap`] is reused and zeroed
     /// first ([`Guest::find_free_physical_for`]).
@@ -455,7 +460,10 @@ impl Guest {
     ) -> Result<(), MapError> {
         self.check_virtual(va, len)?;
         let before = self.layout;
-        if let Some((physical, skipped)) = self.fresh_physical(va, len) {
+        if let Some(physical) = self.physical_beside(va, len) {
+            self.map(va, len, physical, permissions)?;
+            self.fill_zero(physical as usize, len as usize);
+        } else if let Some((physical, skipped)) = self.fresh_physical(va, len) {
             self.map(va, len, physical, permissions)?;
             if skipped != 0 {
                 self.congruence_skipped += skipped;
@@ -506,10 +514,46 @@ impl Guest {
             }
         }
     }
+    /// Free physical storage for a mapping of `len` bytes at page-aligned
+    /// `va` that puts it in one physical host page with a page already
+    /// mapped beside it, in the range's first or last host page
+    /// ([`crate::window::CONGRUENCE`]): that page's backing plus the
+    /// distance between them. Without it the host page has two backings
+    /// and the flat RAM window holds neither (`shares_host_page` in the
+    /// agent's `profile.memory.pages`). None if no such neighbour is
+    /// mapped, or the storage beside it is taken.
+    pub fn physical_beside(&self, va: u32, len: u32) -> Option<u32> {
+        let c = crate::window::CONGRUENCE as u64;
+        let start = va as u64;
+        let end = start + page_end(len as u64);
+        if len == 0 || !page_aligned(start) {
+            return None;
+        }
+        let (lo, hi) = (start & !(c - 1), end.div_ceil(c) * c);
+        let below = (lo..start).step_by(PAGE_SIZE as usize).rev();
+        let above = (end..hi.min(1u64 << 32)).step_by(PAGE_SIZE as usize);
+        below.chain(above).find_map(|n| {
+            let m = &self.mappings[self.mapping_index(n)?];
+            let (mv, mp) = (m.virtual_start as u64, m.physical_start as u64);
+            if n + PAGE_SIZE as u64 > mv + m.len as u64 {
+                return None;
+            }
+            let np = mp + n - mv;
+            if !page_aligned(np) || np % c != n % c {
+                return None;
+            }
+            let at = (np + start).checked_sub(n)?;
+            (at + (end - start) <= RAM_SIZE as u64 && self.physical_free(at as u32, len))
+                .then_some(at as u32)
+        })
+    }
     /// Lowest page-aligned base inside `range` with `len` free bytes per
-    /// [`Guest::physical_free`] for a mapping at `va`: congruent with `va`
-    /// modulo [`crate::window::CONGRUENCE`] when there is one, so the flat
-    /// RAM window can hold it, else any (slow through the window, not
+    /// [`Guest::physical_free`] for a mapping at `va`, so the flat RAM
+    /// window can hold it where it can: beside a page already mapped in
+    /// its first or last host page ([`Guest::physical_beside`]); else
+    /// congruent with `va` modulo [`crate::window::CONGRUENCE`] with the
+    /// rest of those host pages free too, so their later pages can go
+    /// beside it; else congruent; else any (slow through the window, not
     /// wrong; counted in [`crate::window::WindowStats::pages_outside`]).
     /// None if `len` is zero or nothing fits.
     pub fn find_free_physical_for(
@@ -522,6 +566,21 @@ impl Guest {
             return None;
         }
         let limit = (range.end as u64).min(RAM_SIZE as u64);
+        if let Some(p) = self.physical_beside(va, len).filter(|&p| {
+            p >= range.start && p as u64 + page_end(len as u64) <= limit
+        }) {
+            return Some(p);
+        }
+        let c = crate::window::CONGRUENCE as u64;
+        let lo = va as u64 & !(c - 1);
+        let hi = (va as u64 + page_end(len as u64)).div_ceil(c) * c;
+        if page_aligned(va as u64)
+            && hi - lo != page_end(len as u64)
+            && let Ok(span) = u32::try_from(hi - lo)
+            && let Some(block) = self.find_free_physical(span, range.clone(), c as u32)
+        {
+            return Some(block + (va - lo as u32));
+        }
         let mut start = range.start as u64;
         loop {
             start = congruent_at_or_after(page_end(start), va);

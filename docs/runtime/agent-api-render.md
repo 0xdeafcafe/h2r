@@ -10,6 +10,7 @@ Status: Built. Part of the [agent API](agent-api.md), which holds the wire, the 
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
 | `profile.memory` | none | the flat RAM window's counters (below) |
+| `profile.memory.pages` | `{top?, census?}` | the pages outside the window by reason and owner, and the slow-access census (below) |
 | `profile.faults` | `{top?}` | the fault census: every guest memory fault and whether execution went on from it |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?, symbols?}`, none | the in-process sampler; `symbols` names the frames |
 
@@ -19,6 +20,8 @@ h2 agent capture 900                 # 900 game ticks, about 30 s
 h2 agent capture 10000ms sample      # h2 built --features perf
 h2 agent fallbacks 20
 h2 agent flatmem
+h2 agent slowpages on              # start the slow-access census
+h2 agent slowpages 30              # outside pages and the 30 slowest
 h2 agent faults
 ```
 
@@ -114,6 +117,28 @@ h2 agent faults
   is the physical RAM, in bytes, the congruent allocator jumped over to
   give a fresh allocation the residue of its address. A slow page shows as
   `fixups` rising or `pages_outside` above zero.
+- **Which pages, and why.** `profile.memory.pages {top, census}` (`top` 1
+  to 500, 20 by default) names them. `outside` is every page
+  `pages_outside` counts (`Guest::outside_runs`, `runtime/src/guest/pages.rs`):
+  `pages`, `runs`, `by_reason` and the `top` largest runs, each `{va,
+  pages, reason, owner, mapping: {va, len, physical}}`. `reason` is
+  `non_congruent`, `shares_host_page` (whole and congruent, but its host
+  page also holds a page that is not, or one with another physical host
+  page), `byte_granular`, `unaligned` or `trapped`; `owner` is the HLE
+  claim over the run, else the physical reservation under it, else null.
+  `census` is the slow-access census (`runtime::slow_pages`): the guest
+  pages generated code reached the checked helpers (`h2abi_v1_read*`,
+  `h2abi_v1_write*`) for, in both the paged and the flat model. `census:
+  true` starts it from zero, `false` stops it and keeps the counts; off,
+  it costs a helper one load. It answers `armed`, `reads`, `writes`,
+  `pages` (distinct) and the `top` pages by calls, each `{va, reads,
+  writes, crossings, gate_busy, no_view, pc, fast, trapped, outside, owner,
+  mapping}`: `gate_busy` counts calls made while another thread held the
+  inline-memory gate, `no_view` calls from a context that lent no RAM view,
+  `crossings` spans into the next page, `pc` is the last caller, and `fast`
+  is the page's fast table entry (`{physical, read, write}`) that the paged
+  inline path checks. A page whose `fast` entry allows the access and
+  whose calls are mostly `gate_busy` is slow for the gate, not its mapping.
 - **Faults.** `profile.faults {top}` (20 by default, 1 to 500) is the
   fault census (`runtime::fault_census`,
   [block-clock-imprecise-faults.md](block-clock-imprecise-faults.md)):

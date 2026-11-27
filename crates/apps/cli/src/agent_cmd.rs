@@ -111,6 +111,9 @@ or a short form:
                          function, hits and instructions
   flatmem                profile.memory: the flat RAM window's fixups,
                          pages outside it and bytes skipped for congruence
+  slowpages [on|off|N]   profile.memory.pages: the pages outside the window
+                         by reason and owner, and the slow-access census
+                         (on starts it, off stops it), N (20) of each
   faults [N]             profile.faults: the fault census, every guest memory
                          fault and whether execution went on from it, with
                          the N (20) most frequent fault PCs
@@ -809,6 +812,15 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
                 Some(_) => json!({ "top": number(arg, "fallbacks")? }),
             },
         ),
+        "slowpages" => (
+            method::PROFILE_MEMORY_PAGES,
+            match arg.map(String::as_str) {
+                None => Value::Null,
+                Some("on") => json!({ "census": true }),
+                Some("off") => json!({ "census": false }),
+                Some(_) => json!({ "top": number(arg, "slowpages")? }),
+            },
+        ),
         "faults" => (
             method::PROFILE_FAULTS,
             match arg {
@@ -1103,6 +1115,10 @@ mod tests {
         );
         assert_eq!(c("fallbacks"), ("profile.fallbacks".into(), Value::Null));
         assert_eq!(c("faults 5"), ("profile.faults".into(), json!({"top": 5})));
+        assert_eq!(c("slowpages"), ("profile.memory.pages".into(), Value::Null));
+        assert_eq!(c("slowpages on"), ("profile.memory.pages".into(), json!({"census": true})));
+        assert_eq!(c("slowpages off"), ("profile.memory.pages".into(), json!({"census": false})));
+        assert_eq!(c("slowpages 5"), ("profile.memory.pages".into(), json!({"top": 5})));
         assert_eq!(c("faults"), ("profile.faults".into(), Value::Null));
         assert_eq!(c("loads 3"), ("load.timeline".into(), json!({"last": 3})));
         assert_eq!(

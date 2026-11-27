@@ -289,32 +289,70 @@ impl Memory {
         memory.find_free_physical(size, low..end, alignment)
     }
     /// A distinct free physical page for each virtual page of `pages`,
-    /// lowest first, congruent with it modulo 16 KiB where one is left
-    /// (`Guest::find_free_physical_for`), so the flat RAM window can hold
-    /// it; any free page otherwise.
+    /// lowest first, placed so the flat RAM window can hold each 16 KiB
+    /// host page: beside a page of the same host page placed earlier in
+    /// this commit or already mapped (`Guest::physical_beside`), else in a
+    /// free 16 KiB block no other host page of this commit uses, at its
+    /// residue (`Guest::find_free_physical_for`); congruent with it modulo
+    /// 16 KiB where only that is left; any free page otherwise.
     fn physical_pages(memory: &Guest, pages: &[u32]) -> Option<Vec<u32>> {
+        const HOST: u32 = 0x4000;
+        let block = |p: u32| p & !(HOST - 1);
         let mut out: Vec<u32> = Vec::with_capacity(pages.len());
+        // Each 16 KiB virtual host page of this commit and the physical
+        // block it took.
+        let mut blocks: Vec<(u32, u32)> = Vec::new();
         // Per residue, where the next congruent search starts.
         let mut cursor = [0u32; 4];
         let mut any = 0u32;
         for &va in pages {
             let residue = ((va >> 12) & 3) as usize;
-            let congruent = memory
-                .find_free_physical_for(va, PAGE_SIZE, cursor[residue]..RAM_SIZE as u32)
-                .filter(|p| (p ^ va) & 0x3000 == 0 && !out.contains(p));
-            let page = match congruent {
-                Some(p) => {
-                    cursor[residue] = p + PAGE_SIZE;
-                    p
-                }
-                None => loop {
-                    let p = memory.find_free_physical(PAGE_SIZE, any..RAM_SIZE as u32, PAGE_SIZE)?;
-                    any = p + PAGE_SIZE;
-                    if !out.contains(&p) {
-                        break p;
-                    }
-                },
+            let taken = |p: u32, blocks: &[(u32, u32)]| {
+                out.contains(&p) || blocks.iter().any(|&(v, b)| b == block(p) && v != block(va))
             };
+            let beside = blocks
+                .iter()
+                .find(|&&(v, _)| v == block(va))
+                .map(|&(_, b)| b | (va & (HOST - 1)))
+                .or_else(|| memory.physical_beside(va, PAGE_SIZE))
+                .filter(|&p| memory.physical_free(p, PAGE_SIZE) && !taken(p, &blocks));
+            let fresh = || {
+                let mut from = 0u32;
+                loop {
+                    let p = memory.find_free_physical_for(va, PAGE_SIZE, from..RAM_SIZE as u32)?;
+                    if (p ^ va) & 0x3000 != 0 {
+                        return None;
+                    }
+                    if !taken(p, &blocks) {
+                        return Some(p);
+                    }
+                    from = block(p) + HOST;
+                }
+            };
+            let page = match beside.or_else(fresh) {
+                Some(p) => p,
+                None => {
+                    let congruent = memory
+                        .find_free_physical_for(va, PAGE_SIZE, cursor[residue]..RAM_SIZE as u32)
+                        .filter(|p| (p ^ va) & 0x3000 == 0 && !out.contains(p));
+                    match congruent {
+                        Some(p) => {
+                            cursor[residue] = p + PAGE_SIZE;
+                            p
+                        }
+                        None => loop {
+                            let p = memory.find_free_physical(PAGE_SIZE, any..RAM_SIZE as u32, PAGE_SIZE)?;
+                            any = p + PAGE_SIZE;
+                            if !out.contains(&p) {
+                                break p;
+                            }
+                        },
+                    }
+                }
+            };
+            if !blocks.iter().any(|&(v, _)| v == block(va)) {
+                blocks.push((block(va), block(page)));
+            }
             out.push(page);
         }
         Some(out)

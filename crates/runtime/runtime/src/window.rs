@@ -171,6 +171,14 @@ pub fn supported() -> bool {
     !cfg!(miri) && os::page_size().is_some_and(|h| matches!(h, 4096 | 16384))
 }
 
+/// The host page a window is built on here: 4 KiB or 16 KiB, else 4 KiB
+/// (no window; [`crate::guest::OutsideReason`] then names none).
+pub(crate) fn host_page() -> usize {
+    os::page_size()
+        .filter(|h| matches!(h, 4096 | 16384))
+        .unwrap_or(4096)
+}
+
 /// The process's null window (module docs), with its faults sent to the
 /// fixups; `None` where there is no window or the system refused it.
 pub(crate) fn null_window() -> Option<&'static Window> {
