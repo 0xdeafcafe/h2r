@@ -1042,7 +1042,123 @@ fn count_refusal(why: &str) {
 
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
+    render_bridge::effects_shadow::geometry::set_answer_host(Some(Arc::new(TransparentAnswer {
+        device: Arc::clone(device),
+        state: Arc::clone(&state),
+    })));
     render_bridge::native_layers::set_host(Arc::new(Glue { device: Arc::clone(device), state }));
+}
+
+/// R2's geometry answer (`render_bridge::effects_shadow::geometry`): one
+/// BSP cluster entry of the sorted transparents drawn from the world's
+/// layer-15 set, as a run of one item (like [`Glue::commit_run`]'s), in
+/// place of the guest's handler `0x00041020`. The set's passes were
+/// compiled at the load from the same tags the arm proved against the
+/// device (`native_render::transparent_material`).
+struct TransparentAnswer<B: d3d::backend::Backend + Send + 'static> {
+    device: d3d::abi::SharedDevice<B>,
+    state: State,
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer<B> {
+    fn draw(&self, mem: &mut dyn GuestMemory, r: &render_bridge::effects_shadow::geometry::Request) -> Result<(), &'static str> {
+        use native_render::layers_load::TRANSPARENT_LAYER as L;
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            current_ready(&state, mem).map(Arc::clone)
+        }
+        .ok_or("world_pending")?;
+        let (view, palettes) = ready.layers.get().ok_or("no_layers")?;
+        let data = view.layers.get(&L).ok_or("no_layer")?;
+        let part = (Owner::Cluster(r.cluster), r.part);
+        let &(material, shader) = data.part_set.get(&part).ok_or("set")?;
+        if shader & 0xffff != r.shader & 0xffff {
+            return Err("set");
+        }
+        // Each pass's implementation 0 (the build model's, which the arm
+        // checked), with nothing that reads a per-draw input or animates:
+        // the compiled passes hold the load's values.
+        let tags_material = view
+            .materials
+            .iter()
+            .find(|(k, _)| **k & 0xffff == r.shader & 0xffff)
+            .map(|(_, m)| Arc::clone(m))
+            .ok_or("material")?;
+        let layer = tags_material.layers.iter().find(|l| l.lod == 0 && l.layer == usize::from(L)).ok_or("layer")?;
+        let imps: Vec<_> = layer.passes.iter().filter_map(|p| p.implementations.iter().find(|i| i.index == 0)).collect();
+        if imps.len() != layer.passes.len() || imps.len() != r.passes as usize {
+            return Err("passes");
+        }
+        if imps.iter().any(|i| i.per_draw_inputs || !i.animated.is_empty()) {
+            return Err("per_draw");
+        }
+        let mut d = self.device.lock().map_err(|_| "device")?;
+        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
+            return Err("device");
+        }
+        let (stencil, fog) = {
+            let read = ReadMemory(mem);
+            if !viewport_clip(&d, &read) {
+                return Err("viewport");
+            }
+            let device_stencil = d.stencil_state(&read).ok_or("stencil")?;
+            if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
+                return Err("palettes");
+            }
+            // Skipping the handler must leave the device as its draws would:
+            // what the cached implementation restores, then what each pass
+            // sets already holds or is restored (`layer_pass::skip_holds`).
+            let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
+            let device_words = |slot: u32| d.render_state(&read, slot);
+            let device_state = native_render::sorted_entries::after_restore(&restore, &device_words);
+            if !imps.iter().all(|i| layer_pass::skip_holds(i, &device_state)) {
+                return Err("state");
+            }
+            let words = device_fog_words(&d, &read);
+            let fog = data.words.get(&material).and_then(|w| w.resolve(&words)).map(|w| fog_of(&w)).ok_or("fog")?;
+            (layer_pass::item_stencil(L, false, device_stencil, false).stencil, fog)
+        };
+        let warm = ready.with_pipeline_target(&d, &*mem, |gpu, device, color, depth| {
+            if native_render::fog_gpu::layer_stencil(&stencil, depth).is_none() {
+                return Some(Err(()));
+            }
+            Some(Ok(gpu.prewarm_layer(L, device, color, depth, &stencil)))
+        });
+        match warm {
+            Some(Ok(true)) => {}
+            Some(Err(())) => return Err("stencil"),
+            _ => return Err("warming"),
+        }
+        let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: 1, slots: Vec::new() };
+        let pass = Box::new(LayerViewPass {
+            ready: Some(Arc::clone(&ready)),
+            objects: None,
+            texaccum: None,
+            layer: L,
+            runs: vec![LayerRun::World(vec![part])],
+            samples: LayerSamples::new(),
+            fogs: HashMap::from([(material, fog)]),
+            view: None,
+            w_clip: None,
+            writes_depth: data.writes_depth,
+            stencil,
+            run: u64::from(d.swap_count()).wrapping_add(1),
+        });
+        let reservation = d
+            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
+            .ok()
+            .flatten()
+            .ok_or("reservation")?;
+        {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+                return Err("world_changed");
+            }
+        }
+        reservation.commit();
+        Ok(())
+    }
 }
 
 /// A run of the list's items the masks surrendered.

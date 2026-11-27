@@ -634,6 +634,19 @@ pub fn install(b: &mut Builder) {
         })
         .context_only()
         .optional();
+    // R2's geometry answer: a proven BSP cluster entry is drawn natively and
+    // the handler returns (`ret 4`).
+    b.raw()
+        .before(&points::TRANSPARENT_GEOMETRY, "effects_shadow_geometry_draw", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            if geometry::answer_handler(&mut *rt.memory(), c.cpu.esp) {
+                c.ret(4).map(Flow::Return)
+            } else {
+                Ok(Flow::Continue)
+            }
+        })
+        .context_only()
+        .optional();
     b.raw()
         .observe_after(&points::TRANSPARENT_GEOMETRY, "effects_shadow_geometry_end", |o| {
             geometry::end_handler(o.cpu.esp);

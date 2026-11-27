@@ -165,10 +165,47 @@ and `proven`, which fires once after 16 matches in a row
 (`geometry::material_proven`). A difference ends that streak only; the
 build answer's gate is its own.
 
-Not built: an answer for the material. The draw's state stays the guest's;
-the native pass still takes its pipeline from the device. A shader that is
-not a world material (an object's) is refused `not_a_world_material`.
-Tests: `effects_shadow/geometry/tests.rs`, `transparent_material.rs`.
+### The draw's answer
+
+Built (**Code**): `geometry::answer_handler` (`render-bridge`) and
+`native_layers_glue::TransparentAnswer` (`game`). Once the build answer and
+the material have both proved (16 sampled draws in a row each, no
+difference since: `geometry::proven`), on a frame that is not sampled, a
+BSP cluster entry's handler `0x00041020` does not run. The world's layer-15
+set draws it: `layers_load` compiles layer 15 for every world material with
+the planned layers (`TRANSPARENT_LAYER`), and the glue reserves a
+`LayerViewPass` of one run, the entry's `(Owner::Cluster, part)`, in the
+ordered stream at the handler's place; the handler returns (`ret 4`).
+Sampled frames run the guest, so the build and material arms keep
+comparing.
+
+The entry is answered only when:
+
+- the entry reads as a cluster's (`Source::Cluster`) and every pass the
+  build model makes accepts with implementation 0, the one the layer's
+  compile took (`geometry_draw_pass`);
+- the material has no animated property and reads no per-draw input
+  (`per_draw`);
+- the device holds what the guest's draws would leave: what the cached
+  implementation restores, then every state a pass sets holds or is restored
+  (`layer_pass::skip_holds`, `state`), the layer's stencil and palettes
+  (`stencil`, `palettes`), the viewport clip, the pipelines warm
+  (`warming`) and the world unchanged (`world_changed`).
+
+A refusal keeps the guest's handler and is counted
+`scene_kept_15_geometry_draw_<cause>` (also `entry`, `not_cluster`,
+`no_passes`, the build model's `particle_material`, `not_shader`, `record`,
+`passes`, `layout`, and the glue's `world_pending`, `no_layers`, `no_layer`,
+`set`, `material`, `layer`, `device`, `viewport`, `cached_state`, `fog`,
+`reservation`); an answered entry counts
+`layer_plan_15_effects_shadow_answer_geometry_draw`.
+
+Not built: placements and objects (`not_cluster`); the handler's other side
+effects (the lightmap page `0x15c90` sets for a BSP record) are not made, as
+the layer's other skipped draws do not make them; the entry's passes are
+drawn with the load's constants, not the device's per-draw ones. A shader
+that is not a world material is refused `material`. Tests:
+`effects_shadow/geometry/tests.rs`.
 
 ## R2's decals and weather
 
