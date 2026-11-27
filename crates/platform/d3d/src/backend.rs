@@ -1123,6 +1123,20 @@ impl PixelRect {
         Self { x, width: end.saturating_sub(x), ..self }
     }
 
+    /// [`PixelRect::projected_x`] on the vertical axis, for a `factor` above
+    /// 1 (the vertical lens grows by its inverse).
+    pub fn projected_y(self, viewport: (u32, u32, u32, u32), factor: f32) -> Self {
+        if factor == 1.0 || self.height == 0 { return self; }
+        let (_, top, _, height) = viewport;
+        let bottom = top.saturating_add(height);
+        let centre = f64::from(top) + f64::from(height) * 0.5;
+        let edge = |y| centre + (f64::from(y) - centre) / f64::from(factor);
+        let end = self.y.saturating_add(self.height);
+        let y = if self.y <= top { top } else { (edge(self.y).floor() as u32).clamp(top, bottom) };
+        let end = if end >= bottom { bottom } else { (edge(end).ceil() as u32).clamp(top, bottom) };
+        Self { y, height: end.saturating_sub(y), ..self }
+    }
+
     /// Whether this is the whole `w x h` target.
     pub fn is_whole(&self, w: u32, h: u32) -> bool {
         self.x == 0 && self.y == 0 && self.width == w && self.height == h
@@ -1354,8 +1368,11 @@ impl ResolvedDraw {
         let extra = self.extras[stage];
         let mut matrix = extra.bump_env_mat;
         if extra.samples_frame && let Some((_, factor)) = &self.retail_constants {
-            matrix[0] *= *factor;
-            matrix[2] *= *factor;
+            let (x, y) = (canvas_fit::horizontal_term(*factor), canvas_fit::vertical_term(*factor));
+            matrix[0] *= x;
+            matrix[2] *= x;
+            matrix[1] *= y;
+            matrix[3] *= y;
         }
         matrix
     }
@@ -1365,7 +1382,8 @@ impl ResolvedDraw {
         if let Some(fit) = self.ui_fit { return fit.map_rect(rect); }
         let Some((_, factor)) = &self.retail_constants else { return rect };
         let v = self.viewport;
-        rect.projected_x((v.x, v.y, v.width, v.height), *factor)
+        let view = (v.x, v.y, v.width, v.height);
+        if *factor > 1.0 { rect.projected_y(view, *factor) } else { rect.projected_x(view, *factor) }
     }
 
     /// Texture stages whose program reads the bound image.

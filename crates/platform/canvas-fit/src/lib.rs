@@ -49,12 +49,28 @@ impl Lens {
         }
     }
 
-    /// The same picture as a horizontal factor alone: a pipeline that only
-    /// carries `x` narrows the horizontal lens by `y`'s inverse instead of
-    /// growing the vertical one.
-    pub fn horizontal_only(self) -> f32 {
+    /// The lens as the one scalar the projection pipeline carries (the
+    /// projection factor): below 1 it scales the horizontal terms, above 1
+    /// it scales the vertical terms by its inverse.
+    pub fn factor(self) -> f32 {
         self.x / self.y
     }
+
+    /// The lens a projection factor stands for ([`Lens::factor`]'s inverse).
+    pub fn from_factor(factor: f32) -> Self {
+        Self { x: factor.min(1.0), y: factor.recip().min(1.0) }
+    }
+}
+
+/// The factor on the horizontal terms of a projection factor: below 1 only.
+pub fn horizontal_term(factor: f32) -> f32 {
+    Lens::from_factor(factor).x
+}
+
+/// The factor on the vertical terms of a projection factor: below 1 when
+/// the projection factor is above 1.
+pub fn vertical_term(factor: f32) -> f32 {
+    Lens::from_factor(factor).y
 }
 
 /// A uniform fit from a ratio between the axes' stretches, about a pivot
@@ -121,7 +137,10 @@ mod tests {
                 close(lens.y, want.y);
                 // The picture is square-pixel: lens ratio equals the aspect
                 // over the canvas's.
-                close(lens.horizontal_only(), want.x / want.y);
+                close(lens.factor(), want.x / want.y);
+                let back = Lens::from_factor(lens.factor());
+                close(back.x, want.x);
+                close(back.y, want.y);
                 // A wide window never touches y; a narrow one never x.
                 assert!(lens.x == 1.0 || lens.y == 1.0, "{name} @{scale}");
                 assert_eq!(

@@ -4499,6 +4499,7 @@ dependencies = [
  "assets",
  "background",
  "bytemuck",
+ "canvas-fit",
  "d3d",
  "font",
  "frame-scene",

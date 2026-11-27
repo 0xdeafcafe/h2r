@@ -103,10 +103,9 @@ fn retail_lens(mem: &impl GuestMemory) -> f32 {
 // The horizontal clip scale that shows the guest's lens on `output` with
 // square pixels. The display lens changes only X.
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
-    // The projection carries a horizontal factor only, so a window narrower
-    // than 4:3 takes its vertical lens as the equivalent horizontal one
-    // (`Lens::horizontal_only`) until the pipeline has a vertical term.
-    retail_lens(mem) * canvas_fit::Lens::for_window(output).horizontal_only()
+    // Below 1 the factor widens the horizontal lens; above 1 it grows the
+    // vertical one (`canvas_fit::Lens::factor`).
+    retail_lens(mem) * canvas_fit::Lens::for_window(output).factor()
 }
 
 /// The aspect of the lens a fitted guest camera gathers through, whatever
@@ -194,12 +193,35 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
     let (bias, scale, left, right) = (get(0), get(8), get(16), get(20));
     let centre = (left + right) * 0.5;
     let half = (right - left) * 0.5 / frustum;
-    let terms = [bias * factor, scale * factor, centre - half, centre + half];
+    let horizontal = canvas_fit::horizontal_term(factor);
+    let terms = [bias * horizontal, scale * horizontal, centre - half, centre + half];
     if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
         return None;
     }
     for (i, value) in [0, 8, 16, 20].into_iter().zip(terms) {
         words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    // A window narrower than 4:3 grows the vertical lens: the Y bias and
+    // scale (words 1 and 3) and the vertical tangent bounds (words 6 and 7)
+    // take the vertical term, the horizontal ones stay retail.
+    let vertical = canvas_fit::vertical_term(factor);
+    if vertical < 1.0 {
+        let mut extra = [0u8; 8];
+        mem.read(at + 24, &mut extra).ok()?;
+        let get = |b: &[u8], i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let (top, bottom) = (get(&extra, 0), get(&extra, 4));
+        let centre = (top + bottom) * 0.5;
+        let half = (bottom - top) * 0.5 / vertical;
+        let terms = [get(&words, 4) * vertical, get(&words, 12) * vertical, centre - half, centre + half];
+        if !terms.iter().all(|v| v.is_finite()) || terms[1] <= 0.0 || terms[2] >= terms[3] {
+            return None;
+        }
+        for (i, value) in [4, 12].into_iter().zip(terms) {
+            words[i..i + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        extra[0..4].copy_from_slice(&terms[2].to_le_bytes());
+        extra[4..8].copy_from_slice(&terms[3].to_le_bytes());
+        mem.write(at + 24, &extra).ok()?;
     }
     mem.write(at, &words).ok()
 }
@@ -295,8 +317,9 @@ fn projected_effect_fit(
     output: (u32, u32),
     query_stack: Option<u32>,
 ) -> Option<UiFit> {
+    // The sprite fit moves along X only; a vertical lens leaves it retail.
     let factor = projection_factor(mem, output);
-    if factor == 1.0 {
+    if factor >= 1.0 {
         return None;
     }
     let bounds = viewport(mem, 0x0048_5648)?;
@@ -1155,6 +1178,33 @@ mod tests {
             for (i, value) in [(1, 0.0), (3, 2.0), (6, -0.525), (7, 0.525)] {
                 assert_eq!(camera.f32(esp + 0x54 + 4 * i).unwrap(), value);
             }
+        }
+    }
+
+    #[test]
+    fn a_portrait_window_grows_the_vertical_terms_and_keeps_the_horizontal_ones() {
+        let esp = 0x1000;
+        let mem = FakeGuest::new();
+        let gather = gather_factor(&mem);
+        for (output, y) in [((960, 1280), 0.5625f32), ((720, 1280), 0.31640625)] {
+            let factor = projection_factor(&mem, output);
+            close(factor, 1.0 / y);
+            let mut camera = displayed_camera(esp);
+            assert_eq!(fit_view_projection(&mut camera, esp, factor, gather), Fit::Applied, "{output:?}");
+            let at = esp + 0x54;
+            let word = |m: &FakeGuest, i: u32| m.f32(at + 4 * i).unwrap();
+            let retail = displayed_camera(esp);
+            // Horizontal bias and scale stand; the vertical ones take the lens.
+            close(word(&camera, 0), word(&retail, 0));
+            close(word(&camera, 2), word(&retail, 2));
+            close(word(&camera, 1), word(&retail, 1) * y);
+            close(word(&camera, 3), word(&retail, 3) * y);
+            // The vertical tangent bounds grow by the lens, about their centre.
+            close(word(&camera, 6), word(&retail, 6) / y);
+            close(word(&camera, 7), word(&retail, 7) / y);
+            // The vertical edge rays still reach clip 1 on the grown lens.
+            let (scale, bias) = (word(&camera, 3), word(&camera, 1));
+            close((word(&camera, 7) * scale + bias).abs(), (word(&retail, 7) * word(&retail, 3) + word(&retail, 1)).abs());
         }
     }
 

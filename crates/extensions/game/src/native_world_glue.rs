@@ -376,7 +376,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // Admit the union of both lenses. Exact readback renders the retail
         // projection, and hardware clips a submitted part outside either copy.
         let factor = d.projection_factor_for_target(target.surface_size);
-        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor.min(1.));
+        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor);
         let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let run = u64::from(d.swap_count()).wrapping_add(1);
