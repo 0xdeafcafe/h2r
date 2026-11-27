@@ -25,7 +25,8 @@
 //! (`engine::sim_seats::device::arm`): the guest answers until the
 //! kernel's predictions have matched its clean count, then the kernel,
 //! with one read in 64 still the guest's and compared. The arm's proof
-//! resets at map load ([`DEVICE_RESET`]). The phantom seats' action
+//! resets at map load ([`DEVICE_RESET`]), with the leaf arms'
+//! (`engine::sim_seats::leaf`: the bodies' leaf callees in Rust). The phantom seats' action
 //! builder stays in the generated code (the bodies decline it), so hosts
 //! and phantom rosters are unchanged with the switch on.
 //!
@@ -43,7 +44,7 @@ pub const SEATS: &str = "sim.native.seats";
 /// The shadow registry's group for the seats.
 pub const GROUP: &str = "sim.seats";
 /// The device arm's reset at map load.
-pub const DEVICE_RESET: &str = "seats: reset the device arm";
+pub const DEVICE_RESET: &str = "seats: reset the device and leaf arms";
 
 pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(SEATS, false)
@@ -58,7 +59,8 @@ pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
 pub(crate) fn install(b: &mut Builder) {
     if on(b.switches()) {
         b.raw().observe_before(&engine::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
-            sim_seats::device::arm::reset()
+            sim_seats::device::arm::reset();
+            sim_seats::leaf::reset();
         });
     }
     for seat in sim_seats::SEATS {
