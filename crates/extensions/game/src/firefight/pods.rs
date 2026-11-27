@@ -187,9 +187,9 @@ impl PodDrops {
         self.falls
             .iter()
             .map(|(_, f)| *f)
-            .filter(|f| libm::hypotf(f.ground[0] - at[0], f.ground[1] - at[1]) <= SPOT)
+            .filter(|f| flat(f.ground, at) <= SPOT)
             .min_by(|a, b| {
-                let d = |f: &PodFall| libm::hypotf(f.ground[0] - at[0], f.ground[1] - at[1]);
+                let d = |f: &PodFall| flat(f.ground, at);
                 d(a).total_cmp(&d(b))
             })
     }
@@ -332,8 +332,13 @@ impl PodDrops {
     }
 }
 
+/// The horizontal distance.
+fn flat(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])).sqrt()
+}
+
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    libm::sqrtf((0..3).map(|i| (a[i] - b[i]).powi(2)).sum())
+    (0..3).map(|i| (a[i] - b[i]) * (a[i] - b[i])).sum::<f32>().sqrt()
 }
 
 /// Whether the Drop Pods row is offered, and why not.

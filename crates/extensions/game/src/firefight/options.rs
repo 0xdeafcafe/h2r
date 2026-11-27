@@ -179,8 +179,17 @@ pub static SKULLS: Setting = setting(
     Value::Bool(true),
 );
 
+pub static PODS: Setting = setting(
+    "firefight.pods",
+    "Drop pods",
+    "Whether players fall to the ground in drop pods when they spawn.",
+    Kind::Bool,
+    Value::Bool(true),
+);
+
 /// Every Firefight setting, in the page's order.
-pub static DEFS: [&Setting; 6] = [&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIVES, &SKULLS];
+pub static DEFS: [&Setting; 7] =
+    [&ENABLED, &WAVE_SET, &TEAMS, &DIFFICULTY, &LIVES, &SKULLS, &PODS];
 
 /// The Firefight page over `store`: the shared settings dialog
 /// (`crate::ui_kit::settings`) its doc declares,
@@ -255,6 +264,9 @@ pub struct Options {
     pub lives: Option<u16>,
     /// Each round switches on its skull.
     pub skulls: bool,
+    /// Players fall to their spawns in drop pods, where the kit has them
+    /// (`super::pods`).
+    pub pods: bool,
 }
 
 impl Default for Options {
@@ -270,6 +282,7 @@ impl Default for Options {
             difficulty: Difficulty::Normal,
             lives: None,
             skulls: true,
+            pods: true,
         }
     }
 }
@@ -297,6 +310,10 @@ impl Options {
         let skulls = match store.get(SKULLS.key) {
             Some(Value::Bool(v)) => v,
             other => return Err(format!("{} is {other:?}, not on or off", SKULLS.key)),
+        };
+        let pods = match store.get(PODS.key) {
+            Some(Value::Bool(v)) => v,
+            other => return Err(format!("{} is {other:?}, not on or off", PODS.key)),
         };
         let wave_set = usize::try_from(int(&WAVE_SET)?)
             .ok()
@@ -330,6 +347,7 @@ impl Options {
             difficulty,
             lives,
             skulls,
+            pods,
         })
     }
 
