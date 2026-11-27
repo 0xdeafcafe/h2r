@@ -235,8 +235,6 @@ pub fn build_over(
         base: base.map.clone(),
         scenario: scenario.clone(),
         kits: vec!["new-map".into()],
-        edits: Vec::new(),
-        output: "package".into(),
     };
     let key = build_key(template, req, base);
     let floor = stage_kit::map::build_over(
