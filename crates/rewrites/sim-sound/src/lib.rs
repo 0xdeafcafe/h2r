@@ -12,6 +12,7 @@ pub mod feed;
 pub mod impulse;
 pub mod instances;
 pub mod listener;
+pub mod looping;
 pub mod loops;
 pub mod mix;
 pub mod objects;

@@ -147,6 +147,10 @@ pub trait SoundTags {
     fn scale(&self, index: i8) -> Option<&Scale>;
     /// The promotion bank's range for `rule`, as stored (`0xffff` for none).
     fn promotion(&self, bank: u8, rule: u16) -> Option<u16>;
+    /// A looping sound tag's tracks and detail sounds.
+    fn looping(&self, _tag: TagIndex) -> Option<&crate::looping::LoopTag> {
+        None
+    }
 }
 
 /// [`SoundTags`] as plain vectors.
@@ -158,6 +162,7 @@ pub struct TagTable {
     pub scales: Vec<Scale>,
     /// Per bank, its rows' ranges (`0x218f10`: bank `28` bytes, row `16`).
     pub promotions: Vec<Vec<u16>>,
+    pub loops: BTreeMap<TagIndex, crate::looping::LoopTag>,
 }
 
 impl SoundTags for TagTable {
@@ -175,6 +180,9 @@ impl SoundTags for TagTable {
     }
     fn promotion(&self, bank: u8, rule: u16) -> Option<u16> {
         self.promotions.get(usize::from(bank))?.get(usize::from(rule)).copied()
+    }
+    fn looping(&self, tag: TagIndex) -> Option<&crate::looping::LoopTag> {
+        self.loops.get(&tag)
     }
 }
 
@@ -306,7 +314,8 @@ pub struct Instance {
     pub source: SourceParams,
     pub options: Options,
     pub start: u32,
-    /// `None` for a loop segment: only its loop ends it.
+    /// The tick it plays out on. `None` only for a sound nothing ends but a
+    /// stop; every admitted sound, loop segments included, has one.
     pub end: Option<u32>,
     pub phase: Phase,
     pub track: Option<(Handle, u8)>,
@@ -425,11 +434,12 @@ impl Counters {
 
 /// The `kind::SOUND` store.
 pub struct Sounds {
-    instances: Pool<Instance>,
-    chooser: Chooser,
+    pub(crate) instances: Pool<Instance>,
+    pub(crate) chooser: Chooser,
+    pub(crate) loops: Pool<crate::looping::Looping>,
     /// Starts and stops since the last step, in call order.
-    pending: Vec<TableEvent>,
-    counters: Counters,
+    pub(crate) pending: Vec<TableEvent>,
+    pub(crate) counters: Counters,
 }
 
 impl Default for Sounds {
@@ -446,6 +456,7 @@ impl Sounds {
         Self {
             instances: Pool::new(CAPACITY, POOL_NAME),
             chooser: Chooser::new(),
+            loops: Pool::new(crate::looping::CAPACITY, crate::looping::POOL_NAME),
             pending: Vec::new(),
             counters: Counters::default(),
         }
@@ -519,7 +530,7 @@ impl Sounds {
                     gain: instance.gain,
                     pitch: instance.pitch,
                     source: instance.source,
-                    looping: instance.end.is_none(),
+                    looping: instance.track.is_some(),
                     tick,
                 });
                 Ok(handle)
@@ -578,15 +589,11 @@ impl Sounds {
             }
         };
         let selection = Selection { range, permutation, chunk: 0 };
-        let end = if request.track.is_some() {
-            None
-        } else {
-            match length_ms(tags, tag, selection) {
-                Some(ms) => Some(end_tick(tick, ms)),
-                None => {
-                    self.counters.refused_no_length += 1;
-                    Some(tick)
-                }
+        let end = match length_ms(tags, tag, selection) {
+            Some(ms) => Some(end_tick(tick, ms)),
+            None => {
+                self.counters.refused_no_length += 1;
+                Some(tick)
             }
         };
         Ok(Instance {
@@ -630,7 +637,9 @@ impl Sounds {
         if instance.owner.has_host() {
             owners.ended(self, &instance.owner, handle, instance.tag, reason);
         }
-        // An `Owner::Loop` unlinks from its track here (slice 3).
+        if let Owner::Loop { looping, track } = instance.owner {
+            self.unlink(looping, track, handle);
+        }
         self.instances.free(handle).ok()?;
         self.counters.ended[Reason::ALL.iter().position(|&r| r == reason).unwrap_or(0)] += 1;
         Some(TableEvent::Ended { handle, reason, tick })
@@ -666,13 +675,16 @@ impl Sounds {
         out
     }
 
-    /// The canonical bytes: the pool's section, then the chooser.
+    /// The canonical bytes: the instance pool, the chooser, the loop pool.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
         let pool = self.instances.encode();
         w.u32(pool.len() as u32);
         w.bytes(&pool);
         self.chooser.encode(&mut w);
+        let loops = self.loops.encode();
+        w.u32(loops.len() as u32);
+        w.bytes(&loops);
         w.finish()
     }
 
@@ -686,8 +698,12 @@ impl Sounds {
         let pool = r.take(len)?;
         let instances = Pool::decode(kind, CAPACITY, POOL_NAME, 1, pool)?;
         let chooser = Chooser::decode(&mut r)?;
+        let len = r.u32()? as usize;
+        let loops = r.take(len)?;
+        let loops =
+            Pool::decode(kind, crate::looping::CAPACITY, crate::looping::POOL_NAME, 1, loops)?;
         r.end(kind)?;
-        Ok(Self { instances, chooser, pending: Vec::new(), counters: Counters::default() })
+        Ok(Self { instances, chooser, loops, pending: Vec::new(), counters: Counters::default() })
     }
 
     pub fn section_hash(&self) -> u64 {

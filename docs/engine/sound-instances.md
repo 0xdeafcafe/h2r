@@ -1,6 +1,6 @@
 # Sound instances: the Rust table
 
-Status: Design, slice 2 built: `Sounds`, the chooser and the owners exist and pass their differential, wired to nothing. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
+Status: Design, slices 2 and 3 built: `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`, wired to nothing. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
 Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,mixer_feed}.rs`, `crates/platform/sound-clips`. Tests: the same files, named in [Slices](#slices).
 Switch: none. The table replaces `impl.sim.sound-events` and `impl.sim.native.sound` ([switches.md](../runtime/switches.md)).
 
@@ -46,9 +46,9 @@ The sim owns every sound as a record in a Rust table: which sounds run, which pe
 |---|---|---|
 | `instances` | `sim_world::Pool<Instance>`, capacity 384 | the guest pool |
 | `chooser` | `Chooser`: per pitch range `last`, `next` and a used set | the gestalt's runtime bytes (range `+4`, `+5`, the bit array at gestalt `+0x3C`) |
-| `loops` | `Pool<Looping>`, capacity 128, three `Track`s each (slice 3) | the looping-sound array (`0x21a0c0`) |
+| `loops` | `Pool<Looping>`, capacity 128 (`"looping sounds"`, `0x4570ec`), up to three `Track`s each | the looping-sound array (`0x21a0c0`) |
 
-`Sounds::encode` is the section body: the pool's bytes, then the chooser's ranges in index order. A range at the default history (`last` and `next` none, an empty set) is not stored, so equal states save to equal bytes. `Sounds::section_hash` is the fnv64 of it.
+`Sounds::encode` is the section body: the instance pool's bytes, the chooser's ranges in index order, then the loop pool's bytes. A range at the default history (`last` and `next` none, an empty set) is not stored, so equal states save to equal bytes. `Sounds::section_hash` is the fnv64 of it.
 
 A handle is `sim_world::Handle`: the same salt and slot retail's `datum_new` gives, so callers that keep a handle see the values they see today. The pool's name is retail's, `"sound instances"` (`0x4534b8`), so the first salt is `0xef73`.
 
@@ -65,7 +65,7 @@ A handle is `sim_world::Handle`: the same salt and slot retail's `datum_new` giv
 | `source` | `SourceParams`: the request's 17 words (position, flags, scale) | `+0x18` to `+0x5B` |
 | `options` | `Options`: the record's words at `+4` and `+8`, its optional fields (flags 6, 8 and 9) and its rule and channel bytes, as retail stores them | `+4`, `+6`, `+8`, `+0xA0` to `+0xA4` |
 | `start` | tick | `+0x8C` (the mixer clock in ms) |
-| `end` | `Option<u32>` tick; `None` for a loop segment | none: the channel decides |
+| `end` | `Option<u32>` tick, loop segments included | none: the channel decides |
 | `phase` | `Playing`, `Fading { since }` | flags `+4` bit 7, `+0xB0` to `+0xB8` |
 | `track` | `Option<(Handle, u8)>`: the loop and track that hold it | `+0x60`, `+0x6C`, `+0xA8` |
 
@@ -155,12 +155,33 @@ Order is retail's: `ended` runs with the instance still in the pool (it gets `&S
 
 The tick driver gains a 30th phase, `sound`, owned by Rust and in `sim.ledger` ([sim-rewrite.md](sim-rewrite.md), "The tick driver"). In order:
 
-1. `loops.step`: each looping sound in slot order picks its segments and detail sounds and admits them (draws included).
+1. `Sounds::step_loops`: each looping sound in slot order moves on the tracks whose segment sound's end tick has come, then plays its due detail sounds (draws included). See [Looping sounds](#looping-sounds).
 2. `Sounds::step`, each instance in slot order (the walk `0x128020`): a fade whose ramp is done (`owners::ramp_done`) ends with `Faded`; else an owner `alive` calls gone ends with `OwnerGone`; else an `end` that has come ends with `PlayedOut`.
 3. `mouth` for each running owned instance, with the ticks since its start.
 4. Events to the outbox (`events::TableEvent`): starts and stops in call order, then ends in slot order.
 
 The frame service does no sim work. It hands the outbox and a read-only `Scene` to the host.
+
+## Looping sounds
+
+```text
+        normal (0x44a150)              alternate (0x44a16c)
+in ──> loop ⟲                    in, loop ──> alt trans in ──> alt loop ⟲
+alt trans in, alt loop ──> alt trans out ──> loop      alt trans out ──> alt trans in
+stop: out, or alt out from the alternate sequence (OutSegment); every other sound fades
+```
+
+A `Looping` (`sim_sound::looping`) holds its tag, owner, source, the alternate and stopping flags, one `Track` per track tag and one deadline per detail sound. A `Track` holds the segment playing (`current`, `queued`), its `primary` sound and every sound linked to it (`members`). Each sound is an `Instance` owned by `Owner::Loop`, admitted through `Sounds::admit` (the gain, pitch and chooser draws included); `finish` unlinks it.
+
+| Event | Rust | Retail source |
+|---|---|---|
+| Start | `loop_start`: the in as primary, or as an overlay (track flag bit 0) with the chain's first segment under it; each detail draws a deadline | segment refs `0x44a188`, `Segments::from_track_flags` |
+| Segment end | `step_loops`: the primary's end tick moves the chain (`playing::select`): its overlay, then its primary. A segment that is its own successor plays its sound again | `0x44a150`, `0x44a16c`, `0x21a708` |
+| Alternate | `loop_set_alternate`: a track in the other sequence moves on at once; with flag bit 2 the old primary fades over the track's crossfade | `0x21a826` to `0x21a8fc` |
+| Stop | `loop_stop`: every member fades over the fade out, the out plays; the loop is freed in the first `step_loops` with no members | `OutSegment`, `0x21bd00` |
+| Detail | due when its deadline is before the clock (`clock_ms(tick)`), gated by flag bits 0 and 1; a play draws the next: `(lo + (hi - lo) r) * 1000 + clock`, truncated | `0x21b6d0` to `0x21b7b6` |
+
+**Design.** Retail moves a segment on when the device's channel runs out; the table moves it on the segment sound's computed end tick. Retail's draws for loops depend on wall-clock timing, so there is no retail order to keep beyond "once a tick, in slot order".
 
 ## Entries
 
@@ -272,7 +293,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 |---|---|---|---|---|
 | 1 | `sound-clips` crate | Sonnet | none | |
 | 2 | Instances, chooser, owners (pure) | Opus | none | built |
-| 3 | Looping sounds on the table (pure) | Opus | 2's types | |
+| 3 | Looping sounds on the table (pure) | Opus | 2's types | built; no differential |
 | 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | |
 | 5 | Mixer feed, boot wiring, deletions | Opus | 1, 4 | |
 
@@ -292,10 +313,10 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 ### 3. Looping sounds
 
-- Files: `crates/rewrites/sim-sound/src/looping.rs` (new; folds in `loops.rs`, `segments.rs`); `crates/rewrites/engine/tests/sim_sound_differential/looping.rs` (new).
+- Files: `crates/rewrites/sim-sound/src/looping.rs`, `looping/tests.rs`; `instances.rs` (the loop pool, `SoundTags::looping`). `loops.rs` and `segments.rs` stay: `looping` uses their kernels and the engine ports still call them.
 - Tests: `a_loop_plays_in_then_loop_then_out`, `the_alternate_swaps_segments_with_overlap`, `a_detail_sound_starts_on_its_drawn_deadline`, `a_stopped_loop_fades_every_track_instance`, `loops_step_in_slot_order`, `a_track_drops_an_instance_when_it_ends`.
-- Differential: `the_loop_step_admits_what_the_engines_update_admits` against `native_sound_loops` over 1,024 random loop states: same admissions in the same order, same seed after.
-- Exit: both green.
+- Differential: `the_loop_step_admits_what_the_engines_update_admits` against `native_sound_loops` over 1,024 random loop states. Not built: the engine's update runs per frame, starts segments from the device's end and places details with listener draws, so it can only be compared once the per-frame track update and detail placement are decided (Not verified).
+- Exit: the unit tests green; the differential with the open items above.
 
 ### 4. The flip
 
@@ -333,6 +354,10 @@ A refusal never plays or admits something else in its place. An unknown owner re
 - That `0x2226b0` (called before the slot) changes nothing the table keeps. The differential stands in for it.
 - That every sound a level admits decodes from the host's map files, converted Halo 1 maps and injected tags included.
 - Whether the game is silent today with `impl.sim.sound-events` on. The code says the manager's sounds are.
+- Detail placement. `0x21cc60` decides whether and where a detail plays; it steps the shared seed and calls listener and object code (`0x21ce60`, `0x14dde0`, `0x188dd0`). The table plays each due detail at the loop's source and takes none of those draws. A draw that reads the listener breaks "the same with any host"; that needs a design call before the flip.
+- The per-frame track update (`0x21b1c0`): the pitch-range crossfade of unlayered tracks (0.75 s, `0x21b653`) and the per-range voices of layered tracks (tag `+1` bit 5). Not in the table yet.
+- Loop and detail admissions take `level` 0. The bridge computes `level` for entry requests; loops admit inside the phase with no bridge call.
+- The fade-out seconds of a stop (`TrackTag::fade_out`): `0x21bd00` takes them as an argument; which tag field its callers pass is unread.
 
 ## Related
 
