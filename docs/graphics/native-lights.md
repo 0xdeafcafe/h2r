@@ -178,14 +178,14 @@ with zero alpha, its casters colour only, its colour copied into each
 copy's map. A light with a shader gel draws it first, into target 13's
 level 0 (`Op::Gel`, [native-gels.md](native-gels.md), "The gel from the
 scene"), and its layers sample that level through a read-only slot of
-their own. A first-person light (slot 10) refuses the light, and so does
-a caster region that does not start at its target's corner or runs past
-it. The host's `draws_scene`
+their own. A scene light outside slots 4 and 10 refuses the light, and
+so does a caster region that does not start at its target's corner or
+runs past it. The host's `draws_scene`
 is true at any render scale and on every backend while the native
 shadows are on (`native_shadows_glue::enabled`); with them off the
-guest's light frame runs. The first-person lights
-(`0x000404b0`) are not cut; they replay the slots the frame body filled
-and draw as before.
+guest's light frame runs. The first-person lights (`0x000404b0`) replay
+the slots the frame body filled, and under the scene path draw from the
+scene ("First-person lights from the scene").
 
 `a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`,
 `each_copy_freezes_the_casters_region_at_its_own_scale`,
@@ -328,6 +328,26 @@ bypassed. `shadow_walk_layers` counts committed shadow layers, including
 object shadows outside a dynamic light.
 
 ### First-person lights from the scene
+
+Under the scene path (`native_lights::scene_path_ready`)
+`native_lights/first_person.rs` runs the loop as
+`engine::render::light_gather::first_person::run_scene`: each slot's
+volume and records as the guest makes them, then `scene_slot` plans the
+slot from its lists as the typed path does (`Slot::read`: the light's
+constants computed as `0x0004a1e0` would leave them, its first-person
+steps and its groups, `GroupSite::FirstPerson`) and puts the light, with
+those constants as its candidate, and its groups into the first person's
+view. A slot it takes makes no constants call, layer or tail; a slot it
+refuses makes the rest of its steps on the guest. At the loop's exit the
+taken slots' layers draw from the scene in slot 10
+(`native_lights::draw_first_person_scene`, on the target then bound, one
+sequence per light as a dynamic light's, its gel first), and then the
+tail runs once, so the draws see the state the guest's layers would.
+`render.scene` counts the slots taken in `scene_first_person_cut_slots`.
+`a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels`
+checks the light the scene is handed.
+
+Off the scene path:
 
 Whole-pass admission reads each slot after the loop poses its volume
 and replays its records. A slot with only supported view-target groups,
