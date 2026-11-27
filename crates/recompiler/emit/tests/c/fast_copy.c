@@ -88,7 +88,7 @@ static void flat_spans(H2FastPage *pages, uint8_t *ram) {
     assert(h2_flat_span(&g, 16, 32, 2) == ram + 4096 + 16);
     pages[0].permissions = 1;
     assert(!h2_flat_span(&g, 16, 32, 2));
-    pages[0] = (H2FastPage){0x04000000, 3};
+    pages[0] = (H2FastPage){H2_RAM_SIZE, 3}; /* past the end of RAM */
     assert(!h2_flat_span(&g, 16, 32, 2));
     assert(!ext.prefix.dirty[0]);
     uint64_t software[256] = {2}; /* physical page one */
@@ -114,7 +114,7 @@ static void flat_spans(H2FastPage *pages, uint8_t *ram) {
 
 int main(void) {
     H2FastPage *pages = calloc(1u << 20, sizeof *pages);
-    uint8_t *ram = malloc(1u << 26);
+    uint8_t *ram = malloc(H2_RAM_SIZE);
     assert(pages && ram);
     pages[1] = (H2FastPage){0,3}; pages[2] = (H2FastPage){4096,3};
     pages[3] = pages[1]; /* a virtual alias */

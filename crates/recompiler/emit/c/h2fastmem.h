@@ -238,6 +238,12 @@ static inline H2Mem *h2_mem_block(ExecCtxOpaque *ctx) {
 #define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {.dirtied = UINT32_MAX}; (void)h2_mem_
 #define H2_FAST_RELEASE() ((void)0)
 #endif
+/* Guest RAM in bytes: the bound on a fast page's physical address, and the
+ * stride between the watched-store mirror's planes. Equals
+ * runtime::guest::RAM_SIZE (map::arena::RAM); a runtime test pins it. */
+#ifndef H2_RAM_SIZE
+#define H2_RAM_SIZE UINT32_C(0x04800000)
+#endif
 
 static inline void h2_fast_charge(H2View *f) {
     if (++f->accesses == f->budget)
@@ -261,7 +267,7 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
         return 0;
     }
     H2FastPage page = d->pages[addr >> 12];
-    if (!(page.permissions & (write ? 2u : 1u)) || page.physical > 0x04000000u - 4096u) {
+    if (!(page.permissions & (write ? 2u : 1u)) || page.physical > H2_RAM_SIZE - 4096u) {
         H2_GATE_RELEASE(m);
         return 0;
     }
@@ -311,9 +317,9 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
 #endif
 #define H2_FIX_ROW(insn) H2_FIX_PUSH ".p2align 2\n.long " insn " - .\n.long %l[slow_] - .\n.popsection\n"
 /* The table's bounds, for the module table (h2gen.h H2GenModule). The
- * rows are in address order as long as the module's text is: every row is
- * emitted right after its instruction, and the runtime refuses an unsorted
- * table by name (RegistrationError::FixupTable) rather than sort it. */
+ * rows land in link order, and a linker that folds identical functions
+ * repeats a kept copy's rows; the runtime sorts and deduplicates them at
+ * registration and refuses two rows at one instruction that disagree. */
 #if defined(__APPLE__)
 extern const char h2_fix_start_[] __asm("section$start$__DATA_CONST$__h2_fix");
 extern const char h2_fix_end_[] __asm("section$end$__DATA_CONST$__h2_fix");
@@ -573,7 +579,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     if (!d->pages) { H2_GATE_RELEASE(m); return 0; }
     H2FastPage sp = d->pages[src >> 12], dp = d->pages[dst >> 12];
     if (!(sp.permissions & 1u) || !(dp.permissions & 2u) ||
-        sp.physical > 0x04000000u - 4096u || dp.physical > 0x04000000u - 4096u) {
+        sp.physical > H2_RAM_SIZE - 4096u || dp.physical > H2_RAM_SIZE - 4096u) {
         H2_GATE_RELEASE(m); return 0;
     }
     uint32_t from = sp.physical + so, to = dp.physical + doff, bytes = n * width;
@@ -700,7 +706,7 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
         if (!(g).held || !H2_FAST_WIDTH_OK(width) || ((addr) & 4095u) > 4096u - (width)) goto slow; \
         (page) = (g).data->pages[(addr) >> 12];                                 \
         if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
-        if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
+        if ((page).physical > H2_RAM_SIZE - 4096u) goto slow;                   \
         if ((write) && ((g).data->watching & 1u) && (page).physical != (g).dirtied) {  \
             h2_mark_dirty((g).data, (page).physical);                           \
             (g).dirtied = (page).physical;                                      \
@@ -716,11 +722,6 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
  * Never read past the v1 prefix without it, including when running a new
  * module against an older runtime. */
 #if H2_FLAT_SPAN && H2_FASTMEM
-/* Guest RAM in bytes, which is also the stride between the watched-store
- * mirror's planes. Equals runtime::guest::RAM_SIZE (map::arena::RAM). */
-#ifndef H2_RAM_SIZE
-#define H2_RAM_SIZE UINT32_C(0x04800000)
-#endif
 typedef struct H2FlatView {
     uint8_t *base;
     uint8_t *stores;
