@@ -29,6 +29,8 @@ mod light_passes;
 mod light_passes_differential;
 #[path = "map_status_differential.rs"]
 mod map_status_differential;
+#[path = "particle_emission_differential.rs"]
+mod particle_emission_differential;
 #[path = "point_shapes.rs"]
 mod point_shapes;
 #[path = "screen_effects_differential.rs"]

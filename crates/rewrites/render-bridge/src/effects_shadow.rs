@@ -10,6 +10,9 @@
 //! - **Dispatch.** The sorted loop ([`dispatch`]): the Rust sort's order
 //!   against the guest's, each handler named, and the seeds, systems,
 //!   particles and list rows unchanged across the loop.
+//! - **Emission.** Each particle's emission ([`emission`]): the
+//!   callback `0x00224550`'s words, vectors and input cache, made by
+//!   `engine::particle_emission`, against the guest's at its emitter call.
 //! - **Effects seed.** No path under either reads the shared random seeds
 //!   (`[0x004e7408]`): both predict that the seeds do not move.
 //!
@@ -24,6 +27,7 @@
 //! only the guest.
 
 pub mod dispatch;
+mod emission;
 mod overlay;
 pub mod view_update;
 
@@ -532,6 +536,7 @@ fn draw_run(mem: &mut dyn GuestMemory, run: &dispatch::Run) {
 pub fn forget() {
     UPDATE.with(|u| u.borrow_mut().take());
     DISPATCH.with(|d| d.borrow_mut().take());
+    emission::forget();
 }
 
 /// Installs the arm's observers (the frame step's build, unless [`ID`] is
@@ -557,6 +562,20 @@ pub fn install(b: &mut Builder) {
                 update_end(&*g, o.cpu.esp);
             },
         )
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_before(&points::PARTICLE_EVALUATE, "effects_shadow_emission", |o| {
+            let g = o.guest();
+            emission::begin(&*g, o.cpu.esp, o.cpu.mxcsr, o.cpu.x87.control);
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_before(&points::PARTICLE_EMIT, "effects_shadow_emission_emit", |o| {
+            let g = o.guest();
+            emission::emit(&*g, o.cpu.esp, o.cpu.ebx);
+        })
         .context_only()
         .optional();
     b.raw()
