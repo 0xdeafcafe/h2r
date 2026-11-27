@@ -9,7 +9,7 @@
   "forge_build": 1,
   "pathfind": 1
  },
- "description": "Siege on Zanzibar, labels only. PLACEHOLDER indices: every entry index here (flags 32760 and up, starts 32600 and up) is a name for a place not yet read off the map, and the map has no such entry, so the host skips these labels until a census gives each its real index.",
+ "description": "Siege on Zanzibar, labels only. Sites: the south pair (flags 17 and 15) for phase 0, the middle pair (19 and 13) for phase 1; the final stand is the defenders' flag stand. Starts are numbered by phase, the attackers from their stand northward and the defenders from the middle northward.",
  "format": 2,
  "imports": [],
  "ops": [
@@ -24,7 +24,7 @@
       "target": {
        "base": {
         "block": "netgame_flags",
-        "index": 32760
+        "index": 17
        }
       }
      }
@@ -43,7 +43,7 @@
       "target": {
        "base": {
         "block": "netgame_flags",
-        "index": 32761
+        "index": 15
        }
       }
      }
@@ -62,7 +62,7 @@
       "target": {
        "base": {
         "block": "netgame_flags",
-        "index": 32762
+        "index": 19
        }
       }
      }
@@ -81,7 +81,7 @@
       "target": {
        "base": {
         "block": "netgame_flags",
-        "index": 32763
+        "index": 13
        }
       }
      }
@@ -94,12 +94,13 @@
     "forge": {
      "label": {
       "label": {
-       "text": "siege_goal"
+       "number": 0,
+       "text": "siege_attack"
       },
       "target": {
        "base": {
-        "block": "netgame_flags",
-        "index": 32764
+        "block": "starting_locations",
+        "index": 5
        }
       }
      }
@@ -118,7 +119,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32600
+        "index": 6
        }
       }
      }
@@ -137,7 +138,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32601
+        "index": 7
        }
       }
      }
@@ -156,7 +157,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32602
+        "index": 8
        }
       }
      }
@@ -175,7 +176,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32603
+        "index": 10
        }
       }
      }
@@ -194,7 +195,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32604
+        "index": 12
        }
       }
      }
@@ -213,7 +214,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32605
+        "index": 13
        }
       }
      }
@@ -232,7 +233,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32606
+        "index": 14
        }
       }
      }
@@ -251,7 +252,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32607
+        "index": 15
        }
       }
      }
@@ -264,13 +265,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 1,
        "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32608
+        "index": 16
        }
       }
      }
@@ -283,13 +284,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 1,
        "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32609
+        "index": 17
        }
       }
      }
@@ -308,7 +309,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32610
+        "index": 18
        }
       }
      }
@@ -327,7 +328,7 @@
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32611
+        "index": 31
        }
       }
      }
@@ -340,13 +341,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 0,
-       "text": "siege_defend"
+       "number": 2,
+       "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32620
+        "index": 21
        }
       }
      }
@@ -359,13 +360,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 0,
-       "text": "siege_defend"
+       "number": 2,
+       "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32621
+        "index": 41
        }
       }
      }
@@ -378,13 +379,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 0,
-       "text": "siege_defend"
+       "number": 2,
+       "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32622
+        "index": 32
        }
       }
      }
@@ -397,13 +398,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 0,
-       "text": "siege_defend"
+       "number": 2,
+       "text": "siege_attack"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32623
+        "index": 33
        }
       }
      }
@@ -416,13 +417,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 1,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32624
+        "index": 27
        }
       }
      }
@@ -435,13 +436,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 1,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32625
+        "index": 28
        }
       }
      }
@@ -454,13 +455,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 1,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32626
+        "index": 29
        }
       }
      }
@@ -473,13 +474,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 1,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32627
+        "index": 26
        }
       }
      }
@@ -492,13 +493,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32628
+        "index": 30
        }
       }
      }
@@ -511,13 +512,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 0,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32629
+        "index": 25
        }
       }
      }
@@ -530,13 +531,13 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 1,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32630
+        "index": 42
        }
       }
      }
@@ -549,19 +550,285 @@
     "forge": {
      "label": {
       "label": {
-       "number": 2,
+       "number": 1,
        "text": "siege_defend"
       },
       "target": {
        "base": {
         "block": "starting_locations",
-        "index": 32631
+        "index": 43
        }
       }
      }
     }
    },
    "id": 29
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 44
+       }
+      }
+     }
+    }
+   },
+   "id": 30
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 19
+       }
+      }
+     }
+    }
+   },
+   "id": 31
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 20
+       }
+      }
+     }
+    }
+   },
+   "id": 32
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 1,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 22
+       }
+      }
+     }
+    }
+   },
+   "id": 33
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 0
+       }
+      }
+     }
+    }
+   },
+   "id": 34
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 1
+       }
+      }
+     }
+    }
+   },
+   "id": 35
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 2
+       }
+      }
+     }
+    }
+   },
+   "id": 36
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 3
+       }
+      }
+     }
+    }
+   },
+   "id": 37
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 4
+       }
+      }
+     }
+    }
+   },
+   "id": 38
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 40
+       }
+      }
+     }
+    }
+   },
+   "id": 39
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 47
+       }
+      }
+     }
+    }
+   },
+   "id": 40
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 37
+       }
+      }
+     }
+    }
+   },
+   "id": 41
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 38
+       }
+      }
+     }
+    }
+   },
+   "id": 42
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "number": 2,
+       "text": "siege_defend"
+      },
+      "target": {
+       "base": {
+        "block": "starting_locations",
+        "index": 39
+       }
+      }
+     }
+    }
+   },
+   "id": 43
   }
  ],
  "recipes": [],

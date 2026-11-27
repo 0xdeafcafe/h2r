@@ -412,9 +412,12 @@ header's), so a site gets its number and a starting location its
 layout (`gate::Sources::census` takes the script), and a Forge map the lobby
 picked replaces it, so the check and the match agree. A map with no layout
 keeps the flags' built-in labels. A label op on an entry the map lacks is
-skipped (`census::layout_doc`), which is what a placeholder index is: a
-layout names a place it has not yet read off the map (Zanzibar's file is
-all placeholders) and a census fills in the real index later. Readers that
+skipped (`census::layout_doc`), so a layout never blocks a map it does
+not fit. Zanzibar's layout names the map's own flags and starts: the
+territory flags 17 and 15 are the phase 0 sites and 19 and 13 the phase 1
+sites (the final stand is the defenders' flag stand), and the starting
+locations are numbered by phase for each side, the attackers' from the
+south stand northward and the defenders' from mid-map northward. Readers that
 need only the flags' places (`world/walls.rs` on a client, the HUD
 publisher, the Forge play forms) read `census::things`, which applies no
 layout.
