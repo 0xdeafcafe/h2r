@@ -312,6 +312,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   disasm <addr> [count]   decode instructions at a virtual address
   analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>] [--explain <addr>]...
                           function discovery and coverage
+  analyze --prune-report [--replaced <entries.txt>]
+                          TSV of what leaving the replaced entries out of the lift
+                          would drop (docs/lifter/lift-pruning.md); drops nothing
   fpstats [--root <addr>]...
                           floating-point and SIMD instruction mix, control-word
                           writes, compare idioms and x87 stack-depth walk;
@@ -523,6 +526,8 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     let mut functions_out = None;
     let mut against = None;
     let mut explain = Vec::new();
+    let mut prune_report = false;
+    let mut replaced = None;
     let mut list = false;
     let mut no_xcheck = false;
     let mut db_dir = None;
@@ -537,6 +542,12 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
                 ))
             }
             "--explain" => explain.push(args.next().context("--explain needs an address")?),
+            "--prune-report" => prune_report = true,
+            "--replaced" => {
+                replaced = Some(PathBuf::from(
+                    args.next().context("--replaced needs a path")?,
+                ))
+            }
             "--against" => {
                 against = Some(PathBuf::from(
                     args.next().context("--against needs a path")?,
@@ -609,6 +620,7 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
         ("extract", []) => extract(&disc, &repo_root().join("disc/extracted"), force),
         ("extract-xbe", [out]) => extract_xbe(&disc, out, force),
         ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe"), force),
+        ("analyze", []) if prune_report => run_prune_report(&disc, replaced.as_deref()),
         ("analyze", []) => run_analyze(&disc, functions_out, against, &explain, force),
         ("fpstats", []) => run_fpstats(&disc, &roots),
         ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
@@ -910,6 +922,35 @@ fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
     let x = xbe::Xbe::parse(&data)?;
     let a = analyze::analyze(&x)?;
     print!("{}", analyze::fpstats::fpstats(&x, &a, &roots)?);
+    Ok(())
+}
+
+/// `h2 analyze --prune-report`: slice 1 of docs/lifter/lift-pruning.md.
+/// The replaced list is hand-given until the plan names its replaced points.
+#[cfg(feature = "desktop")]
+fn run_prune_report(path: &Path, replaced: Option<&Path>) -> Result<()> {
+    let replaced = match replaced {
+        Some(file) => {
+            let text = fs::read_to_string(file)
+                .with_context(|| format!("reading {}", file.display()))?;
+            analyze::prune::parse_replaced(&text)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?
+        }
+        None => Default::default(),
+    };
+    let data = load_xbe(path)?;
+    let x = xbe::Xbe::parse(&data)?;
+    let a = analyze::analyze(&x)?;
+    let graph = analyze::prune::Graph::build(&x, &a);
+    let keep = analyze::prune::keep_in(
+        &graph,
+        &replaced.keys().copied().collect(),
+        &Default::default(),
+    );
+    print!(
+        "{}",
+        analyze::prune::report(&graph, &keep, &replaced, emit::SHARD_SHIFT)
+    );
     Ok(())
 }
 

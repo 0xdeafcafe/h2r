@@ -87,9 +87,17 @@ owner, since interior entries register against the canonical owner.
 An unresolved indirect call or jump adds no edge. It can reach only an
 address something stored, and every stored code address is already a root.
 That is why a function is droppable only when it was found by `Source::Call`
-or `Source::TailCall` and its address is taken nowhere. `dispatch::coverage`
-already computes a conservative closure per root; `prune::keep` shares its
-walk.
+or `Source::TailCall` and its address is taken nowhere.
+
+`prune::Graph::build` (`crates/recompiler/analyze/src/prune.rs`) reads each
+CFG once: the exiting edges and direct calls of every function, and every
+stored code address. Stored means an imm32 or displacement in any decoded
+instruction, or any aligned word in a data section, that lands on an entry
+or an instruction start. That set covers `Source::CodeRef`, `labels`,
+`pointer_seeds` and the `dispatch` tables, and also a `Call` function whose
+address is taken too, which discovery records only as a call. `prune::keep_in`
+walks the graph, so tests hand it an invented one. The XBE entry is never
+cut, even if listed as replaced.
 
 The walk runs on the analyzer's CFG, before lifting, so a dropped function
 costs no lift, optimisation or emission time. It is deterministic: sorted
@@ -142,10 +150,10 @@ set, so a pruned function still lifts on demand. **Code**:
 | `Builder::calls_guest(&mut self, point: &'static Point)` | declares a guest function the feature's Rust calls |
 | `Plan::replaced(&self, entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the conditions above |
 | `boot::registration::replaced_entries() -> BTreeMap<u32, &'static Point>` | every profile, default switches |
-| `analyze::prune::keep(xbe, analysis, replaced, extra_roots) -> Keep` | `Keep { kept: BTreeSet<u32>, dropped: BTreeMap<u32, Dropped>, digest: u64 }` |
+| `analyze::prune::keep(xbe, analysis, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u32>) -> Keep` | `Keep { kept: BTreeSet<u32>, dropped: BTreeMap<u32, Dropped>, digest: u64 }`; `Dropped { by, bytes }`, `by` the replaced entries whose cut bodies reach it through dropped code; digest FNV-1a over replaced then dropped |
 | `emit::plan_image(analysis, xbe, passes, keep: Option<&Keep>)` | `None` lifts everything |
 | pruned table in the module | rows of entry, end, owning point; read by both tiers' boot bridge |
-| `h2 analyze --prune-report` | TSV: per replaced point, the functions and shards it drops; totals |
+| `h2 analyze --prune-report [--replaced FILE]` | TSV, three row kinds, each after a `#` header. `point`: entry, name, body (`dropped`, `kept`, `unknown`), functions dropped alone and shared, bytes alone, shards, shards it alone empties. `function`: entry, source, bytes, shard, the points that drop it. `total`: functions, kept, dropped, bytes, shards touched, emptied, digest. `FILE` is one hex entry per line and an optional name; slice 2's list replaces it |
 
 ### Build caches
 
@@ -181,7 +189,7 @@ same pruned table.
 
 | # | Slice | Tests |
 |---|---|---|
-| 1 | `h2 analyze --prune-report` over a hand-given entry list: `analyze::prune::keep`, report only, nothing dropped. Gives the win before anything is built on it | synthetic images in `prune.rs`: a chain cut at a replaced entry; an address-taken callee stays; an interior entry keeps its owner; a switch tail edge; closure and determinism |
+| 1 | `h2 analyze --prune-report` over a hand-given entry list: `analyze::prune::keep`, report only, nothing dropped. Gives the win before anything is built on it | invented graphs in `prune.rs`: a chain cut at a replaced entry; an address-taken callee, a gap-scan root and a callee reached from two sides stay; an interior entry keeps its owner; the entry point stays; nested cuts; determinism and digest; report rows. One synthetic image checks `Graph::build` |
 | 2 | `HookRef::replaces_guest`, `Builder::calls_guest`, `Plan::replaced`, `registration::replaced_entries`. Mark the first finished pieces | plan tests beside `native_particles.rs`: marked implement is replaced; a refusing `before` or a compare arm is not; switch off is not; profile intersection |
 | 3 | `plan_image` takes the keep set; pruned table; `Stop::Pruned`; fallback refuses; boot check; `H2_LIFT_PRUNE` | `emit/tests/prune.rs`: A calls replaced B, only B reaches C; module builds on both tiers; a call of C stops naming B; a return into B's body stops by name. Boot test: a pruned table with the feature off refuses and names it |
 | 4 | Cache keys: receipt settings, fast stamp, slim split | receipt misses on a changed digest; an untouched shard's object key is unchanged; an emptied shard's file and object go |
