@@ -63,7 +63,7 @@ fn a_squad_arrives_by_ship_when_the_zone_has_a_path() {
                     count: 1,
                     zone: 0,
                     weapon_tier: 0,
-                    arrival: Arrival::Auto,
+                    arrival: Arrival::Ship,
                     ship: ShipKind::Phantom,
                 }
             ),
@@ -178,7 +178,7 @@ fn a_human_squad_arrives_by_pelican() {
                     count: 1,
                     zone: 0,
                     weapon_tier: 0,
-                    arrival: Arrival::Auto,
+                    arrival: Arrival::Ship,
                     ship: pelican,
                 }
             ),
