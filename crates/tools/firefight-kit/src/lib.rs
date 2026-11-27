@@ -582,6 +582,30 @@ fn assemble(
             }
         }
     }
+    // The one path a zone is the widest kept ship's; every kind is checked
+    // on it at its own hover and reach, and a kind it blocks everywhere is cut.
+    let mut valid: Vec<(ShipKind, Vec<bool>)> = Vec::new();
+    while let (Some(walls), Some(wide)) = (
+        &nav.ship_walls,
+        ship_runs.iter().max_by(|a, b| a.1.radius.total_cmp(&b.1.radius)),
+    ) {
+        let shared = wide.2.clone();
+        valid = ship_runs
+            .iter()
+            .map(|(k, d, _)| (*k, ship::recheck(walls, &shared, d)))
+            .collect();
+        let Some(blocked) = valid.iter().position(|(_, v)| !v.contains(&true)) else {
+            break;
+        };
+        let kind = ship_runs.remove(blocked).0;
+        picks.remove(blocked);
+        valid.remove(blocked);
+        let report = ShipReport::cut_kind(kind, "its run in and out are blocked at its hover height");
+        match kind {
+            ShipKind::Phantom => ship_report = Some(report),
+            ShipKind::Pelican => pelican_report = Some(report),
+        }
+    }
     let copies: Vec<&str> = picks
         .iter()
         .filter_map(|(_, pick)| match pick {
@@ -679,14 +703,16 @@ fn assemble(
         .max_by(|a, b| a.1.radius.total_cmp(&b.1.radius))
         .map(|(_, _, runs)| runs.clone());
     let shared_runs = widest.unwrap_or_default();
-    let kept_sizes: Vec<(ShipKind, ship::Dims)> =
-        ship_tags.iter().filter_map(|(k, _, _)| Some((*k, sized(*k)?.1))).collect();
+    let kept_sizes: Vec<(ShipKind, ship::Dims, Vec<bool>)> = ship_tags
+        .iter()
+        .filter_map(|(k, _, _)| {
+            let ok = valid.iter().find(|(v, _)| v == k)?.1.clone();
+            Some((*k, sized(*k)?.1, ok))
+        })
+        .collect();
     let authored = {
-        let tags: Vec<(ShipKind, TagId, ship::Dims)> = ship_tags
-            .iter()
-            .filter_map(|(k, t, _)| Some((*k, *t, sized(*k)?.1)))
-            .collect();
-        ship::author(&mut map, &tags, &shared_runs, ship_bsp)?
+        let tags: Vec<(ShipKind, TagId)> = ship_tags.iter().map(|(k, t, _)| (*k, *t)).collect();
+        ship::author(&mut map, &tags, &shared_runs, ship_bsp, &kept_sizes)?
     };
     let ship_kept = authored.as_ref().map(|a| a.paths);
     let mut ship_fields = authored.map(|a| a.fields).unwrap_or_default();

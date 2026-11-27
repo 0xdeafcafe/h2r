@@ -371,9 +371,25 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32, lift: f32) -> Vec
         .collect()
 }
 
+/// Whether each zone's run (the widest kept ship's) is clear for a ship of
+/// `dims`: its run-in down to the zone's hover point at the kind's own
+/// height and up to the run-out, rays cast the kind's reach to each side.
+pub(crate) fn recheck(walls: &Walls, runs: &[Option<Run>], dims: &Dims) -> Vec<bool> {
+    runs.iter()
+        .map(|run| {
+            run.is_some_and(|run| {
+                let mut hover = run.points[1];
+                hover[2] += dims.hover - run.lift;
+                clear_wide(walls, run.points[0], hover, dims.radius)
+                    && clear_wide(walls, hover, run.points[2], dims.radius)
+            })
+        })
+        .collect()
+}
+
 /// A point set `ff_path_NN` for each zone with a run: `run_in`, a
 /// `hover_<kind>` for each of `kinds`, `run_out`.
-pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims)]) -> Vec<PointSet> {
+pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims, Vec<bool>)]) -> Vec<PointSet> {
     let mut sets = Vec::new();
     for (zone, run) in runs.iter().enumerate() {
         let Some(run) = run else { continue };
@@ -389,7 +405,10 @@ pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims
                     facing: [run.yaw, 0.0],
                 };
                 let mut points = vec![at(RUN_IN.to_owned(), run.points[0])];
-                for (kind, dims) in kinds {
+                for (kind, dims, valid) in kinds {
+                    if !valid.get(zone).copied().unwrap_or(false) {
+                        continue;
+                    }
                     let mut hover = run.points[1];
                     hover[2] += dims.hover - run.lift;
                     points.push(at(hover_name(*kind), hover));
@@ -402,6 +421,8 @@ pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims
             flags: 0,
         });
     }
+    // A zone no kept kind can use has no path.
+    sets.retain(|s| s.points.len() > 2);
     sets
 }
 
@@ -427,9 +448,10 @@ fn name32(name: &str, size: usize) -> Block {
 /// kept.
 pub(crate) fn author<R: Read + Seek>(
     map: &mut Map<R>,
-    ships: &[(ShipKind, TagId, Dims)],
+    ships: &[(ShipKind, TagId)],
     runs: &[Option<Run>],
     bsp: i16,
+    sizes: &[(ShipKind, Dims, Vec<bool>)],
 ) -> Result<Option<Authored>> {
     let (Some(first), false) = (runs.iter().flatten().next(), ships.is_empty()) else {
         return Ok(None);
@@ -455,7 +477,7 @@ pub(crate) fn author<R: Read + Seek>(
     let mut place_bytes = placements.concat();
     let (mut name_count, mut place_count) = (names.len(), placements.len());
     let mut added_rows: Vec<(usize, TagId)> = Vec::new();
-    for (n, (kind, ship, _)) in ships.iter().enumerate() {
+    for (n, (kind, ship)) in ships.iter().enumerate() {
         let row = match palette.iter().position(|r| r[4..8] == ship.0.to_le_bytes()) {
             Some(row) => row,
             None => {
@@ -509,8 +531,7 @@ pub(crate) fn author<R: Read + Seek>(
         !sets.iter().any(|s| s.name.starts_with(PATH_PREFIX)),
         "the base already has {PATH_PREFIX}NN point sets"
     );
-    let kinds: Vec<(ShipKind, Dims)> = ships.iter().map(|(k, _, d)| (*k, *d)).collect();
-    let made = path_sets(runs, bsp, &kinds);
+    let made = path_sets(runs, bsp, sizes);
     let paths = made.len();
     sets.extend(made);
     let authored = ScenarioAi {
