@@ -132,6 +132,7 @@ impl TileVolume {
     /// constants are the copy's (`ExternalPassRequest::view_constants`),
     /// so a widened display copy projects as it draws. `None` for an empty
     /// or non-finite box.
+    #[cfg(feature = "gpu")]
     pub fn from_bounds(
         view: &crate::program::ViewInputs,
         bounds: ([f32; 3], [f32; 3]),
