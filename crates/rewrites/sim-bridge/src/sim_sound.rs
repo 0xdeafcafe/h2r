@@ -251,7 +251,7 @@ impl SoundSim {
             at = end;
             Ok(r)
         };
-        let mut word = |take: &mut dyn FnMut(usize) -> Result<Vec<u8>, String>| -> Result<u32, String> {
+        let word = |take: &mut dyn FnMut(usize) -> Result<Vec<u8>, String>| -> Result<u32, String> {
             Ok(u32::from_le_bytes(take(4)?.try_into().expect("4 bytes")))
         };
         let mut owned = |n: usize| take(n).map(<[u8]>::to_vec);

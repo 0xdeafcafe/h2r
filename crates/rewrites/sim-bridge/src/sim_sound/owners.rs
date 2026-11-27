@@ -36,7 +36,7 @@ const POOL_COUNT: u32 = 0x38;
 const POOL_SIZE: u32 = 0x24;
 const POOL_RECORDS: u32 = 0x44;
 /// The fade floor: a ramp at or under it silences the sound (`0x44a0b4`).
-const FLOOR: u32 = 0x0044_a0b4;
+pub(crate) const FLOOR: u32 = 0x0044_a0b4;
 
 mod at {
     pub const FLAGS: u32 = 4;
@@ -177,25 +177,29 @@ pub fn seconds(ticks: u32) -> f32 {
     ticks as f32 / TICKS_PER_SECOND
 }
 
+/// A guest with one instance for the tests of this module and its parent.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     use super::*;
     use engine::testing::FakeGuest;
+    pub(crate) use super::FLOOR;
 
-    const POOL: u32 = 0x0060_0000;
-    const RECORDS: u32 = 0x0060_1000;
-    const ENTRIES: u32 = 0x0060_2000;
-    const TAGDATA: u32 = 0x0060_3000;
-    const GEST: u32 = 0x0060_4000;
-    const RANGES: u32 = 0x0060_5000;
-    const PERMS: u32 = 0x0060_6000;
-    const TABLE: u32 = 0x0060_7000;
-    const TAG: u32 = 0xe1e1_0003;
+    pub const POOL: u32 = 0x0060_0000;
+    pub const RECORDS: u32 = 0x0060_1000;
+    pub const ENTRIES: u32 = 0x0060_2000;
+    pub const TAGDATA: u32 = 0x0060_3000;
+    pub const GEST: u32 = 0x0060_4000;
+    pub const RANGES: u32 = 0x0060_5000;
+    pub const PERMS: u32 = 0x0060_6000;
+    pub const MIXER_AT: u32 = 0x0060_8000;
+    pub const TIME: u32 = 0x0060_9000;
+    pub const TABLE: u32 = 0x0060_7000;
+    pub const TAG: u32 = 0xe1e1_0003;
     /// Slot 2, salt 0x1234.
-    const HANDLE: u32 = 0x1234_0002;
-    const REC: u32 = RECORDS + 2 * 0xbc;
+    pub const HANDLE: u32 = 0x1234_0002;
+    pub const REC: u32 = RECORDS + 2 * 0xbc;
 
-    fn guest() -> FakeGuest {
+    pub fn guest() -> FakeGuest {
         let mut g = FakeGuest::new();
         g.map(0x0044_0000, 0x1000).map(0x0051_0000, 0x1_0000).map(0x004e_0000, 0x1_0000).map(0x0060_0000, 0x1_0000);
         g.put_u32(points::SOUND_INSTANCES.base, POOL).put_u32(POOL + 0x38, 4).put_u32(POOL + 0x24, 0xbc).put_u32(POOL + 0x44, RECORDS);
@@ -211,6 +215,12 @@ mod tests {
         g.put_u32(TABLE + 8, UPDATE_LIP_SYNC);
         g
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::fixture::*;
 
     #[test]
     fn a_handle_names_a_record_only_by_its_slot_and_salt() {
