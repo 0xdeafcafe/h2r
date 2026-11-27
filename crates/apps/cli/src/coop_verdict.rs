@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(v.stopped_at().unwrap().n, 2);
         assert!(
             v.render()
-                .contains("[-]  7. the host invited the guest: no line without --auto")
+                .contains("[-]  7. the host invited every guest: no line without --auto")
         );
     }
 

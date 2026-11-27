@@ -932,6 +932,10 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ),
     ("SimNative", "Case::light"),
     ("SimFrame", "Case::light"),
+    (
+        "RenderFrame",
+        "every gpu case that is not Case::light (the registry helper adds it)",
+    ),
     ("ReturnToMenu", "Case::drawing (gpu)"),
     (
         "host audit",

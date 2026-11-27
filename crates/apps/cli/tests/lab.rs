@@ -257,6 +257,9 @@ cp '{}' "$CARGO_TARGET_DIR/release/h2"
             .arg(dir.join("current-image"))
             .arg("--cargo")
             .arg(dir.join("fake-cargo"))
+            // The real disk's free space is not under test: a full machine
+            // would otherwise refuse every build.
+            .args(["--disk-floor", "0"])
             .args(options)
             .env("HOME", &host_home)
             .env("XDG_CACHE_HOME", &host_home)

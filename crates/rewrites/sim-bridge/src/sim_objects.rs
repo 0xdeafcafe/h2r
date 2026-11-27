@@ -622,7 +622,7 @@ mod tests {
         for (point, label) in WALK_ARM_NEW_RUN {
             assert!(plan.chains[&point.base].observe_before.iter().any(|h| h.label == label), "{label}");
         }
-        assert!(plan.save_sections().is_empty());
+        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
         // With the function arm set too, `bab40` is its own.
         let mut registry = Registry::new(walk.with(FUNCTIONS, true));
         registry.add(&SimNative::for_tests()).unwrap();
@@ -670,7 +670,7 @@ mod tests {
         })
         .unwrap();
         let mut g = Guest::new();
-        g.map_zeroed(0x004e_0000, 0x0009_0000, Permissions::RW).unwrap();
+        g.map_zeroed(0x004e_0000, 0x000a_0000, Permissions::RW).unwrap();
         g.set_u32(points::OBJECTS.base, POOL).unwrap();
         g.set_u32(POOL + 0x44, HEADERS).unwrap();
         g.set_u32(HEADERS + 8, BODY).unwrap();

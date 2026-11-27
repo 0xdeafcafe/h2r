@@ -1470,6 +1470,7 @@ mod tests {
                         | "dynamic_lights"
                         | "light_passes"
                         | "frame_tail"
+                        | "movie"
                 ) {
                     Status::Partial
                 } else {
