@@ -31,6 +31,8 @@ The 29 phases of the tick ([sim-rewrite.md](sim-rewrite.md), "The tick driver") 
 
 The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_calls` counts the guest calls the finish, ramp and update make, so it is 0 until an instance is entered. `service_runs` counts the main-loop runs, which fall with the frame rate and not the tick count, so the step that decides ends runs in the tick and the service only delivers. Test: `sound_phase_ledger_is_zero`.
 
+Refusals are counters of the same ledger, never a quiet fallback: `refused_unreadable` counts admissions whose returned handle or tick could not be read (the sound is not entered; the guest keeps it), and `refused_no_duration` counts sounds whose permutation length could not be read from the tag (entered, ending on their start tick). Both are 0 on a run that reads every tag. No new hook is added; the order of the existing ones is the hooks' list above.
+
 ## Instances
 
 An entered sound is the engine's record (`SOUND_INSTANCES`, `0xBC` bytes, salted datum handle; `owners::record`). The sim reads its tag (`+0xC`), owner (`+0x10`), callback table (`+0x14`), payload (`+0x5C`), pitch range (`+0x9C`), permutation (`+0x9D`) and, for a stop, the fade fields (`+0x20`, `+0xB4`, `+0xB8`).

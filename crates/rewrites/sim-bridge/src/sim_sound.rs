@@ -64,6 +64,13 @@ pub struct SoundLedger {
     pub finishes: u64,
     /// Finishes skipped because the guest had freed the instance already.
     pub stale: u64,
+    /// Refusals, each a sound the sim could not account for from its tag.
+    /// An admission returned a handle whose record or tick could not be
+    /// read: the sound is not entered, and the guest keeps it.
+    pub refused_unreadable: u64,
+    /// The permutation's length could not be read from the tag: the sound is
+    /// entered and ends on the tick it starts.
+    pub refused_no_duration: u64,
 }
 
 /// A running sound: the engine's instance and the tick it started on.
@@ -308,9 +315,16 @@ pub async fn admit(cx: Cx, sim: Arc<Mutex<SoundSim>>, busy: Arc<AtomicBool>, arg
     let instance = called?.eax;
     if instance != owners::NONE {
         let read = cx.read(|m| Ok::<_, MemFault>((tick_of(m)?, owners::read_admitted(m, instance))));
-        if let (Ok((tick, Some(a))), true) = (read, true) {
-            let def = SoundDef { tag: a.tag, duration_ms: a.duration_ms, looping: false };
-            lock(&sim).start_instance(def, Source(a.owner), tick, instance);
+        match read {
+            Ok((tick, Some(a))) => {
+                let def = SoundDef { tag: a.tag, duration_ms: a.duration_ms, looping: false };
+                let mut s = lock(&sim);
+                if a.duration_ms.is_none() {
+                    s.ledger_mut().refused_no_duration += 1;
+                }
+                s.start_instance(def, Source(a.owner), tick, instance);
+            }
+            _ => lock(&sim).ledger_mut().refused_unreadable += 1,
         }
     }
     Ok(Ret::new(instance, 16))
@@ -607,6 +621,7 @@ mod tests {
         }
         let ledger = sim.ledger();
         assert_eq!(ledger.guest_calls, 0);
+        assert_eq!((ledger.refused_unreadable, ledger.refused_no_duration), (0, 0));
         assert_eq!(ledger.starts, 300);
         assert_eq!(ledger.tick_steps, 300);
         assert_eq!(ledger.service_runs, 300);
