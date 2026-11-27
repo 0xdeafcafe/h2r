@@ -16,6 +16,12 @@
 //! item opens the editor of what it builds, using the item's map when
 //! specified. Right-click offers **Open** and, for an existing tag,
 //! **New from this...**, the window form of `asset.copy`.
+//!
+//! **Where used** and **Show edits** in a row's menu
+//! ([`Action::WhereUsed`], [`Action::ShowEdits`]) put the app's link view
+//! (`app::assets::Browse`) in place of the list: one line per asset with
+//! its role and where the link was read, opened by a double-click, until
+//! **Clear** or a root button.
 use dear_imgui_rs::{ListClipper, MouseButton, Ui};
 use serde_json::Value;
 
@@ -71,6 +77,8 @@ pub struct BrowserUi {
     cache: Option<(Key, Listing)>,
     /// An explicit set from the document link menu.
     linked: Option<Vec<String>>,
+    /// The app's link view last brought forward (`Browse::serial`).
+    browse_seen: u32,
     /// The asset ids the last frame drew a row for, for scripts and tests.
     pub shown: Vec<String>,
     new_package_name: String,
@@ -90,6 +98,7 @@ impl Default for BrowserUi {
             refresh: 0,
             cache: None,
             linked: None,
+            browse_seen: 0,
             shown: Vec::new(),
             new_package_name: String::new(),
             add_item: Default::default(),
@@ -236,6 +245,9 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         {
             st.root = root;
             st.linked = None;
+            if app.browse.view.is_some() {
+                actions.push(Action::ClearBrowse);
+            }
         }
     }
     ui.same_line();
@@ -246,6 +258,10 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
         ui.tooltip_text("Read the tree and the packages again");
     }
 
+    if let Some(view) = &app.browse.view {
+        browse_view(ui, st, view, actions);
+        return;
+    }
     if st.linked.is_some() {
         ui.text("Linked assets");
         ui.same_line();
@@ -299,6 +315,100 @@ pub fn draw(ui: &Ui, app: &App, st: &mut BrowserUi, actions: &mut Vec<Action>) {
     ui.separator();
     body(ui, app, st, &list, actions);
     st.cache = Some((key, list));
+}
+
+/// The row of a link view: the asset, the word it is grouped by and where
+/// the link was read from.
+fn browse_label(row: &assets::BrowseRow) -> String {
+    let mut text = format!("{}  [{}]", row.asset, row.role);
+    if !row.via.is_empty() {
+        text.push_str(&format!("  {}", row.via));
+    }
+    text
+}
+
+/// The rows of a link view that every word of `query` matches.
+fn browse_rows<'a>(view: &'a assets::BrowseView, query: &str) -> Vec<&'a assets::BrowseRow> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    view.rows
+        .iter()
+        .filter(|row| {
+            let hay = format!("{} {} {}", row.asset, row.role, row.via).to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .collect()
+}
+
+/// **Where used** and **Show edits**: the app's link view in place of the
+/// list.
+fn browse_view(ui: &Ui, st: &mut BrowserUi, view: &assets::BrowseView, actions: &mut Vec<Action>) {
+    ui.text(view.heading());
+    ui.same_line();
+    if ui.small_button("Clear##browser-view-clear") {
+        actions.push(Action::ClearBrowse);
+    }
+    ui.text_disabled(&view.of);
+    ui.set_next_item_width(-1.0);
+    ui.input_text("##browser-view-search", &mut st.query)
+        .hint("Search these rows")
+        .build();
+    ui.separator();
+    for p in &view.problems {
+        ui.text_disabled(p);
+    }
+    let rows = browse_rows(view, &st.query);
+    if rows.is_empty() {
+        ui.text_disabled(match view.mode {
+            assets::BrowseMode::WhereUsed => "Not used by anything.",
+            assets::BrowseMode::Edits => "No package changes this.",
+        });
+        return;
+    }
+    theme::panel_body(ui, "##browser-rows", || {
+        for (n, row) in rows.iter().enumerate() {
+            st.shown.push(row.asset.clone());
+            let key = format!("{}##browser-view-{n}", browse_label(row));
+            if ui
+                .selectable_config(key)
+                .selected(st.selected.as_deref() == Some(row.asset.as_str()))
+                .build()
+            {
+                st.selected = Some(row.asset.clone());
+            }
+            if ui.is_item_hovered() && ui.is_mouse_double_clicked(MouseButton::Left) {
+                open(actions, &row.asset, None);
+            }
+            if let Some(_menu) = ui.begin_popup_context_item() {
+                if ui.menu_item("Open") {
+                    open(actions, &row.asset, None);
+                }
+                link_entries(ui, &row.asset, true, actions);
+            }
+        }
+    });
+}
+
+/// The **Where used** and **Show edits** entries of a row's menu.
+/// `edits` is whether the asset is one Show edits answers for (a tag or a
+/// package).
+fn link_entries(ui: &Ui, asset: &str, edits: bool, actions: &mut Vec<Action>) {
+    if ui.menu_item("Where used") {
+        actions.push(Action::WhereUsed { asset: asset.to_owned() });
+    }
+    let edits = edits && (asset.starts_with("tag:") || asset.starts_with("package:"));
+    if edits && ui.menu_item("Show edits") {
+        actions.push(Action::ShowEdits { asset: asset.to_owned() });
+    }
+}
+
+impl BrowserUi {
+    /// Whether the app has a link view this panel has not brought forward
+    /// yet; answers once per view.
+    pub(super) fn take_browse(&mut self, serial: u32) -> bool {
+        let new = serial != self.browse_seen;
+        self.browse_seen = serial;
+        new
+    }
 }
 
 /// A picker for the Kind and the Map: `None` is every one.
@@ -422,6 +532,7 @@ fn package_row(ui: &Ui, st: &mut BrowserUi, entry: &Value, asset: &str, actions:
         if ui.menu_item("Show items in Browser") {
             st.package = entry["id"].as_str().map(str::to_owned);
         }
+        link_entries(ui, asset, true, actions);
     }
 }
 
@@ -511,6 +622,7 @@ fn row(
                 open(actions, asset, None);
             }
         }
+        link_entries(ui, asset, true, actions);
     }
 }
 
@@ -675,6 +787,32 @@ fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
 mod linked_tests {
     use super::*;
     use crate::app::links::Link;
+
+    #[test]
+    fn a_link_view_filters_by_every_word_and_comes_forward_once() {
+        let row = |asset: &str, role: &str, via: &str| assets::BrowseRow {
+            asset: asset.into(),
+            role: role.into(),
+            via: via.into(),
+        };
+        let view = assets::BrowseView {
+            mode: assets::BrowseMode::WhereUsed,
+            of: "tag:hlmt:objects\\rifle_model".into(),
+            rows: vec![
+                row("tag:weap:objects\\rifle", "Objects", "node 0 +0x0"),
+                row("package:kit-test", "Package", "edits"),
+            ],
+            problems: Vec::new(),
+        };
+        assert_eq!(browse_rows(&view, "").len(), 2);
+        let found = browse_rows(&view, "PACKAGE edits");
+        assert_eq!(found.len(), 1);
+        assert_eq!(browse_label(found[0]), "package:kit-test  [Package]  edits");
+        let mut browser = BrowserUi::default();
+        assert!(browser.take_browse(1));
+        assert!(!browser.take_browse(1));
+        assert!(browser.take_browse(2));
+    }
 
     #[test]
     fn linked_assets_keep_all_roots_and_can_return_to_a_single_asset() {

@@ -90,6 +90,8 @@ pub mod method {
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
     pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_WHERE_USED: &str = "asset.where_used";
+    pub const ASSET_EDITS: &str = "asset.edits";
     pub const ASSET_FORK: &str = "asset.fork";
     pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).

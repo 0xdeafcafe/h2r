@@ -146,7 +146,27 @@ pub(super) fn draw(ui: &Ui, app: &App, actions: &mut Vec<Action>, browser: &mut 
     if ui.button("Links") { ui.open_popup("##doc-links"); }
     if let Some(_popup) = ui.begin_popup("##doc-links") {
         match id.as_deref().map(|id| load(app, id)) {
-            Some(Ok(l)) => { ui.text_disabled("Uses"); link_rows(ui, &l.uses, actions, browser, "uses"); ui.separator(); ui.text_disabled("Used by"); link_rows(ui, &l.used_by, actions, browser, "used-by"); for p in l.problems { ui.text_disabled(p); } }
+Some(Ok(l)) => {
+                ui.text_disabled("Uses");
+                link_rows(ui, &l.uses, actions, browser, "uses");
+                ui.separator();
+                ui.text_disabled("Used by");
+                link_rows(ui, &l.used_by, actions, browser, "used-by");
+                for p in l.problems { ui.text_disabled(p); }
+                ui.separator();
+                // The same rows as a Browser view, and the items that
+                // change the asset (`app::assets::browse`).
+                if let Some(asset) = &id {
+                    if ui.menu_item("Where used##doc-where-used") {
+                        actions.push(Action::WhereUsed { asset: asset.clone() });
+                    }
+                    if (asset.starts_with("tag:") || asset.starts_with("package:"))
+                        && ui.menu_item("Show edits##doc-show-edits")
+                    {
+                        actions.push(Action::ShowEdits { asset: asset.clone() });
+                    }
+                }
+            }
             Some(Err(e)) => ui.text_disabled(e), None => ui.text_disabled("No asset for this document"),
         }
     }

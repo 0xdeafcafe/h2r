@@ -1,4 +1,5 @@
-//! `asset.*`: the browser's rows, thumbnails and Copy into a package
+//! `asset.*`: the browser's rows, its link views (Where used, Show
+//! edits), thumbnails and Copy into a package
 //! (docs/editor/studio-redesign.md, "The browser"). The rows are
 //! `app::assets`'s, the ones the browser panel reads.
 
@@ -8,6 +9,7 @@ use studio_proto::{code, method as m};
 
 use super::{P, Reply, err};
 use crate::App;
+use crate::app::{Action, Refused};
 use crate::app::assets::{self, AssetId, CreateAsset, Query, Root, ThumbRefusal};
 use crate::app::mods;
 use crate::app::package_doc::{self, Refusal};
@@ -75,6 +77,26 @@ fn links(app: &mut App, p: &P) -> Reply {
     let id = asset(p)?;
     let l = app.asset_links(&id).map_err(|e| err(code::REFUSED, e))?;
     Ok(l.json(p.str("asset")?))
+}
+
+/// `asset.where_used` and `asset.edits`: the Browser's link view, set by
+/// the window's own command, so the panel shows the rows answered.
+fn browse(app: &mut App, p: &P, edits: bool) -> Reply {
+    asset(p)?;
+    let asset = p.str("asset")?.to_owned();
+    let action = if edits {
+        Action::ShowEdits { asset }
+    } else {
+        Action::WhereUsed { asset }
+    };
+    app.perform(action, false).map_err(|r| match r {
+        Refused::Failed(e) => err(code::REFUSED, e),
+        other => super::scenario::refused(other),
+    })?;
+    match &app.browse.view {
+        Some(view) => Ok(view.json()),
+        None => Err(err(code::FAILED, "the Browser took no view")),
+    }
 }
 
 /// `package`, else the edit target; with neither, `NO_TARGET`.
@@ -153,6 +175,8 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::ASSET_THUMB => thumb(app, p),
         m::ASSET_COPY => copy(app, p),
         m::ASSET_LINKS => links(app, p),
+        m::ASSET_WHERE_USED => browse(app, p, false),
+        m::ASSET_EDITS => browse(app, p, true),
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }

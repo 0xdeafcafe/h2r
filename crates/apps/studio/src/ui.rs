@@ -821,6 +821,8 @@ impl Studio {
     /// the source the tree's maps are read from.
     fn browser_window(&mut self, ui: &Ui, app: &App, focus: bool, actions: &mut Vec<Action>) {
         let mut st = std::mem::take(&mut self.browser);
+        // A new link view (Where used, Show edits) brings the panel forward.
+        let focus = st.take_browse(app.browse.serial) || focus;
         ui.window(&self.keys.browser).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);

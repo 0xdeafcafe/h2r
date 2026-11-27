@@ -190,7 +190,12 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY | m::ASSET_LINKS => {
+        m::ASSET_LIST
+        | m::ASSET_THUMB
+        | m::ASSET_COPY
+        | m::ASSET_LINKS
+        | m::ASSET_WHERE_USED
+        | m::ASSET_EDITS => {
             // An invented tags tree of two maps and a package `kit-test`.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));

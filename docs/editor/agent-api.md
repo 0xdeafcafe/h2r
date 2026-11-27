@@ -94,6 +94,7 @@ What goes through actions, from both sides:
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
+| Where used, Show edits | `WhereUsed {asset}`, `ShowEdits {asset}`, `ClearBrowse` | a Browser row's menu, the header's **Links** menu, the Browser view's **Clear** | `asset.where_used`, `asset.edits` |
 | Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
@@ -1823,11 +1824,27 @@ items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
 does not decode, or a missing tree, is named in `problems`. A bad id is
 `INVALID_PARAMS`; an unknown package or item number is `REFUSED`.
 
+`asset.where_used {asset}` and `asset.edits {asset}` are the Browser's link
+views (`app/assets/browse.rs`): the rows replace the Browser's list, as the
+menu entries **Where used** and **Show edits** leave them, and the call
+answers `{asset, view, rows: [{asset, role, via}], total, problems}`.
+
+| Method | `view` | Rows |
+|---|---|---|
+| `asset.where_used` | `where_used` | `used_by` of `asset.links`, for any asset id |
+| `asset.edits` on a tag | `edits` | each item with a patch on it in load order: `role` is `edit`, `patch` or `replaces`, `via` is where the item reaches then its lines (`x = 1`, `(overridden)` for a line a later package takes) |
+| `asset.edits` on a package | `edits` | its `edits` and `tag-delta` items and the items that replace an asset, `via` the source |
+
+`asset.edits` on an item or a voice is `REFUSED`; a bad id is
+`INVALID_PARAMS`. A refused call leaves the view as it was.
+
 ```sh
 h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
 h2 studio asset.list '{"root":"packages","package":"pogo"}'
 h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
+h2 studio asset.where_used '{"asset":"tag:hlmt:objects\\weapons\\rifle_model"}'
+h2 studio asset.edits '{"asset":"package:pogo"}'
 ```
 
 `asset.fork {tag, map, package?, set?}` is Fork for this map

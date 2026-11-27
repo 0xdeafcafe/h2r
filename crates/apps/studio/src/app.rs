@@ -347,6 +347,14 @@ pub enum Action {
     OpenAsset { asset: String, map: Option<String> },
     /// Make and open a package item in the edit target.
     CreateAsset(assets::CreateAsset),
+    /// **Where used**: the Browser lists what uses the asset, the
+    /// `used_by` rows of the link table (`app::assets::browse`).
+    WhereUsed { asset: String },
+    /// **Show edits**: the Browser lists the package items that change
+    /// the asset (`app::assets::browse`).
+    ShowEdits { asset: String },
+    /// The Browser lists its root again, in place of a link view.
+    ClearBrowse,
     /// Run a package document control through the package API handlers.
     PackageCommand { method: &'static str, params: serde_json::Value },
     /// **Fork for this map**: the asset's edit lines for the open map, in
@@ -635,6 +643,9 @@ pub struct App {
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
     source_assets: Vec<Option<assets::SourceAsset>>,
+    /// The Browser's link view: Where used or Show edits
+    /// (`app::assets::browse`).
+    pub browse: assets::Browse,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -777,6 +788,7 @@ impl App {
             packages: Vec::new(),
             opened_package: None,
             source_assets: Vec::new(),
+            browse: assets::Browse::default(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -1225,6 +1237,9 @@ impl App {
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
             Action::CreateAsset(request) => self.create_in_target(request),
+            Action::WhereUsed { asset } => self.show_where_used(&asset),
+            Action::ShowEdits { asset } => self.show_edits(&asset),
+            Action::ClearBrowse => self.clear_browse(),
             Action::PackageCommand { method, params } => self.package_command(method, params),
             Action::ForkAsset { asset } => self.fork_asset(&asset),
             Action::RevertAsset { asset } => self.revert_asset(&asset),

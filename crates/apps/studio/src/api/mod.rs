@@ -250,6 +250,20 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"package:kit-test"}"#,
     ),
     def(
+        m::ASSET_WHERE_USED,
+        "Where used: the Browser lists what uses the asset, the `used_by` rows of asset.links, in place of its list (the window's Where used entry runs the same command), and the rows are answered. Double-click on a row, or shell.open, opens it. The view stays until the Browser's Clear or a root button",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
+        r#"{"asset":"string","view":"where_used","rows":"[{asset,role,via}]","total":"integer","problems":"[string]"}"#,
+        r#"{"asset":"tag:weap:objects\\weapons\\rifle"}"#,
+    ),
+    def(
+        m::ASSET_EDITS,
+        "Show edits: the Browser lists the package items that change the asset, in place of its list (the window's Show edits entry runs the same command). A tag: each item with a patch on it in load order (`changed_by` of asset.links), `role` edit, patch or replaces, `via` where the item reaches and its lines, an overridden line marked. A package: its edits and tag-delta items and the items that replace an asset. An item and a voice are refused",
+        r#"{"asset":"string (tag:<group>:<path> or package:<id>)"}"#,
+        r#"{"asset":"string","view":"edits","rows":"[{asset,role,via}]","total":"integer","problems":"[string]"}"#,
+        r#"{"asset":"tag:weap:objects\\weapons\\rifle"}"#,
+    ),
+    def(
         m::ASSET_FORK,
         "Fork for this map: the lines of a tag as they are for one map, in an `edits` item of a package under <data>/packages/ (`package`, else the edit target) whose `maps` names that map alone (`edits/<map>.yaml`). It is never a copy of the tag: every other level reads the asset as it was. Without `set` the lines are the ones the package's other `edits` items that reach the map have for the tag (the last to set a path wins); a package with none is refused, and so is a tag already forked for the map. With `set`, those lines are put in by path. The lock is rewritten",
         r#"{"tag":"string (<group>:<path> or tag:<group>:<path>)","map":"string","package?":"string","set?":"[{path,value,from?}]"}"#,

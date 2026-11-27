@@ -1051,6 +1051,8 @@ impl App {
     }
 }
 
+mod browse;
 mod creation;
+pub use browse::{Browse, BrowseMode, BrowseRow, BrowseView};
 pub use creation::CreateAsset;
 pub(crate) use creation::{SourceAsset, SourceView};
