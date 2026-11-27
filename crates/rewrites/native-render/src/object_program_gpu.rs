@@ -257,11 +257,12 @@ impl SubpartRanges {
 /// from the scene (docs/graphics/framescene.md, slice 4): 1, 5, 7, 8, 20,
 /// the overlay layer 2 (`layer_pass::OVERLAY_LAYER`, the scene's and the
 /// first person's) and 17 (`layer_pass::BLOOM_LAYER`), and from the sorted list's handlers the camouflage's 18 and 19
-/// and the hologram's 21 (docs/graphics/native-water-fog.md). In layer 5 an item whose model has
+/// and the hologram's 21 (docs/graphics/native-water-fog.md), and the geometry
+/// answer's 15 (docs/graphics/retire-d3d-r2.md, "The draw's answer"). In layer 5 an item whose model has
 /// a PRT block draws its pass's PRT variant ([`LitLayerPass::prt`]) with
 /// the stream and constants the geometry draw adds
 /// (`frame_scene::PrtStream`).
-pub const OBJECT_LAYERS: [u8; 10] = [
+pub const OBJECT_LAYERS: [u8; 11] = [
     1,
     PRT_LAYER,
     7,
@@ -272,6 +273,7 @@ pub const OBJECT_LAYERS: [u8; 10] = [
     CAMO_LAYER,
     CAMO_MODULATE_LAYER,
     HOLOGRAM_LAYER,
+    crate::layers_load::TRANSPARENT_LAYER,
 ];
 
 /// Active camouflage, the layer the sorted handler `0x00041cc0` draws its

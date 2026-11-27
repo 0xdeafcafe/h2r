@@ -1156,6 +1156,9 @@ struct TransparentAnswer<B: d3d::backend::Backend + Send + 'static> {
 impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer<B> {
     fn draw(&self, mem: &mut dyn GuestMemory, r: &render_bridge::effects_shadow::geometry::Request) -> Result<(), &'static str> {
         use native_render::layers_load::TRANSPARENT_LAYER as L;
+        if let render_bridge::effects_shadow::geometry::Owner::Object(handle) = r.owner {
+            return self.draw_object(mem, r, handle);
+        }
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             current_ready(&state, mem).map(Arc::clone)
@@ -1166,6 +1169,7 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
         let owner = match r.owner {
             render_bridge::effects_shadow::geometry::Owner::Cluster(c) => Owner::Cluster(c),
             render_bridge::effects_shadow::geometry::Owner::Placement(p) => Owner::Instance(p),
+            render_bridge::effects_shadow::geometry::Owner::Object(_) => return Err("set"),
         };
         let part = (owner, r.part);
         let &(material, shader) = data.part_set.get(&part).ok_or("set")?;
@@ -1241,6 +1245,7 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
             writes_depth: data.writes_depth,
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
+            copy_at: None,
         });
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
@@ -1253,6 +1258,106 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
                 return Err("world_changed");
             }
         }
+        reservation.commit();
+        Ok(())
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
+    /// An object entry: its layer-15 item from the scene the list's masks
+    /// give (the entry's record, part and shader name it), planned like a
+    /// sorted run's object (`plan_objects` over the cached restore), drawn
+    /// as a run of its passes from its model's set. An item that marks the
+    /// stencil, copies a target or samples the view or the accumulation
+    /// target keeps the guest's handler.
+    fn draw_object(&self, mem: &mut dyn GuestMemory, r: &render_bridge::effects_shadow::geometry::Request, handle: u32) -> Result<(), &'static str> {
+        use native_render::layers_load::TRANSPARENT_LAYER as L;
+        // Only the model set and the scene's view kind depend on the
+        // caller: this is a sorted handler's, as the camouflage's.
+        let caller = LayerCaller::Sorted(native_render::world_layers::SortedHandler::Camouflage);
+        let scene = render_bridge::native_layers::extract(&*mem, L, caller).ok_or("object_scene")?;
+        let pass = scene.layer_passes.first().ok_or("object_scene")?;
+        let item = scene
+            .items_of(pass)
+            .iter()
+            .find(|i| {
+                matches!(i.owner, LayerOwner::Object(k) if k.0 == handle)
+                    && i.key.record == r.record
+                    && i.key.part == r.part
+                    && i.key.shader & 0xffff == r.shader & 0xffff
+            })
+            .ok_or("object_item")?;
+        if let Some(why) = item.refusal {
+            return Err(why.name());
+        }
+        let mut d = self.device.lock().map_err(|_| "device")?;
+        if !d.can_external_pass() {
+            return Err("device");
+        }
+        // The layer's draws run W-buffered whatever the device holds
+        // (`native_objects_glue::apply_layer_begin_zenable`).
+        if crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
+            return Err("object_layer_begin");
+        }
+        if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
+            return Err("device");
+        }
+        let (stencil, restore) = {
+            let read = ReadMemory(&*mem);
+            if !viewport_clip(&d, &read) {
+                return Err("viewport");
+            }
+            let device_stencil = d.stencil_state(&read).ok_or("stencil")?;
+            let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
+            if restore_moves_outside(&restore, &|slot| d.render_state(&read, slot)) {
+                return Err("object_restore");
+            }
+            (layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil, restore)
+        };
+        let (mut free, mut outcomes, mut left) = (HashMap::new(), BTreeMap::new(), Left::default());
+        let Some((models, mut planned, _)) =
+            plan_objects(&d, &*mem, L, caller, &scene, pass, &[item], &stencil, Some(&restore), &mut free, &mut outcomes, &mut left)
+        else {
+            return Err(left.layer.unwrap_or("object_models"));
+        };
+        let Some(planned) = planned.remove(&item.slot) else {
+            return Err(left.items.get(&item.slot).copied().unwrap_or("object_plan"));
+        };
+        if planned.marked {
+            return Err("object_stencil");
+        }
+        if planned.copies || planned.sets_copied {
+            return Err("object_target");
+        }
+        if planned.draws.iter().any(|(_, draw)| draw.view || draw.scene_copy || draw.texaccum) {
+            return Err("object_view");
+        }
+        let draws = planned.draws;
+        let warm = d.external_pipeline_target(&*mem).is_some_and(|(device, color, depth)| {
+            models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &draws))) == Some(true)
+        });
+        if !warm {
+            return Err("warming");
+        }
+        let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: draws.len(), slots: Vec::new() };
+        let pass = Box::new(LayerViewPass {
+            ready: None,
+            objects: Some(models),
+            texaccum: None,
+            layer: L,
+            runs: vec![LayerRun::Objects(draws)],
+            samples: LayerSamples::new(),
+            fogs: HashMap::new(),
+            view: None,
+            w_clip: None,
+            writes_depth: false,
+            stencil,
+            run: u64::from(d.swap_count()).wrapping_add(1),
+            copy_at: None,
+        });
+        let reservation =
+            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten().ok_or("reservation")?;
         reservation.commit();
         Ok(())
     }

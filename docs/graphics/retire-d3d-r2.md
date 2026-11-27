@@ -193,20 +193,30 @@ The entry is answered only when:
   (`warming`) and the world unchanged (`world_changed`).
 
 A refusal keeps the guest's handler and is counted
-`scene_kept_15_geometry_draw_<cause>` (also `entry`, `object`,
+`scene_kept_15_geometry_draw_<cause>` (also `entry`,
 `no_passes`, the build model's `particle_material`, `not_shader`, `record`,
 `passes`, `layout`, and the glue's `world_pending`, `no_layers`, `no_layer`,
 `set`, `material`, `layer`, `device`, `viewport`, `cached_state`, `fog`,
 `reservation`); an answered entry counts
 `layer_plan_15_effects_shadow_answer_geometry_draw`.
 
-Not built: objects (`object`: a model's passes need its lighting and
-transform, which the world's set does not hold); the handler's other side
-effects (the lightmap page `0x15c90` sets for a BSP record) are not made, as
-the layer's other skipped draws do not make them; the entry's passes are
-drawn with the load's constants, not the device's per-draw ones. A shader
-that is not a world material is refused `material`. Tests:
-`effects_shadow/geometry/tests.rs`.
+An object's entry (`Glue`'s `draw_object`, `TransparentAnswer`) is drawn
+as the sorted runs' objects are. The scene of layer 15 is extracted from
+the list (`native_layers::extract`), the item found by its owner, record,
+part and shader, and planned by `plan_objects` over the cached restore
+from the object models, which compile layer 15 with the other object
+layers (`OBJECT_LAYERS`). The pass draws the item's passes with its
+lighting and transform. Its refusals are the object plan's (extraction's
+cause, `object_model`, the plan's names) and `object_scene`, `object_item`,
+`object_layer_begin`, `object_restore`, `object_stencil` (the item marks the
+stencil), `object_target` (it copies the structure target) and `object_view`
+(a draw samples the view, the scene copy or the accumulation target).
+
+Not built: the handler's other side effects (the lightmap page `0x15c90`
+sets for a BSP record) are not made, as the layer's other skipped draws do
+not make them; a structure entry's passes are drawn with the load's
+constants, not the device's per-draw ones. A shader that is not a world
+material is refused `material`. Tests: `effects_shadow/geometry/tests.rs`.
 
 ## R2's decals and weather
 

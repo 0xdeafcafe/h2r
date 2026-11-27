@@ -285,7 +285,7 @@ fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_
     assert!(proven());
     let drawn = counter("answer_geometry_draw");
     assert!(answer_handler(&mut m, HESP));
-    assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, owner: Owner::Cluster(0), part: 2, passes: 2 }]);
+    assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, owner: Owner::Cluster(0), record: RECORD_INDEX as u16, part: 2, passes: 2 }]);
     assert_eq!(counter("answer_geometry_draw"), drawn + 1);
 
     // A host that refuses leaves the handler to the guest.
