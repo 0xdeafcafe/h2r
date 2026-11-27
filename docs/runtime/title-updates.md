@@ -166,7 +166,7 @@ from obtaining the executable.
 [Insignia's update and DLC requirements](https://insignia.live/halo2/).
 
 Copy the installed `$u` tree privately through an existing dashboard's
-binary-mode FTP facility, or read the user's own ATA-unlocked HDD/image with a
+binary-mode FTP facility, or read the user's own HDD with its ATA lock released/image with a
 FATX-aware tool and the owner's required keys. Keep companions and provenance
 with `default.xbe`; leave the disc dump unchanged. The user's original map
 DVD offers the older offline update described above. Do not substitute its
