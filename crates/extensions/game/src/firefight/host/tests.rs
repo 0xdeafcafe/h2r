@@ -37,6 +37,8 @@ struct FakeGame {
     pods: Vec<Option<u32>>,
     flood_pods: usize,
     falls: Vec<Option<PodFall>>,
+    /// The engine places no actor: every placement is refused.
+    refuse_places: bool,
 }
 
 impl FakeGame {
@@ -57,6 +59,7 @@ impl FakeGame {
             pods: Vec::new(),
             flood_pods: 0,
             falls: Vec::new(),
+            refuse_places: false,
         }
     }
 
@@ -71,7 +74,9 @@ impl FakeGame {
 
 impl SquadEntry for FakeGame {
     fn squad(&mut self, op: SquadOp) -> anyhow::Result<()> {
+        let refused = self.refuse_places && matches!(op, SquadOp::Place(_));
         self.calls.push(Call::Squad(op));
+        anyhow::ensure!(!refused, "the engine placed no actor for slot 0: class row 0 at zone 7");
         Ok(())
     }
 }
@@ -1384,6 +1389,80 @@ fn a_placement_nobody_sees_is_reported_once() {
         "slot 0: elite placed at tick 601, none seen"
     );
     assert!(host.take_unseen_errors().is_empty());
+}
+
+/// Holdout's opening wave on a game whose engine places no actor: the
+/// placement is refused at once (`sync`), or by the runtime after the
+/// tick's calls (`Host::refused_entry`). The errors of each tick are
+/// returned with the host.
+fn refused_wave(sync: bool) -> (Host, Vec<String>) {
+    let mut game = FakeGame::new();
+    game.refuse_places = sync;
+    let mut host = start(Role::Host, &game);
+    let mut errors = Vec::new();
+    for tick in 0..=900 {
+        let before = host.applied();
+        errors.extend(host.pre_tick(tick, &mut game).into_iter().map(|e| e.to_string()));
+        if !sync {
+            for entry in host.log().since(before).to_vec() {
+                if entry.seq <= host.applied() && matches!(entry.op, Command::PlaceSquad { .. }) {
+                    host.refused_entry(entry.seq, &"the engine placed no actor for slot 0: class row 0 at zone 7");
+                }
+            }
+        }
+        host.post_tick(tick, &game).unwrap();
+        errors.extend(host.take_stop_error().map(|e| e.to_string()));
+    }
+    (host, errors)
+}
+
+/// A wave whose every placement the engine refused has nothing to clear:
+/// the director is stopped before its slot timeout counts the wave as
+/// cleared, the stop names the refusal once, and no next wave is logged.
+/// Before, the director cleared the wave 3 s later and went on to the next
+/// ("wave complete" on a loop).
+#[test]
+fn a_wave_whose_every_placement_is_refused_is_stopped_not_cleared() {
+    for sync in [true, false] {
+        let (mut host, errors) = refused_wave(sync);
+        let why = host.stopped().expect("the director is stopped");
+        assert!(
+            why.starts_with("round 1 wave 1 is refused, not cleared: the engine placed none of its "),
+            "sync {sync}: {why}"
+        );
+        assert!(
+            why.ends_with(
+                "(the engine placed no actor for slot 0: class row 0 at zone 7); the director is stopped"
+            ),
+            "sync {sync}: {why}"
+        );
+        let stops: Vec<&String> = errors.iter().filter(|e| e.contains("is refused, not cleared")).collect();
+        assert_eq!(stops.len(), 1, "named once: {errors:?}");
+        assert!(stops[0].starts_with("at tick "), "{}", stops[0]);
+        let waves: Vec<u8> = host
+            .log()
+            .since(0)
+            .iter()
+            .filter_map(|e| match e.op {
+                Command::Wave { index } => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(waves, [0], "no wave after the refused one: sync {sync}");
+        assert_eq!(host.take_ended(), None, "the match is not counted as won or lost");
+    }
+}
+
+/// One placement the engine takes is enough: the wave is fought as before.
+#[test]
+fn a_wave_with_one_placement_taken_is_not_stopped() {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    for tick in 0..=900 {
+        run(&mut host, &mut game, tick);
+        game.actors[0] = 1;
+    }
+    assert_eq!(host.stopped(), None);
 }
 
 // ---- Endless: sets and the bonus round ----

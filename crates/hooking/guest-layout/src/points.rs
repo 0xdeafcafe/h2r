@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+pub mod ai_gates;
 pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;

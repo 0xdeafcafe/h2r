@@ -240,10 +240,11 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
-/// An entry, or the AI switch, the engine did not take.
+/// An entry the engine did not take, or a problem of no entry's (the AI
+/// switch, an unseen placement, a refused wave).
 #[derive(Debug)]
 pub struct ApplyError {
-    /// The entry's sequence number; none for the AI switch.
+    /// The entry's sequence number; none for a problem of no entry's.
     pub seq: Option<u32>,
     pub tick: u32,
     pub error: anyhow::Error,
@@ -257,7 +258,7 @@ impl std::fmt::Display for ApplyError {
                 "host log entry {seq} at tick {}: {}",
                 self.tick, self.error
             ),
-            None => write!(f, "AI switch at tick {}: {}", self.tick, self.error),
+            None => write!(f, "at tick {}: {}", self.tick, self.error),
         }
     }
 }
@@ -363,6 +364,35 @@ pub struct Host {
     unseen_errors: Vec<ApplyError>,
     /// The kit's squad pods, which squads fall in.
     pods: SquadPods,
+    /// The current wave's placements on this machine and which of them
+    /// the engine refused.
+    wave: WavePlacements,
+    /// Set when a wave's every placement was refused: the director is
+    /// stopped there, so the wave is never counted as cleared.
+    stopped: Option<String>,
+    /// Its error row, until the runtime takes it.
+    stop_error: Option<ApplyError>,
+    /// A placement was made by the entry being applied.
+    placed_now: bool,
+}
+
+/// The placements of the wave under way: the sequence numbers of the
+/// entries that placed a squad (on foot, by ship, or at a pod's landing),
+/// and the engine's reason for each it refused. A `Wave` or `Bonus` entry
+/// starts the next.
+#[derive(Debug, Default)]
+struct WavePlacements {
+    round: u8,
+    wave: u8,
+    placed: BTreeSet<u32>,
+    refused: BTreeMap<u32, String>,
+}
+
+impl WavePlacements {
+    /// Every placement of the wave refused, and at least one made.
+    fn all_refused(&self) -> bool {
+        !self.placed.is_empty() && self.placed.len() == self.refused.len()
+    }
 }
 
 /// Ticks after a placement is applied at which a slot with no actor counts
@@ -434,6 +464,10 @@ impl Host {
                 game.squad_pods().len() - game.flood_pod_count(),
                 game.flood_pod_count(),
             ),
+            wave: WavePlacements::default(),
+            stopped: None,
+            stop_error: None,
+            placed_now: false,
         })
     }
 
@@ -593,7 +627,12 @@ impl Host {
         for entry in due {
             self.applied = entry.seq;
             game.begin_entry(entry.seq);
-            match self.apply(&entry.op, entry.tick, game) {
+            self.placed_now = false;
+            let applied = self.apply(&entry.op, entry.tick, game);
+            if self.placed_now {
+                self.wave.placed.insert(entry.seq);
+            }
+            match applied {
                 Ok(()) => match &entry.op {
                     Command::PlaceSquad { slot, class, .. } => {
                         self.unseen.insert(*slot, (entry.tick, class.clone()));
@@ -605,11 +644,14 @@ impl Host {
                     }
                     _ => {}
                 },
-                Err(error) => errors.push(ApplyError {
-                    seq: Some(entry.seq),
-                    tick: entry.tick,
-                    error,
-                }),
+                Err(error) => {
+                    self.refused_entry(entry.seq, &error);
+                    errors.push(ApplyError {
+                        seq: Some(entry.seq),
+                        tick: entry.tick,
+                        error,
+                    })
+                }
             }
         }
         // The pods whose wreck is over go back to their parking places.
@@ -625,7 +667,10 @@ impl Host {
     /// shows and append its commands for the next tick. Returns how many
     /// entries were appended.
     pub fn post_tick(&mut self, tick: u32, game: &impl Game) -> Result<usize, host_log::Error> {
-        if self.director.is_none() || self.held {
+        if self.director.is_none() || self.held || self.stopped.is_some() {
+            return Ok(0);
+        }
+        if self.wave_refused(tick) {
             return Ok(0);
         }
         let teams = self.director.as_ref().map_or(1, |d| d.def().teams);
@@ -713,6 +758,59 @@ impl Host {
     /// The error rows of placements newly found unseen.
     pub fn take_unseen_errors(&mut self) -> Vec<ApplyError> {
         std::mem::take(&mut self.unseen_errors)
+    }
+
+    /// The engine refused entry `seq`'s calls (the runtime makes them after
+    /// [`Host::pre_tick`]). A placement of the wave under way is kept with
+    /// the reason, for [`Host::stopped`].
+    pub fn refused_entry(&mut self, seq: u32, error: &dyn std::fmt::Display) {
+        if self.wave.placed.contains(&seq) {
+            self.wave.refused.insert(seq, error.to_string());
+        }
+    }
+
+    /// Why the director is stopped: a wave whose every placement the engine
+    /// refused. Such a wave is not cleared, so the match goes no further.
+    pub fn stopped(&self) -> Option<&str> {
+        self.stopped.as_deref()
+    }
+
+    /// The error row of the stop, once.
+    pub fn take_stop_error(&mut self) -> Option<ApplyError> {
+        self.stop_error.take()
+    }
+
+    /// Before the director steps: once every squad of the wave is placed
+    /// (the director fights it) and the engine refused every placement,
+    /// the wave has no actor to clear. The director would count it as
+    /// cleared at its slot timeout and announce the next, so it is stopped
+    /// here instead, with the refusal named.
+    fn wave_refused(&mut self, tick: u32) -> bool {
+        if !self.wave.all_refused() {
+            return false;
+        }
+        let fighting = self
+            .director
+            .as_ref()
+            .is_some_and(|d| matches!(d.state().phase, Phase::Fighting | Phase::Cleanup { .. }));
+        if !fighting {
+            return false;
+        }
+        let first = self.wave.refused.values().next().cloned().unwrap_or_default();
+        let n = self.wave.placed.len();
+        let why = format!(
+            "round {} wave {} is refused, not cleared: the engine placed none of its {n} squad{} ({first}); the director is stopped",
+            u32::from(self.wave.round) + 1,
+            u32::from(self.wave.wave) + 1,
+            if n == 1 { "" } else { "s" },
+        );
+        self.stop_error = Some(ApplyError {
+            seq: None,
+            tick,
+            error: anyhow::anyhow!("{why}"),
+        });
+        self.stopped = Some(why);
+        true
     }
 
     /// The scores credited since the last call, in the order the director
@@ -808,6 +906,7 @@ impl Host {
                 weapon_tier,
             } => {
                 let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                self.placed_now = true;
                 squad(game, SquadOp::Place(placement))
             }
             // By ship when the kit has one and a path to the zone, else on
@@ -822,6 +921,9 @@ impl Host {
                 ship: kind,
             } => {
                 let placement = self.placement(*slot, class, *count, *zone, *weapon_tier)?;
+                // Every way below places the squad now but a pod's fall,
+                // whose landing is a later `PlaceSquad`.
+                self.placed_now = true;
                 if *arrival == Arrival::Foot {
                     return squad(game, SquadOp::Place(placement));
                 }
@@ -848,7 +950,10 @@ impl Host {
                         landed: false,
                     };
                     return match self.pods.start(&game.squad_pods(), kind, fall, tick, falling) {
-                        Some(launch) => game.fly(launch),
+                        Some(launch) => {
+                            self.placed_now = false;
+                            game.fly(launch)
+                        }
                         None => squad(game, SquadOp::Place(placement)),
                     };
                 }
@@ -935,7 +1040,19 @@ impl Host {
             }
             Command::EraseSquad { slot } => squad(game, SquadOp::Erase { slot: *slot }),
             // The HUD reads sets, rounds and waves from the mode blob.
-            Command::Set { .. } | Command::Round { .. } | Command::Wave { .. } => Ok(()),
+            Command::Round { index } => {
+                self.wave.round = *index;
+                Ok(())
+            }
+            Command::Wave { index } => {
+                self.wave = WavePlacements {
+                    round: self.wave.round,
+                    wave: *index,
+                    ..WavePlacements::default()
+                };
+                Ok(())
+            }
+            Command::Set { .. } => Ok(()),
             // The bonus round is a director rule (docs/game/firefight.md,
             // "The bonus round"): the host keeps whether it is on, and
             // [`Command::Respawn`] is refused while it is. Its enemies are
