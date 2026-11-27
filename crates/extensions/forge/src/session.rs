@@ -64,6 +64,9 @@ pub struct Session {
     /// The starting points' weights the world holds, by row
     /// ([`World::spawn_weight`]).
     weights_live: BTreeMap<u32, forge_doc::SpawnWeight>,
+    /// The item rows the world holds back at a round's start
+    /// ([`World::place_at_start`]); the value is always `true`.
+    held_live: BTreeMap<u32, bool>,
     /// The entry held and the tick of its last move: a hold moves at most
     /// once a tick.
     held: Option<(Endpoint, u32)>,
@@ -129,6 +132,7 @@ impl Session {
             own_live: OwnMap::new(),
             clips_live: BTreeMap::new(),
             weights_live: BTreeMap::new(),
+            held_live: BTreeMap::new(),
             held: None,
             head,
             log: vec![],
@@ -750,6 +754,38 @@ impl Session {
         self.edit(world, tick, ops, None)
     }
 
+    /// Whether an item spawner places its item at a round's start, by the
+    /// document's `Property` ops ([`forge_doc::held_at_start`]).
+    pub fn place_at_start(&self, id: Endpoint) -> bool {
+        !forge_doc::held_at_start(&self.doc.ops).contains(&id.identity())
+    }
+
+    /// Place an item spawner's item at a round's start, or hold it back:
+    /// one `EntryOp::Property`, which the world follows with
+    /// [`World::place_at_start`] on the entry's row. It takes effect at the
+    /// next round's start. A thing that is no spawner is refused.
+    pub fn set_place_at_start(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        id: Endpoint,
+        on: bool,
+    ) -> Result<(), String> {
+        self.restore(world)?;
+        let thing = self.thing(id).ok_or(NO_THING)?;
+        if thing.kind != ThingKind::ItemSpawner {
+            return Err(format!("This {} has no place at start.", thing.kind.name()));
+        }
+        if self.place_at_start(thing.id) == on {
+            return Ok(());
+        }
+        let ops = self.ops(vec![Edit::Entry(EntryOp::Property {
+            target: thing.id,
+            property: forge_doc::Property::PlaceAtStart((!on).then_some(false)),
+        })])?;
+        self.edit(world, tick, ops, None)
+    }
+
     /// A property's values by the row the world has each entry of `block`
     /// at: an own entry at its base index, one the kit added at its kit row.
     /// A removed entry has none.
@@ -783,8 +819,8 @@ impl Session {
             .collect()
     }
 
-    /// Bring the world's spare clips, then its starting points' weights, to
-    /// what `doc` gives: one call for each row that changes. A refused call
+    /// Bring the world's spare clips, its starting points' weights, then its
+    /// held-back spawners to what `doc` gives: one call for each row that changes. A refused call
     /// puts back the rows already written.
     fn reconcile_properties(
         &mut self,
@@ -798,17 +834,40 @@ impl Session {
             forge_doc::spawn_weights(&doc.ops),
             own,
         );
+        let held = self.by_row(
+            BlockKind::NetgameEquipment,
+            forge_doc::held_at_start(&doc.ops)
+                .into_iter()
+                .map(|end| (end, true))
+                .collect(),
+            own,
+        );
         let done_clips = reconcile_rows(&self.clips_live, &clips, |row, v| {
             world.spare_clips(row, v)
         })?;
-        if let Err(error) = reconcile_rows(&self.weights_live, &weights, |row, v| {
+        let done_weights = match reconcile_rows(&self.weights_live, &weights, |row, v| {
             world.spawn_weight(row, v)
         }) {
-            for (row, was) in done_clips.into_iter().rev() {
+            Ok(done) => done,
+            Err(error) => {
+                for &(row, was) in done_clips.iter().rev() {
+                    let _ = world.spare_clips(row, was);
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = reconcile_rows(&self.held_live, &held, |row, v| {
+            world.place_at_start(row, v.is_some())
+        }) {
+            for &(row, was) in done_weights.iter().rev() {
+                let _ = world.spawn_weight(row, was);
+            }
+            for &(row, was) in done_clips.iter().rev() {
                 let _ = world.spare_clips(row, was);
             }
             return Err(error);
         }
+        self.held_live = held;
         self.clips_live = clips;
         self.weights_live = weights;
         Ok(())

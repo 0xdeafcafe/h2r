@@ -1144,6 +1144,11 @@ impl Editor {
                 .thing(id)
                 .filter(|t| t.kind == forge::ThingKind::StartingPoint)
                 .map(|_| self.session.spawn_weight(id)),
+            place_at_start: self
+                .session
+                .thing(id)
+                .filter(|t| t.kind == forge::ThingKind::ItemSpawner)
+                .map(|_| self.session.place_at_start(id)),
         }
     }
 
@@ -2533,6 +2538,10 @@ impl Editor {
                 };
                 return self.command(tick, Command::SetSpawnWeight { id, weight });
             }
+            Choice::Set(Prop::PlaceAtStart, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a spawner.")?;
+                return self.command(tick, Command::SetPlaceAtStart { id, on: i == 0 });
+            }
             Choice::Set(Prop::Role, i) => {
                 let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
                 return self.command(
@@ -2936,6 +2945,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         SetTeam { id, team } => s.set_team(w, tick, id, team),
         SetSpareClips { id, clips } => s.set_spare_clips(w, tick, id, clips),
         SetSpawnWeight { id, weight } => s.set_spawn_weight(w, tick, id, weight),
+        SetPlaceAtStart { id, on } => s.set_place_at_start(w, tick, id, on),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),

@@ -96,6 +96,12 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             };
             picker(p, help, Prop::SpawnWeight, values, current.min(last))
         }
+        // Place at start is the document's property, on an item spawner:
+        // Yes, then No.
+        ("picker", "place at start") => {
+            let current = usize::from(!extras.place_at_start?);
+            picker(p, help, Prop::PlaceAtStart, values, current.min(last))
+        }
         ("picker", "role") => {
             let current = int_of(thing, "type").clamp(0, last as i64) as usize;
             picker(p, help, Prop::Role, values, current)

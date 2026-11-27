@@ -231,6 +231,8 @@ enum Staged {
     SpareClips(u32, Option<u8>),
     /// A starting location's weight.
     SpawnWeight(u32, Option<forge_doc::SpawnWeight>),
+    /// A netgame item entry held back at a round's start, or placed.
+    PlaceAtStart(u32, bool),
     /// An own entry's step that needs no tag resolved.
     Base(BaseStep),
     /// An own entry's field write, its value still a document value.
@@ -300,6 +302,9 @@ impl ForgeWorld {
                         Staged::SpareClips(index, clips) => ForgeStep::SpareClips { index, clips },
                         Staged::SpawnWeight(index, weight) => {
                             ForgeStep::SpawnWeight { index, weight }
+                        }
+                        Staged::PlaceAtStart(index, held) => {
+                            ForgeStep::PlaceAtStart { index, held }
                         }
                         Staged::Base(step) => ForgeStep::Base(step),
                         Staged::Field {
@@ -422,6 +427,14 @@ impl World for ForgeWorld {
         weight: Option<forge_doc::SpawnWeight>,
     ) -> Result<(), String> {
         self.steps.push(Staged::SpawnWeight(index, weight));
+        Ok(())
+    }
+
+    /// A netgame item entry held back at a round's start: the game's
+    /// table, after the batch's objects. It takes effect at the next round
+    /// reset.
+    fn place_at_start(&mut self, index: u32, held: bool) -> Result<(), String> {
+        self.steps.push(Staged::PlaceAtStart(index, held));
         Ok(())
     }
 
