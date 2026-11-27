@@ -306,7 +306,7 @@ opens a picker; an action row acts and closes.
   (**C**). The row matters only for kinds that do simulate.
 - The built page has Coordinates... and Heading for any object, Team for
   starting points and goals, Role and Order for goals, and Respawn time,
-  Return time and Game types for item spawners. Heading is Coordinates' Yaw; the rotation step is the
+  Return time, Game types and Team (the document's property) for item spawners. Heading is Coordinates' Yaw; the rotation step is the
   Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Role
   and Order open pickers; Respawn time and Return time open the game's
   keyboard. The keyboard sends the `return time` property to
