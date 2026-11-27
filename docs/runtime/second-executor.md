@@ -2,7 +2,7 @@
 
 Status: Built as a building block, tested on synthetic code; the
 phantoms' action build runs on its alias.
-Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`, `Alias`), `crates/runtime/runtime/src/cow.rs`, `crates/runtime/runtime/src/guest/journal.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`, `executor.rs`.
+Code: `crates/runtime/runtime/src/executor.rs` (`SecondExecutor`, `Alias`), `crates/runtime/runtime/src/cow.rs`, `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/trial.rs`. Tests: `crates/recompiler/emit/tests/second_executor.rs`, `executor.rs`.
 Switch: `impl.sim.phantom-alias` (on), listed in [switches.md](switches.md).
 
 It runs guest code on a second host thread, at the same time as the game
@@ -249,6 +249,22 @@ The journal covers stores. A mapping change during an alias (fresh storage
 that `map_zeroed` zeroes) is not journaled; the executor makes none, since
 every kernel call is refused. A snapshot taken after an alias ends the
 journal (`cow_refresh`), so a view's stores are never journaled.
+
+### Trial stores
+
+`Guest::trial` (`guest/trial.rs`) gives a Rust prediction on the game
+thread the live state for a moment, with no alias:
+
+- **Saved:** every store through `Guest`, fast path and slow, saves the
+  bytes under it; the write watch and an HLE capture see none of them.
+- **Undone:** on every path out, a panic included, newest first. The
+  call returns each stored byte's final value by virtual address
+  (`TrialStores`).
+- **Rust only:** generated code's inline stores bypass `Guest`, so it
+  must not run inside a trial.
+
+The object walk arm predicts each segment this way
+([object-update.md](../engine/object-update.md#the-walk-arm)).
 
 ## 4. Tests and measurements
 

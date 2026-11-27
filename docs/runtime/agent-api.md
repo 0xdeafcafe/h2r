@@ -5862,7 +5862,9 @@ switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 `declined` (calls left to the guest unchecked, summed over reasons). The
 sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
 (`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
-whose `declined` adds its `dropped` audits),
+whose `declined` adds its `dropped` audits), `sim_objects::walk_arm::stats`
+(`objects.walk.<entry>`, one arm per walk-arm entry, whose `declined` adds
+its interrupted guest segments),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
 `sim.effects` groups, and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
