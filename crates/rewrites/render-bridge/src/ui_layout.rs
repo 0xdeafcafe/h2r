@@ -15,7 +15,7 @@
 //! their projected point.
 
 /// The guest window the game draws its UI in.
-pub const CANVAS: [f32; 2] = [640.0, 480.0];
+pub const CANVAS: [f32; 2] = canvas_fit::CANVAS;
 
 /// A draw's placement in guest window units: `x' = x * sx + ox`,
 /// `y' = y * sy + oy`, before the display's raster scale.
@@ -31,16 +31,14 @@ pub const ANCHOR_CENTRE: u32 = 4;
 /// Whether `output` has the canvas's own 4:3 shape, in whole pixels: the
 /// window's stretch is then uniform and nothing needs a fit.
 pub fn is_canvas_shape(output: (u32, u32)) -> bool {
-    u64::from(output.0) * 3 == u64::from(output.1) * 4
+    canvas_fit::is_canvas_shape(output)
 }
 
 /// The window's horizontal stretch of the canvas over its vertical one
 /// (above 1 on a window wider than 4:3). `None` on a canvas-shaped or
 /// degenerate window.
 pub fn stretch_ratio(output: (u32, u32)) -> Option<f32> {
-    let (w, h) = output;
-    (w != 0 && h != 0 && !is_canvas_shape(output))
-        .then(|| (w as f32 / CANVAS[0]) / (h as f32 / CANVAS[1]))
+    canvas_fit::stretch_ratio(output)
 }
 
 /// Display pixels per guest pixel of the uniform fit on `output`:
@@ -55,9 +53,7 @@ pub fn uniform_scale(output: (u32, u32)) -> f32 {
 /// the window holds. `None` on a 4:3 window (the stretch is already
 /// uniform) or a degenerate one: the identity needs no transform.
 pub fn menu_fit(output: (u32, u32), pivot: [f32; 2]) -> Option<Fit> {
-    // Against the stretch the display already applies, each axis of the
-    // canvas draws at the smaller stretch divided into its own.
-    about(stretch_ratio(output)?.recip(), pivot)
+    canvas_fit::window_fit(output, pivot)
 }
 
 /// A uniform fit from a ratio between the axes' stretches, about a pivot
@@ -65,12 +61,7 @@ pub fn menu_fit(output: (u32, u32), pivot: [f32; 2]) -> Option<Fit> {
 /// so both shapes of window take the same rule. `None` when the ratio is
 /// not a finite, non-unit number: the identity needs no transform.
 pub fn about(ratio: f32, pivot: [f32; 2]) -> Option<Fit> {
-    if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 {
-        return None;
-    }
-    let x = ratio.min(1.0);
-    let y = ratio.recip().min(1.0);
-    Some([x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)])
+    canvas_fit::fit_about(ratio, pivot)
 }
 
 /// One HUD group's fit on `output`, for the player's raster `view`
