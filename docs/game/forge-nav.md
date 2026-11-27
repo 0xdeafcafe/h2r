@@ -15,8 +15,8 @@ generator, so what the overlay shows is what a bot would walk.
 
 ## How it works
 
-1. **The row.** **Generate nav** on the Forge options page
-   (`sheet::options_with`, `Choice::GenerateNav`) or `forge.nav
+1. **The row.** **Generate nav** on the Forge menu's Options tab
+   (`menu::sheet`, `Choice::GenerateNav`) or `forge.nav
    {generate: true}` starts a file job of the editor
    (`Editor::start_nav`): a copy of the session goes to a worker, and the
    editor takes it back when the worker is done. Edits wait meanwhile, as

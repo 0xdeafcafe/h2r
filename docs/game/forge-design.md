@@ -214,7 +214,7 @@ and each named source hash. The later geometry and paint slices use
 
 ### Rebuild map
 
-In a local session, **Rebuild map** on GAME MENU builds a play copy of
+In a local session, **Rebuild map** on the Forge menu builds a play copy of
 the map from the document and reloads the running map onto it; the
 session goes on over the copy with the same document, log, undo and
 redo. It is how a Rebuild edit (a device link, an add past the kit's

@@ -4,8 +4,8 @@
 //! The builders here make one from the session's facts, and tables decide
 //! the rows: the object menu's groups ([`GROUPS`]), the Properties rows
 //! (the doc's, [`super::props`]), the tools ([`TOOLS`]), the settings
-//! ([`SETTINGS`]), Forge options ([`OPTIONS`]) and the controls (the
-//! bindings table). A change of design is a change of table.
+//! ([`SETTINGS`]), the Forge menu's tabs ([`super::menu::Tab`]) and the
+//! controls (the bindings table). A change of design is a change of table.
 
 use forge::{BlockKind, Thing, Value};
 
@@ -29,8 +29,9 @@ pub enum Kind {
     Link,
     /// Yes or no, No focused.
     Question,
-    /// The Forge menu's page of what is not on GAME MENU.
-    Options,
+    /// The Forge menu: Back's, while the player flies the monitor; its
+    /// pages are tabs ([`super::menu`]).
+    Menu,
     /// Every control, from the bindings table.
     Controls,
     /// The live object pool and scenario block counts.
@@ -92,7 +93,7 @@ impl Kind {
         Kind::Settings,
         Kind::Link,
         Kind::Question,
-        Kind::Options,
+        Kind::Menu,
         Kind::Controls,
         Kind::Games,
         Kind::Variants,
@@ -119,7 +120,7 @@ impl Kind {
             Kind::Settings => "forge.settings",
             Kind::Link => "forge.link",
             Kind::Question => "forge.question",
-            Kind::Options => "forge.options",
+            Kind::Menu => "forge.menu",
             Kind::Controls => "forge.controls",
             Kind::Games => "forge.games",
             Kind::Variants => "forge.variants",
@@ -147,7 +148,7 @@ impl Kind {
             Kind::Settings => "forge-settings",
             Kind::Link => "forge-link",
             Kind::Question => "forge-question",
-            Kind::Options => "forge-options",
+            Kind::Menu => "forge-menu",
             Kind::Controls => "forge-controls",
             Kind::Games => "forge-games",
             Kind::Variants => "forge-variants",
@@ -174,7 +175,7 @@ impl Kind {
             Kind::Settings => const { ids::family("forge settings") },
             Kind::Link => const { ids::family("forge link") },
             Kind::Question => const { ids::family("forge question") },
-            Kind::Options => const { ids::family("forge options") },
+            Kind::Menu => const { ids::family("forge menu") },
             Kind::Controls => const { ids::family("forge controls") },
             Kind::Games => const { ids::family("forge games") },
             Kind::Variants => const { ids::family("forge variants") },
@@ -205,7 +206,7 @@ impl Kind {
             Kind::Properties
             | Kind::Coordinates
             | Kind::Settings
-            | Kind::Options
+            | Kind::Menu
             | Kind::MapLimits
             | Kind::Controls
             | Kind::Waves
@@ -445,8 +446,8 @@ pub enum Choice {
     StopWaves,
     /// **Generate nav**: the bots' nav with the placed objects in.
     GenerateNav,
-    /// **Rebuild map** (GAME MENU): build the map from the document and
-    /// load it, the session going on over it.
+    /// **Rebuild map** (the Forge menu): build the map from the document
+    /// and load it, the session going on over it.
     Rebuild,
     /// The placed objects browser: fly the monitor to an added object and
     /// look at it.
@@ -561,6 +562,9 @@ pub enum Act {
     /// Open a Waves page above this screen, built from the session's set
     /// as it is then (`super::waves::open`); B comes back.
     Waves(super::waves::Page),
+    /// Close the screen and open the game's keyboard for a map variant's
+    /// name: what is typed is [`Choice::SaveAs`].
+    SaveAs,
 }
 
 /// A row's value picker: its values, the held one, what it says, and the
@@ -1610,45 +1614,6 @@ pub fn overlays_with(on: forge::tool::Overlays, dev_view: bool) -> Sheet {
     sheet
 }
 
-/// A row of Forge options: its label, its help (what it opens, for the
-/// help block under the rows when the page is the shared settings dialog,
-/// docs/game/ui-builder.md "The settings dialog") and the screen it opens.
-pub struct OptionDef {
-    pub label: &'static str,
-    pub description: &'static str,
-    pub opens: Kind,
-}
-
-/// Forge options, in order (docs/game/forge-firefight-ui.md "The screens").
-/// The placed objects browser and the actions follow these pages.
-pub const OPTIONS: &[OptionDef] = &[
-    OptionDef {
-        label: "Tool settings...",
-        description: "Rotation snap and the other tool settings.",
-        opens: Kind::Settings,
-    },
-    OptionDef {
-        label: "Controls",
-        description: "Every Forge control, with its button.",
-        opens: Kind::Controls,
-    },
-    OptionDef {
-        label: "Map variants...",
-        description: "Load, rename, copy or delete this map's variants.",
-        opens: Kind::Variants,
-    },
-    OptionDef {
-        label: "Map limits",
-        description: "See the object pool and scenario counts.",
-        opens: Kind::MapLimits,
-    },
-];
-
-/// The Forge options page.
-pub fn options() -> Sheet {
-    options_with(&[])
-}
-
 /// An added object of the map, a row of the placed objects browser.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placed {
@@ -1846,70 +1811,6 @@ pub fn group_rows(f: &GroupFacts) -> Vec<SheetRow> {
         );
     }
     rows
-}
-
-/// The Forge options page with the placed objects browser over `placed`
-/// ([`placed_rows`]).
-pub fn options_with(placed: &[Placed]) -> Sheet {
-    options_with_groups(&[], placed)
-}
-
-/// [`options_with`] with the groups' folders listed first.
-pub fn options_with_groups(folders: &[Folder], placed: &[Placed]) -> Sheet {
-    options_for(folders, placed, false)
-}
-
-/// [`options_with_groups`] while a wave test runs or not (`testing`): the
-/// Test waves row reads **Stop waves** while one does
-/// (docs/game/forge-firefight.md, "Test waves").
-pub fn options_for(folders: &[Folder], placed: &[Placed], testing: bool) -> Sheet {
-    options_with_waves(folders, placed, testing, false, false)
-}
-
-/// [`options_for`] with **Waves...** when the session has waves to edit
-/// (`waves`) and **Enemy types...** when the recipe names classes
-/// (`enemy_types`), after the placed objects browser
-/// (docs/game/forge-firefight-ui.md, "The Waves screens").
-pub fn options_with_waves(
-    folders: &[Folder],
-    placed: &[Placed],
-    testing: bool,
-    waves: bool,
-    enemy_types: bool,
-) -> Sheet {
-    let test = if testing {
-        SheetRow::new("Stop waves", Act::Choose(Choice::StopWaves))
-            .describe("Erase the test's enemies and stop the waves.")
-    } else {
-        SheetRow::new("Test waves", Act::Choose(Choice::TestWaves))
-            .describe("Fight the waves here, building the AI ground first if needed.")
-    };
-    Sheet {
-        kind: Kind::Options,
-        title: "FORGE OPTIONS".into(),
-        body: String::new(),
-        rows: OPTIONS
-            .iter()
-            .map(|o| SheetRow::new(o.label, Act::Open(o.opens)).describe(o.description))
-            .chain([placed_row_with(folders, placed)])
-            .chain(waves.then(|| {
-                SheetRow::new("Waves...", Act::Open(Kind::Waves))
-                    .describe("The rounds, waves and squads this map plays.")
-            }))
-            .chain(enemy_types.then(|| {
-                SheetRow::new("Enemy types...", Act::Open(Kind::EnemyTypes))
-                    .describe("The enemies the AI ground builds.")
-            }))
-            .chain([
-                SheetRow::new("Build AI ground", Act::Choose(Choice::BuildGround))
-                    .describe("Build the nav mesh and zones for the placed labels now."),
-                test,
-                SheetRow::new("Generate nav", Act::Choose(Choice::GenerateNav))
-                    .describe("Build the bots' nav with the placed objects in."),
-            ])
-            .collect(),
-        focus: 0,
-    }
 }
 
 /// A link's dialog: its two ends and what it writes in the body; **Remove

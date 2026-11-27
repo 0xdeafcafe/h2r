@@ -236,7 +236,7 @@ impl Buttons {
                 glyph: '\u{e107}',
                 hold: true,
             },
-            menu: press('\u{e10c}'),
+            menu: press('\u{e10d}'),
         }
     }
 }
@@ -249,7 +249,7 @@ pub enum Teach {
     Delete,
     /// Holding a thing: hold RT to turn it.
     Turn,
-    /// Nothing aimed at: Start's menu.
+    /// Nothing aimed at: Back's menu.
     Menu,
 }
 

@@ -3,10 +3,11 @@
 //! the Controls page and the HUD's prompts all read it, so none can
 //! disagree: change a row here and they follow.
 //!
-//! Start is a row that does nothing of ours ([`Does::Game`]): it reaches
-//! the game, which opens its own GAME MENU with the Forge rows in it
-//! (`crate::forge_screens::game_menu`). Escape is B's key, and reaches the
-//! game the same way when there is nothing to cancel.
+//! Back opens the Forge menu (`crate::forge_screens::menu`) while the
+//! player flies the monitor; in their own body it is the game's, the
+//! scoreboard. Start is a row that does nothing of ours ([`Does::Game`]):
+//! it reaches the game, which opens its own GAME MENU. Escape is B's key,
+//! and reaches the game the same way when there is nothing to cancel.
 
 use std::time::Duration;
 
@@ -130,8 +131,9 @@ const fn act(a: Action) -> Does {
 use HostButton as B;
 
 /// Halo 3's layout, with B as cancel where Halo 3 has hold to drop. The
-/// D-pad's other three directions and the stick click are ours. The host
-/// pad's bumpers are the game's Black and White buttons.
+/// D-pad's other three directions, the stick clicks and Back's Forge menu
+/// are ours. The host pad's bumpers are the game's Black and White
+/// buttons.
 pub const BINDINGS: &[Binding] = &[
     row(
         act(Action::Toggle),
@@ -246,7 +248,7 @@ pub const BINDINGS: &[Binding] = &[
     row(
         act(Action::Overlays),
         "Overlays",
-        Pad::Tap(B::Back),
+        Pad::Tap(B::RightStick),
         &[Key::Overlays],
         "H",
     ),
@@ -265,8 +267,15 @@ pub const BINDINGS: &[Binding] = &[
         "Shift+Cmd+Z",
     ),
     row(
-        Does::Game,
+        act(Action::Menu),
         "Forge menu",
+        Pad::Tap(B::Back),
+        &[Key::Menu],
+        "M",
+    ),
+    row(
+        Does::Game,
+        "Game menu",
         Pad::Tap(B::Start),
         &[],
         "Escape with nothing held",
@@ -314,13 +323,14 @@ pub fn controls() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Pairs of controls the Controls page shows on one row: up and down, and
-/// the tool settings and the overlays. Undo and redo keep a row each; their
-/// pad names together are wider than the column.
+/// Pairs of controls the Controls page shows on one row: up and down,
+/// the tools and their settings, and the two menus. Undo and redo keep a
+/// row each; their pad names together are wider than the column.
 pub const PAIRS: &[(Does, Does)] = &[
     (Does::Hold(Held::Rise), Does::Hold(Held::Fall)),
     (act(Action::Accept), act(Action::Select)),
-    (act(Action::Settings), act(Action::Overlays)),
+    (act(Action::Tools), act(Action::Settings)),
+    (act(Action::Menu), Does::Game),
 ];
 
 /// The Controls page's rows, `(what, pad, keys)`: the table in its order,
@@ -404,6 +414,7 @@ mod tests {
         Action::Tools,
         Action::Settings,
         Action::Overlays,
+        Action::Menu,
     ];
 
     #[test]
@@ -426,7 +437,8 @@ mod tests {
     /// Halo 3's layout, the owner's choice: hold Y deletes, B cancels, A
     /// picks up, D-pad Up swaps, RB and LB rise and fall, RT held
     /// manipulates, LT held thrusts, D-pad Right and Down are the Tools and
-    /// their settings, Start is the game's.
+    /// their settings, Start is the game's. Back is the Forge menu and the
+    /// right stick's click the overlays.
     #[test]
     fn the_default_is_halo_3s_layout() {
         let pad = |d: Does| binding(d).pad;
@@ -440,7 +452,8 @@ mod tests {
         assert_eq!(pad(Does::Hold(Held::Thrust)), Pad::Trigger(Side::Left));
         assert_eq!(pad(act(Action::Tools)), Pad::Tap(B::DpadRight));
         assert_eq!(pad(act(Action::Settings)), Pad::Tap(B::DpadDown));
-        assert_eq!(pad(act(Action::Overlays)), Pad::Tap(B::Back));
+        assert_eq!(pad(act(Action::Overlays)), Pad::Tap(B::RightStick));
+        assert_eq!(pad(act(Action::Menu)), Pad::Tap(B::Back));
         assert_eq!(pad(act(Action::Undo)), Pad::Tap(B::DpadLeft));
         assert_eq!(pad(act(Action::Redo)), Pad::Hold(B::DpadLeft));
         assert_eq!(pad(Does::Game), Pad::Tap(B::Start));
@@ -505,6 +518,7 @@ mod tests {
             Key::Tools,
             Key::Settings,
             Key::Overlays,
+            Key::Menu,
             Key::Undo,
             Key::Redo,
         ] {
@@ -530,9 +544,19 @@ mod tests {
         }
         assert!(page.contains(&("Up; down".into(), "RB; LB".into(), "E; Q".into())));
         assert!(page.contains(&(
-            "Tool settings; overlays".into(),
-            "D-pad Down; Back".into(),
-            "G; H".into()
+            "Tools; tool settings".into(),
+            "D-pad Right; D-pad Down".into(),
+            "T; G".into()
+        )));
+        assert!(page.contains(&(
+            "Forge menu; game menu".into(),
+            "Back; Start".into(),
+            "M; Escape with nothing held".into()
+        )));
+        assert!(page.contains(&(
+            "Overlays".into(),
+            "Click the right stick".into(),
+            "H".into()
         )));
         assert!(page.contains(&("Undo".into(), "D-pad Left".into(), "Cmd+Z".into())));
         assert!(page.contains(&("Redo".into(), "Hold D-pad Left".into(), "Shift+Cmd+Z".into())));
@@ -544,8 +568,9 @@ mod tests {
         assert_eq!(c.len(), BINDINGS.len());
         assert!(c.contains(&("Delete".into(), "Hold Y".into(), "Delete".into())));
         assert!(c.contains(&("Up".into(), "RB".into(), "E".into())));
+        assert!(c.contains(&("Forge menu".into(), "Back".into(), "M".into())));
         assert!(c.contains(&(
-            "Forge menu".into(),
+            "Game menu".into(),
             "Start".into(),
             "Escape with nothing held".into()
         )));

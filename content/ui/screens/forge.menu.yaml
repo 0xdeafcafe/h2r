@@ -1,0 +1,81 @@
+screen: forge.menu
+kind: list
+layout: controls
+backing: shell
+states:
+  options:
+    focus: 0
+  variants:
+    focus: 0
+  waves:
+    focus: 0
+  objects:
+    focus: 0
+  limits:
+    focus: 0
+widgets:
+  title:
+    component: title
+    text: "FORGE"
+  legend:
+    component: legend
+  forge.menu.tab.0:
+    component: text.emphasis
+    text: "{forge_menu_tab_0}"
+    at: [-228, 180]
+    size: [70, 20]
+  forge.menu.tab.1:
+    component: text.label
+    text: "{forge_menu_tab_1}"
+    at: [-228, 180]
+    size: [70, 20]
+  forge.menu.tab.2:
+    component: text.emphasis
+    text: "{forge_menu_tab_2}"
+    at: [-150, 180]
+    size: [112, 20]
+  forge.menu.tab.3:
+    component: text.label
+    text: "{forge_menu_tab_3}"
+    at: [-150, 180]
+    size: [112, 20]
+  forge.menu.tab.4:
+    component: text.emphasis
+    text: "{forge_menu_tab_4}"
+    at: [-30, 180]
+    size: [60, 20]
+  forge.menu.tab.5:
+    component: text.label
+    text: "{forge_menu_tab_5}"
+    at: [-30, 180]
+    size: [60, 20]
+  forge.menu.tab.6:
+    component: text.emphasis
+    text: "{forge_menu_tab_6}"
+    at: [38, 180]
+    size: [72, 20]
+  forge.menu.tab.7:
+    component: text.label
+    text: "{forge_menu_tab_7}"
+    at: [38, 180]
+    size: [72, 20]
+  forge.menu.tab.8:
+    component: text.emphasis
+    text: "{forge_menu_tab_8}"
+    at: [118, 180]
+    size: [64, 20]
+  forge.menu.tab.9:
+    component: text.label
+    text: "{forge_menu_tab_9}"
+    at: [118, 180]
+    size: [64, 20]
+  forge.menu.tab.10:
+    component: text.label
+    text: ""
+    at: [-254, 180]
+    size: [20, 20]
+  forge.menu.tab.11:
+    component: text.label
+    text: ""
+    at: [190, 180]
+    size: [20, 20]

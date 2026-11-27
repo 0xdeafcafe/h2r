@@ -161,7 +161,7 @@ fn modal_input_leaves_view_and_selection_alone_and_walls_block_aim() {
 }
 
 /// Halo 3's buttons on the tool: B with nothing held does nothing (the
-/// Forge menu is Start's), the Tools picker and the Tool settings are
+/// Forge menu is Back's), the Tools picker and the Tool settings are
 /// commands, and manipulating pushes a held object away and pulls it in.
 #[test]
 fn b_idle_is_nothing_tools_and_settings_open_and_manipulate_pushes() {

@@ -66,9 +66,9 @@ are the retail five and Theater.
 1. *The HUD*: the reticle, one prompt for what A does, the budget as a
    pill with a count, the tool's name, notices, and the motion tracker.
 2. *Screens* over the world: the object menu, Properties, Tools, Tool
-   settings, Coordinates, the Link question, and the game's own GAME
-   MENU with **Save**, **Save as**, **Load**, **Rebuild map** and
-   **Forge options...**.
+   settings, Coordinates, the Link question, and the Forge menu on
+   Back, with **Save**, **Save as**, **Load**, **Rebuild map** and the
+   rest on its tabs.
 3. *The scene*: the held object itself, navpoints on it, on other
    monitors and on a link's ends, the axis gizmo, and the volume, nav
    and barrier overlays.

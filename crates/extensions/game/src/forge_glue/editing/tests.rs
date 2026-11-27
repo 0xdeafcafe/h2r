@@ -358,12 +358,7 @@ fn selecting_two_objects_groups_them_and_the_browser_lists_the_group_first() {
     let folders = sheet::folder_rows(&e.session.groups());
     assert_eq!(folders[0].name, "Group 1");
     assert_eq!(folders[0].line, "Group. 2 objects.");
-    let page = sheet::options_with_groups(&folders, &e.placed());
-    let row = page
-        .rows
-        .iter()
-        .find(|r| r.label == "Placed objects")
-        .unwrap();
+    let row = sheet::placed_row_with(&folders, &e.placed());
     let sheet::Act::Pick(pick) = &row.act else {
         panic!("a browser picks");
     };
@@ -523,8 +518,29 @@ fn tools_and_settings_open_and_their_choices_set_the_tool() {
     e.choose(6, Choice::Set(Prop::Axes, 1)).unwrap();
     assert!(e.local_axes && e.local_axes());
     assert_eq!(e.status()["axes"], "local");
-    // The Forge menu is GAME MENU's, refused by name here.
-    assert!(e.command(7, Command::Menu).unwrap_err().contains("Start"));
+}
+
+/// Back's command opens the Forge menu while the monitor flies, on the
+/// tab it was left on; in the player's body it is refused by name.
+#[test]
+fn the_menu_command_opens_the_forge_menu_in_the_monitor() {
+    let mut e = editor();
+    screens::publish(screens::Facts {
+        active: true,
+        monitor: true,
+        ..screens::Facts::default()
+    });
+    e.command(1, Command::Menu).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Menu));
+    assert_eq!(screens::screen(Kind::Menu).sheet().title, "FORGE");
+    screens::publish(screens::Facts {
+        active: true,
+        monitor: false,
+        ..screens::Facts::default()
+    });
+    assert!(e.command(2, Command::Menu).unwrap_err().contains("monitor"));
+    assert_eq!(screens::take_request(), None);
+    screens::publish(screens::Facts::default());
 }
 
 /// A second screen while one is opening is refused by name, never

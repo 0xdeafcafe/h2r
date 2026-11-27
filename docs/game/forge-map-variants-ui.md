@@ -254,11 +254,11 @@ sentence (`Budget::full`: "Item spawners are full (100).").
 | `forge.budget.count`, `.meter` (the monitor HUD's pill) | with nothing held, the session's objects left and the share used; holding or aiming, the same for that thing's kind. It flashes from 90% (`Pulse::TimeWarning`) |
 | `fgr.guide` | when a hold starts with a tenth or less left: the binding limit by name, "3 item spawners left" |
 | The object menu's description | placed and left, by the object's kind ([forge-editing.md](forge-editing.md), "The object menu") |
-| **Map limits** (Forge options, P4) | Objects, Scenery, Crates, Machines, Item spawners, Starting points and Goals, with each count and its engine limit where known |
+| **Map limits** (the Forge menu's Limits tab, P4) | Objects, Scenery, Crates, Machines, Item spawners, Starting points and Goals, with each count and its engine limit where known |
 | A refused edit | `forge.notice` with the limit named: "Item spawners are full (100)." |
 
 **Map limits** (`forge.map-limits`, `forge_screens/map_limits.rs`)
-opens a read-only list over Forge options. It shares the live object pool
+is a read-only tab of the Forge menu. It shares the live object pool
 and scenario block readers with `forge.capacity`. Objects counts live
 datums across the game. The scenario rows count entries in their respective
 blocks, with Goals counting the netgame flags block. Starting points and
@@ -272,15 +272,15 @@ one gives its row back to the kind.
 
 ### Saving, loading and renaming
 
-GAME MENU keeps its five Forge rows
-([forge-firefight-ui.md](forge-firefight-ui.md), "The screens"); they
-act on the variant store (`forge::files::variants`).
+**Save**, **Save as** and **Load** are rows of the Forge menu's Map
+variants tab ([forge-firefight-ui.md](forge-firefight-ui.md), "The
+screens"); they act on the variant store (`forge::files::variants`).
 
 | Screen | Doc | Opened by | Is |
 |---|---|---|---|
 | Name | the game's keyboard (`Effect::Keyboard`) | Save as; Rename; Save on a variant with no name | 16 characters (the title NAME MAP VARIANT is not set: the keyboard's open call takes none yet) |
 | Map variant picker | `kit.picker.map-variant` | the lobby's Map Variant... | a picker: Original, then this map's saved variants by name; the description block has the author and the counts by kind of what a variant adds (`forge_screens::variants::detail`), or the sentence of one that cannot be used, which A does not choose (`Pick::blocked`) |
-| Map variants | `forge.variants` | **Map variants...** on Forge options | a dialog (`forge_screens::variants::list_sheet`) on the large dialog, so each row's line shows beside it: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) in the value column, or `Unusable` and its sentence as the row's line |
+| Map variants | `forge.variants` | **Map variants...** on the Forge menu's Map variants tab | a dialog (`forge_screens::variants::list_sheet`) on the large dialog, so each row's line shows beside it: a row a variant of this map, with where it is (`Saved`, `Xbox Live`) in the value column, or `Unusable` and its sentence as the row's line |
 | A variant's actions | `forge.variant` | A on a row of Map variants | a dialog on top (`variant_sheet`): **Load**, **Rename**, **Duplicate** and **Delete**, each only where it can act. A row that is only a fact (the page's "No map variants", the open variant's "Open now") takes no A: while it is focused the legend is Back alone: the footer is set as the screen opens and again on each focus change (`ForgeScreen::prompts_at`, `focused_footer`; `spec` takes the same legend) |
 | Questions | `forge.question` | below | Yes and No, No focused |
 
@@ -320,8 +320,8 @@ act on the variant store (`forge::files::variants`).
 - **Upload to Xbox Live** joins the dialog for a signed-in player on a
   variant Live does not have, when the game has a Live client for it. It
   is not built.
-- **Unsaved edits** show as the Save row's value on GAME MENU and in
-  `forge.status`. Leave Game asks before it leaves.
+- **Unsaved edits** show in `forge.status`. GAME MENU's Leave Game
+  asks before it leaves.
 - A variant that fails a check
   ([forge-map-variants.md](forge-map-variants.md), "Rules and limits")
   is listed with its sentence and can be renamed and deleted, not
@@ -390,8 +390,8 @@ h2 hud preview forge-all --out DIR
 - The readout and the marks are presentation. They read the session
   and never write it, and nothing of them is in the document, the log
   or the sim.
-- GAME MENU does not scroll: everything past its five Forge rows is on
-  Forge options.
+- GAME MENU has no Forge row: Save, Save as and Load are on the Forge
+  menu.
 - A screen with no retail counterpart is not built
   ([forge-firefight-ui.md](forge-firefight-ui.md), "Rules and limits").
 
@@ -413,7 +413,7 @@ they start with `assets/` or `docs/`.
 | **S1** | Properties from its doc: the row keys, the binder, the page's states, `sheet::PROPERTIES` removed | `content/ui/screens/forge.properties.yaml`, `extensions/game/src/ui_kit/data.rs`, `extensions/game/src/forge_screens/{props.rs (new), sheet.rs, pages.rs, tests.rs}` | the doc loads and round-trips through `data::to_yaml`; an unknown `prop` is a `DataError` naming the row; a `Page` table a kind; a property the map lacks has no row; the content check passes in every state | `h2 ui preview forge.properties --state all` writes a state a kind. Needs M6 |
 | **S2** (built) | The Game types dialog | `content/ui/screens/forge.games.yaml`, `extensions/game/src/forge_screens/games.rs` (new), one line of `ui_kit/screens.rs` | a `Page` table: ticks, All game types, Done writes one step, five engines show the refusal as the status line and write nothing | preview in every state. Needs D2, S1 |
 | **S3** (built) | The map variant picker and the lobby's row | `content/ui/screens/kit.picker.map-variant.yaml` (in place of `kit.picker.forge-map.yaml`), `extensions/game/src/{lobby_mode.rs, lobby_options.rs}`, one line of `ui_kit/screens.rs` | `Page` tables for Game Setup in CUSTOM GAMES and FORGE; Original is first; an unusable variant shows its sentence and cannot be chosen; a map change clears the panel line | `h2 ui preview kit.picker.map-variant`. Needs V1, V2 |
-| **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), game_menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `content/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
+| **S4** | Save, Save as and Load on the store, with their questions and notices | `extensions/game/src/forge_screens/{variants.rs (new), menu.rs}`, `extensions/game/src/forge_glue/editing.rs`, `content/ui/screens/forge.question.yaml` | a table of flows: unnamed Save opens the keyboard; a taken name asks; No is focused; Load with edits asks first; each ends in its notice | tests pass. Needs V1 |
 | **S5** (built) | Map variants and a variant's actions | `content/ui/screens/{forge.variants.yaml, forge.variant.yaml}`, `extensions/game/src/forge_screens/variants.rs`, `forge_screens/sheet.rs` (`OPTIONS`), two lines of `ui_kit/screens.rs` | `Page` tables; rename to a taken name writes nothing; the open variant's Delete is absent; Upload is absent when signed out | previews in every state. Needs S4 |
 | **S6** (built) | The budget by kind: `Session::budget_for`, the pill's feed, the guide line, the refusal's sentence | `extensions/forge/src/session.rs`, `extensions/forge/src/tests.rs`, `extensions/game/src/forge_readout.rs` | a table of counts and which limit binds; the sentence names it; an own entry's move costs nothing | tests pass. Needs M5, H3 |
 
@@ -448,8 +448,8 @@ they land one after another.
   pass's cost on a busy map.
 - That the game's keyboard takes a 16-character limit and a title of
   ours from an in-game screen.
-- That a list page and a dialog of ours open over GAME MENU in a game
-  in the order the flows need.
+- That the game's keyboard and a question of ours open over a game as
+  the Forge menu closes, in the order the flows need.
 
 ## Related
 

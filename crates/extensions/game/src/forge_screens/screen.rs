@@ -9,6 +9,11 @@
 //! picker's rule, docs/game/ui-builder.md "Strings are in guest memory
 //! before the screen is built"). A press sends its [`Choice`] to the
 //! screen's outbox, which the session drains ([`super::take_choices`]).
+//!
+//! The Forge menu ([`Kind::Menu`]) changes its sheet while it is up: LB and
+//! RB step its tabs ([`ForgeScreen::turn_tab`], [`super::menu`]), and the
+//! list grows or shrinks to the new rows at its next draw
+//! ([`Rows::growing_capacity`], [`Rows::live_text`]).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -18,7 +23,9 @@ use engine::entry::GuestCall;
 use engine::memory::{GuestMemory, MemFault};
 
 use super::sheet::{Act, Choice, Kind, Look, NumberField, PickSpec, Sheet};
-use crate::list_class::{Action, ListClass, ListLayout, OnFree, Panel, PanelText, Rows, TextBlock};
+use crate::list_class::{
+    Action, Button, ListClass, ListLayout, LiveText, OnFree, Panel, PanelText, Rows, TextBlock,
+};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 use crate::ui_kit::dialog::{
     self, DialogBase, DialogGeometry, DialogSpec, PICKER_HELP_TEXT, PICKER_LIST_ROWS,
@@ -92,6 +99,9 @@ pub struct ForgeScreen {
     up: AtomicBool,
     /// Its screen, once its pane is built (0: none).
     screen: AtomicU32,
+    /// The sheet changed while the screen is up (the Forge menu's tabs):
+    /// the next draw sizes the list and sets the texts again.
+    redraw: AtomicBool,
 }
 
 impl ForgeScreen {
@@ -121,6 +131,7 @@ impl ForgeScreen {
             opening_focus: AtomicU32::new(u32::MAX),
             up: AtomicBool::new(false),
             screen: AtomicU32::new(0),
+            redraw: AtomicBool::new(false),
         }
     }
 
@@ -179,6 +190,16 @@ impl ForgeScreen {
     /// does: its dialog chose something that leaves it with nothing to show.
     pub fn close_with_dialog(&self) {
         self.close_after_pick.store(true, Ordering::SeqCst);
+    }
+
+    /// The Forge menu's tab after (`right`) or before the one it shows,
+    /// its rows from the session's facts, shown in place: the tab now
+    /// showing.
+    pub fn turn_tab(&self, right: bool) -> super::menu::Tab {
+        let tab = super::menu::tab_of(&self.sheet()).next(right);
+        *lock(&self.sheet) = super::menu::sheet(tab, &super::facts());
+        self.redraw.store(true, Ordering::SeqCst);
+        tab
     }
 
     /// The rows its text slots hold, and the in-game list's lines.
@@ -243,6 +264,15 @@ impl ForgeScreen {
     fn inputs(&self) -> Vec<Input> {
         match self.kind {
             Kind::Controls | Kind::MapLimits => vec![Input::Up, Input::Down, Input::B],
+            // Left and Right step the tabs, as LB and RB do.
+            Kind::Menu => vec![
+                Input::Up,
+                Input::Down,
+                Input::Left,
+                Input::Right,
+                Input::A,
+                Input::B,
+            ],
             _ => vec![Input::Up, Input::Down, Input::A, Input::B],
         }
     }
@@ -378,6 +408,21 @@ impl ForgeScreen {
                     texts: vec![body_block()],
                 }),
             Look::List if self.kind == Kind::Coordinates => c.lines().sideways(),
+            Look::List if self.kind == Kind::Menu => {
+                let me = Arc::clone(self);
+                c.lines()
+                    .panel(super::menu::panel())
+                    .buttons(Arc::new(move |kind, button| {
+                        match super::menu::turn_of(kind, button) {
+                            Some(right) => {
+                                let tab = me.turn_tab(right);
+                                eprintln!("{}: {}", me.kind.screen(), tab.label());
+                                Button::Handled
+                            }
+                            None => Button::Pass,
+                        }
+                    }))
+            }
             Look::List => c.lines(),
             // No frame art and the rows at the menu's point; the point of
             // each opening is written as it opens (`object_menu::place`).
@@ -398,6 +443,20 @@ impl Rows for ForgeScreen {
     }
     fn content_spec(&self) -> Option<ScreenSpec> {
         Some(self.spec())
+    }
+    /// The Forge menu's list has room for its longest tab and takes each
+    /// tab's rows in place.
+    fn growing_capacity(&self) -> Option<usize> {
+        (self.kind == Kind::Menu).then(|| self.max_rows())
+    }
+    fn shrink_growing_rows(&self) -> bool {
+        self.kind == Kind::Menu
+    }
+    fn live_text(&self) -> LiveText {
+        LiveText {
+            writes: Vec::new(),
+            redraw: self.redraw.swap(false, Ordering::SeqCst),
+        }
     }
     /// The footer follows the focused row, as the description does: a fact
     /// row on a dialog takes no A, so its footer reads Back alone.
@@ -492,6 +551,13 @@ impl Rows for ForgeScreen {
                 Err(why) => Chosen::Stepped(format!("{}: not opened: {why}", sheet.kind.screen())),
             },
             Act::Type(spec) => super::ask_keyboard(spec.clone()),
+            Act::SaveAs => match super::ask_name() {
+                Ok(()) => {
+                    self.closing.store(true, Ordering::SeqCst);
+                    Chosen::Act
+                }
+                Err(why) => Chosen::Stepped(why),
+            },
             // Above this screen on its window and slot, so B comes back.
             Act::Open(k) if *k == Kind::Coordinates => {
                 match super::push(super::screen(*k).sheet()) {
@@ -551,6 +617,11 @@ impl Rows for ForgeScreen {
     }
 
     fn description(&self, row: i16) -> Option<u32> {
+        // The menu's description widget stands where its strip's first
+        // text does (`ListClass::panel`): it stays empty.
+        if self.kind == Kind::Menu {
+            return None;
+        }
         let s = lock(&self.sheet);
         let r = s.rows.get(usize::try_from(row).ok()?)?;
         Some(
@@ -559,9 +630,18 @@ impl Rows for ForgeScreen {
         )
     }
     fn panel_text(&self, i: usize) -> Option<u32> {
+        if self.kind == Kind::Menu {
+            // The strip: every text is set at each change of tab, the
+            // ones not showing to an empty string.
+            let strip = super::menu::strip(super::menu::tab_of(&lock(&self.sheet)));
+            return strip.get(i).map(|text| super::tab_text(i, text));
+        }
         (i == 0 && self.kind.look() == Look::Question).then(|| self.texts.family.id(BODY))
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+        if self.kind == Kind::Menu {
+            super::write_tab_texts(m)?;
+        }
         self.texts.write(m)
     }
     /// Asked as the screen opens: it is up, and its focus is set once the
@@ -612,7 +692,9 @@ fn row_spec(r: &super::sheet::SheetRow, described: bool) -> RowSpec {
             row.prompts = Some(vec![Prompt::new(&[Glyph::B], "Back")]);
             row
         }
-        Act::Choose(_) | Act::Close | Act::Done => RowSpec::action(&r.label).press(Press::Act),
+        Act::Choose(_) | Act::Close | Act::Done | Act::SaveAs => {
+            RowSpec::action(&r.label).press(Press::Act)
+        }
     };
     match (&r.description, described) {
         (Some(d), true) => row.describe(d),
@@ -658,6 +740,9 @@ impl Describe for ForgeScreen {
             }
             Look::List => {
                 s.scrolls = s.rows.len() > ListPlace::Controls.shown();
+                if self.kind == Kind::Menu {
+                    s.texts = super::menu::pane_texts(super::menu::tab_of(&sheet));
+                }
             }
             Look::Floating => {
                 s.list = ListPlace::from(Some(super::object_menu::layout(s.rows.len())));

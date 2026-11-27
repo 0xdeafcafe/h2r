@@ -1111,7 +1111,7 @@ impl Tool {
                 None
             }
             // B with nothing held lets the selection go; the Forge menu is
-            // Start's.
+            // Back's.
             Some(A::Back) => {
                 self.selection.clear();
                 None

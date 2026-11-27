@@ -259,9 +259,6 @@ impl Bridge {
         if s.screen {
             return Err("A screen is up; drive it with ui.press.".into());
         }
-        if input.action == Some(Action::Menu) {
-            return Err("The Forge menu is the game's GAME MENU; open it with Start.".into());
-        }
         if s.area.is_none()
             && matches!(input.action, Some(Action::AreaShape | Action::AreaClose |
                 Action::AreaGrab | Action::AreaRelease))
@@ -514,21 +511,32 @@ impl PadGate for Gate {
         let state = controller.as_ref().map(|p| p.pad.state).unwrap_or_default();
         self.controls(&mut b, state, Instant::now());
         if let Some(p) = controller {
-            if b.state.screen {
-                // The screen up (ours or the game's) takes the whole pad.
-            } else if b.state.monitor {
-                // Start reaches the Forge menu outside area editing.
-                let start = !self.area_start && p.pad.state.buttons.contains(HostButton::Start);
-                p.pad.state = HostPadState::default();
-                p.pad.state.buttons.set(HostButton::Start, start);
-            } else {
-                let swap = bindings::binding(Does::Act(Gesture::Do(Action::Toggle)));
-                if let Some(button) = swap.pad.button() {
-                    p.pad.state.buttons.set(button, false);
-                }
-            }
+            p.pad.state = handed(&b.state, self.area_start, p.pad.state);
         }
     }
+}
+
+/// What the game gets of player one's pad. A screen up (ours or the
+/// game's) takes all of it. Flying the monitor, only Start reaches the
+/// game (its GAME MENU), outside area editing: Back is the Forge menu's.
+/// In the player's own body the game has everything but the swap's
+/// button, so Back is its scoreboard.
+fn handed(state: &State, area_start: bool, pad: HostPadState) -> HostPadState {
+    if state.screen {
+        return pad;
+    }
+    if state.monitor {
+        let start = !area_start && pad.buttons.contains(HostButton::Start);
+        let mut out = HostPadState::default();
+        out.buttons.set(HostButton::Start, start);
+        return out;
+    }
+    let mut out = pad;
+    let swap = bindings::binding(Does::Act(Gesture::Do(Action::Toggle)));
+    if let Some(button) = swap.pad.button() {
+        out.buttons.set(button, false);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -641,8 +649,8 @@ mod tests {
     /// The gate's table: RB and LB rise and fall, RT held manipulates, LT
     /// held thrusts, hold Y deletes once, a tap of Y does nothing, B
     /// cancels at once, D-pad Left undoes and held redoes, D-pad Right and
-    /// Down open the Tools and their settings, the stick click is fine
-    /// movement.
+    /// Down open the Tools and their settings, Back the Forge menu, the
+    /// right stick's click the overlays, the left's is fine movement.
     #[test]
     fn the_gate_follows_halo_3s_buttons() {
         let mut gate = Gate::default();
@@ -738,7 +746,8 @@ mod tests {
         for (button, action) in [
             (HostButton::DpadRight, Action::Tools),
             (HostButton::DpadDown, Action::Settings),
-            (HostButton::Back, Action::Overlays),
+            (HostButton::Back, Action::Menu),
+            (HostButton::RightStick, Action::Overlays),
         ] {
             pad.buttons.set(button, true);
             assert_eq!(step(&mut gate, &mut bridge, pad, at(3000)), Some(action));
@@ -852,11 +861,65 @@ mod tests {
             Err("A screen is up; drive it with ui.press.".into())
         );
         b.state.screen = false;
+        assert_eq!(b.enqueue(input), Ok(()));
+    }
+
+    fn back_pressed() -> HostPadState {
+        let mut pad = HostPadState::default();
+        pad.buttons.set(HostButton::Back, true);
+        pad
+    }
+
+    /// In the player's own body Back is the game's: nothing of ours fires
+    /// and the game gets the press, its scoreboard.
+    #[test]
+    fn back_in_player_mode_shows_the_scoreboard() {
+        let mut bridge = monitor();
+        bridge.state.monitor = false;
+        let mut gate = Gate::default();
+        let pad = back_pressed();
+        gate.controls(&mut bridge, pad, Instant::now());
+        assert_eq!(next(&mut bridge), None, "no Forge menu in the body");
+        let game = handed(&bridge.state, gate.area_start, pad);
+        assert!(game.buttons.contains(HostButton::Back), "the game has Back");
+        assert!(!bridge.key(Key::Menu, true, false), "nor from its key");
+        assert_eq!(next(&mut bridge), None);
+    }
+
+    /// Flying the monitor, Back (and its key) asks for the Forge menu and
+    /// the game never sees the press; Start still reaches the game.
+    #[test]
+    fn back_in_the_monitor_opens_the_forge_menu() {
+        let mut bridge = monitor();
+        let mut gate = Gate::default();
+        let mut pad = back_pressed();
+        gate.controls(&mut bridge, pad, Instant::now());
+        assert_eq!(next(&mut bridge), Some(Action::Menu));
+        assert_eq!(next(&mut bridge), None, "once a press");
+        let game = handed(&bridge.state, gate.area_start, pad);
+        assert!(!game.buttons.contains(HostButton::Back), "no scoreboard");
+        pad.buttons.set(HostButton::Start, true);
+        let game = handed(&bridge.state, gate.area_start, pad);
+        assert!(game.buttons.contains(HostButton::Start), "GAME MENU is Start's");
+        assert!(bridge.key(Key::Menu, true, false));
+        assert_eq!(next(&mut bridge), Some(Action::Menu));
+        // The agent asks the same way.
         let menu = Input {
             action: Some(Action::Menu),
             ..Default::default()
         };
-        assert!(b.enqueue(menu).unwrap_err().contains("GAME MENU"));
-        assert_eq!(b.enqueue(input), Ok(()));
+        assert_eq!(bridge.enqueue(menu), Ok(()));
+    }
+
+    /// With a screen up the pad is the screen's: Back closes it, as B does.
+    #[test]
+    fn back_with_a_screen_up_is_the_screens() {
+        let mut bridge = monitor();
+        bridge.state.screen = true;
+        let mut gate = Gate::default();
+        let pad = back_pressed();
+        gate.controls(&mut bridge, pad, Instant::now());
+        assert_eq!(next(&mut bridge), None);
+        assert!(handed(&bridge.state, gate.area_start, pad).buttons.contains(HostButton::Back));
     }
 }

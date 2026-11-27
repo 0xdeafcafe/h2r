@@ -37,7 +37,7 @@ const HOST: Menu = Menu {
 #[test]
 fn game_menus_array_grows_by_one_only_while_the_feature_is_built() {
     assert_eq!(grown(ARRAY_NAME, 6, true), 7);
-    assert_eq!(grown(ARRAY_NAME, 11, true), 12, "on top of the Forge rows");
+    assert_eq!(grown(ARRAY_NAME, 11, true), 12, "whatever the room asked for");
     assert_eq!(grown(ARRAY_NAME, 6, false), 6);
     assert_eq!(grown(0x1234, 6, true), 6);
 }
@@ -593,7 +593,7 @@ fn the_row_and_its_screens_plan_with_the_other_game_menu_rows() {
             .find(|l| l.contains(&format!(" {point}: ")) && l.contains(label))
             .unwrap_or_else(|| panic!("no {point} line with {label}\n{plan}"));
         if let Some(forge) = line.find("forge-screens:") {
-            assert!(forge < line.find(label).unwrap(), "inside the Forge rows' hook: {line}");
+            assert!(forge < line.find(label).unwrap(), "inside Forge's Leave Game hook: {line}");
         }
     }
 }
