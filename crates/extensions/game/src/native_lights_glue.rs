@@ -567,7 +567,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             if layer == CASTER_LAYER {
                 draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
             } else {
-                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer)?);
+                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
             }
         }
         if !run.is_empty() {
@@ -2128,6 +2128,7 @@ impl LightsWorld {
         entry: &LightEntry,
         rows: &[Row],
         layer: usize,
+        produced_gel: bool,
     ) -> Result<Planned, Keep> {
         let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
             "scene receiver entry has no native stream",
@@ -2157,7 +2158,7 @@ impl LightsWorld {
                 "receiver entry's node rows do not fit the palette",
             ));
         }
-        self.binds(&compiled.program, None, false, &lights.images)?;
+        self.binds(&compiled.program, None, produced_gel, &lights.images)?;
         Ok(Planned {
             material: MODEL_MATERIAL,
             layer,
