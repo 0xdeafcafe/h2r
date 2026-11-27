@@ -176,6 +176,7 @@ pub const READS: &[u16] = &[
 pub const ACTIONS: &[u16] = &[
     id::SCORE,
     id::END_ROUND,
+    id::NEXT_ROUND,
     id::SET_LIVES,
     id::RESPAWN,
     id::ROLE_TRAITS,
@@ -359,6 +360,9 @@ pub enum Call {
     },
     /// `end_round`, or the round end of a script error.
     End,
+    /// `next_round`: the round ends and the game goes on
+    /// (`guest::next_round`).
+    NextRound,
     /// `message`, `message_team` or `message_all`: not an engine call but
     /// a show cue, made at the boundary by [`Runtime::pre_tick`]
     /// (`super::world::show`).
@@ -410,6 +414,7 @@ impl Call {
                 None => "bot_free",
             },
             Call::End => "end_round",
+            Call::NextRound => "next_round",
             Call::Message(_) => "message",
             Call::SoundTo { .. } | Call::Play { .. } => "sound",
             Call::SetLoadout { .. } => "set_loadout",
@@ -1423,14 +1428,18 @@ impl Runtime {
     }
 
     /// A later round began (the engine's round reset,
-    /// `ENGINE_ROUND_RESET`): `on round_start`, with its calls kept for
-    /// the next tick boundary. The first round's is [`Runtime::start`]'s.
+    /// `ENGINE_ROUND_RESET`): the last round's end in the VM, which takes
+    /// its round state (the `ticks_held` counts, spawn rules, bodies, shown
+    /// areas, HUD, offers; `on round_end` is not delivered, so no handler
+    /// runs), then `on round_start`, with its calls kept for the next tick
+    /// boundary. The first round's is [`Runtime::start`]'s.
     pub fn round_start(&mut self, m: &dyn GuestMemory) {
         let Some(r) = self.running() else { return };
         let ty = r.game_type;
         let projects_role = r.record_engine == super::roles::JUGGERNAUT;
         self.run(m, |vm, g| {
             let before = vm.ext().role_mask;
+            vm.fire(g, Input::RoundEnd);
             vm.clear_roles();
             let first_call = g.calls.len();
             vm.round_start_as(g, ty);
