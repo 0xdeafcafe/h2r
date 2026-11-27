@@ -204,6 +204,23 @@ What the native pass draws is exactly the set of objects whose layer-3 items it 
 
 An object item's draw reads three things beyond its material: the fade byte, the shader's flag bit 0 (with the structure's parameter block) and the item's argument. The native draw takes the item only where skipping the guest's draw leaves the device's state as drawing it would. The cases and the names of what declines (`object_fade`, `object_stipple`, `object_shader_flag`, `object_shader_flag_target`) are in [native-objects-fade.md](native-objects-fade.md).
 
+### Depth mode at the layer call
+
+A layer's object items are planned at the layer call, before its first shader begin (`0x0001bbf0`) sets `ZENABLE` to `D3DZB_USEW` (`push 2` at `0x0001bc11`). The device at the call holds what the work before left: before layer 1 that is the last view's screen passes, drawn unbuffered.
+
+| Step | Where |
+|---|---|
+| Set the begin's `ZENABLE` through D3D when the device holds another | `native_objects_glue::apply_layer_begin_zenable`, before the boundary's drain |
+| The drain consumes the pushed `SET_CONTROL0`, viewport and W clip | `Device::begin_external_boundary` |
+| The W check reads the drained device | `entry_states`; refused: `object_w_buffer` |
+| A D3D error setting it | every item kept, `object_layer_begin` |
+
+The guest's begin sets the same value again, so its kept draws are unchanged.
+
+### Texture accumulation order
+
+Layer 1 draws each object's albedo into the texture accumulation target; layer 3 samples it. Both run in stream order: a native pass is issued at the drain after the D3D work pushed before it, and binds the target's level in place (`rtt_direct.rs`, `an_external_pass_samples_a_level_after_the_work_drawn_into_it_before_the_drain`). A layer-3 pass never reads the level ahead of its layer-1 items, native or kept.
+
 ### Transform source
 
 Node matrices are read once per view at the hook, from the body (`[body+0x116]`, `[body+0x114] / 0x34` nodes), after the game has finished the frame's animation and attachment updates (the records exist, so `0x00133ab0`'s node pass ran). They are uploaded raw (13 floats a node) into one storage buffer per pass.
