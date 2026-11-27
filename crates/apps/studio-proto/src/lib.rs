@@ -90,7 +90,16 @@ pub mod method {
     pub const ASSET_THUMB: &str = "asset.thumb";
     pub const ASSET_COPY: &str = "asset.copy";
     pub const ASSET_LINKS: &str = "asset.links";
+    pub const ASSET_WHERE_USED: &str = "asset.where_used";
+    pub const ASSET_EDITS: &str = "asset.edits";
+    pub const ASSET_DROP: &str = "asset.drop";
     pub const ASSET_FORK: &str = "asset.fork";
+    // Forge map variants and the Forge palette (api/forge_variants.rs).
+    pub const FORGE_VARIANT_LIST: &str = "forge.variant.list";
+    pub const FORGE_VARIANT_READ: &str = "forge.variant.read";
+    pub const FORGE_VARIANT_SET: &str = "forge.variant.set";
+    pub const FORGE_VARIANT_SAVE: &str = "forge.variant.save";
+    pub const FORGE_ITEMS: &str = "forge.items";
     pub const ASSET_REVERT: &str = "asset.revert";
     // The package document (api/packages.rs).
     pub const PACKAGE_LIST: &str = "package.list";
@@ -118,6 +127,14 @@ pub mod method {
     pub const WORKSPACE_EXTRACT: &str = "workspace.extract";
     pub const WORKSPACE_IMPORT: &str = "workspace.import";
     pub const WORKSPACE_PRUNE: &str = "workspace.prune";
+    // The workspace's projects and edit files (docs/editor/tag-workspace.md,
+    // "Projects", "Edits are data"; api/projects.rs).
+    pub const PROJECT_LIST: &str = "project.list";
+    pub const PROJECT_READ: &str = "project.read";
+    pub const PROJECT_BUILD: &str = "project.build";
+    pub const EDITS_LIST: &str = "edits.list";
+    pub const EDITS_CHECK: &str = "edits.check";
+    pub const EDITS_SET: &str = "edits.set";
 
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
@@ -344,6 +361,7 @@ pub mod method {
     pub const MESH_TRANSFORM: &str = "mesh.transform";
     pub const MESH_OPS: &str = "mesh.ops";
     pub const MESH_APPLY: &str = "mesh.apply";
+    pub const MESH_SCULPT: &str = "mesh.sculpt";
 
     // The Textures tool (docs/editor/modeling.md, "Texture editing").
     pub const BITMAP_LIST: &str = "bitmap.list";

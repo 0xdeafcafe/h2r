@@ -112,6 +112,7 @@ Everything else keeps its D3D draws and so the indexed-draw admission: per-draw 
 | `object_state`, `state` | the pass would leave a render state other than the device holds (`skip_holds`) |
 | `object_models`, `object_model` | the caller's models are not resident or their palettes changed; the item's model is not uploaded |
 | `viewport`, `object_w_buffer`, `object_fog`, `object_stencil`, `object_aux_depth`, `object_texaccum` | the device conditions above do not hold (`object_texaccum`: in layer 1, or no target to bind or level to give) |
+| `object_layer_begin` | setting the layer begin's `ZENABLE` before the drain failed (`native_objects_glue::apply_layer_begin_zenable`, [native-objects.md](native-objects.md) "Depth mode at the layer call") |
 | `object_warming`, `warming` | a pipeline is not built yet |
 | `object_plan_<cause>` (`LayerPlanRefusal::name`) | `not_compiled` (the material's passes of the layer did not compile; its first compile error is kept per layer and shader, counted again as `object_plan_not_compiled_<kind>` with `LayerPlanRefusal::detail`: `constant`, `input`, `object_function`, `wave`, `cube`, `other`, and logged with the shader's tag), `no_part`, `shader`, `level`, `pass`, `pass_empty`, `implementation`, `prt`, `aux_depth`, `structure_parameters`, `defaults`, `ranges`, `program`, `animation`, `constants`, `state`, `model`. The first of each message is logged |
 | `stencil` | the device's stencil does not read, tests or writes on a depth with no stencil aspect, or layer 1's stencil is off and the device is not in mode 1 |

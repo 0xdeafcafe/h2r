@@ -52,7 +52,7 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 | `package check\|build` | `package_cmd.rs` (over `crates/tools/workspace`; [studio-redesign.md](../editor/studio-redesign.md), "Packages") |
 | `firefight kit` | `firefight_cmd.rs` |
 | `forge build\|check` | `forge_cmd.rs` |
-| `maps`, `tags`, `tag` | `maps.rs`, `tag_repo_cmd.rs` (`tags extract\|build`) |
+| `maps`, `tags`, `tag` | `maps.rs`, `tag_repo_cmd.rs` (`tags extract\|build`), `tag_project_cmd.rs` (`tags project\|edits`) |
 | `map testbuild` | `map_testbuild.rs` |
 | `testmap` | `testmap_cmd.rs` |
 | `collision`, `superbounce scan`, `hud preview\|sheet` | `collision.rs`, `superbounce_cmd.rs`, `hud_cmd.rs` |

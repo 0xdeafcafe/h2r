@@ -28,6 +28,7 @@ mod siege_cmd;
 mod strings;
 mod studio_link;
 mod superbounce_cmd;
+mod tag_project_cmd;
 mod tag_repo_cmd;
 mod testmap_cmd;
 mod variants_cmd;
@@ -52,6 +53,7 @@ sits beside h2 (docs/runtime/cli-tools.md).
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
   tags extract|build ...  the tag repository (h2 tags extract --help)
+  tags project|edits ...  the workspace's projects and edit files (h2 tags project --help)
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   firefight kit MAP [--home red|blue] [--probe]  build a Firefight package
                           from a disc map (docs/game/firefight.md)
@@ -115,6 +117,7 @@ fn main() -> Result<()> {
         "map" => map_testbuild::run(rest),
         "testmap" => testmap_cmd::run(rest),
         "tags" if tag_repo_cmd::handles(&rest) => tag_repo_cmd::run(rest),
+        "tags" if tag_project_cmd::handles(&rest) => tag_project_cmd::run(rest),
         "maps" | "tags" | "tag" => maps::run(&cmd, rest),
         "collision" => collision::run(rest),
         "superbounce" => superbounce_cmd::run(rest),

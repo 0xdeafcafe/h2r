@@ -65,8 +65,8 @@
 //!   when both are order-free and every kept item before it restores what
 //!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
 //!   D3D draw (`order`). One external pass records them, in the list's
-//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8
-//!   and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
+//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8,
+//!   17 and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
 //!   draw keeps its guest draw, under the same order rule, and its cause
 //!   goes to the bridge's `Left` (by slot, or for the whole layer), which
 //!   counts it `scene_kept_<site><layer>_<kind>_<cause>`. Object items
@@ -249,7 +249,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             left.all("device");
             return None;
         };
-        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
+        if !d.can_external_pass() {
+            refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
+            report(&outcomes, 0);
+            return None;
+        }
+        // The layer's draws run W-buffered whatever the device holds at the
+        // call: its first shader begin sets ZENABLE first
+        // (`native_objects_glue::apply_layer_begin_zenable`). Set before
+        // the drain, the objects' W check (`object_w_buffer`) and the
+        // pass's view constants and clip read the state the draws run with.
+        if !objects.is_empty() && crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
+            refuse_all(&mut outcomes, &mut *left, "object_layer_begin", taken.len(), objects.len());
+            report(&outcomes, 0);
+            return None;
+        }
+        if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
             refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;

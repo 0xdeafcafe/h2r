@@ -9,7 +9,7 @@ documented here because it was surveyed with the datum primitives; the
 Rust port is a separate step (it calls guest allocators and has a debug
 path through `0x3314b0`).
 
-## Header (`0x40` bytes, cleared by the initializer)
+## Header (`0x40` bytes, cleared by the initialiser)
 
 | Off | Meaning |
 |---|---|
@@ -33,7 +33,7 @@ compaction), `+8` next, `+0xc` previous.
 
 | Address | Assigned name | Convention / effect |
 |---|---|---|
-| `18e1f0` | `memory_pool_new` | EAX allocator (0 → default `*0x468758`), ECX capacity, stack name; allocates `capacity + 0x50` and initializes. Returns header or 0. |
+| `18e1f0` | `memory_pool_new` | EAX allocator (0 → default `*0x468758`), ECX capacity, stack name; allocates `capacity + 0x50` and initialises. Returns header or 0. |
 | `18e230` | `memory_pool_dispose` | EDX header: clears 0x40 bytes, frees through the allocator. |
 | `18e250` | `memory_pool_initialize` | ESI header, EBX capacity; stack name, allocator; `ret 8`. |
 | `18e2b0` | `memory_pool_allocate` | ECX pool; stack (out slot, size, tag); EAX a second tag (EAX and the third argument only reach the debug header). Rounds `size + 0x10` (`0x20` with debug headers) up to 16. With `+3d` set tries the first gap (`18e690`), then the head (`18e600`); always falls back to the tail (`18e560`). Records the out slot as owner unless `+3c`, subtracts from free bytes, stores the payload address to the out slot; AL = success; `ret 0xc`. |

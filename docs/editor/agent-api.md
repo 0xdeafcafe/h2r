@@ -94,6 +94,10 @@ What goes through actions, from both sides:
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the front document: the tool's, or the tag tab in front), `UndoDoc(doc)`, `RedoDoc(doc)`, `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys, every editor's Undo and Redo button | `doc.undo`, `doc.redo` |
 | Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
+| Open as fields | `OpenFields {asset, map}` | a Browser tag row's menu, **Fields** in the header's **Open with** | `shell.open {asset, fields: true}` |
+| Drop a source file on a package | `DropFile {file, package}` | a WAV, a PNG or a model YAML dropped on the window: the package is the one the Browser's Packages root shows or has selected, else the edit target | `asset.drop` |
+| Where used, Show edits | `WhereUsed {asset}`, `ShowEdits {asset}`, `ClearBrowse` | a Browser row's menu, the header's **Links** menu, the Browser view's **Clear** | `asset.where_used`, `asset.edits` |
+| A Forge map variant's field, its save | `Forge(ForgeAction::{Set, Save, Select})`, `UndoDoc(Doc::Forge)`, `RedoDoc(Doc::Forge)` | the Forge variant window's field boxes and rows, the header's Undo, Redo and Save | `forge.variant.set`, `forge.variant.save`, `doc.undo`, `doc.redo` |
 | Go to anything | `OpenAsset` for tags, packages and items, `GoTo` for placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `NewVariantFromScript`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `SetScriptOption`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
@@ -162,7 +166,7 @@ dropped with it.
 | Method | Does |
 |---|---|
 | `shell.tabs` | the tabs in order and the `front` one; per tab its `doc` id, `kind`, `title`, the `tool` it shows in, `dirty`, `can_undo`, `can_redo`, and for a tag its `editor`, `id`, `group` and `map` |
-| `shell.open {asset?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:`, `item:` or `package:` id. A package opens in the `package` tab. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. A local authored tag, WAV or model can open in a source tab before its tag is available in a map. Playlist fragments are refused. The call answers the `tab`, the `front` and the `log` |
+| `shell.open {asset?, fields?, tag?, map?, discard?}` | opens a tag of the open map (with `map`, that map opens first; refused over unsaved edits unless `discard`), or brings a map's tab forward; `asset` takes a `tag:`, `voice:`, `item:` or `package:` id. A package opens in the `package` tab. A voice opens on Setup while it has no dataset. A package item opens the editor of what it builds, with `item:` tab IDs for scripts and variants. A local authored tag, WAV or model can open in a source tab before its tag is available in a map. Playlist fragments are refused. `forge:<map>:<file>` opens a Forge map variant. With `fields`, a `tag:` asset opens as fields (the Browser's **Open as fields**): its tab shows the field panel in place of its group's editor, a bitmap's leaving the Textures canvas and a sound's the sound editor, and says `editor: field_panel` and `fields: true` until the tag is opened without `fields` or the tab closes; a scenario and an asset that is no tag are refused. The call answers the `tab`, the `front` and the `log` |
 | `shell.focus {doc}` | brings a tab forward: its document shows in its editor |
 | `shell.close {doc, discard?}` | closes a tab: a tool's document closes (`UNSAVED` over edits unless `discard`), a tag's tab closes keeping its edits; the nearest tab left open, to its left first, comes forward |
 
@@ -318,6 +322,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `workspace` | `status`, `extract {disc?, maps?, verify?, root?}`, `prune {dry_run?}` ([The tag workspace](#the-tag-workspace)); `import {map \| path, name}` (planned) |
+| `project` | `list`, `read {project, closure?}`, `build {project}`: projects over the tree ([Projects and edit files](#projects-and-edit-files)) |
+| `edits` | `list`, `check {project}`, `set {file, tag, path, value, project?}`: edit files over the tree ([Projects and edit files](#projects-and-edit-files)) |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}` (`variant` is `{builtin}`, `{saved}`, `{new}` or `{script}`), `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` (`undo`, `redo` and `close` also take a tag tab's id) |
 | `shell` | `tabs`, `open {tag?, map?, discard?}`, `focus {doc}`, `close {doc, discard?}`: the document tabs ([Document tabs](#document-tabs)) |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `kinds {group?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
@@ -1750,12 +1756,55 @@ keeping what a tag file or a manifest names); the API's tests
 (`api/tests.rs`) do the same through the dispatcher, and every method's
 example runs in `every_method_in_methods_has_a_test`.
 
+### Projects and edit files
+
+A project names one map to build from the tree, its import layers, its
+edit files and its kits (docs/editor/tag-workspace.md, "Projects"; code
+`workspace::project`, `workspace::project_build`, `api/projects.rs`).
+Each call reads the files again. The roots are the `tags_root` setting,
+the data root and the checkout Studio was built from.
+
+| Method | Does | Answers |
+|---|---|---|
+| `project.list` | every `art/*/project.toml`, then `<data>/workspace/projects/*.toml` | `{projects: [{name, path, origin, mode, base, error}]}` |
+| `project.read {project, closure?}` | resolves a project (a name, or a path to its `.toml`) without building it | `{project, file, origin, layers, edit_files, edited, kits, scenario_from, lossy, problems}` |
+| `project.build {project}` | builds and writes `<data>/maps/<name>/` with `receipt.json` | `{dir, map_id, file, took_ms, receipt}` |
+| `edits.list` | every `assets/tag-edits/*.yaml`, then `<data>/workspace/edits/*.yaml` | `{files: [{name, origin, path, entries, tags, problems}]}` |
+| `edits.check {project}` | applies every edit of the project once over its layers | `{project, files, edited, problems: [{file, line, tag, why}], overrides}` |
+| `edits.set {file, tag, path, value, project?}` | writes one `set` line into local file `file`; `project` records the tag's hash as `was` | `{file, path, line, replaced, was}` |
+
+`problems` in `project.read` are what would stop the build: a missing
+tree, base map, import layer or edit file, an edit that does not apply, a
+kit this build lacks. `lossy` (with `closure`, a fresh project whose
+scenario is in the layers) lists the closure's tags the tree does not
+hold exactly. `project.build` fails (`FAILED`) with the same words; an
+unknown project is `INVALID_PARAMS`; `edits.set` refuses (`REFUSED`) a
+dead path, a value the field does not take and an entry made on another
+hash.
+
+```sh
+h2 studio project.list
+h2 studio project.read '{"project":"stage","closure":true}'
+h2 studio edits.set '{"file":"tuning","tag":"jpt!:objects\\weapons\\rifle\\damage","path":"damage_lower_bound","value":12.5,"project":"stage"}'
+h2 studio edits.check '{"project":"stage"}'
+h2 studio project.build '{"project":"stage"}'
+```
+
+The same calls are `h2 tags project list|show|build` and `h2 tags edits
+list|check|set`. Tests: `workspace`'s `edits_tests.rs` and
+`project_tests.rs` (invented trees), and
+`projects_and_edit_files_resolve_over_an_invented_tree` in
+`api/tests.rs`; every example runs in
+`every_method_in_methods_has_a_test`, where `project.build` and
+`edits.check` answer that there is no tree.
+
 ### The browser
 
 `asset.*` is the browser's data (docs/editor/studio-redesign.md, "The
 browser"; `app/assets.rs`). An asset is named by an id: `tag:<group>:<path>`
 (a tag of the tree, or one a package adds), `package:<id>` or
-`item:<package>:<n>` (the n-th item of a package's manifest).
+`item:<package>:<n>` (the n-th item of a package's manifest), `voice:<id>`
+or `forge:<map>:<file>` (a Forge map variant).
 
 `asset.list {root?, package?, kind?, map?, query?, limit?}` answers
 `{rows, total, limit, truncated, maps, kinds, problems}`. With `root`
@@ -1790,10 +1839,28 @@ is its manifest kind. Use `kind` to filter those rows. `root` `live` answers `of
 offer is not held. A missing tree is refused with the way to make it
 (`workspace.extract`).
 
-`asset.thumb {asset, out?}` writes a PNG and answers its path: for a
-package's bitmap item with a PNG source. A tag's own picture (a bitmap,
-a model through `model.render`, a waveform, a screen) is not drawn yet
-and answers `not-yet`.
+`asset.thumb {asset, out?}` writes a PNG and answers its path: the
+picture a Browser row draws (`app/assets/thumbs.rs`).
+
+| Asset | PNG | Answer |
+|---|---|---|
+| a package's `bitmap` item with a PNG source | the source as it is | `{asset, path, bytes, source}` |
+| a bitmap tag (`tag:bitm:<path>`) the open map holds | image 0 at its base level, 64 pixels on its longer side | `{asset, path, bytes, width, height, source}`, `source` the map |
+| a bitmap no open map holds; any other tag (a model through `model.render`, a waveform, a screen) | none | `not-yet` |
+
+`asset.drop {file, package?}` is a source file dropped on the window
+(`app/assets/drop.rs`). It answers `{file, kind, tag, package, front, log}`.
+
+| File | `kind` | `tag` | As |
+|---|---|---|---|
+| `.wav` | `sound` | `sounds\<name>` | `import.sound`; opens the source tab |
+| `.png` | `bitmap` | `bitmaps\<name>` | `import.bitmap` |
+| `.yaml`, `.yml` | `model` | `models\<name>\model` | `import.model`; opens the source tab |
+
+`<name>` is the file's name in lower case with `-` for every run of other
+characters. With no `package`, the method uses the edit target or returns
+`NO_TARGET`. Any other file is `INVALID_PARAMS` (`source.open` opens a
+map); a file the import refuses is refused the same way.
 
 `asset.copy {asset, package?, to?}` is **New from this...**. It writes
 `tags/<path>.<group>.yaml` holding only `like: '<group>:<path>'`, adds a
@@ -1823,11 +1890,82 @@ items and `requires`. `editors` is `[{id, label, why_not}]`. A tag file that
 does not decode, or a missing tree, is named in `problems`. A bad id is
 `INVALID_PARAMS`; an unknown package or item number is `REFUSED`.
 
+`asset.where_used {asset}` and `asset.edits {asset}` are the Browser's link
+views (`app/assets/browse.rs`): the rows replace the Browser's list, as the
+menu entries **Where used** and **Show edits** leave them, and the call
+answers `{asset, view, rows: [{asset, role, via}], total, problems}`.
+
+| Method | `view` | Rows |
+|---|---|---|
+| `asset.where_used` | `where_used` | `used_by` of `asset.links`, for any asset id |
+| `asset.edits` on a tag | `edits` | each item with a patch on it in load order: `role` is `edit`, `patch` or `replaces`, `via` is where the item reaches then its lines (`x = 1`, `(overridden)` for a line a later package takes) |
+| `asset.edits` on a package | `edits` | its `edits` and `tag-delta` items and the items that replace an asset, `via` the source |
+
+`asset.edits` on an item or a voice is `REFUSED`; a bad id is
+`INVALID_PARAMS`. A refused call leaves the view as it was.
+
 ```sh
 h2 studio asset.list '{"kind":"Objects","query":"rifle"}'
 h2 studio asset.list '{"root":"packages","package":"pogo"}'
+h2 studio asset.drop '{"file":"/tmp/boing.wav","package":"my-pack"}'
 h2 studio asset.copy '{"asset":"tag:weap:objects\\weapons\\rifle","package":"my-pack"}'
 h2 studio asset.links '{"asset":"tag:weap:objects\\weapons\\rifle"}'
+h2 studio asset.where_used '{"asset":"tag:hlmt:objects\\weapons\\rifle_model"}'
+h2 studio asset.edits '{"asset":"package:pogo"}'
+```
+
+### Forge variants and items
+
+`forge.*` is the Forge map variants and the Forge palette
+(docs/editor/studio-flow.md, "Forge variants and items";
+`app/forge_variants.rs`, `app/assets/forge.rs`, `api/forge_variants.rs`). A
+variant is the document `forge::files::variants` stores at
+`<data>/map-variants/<map>/<file>.h2mapvariant`; its asset id is
+`forge:<map>:<file>` and `shell.open {asset}` opens it as a tab.
+
+| Method | Does |
+|---|---|
+| `forge.variant.list {query?, limit?}` | the saved and fetched variants of every map, the rows of `asset.list {kind: "Forge variants"}`: `{asset, name, map, file, source, editable, things, id, base}`. Only a `saved` one opens |
+| `forge.variant.read {asset?}` | the variant's things: `{target, block, added, removed, item, piece, notes, fields: [{field, type, value}]}`. With no `asset`, the open one, with its unsaved edits (`dirty`) |
+| `forge.variant.set {asset?, target, field, value}` | sets a field the variant writes; one undo step of the document. `asset` opens that variant first |
+| `forge.variant.save {}` | writes the open variant's file in the store |
+| `forge.items {query?, map?, custom?, limit?}` | the Forge palette, the rows of `asset.list {kind: "Forge items"}`: tag rows with `forge: {menu, custom, source}` |
+
+A thing's `target` is `added:<op>` for an entry the variant adds and
+`base:<block>:<index>` for an entry of the base map it edits or removes.
+`type` is `bool`, `int`, `float`, `vec2`, `vec3`, `vec4`, `text` or `tag`; a
+tag's value is `<group>:<path>`, or null for none. `forge.variant.set`
+replaces the value of the write that gives the field its value, so it adds
+no op; the value keeps the field's type and the document must still pass
+`forge_doc::validate`.
+
+| Refusal | Code |
+|---|---|
+| no variant is open; a field the variant does not write; an entry it does not have; a variant from Live | `REFUSED` |
+| a value of another type; a `target` that is not `added:<op>` or `base:<block>:<index>` | `INVALID_PARAMS` |
+
+A variant with unsaved edits does not close, and another does not open over
+it: save it or undo the edits.
+
+`forge.items` rows by `forge.source`:
+
+| `source` | Rows | `custom` |
+|---|---|---|
+| `disc` | every tag of the tree in a group Forge places: `weap`, `vehi`, `eqip`, `scen`, `bloc`, `mach`, `ctrl`, and the spawner collections `itmc` and `vehc` | false |
+| `package` | the tags the packages that are on add in those groups | true |
+| `blockout` | the kit's block-out set (`forge_shapes::starter`), `bloc` under `forge\blockout\` | true |
+
+`asset.where_used` and `asset.links` on an item's `tag:` id list the
+variants that place it (`role` `Forge variant`, `via` `<n> placed in <name>`);
+`asset.links` on a variant lists the tags it places under `uses`.
+
+```sh
+h2 studio forge.variant.list '{}'
+h2 studio shell.open '{"asset":"forge:lockout:Castle"}'
+h2 studio forge.variant.set '{"target":"added:1","field":"position","value":[1.5,0,2]}'
+h2 studio forge.variant.save '{}'
+h2 studio forge.items '{"custom":true}'
+h2 studio asset.where_used '{"asset":"tag:weap:objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}'
 ```
 
 `asset.fork {tag, map, package?, set?}` is Fork for this map
@@ -2515,7 +2653,14 @@ the window and the API stay one path.
   `geometry.read` gives the mesh (positions by vertex id, faces, the
   selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
   step each (`mesh.transform` with a `merge` key joins a drag), and
-  `mesh.apply` replays a `mesh.ops` log as one step. While a target is in
+  `mesh.apply` replays a `mesh.ops` log as one step. `mesh.sculpt
+  {brush, centre | points, radius, strength?, falloff?, height?, axis?,
+  detail?}` is one brush stroke (`raise`, `lower`, `smooth`, `flatten`,
+  `cut`) as one step and one `sculpt` op: it subdivides where the brush
+  needs vertices, goes through the collision compiler, and answers
+  `class`, `moved`, `verts` and `faces`; a stroke the kernel or the
+  compiler refuses is `REFUSED` with the reason, and nothing is kept
+  (docs/editor/modeling.md, "Sculpting"). While a target is in
   edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
   `geometry.check` gives each open target's write class and
   `save_refusal`, why a save would be refused (Allow unverified geometry

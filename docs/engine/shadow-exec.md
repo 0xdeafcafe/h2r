@@ -139,7 +139,7 @@ h2 agent shadow.status
 switches added to `H2_FEATURES` (the seats' one switch once, for any
 `sim.seats` name), waits for gameplay, turns their checks on, waits
 TICKS ticks and reads `shadow.status`. With the seats checked the match
-answers exactly as retail — the guest arm — so the run also proves the
+answers exactly as retail - the guest arm - so the run also proves the
 phantom seats' path with the bodies installed. It fails when a named
 port is not installed, when any call mismatched, or when nothing was
 checked; the verdict, with the full status, is in its output directory.

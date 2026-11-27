@@ -17,7 +17,10 @@
 //! `item:<package>:<n>` for the n-th item of a package's manifest, and
 //! `voice:<id>` for a voice (a character of `voice::dataset::CHARACTERS`,
 //! or `announcer`), which the **Voices** kind lists
-//! ([`App::voice_asset_list`]).
+//! ([`App::voice_asset_list`]), and `forge:<map>:<file>` for a Forge map
+//! variant, which the **Forge variants** kind lists
+//! (`app::forge_variants`). The **Forge items** kind lists the Forge
+//! palette as tags (`assets/forge.rs`).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -86,7 +89,12 @@ pub fn kind_names() -> Vec<&'static str> {
     KINDS
         .iter()
         .map(|(k, _)| *k)
-        .chain(["Other", VOICES_KIND])
+        .chain([
+            "Other",
+            VOICES_KIND,
+            super::forge_variants::VARIANTS_KIND,
+            super::forge_variants::ITEMS_KIND,
+        ])
         .collect()
 }
 
@@ -155,13 +163,16 @@ pub enum AssetId {
     Item(String, usize),
     /// A voice: a character id or `announcer`.
     Voice(String),
+    /// A Forge map variant: its base map and its file's stem in the store
+    /// (`app::forge_variants`).
+    Forge(String, String),
 }
 
 impl AssetId {
     pub fn parse(s: &str) -> Result<Self, String> {
         let bad = || {
             format!(
-                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"
+                "{s:?} is not an asset id (tag:<group>:<path>, package:<id>, item:<package>:<n>, voice:<id> or forge:<map>:<file>)"
             )
         };
         let (kind, rest) = s.split_once(':').ok_or_else(bad)?;
@@ -177,6 +188,13 @@ impl AssetId {
             "package" if !rest.is_empty() => Ok(Self::Package(rest.to_owned())),
             "voice" if crate::voice::dataset::character(rest).is_some() || rest == super::voices::ANNOUNCER => {
                 Ok(Self::Voice(rest.to_owned()))
+            }
+            "forge" => {
+                let (map, file) = rest.split_once(':').ok_or_else(bad)?;
+                if map.is_empty() || file.is_empty() {
+                    return Err(bad());
+                }
+                Ok(Self::Forge(map.to_owned(), file.to_owned()))
             }
             "item" => {
                 let (p, n) = rest.rsplit_once(':').ok_or_else(bad)?;
@@ -860,10 +878,40 @@ impl App {
             Ok(AssetId::Tag(key)) => key,
             Ok(AssetId::Item(p, n)) => return self.open_item(asset, &p, n, map),
             Ok(AssetId::Voice(id)) => return self.open_voice(&id),
+            Ok(AssetId::Forge(map, file)) => return self.open_forge_variant(&map, &file),
             Ok(AssetId::Package(id)) => return self.open_package_document(&id),
             Err(e) => return self.error(e),
         };
         self.open_tag(key, map)
+    }
+
+    /// [`super::Action::OpenFields`]: the tag as [`Self::open_asset`] opens
+    /// it, with its tab marked to show the field panel in place of its
+    /// group's editor (a bitmap's tab leaves the Textures canvas, a sound's
+    /// the sound editor). The scenario is the map's own tab and is
+    /// refused: its fields are the Tags tool's.
+    pub(super) fn open_fields(&mut self, asset: &str, map: Option<&str>) {
+        let key = match AssetId::parse(asset) {
+            Ok(AssetId::Tag(key)) => key,
+            Ok(_) => return self.error(format!("{asset}: Open as fields is for a tag")),
+            Err(e) => return self.error(e),
+        };
+        if kinds::kind(key.group).editor == Editor::Scenario {
+            return self.error(format!(
+                "{asset}: the scenario is the map's own tab; its fields are in the Tags tool"
+            ));
+        }
+        let text = format!("{}:{}", fourcc_text(key.group), key.path);
+        self.open_tag(key, map);
+        self.sync_tags();
+        let Some(id) = tag_api::find_tag(&self.tags, &text) else {
+            // `open_tag` has said why the tag did not open.
+            return;
+        };
+        if self.find_doc(&self.doc_id(Doc::Tag(id))) == Some(Doc::Tag(id)) {
+            self.fields_only.insert(id);
+            self.focus_doc(Doc::Tag(id));
+        }
     }
 
     /// The tag half of [`Self::open_asset`]: open the map that holds the
@@ -902,6 +950,8 @@ impl App {
                 if let Err(e) = self.navigate(super::NavAction::Open(vec![id])) {
                     return self.error(e);
                 }
+                // Open shows the tag in its group's editor again.
+                self.fields_only.remove(&id);
                 self.open_doc(Doc::Tag(id));
             }
             None => self.error(format!("{text} is not in the open map")),
@@ -1051,6 +1101,14 @@ impl App {
     }
 }
 
+mod browse;
 mod creation;
+mod drop;
+mod forge;
+mod thumbs;
+pub use drop::DropKind;
+pub use forge::forge_items;
+pub use thumbs::{THUMB_EDGE, has_thumb, shrink};
+pub use browse::{Browse, BrowseMode, BrowseRow, BrowseView};
 pub use creation::CreateAsset;
 pub(crate) use creation::{SourceAsset, SourceView};

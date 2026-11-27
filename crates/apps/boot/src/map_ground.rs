@@ -31,8 +31,22 @@ impl Fresh for AppFresh<'_> {
         let map = ::map::Map::from_reader(Cursor::new(job.map))
             .map_err(|e| format!("the map {} does not read: {e}", job.name))?;
         let name = map.header().name.clone();
-        let built = ground::build(job.map, &name, &labels_of(job.ground), &recipe_of(job.ground))
-            .map_err(|e| format!("the AI ground of {}: {e:#}", job.name))?;
+        // The Elite's behaviour rows come from the disc's campaign Elite;
+        // a disc without the map leaves the build refused by name.
+        let elite_bytes = self.0.bases.read(firefight_kit::ELITE_DONOR_MAP).ok();
+        let elite = elite_bytes.as_deref().map(|bytes| firefight_kit::Donor {
+            name: firefight_kit::ELITE_DONOR_MAP,
+            bytes,
+        });
+        let built = ground::build_with_elite(
+            job.map,
+            &name,
+            &labels_of(job.ground),
+            &recipe_of(job.ground),
+            None,
+            elite.as_ref(),
+        )
+        .map_err(|e| format!("the AI ground of {}: {e:#}", job.name))?;
         for problem in &built.problems {
             eprintln!(
                 "packages: the AI ground of {}: {} at {:?}: {}",

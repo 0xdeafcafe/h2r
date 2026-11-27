@@ -145,12 +145,28 @@ pub fn install(
     copier: &mut impl Copier,
 ) -> Result<(Option<Vec<u8>>, Report), Error> {
     let mut map = Map::from_reader(Cursor::new(base))?;
-    let mut set = TagSet::from_map(&mut map)?;
-    blockout_kit::make_index_room(&mut set);
     let mut report = Report {
         headroom,
         ..Report::default()
     };
+    // A base the tag set cannot take apart carries no body: each is
+    // refused by name, and the build goes on, as the block-out set's
+    // `unavailable` does.
+    let mut set = match TagSet::from_map(&mut map) {
+        Ok(set) => set,
+        Err(e) => {
+            let detail = format!("the base map cannot carry new tags: {e}");
+            report.rows = Body::ALL
+                .into_iter()
+                .map(|body| {
+                    let why = Refused::CannotCopy;
+                    (body, Row::Refused { why, detail: detail.clone() })
+                })
+                .collect();
+            return Ok((None, report));
+        }
+    };
+    blockout_kit::make_index_room(&mut set);
     let mut used = 0;
     let mut carried = false;
     for body in Body::ALL {
@@ -204,6 +220,9 @@ mod tests {
             match self.0.iter().find(|(b, _)| *b == spec.body).map(|(_, r)| *r) {
                 Some(Ok(size)) => {
                     let block = Block::new(vec![0; size]);
+                    // As `tags::schema::transplant` does: the group is
+                    // declared before its tag.
+                    set.add_group(FourCC(spec.unit.group), None, None);
                     set.add_tag(FourCC(spec.unit.group), spec.unit.path, TagPayload::Built(block))
                         .map_err(|e| (Refused::CannotCopy, e.to_string()))?;
                     Ok("invented_donor".into())
@@ -247,6 +266,25 @@ mod tests {
         assert!(map.tag(TagQuery::NameInGroup(monitor.path, FourCC(monitor.group))).is_ok());
         let prophet = Body::Prophet.spec().unit;
         assert!(map.tag(TagQuery::NameInGroup(prophet.path, FourCC(prophet.group))).is_err());
+    }
+
+    /// A base the tag set cannot take apart (its index is not at the retail
+    /// base) refuses every body by name, and the build goes on.
+    #[test]
+    fn a_base_that_cannot_take_tags_refuses_every_body() {
+        let base = scenario_edit::fixture::fixture_at_end();
+        let mut fake = Fake(vec![(Body::Monitor, Ok(0x400))]);
+        let (bytes, report) = install(&base, 0x2000, &mut fake).unwrap();
+        assert_eq!(bytes, None);
+        assert_eq!(report.rows.len(), 3);
+        for (_, row) in &report.rows {
+            match row {
+                Row::Refused { why: Refused::CannotCopy, detail } => {
+                    assert!(detail.contains("cannot carry new tags"), "{detail}");
+                }
+                other => panic!("refused: {other:?}"),
+            }
+        }
     }
 
     #[test]

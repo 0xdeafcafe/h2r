@@ -362,40 +362,38 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         std::mem::take(&mut *self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut render_bridge::native_layers::Left) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(current_ready(&state, mem)?)
+            let Some(ready) = current_ready(&state, mem) else { return crate::native_fog_glue::kept(left, "unloaded") };
+            Arc::clone(ready)
         };
-        let (water, palettes) = ready.water.get()?;
-        if water.parts.is_empty() { return None; }
-        let Ok(mut d) = self.device.lock() else { return None };
+        let Some((water, palettes)) = ready.water.get() else { return crate::native_fog_glue::kept(left, "unloaded") };
+        if water.parts.is_empty() { return crate::native_fog_glue::kept(left, "no_parts"); }
+        let Ok(mut d) = self.device.lock() else { return crate::native_fog_glue::kept(left, "device") };
         if !d.can_external_pass()
-            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
+            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).unwrap_or(false)
         {
-            return None;
+            return crate::native_fog_glue::kept(left, "device");
         }
         let read = ReadMemory(mem);
         if !crate::native_fog_glue::stencil_disabled(|slot| d.render_state(&read, slot)) {
-            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_stencil_view", 1);
-            return None;
+            return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, "stencil_view");
         }
         if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
-            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_palette_view", 1);
-            return None;
+            return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, "palette_view");
         }
         // The render targets the passes sample (the reflection inputs):
         // their embedded texture headers, resolved by the reservation.
         let mut headers = Vec::with_capacity(water.targets.len());
         for &t in &water.targets {
             let Some(header) = target_header(mem, t) else {
-                render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_target_view", 1);
                 if !TARGET_UNREADABLE.swap(true, Ordering::Relaxed) {
                     eprintln!("native-water: render target {t} is unavailable; the D3D path draws the water");
                 }
-                return None;
+                return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, "target_view");
             };
             headers.push(header);
         }
@@ -408,8 +406,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // register gets the device's).
         let device_words = crate::native_fog_glue::device_fog_words(&d, mem);
         let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
-            render_bridge::native_layers::count(WATER_LATE_LAYER.into(), "refused_fog_words_view", 1);
-            return None;
+            return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, "fog_words_view");
         };
         let writes_depth = water
             .programs
@@ -436,11 +433,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let selected = crate::native_fog_glue::display_late_part(mem, display_clusters, &water.part_set,
                 WATER_LATE_LAYER, |_, _| true);
             if let Some(selected) = selected {
-                let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+                let Ok(target) = d.external_ready(&ReadMemory(mem), false) else { return crate::native_fog_glue::kept(left, "device") };
                 if d.projection_factor_for_target(target.surface_size) < 1.0 {
-                    ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                    if ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
                         gpu.prewarm_water(device, color, depth).then_some(())
-                    })?;
+                    }).is_none() {
+                        return crate::native_fog_glue::kept(left, "pipeline");
+                    }
                     let plan = plan(1);
                     let display = pass(vec![selected], crate::native_fog_glue::late_fogs(&materials), true);
                     if matches!(d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, display), Ok(true))
@@ -455,34 +454,38 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let read = ReadMemory(mem);
-        let mut preview = native_render::skip::MaskPreview::new(&read)?;
-        let (selected, cleared, refused) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
+        let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else { return crate::native_fog_glue::kept(left, "list") };
+        let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
             let accepted = water.part_set.get(&(item.owner, item.part)) == Some(&(item.shader));
             if !accepted {
                 Stage::Water.count(Metric::Examined, 1);
                 Stage::Water.count(Metric::RefusedOwnership, 1);
             }
             accepted
-        })?;
-        crate::native_fog_glue::count_late_refusals(WATER_LAYER as u32, refused);
-        let masks = preview.finish()?;
+        }) else { return crate::native_fog_glue::kept(left, "list") };
+        crate::native_fog_glue::count_late_refusals(WATER_LAYER as u32, refused, left);
+        let Some(masks) = preview.finish() else { return crate::native_fog_glue::kept(left, "list") };
         if selected.is_empty() {
             return None;
         }
-        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+        if ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
             gpu.prewarm_water(device, color, depth).then_some(())
-        })?;
+        }).is_none() {
+            return crate::native_fog_glue::kept(left, "pipeline");
+        }
         // The view's water into the frame step's scene; the stage draws
         // the scene's copy. A view the scene cannot take stays on the D3D
         // path.
         let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
-        let late = render_bridge::scene_step::late_layer(&*mem, WATER_LATE_LAYER, true, device_words, &materials, &parts)?;
+        let Some(late) = render_bridge::scene_step::late_layer(&*mem, WATER_LATE_LAYER, true, device_words, &materials, &parts) else {
+            return crate::native_fog_glue::kept(left, "scene");
+        };
         let fogs = crate::native_fog_glue::late_fogs(&late.materials);
         let selected = crate::native_fog_glue::late_selected(&late.parts);
         let ranges = selected.len();
         drop(planning);
         if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
-            return None;
+            return crate::native_fog_glue::kept(left, "reservation");
         }
         render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
         Some(cleared)

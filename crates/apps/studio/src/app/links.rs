@@ -13,6 +13,10 @@
 //! | any other item | the tag it adds or edits | its package |
 //! | a package | its items, the packages it `requires` | the packages that require it |
 //! | a voice | | the dialogue sounds its rules pick, and (from the batch) the lines it made |
+//! | a Forge map variant | the tags its things place | |
+//!
+//! A tag also lists, under used by, the Forge map variants that place it
+//! (`app::forge_variants::users`).
 //!
 //! A `rules` item and a `variant` item of one script share the file stem
 //! the registry keys them by (`rules::builtin::package_sources`); that
@@ -110,6 +114,7 @@ const ROLE_ORDER: &[&str] = &[
     "Variant",
     "Voice",
     "Package",
+    "Forge variant",
 ];
 
 fn sort(links: &mut Vec<Link>) {
@@ -483,6 +488,16 @@ pub fn links(tags_root: &Path, set: &GameSet, id: &AssetId) -> Result<Links, Str
         AssetId::Item(package, n) => item_links(set, package, *n)?,
         AssetId::Package(p) => package_links(set, p)?,
         AssetId::Voice(v) => voice_links(tags_root, v),
+        // A variant's file is under the data root: `App::asset_links`
+        // reads what it places.
+        AssetId::Forge(..) => Links {
+            editors: vec![EditorRow {
+                id: "forge_variant",
+                label: "Forge variant",
+                why_not: None,
+            }],
+            ..Links::default()
+        },
     };
     sort(&mut out.uses);
     sort(&mut out.used_by);
@@ -552,6 +567,7 @@ impl super::App {
             Doc::SourceAsset(_) => self.source_asset(doc).map(|s| super::assets::tag_id(&s.key)),
             Doc::Package => self.package_document.id().map(|id| format!("package:{id}")),
             Doc::Voice => self.voices.doc.as_ref().map(|v| format!("voice:{v}")),
+            Doc::Forge => self.forge_variants.open.as_ref().map(|open| open.asset()),
             Doc::Tag(id) => tag(id),
             Doc::Map => self.session.scenario().and_then(|s| tag(s.tag)),
             Doc::Ui => match &self.ui_screens.pick {
@@ -615,6 +631,21 @@ impl super::App {
                 }
             }
             sort(&mut out.uses);
+        }
+        // The Forge map variants are files under the data root: a tag
+        // lists the variants that place it, a variant the tags it places
+        // (`app::forge_variants`).
+        match id {
+            AssetId::Tag(key) => {
+                out.used_by
+                    .extend(super::forge_variants::users(&self.data_root(), key));
+                sort(&mut out.used_by);
+            }
+            AssetId::Forge(map, file) => {
+                out.uses = self.forge_variant_uses(map, file)?;
+                sort(&mut out.uses);
+            }
+            _ => {}
         }
         Ok(out)
     }

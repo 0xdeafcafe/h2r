@@ -21,8 +21,15 @@
 //! the buffer is emptied at the tick's entry (docs/engine/object-update.md,
 //! "Slice 8 body").
 //!
+//! The function value `bab40` has a shadow arm over the Rust evaluator
+//! (`engine::sim_objects::functions::arm`), on with
+//! `impl.sim.native.objects.functions` ([`FUNCTIONS`]): at each entry the
+//! driver runs, the evaluator answers once proven and is compared until
+//! then, and on one call in 64 after.
+//!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
-//! state, so the feature's snapshot policy does not change.
+//! state, so the feature's snapshot policy does not change. The arm's
+//! Rust-owned data is the map's, rebuilt after a map load.
 use hooks::Builder;
 use engine::points;
 use engine::sim_objects::{self as objects, Table, damage};
@@ -34,6 +41,16 @@ pub const OBJECTS: &str = "sim.native.objects";
 
 pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(OBJECTS, false)
+}
+
+/// The function value's shadow arm, looked up exactly: it is on only when
+/// set, and only under [`OBJECTS`]. Off by default until the parity ladder
+/// passes (docs/engine/sim-rewrite.md, "Objects and units update (phase
+/// 3)").
+pub const FUNCTIONS: &str = "impl.sim.native.objects.functions";
+
+pub fn functions_on(switches: &hooks::Switches) -> bool {
+    on(switches) && switches.feature(FUNCTIONS, false)
 }
 
 /// Whether the per-function port at `addr` stands down: the switch is on
@@ -76,18 +93,27 @@ pub(crate) fn install(b: &mut Builder) {
         crate::shadow::register(point.name, OBJECTS, point, installed && bodies.owns(point.base));
     }
     if installed {
-        install_table(b, bodies, OBJECTS, |_| &[]);
+        let arm = functions_on(b.switches());
+        install_table_with(b, bodies, OBJECTS, |_| &[], arm);
         install_events(b);
         install_curve_arm(b);
         // The arm's proof is the map's: a new map earns it again.
         b.raw().observe_before(&points::CACHE_TAGS_LOAD, CURVE_ARM_RESET, |_| {
             engine::sim_objects::functions::parity::reset()
         });
+        if arm {
+            // So are the function arm's proof and its Rust-owned data.
+            b.raw().observe_before(&points::CACHE_TAGS_LOAD, FUNCTION_ARM_RESET, |_| {
+                engine::sim_objects::functions::arm::reset()
+            });
+        }
     }
 }
 
 /// The map-load observer that clears the curve arm's proof.
 const CURVE_ARM_RESET: &str = "objects: reset the curve arm";
+/// The map-load observer that clears the function arm and its data.
+const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
 
 /// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
 /// idiomatic kernel predicts every call, and
@@ -129,18 +155,31 @@ fn drive(
     table: &Table,
     pc: u32,
     shadow: &crate::shadow::Shadow,
+    arm: bool,
 ) -> objects::Result<TransferAbi> {
-    if !shadow.any_enabled() {
+    let shadowed = shadow.any_enabled();
+    if !shadowed && !arm {
         return objects::drive(cpu, g, table, pc);
     }
     objects::drive_with(cpu, g, table, pc, |body, cpu, g, pc| {
-        if SHADOW_POINTS.iter().any(|point| point.base == body.point.base) {
+        let value = arm && body.point.base == points::OBJECT_FUNCTION_VALUE.base;
+        if value && pc == body.point.base {
+            use engine::sim_objects::functions::arm::{self as function_arm, Step};
+            if let Step::Answered { target } = function_arm::enter(cpu, g) {
+                return Ok(TransferAbi::ret(target));
+            }
+        }
+        let transfer = if shadowed && SHADOW_POINTS.iter().any(|point| point.base == body.point.base) {
             shadow.run(body.point.name, cpu, g, pc, crate::shadow::game_tick, &mut |cpu, g| {
                 body.segment(cpu, g, pc)
-            })
+            })?
         } else {
-            body.segment(cpu, g, pc)
+            body.segment(cpu, g, pc)?
+        };
+        if value && transfer.kind == runtime::abi::RETURN {
+            engine::sim_objects::functions::arm::returned(cpu, g);
         }
+        Ok(transfer)
     })
 }
 
@@ -165,6 +204,17 @@ pub(crate) fn install_table(
     label: &'static str,
     generated_sites: fn(u32) -> &'static [u32],
 ) {
+    install_table_with(b, table, label, generated_sites, false);
+}
+
+/// [`install_table`], with the function value's arm when `arm`.
+fn install_table_with(
+    b: &mut Builder,
+    table: &'static Table,
+    label: &'static str,
+    generated_sites: fn(u32) -> &'static [u32],
+    arm: bool,
+) {
     for &body in table.bodies() {
         let point = body.point;
         b.raw()
@@ -172,7 +222,7 @@ pub(crate) fn install_table(
                 let site = pc != point.base && body.sites.contains(&pc);
                 if (pc == point.base || site) && table.supports(cpu) {
                     let mut mem = ctx.memory();
-                    return drive(cpu, &mut mem, table, pc, &crate::shadow::SHADOW);
+                    return drive(cpu, &mut mem, table, pc, &crate::shadow::SHADOW, arm);
                 }
                 original(cpu, ctx, pc, site)
             })
@@ -270,7 +320,7 @@ mod tests {
             g.set_u32(STACK, 0xabcd).unwrap();
             let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
             let before = CALLS.load(Ordering::Relaxed);
-            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow).unwrap();
+            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow, false).unwrap();
             assert_eq!(CALLS.load(Ordering::Relaxed) - before, 1);
             assert_eq!(transfer, TransferAbi::ret(0xabcd));
             assert_eq!((cpu.esp, cpu.eax), (STACK + 4, 27));
@@ -295,7 +345,12 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        assert!(plan.chains.is_empty(), "off: nothing installs");
+        // The default-on animation manager arms install their own entries;
+        // none of them is an object body.
+        for body in objects::BODIES {
+            let chain = plan.chains.get(&body.point.base);
+            assert!(chain.is_none_or(|c| c.implement.is_none()), "off: {}", body.point.name);
+        }
         assert!(plan.save_sections().is_empty());
 
         let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
@@ -354,6 +409,55 @@ mod tests {
             let chain = &plan.chains[&point.base];
             assert!(chain.observe_before.iter().any(|h| h.label == label), "{}", point.name);
         }
+    }
+
+    #[test]
+    fn the_function_arm_is_off_unless_set_under_the_objects_switch() {
+        let objects_on = || Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
+        assert!(!functions_on(&objects_on()), "the objects switch alone leaves it off");
+        assert!(!functions_on(&Switches::defaults().with(FUNCTIONS, true)), "it needs the objects switch");
+        assert!(functions_on(&objects_on().with(FUNCTIONS, true)));
+        for (switches, armed) in [(objects_on(), false), (objects_on().with(FUNCTIONS, true), true)] {
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::for_tests()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
+            assert_eq!(load.observe_before.iter().any(|h| h.label == FUNCTION_ARM_RESET), armed);
+        }
+    }
+
+    /// The real `bab40` body under the driver with the arm on: the
+    /// evaluator's prediction at the entry matches the body's return.
+    #[test]
+    fn the_function_arm_compares_the_value_body_at_its_return() {
+        use engine::sim_objects::functions::arm;
+        use runtime::guest::Permissions;
+        const STACK: u32 = 0x007f_0800;
+        const OUT: u32 = 0x007f_0f00;
+        const POOL: u32 = 0x0050_0000;
+        arm::reset();
+        let mut g = Guest::new();
+        g.map_zeroed(0x000b_0000, 0x0010_0000, Permissions::RW).unwrap();
+        g.map_zeroed(0x0041_0000, 0x0020_0000, Permissions::RW).unwrap();
+        g.map_zeroed(0x007f_0000, 0x1000, Permissions::RW).unwrap();
+        g.set_u32(engine::function_eval::constant::ONE, 1.0f32.to_bits()).unwrap();
+        g.set_u32(points::OBJECTS.base, POOL).unwrap();
+        g.set_u32(POOL + 0x44, POOL + 0x1000).unwrap();
+        g.set_u32(POOL + 0x1000 + 12 + 8, POOL + 0x2000).unwrap();
+        // `bab40(object 1, name 0, OUT)`, returning outside the table.
+        for (off, v) in [(0, 0x0001_2345), (4, 0x1234_0001), (8, 0), (0xc, OUT)] {
+            g.set_u32(STACK + off, v).unwrap();
+        }
+        let mut cpu = CpuAbi { esp: STACK, ecx: 0xaabb_ccdd, mxcsr: 0x1fa0, ..Default::default() };
+        cpu.x87.control = 0x027f;
+        let shadow = crate::shadow::Shadow::new();
+        let value = points::OBJECT_FUNCTION_VALUE.base;
+        let transfer = drive(&mut cpu, &mut g, &objects::TABLE, value, &shadow, true).unwrap();
+        assert_eq!(transfer, TransferAbi::ret(0x0001_2345));
+        assert_eq!(g.u32(OUT).unwrap(), 1.0f32.to_bits());
+        let s = arm::status();
+        assert_eq!((s.checked, s.matched, s.mismatched, s.answered, s.dropped), (1, 1, 0, 0, 0));
+        arm::reset();
     }
 
     #[test]

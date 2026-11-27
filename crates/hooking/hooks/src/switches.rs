@@ -118,6 +118,18 @@ pub fn native_render_on(switches: &Switches) -> bool {
     switches.feature(NATIVE, true)
 }
 
+/// The Rust view projection and visibility producers (slice R4 of
+/// docs/graphics/retire-d3d.md): on with the native renderer unless
+/// `impl.render.native.visibility=off`, which leaves the guest's
+/// `0x0002fb70` and its portal, sphere and potentially-visible-set
+/// producers running. The scene step's differential runs either way.
+pub const NATIVE_VISIBILITY: &str = "impl.render.native.visibility";
+
+/// Whether the Rust visibility producers ([`NATIVE_VISIBILITY`]) are on.
+pub fn native_visibility_on(switches: &Switches) -> bool {
+    native_render_on(switches) && switches.feature(NATIVE_VISIBILITY, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +140,15 @@ mod tests {
         assert!(on(""));
         assert!(on("impl.render=off"));
         assert!(!on("impl.render.native=off"));
+    }
+
+    #[test]
+    fn the_visibility_switch_only_turns_the_rust_producers_off() {
+        let on = |spec| native_visibility_on(&Switches::parse(spec).unwrap());
+        assert!(on(""));
+        assert!(!on("impl.render.native.visibility=off"));
+        assert!(!on("impl.render.native=off"), "the master switch takes it along");
+        assert!(on("impl.render.native=on"));
     }
 
     #[test]

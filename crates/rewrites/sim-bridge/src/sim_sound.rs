@@ -20,6 +20,7 @@ use sim_sound::schedule::Schedule;
 
 pub mod mixer_feed;
 pub mod owners;
+pub mod voice_arm;
 
 pub const SOUND: &str = "sim.native.sound";
 /// The sound simulation's switch (`impl.sim.sound-events`, default on; `h2 sim diff` parity in
@@ -479,15 +480,19 @@ impl Feature for SimSound {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.snapshot(SnapshotPolicy::Stateless);
-        if b.switches().implementation(SOUND, false) {
-            crate::sim_objects::install_table(
-                b,
-                &engine::sim_sound::TABLE,
-                SOUND,
-                engine::sim_sound::generated_sites,
-            );
+        if !b.switches().implementation(SOUND, false) {
+            b.snapshot(SnapshotPolicy::Stateless);
+            return Ok(());
         }
+        crate::sim_objects::install_table(
+            b,
+            &engine::sim_sound::TABLE,
+            SOUND,
+            engine::sim_sound::generated_sites,
+        );
+        // The per-tick voice update, shadowing the guest's (voice_arm.rs).
+        b.snapshot(SnapshotPolicy::section(voice_arm::save, |bytes, _| voice_arm::load(bytes)));
+        voice_arm::install(b);
         Ok(())
     }
 }
@@ -824,15 +829,32 @@ mod tests {
             let mut registry = Registry::new(Switches::parse(spec).unwrap());
             registry.add(&SimSound).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert!(plan.save_sections().is_empty());
+            assert_eq!(!plan.save_sections().is_empty(), enabled, "the voices are saved with the switch on");
             let table = &*engine::sim_sound::TABLE;
-            assert_eq!(plan.chains.len(), if enabled { table.bodies().len() } else { 0 });
+            // The voice arm's points, beside the bodies.
+            let arm = [
+                &points::SOUND_IMPULSE_ALLOCATE,
+                &points::SOUND_STOP_INSTANCE,
+                &points::SOUND_FINISH_INSTANCE,
+                &points::GAME_TICK,
+                &points::SOUND_UPDATE,
+            ];
+            let bases: std::collections::BTreeSet<u32> =
+                table.bodies().iter().map(|b| b.point.base).chain(arm.iter().map(|p| p.base)).collect();
+            assert_eq!(plan.chains.len(), if enabled { bases.len() } else { 0 });
             if enabled {
                 for body in table.bodies() {
                     let hook = plan.chains[&body.point.base].implement.as_ref().unwrap();
                     assert_eq!(hook.label, SOUND);
                     assert_eq!(hook.continuation_sites(), (body.sites, engine::sim_sound::generated_sites(body.point.base)));
                 }
+                let chain = |p: &engine::points::Point| &plan.chains[&p.base];
+                let labels = |hs: &[hooks::Hook]| hs.iter().map(|h| h.label).collect::<Vec<_>>();
+                assert_eq!(labels(&chain(&points::SOUND_IMPULSE_ALLOCATE).observe_after), ["voice start"]);
+                assert_eq!(labels(&chain(&points::SOUND_STOP_INSTANCE).observe_before), ["voice stop"]);
+                assert_eq!(labels(&chain(&points::SOUND_FINISH_INSTANCE).observe_before), ["voice finish"]);
+                assert_eq!(labels(&chain(&points::GAME_TICK).observe_after), ["voice tick"]);
+                assert_eq!(labels(&chain(&points::SOUND_UPDATE).before), ["voice play-outs"]);
             }
         }
     }

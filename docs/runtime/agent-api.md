@@ -2194,11 +2194,13 @@ h2 agent render.parity '{"arm": true}'
   did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
   `projection`, `start cluster`, `mode`).
   The top-level `counters` include
-  the visibility differential's `scene_visibility_checked` (game views
-  whose Rust sets were made and compared), `scene_visibility_equal`,
-  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
-  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
-  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
+  the visibility differential's `scene_visibility_checked` (sampled game
+  views whose Rust sets were made and compared), `scene_visibility_equal`,
+  `scene_visibility_differ`, the shadow arms'
+  `scene_visibility_<arm>_matched`, `_differ`, `_answered`, `_guest`,
+  `_declined`, `_proven` and `_fallen` for `clusters`, `frusta` and
+  `objects` ([native-visibility.md](../graphics/native-visibility.md#the-shadow-arms)),
+  `scene_visibility_rust_taken` (views that carry the Rust sets), `scene_visibility_ns` (time in the Rust
   computation), `scene_visibility_lens_retail`, `_guest` and `_display`
   (game views by the lens their visibility used: retail, the single-copy
   camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
@@ -2317,8 +2319,8 @@ h2 agent render.parity '{"arm": true}'
   with frame statistics and the residual census disabled. The corresponding
   `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
   `sky_plan_admitted` counts strips offered to the device after extraction and
-  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
-  material, transform, view, range, stencil or device. GPU reservation and
+  material checks. `scene_kept_sky_<cause>` counts strips left to their guest
+  draw, by cause ([native-world-walk.md](../graphics/native-world-walk.md)). GPU reservation and
   replay outcomes appear under `native_sky_*` in the frame counters.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
@@ -2331,7 +2333,7 @@ h2 agent render.parity '{"arm": true}'
   named `object_*` (`render_bridge::native_layers`; framescene.md,
   slice 4), and the cut world layers' items left to their guest draw,
   `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
-  `world`, `object` or `unreadable`; causes in
+  `world`, `object` or `unreadable`; layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20; causes in
   [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
@@ -5844,21 +5846,25 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, in that order. |
 
 Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
 `declined` (calls left to the guest unchecked, summed over reasons). The
-sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
+sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
+(`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
+whose `declined` adds its `dropped` audits),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
-`sim.effects` groups. A source without a counter reports 0 for that
+`sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
+`sim.effects` groups, and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
 `mismatched`; shadow ports have no `answered` and their
-`skipped` is `declined`. A subsystem with its switch off reads zeros, so
+`skipped` is `declined`; `sound.voices` counts ticks for `checked`
+(sampled ticks with voices), `matched` and `mismatched`, and voices for
+`answered`. A subsystem with its switch off reads zeros, so
 `clean` is false.
 
 ```sh

@@ -552,6 +552,7 @@ const SCENE_LISTS: &[&str] = &[
     "portal_regions",
     "sphere_regions",
     "window_record",
+    "view_projection",
 ];
 const SCENE_LIST_RESULTS: [&str; 12] = [
     "native",
@@ -625,6 +626,8 @@ pub enum SceneList {
     PortalRegions,
     SphereRegions,
     WindowRecord,
+    /// One call of the view projection builder `0x0002fb70`.
+    ViewProjection,
 }
 
 #[derive(Clone, Copy)]
@@ -1151,7 +1154,7 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_window_record_mismatch"
+            "native_scene_lists_view_projection_dropped"
         );
         for (stage, label) in [
             (SceneList::LightAdditionalCasters, "native_scene_lists_light_additional_casters_native"),

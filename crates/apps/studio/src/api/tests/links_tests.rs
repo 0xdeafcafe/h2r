@@ -335,3 +335,76 @@ fn a_voice_lists_the_dialogue_sounds_its_rules_pick() {
         .unwrap_err();
     assert_eq!(e.code, code::INVALID_PARAMS, "{}", e.message);
 }
+
+/// **Where used** (`asset.where_used`, `Action::WhereUsed`): the rows are
+/// `used_by` of the link table, and the Browser holds them as its view.
+#[test]
+fn where_used_answers_used_by_and_the_browser_shows_the_same_rows() {
+    use crate::app::Action;
+    use crate::app::assets::BrowseMode;
+    let (_t, mut app, mut api) = setup("links-where-used");
+    let links = links(&mut api, &mut app, MODEL);
+    let v = call(&mut api, &mut app, m::ASSET_WHERE_USED, json!({ "asset": MODEL }));
+    assert_eq!(v["view"], "where_used");
+    assert_eq!(v["asset"], MODEL);
+    assert_eq!(v["rows"], links["used_by"], "{v}");
+    assert_eq!(v["total"], 1);
+    let view = app.browse.view.clone().expect("the Browser's view");
+    assert_eq!(view.mode, BrowseMode::WhereUsed);
+    assert_eq!(view.rows[0].asset, RIFLE);
+    assert_eq!(view.heading(), "Where used: rifle_model (1)");
+    // The window's entry leaves the same view, and Clear takes it away.
+    let serial = app.browse.serial;
+    app.dispatch(Action::WhereUsed { asset: MODEL.to_owned() });
+    assert_eq!(app.browse.view.as_ref(), Some(&view));
+    assert_ne!(app.browse.serial, serial, "a new view comes forward");
+    app.dispatch(Action::ClearBrowse);
+    assert!(app.browse.view.is_none());
+}
+
+/// **Show edits** (`asset.edits`, `Action::ShowEdits`): a tag lists the
+/// items with a patch on it, a package its edit items.
+#[test]
+fn show_edits_lists_the_items_that_change_a_tag_and_a_packages_edit_items() {
+    let (_t, mut app, mut api) = setup("links-edits");
+    let v = call(&mut api, &mut app, m::ASSET_EDITS, json!({ "asset": RIFLE }));
+    assert_eq!(v["view"], "edits");
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["asset"], "item:kit-test:1");
+    assert_eq!(rows[0]["role"], "edit");
+    assert!(rows[0]["via"].as_str().unwrap().contains("x = 1"), "{v}");
+    // A tag no package touches has no row; the view still shows.
+    let none = call(&mut api, &mut app, m::ASSET_EDITS, json!({ "asset": MODEL }));
+    assert_eq!(none["total"], 0);
+    assert_eq!(app.browse.view.as_ref().map(|v| v.of.as_str()), Some(MODEL));
+    // A package: its `edits` item, by its file.
+    let package = call(
+        &mut api,
+        &mut app,
+        m::ASSET_EDITS,
+        json!({ "asset": "package:kit-test" }),
+    );
+    assert_eq!(
+        package["rows"],
+        json!([{ "asset": "item:kit-test:1", "role": "edit", "via": "edits/kit.yaml" }])
+    );
+}
+
+#[test]
+fn a_link_view_of_a_bad_id_or_an_item_without_edits_is_refused_and_keeps_the_view() {
+    let (_t, mut app, mut api) = setup("links-view-refused");
+    call(&mut api, &mut app, m::ASSET_WHERE_USED, json!({ "asset": MODEL }));
+    for (method, asset, code) in [
+        (m::ASSET_WHERE_USED, "nonsense", code::INVALID_PARAMS),
+        (m::ASSET_WHERE_USED, "package:nope", code::REFUSED),
+        (m::ASSET_EDITS, "item:kit-test:1", code::REFUSED),
+        (m::ASSET_EDITS, "voice:arbiter", code::REFUSED),
+    ] {
+        let e = api
+            .call(&mut app, method, json!({ "asset": asset }))
+            .unwrap_err();
+        assert_eq!(e.code, code, "{method} {asset}: {}", e.message);
+    }
+    assert_eq!(app.browse.view.as_ref().map(|v| v.of.as_str()), Some(MODEL));
+}

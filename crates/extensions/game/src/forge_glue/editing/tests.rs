@@ -1910,7 +1910,10 @@ mod rebuild {
         assert_eq!(e.session.objects()[0].handle, 55);
         assert_eq!(e.session.head(), head);
         assert_eq!(e.guard.scenario, 9);
-        assert!(e.tool.monitor, "the monitor and its tool are kept");
+        // The reloaded map holds no body: the player is in their biped
+        // and is swapped into the body again once they have a unit.
+        assert!(!e.tool.monitor, "the body went with the old map");
+        assert!(e.enter_at_start, "the session goes back into the body");
         assert_eq!(e.notice, Some((reload::REBUILT.into(), 5)));
         assert!(!e.session.rebuild_needed());
         assert!(!e.busy());

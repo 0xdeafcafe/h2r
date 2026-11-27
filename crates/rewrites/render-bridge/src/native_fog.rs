@@ -23,6 +23,14 @@
 //!   entry for them. Objects' fog items are never cleared (stage 2's),
 //!   and a placement draws natively when its rigid program and rows resolve.
 //!
+//! Every item the guest's layer draw still draws after the decision (the
+//! host's refusal, a caller other than the late passes', no host, or the
+//! items the walk leaves) keeps its guest draw and is counted
+//! `scene_kept_16_<kind>_<cause>` ([`count_late_kept`]): the walk's cause
+//! for its slot (`native_render::fog::LateRefusals::kept`), else the
+//! host's for the view, else the hook's (`caller`, `gate`, `host`). A
+//! record with no layer-16 entry draws nothing and is not counted.
+//!
 //! The fog the passes read is the device's at the layer (set by
 //! `0x00025d50` before the layer begins): the glue reads it through
 //! `d3d::Device::render_state` at the ask and resolves each material's
@@ -41,6 +49,8 @@ use native_render::camera::{GuestRead, GuestWrite};
 use native_render::fog::{self, FOG_LAYER};
 use native_render::skip::{self, Cleared};
 
+use crate::native_layers::Left;
+
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-fog";
@@ -56,8 +66,10 @@ pub trait Host: Send + Sync {
     /// reservation, recording on every copy before anything is
     /// surrendered), applies the mask edits and commits. Returns what was
     /// cleared for the restore at the next layer draw, or `None` to leave
-    /// the fog to the D3D path (the guest items untouched).
-    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<Cleared>;
+    /// the fog to the D3D path (the guest items untouched). `left` takes
+    /// why the items it does not clear keep their guest draw: the walk's
+    /// cause per slot, the view's refusal for the rest.
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut Left) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -118,8 +130,7 @@ impl GuestWrite for Mem<'_> {
 /// draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let m = Mem(mem);
-    if m.read_u32(skip::CURRENT_LAYER) != Some(FOG_LAYER as u32) {
+    if Mem(&mut *mem).read_u32(skip::CURRENT_LAYER) != Some(FOG_LAYER as u32) {
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
@@ -127,12 +138,24 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         // Only the indexed range hook can establish this handler's layer.
         return;
     }
+    let mut left = Left::default();
+    if claim(mem, ret, &mut left) {
+        count_late_kept(&Mem(&mut *mem), FOG_LAYER as u32, &left);
+    }
+}
+
+/// The skip of one layer-16 call. `false` when the layer draws nothing
+/// (its gate off), so nothing is kept; else what it did not clear keeps
+/// its guest draw under the cause named in `left`.
+fn claim(mem: &mut dyn GuestMemory, ret: u32, left: &mut Left) -> bool {
+    let m = Mem(mem);
     if ret != fog::SCENE_FOG_RETURN {
         let n = WRONG_CALLER.fetch_add(1, Ordering::Relaxed);
         if n % 1800 == 0 {
             eprintln!("native-fog: {} layer-16 calls from other sites (latest {ret:#010x}, scene {:#010x}): no whole-list claim", n + 1, fog::SCENE_FOG_RETURN);
         }
-        return;
+        left.all(crate::native_layers::CALLER_CAUSE);
+        return true;
     }
     // The layer draw's own gate (`0x00044582`): a layer that draws no
     // fog must not be drawn natively either. Unreadable, the D3D path.
@@ -141,25 +164,31 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         Some(false) => {
             GATED.fetch_add(1, Ordering::Relaxed);
             crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, false);
-            return;
+            return false;
         }
-        None => return,
+        None => {
+            left.all("gate");
+            return true;
+        }
     }
     let display = crate::scene_step::late_display_visibility(&*m.0, FOG_LAYER as u8);
     let clusters = display.as_ref().map_or(&[][..], |extra| extra.whole_clusters.as_slice());
     if clusters.is_empty() && skip::has_structure_items(&m, FOG_LAYER as u32) != Some(true) {
         crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, true);
-        return;
+        // Objects' fog only, which this stage does not draw.
+        left.all("object");
+        return true;
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return;
+        left.all("host");
+        return true;
     };
-    let Some(cleared) = host.ask(&mut *m.0, clusters) else {
+    let Some(cleared) = host.ask(&mut *m.0, clusters, left) else {
         crate::scene_step::late_kept(&*m.0, FOG_LAYER as u8, true);
-        return;
+        return true;
     };
     if cleared.items.is_empty() {
-        return;
+        return true;
     }
     DRAWN.fetch_add(1, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
@@ -168,8 +197,26 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (v, d, i, g, w) = counts();
         eprintln!("native-fog: {d} of {v} layer-16 views drawn natively ({g} gated off, {w} other callers), {i} items skipped");
     }
-    let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left });
+    let kept = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left: kept });
+    true
+}
+
+/// Counts each item of late layer `layer` (16 or 6) the guest's layer draw
+/// still draws (`native_render::fog::guest_items`) as
+/// `scene_kept_<layer>_<kind>_<cause>`: `record` for a render record that
+/// does not read, else its cause in `left` (its slot's, the layer's, or
+/// `unnamed`). A list that does not read is one `unreadable` count under
+/// `list`. Nothing is written.
+pub fn count_late_kept(mem: &dyn GuestRead, layer: u32, left: &Left) {
+    let Some(held) = fog::guest_items(mem, layer) else {
+        crate::native_layers::count_kept_as("", layer, "unreadable", "list", 1);
+        return;
+    };
+    for h in held {
+        let cause = if h.item.is_none() { "record" } else { left.cause(h.slot) };
+        crate::native_layers::count_kept_as("", layer, h.kind(), cause, 1);
+    }
 }
 
 pub(crate) fn has_claim() -> bool {

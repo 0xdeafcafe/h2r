@@ -38,10 +38,10 @@ impl ListItem {
 
 /// The world layers cut to the scene (native-only design
 /// section 2): 1, 3, 5, 8 and 20 in slot 1, 7 in slot 3 after the object
-/// shadows, 2 in slot 6. A part of one of them the scene cannot draw keeps
-/// its guest draw, counted by layer, kind and cause (`scene_kept_*`,
-/// [`held_items`]), until the scene draws it.
-pub const WORLD_LAYERS: [u8; 7] = [1, 2, 3, 5, 7, 8, 20];
+/// shadows, 2 in slot 6, 17 in slot 12. A part of one of them the scene
+/// cannot draw keeps its guest draw, counted by layer, kind and cause
+/// (`scene_kept_*`, [`held_items`]), until the scene draws it.
+pub const WORLD_LAYERS: [u8; 8] = [1, 2, 3, 5, 7, 8, 17, 20];
 
 /// The view slot a world layer draws in; `None` for any other layer.
 pub fn world_slot(layer: u8) -> Option<frame_scene::ViewSlot> {
@@ -50,6 +50,7 @@ pub fn world_slot(layer: u8) -> Option<frame_scene::ViewSlot> {
         1 | 3 | 5 | 8 | 20 => Some(ViewSlot::OpaqueBase),
         7 => Some(ViewSlot::ShadowsAndLayer7),
         2 => Some(ViewSlot::Layer2),
+        17 => Some(ViewSlot::Layer17),
         _ => None,
     }
 }

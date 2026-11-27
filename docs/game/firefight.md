@@ -688,7 +688,7 @@ that id, and each machine loads its own build.
 | Drop zones | the bots' nav mesh (`bots::autonav`): sectors near the map's edge, off the players' spawn clusters, with a path to the middle | 6 to 12 a map; written as zones and areas |
 | Zones, areas, firing positions | sampled from the sectors: cover is a position with a wall toward the middle | the block writers of `h1campaign::ai` (`ScenarioBlocks`) |
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time), then the class record: one empty squad `ff_class_<name>` per palette row, on its class's faction's team | the same writers |
-| Characters, stage 1 | `char` tags we author on bipeds and weapons the multiplayer map already has. With no parent, the Elite carries a row of every property block the engine reads unchecked (`ai/character.rs`, `PROPERTY_ROWS`: an empty movement block faulted at `0x1f9119` on an actor's first update). Each row is the retail campaign Elite's (`objects\characters\elite\ai\elite`, walking its parents), read from the base, the disc map `ELITE_DONOR_MAP` (`03a_oldmombasa`) or a class donor, with our tuning table's fields set over it and the donor's tag references null. No map carrying it, or a row missing, refuses the build by name | Elites only; no tag is copied from another map, only the Elite's rows |
+| Characters, stage 1 | `char` tags we author on bipeds and weapons the multiplayer map already has. With no parent, the Elite carries a row of every property block the engine reads unchecked (`ai/character.rs`, `PROPERTY_ROWS`: an empty movement block faulted at `0x1f9119` on an actor's first update). Each row is the retail campaign Elite's (`objects\characters\elite\ai\elite`, walking its parents), read from the base, the disc map `ELITE_DONOR_MAP` (`03a_oldmombasa`) or a class donor (the built-in kits, `h2 firefight kit`, host data, a Forge document's ground and a `map` item's ground all give the disc's), with our tuning table's fields set over it and the donor's tag references null. No map carrying it, or a row missing, refuses the build by name | Elites only; no tag is copied from another map, only the Elite's rows |
 | Dropship | the Phantom by stage-2 transplant (the map's own Spirit on a Halo 1-built map), one parked `ff_ship_phantom` placement and, when a donor has it, a `ff_ship_pelican` one, a point set `ff_path_NN` for each drop zone with a clear column ("The dropship", below) | cut before any class when headroom is short |
 | Drop pods | Halo 2's `insertion_pod` by stage-2 transplant when the map lacks it, pools `ff_pod_00..03` (squads) and `ff_ppod_00..07` (players), a point set `ff_fall_NN` per drop zone and `ff_pfall_NN` per starting location with an open column ("Drop pods", below) | cut after the ship, before any class |
 | Characters, stage 2 | `firefight_kit::Classes` (`src/transplant.rs`): `tags::schema::transplant` of a donor's `char` tag and its closure, from the player's own campaign maps, with the sound gestalt merge (`h1_assets::sounds::transplant_from`); the retail class table (`src/retail.rs`) names the donors | each class costs tag headroom; the builder refuses a build that does not fit, naming every class's cost, or cuts classes from the end of the list |
@@ -941,7 +941,11 @@ boundary as engine calls (`Call::PodDrop`, `PodEject`, `PodPark`):
    (`AI_LINE_OF_SIGHT`, which includes objects), the pod is put at the top and
    the unit is seated in its first seat (`UNIT_ENTER_VEHICLE`, `0x11ade0`: the
    vehicle in EBX, the unit and the seat label on the stack; the label is
-   read from the vehicle tag's seats block);
+   read from the vehicle tag's seats block). The routine seats no one, and
+   says nothing, when the rider fails the seat test at `0xc8200`: its
+   animation graph needs a mode of the seat's label (`0x1cb920`), unless the
+   unit's byte at `+0xaa` is 1. The host makes the same test first
+   (`pods::takes_seat`) and names that refusal;
 2. on success the pod flies the two points in 75 ticks (`Flights`), counted in
    `pod_spawns`;
 3. when it is within a unit of the ground, 15 ticks later the rider is ejected

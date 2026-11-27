@@ -20,12 +20,14 @@
 //!   clears the layer's bit on the items it draws, from the list's first,
 //!   and the guest draws the rest.
 //!
-//! The scene's and the alternate view's layers 1, 2, 5, 7, 8 and 20
+//! The scene's and the alternate view's layers 1, 2, 5, 7, 8, 17 and 20
 //! ([`SCENE_ONLY`]) are cut to the scene: an item the host does not draw
 //! keeps its guest draw, and is counted by layer, kind and the host's
 //! cause, `scene_kept_<site><layer>_<kind>_<cause>` ([`count_kept`]), until
 //! the scene draws it. No item is dropped: an object or a wall the pass
-//! refuses still draws. The first person's and the sorted handlers' layers
+//! refuses still draws. A layer 2 or 17 draw from a caller this stage does
+//! not take ([`UNTAKEN_CALLER`]) keeps every item, counted under the cause
+//! `caller`. The first person's and the sorted handlers' layers
 //! keep what the host refuses to D3D, counted under `layer_plan_*`.
 //!
 //! The plan's outcomes are counted by cause for `render.scene`
@@ -53,8 +55,16 @@ pub const LAYERS: [u32; 7] = [1, 5, 7, 8, 20, 2, 17];
 
 /// The layers that draw only from the scene when `caller` is the scene's or
 /// the alternate view's (`layer_pass::WORLD_LAYERS` less layer 3, which
-/// `native_world` owns).
-pub const SCENE_ONLY: [u32; 6] = [1, 2, 5, 7, 8, 20];
+/// `native_world` owns). The alternate view has no layer 17.
+pub const SCENE_ONLY: [u32; 7] = [1, 2, 5, 7, 8, 17, 20];
+
+/// The layers whose draws from a caller [`caller`] does not name keep
+/// every item, each counted `scene_kept_<layer>_<kind>_caller`: R5's
+/// overlay and late layers (docs/graphics/retire-d3d.md, "By caller").
+pub const UNTAKEN_CALLER: [u32; 2] = [2, 17];
+
+/// The cause an untaken caller's items are counted under.
+pub const CALLER_CAUSE: &str = "caller";
 
 /// Whether `layer` of `caller` is cut to the scene: its kept guest draws are counted `scene_kept_*`.
 pub fn scene_only(layer: u32, caller: LayerCaller) -> bool {
@@ -318,7 +328,13 @@ impl GuestWrite for Mem<'_> {
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let Some(layer) = Mem(mem).read_u32(skip::CURRENT_LAYER) else { return };
-    let Some(caller) = caller(layer, ret) else { return };
+    let Some(caller) = caller(layer, ret) else {
+        if UNTAKEN_CALLER.contains(&layer) {
+            let left = Left { layer: Some(CALLER_CAUSE), ..Left::default() };
+            count_kept(&Ro(&*mem), layer, "", true, &left, None);
+        }
+        return;
+    };
     if layer == 7 && caller == LayerCaller::Scene {
         // The object shadows draw in slot 3 ahead of layer 7.
         let shadows = crate::scene_step::open_object_shadow_passes();
@@ -579,6 +595,31 @@ mod tests {
             assert_eq!(kept(n), b + 1, "{n}");
         }
         assert_eq!(mask(&m, 0), 1 << 8, "counting writes nothing");
+    }
+
+    /// Layer 17's items the host does not draw keep their guest draw and
+    /// are counted as layer 2's are; a layer 2 or 17 draw from a caller
+    /// the stage does not take keeps every item under `caller`.
+    #[test]
+    fn layer_17_and_an_untaken_callers_layer_2_count_what_they_keep() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_host(Arc::new(Refuses));
+        assert!(scene_only(17, LayerCaller::Scene));
+        let before = (kept("scene_kept_17_world_unread"), kept("scene_kept_17_object_unread"));
+        let mut m = list(17, &[(1, false), (2, true)]);
+        before_layer(&mut m, 0x0002_c30b);
+        assert_eq!((mask(&m, 0), mask(&m, 1)), (1 << 17, 1 << 17), "both keep their guest draw");
+        assert_eq!((kept("scene_kept_17_world_unread"), kept("scene_kept_17_object_unread")), (before.0 + 1, before.1 + 1));
+        let before = (kept("scene_kept_2_world_caller"), kept("scene_kept_2_object_caller"));
+        let mut m = list(2, &[(1, false), (2, true)]);
+        before_layer(&mut m, 0x0002_c30b);
+        assert_eq!((mask(&m, 0), mask(&m, 1)), (1 << 2, 1 << 2));
+        assert_eq!((kept("scene_kept_2_world_caller"), kept("scene_kept_2_object_caller")), (before.0 + 1, before.1 + 1));
+        let other = kept("scene_kept_5_world_caller");
+        let mut m = list(5, &[(1, false)]);
+        before_layer(&mut m, 0x0002_c30b);
+        assert_eq!(kept("scene_kept_5_world_caller"), other, "only R5's layers count an untaken caller");
+        *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     #[test]

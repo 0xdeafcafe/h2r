@@ -152,6 +152,14 @@ source = "firefight/last-stand.firefight.json"
 kind = "rules"
 source = "firefight/crossfire.firefight.json"
 
+[[item]]
+kind = "rules"
+source = "firefight/endless.firefight.json"
+
+[[item]]
+kind = "rules"
+source = "firefight/outbreak.firefight.json"
+
 # The map-specific wave sets, in map order then file order
 # (firefight::builtin::MAP_SETS; the lobby offers the map's own first).
 

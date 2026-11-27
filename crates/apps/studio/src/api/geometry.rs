@@ -7,7 +7,7 @@
 
 use agent_proto::RpcError;
 use geometry_edit::Target;
-use geometry_edit::mesh_edit::{MeshOp, SelectHow, SelectMode};
+use geometry_edit::mesh_edit::{Brush, Falloff, MeshOp, SelectHow, SelectMode, Stroke};
 use map::TagId;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
@@ -143,6 +143,13 @@ const METHODS: &[MethodDef] = &[
         r#"{"ops":"[MeshOp]","target?":"string"}"#,
         r#"{"target":"string","class":"string","ops":"integer"}"#,
         r#"{"ops":[{"op":"select_all"},{"op":"select_none"}]}"#,
+    ),
+    def(
+        m::MESH_SCULPT,
+        "One sculpt brush stroke on the target in edit mode, as one undo step and one `sculpt` op in the log: `brush` raise, lower, smooth, flatten or cut; `centre` for one dab or `points` for a stroke's path; `radius` (world units across `axis`, default +z); `strength` (world units for raise and lower, a fraction 0 to 1 for smooth and flatten; default 1); `falloff` smooth, linear, sphere or constant; flatten's `height` (default the first centre's); `detail`, the longest edge the stroke leaves (default radius / 4). Faces the brush reaches are subdivided first. The stroke goes through the collision compiler (a coll BSP as its save compiles it, a structure section as its level collision would be) and one it refuses is refused with the reason",
+        r#"{"brush":"raise|lower|smooth|flatten|cut","centre?":"[x,y,z]","points?":"[[x,y,z]]","radius":"number","strength?":"number","falloff?":"smooth|linear|sphere|constant","height?":"number","axis?":"[x,y,z]","detail?":"number","target?":"string"}"#,
+        r#"{"target":"string","class":"string","moved":"integer","verts":"integer","faces":"integer"}"#,
+        r#"{"brush":"raise","centre":[2,2,0],"radius":1.5,"strength":0.5}"#,
     ),
 ];
 
@@ -511,8 +518,62 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             v["ops"] = json!(n);
             Ok(v)
         }
+        m::MESH_SCULPT => {
+            let t = open_target(app, p)?;
+            let stroke = stroke(p)?;
+            run(app, ModelAction::Seal)?;
+            app.perform(
+                Action::Model(ModelAction::Apply {
+                    target: t,
+                    ops: vec![MeshOp::Sculpt(stroke)],
+                    merge: None,
+                }),
+                false,
+            )
+            .map_err(|failure| match failure {
+                Refused::Failed(reason) => err(code::REFUSED, reason),
+                other => refused(other),
+            })?;
+            let mut v = summary(app, t);
+            let (verts, _, faces) = app.modeling.session.mesh(t).expect("open").counts();
+            v["verts"] = json!(verts);
+            v["faces"] = json!(faces);
+            Ok(v)
+        }
         _ => unreachable!("listed in METHODS"),
     }
+}
+
+/// `mesh.sculpt`'s params as a stroke. The kernel checks the values
+/// (`MeshError::Stroke`); this checks their shapes.
+fn stroke(p: &P) -> Result<Stroke, RpcError> {
+    let name = p.str("brush")?;
+    let brush = Brush::parse(name).ok_or_else(|| {
+        err(code::INVALID_PARAMS, format!("brush: {name:?} is not raise, lower, smooth, flatten or cut"))
+    })?;
+    let points: Vec<[f32; 3]> = match (p.opt_vec3("centre")?, p.get("points")) {
+        (Some(c), None) => vec![c],
+        (None, Some(v)) => serde_json::from_value(v.clone())
+            .map_err(|e| err(code::INVALID_PARAMS, format!("points: {e}")))?,
+        _ => return Err(err(code::INVALID_PARAMS, "give centre or points, not both")),
+    };
+    let radius = p.opt_f32("radius")?.ok_or_else(|| err(code::INVALID_PARAMS, "radius: give a number"))?;
+    let falloff = match p.opt_str("falloff")? {
+        None => Falloff::default(),
+        Some(f) => Falloff::parse(f).ok_or_else(|| {
+            err(code::INVALID_PARAMS, format!("falloff: {f:?} is not smooth, linear, sphere or constant"))
+        })?,
+    };
+    Ok(Stroke {
+        brush,
+        points,
+        radius,
+        strength: p.opt_f32("strength")?.unwrap_or(1.0),
+        falloff,
+        height: p.opt_f32("height")?,
+        axis: p.opt_vec3("axis")?,
+        detail: p.opt_f32("detail")?,
+    })
 }
 
 fn mode_name(m: SelectMode) -> &'static str {

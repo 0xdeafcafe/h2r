@@ -1558,6 +1558,24 @@ fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The native renderer replaces the guest's view projection and its
+/// visibility producers; `impl.render.native.visibility=off` leaves them
+/// to the guest (docs/graphics/native-visibility.md).
+#[cfg(feature = "gpu")]
+#[test]
+fn the_view_projection_is_native_unless_its_switch_is_off() {
+    let profile = super::compiled_render_hooks();
+    if profile != film::RenderHooks::Gpu {
+        return;
+    }
+    let on = registry_for_profile(&Case::full(""), profile);
+    assert_eq!(hooked_at(on, "VIEW_PROJECTION_BUILD"), ["native-scene-lists"]);
+    let off = Case::full("impl.render.native.visibility=off");
+    for point in ["VIEW_PROJECTION_BUILD", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
+        assert!(hooked_at(registry_for_profile(&off, profile), point).is_empty(), "{point}");
+    }
+}
+
 /// A recording and its replay register the render stream alike, so the
 /// film's simulation hooks match whatever window either had.
 #[test]

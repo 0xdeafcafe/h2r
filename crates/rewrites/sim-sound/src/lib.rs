@@ -20,3 +20,4 @@ pub mod sources;
 pub mod spatial;
 pub mod submix;
 pub mod tick;
+pub mod voices;

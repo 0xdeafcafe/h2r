@@ -97,6 +97,22 @@ impl MapListUi {
         self.texture(gpu, key, pic)
     }
 
+    /// Drop the pictures whose key starts with `prefix`: a window whose
+    /// rows changed frees what it uploaded (the Browser's thumbnails).
+    pub fn forget(&mut self, gpu: &mut Gpu<'_>, prefix: &str) {
+        let keys: Vec<String> = self
+            .textures
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(old) = self.textures.remove(&key) {
+                let _ = gpu.renderer.unregister_external_texture(old.id);
+            }
+        }
+    }
+
     /// The picture for row `key` on the GPU, uploaded when new or changed.
     fn texture(&mut self, gpu: &mut Gpu<'_>, key: &str, pic: &Arc<Picture>) -> Option<TextureId> {
         if let Some(t) = self.textures.get(key)

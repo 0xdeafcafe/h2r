@@ -57,7 +57,7 @@ source type to the node's type `+4`, with the same guard:
   unchanged;
 - otherwise call `0x004f5770[dest*62 + source]`. `0x0020a1a0` fills the table,
   and nothing else writes to it (Ghidra xrefs: two readers plus the
-  initializer).
+  initialiser).
 
 | Entry (dest <- source) | Body | Behaviour |
 |---|---|---|
@@ -97,8 +97,8 @@ Thread datum `0x418` bytes (array `0x004f9384`, 320 slots, `0x00208ff0`):
 scan start, then the high-water slot. Scheduling order is slot order.
 
 New map (`0x002090a0`): delete all threads, then enable the scheduler. Then,
-on one category-1 thread, evaluate each scenario global's initializer in table
-order straight into its cell (EBX = cell, `0x00209191`). A call initializer
+on one category-1 thread, evaluate each scenario global's initialiser in table
+order straight into its cell (EBX = cell, `0x00209191`). A call initialiser
 runs to completion synchronously (`0x002091a5`). Object-list globals take a
 reference, and each global then goes through write-back. Then delete that
 thread and create a category-0 thread for each startup, dormant and continuous
@@ -217,12 +217,12 @@ leaves the others running:
 - a dispatch limit of 2^20 per execution;
 - null casts and null evaluators;
 - argument type mismatches, which the guest would read as garbage;
-- an initializer that sleeps.
+- an initialiser that sleeps.
 
 ## Live comparison
 
 The HaloScript arm in `crates/rewrites/sim-bridge/src/sim_native.rs` installs
-read-only observers when the image exports the map initializer and all six
+read-only observers when the image exports the map initialiser and all six
 execution entries below. An incomplete image lists the missing entries at
 startup. A declined comparison leaves the call out of the match count.
 
@@ -237,7 +237,7 @@ startup. A declined comparison leaves the call out of the match count.
 
 The whole-thread check accepts up to 64 node visits, including static
 script calls. It reads the active definition, nodes, signatures and global
-types against the cached map program before using it. Map initialization
+types against the cached map program before using it. Map initialisation
 discards the cache. External bindings, engine calls and the thread-facing
 builtins (`sleep` with a named script target, `sleep_forever`,
 `sleep_until`, `wake`, `begin_random`) lie outside this check. The
@@ -268,10 +268,10 @@ here.
 
 The synthetic guest differential in
 `crates/rewrites/sim-bridge/src/sim_native/hs_differential.rs` runs the
-owner's lifted map initializer and five updates on invented tables. Its
+owner's lifted map initialiser and five updates on invented tables. Its
 Rust arm receives the same ticks and engine query answers. It compares
 salted thread slots, frame depth, wake state, globals, dispatch counts and
-the ordered engine calls after initialization and each tick. The
+the ordered engine calls after initialisation and each tick. The
 individual boundary tests exercise sparse slots, nested calls and external
 global widths. The fixture data is independent of the executable used
 for the lifted instructions.

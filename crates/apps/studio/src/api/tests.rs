@@ -22,6 +22,7 @@ mod markers_tests;
 mod script_variants_tests;
 mod assets_tests;
 mod links_tests;
+mod forge_tests;
 mod mods_tests;
 mod packages_tests;
 mod edit_target_tests;
@@ -190,8 +191,25 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::ASSET_LIST | m::ASSET_THUMB | m::ASSET_COPY | m::ASSET_LINKS => {
+        m::ASSET_LIST
+        | m::ASSET_THUMB
+        | m::ASSET_COPY
+        | m::ASSET_LINKS
+        | m::ASSET_WHERE_USED
+        | m::ASSET_EDITS => {
             // An invented tags tree of two maps and a package `kit-test`.
+            assets_tests::tree(&app.tags_root());
+            assets_tests::package(&t.path("data/packages/kit-test"));
+        }
+        m::FORGE_VARIANT_LIST
+        | m::FORGE_VARIANT_READ
+        | m::FORGE_VARIANT_SET
+        | m::FORGE_VARIANT_SAVE => {
+            // The invented map variant `Castle` of the map `fixture`, open.
+            forge_tests::open_castle(api, app);
+        }
+        m::FORGE_ITEMS => {
+            // The invented tree and the package `kit-test`, which adds a weapon.
             assets_tests::tree(&app.tags_root());
             assets_tests::package(&t.path("data/packages/kit-test"));
         }
@@ -217,7 +235,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
             std::fs::create_dir_all(dir.join("data")).unwrap();
             std::fs::write(dir.join("data/note.txt"), "a note\n").unwrap();
         }
-        m::IMPORT_SOUND => {
+        m::IMPORT_SOUND | m::ASSET_DROP => {
             // An empty local package `mine` and a WAV of an invented tone.
             import_tests::package(&t.path("data/packages/mine"), "mine");
             std::fs::create_dir_all(t.path("out")).unwrap();
@@ -413,7 +431,8 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         | m::MESH_SELECT
         | m::MESH_TRANSFORM
         | m::MESH_OPS
-        | m::MESH_APPLY => {
+        | m::MESH_APPLY
+        | m::MESH_SCULPT => {
             // The invented textured map: one BSP (e1000004) whose one
             // cluster is a 4 by 4 floor quad in a local raw block.
             let map = t.path("textured.map");
@@ -1407,6 +1426,12 @@ fn every_method_in_methods_has_a_test() {
                 ) && e.code == code::REFUSED => {}
             // No edit target is set here; app/ground_tests.rs sets one.
             (None, Err(e)) if d.name == m::GROUND_SAVE && e.code == code::NO_TARGET => {}
+            // No tag tree under the test's data root: the build and the
+            // edit check name it (api/projects.rs's own tests make one).
+            (None, Err(e))
+                if matches!(d.name, m::PROJECT_BUILD | m::EDITS_CHECK)
+                    && e.code == code::FAILED
+                    && e.message.contains("no tag tree") => {}
             // The invented map has no hill with corners to convert
             // (markers_tests.rs makes one).
             (None, Err(e)) if d.name == m::MARKERS_AREA_CONVERT && e.code == code::REFUSED => {}
@@ -4300,6 +4325,64 @@ fn geometry_lists_the_floor_cluster_and_an_unedited_target_saves_nothing() {
 }
 
 #[test]
+fn mesh_sculpt_is_one_logged_undo_step_and_a_bad_stroke_is_refused_by_name() {
+    let t = Temp::new("mesh-sculpt");
+    let (mut api, mut app, _) = textured(&t);
+    let r = call(
+        &mut api,
+        &mut app,
+        m::MESH_SCULPT,
+        json!({"brush": "raise", "centre": [2.0, 2.0, 0.0], "radius": 1.5, "strength": 0.5, "detail": 0.5}),
+    );
+    // Refined where the brush is, so the floor is a grown write.
+    assert_eq!(r["class"], "grown_raw");
+    assert!(r["verts"].as_u64().unwrap() > 4, "{r}");
+    let read = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    let top = read["verts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["position"][2].as_f64().unwrap())
+        .fold(f64::MIN, f64::max);
+    assert!((top - 0.5).abs() < 1e-4, "the centre is raised by the strength: {top}");
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"].as_array().unwrap().len(), 1);
+    assert_eq!((ops["ops"][0]["op"].clone(), ops["ops"][0]["brush"].clone()), (json!("sculpt"), json!("raise")));
+    // The same stroke through mesh.apply is the same mesh.
+    let log = ops["ops"].clone();
+    // A path, a cut and a falloff by name.
+    call(
+        &mut api,
+        &mut app,
+        m::MESH_SCULPT,
+        json!({"brush": "cut", "points": [[0.5, 3.0, 0.0], [1.0, 3.0, 0.0]], "radius": 0.4, "falloff": "constant", "detail": 0.5}),
+    );
+    // Each stroke is one step of the map's undo.
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"], log);
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc": "map"}));
+    let read = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(read["verts"].as_array().unwrap().len(), 4);
+    call(&mut api, &mut app, m::MESH_APPLY, json!({"ops": log}));
+    let again = call(&mut api, &mut app, m::GEOMETRY_READ, Value::Null);
+    assert_eq!(again["verts"].as_array().unwrap().len() as u64, r["verts"].as_u64().unwrap());
+    // Refused with the kernel's reason, and nothing logged.
+    for (params, why) in [
+        (json!({"brush": "raise", "centre": [2.0, 2.0, 0.0], "radius": 0.0}), "the radius must be above 0"),
+        (json!({"brush": "cut", "centre": [40.0, 40.0, 0.0], "radius": 1.0}), "the cut reaches no face"),
+    ] {
+        let e = api.call(&mut app, m::MESH_SCULPT, params).unwrap_err();
+        assert_eq!(e.code, code::REFUSED, "{e}");
+        assert!(e.message.contains(why), "{e}");
+    }
+    let e = api.call(&mut app, m::MESH_SCULPT, json!({"brush": "pinch", "centre": [0.0, 0.0, 0.0], "radius": 1.0})).unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
+    let ops = call(&mut api, &mut app, m::MESH_OPS, Value::Null);
+    assert_eq!(ops["ops"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn a_geometry_edit_saves_only_with_the_unverified_switch_on() {
     let t = Temp::new("geometry-save");
     let (mut api, mut app, map) = textured(&t);
@@ -5844,6 +5927,89 @@ fn the_workspace_reports_the_start_page_and_extracts_an_invented_disc() {
     assert_eq!(pruned["raw_removed"], json!(0));
     assert_eq!(pruned["bytes"], json!(0));
     assert_eq!(pruned["outputs_removed"], json!([]));
+}
+
+/// `project.*` and `edits.*` over an invented tree (docs/editor/agent-api.md,
+/// "Projects and edit files"): a local project onto the invented map, an
+/// edit written by the API and the check that names the tag no layer holds.
+#[test]
+fn projects_and_edit_files_resolve_over_an_invented_tree() {
+    let t = Temp::new("projects");
+    let mut app = App::new();
+    app.set_data_root(t.path("data"));
+    let mut api = Api::new();
+    let disc = t.path("disc");
+    std::fs::create_dir_all(&disc).unwrap();
+    std::fs::write(
+        disc.join("example.map"),
+        crate::app::workspace::tests::invented_map("example"),
+    )
+    .unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::WORKSPACE_EXTRACT,
+        json!({"disc": disc.display().to_string()}),
+    );
+    app.wait_workspace();
+    let projects = t.path("data/workspace/projects");
+    std::fs::create_dir_all(&projects).unwrap();
+    std::fs::write(
+        projects.join("mine.toml"),
+        "name = \"mine\"\nmode = \"onto\"\nbase = \"example\"\noutput = \"package\"\n",
+    )
+    .unwrap();
+
+    let listed = call(&mut api, &mut app, m::PROJECT_LIST, json!({}));
+    let mine = listed["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "mine")
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!(mine["origin"], "local");
+    assert_eq!(mine["mode"], "onto");
+
+    let read = call(&mut api, &mut app, m::PROJECT_READ, json!({"project": "mine"}));
+    assert_eq!(read["problems"], json!([]), "{read}");
+    assert_eq!(read["layers"][0]["kind"], "tree");
+
+    let set = call(
+        &mut api,
+        &mut app,
+        m::EDITS_SET,
+        json!({"file": "mine", "tag": "jpt!:invented\\nowhere", "path": "damage_lower_bound", "value": 2.0}),
+    );
+    assert_eq!(set["line"], 1, "{set}");
+    let files = call(&mut api, &mut app, m::EDITS_LIST, json!({}));
+    assert!(
+        files["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "mine" && f["origin"] == "local"),
+        "{files}"
+    );
+    // The project's own local file applies: its tag is in no layer.
+    let checked = call(&mut api, &mut app, m::EDITS_CHECK, json!({"project": "mine"}));
+    assert_eq!(checked["files"], json!(["mine"]), "{checked}");
+    let problems = checked["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{checked}");
+    assert_eq!(problems[0]["line"], 1);
+    assert!(
+        problems[0]["why"].as_str().unwrap().contains("no layer holds this tag"),
+        "{checked}"
+    );
+    // The build stops on it, with the same words.
+    let e = api
+        .call(&mut app, m::PROJECT_BUILD, json!({"project": "mine"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::FAILED);
+    assert!(e.message.contains("no layer holds this tag"), "{}", e.message);
+    let e = api
+        .call(&mut app, m::PROJECT_READ, json!({"project": "nobody"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::INVALID_PARAMS);
 }
 
 #[test]
