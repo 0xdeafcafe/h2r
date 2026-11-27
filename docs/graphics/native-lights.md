@@ -173,9 +173,11 @@ guest's layer begin and end do not run; their device work is the steps:
 - layer 14: target 1;
 - layers 12 and 13: the view's target.
 
-A colour-mask caster (target 10), a shader gel and a first-person light
-(slot 10) refuse the light, and so does a caster region that does not
-start at its target's corner or runs past it. The host's `draws_scene`
+A colour-mask caster draws the same way on target 10: cleared to white
+with zero alpha, its casters colour only, its colour copied into each
+copy's map. A shader gel and a first-person light (slot 10) refuse the
+light, and so does a caster region that does not start at its target's
+corner or runs past it. The host's `draws_scene`
 is true at any render scale and on every backend while the native
 shadows are on (`native_shadows_glue::enabled`); with them off the
 guest's light frame runs. The first-person lights
