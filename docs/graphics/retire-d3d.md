@@ -584,7 +584,7 @@ keeps a guest draw, by the counter that names it (**Code**):
   them unset, or in layer 3 a structure lightmap index the guest's draw
   leaves unbound; `object_layer5_stream`, `object_subparts`,
   `object_aux_state`, `object_unread`), then
-  `object_models`, `object_w_buffer`, `object_model`, `object_plan`,
+  `object_models`, `object_w_buffer`, `object_model`, `object_plan_<cause>`,
   `object_shader_flag_target` (the shader's flag bit 0 before the
   frame's structure target copy, where a pass's program has flag bit 20:
   its draw calls `0x0003bea0`, which clears the shader cache and, with a

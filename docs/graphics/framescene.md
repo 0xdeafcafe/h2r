@@ -1210,8 +1210,14 @@ to the guest's draws (**Code**):
     `skip_holds`),
     `object_models` (the caller's models are not resident or their
     palettes changed), `viewport`, `object_w_buffer`,
-    `object_model` (the item's model is not uploaded), `object_plan`
-    (a pass does not plan; the first of each reason is logged),
+    `object_model` (the item's model is not uploaded), the plan's causes
+    `object_plan_<cause>` (`object_program_gpu::LayerPlanRefusal::name`:
+    `not_compiled`, the material's passes of the layer did not compile
+    for the model, its first compile error kept per layer and shader;
+    `no_part`, `shader`, `level`, `pass`, `pass_empty`,
+    `implementation`, `prt`, `aux_depth`, `structure_parameters`,
+    `defaults`, `ranges`, `program`, `animation`, `constants`, `state`,
+    `model`; the first of each message is logged),
     `object_texaccum` (in layer 1, or no target to bind or level to
     give), `object_aux_depth` (the device does not hold the toggle off),
     `object_fog`, `object_stencil`,
