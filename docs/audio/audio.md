@@ -128,6 +128,12 @@ against vgmstream `ima_decoder.c` and xemu `hw/xbox/mcpx/apu/vp/vp.c`
 comparison mode. Confirmed against real Halo 2 data and the engine's own
 format builder; see [sound.md](../formats/sound.md).
 
+A whole `snd!` permutation (its chunks read from the raw-resource files, then
+ADPCM or the WMA codec stream decoded by the sound's header) is decoded by
+`crates/platform/sound-clips`, the one decoder Studio's audition, `h2 sound`
+and the mixer feed share ([sound-instances.md](../engine/sound-instances.md),
+"Clip source").
+
 ### Tests
 
 The ADPCM tests contain a tiny IMA encoder producing Xbox blocks and

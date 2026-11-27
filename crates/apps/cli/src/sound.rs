@@ -261,10 +261,10 @@ fn wma_pcm(res: &Resources, data: &[u8], tables: &mut Option<wma::Tables>) -> Re
         file.seek(SeekFrom::Start(*base))?;
         let mut bytes = vec![0; *size as usize];
         file.read_exact(&mut bytes)?;
-        let image = wma::VerifiedImage::load(&bytes)?;
-        *tables = Some(wma::Tables::load(&image)?);
+        *tables = Some(sound_clips::load_tables(&bytes)?);
     }
-    Ok(wma::decode_asf(tables.as_ref().expect("loaded"), data, 128 * 1024 * 1024)?.pcm)
+    let clip = sound_clips::decode_wma(tables.as_ref().expect("loaded"), data)?;
+    Ok(clip.pcm.to_vec())
 }
 
 fn codec_stream(sound: &Sound) -> bool {
@@ -296,7 +296,7 @@ fn export_one(map_name: &str, tag: &str, disc: Option<PathBuf>, out: OutDir) -> 
             let data = gestalt.read_encoded(p, &mut res)?;
             match adpcm_format(&sound) {
                 Ok((ch, rate)) => {
-                    let pcm = adpcm::decode(&data, ch)?;
+                    let pcm = sound_clips::decode_adpcm(&data, ch, rate)?.pcm;
                     let wav = wav_bytes(&pcm, ch as u16, rate)?;
                     let path = out.write(&out_components(tag, ri, pi, "wav"), &wav)?;
                     let frames = pcm.len() / ch;

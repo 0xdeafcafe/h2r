@@ -1,6 +1,6 @@
 # Sound instances: the Rust table
 
-Status: Design, slices 2 and 3 built: `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`, wired to nothing. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
+Status: Design, slices 1 to 3 built: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`, wired to nothing. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
 Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,mixer_feed}.rs`, `crates/platform/sound-clips`. Tests: the same files, named in [Slices](#slices).
 Switch: none. The table replaces `impl.sim.sound-events` and `impl.sim.native.sound` ([switches.md](../runtime/switches.md)).
 
@@ -227,9 +227,15 @@ audio::adpcm, wma::Tables ─────┘        ^ Studio audition, h2 sound,
 | Type | Does |
 |---|---|
 | `ClipKey { tag, range, permutation }` | names one permutation |
+| `Library` | where a permutation's chunks are: `header`, `chunk_count`, `read_chunk`; `GestaltLibrary` serves a gestalt over a `ResourceReader` |
 | `ClipError::{Refused, Failed}` | Studio's `SoundError`, with the reason as text |
-| `ClipSource::get(key) -> Ready(Arc<Clip>) \| Pending \| Err` | decodes on a worker thread, once per key; cached by decoded bytes, never dropping a clip a voice holds |
-| `ClipSource::stream(key) -> ChunkReader` | a long permutation chunk by chunk, for `audio::Stream` |
+| `ClipSource::new(library, tables, budget)` | the cache; `tables` is the shared `Arc<wma::Tables>` or none |
+| `ClipSource::get(key) -> Result<Got::{Ready(Arc<Clip>), Pending}, ClipError>` | decodes on a worker thread, once per key; a refusal or failure is kept as the key's answer; cached by decoded bytes against the budget, dropping the least recently used clip only when nothing else holds its `Arc` |
+| `ClipSource::wait(key, timeout)` | `get`, waiting for the decode |
+| `ClipSource::stream(key) -> ChunkReader` | `next_chunk()` hands out a long permutation chunk by chunk, for `audio::Stream`: ADPCM blocks per chunk, a block that spans two chunks carried over; a codec stream decodes whole, then goes out in `CODEC_FRAMES` runs |
+| `ClipSource::stats()` | `decoded`, `refused_without_tables`, `evicted`, `cached_clips`, `cached_bytes` |
+
+The free functions `decode`, `decode_adpcm`, `decode_wma`, `decode_permutation`, `load_tables` and `needs_executable` are what Studio's audition and `h2 sound` call.
 
 Codec streams need the executable's tables. Boot already loads them for the XWMA shim (`dsound::xwma`, `wma::Tables::load`) and shares that `Arc`. A codec stream with no tables is `Refused` and counted, never silent by default.
 
@@ -291,7 +297,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 | # | Slice | Model | Depends on | State |
 |---|---|---|---|---|
-| 1 | `sound-clips` crate | Sonnet | none | |
+| 1 | `sound-clips` crate | Sonnet | none | built |
 | 2 | Instances, chooser, owners (pure) | Opus | none | built |
 | 3 | Looping sounds on the table (pure) | Opus | 2's types | built; no differential |
 | 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | |

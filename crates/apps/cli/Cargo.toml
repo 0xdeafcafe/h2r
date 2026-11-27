@@ -94,6 +94,7 @@ vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"], optional = true }
 asf = { path = "../../formats/asf", optional = true }
 wma = { path = "../../platform/wma", optional = true }
+sound-clips = { path = "../../platform/sound-clips", optional = true }
 live-hle = { path = "../../live/live-hle", optional = true }
 live-proto.workspace = true
 live-server.workspace = true
@@ -204,6 +205,7 @@ desktop = [
     "dep:iced-x86",
     "dep:asf",
     "dep:wma",
+    "dep:sound-clips",
     "dep:cloud-saves",
     "dep:image",
     "dep:flate2",
