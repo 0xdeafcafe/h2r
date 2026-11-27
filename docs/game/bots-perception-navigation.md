@@ -124,7 +124,7 @@ the nav mesh, and shared read-only by every bot in the process.
   precomputes each triangle's plane and edges. It factors the 64
   corner-crossing checks into two groups of eight projections per edge
   and uses the direct projection at rounding boundaries. Candidate
-  order, proof limits and serialized grid bytes are identical to the
+  order, proof limits and serialised grid bytes are identical to the
   scalar proof (`visibility_build_matches_legacy_grid_bytes`).
 - **Progress.** A grid is built in about 64 chunks of rows of pairs
   (`vis::fill`). The workers take rows from the current chunk and
@@ -454,7 +454,7 @@ period. Last seeing the item elsewhere in someone's hands or hearing a
 teammate call the pad empty also changes the estimate. A carried model is
 attributable only when it matches one known pad.
 
-A recognizable object in either hand is specific to its placement. Indirect
+A recognisable object in either hand is specific to its placement. Indirect
 reports always retain uncertainty and retain the original observation tick
 through perception and radio delays. Distance, recent danger, the strength
 of the nearby position and past visits all affect whether a trip is
@@ -491,7 +491,7 @@ choice between two nearby pads.
 
 A patient long-range gunner or one carrying its favourite rifle gives a
 stronger sightline more weight. Skill and tuned awareness affect how many
-places and pad locations it recognizes, how far it will go, and how
+places and pad locations it recognises, how far it will go, and how
 accurately it estimates arrival. A once-visible enemy can be chased at its
 last observed position.
 

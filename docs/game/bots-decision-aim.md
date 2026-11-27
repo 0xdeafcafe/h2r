@@ -164,7 +164,7 @@ weight of 0.3 on the combo means roughly three attempts in ten eligible
 openings.
 
 Holding the same opening for ten ticks gives it one chance. The card
-summarizes the most distinctive tendencies. `h2 agent bots.stats` shows
+summarises the most distinctive tendencies. `h2 agent bots.stats` shows
 their numeric weights for the current difficulty and style.
 
 | Trait | What changes in play | Easy | Normal | Heroic | Legendary |

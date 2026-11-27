@@ -145,7 +145,7 @@ other posture bytes.
 `Replica::apply` replaces that state on a key and applies each packet atomically.
 It ignores duplicate and older ticks using wrapping 32-bit ordering. A
 delivered key restores the live actor set and mode state after earlier packet loss. Dialogue playback uses the original
-(entity, vocalisation, tick) to recognize repeated copies of a line.
+(entity, vocalisation, tick) to recognise repeated copies of a line.
 
 **3. The host log** (`crates/formats/host-log`). An ordered, hash-chained
 list of entries `{seq, tick, op, prev_hash}`, generic over the op.

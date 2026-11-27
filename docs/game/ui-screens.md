@@ -56,7 +56,7 @@ close message and frees it after the out transition.
 
 `ui_back::RetailBack` remembers Game Setup only when an eligible selector
 replaces the active Game Setup in the same lobby channel. B or Back
-queues Game Setup with a return request, so the window initializes the
+queues Game Setup with a return request, so the window initialises the
 replacement and sends the outgoing selector its normal Back message.
 The supported selectors are **Change Map**, **Change Game Type**, the
 lobby's **Select Level** and **Difficulty**, and kit pages loaded directly from

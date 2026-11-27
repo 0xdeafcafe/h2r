@@ -252,7 +252,7 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    Contest a due pad with a sword or rockets and check the bot can fight
    from pickup range. Try half, double and disabled respawns. Compare its
    arrival with the actual service tick. Hand a sniper to another player
-   in view and check the bot recognizes the new wielder. Repeat with a
+   in view and check the bot recognises the new wielder. Repeat with a
    hidden handover and check that the old sighting decays.
    Repeat on Easy with the same roster to compare the timing.
 7. **Outdoor map knowledge.** On H1 Blood Gulch and Sidewinder, give a
