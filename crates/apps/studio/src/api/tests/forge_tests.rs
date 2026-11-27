@@ -380,10 +380,17 @@ fn forge_items_lists_the_disc_items_the_package_items_and_the_block_out_set() {
     // A bitmap and a scenario are not items.
     assert!(rows.iter().all(|r| r["group"] != "bitm" && r["group"] != "scnr"), "{all}");
     let blockout = forge_shapes::starter().len();
-    assert_eq!(all["custom"], blockout + 1);
+    // The custom items are the block-out set and every package tag the set
+    // has on: this package's `kit_new` and the baked packages' (the Pogo
+    // Stick's three weapons).
+    let from = |source: &str| rows.iter().filter(|r| r["forge"]["source"] == source).count();
+    assert_eq!(from("blockout"), blockout);
+    let packaged = from("package");
+    assert!(packaged >= 1, "{all}");
+    assert_eq!(all["custom"], blockout + packaged);
     // `custom` keeps the custom ones; the Browser's kind answers the same rows.
     let custom = call(&mut api, &mut app, m::FORGE_ITEMS, json!({ "custom": true, "limit": 1000 }));
-    assert_eq!(custom["total"], blockout + 1);
+    assert_eq!(custom["total"], blockout + packaged);
     assert!(custom["rows"].as_array().unwrap().iter().all(|r| r["forge"]["custom"] == true));
     let kind = call(
         &mut api,

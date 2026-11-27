@@ -24,6 +24,10 @@ pub struct Requirements {
     pub row_help: bool,
     /// This is a picker, including bases shared with other dialogs.
     pub picker: bool,
+    /// The content is a row of cards drawn as panel art and texts, with no
+    /// list rows (`ui_kit::card`, the `row` layout): the list has nothing
+    /// to be empty of.
+    pub card_row: bool,
 }
 
 impl Requirements {
@@ -290,6 +294,7 @@ pub(super) fn check(s: &ScreenSpec, view: &View) -> Vec<Finding> {
     }
 
     let list = s.dialog.is_none()
+        && !s.content.card_row
         && view.list.is_some()
         && (s.scrolls || !s.inputs.is_empty() || !s.title.trim().is_empty());
     let picker = s.content.picker

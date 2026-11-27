@@ -421,14 +421,15 @@ fn siege_says_a_site_captured_the_round_over_and_each_sides_reinforcements() {
     let mut g = siege_game();
     let mut vm = start(builtin::SIEGE, &mut g, &[("capture_time", 5)]);
     g.inside.insert((0, 600));
-    ticks_flushing(&mut vm, &mut g, 2, 60);
+    // A time option is in seconds: five seconds alone on the site is 150 ticks.
+    ticks_flushing(&mut vm, &mut g, 2, 160);
     let at = said(&g);
     assert!(at.contains(&("site-captured".to_string(), EVERYONE)), "{at:?}");
     // A defender dies: the side's wave lands after its time, with a line to
     // that side alone.
     g.players.get_mut(&1).unwrap().alive = false;
     vm.fire(&mut g, Input::Death(1));
-    ticks_flushing(&mut vm, &mut g, 62, 400);
+    ticks_flushing(&mut vm, &mut g, 162, 400);
     let at = said(&g);
     assert!(at.contains(&("reinforcements".to_string(), player(1))), "{at:?}");
     assert!(!at.contains(&("reinforcements".to_string(), player(0))), "{at:?}");

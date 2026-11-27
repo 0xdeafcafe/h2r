@@ -637,7 +637,12 @@ mod tests {
         // The hooks: with the switch on, the service is implemented here and
         // the admission and the tick's start are `before` hooks; the marker
         // start and the stop are the engine's own.
-        for (spec, on) in [("impl.sim.sound-events=off", false), ("impl.sim.sound-events", true)] {
+        // The table's switch is a child of the events switch, so the events
+        // arm under test names it off: with the table on, this arm stands down.
+        for (spec, on) in [
+            ("impl.sim.sound-events=off", false),
+            ("impl.sim.sound-events,impl.sim.sound-events.table=off", true),
+        ] {
             let mut registry = Registry::new(Switches::parse(spec).unwrap());
             registry.add(&SimSoundEvents::headless()).unwrap();
             let plan = registry.build(&Base).unwrap();
