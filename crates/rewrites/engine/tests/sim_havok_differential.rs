@@ -2432,7 +2432,7 @@ const GJK_OUT: u32 = 0x0077_2000;
 
 fn gjk_code(image: &Image) -> lifted::Original {
     let mut code = image.original();
-    for f in [0x2da4d0, 0x2da6e0, 0x303360, 0x308590, 0x3032c0] {
+    for f in [0x2da4d0, 0x2da6e0, 0x303360, 0x308590, 0x3032c0, 0x303540, 0x303110] {
         code.prime(f);
     }
     code
@@ -2598,4 +2598,51 @@ fn the_query_contact_matches_the_lifted_contact() {
         cases[case as usize] += 1;
     }
     assert!(cases.iter().all(|&n| n > 32), "{cases:?}");
+}
+
+/// Seeded tetrahedra and points, some at the newest vertex and some far
+/// past one face: the face `0x00303540` names (through `0x00303110` when
+/// no face dominates) and ecx equal the lifted function's, and it writes
+/// nothing outside its frame.
+#[test]
+fn the_tetrahedron_face_matches_the_lifted_choice() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = gjk_code(image);
+    let mut seen = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x3035_0000 + seed);
+        let mut mem = base.clone();
+        let (verts, p) = (GJK_IN, GJK_IN + 0x100);
+        for i in 0..4 {
+            seed_vector(&mut r, &mut mem, verts + 16 * i);
+        }
+        let point = seed_vector(&mut r, &mut mem, p);
+        match seed % 8 {
+            0 => {
+                let v3: [f32; 4] = std::array::from_fn(|i| f32::from_bits(mem.read_u32(verts + 0x30 + 4 * i as u32).unwrap()));
+                put_lanes(&mut mem, p, v3);
+            }
+            1 => put_lanes(&mut mem, p, point.map(|x| 8.0 * x)),
+            _ => {}
+        }
+        let s = [1.0f32, -1.0, float(&mut r, -2.0, 2.0)][r.below(3) as usize].to_bits();
+        word(&mut mem, STACK, EXIT);
+        word(&mut mem, STACK + 4, s);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} {fpu:x?}");
+        let face = gjk::tetrahedron(&Journal::new(&Flat(&mem)), verts, p, s, fpu).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let before = mem.clone();
+        let mut cpu = Cpu { gpr: [verts, 0, 0, p, STACK, 0x2222, 0x3333, 0x4444], eip: 0x303540, ..Cpu::default() };
+        cpu.mxcsr = fpu.mxcsr;
+        cpu.x87.control = fpu.control;
+        run(&mut code, &mut cpu, &mut mem);
+        let after = abi_cpu(&cpu);
+        assert_eq!((after.eax, after.ecx, after.esp), (face.eax, face.ecx, STACK + 4), "{why}: eax, ecx, ret");
+        assert_eq!((after.ebx, after.edi), (p, 0x4444), "{why}");
+        let mut expected = before;
+        clear_frame([&mut mem, &mut expected], 4);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        *seen.entry((face.eax, face.ecx == verts + 0x30)).or_insert(0) += 1;
+    }
+    assert!(seen.len() >= 6, "{seen:?}");
 }
