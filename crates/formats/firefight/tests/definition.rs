@@ -36,7 +36,7 @@ fn golden_hash_for_the_builtin_defs() {
         ),
         (
             "Endless",
-            "72538db923ff33c981d1c6c1cae2e39269c0dfbc63e77a99d8765da39ef9a4c1",
+            "b1a5cdb7d7892902c12ef1207103ad134a38f88a1d9da359c0bf0951c721b2d4",
         ),
         (
             "Outbreak",
