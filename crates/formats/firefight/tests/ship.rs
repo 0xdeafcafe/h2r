@@ -91,7 +91,7 @@ fn a_busy_ship_never_stalls_a_wave() {
         &mut director,
         &mut world,
         100,
-        |tick, world| kill_at_age_three(tick, world),
+        kill_at_age_three,
         |_, _, _, _, _| {},
     );
     assert_eq!(run.outcome, Some(Outcome::Won));
@@ -127,7 +127,7 @@ fn a_ship_that_is_back_takes_the_next_squad() {
         &mut director,
         &mut world,
         3_000,
-        |tick, world| kill_at_age_three(tick, world),
+        kill_at_age_three,
         |_, _, _, _, _| {},
     );
     let by_ship: Vec<u32> = run

@@ -560,7 +560,7 @@ pub fn build(
         }
         Joint::Prismatic => {
             b.header(acc, c.wrapping_add(0xac))?;
-            let w = [0x70, 0x80, 0x90].map(|off| local(off));
+            let w = [0x70, 0x80, 0x90].map(&local);
             let [Ok(w0), Ok(w1), Ok(w2)] = w else { return Err(Memory) };
             let w = [w0, w1, w2].map(|v| b.rotate(&ta, v));
             b.angular(w[0], tb.basis[1], w[2])?;

@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(p.spill, Some(Spill { block: LIFO_CURSOR, end: LIFO_CURSOR + bytes }));
         assert_eq!(p.ranges, vec![(LIFO_CURSOR, LIFO_CURSOR + bytes)]);
         assert_eq!((p.cursor_limit, p.overflow), (p.layout.impulses, 0));
-        assert_eq!(j.get(SYSTEM + l::POOL_LIFO_CURSOR), Some(LIFO_CURSOR + (bytes + 15) / 16 * 16));
+        assert_eq!(j.get(SYSTEM + l::POOL_LIFO_CURSOR), Some(LIFO_CURSOR + bytes.div_ceil(16) * 16));
         // The inline release leaves the descriptor as it was.
         lifo_release(&mut j, p.spill.unwrap()).unwrap();
         for off in [l::POOL_LIFO_CURSOR, l::POOL_LIFO_REMAINING] {

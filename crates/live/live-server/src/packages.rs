@@ -352,7 +352,7 @@ impl Live {
             .filter(|(_, k)| withheld(&catalog, k).is_none())
             .map(|(id, k)| self.package_summary(&catalog, &s, id, k))
             .collect();
-        items.sort_by(|a, b| b.position.cmp(&a.position));
+        items.sort_by_key(|i| std::cmp::Reverse(i.position));
         PackageList {
             items,
             position: self.position(),

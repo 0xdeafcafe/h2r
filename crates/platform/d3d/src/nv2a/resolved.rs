@@ -26,7 +26,7 @@ pub fn resolve(
         signs,
         border,
         ..
-    } = program_key(&table, caps, draw, present, FetchMode::Cpu)?;
+    } = program_key(table, caps, draw, present, FetchMode::Cpu)?;
     let VertexSource::Microcode(words) = &key.vertex else {
         return Err("native effects require a programmable vertex shader".into());
     };
@@ -59,7 +59,7 @@ pub fn resolve(
         c0,
         c1,
         fog_color: argb(render.fog_color),
-        fog: fog_uniform(&table, draw),
+        fog: fog_uniform(table, draw),
         alpha_ref: [render.alpha_ref as f32, 0.0, 0.0, 0.0],
         eye: eye_uniform(&draw.hw),
         ..PixelUniforms::default()
@@ -70,7 +70,7 @@ pub fn resolve(
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
-        vu.w_clamp = depth_clamp(&table, draw);
+        vu.w_clamp = depth_clamp(table, draw);
     }
     if w_buffer {
         // The polygon offset joins the stored w in the fragment stage

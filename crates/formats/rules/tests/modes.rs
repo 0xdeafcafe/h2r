@@ -9,7 +9,7 @@ use rules::builtin::{Registry, package_sources};
 use rules::fake::FakeSpawns;
 use rules::ir::OptionValue;
 use rules::labels::Class;
-use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, ScenarioPick, ScenarioTick};
+use rules::scenario::{self, RunResult, Scenario, ScenarioEvent, ScenarioLabel, ScenarioTick};
 use rules::vm::Arg;
 
 const SIEGE_ATTACKERS_WIN: &str = include_str!("scenarios/siege_attackers_win.json");

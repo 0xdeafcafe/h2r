@@ -171,7 +171,7 @@ impl crate::BinkHle {
                 match display() {
                     None => refuse(Ui::MovieRefusedHost, "no native display is installed"),
                     Some(host) => {
-                        if host.show(&mut *mem, &draw) {
+                        if host.show(&mut mem, &draw) {
                             Ui::MoviePlaced.count();
                         }
                     }

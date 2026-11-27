@@ -582,7 +582,7 @@ pub fn bitmap_widget(
                     pending.push((global::INPUTS, u32_at(record, 0x250 + 4 * i)));
                     quads.push(Quad { writes: std::mem::take(&mut pending), corners, bounds: [left, right, top, bottom] });
                     for corner in &mut corners {
-                        corner[0] = step + corner[0];
+                        corner[0] += step;
                     }
                 }
             }
@@ -610,10 +610,10 @@ pub fn bitmap_widget(
             let mut c = corners;
             for (i, corner) in c.iter_mut().enumerate() {
                 if x && i != 1 && i != 2 {
-                    corner[0] = across * 2.0 + corner[0];
+                    corner[0] += across * 2.0;
                 }
                 if y && i <= 1 {
-                    corner[1] = down * 2.0 + corner[1];
+                    corner[1] += down * 2.0;
                 }
             }
             Quad { writes: Vec::new(), corners: c, bounds }

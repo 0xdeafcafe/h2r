@@ -318,13 +318,7 @@ fn guest_function(ram: &Ram, x: f32, r: f32) -> Result<u32, Decline> {
         return Ok(v);
     }
     let v = f32::from_bits(v);
-    let v = if 0.0 > v {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    };
+    let v = v.clamp(0.0, 1.0);
     let (lo, hi) = (
         f32::from_bits(ram.u32(data + 4).unwrap()),
         f32::from_bits(ram.u32(data + 8).unwrap()),
@@ -799,15 +793,7 @@ fn a_periodic_export_runs_on_game_time_with_an_optional_per_object_offset() {
     exports(&mut ram, DEF, 1);
     let t = 1234.0f32 * (1.0f32 / 30.0);
     let h = constants().time_hash.of(OBJECT);
-    let clamp = |v: f32| {
-        if 0.0 > v {
-            0.0
-        } else if v > 1.0 {
-            1.0
-        } else {
-            v
-        }
-    };
+    let clamp = |v: f32| v.clamp(0.0, 1.0);
     let want = |ram: &mut Ram, t: f32| {
         reference(ram, wave);
         let v = f32::from_bits(guest_function(ram, t, 1.0).unwrap());

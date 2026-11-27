@@ -348,7 +348,7 @@ fn run(
             schema,
             open(*base, *size)?,
             &mut src,
-            &[new.clone()],
+            std::slice::from_ref(&new),
         )?;
         assert_eq!(added.added, vec![new.clone()]);
         assert!(set.find(new.group, &new.path).is_some());
