@@ -64,8 +64,11 @@ pub enum TableEvent {
         gain: f32,
         pitch: f32,
         source: crate::instances::SourceParams,
-        /// A loop segment: only its loop ends it.
+        /// A loop segment: linked to a loop's track.
         looping: bool,
+        /// A loop's detail sound: the host places it (presentation, its own
+        /// seed copy, the listener); the sim took no placement draw.
+        detail: bool,
         tick: u32,
     },
     /// A stop: the sound fades for `fade_ticks`, then ends with `Faded`.

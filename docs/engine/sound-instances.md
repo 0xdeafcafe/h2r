@@ -1,6 +1,6 @@
 # Sound instances: the Rust table
 
-Status: Design, slices 1 to 3 built: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`, wired to nothing. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
+Status: Design, slices 1 to 3 built, slice 4 begun: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`; the bridge reads request records and hosts owners; nothing is wired at boot. [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
 Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,mixer_feed}.rs`, `crates/platform/sound-clips`. Tests: the same files, named in [Slices](#slices).
 Switch: none. The table replaces `impl.sim.sound-events` and `impl.sim.native.sound` ([switches.md](../runtime/switches.md)).
 
@@ -181,6 +181,8 @@ A `Looping` (`sim_sound::looping`) holds its tag, owner, source, the alternate a
 | Stop | `loop_stop`: every member fades over the fade out, the out plays; the loop is freed in the first `step_loops` with no members | `OutSegment`, `0x21bd00` |
 | Detail | due when its deadline is before the clock (`clock_ms(tick)`), gated by flag bits 0 and 1; a play draws the next: `(lo + (hi - lo) r) * 1000 + clock`, truncated | `0x21b6d0` to `0x21b7b6` |
 
+Sounds the phase admits itself (segments, details) take their `level` from `instances::Levels`, which the bridge implements by reading `0x1251e0`'s inputs (the tag's curves, the class's runtime state) inside the phase. A detail's `Started` event has `detail: true`: where it plays is presentation, which draws from its own seed copy (as `impl.sim.present`'s `PRESENT_SEEDS`) and reads the listener there, never the sim seed. The per-frame track crossfades (`0x21b1c0`) are presentation too, outside the hash.
+
 **Design.** Retail moves a segment on when the device's channel runs out; the table moves it on the segment sound's computed end tick. Retail's draws for loops depend on wall-clock timing, so there is no retail order to keep beyond "once a tick, in slot order".
 
 ## Entries
@@ -300,7 +302,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 | 1 | `sound-clips` crate | Sonnet | none | built |
 | 2 | Instances, chooser, owners (pure) | Opus | none | built |
 | 3 | Looping sounds on the table (pure) | Opus | 2's types | built; no differential |
-| 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | |
+| 4 | The flip: entries, sound phase, readers, counters | Opus | 2, 3 | begun: request reader, `GuestUnits`, `Levels` |
 | 5 | Mixer feed, boot wiring, deletions | Opus | 1, 4 | |
 
 ### 1. `sound-clips`
@@ -327,6 +329,8 @@ A refusal never plays or admits something else in its place. An unknown owner re
 ### 4. The flip
 
 - Files: `crates/rewrites/sim-bridge/src/sim_sound.rs` (the store, the snapshot section, the phase), `sim_sound/{entries,owner_host,request}.rs` (new), `tick.rs` (phase 30); `crates/apps/boot/src/registration.rs`; `crates/extensions/game/src/{audio_loops.rs,h1_conversation.rs}`; delete `sim_sound/{owners,voice_arm}.rs`, `extensions/game/src/sim_glue/voices.rs`; `crates/hooking/hooks/src/switches/table.rs` (both switches removed); docs: [sound-sim.md](sound-sim.md) rewritten to the table, [switches.md](../runtime/switches.md), [agent-api.md](../runtime/agent-api.md) (`audio.loops`), [sim-determinism.md](../runtime/sim-determinism.md) (`sound.table`).
+- Built: `sim_sound/request.rs` (`read`: the record and arguments into a `Request`, the callback table's finish classified as `Unit` or `ScriptLine`, any other refused), `sim_sound/owner_host.rs` (`GuestUnits`: the line table clear as a counted write at once; the unit's line end and mouth queued as counted `UnitCall`s the phase makes after the step), `instances::Levels`.
+- To build: the guest-reading `Levels` (`0x1251e0`'s math, with `0x127010`'s class state), the entry bodies, phase 30, the readers, the counters ledger, boot wiring, the deletions.
 - Tests: `every_outside_entry_has_a_rust_body`, `a_request_record_reads_into_a_request`, `an_unknown_callback_table_refuses_the_request`, `a_unit_line_end_calls_the_unit_once_with_the_tag`, `a_script_line_end_clears_its_slot`, `the_pool_global_is_zero_after_start`, `the_sound_phase_runs_once_per_tick_number`, `the_hash_is_the_same_with_any_host`, `audio_loops_rows_come_from_the_table`, `a_conversation_poll_sees_an_ended_sound_as_gone`.
 - Exit: `h2 sim diff` of the same match twice is identical with `sound.table` in the series; D1's counters hold on a campaign level and a match through `sim.ledger`.
 
@@ -360,9 +364,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 - That `0x2226b0` (called before the slot) changes nothing the table keeps. The differential stands in for it.
 - That every sound a level admits decodes from the host's map files, converted Halo 1 maps and injected tags included.
 - Whether the game is silent today with `impl.sim.sound-events` on. The code says the manager's sounds are.
-- Detail placement. `0x21cc60` decides whether and where a detail plays; it steps the shared seed and calls listener and object code (`0x21ce60`, `0x14dde0`, `0x188dd0`). The table plays each due detail at the loop's source and takes none of those draws. A draw that reads the listener breaks "the same with any host"; that needs a design call before the flip.
-- The per-frame track update (`0x21b1c0`): the pitch-range crossfade of unlayered tracks (0.75 s, `0x21b653`) and the per-range voices of layered tracks (tag `+1` bit 5). Not in the table yet.
-- Loop and detail admissions take `level` 0. The bridge computes `level` for entry requests; loops admit inside the phase with no bridge call.
+- Whether `0x21cc60` can refuse a detail for a reason that is not placement. The table plays every due detail; presentation places it (`0x21ce60`, `0x14dde0`, `0x188dd0`).
 - The fade-out seconds of a stop (`TrackTag::fade_out`): `0x21bd00` takes them as an argument; which tag field its callers pass is unread.
 
 ## Related
