@@ -332,3 +332,52 @@ fn a_stroke_past_the_vertex_budget_is_refused() {
     assert!(why.starts_with("the stroke needs more than 65535 vertices"), "{why}");
     assert_eq!(m, before);
 }
+
+/// Whether the plan point `(x, y)` is inside a face of `m` (even-odd).
+fn covered(m: &Mesh, x: f32, y: f32) -> bool {
+    m.face_ids().any(|f| {
+        let p = m.face_positions(f);
+        let mut odd = false;
+        for i in 0..p.len() {
+            let (a, b) = (p[i], p[(i + p.len() - 1) % p.len()]);
+            if (a[1] > y) != (b[1] > y) && x < a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+                odd = !odd;
+            }
+        }
+        odd
+    })
+}
+
+#[test]
+fn a_cut_splits_an_edge_that_dips_into_the_circle_with_neither_end_inside() {
+    // Centre (2, 1.5), radius 1.05: the edges x = 1 and x = 3 from y = 1 to
+    // 2 pass 1.0 from the centre, but both their ends are 1.118 away.
+    let mut m = unit_grid(4);
+    let centre = [2.0, 1.5, 0.0];
+    sculpt(&mut m, Stroke { detail: Some(1.0), ..Stroke::dab(Brush::Cut, centre, 1.05, 1.0) });
+    let dy = (1.05f32 * 1.05 - 1.0).sqrt();
+    for x in [1.0, 3.0] {
+        for y in [1.5 - dy, 1.5 + dy] {
+            assert!(
+                m.vert_ids().any(|v| close3(m.position(v), [x, y, 0.0])),
+                "a rim vertex where x = {x} crosses the circle at y = {y}"
+            );
+        }
+        // Inside the circle beside the dipping edge, on the centre's side:
+        // no sliver of face is left there.
+        let inward = if x < 2.0 { x + 0.01 } else { x - 0.01 };
+        assert!(!covered(&m, inward, 1.5), "a sliver is left at x = {inward}");
+    }
+    // Every vertex of the hole's edge is on the circle.
+    let outer = |p: [f32; 3]| p[0] == 0.0 || p[0] == 4.0 || p[1] == 0.0 || p[1] == 4.0;
+    for e in m.edge_ids().filter(|&e| m.edge_face_count(e) == 1) {
+        let ends = m.edge_verts(e);
+        if ends.iter().all(|&v| outer(m.position(v))) {
+            continue;
+        }
+        for v in ends {
+            assert!((flat_distance(m.position(v), centre) - 1.05).abs() < 1e-3);
+        }
+    }
+    assert_eq!(euler(&m), 0);
+}

@@ -41,6 +41,10 @@
 //! "Collision"). [`from_render`] makes collision polygons from a render
 //! section's triangles.
 //!
+//! [`rebuild`] compiles a level again from its edited render surface,
+//! keeping portal planes and the per-leaf clusters (docs/editor/modeling.md,
+//! "Sculpting").
+//!
 //! [`merge`] appends a compiled solid to a level's BSP keeping every
 //! existing index, and [`level`] adds a solid to a structure's level
 //! collision with its per-leaf block and MOPP (docs/editor/modeling.md,
@@ -54,6 +58,7 @@ pub mod level;
 pub mod merge;
 mod prep;
 pub mod query;
+pub mod rebuild;
 mod tree;
 mod tree2d;
 pub mod verify;

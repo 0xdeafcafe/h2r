@@ -175,7 +175,12 @@ steps of rising risk.
    appended first, in order), the MOPP, pathfinding
    (`pathfind::generate`, which has no instanced or object sectors),
    surface materials and breakable-surface bytes (carried as face
-   attributes). Named fields cover under 15% of `sbsp`
+   attributes). A sculpt stroke on a cluster does this
+   (`geometry_edit::level_rebuild`; [modeling.md](modeling.md),
+   "Sculpting"): leaves take the old leaf their cell's centre stood in,
+   portal planes are kept and renumbered, and pathfinding is generated
+   again, refused while hints or object references name sectors. Named
+   fields cover under 15% of `sbsp`
    ([editor.md](editor.md), "The field registry"), so other holders of a
    surface, leaf or plane index may exist (**S**). This step is built
    for converted Halo 1 maps first, where `h1convert` writes every field
@@ -197,9 +202,11 @@ where its *section's* cluster is seen, wherever the face is.
   written) is the fix.
 - Portals, the cluster graph, the visibility rows (`sbsp+0x54`,
   `+0x58`), sky indices and sound palettes are shown (an overlay of
-  portal polygons and cluster colours) and not edited. A wall moved past
-  a portal leaves a hole in the flood's seal; the check reports a portal
-  whose polygon no longer touches collision surfaces on all its edges.
+  portal polygons and cluster colours) and not edited by hand. A sculpt
+  stroke lays a portal's ground edge along the new surface, and refuses a
+  cut that leaves a gap under it. A wall moved past a portal leaves a
+  hole in the flood's seal; the check reports a portal whose polygon no
+  longer touches collision surfaces on all its edges.
 - Portal and cluster editing, and new clusters, are out of scope. They
   need the cluster split, the portal limits (512, and 256 flood nodes:
   `h1convert::clusters::MAX_PORTALS`, `h1convert::flood`) and the sound

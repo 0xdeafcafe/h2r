@@ -519,33 +519,74 @@ impl Mesh {
     /// Step 3: the cut.
     fn cut_footprint(&mut self, fp: &Footprint) -> Result<(), MeshError> {
         let eps = (fp.radius * 1e-4).max(1e-6);
-        let signed = |m: &Mesh, v: VertId| fp.distance(m.position(v)) - fp.radius;
+        let signed = |p: Vec3| fp.distance(p) - fp.radius;
+        // Split every edge where it crosses the rim: once where one end is
+        // inside, and twice where an edge with neither end inside dips in.
         let mut rim: BTreeSet<VertId> = BTreeSet::new();
-        // Split every edge that crosses the rim on the rim.
         for e in self.edge_ids().collect::<Vec<_>>() {
             let [a, b] = self.edge_verts(e);
-            let (da, db) = (signed(self, a), signed(self, b));
-            if !((da < -eps && db > eps) || (da > eps && db < -eps)) {
-                continue;
-            }
             let (pa, pb) = (self.position(a), self.position(b));
-            let (mut lo, mut hi) = (0.0f32, 1.0f32);
-            for _ in 0..40 {
-                let mid = 0.5 * (lo + hi);
-                let d = fp.distance(math::lerp(pa, pb, mid)) - fp.radius;
-                if (d < 0.0) == (da < 0.0) {
-                    lo = mid;
-                } else {
-                    hi = mid;
+            let (da, db) = (signed(pa), signed(pb));
+            let at = |t: f32| signed(math::lerp(pa, pb, t));
+            // The rim crossing between `lo` and `hi`, whose sides differ.
+            let cross = |mut lo: f32, mut hi: f32| {
+                let inside_lo = at(lo) < 0.0;
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if (at(mid) < 0.0) == inside_lo {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
                 }
+                0.5 * (lo + hi)
+            };
+            let ts: Vec<f32> = if (da < -eps && db > eps) || (da > eps && db < -eps) {
+                vec![cross(0.0, 1.0)]
+            } else if da >= -eps && db >= -eps {
+                // The closest approach, sampled then refined.
+                let mut t_min = 0.0f32;
+                for k in 0..=32 {
+                    let t = k as f32 / 32.0;
+                    if at(t) < at(t_min) {
+                        t_min = t;
+                    }
+                }
+                let step = 1.0 / 32.0;
+                let (mut lo, mut hi) = ((t_min - step).max(0.0), (t_min + step).min(1.0));
+                for _ in 0..40 {
+                    let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                    if at(m1) < at(m2) {
+                        hi = m2;
+                    } else {
+                        lo = m1;
+                    }
+                }
+                let t_min = 0.5 * (lo + hi);
+                if at(t_min) >= -eps {
+                    Vec::new()
+                } else {
+                    let mut ts = Vec::new();
+                    if da > eps {
+                        ts.push(cross(0.0, t_min));
+                    }
+                    if db > eps {
+                        ts.push(cross(t_min, 1.0));
+                    }
+                    ts
+                }
+            } else {
+                Vec::new()
+            };
+            if !ts.is_empty() {
+                rim.extend(self.split_edge(e, a, &ts)?);
             }
-            rim.extend(self.split_edge(e, a, &[0.5 * (lo + hi)])?);
         }
         let side = |m: &Mesh, v: VertId| {
             if rim.contains(&v) {
                 return Side::On;
             }
-            let d = signed(m, v);
+            let d = signed(m.position(v));
             if d < -eps {
                 Side::In
             } else if d > eps {
@@ -554,47 +595,77 @@ impl Mesh {
                 Side::On
             }
         };
-        // Split each face along the rim: a run of inside corners between
-        // two rim corners becomes a face of its own.
+        // An edge between corners is inside the footprint when an end is,
+        // or, between two rim corners, when its middle is.
+        let inside_edge = |m: &Mesh, a: VertId, b: VertId| match (side(m, a), side(m, b)) {
+            (Side::In, _) | (_, Side::In) => true,
+            (Side::Out, _) | (_, Side::Out) => false,
+            _ => signed(math::lerp(m.position(a), m.position(b), 0.5)) < 0.0,
+        };
+        // Split each face along the rim: its inside edges form chains from
+        // rim corner to rim corner; the chains joined by chords are the
+        // inside part, and each run of outside edges closed by a chord is
+        // an outside part.
+        let mut doomed: Vec<FaceId> = Vec::new();
         for f in self.face_ids().collect::<Vec<_>>() {
-            loop {
-                let poly = self.face_poly(f);
-                let sides: Vec<Side> = poly.verts.iter().map(|&v| side(self, v)).collect();
-                let Some((i, j)) = inside_run(&sides) else { break };
-                let n = poly.len();
-                let arc = |from: usize, to: usize| {
-                    let mut part = Poly {
-                        verts: Vec::new(),
-                        corners: Vec::new(),
-                        src: None,
-                        flags: poly.flags | face_flags::LIGHTMAP_STALE,
-                        ..poly.clone()
-                    };
-                    let mut k = from;
-                    loop {
-                        part.verts.push(poly.verts[k]);
-                        part.corners.push(poly.corners[k]);
-                        if k == to {
-                            break;
-                        }
-                        k = (k + 1) % n;
+            let poly = self.face_poly(f);
+            let n = poly.len();
+            let inside: Vec<bool> =
+                (0..n).map(|k| inside_edge(self, poly.verts[k], poly.verts[(k + 1) % n])).collect();
+            if inside.iter().all(|&x| x) {
+                doomed.push(f);
+                continue;
+            }
+            if !inside.iter().any(|&x| x) {
+                continue;
+            }
+            // Start just after an outside edge, at a chain's first corner.
+            let start = (0..n).find(|&k| !inside[k] && inside[(k + 1) % n]).map(|k| (k + 1) % n).expect("both kinds");
+            let mut chains: Vec<Vec<usize>> = Vec::new();
+            let mut outs: Vec<Vec<usize>> = Vec::new();
+            let mut k = 0;
+            while k < n {
+                let i = (start + k) % n;
+                let into = inside[i];
+                let mut run = vec![i];
+                while k < n && inside[(start + k) % n] == into {
+                    k += 1;
+                    run.push((start + k) % n);
+                }
+                if into { chains.push(run) } else { outs.push(run) }
+            }
+            let part = |corners: Vec<usize>| Poly {
+                verts: corners.iter().map(|&c| poly.verts[c]).collect(),
+                corners: corners.iter().map(|&c| poly.corners[c]).collect(),
+                src: None,
+                flags: poly.flags | face_flags::LIGHTMAP_STALE,
+                ..poly.clone()
+            };
+            let mut inner: Vec<usize> = Vec::new();
+            for c in &chains {
+                for &x in c {
+                    if inner.last() != Some(&x) && inner.first() != Some(&x) {
+                        inner.push(x);
                     }
-                    part
-                };
-                let (cut, rest) = (arc(i, j), arc(j, i));
-                self.rebuild_face(f, &rest)?;
-                self.add_face(&cut)?;
+                }
+            }
+            let outer: Vec<Poly> = outs.into_iter().filter(|o| o.len() >= 3).map(part).collect();
+            let mut pieces = outer.into_iter();
+            let first = pieces.next();
+            match first {
+                Some(p) => self.rebuild_face(f, &p)?,
+                None => {
+                    doomed.push(f);
+                    continue;
+                }
+            }
+            for p in pieces {
+                self.add_face(&p)?;
+            }
+            if inner.len() >= 3 {
+                doomed.push(self.add_face(&part(inner))?);
             }
         }
-        // The faces inside go, with what they leave loose.
-        let doomed: Vec<FaceId> = self
-            .face_ids()
-            .filter(|&f| {
-                let sides: Vec<Side> = self.face_verts(f).iter().map(|&v| side(self, v)).collect();
-                !sides.contains(&Side::Out)
-                    && (sides.contains(&Side::In) || fp.distance(self.face_center(f)) < fp.radius - eps)
-            })
-            .collect();
         if doomed.is_empty() {
             return Err(refuse("the cut reaches no face"));
         }
@@ -633,29 +704,6 @@ impl Mesh {
         }
         best
     }
-}
-
-/// In a face's corner sides, a run of inside corners with a rim corner at
-/// each end, `(first rim, last rim)`, when the face also has an outside
-/// corner, so splitting there leaves both parts with three corners.
-fn inside_run(sides: &[Side]) -> Option<(usize, usize)> {
-    let n = sides.len();
-    if !sides.contains(&Side::Out) {
-        return None;
-    }
-    for i in 0..n {
-        if sides[i] != Side::On || sides[(i + 1) % n] != Side::In {
-            continue;
-        }
-        let mut j = (i + 1) % n;
-        while sides[j] == Side::In {
-            j = (j + 1) % n;
-        }
-        if sides[j] == Side::On && j != i {
-            return Some((i, j));
-        }
-    }
-    None
 }
 
 /// Möller-Trumbore, both sides.

@@ -403,7 +403,15 @@ impl App {
                 Err(e) => c.refusal = Some(e.to_string()),
             }
         }
-        for edit in self.modeling.level_collision.values() {
+        for (tag, edit) in &self.modeling.level_collision {
+            // Both rewrite the same level blocks from the map's copy: one
+            // would undo the other.
+            if g.level_change(*tag).is_some() && c.refusal.is_none() {
+                c.refusal = Some(format!(
+                    "structure {:08x} has added collision boxes and a sculpted level: save one, then reopen the map for the other",
+                    tag.0
+                ));
+            }
             let w = edit.writes();
             for p in w.patches {
                 match p.space {

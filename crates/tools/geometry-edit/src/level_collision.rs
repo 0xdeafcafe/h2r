@@ -132,7 +132,7 @@ fn refused(tag: TagId, reason: impl Into<String>) -> Error {
 /// `len` bytes at `address`: in `space` when they lie there, else in the
 /// ordinary metadata. Returns the bytes and where they were (`None`: the
 /// metadata).
-fn read_at<R: Read + Seek>(
+pub(crate) fn read_at<R: Read + Seek>(
     map: &mut Map<R>,
     space: AddressSpace,
     address: u32,
@@ -406,29 +406,7 @@ impl LevelEdit {
 
     /// What a save writes: see the module docs.
     pub fn writes(&self) -> LevelWrites {
-        let src = &self.source;
-        let new = &self.added.level;
-        let mut out = LevelWrites::default();
-        for (i, b) in collision_build::coll::stage_blocks(&new.bsp).into_iter().enumerate() {
-            out.block(
-                b.name,
-                (src.blocks[i], &src.block_bytes[i]),
-                (src.element.space, src.element.address + 8 * i as u32),
-                (b.count, &b.bytes),
-            );
-        }
-        out.block(
-            "leaf_clusters",
-            (src.leaves, &src.level.leaves),
-            (src.space, src.root + LEAVES_FIELD as u32),
-            ((new.leaves.len() / LEAF_SIZE) as u32, &new.leaves),
-        );
-        out.mopp(
-            (src.mopp, &src.level.mopp),
-            (src.space, src.root + MOPP_FIELD as u32),
-            &new.mopp,
-        );
-        out
+        level_writes(&self.source, &self.added.level)
     }
 
     /// The blocks `edit.collision.stage` sends: the eight collision blocks
@@ -437,6 +415,33 @@ impl LevelEdit {
     pub fn stage(&self) -> LevelStage {
         self.added.stage()
     }
+}
+
+/// The writes that turn `src`'s level into `new`: the eight collision
+/// blocks, the per-leaf block and the MOPP, each patched where its count
+/// holds and grown where it does not.
+pub(crate) fn level_writes(src: &LevelSource, new: &Level) -> LevelWrites {
+    let mut out = LevelWrites::default();
+    for (i, b) in collision_build::coll::stage_blocks(&new.bsp).into_iter().enumerate() {
+        out.block(
+            b.name,
+            (src.blocks[i], &src.block_bytes[i]),
+            (src.element.space, src.element.address + 8 * i as u32),
+            (b.count, &b.bytes),
+        );
+    }
+    out.block(
+        "leaf_clusters",
+        (src.leaves, &src.level.leaves),
+        (src.space, src.root + LEAVES_FIELD as u32),
+        ((new.leaves.len() / LEAF_SIZE) as u32, &new.leaves),
+    );
+    out.mopp(
+        (src.mopp, &src.level.mopp),
+        (src.space, src.root + MOPP_FIELD as u32),
+        &new.mopp,
+    );
+    out
 }
 
 #[cfg(test)]

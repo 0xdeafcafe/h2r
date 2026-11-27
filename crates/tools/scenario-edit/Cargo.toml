@@ -30,6 +30,9 @@ gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"
 h1-assets = { path = "../h1-assets" }
 # The layered test map's invented pixel and vertex shaders (fixture.rs).
 shaders = { path = "../../formats/shaders" }
+# The textured level fixture's compiled room and its MOPP (fixture.rs).
+collision-build = { path = "../collision-build" }
+mopp = { path = "../../formats/mopp" }
 
 [dev-dependencies]
 pollster = "1"

@@ -24,6 +24,8 @@ use crate::coll_target::CollSource;
 use crate::grow::{self, Grown};
 use crate::import::section_source;
 use crate::level_collision::GrownBlock;
+use crate::level_rebuild::{self, LevelChange, StructureLevel};
+use collision_build::rebuild::{SectionEdit, Tri};
 use crate::target::{Target, TargetKind};
 use crate::write::{SectionSource, block_runs, rewrite};
 
@@ -293,6 +295,10 @@ enum Source {
         record: RecordAt,
         /// Why a lightmap bucket reaches the section, if one does.
         bucket_lit: Option<String>,
+        /// A cluster's structure: its level collision, portals and
+        /// pathfinding, or why they could not be read. `None` for an
+        /// instanced definition.
+        level: Option<Result<Arc<StructureLevel>, String>>,
     },
     Model {
         model: Arc<ModelSource>,
@@ -321,6 +327,8 @@ struct Opened {
 struct State {
     edits: Vec<(Target, Arc<Mesh>, Arc<Vec<MeshOp>>)>,
     lower_lods: Vec<Target>,
+    /// Each sculpted structure's rebuilt level, by structure tag.
+    levels: Vec<(TagId, Arc<LevelChange>)>,
 }
 
 impl State {
@@ -675,6 +683,11 @@ impl GeometrySession {
                     Vec::new()
                 };
                 let (mesh, _) = Mesh::from_triangles(source).map_err(Error::Mesh)?;
+                let level = (target.kind == TargetKind::Cluster).then(|| {
+                    level_rebuild::read(map, target.tag)
+                        .map(Arc::new)
+                        .map_err(|e| e.to_string())
+                });
                 Ok(Opened {
                     target,
                     name,
@@ -684,6 +697,7 @@ impl GeometrySession {
                         instances,
                         record,
                         bucket_lit,
+                        level,
                     },
                     original: Arc::new(mesh),
                     no_append: map.raw_append_refusal().map(str::to_owned),
@@ -855,12 +869,11 @@ impl GeometrySession {
                     reason,
                 })?;
         }
-        if ops.iter().any(|op| matches!(op, MeshOp::Sculpt(_))) {
-            self.stroke_collision(t, &mesh).map_err(|reason| Error::Refused {
-                target: t.id(),
-                reason,
-            })?;
-        }
+        let sculpted = ops.iter().any(|op| matches!(op, MeshOp::Sculpt(_)));
+        let level = self.stroke_collision(t, &mesh, sculpted).map_err(|reason| Error::Refused {
+            target: t.id(),
+            reason,
+        })?;
         let before = self.state.clone();
         match merge {
             Some(key) => self.undo.record_coalesced(before, key),
@@ -873,40 +886,79 @@ impl GeometrySession {
             Some(e) => *e = entry,
             None => self.state.edits.push(entry),
         }
+        if let Some(change) = level {
+            let change = Arc::new(change);
+            match self.state.levels.iter_mut().find(|l| l.0 == t.tag) {
+                Some(l) => l.1 = change,
+                None => self.state.levels.push((t.tag, change)),
+            }
+        }
         self.rev += 1;
         Ok(last)
     }
 
-    /// A sculpted mesh through the collision compiler
-    /// (docs/editor/modeling.md, "Sculpting"). A `coll` BSP compiles as its
-    /// save compiles it (`CollSource::writes`: the limits and the tag's
-    /// materials). A structure cluster or instanced definition compiles as
-    /// its level collision would be (`from_render`, `collision_build::build`
-    /// and `verify::check`). A model section has no collision of its own.
-    /// The error is why the stroke is refused, in a sentence.
-    fn stroke_collision(&self, t: Target, mesh: &Mesh) -> Result<(), String> {
+    /// The collision a stroke rewrites with it (docs/editor/modeling.md,
+    /// "Sculpting"). A `coll` BSP compiles as its save compiles it
+    /// (`CollSource::writes`: the limits and the tag's materials). A
+    /// structure cluster's level collision, portals and pathfinding are
+    /// rebuilt over every edited cluster of its structure
+    /// ([`level_rebuild`]), on a stroke and on every later edit of a
+    /// structure already sculpted; the result is kept in the undo state and
+    /// written by the save. An instanced definition's own collision is not
+    /// rebuilt, so a stroke on one is refused. A model section has no
+    /// collision of its own. The error is why the edit is refused.
+    fn stroke_collision(&self, t: Target, mesh: &Mesh, sculpted: bool) -> Result<Option<LevelChange>, String> {
         let opened = self.find(t).ok_or_else(|| format!("{t} is not open"))?;
         match &opened.source {
-            Source::Coll { source, index } => source
+            Source::Coll { source, index } if sculpted => source
                 .writes(*index, &coll::polygons_from_mesh(mesh))
-                .map(|_| ())
+                .map(|_| None)
                 .map_err(|e| format!("the collision compiler refuses the stroke: {e}")),
-            Source::Structure { .. } => {
-                let export = mesh.export();
-                let polygons =
-                    from_render(&export.positions, &export.triangles, &[], &FromRender::default());
-                if polygons.is_empty() {
-                    return Err("the stroke leaves no surface for the collision compiler".into());
-                }
-                let compiled = collision_build::build(&polygons)
-                    .map_err(|e| format!("the collision compiler refuses the stroke: {e}"))?;
-                match collision_build::verify::check(&compiled.bsp, 1).first() {
-                    Some(why) => Err(format!("the stroke's collision fails the compiler's check: {why}")),
-                    None => Ok(()),
-                }
+            Source::Structure { level: None, .. } if sculpted => Err(
+                "an instanced definition's own collision is not rebuilt: sculpt the cluster it stands in".into(),
+            ),
+            Source::Structure { level: Some(level), .. }
+                if sculpted || self.state.levels.iter().any(|l| l.0 == t.tag) =>
+            {
+                let level = level
+                    .as_ref()
+                    .map_err(|e| format!("the structure's level collision cannot be read: {e}"))?;
+                let sections = self.sections(t, mesh);
+                level.rebuild(&sections).map(Some)
             }
-            Source::Model { .. } => Ok(()),
+            _ => Ok(None),
         }
+    }
+
+    /// Every edited cluster of `t`'s structure as a section edit, `t` with
+    /// `mesh`.
+    fn sections(&self, t: Target, mesh: &Mesh) -> Vec<SectionEdit> {
+        let tris = |m: &Mesh| -> Vec<Tri> {
+            let e = m.export();
+            e.triangles
+                .iter()
+                .zip(&e.materials)
+                .map(|(tri, &material)| Tri { points: tri.map(|v| e.positions[v as usize]), material })
+                .collect()
+        };
+        self.opened
+            .iter()
+            .filter(|o| o.target.tag == t.tag && o.target.kind == TargetKind::Cluster)
+            .filter_map(|o| {
+                let now: &Mesh = if o.target == t { mesh } else { self.state.get(o.target).map(|e| &*e.1)? };
+                Some(SectionEdit {
+                    cluster: o.target.index as i16,
+                    before: tris(&o.original),
+                    after: tris(now),
+                })
+            })
+            .collect()
+    }
+
+    /// The rebuilt level of a sculpted structure, while the undo state has
+    /// one.
+    pub fn level_change(&self, structure: TagId) -> Option<&LevelChange> {
+        self.state.levels.iter().find(|l| l.0 == structure).map(|l| &*l.1)
     }
 
     /// End a run of merged steps.
@@ -1311,6 +1363,16 @@ impl GeometrySession {
             self.model_patches(model, &self.edited_sections(model), &mut out)?;
         }
         self.lod_patches(&mut out);
+        for (tag, change) in &self.state.levels {
+            let level = self.opened.iter().find_map(|o| match &o.source {
+                Source::Structure { level: Some(Ok(level)), .. } if o.target.tag == *tag => Some(level),
+                _ => None,
+            });
+            let Some(level) = level else { continue };
+            let w = level.writes(change);
+            out.tags.extend(w.patches);
+            out.grown.extend(w.grown);
+        }
         Ok(out)
     }
 

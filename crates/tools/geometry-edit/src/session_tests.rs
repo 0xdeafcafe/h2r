@@ -392,31 +392,24 @@ fn the_preview_redraws_the_cluster_with_the_moved_vertex() {
 }
 
 #[test]
-fn a_sculpt_stroke_on_the_cluster_is_one_step_and_its_collision_compiles() {
+fn a_sculpt_stroke_on_a_cluster_whose_level_collision_cannot_be_read_is_refused() {
+    // The textured map's structure has no collision BSP: a stroke must
+    // rebuild it (level_rebuild_tests.rs), so it is refused, by name.
     let (_, mut s) = opened();
     let stroke = MeshOp::Sculpt(mesh_edit::Stroke {
         detail: Some(0.5),
         ..mesh_edit::Stroke::dab(mesh_edit::Brush::Raise, [2.0, 2.0, 0.0], 1.5, 0.5)
     });
-    s.apply(cluster(), std::slice::from_ref(&stroke), None).unwrap();
-    let mesh = s.mesh(cluster()).unwrap();
-    assert!(mesh.vert_count() > 4, "refined where the brush is");
-    let top = mesh.vert_ids().map(|v| mesh.position(v)[2]).fold(f32::MIN, f32::max);
-    assert!(top > 0.0 && top <= 0.5);
-    assert_eq!(s.ops(cluster()), &[stroke.clone()]);
-    // A count change: the cluster is grown, not patched in place.
-    assert_eq!(s.check(Some(cluster()))[0].class, WriteClass::Grown);
-    // A cut through the floor: the hole compiles too.
-    let cut = MeshOp::Sculpt(mesh_edit::Stroke {
-        detail: Some(0.5),
-        ..mesh_edit::Stroke::dab(mesh_edit::Brush::Cut, [1.0, 1.0, 0.0], 0.6, 1.0)
-    });
-    s.apply(cluster(), std::slice::from_ref(&cut), None).unwrap();
-    assert_eq!(s.ops(cluster()).len(), 2);
-    // Each stroke is one undo step.
-    assert!(s.undo());
-    assert_eq!(s.ops(cluster()), &[stroke]);
-    assert!(s.undo());
+    let e = s.apply(cluster(), std::slice::from_ref(&stroke), None).unwrap_err();
+    let Error::Refused { reason, .. } = &e else { panic!("{e}") };
+    assert!(
+        reason.starts_with("the structure's level collision cannot be read")
+            && reason.contains("0 collision BSPs"),
+        "{reason}"
+    );
+    assert!(s.ops(cluster()).is_empty());
     assert_eq!(s.mesh(cluster()).unwrap().vert_count(), 4);
-    assert_eq!(s.check(Some(cluster()))[0].class, WriteClass::Unchanged);
+    assert!(!s.can_undo());
+    // An edit that is not a stroke still goes through.
+    lift(&mut s, [4.0, 4.0, 0.0], 1.0);
 }

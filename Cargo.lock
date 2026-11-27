@@ -2617,6 +2617,7 @@ dependencies = [
  "map",
  "mesh-edit",
  "mopp",
+ "pathfind",
  "scenario-edit",
  "tags",
 ]
@@ -6340,11 +6341,13 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "bytemuck",
+ "collision-build",
  "content",
  "game-markers",
  "gfx",
  "h1-assets",
  "map",
+ "mopp",
  "native-render",
  "pollster",
  "serde",

@@ -24,6 +24,8 @@
 //! - [`coll_target`]: a `coll` BSP as a polygon mesh, compiled back with
 //!   `collision_build::coll::rebuild` and written as patches and grown
 //!   blocks in the ordinary metadata.
+//! - [`level_rebuild`]: a sculpted structure's level collision, portals
+//!   and pathfinding rebuilt and written with the stroke.
 //! - [`level_collision`]: a solid added to a structure's level collision
 //!   (`collision_build::level`), read from the map and written back as
 //!   patches and grown blocks in the ordinary metadata, or staged for the
@@ -33,6 +35,7 @@ pub mod coll_target;
 mod grow;
 mod import;
 pub mod level_collision;
+pub mod level_rebuild;
 mod session;
 mod target;
 mod visibility;
