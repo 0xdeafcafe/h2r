@@ -65,11 +65,13 @@
 //!   when both are order-free and every kept item before it restores what
 //!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
 //!   D3D draw (`order`). One external pass records them, in the list's
-//!   order. The scene's and the alternate view's layers 1, 2, 5, 7, 8 and
-//!   20 keep no guest draw (`native_layers::SCENE_ONLY`): every item the
-//!   pass draws is taken in list order with no order rule, and the rest
-//!   lose the bit (`layer_pass::clear_scene_layer`) and are counted
-//!   `scene_dropped_world_*`.
+//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8
+//!   and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
+//!   draw keeps its guest draw, under the same order rule, and its cause
+//!   goes to the bridge's `Left` (by slot, or for the whole layer), which
+//!   counts it `scene_kept_<site><layer>_<kind>_<cause>`. Object items
+//!   plan without the world: a BSP still loading leaves only the
+//!   structure's items to the guest (`world_pending`).
 //! - **The stencil** (`layer_pass::item_stencil`): in layer 1 the
 //!   geometry draw's prologue sets stencil mode 0 when the stencil-off
 //!   flags are set and mode 2 for a marked object's record, and its
@@ -109,7 +111,7 @@ use native_render::object_program_gpu::{self, LitObjects, OBJECT_LAYERS, Planned
 use native_render::object_streams::StreamFormats;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
-use render_bridge::native_layers::{Host, LayerCaller, count_for};
+use render_bridge::native_layers::{Host, LayerCaller, Left, count_for};
 
 use crate::native_fog_glue::{device_fog_words, fog_of};
 use crate::native_world_glue::{ReadMemory, Ready, State, current_ready, palettes_hold};
@@ -146,15 +148,22 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene) -> Option<native_render::skip::Cleared> {
-        let l = u8::try_from(layer).ok()?;
-        let scene_only = render_bridge::native_layers::scene_only(layer, caller);
-        let pass = scene.layer_passes.first()?;
-        // The world's layer sets: the main and alternate scene callers.
+    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left) -> Option<native_render::skip::Cleared> {
+        let Ok(l) = u8::try_from(layer) else {
+            left.all("layer");
+            return None;
+        };
+        let Some(pass) = scene.layer_passes.first() else {
+            left.all("unread");
+            return None;
+        };
+        // The world's layer sets: the main and alternate scene callers. A
+        // world not loaded yet leaves the structure's items to the guest,
+        // and the objects still plan.
         let ready = match caller {
             LayerCaller::Scene | LayerCaller::AlternateView => {
                 let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                Some(Arc::clone(current_ready(&state, mem)?))
+                current_ready(&state, mem).map(Arc::clone)
             }
             LayerCaller::FirstPerson | LayerCaller::Sorted(_) => None,
         };
@@ -173,6 +182,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 for (slot, r) in &plan.refused {
                     if !is_object(*slot) {
                         *outcomes.entry(cause(r)).or_default() += 1;
+                        left.item(*slot, cause(r));
                     }
                 }
                 for d in &plan.draws {
@@ -190,13 +200,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 }
             }
             None => {
-                let structure = scene.items_of(pass).iter().filter(|i| !matches!(i.owner, LayerOwner::Object(_))).count();
+                let structure: Vec<u32> =
+                    scene.items_of(pass).iter().filter(|i| !matches!(i.owner, LayerOwner::Object(_))).map(|i| i.slot).collect();
                 let why = match caller {
                     LayerCaller::FirstPerson => "first_person_structure",
                     LayerCaller::Sorted(_) => "sorted_structure",
+                    LayerCaller::Scene | LayerCaller::AlternateView if ready.is_none() => "world_pending",
                     LayerCaller::Scene | LayerCaller::AlternateView => "program",
                 };
-                *outcomes.entry(why).or_default() += structure as u64;
+                *outcomes.entry(why).or_default() += structure.len() as u64;
+                for slot in structure {
+                    left.item(slot, why);
+                }
             }
         }
         let report = |outcomes: &BTreeMap<&'static str, u64>, drawn: u64| {
@@ -207,15 +222,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         if data.is_none_or(|d| d.programs.is_empty()) {
             *outcomes.entry("program").or_default() += taken.len() as u64;
-            taken.clear();
+            taken.drain().for_each(|(slot, _)| left.item(slot, "program"));
         }
         // Extraction's causes before anything is asked of the device.
         let mut objects: Vec<&LayerItem> = Vec::with_capacity(object_items.len());
         for &item in &object_items {
             if let Some(why) = item.refusal {
                 *outcomes.entry(why.name()).or_default() += 1;
+                left.item(item.slot, why.name());
             } else if !OBJECT_LAYERS.contains(&l) {
                 *outcomes.entry("object_layer").or_default() += 1;
+                left.item(item.slot, "object_layer");
             } else {
                 objects.push(item);
             }
@@ -224,18 +241,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             report(&outcomes, 0);
             return None;
         }
-        let refuse_all = |outcomes: &mut BTreeMap<&'static str, u64>, why: &'static str, world: usize, objects: usize| {
+        let refuse_all = |outcomes: &mut BTreeMap<&'static str, u64>, left: &mut Left, why: &'static str, world: usize, objects: usize| {
             *outcomes.entry(why).or_default() += (world + objects) as u64;
+            left.all(why);
         };
-        let Ok(mut d) = self.device.lock() else { return None };
+        let Ok(mut d) = self.device.lock() else {
+            left.all("device");
+            return None;
+        };
         if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
-            refuse_all(&mut outcomes, "device", taken.len(), objects.len());
+            refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;
         }
         let read = ReadMemory(mem);
         if !viewport_clip(&d, &read) {
-            refuse_all(&mut outcomes, "viewport", taken.len(), objects.len());
+            refuse_all(&mut outcomes, &mut *left, "viewport", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;
         }
@@ -243,7 +264,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // under (`layer_pass::item_stencil`); one that does not read
         // leaves the layer to the D3D path.
         let Some(device_stencil) = d.stencil_state(&read) else {
-            refuse_all(&mut outcomes, "stencil", taken.len(), objects.len());
+            refuse_all(&mut outcomes, &mut *left, "stencil", taken.len(), objects.len());
             report(&outcomes, 0);
             return None;
         };
@@ -251,7 +272,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // through.
         if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &|n| d.stage_palette(&read, n))) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
-            taken.clear();
+            taken.drain().for_each(|(slot, _)| left.item(slot, "palettes"));
         }
         // Skipping an item's draws must leave the device as drawing them
         // would: every state its passes restore already holds, and every
@@ -273,18 +294,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 {
                     free.insert(draw.slot, draw.shader);
                 }
-                // A scene-only layer has no guest draw left to see the
-                // device: its state is the pass's own.
-                if taken.contains_key(&draw.slot) && !holds && !scene_only {
+                if taken.contains_key(&draw.slot) && !holds {
                     taken.remove(&draw.slot);
                     *outcomes.entry("state").or_default() += 1;
+                    left.item(draw.slot, "state");
                 }
             }
         }
         let planned = if objects.is_empty() {
             None
         } else {
-            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, &mut free, &mut outcomes)
+            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, &mut free, &mut outcomes, left)
         };
         let (models, mut object_draws, texaccum) = match planned {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
@@ -296,12 +316,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if pass.stencil_off {
                 // Every item's draw leaves mode 1: skipping them is
                 // state-neutral only from mode 1.
-                refuse_all(&mut outcomes, "stencil", taken.len(), object_draws.len());
+                refuse_all(&mut outcomes, &mut *left, "stencil", taken.len(), object_draws.len());
                 report(&outcomes, 0);
                 return None;
             }
             let before = object_draws.len();
-            object_draws.retain(|_, o| !o.marked);
+            object_draws.retain(|&slot, o| {
+                if o.marked {
+                    left.item(slot, "object_stencil");
+                }
+                !o.marked
+            });
             *outcomes.entry("object_stencil").or_default() += (before - object_draws.len()) as u64;
             stencil = layer_pass::item_stencil(l, pass.stencil_off, device_stencil, false);
         }
@@ -321,11 +346,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 Some(Ok(true)) => {}
                 Some(Err(())) => {
                     *outcomes.entry("stencil").or_default() += taken.len() as u64;
-                    taken.clear();
+                    taken.drain().for_each(|(slot, _)| left.item(slot, "stencil"));
                 }
                 _ => {
                     *outcomes.entry("warming").or_default() += taken.len() as u64;
-                    taken.clear();
+                    taken.drain().for_each(|(slot, _)| left.item(slot, "warming"));
                 }
             }
         }
@@ -336,7 +361,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             });
             if !warm {
                 *outcomes.entry("object_warming").or_default() += object_draws.len() as u64;
-                object_draws.clear();
+                object_draws.drain().for_each(|(slot, _)| left.item(slot, "object_warming"));
             }
         }
         if taken.is_empty() && object_draws.is_empty() {
@@ -353,36 +378,55 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         }
         let read = ReadMemory(mem);
-        let mut preview = native_render::skip::MaskPreview::new(&read)?;
+        let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else {
+            left.all("masks");
+            return None;
+        };
         let candidates = taken.len() + object_draws.len();
         let is_free = |slot: u32, shader: u32| free.get(&slot) == Some(&shader);
+        // A planned item the sets cannot draw (no compiled part or fog).
+        let unset = std::cell::RefCell::new(Vec::new());
         let take_world = |item: layer_pass::SkipItem| {
-            data.is_some_and(|data| {
+            let take = data.is_some_and(|data| {
                 taken.get(&item.slot) == Some(&item.shader)
                     && data.part_set.get(&(item.owner, item.part))
                         .is_some_and(|(m, shader)| *shader == item.shader && fogs.contains_key(m))
-            })
+            });
+            if !take && taken.contains_key(&item.slot) {
+                unset.borrow_mut().push(item.slot);
+            }
+            take
         };
-        let (drawn, cleared, order) = if scene_only {
-            // No guest draw is kept: every item the pass draws is taken in
-            // list order, and the rest lose the bit and are dropped by name.
-            let skip = layer_pass::clear_scene_layer(&mut preview, layer, true, &|item| match item {
-                ListItem::World(item) => take_world(item),
-                ListItem::Object { slot, shader } => object_draws.get(&slot).is_some_and(|o| o.shader == shader),
-            })?;
-            render_bridge::native_layers::count_dropped("refused", skip.refused as u64);
-            render_bridge::native_layers::count_dropped("unreadable", skip.unreadable as u64);
-            (skip.drawn, skip.cleared, 0)
-        } else {
-            let skip = layer_pass::clear_layer_items(&mut preview, layer, &|item| match item {
-                ListItem::World(item) => ItemSkip { take: take_world(item), free: is_free(item.slot, item.shader) },
-                ListItem::Object { slot, shader } => {
-                    ItemSkip { take: object_draws.get(&slot).is_some_and(|o| o.shader == shader), free: is_free(slot, shader) }
+        // The kept items keep their guest draws, so the order rule holds
+        // on every layer: an item after a kept one it does not commute
+        // with stays the guest's (`order`).
+        let Some(skip) = layer_pass::clear_layer_items(&mut preview, layer, &|item| match item {
+            ListItem::World(item) => ItemSkip { take: take_world(item), free: is_free(item.slot, item.shader) },
+            ListItem::Object { slot, shader } => {
+                let planned = object_draws.get(&slot);
+                let take = planned.is_some_and(|o| o.shader == shader);
+                if planned.is_some() && !take {
+                    unset.borrow_mut().push(slot);
                 }
-            })?;
-            (skip.drawn, skip.cleared, skip.order)
+                ItemSkip { take, free: is_free(slot, shader) }
+            }
+        }) else {
+            left.all("list");
+            return None;
         };
-        let masks = preview.finish()?;
+        let (drawn, cleared, order) = (skip.drawn, skip.cleared, skip.order);
+        for slot in unset.into_inner() {
+            left.item(slot, "set");
+        }
+        for &slot in taken.keys().chain(object_draws.keys()) {
+            if !drawn.iter().any(|d| d.slot() == slot) {
+                left.item(slot, "order");
+            }
+        }
+        let Some(masks) = preview.finish() else {
+            left.all("masks");
+            return None;
+        };
         // The list's runs, in order, and the ranges they promise: one per
         // structure item, one per object pass draw.
         let mut runs: Vec<LayerRun> = Vec::new();
@@ -438,16 +482,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
         });
-        let reservation = d
-            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-            .ok()??;
+        let Some(reservation) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok().flatten() else {
+            left.all("reservation");
+            return None;
+        };
         if let Some(ready) = &ready {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready)) {
+                left.all("world_changed");
                 return None;
             }
         }
         if !masks.apply(&mut render_bridge::native_fog::Mem(mem)) {
+            left.all("masks");
             return None;
         }
         reservation.commit();
@@ -462,10 +509,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 #[allow(clippy::too_many_arguments)]
 fn plan_objects<B: d3d::backend::Backend>(
     d: &d3d::Device<B>, mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
-    items: &[&LayerItem], stencil: &gfx::state::StencilState, free: &mut HashMap<u32, u32>, outcomes: &mut BTreeMap<&'static str, u64>,
+    items: &[&LayerItem], stencil: &gfx::state::StencilState, free: &mut HashMap<u32, u32>, outcomes: &mut BTreeMap<&'static str, u64>, left: &mut Left,
 ) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>, Option<native_render::world_layers::Texaccum>)> {
     let mut all = |why: &'static str| {
         *outcomes.entry(why).or_default() += items.len() as u64;
+        for item in items {
+            left.item(item.slot, why);
+        }
         None
     };
     let models = match caller {
@@ -507,6 +557,7 @@ fn plan_objects<B: d3d::backend::Backend>(
     for (item, ready) in items.iter().zip(ready) {
         if !ready || !lit.has(item.model) {
             *outcomes.entry("object_model").or_default() += 1;
+            left.item(item.slot, "object_model");
             continue;
         }
         let draws = match lit.plan_layer_item(item.model, layer, scene, pass, item, &entry) {
@@ -514,6 +565,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             Err(why) => {
                 count_refusal(&why.to_string());
                 *outcomes.entry(why.name()).or_default() += 1;
+                left.item(item.slot, why.name());
                 if let Some(detail) = why.detail() {
                     *outcomes.entry(detail).or_default() += 1;
                 }
@@ -527,6 +579,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         // of unknown effect.
         if object_program_gpu::makes_target_copy(item.flags, draws.iter().map(|draw| lit.planned_pass(item.model, draw))) {
             *outcomes.entry("object_shader_flag_target").or_default() += 1;
+            left.item(item.slot, "object_shader_flag_target");
             continue;
         }
         // Engine texture 3, the texture accumulation target, as layer 3's
@@ -536,6 +589,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             && (layer == 1 || texaccum.get_or_insert_with(|| crate::native_objects_glue::sampled_texaccum(d, mem, true).ok().flatten()).is_none())
         {
             *outcomes.entry("object_texaccum").or_default() += 1;
+            left.item(item.slot, "object_texaccum");
             continue;
         }
         // An item toggling the auxiliary state: its epilogue leaves the
@@ -545,6 +599,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(d, mem, &aux))
         {
             *outcomes.entry("object_aux_depth").or_default() += 1;
+            left.item(item.slot, "object_aux_depth");
             continue;
         }
         // An item whose shader's prologue uploads the structure's
@@ -559,6 +614,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             })
         {
             *outcomes.entry("object_shader_flag").or_default() += 1;
+            left.item(item.slot, "object_shader_flag");
             continue;
         }
         // An item with a fade byte: its prologue sets the stipple pattern
@@ -571,15 +627,18 @@ fn plan_objects<B: d3d::backend::Backend>(
             });
             if !off {
                 *outcomes.entry("object_fade").or_default() += 1;
+                left.item(item.slot, "object_fade");
                 continue;
             }
             if !at_rest {
                 *outcomes.entry("object_stipple").or_default() += 1;
+                left.item(item.slot, "object_stipple");
                 continue;
             }
         }
         if !draws.iter().all(|draw| lit.planned_pass(item.model, draw).is_some_and(|p| layer_pass::skip_holds(&p.implementation, &device_state))) {
             *outcomes.entry("object_state").or_default() += 1;
+            left.item(item.slot, "object_state");
             continue;
         }
         // Order-free (`layer_pass::order_free`): an unmarked record whose
@@ -602,6 +661,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             if let Err(why) = filled {
                 count_refusal(&why);
                 *outcomes.entry("object_prt").or_default() += 1;
+                left.item(item.slot, "object_prt");
                 continue;
             }
         }
@@ -615,6 +675,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         }
         if with_fog.len() != passes {
             *outcomes.entry("object_fog").or_default() += 1;
+            left.item(item.slot, "object_fog");
             continue;
         }
         out.insert(item.slot, ObjectItem { shader: item.key.shader, marked, draws: with_fog });

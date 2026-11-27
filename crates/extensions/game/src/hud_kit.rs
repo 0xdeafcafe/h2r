@@ -41,7 +41,7 @@
 //!    game shows no prompt of its own ([`show_prompt`]); the training text
 //!    through the scripted training slot and the string lookup
 //!    ([`write_training`], [`text`]); the banner through each local user's
-//!    timed centred line when its text changes ([`banner_due`],
+//!    timed centred line when the text its values show changes ([`banner_due`],
 //!    [`write_banner`]); the navpoint through the game's
 //!    navpoint list at a scenario point of ours ([`install_point`],
 //!    [`write_navpoint`]); a notification ([`Handle::notify`]) through the
@@ -335,8 +335,9 @@ pub struct Note {
     pub text: String,
 }
 static TRAINING_TEXT: Mutex<String> = Mutex::new(String::new());
-/// The banner the last tick showed ([`banner_due`]).
-static BANNER_LAST: Mutex<Option<String>> = Mutex::new(None);
+/// The banner the last tick showed each local user ([`banner_due`]).
+static BANNER_LAST: Mutex<[Option<String>; USERS as usize]> =
+    Mutex::new([None, None, None, None]);
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
@@ -389,8 +390,10 @@ impl Handle {
     /// Local user `user`'s own values, drawn by the widget hooks for that
     /// user's HUD in place of the shared ones ([`Handle::publish`]); `None`
     /// takes them away, so the user draws the shared values again. The
-    /// channels (prompt, training, banner, navpoints, world marks) read the
-    /// shared values alone. A user past [`USERS`] is ignored.
+    /// banner reads them too, so each user's timed line is its own
+    /// ([`banner_now`]); the other channels (prompt, training, navpoints,
+    /// world marks) read the shared values alone. A user past [`USERS`] is
+    /// ignored.
     pub fn publish_for(&self, user: u32, values: Option<Values>) {
         if user >= USERS {
             return;
@@ -708,10 +711,25 @@ pub fn banner_of(hud: &Hud, values: &Values, mode: Mode) -> Option<String> {
         })
 }
 
-/// The banner over the registered HUDs in their order ([`banner_of`]).
-fn banner_now(mode: Mode) -> Option<String> {
+/// Local user `user`'s banner over the registered HUDs in their order
+/// ([`banner_of`]), each at the values that user's HUD draws
+/// ([`values_for`]): its own, else the shared ones.
+fn banner_now(mode: Mode, user: u32) -> Option<String> {
     let r = read(&REGISTRY);
-    r.iter().find_map(|x| banner_of(&x.hud, &x.values, mode))
+    r.iter()
+        .find_map(|x| banner_for(&x.hud, (&x.values, &x.stamps), &x.own, user, mode))
+}
+
+/// One HUD's banner for local user `user` in screen mode `mode`: the
+/// banner ([`banner_of`]) of the user's own values, else of the shared.
+pub fn banner_for(
+    hud: &Hud,
+    shared: (&Values, &Stamps),
+    own: &[Own],
+    user: u32,
+    mode: Mode,
+) -> Option<String> {
+    banner_of(hud, values_for(shared, own, user).0, mode)
 }
 
 /// Whether the banner `now` is to be written this tick, given the one the
@@ -1777,10 +1795,13 @@ fn tick(mem: &mut dyn GuestMemory, points_region: (u32, u32)) -> Result<(), MemF
         *lock(&TRAINING_TEXT) = t.clone();
     }
     write_training(mem, training.is_some())?;
-    // The banner, to every local user, when its text changes.
-    let due = banner_due(&mut lock(&BANNER_LAST), banner_now(mode(&*mem)?));
-    if let Some(text) = due {
-        for user in 0..local_users(&*mem)? {
+    // The banner, to each local user, when the text that user's values
+    // show changes.
+    let screen = mode(&*mem)?;
+    for user in 0..local_users(&*mem)? {
+        let now = banner_now(screen, user);
+        let due = banner_due(&mut lock(&BANNER_LAST)[user as usize], now);
+        if let Some(text) = due {
             write_banner(mem, user, &text, BANNER_TICKS)?;
         }
     }

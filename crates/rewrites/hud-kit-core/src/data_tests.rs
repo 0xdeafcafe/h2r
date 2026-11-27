@@ -16,7 +16,7 @@ fn rust_hud(name: &str) -> Option<Hud> {
         "firefight" => expected::firefight::hud(),
         // The display HUDs are YAML first (`views::objective`'s tests),
         // and the Theater's (`views::theater`'s).
-        "base" | "ctf" | "assault" | "oddball" | "koth" | "territories" | "script-objective" | "theater" => return None,
+        "base" | "ctf" | "assault" | "oddball" | "koth" | "territories" | "siege" | "script-objective" | "theater" => return None,
         other => panic!("no expected HUD {other}"),
     })
 }
@@ -43,7 +43,7 @@ fn the_views_serve_the_yaml() {
     assert_eq!(views::superbounce_readout::hud().elements.len(), 1 + 9 + 4 + 3 + 5);
     assert_eq!(views::forge::hud().elements.len(), 14 + 4 + 3);
     assert_eq!(views::forge_readout::hud().elements.len(), 3 + 5 + 12 + 8);
-    assert_eq!(views::firefight::hud().elements.len(), 12);
+    assert_eq!(views::firefight::hud().elements.len(), 12 + 1 + 3 + 5);
     assert_eq!(views::pill_block::hud().elements.len(), 4);
     assert_eq!(views::theater::hud().elements.len(), views::theater::IDS.len());
     for d in views::all() {

@@ -90,8 +90,10 @@ Each piece copies one retail screen or HUD element, by tag.
 | Contextual prompt | the pickup prompt line, top left | HUD kit `Prompt` |
 | Refusals and confirmations | the pickup notification list | HUD kit `Message` |
 | First-use teaching | the training box | HUD kit `Training` |
-| Budget, lives, enemies left | a grenade pill with its LCD count | HUD kit `Icon` (`Art::GrenadePill`) and `Text` (`Font::Lcd`) |
-| Budget fill | the energy sword's battery strip | HUD kit `Meter` (`Art::StripMeter`) |
+| Budget, a wave test's enemies left | a grenade pill with its LCD count | HUD kit `Icon` (`Art::GrenadePill`) and `Text` (`Font::Lcd`) |
+| Budget fill, Firefight's enemies left | the energy sword's battery strip | HUD kit `Meter` (`Art::StripMeter`) |
+| Firefight's score, lives and bonus clock | the HUD's own text lines, above the score plate | HUD kit `Text` (`Font::Hud`) |
+| Firefight's set, rounds, waves and skulls | Halo 3: ODST's Firefight HUD for what is shown (a numeral, a circle a round, a bar a wave, a picture a skull); the pictures are strokes of ours drawn as the HUD draws a letter | HUD kit `Text` and `Gauge` (`font::skulls`) |
 | Reticle | a retail weapon's reticle widget | HUD kit `Icon` (`Art::Widget`) |
 | Wave and round banner | the timed centred line of the message routine | a HUD kit channel, `Banner` (slice K2) |
 | Held object, other monitors, link ends | the game's navpoint: arrow, waypoint marker, number | HUD kit `Navpoint` |
@@ -606,10 +608,13 @@ Forge options has the Enemy types row whenever they do.
 A HUD kit `Hud` named `firefight` (`hud_kit_core::views::firefight`),
 fed by `hud::view_on` from the mode blob as it is ([firefight.md](firefight.md),
 "The HUD"; [hud-kit.md](hud-kit.md), "The Firefight HUD"): the score,
-lives and progress lines, the enemies meter, the seven skull slots and the
-banner, at the frame's bottom right above the retail score plate. The
-elements, their places and their checks are there; a banner is an event
-(a set, round, skull or wave that begins), not a stage.
+lives and progress lines, the enemies meter, the set's numeral with the
+round and wave pips, the seven skull slots, all at the frame's bottom right
+above the retail score plate, and the banner, which is the game's own timed
+centred line (the `Banner` channel, K2). What is shown follows Halo 3:
+ODST's Firefight HUD. The elements, their places and their checks are
+there; a banner is an event (a set, round, skull or wave that begins), not
+a stage.
 
 **While editing** (built, FA3). A wave test in a Forge session draws
 the Firefight HUD from the same mode blob, by what the local user is
@@ -617,7 +622,7 @@ the Firefight HUD from the same mode blob, by what the local user is
 
 | The user is | `ff.banner` | `ff.enemies`, `ff.progress`, `ff.score`, skulls | `ff.lives` | The monitor HUD |
 |---|---|---|---|---|
-| in the monitor | shown | hidden: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
+| in the monitor | shown | hidden, the pips too: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
 | in the biped | shown | shown, in their match places | hidden: a test charges no lives | not drawn |
 
 - `hud::view_on(mode, slot, scope, screen, banner)` takes the scope

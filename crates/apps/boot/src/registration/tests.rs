@@ -734,6 +734,35 @@ fn every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off() {
     }
 }
 
+/// With Firefight on, the AI's multiplayer gate in
+/// `ai_initialize_for_new_map` (`engine::points::ai_gates`) has the
+/// feature's one `before`, so a kit map's AI is initialised and squads can
+/// be placed; the gate's site and its target are image entries. Off, the
+/// gate is not hooked and a multiplayer map's AI stays off as in retail.
+#[test]
+fn a_firefight_map_initialises_its_ai_unless_firefight_is_off() {
+    use engine::points::ai_gates::{AI_NEW_MAP_INITIALISE, AI_NEW_MAP_MULTIPLAYER};
+    let hooked = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        plan.chains
+            .values()
+            .filter(|chain| std::ptr::eq(chain.point, &AI_NEW_MAP_MULTIPLAYER))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::firefight::feature::FEATURE)
+                    .map(|hook| hook.kind().as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hooked(""), ["before"]);
+    assert!(hooked("-firefight").is_empty());
+    let entries: Vec<u32> = crate::image_entries().collect();
+    assert!(entries.contains(&AI_NEW_MAP_MULTIPLAYER.base));
+    assert!(entries.contains(&AI_NEW_MAP_INITIALISE));
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]

@@ -85,8 +85,9 @@ pub fn perf_env_note(
 }
 
 /// Register the retail image's hooked interior sites (the render sites, the
-/// script index's, `engine::points::game_types`, and the AI skulls'
-/// campaign gates, `engine::points::skull_gates`) with the image
+/// script index's, `engine::points::game_types`, the AI skulls'
+/// campaign gates, `engine::points::skull_gates`, and the AI's multiplayer
+/// gate, `engine::points::ai_gates`) with the image
 /// builder (`recomp::register_retail_entries`), so discovery makes them
 /// instruction entries in both tiers. Every binary that builds, stamps,
 /// loads or analyses the image calls it first (`h2`'s `main`, the Apple
@@ -97,11 +98,12 @@ pub fn register_image_entries() {
 
 /// The list [`register_image_entries`] registers, in order.
 pub fn image_entries() -> impl Iterator<Item = u32> {
-    use engine::points::{game_types, render_aspect, scene_effects, skull_gates};
+    use engine::points::{ai_gates, game_types, render_aspect, scene_effects, skull_gates};
     render_aspect::instruction_entries()
         .chain(scene_effects::instruction_entries())
         .chain(game_types::instruction_entries())
         .chain(skull_gates::instruction_entries())
+        .chain(ai_gates::instruction_entries())
 }
 
 /// Map the image, attach the kernel, register the generated module and run
@@ -1514,6 +1516,9 @@ fn run_configured(
             host.perf_overlay.clone(),
             host.cheat_line.clone(),
         );
+        if let Some(link) = &host.readout {
+            game::debug_readout::install(&a.agent, link.clone());
+        }
         if let Some(code) = &host.game_code {
             game::game_code::install(&a.agent, Arc::clone(code));
         }

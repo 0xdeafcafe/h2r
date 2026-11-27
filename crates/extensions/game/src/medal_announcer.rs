@@ -34,7 +34,7 @@ pub const FEATURE: &str = "medal-announcer";
 /// Bounced has none, so it is silent. `incel.wav` is not embedded: no line
 /// in the game shows the Incel medal (docs/game/teabag.md), so nothing
 /// would speak it.
-pub const CLIPS: [(&str, &[u8]); 27] = [
+pub const CLIPS: [(&str, &[u8]); 41] = [
     ("superbounce", include_bytes!("../../../../art/announcer/superbounce.wav")),
     ("double-bounce", include_bytes!("../../../../art/announcer/double-bounce.wav")),
     ("triple-bounce", include_bytes!("../../../../art/announcer/triple-bounce.wav")),
@@ -62,6 +62,20 @@ pub const CLIPS: [(&str, &[u8]); 27] = [
     ("mythic-on", include_bytes!("../../../../art/announcer/mythic-on.wav")),
     ("angry-on", include_bytes!("../../../../art/announcer/angry-on.wav")),
     ("bandana-on", include_bytes!("../../../../art/announcer/bandana-on.wav")),
+    ("round-complete", include_bytes!("../../../../art/announcer/round-complete.wav")),
+    ("set-complete", include_bytes!("../../../../art/announcer/set-complete.wav")),
+    ("bonus-round", include_bytes!("../../../../art/announcer/bonus-round.wav")),
+    ("bonus-round-complete", include_bytes!("../../../../art/announcer/bonus-round-complete.wav")),
+    ("lives-added", include_bytes!("../../../../art/announcer/lives-added.wav")),
+    ("last-life", include_bytes!("../../../../art/announcer/last-life.wav")),
+    ("game-over", include_bytes!("../../../../art/announcer/game-over.wav")),
+    ("skulls-off", include_bytes!("../../../../art/announcer/skulls-off.wav")),
+    ("attack", include_bytes!("../../../../art/announcer/attack.wav")),
+    ("defend", include_bytes!("../../../../art/announcer/defend.wav")),
+    ("final-round", include_bytes!("../../../../art/announcer/final-round.wav")),
+    ("site-captured", include_bytes!("../../../../art/announcer/site-captured.wav")),
+    ("reinforcements", include_bytes!("../../../../art/announcer/reinforcements.wav")),
+    ("round-over", include_bytes!("../../../../art/announcer/round-over.wav")),
 ];
 
 /// The clip id of `medal`, when it has a clip.

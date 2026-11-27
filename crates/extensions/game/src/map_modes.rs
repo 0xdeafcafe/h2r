@@ -90,6 +90,13 @@ pub struct View {
     hidden: BTreeSet<u32>,
 }
 
+impl View {
+    /// A view that knows only what the lobby plays: no map is analysed.
+    pub fn playing(played: Played) -> Self {
+        View { played, ..Default::default() }
+    }
+}
+
 /// The [`View`] of `cat` for a lobby playing `played`. `ground` says
 /// whether a map has a saved map variant with AI ground, `siege` whether it
 /// has Siege's objectives (`false` when that cannot be told).
@@ -109,13 +116,17 @@ pub fn analyse(
             firefight: firefight_support(cat, map, !is_kit && ground(map), wave),
             siege: siege(map),
         };
-        view.support.insert(map.id, support);
+        // A kit package with its original map takes the original's support,
+        // whichever of the two the catalogue lists first.
+        if !has_base {
+            view.support.insert(map.id, support);
+        }
         if has_base {
             view.hidden.insert(map.id);
         }
         if let Some(kit) = kit_package_of(cat, map) {
             view.kits.insert(map.id, kit.id);
-            view.support.entry(kit.id).or_insert(support);
+            view.support.insert(kit.id, support);
         }
     }
     view
@@ -219,8 +230,9 @@ pub const FIREFIGHT_TAG: &str = "Firefight";
 pub const SIEGE_TAG: &str = "Siege";
 
 /// A row's text: `name`, then the tags of what it supports (Firefight, then
-/// Siege). In a lobby playing a mode the map lacks, `name` then what it
-/// lacks instead.
+/// Siege) in brackets. In a lobby playing a mode the map lacks, `name` then
+/// what it lacks instead. One space between words: the UI kit's spacing
+/// check refuses doubled ones.
 pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
     let lacks = match played {
         Played::Firefight if !support.firefight => Some("no Firefight kit"),
@@ -228,7 +240,7 @@ pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
         _ => None,
     };
     if let Some(lacks) = lacks {
-        return Some(format!("{name}  ({lacks})"));
+        return Some(format!("{name} ({lacks})"));
     }
     let tags: Vec<&str> = [
         support.firefight.then_some(FIREFIGHT_TAG),
@@ -237,7 +249,7 @@ pub fn label(name: &str, support: Support, played: Played) -> Option<String> {
     .into_iter()
     .flatten()
     .collect();
-    (!tags.is_empty()).then(|| format!("{name}  {}", tags.join("  ")))
+    (!tags.is_empty()).then(|| format!("{name} ({})", tags.join(", ")))
 }
 
 /// Why `support` does not play `played`; `None` when it does.

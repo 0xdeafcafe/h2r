@@ -38,3 +38,18 @@ rows:
     text: "{label}"
     help: "{help}"
     bind: quick.4
+  row.5:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.5
+  row.6:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.6
+  row.7:
+    kind: pick
+    text: "{label}"
+    help: "{help}"
+    bind: quick.7

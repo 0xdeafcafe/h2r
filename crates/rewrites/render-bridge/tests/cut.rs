@@ -249,7 +249,7 @@ fn object_setup_makes_the_guests_residency_requests() {
 }
 
 /// The world layers cut draw in the slots the design traces, and the
-/// layers their producers drop for are the table's.
+/// layers whose kept guest draws are counted are the table's.
 #[cfg(feature = "native-render")]
 #[test]
 fn the_world_layers_are_cut_in_their_slots() {

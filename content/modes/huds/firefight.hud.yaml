@@ -1,8 +1,11 @@
 # The Firefight HUD (docs/game/firefight.md, "The HUD"): the block at the
 # bottom right above Halo 2's score plate, in the HUD font. Offsets are from
-# the frame's bottom right corner (the banner's from its top left), up from
-# the plate's top edge (44) in 14 pixel lines. The quarter screen draws the
-# lives and progress lines alone, one line lower. Elements in draw order.
+# the frame's bottom right corner, up from the plate's top edge (44) in 14
+# pixel lines. What it shows is Halo 3: ODST's Firefight HUD (lives, the
+# set's numeral, a circle a round, a bar a wave, the skulls on, a centred
+# line), in Halo 2's pieces and pictures of ours. The quarter screen draws
+# the lives and progress lines and the pips alone, one line lower. Elements
+# in draw order.
 name: firefight
 elements:
   - id: ff.score
@@ -21,50 +24,90 @@ elements:
     kind: text
     font: hud
     justify: end
-    longest: "SET 256 ROUND 12 WAVE 16"
+    longest: "ROUND 12 OF 12"
     at: {anchor: bottom-right, full: [0, -86], half: [0, -86], quarter: [0, -72]}
   # The enemies meter: the battery strip (92 by 8), right-justified.
   - id: ff.enemies
     kind: meter
     art: {type: strip-meter}
     at: {anchor: bottom-right, full: [0, -94], half: [0, -94], registration: [1.0, 0.0]}
-  # Seven fixed skull slots, right to left: Ghost, Catch, Black Eye,
-  # Thunderstorm, Famine, Mythic, Iron. Each is two pictures (off, on) of the
-  # skulls' strokes (game::skull_glyphs), 14 pixels square, from U+E600 two a
-  # slot. 18 pixels apart at full size, 14 at half.
+  # Seven fixed skull slots, right to left, over the pips: Ghost, Catch,
+  # Black Eye, Thunderstorm, Famine, Mythic, Iron. Each is two pictures (off,
+  # on) of the skulls' strokes (game::skull_glyphs), 14 pixels square, from
+  # U+E600 two a slot. 18 pixels apart at full size, 14 at half.
   - id: ff.skull.0
     kind: gauge
     glyphs: {first: 58880, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-15, -113], half: [-14, -110]}
+    at: {anchor: bottom-right, full: [-15, -125], half: [-14, -124]}
   - id: ff.skull.1
     kind: gauge
     glyphs: {first: 58882, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-33, -113], half: [-28, -110]}
+    at: {anchor: bottom-right, full: [-33, -125], half: [-28, -124]}
   - id: ff.skull.2
     kind: gauge
     glyphs: {first: 58884, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-51, -113], half: [-42, -110]}
+    at: {anchor: bottom-right, full: [-51, -125], half: [-42, -124]}
   - id: ff.skull.3
     kind: gauge
     glyphs: {first: 58886, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-69, -113], half: [-56, -110]}
+    at: {anchor: bottom-right, full: [-69, -125], half: [-56, -124]}
   - id: ff.skull.4
     kind: gauge
     glyphs: {first: 58888, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-87, -113], half: [-70, -110]}
+    at: {anchor: bottom-right, full: [-87, -125], half: [-70, -124]}
   - id: ff.skull.5
     kind: gauge
     glyphs: {first: 58890, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-105, -113], half: [-84, -110]}
+    at: {anchor: bottom-right, full: [-105, -125], half: [-84, -124]}
   - id: ff.skull.6
     kind: gauge
     glyphs: {first: 58892, steps: 1, size: [14, 14]}
-    at: {anchor: bottom-right, full: [-123, -113], half: [-98, -110]}
-  # The banner: centred on the frame's width (544), 60 below its top (48 at
-  # half). None in a quarter.
+    at: {anchor: bottom-right, full: [-123, -125], half: [-98, -124]}
+  # The banner is the game's own timed centred line (the one the respawn
+  # timer sits under): the game places, draws and fades it. None in a quarter.
   - id: ff.banner
+    kind: banner
+    longest: "BONUS OVER 99 LIVES"
+    at: {anchor: top-left, full: [0, 0], half: [0, 0]}
+  # The set's numeral, then the pips between the meter and the skulls: a
+  # circle a round (8 by 10 on a 9 pixel pitch), a gap of 6, a slanted bar a
+  # wave (6 by 10 on 7), each two pictures, faint and lit, from U+E60E
+  # (font::skulls::Pip). The last wave's bar is at the frame's right edge.
+  - id: ff.set
     kind: text
     font: hud
-    justify: centre
-    longest: "BONUS OVER 99 LIVES"
-    at: {anchor: top-left, full: [272, 60], half: [272, 48]}
+    justify: end
+    longest: "256"
+    at: {anchor: bottom-right, full: [-72, -110], half: [-72, -110], quarter: [-72, -86]}
+  - id: ff.round.0
+    kind: gauge
+    glyphs: {first: 58894, steps: 1, size: [8, 10]}
+    at: {anchor: bottom-right, full: [-66, -108], half: [-66, -108], quarter: [-66, -84]}
+  - id: ff.round.1
+    kind: gauge
+    glyphs: {first: 58894, steps: 1, size: [8, 10]}
+    at: {anchor: bottom-right, full: [-57, -108], half: [-57, -108], quarter: [-57, -84]}
+  - id: ff.round.2
+    kind: gauge
+    glyphs: {first: 58894, steps: 1, size: [8, 10]}
+    at: {anchor: bottom-right, full: [-48, -108], half: [-48, -108], quarter: [-48, -84]}
+  - id: ff.wave.0
+    kind: gauge
+    glyphs: {first: 58896, steps: 1, size: [6, 10]}
+    at: {anchor: bottom-right, full: [-34, -108], half: [-34, -108], quarter: [-34, -84]}
+  - id: ff.wave.1
+    kind: gauge
+    glyphs: {first: 58896, steps: 1, size: [6, 10]}
+    at: {anchor: bottom-right, full: [-27, -108], half: [-27, -108], quarter: [-27, -84]}
+  - id: ff.wave.2
+    kind: gauge
+    glyphs: {first: 58896, steps: 1, size: [6, 10]}
+    at: {anchor: bottom-right, full: [-20, -108], half: [-20, -108], quarter: [-20, -84]}
+  - id: ff.wave.3
+    kind: gauge
+    glyphs: {first: 58896, steps: 1, size: [6, 10]}
+    at: {anchor: bottom-right, full: [-13, -108], half: [-13, -108], quarter: [-13, -84]}
+  - id: ff.wave.4
+    kind: gauge
+    glyphs: {first: 58896, steps: 1, size: [6, 10]}
+    at: {anchor: bottom-right, full: [-6, -108], half: [-6, -108], quarter: [-6, -84]}

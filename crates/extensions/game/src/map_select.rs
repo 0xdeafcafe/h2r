@@ -511,6 +511,11 @@ impl Selection {
                 .map(|s| s.prefix);
             let view = crate::map_modes::in_game(&catalogue, played, wave, &sources.data_root);
             catalogue = Arc::new(catalogue.with_modes(view));
+        } else {
+            // Nothing to analyse the maps with: the lobby's game type still
+            // says what it plays.
+            let view = crate::map_modes::View::playing(played);
+            catalogue = Arc::new(catalogue.with_modes(view));
         }
         *lock(&self.picker) = Some(catalogue);
         OpenList { mode: Mode::Categories, focus: None, from_setup: false }

@@ -505,7 +505,7 @@ fn each_stage_has_its_words() {
         [
             "ff.score=SCORE 3400",
             "ff.lives=LIVES 4",
-            "ff.progress=ROUND 2 OF 3 WAVE 3",
+            "ff.progress=-",
             "ff.banner=-"
         ]
     );
@@ -550,6 +550,95 @@ fn each_stage_has_its_words() {
     };
     assert_eq!(text(&bonus)[2], "ff.progress=BONUS 0:42");
     assert!((meter(&bonus).fill - 0.5).abs() < 1e-6);
+    // A definition with more rounds than round pips names its round.
+    let long = Mode {
+        round: 6,
+        rounds: 12,
+        ..sample_mode()
+    };
+    assert_eq!(text(&long)[2], "ff.progress=ROUND 7 OF 12");
+}
+
+/// The pips, as Halo 3: ODST's Firefight shows them: a circle a round and
+/// a bar a wave, lit for the one on and those done, faint for those to
+/// come; the set's numeral only where sets repeat. A bonus round has no
+/// wave, a definition over three rounds no circles, the end and the
+/// monitor none of it, and a quarter screen keeps them.
+#[test]
+fn the_pips_show_the_set_the_round_and_the_wave() {
+    let pips = |v: &Values| -> (String, String, String) {
+        let row = |ids: &[&str]| -> String {
+            ids.iter()
+                .map(|id| {
+                    let p = v.get(id).unwrap();
+                    match (p.shown, p.fill > 0.5) {
+                        (false, _) => '-',
+                        (true, true) => '#',
+                        (true, false) => '.',
+                    }
+                })
+                .collect()
+        };
+        let set = v.get(ff::SET).unwrap();
+        let numeral = if set.shown { set.text.clone() } else { "-".into() };
+        (numeral, row(&ff::ROUNDS), row(&ff::WAVES))
+    };
+    let of = |m: &Mode| pips(&view(m, 0, M));
+    let s = |a: &str, b: &str, c: &str| (a.to_owned(), b.to_owned(), c.to_owned());
+    // Round 2 of 3, wave 3 of 5, no sets.
+    assert_eq!(of(&sample_mode()), s("-", "##.", "###.."));
+    let endless = Mode {
+        set: 1,
+        endless: true,
+        round: 0,
+        wave: 4,
+        ..sample_mode()
+    };
+    assert_eq!(of(&endless), s("2", "#..", "#####"));
+    let bonus = Mode {
+        bonus_left: 900,
+        total: 1_800,
+        ..endless.clone()
+    };
+    assert_eq!(of(&bonus), s("2", "#..", "-----"));
+    let long = Mode {
+        round: 6,
+        rounds: 12,
+        ..sample_mode()
+    };
+    assert_eq!(of(&long), s("-", "---", "###.."));
+    let two = Mode {
+        rounds: 2,
+        round: 1,
+        wave: 0,
+        ..sample_mode()
+    };
+    assert_eq!(of(&two), s("-", "##-", "#...."));
+    let won = Mode {
+        stage: Stage::Won,
+        ..endless.clone()
+    };
+    assert_eq!(of(&won), s("-", "---", "-----"));
+    for screen in Screen::ALL {
+        let seen = pips(&view_on(&endless, 0, M, screen, None));
+        assert_eq!(seen, s("2", "#..", "#####"), "{screen:?}");
+        let monitor = pips(&view_on(&endless, 0, Scope::Monitor, screen, None));
+        assert_eq!(monitor, s("-", "---", "-----"), "{screen:?}");
+    }
+    // A lit pip blinks as it lights; a faint one is steady.
+    let v = view(&sample_mode(), 0, M);
+    use hud_kit_core::motion::Motion;
+    assert_eq!(v.get(ff::WAVES[2]).unwrap().motion, Motion::Arrive);
+    assert_eq!(v.get(ff::WAVES[3]).unwrap().motion, Motion::None);
+    // The row, right to left from the frame's right edge: the waves, a
+    // gap, the rounds, a gap, the numeral.
+    let l = layout::layout(&endless, 0, M, Screen::Full, None);
+    let at = |id: &str| l.iter().find(|e| e.id == id).unwrap().rect;
+    assert_eq!(at(layout::WAVE_IDS[4]), layout::Rect::new(592 - 6, 400 - 64, 6, 10));
+    assert_eq!(at(layout::WAVE_IDS[0]).x, 592 - 34);
+    assert_eq!(at(layout::ROUND_IDS[2]), layout::Rect::new(592 - 48, 400 - 64, 8, 10));
+    assert_eq!(at(layout::ROUND_IDS[0]).x, 592 - 66);
+    assert_eq!(at(layout::SET), layout::Rect::new(592 - 72 - 8, 400 - 66, 8, 14));
 }
 
 #[test]
@@ -1068,7 +1157,7 @@ fn no_element_overlaps_a_retail_rectangle() {
                 for (piece, r) in screen.retail() {
                     assert!(!e.rect.overlaps(&r), "{name} {screen:?}: {} on {piece}", e.id);
                 }
-                if e.kind == layout::Kind::Text && e.shown && e.id != layout::BANNER {
+                if e.kind == layout::Kind::Text && e.shown && e.id != layout::SET {
                     assert_eq!(e.rect.right(), f.right(), "{} is right-justified", e.id);
                     assert!(e.rect.bottom() <= f.bottom() - layout::PLATE_TOP, "{}", e.id);
                 }
@@ -1106,8 +1195,8 @@ fn a_skull_slot_never_moves() {
             }
         }
     }
-    // Full: 16 px on an 18 px pitch from the right, 70 above the plate.
-    assert_eq!(layout::skull_slot(2, Screen::Full), Some(layout::Rect::new(592 - 36 - 16, 444 - 44 - 70, 16, 16)));
+    // Full: 16 px on an 18 px pitch from the right, 82 above the plate.
+    assert_eq!(layout::skull_slot(2, Screen::Full), Some(layout::Rect::new(592 - 36 - 16, 444 - 44 - 82, 16, 16)));
     assert_eq!(layout::skull_slot(0, Screen::Quarter), None);
     // A skull on is shown in its slot, off is hidden, and switching one
     // changes nothing else.

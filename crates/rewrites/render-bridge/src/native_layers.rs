@@ -21,16 +21,17 @@
 //!   and the guest draws the rest.
 //!
 //! The scene's and the alternate view's layers 1, 2, 5, 7, 8 and 20
-//! ([`SCENE_ONLY`]) draw only from the scene: what the host does not draw
-//! loses the layer's bit too, so the guest builds no entry for it, and is
-//! counted `scene_dropped_world_<cause>` ([`count_dropped`]). The first
-//! person's and the sorted handlers' layers still keep what the host
-//! refuses to D3D until their own cuts.
+//! ([`SCENE_ONLY`]) are cut to the scene: an item the host does not draw
+//! keeps its guest draw, and is counted by layer, kind and the host's
+//! cause, `scene_kept_<site><layer>_<kind>_<cause>` ([`count_kept`]), until
+//! the scene draws it. No item is dropped: an object or a wall the pass
+//! refuses still draws. The first person's and the sorted handlers' layers
+//! keep what the host refuses to D3D, counted under `layer_plan_*`.
 //!
 //! The plan's outcomes are counted by cause for `render.scene`
 //! ([`counters`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -55,7 +56,7 @@ pub const LAYERS: [u32; 7] = [1, 5, 7, 8, 20, 2, 17];
 /// `native_world` owns).
 pub const SCENE_ONLY: [u32; 6] = [1, 2, 5, 7, 8, 20];
 
-/// Whether `layer` of `caller` draws only from the scene.
+/// Whether `layer` of `caller` is cut to the scene: its kept guest draws are counted `scene_kept_*`.
 pub fn scene_only(layer: u32, caller: LayerCaller) -> bool {
     matches!(caller, LayerCaller::Scene | LayerCaller::AlternateView) && SCENE_ONLY.contains(&layer)
 }
@@ -117,24 +118,52 @@ pub trait Host: Send + Sync {
     /// bit of those it draws over a preview, reserves the native
     /// replacement, applies the masks and commits. Returns what was
     /// cleared for the restore at the next layer draw, or `None` to leave
-    /// the layer to the D3D path.
-    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene) -> Option<Cleared>;
+    /// the layer to the D3D path. `left` takes why each item it does not
+    /// draw keeps its guest draw ([`Left`]).
+    fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left) -> Option<Cleared>;
+}
+
+/// Why the host left items of a layer to the guest: by list slot, and for
+/// the whole layer when it stopped before naming items (the world not
+/// loaded, the device refusing the pass). A slot it names keeps that
+/// cause; the rest take the layer's, or `unnamed`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Left {
+    pub layer: Option<&'static str>,
+    pub items: std::collections::HashMap<u32, &'static str>,
+}
+
+impl Left {
+    /// The cause of slot `slot`: its own, else the layer's, else `unnamed`.
+    pub fn cause(&self, slot: u32) -> &'static str {
+        self.items.get(&slot).copied().or(self.layer).unwrap_or("unnamed")
+    }
+
+    /// Names `slot`'s cause unless one is named already.
+    pub fn item(&mut self, slot: u32, why: &'static str) {
+        self.items.entry(slot).or_insert(why);
+    }
+
+    /// Names the whole layer's cause unless one is named already.
+    pub fn all(&mut self, why: &'static str) {
+        self.layer.get_or_insert(why);
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static PLACED: AtomicBool = AtomicBool::new(false);
 /// What the last taken layer cleared, with each item as it was left
-/// ([`Left`]).
-static CLEARED: Mutex<Option<(Cleared, Vec<Left>)>> = Mutex::new(None);
+/// ([`ItemState`]).
+static CLEARED: Mutex<Option<(Cleared, Vec<ItemState>)>> = Mutex::new(None);
 
 /// An item as the skip left it: its mask (`+0x10`), shader (`+8`) and
 /// record argument (`+0xc`). A sorted handler's layer can be the last of
 /// its list (the next layer draw follows the next entry's rebuild of the
 /// same items), so the bit goes back only on an item that is still the
 /// one cleared.
-type Left = [u32; 3];
+type ItemState = [u32; 3];
 
-fn left_of(m: &dyn GuestRead, item: u32) -> Left {
+fn left_of(m: &dyn GuestRead, item: u32) -> ItemState {
     [0x10, 8, 0xc].map(|at| m.read_u32(item + at).unwrap_or(0))
 }
 static ASKED: AtomicU64 = AtomicU64::new(0);
@@ -154,18 +183,51 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-/// World items the scene did not draw, by cause: `refused` (no scene draw
-/// for the part), `unreadable` (its render record or list did not read).
-static DROPPED: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+/// Items of a cut world layer that kept their guest draw, by
+/// `<site><layer>_<kind>_<cause>`.
+static KEPT: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
-/// Counts `n` world items dropped under `cause`: `scene_dropped_world_<cause>`
-/// in [`counters`], and the world stage's `scene_dropped` total.
-pub fn count_dropped(cause: &'static str, n: u64) {
+/// Counts `n` items of `layer` (`site` `""` for the scene, `alt` for the
+/// alternate view) of `kind` (`world`, `object`, `unreadable`) that keep
+/// their guest draw under `cause`: `scene_kept_<site><layer>_<kind>_<cause>`
+/// in [`counters`].
+pub fn count_kept_as(site: &str, layer: u32, kind: &str, cause: &str, n: u64) {
     if n == 0 {
         return;
     }
-    *DROPPED.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += n;
-    timeline::native::Stage::World.count(timeline::native::Metric::SceneDropped, n);
+    *KEPT.lock().unwrap_or_else(|e| e.into_inner()).entry(format!("{site}{layer}_{kind}_{cause}")).or_default() += n;
+}
+
+/// The items of the current list still holding `layer`'s bit after the
+/// host's clear, each counted by kind and its cause in `left`
+/// ([`count_kept_as`]): `record` for an item whose render record does not
+/// read, `remainder` for one outside `extracted` (the slots the layer's
+/// scene holds) that the host did not name. `objects` false leaves the
+/// objects out (layer 3's are the sorted walk's). Nothing is written: they
+/// keep their guest draw. A list that does not read is one `unreadable`
+/// count under `list`.
+pub fn count_kept(mem: &dyn GuestRead, layer: u32, site: &str, objects: bool, left: &Left, extracted: Option<&HashSet<u32>>) {
+    let Some(held) = native_render::layer_items::held_items(mem, layer, objects) else {
+        count_kept_as(site, layer, "unreadable", "list", 1);
+        return;
+    };
+    for h in held {
+        let cause = match h.item {
+            None => "record",
+            Some(_) if !left.items.contains_key(&h.slot) && extracted.is_some_and(|e| !e.contains(&h.slot)) => "remainder",
+            Some(_) => left.cause(h.slot),
+        };
+        count_kept_as(site, layer, h.kind(), cause, 1);
+    }
+}
+
+/// The counter site of `caller`: `""` for the scene, `alt` for the
+/// alternate view.
+fn site(caller: LayerCaller) -> &'static str {
+    match caller {
+        LayerCaller::AlternateView => "alt",
+        _ => "",
+    }
 }
 
 /// Counts `n` items of `layer` under `outcome` (`taken`, or a refusal's
@@ -205,7 +267,7 @@ pub fn counters() -> Vec<(String, u64)> {
         ("layer_plan_items".to_owned(), ITEMS.load(Ordering::Relaxed)),
     ];
     out.extend(OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)));
-    out.extend(DROPPED.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (format!("scene_dropped_world_{k}"), v)));
+    out.extend(KEPT.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (format!("scene_kept_{k}"), v)));
     out
 }
 
@@ -266,10 +328,16 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     };
     ASKED.fetch_add(1, Ordering::Relaxed);
+    let mut left = Left::default();
+    let mut extracted = None;
     let drawn = match extract(&*mem, layer as u8, caller) {
-        Some(scene) => host.ask(mem, layer, caller, &scene),
+        Some(scene) => {
+            extracted = scene.layer_passes.first().map(|p| scene.items_of(p).iter().map(|i| i.slot).collect::<HashSet<u32>>());
+            host.ask(mem, layer, caller, &scene, &mut left)
+        }
         None => {
             count_for(caller, layer, "refused_unread", 1);
+            left.all("unread");
             None
         }
     };
@@ -278,7 +346,9 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
         remember(mem, cleared);
     }
-    drop_rest(mem, layer, caller);
+    if scene_only(layer, caller) {
+        count_kept(&Ro(&*mem), layer, site(caller), true, &left, extracted.as_ref());
+    }
 }
 
 /// What the layer's call will restore at the next layer draw: `cleared`
@@ -292,27 +362,6 @@ fn remember(mem: &dyn GuestMemory, cleared: Cleared) {
             left.push(left_of(&ro, item));
             all.items.push(item);
         }
-    }
-}
-
-/// A scene-only layer's items the host did not draw lose the layer's bit:
-/// the guest builds no entry for them, so none reaches the device. Counted
-/// `scene_dropped_world_refused`, or `_unreadable` for a part whose record
-/// or list does not read.
-fn drop_rest(mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller) {
-    if !scene_only(layer, caller) {
-        return;
-    }
-    let skip = native_render::layer_items::clear_scene_layer(&mut Mem(&mut *mem), layer, true, &|_| false);
-    match skip {
-        Some(skip) => {
-            count_dropped("refused", skip.refused as u64);
-            count_dropped("unreadable", skip.unreadable as u64);
-            if !skip.cleared.items.is_empty() {
-                remember(mem, skip.cleared);
-            }
-        }
-        None => count_dropped("unreadable", 1),
     }
 }
 
@@ -442,8 +491,99 @@ mod tests {
         assert!(c["layer_plan_sorted18_taken"] >= 4, "a sorted handler's apart");
     }
 
+    /// The tests that touch the process-wide host and pending restore run
+    /// one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    const LIST: u32 = 0x004c_1a48;
+    const LIST_ITEMS: u32 = 0x004d_0000;
+
+    /// Guest memory with `layer` current and its list's items: per item its
+    /// render record and whether the record is an object's. Record
+    /// `0x7000` is past the memory: it does not read. The render camera
+    /// reads as no camera.
+    fn list(layer: u32, items: &[(u32, bool)]) -> engine::memory::FlatMemory {
+        use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
+        let mut m = engine::memory::FlatMemory::new(0x0040_0000, 0x0010_0000);
+        m.set_u32(CURRENT_LAYER, layer).unwrap();
+        m.set_u32(CURRENT_LIST, LIST).unwrap();
+        m.set_u32(LIST + 4, items.len() as u32).unwrap();
+        m.set_u32(LIST + 0xc, 0).unwrap();
+        m.set_u32(LIST + 0x14, LIST_ITEMS).unwrap();
+        for (i, &(record, object)) in items.iter().enumerate() {
+            let at = LIST_ITEMS + 0x18 * i as u32;
+            m.set_u32(at, GEOMETRY_BUILD).unwrap();
+            m.set_u32(at + 8, 0xe000_0010 + i as u32).unwrap();
+            m.set_u32(at + 0xc, record << 8 | i as u32).unwrap();
+            m.set_u32(at + 0x10, 1 << layer).unwrap();
+            let _ = m.set_u32(RENDER_RECORDS + 0x20 * record + 4, if object { 0xe100_0001 } else { u32::MAX });
+        }
+        m
+    }
+
+    fn mask(m: &engine::memory::FlatMemory, slot: u32) -> u32 {
+        m.u32(LIST_ITEMS + 0x18 * slot + 0x10).unwrap()
+    }
+
+    fn kept(name: &str) -> u64 {
+        counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
+    }
+
+    /// A host that names the whole layer `device` and draws nothing.
+    struct Refuses;
+
+    impl Host for Refuses {
+        fn ask(&self, _: &mut dyn GuestMemory, _: u32, _: LayerCaller, _: &FrameScene, left: &mut Left) -> Option<Cleared> {
+            left.all("device");
+            None
+        }
+    }
+
+    /// A scene layer the host does not draw (here its view does not
+    /// extract: no camera) keeps every item's guest draw, the wall's and
+    /// the object's, each counted by layer, kind and cause. Nothing goes
+    /// undrawn.
+    #[test]
+    fn a_scene_layer_the_host_does_not_draw_keeps_its_guest_draws() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_host(Arc::new(Refuses));
+        let (world, object) = (kept("scene_kept_5_world_unread"), kept("scene_kept_5_object_unread"));
+        let mut m = list(5, &[(1, false), (2, true)]);
+        before_layer(&mut m, 0x0002_bf39);
+        assert_eq!((mask(&m, 0), mask(&m, 1)), (1 << 5, 1 << 5), "both keep their guest draw");
+        assert_eq!(kept("scene_kept_5_world_unread"), world + 1);
+        assert_eq!(kept("scene_kept_5_object_unread"), object + 1);
+        // The next layer draw has nothing to set back.
+        m.set_u32(native_render::skip::CURRENT_LAYER, 6).unwrap();
+        before_layer(&mut m, 0);
+        assert_eq!((mask(&m, 0), mask(&m, 1)), (1 << 5, 1 << 5));
+        *HOST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Each kept item takes the cause the host named for its slot, else
+    /// `remainder` when the layer's scene does not hold it, else the
+    /// layer's cause; an unreadable record is `record`.
+    #[test]
+    fn a_kept_item_is_counted_by_its_own_cause_first() {
+        let m = list(8, &[(1, false), (3, false), (2, true), (0x7000, false)]);
+        let mut left = Left::default();
+        left.item(0, "set");
+        left.all("device");
+        left.all("later");
+        assert_eq!(left.layer, Some("device"), "the first cause stays");
+        let extracted: HashSet<u32> = [0, 2, 3].into_iter().collect();
+        let names = ["scene_kept_alt8_world_set", "scene_kept_alt8_world_remainder", "scene_kept_alt8_object_device", "scene_kept_alt8_unreadable_record"];
+        let before: Vec<u64> = names.iter().map(|n| kept(n)).collect();
+        count_kept(&Ro(&m), 8, "alt", true, &left, Some(&extracted));
+        for (n, b) in names.iter().zip(before) {
+            assert_eq!(kept(n), b + 1, "{n}");
+        }
+        assert_eq!(mask(&m, 0), 1 << 8, "counting writes nothing");
+    }
+
     #[test]
     fn a_cleared_bit_goes_back_only_on_the_same_item() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         use engine::memory::FlatMemory;
         const BASE: u32 = 0x0060_0000;
         let mut mem = FlatMemory::new(BASE, 0x100);

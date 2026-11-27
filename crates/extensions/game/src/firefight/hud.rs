@@ -615,7 +615,8 @@ fn lives_of(m: &Mode, local: u8) -> Option<u16> {
 }
 
 /// The kit's state for the elements [`layout::layout`] made: each line's
-/// words, the meter's fill, the skulls on, the banner's words.
+/// words, the meter's fill, the skulls on, the banner's words, the set's
+/// numeral and which round and wave pips show and are lit.
 pub fn state_of(elements: &[layout::Element]) -> State {
     let mut out = State::default();
     for e in elements.iter().filter(|e| e.shown) {
@@ -640,9 +641,15 @@ pub fn state_of(elements: &[layout::Element]) -> State {
                 });
             }
             layout::BANNER => out.banner = words(),
+            layout::SET => out.set = words(),
             id => {
-                if let Some(i) = layout::SKULL_IDS.iter().position(|s| *s == id) {
+                let at = |ids: &[&str]| ids.iter().position(|s| *s == id);
+                if let Some(i) = at(&layout::SKULL_IDS) {
                     out.skulls[i] = true;
+                } else if let Some(i) = at(&layout::ROUND_IDS) {
+                    out.rounds[i] = Some(e.fill.0 > 0);
+                } else if let Some(i) = at(&layout::WAVE_IDS) {
+                    out.waves[i] = Some(e.fill.0 > 0);
                 }
             }
         }

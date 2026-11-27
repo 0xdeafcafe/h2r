@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `world.pools` | read | [`world.pools`](#worldpools) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `actors.net` | read | [`actors.net`](#actorsnet) |
@@ -676,6 +677,15 @@ break step reads the same state (`bots::guest::breakable`;
 ```sh
 h2 agent world.breakable '{}'
 ```
+
+## `world.pools`
+
+`h2 agent world.pools` returns `{at, actors, decals, particles}`: the live
+count in each data array's header (`crates/extensions/agent/src/pools.rs`).
+It takes no parameters and reads three headers, so it is cheap to poll. A
+pool that is not allocated, or whose header fails its signature or capacity
+check, is `null`. The watermark's `full` level reads it for its AI, decal and
+particle counts ([app.md](app.md#watermark)).
 
 ## `world.ai`
 
@@ -2319,7 +2329,10 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
   the alternate view's as `layer_plan_alt<layer>_*`, the first person's as `layer_plan_fp<layer>_*`, object items' causes
   named `object_*` (`render_bridge::native_layers`; framescene.md,
-  slice 4); a later slice adds
+  slice 4), and the cut world layers' items left to their guest draw,
+  `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
+  `world`, `object` or `unreadable`; causes in
+  [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,

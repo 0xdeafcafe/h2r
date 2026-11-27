@@ -543,6 +543,10 @@ pub const BUILTIN: [(&str, &str); 14] = [
         include_str!("../../../../content/modes/huds/territories.hud.yaml"),
     ),
     (
+        "siege",
+        include_str!("../../../../content/modes/huds/siege.hud.yaml"),
+    ),
+    (
         "theater",
         include_str!("../../../../content/core/huds/theater.hud.yaml"),
     ),

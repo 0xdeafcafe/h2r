@@ -79,9 +79,9 @@ fn view(played: Played) -> (Catalogue, View) {
 fn each_map_row_says_which_modes_it_supports() {
     let (c, v) = view(Played::Other);
     let name = |n: &str| by_name(&c, n);
-    assert_eq!(v.label(name("Lockout").id, "Lockout").as_deref(), Some("Lockout  Firefight  Siege"));
-    assert_eq!(v.label(name("Midship").id, "Midship").as_deref(), Some("Midship  Siege"));
-    assert_eq!(v.label(name("Beaver Creek").id, "Beaver Creek").as_deref(), Some("Beaver Creek  Firefight"));
+    assert_eq!(v.label(name("Lockout").id, "Lockout").as_deref(), Some("Lockout (Firefight, Siege)"));
+    assert_eq!(v.label(name("Midship").id, "Midship").as_deref(), Some("Midship (Siege)"));
+    assert_eq!(v.label(name("Beaver Creek").id, "Beaver Creek").as_deref(), Some("Beaver Creek (Firefight)"));
     assert_eq!(v.refusal(name("Midship").id), None, "any other game type takes every map");
     let (_, plain) = view(Played::Other);
     assert!(!plain.is_empty());
@@ -111,10 +111,10 @@ fn a_mode_lists_its_maps_first_and_marks_the_rest() {
     assert!(ordered[..split].iter().all(ok) && ordered[split..].iter().all(|id| !ok(id)));
     assert_eq!(ordered.len(), rows.len(), "every map stays visible");
     let coag = by_name(&c, "Coagulation");
-    assert_eq!(v.label(coag.id, "Coagulation").as_deref(), Some("Coagulation  (no Siege sites)"));
+    assert_eq!(v.label(coag.id, "Coagulation").as_deref(), Some("Coagulation (no Siege sites)"));
     let (cf, vf) = view(Played::Firefight);
     let midship = by_name(&cf, "Midship");
-    assert_eq!(vf.label(midship.id, "Midship").as_deref(), Some("Midship  (no Firefight kit)"));
+    assert_eq!(vf.label(midship.id, "Midship").as_deref(), Some("Midship (no Firefight kit)"));
 }
 
 #[test]

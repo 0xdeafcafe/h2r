@@ -86,12 +86,12 @@ pub const FIRST_PERSON: Cut = Cut {
 /// otherwise gathers as before.
 pub const OWN_PRODUCER: &[&str] = &["dynamic_lights", "first_person", "object_shadows"];
 
-/// A world layer draw (`LAYER_DRAW`, `0x00044550`) that draws only from the
-/// scene. The layer draw serves every layer, so these are cut per layer: its
-/// producer is [`crate::native_layers`] (layers 1, 2, 5, 7, 8 and 20) and
+/// A world layer draw (`LAYER_DRAW`, `0x00044550`) cut to the scene. The
+/// layer draw serves every layer, so these are cut per layer: its producer
+/// is [`crate::native_layers`] (layers 1, 2, 5, 7, 8 and 20) and
 /// [`crate::native_world`] (layer 3), which clear the layer's bit on every
-/// item the scene does not draw, so the guest builds no entry for it. What
-/// the scene cannot draw is `scene_dropped_world_*`.
+/// item the scene draws. An item the scene cannot draw yet keeps its guest
+/// draw and is counted `scene_kept_<layer>_<kind>_<cause>`.
 #[cfg(feature = "native-render")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerCut {

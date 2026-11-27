@@ -287,7 +287,9 @@ fn the_built_in_list_is_read_from_the_game() {
     odd.set_name("Rockets Oddball").unwrap();
     let siege = ::rules::compile(::rules::builtin::SIEGE).unwrap();
     let script = variants::portable::record_for_named(&siege, "My Siege", &[]).unwrap();
-    assert_eq!(script.game_type(), GameType::Script);
+    // A team script's record is on Slayer's index outside a game; the
+    // list files it under its script's row all the same.
+    assert_eq!(script.game_type(), GameType::Slayer);
     g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 3);
     for (i, v) in [&ctf, &odd, &script].into_iter().enumerate() {
         let at = RECORDS + 4 + i as u32 * BUILTIN_RECORD + BUILTIN_VARIANT;

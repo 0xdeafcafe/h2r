@@ -456,7 +456,11 @@ instruction boundaries those stages hook mid-function, and
 `game_types::instruction_entries` lists the spawn gather's site the
 `rules` feature answers for the script index, and its resume
 ([game-types-without-carriers.md](../game/game-types-without-carriers.md)).
-The composition root registers the three lists with the image builder
+`skull_gates::instruction_entries` lists the AI skulls' campaign gates
+([skulls.md](../game/skulls.md)), and `ai_gates::instruction_entries` the
+multiplayer gate of `ai_initialize_for_new_map` that the `firefight`
+feature answers on a kit map ([firefight.md](../game/firefight.md#the-host-runtime)).
+The composition root registers the lists with the image builder
 (`boot::register_image_entries`, calling `recomp::register_retail_entries`)
 before anything builds, stamps, loads or analyses the image: `h2`'s
 `main`, the Apple hosts and every `boot::run*`. Discovery for both image

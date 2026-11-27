@@ -31,6 +31,7 @@ pub fn all() -> Vec<Box<dyn Describe>> {
         Box::new(objective::Oddball),
         Box::new(objective::Koth),
         Box::new(objective::Territories),
+        Box::new(objective::Siege),
         Box::new(script_objective::ScriptObjective),
         Box::new(theater::Theater),
     ]
