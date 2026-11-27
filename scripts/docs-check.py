@@ -14,6 +14,9 @@ Checks:
           docs/runtime/switches.md (a `H2_FOO_*` row covers the family)
   paths   backticked crates/, platform/, scripts/, deploy/ and web/ paths exist
   style   headings that record history instead of the design
+  voice   an em dash, a banned word, an American spelling, connective filler
+          or a manufactured contrast (docs/meta/docs-style.md rule 13)
+  length  a paragraph over MAX_SENTENCES sentences (rule 12)
   code    docs/*.md paths cited in code comments exist (always fails), and
           the section they cite (`§ 5.2` or "Title") is still a heading
 
@@ -353,6 +356,115 @@ def check_style(files):
     return bad
 
 
+# Voice rules: docs/meta/docs-style.md rule 13.
+BANNED = re.compile(
+    r"\b(?:delve[sd]?|leverag(?:e|es|ed|ing)|utili[sz](?:e|es|ed|ing)|robust(?:ly|ness)?"
+    r"|seamless(?:ly)?|unlock(?:s|ed|ing)?|elevat(?:e|es|ed|ing)|empower(?:s|ed|ing)?"
+    r"|tapestry|vibrant|groundbreaking|revolutionary|next-level|game-chang(?:er|ing)"
+    r"|superpowers?|paradigm|synerg(?:y|ize|istic)|key takeaway|in essence|fundamentally"
+    r"|essentially|streamline[sd]?|landscape|cutting-edge|state-of-the-art|best-in-class"
+    r"|let's dive|at the end of the day|comprehensive solution|journey"
+    r"|furthermore|moreover|additionally|it's worth noting|it is worth noting)\b"
+    r"|\bindeed,",
+    re.I,
+)
+CONTRAST = re.compile(
+    r"\b(?:isn't|is not|not) (?:just|only|about)\b[^.]{0,60}?,? (?:it's|it is|but)\b"
+    r"|\bisn't the interesting (?:bit|part)",
+    re.I,
+)
+AMERICAN = re.compile(
+    r"\b(?:behavior\w*|colors?|colored|colorful|centers?|centered|analyz(?:e|es|ed|ing)"
+    r"|optimiz\w*|\w+ization\w*|realiz\w*|judgment|favorites?|neighbors?|gray"
+    r"|licenses? (?=to\b)|catalog(?:ed|ing)?)\b",
+    re.I,
+)
+# Words that match the American pattern but are right as written.
+AMERICAN_OK = re.compile(r"^(?:realization)$", re.I)
+MAX_SENTENCES = 4
+
+
+def prose_only(line):
+    """A line without inline code, link targets and URLs."""
+    line = re.sub(r"`[^`]*`", "", line)
+    line = re.sub(r"\[[^\]]*\.md\]", "[]", line)  # a file name used as link text
+    line = re.sub(r"\]\([^)]*\)", "]", line)
+    return re.sub(r"https?://\S+", "", line)
+
+
+def check_voice(files):
+    bad = []
+    for path in files:
+        if not path.startswith("docs/") or path.startswith("docs/meta/"):
+            continue
+        for number, line in prose_lines(path):
+            text = prose_only(line)
+            if "\u2014" in text:
+                bad.append(f"{path}:{number}: em dash")
+            for m in BANNED.finditer(text):
+                bad.append(f"{path}:{number}: banned word: {m.group(0)}")
+            for m in AMERICAN.finditer(text):
+                if not AMERICAN_OK.match(m.group(0)):
+                    bad.append(f"{path}:{number}: American spelling: {m.group(0)}")
+            if CONTRAST.search(text):
+                bad.append(f"{path}:{number}: manufactured contrast")
+    return bad
+
+
+SENTENCE_END = re.compile(r"(?<![A-Z])(?<!\be\.g)(?<!\bi\.e)(?<!\bvs)(?<!\betc)[.!?](?=\s+[A-Z])")
+NOT_PROSE = re.compile(r"^\s*(?:[-*+>|#]|\d+[.)]\s|<)")
+
+
+def check_length(files):
+    bad = []
+    for path in files:
+        if not path.startswith("docs/") or path.startswith("docs/meta/"):
+            continue
+        para, start = [], 0
+
+        def flush():
+            if para:
+                if para[0].startswith(("Status:", "Code:", "Tests:", "Switch:")):
+                    para.clear()
+                    return
+                text = prose_only(" ".join(para))
+                count = len(SENTENCE_END.findall(text)) + 1
+                if count > MAX_SENTENCES:
+                    bad.append(f"{path}:{start}: paragraph of {count} sentences")
+            para.clear()
+
+        in_item = False
+        for number, line in prose_lines(path):
+            if not line.strip():
+                flush()
+                in_item = False
+                continue
+            if NOT_PROSE.match(line):
+                flush()
+                in_item = True  # a list item or table: indented lines continue it
+                continue
+            if in_item and line[0] == " ":
+                continue
+            in_item = False
+            if line.startswith("    "):
+                flush()
+                continue
+            if not para:
+                start = number
+            para.append(line.strip())
+        flush()
+    return bad
+
+
+def changed_pages():
+    """Pages changed in this branch against origin/master, or uncommitted."""
+    base = git_lines("merge-base", "HEAD", "origin/master")
+    names = set(git_lines("diff", "--name-only", base[0], "--")) if base else set()
+    names.update(git_lines("diff", "--name-only", "HEAD", "--"))
+    names.update(git_lines("ls-files", "--others", "--exclude-standard"))
+    return names
+
+
 def main(argv):
     strict = "--strict" in argv
     wanted = [a.rstrip("/") for a in argv if not a.startswith("--")]
@@ -382,12 +494,21 @@ def main(argv):
         ("paths", check_paths(files), False),
         ("style", check_style(files), False),
     ]
+    touched = changed_pages()
+    soft = [("voice", check_voice(files)), ("length", check_length(files))]
     failed = False
     for name, found, hard in checks:
         for line in found:
             print(f"{name}: {line}")
         print(f"{name}: {len(found)} finding(s)", file=sys.stderr)
         failed = failed or (bool(found) and (hard or strict))
+    for name, found in soft:
+        # A page changed in this branch must be clean; the rest are warnings.
+        mine = [f for f in found if f.split(":", 1)[0] in touched]
+        for line in found:
+            print(f"{name}: {line}" if line in mine else f"{name}: warning: {line}")
+        print(f"{name}: {len(found)} finding(s), {len(mine)} on changed pages", file=sys.stderr)
+        failed = failed or bool(mine)
     return 1 if failed else 0
 
 

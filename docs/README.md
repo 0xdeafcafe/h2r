@@ -1,15 +1,42 @@
 # Docs
 
-Every doc in this folder, by area. **Start here** marks the entry point for
-each area. A page's own status line says whether it describes built code,
-partly built code or a design. Pages are written to the rules in
-[meta/docs-style.md](meta/docs-style.md).
+```mermaid
+flowchart LR
+    disc[retail disc] --> formats
+    disc --> lifter
+    lifter --> runtime
+    runtime --> graphics & audio & input
+    formats --> engine
+    engine --> game
+    game --> halo1 & live
+    editor --> formats & game
+    perf -.-> runtime
+```
 
-[ARCHITECTURE.md](ARCHITECTURE.md) is the entry point for the whole project:
-goals, targets, the pipeline and the crate table. Dated reviews of the code
-are under [Reviews](#reviews).
+| Area | Folder | Pages | Start here |
+|---|---|---|---|
+| Lifter | `lifter/` | 19 | [LIFTER.md](lifter/LIFTER.md) |
+| Runtime | `runtime/` | 32 | [BOOT.md](runtime/BOOT.md) |
+| Input | `input/` | 6 | [input.md](input/input.md) |
+| Graphics | `graphics/` | 50 | [graphics.md](graphics/graphics.md) |
+| Audio and movies | `audio/` | 6 | [audio.md](audio/audio.md) |
+| Performance | `perf/` | 19 | [README.md](perf/README.md) |
+| Formats and tags | `formats/` | 22 | [map-format.md](formats/map-format.md) |
+| Engine | `engine/` | 40 | [engine-map.md](engine/engine-map.md) |
+| Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
+| Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
+| Xbox Live | `live/` | 34 | [live.md](live/live.md) |
+| Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
+| Development | `dev/` | 5 | [crate-structure.md](dev/crate-structure.md) |
 
-[features.md](features.md) lists every feature beyond the retail game with its state and its page, the measured speed numbers and the roadmap.
+The whole project starts at [ARCHITECTURE.md](ARCHITECTURE.md): goals,
+targets, the pipeline and the crate table. [features.md](features.md) lists
+every feature beyond the retail game with its state and its page, the
+measured speed numbers and the roadmap. Dated reviews of the code are under
+[Reviews](#reviews).
+
+Every page below has a status line: built, partly built or a design. Pages
+follow [meta/docs-style.md](meta/docs-style.md).
 
 ## Lifter: analysis, lifting and CPU semantics (`lifter/`)
 

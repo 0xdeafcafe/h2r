@@ -100,6 +100,22 @@ deleted, and git keeps it.
    asset names from the disc.
 10. **Short.** A design page over about 600 lines is two pages. Split by
     topic, not by date.
+11. **Lead with a picture.** Each page, and each section that explains a
+    flow or a set of states, opens with a table, an ASCII diagram, or a
+    mermaid flowchart or sequence diagram, before any prose. States, slices
+    and options are tables. Flows are mermaid.
+12. **Short prose.** Terse, claim first, at most about 3 sentences a
+    paragraph, numbers over adjectives. A longer paragraph is a table or a
+    list.
+13. **The owner's voice.** British spelling (behaviour, optimise, colour,
+    analyse, centre, -isation). No em dashes: a spaced hyphen, commas,
+    brackets or a new sentence. None of the banned words (`delve`,
+    `leverage` as a verb, `robust`, `seamless`, `unlock`, `harness` as a
+    verb, `utilise`, `streamline`, `landscape`, `paradigm`, `synergy`,
+    `journey`, `game-changer`, `cutting-edge`, `superpower`, `in essence`,
+    `fundamentally`, `essentially`). No manufactured contrasts ("this
+    isn't X, it's Y": say Y) and no connective filler (`Furthermore`,
+    `Moreover`, `Additionally`, `Indeed`, `It's worth noting`).
 
 ## Evidence labels
 
@@ -197,6 +213,8 @@ scripts/docs-check.py --strict docs/x  # soft findings fail too
 | `switches` | an `H2_*` variable the code reads that `docs/runtime/switches.md` does not list (a `H2_FOO_*` row covers the family) | with `--strict` |
 | `paths` | a backticked `crates/...` path that does not exist | with `--strict` |
 | `style` | a heading that records history (a date, "as built", "superseded") | with `--strict` |
+| `voice` | an em dash, a banned word, an American spelling, or a connective filler | on a page changed in the branch; a warning elsewhere |
+| `length` | a paragraph over 4 sentences | on a page changed in the branch; a warning elsewhere |
 
 `names`, `paths` and `style` skip `notes/` and `docs/reviews/`, which
 describe the tree as it was. `names` and `paths` also skip a page whose
