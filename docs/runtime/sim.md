@@ -391,11 +391,12 @@ h2 sim run docs/runtime/sim-examples/firefight-beavercreek.toml
 h2 sim run docs/runtime/sim-examples/firefight-beavercreek-crossfire.toml
 ```
 
-A `firefight-<base>` map that is not in `<data>/maps` stops the run, naming the
-`h2 firefight kit` command that makes it (`firefight_kits::ensure_map`); the
-built-in kits (Coagulation, Zanzibar) are built first. A package that does not
-stage (`packages::staged_or_named`) stops a sim run with its package, item and
-reason.
+A `firefight-<base>` map that is not in `<data>/maps` is built before the run:
+a built-in kit (Coagulation, Zanzibar) by `firefight_kit::builtin::ensure`, any
+other by `h2 firefight kit <base> --disc <disc> --data <data>` run as a child of
+the same `h2` (`firefight_kits::ensure_map`). A build that fails stops the run,
+naming the kit and the exit status. A package that does not stage
+(`packages::staged_or_named`) stops it with its package, item and reason.
 
 ### Bot parameters from a file
 
