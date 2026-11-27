@@ -226,7 +226,7 @@ the links, editor choices and read problems over the socket.
 
 ### Shared patterns
 
-| Pattern | Window and API behavior | Code under `crates/apps/studio/src/` |
+| Pattern | Window and API behaviour | Code under `crates/apps/studio/src/` |
 |---|---|---|
 | **Preview** | The header and **Preview** menu share the target picker and **In game**. `preview.target` reads or changes the front tab's target. `pair.preview {doc?}` runs the document's route. Supported tags use the paired game, variants launch Studio's game with the current record, and scripts compile and reload into Studio's game. | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs` |
 | **Check** | The header counts the front asset's findings. Clicking **Check** refreshes Problems. `check.run {asset}` returns the requested asset's rows from a refresh, and `problems.list {asset}` filters the list. Script findings can open the affected line. | `ui/doc_header.rs`, `app/problems.rs`, `api/checks.rs` |

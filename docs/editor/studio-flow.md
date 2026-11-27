@@ -388,7 +388,7 @@ nothing unbuilt and run together.
 | FL9 (built) | **One preview**: the target switch and **In game** in the header and menu, with the Game panel showing the result | M | FL2 | `ui/preview_switch.rs`, `app/preview_switch.rs`, `api/preview.rs`, `play.rs`, `ui/game_script.rs` | the button and API queue the same unsaved variant record, and the launch uses it; the fake own game receives `rules.reload` for the open script; paired kinds use the plans from `preview.target` |
 | FL10 (built) | **The package document**: the manifest, the items, **Check**, **Build**, **Play**, **Publish...**, **Export...**, **Set as edit target**, **New package...**, and **Add to package** from any header | M | FL4 (built) | `ui/package.rs` (new), `app/package_doc.rs`, `ui/browser.rs`, `ui.rs` | local actions show their `package.*` replies; a new package made in the window is the edit target and is listed by `package.list`; Live publishing depends on PK14 |
 | FL11 (built) | **New from this**: **New from this...** on a Browser row and in the header (the window form of `asset.copy`), **Import sound...** (`import.sound`) and **Add model...** (`import.model`), each opening the new document | M | FL10 | `ui/browser.rs`, `ui/doc_header.rs`, `app/assets.rs`, `api/import.rs` | a weapon copied from an invented one opens as a tab marked **new in** the target and holds no bytes of its source; an imported WAV opens in the sound editor |
-| FL12 (built) | **The guide by journey**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
+| FL12 (built) | **The guide by task**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
 | FL13 (built) | **Where used and Show edits**: the Browser's link views over FL1's table | S | FL1 | `app/assets/browse.rs` (new), `ui/browser.rs`, `ui/doc_header.rs`, `api/assets.rs` | on an invented map and package, `asset.where_used` on a model lists the weapon, and `asset.edits` on an edited tag lists the item and its lines; the Browser draws the same rows and **Clear** brings the list back |
 | FL14 (built) | **Forge variants and items**: the two kinds, `Doc::Forge`, field edits with undo, the variants that place an item | M | FL13 | `app/forge_variants.rs` (new), `app/assets/forge.rs` (new), `ui/forge_variant.rs` (new), `api/forge_variants.rs` (new), `app/links.rs`, `app/shell.rs` | an invented variant lists, opens, takes a field edit that undoes, and saves a file `forge_doc` reads back with the new value; a package's added weapon and the block-out set list as custom; a placed tag's **Where used** names the variant |
 | FL15 (built) | **Open as fields**: a tag's tab in the field panel | S | nothing | `app.rs` (`OpenFields`, `as_fields`), `app/assets.rs`, `ui/browser.rs`, `ui/doc_header.rs`, `api/shell.rs` | `shell.open {asset, fields: true}` on an invented sound leaves its tab on the field panel with `fields: true` in `shell.tabs`; a plain open brings the sound editor back |
@@ -432,10 +432,10 @@ nothing unbuilt and run together.
 - Export includes the manifest, lock and named sources and refuses an
   existing destination: **Test**
   `package_export_writes_only_the_manifest_lock_and_named_sources`.
-- An item row's double-click opens the editor of what the item builds —
+- An item row's double-click opens the editor of what the item builds -
   the script editor on the `rules` item, the variant's settings on the
   `variant`, the sound editor on the `snd!` the `sound` item builds, the
-  edited tag on the `edits` item — each a tab of its `item:` id, and a
+  edited tag on the `edits` item - each a tab of its `item:` id, and a
   variant opened another way answers no item: **Test**
   `an_items_double_click_opens_the_editor_of_what_it_builds`,
   `a_variant_opened_another_way_answers_no_item`.

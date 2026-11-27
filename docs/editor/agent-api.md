@@ -211,7 +211,7 @@ group. `maps` remains the array of Halo 2 file stems in source order.
 ## Go to anything
 
 `ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
-The asset rows are what `asset.list` answers for the query — every tag
+The asset rows are what `asset.list` answers for the query - every tag
 of the tags tree, the set's packages and the items of each package that
 is on (`app::commands::palette_assets`), with no map open. The commands
 are the menus' own, one `Open editor: <name>` per editor of View >
@@ -690,9 +690,9 @@ Notes on some:
   group has none; `path` is the element shown (by field
   names, empty for the root), `breadcrumbs` its crumbs as drawn
   (`weap: objects\test\blaster`, then `Parts 1 scope` per list step),
-  `rows` the element's `tag.fields` rows the panel shows — with a
+  `rows` the element's `tag.fields` rows the panel shows - with a
   search or **Changed only** on, the hit list's rows, each a
-  `tag.fields` row of the field it found — `unnamed_hidden` the
+  `tag.fields` row of the field it found - `unnamed_hidden` the
   unnamed rows in a folded group (`unnamed: true` adds them to `rows`;
   0 with a filter on), `field` the focused path, `search` the panel's
   search text (empty when none) and `changed` its **Changed only**, and
@@ -1725,7 +1725,7 @@ everything the workspace holds (the tree, each layer under
 showing. `workspace.extract {disc}` runs the plan: `disc` is an image, a
 `.map` file or a folder of maps (the recorded disc, `H2_DISC` or
 `disc/halo2.iso` when not given), `maps` limits it to those, `verify`
-reads every stored file back, and `root` sets the tree's root — refused
+reads every stored file back, and `root` sets the tree's root - refused
 inside a Git checkout, for the tree is game data and never sits in a
 repository. It answers at once with the maps it will read; the progress
 is in `workspace.status` and the window's status line, and work
@@ -1733,13 +1733,13 @@ continues while the tree fills. An unchanged disc is a no-op, and a
 later start of the editor runs the plan against the recorded disc in the
 background. `workspace.prune {dry_run}` removes raw resources no tag
 file or manifest names, generated layers no project asks for and build
-caches unused for a week — with `dry_run`, what would go; the outputs of
+caches unused for a week - with `dry_run`, what would go; the outputs of
 deleted projects are the projects' and are not pruned. The tree itself
 is never pruned in part: it is deleted whole and extracted again.
 `workspace.import` (planned) stores a map as an import layer (W9).
 
-The window's first start — no tree, no source open other than a disc
-image — is one step: choose the disc (`H2_DISC` and `disc/halo2.iso`
+The window's first start - no tree, no source open other than a disc
+image - is one step: choose the disc (`H2_DISC` and `disc/halo2.iso`
 offered), see the size and the time, extract every map with the status
 line's progress bar. It makes the same calls.
 
@@ -3188,7 +3188,7 @@ and edits live in memory.
 - `anim.list {tag}`: the graph's animations, each
   `{index, name, type (base|overlay|replacement|unknown), frames,
   codecs: [static, animated] (the engine's codec names, null where a
-  stream is absent), aim_grid, error}` — `aim_grid` marks codec 8, whose
+  stream is absent), aim_grid, error}` - `aim_grid` marks codec 8, whose
   "frames" are the cells of an aim grid, not points in time; `error`
   names why a damaged clip does not build (inline data is refused by
   name). With them: `nodes`, and `users`, the map's objects whose `hlmt`
@@ -3205,7 +3205,7 @@ and edits live in memory.
   when none does, the answer still gives the animation's own channels
   with a note saying so. The reply: `nodes`, each
   `{index, name, parent, rotation [x,y,z,w], translation, scale, has
-  {rotation, translation, scale}, world}` — the local transform that
+  {rotation, translation, scale}, world}` - the local transform that
   composes (the animation's channel where it has one, the render model
   node's default where it does not, which `has` says), and the posed
   world matrix, column-major `T·R·S` (null without a model). The
@@ -3367,7 +3367,7 @@ an arm box, their graph and the `bipd` that uses them, built with the
 Halo 1 converter's writers in `api/anim/tests.rs`). That suite is the
 slice's accepted test: posed at the last frame of the base clip, the
 arm's transforms are the expected quarter turn and the body's are the
-rest pose — the pose differs from the rest where the clip moves it and
+rest pose - the pose differs from the rest where the clip moves it and
 nowhere else. It also checks the list (names, codecs, the user), the
 overlay at weights 0 and 1 (0 changes nothing; 1 composes the base's
 quarter about z with the overlay's about x), a frame past the end

@@ -631,7 +631,7 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
 - the mouth curves, read (slice A2, built): the extra-info index is named
   in `defs/snd_.txt`, the block, its descriptors and its locators in
   `defs/ugh_.txt`, and `Gestalt::mouth_curve` reads a permutation's curve
-  out of the resource by its two locators — one aperture byte per 30 Hz
+  out of the resource by its two locators - one aperture byte per 30 Hz
   tick, `None` for an unvoiced permutation (no extra info, a negative
   descriptor index, or a zero-length entry). The Sound window draws the
   selected permutation's curve as a filled track under the waveform on

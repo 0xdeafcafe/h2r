@@ -10,8 +10,8 @@ built, tested or run. The window was read from
 `crates/apps/studio/src/ui.rs` (`Studio::frame`, `menu_bar`), the modules
 of `src/ui/` and `src/app/shell.rs`, `app/assets.rs`, `app/commands.rs`
 and `app/problems.rs`, against [editor-guide.md](../editor-guide.md) and
-[studio-redesign.md](../studio-redesign.md). To repeat it: walk each
-journey below in the window and compare each step with the file named.
+[studio-redesign.md](../studio-redesign.md). To repeat it: take each
+walk-through below in the window and compare each step with the file named.
 
 Each step is marked with what goes wrong there:
 
