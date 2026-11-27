@@ -24,7 +24,7 @@ references. Each function reference instruction was decoded with
 `./target/release/h2 disasm disc/default.xbe <from-address> 1`.
 The function table gives **C/J/R**: direct thunk `call` sites / thunk tail
 `jmp` sites / all slot references, including pointer loads. These are static
-counts across the analyzed image, including linked SDK code, not execution
+counts across the analysed image, including linked SDK code, not execution
 frequencies or proof of reachability. Calls through a previously loaded
 register and references missed by Ghidra are not counted as C/J. Data rows
 show references only. Totals: 1,005 calls, 25 tail jumps and 1,152 references
@@ -43,7 +43,7 @@ are **guest 32-bit** values; `BOOLEAN` and `KIRQL` are unsigned 8-bit,
 sizes for guest structures. A `P...` type is a guest pointer, not a host pointer.
 Xbox NT calls have fewer arguments than some Windows equivalents.
 
-Difficulty estimates cover correct behavior in this runtime, not a success
+Difficulty estimates cover correct behaviour in this runtime, not a success
 stub. **† marks a public-source disagreement**, detailed below. Research
 checked 2026-11-14; hardware details still need title-specific validation.
 
@@ -80,9 +80,9 @@ checked 2026-11-14; hardware details still need title-specific validation.
 | 98 | [KeConnectInterrupt][kernel] | `BOOLEAN NTAPI KeConnectInterrupt(PKINTERRUPT Interrupt);` | hardware/HAL | 5/0/5 | Register a guest ISR with the virtual interrupt source and return connection status. | hard |
 | 99 | [KeDelayExecutionThread][kernel] | `NTSTATUS NTAPI KeDelayExecutionThread(KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Interval);` | time | 3/0/3 | Suspend only the calling guest thread until its deadline or alert/APC. | hard |
 | 100 | [KeDisconnectInterrupt][kernel] † | `BOOLEAN NTAPI KeDisconnectInterrupt(PKINTERRUPT Interrupt);` | hardware/HAL | 4/0/4 | Disconnect a guest ISR safely against in-flight delivery; return type disputed (†). | hard |
-| 107 | [KeInitializeDpc][kernel] | `VOID NTAPI KeInitializeDpc(KDPC *Dpc, PKDEFERRED_ROUTINE DeferredRoutine, PVOID DeferredContext);` | threads/sync | 12/0/13 | Initialize guest DPC callback, context and queue state. | moderate |
-| 109 | [KeInitializeInterrupt][kernel] | `VOID NTAPI KeInitializeInterrupt(PKINTERRUPT Interrupt, PKSERVICE_ROUTINE ServiceRoutine, PVOID ServiceContext, ULONG Vector, KIRQL Irql, KINTERRUPT_MODE InterruptMode, BOOLEAN ShareVector);` | hardware/HAL | 5/0/5 | Initialize the guest interrupt object, callback, vector, IRQL and sharing mode. | hard |
-| 113 | [KeInitializeTimerEx][kernel] | `VOID NTAPI KeInitializeTimerEx(PKTIMER Timer, TIMER_TYPE Type);` | time | 9/0/9 | Initialize notification/synchronization timer state in guest memory. | moderate |
+| 107 | [KeInitializeDpc][kernel] | `VOID NTAPI KeInitializeDpc(KDPC *Dpc, PKDEFERRED_ROUTINE DeferredRoutine, PVOID DeferredContext);` | threads/sync | 12/0/13 | Initialise guest DPC callback, context and queue state. | moderate |
+| 109 | [KeInitializeInterrupt][kernel] | `VOID NTAPI KeInitializeInterrupt(PKINTERRUPT Interrupt, PKSERVICE_ROUTINE ServiceRoutine, PVOID ServiceContext, ULONG Vector, KIRQL Irql, KINTERRUPT_MODE InterruptMode, BOOLEAN ShareVector);` | hardware/HAL | 5/0/5 | Initialise the guest interrupt object, callback, vector, IRQL and sharing mode. | hard |
+| 113 | [KeInitializeTimerEx][kernel] | `VOID NTAPI KeInitializeTimerEx(PKTIMER Timer, TIMER_TYPE Type);` | time | 9/0/9 | Initialise notification/synchronisation timer state in guest memory. | moderate |
 | 119 | [KeInsertQueueDpc][kernel] | `BOOLEAN NTAPI KeInsertQueueDpc(PRKDPC Dpc, PVOID SystemArgument1, PVOID SystemArgument2);` | threads/sync | 7/0/7 | Queue a DPC once with its two guest arguments and dispatch at emulated DISPATCH_LEVEL. | hard |
 | 126 | [KeQueryPerformanceCounter][kernel] | `ULONGLONG NTAPI KeQueryPerformanceCounter(void);` | time | 1/0/1 | Return a monotonic 64-bit guest performance counter in EDX:EAX. | moderate |
 | 127 | [KeQueryPerformanceFrequency][kernel] | `ULONGLONG NTAPI KeQueryPerformanceFrequency(void);` | time | 1/0/1 | Return the matching counter frequency, independent of the host CPU frequency. | trivial |
@@ -92,11 +92,11 @@ checked 2026-11-14; hardware details still need title-specific validation.
 | 139 | [KeRestoreFloatingPointState][kernel] | `NTSTATUS NTAPI KeRestoreFloatingPointState(PKFLOATING_SAVE FloatSave);` | debug/misc | 7/0/7 | Restore the saved guest x87/SSE state and control words. | moderate |
 | 142 | [KeSaveFloatingPointState][kernel] | `NTSTATUS NTAPI KeSaveFloatingPointState(PKFLOATING_SAVE FloatSave);` | debug/misc | 7/0/7 | Save guest x87/SSE state and establish the kernel floating-point environment. | moderate |
 | 143 | [KeSetBasePriorityThread][kernel] | `LONG NTAPI KeSetBasePriorityThread(PKTHREAD Thread, LONG Increment);` | threads/sync | 1/0/1 | Adjust a guest thread base priority and return the previous increment. | moderate |
-| 145 | [KeSetEvent][kernel] | `LONG NTAPI KeSetEvent(PRKEVENT Event, KPRIORITY Increment, BOOLEAN Wait);` | threads/sync | 27/0/29 | Signal the dispatcher event, return its previous state, and honor wake/reset/Wait semantics. | hard |
+| 145 | [KeSetEvent][kernel] | `LONG NTAPI KeSetEvent(PRKEVENT Event, KPRIORITY Increment, BOOLEAN Wait);` | threads/sync | 27/0/29 | Signal the dispatcher event, return its previous state, and honour wake/reset/Wait semantics. | hard |
 | 149 | [KeSetTimer][kernel] | `BOOLEAN NTAPI KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc);` | time | 20/0/20 | Arm a one-shot guest timer with optional DPC; return its previous queued state. | hard |
 | 150 | [KeSetTimerEx][kernel] | `BOOLEAN NTAPI KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, LONG Period, PKDPC Dpc);` | time | 1/0/1 | Arm/rearm a guest timer with a millisecond period and optional DPC. | hard |
 | 151 | [KeStallExecutionProcessor][kernel] | `VOID NTAPI KeStallExecutionProcessor(ULONG MicroSeconds);` | time | 9/0/12 | Advance or wait for the requested microsecond interval without losing device timing. | moderate |
-| 153 | [KeSynchronizeExecution][kernel] | `BOOLEAN NTAPI KeSynchronizeExecution(PKINTERRUPT Interrupt, PKSYNCHRONIZE_ROUTINE SynchronizeRoutine, PVOID SynchronizeContext);` | hardware/HAL | 1/0/2 | Run a guest callback while excluding its ISR at the interrupt synchronization level. | hard |
+| 153 | [KeSynchronizeExecution][kernel] | `BOOLEAN NTAPI KeSynchronizeExecution(PKINTERRUPT Interrupt, PKSYNCHRONIZE_ROUTINE SynchronizeRoutine, PVOID SynchronizeContext);` | hardware/HAL | 1/0/2 | Run a guest callback while excluding its ISR at the interrupt synchronisation level. | hard |
 | 158 | [KeWaitForMultipleObjects][kernel] | `NTSTATUS NTAPI KeWaitForMultipleObjects(ULONG Count, PVOID Object[], WAIT_TYPE WaitType, KWAIT_REASON WaitReason, KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Timeout, PKWAIT_BLOCK WaitBlockArray);` | threads/sync | 1/0/1 | Wait on guest objects with WaitAny/WaitAll, timeout, alert/APC and consumption rules. | hard |
 | 159 | [KeWaitForSingleObject][kernel] | `NTSTATUS NTAPI KeWaitForSingleObject(PVOID Object, KWAIT_REASON WaitReason, KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Timeout);` | threads/sync | 9/0/11 | Wait on a guest dispatcher object with timeout and alert/APC handling. | hard |
 | 160 | [KfRaiseIrql][xbox] | `KIRQL FASTCALL KfRaiseIrql(KIRQL NewIrql);` | threads/sync | 2/0/2 | Raise the emulated IRQL, return its previous level, and defer masked work. | hard |
@@ -153,36 +153,36 @@ checked 2026-11-14; hardware details still need title-specific validation.
 | 247 | [ObReferenceObjectByName][ob] | `NTSTATUS NTAPI ObReferenceObjectByName(POBJECT_STRING ObjectName, ULONG Attributes, POBJECT_TYPE ObjectType, PVOID ParseContext, PVOID *Object);` | threads/sync | 1/0/1 | Resolve a named guest object, applying type checks and parse callbacks. | hard |
 | 250 | [ObfDereferenceObject][ob] | `VOID FASTCALL ObfDereferenceObject(PVOID Object);` | threads/sync | 14/1/15 | Release a guest object reference and destroy it only after all references expire. | moderate |
 | 252 | [PhyGetLinkState][xbox] † | `DWORD NTAPI PhyGetLinkState(BOOLEAN update);` | hardware/HAL | 3/0/3 | Report virtual Ethernet link/speed/duplex state; argument width disputed (†). | moderate |
-| 253 | [PhyInitialize][xbox] † | `NTSTATUS NTAPI PhyInitialize(BOOLEAN forceReset, PVOID param);` | hardware/HAL | 2/0/2 | Initialize the virtual PHY and honor reset intent; argument width disputed (†). | moderate |
+| 253 | [PhyInitialize][xbox] † | `NTSTATUS NTAPI PhyInitialize(BOOLEAN forceReset, PVOID param);` | hardware/HAL | 2/0/2 | Initialise the virtual PHY and honour reset intent; argument width disputed (†). | moderate |
 | 255 | [PsCreateSystemThreadEx][ps] | `NTSTATUS NTAPI PsCreateSystemThreadEx(PHANDLE ThreadHandle, SIZE_T ThreadExtensionSize, SIZE_T KernelStackSize, SIZE_T TlsDataSize, PHANDLE ThreadId, PKSTART_ROUTINE StartRoutine, PVOID StartContext, BOOLEAN CreateSuspended, BOOLEAN DebuggerThread, PKSYSTEM_ROUTINE SystemRoutine);` | threads/sync | 1/0/1 | Create a schedulable guest thread with stack, TLS, startup callbacks and suspended state. | hard |
 | 258 | [PsTerminateSystemThread][ps] | `VOID NTAPI DECLSPEC_NORETURN PsTerminateSystemThread(NTSTATUS ExitStatus);` | threads/sync | 1/0/1 | Terminate only the current guest thread, signal its object and release resources; never return. | moderate |
 | 260 | [RtlAnsiStringToUnicodeString][rtl] | `NTSTATUS NTAPI RtlAnsiStringToUnicodeString(PUNICODE_STRING DestinationString, PSTRING SourceString, BOOLEAN AllocateDestinationString);` | debug/misc | 1/0/1 | Convert counted ANSI to guest UTF-16, checking capacity and optional pool allocation. | moderate |
 | 269 | [RtlCompareMemoryUlong][rtl] | `SIZE_T NTAPI RtlCompareMemoryUlong(PVOID Source, SIZE_T Length, ULONG Pattern);` | memory | 7/0/7 | Count the initial bytes matching the repeated 32-bit pattern. | trivial |
 | 277 | [RtlEnterCriticalSection][rtl] | `VOID NTAPI RtlEnterCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);` | threads/sync | 17/0/17 | Enter a recursive guest critical section with ownership, contention and wakeup handling. | hard |
 | 279 | [RtlEqualString][rtl] | `BOOLEAN NTAPI RtlEqualString(CONST PSTRING String1, CONST PSTRING String2, BOOLEAN CaseInSensitive);` | debug/misc | 1/0/1 | Compare counted byte strings with the Xbox case-insensitive option. | trivial |
-| 289 | [RtlInitAnsiString][rtl] | `VOID NTAPI RtlInitAnsiString(PANSI_STRING DestinationString, PCSZ SourceString);` | debug/misc | 19/0/25 | Initialize the counted ANSI descriptor over the supplied guest NUL-terminated string. | trivial |
-| 291 | [RtlInitializeCriticalSection][rtl] | `VOID NTAPI RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);` | threads/sync | 3/0/3 | Initialize the guest critical-section fields and dispatcher state. | moderate |
+| 289 | [RtlInitAnsiString][rtl] | `VOID NTAPI RtlInitAnsiString(PANSI_STRING DestinationString, PCSZ SourceString);` | debug/misc | 19/0/25 | Initialise the counted ANSI descriptor over the supplied guest NUL-terminated string. | trivial |
+| 291 | [RtlInitializeCriticalSection][rtl] | `VOID NTAPI RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);` | threads/sync | 3/0/3 | Initialise the guest critical-section fields and dispatcher state. | moderate |
 | 294 | [RtlLeaveCriticalSection][rtl] | `VOID NTAPI RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);` | threads/sync | 150/0/150 | Release recursive ownership and wake the correct critical-section waiter. | hard |
 | 301 | [RtlNtStatusToDosError][rtl] | `ULONG NTAPI RtlNtStatusToDosError(NTSTATUS Status);` | debug/misc | 23/0/27 | Map NTSTATUS values to the corresponding DOS error numbers. | moderate |
-| 302 | [RtlRaiseException][rtl] | `VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);` | debug/misc | 3/0/3 | Dispatch the guest exception through x86 SEH and implement continuation/unhandled behavior. | hard |
+| 302 | [RtlRaiseException][rtl] | `VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);` | debug/misc | 3/0/3 | Dispatch the guest exception through x86 SEH and implement continuation/unhandled behaviour. | hard |
 | 304 | [RtlTimeFieldsToTime][rtl] | `BOOLEAN NTAPI RtlTimeFieldsToTime(PTIME_FIELDS TimeFields, PLARGE_INTEGER Time);` | time | 2/0/3 | Validate calendar fields and convert to NT 100 ns time. | moderate |
 | 305 | [RtlTimeToTimeFields][rtl] | `VOID NTAPI RtlTimeToTimeFields(PLARGE_INTEGER Time, PTIME_FIELDS TimeFields);` | time | 5/0/5 | Convert NT 100 ns time to calendar fields with Xbox epoch and rounding. | moderate |
 | 308 | [RtlUnicodeStringToAnsiString][rtl] | `NTSTATUS NTAPI RtlUnicodeStringToAnsiString(PSTRING DestinationString, PUNICODE_STRING SourceString, BOOLEAN AllocateDestinationString);` | debug/misc | 1/0/1 | Convert counted guest UTF-16 to ANSI with capacity and optional allocation handling. | moderate |
 | 312 | [RtlUnwind][rtl] | `VOID NTAPI RtlUnwind(PVOID TargetFrame, PVOID TargetIp, PEXCEPTION_RECORD ExceptionRecord, PVOID ReturnValue);` | debug/misc | 0/1/1 | Walk guest x86 SEH frames, run unwind handlers and transfer to the requested target. | hard |
-| 327 | [XeLoadSection][xbox] | `NTSTATUS NTAPI XeLoadSection(PXBE_SECTION_HEADER Section);` | memory | 1/0/1 | Load/reference a supplied-XBE section, honoring shared pages and section reference counts. | hard |
+| 327 | [XeLoadSection][xbox] | `NTSTATUS NTAPI XeLoadSection(PXBE_SECTION_HEADER Section);` | memory | 1/0/1 | Load/reference a supplied-XBE section, honouring shared pages and section reference counts. | hard |
 | 328 | [XeUnloadSection][xbox] | `NTSTATUS NTAPI XeUnloadSection(PXBE_SECTION_HEADER Section);` | memory | 1/0/1 | Decrement XBE section references and release only pages no longer shared or needed. | hard |
-| 335 | [XcSHAInit][xbox] | `VOID NTAPI XcSHAInit(PUCHAR pbSHAContext);` | crypto | 0/1/1 | Initialize the guest-compatible SHA-1 context layout. | moderate |
+| 335 | [XcSHAInit][xbox] | `VOID NTAPI XcSHAInit(PUCHAR pbSHAContext);` | crypto | 0/1/1 | Initialise the guest-compatible SHA-1 context layout. | moderate |
 | 336 | [XcSHAUpdate][xbox] | `VOID NTAPI XcSHAUpdate(PUCHAR pbSHAContext, PUCHAR pbInput, ULONG dwInputLength);` | crypto | 0/1/1 | Update the guest SHA-1 context with exactly the requested bytes. | moderate |
 | 337 | [XcSHAFinal][xbox] | `VOID NTAPI XcSHAFinal(PUCHAR pbSHAContext, PUCHAR pbDigest);` | crypto | 0/1/1 | Finalize SHA-1 and write the 20-byte digest with compatible context mutation. | moderate |
-| 338 | [XcRC4Key][xbox] | `VOID NTAPI XcRC4Key(PUCHAR pbKeyStruct, ULONG dwKeyLength, PUCHAR pbKey);` | crypto | 0/1/1 | Initialize the guest RC4 key schedule and stream-state layout. | moderate |
+| 338 | [XcRC4Key][xbox] | `VOID NTAPI XcRC4Key(PUCHAR pbKeyStruct, ULONG dwKeyLength, PUCHAR pbKey);` | crypto | 0/1/1 | Initialise the guest RC4 key schedule and stream-state layout. | moderate |
 | 339 | [XcRC4Crypt][xbox] | `VOID NTAPI XcRC4Crypt(PUCHAR pbKeyStruct, ULONG dwInputLength, PUCHAR pbInput);` | crypto | 0/1/1 | Apply RC4 in place and update the guest stream state. | moderate |
-| 340 | [XcHMAC][xbox] | `VOID NTAPI XcHMAC(PUCHAR pbKey, ULONG dwKeyLength, PUCHAR pbInput, ULONG dwInputLength, PUCHAR pbInput2, ULONG dwInputLength2, PUCHAR pbDigest);` | crypto | 0/1/1 | Compute Xbox-compatible HMAC-SHA1 over both input spans, preserving key-length behavior. | moderate |
+| 340 | [XcHMAC][xbox] | `VOID NTAPI XcHMAC(PUCHAR pbKey, ULONG dwKeyLength, PUCHAR pbInput, ULONG dwInputLength, PUCHAR pbInput2, ULONG dwInputLength2, PUCHAR pbDigest);` | crypto | 0/1/1 | Compute Xbox-compatible HMAC-SHA1 over both input spans, preserving key-length behaviour. | moderate |
 | 343 | [XcPKGetKeyLen][xbox] | `ULONG NTAPI XcPKGetKeyLen(PUCHAR pbPubKey);` | crypto | 0/1/1 | Parse the Xbox RSA public-key blob and return its key length. | moderate |
 | 344 | [XcVerifyPKCS1Signature][xbox] | `BOOLEAN NTAPI XcVerifyPKCS1Signature(PUCHAR pbSig, PUCHAR pbPubKey, PUCHAR pbDigest);` | crypto | 0/1/1 | Verify the Xbox RSA/PKCS#1 SHA-1 signature format and its byte order. | hard |
 | 345 | [XcModExp][xbox] | `ULONG NTAPI XcModExp(PULONG pA, PULONG pB, PULONG pC, PULONG pD, ULONG dwN);` | crypto | 0/1/1 | Compute modular exponentiation using the Xbox limb order, buffer sizes and return convention. | hard |
 | 346 | [XcDESKeyParity][xbox] | `VOID NTAPI XcDESKeyParity(PUCHAR pbKey, ULONG dwKeyLength);` | crypto | 0/1/1 | Set each DES key byte to odd parity. | trivial |
 | 347 | [XcKeyTable][xbox] | `VOID NTAPI XcKeyTable(ULONG dwCipher, PUCHAR pbKeyTable, PUCHAR pbKey);` | crypto | 0/1/1 | Build the guest DES/3DES key-table layout for the selected cipher. | moderate |
-| 349 | [XcBlockCryptCBC][xbox] | `VOID NTAPI XcBlockCryptCBC(ULONG dwCipher, ULONG dwInputLength, PUCHAR pbOutput, PUCHAR pbInput, PUCHAR pbKeyTable, ULONG dwOp, PUCHAR pbFeedback);` | crypto | 0/1/1 | Encrypt/decrypt DES/3DES CBC, honoring operation, in-place buffers and feedback mutation. | moderate |
+| 349 | [XcBlockCryptCBC][xbox] | `VOID NTAPI XcBlockCryptCBC(ULONG dwCipher, ULONG dwInputLength, PUCHAR pbOutput, PUCHAR pbInput, PUCHAR pbKeyTable, ULONG dwOp, PUCHAR pbFeedback);` | crypto | 0/1/1 | Encrypt/decrypt DES/3DES CBC, honouring operation, in-place buffers and feedback mutation. | moderate |
 | 358 | [HalIsResetOrShutdownPending][hal] | `BOOLEAN NTAPI HalIsResetOrShutdownPending(void);` | hardware/HAL | 1/0/1 | Return whether the guest reset/shutdown state machine has a pending request. | trivial |
 | 359 | [IoMarkIrpMustComplete][io] † | `VOID NTAPI IoMarkIrpMustComplete(PIRP Irp);` | file I/O | 1/0/1 | Mark IRP completion requirements consistently with pending I/O; return type disputed (†). | hard |
 | 360 | [HalInitiateShutdown][hal] † | `VOID NTAPI HalInitiateShutdown(void);` | hardware/HAL | 1/0/1 | Request guest shutdown through the virtual SMC/runtime; return type disputed (†). | moderate |
@@ -259,7 +259,7 @@ channel layouts rather than allocating host Rust equivalents.
 - **Guest exceptions and crypto formats:** exception dispatch/unwind (302,
   312) must walk guest x86 SEH, not the host Rust stack. RSA verification and
   modular exponentiation (344, 345) need Xbox key/blob/limb byte order and
-  failure behavior. SHA/RC4/DES contexts remain guest-readable across calls.
+  failure behaviour. SHA/RC4/DES contexts remain guest-readable across calls.
   See [RTL HLE][hle-rtl] and [crypto HLE][hle-xc].
 
 These bullets cover every row rated hard, and name the contracts
@@ -272,7 +272,7 @@ establish which subset a run executes.
 The noreturn set is **49, 95, 96, 258** for Xbox guest execution.
 The [nxdk declarations][nxdk] explicitly mark all four noreturn:
 
-| Ordinal | Export | Imported here? | Runtime behavior |
+| Ordinal | Export | Imported here? | Runtime behaviour |
 | ---: | --- | --- | --- |
 | 49 | HalReturnToFirmware | yes | Halt/reboot/relaunch transfers control out of the current guest execution. |
 | 95 | KeBugCheck | yes | Fatal stop; no guest continuation. |
@@ -291,14 +291,14 @@ transfers control in some paths but is not an unconditional noreturn export.
 ## Not verified
 
 All 152 ordinal/name pairs and their function/data split were verified
-against the XBE and public ordinal table. Retail behavior was not observed
+against the XBE and public ordinal table. Retail behaviour was not observed
 on hardware. The following are open, and are not grounds for inventing a host ABI:
 
 | Export(s) | Disagreement or missing evidence | Working entry above |
 | --- | --- | --- |
 | 41, 42 HalDiskModelNumber/HalDiskSerialNumber | [Cxbx HAL declarations][hal] and implementation use `PANSI_STRING` variables; [nxdk][nxdk] declares inline `STRING` objects. Pointer depth changes guest dereferencing. | nxdk inline descriptor; verify guest consumers before implementing. |
 | 100 KeDisconnectInterrupt | [Cxbx][kernel] returns `void`; [nxdk][nxdk] returns `BOOLEAN`. | nxdk `BOOLEAN`; verify whether guest consumers test AL. |
-| 238 NtYieldExecution | [Cxbx][nt] declares/implements `void`; [nxdk][nxdk] returns `NTSTATUS`. | nxdk `NTSTATUS`; status behavior needs confirmation. |
+| 238 NtYieldExecution | [Cxbx][nt] declares/implements `void`; [nxdk][nxdk] returns `NTSTATUS`. | nxdk `NTSTATUS`; status behaviour needs confirmation. |
 | 252 PhyGetLinkState; 253 PhyInitialize | [Cxbx][xbox] uses a 32-bit first argument; [nxdk][nxdk] uses `BOOLEAN`. Both still occupy a guest stack argument slot. | nxdk `BOOLEAN`; confirm low-byte versus full-word interpretation. |
 | 359 IoMarkIrpMustComplete | [Cxbx][io] returns `CCHAR`; [nxdk][nxdk] returns `VOID`. | nxdk `VOID`; verify return-value use and completion bookkeeping. |
 | 360 HalInitiateShutdown | [Cxbx HAL HLE][hle-hal] returns `NTSTATUS`; [nxdk][nxdk] returns `VOID`. | nxdk `VOID`; this is returning, not noreturn. |

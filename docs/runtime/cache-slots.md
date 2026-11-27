@@ -5,7 +5,7 @@ Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map
 Switches: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default), `map-copy.lobby` ([Copy speed on the loading screen](#copy-speed-on-the-loading-screen), on for light hosts), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
-It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
+It reads and analyses the supplied XBE at runtime, lifts the cache path and its
 callees, compiles a bounded C module in scratch space, and runs it against the
 real kernel/runtime/VFS. No retail bytes or generated code belong in Git.
 
@@ -34,7 +34,7 @@ call the actual kernel. The job adapter completes each submitted job inline,
 so concurrent cancellation and thread scheduling are outside this fixture.
 The title arena allocator/free boundaries delegate to the kernel's contiguous
 allocator/free; a fixed FILETIME keeps eviction ordering reproducible.
-The fixture initializes the XBE TLS template and publishes its signed index
+The fixture initialises the XBE TLS template and publishes its signed index
 for generated XAPI last-error storage, because it enters after startup.
 
 This gate covers the storage boundary, not a whole campaign activation. It does

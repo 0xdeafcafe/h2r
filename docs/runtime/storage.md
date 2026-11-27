@@ -10,6 +10,13 @@ memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
 ANSI object strings, handles, information classes and IO_STATUS_BLOCKs at its
 boundary. Nothing here extracts, copies or embeds the user's game files.
 
+## Pages
+
+| Page | Holds |
+|---|---|
+| [Xbox storage: write metadata and write-behind](storage-writes.md) | How a guest write reaches the host: metadata, then write-behind. |
+| [Xbox storage: file objects and kernel integration](storage-nt.md) | File objects, NT behaviour and the kernel entry points. |
+
 ## Host directories
 
 Every per-user path h2recomp keeps on the host is under one of three
@@ -303,7 +310,7 @@ host entries that differ only by case report `FileCorrupt` rather than
 arbitrarily choosing one. Host symlinks, sockets/FIFOs/special files, files
 over the FATX size limit, and (on Unix) multiply linked files are hidden from
 listings; direct access to such objects fails. Names outside the supported
-FATX rules are also hidden. These neighbors do not poison ordinary directory
+FATX rules are also hidden. These neighbours do not poison ordinary directory
 queries or creation. Entry limits count eligible names/kinds without reading
 sidecar metadata.
 
@@ -367,7 +374,7 @@ OEM/codepage decoding and uppercasing of bytes above 0x7f is not yet modeled.
 Rejecting them is an explicit compatibility limit, not a claim that Xbox
 uses Unicode or that every high byte is illegal on hardware.
 
-The emulation additionally limits a volume-relative path to 250 bytes
+The emulation also limits a volume-relative path to 250 bytes
 (excluding device prefix) and a directory to 4,096 visible items. Public
 references disagree about full-path and per-directory limits across Xbox
 versions/tools. These are explicit VFS policies based on the
@@ -391,7 +398,7 @@ listed by the [FATXplorer author](https://fatxplorer.eaton-works.com/fatx-file-s
 `Timestamp(u64)` is NT time (100 ns since 1601 UTC). FATX's packed timestamp
 format uses a 2000 epoch and two-second precision, as shown in the
 [XboxDev FATX date/time definitions](https://github.com/XboxDev/fatx/blob/master/libfatx/fatx_internal.h).
-VFS rounds down to two seconds and clamps to 2000–2127, using UTC so behavior
+VFS rounds down to two seconds and clamps to 2000–2127, using UTC so behaviour
 is deterministic across host timezones. Creation/access/write times persist;
 change time is an additional emulated field. Reads update access time in
 memory and coalesce it per path; the record is persisted on explicit flush,
@@ -404,367 +411,15 @@ to rewrite host birthtime or mtime.
 
 ### Write metadata
 
-A write or truncation does not store the metadata record on the spot.
-Storing it durably cost two fsyncs per guest write: while Halo 2 fills
-its cache partition on the main menu, that was about a tenth of each
-frame (docs/perf/menu-budget.md). A synthetic bench put it at 16 ms per write
-against 0.09 ms (`cargo test -p vfs --release bench_write_metadata --
---ignored --nocapture`). The new write and change times and the archive
-bit are stored:
-
-- at `flush` (NtFlushBuffersFile), final cleanup (close), and backend
-  drop, as access times are;
-- by the backend's `vfs-metadata` thread, which checks every 250 ms for
-  entries older than `vfs::METADATA_STALE` (1 s);
-- by the write path, once the oldest pending entry is that old, but only
-  if the thread could not be spawned. While the game streams writes, a
-  store on the write path once a second (two syncs) was most of what
-  `touch` cost the game thread;
-- by `vfs::flush_pending_metadata()`, which reaches every live backend,
-  leaked ones included. `h2 run` calls it when the run ends normally.
-
-**Guarantee:** a crash, `process::exit`, an aborting panic, or a signal
-(SIGINT, SIGTERM, a kill; nothing flushes on a signal)
-loses at most about 1.25 s of write-time, change-time and archive-bit
-updates. File data is covered by "Write-behind" below: at most the
-bytes still queued (4 MiB) when the process dies without
-`flush_pending_metadata`, which lands them first. A host power loss is
-different: only `flush` syncs data, as before. A record lost that way falls back to the
-previous record, as a torn one does. The bound relies on the flusher
-thread; if it cannot be spawned (logged), only the write path, flush,
-close and drop store pending metadata. Every record store holds the
-pending map's lock, so a thread's store never lands after a newer one.
-Removing a file holds that lock across the unlink and drops the pending
-entry only once the file is gone, so a failed remove keeps both the
-durable record and the write's pending metadata. Creating a name drops
-any pending entry for it and holds the lock from clearing an orphaned
-record until the new entry exists. Format holds the lock across the root
-swap and clears pending metadata once the volume is empty; a failed format
-moves nothing, so every pending entry still describes its file.
+A write or truncation does not store the metadata record on the spot. Detail: [Xbox storage: write metadata and write-behind](storage-writes.md).
 
 ### Write-behind
 
-All guest threads run on one host thread, so a host `write` stalls the
-whole game, not just the guest thread that issued it. While Halo 2 copies
-maps to its cache partition on the main menu (256 KiB NtReadFile and
-NtWriteFile pairs), a 250 Hz profile put 10.8% of that thread in file
-calls, most of it (355 of their samples) in the write syscall itself. `HostBackend` therefore queues the host data write
-on a per-backend `vfs-write-behind` thread and returns.
+All guest threads run on one host thread, so a host `write` stalls the whole game, not just the guest thread that issued it. Detail: [Xbox storage: write metadata and write-behind](storage-writes.md).
 
-What stays on the calling thread: path resolution,
-capacity and growth checks (DiskFull, FileTooLarge), allocation and usage
-accounting, the dirty set, write metadata (`touch`), and the returned
-byte count (the whole buffer: the queued write is a `pwrite` loop that
-writes all of it). Only the bytes travel, copied into a reused buffer
-(a fresh 256 KiB allocation is a fresh mapping, and faulting it in cost
-more than the copy), with an `Arc` of the kept-open handle; an evicted
-handle's last copy closes on the writer thread. One FIFO thread writes them, so writes land in issue
-order, per file and overall; overlapping writes resolve as they would
-synchronously.
+## File objects and NT behaviour
 
-What the guest sees while bytes are in flight:
-
-- `stat`, directory listings and the EOF/allocation every later call
-  checks use a pending end of file per host path: the furthest byte any
-  queued write to it reaches, combined with the host length (looked up
-  first, so a write landing in between is still counted). Usage is the
-  incrementally updated count, so volume queries agree too.
-- Anything that reads or changes a file's host bytes or identity first
-  waits for that file's queued writes: `read_at`, `set_len` (and
-  `overwrite_allocated`), `flush`, `cleanup` (which flushes a written
-  file), `remove`, `create` at the path, and `host_file` (an outside
-  reader sees the bytes). `format` and backend drop wait for all of them,
-  and so does `vfs::flush_pending_metadata`, so `h2 run`'s normal exit
-  lands queued data before it stores metadata.
-- `flush` keeps its meaning: queued data lands, then the file is synced.
-
-Host write errors: the guest's write already returned success. The first
-failure for a path is logged once and latched; the next operation on
-that file that waits for it (`read_at`, `set_len`, `flush`, `cleanup`,
-`remove`, `create`), or the next `write_at`, returns it, once, and does
-nothing else. Bookkeeping assumed the write landed, so usage and the
-directory indexes are rebuilt from the host at that point. A successful
-format drops latched errors with the files; a failed one keeps them. A drop logs nothing more: the failure was
-logged when it happened. Nothing below the backend sees the difference
-between a failure reported late and one reported at once, except that
-a failed write's bytes may be partly on the host.
-
-Memory is bounded: at most 4 MiB (`MAX_IN_FLIGHT`) is queued or being
-written; a write that would go over waits for the writer to catch up (one
-write larger than the bound is admitted once the queue is empty). A
-sustained write rate above the host's therefore throttles the caller
-back to synchronous speed, never further.
-
-A crash, `process::exit` without `flush_pending_metadata`, or a signal
-loses at most the queued bytes; a process that exits normally or drops
-its backends loses nothing. `HostBackend::with_write_behind(false)` gives
-synchronous writes, as does a failure to spawn the thread (logged). A
-differential test runs the same random sequence of creates, overlapping writes, reads, stats, truncations, flushes,
-cleanups, removals, listings and volume queries with write-behind on and
-off and compares every result and the final host bytes
-(`crates/runtime/vfs/src/host_write_behind_tests.rs`). `cargo test -p vfs
---release bench_write_behind -- --ignored --nocapture` measures the
-calling thread's time per 256 KiB write either way, with the caller busy
-for 0, 1 or 5 ms between writes. On a heavily loaded host (load average
-about 130) the median went from 300 to 600 µs synchronously to 33 to
-60 µs queued with room between writes; back to back, backpressure holds
-both to the host's rate (about 270 µs each).
-
-Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
-mounts. Each lowercase path component is hex encoded as a metadata-directory
-component; a `record` contains `HVF1`, the little-endian u32 attributes and
-four little-endian u64 times, 40 bytes total. A backend builds each guest
-path's record path once and keeps it (`RecordPaths` in
-`crates/runtime/vfs/src/host.rs`): every read asks for its file's record. Missing/truncated/invalid records
-fall back to host defaults; a later successful metadata write repairs them.
-Updates write and fsync a staging file, rename it over the record, and fsync
-the containing directory. New metadata directories are synced through their
-parents. Removal unlinks the file (or, after removing known litter, rmdirs
-the directory) **before** retiring metadata. ENOTEMPTY, permission errors,
-or litter cleanup failure therefore leave the entry's attributes/timestamps
-intact, durable record and pending write metadata alike. If a successful
-unlink or rmdir is followed by a metadata retirement error, the deletion
-succeeds and logs a warning; the orphan record is never read. Creation clears any orphaned metadata subtree
-before adding a new host entry, so later recreation cannot inherit stale
-attributes or child records. Post-removal parent-sync errors are also logged
-without undoing a successful namespace operation. Preserve both `disk/` and `metadata/` when
-backing up storage.
-Out-of-band removal/recreation of a host file can retain obsolete metadata.
-
-Host allocation is emulated in 16 KiB units, including one unit per directory
-below the volume root. Growth holes read as zero but count toward logical
-allocation even if the host stores them sparsely. Volume capacities are
-emulator defaults: Partition1 5 GiB, Partition2 500 MiB and each cache 750 MiB;
-`HostBackend::with_volume` customizes label, serial and capacity. Growth
-checks logical quota and FATX maximum size before writing; host ENOSPC is
-also mapped to DiskFull. Available space is cached from eligible host entries and
-does not promise the host has that much physical free space. The root,
-metadata, FAT structures, fragmentation and directory growth are not charged
-as a physical FATX allocator would charge them.
-
-## File objects and NT behavior
-
-The numeric access/share/disposition constants agree with
-[nxdk's public Xbox kernel header](https://github.com/XboxDev/nxdk/blob/master/lib/xboxkrnl/xboxkrnl.h).
-`OpenOptions::from_nt` expands generic rights and decodes supported creation
-flags. It validates share bits, mutually exclusive directory/type and sync
-options, SYNCHRONIZE for synchronous opens, and DELETE for delete-on-close.
-FILE_WRITE_THROUGH (`0x2`) and FILE_NO_INTERMEDIATE_BUFFERING (`0x8`) are
-accepted as hints without changing the public options struct. Kernel code
-must enforce guest alignment if required; VFS byte-slice operations remain
-buffered/synchronous, and these hints do not promise per-write host durability.
-Use `flush` for durable completion. Open-by-ID and reparse-point flags remain
-`NotSupported`. Accepted hints do not provide asynchronous I/O, host ACLs,
-caching guarantees or a guest event implementation.
-
-| Disposition | Missing leaf | Existing file | Success information |
-| --- | --- | --- | --- |
-| FILE_SUPERSEDE (0) | Create | Truncate and replace attributes | Created (2) / Superseded (0) |
-| FILE_OPEN (1) | ObjectNameNotFound | Open unchanged | Opened (1) |
-| FILE_CREATE (2) | Create | ObjectNameCollision | Created (2) |
-| FILE_OPEN_IF (3) | Create | Open unchanged | Created (2) / Opened (1) |
-| FILE_OVERWRITE (4) | ObjectNameNotFound | Truncate, add requested attributes | Overwritten (3) |
-| FILE_OVERWRITE_IF (5) | Create | Truncate, add requested attributes | Created (2) / Overwritten (3) |
-
-A missing parent always fails; VFS does not implicitly create trees. Create
-options select the directory/file type, not the DIRECTORY attribute input.
-Truncating a directory fails. Overwrite requires WRITE. Supersede of an
-existing file no longer requires the caller to explicitly request DELETE.
-The operation checks implied DELETE against existing share reservations,
-then grants only the requested handle rights. Supersede of a missing leaf
-creates it without implied deletion. This follows FastFat's distinction
-between operation access and granted access, not a claim that retail Xbox
-behavior has been measured: `FatOpenExistingFcb` records `AddedAccess`, adds
-DELETE for supersede, checks access/sharing, then clears `AddedAccess` before
-`IoSetShareAccess`; `FatOpenExistingFile` follows the same pattern.
-See [Microsoft FastFat create.c, pinned revision](https://github.com/microsoft/Windows-driver-samples/blob/96eb96dfb613e4c745db6bd1f53a92fe7e2290fc/filesys/fastfat/create.c#L3332)
-and [removal of implied access before share registration](https://github.com/microsoft/Windows-driver-samples/blob/96eb96dfb613e4c745db6bd1f53a92fe7e2290fc/filesys/fastfat/create.c#L3775).
-A WRITE-only supersede therefore succeeds when deletion is permitted by
-existing shares, but its resulting handle cannot set delete disposition.
-The previous explicit-DELETE rejection was too strict. Supersede is still
-replacement in place, without a detached old inode or ACL replacement.
-
-Each independent open acquires a share reservation for data-read/execute,
-data-write/append and delete access. Existing share flags must permit the new
-access, and the new share flags must permit every existing access. Checks
-happen **before truncation**. Metadata-only handles do not acquire data
-read/write reservations. All drive aliases use the resolved mount and
-lowercase volume path as identity. Successful opens return a `Handle` and
-`CreateInformation`; the latter is already the numeric IO_STATUS_BLOCK
-Information value, not an NTSTATUS.
-
-`duplicate` references the same file object: byte position, search expression,
-search cursor and share reservation are shared. A separate `open` creates a
-new position/search cursor. `close` frees the reservation when the last
-handle to its object closes. Handles are opaque Rust values; kernel handles
-must live in the kernel object table. An identifier is valid only in the VFS
-instance that created it. Handle values are opaque and never reused within
-that VFS instance, including after close. Do not serialize or reconstruct them.
-
-`read`/`write` return the actual transferred byte count. Operations are
-synchronous; Current and Absolute offsets update the shared position after
-success. APPEND-only rights force writes to EOF regardless of supplied
-offset. `Offset::EndOfFile` requests append for a writable handle; it is
-invalid for reads. Negative NT sentinel offsets must be translated by the
-kernel; ordinary offsets must fit signed LARGE_INTEGER. A nonempty read at
-or beyond EOF returns EndOfFile; a read crossing EOF returns the available
-prefix successfully. A zero-length read succeeds with zero bytes. EOF resize
-does not move the position. Position behavior follows the synchronous model
-in [Microsoft's read contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-zwreadfile).
-
-`set_delete_pending` requires DELETE and rejects read-only files, volume roots
-and nonempty directories. An explicit disposition request becomes pending
-immediately and can be cancelled before cleanup. FILE_DELETE_ON_CLOSE instead
-records an intent on its file object: other compatible opens are allowed
-until its last duplicated handle closes and cleanup runs. Cleanup makes the
-pending request sticky while other file objects remain; a different object
-cannot cancel that completed cleanup by setting disposition false. Pending
-paths reject new opens (including beneath pending directories); existing
-handles remain usable until all file objects for the path close. This file-object distinction follows [Microsoft's delete-on-close explanation](https://devblogs.microsoft.com/oldnewthing/20160108-00/?p=92821).
-The last close removes the host entry. Final-object cleanup uses
-`Backend::cleanup(path, write_access)`. Its default calls `flush` only for
-file objects opened with WRITE/APPEND; directory and read-only opens avoid
-unconditional sync. HostBackend additionally tracks dirty data and deferred
-atime: atime-only cleanup persists its record without syncing file data;
-write-capable or data-dirty cleanup syncs file data and persists the record
-any write left. Duplicate-handle closes
-do not trigger cleanup until the last reference closes. A cleanup-sync
-failure is logged to stderr with a `vfs:` prefix and does not turn an already
-closed handle into a failed close. Actual removal errors still propagate.
-Call `flush` before close to receive a durability failure synchronously.
-Session drop is best effort. There is no crash-time delete replay.
-
-Directory enumeration is a sorted, case-insensitive snapshot per file object,
-without `.`/`..` entries. The first expression is captured; later expressions
-are ignored, including on restart. Restart rebuilds and rewinds the snapshot.
-`*` and `?` work case-insensitively; `?` consumes exactly one byte and a dot
-is literal. Consequently `ab?` does not match `ab`, and `a*.*` does not match
-`abc`. This kernel-facing behavior follows [OXOS's original-Xbox matcher](https://github.com/kooscode/oxos/blob/main/kernel/src/filesystems/hddfs/volume.cpp#L327).
-Cxbx [forwards the mask to NtQueryDirectoryFile](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/kernel/exports/EmuKrnlNt.cpp#L1197),
-with a specific `*.*` to `*` rewrite that VFS retains, so `*.*` does include
-extensionless names. These implementation sources do not establish broader
-Win32 DOS wildcard translation on original hardware. In particular,
-[nboxkrnl's FATX driver table](https://github.com/ergo720/nboxkrnl/blob/master/nboxkrnl/io/hdd/fatx.cpp#L78)
-registers `IopUnimplementedDeviceRequest` for IRP_MJ_DIRECTORY_CONTROL; that
-source has a name validator, but no FATX enumeration/name matcher to cite.
-**Kernel integration compatibility note:** VFS's `a*.*` will not match `abc`.
-If retail Xbox applies DOS-style semantics that make this a match, the
-current VFS mask behavior will miss the file and needs a hardware-backed
-matcher correction; desktop forwarding or a reimplementation does not prove
-retail behavior. DOS_STAR, DOS_QM and DOS_DOT encodings remain unsupported; callers must not silently translate
-ordinary `?` into DOS_QM based on desktop FindFirstFile behavior. An absent
-or initially empty expression means `*`. Initial no-match returns
-NoSuchFile; exhaustion returns NoMoreFiles. See the expression/cursor model
-in [Microsoft's directory query contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile).
-
-Use `peek_directory` to inspect an entry without consuming it, pack the guest
-record, then `consume_directory` after it fits. A buffer-too-small retry must
-not consume or restart the cursor. `query_directory` combines those calls for
-callers needing one complete entry. VFS does not know the guest buffer size,
-information class or NextEntryOffset layout. Querying a file as a directory
-returns InvalidParameter; using a file as an intermediate path component
-returns ObjectPathNotFound (an explicit directory-type open on that same
-final file still returns NotADirectory).
-
-## Kernel integration
-
-The kernel depends on `vfs` and translates the NT file exports onto it; the
-boot runner configures it (docs/runtime/BOOT.md, `--data`).
-
-`Vfs::set_open_observer` is told about every file (not directory) opened,
-under the VFS lock, with `OpenedFile::host`: where its bytes sit on the host
-(`Backend::host_file`: an entry's region of the disc image, a hard-disk file,
-`None` for a rewritten one). `Vfs::host_file(name)` answers the same for any
-name. The controller-speaker sound index uses both to read the maps the game
-loads ([playstation-audio.md](../audio/playstation-audio.md)).
-`Vfs::set_change_observer` is told when a change is finished: `ChangeKind::Written`
-at the last close of a file object that created, overwrote, wrote or
-truncated a file (after its cleanup, so the bytes are on the host), and
-`ChangeKind::Removed` when a deletion is carried out. Cloud saves watch U:
-with it ([live-cloud-saves.md](../live/live-cloud-saves.md)). Basic setup:
-
-```rust
-use vfs::{Config, OpenOptions, Offset, Vfs};
-
-let config = Config::for_title(0x4D530064)?;
-let mut storage = Vfs::with_disc(config.clone(), "disc/halo2.iso")?;
-storage.create_standard_links(&config)?; // host tool only; on the boot path XAPI creates D:
-let opened = storage.open(r"D:\default.xbe", OpenOptions::default())?;
-let mut header = [0u8; 64];
-let transferred = storage.read(opened.handle, Offset::Current, &mut header)?;
-storage.close(opened.handle)?;
-```
-
-| Xbox export / operation | Rust API |
-| --- | --- |
-| NtCreateFile / NtOpenFile | `OpenOptions::from_nt`, `open` / `open_relative` |
-| NtReadFile / NtWriteFile | `read` / `write`, translating ByteOffset to `Offset` |
-| NtClose / NtDuplicateObject | `close` / `duplicate` |
-| NtQueryInformationFile | `query_information` returns basic/standard/position/access/name data |
-| NtQueryFullAttributesFile | `query_path` |
-| NtSetInformationFile EOF / position / basic / disposition | `set_end_of_file`, `set_position`, `set_basic_information`, `set_delete_pending` |
-| NtQueryDirectoryFile | `peek_directory` + `consume_directory`, or `query_directory` |
-| NtQueryVolumeInformationFile | `query_volume_information` |
-| NtFlushBuffersFile | `flush` |
-| IoCreateSymbolicLink / IoDeleteSymbolicLink | `namespace.create_symbolic_link` / `delete_symbolic_link` |
-
-The kernel validates guest buffers **before** operations with effects (file
-creation, I/O, cursor consumption), maintains guest object references, and
-marshals Xbox-width structures. Validate per-information-class rights at that
-boundary; `query_information` is a combined typed snapshot, not an unchecked
-implementation of every class. `set_basic_information` replaces a full
-`BasicInfo`; merge NT zero/-1 unchanged-time sentinels and unchanged attributes
-with current values before calling it. Pack Xbox names as byte strings, not
-Windows UTF-16 names. Async completion, IRPs, events/APCs, notifications, raw
-sector/device IOCTLs, file IDs, rename, EAs, oplocks,
-byte-range locks, volume formatting and ACLs are not implemented here.
-
-`Backend::cleanup(&mut self, path: &str, write_access: bool) -> Result<()>`
-handles deferred metadata independently of `release_allocation(path, owner)`.
-The initial-allocation methods receive that same owner identity; backend
-wrappers implementing reservations must forward it and its release to their
-inner backend. Default methods reject unsupported nonzero reservations before
-mutation. VFS logs cleanup/release errors separately from close. Existing
-open/close signatures, OpenOptions and Handle are unchanged; allocated-open
-variants carry the initial allocation hint.
-`set_basic_information` remains full replacement and must be merged by the
-kernel; `Handle` remains opaque and nonreusable. Rename is still unavailable.
-FileRenameInformation within a volume is a useful next addition for XAPI
-MoveFile/save handling, but should be designed with handle/share identity,
-replacement rules and metadata movement together; it is not emulated by
-unlink/copy in this patch.
-
-Every failure is a typed `vfs::Error`; `error.ntstatus()` is the numeric status
-for the guest. Success is STATUS_SUCCESS (`0`), with byte count or create
-information written separately. Storage errors include:
-
-| Error | NTSTATUS |
-| --- | --- |
-| InvalidHandle / InvalidParameter | `C0000008` / `C000000D` |
-| NoSuchFile / EndOfFile | `C000000F` / `C0000011` |
-| AccessDenied | `C0000022` |
-| ObjectNameInvalid / ObjectNameNotFound / ObjectNameCollision | `C0000033` / `C0000034` / `C0000035` |
-| ObjectPathNotFound / SharingViolation / DeletePending | `C000003A` / `C0000043` / `C0000056` |
-| DiskFull / MediaWriteProtected | `C000007F` / `C00000A2` |
-| FileIsADirectory / NotSupported | `C00000BA` / `C00000BB` |
-| DirectoryNotEmpty / FileCorrupt / NotADirectory | `C0000101` / `C0000102` / `C0000103` |
-| IoDeviceError / ReparsePointNotResolved / FileTooLarge | `C0000185` / `C0000280` / `C0000904` |
-| NoMoreFiles (warning severity) | `80000006` |
-
-Host errors are mapped by category; unexpected I/O becomes IoDeviceError,
-malformed XISO becomes FileCorrupt. The typed error does not retain a private
-host path. Partial host writes return their transferred count. A metadata
-failure after a data write can report failure after data has changed; this
-backend is not a journaled filesystem. `flush` explicitly persists deferred
-atime and syncs file data. Close performs conditional cleanup as described
-above. A successful create whose final host-parent sync fails still reports
-success (the entry and metadata already exist) and logs a durability warning
-instead of returning an error that encourages a duplicate create. Earlier
-metadata setup errors still fail creation and attempt rollback. Sidecar
-records/directories are synced, but file data and logical metadata still
-are not a single crash-atomic transaction. Failed host deletion after metadata retirement can leave intact
-data with default logical attributes; out-of-band replacement may also retain
-old metadata until it is explicitly removed.
+The numeric access/share/disposition constants agree with [nxdk's public Xbox kernel header](https://github.com/XboxDev/nxdk/blob/master/lib/xboxkrnl/xboxkrnl.h). Detail: [Xbox storage: file objects and kernel integration](storage-nt.md).
 
 ## XAPI save containers
 
@@ -792,10 +447,10 @@ E:\
 
 TitleMeta.xbx describes the title (`TitleName=...`); SaveMeta.xbx describes a
 save (`Name=...`). Metadata is text, commonly UTF-16LE; a save scanner should
-also account for ASCII and localization sections, as demonstrated by the
+also account for ASCII and localisation sections, as demonstrated by the
 [OGXBL homebrew metadata reader](https://github.com/OGXBL/XBLCloudGameSave/blob/main/README.md#save-metadata).
 TitleImage.xbx and SaveImage.xbx are Xbox texture resources. A save-specific
-image overrides the shared image in the title directory. This organization
+image overrides the shared image in the title directory. This organisation
 and image precedence are described in the
 [Xbox savegame format notes](https://xboxdevwiki.net/Xbox_Savegame_System).
 VFS only creates the TDATA/UDATA title roots: it does not invent save IDs,
@@ -812,7 +467,7 @@ case lookup/collisions, aliases, shares, directory search/restart/retry,
 duplicate positions, EOF/append/growth, persistent attributes/times, deletion,
 quota, directory count limits and host link rejection. Review regressions add
 readonly create/existing-handle rights, buffering hints, damaged records and
-unrepresentable neighbors, host litter, metadata retirement failure, deferred
+unrepresentable neighbours, host litter, metadata retirement failure, deferred
 atime and scan-count assertions, cleanup-time deletion, supersede permissions,
 original-Xbox punctuation, mask semantics, invalid disc names and low-level
 status/configuration cases. Re-review tests cover litter-only rmdir through

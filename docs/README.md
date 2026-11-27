@@ -63,21 +63,37 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [cli-tools.md](runtime/cli-tools.md): `h2-tools`, the offline map, tag and script tools in a binary without the game; `h2 <tool>` runs it, `cargo h2-tools` builds only it
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play`, `h2 play --follow` and `h2 play --watch` (`crates/apps/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
+- [app-overlays.md](runtime/app-overlays.md): app: the `--frame-stats` overlay and the watermark
+- [app-follow.md](runtime/app-follow.md): app: `h2 play --follow` and `--watch`
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/platform/xapi`) and which stay generated, native saves included
+- [xapi-saves.md](runtime/xapi-saves.md): XAPI: generated and native saves, the N: volume
+- [xapi-inventory.md](runtime/xapi-inventory.md): XAPI: runtime registration and the inventory of matched and inferred entries
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/runtime/vfs`): volumes, FATX names, file semantics, map overrides
+- [storage-writes.md](runtime/storage-writes.md): xbox storage: write metadata and write-behind
+- [storage-nt.md](runtime/storage-nt.md): xbox storage: file objects, NT behaviour and kernel integration
 - [background-work.md](runtime/background-work.md): work nothing on the frame waits for (nav meshes, film hashes, uploads) on threads below the game's priority, and the worker cap (`crates/runtime/background`, `H2_BACKGROUND_THREADS`)
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
+- [contract-thin-transfers-flat-ram-target.md](runtime/contract-thin-transfers-flat-ram-target.md): spec section 4: the flat memory model and the thin transfers
 - [block-clock-imprecise-faults.md](runtime/block-clock-imprecise-faults.md): the fault census (`profile.faults`: which guest memory faults need a precise exit), the block clock (the default; the scheduler counts planned block costs, not accesses) and imprecise memory faults (the default)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over the LAN, build branches there, replay input recordings, fetch frame stats, profiles and logs
+- [lab-consent.md](runtime/lab-consent.md): the lab: player consent before a job, what happens when the player opens a game, memory limits
+- [lab-runs.md](runtime/lab-runs.md): the lab: the agent API on a run, own-data play, the dedicated System Link host, sim benchmarks, Theater runs, recordings
 - The [agent API skill](../.claude/skills/h2-agent-api/SKILL.md) and [lab skill](../.claude/skills/h2-lab/SKILL.md) guide coding agents through live checks and remote runs.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
+- [sim-match-setup.md](runtime/sim-match-setup.md): sim mode: the playerless host and start, the match file, rules scripts, Firefight, bot parameters
+- [sim-metrics.md](runtime/sim-metrics.md): sim mode: the tally and report, the spatial trace, sim stores, shared guest RAM
+- [sim-parallel.md](runtime/sim-parallel.md): sim mode: batches, arm swaps, Uplink watching, batches on hosts
+- [sim-bounce.md](runtime/sim-bounce.md): sim mode: bounce practice, the drill, sweeps, site training, seam drops
+- [sim-determinism.md](runtime/sim-determinism.md): sim mode: post-tick state hashes, finding the first differing state, bot navigation cost, host audit corpus
 - [bounce-search.md](runtime/bounce-search.md): the forked bounce search: superbounce trials from a saved machine, the region that bounces on each seam and the seams ranked by ease
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, the quiescence rule
+- [snapshots-state.md](runtime/snapshots-state.md): machine snapshots: kernel and machine state, devices, the `state.*` wiring
+- [snapshots-quiescence.md](runtime/snapshots-quiescence.md): machine snapshots: the quiescence probe
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
 - [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)
@@ -85,6 +101,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [steamos.md](runtime/steamos.md): playing on Linux and on a Steam Machine in Developer Mode through Buck (`//platform/linux:play`, `//platform/steamos:run`), the disc from `.buckconfig.local`
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
+- [title-updates-design.md](runtime/title-updates-design.md): title updates: version detection, the per-version address map, hook translation, testing
 - [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the phantoms' action build runs on
 - [ios.md](runtime/ios.md): the iOS app: building, deploying and the touch controls (`platform/ios`, `input::touch`)
 - Notes: [boot-log.md](runtime/notes/boot-log.md) (the boot milestone log), [sim.md](runtime/notes/sim.md) (sim mode's speed-up estimate and per-process memory), [snapshots.md](runtime/notes/snapshots.md) (snapshot quiescence probe runs), [steamos-boot.md](runtime/notes/steamos-boot.md) (the first Steam Machine boot)
