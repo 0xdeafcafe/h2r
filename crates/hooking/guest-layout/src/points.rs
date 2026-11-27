@@ -1512,6 +1512,13 @@ points! { ALL;
     /// A text widget's draw: its string, laid out and drawn.
     HUD_TEXT_WIDGET @ 0x0022_aa16: [fn(player: stack 0, record: stack 1, widget: stack 2, inputs: stack 3) ret 16], Optional; "docs/graphics/native-hud-overlay.md";
     HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
+    /// One motion sensor blip's draw into the sensor's target, called by
+    /// `0x001a2197` (return `0x001a2219`): its position (two `f32`), shade,
+    /// size, colour (three `f32`) and whether it pulses (low byte).
+    HUD_SENSOR_BLIP @ 0x0025_4490: [fn(position: stack 0, shade: stack 1, size: stack 2, colour: stack 3, pulse: stack 4) ret 20], Optional; "docs/graphics/native-hud-overlay.md";
+    /// The motion sensor's wash, tint and composite fans around its centre
+    /// (two `f32`), called by `HUD_SENSOR_DRAW` at `0x001a295b`.
+    HUD_SENSOR_COMPOSITE @ 0x0025_48f0: [fn(centre: stack 0, value: stack 1) ret 8], Optional; "docs/graphics/native-hud-overlay.md";
     HUD_TEXT_TAIL @ 0x0015_f120: [fn(player: eax, out: esi, capacity: stack 0, mode: stack 1) -> al ret 8], Optional; "docs/halo1/text.md";
     HUD_TEXT_DRAW @ 0x0001_fa30: [fn(rect: eax, text: ecx) ret 0], Optional; "docs/halo1/text.md";
     HUD_TEXT_SUBSTITUTE @ 0x0022_d2ee: [fn(text: stack 0, capacity: stack 1) ret 8], Optional; "docs/halo1/text.md";

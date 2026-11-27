@@ -144,6 +144,8 @@ struct State {
     /// The order of the definitions' walks (`super::definitions`), by
     /// the local user.
     definitions: HashMap<u32, Proof>,
+    /// The motion sensor's draw calls (`super::sensor`), by the local user.
+    sensors: HashMap<u32, Proof>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
@@ -169,6 +171,12 @@ fn walk_proof<T>(definition: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
 /// walk's for the map.
 pub(super) fn definitions_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
     state(|s| f(s.definitions.entry(user).or_default()))
+}
+
+/// The proof of local user `user`'s motion sensor draws, kept with the
+/// walk's for the map.
+pub(super) fn sensor_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+    state(|s| f(s.sensors.entry(user).or_default()))
 }
 
 /// The loop's side of the walk the guest is in.

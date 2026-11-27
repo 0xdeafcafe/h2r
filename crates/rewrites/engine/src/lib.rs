@@ -19,6 +19,8 @@
 //! - [`screen_effects`]: which of the scenario's screen effects draw
 //!   (`0x00134fc0`, the loop of `render_screen_effects`).
 //! - [`hud_effects`]: a HUD widget's effects on its basis (`0x0022bcaf`).
+//! - [`hud_sensor`]: the motion sensor's place and its draw calls
+//!   (`0x001a2823`).
 //! - [`function_eval`]: the tag function evaluator `0x0013b390` with the
 //!   CRT's `fmod` and `pow`, bit for bit.
 //! - [`map_status`]: the map cache status `0x213f10`, answered from its
@@ -42,6 +44,7 @@ pub mod contrail_ribbon;
 pub mod campaign_squad_pool;
 pub mod function_eval;
 pub mod hud_effects;
+pub mod hud_sensor;
 pub mod gel;
 pub mod glow;
 pub mod light_constants;

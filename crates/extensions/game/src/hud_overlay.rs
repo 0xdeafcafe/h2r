@@ -23,7 +23,7 @@ use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPassRequest, Extern
 use engine::memory::GuestMemory;
 use frame_scene::{
     ClipRect, Overlay, OverlayBlend, OverlayKind, OverlayMaterial, OverlayTexture, OverlayVertex, Program,
-    Sampler,
+    Sampler, ViewSlot,
 };
 use gfx::state::{
     BlendFactor, CompareFunc, CullMode, DepthBufferMode, FillMode, TextureAddress, TextureFilter,
@@ -205,6 +205,17 @@ impl Source<'_> {
         match self {
             Source::Tag(at) | Source::Glyph(at) => (at.shader, at.hud_input),
             Source::Screen => (0, [0.0; 4]),
+        }
+    }
+
+    /// The overlay slot the item draws in: a tag shader's quad or a glyph
+    /// is the HUD's, a screen draw the HUD's inside its scope and the
+    /// UI's elsewhere.
+    fn slot(&self) -> ViewSlot {
+        match self {
+            Source::Tag(_) | Source::Glyph(_) => ViewSlot::Hud,
+            Source::Screen if render_bridge::native_hud::kept::in_hud() => ViewSlot::Hud,
+            Source::Screen => ViewSlot::Ui,
         }
     }
 
@@ -402,6 +413,7 @@ impl Widget<'_> {
         item.blend_constant = blend_constant;
         item.shader_words = Some(Box::new(words));
         item.color_write = rs.color_write.xbox_value();
+        item.slot = self.source.slot();
         let overlay = Arc::new(overlay);
         *self.captured.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&overlay));
         let pass = WidgetPass {
@@ -731,15 +743,17 @@ pub(crate) fn with_art_map<T>(mem: &dyn GuestMemory, f: impl FnOnce(&mut NativeM
     Some(f(&mut a.map))
 }
 
-/// Places `part` (HUD quads whose stages name bitmap images) at this
+/// Places `part` (HUD quads whose stages name bitmap images), tagged
+/// [`ViewSlot::Hud`], at this
 /// point in the frame with the map's assets, its images decoded first:
 /// whether it was placed. While the map loads, or when an image does
 /// not decode, nothing is placed.
 pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
-    part: Overlay,
+    mut part: Overlay,
 ) -> bool {
+    part.set_slot(ViewSlot::Hud);
     let Some((Some(art), assets)) = slot(mem) else { return false };
     {
         let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
@@ -751,14 +765,16 @@ pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
     place(device, mem, Arc::new(part), assets)
 }
 
-/// Places `part` (a HUD string's runs over the glyph pages) at this
+/// Places `part` (a HUD string's runs over the glyph pages), tagged
+/// [`ViewSlot::Hud`], at this
 /// point in the frame, every glyph of it in the pages first: whether it
 /// was placed. A glyph the fonts do not give places nothing.
 pub(crate) fn place_text<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
-    part: Overlay,
+    mut part: Overlay,
 ) -> bool {
+    part.set_slot(ViewSlot::Hud);
     let Some((_, assets)) = slot(mem) else { return false };
     let Some(fonts) = fonts() else { return false };
     {

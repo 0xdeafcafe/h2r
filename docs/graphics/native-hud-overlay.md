@@ -1,7 +1,7 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `definitions.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs` and `native_hud/definitions.rs`, and `hud-kit-core/src/walk_tests.rs`.
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's, which still draws it. The HUD's overlay items are tagged `ViewSlot::Hud`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `definitions.rs`, `sensor.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `hud_sensor.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `hud_sensor.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs`, `native_hud/definitions.rs` and `native_hud/sensor.rs`, and `hud-kit-core/src/walk_tests.rs`.
 Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust). All in [switches.md](../runtime/switches.md).
 
 The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
@@ -223,7 +223,43 @@ A word of -1 names no definition and is skipped.
 
 Hooks (`native_hud::place_definitions`, with `place_walk`): `HUD_DEFINITIONS` before and after. Counters as the walk's (`native_ui_overlay_hud_walk_definitions_*`): `owned`, `matched`, `proven`, `differed`, `guest` (a call after one differed), `gave_back` and the refusals above.
 
-Not built: the HUD render `0x0013954b` itself (the record's fill `0x0013992a`, the motion sensor, the messages and training), and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
+### The motion sensor in Rust
+
+After the definitions the HUD render calls `0x001a2823` (`points::HUD_SENSOR_DRAW`, EAX its point, ECX the user) when `0x0015fef0` allows it and the record's word at `+0x3c` is -1 (`0x001395fa`..`0x00139685`). `engine::hud_sensor` gives the call's point and every draw it asks for; `native_hud::sensor` checks them against the guest's (Code, `h2 disasm 0x0013954b 120`, `h2 disasm 0x001a2823 100`, `h2 disasm 0x001a2197 40`).
+
+```mermaid
+flowchart LR
+  R[HUD render: anchor 2 + centre table - window corner] --> D[HUD_SENSOR_DRAW 0x001a2823]
+  D -->|camera mode 2 or 3| N[nothing]
+  D --> T[0x00254200: the sensor's target]
+  T --> B[10 frames of the ring: each blip through 0x001a2197 to HUD_SENSOR_BLIP 0x00254490]
+  B --> C[HUD_SENSOR_COMPOSITE 0x002548f0: wash, tint, composite fans]
+```
+
+| Part | Guest | Rust |
+|---|---|---|
+| Screen mode | `0x0013a690(4)`: 0 with the window 640 by 480 or more, 2 with both less, else 1 | `hud_sensor::screen_mode` |
+| Point | `0x00139614`: the safe rectangle's left and bottom (anchor 2), plus the mode's entry of the centre table `0x0047ff40`, less the window's corner, each truncated to `i16` | `hud_sensor::point` |
+| Camera mode | `0x00155760`: the user's camera update function (`0x004e8c44 + 0x140 * user`, `+0xc`); first person with no blend 0, following 1, dead or flying with `[0x0051ec10]` 2, else 3. 2 and 3 draw nothing | `hud_sensor::camera_mode` |
+| Centre | the point plus the window's corner, as floats | `Sensor::centre` |
+| Ring | `[0x0051e994] + 0x2f0 * user`: ten frames of `0x44` bytes, sixteen 4-byte blips (x, y, type, size index) and the count at `+0x40`; step `i` reads frame `([[0x0051e994] + 0xbc0] + i) % 10` | `hud_sensor::draw` |
+| Step values | `a = (10 - i) * 0.1`; shade `a * a`; swell `pow(1 - a, 3.5) * 7 + 1` on the x87 | the SSE and x87 models, `function_eval::pow` |
+| Blip | type 0 is none; size `base * swell + [0x0047ff9c + 4 * index]`, `base` 1 or, for type 6, `(sin(ticks * seconds a tick * pi) + 1) / 30 + 1`; colour `0x00445320 + 12 * type` | `Blip` |
+| Composite | the centre and `[0x0051e98c]` | `Sensor::value` |
+
+| Rule | Why |
+|---|---|
+| A call from the HUD render (return `0x0013968a`) is checked: the point at its entry, each blip draw from `0x001a2197` (return `0x001a2219`) and the composite (return `0x001a2960`), bit for bit, in order, at the return | Rust's list is the guest's only where it has been checked |
+| 8 matching calls in a row prove it (`sensor_proven`), kept per local user for the map; every call is still checked, as the guest draws the sensor | the list a Rust draw starts from is proven first |
+| A call that differs leaves the sensor unchecked for the map (`sensor_guest` after) | as a widget's draw |
+| A call with no guest draw where Rust expects one is no verdict (`sensor_unseen`): the Halo 1 HUD's hook skips hidden sensors at the same entry | another feature's skip is not a difference |
+| What Rust or a guest draw does not read is not checked (`sensor_read`) | |
+
+Hooks (`native_hud::place_sensor`, with `place_walk`): observers before `HUD_SENSOR_DRAW`, `HUD_SENSOR_BLIP` and `HUD_SENSOR_COMPOSITE`, and after `HUD_SENSOR_DRAW`. Being observers they need no order with `h1_hud_text`'s hook on `HUD_SENSOR_DRAW`. Counters as the walk's (`native_ui_overlay_hud_walk_sensor_*`): `matched`, `proven`, `differed` with the part (`differed_point`, `differed_drawn`, `differed_blips`, `differed_composite`), `guest`, `unseen`, `read`.
+
+The fans the composite draws are the host's ([What is kept](#what-is-kept)). The sensor's target (`0x00254200`: target `0x1d` cleared, its blend states) and the blip quads (`0x00254490`) are the guest's.
+
+Not built: the sensor drawn from Rust's list (its target, the blips and the fans as overlay items in slot `Hud`); the rest of the HUD render `0x0013954b` (the record's fill `0x0013992a`, then `0x0015ea50`, `0x00200462` and `0x001e6fe0` after the sensor: the messages and training); and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
 
 ## What is kept
 
@@ -260,6 +296,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That a string's quads, the window's pixels plus its corner (`WalkText::origin`), are the frame's pixels the overlay draws in (**S**).
 - That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
 - That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
+- That retail sensor calls match (`sensor_differed` at zero), that no blip draw comes from elsewhere while the call runs, and that `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).
 - That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
 - That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).
 - HUD pixel parity on the lab. From the same saved camera and tick, capture `render.frame` with `impl.render.native` off and on. Compare empty, partial and full ammo and shield meters, a flashing ammo count and a two-colour waypoint emblem, including a split-screen view and a scaled display copy. Compare RGBA in each widget rectangle and check `render.stats` for bitmap and text reservations, display recordings and zero fallback or failed recordings for the exercised widgets.
