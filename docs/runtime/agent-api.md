@@ -1300,7 +1300,12 @@ h2 agent faults
   alone took more than 33⅓ ms.
   `d3d_entries` counts guest D3D entry calls that ran, `d3d_residual_draws`
   the guest draws `d3d` handed to its backend (what no native replacement
-  claimed) and `d3d_push_words` the push-buffer words it decoded. They are
+  claimed) and `d3d_push_words` the push-buffer words it decoded.
+  `native_inline_full` and `native_inline_fast` count the native inline
+  draws (particles) resolved in full and on a same-state run's fast path,
+  and `queued_runs` and `queued_run_draws` the queued native admissions the
+  render thread prepared and the draws in them
+  ([native-particles.md](../graphics/native-particles.md)). They are
   always on: an integer add into the calling thread's frame, or one relaxed
   load when frame stats are off
   ([retire-d3d.md](../graphics/retire-d3d.md), slice R0;
