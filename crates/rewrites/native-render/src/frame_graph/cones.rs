@@ -1,5 +1,5 @@
-//! E3's shadowed cones in the frame graph (docs/graphics/e3-lighting.md,
-//! "Built: the shadowed cones"). The frame step draws a chosen light the
+//! E3's shadowed cones in the frame graph (docs/graphics/e3-lighting-cones.md,
+//! "The shadowed cones"). The frame step draws a chosen light the
 //! renderer shadows with its shadowed implementations, whose layers read
 //! layer 11's term from the destination alpha, and its scene stage names
 //! the light (`d3d::ExternalPass::cone_shadow`). Under E3, just before

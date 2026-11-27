@@ -1,54 +1,37 @@
 # Simulation rewrite: plan
 
-Status: plan, 2026-11-20. The `SimExt` blob (section 2) is partly built,
-with tests only. Phase 1b's skeleton walk in `bd090` is built, with tests
-only ([skeleton-walk.md](skeleton-walk.md)). Its graph walk `1dd1c0` is
-built and runs as an arm: the guest answers and the Rust result is compared
-with it until the arm is proven, then the Rust body answers and one call in
-64 is still compared. The phase 1c bodies cover
-[markers](markers.md), the [first-person palette](palette.md), the
-[unit pose](unit-pose.md), unit aim (`c7840`) and the
-[first-person filters](first-person-filters.md) (`166d75`, including
-`11eed0`). Slice 1d compares all six [channel manager and graph entries](animation-manager.md)
-with the guest at their entry and return selectors. The guest supplies the
-result. The verification ladder and cumulative 1.2 ms/tick gate remain open.
-Phase 2 answers point, location and MOPP box queries, the object-reference
-sphere pretest and exact exits in the BSP walk, instance trace, cluster
-flood and object visit. The whole-query planner follows structure,
-liquid, instances and object models. It compares its answer at the
-lifted return and supplies the read-only `collision.trace` method.
-The general Havok ray remains under live parity. The exit ladder includes
-run hashes, a cold-cache comparison, cross-architecture results and timing.
-The [collision entry contracts](collision-queries.md) list each exit.
-Phase 3 runs behind `impl.sim.native.objects` as register-level bodies
-over the retail frames ([sim-rewrite-objects.md](sim-rewrite-objects.md)),
-and its curve evaluator — the tag-function curves `13b390` every function
-value, light and screen effect flows through — runs as an idiomatic kernel
-in `crates/rewrites/sim-objects` compared with the guest until it has
-matched 4096 calls, then answering them with an audit of every 64th
-(`engine::sim_objects::functions::parity`).
-Phase 4 runs as an opt-in sound arm. Its synthetic differential harness compares the
-guest and Rust sound bodies at each call and return. The owner-image, match,
-campaign, cross-architecture and timing results are pending.
+Status: plan (partly built; the table gives each phase).
 
-Phase 5 has landed its kernels and arms
-([sim-rewrite-havok.md](sim-rewrite-havok.md)): `impl.sim.native.physics`
-installs the world step, island collide and island integrate entries, the
-broadphase batch update answers its calls once its capture arm is proven
-(one call in 64 still compared with the guest), the two
-unconstrained-motion methods and the MOPP box query run as capture arms
-compared with the guest, and the Havok
-heap digest (`havok.digest`, the sim report's `havok.world` component)
-covers what the arena hash cannot. The per-function Havok and MOPP box
-switches are retired. The run ladder and the timing gate are open.
-The plan replaces the verdict in
-[feature-engine.md](feature-engine.md) ("Subsystem map and ranking", rows
-15-18) that objects, AI and physics "stay recompiled". The user asked on
-2026-11-16 and 2026-11-17 for whole-subsystem rewrites, not per-function
-patches. The per-function ports in `crates/rewrites/engine/src/sim_native` and
-`crates/rewrites/engine/src/sim_physics` are bit-exact, register-level ports of single
-functions. From here on they serve as **reference and test oracles**. They are
-not the architecture.
+```text
+guest memory (retail layout, persistent truth)
+   ^ scatter                      | gather
+   |                              v
+Rust subsystem: static + derived + transient + extension state
+   phases 1..7, one switch each: impl.sim.native.<subsystem>
+```
+
+| Piece | State | Open |
+|---|---|---|
+| `SimExt` blob (section 2) | partly built, tests only | no feature stores a record yet |
+| 1b skeleton walk, `bd090` ([skeleton-walk.md](skeleton-walk.md)) | built, tests only | |
+| 1b graph walk, `1dd1c0` | built, runs as an arm: the guest answers and the Rust result is compared with it until the arm is proven. Then the Rust body answers and one call in 64 is still compared | |
+| 1c bodies | [markers](markers.md), [first-person palette](palette.md), [unit pose](unit-pose.md), unit aim (`c7840`), [first-person filters](first-person-filters.md) (`166d75`, including `11eed0`) | |
+| 1d | compares all six [channel manager and graph entries](animation-manager.md) with the guest at their entry and return selectors. The guest supplies the result | verification ladder; cumulative 1.2 ms/tick gate |
+| 2 collision | answers point, location and MOPP box queries, the object-reference sphere pretest and exact exits in the BSP walk, instance trace, cluster flood and object visit. The whole-query planner follows structure, liquid, instances and object models. It compares its answer at the lifted return and supplies the read-only `collision.trace` method. The [collision entry contracts](collision-queries.md) list each exit | the general Havok ray stays under live parity; exit ladder (run hashes, cold-cache comparison, cross-architecture results, timing) |
+| 3 objects | `impl.sim.native.objects`: register-level bodies over the retail frames ([sim-rewrite-objects.md](sim-rewrite-objects.md)). The curve evaluator for the tag-function curves (`13b390`, which every function value, light and screen effect flows through) runs as an idiomatic kernel in `crates/rewrites/sim-objects`. It is compared with the guest until it has matched 4096 calls, then answers them with an audit of every 64th (`engine::sim_objects::functions::parity`) | |
+| 4 sound | opt-in sound arm; a synthetic differential harness compares the guest and Rust sound bodies at each call and return | owner-image, match, campaign, cross-architecture and timing results |
+| 5 Havok | kernels and arms ([sim-rewrite-havok.md](sim-rewrite-havok.md)). `impl.sim.native.physics` installs the world step, island collide and island integrate entries. The broadphase batch update answers its calls once its capture arm is proven (one call in 64 still compared). The two unconstrained-motion methods and the MOPP box query run as capture arms compared with the guest. The Havok heap digest (`havok.digest`, the sim report's `havok.world` component) covers what the arena hash cannot. The per-function Havok and MOPP box switches are retired | run ladder; timing gate |
+
+The plan replaces the verdict in [feature-engine.md](feature-engine.md)
+("Subsystem map and ranking", rows 15-18) that objects, AI and physics "stay
+recompiled". The user asked on 2026-11-16 and 2026-11-17 for whole-subsystem
+rewrites, not per-function patches.
+
+The per-function ports in `crates/rewrites/engine/src/sim_native` and
+`crates/rewrites/engine/src/sim_physics` are bit-exact, register-level ports of
+single functions. They serve as **reference and test oracles**. They are not
+the architecture.
+
 
 Numbers come from [sim-attribution.md](../perf/sim-attribution.md), which
 gives every sample of the [sim-budget.md](../perf/sim-budget.md) profile an
@@ -58,6 +41,14 @@ runner cost. Addresses are guest virtual addresses already named in the repo
 docs.
 
 ## Decision summary
+
+| Decision | Choice |
+|---|---|
+| State | guest memory stays the persistent truth; Rust owns the work |
+| Exactness | contract D for every build; bar E (bit-exact with lifted) for verification |
+| Order | animation, collision, objects, sound, Havok, effects, seats |
+| Switches | one `impl.sim.native.<subsystem>` each |
+
 
 - **State.** Guest-layout memory stays the persistent truth: the
   `0x3fe000`-byte checkpoint arena and the tag data. Rust owns the *work*:
@@ -123,6 +114,15 @@ of the areas below.
   consumes this work's outputs.
 
 ## 2. Who owns state
+
+```mermaid
+flowchart LR
+  G[(guest arena, retail layout)] -- gather --> R[Rust pass: SoA working set]
+  R -- scatter, fixed order --> G
+  S[static: clips, BVHs] --> R
+  D[derived caches, dropped on epoch bump] --> R
+  X[(SimExt blob)] <--> R
+```
 
 Today every reader goes through guest memory: HaloScript, AI, replication,
 checkpoints (`0x123e20` snapshot, `0x123f60` revert, `0x124380` full restore,
@@ -268,10 +268,11 @@ worker-thread count.
 bits as the lifted code for every guest-visible write. The win comes from
 structure, not from reordering floats. With E, `h2 sim diff` and the arena
 digests prove a phase against `-impl.sim.native`, with no tolerance and no
-judgement calls. Getting the animation codecs and pose math exact is cheap:
-the guest does them in SSE with a fixed operation order, and the existing
-ports already match it with NEON and SSE2 lanes. Where retail uses x87, the
-Rust kernel uses the `x87` crate's exact operations, or proves the double
+judgement calls.
+
+Getting the animation codecs and pose math exact is cheap: the guest does
+them in SSE with a fixed operation order, and the existing ports already
+match it with NEON and SSE2 lanes. Where retail uses x87, the Rust kernel uses the `x87` crate's exact operations, or proves the double
 result equals the ext80 one, as `sse-native` does.
 
 **Relaxing to D only (not planned; per subsystem, with user sign-off):**
@@ -503,23 +504,27 @@ so census A's phantom arm decides whether this phase matters to hosts or
 only to players.
 
 Built behind `impl.sim.native.seats` (`crates/rewrites/engine/src/sim_seats`,
-one entry per function): the observer camera `171d90`, the look curve
-`185b30`, the player-control update `185be0` (the unbound entry, which the
-phantom seats take, and every segment from the first look-curve return on —
-the bound controller's device reading stays guest), the action `1505f0`,
-neutral `150790` and unit `c6de0` control packet builders, the HUD's
-per-seat update `13a838`, the aim-assist cone `1a50a0`, the target
-comparator `1a66f0` and the observer resource walk `16e5e0`. The target
-search `1a5370`, the follow update `1a4900` and the shot aim `1a4c00` are
-bodies too, proven on the disc by the shadow arm rather than the synthetic
-differential. The entries install as the shadow's guest-authoritative arm:
-`shadow.enable` on, the original answers and each body is checked against
-it on a copy; checks off, the bodies answer. The switch retires
-`native_observer_camera`. `observer-resources` (the trim that spares the
-headless host most of the prediction walk) stays on by default until the
-seats are promoted: with the seats on it stands down, because the seats'
-resource walk covers its point, and with them off it keeps hosts fast.
-It goes when the seats default on.
+one entry per function):
+
+| Entry | Function |
+|---|---|
+| `171d90` | observer camera |
+| `185b30` | look curve |
+| `185be0` | player-control update: the unbound entry, which the phantom seats take, and every segment from the first look-curve return on; the bound controller's device reading stays guest |
+| `1505f0`, `150790`, `c6de0` | action, neutral and unit control packet builders |
+| `13a838` | HUD per-seat update |
+| `1a50a0`, `1a66f0` | aim-assist cone, target comparator |
+| `16e5e0` | observer resource walk |
+| `1a5370`, `1a4900`, `1a4c00` | target search, follow update, shot aim: proven on the disc by the shadow arm rather than the synthetic differential |
+
+The entries install as the shadow's guest-authoritative arm: `shadow.enable`
+on, the original answers and each body is checked against it on a copy;
+checks off, the bodies answer. The switch retires `native_observer_camera`.
+
+`observer-resources` (the trim that spares the headless host most of the
+prediction walk) stays on by default until the seats are promoted. With the
+seats on it stands down, because the seats' resource walk covers its point;
+with them off it keeps hosts fast. It goes when the seats default on.
 
 **Network replication.** Stays guest. Rust subsystems feed it the same arena
 state.
@@ -576,9 +581,10 @@ The callers have already resolved the resource: each wrapper receives the
 12-byte view built by `1ddb40` (data pointer, sizes pointer `&element[+0x3c]`,
 node count, frame-info type, frame count). So the boundary makes **no
 resource-cache calls** and nothing inside it calls guest code. The bodies are
-plain `fn`s. Slice 1d owns `1c6f60` and the preload at `1dd9d0`. Cache
-request and get (`1236f0`, `1237e0`) and `1dd630` (with its RNG draw at
-`1dd6e1`) stay guest.
+plain `fn`s.
+
+Slice 1d owns `1c6f60` and the preload at `1dd9d0`. Cache request and get
+(`1236f0`, `1237e0`) and `1dd630` (with its RNG draw at `1dd6e1`) stay guest.
 
 **Step 0 (research, about half a day, static reading with `h2 disasm`):**
 
@@ -695,40 +701,52 @@ returns every call to the guest for good.
 `native_transform_compose` and `native_pose_matrix` retire once the ladder
 is clean.
 
-1c's marker slice follows the same shape: the marker port
-(`sim_native::marker`, `b8d30`) stays the vehicle, and where it would
-call `1d8f50` it calls `sim_anim::model_markers` through
-`engine::sim_anim::markers` — the scan `1d8f00` and the transform fill
-`1d8f50` as one gather, kernel call and scatter, and the basis leaf
-`141e10` beside the pose and composition leaves
-([markers.md](markers.md)). The first-person palette follows it in the same shape: the
-first-person pose port (`sim_physics::first_person`, `16760c`) runs its
-palette step through `engine::sim_anim::palette` and
-`sim_anim::palette` ([palette.md](palette.md)).
-The [unit pose](unit-pose.md) (`sim_native::unit::run`, `112070`) plans
-the base and aim channels, angle projections and overlay tail one guest
-call at a time. The [channel manager](animation-manager.md) receives those calls through the dispatcher.
+Each 1c slice has the same shape: a gather, one Rust kernel call, a
+scatter. The table names the port that stays the vehicle and the Rust entry
+it calls.
 
-The same checked segment plan runs `sim_anim::unit_aim` (`c7840`,
-nine return sites) and `sim_anim::first_person_filters` (`166d75`, 40).
-Unit aim projects the directions into joint space, enforces yaw and pitch
-limits and updates direction and angular velocity. First-person filters
-advance four seat axes and visit both weapon slots, including their
-motion tracks and idle timers. Its five calls to `11eed0` can run within
-the segment ([first-person-filters.md](first-person-filters.md)).
-Each body resumes after a guest callee using the live guest frame.
-A declined segment starts the original at its entry or return selector.
-An image must export the entry and every return selector for that body.
-The differential in `engine/tests/sim_physics_differential.rs` checks
-the transfer, CPU and memory at the boundaries and requires every site.
-The phase 1c ladder and cumulative timing gate are in the table above.
+| Slice | Guest function | Port (vehicle) | Rust entry | Page |
+|---|---|---|---|---|
+| Markers | `b8d30`; scan `1d8f00`, transform fill `1d8f50`, basis leaf `141e10` | `sim_native::marker` | `sim_anim::model_markers` through `engine::sim_anim::markers` | [markers.md](markers.md) |
+| First-person palette | `16760c` | `sim_physics::first_person` | `sim_anim::palette` through `engine::sim_anim::palette` | [palette.md](palette.md) |
+| Unit pose | `112070` | `sim_native::unit::run` | plans the base and aim channels, angle projections and overlay tail one guest call at a time | [unit-pose.md](unit-pose.md) |
+| Unit aim | `c7840` (nine return sites) | checked segment plan | `sim_anim::unit_aim` | |
+| First-person filters | `166d75` (40 return sites; five calls to `11eed0` can run within the segment) | checked segment plan | `sim_anim::first_person_filters` | [first-person-filters.md](first-person-filters.md) |
 
-The unit animation state `111650` is a body of the object update
-(slice 6c, [object-update.md](object-update.md)). The [channel manager
-contract](animation-manager.md) describes the channel writes, callback
+The [channel manager](animation-manager.md) receives the unit pose's calls
+through the dispatcher. Its contract describes the channel writes, callback
 frames and sampling view that the phase 1d arms compare.
 
+Unit aim projects the directions into joint space, enforces yaw and pitch
+limits and updates direction and angular velocity. First-person filters
+advance four seat axes and visit both weapon slots, including their motion
+tracks and idle timers.
+
+Each body resumes after a guest callee using the live guest frame. A declined
+segment starts the original at its entry or return selector. An image must
+export the entry and every return selector for that body.
+
+The differential in
+`engine/tests/sim_physics_differential.rs` checks the transfer, CPU and memory
+at the boundaries and requires every site. The phase 1c ladder and cumulative
+timing gate are in the table above.
+
+The unit animation state `111650` is a body of the object update (slice 6c,
+[object-update.md](object-update.md)).
+
 ## The tick driver
+
+```mermaid
+flowchart TD
+  A[GAME_TICK 0x00137fe0] --> B[x87 control word]
+  B --> C[update record 0x4048 bytes]
+  C --> D{RUN_FLAG set?}
+  D -- yes --> E[29 phases in retail order]
+  E --> F[clock step 0x001380b4]
+  D -- no --> G
+  F --> G[record close 0x000684e0]
+  G --> H[tick count at game time +8, only if flag still set]
+```
 
 `GAME_TICK` (`0x00137fe0`) runs from Rust: `engine::sim_tick::run`, installed
 by `sim_bridge::tick::TickDriver` as the body of the point with
@@ -770,9 +788,11 @@ it, and a `before` that returns skips the body. `existing_tick_hooks_still_fire`
 (`engine::sim_tick::Ledger`) and times it: nanoseconds per phase as a
 running total and for the last tick, the tick body's, and the loop's (tick
 entry to the next entry, which holds the sound that runs outside the 29
-phases). The clock is `Instant`, read once after each phase and three times
-per tick; the phases' times are consecutive spans, so they sum to at most
-the tick's. `sim.ledger` ([the agent API](../runtime/agent-api.md)) reads
+phases).
+
+The clock is `Instant`, read once after each phase and three times per tick;
+the phases' times are consecutive spans, so they sum to at most the tick's.
+`sim.ledger` ([the agent API](../runtime/agent-api.md)) reads
 it, `profile.counters` carries it as `sim_tick_phase_<n>_ns`, and the sim
 report's `tick_phases` block holds the per-match means. Wave benches read
 the phases there. The ratchet is
@@ -793,6 +813,16 @@ holds the clock step's writes. Both runs set the run flag at the before step.
 runs, the tick holds) and a close that clears it.
 
 ## 6. Threading inside a tick
+
+```mermaid
+sequenceDiagram
+  participant Game as game thread
+  participant Pool as sim-core::Jobs
+  Game->>Game: gather inputs from guest memory
+  Game->>Pool: fixed chunks by item index
+  Pool-->>Game: results in Rust buffers
+  Game->>Game: scatter into guest memory, in order, then join
+```
 
 - One host thread still runs every guest thread. Rust parallelism happens
   only **inside one Rust call**. The game thread gathers inputs, workers
@@ -817,6 +847,12 @@ runs, the tick holds) and a close that clears it.
   game thread, in retail order.
 
 ## 7. Interfaces for theater, film, stats and Live
+
+| Consumer | Reads | Source |
+|---|---|---|
+| Theater and film | `Keyframe`, `HASH` chunks | `sim-state` |
+| Stats | `SimEvent` | the subsystem that applies the event |
+| Live and hosts | scoreboard, events, shared static caches | `sim-state`, mmapped cache |
 
 The other session (`bed6c8dc`: Live, bots, theater, film) owns the internals.
 This is only the surface this work offers. It goes in a new `sim-state` crate
@@ -857,6 +893,15 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
     memory scraping.
 
 ## 8. Decisions
+
+| # | Decision |
+|---|---|
+| 1 | Physics stays bit-exact with retail |
+| 2 | Films replay across architectures |
+| 3 | Co-op campaign measures frame rate and host density |
+| 4 | Per-function switches go as each subsystem lands |
+| 5-7 | Review outcomes: both routes run, Havok stays bit-exact, recompiler contract changes |
+
 
 1. **Physics stays bit-exact with retail.** The Havok phase (phase 5 since
    the 2026-11-20 reorder) replaces Havok with a structural port held to

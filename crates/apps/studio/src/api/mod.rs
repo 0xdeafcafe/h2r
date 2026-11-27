@@ -48,6 +48,7 @@ mod models;
 mod nav;
 mod game;
 mod ground;
+mod siege;
 mod nav_mesh;
 mod pair;
 mod params;

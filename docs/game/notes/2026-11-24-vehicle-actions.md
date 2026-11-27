@@ -2,7 +2,7 @@
 
 Evidence for [Vehicles and drop ships](../rules-world-api.md#vehicles-and-drop-ships).
 
-## 2026-11-24 — retail Xbox, dbafa82d1
+## 2026-11-24 - retail Xbox, dbafa82d1
 
 Static reading of the owner's retail executable. To reproduce, read HS
 descriptor entries 232, 233 and 621 with the layout in

@@ -321,7 +321,9 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
   each Firefight team's players' centre (`u32::MAX` for a team with no
   unit). A player's `team` is its game team; `player_kills` are the
   tick's players killed by players.
-- States (`Phase`): `Warmup` until the first wave's gap has passed,
+- States (`Phase`): `Warmup` until the first wave's gap has passed, or
+  one second (`first_lead`) if that is sooner: a wave's gap is the
+  breather before it, and the game's start has nothing to breathe from;
   `Spawning` while the wave has squads in the reserve, `Fighting` once
   all are placed, `Cleanup`, `Intermission` for the next wave's gap, and
   `Done`. `Round` (with the round's new `Skull` commands) and `Wave` are
@@ -970,6 +972,10 @@ names the ship out; one ship is out at a time.
   that ship in the world, is placed by `ff_ship_hover(kind, true)` and
   `ff_drop_squad(..., kind)`
   (`Command::ShipHover`, `Command::DropSquad`); the state is inbound.
+  When the warmup cut the set's first gap (`opening_cut`), the game's
+  first wave (round 0, wave 0 of the first set) takes no ship: its squads
+  drop by pod or arrive on foot, so the first enemies land within seconds
+  of the start and not after the ship's 10 s run.
   Every other squad, including each squad of a wave while the ship is
   out, is placed on foot by `place_squad_at` as before, so a wave
   never waits on the ship, and a map with no ship or no path has the
@@ -1299,7 +1305,43 @@ through a fresh script for the same commands.
   jumps past its byte when it is not the campaign; a hook at each of
   those thirteen jumps (`engine::points::skull_gates`) answers the gate
   "on" for the skulls the host runs, and the native active camouflage
-  asks `engine::skull_gate` ([skulls.md](skulls.md#the-campaign-gate)).
+  asks `engine::skull_gate` ([skulls.md](skulls-modes.md#the-campaign-gate)).
+
+### Which maps are built in
+
+A map is built in when `h2 firefight kit MAP` makes a package for it from the
+retail disc: six or more drop zones off both bases and the starts, a walkable
+path to both bases, and the tag headroom for the sectors, zones and squads.
+The two refused maps are listed in `builtin::REFUSED`; they are not built at
+start, report their reason in the lobby's kit line, and
+`builtin::refusal(map)` names it. Tests: `the_builtin_list_is_the_ten_maps_the_builder_makes_a_kit_for`,
+`a_refused_retail_map_is_named_with_its_reason_and_never_read`
+(`firefight-kit/src/builtin/ensure/tests.rs`). The survey is the builder's
+own result on the retail disc, by `h2 firefight kit`; a map the disc does
+not hold (the Multiplayer Map Pack's) is left to the user's own kit.
+
+| Map (file) | Built in | Reason |
+| --- | --- | --- |
+| Coagulation (`coagulation`) | yes | authored layout, two teams |
+| Zanzibar (`zanzibar`) | yes | authored layout, one team, 4 base positions |
+| Ascension (`ascension`) | yes | generated, 12 drop zones |
+| Beaver Creek (`beavercreek`) | yes | generated, 12 drop zones |
+| Burial Mounds (`burial_mounds`) | yes | generated, 12 drop zones |
+| Colossus (`colossus`) | yes | generated, 12 drop zones |
+| Foundation (`foundation`) | yes | generated, 9 drop zones |
+| Headlong (`headlong`) | yes | generated, 12 drop zones; 340 KB of headroom left |
+| Lockout (`lockout`) | yes | generated, 12 drop zones |
+| Midship (`midship`) | yes | generated, 12 drop zones |
+| Ivory Tower (`cyclotron`) | no | no six drop zones: the bases' area has room for 5, and the area of 6 polygons with 2 starts has no walkable path |
+| Waterworks (`waterworks`) | no | 164 KB over the tag headroom, sectors, after every fit step |
+
+### Making your own kit
+
+| Tool | Command or screen | Output |
+| --- | --- | --- |
+| `h2 firefight kit` | `h2 firefight kit MAP [--home red\|blue] [--disc ISO] [--data DIR] [--replace]` | `<data>/maps/firefight-MAP`, a map package |
+| Studio | the map's ground: `ground.build`, then `ground.save {name?}` ([editor agent API](../editor/agent-api.md)) | `maps/<name>/map.toml` and `ground.yaml` in the edit target, and the built ground |
+| Forge | place drops, bases and cover, then save the map variant ([forge-firefight.md](forge-firefight.md)) | a map variant with a ground recipe, which Change Map lists for Firefight |
 
 ### Game Setup
 
@@ -1363,11 +1405,13 @@ team is never a seat.
 With no compatible kit installed, the map picker is empty and Start
 Game reports the missing kit. Change Rules remains available.
 
-**The built-in kits build themselves.** Coagulation and Zanzibar have
-authored layouts (`firefight_kit::builtin`), so no one runs `h2 firefight
-kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
+**The built-in kits build themselves.** Ten retail multiplayer maps are
+built in (`firefight_kit::builtin::MAPS`); Coagulation and Zanzibar have
+authored layouts (`firefight_kit::builtin`), the other eight are built by the
+kit's generator from their own flags and starts (`Config::default()`, home
+team red, no layout). No one runs `h2 firefight kit` for them. At the start of `h2 run`, `h2 serve` and `h2 play`,
 `crates/apps/cli/src/firefight_kits.rs` asks
-`firefight_kit::builtin::pending` which of the two packages
+`firefight_kit::builtin::pending` which of the ten packages
 (`<data>/maps/firefight-<map>`) is missing or stale and, if any is, runs
 `firefight_kit::builtin::ensure` on a worker thread while the game boots.
 A package is current when its manifest is on disk and the stamp beside it
@@ -1378,7 +1422,7 @@ are current. The kits carry the Elite only (no classes), and a map that
 does not fit its tag headroom takes the fit steps of "The kit" before it is
 refused. Each map's result is a report: current, built, or refused with a
 reason short enough for a panel line (`Zanzibar: 6 KB over, sectors`); one
-map's refusal does not stop the other. When the worker is done it reads
+map's refusal does not stop the others. When the worker is done it reads
 the map list again (`map_select::publish_packages`, which also has the VFS
 read the maps folder), so the packages join the catalogue as a Live
 download does.
@@ -1643,7 +1687,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | An ally's team and hold | `AI_SET_TEAM` (`0x275b60`) then `AI_SET_ORDERS` (`0x275cb0`), as above | `ally` | built; not run | The kit's `ff_hold_NN` order, found by name as `ff_hunt_NN` is (`KitLayout::hold_orders`). The team is the players' engine team, not a faction's. A base with no such order is an error naming it |
 | Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
 | Fly a ship along its path | `OBJECT_SET_TRANSFORM` (`0xb7430`), the pose of `rules::vehicles::Flight` | `fly` (`Game::fly`), `Flights` (`rules/world/vehicles/flight.rs`), `put_ship` | built; rules-world R7 and R3 | The host flies the ship along a keyed path with no AI pilot. `Game::fly` hands the match the ship, the path's points and the ticks; the match begins a flight on the tick it applies the entry and every tick after puts the ship at the flight's pose, facing the path's tangent, as a put at the boundary (`put_ship`: the object's own `up` made perpendicular to the tangent, `notify` set). The pose is 16.16 integer math, so every machine and a film put the ship in the same place. A flight that has run its ticks puts the ship on the last point once and is reported as an arrival (`Match::take_arrived`). At most 4 ships fly at once; a second flight of a ship replaces its first with no arrival. The next physics step can move the body again, with riders aboard and with contacts, which only a run settles ([R7](notes/2026-11-24-vehicle-actions.md)). Whether a client sees the ship move is rules-world R3 |
-| Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The two register and stack layouts of the load and the list cast are read from the call at `0x2a411c` and the HS cast table and are confirmed by the run |
+| Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The load's layout is read from the call at `0x2a411c`: the ship in EDX, the mapping and the list on the stack. The list cast takes the squad on the stack, as its HS caller at `0x2a5b5b` pushes it, and writes the list datum over that slot (`0x272ebf`). Every Firefight guest call is checked against its point's signature before it is made (`GuestCall::shape_error`), and a call of the wrong shape is refused by name, so a callee never reads or writes the entry's own frame |
 | Hold the ship, unload it | `VEHICLE_HOVER` (`0xf0fd0`), `VEHICLE_UNLOAD` (`0x11b2b0`, mapping -1) | `ship::hover`, `ship::unload` (`Game::hover`, `Game::unload`) | named; rules-world R7 | The director's `ShipHover` and `ShipUnload`, made at the boundary as the rules runtime makes `hover` and `unload`; each is refused for a ship no longer in the world |
 | Land the rest on foot | `AI_SQUAD_PLACE` | `drop_squad` | built | `drop_squad` places the remainder of the squad (`count` less those aboard) as `place_squad` does, in the same slot squad, so a wave never waits on the ship: a ship with no free seat, not in the world or whose load the engine refuses leaves the whole squad on foot, and the reason is printed |
 | Credit a player's score | `SCORE_ADD` (`0x15b7c0`) | `credit_score` | traced | Slayer's kill callback is its engine's vtable slot `+0x78` (engine 2 at `0x55e4d8`), which `0x15ce70` calls last (`0x15d6a4`); it calls `0x15b7c0` with the score change in EAX and the killer's player datum on the stack (`0x2bc05d`). The routine adds the change's low 16 bits, signed, to row `+0x00` at `+0x308 + 0x1c * slot` of the game engine globals, clamps to ±30,000 (`0x15b849`), marks the statborg entity's player bit for replication (`0x15b88a`), updates the team score in a team game, checks the score limit when it is nonzero, and returns true. It refuses, returning false, without a game engine, while engine `+0x6c` is not 1, and on a machine where engine `+0xc04` is not 1 (unless game globals `+0x0c` is 4). `credit_score` passes the salted player datum and treats false as an error |

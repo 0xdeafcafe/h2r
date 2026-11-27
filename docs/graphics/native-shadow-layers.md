@@ -4,6 +4,23 @@ Status: Built. Layers 10, 11 and 14 draw from their whole scene groups with no g
 Code: `crates/rewrites/native-render/src/shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`, `shadow_chain.rs`, `light_models.rs`, `light_gpu.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/render-bridge/src/native_shadows.rs`, `native_lights/walk.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_shadows_glue.rs`, `native_shadow_chain.rs`. Tests: `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `shadow_chain`, `boot::native_shadow_chain`, `light_gpu`, `scene_extract::light_groups`, `render_bridge::native_shadows`, `crates/rewrites/native-render/tests/shadow_gpu.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
+| Layer | Role | Drawn from the scene by |
+|---|---|---|
+| 10 | casters (depth map on target 9, colour mask on target 10) | `shadow_look` pass, `shadow_scene` plan |
+| 11 | receivers, sampling the frozen map | the same, with the boundary's `ReceiverTerm` |
+| 14 | receivers without shadow inputs | the same |
+| object filter | blur of target 10 through 11 | `shadow_filter_gpu` inside a swallow at `0x000222a0` |
+
+```mermaid
+flowchart LR
+  B[guest begin and clear] --> C[casters from the scene]
+  C --> E[guest end]
+  E --> F[object filter: native quads, guest quads swallowed]
+  F --> R[layer 11 receivers sample the map]
+  C -. object mask alone .-> P[private chain: mask, other, depth owned by the stage]
+  P --> F
+```
+
 The shadow stage draws layers 10, 11 and 14 from their gathered groups
 in the frame scene (`frame_scene::LightGroup`) with no guest geometry
 handler run, as the light stage draws layers 12 and 13
@@ -11,14 +28,16 @@ handler run, as the light stage draws layers 12 and 13
 `native_render::shadow_look` compiles the passes from tags,
 `shadow_scene` plans the group, and `native_lights_glue::shadow_alone`
 reserves the packets on the guest target before the walk empties the
-entry loop. Receivers take their frozen depth or colour-mask map from
-the boundary's `ReceiverTerm`. The guest's begin, clear and end still
-run. The object filter goes through `native_render::shadow_filter_gpu`
-inside a swallow at `0x000222a0`, so its guest quads are dropped after
-validation. The one rule: at every point a guest draw or the freeze
-reads target 9 or 10, that target holds what the guest's own casters and
-filter would have left there. A private chain keeps it by having no such
-reader, or by copying its mask back first.
+entry loop.
+
+Receivers take their frozen depth or colour-mask map from the boundary's
+`ReceiverTerm`. The guest's begin, clear and end still run. The object
+filter's guest quads are dropped after validation.
+
+The one rule: at every point a guest draw or the freeze reads target 9 or
+10, that target holds what the guest's own casters and filter would have
+left there. A private chain keeps it by having no such reader, or by
+copying its mask back first.
 
 Evidence labels as in [docs-style.md](../meta/docs-style.md): **E**
 (`h2 disasm`), **Code**, **S**, **Design**.
@@ -216,10 +235,11 @@ At the layer's build, with the group in the scene and whole,
 6. Hand the guest's entry loop no entries.
 
 A refusal at 1 to 5 issues nothing and drops the layer under its cause
-(`scene_dropped_shadow_layers_<cause>`); the guest's handlers do not run. The begin and end still run, so the clear, the
-raster state and its restore are the guest's. The freeze stays at the
-start of layer 11, and a caster generation is counted as today, so
-`observe_receivers` consumers see no change.
+(`scene_dropped_shadow_layers_<cause>`); the guest's handlers do not run.
+The begin and end still run, so the clear, the raster state and its
+restore are the guest's. The freeze stays at the start of layer 11, and a
+caster generation is counted as today, so `observe_receivers` consumers
+see no change.
 
 A pass that fails while recording on the render side, after step 6, is
 counted in `scene_dropped_shadow_layers` with one log line for its
@@ -230,16 +250,19 @@ cause. Step 3 makes that a device loss or a bug.
 `engine::glow::blur` gives the quads of `0x000211a0` from the step
 count, scale and growth words in the filter wrapper's three pushes.
 The wrapper passes zero strength and zero `y` to
-`engine::glow::blur_combiner`. `scene_extract::light_groups::shadow_filter` puts
-the quads, final copy, signs and target size in the current
-`frame_scene::ObjectShadow` (`filter`). The observer at the blur
-(`0x000211a0`) accepts the filter wrapper's return site `0x000222c7`.
-The wrapper pushes this address in guest code on either executor.
-Its ten stack arguments put the wrapper's own return slot at the
-blur's entry `ESP + 44`. The device uses this slot to track the
-swallow through the wrapper's return. The native pass
-uses a full-target rectangle, as `0x00034a90`'s tenth argument selects,
-and each source's own size for its taps.
+`engine::glow::blur_combiner`.
+`scene_extract::light_groups::shadow_filter` puts the quads, final copy,
+signs and target size in the current `frame_scene::ObjectShadow`
+(`filter`).
+
+The observer at the blur (`0x000211a0`) accepts the filter wrapper's
+return site `0x000222c7`. The wrapper pushes this address in guest code
+on either executor. Its ten stack arguments put the wrapper's own return
+slot at the blur's entry `ESP + 44`, which the device uses to track the
+swallow through the wrapper's return.
+
+The native pass uses a full-target rectangle, as `0x00034a90`'s tenth
+argument selects, and each source's own size for its taps.
 
 While the entry is the guest's, the guest's call runs and its quads are
 swallowed (`Device::swallow`, as the post stage swallows the glow's).

@@ -13,6 +13,8 @@ states:
     focus: 0
   spawner:
     focus: 0
+  start:
+    focus: 0
   gate:
     focus: 0
 widgets:
@@ -39,6 +41,13 @@ props:
     prop: team
     open: picker
     values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
+  prop.19:
+    text: "Weight"
+    help: "How much more or less often players spawn here."
+    on: [starting-point]
+    prop: weight
+    open: picker
+    values: ["Low", "Normal", "High"]
   prop.3:
     text: "Team"
     help: "Which team this goal belongs to."

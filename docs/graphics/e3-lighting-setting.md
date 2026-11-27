@@ -4,28 +4,20 @@ Status: Built. This page describes the scaled D3D backend. The native frame grap
 Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (`PixelOptions::hard_shadow`). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
-With the Video screen's Lighting row on E3, the scaled backend
-([high-resolution.md](high-resolution.md)) draws the guest's own shadow
-maps larger and compares them with one tap, in the shown image only. It
-changes no other part of the picture: not the lights drawn, not object
-shadows, not the lightmaps. The design for E3 lighting as a whole, on the
-native renderer, is in [e3-lighting.md](e3-lighting.md). The scaled
-shadow maps live on the path FrameScene removes
-([framescene.md](framescene.md), section 11: `scaled.rs` goes in slice 10).
-While the row is on E3 the native shadow stage stands down for the scaled
-copies ([native-shadows.md](native-shadows.md), "Rules and limits"). No
-further work lands here.
+With the Video screen's Lighting row on E3, the scaled backend ([high-resolution.md](high-resolution.md)) draws the guest's own shadow maps larger and compares them with one tap, in the shown image only.
+
+| Changes | Does not change |
+|---|---|
+| the edge of retail's own dynamic-light shadows, in the view | the lights drawn, object shadows, the lightmaps, the guest, the simulation |
+
+The design for E3 lighting as a whole, on the native renderer, is in [e3-lighting.md](e3-lighting.md). The scaled shadow maps live on the path FrameScene removes ([framescene.md](framescene.md), section 11: `scaled.rs` goes in slice 10), so no further work lands here. While the row is on E3 the native shadow stand-down applies to the scaled copies ([native-shadows.md](native-shadows.md), "Rules and limits").
 
 ## How it works
 
-Retail shadows are depth textures: the shadow-generate layer (10) draws the
-casters into a depth level, and the shadow-apply layer (11) samples it as
-`LIN_D24S8` with the NV2A's hardware comparison and a 2x2 percentage-closer
-filter ([e3-lighting.md](e3-lighting.md), "Phase 0 findings"). E3 lighting makes that edge hard and sharp in
-the view only. It runs on the scaled backend ([high-resolution.md](high-resolution.md)):
-a 1x reference answers every read the guest makes and a scaled view draws what
-is shown, and in-place depth sampling (`Backend::depth_level_texture`,
-`gfx::depth_bits`; [d3d.md](d3d.md) "Lazy depth levels") means a depth level
+Retail shadows are depth textures: the shadow-generate layer (10) draws the casters into a depth level, and the shadow-apply layer (11) samples it as `LIN_D24S8` with the NV2A's hardware comparison and a 2x2 percentage-closer filter ([e3-lighting.md](e3-lighting.md), "Phase 0 findings"). E3 lighting makes that edge hard in the view only.
+
+The scaled backend ([high-resolution.md](high-resolution.md)) keeps a 1x reference that answers every read the guest makes, and a scaled view draws what is shown. In-place depth sampling (`Backend::depth_level_texture`,
+`gfx::depth_bits`; [d3d-render-targets.md](d3d-render-targets.md) "Depth levels") means a depth level
 is sampled with no read-back. The shadow comparison indexes texels by the
 bound texture's real size (`textureDimensions`) and takes the coordinate in
 the guest's size (`tex_scale`), so a larger map needs no change there.
@@ -86,12 +78,12 @@ pass, a colour level over the map's bytes, swap),
 The run report's `render scale` line ends with `shadow maps
 at Kx: D draws, T textures, R refills`. In a level with shadows, `T` above 0
 is the scaled map being sampled; `D` above 0 with `T` at 0 means the level went
-through guest memory and the view sampled the 1x upload, still one tap. The
-draw diagnostics list frames that drew with a depth texture bound
+through guest memory and the view sampled the 1x upload, still one tap.
+
+The draw diagnostics list frames that drew with a depth texture bound
 (`shadow-map frames K  a-b, c, ...`) and `H2_BOOT_GFX_SHADOWS=N` writes the
-first N lit ones. Two headless runs are not the same run this deep (polled
-visibility tests answer by host timing), so the comparison is made inside one
-run: `H2_BOOT_GFX_LIGHTING_AB=1` (`d3d::LightingAb`) puts a second view over
+first N lit ones. Two headless runs differ this deep (polled visibility tests answer by host
+timing), so the comparison is made inside one run: `H2_BOOT_GFX_LIGHTING_AB=1` (`d3d::LightingAb`) puts a second view over
 the scaled backend; the inner view draws retail and the outer draws E3 from
 the same calls, and each captured frame is written as `frame-N-retail.png`
 and `frame-N-e3.png`. The report ends with `lighting A/B: K of M shadow-map

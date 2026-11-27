@@ -229,6 +229,8 @@ enum Staged {
     Channel(u32, i16),
     /// A netgame item entry's spare clips.
     SpareClips(u32, Option<u8>),
+    /// A starting location's weight.
+    SpawnWeight(u32, Option<forge_doc::SpawnWeight>),
     /// An own entry's step that needs no tag resolved.
     Base(BaseStep),
     /// An own entry's field write, its value still a document value.
@@ -296,6 +298,9 @@ impl ForgeWorld {
                         Staged::Delete(target) => ForgeStep::Delete { target },
                         Staged::Channel(flag, channel) => ForgeStep::Channel { flag, channel },
                         Staged::SpareClips(index, clips) => ForgeStep::SpareClips { index, clips },
+                        Staged::SpawnWeight(index, weight) => {
+                            ForgeStep::SpawnWeight { index, weight }
+                        }
                         Staged::Base(step) => ForgeStep::Base(step),
                         Staged::Field {
                             block,
@@ -406,6 +411,17 @@ impl World for ForgeWorld {
             return Err("Spare clips are 0 to 10.".into());
         }
         self.steps.push(Staged::SpareClips(index, clips));
+        Ok(())
+    }
+
+    /// A starting location's weight: the game's table, after the batch's
+    /// objects.
+    fn spawn_weight(
+        &mut self,
+        index: u32,
+        weight: Option<forge_doc::SpawnWeight>,
+    ) -> Result<(), String> {
+        self.steps.push(Staged::SpawnWeight(index, weight));
         Ok(())
     }
 

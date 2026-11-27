@@ -374,29 +374,27 @@ fn a_retail_record_that_cannot_map_stays_and_the_reason_is_named() {
 }
 
 #[test]
-fn the_listed_siege_record_is_on_the_script_index_and_a_slayer_copy_of_it_moves_there() {
-    // Siege has no retail engine and no disc record: its record is the
-    // script's own (`variants::portable::record_for`), made on the script
-    // index, so the game's start leaves it where it is. A copy of it on
-    // the Slayer index (a record saved or sent before scripts that ride
-    // Slayer took the script index) moves there, with the script
-    // reference, the options and the common settings (team play, one
-    // life, no starting weapon) whole.
+fn the_listed_siege_record_is_on_slayers_index_in_the_lobby_and_moves_at_the_start() {
+    // Siege is a team script: its record stays on Slayer's index, which the
+    // retail pregame lobby builds its Game Setup rows, Quick Options and
+    // team player list from (the script index has no engine object before
+    // a game starts). The game's start moves it onto the script index with
+    // the script reference, the options and the common settings (team
+    // play, one life, no starting weapon) whole and the type area dropped.
     let siege = crate::community_variants::listed_named("Siege").unwrap();
     assert!(siege.record.team_play());
     let was = siege.record.to_bytes();
-    assert_eq!(
-        i32::from_le_bytes(was[variants::record::ENGINE_AT..variants::record::ENGINE_AT + 4].try_into().unwrap()),
-        SCRIPT
-    );
+    let engine = |raw: &[u8]| {
+        i32::from_le_bytes(raw[variants::record::ENGINE_AT..variants::record::ENGINE_AT + 4].try_into().unwrap())
+    };
+    assert_eq!(siege.record.game_type(), variants::GameType::Slayer);
+    assert_ne!(engine(&was), SCRIPT);
     let mut options = options_with(was);
-    assert_eq!(crate::rules::record::move_onto_script_index(&mut options, OPTIONS), Ok(Swap::Stayed));
-    assert_eq!(record_at(&options), was);
-
-    let mut old = was;
-    old[variants::record::ENGINE_AT..variants::record::ENGINE_AT + 4].copy_from_slice(&1i32.to_le_bytes());
-    let mut options = options_with(old);
     let moved = on_script_index(&mut options);
     assert_eq!(moved[..], was[variants::ext::AT..variants::ext::AT + LEN], "the script reference and options stay");
-    assert_eq!(&record_at(&options)[0x4c..0xe0], &was[0x4c..0xe0], "the common settings stay");
+    let started = record_at(&options);
+    assert_eq!(engine(&started), SCRIPT);
+    assert_eq!(&started[0x4c..0xe0], &was[0x4c..0xe0], "the common settings stay");
+    let v = variants::GameVariant::from_bytes(&started).unwrap();
+    assert!(v.bytes()[variants::record::TYPE_AREA].iter().all(|&b| b == 0));
 }

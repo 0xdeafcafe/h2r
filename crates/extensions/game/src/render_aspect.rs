@@ -243,20 +243,25 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
 /// no wider than the guest's lens) or one that does not read leaves the
 /// retail grid. Whether it widened.
 ///
-/// A fitted window at 2560x1440 on Delta Towers' bay showed the grid's far
-/// corners inside the picture (the water ended in two curved edges, the
-/// 4:3 window showed none), so the widened grid takes `OCEAN_GRID_SPARE`
-/// on top of the window's own lens.
-/// Extra width on a widened ocean grid, so its far corners stay off screen.
-const OCEAN_GRID_SPARE: f32 = 1.25;
-
+/// The setup caps the half angle at `[0x0045e2d4]` (0.7807) before the
+/// tangent, so a lens wider than the cap would still end short of the
+/// window's corners however large the aspect. The widened aspect carries
+/// the cap's loss as well: it is multiplied by `tan(half) / tan(cap)`
+/// (the horizontal field of view at `0x00485640`, halved by `0x0045dbbc`),
+/// so the grid spans the window's real half angle with retail's margin.
 fn widen_ocean_grid(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> bool {
     if !(factor.is_finite() && factor > 0.0 && factor < 1.0) {
         return false;
     }
     let Some(at) = esp.checked_add(0x10) else { return false };
     let Ok(aspect) = mem.f32(at) else { return false };
-    let widened = aspect / factor * OCEAN_GRID_SPARE;
+    let uncapped = match (mem.f32(0x0048_5640), mem.f32(0x0045_dbbc), mem.f32(0x0045_e2d4)) {
+        (Ok(fov), Ok(half), Ok(cap)) if cap > 0.0 && fov * half > cap && fov * half < 1.5 => {
+            (fov * half).tan() / cap.tan()
+        }
+        _ => 1.0,
+    };
+    let widened = aspect / factor * uncapped;
     if !(aspect.is_finite() && aspect > 0.0 && widened.is_finite()) {
         return false;
     }
@@ -1291,14 +1296,14 @@ mod tests {
                 guest.put_f32(at, 4.0 / 3.0);
                 assert!(widen_ocean_grid(&mut guest, esp, factor));
                 let aspect = guest.f32(at).unwrap();
-                close(aspect, output.0 as f32 / output.1 as f32 * OCEAN_GRID_SPARE);
+                close(aspect, output.0 as f32 / output.1 as f32);
                 let grid = ocean_half_tangent(fov, aspect);
                 assert!(grid >= window_half_tangent(fov, factor), "{output:?} at {fov}");
                 // The margin is retail's at 4:3, and the spare on top.
                 close(
                     grid / window_half_tangent(fov, factor),
                     ocean_half_tangent(fov, 4.0 / 3.0) / window_half_tangent(fov, 1.0)
-                        * OCEAN_GRID_SPARE,
+                       ,
                 );
             }
             // 16:10 and 16:9 were inside retail's margin already, and
@@ -1306,6 +1311,26 @@ mod tests {
             for output in [(1920, 1200), (2560, 1440)] {
                 let factor = projection_factor(&mem, output);
                 assert!(ocean_half_tangent(fov, 4.0 / 3.0) >= window_half_tangent(fov, factor));
+            }
+        }
+    }
+
+    /// A field of view past the setup's half-angle cap: the grid's corners
+    /// still cover the window at 16:9 and 21:9.
+    #[test]
+    fn the_ocean_grid_corners_cover_a_lens_past_the_half_angle_cap() {
+        let esp = 0x1000;
+        let at = esp + 0x10;
+        for fov in [100f32.to_radians(), 110f32.to_radians()] {
+            for output in [(2560, 1440), (3440, 1440)] {
+                let mut mem = FakeGuest::new();
+                mem.put_f32(0x0048_5640, fov).put_f32(0x0045_dbbc, 0.5).put_f32(0x0045_e2d4, 0.780_685_8);
+                let factor = projection_factor(&mem, output);
+                mem.put_f32(at, 4.0 / 3.0);
+                assert!(widen_ocean_grid(&mut mem, esp, factor));
+                let grid = ocean_half_tangent(fov, mem.f32(at).unwrap());
+                let window = window_half_tangent(fov, factor);
+                assert!(grid >= window * 1.13 - 1e-3, "{output:?} at {fov}: {grid} < {window}");
             }
         }
     }
@@ -1331,7 +1356,7 @@ mod tests {
         mem.put_u8(0x0048_5ac2, 1).put_f32(0x0045_dfdc, 4.0 / 3.0).put_f32(at, 2.0);
         let factor = projection_factor(&mem, (3440, 1440));
         assert!(widen_ocean_grid(&mut mem, esp, factor));
-        close(mem.f32(at).unwrap(), 2.0 * (3440.0 / 1440.0) / (16.0 / 9.0) * OCEAN_GRID_SPARE);
+        close(mem.f32(at).unwrap(), 2.0 * (3440.0 / 1440.0) / (16.0 / 9.0));
     }
 
     #[cfg(feature = "desktop-runtime")]
@@ -1753,7 +1778,7 @@ mod tests {
         };
         let fit = canvas.fit(None).unwrap();
         // The view's right edge is the canvas's, so it reaches the
-        // display's edge (docs/graphics/high-resolution.md, "Scissors").
+        // display's edge (docs/graphics/high-resolution.md, "Scissor, clears and viewport").
         assert_eq!(
             fit.map_rect(rect),
             PixelRect {

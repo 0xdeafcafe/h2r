@@ -1,0 +1,325 @@
+# Gametype markers: drawing and editing
+
+Drawing, editing, the agent API, rules, slices and evidence. Part of [gametype-markers.md](gametype-markers.md).
+
+## Drawing
+
+Both drawers build `Marker`s from their own data, take each one's mesh
+and place it. Neither holds a shape of its own.
+
+### Studio
+
+`scenario_edit::marker_view` turns the session's
+`geometry::Marker`s, their `Gameplay` (flag type, team, identifier),
+the document's labels and areas, and the trigger volumes into placed
+`game_markers::Mesh`es (`marker_view::placed`), and
+`render::Viewport::set_layer_overlay` takes them as the triangle list and
+line list of the layer each belongs to (`SpawnPoints`, `Flags`,
+`NetgameItems`, `Volume(kind)`; `marker_view::overlays`). They replace
+the glyphs of those blocks and the volume boxes. A selected marker (any
+corner of a hill, the selected volume) is white. The
+Show popover and `view.layers` hide and show them as they do the layers
+now, and X-ray draws them through walls. `view.snapshot` draws what the
+window draws.
+
+A placement `marker_view` has no marker for keeps its glyph: a flag of a
+type the game does not read, and an item spawner whose model draws (the
+model is the hologram). An item spawner's class is its item's tag group:
+`weap` and `itmc` a weapon, `vehi` and `vehc` a vehicle, else equipment.
+The overlay's blend sets the opacity of the skin (`OVERLAY_ALPHA`) and
+of the lines, so the skin is not `FILL_ALPHA` there and `Mesh::faded`
+does not reach it. The labels of `gameplay_labels` are unchanged.
+
+A trigger volume's box is given by a corner and three full lengths
+(`scenario_edit::volumes`); `marker_view` hands `Solid::Box` the half
+lengths and a `Place` at the box's middle on the volume's axes.
+
+### The game
+
+The markers are a world-line source
+(`crates/extensions/game/src/world_lines.rs`, `WorldLineSource`), as the
+HUD kit's world marks and the superbounce guide are:
+`forge_glue::markers_world` turns the session's things
+(`Session::things`), its ground labels and the problems of the last
+ground build into `Entry`s (`Editor::marker_entries`, rebuilt every
+third tick), and its `Source` builds the mesh of each in the capture and
+gives the window's world-line pass their lines, under the HUD, each
+marker's label text ("Red spawn", "Hill 2") over its anchor. The ground
+labels, which were rings painted on the HUD canvas, are markers; another
+seat's monitor keeps its ring (`forge_glue::marker`). A hill's marker
+takes `Area::of_corners` or the default area until the document holds an
+area.
+
+- **Forms and plates.** Each entry draws its marker's edit form with the
+  monitor on ([gametype-marker-forms.md](gametype-marker-forms.md),
+  "When a form shows"): `markers_world::drawn` puts the play form's parts
+  in a group's `edges` at its alpha and the edit-only parts in its `dim`
+  at `form::EDIT_ALPHA` of it. The plate stands on the post, turned about
+  the upright to face the eye and scaled by `form::icon_scale` of the
+  eye's distance with its foot on the post (`markers_world::plate`).
+- **Lines first.** The world-line pass draws lines, with no depth test.
+  That is the hologram's frame and is enough to read every marker. The
+  native renderer's marker pass (`native_render::markers::Pass`) draws
+  the translucent skin (`Mesh::tris`) alpha blended, depth tested and not
+  written, over the world's colour and depth, behind the renderer's own
+  switch `impl.render.native` ([switches.md](../runtime/switches.md)).
+  It takes a `Batch` of vertices (three a face, two a line) and a
+  world-to-clip matrix.
+- **In the frame.** `Source::capture` turns the groups of the view into a
+  `Batch` (`markers_world::batch`: each vertex's alpha is the group's
+  times its distance fade from the eye) and publishes it
+  (`markers::publish`). The frame graph
+  (`frame_graph::markers`) puts one stage after the last op of each game
+  view's own slots, which is after the transparents and the post passes
+  and before the overlay's HUD. The stage draws the batch on the scene's
+  colour and depth with the view's view-projection inside the view's
+  viewport. The guest's depth is a 24-bit W-buffer (nearer smaller), so
+  the pass writes `floor(w * scale / far) / scale` for each fragment
+  (`markers::WDepth`) and tests with the usual order, not a reversed one.
+  Every game view draws the batch the first view's eye faded.
+- **No double draw.** While the stage has recorded within the last 250 ms
+  (`markers::drawn_recently`) and the renderer is on, the window's
+  world-line pass leaves the markers' lines out and keeps their labels
+  (`markers::window_skips_lines`); the first frame, a frame the graph
+  does not own and `impl.render.native=off` draw the lines in the window
+  alone, at full alpha with no skin.
+- **Depth.** A marker behind a wall draws its lines at a third of their
+  alpha (`markers::XRAY_ALPHA`, the X-ray look) and no skin, so an author
+  finds a spawn through a wall and still sees which side of it the spawn
+  is on. The marker pass tests against the world's depth: the skin and
+  the lines in front draw where the marker is nearer, the lines behind
+  where it is not. The window's line pass has no depth, so on its own
+  every line draws full.
+- **Distance.** A marker fades from 40 world units to nothing at 60, an
+  area's wall from 80 to 120, as the window's own per-line fade
+  (`LineStyle::fade`); its label shows within 20. The aimed-at and held
+  markers are white, never fade and are drawn first. A marker past its
+  fade is not drawn and not counted.
+- **Other game types.** With the tool showing this game type
+  (`forge.show`), a thing of another game type has no marker; with all
+  shown it draws at a quarter alpha (`Mesh::faded`).
+- **Budget.** At most 256 markers a view (`markers_world::BUDGET`), the
+  nearest first; the rest are counted in `render.markers`.
+
+### When a marker shows
+
+| Where | Shows |
+|---|---|
+| Studio's viewport and `view.snapshot` | every marker of a visible layer |
+| Forge, monitor on | every marker of the game type the tool shows (`forge.show`: `this_game_type` or `all_game_types`); the others faded when all are shown |
+| Forge, playing in the session (D-pad Up) | none, but for the boundary below |
+| A game | none, but for the boundary below |
+
+**The boundary in play.** A script asks for an area's wall to draw in
+play, as Halo 3 draws its hill (**C**): `show_area(zone, team)`
+([rules-world-api.md](rules-world-api.md), "Zones") turns it on for a
+zone in a team's colour, `none` for neutral, and `hide_area(zone)` off.
+`koth.rules` shows the hill in play and hides the last one when the hill
+moves; `territories.rules` shows each registered territory, neutral until
+a player's team takes it; `siege.rules` shows its sites and the
+defenders' stand in the defenders' colour and a site it is taken in the
+attackers' (at most six sites are shown, so the sites and the stand fit
+the eight). The VM keeps at most eight shown areas in `RulesExt::shown`
+(a zone object and a team, in the order first shown; a ninth is a script
+error, and the round's end clears them). After each tick the runtime
+turns each into a `Wall` of the zone's shape (`world/walls.rs`) and
+publishes them; the same world-line source draws each wall alone
+(`Kind::wall`, `draw_walls`), in the team's colour with no pip and no
+label, fading over the area's range, and `render.markers` lists it as a
+`wall`. A game draws it with or without a Forge session. A machine that
+runs the VM draws it, and so does a film's re-run. A client that does not
+run the script draws it from a walls cue ([rules-world-api.md](rules-world-api.md),
+"The show channel"): the authority sends the whole shown list when it
+changes and every 90 ticks while it is not empty, and the client reads each
+zone's shape from its own copy of the map. It is on in the built-in scripts, and a
+script that never calls it draws nothing.
+
+## Editing
+
+One document op carries every edit, so Forge, Studio and the agent API
+make the same document.
+
+### Forge
+
+- **Placing.** The Objects menu's Goals group offers **Hill**,
+  **Territory** and **Siege site**. A places a centre flag with a
+  radius of 1 in one undo step. A custom hill uses one centre flag of
+  an unused hill type and one area op
+  ([forge-editing.md](forge-editing.md), "The object menu").
+- **Radius.** Choose **Edit area** in an aimed or held goal's
+  Properties (X): a hill, a territory, a site, a flag return, a bomb
+  goal or a siege goal. A flag return, a bomb goal and a siege goal with
+  no area start from `Area::plate()`, the rest from the default circle
+  (`forge_glue::editing::area::default_area`). The left stick grows or
+  shrinks the radius by the
+  movement snap, or by 0.25 with snap off. The wall follows the draft.
+  X opens the typed **Radius**, **Below** and **Above** rows. Close the
+  rows to return to the draft. A writes one `EntryOp::Area`. B cancels.
+- **Shapes.** Y cycles the draft's shape: a circle becomes a box of its
+  radius each way, a box a sphere of the same floor, a sphere an empty
+  path, and a path a circle of the same floor
+  ([gametype-marker-forms.md](gametype-marker-forms.md), "Boundaries").
+  A box lies on its marker's facing, as Studio draws it and the game
+  scores it. The left stick's forward axis steps the box's half length
+  and its right axis its half width while the monitor looks more along
+  the marker's facing than across it, and the other way round while it
+  looks across, one step a lean; a sphere grows on the forward
+  axis alone. X types a box's **Half length**, **Half width**, **Below**
+  and **Above**, and a sphere's **Radius**: a sphere has no height, so
+  it sets the heights aside and the shape after it takes them back.
+- **Path.** From a sphere, Y makes a path. Fly the monitor and press A to drop
+  each point on the floor under the reticle. The closing edge is
+  dashed. X removes the last point and holding A on a point drags it.
+  Invalid additions and drags leave the last valid points in place
+  and show the `AreaError` sentence. Start or a tap of A on the first
+  point closes a valid path and writes one area op. B cancels. Y
+  makes a circle with the same floor area, or restores the radius
+  from before the path if it has fewer than three points.
+- **Moving the marker** moves the area with it and writes no area op.
+- **Undo** is the op's inverse, as for any entry op.
+
+### Studio
+
+- The Scene tab's **AI and objectives** group places the same markers
+  with **Place new with the mouse**.
+- A selected marker with an area has gizmo handles
+  (`crates/apps/studio/src/viewport.rs`): a radius has one handle on
+  its rim, dragged in or out; a box has one on each corner (both half
+  lengths) and one on the middle of each side (one half length), on the
+  marker's own axes; a sphere has one on its equator and one on its
+  pole (the radius); a path has a handle a point (drag to
+  move, Delete to remove) and one on the middle of each edge (drag to
+  add a point there). The top and the bottom of the wall each have a
+  handle for the heights, except a sphere's, which has none. A drag
+  that `Area::validate` refuses snaps back, with the sentence in the
+  status line (`crates/tools/scenario-edit/src/area_edit.rs`).
+- The inspector shows **Shape** (Radius, Box, Sphere or Path),
+  **Radius** or the box's **Half x** and **Half y**, **Below** and
+  **Above** (not for a sphere) and the points as a table of typed
+  numbers. Changing the shape keeps what the old one held: a radius, a
+  sphere and a path keep their farthest reach, a box the tightest box
+  in the marker's axes, a path of a box its corners turned to the
+  marker.
+- A retail hill's corners show **Convert to area**: it writes
+  `Area::of_corners`' path on a new centre flag and removes the corner
+  flags, in one undo step. A custom hill is one centre marker and an
+  area. The marker models replace Studio's old glyphs (MK4).
+- Areas are held in the open session, keyed by placement, and a save
+  writes them to the end of the `.map` ("Areas saved with a map"); they
+  count in `changes()` and `is_dirty`.
+
+## Agent API
+
+Both APIs gain what a later agent needs to see a marker and to check
+it, so a lane's report attaches a render and a check, not a screenshot
+of a window ([agent API rules](../../AGENTS.md)).
+
+| Method | API | Does |
+|---|---|---|
+| `markers.list {kind?, layer?}` (built) | Studio | every marker of the open map: `{id, kind, layer, team, icon, use, position, facing, label, number, area, area_from, members, bounds, lines, triangles}`, `id` the placement as `scenario.*` names it (`netgame_flags[3]`; `volume[2]` for a trigger volume), `area` as the document writes it (floats in hex) or `null`, `area_from` `corners` or `default` while the area is derived and not stored, `members` the placements it stands for, `bounds` the placed mesh's box; with `counts` by kind |
+| `markers.render {kind?, team?, area?, view?, size?, out?}` (built) | Studio | draws markers with no map, on the grid at the scale of a 0.7 figure: one kind, or with none the contact sheet of `Kind::samples` in red, blue and neutral (a kind of one fixed colour once). Answers `{path, width, height, view, covered, kinds}`, each of `kinds` with its cell and its centre in pixels. `area` is `{radius, below?, above?}` or `{path, below?, above?}` in plain numbers and is refused with `Area::validate`'s sentence. Needs no disc |
+| `markers.area.set {id, area}` (built) | Studio | sets a flag's area (`{radius, below?, above?}` or `{path, below?, above?}`) or clears it (`null`), as one undo step; answers `{id, area}` as stored, or `Area::validate`'s sentence as `REFUSED`, the document untouched |
+| `markers.area.convert {id}` (built) | Studio | a retail hill's corners become one centre flag with an area, in one undo step; answers `{id, area, position}` of the kept flag |
+| `check.run` | Studio | the `markers` check (built): `markers.area.invalid`, `markers.hill.corners_and_area`, `markers.area.no_floor`, `markers.area.overlap`; a spawn or a marker under the floor or off the map is not checked |
+| `view.layers`, `view.snapshot` | Studio | as they are: the layers now draw the markers |
+| `forge.things` | game | each netgame flag reports `area` in the document spelling, or `null` |
+| `forge.propose` | game | accepts an op with `"edit":{"entry":{"area":{target, area}}}` and reports refusals by name |
+| `render.markers` | game | what the last capture drew: `{shown, hidden_by_budget, markers: [{thing, kind, team, anchor, lines, faded}]}`, `anchor` in world units, `kind` filtering the list ([agent-api.md](../runtime/agent-api.md), "`render.markers`"); the walls shown in play are rows of kind `wall` |
+| `rules.zones` (built) | game | each zone the host built: `{label, number, shape: "area" \| "corners" \| "default", area, at}`, so a test reads the hill a script scores |
+
+`markers.render` is the content render of this page's shapes, as
+`model.render` is a model's
+([agent-api.md](../editor/agent-api.md), "`model.*`"): a change to a
+shape attaches its sheet.
+
+## Rules and limits
+
+- One shape per kind, from `game_markers`. A drawer does not add lines
+  to a marker; a new part of a game type is a new `Kind`.
+- A marker is never an object: it has no datum, no collision and no
+  guest memory, and a film replays without it.
+- A marker draws nothing in a game but a wall a script shows.
+- An area is on a netgame flag only. A trigger volume is not a zone: the
+  host's census has no trigger volumes
+  ([rules-world-api.md](rules-world-api.md), "Zones").
+- The retail engines read the corner flags and no area. A hill shaped
+  as one flag with an area is a hill for a script; `koth.rules` is King
+  of the Hill ([game-types-without-carriers.md](game-types-without-carriers.md)).
+- A path is at most 32 points and a view at most 256 markers.
+
+## Slices
+
+Sizes as [rich-editors.md](../editor/rich-editors.md): S under 800
+lines with tests, M under 2,500.
+
+| # | Slice | Size | Needs | Accepted when |
+|---|---|---|---|---|
+| MK1 (built) | **The marker set and the area**: `game_markers`, every `Kind`'s mesh, `Palette`, `Area` with `validate`, `contains`, `outline`, `of_corners` | S | nothing | `every_kind_has_its_lines_faces_and_bounds` gives each kind's lines, triangles and box; a marker is its team's colour; a bow tie, a spike, points in a line and a radius out of range are refused by name; an L holds its inside and not its notch; a hill's corners give the hull the host makes |
+| MK2 (built) | **The area in the document**: `EntryOp::Area`, its wire form, the validator's refusals, `ForgeDoc::areas`, `LabelledThing::area`, `Session::set_area`, `forge.propose` and `forge.things` | S | MK1 | an area op round-trips canonical JSON; a crossing path is refused with `AreaError`'s sentence; an area follows its flag through a swap-remove; a document with an area is format 3 and a map variant; a hill with corners refuses an area |
+| MK3 (built) | **The zone read**: `zones::Shape::Area`, the three-step order, `FakeGame`'s areas, `bots::objective::zones`, `rules.zones` | S | MK2 | on the fake game `koth.rules` scores a player inside a path hill and not one in its notch; a retail hill's zone holds the same points before and after; a lone flag is the default cylinder |
+| MK4 (built) | **Studio draws them**: `scenario_edit::marker_view`, the layers' overlays in place of the glyphs, outlines and volume boxes, `markers.list`, `markers.render` | M | MK1 | on the invented cache each placement block gives its kind and team; a hill's corners give one `Hill`; `markers.render` writes the sheet with every kind of `Kind::samples`; `view.snapshot` of a spawn differs from the background where its mesh projects |
+| MK5 (built) | **Studio edits areas**: the gizmo handles, the inspector rows, `markers.area.set`, **Convert to area**, the `markers` check | M | MK2, MK4 | a rim drag writes one area op; an edge handle adds a point; a refused drag leaves the document as it was; converting a hill's corners gives a zone that holds the same points; the check names an overlapping pair |
+| MK6 (built) | **Forge draws them**: `forge_glue::markers_world` as a world-line source, the fades and the budget, the label text, `render.markers`; the HUD-canvas rings for ground labels removed | M | MK1 | on an invented session every thing gives its marker's lines with the monitor on and none with it off; a marker of another game type is faded; the 257th marker is counted and not drawn |
+| MK7 (built) | **Forge edits areas**: **Edit area**, radius by stick and typed, the path's drop, drag, remove and close, the notices | M | MK2, MK6 | scripted pad input (`forge.input`) that drops four points and closes writes one op with those points; a crossing fifth point is refused with its sentence and the path is unchanged; B leaves the document as it was |
+| MK8 (built) | **The boundary in play**: `show_area`, `hide_area`, the eight shown areas in `RulesExt`, the built-ins' calls, the wall from the same source | S | MK3, MK6 | on the fake game `koth.rules` shows the hill in play and one area at a time as the hill moves; the shown areas are equal on a host and a client after a tick; a script that never calls it shows none |
+| MK9 (built) | **The skin**: `native_render::markers`, the translucent faces with depth, the X-ray lines | M | MK6 | on the renderer's headless target a hill's wall changes pixels in front of a floor and none behind a nearer wall; with `impl.render.native=off` the lines draw alone |
+
+MK1 is first. MK2 and MK4 start together after it, and MK6 beside
+them; MK3, MK5 and MK7 follow their needs; MK8 and MK9 are last.
+
+## Evidence
+
+- **Code** The rows, labels and zones named in "What a map has and what
+  draws it": the paths given there.
+- **Test** Each kind's lines, triangles and bounds:
+  `every_kind_has_its_lines_faces_and_bounds`. Colours:
+  `a_marker_is_its_teams_colour_with_solid_lines_and_a_thin_skin`,
+  `a_kinds_own_colour_holds_or_gives_way_to_a_team`. The area's
+  refusals: `a_radius_area_is_refused_outside_its_limits`,
+  `a_path_is_refused_by_its_first_fault`. The zone test:
+  `a_concave_path_holds_what_is_in_it_and_not_its_notch`,
+  `a_radius_area_holds_a_cylinder`. A retail hill's area:
+  `a_hills_corners_make_the_area_the_host_makes_of_them`. All in
+  `crates/formats/game-markers/src/tests.rs`. The skin on the headless
+  target: `a_wall_changes_pixels_in_front_of_a_floor_and_none_behind_a_nearer_wall`
+  and `a_line_behind_the_world_draws_at_a_third_of_its_alpha`
+  (`crates/rewrites/native-render/tests/markers_gpu.rs`); the switch:
+  `with_the_native_renderer_off_nothing_draws_here`.
+- **C** Halo 3's Forge shows spawn and goal objects as holograms in the
+  team's colour under a chosen game type, and its hill in play is a
+  ring of light on the floor; Halo: Reach gives a labelled object a
+  boundary that is a cylinder or a box with typed sizes. From the
+  games as shipped and their public guides. No asset of either is used.
+- **Design** Everything else: the shapes and their sizes, the area as
+  document data on one flag, the path, the order a zone's shape is
+  chosen in, the fades, the budget, the script calls.
+
+## Not verified
+
+- That the markers read at the sizes given, in Studio and from a
+  monitor: a `markers.render` sheet and a Forge session show it.
+- The 0.7 figure against a player standing beside it in a game.
+- The fade distances and the 256 budget on a map with every flag and
+  spawn shown, at 60 fps: `render.stats` beside `render.markers`.
+- The retail engines' own hill test and its heights, which
+  `zones::RADIUS`, `ABOVE` and `BELOW` stand in for
+  ([rules-world-api.md](rules-world-api.md), "Not verified").
+- Which netgame flag types the retail engines read as a hill of one
+  flag, if any.
+
+## Related
+
+- [gametype-marker-forms.md](gametype-marker-forms.md): the design for
+  icons on a plate, the edit form and the play form of each kind, the
+  box and sphere areas, and what shows in a match (MK10 to MK16).
+- [forge-editing.md](forge-editing.md): the Objects tool, the object
+  menu and Properties.
+- [forge-map-variants.md](forge-map-variants.md): the things, entry ops
+  and properties without a retail field.
+- [game-types-without-carriers.md](game-types-without-carriers.md):
+  "Maps for scripted games", the labels.
+- [rules-engine.md](rules-engine.md#forge-labels) and
+  [rules-world-api.md](rules-world-api.md): labels and zones.
+- [hud-kit.md](hud-kit.md): world marks and team colours.
+- [agent-api.md](../editor/agent-api.md) and
+  [agent-api.md](../runtime/agent-api.md): the methods.

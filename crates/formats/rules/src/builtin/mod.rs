@@ -153,11 +153,13 @@ pub struct Layout {
 }
 
 /// Every built-in layout, files of `builtin/layouts/<script>/<map>.json`.
-pub const LAYOUTS: &[Layout] = &[Layout {
-    script: "siege",
-    map: "zanzibar",
-    json: include_str!("layouts/siege/zanzibar.json"),
-}];
+pub const LAYOUTS: &[Layout] = &[
+    Layout { script: "siege", map: "zanzibar", json: include_str!("layouts/siege/zanzibar.json") },
+    // Scaffolded by `h2 siege layout` (docs/game/rules-engine.md, "Siege layouts").
+    Layout { script: "siege", map: "coagulation", json: include_str!("layouts/siege/coagulation.json") },
+    Layout { script: "siege", map: "headlong", json: include_str!("layouts/siege/headlong.json") },
+    Layout { script: "siege", map: "waterworks", json: include_str!("layouts/siege/waterworks.json") },
+];
 
 /// The built-in layout of `script` on `map` (short names), if there is
 /// one. A map without one keeps the labels its flags carry.

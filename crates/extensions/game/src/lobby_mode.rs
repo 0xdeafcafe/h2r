@@ -190,6 +190,26 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
     (out != actions).then_some(out)
 }
 
+/// The rows the hook writes for a list built with `actions`, or why it
+/// writes none: a list the game built empty, or an arrangement that would
+/// leave it empty, is named on the log instead of shown as an empty Game
+/// Setup (no quiet fallback). `None` with no error: the list stays as built.
+pub fn rows_to_write(mode: Mode, offer: Offer, actions: &[i16]) -> Result<Option<Vec<i16>>, String> {
+    if actions.is_empty() {
+        return Err(format!(
+            "the Game Setup list was built with no rows in {} (the variant's engine gave the lobby none)",
+            mode.label()
+        ));
+    }
+    match arrange(mode, offer, actions) {
+        Some(rows) if rows.is_empty() => Err(format!(
+            "arranging the Game Setup list in {} would leave no rows of {actions:?}; it stays as built",
+            mode.label()
+        )),
+        other => Ok(other),
+    }
+}
+
 /// The Map Variant row's help line: what the lobby's pick plays.
 pub fn map_variant_help(name: Option<&str>) -> String {
     match name {
@@ -961,10 +981,14 @@ impl hooks::Feature for LobbyMode {
                 let mut mem = rt.memory();
                 let Ok(actions) = h1row::setup_actions(&*mem, list) else { return Ok(()) };
                 let mode = lobby_start::mode();
-                let rows = arrange(mode, offer, &actions).unwrap_or_else(|| actions.clone());
-                if rows == actions {
-                    return Ok(());
-                }
+                let rows = match rows_to_write(mode, offer, &actions) {
+                    Ok(Some(rows)) if rows != actions => rows,
+                    Ok(_) => return Ok(()),
+                    Err(why) => {
+                        eprintln!("lobby mode: {why}");
+                        return Ok(());
+                    }
+                };
                 match h1row::rewrite_rows(&mut *mem, list, &rows) {
                     Ok(n) => {
                         eprintln!("lobby mode: Game Setup list in {} ({n} rows)", mode.label())

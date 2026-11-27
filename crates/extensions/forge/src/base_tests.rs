@@ -24,6 +24,7 @@ pub(crate) enum Call {
     KitAdd(BlockKind, u32, Vec<(String, Value)>),
     KitDrop(BlockKind, u32),
     SpareClips(u32, Option<u8>),
+    SpawnWeight(u32, Option<forge_doc::SpawnWeight>),
 }
 
 /// A world that records each call. `refuse_at` refuses the call at that
@@ -98,6 +99,13 @@ impl World for Fake {
     }
     fn spare_clips(&mut self, index: u32, clips: Option<u8>) -> Result<(), String> {
         self.call(Call::SpareClips(index, clips))
+    }
+    fn spawn_weight(
+        &mut self,
+        index: u32,
+        weight: Option<forge_doc::SpawnWeight>,
+    ) -> Result<(), String> {
+        self.call(Call::SpawnWeight(index, weight))
     }
 }
 

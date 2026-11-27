@@ -444,7 +444,7 @@ pub fn object_type(group: &[u8; 4]) -> Option<ObjectType> {
     })
 }
 
-fn map_error(e: impl std::fmt::Display) -> Refusal {
+pub(crate) fn map_error(e: impl std::fmt::Display) -> Refusal {
     Refusal::invalid("map", e.to_string())
 }
 
@@ -456,7 +456,7 @@ fn le_u32(b: &[u8], at: usize) -> Result<u32> {
 
 /// A block of the scenario root `root` (at `space`), its entries' bytes;
 /// at most `limit` of them.
-fn read_block<R: Read + Seek>(
+pub(crate) fn read_block<R: Read + Seek>(
     map: &mut map::Map<R>,
     root: &[u8],
     space: map::AddressSpace,

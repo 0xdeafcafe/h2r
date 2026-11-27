@@ -540,6 +540,21 @@ mod tests {
         assert_eq!(lines[3], "Bounce points: 1");
     }
 
+    /// Siege's Quick Options are its five marks, read off its record on
+    /// Slayer's index (where the lobby builds the panel), and its rows
+    /// take the whole panel.
+    #[test]
+    fn siege_has_its_quick_options() {
+        let ir = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        assert_eq!(record.game_type(), variants::GameType::Slayer);
+        let lines = crate::variant_quick::lines(&record).unwrap();
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!(lines.iter().all(|l| !l.is_empty()), "{lines:?}");
+        let ids: Vec<u32> = (0..5).collect();
+        assert_eq!(plan(retail(PANEL_ROWS), Some(&ids), &[]), [0, 1, 2, 3, 4].map(Slot::Ours));
+    }
+
     /// The lobby mode's and the options' lines take the bottom of a script
     /// variant's rows by the same rule as of the formatter's.
     #[test]

@@ -32,6 +32,10 @@ pub(super) struct Starts {
     held: Option<GameStart>,
     /// Updates a game has gone on undescribed, after its first.
     undescribed: u32,
+    /// Overrides [`DESCRIBE_UPDATES`]: a test's seam, so a give-up takes
+    /// a few updates instead of hundreds of arena hashes.
+    #[cfg(test)]
+    pub(super) describe_updates: Option<u32>,
 }
 
 /// Updates the observer may take to describe a game, counted from its
@@ -92,8 +96,12 @@ impl Starts {
         };
         if meta.descriptor().map.name.is_empty() {
             self.undescribed += 1;
+            #[cfg(test)]
+            let limit = self.describe_updates.unwrap_or(DESCRIBE_UPDATES);
+            #[cfg(not(test))]
+            let limit = DESCRIBE_UPDATES;
             ensure!(
-                self.undescribed <= DESCRIBE_UPDATES,
+                self.undescribed <= limit,
                 "the game was not described in its first {DESCRIBE_UPDATES} updates"
             );
             self.activated = Some(start.options);
