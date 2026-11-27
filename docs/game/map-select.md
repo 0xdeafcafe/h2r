@@ -48,15 +48,15 @@ The category follows the slot's load path. The DVD's
 `D:\maps\<name>.map` has its original Halo 2 slot. Map Pack maps keep their
 imported `T:\$c\<offer>\<name>.map` slots. Each mod uses a separate content
 offer, a separate list ID, and a free multiplayer slot. A mod based on
-Lockout is listed by its own name under **Mods** while **Lockout** remains
+Lockout is listed by its own name under **Mod Downloader** while **Lockout** remains
 under **Halo 2**. The same rule applies to mods based on Map Pack maps.
 
-A fully installed Live pack appears as a folder under **Mods**. The
+A fully installed Live pack appears as a folder under **Mod Downloader**. The
 folder lists its base maps. Pick one to play that member and use the
 pack for later map choices. In **Halo 2** and **Map Pack**, a covered
 base shows its name followed by the pack name. Its row selects the
 member's exact offer. Uncovered maps
-keep their original slots. Choose **Mods** → **Use original maps**
+keep their original slots. Choose **Mod Downloader** → **Use original maps**
 to clear the pack for subsequent selections. A member can still be
 played individually when only part of its pack is installed.
 
@@ -73,7 +73,7 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-Installed mods appear in their own slots when space allows. See [generated offers](maps.md#package-offers) for slot
+Installed mods appear in their own slots when space allows. See [generated offers](maps-new-maps.md#package-offers) for slot
 allocation, IDs and load paths.
 
 ## Names, descriptions and pictures
@@ -88,7 +88,7 @@ The game applies the record to a free slot and uploads the preview to
 that slot's bitmap. Select Map, Game Setup and the lobby use the same
 slot, so all three show the chosen mod's picture. The retail slot
 retains its own name, description and bitmap. See
-[Map Pack §8.1](map-pack.md#81-where-10-reads-patchlvl) and
+[Map Pack §8.1](map-pack-playing.md#81-where-10-reads-patchlvl) and
 [map packages §4](maps.md#4-new-maps-and-the-map-pack).
 
 ## Changes during a session
@@ -139,7 +139,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   the console says which rows won't show by name and why:
   `map select: Maps(MapPack): 4 of 9 rows won't show by name
   (Containment (0x514): not in the game's list, ...)`. Nothing is said
-  when every row has an unlocked slot.
+  when every row has an open slot.
 - **Row text** (`MAP_LIST_ROW_TEXT` `0x2c9ac4` notes which list is
   drawing; `MP_LEVEL_NAME` `0x2afd70` answers). The row text looks up the
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its

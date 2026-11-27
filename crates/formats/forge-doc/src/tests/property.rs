@@ -467,3 +467,43 @@ fn spare_clips_are_an_item_spawners_in_range_and_the_last_op_wins() {
     assert!(spare_clips(&ops).is_empty());
     assert!(resolve(&ops, &limits().base_counts).unwrap().lowered.is_empty());
 }
+
+fn weight(id: u32, target: Endpoint, weight: Option<SpawnWeight>) -> Op {
+    Op {
+        id: OpId(id),
+        edit: Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Weight(weight),
+        }),
+    }
+}
+
+#[test]
+fn a_weight_is_a_starting_points_and_the_last_op_wins() {
+    const STARTS: BlockKind = BlockKind::StartingLocations;
+    let limits = Limits {
+        base_counts: BTreeMap::from([(ITEMS, 3), (STARTS, 2)]),
+        ..Limits::default()
+    };
+    let op = weight(1, at(STARTS, 0), Some(SpawnWeight::High));
+    assert_eq!(
+        serde_json::to_value(&op.edit).unwrap()["entry"]["property"]["property"],
+        serde_json::json!({"weight": "high"})
+    );
+    validate(&with(vec![op.clone()]), &limits).unwrap();
+    let error = validate(&with(vec![weight(1, at(ITEMS, 0), Some(SpawnWeight::Low))]), &limits)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("a weight is a starting point's"), "{error}");
+    let mut ops = vec![
+        op,
+        weight(2, at(STARTS, 1), Some(SpawnWeight::Low)),
+        weight(3, at(STARTS, 1), None),
+    ];
+    assert_eq!(
+        spawn_weights(&ops),
+        BTreeMap::from([(Endpoint::base(STARTS, 0), SpawnWeight::High)])
+    );
+    ops.push(reset(4, at(STARTS, 0)));
+    assert!(spawn_weights(&ops).is_empty());
+}

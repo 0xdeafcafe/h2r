@@ -172,14 +172,14 @@ host_agent world.ai '{}'
 
 Confirm the authored spare counts and marked tails against the baseline.
 For device groups and squads, compare with the kit build's reservation
-counts. Check that each tail leaves its readers' behavior intact:
+counts. Check that each tail leaves its readers' behaviour intact:
 ordinary placement and naming, player starts, objectives and teleporter
 selection, equipment spawn and respawn, device activation, and the
 actor roster. Include a positive control with one functional entry in
 place of a spare to confirm the exercised reader can observe it.
-Record load errors, extra objects or actors, changed behavior, and
+Record load errors, extra objects or actors, changed behaviour, and
 untested readers by block. An equal aggregate census can corroborate
-the behavior checks but cannot establish inertness by itself.
+the behaviour checks but cannot establish inertness by itself.
 
 ## Probes for the loose ends (not yet run)
 
