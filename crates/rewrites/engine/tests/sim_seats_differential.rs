@@ -1042,7 +1042,13 @@ fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, ca
             c.gpr[1] = rec;
             c.gpr[0] = block;
         }
-        Leaf::WeaponReady => {}
+        Leaf::WeaponReady => {
+            // count, the two magazines' rounds, the zoom levels.
+            let (count, rounds, levels) =
+                [(2, [0i16, 3], 1i16), (2, [9, 0], 1), (2, [0, 0], 0), (0, [3, 3], 2), (1, [6, 1], 0), (2, [7, -2], -1), (u32::MAX, [1, 1], 0)]
+                    [case as usize % 7];
+            weapon_fixture(m, c, count, rounds, levels);
+        }
         Leaf::Direction => {
             let v: [[f32; 3]; 4] = [[1.0, 0.5, -0.25], [-3.0, 0.0, 2.0], [0.0, 0.0, 0.0], [0.1, -0.7, 0.3]];
             for (i, x) in v[case as usize % 4].into_iter().enumerate() {
@@ -1058,7 +1064,7 @@ fn leaf_fixture(m: &mut FlatMemory, c: &mut Cpu, leaf: sim_seats::leaf::Leaf, ca
 fn seat_leaves_match_lifted() {
     use sim_seats::leaf::{self, Leaf};
     let Some((image, ram)) = image() else { return };
-    for l in Leaf::ALL.into_iter().filter(|&l| l != Leaf::WeaponReady) {
+    for l in Leaf::ALL {
         let mut code = image.original();
         code.prime(l.target());
         for case in 0..7 {
@@ -1110,76 +1116,89 @@ fn seat_leaves_match_lifted() {
     }
 }
 
-/// `100f70` through its two halves, with its guest callee `100880` run
-/// for real between them, against the lifted `100f70` whole.
+const WEAPON_OBJECT: u32 = RECORDS + 0x600;
+const WEAPON_TAGS: u32 = RECORDS + 0x700;
+const WEAPON_DEF: u32 = RECORDS + 0x800;
+
+/// A weapon (handle `0x8300_0003`, tag 5) with `count` magazines, the
+/// first two holding `rounds`, and `levels` zoom levels.
+fn weapon_fixture(m: &mut FlatMemory, c: &mut Cpu, count: u32, rounds: [i16; 2], levels: i16) {
+    word(m, 0x004e_0300, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    word(m, points::TAG_ENTRIES.base, WEAPON_TAGS);
+    word(m, DATA + 3 * 12 + 8, WEAPON_OBJECT);
+    word(m, WEAPON_OBJECT, 0x00ab_0005);
+    word(m, WEAPON_TAGS + 5 * 16 + 8, WEAPON_DEF);
+    word(m, WEAPON_DEF + 0x2c0, count);
+    for (i, r) in rounds.into_iter().enumerate() {
+        m.bytes[(WEAPON_OBJECT + 0x224 + 16 * i as u32) as usize..][..2].copy_from_slice(&r.to_le_bytes());
+    }
+    m.bytes[(WEAPON_DEF + 0x1fe) as usize..][..2].copy_from_slice(&levels.to_le_bytes());
+    c.gpr[0] = 0x8300_0003;
+}
+
+/// `100f70` with its callee `100880` in the kernel, over magazine counts
+/// (none, negative, past the two set), rounds on both sides of 1..=6 and
+/// zoom levels, against the lifted `100f70` whole: every register, `esp`,
+/// and every byte but the dead stack.
 #[test]
 fn weapon_ready_matches_lifted() {
     use sim_seats::leaf::{self, Leaf};
     let Some((image, ram)) = image() else { return };
     const SITE: u32 = 0x0018_66b3;
-    let (object, def) = (RECORDS + 0x600, RECORDS + 0x800);
-    for case in 0..6u32 {
+    let mut code = image.original();
+    code.prime(Leaf::WeaponReady.target());
+    let rounds = [0i16, 1, 3, 6, 7, -2, i16::MIN];
+    for case in 0..5 * rounds.len() * rounds.len() * 4 {
+        let count = [0u32, 1, 2, 3, u32::MAX][case % 5];
+        let pair = [rounds[case / 5 % 7], rounds[case / 35 % 7]];
+        let levels = [1i16, 0, 2, -1][case / 245 % 4];
         let mut mem = ram.clone();
-        word(&mut mem, 0x004e_0300, HEADER);
-        word(&mut mem, HEADER + 0x44, DATA);
-        word(&mut mem, points::TAG_ENTRIES.base, RECORDS + 0x700);
-        word(&mut mem, DATA + 3 * 12 + 8, object);
-        word(&mut mem, object, 5);
-        word(&mut mem, RECORDS + 0x700 + 5 * 16 + 8, def);
-        word(&mut mem, def + 0x2c0, case % 3);
-        for i in 0..2u32 {
-            let rounds = [0u16, 3, 9][((case + i) % 3) as usize];
-            mem.bytes[(object + 0x224 + 16 * i) as usize..][..2].copy_from_slice(&rounds.to_le_bytes());
-        }
-        let levels = [1i16, 0, 2][(case / 2) as usize % 3];
-        mem.bytes[(def + 0x1fe) as usize..][..2].copy_from_slice(&levels.to_le_bytes());
-        // The caller's frame: the body's `esp` before the call.
-        let esp = STACK;
+        let esp = STACK - 4;
+        word(&mut mem, esp, SITE);
         let mut cpu = Cpu {
-            gpr: [0x8300_0003, 0x9876_5432, 0x00fe_3420, 0x7b1c, esp, 0x00aa_bbcc, 0x5151, 0x0e37],
+            gpr: [0, 0x9876_5432, 0x00fe_3420, 0x7b1c, esp, 0x00aa_bbcc, 0x5151, 0x0e37],
+            eip: Leaf::WeaponReady.target(),
             eflags: 0x2,
             mxcsr: 0x1fa0,
             ..Default::default()
         };
-        let why = format!("case {case}");
-        // Rust: the call half, the real `100880`, the return half.
-        let mut rmem = mem.clone();
+        weapon_fixture(&mut mem, &mut cpu, count, pair, levels);
+        let why = format!("case {case}: count {count:#x} rounds {pair:?} levels {levels}");
+        let mut native = Guest::new();
+        native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+        native.write_bytes(0, &mem.bytes, 1).unwrap();
         let mut regs = abi_cpu(&cpu);
-        let mut native = Guest::new();
-        native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
-        native.write_bytes(0, &rmem.bytes, 1).unwrap();
-        let call = leaf::ready_call(&regs, &native, SITE).unwrap_or_else(|d| panic!("{why}: {d:?}"));
-        for (a, v) in call.writes.iter().flatten() {
-            word(&mut rmem, *a, *v);
-        }
-        let mut child = cpu.clone();
-        child.gpr = [regs.eax, call.ecx, call.edx, call.ebx, esp - 20, regs.ebp, call.esi, call.edi];
-        word(&mut rmem, esp - 20, leaf::READY_RESUME);
-        child.eip = leaf::READY_CHILD;
-        let mut code = image.original();
-        code.prime(leaf::READY_CHILD);
-        lifted::code::run_until(&mut code, &mut child, &mut rmem, 100_000, |c| c.eip == leaf::READY_RESUME)
-            .unwrap_or_else(|e| panic!("{why}: {e}"));
-        let mut native = Guest::new();
-        native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
-        native.write_bytes(0, &rmem.bytes, 1).unwrap();
-        regs = abi_cpu(&child);
-        let (back, after, target) = leaf::ready_return(&regs, &native).unwrap_or_else(|d| panic!("{why}: {d:?}"));
-        assert_eq!(target, SITE, "{why}");
-        leaf::apply(&mut regs, &mut native, &back).unwrap();
-        regs.esp = after;
-        // The guest: `100f70` whole, called from the site.
-        let mut code = image.original();
-        code.prime(Leaf::WeaponReady.target());
-        word(&mut mem, esp - 4, SITE);
-        cpu.gpr[4] = esp - 4;
-        cpu.eip = Leaf::WeaponReady.target();
+        regs.esp = STACK;
+        let effect = leaf::kernel(Leaf::WeaponReady, &regs, &native).unwrap_or_else(|d| panic!("{why}: declined {d:?}"));
+        leaf::apply(&mut regs, &mut native, &effect).unwrap();
         lifted::code::run_until(&mut code, &mut cpu, &mut mem, 100_000, |c| c.eip == SITE)
             .unwrap_or_else(|e| panic!("{why}: {e}"));
         let want = abi_cpu(&cpu);
         let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi];
         assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx esp ebp esi edi");
+        assert_eq!(regs.xmm, want.xmm, "{why}: xmm");
         let start = native.mappings()[0].physical_start as usize;
-        assert_eq!(&native.physical_ram()[start..start + RAM], &mem.bytes[..], "{why}: memory");
+        let live = &native.physical_ram()[start..start + RAM];
+        let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+        let first = mem.bytes.iter().zip(live).enumerate()
+            .find(|(i, (a, b))| a != b && !dead.contains(i))
+            .map(|(i, (a, b))| (i, *a, *b));
+        assert_eq!(first, None, "{why}: first differing byte (original, port)");
     }
+}
+
+/// A magazine count `100880`'s `movsx` index would wrap is declined, not
+/// answered.
+#[test]
+fn weapon_ready_declines_a_wrapping_count() {
+    use sim_seats::leaf::{self, Decline, Leaf};
+    let mut mem = FlatMemory::new(0, RAM);
+    let mut cpu = Cpu::default();
+    weapon_fixture(&mut mem, &mut cpu, 0x8000, [0, 0], 1);
+    let mut native = Guest::new();
+    native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+    native.write_bytes(0, &mem.bytes, 1).unwrap();
+    let regs = abi_cpu(&cpu);
+    assert_eq!(leaf::kernel(Leaf::WeaponReady, &regs, &native), Err(Decline::Fault));
 }

@@ -13,7 +13,7 @@
 //! | [`Leaf::UserTest`] | `14ddc0` | the HUD seat update (`USER_TESTED`) | whether the user slot has a player |
 //! | [`Leaf::UserPlayer`] | `14de70` | the HUD seat update (`PLAYER_FOUND`) | the user slot's player |
 //! | [`Leaf::Submit`] | `187b30` | the control update, `0x186a94` | the input record's flags into the control globals' word, the latches and the axis clamps |
-//! | [`Leaf::WeaponReady`] | `100f70` | the control update, `0x1866b3` | the weapon can be readied: its guest callee `100880` stays a call ([`ready`]) |
+//! | [`Leaf::WeaponReady`] | `100f70` | the control update, `0x1866b3` | the weapon can be readied: none of its magazines holds 1 to 6 rounds (its callee `100880`, [`magazine`]) and it has a zoom level |
 //!
 //! At the call, [`call`] runs the kernel. Until [`PROVEN_AFTER`] of a
 //! leaf's predictions have matched with no mismatch, the guest's leaf
@@ -23,11 +23,6 @@
 //! answers in place and the body goes on at the site in the same segment;
 //! one answerable call in [`AUDIT_EVERY`] still goes to the guest. A
 //! mismatch hands that leaf back to the guest until the next map.
-//!
-//! `100f70` calls `100880`, which stays the guest's. Its arm has two
-//! halves around that call: the frame and registers at the call
-//! (compared at `0x100fab`, the call's return, which the control update
-//! registers as a site) and the return (compared at `0x1866b3`).
 
 use crate::light_constants::X87;
 use crate::sim_native::{Memory, Result};
@@ -52,9 +47,8 @@ const RANK_SCALE: u32 = 0x0045_df20;
 const USERS: u32 = 0x004e_8c20;
 const CONTROL: u32 = 0x004e_d284;
 const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
-/// `100f70`'s guest callee and the return inside `100f70` it comes back to.
-pub const READY_CHILD: u32 = 0x0010_0880;
-pub const READY_RESUME: u32 = 0x0010_0fab;
+/// `100880`'s index is `movsx cx`: a count past this would wrap it.
+const MAGAZINES_MAX: i32 = 0x7fff;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leaf {
@@ -158,10 +152,6 @@ static DECLINED: [[AtomicU64; 2]; N] = [const { [const { AtomicU64::new(0) }; 2]
 thread_local! {
     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
     static FORCE: Cell<bool> = const { Cell::new(false) };
-    /// `100f70` running in Rust: its frame's `esp` at `0x100fab`.
-    static READY_AT: Cell<Option<u32>> = const { Cell::new(None) };
-    /// `100f70` audited: the frame whose return half is next to predict.
-    static READY_AUDIT: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -203,8 +193,6 @@ pub fn reset() {
         }
     }
     PENDING.set(None);
-    READY_AT.set(None);
-    READY_AUDIT.set(None);
 }
 
 /// Answer every leaf on this thread, proof or not: the differential
@@ -219,8 +207,6 @@ fn proven(i: usize) -> bool {
 
 /// What a leaf leaves: the registers, `xmm0` and `xmm1`, the x87 state
 /// with its last instruction and operand, and up to six word stores.
-/// `saved_only` (the call half of `100f70`) compares the callee-saved
-/// registers and the stores alone, as the guest callee changes the rest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Effect {
     pub eax: u32,
@@ -233,7 +219,6 @@ pub struct Effect {
     pub xmm1: [u8; 16],
     pub x87: Option<(X87State, u32, u32)>,
     pub writes: [Option<(u32, u32)>; 6],
-    pub saved_only: bool,
 }
 
 impl Effect {
@@ -250,7 +235,6 @@ impl Effect {
             xmm1: c.xmm[1],
             x87: None,
             writes: [None; 6],
-            saved_only: false,
         }
     }
 }
@@ -344,17 +328,8 @@ pub fn at_site(c: &CpuAbi, m: &impl Memory, pc: u32) {
     }
     CHECKED[i].fetch_add(1, Ordering::Relaxed);
     let e = &p.effect;
-    if p.leaf == Leaf::WeaponReady && pc == READY_RESUME {
-        READY_AUDIT.set(Some(c.esp));
-    }
     let what = if (c.ebx, c.esi, c.edi) != (e.ebx, e.esi, e.edi) {
         Some("ebx esi edi")
-    } else if e.saved_only {
-        e.writes
-            .iter()
-            .flatten()
-            .any(|(a, v)| m.u32(*a).ok() != Some(*v))
-            .then_some("stack")
     } else if (c.eax, c.ecx, c.edx) != (e.eax, e.ecx, e.edx) {
         Some("eax ecx edx")
     } else if c.xmm[0] != e.xmm0 || c.xmm[1] != e.xmm1 {
@@ -397,8 +372,7 @@ pub fn kernel(leaf: Leaf, c: &CpuAbi, m: &impl Memory) -> std::result::Result<Ef
     let mut e = Effect::of(c);
     match leaf {
         Leaf::Submit => submit(c, m, &mut e)?,
-        // Its callee splits it: [`ready`] and [`ready_return`].
-        Leaf::WeaponReady => return Err(Decline::Fault),
+        Leaf::WeaponReady => weapon_ready(c, m, &mut e)?,
         Leaf::UserTest => {
             // `xor al, al`, then `setne al` over the table's word.
             e.eax = c.eax & !0xff;
@@ -544,139 +518,75 @@ fn direction(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result
     Ok(())
 }
 
-/// `call 100f70` returning to `site`, through its arm. Answered, the
-/// frame is laid down and `100880` called from it, to return to
-/// [`READY_RESUME`] ([`ready_resume`]); audited, the guest's `100f70`
-/// runs with the call half pending.
-pub fn ready<M: Memory>(c: &mut CpuAbi, m: &mut M, site: u32) -> Result {
-    if let Some(p) = PENDING.take() {
-        DROPPED[p.leaf.index()].fetch_add(1, Ordering::Relaxed);
-    }
-    let leaf = Leaf::WeaponReady;
-    let i = leaf.index();
-    let effect = match ready_call(c, m, site) {
-        Ok(e) => e,
-        Err(why) => {
-            DECLINED[i][why as usize].fetch_add(1, Ordering::Relaxed);
-            return m.call(c, leaf.target(), site);
-        }
-    };
-    let slot = if FORCE.get() {
-        1
-    } else {
-        ANSWERABLE[i].fetch_add(1, Ordering::Relaxed)
-    };
-    if FORCE.get() || (proven(i) && slot % AUDIT_EVERY != 0) {
-        // The call's return, then the three saved registers.
-        for (a, v) in effect.writes.iter().flatten() {
-            m.set_u32(*a, *v)?;
-        }
-        let eip = c.eip;
-        c.esp = c.esp.wrapping_sub(16);
-        (c.ebx, c.esi, c.edi, c.ecx, c.edx) =
-            (effect.ebx, effect.esi, effect.edi, effect.ecx, effect.edx);
-        c.eflags_defined &= !ARITH;
-        c.eip = eip;
-        READY_AT.set(Some(c.esp));
-        return m.call(c, READY_CHILD, READY_RESUME);
-    }
-    PENDING.set(Some(Pending {
-        leaf,
-        site: READY_RESUME,
-        esp: c.esp.wrapping_sub(16),
-        effect,
-    }));
-    m.call(c, leaf.target(), site)
-}
-
-/// At [`READY_RESUME`]: `100880` has returned. Finish a Rust `100f70`;
-/// predict an audited one's return and leave it to the guest; leave any
-/// other caller's to the guest.
-pub fn ready_resume<M: Memory>(c: &mut CpuAbi, m: &mut M) -> Result {
-    let i = Leaf::WeaponReady.index();
-    let ours = READY_AT.take() == Some(c.esp);
-    let audited = READY_AUDIT.take() == Some(c.esp);
-    if !ours && !audited {
-        return Err(decline_fault(READY_RESUME));
-    }
-    let Ok((effect, esp, target)) = ready_return(c, m) else {
-        DECLINED[i][Decline::Fault as usize].fetch_add(1, Ordering::Relaxed);
-        return Err(decline_fault(READY_RESUME));
-    };
-    if ours {
-        apply(c, m, &effect)?;
-        c.esp = esp.wrapping_sub(4);
-        ANSWERED[i].fetch_add(1, Ordering::Relaxed);
-        return m.ret(c, 0);
-    }
-    PENDING.set(Some(Pending {
-        leaf: Leaf::WeaponReady,
-        site: target,
-        esp,
-        effect,
-    }));
-    Err(decline_fault(READY_RESUME))
-}
-
-fn decline_fault(pc: u32) -> runtime::GuestFault {
-    runtime::GuestFault {
-        addr: pc,
-        len: 1,
-        access: runtime::guest::Access::Execute,
-        reason: runtime::guest::FaultReason::InvalidBuffer,
-    }
-}
-
-/// `100f70` to its call of `100880`, from the caller's registers (before
-/// the call pushes its return): the weapon's definition in `edi`, both
-/// result registers `-1`, and the frame — the return to the caller, the
-/// saved `ebx`, `esi`, `edi` — as stores.
-pub fn ready_call(c: &CpuAbi, m: &impl Memory, site: u32) -> std::result::Result<Effect, Decline> {
+/// `100f70 (weapon: eax) -> al`: the weapon can be readied. Its callee
+/// `100880` runs here as [`magazine`] (with `ebx` the `-1` `100f70` sets);
+/// with no magazine holding 1 to 6 rounds, the answer is whether the
+/// definition has a zoom level (`[def + 1fe] - 1 != -1`). `ecx` is what
+/// `100880` leaves, `edx` that or the levels less one; `ebx`, `esi` and
+/// `edi` come back saved. Only the dead frame below the return is not
+/// laid down.
+fn weapon_ready(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result<(), Decline> {
     let word = |a: u32| m.u32(a).map_err(|_| Decline::Fault);
     let entries = word(word(OBJECT_HEADER)?.wrapping_add(0x44))?;
     let object = word(entries.wrapping_add((c.eax & 0xffff) * 12 + 8))?;
     let tag = word(object)? & 0xffff;
-    let tags = word(TAG_ENTRIES)?;
-    let mut e = Effect::of(c);
-    e.edx = tag << 4;
-    e.ecx = tags;
-    e.edi = word(e.edx.wrapping_add(tags).wrapping_add(8))?;
-    e.ebx = u32::MAX;
-    e.esi = u32::MAX;
-    e.saved_only = true;
-    let at = |k: u32| c.esp.wrapping_sub(4 * k);
-    // The frame must take the stores.
-    word(at(4))?;
-    e.writes[0] = Some((at(1), site));
-    e.writes[1] = Some((at(2), c.ebx));
-    e.writes[2] = Some((at(3), c.esi));
-    e.writes[3] = Some((at(4), c.edi));
-    Ok(e)
-}
-
-/// `100f70` from `0x100fab` to its return: the result from `100880`'s
-/// `al` and the definition's zoom levels, the saved registers popped.
-/// Returns the effect, the `esp` after `ret`, and the return address.
-pub fn ready_return(
-    c: &CpuAbi,
-    m: &impl Memory,
-) -> std::result::Result<(Effect, u32, u32), Decline> {
-    let word = |a: u32| m.u32(a).map_err(|_| Decline::Fault);
-    let mut e = Effect::of(c);
-    let mut slot = c.esi;
-    if c.eax as u8 == 0 {
-        let levels = m
-            .u16(c.edi.wrapping_add(0x1fe))
-            .map_err(|_| Decline::Fault)? as i16;
+    let def = word((tag << 4).wrapping_add(word(TAG_ENTRIES)?).wrapping_add(8))?;
+    let held = magazine(m, object, def, u32::MAX)?;
+    e.ecx = held.ecx;
+    e.edx = held.edx;
+    // `esi` is `-1` into the call; a weapon with no loaded magazine takes
+    // `setne al; dec eax` over its zoom levels.
+    let mut slot = u32::MAX;
+    if !held.found {
+        let levels = m.u16(def.wrapping_add(0x1fe)).map_err(|_| Decline::Fault)? as i16;
         e.edx = (i32::from(levels) - 1) as u32;
         slot = if e.edx != u32::MAX { 0 } else { u32::MAX };
     }
     e.eax = u32::from(slot as u16 != 0xffff);
-    e.edi = word(c.esp)?;
-    e.esi = word(c.esp.wrapping_add(4))?;
-    e.ebx = word(c.esp.wrapping_add(8))?;
-    let target = word(c.esp.wrapping_add(12))?;
-    Ok((e, c.esp.wrapping_add(16), target))
+    Ok(())
+}
+
+/// What `100880` leaves: `al` (in `found`), `ecx` and `edx`.
+struct Magazine {
+    found: bool,
+    ecx: u32,
+    edx: u32,
+}
+
+/// `100880 (weapon: eax, only: ebx) -> al`: a magazine (`[def + 2c0]` of
+/// them, each 16 bytes at `object + 224`) holding 1 to 6 rounds; `only`
+/// not `-1` tests that index alone. `ecx` is the index it stopped at,
+/// `edx` the last rounds read, or the definition when there are none.
+fn magazine(
+    m: &impl Memory,
+    object: u32,
+    def: u32,
+    only: u32,
+) -> std::result::Result<Magazine, Decline> {
+    let word = |a: u32| m.u32(a).map_err(|_| Decline::Fault);
+    let count = word(def.wrapping_add(0x2c0))? as i32;
+    if count > MAGAZINES_MAX {
+        return Err(Decline::Fault);
+    }
+    let mut out = Magazine { found: false, ecx: 0, edx: def };
+    let mut i = 0i32;
+    while i < count {
+        if only == u32::MAX || only == i as u32 {
+            let at = ((i as u16 as i16 as i32) << 4) as u32;
+            let rounds = m
+                .u16(at.wrapping_add(object).wrapping_add(0x224))
+                .map_err(|_| Decline::Fault)? as i16;
+            out.edx = i32::from(rounds) as u32;
+            if (1..=6).contains(&rounds) {
+                out.found = true;
+                out.ecx = i as u32;
+                return Ok(out);
+            }
+        }
+        i += 1;
+        out.ecx = i as u32;
+    }
+    Ok(out)
 }
 
 /// `187b30`: the input record (`ecx`) and the port's block (`eax`) into
