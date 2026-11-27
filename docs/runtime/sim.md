@@ -362,9 +362,12 @@ options = { round_count = 2, phase_time = 60 }  # by name: a number, a bool, or 
   ([Rounds](#rounds)).
 
 [sim-examples/siege-zanzibar-rounds.toml](sim-examples/siege-zanzibar-rounds.toml)
-is two-round Siege on Zanzibar, two phantoms a side and a minute a phase:
+is two-round Siege on Zanzibar, two phantoms a side and a minute a phase.
+The bots need Zanzibar's nav mesh: without it they see nobody and roam
+the whole game (the report's `nav` reads `missing`):
 
 ```sh
+h2 bots nav zanzibar
 h2 sim run docs/runtime/sim-examples/siege-zanzibar-rounds.toml
 ```
 
@@ -378,9 +381,15 @@ holds `round` (1 for the first), `tick` (the script's tick), `players`
 `score`). The runtime reads them from the game's statborg, the reads a
 script's `player_score` and team score make, at the round reset and before
 the script's own `on round_start` runs (`rules::runtime::Runtime::round_start`,
-`sim_rounds`): the first round's at the script's start. A `player_score`
-that the engine resets with the round reads 0 in the later entries; one
-that carries on reads what it was.
+`sim_rounds`): the first round's at the script's start. The scores are
+the game's so far, the earlier rounds' included: the engine's round reset
+zeroes each row's round score and adds it into the row's earlier rounds'
+score, and the reads add the two (`guest_layout::game::game_score`).
+
+The report's `result` reads the scores as the game ended: a script's
+last round's points and its `end_round` are made at the same tick
+boundary, after the last tick's sample, so the sim takes the scores
+again when the game's end returns (`sim_glue`, `on_end`).
 
 ### Firefight
 
