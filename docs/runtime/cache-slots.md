@@ -166,6 +166,18 @@ thing checked.
   - The copy failure table (`0x55acac`): a path that failed three times
     stays refused for the session.
 
+**Native readers open the slot's source.** The renderer's loaders, the
+HUD kit and the menu overlay read the running map through
+`native_map::open`, which opens the file the active slot was copied from
+(`map_slots::active_file`, published by `loaded_map` before
+`GAME_ACTIVATE` and again at the start), not a path built from the map's
+name. A disc map, a mod or Live map in the data partition's content
+store (`m-<id>-<MapId prefix>`), a Forge build and a rewritten or
+spliced file (`vfs::FileSource::Memory` or `Spliced`) all resolve
+through it. A slot path the VFS cannot serve fails the open, naming the
+path; only a map that is not the running one (a disc map named by a
+caller) is found by `<cdrom>\maps\<name>.map` or the disc's headers.
+
 **Reloading an editor play copy.** Queueing the same scenario can hit the
 active slot without opening the source. The copier closes the DVD source
 after publishing its header. Subsequent resource reads use the cache slot's

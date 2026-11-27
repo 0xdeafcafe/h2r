@@ -1844,6 +1844,8 @@ impl hooks::Feature for HudKit {
             // reads the nhdt datums it points the owners at) read nothing
             // the kit writes; the plan wants an order.
             .after_feature(crate::hud_swap::FEATURE)
+            // The map's file, which the kit's read of the map opens.
+            .after_feature(crate::loaded_map::FEATURE)
             .after_feature(crate::variant_ext::FEATURE)
             .after_feature(crate::aim_assist::FEATURE)
             .after_feature(crate::precision::FEATURE)
