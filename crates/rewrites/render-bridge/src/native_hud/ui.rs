@@ -341,7 +341,10 @@ fn overlay_rect(c: &mut Call<'_>) -> Option<TransferAbi> {
         return geometry_refused();
     }
     let primitive = mem.u32(PRIMITIVE_TABLE + 3 * 4).ok()?;
-    if !matches!(primitive, 6..=8) { return None; }
+    if !matches!(primitive, 6..=8) {
+        super::kept::count(super::kept::UiKind::Bar, "primitive");
+        return None;
+    }
     let bytes = mem.read::<{ RECT_BYTES as usize }>(data).ok()?.to_vec();
     let drawn = host().is_some_and(|host| host.inline_ui_quad(&mut *mem, primitive, bytes));
     record(drawn);

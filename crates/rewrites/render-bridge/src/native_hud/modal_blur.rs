@@ -231,7 +231,7 @@ fn enter(mem: &mut dyn GuestMemory, esp: u32, source: u32, mxcsr: u32, x87_contr
         Ok(Some(call)) => call,
         Ok(None) => return,
         Err(why) => {
-            why.counter().count();
+            super::kept::ui(why.counter());
             return;
         }
     };
@@ -239,7 +239,7 @@ fn enter(mem: &mut dyn GuestMemory, esp: u32, source: u32, mxcsr: u32, x87_contr
     if host.modal_blur(mem, &call) {
         ARMED.with(|a| *a.borrow_mut() = Some((call.wrapper_esp, call.blur)));
     } else {
-        Ui::OverlayModalBlurRefusedPass.count();
+        super::kept::ui(Ui::OverlayModalBlurRefusedPass);
     }
 }
 
@@ -254,7 +254,7 @@ fn leave(mem: &mut dyn GuestMemory, esp: u32) {
     }
     let Some(host) = host() else { return };
     if !host.finish_modal_blur(mem, esp) {
-        Ui::OverlayModalBlurReplayed.count();
+        super::kept::ui(Ui::OverlayModalBlurReplayed);
         return;
     }
     Ui::OverlayModalBlurs.count();

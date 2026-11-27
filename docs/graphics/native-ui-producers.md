@@ -102,6 +102,7 @@ Outstanding push callbacks, visibility queries, replay, unavailable resources or
 | `backdrop_fallback_*`, `outline_fallback_*` | a missing entry, incompatible inputs and failed reservations |
 | `model_fallback_widget`, `model_fallback_*` | widgets with a recorded refusal, and the entry, camera, caller, geometry, range limit, texture commit or reservation reason |
 | `scene_kept_overlay_<kind>_<cause>` (`render.scene`) | HUD items the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d.md](retire-d3d.md#r6s-remainder)) |
+| `scene_kept_ui_<kind>_<cause>` (`render.scene`) | menu-frame draws the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)) |
 | `native_ui_overlay_*` | the typed overlay stage, which draws from the scene and not from these producers ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats` reports them |
 
 Native ranges committed on each copy and the standard per-copy resource, validation and replay counters still apply. The generated image must expose the instruction sites for the native walk.

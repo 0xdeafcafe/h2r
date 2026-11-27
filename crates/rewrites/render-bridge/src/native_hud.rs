@@ -121,9 +121,14 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
         timeline::native::Ui::OverlayHudTagFallback.count();
     } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
         // A menu shader bitmap: the game's draw at the sorted list
-        // (`ui_overlay::plan`), its quad from the overlay here.
+        // (`ui_overlay::plan`), its quad from the overlay here. Kept, it
+        // counts under the capture's cause (`scene_kept_ui_menu_shader_*`).
+        let offered = kind.is_none() && kept::begin_ui(kept::UiKind::MenuShader);
         if host.draw_tag_quad(mem, &at, &vertices) {
             timeline::native::Ui::OverlayMenuShaderQuads.count();
+            if offered {
+                kept::end(true);
+            }
             ui::record(true);
             return true;
         }
@@ -259,7 +264,7 @@ pub trait Host: Send + Sync {
     /// Draws `part`, the items of a run of a list's widgets, from the
     /// overlay stage, placed at this point in the frame. True: placed, and
     /// the run's widget draws are left out; false: the game draws them.
-    fn ui_pass(&self, _mem: &mut dyn GuestMemory, _part: &frame_scene::Overlay) -> bool {
+    fn ui_pass(&self, _mem: &mut dyn GuestMemory, _part: &Arc<frame_scene::Overlay>) -> bool {
         false
     }
 
@@ -302,12 +307,13 @@ fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
         Some(true) => {}
         Some(false) => {
             MenuRefusal::Pass.counter().count();
+            kept::count(kept::UiKind::List, "pass");
             return;
         }
         None => return,
     }
     if let Err(why) = ui_overlay::check_frame(mem, edi) {
-        why.counter().count();
+        kept::ui(why.counter());
         return;
     }
     let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
@@ -340,6 +346,8 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
                 return None;
             };
             // A run of containers has nothing to draw: it needs no pass.
+            // The pass and the scene's overlay share the run's items.
+            let part = Arc::new(part);
             let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
             ui_overlay::placed(frame, run, placed);
             if !placed {
@@ -388,7 +396,7 @@ impl Feature for NativeHud {
                 return Ok(Flow::Continue);
             }
             if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {
-                MenuRefusal::Frame.counter().count();
+                kept::ui(MenuRefusal::Frame.counter());
                 return Ok(Flow::Continue);
             }
             let mut mem = rt.memory();

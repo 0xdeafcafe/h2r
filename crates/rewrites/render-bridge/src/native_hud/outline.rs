@@ -43,7 +43,7 @@ fn draw(c: &Call<'_>) -> Option<TransferAbi> {
     }
     Stage::Ui.count(Metric::WalkExamined, 1);
     if !rt.read_dispatch(|d| d.has_generated(OUTLINE_VERTICES_TAIL)) {
-        Ui::OutlineEntry.count();
+        super::kept::ui(Ui::OutlineEntry);
         return None;
     }
     let Some(points) = esp.checked_add(POINTS_FROM_FRAME).and_then(|at| mem.u32(at).ok()) else {
@@ -58,16 +58,16 @@ fn draw(c: &Call<'_>) -> Option<TransferAbi> {
     let drawn = host().is_some_and(|h| h.outline(&mut *mem, &vertices));
     ui::record(drawn);
     if drawn {
-        Ui::OutlineNative.count();
+        super::kept::ui(Ui::OutlineNative);
         Some(TransferAbi::jump(OUTLINE_VERTICES_TAIL))
     } else {
-        Ui::OutlineReservation.count();
+        super::kept::ui(Ui::OutlineReservation);
         None
     }
 }
 
 fn refuse_inputs() -> Option<TransferAbi> {
-    Ui::OutlineInputs.count();
+    super::kept::ui(Ui::OutlineInputs);
     Stage::Ui.count(Metric::WalkRefusedInputs, 1);
     None
 }

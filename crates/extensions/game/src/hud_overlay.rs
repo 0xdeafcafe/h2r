@@ -102,6 +102,18 @@ impl ScreenDraw {
             ScreenDraw::Widget => Ui::OverlayWidgetQuads,
         }
     }
+
+    /// Its kind in `scene_kept_ui_<kind>_<cause>` (a generic widget fan is
+    /// a `quad`).
+    pub fn kind(self) -> render_bridge::native_hud::kept::UiKind {
+        use render_bridge::native_hud::kept::UiKind;
+        match self {
+            ScreenDraw::Fade => UiKind::Fade,
+            ScreenDraw::Bar => UiKind::Bar,
+            ScreenDraw::Loading => UiKind::Loading,
+            ScreenDraw::Widget => UiKind::Quad,
+        }
+    }
 }
 
 /// Screen draw `what`, issued by `issue` (the producer's immediate fan or
@@ -291,6 +303,26 @@ impl DrawAdmission for Widget<'_> {
     }
 }
 
+/// The order the overlay's corners take a 4-vertex draw's vertices in, so
+/// its quad (`QUAD_INDICES`: corners 0, 1, 2 and 0, 2, 3) is the draw's
+/// two triangles with their windings: a fan, a quad and a polygon (a fan)
+/// as drawn; a strip (triangles 0, 1, 2 and 2, 1, 3) from vertex 1, round
+/// by 3, 2 and 0, whose diagonal is the strip's 1 to 2. A strip whose 0
+/// and 3 are not on either side of that diagonal overlaps itself, and the
+/// overlay would blend the overlap in the other order: it is refused.
+fn corner_order(primitive: gfx::vertex::PrimitiveType, positions: [[f32; 2]; 4]) -> Result<[usize; 4], &'static str> {
+    use gfx::vertex::PrimitiveType::*;
+    match primitive {
+        TriangleFan | QuadList | Polygon => Ok([0, 1, 2, 3]),
+        TriangleStrip => {
+            let [p0, p1, p2, p3] = positions;
+            let side = |p: [f32; 2]| (p2[0] - p1[0]) * (p[1] - p1[1]) - (p2[1] - p1[1]) * (p[0] - p1[0]);
+            if side(p0) * side(p3) < 0.0 { Ok([1, 3, 2, 0]) } else { Err("strip_shape") }
+        }
+        _ => Err("primitive"),
+    }
+}
+
 impl Widget<'_> {
     /// The draw as one overlay quad, or the first thing that keeps it off
     /// the overlay.
@@ -332,6 +364,8 @@ impl Widget<'_> {
         let (tag, hud_input) = self.source.shader();
         let (blend, blend_constant) = blend(rs);
         let evaluated = d3d::nv2a::overlay_vertices(draw, sampled).ok_or("vertices")?;
+        let order = corner_order(draw.primitive, evaluated.map(|(position, _, _)| position))?;
+        let evaluated = order.map(|i| evaluated[i]);
         let corners = evaluated.map(|(position, coords, color)| OverlayVertex {
             position,
             uv: coords[first.unwrap_or(0)],
@@ -905,7 +939,7 @@ pub fn place<B: d3d::Backend + Send + 'static>(
 pub fn place_menu<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
-    part: &Overlay,
+    part: &Arc<Overlay>,
 ) -> bool {
     let Some((art, assets)) = slot(mem) else { return false };
     let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
@@ -933,7 +967,7 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
         let _ = fill_glyphs(&mut a.glyphs, part, &fonts, scale);
     }
     drop(a);
-    place(device, mem, Arc::new(part.clone()), assets)
+    place(device, mem, Arc::clone(part), assets)
 }
 
 /// The renderer's overlay programs and resident textures, on the device
@@ -988,10 +1022,16 @@ impl d3d::ExternalPass for OverlayPass {
         let Some((_, gpu, residency)) = r.as_mut() else { return };
         let assets = self.assets.lock().unwrap_or_else(|e| e.into_inner());
         residency.sync(t.device, t.queue, &assets);
-        let mut overlay = (*self.overlay).clone();
-        fit_overlay(&mut overlay, self.fit);
+        // Only a fitted pass moves its items: an unfitted one plans the
+        // shared items as they are, with no copy a frame.
+        let fitted = self.fit.map(|fit| {
+            let mut overlay = (*self.overlay).clone();
+            fit_overlay(&mut overlay, Some(fit));
+            overlay
+        });
+        let overlay: &Overlay = fitted.as_ref().unwrap_or(&*self.overlay);
         let size = t.color.texture().size();
-        let plan = OverlayPlan::new(&overlay, [size.width, size.height], &assets.glyphs);
+        let plan = OverlayPlan::new(overlay, [size.width, size.height], &assets.glyphs);
         drop(assets);
         if let Ok((encoded, stats)) = gpu.prepare(t.device, t.color, &plan, residency) {
             (encoded.commands)(&mut *t.encoder);
@@ -1022,6 +1062,33 @@ mod tests {
         let mut crossed = quad;
         crossed.swap(2, 3);
         assert!(!faces_visible(&crossed, CullMode::Ccw));
+    }
+
+    /// A strip's corners go round its quad with the strip's diagonal as
+    /// the overlay's (corners 0 to 2) and both its triangles' windings; a
+    /// strip that overlaps itself, or another primitive, is refused.
+    #[test]
+    fn a_strip_bar_takes_its_corners_round_the_quad() {
+        use gfx::vertex::PrimitiveType::*;
+        // A bar as a strip: top-left, top-right, bottom-left, bottom-right.
+        let strip = [[0., 0.], [8., 0.], [0., 2.], [8., 2.]];
+        let order = corner_order(TriangleStrip, strip).unwrap();
+        assert_eq!(order, [1, 3, 2, 0]);
+        let corners = order.map(|i| OverlayVertex { position: strip[i], ..Default::default() });
+        // The overlay's diagonal is the strip's, vertex 1 to vertex 2.
+        assert_eq!((corners[0].position, corners[2].position), (strip[1], strip[2]));
+        // Its triangles keep the strip's windings: both face the same way.
+        let round = [0, 1, 3, 2].map(|i| OverlayVertex { position: strip[i], ..Default::default() });
+        for cull in [CullMode::Cw, CullMode::Ccw] {
+            assert_eq!(faces_visible(&corners, cull), faces_visible(&round, cull));
+        }
+        assert_eq!(corner_order(TriangleFan, strip), Ok([0, 1, 2, 3]));
+        assert_eq!(corner_order(QuadList, strip), Ok([0, 1, 2, 3]));
+        // Corners in going-round order make a strip that crosses itself.
+        let crossed = [[0., 0.], [8., 0.], [8., 2.], [0., 2.]];
+        assert_eq!(corner_order(TriangleStrip, crossed), Err("strip_shape"));
+        assert_eq!(corner_order(TriangleStrip, [[0., 0.]; 4]), Err("strip_shape"));
+        assert_eq!(corner_order(LineStrip, strip), Err("primitive"));
     }
 
     /// Each blend the fade's modes set (invented colours): the factors
