@@ -333,6 +333,7 @@ Read only by ignored tests, examples and benches. Most need the disc (`H2_DISC`)
 | `H2_HS_MAP`, `H2_HS_TICKS` | The disc script-VM test (`crates/formats/hs/tests/vm_disc.rs`): limit the map and set ticks per phase (default 3000). |
 | `H2_SAVED_VARIANT` | A game-written saved variant payload to check (`crates/formats/variants/tests/disc.rs`). |
 | `H2_MAP`, `H2_MAPS`, `H2_BASE`, `H2_STEMS`, `H2_LEVELS` | Map stems for the Halo 1 converter and asset tests (defaults such as `lockout`, `beavercreek`, `05a_deltaapproach`). |
+| `SHADERS_NO_GPU` | Makes the shader and D3D GPU tests pass without an adapter (`crates/formats/shaders/tests/common/mod.rs`, `crates/platform/d3d/tests/nv2a_conformance.rs`). Not an `H2_` variable. |
 | `H2_SHADER_CORPUS`, `H2_FONT_HD_PNG` | The extracted shader directory for the pipeline-cost test, and the output directory for the glyph test's 4x images (`crates/platform/d3d/tests`). |
 | `H2_TITLE_CHECK`, `H2_PREVIEW_CHECK`, `H2_GEOMETRY_CHECK`, `H2_GEOMETRY_BEFORE`, `H2_LOOKS_MAPS`, `H2_CATALOG_CHECK` | Output directories and map list for the Live art disc checks (`crates/apps/cli/src/live_*.rs`). |
 | `H2_ARCHIVE_DUMP`, `H2_V8_DUMP` | A recorded archive or v8 packed-record file for the Live protocol tests and `web/bench`. |

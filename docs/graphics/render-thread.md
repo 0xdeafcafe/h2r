@@ -260,7 +260,7 @@ Against the requirements:
   every test with `Device::set_visibility_poll(false)`, waits for the queue.
 - Depth levels (shadow maps) are lazy like colour levels and sampled
   through a texture the render thread makes on the GPU
-  (`Backend::depth_level_texture`, [d3d.md](d3d.md), "Lazy depth levels").
+  (`Backend::depth_level_texture`, [d3d-render-targets.md](d3d-render-targets.md), "Depth levels").
 
 ## Rules and limits
 

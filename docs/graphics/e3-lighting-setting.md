@@ -17,7 +17,7 @@ The design for E3 lighting as a whole, on the native renderer, is in [e3-lightin
 Retail shadows are depth textures: the shadow-generate layer (10) draws the casters into a depth level, and the shadow-apply layer (11) samples it as `LIN_D24S8` with the NV2A's hardware comparison and a 2x2 percentage-closer filter ([e3-lighting.md](e3-lighting.md), "Phase 0 findings"). E3 lighting makes that edge hard in the view only.
 
 The scaled backend ([high-resolution.md](high-resolution.md)) keeps a 1x reference that answers every read the guest makes, and a scaled view draws what is shown. In-place depth sampling (`Backend::depth_level_texture`,
-`gfx::depth_bits`; [d3d.md](d3d.md) "Lazy depth levels") means a depth level
+`gfx::depth_bits`; [d3d-render-targets.md](d3d-render-targets.md) "Depth levels") means a depth level
 is sampled with no read-back. The shadow comparison indexes texels by the
 bound texture's real size (`textureDimensions`) and takes the coordinate in
 the guest's size (`tex_scale`), so a larger map needs no change there.
