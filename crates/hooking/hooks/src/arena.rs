@@ -21,10 +21,10 @@
 use runtime::guest::Permissions;
 
 /// Start of the feature arena: the page after the D3D scratch page
-/// (`boot::d3d_glue::SCRATCH_BASE`, `0xa0e8_0000`), which ends the push
+/// (`boot::d3d_glue::SCRATCH_BASE`, `0xa0c8_0000`), which ends the push
 /// buffer's range.
-pub const ARENA_START: u32 = 0xa0e8_1000;
-/// End (exclusive): 1340 KiB, up to the community variants' fixed page at
+pub const ARENA_START: u32 = 0xa0c8_1000;
+/// End (exclusive): 3388 KiB, up to the community variants' fixed page at
 /// `0xa0fd_0000`.
 pub const ARENA_END: u32 = 0xa0fd_0000;
 /// Bytes in the arena.

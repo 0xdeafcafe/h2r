@@ -534,7 +534,7 @@ fn a_full_arena_refuses_the_plan_naming_the_points() {
     );
     assert_eq!(
         c[0].to_string(),
-        "guest arena full (0x14f000 of 0x14f000 bytes used): no return shadow for 2 hooked points: GAME_TICK, GAME_END"
+        "guest arena full (0x34f000 of 0x34f000 bytes used): no return shadow for 2 hooked points: GAME_TICK, GAME_END"
     );
 }
 
@@ -557,7 +557,7 @@ fn a_request_past_the_arena_names_the_feature() {
         .unwrap_err();
     assert_eq!(
         e.0,
-        "guest arena full: late asked for 0x8 bytes with 0x0 of the arena's 0x14f000 left (hooks::arena)"
+        "guest arena full: late asked for 0x8 bytes with 0x0 of the arena's 0x34f000 left (hooks::arena)"
     );
 }
 

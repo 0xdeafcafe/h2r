@@ -14,9 +14,9 @@ use d3d::RecordingBackend;
 #[cfg(feature = "gpu")]
 mod clip_png;
 
-pub const PUSH_BASE: u32 = 0xa0e0_0000;
+pub const PUSH_BASE: u32 = 0xa0c0_0000;
 pub const PUSH_LEN: u32 = 0x8_0000;
-pub const SCRATCH_BASE: u32 = 0xa0e8_0000;
+pub const SCRATCH_BASE: u32 = 0xa0c8_0000;
 
 pub struct Installed {
     report: Box<dyn Fn() -> String + Send + Sync>,

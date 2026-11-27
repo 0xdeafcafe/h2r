@@ -183,7 +183,7 @@ runs alone.
 
 `Builder::guest_alloc(len, perms)` hands out guest memory from one reserved
 range (`crates/hooking/hooks/src/arena.rs`, `ARENA_START` to `ARENA_END`,
-1340 KiB inside the kernel's HLE reservation), mapped at install. A request
+3388 KiB inside the kernel's HLE reservation), mapped at install. A request
 of a page or more gets whole pages of its own. A smaller one is packed,
 16-byte aligned, into a page shared with other features' small requests of
 the same protection, so a feature uses only the bytes it asked for.
