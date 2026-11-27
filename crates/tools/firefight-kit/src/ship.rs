@@ -218,24 +218,25 @@ impl std::fmt::Display for ShipReport {
         if self.kept {
             write!(
                 f,
-                "{label}: kept ({}, {} tags, {} bytes, {} zone paths{}{})",
+                "{label}: kept ({}, {} tags, {} bytes, {} zone paths{})",
                 self.tag,
                 self.tags,
                 self.bytes,
                 self.paths,
-                match self.hover_source.as_deref() {
-                    Some(source) => format!("; hover from {source}"),
-                    None => String::new(),
-                },
                 match self.dims {
-                    Some(d) if d.from_tag => format!(
-                        "; from the tag: reach {}, {} seats, hover {}",
-                        d.radius, d.seats, d.hover
-                    ),
-                    Some(d) => format!(
-                        "; the tag gives no size, so reach {}, {} seats, hover {} are assumed",
-                        d.radius, d.seats, d.hover
-                    ),
+                    Some(d) => {
+                        let size = if d.from_tag {
+                            format!("reach {}, {} seats from the tag", d.radius, d.seats)
+                        } else {
+                            format!("the tag gives no size, so reach {}, {} seats are assumed", d.radius, d.seats)
+                        };
+                        let hover = match self.hover_source.as_deref() {
+                            Some(source) => format!("hover {} from {source}", d.hover),
+                            None if d.from_tag => format!("hover {} from the tag's hull", d.hover),
+                            None => format!("hover {} assumed", d.hover),
+                        };
+                        format!("; {size}, {hover}")
+                    }
                     None => String::new(),
                 }
             )

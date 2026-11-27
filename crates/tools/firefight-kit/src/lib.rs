@@ -842,7 +842,7 @@ fn assemble(
                 dims: sized(*kind).map(|(_, d, _)| *d),
                 hover_source: config.ship_hovers.and_then(|s| {
                     let (_, n) = s.median(*kind)?;
-                    Some(format!("median of {n} retail waypoints: {}", s.maps(*kind)))
+                    Some(format!("{n} campaign waypoints (median; {})", s.maps(*kind)))
                 }),
             };
             match kind {
