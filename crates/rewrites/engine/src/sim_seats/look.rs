@@ -2,6 +2,7 @@
 //! a phantom's action builder supplies. The frame and input globals always
 //! come from the calling executor.
 use crate::light_constants::X87;
+use super::device::arm;
 use crate::sim_native::{Memory, Result, SegmentMemory, plan::segment, sub_flags};
 use crate::sim_objects::alu;
 use crate::sim_objects::sse::{self, Ss, lane0, load, movaps, ss, ss_reg};
@@ -20,6 +21,10 @@ type Unit = std::result::Result<(), GuestFault>;
 
 /// Sample a signed axis against its profile's evenly spaced response curve.
 pub fn curve(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
+    if pc == CURVE {
+        // An audited device read's transfer, when the guest ran it.
+        arm::at_curve(cpu, ram);
+    }
     segment::<4, _>(cpu, ram, pc, CURVE..0x0018_5bd4, &[], |c, p, pc| sample_curve(c, p, pc))
 }
 
@@ -145,7 +150,10 @@ fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
         }
         0x1861a6 => after_search(c, m),
         0x1863a6 | 0x1863c0 | 0x1863f7 | 0x186403 => tracked_object(c, m, pc),
-        0x1865c4 => after_visibility(c, m, c.eax as u8 != 0),
+        0x1865c4 => {
+            arm::at_visible(c, m);
+            after_visibility(c, m, c.eax as u8 != 0)
+        }
         0x1866b3 => after_weapon(c, m),
         0x186a94 => {
             c.edi = pop(c, m)?;
@@ -199,13 +207,57 @@ fn enter(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
         let handle = m.u32(at(0x004e_61cc, port.wrapping_mul(4)))?;
         m.set_u32(at(sp, 0x48), port)?;
         if handle != 0 {
-            return Err(declined(UPDATE));
+            return bound(c, m, sp, port);
         }
         logic(c, handle, 1 << 31);
     }
     c.ecx = m.u32(at(sp, 0x104))?;
     c.eax = at(sp, 0x6c);
     m.call(c, SUBMIT, 0x186a94)
+}
+
+/// `0x185c6c`: a bound seat's device read, through its arm
+/// ([`arm`]): the kernel's answer laid down and the transfer it leads
+/// to, or a decline the guest answers.
+fn bound(c: &mut CpuAbi, m: &mut impl Memory, sp: u32, port: u32) -> Result {
+    let Some(p) = arm::enter(c, m, sp, port) else {
+        return Err(declined(UPDATE));
+    };
+    match lay(c, m, &p) {
+        Ok(transfer) => {
+            arm::answered();
+            Ok(transfer)
+        }
+        Err(fault) => {
+            arm::declined(arm::Decline::Fault);
+            Err(fault)
+        }
+    }
+}
+
+/// The prediction's stores in retail's order, its registers, then the
+/// curve's call or the visibility tail.
+fn lay(c: &mut CpuAbi, m: &mut impl Memory, p: &arm::Prediction) -> Result {
+    m.set_u32(p.slot, p.input)?;
+    let curve = p.site == arm::Site::Curve;
+    for (a, v) in p.frame_stores(if curve { -4 } else { 0 }) {
+        m.set_u32(a, v)?;
+    }
+    for (a, v) in p.record_stores() {
+        m.set_u32(a, v)?;
+    }
+    for (i, half) in [0xc, 0xe].into_iter().enumerate() {
+        m.set_u16(at(c.ebp, half), p.buttons[i])?;
+    }
+    let eip = c.eip;
+    *c = p.cpu;
+    c.eip = eip;
+    if curve {
+        c.esp = p.sp.wrapping_sub(4);
+        m.call(c, CURVE, arm::CURVE_SITE)
+    } else {
+        visibility(c, m)
+    }
 }
 
 // Compare an axis magnitude without rounding its x87 value back to a single.
@@ -577,7 +629,11 @@ fn selections(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     }
     c.ecx = 0x10;
     c.edx = 0x8000;
-    // 0x186593: only an odd-typed controlled unit asks for visibility.
+    visibility(c, m)
+}
+
+/// `0x186593`: only an odd-typed controlled unit asks for visibility.
+fn visibility(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     c.eax = m.u32(c.ebp)?;
     arithmetic(c, c.eax, u32::MAX, true);
     if c.eax != u32::MAX {
@@ -820,7 +876,7 @@ fn publish(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     // 0x186973: bit 4 of the second word.
     or_bit(c, m, 0x1c, 0x10, m.u8(at(sp, 0x2e))? != 0)?;
     // 0x186984: bit 5 and the second byte's bit 0.
-    let zoom_byte = m.u32(at(sp, 0x2f))? != 0;
+    let zoom_byte = m.u8(at(sp, 0x2f))? != 0;
     or_bit(c, m, 0x1c, 0x20, zoom_byte)?;
     let grenade = m.u8(at(sp, 0x2e))?;
     sub_flags(c, u32::from(grenade), 1, 8);

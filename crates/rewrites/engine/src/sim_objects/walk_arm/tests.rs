@@ -104,7 +104,7 @@ const CALLER: u32 = 0x0001_2345;
 
 fn guest() -> Guest {
     let mut g = Guest::new();
-    g.map_zeroed(0x004e_0000, 0x0009_0000, Permissions::RW).unwrap();
+    g.map_zeroed(0x004e_0000, 0x000a_0000, Permissions::RW).unwrap();
     g.set_u32(points::OBJECTS.base, POOL).unwrap();
     g.set_u32(POOL + 0x20, 64).unwrap();
     g.set_u32(POOL + 0x24, 12).unwrap();

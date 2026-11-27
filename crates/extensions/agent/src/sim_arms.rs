@@ -9,8 +9,8 @@
 //!   `checked` is their sum, and `answered` is 0;
 //! * `anim.manager` reports `differed` for `mismatched`;
 //! * the shadow ports (`seats`, `effects`) count `skipped` for `declined`
-//!   and `answered` 0; the seats' `seats.aim` arm counts its declines and
-//!   unwatched audits for `declined`;
+//!   and `answered` 0; the seats' `seats.aim` and `seats.device` arms
+//!   count their declines and unwatched audits for `declined`;
 //! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
 //!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
 
@@ -24,6 +24,7 @@ use engine::sim_objects::functions::parity as objects;
 use engine::sim_objects::walk_arm;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
+use engine::sim_seats::device::arm as device;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
 use sim_bridge::shadow::{SHADOW, Shadow};
@@ -69,6 +70,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             subsystem(switches, "seats", {
                 let mut arms = group(sim_bridge::sim_seats::GROUP);
                 arms.push(aim_wire(aim::status()));
+                arms.push(device_wire(device::status()));
                 arms
             }),
             subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
@@ -152,6 +154,19 @@ fn objects_wire(s: objects::Status) -> Arm {
 fn aim_wire(s: aim::Status) -> Arm {
     Arm {
         name: "seats.aim".to_owned(),
+        checked: s.checked,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined_total() + s.dropped,
+    }
+}
+
+/// The bound controller's device arm (under `impl.sim.native.seats`);
+/// audits whose transfer never came count as declined.
+fn device_wire(s: device::Status) -> Arm {
+    Arm {
+        name: "seats.device".to_owned(),
         checked: s.checked,
         matched: s.matched,
         mismatched: s.mismatched,
@@ -289,9 +304,10 @@ mod tests {
             }
         }
         let seats = &r.subsystems[4];
-        assert_eq!(seats.arms.len(), 2);
+        assert_eq!(seats.arms.len(), 3);
         assert_eq!(seats.arms[0].name, "sim.seats_a");
         assert_eq!(seats.arms[1].name, "seats.aim");
+        assert_eq!(seats.arms[2].name, "seats.device");
         assert!(r.subsystems[5].arms.is_empty());
     }
 

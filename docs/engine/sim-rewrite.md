@@ -574,7 +574,7 @@ one entry per function):
 |---|---|
 | `171d90` | observer camera |
 | `185b30` | look curve |
-| `185be0` | player-control update: the unbound entry, which the phantom seats take, and every segment from the first look-curve return on; the bound controller's device reading stays guest |
+| `185be0` | player-control update: the unbound entry, which the phantom seats take, the bound controller's device read (through its kernel arm, below), and every segment from the first look-curve return on |
 | `1505f0`, `150790`, `c6de0` | action, neutral and unit control packet builders |
 | `13a838` | HUD per-seat update |
 | `1a66f0` | target comparator |
@@ -618,6 +618,46 @@ a mismatch hands every call back to the guest until the next map.
 against the lifted original with its real callees, `pow` included. The
 register-level port stays as the differential oracle
 `sim_seats::PARAMS_ORACLE`.
+
+*The bound controller's device read.* At `185be0`'s bound branch
+(`0x185c6c`, a seat whose port has a controller) the kernel
+`engine/src/sim_seats/device.rs` reads the port as plain Rust over a copy
+(`Device`) and stops where retail's next call is: the look curve
+unblocked, the visibility walk blocked.
+
+| Step | Retail | Kernel |
+|---|---|---|
+| Rates | port rates times `[0x45dc54]` | `rates` |
+| Vehicle seat | `t = clamp((\|v\| - lo) / (hi - lo), 0, 1)`, then `pow(t, e)` unless `e == 0`; a rate pair with a positive end becomes `(a + (b - a) * t) * scale` | `vehicle` |
+| Unblocked | the stick pair over its larger axis, `s = hypot`, each axis times `s` clamped to `[0x45dbcc]..1` | `steer` |
+| Blocked | wanted buttons not pressed leave both halves; the rest get the block's state and hold | `select` |
+
+| Data | Owner | Lifetime |
+|---|---|---|
+| The port's rates and 20-word block, the vehicle seat's fields and velocity, the blocked flags, the wanted buttons, five image constants | `Device` | copied from the guest per read |
+| The x87 state the length, `pow`, magnitudes and hypot run on | the arm's x87 model (`Fpu`) | per read |
+
+`engine::sim_seats::device::arm` runs it as a shadow arm inside the seat
+body (no hook of its own; the proof resets at map load):
+
+```
+0x185c6c -> predict -> declined?  -> guest answers                   (declined[float, fault, unseen, alias])
+                    -> unproven or slot % 64 == 0
+                                  -> guest answers, compare at the curve's entry
+                                     or the walk's return 0x1865c4   (checked, matched, mismatched)
+                    -> else       -> Rust answers: frame, record, input slot, buttons,
+                                     registers, x87, then the call    (answered)
+```
+
+At the curve's entry the audit compares every register, `xmm0`-`xmm7`, the
+x87 stack and the frame; at the walk's return, the callee-saved registers,
+the frame and the x87 control word. Both compare the record, the input slot
+and the buttons. A blocked read that skips the walk has no transfer to
+compare at, so its audit is declined as `unseen`; answered, it is laid down
+like the rest. `sim.arms` reports it as `seats.device`.
+`bound_control_matches_lifted` (`engine/tests/sim_seats_differential.rs`)
+puts the applied answer against the lifted original with its real `24590`
+and `pow`; `bound_control_audits_through_the_guest` runs the audit path.
 
 `observer-resources` (the trim that spares the headless host most of the
 prediction walk) stays on by default until the seats are promoted. With the

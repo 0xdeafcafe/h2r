@@ -21,9 +21,13 @@
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The bound
-//! controller's device reading and the phantom seats' action builder
-//! stay in the generated code (the bodies decline them), so hosts and
-//! phantom rosters are unchanged with the switch on.
+//! controller's device read runs through its kernel arm
+//! (`engine::sim_seats::device::arm`): the guest answers until the
+//! kernel's predictions have matched its clean count, then the kernel,
+//! with one read in 64 still the guest's and compared. The arm's proof
+//! resets at map load ([`DEVICE_RESET`]). The phantom seats' action
+//! builder stays in the generated code (the bodies decline it), so hosts
+//! and phantom rosters are unchanged with the switch on.
 //!
 //! The seats a host runs for phantoms keep working because the unbound
 //! path — the entry that zeroes the action and collects the script
@@ -38,6 +42,8 @@ use runtime::{CpuAbi, GuestFault};
 pub const SEATS: &str = "sim.native.seats";
 /// The shadow registry's group for the seats.
 pub const GROUP: &str = "sim.seats";
+/// The device arm's reset at map load.
+pub const DEVICE_RESET: &str = "seats: reset the device arm";
 
 pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(SEATS, false)
@@ -50,6 +56,11 @@ pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
 }
 
 pub(crate) fn install(b: &mut Builder) {
+    if on(b.switches()) {
+        b.raw().observe_before(&engine::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
+            sim_seats::device::arm::reset()
+        });
+    }
     for seat in sim_seats::SEATS {
         let installed = on(b.switches());
         crate::shadow::register(seat.name, GROUP, seat.point, installed);
@@ -141,6 +152,19 @@ mod tests {
             assert_eq!(implement.label, SEATS, "{}", seat.name);
             assert_eq!(implement.continuation_sites().0, seat.sites, "{}", seat.name);
         }
+    }
+
+    #[test]
+    fn the_device_arm_resets_at_map_load_only_while_the_seats_are_on() {
+        let resets = |switches: Switches| {
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::for_tests()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let load = &plan.chains[&engine::points::CACHE_TAGS_LOAD.base];
+            load.observe_before.iter().any(|h| h.label == DEVICE_RESET)
+        };
+        assert!(!resets(Switches::defaults()));
+        assert!(resets(Switches::defaults().with(&format!("impl.{SEATS}"), true)));
     }
 
     #[test]
