@@ -1246,7 +1246,8 @@ stand taking every site wins it. A run the gate does not guard (a
 scenario) with neither draws the round at its start with a message. The
 variant's `lives = 1` holds each death's respawn (the engine's own
 lives gate), and each side's dead come back together when its wave
-timer (`wave_time`) runs out (`respawn`). Each side spawns near its
+timer (`wave_time`) runs out (`respawn`); a death is told "Reinforcements
+in N seconds" (`hold`), the seconds left of its side's wave. Each side spawns near its
 line (`spawn_near`, the four starting locations nearest it), and the
 lines move with the phases: the attackers start at their own flag stand
 (`base[team 0]`) and spawn at each site they take, and the defenders
@@ -1284,9 +1285,12 @@ start and as each phase begins the script `offer`s every player the rows of
 their side's tier (`offer(p, picker, count)`; the two sides' labels are
 the pickers 0 and 1), and `on spawn` gives the row `choice(p)` reads. A
 local player picks in a select dialog that opens when their window grows
-(`rules/world/choice.rs`, over the `kit.picker.game` dialog): a row above
-the tier is refused by the VM (`Vm::choose_loadout`) and the last pick
-stands. The pick never blocks a spawn: a player who picks nothing keeps
+and at each spawn of theirs (`rules/world/choice.rs`, `spawned`, over the
+`kit.picker.game` dialog titled ATTACKER LOADOUT or DEFENDER LOADOUT):
+a row above the tier is refused by the VM (`Vm::choose_loadout`) and the
+last pick stands. A row picked while the player is alive is equipped by
+the next tick (`on tick` in `siege.rules` sets the kit of a player whose
+`kit` differs from `choice(p)`), so the pick need not wait for a death. The pick never blocks a spawn: a player who picks nothing keeps
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
