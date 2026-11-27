@@ -113,7 +113,12 @@ step of the triangle/sawtooth matters). Waves 3, 5, 7, 8, 9, 10, 11
 `Tables::with_engine_slab` takes the 18,432 bytes at `0x00468d48` read from the
 user's own executable; without them such a wave evaluates as 0. Of the 638 periodic uses in effect emitters, 29 use the procedural
 cosine and 609 use the engine-only noise waves 8, 9 and 10, so consumers that
-need them must supply the slab at run time.
+need them must supply the slab at run time. The game's native object and
+world loads read it from the running image once
+(`native_objects_glue::install_function_tables`, `Tables::install_engine_slab`),
+and the material animation samples `Tables::engine()`: the installed tables,
+or the procedural ones where no game runs (Studio), where such a wave
+refuses (`wave`).
 
 **Known approximations / open items.** (1) The spline2 remap uses the engine's
 exponent-halving square-root trick exactly but an exact reciprocal square root

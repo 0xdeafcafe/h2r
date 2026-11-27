@@ -588,7 +588,8 @@ keeps a guest draw, by the counter that names it (**Code**):
   (`not_compiled`: a pass's program reads a constant or vertex register
   the object draw does not give where its value reaches a live output,
   such as the PRT row `c[69]` outside layer 5, an animated property
-  driven by an object function or an engine wave table, or a
+  driven by an object function, an engine wave before the game's tables
+  are installed (`Tables::install_engine_slab`), or a
   `dot_rflct_spec` stage bound a 2D bitmap where it needs a cube;
   [native-objects.md](native-objects.md), "Object programs"),
   `object_shader_flag_target` (the shader's flag bit 0 before the
