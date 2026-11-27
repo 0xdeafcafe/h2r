@@ -531,10 +531,19 @@ pub fn predict(m: &dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) -> Result<Pr
         Ok(Prediction { out, points, vertices, ret, writes: x.m.writes })
     };
 
+    // A list that comes back to a point is a cycle the original runs on
+    // through until it faults: refuse it as unbounded before drawing past
+    // the buffer. Brent's search: `mark` is a point seen `span` steps back,
+    // so a cycle is found within twice its length, with no set kept.
+    let (mut mark, mut span, mut steps) = (u32::MAX, 1u32, 0u32);
     while next != u32::MAX {
-        if points == BUDGET {
+        if points == BUDGET || next == mark {
             return Err(Error::Unbounded);
         }
+        if steps == span {
+            (mark, span, steps) = (next, span << 1, 0);
+        }
+        steps += 1;
         points += 1;
         let pt = x.point(next)?;
 
