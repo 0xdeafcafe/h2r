@@ -180,10 +180,11 @@ fn world(riders: u8, pool: usize) -> World {
         let (id, actor) = fake::push(m, &actors);
         actor.set_unit(m, Some(unit)).unwrap();
         actor.set_squad(m, squad).unwrap();
-        let view = body.as_unit();
+        let raw = guest_layout::Object::at(body.addr);
+        let view = raw.as_unit();
         view.set(m, guest_layout::Unit::ACTOR, guest_layout::Datum(id.raw())).unwrap();
         view.set(m, guest_layout::Unit::PLAYER, guest_layout::Datum::NONE).unwrap();
-        body.set(m, guest_layout::Object::ENTITY, u32::MAX).unwrap();
+        raw.set(m, guest_layout::Object::ENTITY, u32::MAX).unwrap();
         actor
     };
     for _ in 0..riders {
