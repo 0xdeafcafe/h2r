@@ -311,7 +311,11 @@ lights stand down when the native world is disabled or its BSPs yield no
 native lit parts. Fog and the layer-6 water edge blend stand down when their
 translated passes yield no drawable parts.
 
-This applies to whole-list replacement. Indexed fog ranges stay eligible at
+This applies to whole-list replacement. A fog or water layer that shares
+its list with an item the stage keeps draws per item over the guest's
+sorted entries, interleaved with the kept ones
+([retire-d3d-r5.md](retire-d3d-r5.md), "Fog and water per item").
+Indexed fog ranges stay eligible at
 their indexed draws, using the live shader and geometry after the guest
 handler sets them up. Planar world passes sample the current view's combiner
 colour and fade weights, and a BSP-backed stage stays eligible while any BSP

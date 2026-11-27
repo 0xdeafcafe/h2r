@@ -844,7 +844,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn material(layer: usize, passes: Vec<Vec<ResolvedImplementation>>, inputs: EngineInputs) -> Material {
+    pub(crate) fn material(layer: usize, passes: Vec<Vec<ResolvedImplementation>>, inputs: EngineInputs) -> Material {
         Material {
             shader: TagId(SHADER),
             template: TagId(0xe000_0041),

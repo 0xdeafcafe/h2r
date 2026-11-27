@@ -146,6 +146,9 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [framescene-measure.md](graphics/framescene-measure.md): A/B, counters, pixel and hash run commands
 - [framescene-deletion.md](graphics/framescene-deletion.md): the deletion table and risks
 - [retire-d3d.md](graphics/retire-d3d.md): design for retiring the guest D3D path: what the native stages leave on D3D by caller, the residual census (`render.residual`), what replaces each guest render subsystem, the slices and the zero-residual gate before `crates/platform/d3d` is deleted
+- [retire-d3d-r1.md](graphics/retire-d3d-r1.md): retire-d3d R1's remainder: what R1's stages still leave to the guest's draws
+- [retire-d3d-r2.md](graphics/retire-d3d-r2.md): retire-d3d R2's built slices: the display queue's runs and the effects shadow arm
+- [retire-d3d-r5.md](graphics/retire-d3d-r5.md): retire-d3d R5, the rest of a game view: what is kept by cause, fog and water per item over the sorted entries, the sky and layer 2 from the scene
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
 - [shaders-pixel.md](graphics/shaders-pixel.md): the pixel side: combiners, final combiner, texture modes, HILO, COLORSIGN
 - [shaders-fog.md](graphics/shaders-fog.md): the NV2A fog unit and how D3D state maps to it

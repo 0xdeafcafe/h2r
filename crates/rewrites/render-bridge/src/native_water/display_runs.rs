@@ -186,6 +186,12 @@ mod tests {
         fn ask(&self, _: &mut dyn GuestMemory, _: &[u16], _: &mut crate::native_layers::Left) -> Option<native_render::skip::Cleared> {
             None
         }
+        fn ask_run(
+            &self, _: &mut dyn GuestMemory, _: &crate::late_sorted::RunAt<'_>, left: &mut crate::native_layers::Left,
+        ) -> crate::late_sorted::Run {
+            left.all("device");
+            crate::late_sorted::Run::Refused
+        }
         fn draws_display_part(&self, _: &dyn GuestMemory, part: &DisplayTransparentPart) -> bool {
             part.shader >= 50
         }

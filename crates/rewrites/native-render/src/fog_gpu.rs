@@ -347,6 +347,24 @@ pub fn layer_passes_selected(material: &Material, layer: usize, selection: Selec
     passes_of(material, layer, false, selection, None)
 }
 
+/// The implementation each pass of `material`'s `layer` (LOD 0) binds,
+/// in draw order, chosen as [`layer_passes_selected`] chooses with
+/// `implementation`: what the guest's draw of an item sets and restores,
+/// so a skip of it can be checked against the device
+/// (`layer_pass::skip_holds`). `None` when the layer has no pass or a
+/// pass's choice is not given.
+pub fn layer_implementations(material: &Material, layer: usize, implementation: Option<usize>) -> Option<Vec<ResolvedImplementation>> {
+    let layer = material.layers.iter().find(|l| l.lod == 0 && l.layer == layer).filter(|l| !l.passes.is_empty())?;
+    layer
+        .passes
+        .iter()
+        .map(|pass| match pass.implementations.as_slice() {
+            [imp] => Some(imp.clone()),
+            all => implementation.and_then(|i| all.get(i)).cloned(),
+        })
+        .collect()
+}
+
 /// [`layer_passes`] with the engine-texture stages a per-view supply
 /// resolves kept as [`Stage::Engine`]: the view's own target (id 5) and
 /// the render targets (`crate::screen_look::engine_texture`'s `Target`s),
@@ -1110,6 +1128,20 @@ pub(crate) mod tests {
     use wgpu::{TextureFormat as F, TextureUsages as U};
 
     pub(crate) const SIZE: u32 = 32;
+
+    /// A pass of one implementation draws it for any item; a pass of
+    /// several draws the chosen one, and without a choice the layer has
+    /// none to check.
+    #[test]
+    fn each_pass_names_the_implementation_its_draw_binds() {
+        use crate::layer_pass::tests::{implementation, material};
+        let imp = |n| implementation(n, Default::default(), Vec::new());
+        let m = material(16, vec![vec![imp(0)], vec![imp(1), imp(2), imp(3)]], Default::default());
+        let chosen = layer_implementations(&m, 16, Some(2)).unwrap();
+        assert_eq!(chosen.iter().map(|i| i.index).collect::<Vec<_>>(), vec![0, 3]);
+        assert_eq!(layer_implementations(&m, 16, None), None);
+        assert_eq!(layer_implementations(&m, 6, Some(2)), None, "no layer-6 pass");
+    }
 
     pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
         // A guest boundary at 10 / 19 of the screen falls between physical texels.

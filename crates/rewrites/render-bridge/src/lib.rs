@@ -8,6 +8,8 @@ pub mod entry_census;
 #[cfg(feature = "native-render")]
 pub mod effects_shadow;
 #[cfg(feature = "native-render")]
+pub mod late_sorted;
+#[cfg(feature = "native-render")]
 pub mod native_decals;
 #[cfg(feature = "native-render")]
 pub mod native_decorators;

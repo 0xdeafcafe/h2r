@@ -43,6 +43,11 @@ impl Host for OnePart {
         }
         Some(cleared)
     }
+
+    fn ask_run(&self, _: &mut dyn GuestMemory, _: &render_bridge::late_sorted::RunAt<'_>, left: &mut Left) -> render_bridge::late_sorted::Run {
+        left.all("device");
+        render_bridge::late_sorted::Run::Refused
+    }
 }
 
 fn install_host(draws: bool) {
@@ -105,6 +110,7 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
     };
     let text = plan.text();
     assert!(text.contains("native_fog_skip"), "{text}");
+    assert!(text.contains("native_fog_sorted") && text.contains("native_fog_entry"), "per item over the sorted entries: {text}");
     assert!(!text.contains("native_fog_restore"), "nothing after the body: {text}");
 }
 
