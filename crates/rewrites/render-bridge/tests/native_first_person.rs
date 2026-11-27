@@ -1,5 +1,6 @@
 //! The first person is a cut (`0x0003fdf0`, both calls) whose parts draw
 //! from the scene in slot 10, on synthetic scenes and a stub host.
+#![cfg(feature = "native-render")]
 
 use std::sync::{Arc, Mutex};
 

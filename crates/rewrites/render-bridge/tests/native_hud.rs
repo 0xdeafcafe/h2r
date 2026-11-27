@@ -1,5 +1,6 @@
 //! The `native-hud` feature (docs/graphics/native-post-hud.md, stage 5):
 //! its plan (context-only hooks; none with the master switch off).
+#![cfg(feature = "native-render")]
 
 use render_bridge::native_hud::{self, NativeHud};
 use hooks::plan::Base;

@@ -1,3 +1,4 @@
+#![cfg(feature = "native-render")]
 use std::sync::{Arc, Mutex};
 
 use engine::{memory::GuestMemory, points};

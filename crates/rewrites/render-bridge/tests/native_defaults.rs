@@ -1,6 +1,7 @@
 //! Every native stage is on with the empty switch string, and
 //! `impl.render.native=off` is the only way to turn them off: one switch
 //! for the whole native renderer, looked up exactly.
+#![cfg(feature = "native-render")]
 
 use hooks::plan::Base;
 use hooks::{Feature, Registry, Switches};

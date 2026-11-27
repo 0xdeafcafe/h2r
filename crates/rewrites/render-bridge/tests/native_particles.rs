@@ -1,3 +1,4 @@
+#![cfg(feature = "native-render")]
 use render_bridge::native_particles::{NativeParticles, DYNAMIC_QUAD_READY, EMIT_READY};
 use hooks::plan::Base;
 use hooks::{Registry, Switches};

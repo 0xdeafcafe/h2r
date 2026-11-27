@@ -1,4 +1,5 @@
 //! Context-only admission inside the original light layers.
+#![cfg(feature = "native-render")]
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
 use render_bridge::native_lights::{self, NativeLights};
