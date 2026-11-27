@@ -872,7 +872,7 @@ the import's own job function (`DiscConverter::multiplayer`).
 ### Dialogue (`udlg`)
 
 `crates/formats/tags/src/defs/udlg.txt`: all 42 distinct retail `udlg` round-trip
-byte-identical. A Halo 2 `udlg` is a list of vocalizations, each a
+byte-identical. A Halo 2 `udlg` is a list of vocalisations, each a
 string ID name and a `snd!`, plus an `adlg` reference (null on every tag)
 and a per-tag string (a three-letter designator, `jon`, `grf`, `dop`;
 null on the Chief's, the multiplayer elite's and the drone's). On 05a

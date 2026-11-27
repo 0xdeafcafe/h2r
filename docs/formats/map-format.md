@@ -8,11 +8,11 @@ one `.map` file, including when the map is read inside an ISO.
 
 Evidence labels:
 
-- **V — verified-on-disc:** the stated structural property was checked against
+- **V - verified-on-disc:** the stated structural property was checked against
   the owner's retail disc. This is evidence for that build, not a guarantee
   about every modded or regional map.
-- **E — engine:** read from the retail XBE with `h2 disasm`.
-- **S — unverified:** not independently validated on the disc or in the
+- **E - engine:** read from the retail XBE with `h2 disasm`.
+- **S - unverified:** not independently validated on the disc or in the
   engine; kept only where the text needs it.
 - **Design:** an implementation choice or recommendation, not a format fact.
 
@@ -72,7 +72,7 @@ resource encodings are **S**, outside this reader's implementation.
 
 The checksum has executable and disc evidence: see "Lossless writing and bounded edits" below. The old
 whitepaper description (XOR u32 words after the header) omits the routine's
-qword parity seed and incomplete-tail behavior. Other header fields remain
+qword parity seed and incomplete-tail behaviour. Other header fields remain
 uninterpreted; the writer preserves them, rather than treating them as padding.
 
 ## Strings, names and groups
@@ -91,10 +91,10 @@ retail disc. Empty strings remain distinct from missing strings.
 
 **V:** a StringID's low 24 bits select a string and its high 8 bits carry its
 length; every locale ID on the disc resolves to a name of exactly the encoded
-length ([localization.md](localization.md)). The API exposes indexed strings
+length ([localisation.md](localization.md)). The API exposes indexed strings
 rather than promising a complete StringID semantic validator. Localized UI text is separate: language
 information is in `matg`, with nine language records (descriptors start at `+0x188`; `+0x190` is the count field eight bytes in), stride `0x1c`,
-and `unic` selects ranges. The later [localization decoder and evidence](localization.md) covers all nine
+and `unic` selects ranges. The later [localisation decoder and evidence](localization.md) covers all nine
 languages, compiled `unic` ranges, and the executable's wide-text conversion.
 
 **V:** classes are FourCCs stored as little-endian integers: e.g. `scnr` is bytes
@@ -304,7 +304,7 @@ from disc alone.
 | `RenderModelHeader` | name and two empty guards; the rest opaque | Name StringID index/encoded length resolves; guards are empty. Other scalar meanings remain S; geometry child-block regions are opaque. |
 
 **Locale offsets:** full descriptors start at `matg + 0x188 + i * 0x1c`, for
-`i = 0..8` (E `0x1a01c3`, [localization.md](localization.md)). `+0x190` is the
+`i = 0..8` (E `0x1a01c3`, [localisation.md](localization.md)). `+0x190` is the
 **count field**, eight bytes into the first descriptor, after two runtime
 pointer words at `0x188` and `0x18c`. In the full record, count is `+8`, data
 size `+0xc`, index file offset `+0x10`, data file offset `+0x14`, and loaded
@@ -370,7 +370,7 @@ Total decoded sprite count is capped at `payload_len / 0x20` so repeated,
 aliased sprite spans cannot produce quadratic allocations. Bounded aliasing is
 allowed; arbitrary next-block order or non-overlap is not assumed.
 
-The [lighting decoder](lighting.md) additionally verifies three sky-child
+The [lighting decoder](lighting.md) also verifies three sky-child
 aliases into other sky payloads and one zero-sized fog identity alias on the
 retail disc. Those reads require a same-class owning payload in the identical
 address space; zero-sized roots require an exact metadata address match.
@@ -384,7 +384,7 @@ root tag references resolve full salted IDs with concrete/parent/grandparent
 class compatibility, and model StringID lengths match. Empty guards confirm
 only zero counts, never a stride. The verifier reports aggregate coverage.
 
-`validate_resources(&ResourceSizes)` additionally requires lengths for every
+`validate_resources(&ResourceSizes)` also requires lengths for every
 selected resource file and checks full LOD/low-detail extents. The disc verifier
 supplies those lengths. This proves file containment, not a valid texture;
 pixels, mip packing, swizzling, palettes and cube faces still need review.
@@ -579,7 +579,7 @@ source and applies only queued patches, appended name tables and the header
 fields listed below. Any "byte-identical round trip" claim in this document means
 this pass-through of an unedited map, not a re-encode of decoded structures.
 
-There is no canonicalization exception: unchanged writes are byte-identical,
+There is no canonicalisation exception: unchanged writes are byte-identical,
 including invalid recorded checksum values if the caller opened a damaged map.
 Call `validate_checksum()` explicitly when integrity is required.
 

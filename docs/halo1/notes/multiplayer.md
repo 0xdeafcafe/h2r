@@ -97,7 +97,7 @@ and hands name its model's markers; converter version 50). Method: the
 owner's report on a Blood Gulch game (the first Halo 1 sandbox builds).
 
 With the rebuilt biped's camera and weapon markers left empty, the
-cyborg's camera sat at its origin — the feet in view, the view low —
+cyborg's camera sat at its origin - the feet in view, the view low,
 and its weapons had no marker to attach to, so the player held nothing
 (and those builds had no item to pick up either: the spawns named
 their `weap` and `vehi` directly, so nothing spawned).
@@ -114,7 +114,7 @@ runs.
   cliffs, and no ground, and sky showed where the level should be.
 - With a surface that crosses a portal listed by its first cluster
   only (the state before converter version 65), looking from another of
-  its clusters without seeing the first, it vanished — the culling the
+  its clusters without seeing the first, it vanished - the culling the
   owner saw on Blood Gulch at converter version 60. The test proves it
   from every spawn turning through 360°: of the surfaces seen (centre
   in the frustum, the sight line clear of solid), drawn with the first

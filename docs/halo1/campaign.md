@@ -421,7 +421,7 @@ a10 the walk gives `0x464be00` bytes for it, over the map reader's 64 MiB
 limit on one raw read in `Unpinner::copy_raw`. Both fresh paths size all
 nine locale indices as `count * 8` and their blobs as the descriptor's byte
 count, matching the loader at `0x1a01e0`
-([localization.md](../formats/localization.md)). The synthetic
+([localisation.md](../formats/localization.md)). The synthetic
 `matg_locales_use_descriptor_lengths_across_a_large_raw_gap` test puts a
 known boundary 80 MiB after an empty locale and checks both raw readers.
 

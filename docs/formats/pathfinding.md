@@ -262,7 +262,7 @@ collision edge. Lowest agreement: `05b_deltatowers` BSP 1 (0.693),
 ## Engine invariants checked (`PathfindingData::validate`)
 
 The retail sector walker bounds the starting sector by the mesh's sector
-count at `0x0026c5fb`. Its neighbor check at `0x0026c3bf` reads the sector
+count at `0x0026c5fb`. Its neighbour check at `0x0026c3bf` reads the sector
 across a link, tests for the absent side and checks flag bit 0 of the
 neighboring sector. Generated ground sectors carry this bit (`0x19`).
 

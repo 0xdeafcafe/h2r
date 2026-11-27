@@ -14,10 +14,10 @@ listings are in the repository; tests build invented data.
 
 Every table below was derived from two sources only:
 
-- **E — engine code:** instructions in the retail XBE, read with
+- **E - engine code:** instructions in the retail XBE, read with
   `cargo h2 disasm [iso] <addr> [count]`. The address cited is the instruction
   that reads or writes the field. Names are ours, not recovered symbols.
-- **V — disc check:** a structural property checked on every campaign,
+- **V - disc check:** a structural property checked on every campaign,
   multiplayer and main-menu map of the owner's disc by
   a disc sweep in the standalone viewer that has been removed
   (`git log -- crates/tools/viewer`); nothing repeats it.

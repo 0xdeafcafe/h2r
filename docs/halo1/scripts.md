@@ -397,7 +397,7 @@ minimal scenario payload for `hs::Scenario::decode`.
 Proof (`every_campaign_script_compiles_and_round_trips`): under both
 policies, all ten maps compile, `hs::Scenario::decode` reads the tables back
 with byte-for-byte codec symmetry, and every node is reached. Under `Stub`
-they also pass `Scenario::validate` against Halo 2's XBE catalog (every
+they also pass `Scenario::validate` against Halo 2's XBE catalogue (every
 fixed-signature call's arity and argument types equal Halo 2's descriptor) and
 `hs` decompiles them with a matching node count.
 
@@ -609,7 +609,7 @@ reset value -1, is preserved.
 
 The synthetic tests check the generated roots, speaker references and sound
 datums. The ignored disc tests check every campaign scene against Halo 2's
-retail catalog and exercise playback, hold, advance, stop/restart and
+retail catalogue and exercise playback, hold, advance, stop/restart and
 simultaneous voices sharing one tag on the Rust HS scheduler. Boot unit
 tests cover the native call ABI and the cast rules.
 

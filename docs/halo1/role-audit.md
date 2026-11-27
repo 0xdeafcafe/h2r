@@ -285,7 +285,7 @@ The survey has 35,510 rows. Each gives the map, group, source path, parent or BS
 - **Built.** One unit can select among all of its authored voices. Halo 1
   `0x468d0` defines selector matching and alternative selection. Halo 2
   `0x114ec0` binds a model variant's dialogue to the individual unit.
-  The rebuilt table uses the native vocalization indices, and explicit
+  The rebuilt table uses the native vocalisation indices, and explicit
   vocalize commands resolve source slots on that unit.
   See [ai.md](ai.md#command-execution).
 - **Built.** Every authored `udlg` slot has an automatic event. The
@@ -331,8 +331,8 @@ gestalt and native scenario infrastructure. The H1 conversion writes source
 entries into these containers. Material and HUD rendering require native
 shader programs, vertex shaders and default inputs. The H1 Xbox engine has
 no equivalent tags for those programs. The HUD's optional H2 view and the
-multiplayer player emblem are explicit features. The generic AI behavior
-parent and Sentinel behavior style supply H2 engine behavior. H1 actor
+multiplayer player emblem are explicit features. The generic AI behaviour
+parent and Sentinel behaviour style supply H2 engine behaviour. H1 actor
 variants provide the concrete character. H2 asset mode retains its selected
 native units, weapons and vehicles, including assets from donor maps.
 

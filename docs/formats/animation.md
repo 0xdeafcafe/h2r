@@ -311,7 +311,7 @@ column-major world matrices. Check `clip.is_aim_grid()` before playing a clip
 `rotation: [f32; 4]` (x, y, z, w), `translation: [f32; 3]`, `scale: f32`.
 These are the animation's own channels in the node's *local* space, with
 the node tree given by `graph.nodes[i].parent`; the skeleton in the render
-model is not combined here — "Composing a pose" above is how a viewer
+model is not combined here - "Composing a pose" above is how a viewer
 does it (`Pose::merged`, `Pose::add_overlay`,
 `scenario_edit::native_view::posed_nodes`).
 

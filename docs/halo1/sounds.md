@@ -9,10 +9,10 @@ entries in the map's `ugh!` sound gestalt. The cache file around them is in
 
 Evidence labels, as in map-format.md:
 
-- **V — verified-on-disc:** checked by the `#[ignore]`d tests in
+- **V - verified-on-disc:** checked by the `#[ignore]`d tests in
   `crates/tools/h1-assets/tests/sounds/real_disc.rs` on every map of the owner's Halo 1
   disc (24 maps, 15,698 `snd!` tags) and every map of the Halo 2 disc (30).
-- **S — unverified:** the reader relies on the name or meaning but the
+- **S - unverified:** the reader relies on the name or meaning but the
   disc doesn't prove it.
 - **Design:** an implementation choice.
 

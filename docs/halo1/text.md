@@ -2,18 +2,18 @@
 
 Halo 1 keeps its user-facing text in two tag groups, read here by
 `crates/tools/h1-assets` through the [`h1map`](map-format.md) reader, and
-converted into Halo 2 localized text ([localization.md](../formats/localization.md)):
+converted into Halo 2 localized text ([localisation.md](../formats/localization.md)):
 string IDs, locale rows in the `matg` globals, and one `unic` tag per
 Halo 1 list. This page covers both sides.
 
 Evidence labels, as in map-format.md:
 
-- **V — verified-on-disc:** checked against the owner's retail Halo 1 disc
+- **V - verified-on-disc:** checked against the owner's retail Halo 1 disc
   by the ignored tests `real_disc_every_string_list_decodes` (every
   `ustr` and `hmt ` on every map: 10 campaign levels, 13 multiplayer
   maps and `ui.map`, `$H1_ISO`) and
   `real_disc_a30_converts_and_reads_back_through_halo_2`.
-- **S — unverified:** not independently checked here.
+- **S - unverified:** not independently checked here.
 - **Design:** an implementation choice.
 
 No game text, string dumps or community definition files are included in
@@ -22,8 +22,8 @@ the crate or its tests; the tests build invented string lists in memory.
 ## `ustr`: unicode string list
 
 **V** (all 418 tags on the disc, 5,397 strings): the tag is a block
-(count, address, unused) of 20-byte elements — the same data-reference
-shape the `sbsp` material layout uses — followed by the strings, packed
+(count, address, unused) of 20-byte elements - the same data-reference
+shape the `sbsp` material layout uses - followed by the strings, packed
 in element order.
 
 Element (`0x14` bytes):
@@ -82,9 +82,9 @@ Message (`0x40` bytes):
 | `20` | u16 | Start of this message in the UTF-16 blob, in code units | E `0xdfbd6`, V on a10, a30 and d40 |
 | `22` | u16 | First element of the message | V |
 | `24` | u8 | Element count | E `0xdfbdf`, V |
-| `25`..`40` | — | Zero on the disc | V |
+| `25`..`40` | - | Zero on the disc | V |
 
-**V:** the messages tile the element block in order — message `i` starts
+**V:** the messages tile the element block in order - message `i` starts
 where message `i−1` ends, at element 0, and together they cover every
 element. A message's text is its parts in order: text runs and glyphs
 (`HudMessage::plain_text` drops the glyphs).
@@ -109,7 +109,7 @@ A non-null reference that names a tag of the wrong group is refused.
 ## Conversion to Halo 2
 
 Halo 2 localized text is one global structure per map
-([localization.md](../formats/localization.md)): per language, an index of
+([localisation.md](../formats/localization.md)): per language, an index of
 `(packed string ID, blob offset)` rows over a NUL-terminated UTF-8-like
 blob, described by a descriptor in the `matg` at `+0x188`; a `unic` tag
 is `0x34` bytes whose nine `(start, count)` ranges select rows in its
@@ -137,8 +137,8 @@ tag and index rather than by ID.
   size, index and blob file offsets) into a `matg` block. The offsets
   are plain file offsets of the two raw resources, so the set is built
   once to learn them (`BuildLayout::raw`), the descriptor is patched,
-  and the map is built again: only field values changed, so the layout —
-  and the raw offsets — stay put (asserted in the tests).
+  and the map is built again: only field values changed, so the layout,
+  and the raw offsets - stay put (asserted in the tests).
 
 Verified end to end by the ignored disc test: a30's 21 string lists (19
 `ustr`, 2 `hmt `) become 21 `unic` tags over 239 rows; every row reads

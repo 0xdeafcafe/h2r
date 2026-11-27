@@ -25,7 +25,7 @@ and translation. Runtime behaviour is not verified in a game run.
 | `ai_follow_distance` | The VM evaluates the radius each time the script sets it. The value applies to the next area calculation and to automatic migration. Halo 1 uses 2 m if the assigned distance is nonpositive (`0x0013cf2a`–`0x0013cf45`). |
 | `ai_automatic_migration_target` | Preserves Halo 1 squad flag `0x20` and the separately enabled destination bit (setter `0x00140014`). The follow tick scores the original firing coordinates and the union of the three masks for the current platoon posture, following `0x0013caa0` and `0x0013cd80`. It uses the farthest occupied destination for hysteresis (`0x0013cf45`) and moves participants through Halo 2 `0x001e3400`. Halo 1 scores across BSPs, so an empty native area set no longer prevents destination selection. An encounter with no matching authored firing positions has no automatic destination. Disabling a destination still lets its current actors move elsewhere. |
 | `ai_migrate` | Halo 2's 308 accepts encounter sources and bare squad destinations. It rejects group destinations at `0x002a54cc`. The converter resolves literal Halo 1 encounter and platoon destinations per source squad, preferring compatible variants and character types as in the selector at `0x001402a0`. Literal platoon sources expand to their member squads. |
-| `ai_migrate_and_speak` | Moves the selected actors and requests the native combat vocalization at `0x0020ba60` for each changed actor. Halo 1 chooses advance or retreat in `0x00141fc0` and speaks after moving at `0x00141d0c`. Halo 2's `adlg` events 111 and 114 resolve through the index at `+0x1c` to patterns 138 (`newordr_advance`) and 144 (`newordr_retreat`). The native system selects an available voice line and applies its dialogue gate. |
+| `ai_migrate_and_speak` | Moves the selected actors and requests the native combat vocalisation at `0x0020ba60` for each changed actor. Halo 1 chooses advance or retreat in `0x00141fc0` and speaks after moving at `0x00141d0c`. Halo 2's `adlg` events 111 and 114 resolve through the index at `+0x1c` to patterns 138 (`newordr_advance`) and 144 (`newordr_retreat`). The native system selects an available voice line and applies its dialogue gate. |
 | `ai_migrate_by_unit` | Evaluates the HaloScript object list, collects the actors of its units and vehicles’ riders, and migrates each with Halo 2 `0x001e3400`. Group destinations prefer a squad of the same actor type. |
 | `ai_free`, `ai_free_units` | Call Halo 2's actor migration routine `0x001e3400` with no destination. It unlinks the old squad at `0x00203ed0` and puts the actor on the free-actor list at `0x00203f60`. A unit-list argument is evaluated by the VM and traversed through the native list pool. |
 | `ai_attach_free` | Compiles the actor-variant token to a rebuilt `char` at the original tag path. Source `actr` perception and `actv` vitality and weapon tuning populate the Halo 2 character records. The hook uses Halo 2 `0x001e0160` with no squad to attach that character to the supplied unit. The routine replaces any previous actor at `0x001e0d98` and puts the new actor on the free list. Halo 1's allocator and free-list insertion are `0x0014b810` and `0x0013bdd0`. |
@@ -45,7 +45,7 @@ and translation. Runtime behaviour is not verified in a game run.
 | `ai_force_active`, `ai_force_active_by_unit`, `ai_allow_dormant` | Binds 317 and 318. Their callees at `0x00275a50` and `0x00275ad0` set the squad and actor activation overrides. Halo 1's `ai_allow_dormant` callee `0x0013ff90` writes the inverse to the squad override, so the adapter calls 317 with `not allow`. |
 | `ai_allegiance_remove`, `ai_allegiance_broken`, `ai_set_team` | Binds Halo 2's 310 (`0x002a5540`, allegiance removal), 332 (`0x002a5b70`, allegiance broken predicate) and 322 (`0x002a5850`, writes the actor team). |
 | `ai_dialogue_triggers` | Calls `ai_dialogue_enable` (281), which writes Halo 2's AI dialogue gate at `0x002a4df1`. Halo 1 writes its dialogue gate at `0x000f08ad`. |
-| `ai_reconnect` | The retail Halo 1 evaluator at `0x000ed620` returns void immediately. The compiler preserves that retail behavior for this editor operation. |
+| `ai_reconnect` | The retail Halo 1 evaluator at `0x000ed620` returns void immediately. The compiler preserves that retail behaviour for this editor operation. |
 
 The scenario order fields `+0x4c` and `+0x4e` are distinct. Halo 2
 `0x00202abe` uses `+0x4c` to index the static script block.
@@ -75,13 +75,13 @@ or Agent API method.
 vitality tests when playfighting, then checks actor restrictions. Halo 2
 presearch at `0x001b44d0` uses a character search block and a tracked
 target. During playfight it skips that character prerequisite while
-preserving the live target and behavior safety checks. Halo 2's usual
+preserving the live target and behaviour safety checks. Halo 2's usual
 uncover rank at `0x001b84a0` has no matching character time or vitality
 tests.
 
 **Built.** Platoon flag `0x1` requests uncover once per actor migration.
 Halo 1 queues it at `0x0014ff6d` and consumes it at `0x001673d0`.
-Halo 2 behavior 35 uses native installer `0x001a80e0` and the uncover
+Halo 2 behaviour 35 uses native installer `0x001a80e0` and the uncover
 record at `0x0047e908`. Halo 1 passes target `NONE` to its point
 selector at `0x0016e070`. The marked Halo 2 uncover record therefore
 uses the non-targeted firing-position planner at `0x001b1f70`. That
@@ -151,7 +151,7 @@ unnamed automatic destinations use reusable squad orders and keep their
 source order and masks. Slot 300 marker 40 passes the offset of this data
 in the scenario script section.
 
-**Built — alert reports and forced combat levels.** Halo 1 keeps both
+**Built - alert reports and forced combat levels.** Halo 1 keeps both
 kinds of state on the unit object: the alert-report copy at `0x0014e8a0`
 (Halo 1 `0x0014e200`) moves the alert bits at unit `+0xc0` and the
 sighting timestamps at `+0xb8`, `+0x3e4` and `+0x3e8` from one linked
@@ -163,7 +163,7 @@ interest for such an actor, so `h1_ai_control::reports` rebuilds the
 events: the timer tick spreads the strongest alarmed contact of an
 encounter to its members (level, alert latch and sighting sample, the
 fields the copy moves), and a muzzle report at the native weapon-fire
-point forces the release level for three seconds — the weapon's
+point forces the release level for three seconds - the weapon's
 converted `firing_noise` decides whether the shot reports at all (the
 silent end of Halo 1's trigger `+0x2e` enum) and each hearing actor's
 reach is three times the firing weapon's authored loudness plus the
@@ -185,7 +185,7 @@ character rows into the weapon section. The disc check
 `every_level_s_scripts_run_on_the_retail_interpreter` reads each
 weapon row's reference group.
 
-**Built — the hold at behaviour sites.** Halo 1 checks the combat-timer
+**Built - the hold at behaviour sites.** Halo 1 checks the combat-timer
 hold at the individual behaviour call sites, so a held actor does not
 advance its behaviours while its squad counts down. The throttle that
 `AI_SUBMIT_UNIT_CONTROL` writes is gated too. The `AI_UPDATE_BEHAVIORS`
@@ -195,7 +195,7 @@ table) returns early for an actor whose squad timer is active and
 unreleased, and the throttle hold uses the same predicate
 (`h1_ai_control::timers::held`).
 
-**Built — substitute major upgrades.** A substitute character promotes
+**Built - substitute major upgrades.** A substitute character promotes
 through its `char` tag's `+0x24` major reference; when the major is a
 Halo 2-only tag no Halo 1 variant names, the promoted actor would find no
 row in the perception table and uncover without its authored

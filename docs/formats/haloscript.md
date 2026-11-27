@@ -17,7 +17,7 @@ Surveyed 2026-11-14/15 against the owner's `disc/halo2.iso`, cache build
 `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`;
 title `4D530064`, certificate version 3, entry `0x002d0aee`.
 Addresses below are guest VAs. Descriptive function names are assigned from
-behavior, not recovered debug symbols. Evidence is static instructions, tables,
+behaviour, not recovered debug symbols. Evidence is static instructions, tables,
 and cache contents, not an execution trace.
 
 Sources are the local executable and disc, inspected using this repository's
@@ -67,8 +67,8 @@ A script definition is a 32-byte fixed name, `u16 kind`, `u16 return_type`,
 `u32 root_datum`. A global definition substitutes `u16 value_type`, an
 uninterpreted `u16`, then the initializer root. Name padding is retained.
 The six script-kind name pointers at `0x0046fff8` identify startup, dormant,
-continuous, static, stub and command_script; kind behavior is corroborated by
-initialization and completion paths below.
+continuous, static, stub and command_script; kind behaviour is corroborated by
+initialisation and completion paths below.
 
 ### Syntax node wire record
 
@@ -115,7 +115,7 @@ and following the interpreter instead finds the following:
 | Builtin pointer table `0x004744e0` | 911 u32 guest descriptor pointers. **E:** interpreter indexes it at `0x0020994d`, calls descriptor `+4`, and reads return type through it at `0x00209b21`. **D:** all 911 descriptors/parameter types validate. Adjacent count word `0x0044f6bc` is 911, agreeing with pointer/descriptor extents. |
 | Type-name pointer table `0x0046ff00` | 62 u32 pointers to NUL strings. Located from the type-name string at `0x00453f10` and pointer xrefs, then checked against typed descriptors and node values. **E:** conversion dispatch `0x0020a2c7` uses stride 62; literal and string handling corroborate scalar indices. A full parser using this name table is not claimed. |
 | Script-kind names `0x0046fff8` | Six u32 string pointers, immediately after the 62 type names; startup/dormant/continuous semantics corroborated by interpreter branches. |
-| External globals `0x00473468` | `0x41d` descriptor pointers; declared type u16 at descriptor `+0`, external value pointer at `+4`. `0x00209a41–0x00209a50` reads type; `0x0020a2e0` onward refreshes values. The catalog reads types only. Names are not inferred for unused entries. |
+| External globals `0x00473468` | `0x41d` descriptor pointers; declared type u16 at descriptor `+0`, external value pointer at `+4`. `0x00209a41–0x00209a50` reads type; `0x0020a2e0` onward refreshes values. The catalogue reads types only. Names are not inferred for unused entries. |
 
 Builtin descriptor fields:
 
@@ -215,7 +215,7 @@ no per-script call list or script-derived summary is retained here.
   bit 0 marks first entry; `0x00209850` clears it before dispatch and passes
   that status to evaluate. Evaluators retain progress in frame locals across
   yields. Bit-1 call nodes take `0x00209bf0`, which evaluates the script root.
-- New-map initialization `0x002090a0` evaluates global initializers first and
+- New-map initialisation `0x002090a0` evaluates global initializers first and
   creates ordinary threads for script kinds 0, 1 and 2. Kind 1 starts with wake
   state -2 (dormant); other ordinary threads start at zero.
 - `hs_update`, `0x00209310`, checks enabled state, reads tick count through
@@ -243,7 +243,7 @@ The VM in [engine/hs_vm.md](../engine/hs_vm.md) reproduces these structures in
 Rust; its stack bound is a host policy. No guest-compatible VM ABI is promised here. The
 interpreter uses register arguments in several helpers; these notes must not
 be turned directly into ordinary C calling conventions. Retain generated VM
-execution until replacement behavior is tested against a runtime trace.
+execution until replacement behaviour is tested against a runtime trace.
 
 ## Validation and use
 

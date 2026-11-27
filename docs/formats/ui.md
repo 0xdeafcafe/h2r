@@ -19,11 +19,11 @@ Field names describe what the engine does with a value.
 
 Labels used in the tables:
 
-- **E** — engine-read: an instruction at the cited address reads this offset
+- **E** - engine-read: an instruction at the cited address reads this offset
   and the stated use follows from the surrounding code.
-- **V** — verified on the disc: the structural property holds for every
+- **V** - verified on the disc: the structural property holds for every
   instance in all 30 retail maps (see [Validation](#validation)).
-- **raw** — preserved but not interpreted. Either no reader was found or its
+- **raw** - preserved but not interpreted. Either no reader was found or its
   effect was not traced. A renderer must not rely on these.
 
 Disassembly came from a linear sweep of the analyzer's function starts with
@@ -156,7 +156,7 @@ text interface at `+0x74` (`0x0022f561`, `0x0022f583`), a pane button at
 `+0x70` (`0x00253c8b`). Both interfaces store UTF-16 at `+0x44`,
 with 32 or 256 units including the terminator (`0x0022f50d`, `0x0022f545`).
 [The UI audit](../runtime/agent-api-host.md#ui-what-the-menus-show) reads these
-buffers after row binding and localization.
+buffers after row binding and localisation.
 
 ### Substitution units
 
@@ -274,11 +274,11 @@ nonzero `+0x28` index fall outside it and `0x0022facd` skips them.
 | 02 | animation (copied to the screen widget) | | E `0x0022f71c` |
 | 04 | buttons | `0x3c` | E `0x00253cc8`; V |
 | 0c | lists (only the first is used) | `0x18` | E `0x0024bbf3`; V |
-| 14 | block | — | empty on the whole disc; refused if populated |
+| 14 | block | - | empty on the whole disc; refused if populated |
 | 1c | text blocks | `0x2c` | E `0x0022fc08`; V |
 | 24 | bitmaps | `0x38` | E `0x0022fc08`; V |
 | 2c | model scenes | `0x4c` | E `0x0022fc08`; V |
-| 34 | block | — | empty on the whole disc; refused if populated |
+| 34 | block | - | empty on the whole disc; refused if populated |
 | 3c | shader bitmaps | `0x24` | E `0x0022fc08`; V |
 | 44 | tables, one widget per cell (`+0x11`) | `0x18` | E `0x0022fc08`; V |
 
@@ -296,7 +296,7 @@ nonzero `+0x28` index fall outside it and `0x0022facd` skips them.
 | 30 | label string ID | E; V |
 | 34 | `i16` render depth bias | E |
 | 38 | flags: bits 0, 1 copied to the item | E |
-| 06, 08, 0c, 36 | — | raw |
+| 06, 08, 0c, 36 | - | raw |
 
 ### List, `0x18` bytes
 
@@ -325,7 +325,7 @@ Items are laid out from the anchor using the skin's bounding box
 | 1c | rectangle | E |
 | 24 | string ID | E `0x00253765`; V |
 | 28 | `i16` render depth bias | E |
-| 08, 0c, 2a | — | raw |
+| 08, 0c, 2a | - | raw |
 
 ### Bitmap block, `0x38` bytes
 
@@ -341,7 +341,7 @@ Items are laid out from the anchor using the skin's bounding box
 | 20 | `i16` render depth bias | E |
 | 24 | sprite frames per second; below 0.001 the image is static | E `0x002b0328` |
 | 28 | meter extent: right, bottom | E `0x002b0328` |
-| 06, 22, 2c–37 | — | raw |
+| 06, 22, 2c–37 | - | raw |
 
 The rectangle is `[y, x, y - height, x + width]` from the selected image's
 dimensions (image `+4`, `+6`), recomputed every update. A meter instead has
@@ -361,7 +361,7 @@ runtime 0..1 value; it is filled with the `wigl +0x50` ARGB colour
 | 28 | camera position | E |
 | 34 | field of view, clamped to at least 1 | E |
 | 38 | viewport rectangle | E |
-| 00, 06, 0a, 40–4b | — | raw |
+| 00, 06, 0a, 40–4b | - | raw |
 
 A model scene draws only while `0x0054d598` equals 4, which this survey did
 not identify.
@@ -436,7 +436,7 @@ arithmetic instead and returns `None` for a skipped cell or a result outside
 | 168 | header text colour (a, r, g, b) | E `0x0022fda6` |
 | 178 | four header layouts, 16 bytes each: header rectangle, second rectangle | E `0x0022fda6`, `0x0022ff53` |
 | 1b8 | looping sound (`lsnd`) | E `0x00235b46`; V |
-| 00–4b, 60–6b, 7c–87, 1c0 | — | raw |
+| 00–4b, 60–6b, 7c–87, 1c0 | - | raw |
 
 The three raw blocks are nonempty in all 30 `wigl` tags, so they cannot
 use the empty-block guard. They are kept as untrusted `Block` descriptors:
@@ -451,7 +451,7 @@ never followed, never bounds-checked, and documented as such on the fields.
 | 1c | ambient period | E |
 | 20 | `i16` ambient loop style (engine maps 0→0, 1→3, 2→1, 3→0) | E |
 | 24 | ambient keyframes block | E |
-| 00, 22 | — | raw |
+| 00, 22 | - | raw |
 
 ### Keyframe, `0x14` bytes
 

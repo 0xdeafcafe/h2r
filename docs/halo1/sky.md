@@ -10,12 +10,12 @@ ABI.
 
 Evidence labels:
 
-- **V — verified on disc:** read off the owner's retail discs by this
-  crate's ignored tests — Halo 1: all 31 skies on the 24 maps
+- **V - verified on disc:** read off the owner's retail discs by this
+  crate's ignored tests - Halo 1: all 31 skies on the 24 maps
   (`real_h1_disc_every_sky_reads`); Halo 2: all 91 identities across 28
   maps (`real_h2_disc_every_sky_decodes`). Structural facts: offsets,
   sizes, value ranges.
-- **E — engine:** the field's meaning was reviewed against the retail Halo 2
+- **E - engine:** the field's meaning was reviewed against the retail Halo 2
   engine in [lighting.md](../formats/lighting.md) (the `sky ` rows of its atmosphere
   table); the engine addresses there are the evidence, not this page.
 - **Design:** a converter choice.
@@ -182,7 +182,7 @@ unreferenced). Root sizes seen: `0xd0` (no lights), `0x144` (one), `0x1b8`
 
 ## The Halo 2 `sky ` tag
 
-The root struct is `0xac` bytes; the declared payload additionally covers
+The root struct is `0xac` bytes; the declared payload also covers
 the block elements, laid out after it. Root fields this crate reads
 (`h1_assets::sky::h2`), with the E rows from [lighting.md](../formats/lighting.md):
 
@@ -248,13 +248,13 @@ what is synthesised, and what has no Halo 2 home:
 | first ambient colour (`+48`) | `+34` fallback colour | copied |
 | light yaw/pitch (`+68/+6c`) | light `+0c/+10` | copied (which of the two angles is yaw follows Halo 2's engine order; the pairing itself is **Design**) |
 | light colour/power/falloff/cutoff | params `+08/+14/+18/+24` | copied |
-| — | params flags `+00` | **Design:** `15`, the retail-common value; Halo 1's flags (1/3) have a different, unknown meaning |
-| — | model scale `+14` | **Design:** the least scale, at least 1, that puts every surface of the model as far from the camera as the level is wide (below) |
-| — | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
+| - | params flags `+00` | **Design:** `15`, the retail-common value; Halo 1's flags (1/3) have a different, unknown meaning |
+| - | model scale `+14` | **Design:** the least scale, at least 1, that puts every surface of the model as far from the camera as the level is wide (below) |
+| - | camera translation scale `+18` | **Design:** `1.0`; the Halo 1 sky box stays centred on the camera |
 | fog A (scalars `4–11`) | `+48` `fog_a` | colour, density, start and opaque distance copied, one element, when the density is above zero and the opaque distance past the start |
 | fog B (scalars `12–19`) | scenario `+0x340` atmosphere element 0 | the first sky's only, when its density is above zero: colour, density, start and opaque distance as the element's first fog; every skyless cluster's `+0x6f` names it ("Indoor fog", above) |
 | lens flare (`+00`) | light `+14` | the converted Halo 1 `lens` (`h1convert::lens`); null when it does not install |
-| — | `+10` word, bitmap layers, `+58`, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` — retail zeroes |
+| - | `+10` word, bitmap layers, `+58`, `+44`, rotation | **Design:** `0`, empty blocks, `0`, `0.0` - retail zeroes |
 
 ### The model scale
 

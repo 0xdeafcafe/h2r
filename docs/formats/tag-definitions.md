@@ -365,9 +365,9 @@ file in the meaning text:
   `cli::extract_shaders`.
 - `ugh!`: `tags::sound` and [sound.md](sound.md). The playback distances
   and the permutation length come from
-  [halo1/sounds.md](../halo1/sounds.md) (E). The extra-info names — the
+  [halo1/sounds.md](../halo1/sounds.md) (E). The extra-info names - the
   permutation's descriptor index, the block, its resource, its locators
-  and the owner datum — come from the lip-sync read there ("Dialogue
+  and the owner datum - come from the lip-sync read there ("Dialogue
   mouth curves", E and V). The fields that doc marks S
   stay unnamed.
 - `pmov`: `tags::effects::movement`, with the property layout from
@@ -390,7 +390,7 @@ file in the meaning text:
   - grenades and player representations (`h1convert::globals`);
   - the UI globals references ([ui.md](ui.md));
   - start levels and level select (`content::campaign_list`);
-  - the locale descriptors ([localization.md](localization.md)).
+  - the locale descriptors ([localisation.md](localization.md)).
 
   Some level-select text slots and map ids stay unnamed, because the
   schema has a raw pointer or a raw size at those offsets.

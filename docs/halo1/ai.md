@@ -44,7 +44,7 @@ unused), tag references 16.
 | `468` | AI conversations | `74` | V |
 
 Encounter (`b0`): name `char[32]` `00`, flags `u32` `20`, team `u16` `24`,
-search behavior `u16` `28`, manual BSP `i16` `2a`, compiled BSP `i16` `7e`, respawn delay `f32[2]`
+search behaviour `u16` `28`, manual BSP `i16` `2a`, compiled BSP `i16` `7e`, respawn delay `f32[2]`
 `2c`; blocks: squads `80` (`e8`), platoons `8c` (`ac`), firing positions
 `98` (`18`), player starting locations `a4` (`34`, the scenario's own
 layout). V for the blocks; the scalars are R.
@@ -97,7 +97,7 @@ that atom and can still run the next one.
 command list of each authored location. The retail Xbox executables show
 which absent indices actually suppress an action.
 
-| Source field | Retail behavior and v8 representation |
+| Source field | Retail behaviour and v8 representation |
 |---|---|
 | Actor variant | H1 loads the squad default and replaces it only when the start's index differs from -1 (`0x13e390..0x13e3ae`). A negative or out-of-range effective index or a null palette datum skips creation (`0x13e3b0..0x13e3dd`). H2 makes the same checks at `0x2037bf..0x2037fa`. When an explicit empty override shares a squad with valid inherited starts, the converter puts the default on those siblings and leaves both character fields empty for the failed spawn. |
 | Weapon | H1 tests the effective variant's weapon datum at `0x14d6ee`. A null datum skips weapon creation at `0x14d70b`. A mixed squad stores its weapons on individual starts so an explicitly unarmed variant cannot inherit another variant's weapon. An armed source requires a resolved destination weapon palette slot. |
@@ -425,7 +425,7 @@ need a runtime calculation. H1 `0x16b74d` uses the direction from the
 unit to a point, while `0x16b895` uses the unit's facing for a duration.
 H2's begin/update pair is `0x258cf0` / `0x259430`. The two H1 vehicle
 atoms search for a driver seat on a nearby live vehicle (`0x16bd0c`).
-H2 tests seat admission at `0xc8200` and submits the entry behavior at
+H2 tests seat admission at `0xc8200` and submits the entry behaviour at
 `0x1a80e0`. H1's falling-damage exemption sets and clears a unit flag at
 `0x16a603` and `0x16b23c`. H2's landing routine tests its counterpart at
 `0xe3727` before applying the distance damage effect.
@@ -439,7 +439,7 @@ and designator to the unit's speech block at `0x114ff3`. The hook
 selects the matching voice variant for that call. A unique leader
 assigned an existing unit updates the same two speech fields.
 
-**Built.** Native vocalizations use the indexed vocabulary at `adlg +0`.
+**Built.** Native vocalisations use the indexed vocabulary at `adlg +0`.
 Halo 2 reads the chosen unit's indexed sound at `0x1144f4`. The rebuilt
 table keeps explicit Halo 1 slots after its native rows. A command
 atom names a slot and resolves the authored fallback chain from
@@ -529,7 +529,7 @@ through the table at `0x1efbd8`. It first seeks a living AI in the
 speaker's encounter, or on its team if there is no encounter, within
 nine units. The kill replies also test a five-unit unit-contact
 predicate at `0x145140`. The Halo 2 hook keys off the native sound's
-last active tick at `0x114d8a`. The converted vocalization rows retain
+last active tick at `0x114d8a`. The converted vocalisation rows retain
 their source slot so that native and source-only remarks can both
 trigger their own replies. Nearby allied actors are selected from the
 same group and BSP visibility region and speak through their own
@@ -569,14 +569,14 @@ uses its original exit remark there. Halo 1's motion check at
 `0x4b6fb` selects excitement or fright for vehicle riders. Halo 2
 also distinguishes its cheer and dangerous-driving events at
 `0x1c831d` and `0x1c8347`, and selects the converted sounds through
-its rider vocalizations.
+its rider vocalisations.
 
 **Built.** Halo 1's perception update at `0x15725e` reports an
 alliance change using the new relationship. Halo 2 emits alliance
 break event 194 at `0x25accf` for the observer and emits alliance
 restoration event 196 at `0x1c9958`. The observer can use its exact
 alliance-break row, and the restored alliance uses the native
-forgiveness vocalization.
+forgiveness vocalisation.
 
 **Built.** Halo 1 chooses its firing remark at `0x162a82`. It first
 checks berserk mode, then an enemy flagged as a traitor, then five
@@ -605,7 +605,7 @@ by the exact salted unit in the alert.
 **Built.** Halo 1 dispatches loss of contact at `0x166869` and
 `0x16a419`, group uncover at `0x169b7c`, cover at `0x167356`
 and completion of hiding at `0x16d748`. The Halo 2 control update
-follows the native actor's contact and behavior transitions.
+follows the native actor's contact and behaviour transitions.
 It uses its guard/search states for loss of contact, entry to uncover
 while tracking the enemy, entry to cover, and exit from hiding with
 a relevant contact. The focused-prop awareness levels come from
@@ -642,7 +642,7 @@ pre-combat and remaining group size and the speaker's original
 and current body vitality. It distinguishes serious wounds,
 an isolated survivor, heavy losses, a rout, and a healthy survivor.
 Halo 2's actor control hook records starting strength and vitality.
-Entry to its postcombat behavior at `0x1b4240` selects the remark
+Entry to its postcombat behaviour at `0x1b4240` selects the remark
 after contact ends for the group. Three original aftermath rules
 allow nearby allies to answer after the initial line has finished.
 
@@ -740,7 +740,7 @@ from 03a, flood combat elite, infection, carrier and the monitor from
 04b, flood combat human from 06a, and the special-ops elite and grunt
 from 04b.
 
-**Built — Sentinel graph.** The Halo 1 variant points to its own rebuilt
+**Built - Sentinel graph.** The Halo 1 variant points to its own rebuilt
 biped. The model converter reads the biped's `antr` and emits a `jmad`
 with local animation resources and owner fixups. On c40, the fixed weapon
 class's slot 0 selects each stance's idle. Slot 25 selects the nine-frame
@@ -754,7 +754,7 @@ sequence at `+0x2cc` on 04b's Halo 1 aggressor. Both retail aggressors
 have biped flags `0xe00` and character-physics flags `0x13`. The style
 comes from 04b when donor maps are supplied.
 
-**Built — crew.** Each distinct `actv` gets a definition-built `char`
+**Built - crew.** Each distinct `actv` gets a definition-built `char`
 with its unit, perception, vitality and weapon properties. a10's tech,
 engineer, security, science and command variants have different RGB
 bounds in the block at `actv+0x22c`. Their rebuilt bipeds share a model
@@ -762,7 +762,7 @@ and graph. Security carries the source pistol (the retail magnum in the
 Halo 2-assets variant). The other five variants (including the pilot)
 have null weapon references.
 
-**Built — firing positions.** Halo 1 encounter flag `0x20` marks all
+**Built - firing positions.** Halo 1 encounter flag `0x20` marks all
 three a30 Banshee encounters (584 points). They keep their altitude and
 use a null sector, as in 06a's flying Sentinel zones. Ground points use
 their assigned BSP at encounter `+0x7e`. The surface reference and the
@@ -778,7 +778,7 @@ of the floor check. The rest must be on a sector for at least 98% of firing
 positions and 90% of starting locations; the misses (a30's river and cave
 floor, a10's flanks) stand on scenery, which isn't in the structure BSP, on
 slopes past 45°, or in water.
-**Built — script-created and migration squads.** Halo 1 squad literals
+**Built - script-created and migration squads.** Halo 1 squad literals
 encode `0x80000000 | local_squad << 16 | encounter`. The converter uses
 these indices to retain named targets, including on a50 and b40. The
 native migration evaluator requires a squad datum (`0x002a54cc`).
@@ -915,7 +915,7 @@ out in `0xfe618`.
 
 - That Halo 2 places each wave, moves actors between its firing positions,
   takes cover, targets the player and uses the selected weapons and grenades.
-  The agent method `world.ai` reports squad, cached sector, behavior, focus
+  The agent method `world.ai` reports squad, cached sector, behaviour, focus
   object and combat status. Match its unit ID to positions across ticks in
   `world.object`. [Agent API](../runtime/agent-api-world.md#worldai)
 - That the chosen characters, pulled into a Halo 1 level from other maps,

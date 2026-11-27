@@ -507,12 +507,12 @@ keep their source stationary vehicle type 6 and seats. a10's scripts call
 Their collision bodies follow the model's nodes, including the cryotube
 door. The fighter-bomber is a type 3 aircraft for `recording_play`. Its
 `phys` has eighteen mass point spheres, which form one native compound
-body. Halo 1 supplies mass, center of mass and inertia.
+body. Halo 1 supplies mass, centre of mass and inertia.
 
 Lifepods: the flying pods use Halo 1's type 5, model,
 collision, seats and flight rates. Where Halo 1 supplies `phys` (the
 plain pod and a30 entry pod), the collision-derived rigid body keeps its
-mass, center of mass and inertia tensor. The flight hook applies H1's positive-radius lifepod controller at
+mass, centre of mass and inertia tensor. The flight hook applies H1's positive-radius lifepod controller at
 `0x37760` when the source supplies two powered groups.
 The docked pod keeps its stationary body and source lights. a30's entry pod
 attaches its own `lifeboat` loop, including the source track samples,

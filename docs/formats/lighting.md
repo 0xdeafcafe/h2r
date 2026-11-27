@@ -39,7 +39,7 @@ for a surface to receive the current lightmap.
 The existing [BSP layout](structure-bsp.md) owns the root group descriptor at
 `ltmp+80`, bitmap reference at group `+18`, palettes at `+08`, render-info
 indices and bucket references. Group stride is `0x68`: the palette
-initialization loop advances by `add esi, 68h` at `0x00015c6b`. An earlier
+initialisation loop advances by `add esi, 68h` at `0x00015c6b`. An earlier
 `0x98` reading could not be told apart by bounds, since every retail tag has
 one group; the canonical decoder now uses `0x68`, and a synthetic two-group
 test distinguishes the layouts.
@@ -47,7 +47,7 @@ test distinguishes the layouts.
 | Field or operation | Evidence |
 |---|---|
 | Group `+08/+0c`: palette count/pointer, `0x400` bytes each | E `0x00015c0a`, `0x00015c32`, `0x00015c51`; V 2,042 palettes |
-| Palette: 256 A8R8G8B8 words | E palette resource initialization at `0x00015c37`–`0x00015c46`, `0x00015c90` → `0x003f84d0` (`D3DDevice_SetPalette_4`); channel convention also covered by existing gfx conversion tests |
+| Palette: 256 A8R8G8B8 words | E palette resource initialisation at `0x00015c37`–`0x00015c46`, `0x00015c90` → `0x003f84d0` (`D3DDevice_SetPalette_4`); channel convention also covered by existing gfx conversion tests |
 | Render info `+0` i16 bitmap page; `+2` i8 palette, `-1` absent | E `0x0004d3d4`–`0x0004d40a` |
 | Selected palette is bound at texture stage 3 | E `0x0004d40f`–`0x0004d416`, `edi=3`, `esi=palette index` |
 | Lightmap bitmap and page are selected from the active group | E `0x00018bfe`–`0x00018d06`: bitmap datum at group `+1c`, image stride `0x74`, page global `0x00485a60` |
@@ -99,9 +99,9 @@ The constants at `0x0045dee0/+dee8` establish 3 and pi; `0x0045dec0/+dec8`
 establish 15 and 5; `0x0045dbbc/+dbc4` and `0x0045dc20` supply 1/2, -1/2 and 1/4.
 `sh_basis`, `LightProbe::ambient_rgb` and `evaluate` expose that convention.
 Evaluation is the coefficient/basis dot product for each channel, without
-clamping or normalization. `0x00023ca0` also contracts nine-term arrays to
+clamping or normalisation. `0x00023ca0` also contracts nine-term arrays to
 per-vertex RGB. This does not recover all precomputed-transfer, visibility,
-probe selection or material-shading behavior. `0x00022cf0` selects nearby
+probe selection or material-shading behaviour. `0x00022cf0` selects nearby
 probes and interpolates; reproducing its full selection algorithm is deferred.
 
 The preliminary disc scan found 147 probes in 26 groups; all stored rotations
@@ -117,7 +117,7 @@ geometry stream enum:
 | Stream | Stride | Interpretation and evidence |
 |---|---:|---|
 | `2e` | 4 | Packed ARGB to normalized RGB; E `0x000d35a0` selects the four-byte variant, `0x000d3630` calls `0x00131bb0` |
-| `2f` | 3 | RGB bytes in memory order, each /255; E `0x000d33a0`, `0x000d3630`, normalization constant `0x0045dbb4` |
+| `2f` | 3 | RGB bytes in memory order, each /255; E `0x000d33a0`, `0x000d3630`, normalisation constant `0x0045dbb4` |
 | `30` | 4 | Signed 11:11:10 lighting vector; E `0x000d31c0`, constants `0x0045dd38/+dd3c/+dd48/+dd4c` |
 | `1f` | 4 | Lightmap UVs, existing geometry interpretation; CPU consumer E `0x000d2bf0` |
 | Others | preserved | Opaque; validator counts them explicitly |
@@ -313,7 +313,7 @@ outside the repository.
 Synthetic tests cover multiple groups at the `0x68` stride, probe arrays,
 every SH term against independent values at mixed-axis directions, probe
 evaluation per term and channel, sky scalar offsets with neighbouring
-sentinels, the MGS2 distance fade, RGB/ARGB and vector quantization,
+sentinels, the MGS2 distance fade, RGB/ARGB and vector quantisation,
 duplicate bucket resources, truncation, malformed pointers, non-finite
 reviewed fields, opaque-field preservation, the shared alias budget, palette
 ambiguity, PNG channel order, symlinked output roots, no-clobber output, and
