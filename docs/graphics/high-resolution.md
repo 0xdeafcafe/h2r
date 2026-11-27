@@ -416,7 +416,6 @@ The wide view's remaining work, in order:
 
 1. **Supplement objects past 12:5.** In a 32:9 window the objects outside the gather lens draw their opaque layer alone (`native_objects_glue/display.rs`): no accumulation layer of their own (a part sampling it reads what is behind the object), no dynamic lights, shadows, decals or transparent parts. Either the film records the gather lens it was made with, so each session gathers through its own window, or the supplement draws layer 1 before layer 3.
 2. **Networked games.** A game of several machines keeps the retail gather and shows the sides through the display supplement (`VisibilityLens::Display`), with the same object limits and with clusters left out whole when a layer has no display draw. The gather lens needs every peer to take it.
-3. **A vertical term in the projection.** `canvas_fit::Lens` gives a window narrower than 4:3 a vertical lens (`y` below 1, `x` 1), but the projection pipeline (`widen_projection_rows`, `display_camera`, the frustum and scissor reprojection) carries a horizontal factor only. `projection_factor` therefore takes `Lens::horizontal_only`, which narrows the horizontal lens on a portrait window; the vertical term replaces it once those paths carry `y`.
 
 ## Not verified
 

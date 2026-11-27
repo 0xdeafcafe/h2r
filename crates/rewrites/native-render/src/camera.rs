@@ -75,17 +75,17 @@ pub(crate) mod tests {
             assert!((clip[0] - retail_clip[0]).abs() < 1e-5);
             assert!((clip[1] - retail_clip[1] * lens.y).abs() < 1e-5, "{output:?}");
             assert_eq!(clip[3], retail_clip[3]);
-            // The frustum: a point just above the retail top edge is
-            // outside the retail camera and inside the grown lens.
-            let w = retail_clip[3];
-            let y = retail_clip[1];
-            let ratio = (y / w).abs();
-            assert!(ratio < 1.0 || ratio * lens.y < 1.0);
-            let above = [10., 3., 5. + 6.0 / ratio.max(1e-3) * 0.0 + 12., 1.];
-            let (r, g) = (super::transform(&camera.view_projection(), above), super::transform(&wide.view_projection(), above));
-            assert!(r[1].abs() > r[3], "retail clips the point: {r:?}");
-            assert!(g[1].abs() <= g[3] || g[1].abs() < r[1].abs(), "the grown lens holds more: {g:?}");
-            assert!((g[1] / g[3]).abs() < (r[1] / r[3]).abs());
+            // The frustum: a point whose retail clip y is 1.5 w lies above
+            // the retail top edge and inside the grown lens (1.5 * y < 1).
+            let at = |dz: f32| [10., 4., 3. + dz, 1.];
+            let c0 = super::transform(&camera.view_projection(), at(0.));
+            let c1 = super::transform(&camera.view_projection(), at(1.));
+            let dz = (1.5 * c0[3] - c0[1]) / (c1[1] - c0[1]);
+            let retail = super::transform(&camera.view_projection(), at(dz));
+            let grown = super::transform(&wide.view_projection(), at(dz));
+            assert!((retail[1] / retail[3] - 1.5).abs() < 1e-4, "{retail:?}");
+            assert!(grown[1].abs() < grown[3], "the grown lens holds it at {output:?}: {grown:?}");
+            assert!((grown[0] - retail[0]).abs() < 1e-5);
         }
     }
 }
