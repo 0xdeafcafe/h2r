@@ -62,8 +62,15 @@ flowchart LR
    splices the sealed command buffers into the D3D submission order.
 4. **Fallback.** A refusal, a failed validation, a material or state the
    stage cannot reproduce, or a stood-down stage leaves the original D3D draw.
-   Clears, target changes, query reports, menu and video traffic and the
-   final display stay on D3D ([Residual render callers](#residual-render-callers)).
+   Clears, target changes, query reports, menu traffic and the final
+   display stay on D3D ([Residual render callers](#residual-render-callers)).
+
+`render_frame_and_present` `0x00223240` is the Rust frame step
+(`render_bridge::render_frame`): it calls the views or the frame outside a
+game view, the frame wait and the present in the guest's order. A movie's
+picture is uploaded from the decoder and drawn as an overlay `MovieFrame`
+item; the guest's texture is never filled
+([retire-d3d-display.md](retire-d3d-display.md)).
 
 `impl.render.native=off` returns every stage, walk and scene list to the D3D
 path together. `crates/hooking/hooks/src/switches.rs` (`NATIVE`,
@@ -452,7 +459,8 @@ Numbers from the all-native A/B are in
 ## Residual render callers
 
 What stays on D3D: unsupported materials, exceptional handlers, clears,
-target changes, query reports, menu and video traffic, final display, and
+target changes, query reports, menu traffic, the movie's texture creation
+and release, final display, and
 any shader or geometry setup a stage keeps when it replaces only the
 resolved draws. The reachable sites in the retail image (conditional sites
 counted once; runtime counts depend on visibility and admissions):
@@ -464,7 +472,7 @@ counted once; runtime counts depend on visibility and admissions):
 | Scene kinds 0, 3, 4, 6, 7 | 4 general layer begins (one is the layer-2 overlay), then the late sky and visibility sites |
 | Scene kind 5 | 1 common exit; it may restore target 0 and the depth clip |
 | Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
-| Outside game views | fallback-view call `0x0022326a`, 2 frame-finish calls, present `0x00223296` |
+| Outside game views | the frame step's call of `0x002232a0`, 2 frame-finish calls, the present `0x00013f10` |
 
 The frame tail at `0x00013b90` conditionally copies the view target and
 composites it. The bridge scopes each helper by its caller and drains pending
