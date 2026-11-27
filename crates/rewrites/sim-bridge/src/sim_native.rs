@@ -217,7 +217,7 @@ pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
 pub(crate) const ANIM_MANAGER: &str = "sim.native.anim.manager";
 
 pub(crate) fn anim_manager_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(ANIM_MANAGER, false)
+    switches.implementation(ANIM_MANAGER, true)
 }
 
 /// The phase 1d rows of `exports`.
