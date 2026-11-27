@@ -148,7 +148,9 @@ fn menu_text_reads_short() {
     assert_eq!(menu_text(0), "Mod Downloader");
     assert_eq!(menu_text(3), "Mod Downloader (3 new)");
     assert_eq!(menu_text(150), "Mod Downloader (99+ new)");
-    assert!(menu_text(99).len() <= crate::custom_games::TEXT.len());
+    // 99 is the last count shown whole; the label is longer than the old
+    // "Mods (99 new)" bound ("Custom Game Browser") since the rename.
+    assert_eq!(menu_text(99), "Mod Downloader (99 new)");
 }
 
 #[test]
