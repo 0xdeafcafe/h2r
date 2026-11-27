@@ -984,6 +984,44 @@ mod tests {
     }
 
     #[test]
+    fn a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest() {
+        use crate::native_lights::typed_groups::{self, GroupRefusal};
+        use frame_scene::{EntryState, GroupSite, LightStep, LightTarget};
+        use scene_extract::light_groups::Cause;
+
+        let mut m = fixture(12);
+        m.set_u32(shadows::RECEIVERS + 12, 0).unwrap();
+        m.set_u32(lp::global::DEFINITION, u32::MAX).unwrap();
+        m.set_u8(RECORD + 0x1a, 0x80).unwrap();
+        let steps = [LightStep { layer: 12, target: LightTarget::View, stencil: Some(0), draws: true }];
+        // With no host nothing is held: the light keeps its guest passes.
+        assert_eq!(
+            typed_groups::plan_or_refusal(&m, GroupSite::Light, &steps, 0, 32, None).err(),
+            Some(GroupRefusal::Entry(Cause::State)),
+        );
+        let mut asked = 0;
+        let mut held = |state: EntryState| {
+            let mut ask = || {
+                asked += 1;
+                state
+            };
+            typed_groups::plan_held(&m, GroupSite::Light, &steps, 0, 32, None, &mut ask)
+        };
+        let all = EntryState { aux_depth: true, fade: true };
+        let groups = held(all).unwrap();
+        assert!(groups[0].entries.iter().all(|e| e.state == EntryState { aux_depth: false, fade: true }));
+        assert_eq!(held(EntryState { aux_depth: true, fade: false }).err(), Some(GroupRefusal::Entry(Cause::State)));
+        assert_eq!(asked, 4, "asked for each entry with state, up to the first refused");
+        // Only diffuse and specular take it; the shadow layers keep the handler.
+        let fade = EntryState { aux_depth: false, fade: true };
+        for layer in [10, 11, 14] {
+            assert!(!typed_groups::state_drawn(layer, fade, &mut || all), "layer {layer}");
+        }
+        assert!(typed_groups::state_drawn(13, all, &mut || all));
+        assert!(typed_groups::state_drawn(14, EntryState::default(), &mut || unreachable!("a plain entry asks nothing")));
+    }
+
+    #[test]
     fn typed_casters_predict_the_draw_target_and_restore_before_receivers() {
         use crate::native_lights::typed_groups;
         use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};

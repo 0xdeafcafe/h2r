@@ -287,6 +287,10 @@ pub struct ModelGeometry<'a> {
     pub layout: &'a ModelLayout,
     pub nodes: &'a [Row],
     pub decompression: [Row; 3],
+    /// What the auxiliary state toggle sets, for a part whose record
+    /// toggles it: `c[0..3]` and the clip range it draws with in place of
+    /// the view's (`crate::object_program_gpu::with_aux_depth`).
+    pub aux_depth: Option<&'a frame_scene::AuxDepth>,
 }
 
 /// `u` with a model draw's node rows and decompression put in; `None`
@@ -302,6 +306,25 @@ pub fn model_vertex(
     u.constants[MODEL_ROWS..MODEL_ROWS + nodes.len()].copy_from_slice(nodes);
     u.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression);
     Some(u)
+}
+
+/// A model part's uniforms over the light's: its node rows and
+/// decompression, and for a record toggling the auxiliary state what the
+/// toggle sets (`c[0..3]` and the clip range). Rows past the palette are
+/// checked before the run is prepared ([`LightSet::draws`]).
+fn model_part(
+    vertex: &mut VertexUniforms,
+    pixel: &mut PixelUniforms,
+    nodes: &[Row],
+    decompression: [Row; 3],
+    aux: Option<&frame_scene::AuxDepth>,
+) {
+    if let Some(v) = model_vertex(vertex.clone(), nodes, decompression) {
+        *vertex = v;
+    }
+    if let Some(aux) = aux {
+        crate::object_program_gpu::with_aux_depth(vertex, pixel, aux);
+    }
 }
 
 /// The light passes' pipelines in a packet's description (diagnostics
@@ -676,8 +699,7 @@ impl LightDraw<'_> {
             None => light_vertex(&vertex, self.frame),
         };
         if let Some(m) = &self.model {
-            // Checked before the run is prepared ([`LightSet::draws`]).
-            vertex = model_vertex(vertex.clone(), m.nodes, m.decompression).unwrap_or(vertex);
+            model_part(&mut vertex, &mut pixel, m.nodes, m.decompression, m.aux_depth);
         }
         (vertex, pixel)
     }
@@ -1041,6 +1063,30 @@ mod tests {
         assert_eq!(u.constants[31], [1.0; 4], "the light frame stays");
         let too_many = vec![[0.0; 4]; 3 * MAX_PALETTE + 1];
         assert!(model_vertex(base, &too_many, decompression).is_none());
+    }
+
+    #[test]
+    fn a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip() {
+        let base = light_vertex(&VertexUniforms::default(), &[1.0f32.to_bits(); FRAME_DWORDS]);
+        let nodes: Vec<Row> = (0..3).map(|r| [r as f32; 4]).collect();
+        let decompression = [[2.0; 4], [3.0; 4], [4.0; 4]];
+        let aux = frame_scene::AuxDepth {
+            scale: 0.5,
+            rows: [[5.0; 4], [6.0; 4], [7.0; 4], [8.0; 4]],
+            clip: [1.0, 900.0],
+            rest_rows: [[10.0; 4]; 4],
+            rest_clip: [2.0, 900.0],
+        };
+        let (mut plain, mut plain_pixel) = (base.clone(), PixelUniforms::default());
+        model_part(&mut plain, &mut plain_pixel, &nodes, decompression, None);
+        assert_eq!(plain.constants[..4], base.constants[..4], "a plain part keeps the view's rows");
+        assert_eq!(plain.w_clip, base.w_clip);
+        let (mut toggled, mut pixel) = (base.clone(), PixelUniforms::default());
+        model_part(&mut toggled, &mut pixel, &nodes, decompression, Some(&aux));
+        assert_eq!(toggled.constants[..4], aux.rows);
+        assert_eq!((toggled.w_clip, pixel.depth_range), (Some(aux.clip), aux.clip));
+        assert_eq!(&toggled.constants[MODEL_ROWS..MODEL_ROWS + 3], nodes.as_slice(), "its node rows too");
+        assert_eq!(toggled.constants[31], [1.0; 4], "the light frame stays");
     }
 
     #[test]

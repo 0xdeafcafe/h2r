@@ -436,6 +436,10 @@ fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
             ] {
                 h.word(w);
             }
+            // A plain entry hashes as it always has.
+            if !e.state.plain() {
+                h.word(0x3_0000 | u32::from(e.state.aux_depth) | u32::from(e.state.fade) << 1);
+            }
         }
     }
 }
@@ -686,6 +690,7 @@ mod tests {
                 variant: 0,
                 implementation: 2,
             },
+            state: Default::default(),
         };
         let group = |light, site| LightGroup {
             light,

@@ -394,6 +394,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     ) -> Result<Vec<Planned>, Keep> {
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let mut model_lights = None;
+        let mut held = None;
         // Runs of structure entries resolve together, as the sorted
         // list's do; each object entry is a draw of its own (its rows).
         let mut draws: Vec<Planned> = Vec::new();
@@ -401,7 +402,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         for (entry, rows) in entries {
             let binding = entry.binding;
             let selection = Some((binding.variant, binding.selector));
+            // An entry's state: the toggle's values it draws with, and an
+            // unmasked fade, only while the device holds what the
+            // handler's epilogue would leave.
+            let mut aux = None;
+            if !entry.state.plain() {
+                let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
+                if entry.state.fade && !now.fade {
+                    return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
+                }
+                if entry.state.aux_depth {
+                    aux = Some(values.ok_or(Keep::Unsupported(
+                        "an entry toggling the auxiliary state, whose values the device does not hold off",
+                    ))?);
+                }
+            }
             if structure_key(entry).is_some() {
+                if aux.is_some() {
+                    return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
+                }
                 let draw = world.structure_entry(entry)?;
                 run.push((layer, usize::from(binding.implementation), draw, selection));
                 continue;
@@ -413,7 +432,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 .get_or_insert_with(|| self.model_lights(device, mem, ready))
                 .as_ref()
                 .map_err(Clone::clone)?;
-            draws.push(world.resolve_model(c, lights, layer, entry, rows, selection, produced_gel)?);
+            let mut planned = world.resolve_model(c, lights, layer, entry, rows, selection, produced_gel)?;
+            if let Some(model) = &mut planned.model {
+                model.aux_depth = aux;
+            }
+            draws.push(planned);
         }
         if !run.is_empty() {
             draws.extend(world.resolve_world_parts(c, run, produced_gel)?);
@@ -781,6 +804,26 @@ impl native_render::light_scene::Resident for Held<'_> {
     }
 }
 
+/// What the device holds for an entry's state
+/// (`frame_scene::EntryState`): the auxiliary state toggle's values off,
+/// as layer 3's objects need them ([`crate::native_objects_glue::aux_depth_at_rest`]),
+/// and the stipple off and at rest, as a faded object's
+/// ([`crate::native_objects_glue::stipple_off`], `stipple_at_rest`).
+/// Skipping a handler then leaves what its prologue and epilogue would.
+fn held_state<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> frame_scene::EntryState {
+    frame_scene::EntryState {
+        aux_depth: held_aux(d, mem).is_some(),
+        fade: crate::native_objects_glue::stipple_off(d, mem) && crate::native_objects_glue::stipple_at_rest(d, mem),
+    }
+}
+
+/// What the auxiliary state toggle sets for the current view, when the
+/// device holds its values off.
+fn held_aux<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> Option<frame_scene::AuxDepth> {
+    native_render::aux_depth::read(&ReadMemory(mem))
+        .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(d, mem, aux))
+}
+
 /// A structure entry's key in [`ClusterParts`]; `None` for an object's.
 fn structure_key(e: &LightEntry) -> Option<(Owner, u8)> {
     match e.owner {
@@ -1000,6 +1043,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     /// off the guest's frame runs.
     fn draws_scene(&self) -> bool {
         crate::native_shadows_glue::enabled()
+    }
+
+    /// An entry's state draws while the device holds what its handler's
+    /// epilogue leaves ([`held_state`]).
+    fn held_state(&self, mem: &dyn GuestMemory) -> frame_scene::EntryState {
+        match self.device.lock() {
+            Ok(d) => held_state(&*d, mem),
+            Err(_) => frame_scene::EntryState::default(),
+        }
     }
 
     fn draw_scene(
@@ -1663,6 +1715,9 @@ struct ModelDraw {
     section: u16,
     buffer: usize,
     rows: Vec<Row>,
+    /// What the auxiliary state toggle sets, for an entry toggling it
+    /// (`frame_scene::EntryState::aux_depth`).
+    aux_depth: Option<frame_scene::AuxDepth>,
 }
 
 impl std::fmt::Debug for ModelDraw {
@@ -1697,6 +1752,7 @@ impl ModelDraw {
             layout: &buffer.layout,
             nodes: &self.rows,
             decompression: section.decompression,
+            aux_depth: self.aux_depth.as_ref(),
         })
     }
 }
@@ -1952,6 +2008,7 @@ impl LightsWorld {
                 section: entry.stream.section,
                 buffer,
                 rows: rows.to_vec(),
+                aux_depth: None,
             }),
         })
     }
@@ -2059,6 +2116,7 @@ impl LightsWorld {
                 section: entry.stream.section,
                 buffer,
                 rows: rows.to_vec(),
+                aux_depth: None,
             }),
         })
     }
@@ -2172,6 +2230,7 @@ impl LightsWorld {
                 section: entry.stream.section,
                 buffer,
                 rows: rows.to_vec(),
+                aux_depth: None,
             }),
         })
     }
@@ -2772,6 +2831,7 @@ mod tests {
             },
             pose: LightPose::Rows(0..6),
             binding: LightBinding { shader: 64, selector: 2, variant: 1, implementation: 4 },
+            state: Default::default(),
         };
         let slot = LightSlot::new(8, 72, &entry);
         let owner = |handle, model, section| ResolvedOwner::Object { handle, model, section };

@@ -5,7 +5,7 @@
 
 use engine::memory::GuestMemory;
 use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
-use frame_scene::{GroupSite, LightGroup, LightStep, LightTarget, PROJECTION_ROWS, ShadowPass};
+use frame_scene::{EntryState, GroupSite, LightGroup, LightStep, LightTarget, PROJECTION_ROWS, ShadowPass};
 use native_render::shadows;
 use scene_extract::light_groups;
 
@@ -117,7 +117,9 @@ pub enum GroupRefusal {
     Mask,
     /// The layer's sort did not read.
     Sort,
-    /// A sorted entry the scene cannot hold whole, by its cause.
+    /// A sorted entry the scene cannot hold whole, by its cause; an
+    /// entry whose state ([`EntryState`]) its layer does not take or the
+    /// host does not hold now is `Entry(State)`.
     Entry(light_groups::Cause),
     /// The layer's target or raster state did not read.
     Pass,
@@ -175,7 +177,9 @@ pub(super) fn plan(
 /// or unsupported entry discards the entire collection, named by the
 /// first refusal. Only call with this invocation's item lists, including
 /// any pending shadow-target resize in `mem` (or after proving its size
-/// is unchanged).
+/// is unchanged). An entry with state is taken only in layers 12 and 13
+/// and only while the host holds what its handler's epilogue would leave
+/// ([`super::held_state`], asked once and only for such an entry).
 pub(super) fn plan_or_refusal(
     mem: &dyn GuestMemory,
     site: GroupSite,
@@ -183,6 +187,35 @@ pub(super) fn plan_or_refusal(
     flags: u32,
     definition_flags: u32,
     projection: Option<[[u32; 4]; PROJECTION_ROWS]>,
+) -> Result<Vec<SceneGroup>, GroupRefusal> {
+    let mut held = None;
+    plan_held(mem, site, steps, flags, definition_flags, projection, &mut || {
+        *held.get_or_insert_with(|| super::held_state(mem))
+    })
+}
+
+/// Whether an entry's `state` draws in `layer` with the host holding
+/// `held`.
+pub(super) fn state_drawn(layer: u8, state: EntryState, held: &mut dyn FnMut() -> EntryState) -> bool {
+    if state.plain() {
+        return true;
+    }
+    if !light_groups::state_taken(layer, state) {
+        return false;
+    }
+    let held = held();
+    (!state.aux_depth || held.aux_depth) && (!state.fade || held.fade)
+}
+
+/// [`plan_or_refusal`] with what the host holds given by `held`.
+pub(super) fn plan_held(
+    mem: &dyn GuestMemory,
+    site: GroupSite,
+    steps: &[LightStep],
+    flags: u32,
+    definition_flags: u32,
+    projection: Option<[[u32; 4]; PROJECTION_ROWS]>,
+    held: &mut dyn FnMut() -> EntryState,
 ) -> Result<Vec<SceneGroup>, GroupRefusal> {
     use GroupRefusal as R;
     let mut groups = Vec::new();
@@ -214,6 +247,9 @@ pub(super) fn plan_or_refusal(
         let mut rows = Vec::with_capacity(sorted.len());
         for slot in sorted {
             let (entry, pose) = light_groups::entry(&Ro(mem), items, slot).map_err(R::Entry)?;
+            if !state_drawn(step.layer, entry.state, held) {
+                return Err(R::Entry(light_groups::Cause::State));
+            }
             entries.push(entry);
             rows.push(pose);
         }

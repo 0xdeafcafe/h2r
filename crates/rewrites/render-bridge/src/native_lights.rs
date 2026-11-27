@@ -140,6 +140,13 @@ pub fn scene_path_ready() -> bool {
         .is_some_and(|h| h.draws_scene())
 }
 
+/// What the host holds for an entry's state ([`Host::held_state`]);
+/// nothing without a host.
+pub fn held_state(mem: &dyn GuestMemory) -> frame_scene::EntryState {
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    host.map_or_else(frame_scene::EntryState::default, |h| h.held_state(mem))
+}
+
 static SCENE_DRAWN: AtomicU64 = AtomicU64::new(0);
 
 /// Light layers the host drew from the scene's groups (slots 4 and 10).
@@ -303,6 +310,15 @@ pub trait Host: Send + Sync {
     /// frame can be cut whole.
     fn draws_scene(&self) -> bool {
         false
+    }
+    /// The entry state ([`frame_scene::EntryState`]) the host can draw a
+    /// layer 12 or 13 entry with now: `aux_depth` while the device holds
+    /// what the auxiliary state toggle leaves off and the toggle's values
+    /// read, `fade` while the stipple is off and at rest. An entry with
+    /// state the host does not hold keeps the guest's passes
+    /// ([`held_state`]).
+    fn held_state(&self, _mem: &dyn GuestMemory) -> frame_scene::EntryState {
+        frame_scene::EntryState::default()
     }
     /// Draw `draw`'s light layers from the scene, slot 4's and then slot
     /// 10's, in the view whose light pass is over. Returns the layers

@@ -198,6 +198,36 @@ Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
 `a_kept_light_is_counted_by_cause_and_group_refusal`
 (`native_lights/passes.rs`).
 
+### Entry state
+
+The geometry draw's prologue `0x0004d640` sets two things beyond an
+entry's bindings, and its epilogue `0x0004d720` puts both back. The
+entry carries them (`frame_scene::EntryState`, read by
+`scene_extract::light_groups::entry`):
+
+| State | Where | The host draws it with | Held when |
+|---|---|---|---|
+| `aux_depth` | bit 11 on an object's record: the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
+| `fade` | the record's fade byte `+0x1a` below `0xff`: a stipple pattern | nothing: unmasked | the stipple is off and at rest (`stipple_off`, `stipple_at_rest`) |
+
+- Only layers 12 and 13 take an entry with state
+  (`light_groups::state_taken`). In layers 10, 11 and 14, and on the
+  per-handler path (`dispatched_entry`), it stays `State`.
+- A structure record's toggle, or a toggle whose values do not read,
+  stays `State`.
+- The cut asks the host once per light, and only for an entry with
+  state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
+  `scene_kept_light_group_entry_state`, and the guest's passes draw the
+  light.
+- The host checks again at the draw (`gathered_draws`).
+
+Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it`
+(`scene_extract::light_groups`),
+`a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest`
+(`native_lights/walk.rs`),
+`a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip`
+(`native_render::light_gpu`).
+
 Once the view's light pass is over (at the decal mode that follows it),
 `native_lights::draw_scene` hands the open view's light layers to the
 host in the passes' order. The game host (`native_lights_glue/scene.rs`)
@@ -365,8 +395,9 @@ section's vertex layout (`LightGpu::pipeline`, `ModelLayout`).
 It refuses, issuing nothing, object entries before the model parts
 load, an entry whose part, raw range, topology or classification no
 buffer was built for, node rows past the palette, a shader gel (its
-target-13 slot is pinned through a draw's plan), a remainder, and any
-state the resolved-draw path refuses.
+target-13 slot is pinned through a draw's plan), a remainder, an entry
+state the device does not hold ("Entry state"), and any state the
+resolved-draw path refuses.
 
 When it draws, the walk hands the guest's entry loop no
 entries, so none of the layer's handlers runs, and the layer leaves the
