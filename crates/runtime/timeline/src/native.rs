@@ -954,13 +954,11 @@ impl ObjectWalk {
         self.count(n);
     }
 
-    /// `n` objects the scene could not draw and nothing draws instead:
-    /// counted under this cause and as the objects stage's
-    /// `scene_dropped`. No guest draw follows.
-    pub fn dropped(self, n: usize) {
-        self.count(n);
-        Stage::Objects.count(Metric::SceneDropped, n as u64);
+    /// The cause's name: its column without `walk_` (`state`, `order`).
+    pub fn name(self) -> &'static str {
+        OBJECT_WALK_COLUMNS[self as usize].trim_start_matches("walk_")
     }
+
 }
 pub(crate) fn labels() -> &'static [String] {
     static LABELS: OnceLock<Vec<String>> = OnceLock::new();

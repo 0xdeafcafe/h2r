@@ -78,8 +78,9 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 // Under the cut the passes stop after the item lists:
                 // the scene takes the light's layers, and nothing draws.
+                // A light the scene cannot take is the guest's to draw.
                 if super::scene_path_ready() {
-                    return scene_passes(cpu, ctx, plan);
+                    return scene_passes(cpu, ctx, addr, plan);
                 }
                 let plan = match plan {
                     Ok(plan) => plan,
@@ -131,10 +132,13 @@ pub(super) fn install(b: &mut Builder) {
 
 /// The passes of a light of the cut frame ([`super::scene_frame`]): the
 /// item lists, then the light's groups into the scene, and the return
-/// (`ret 0x10`). A refused plan returns at once: its light is a drop.
+/// (`ret 0x10`). A light the scene cannot take keeps the guest's draw:
+/// a refused plan runs the whole original, and a light whose groups do
+/// not make runs the passes on past the item lists ([`after_lists`]).
 fn scene_passes(
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
+    addr: u32,
     plan: Result<passes::Plan, Refusal>,
 ) -> Result<TransferAbi, runtime::GuestFault> {
     let plan = match plan {
@@ -142,21 +146,30 @@ fn scene_passes(
         Err(why) => {
             refused(SceneList::LightPasses, why);
             super::scene_frame::refused();
-            cpu.eax = 0;
-            return ctx.memory().ret(cpu, 0x10);
+            return original(cpu, ctx, addr);
         }
     };
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
-                super::scene_frame::light(&*mem, p);
-                Ok(Some((Ret::new(0, 0x10), passes::LightPasses::default())))
+                Ok(after_lists(super::scene_frame::light(&*mem, p)))
             })
             .await?;
             SceneList::LightPasses.count(SceneListResult::Native);
             Ok::<_, engine::entry::EntryError>(ret)
         })
     })
+}
+
+/// What the cut passes do once the item lists are made, given what the
+/// scene took: a light in the scene returns (`ret 0x10`, nothing drawn);
+/// one it kept (`None`) runs the guest's remaining passes, which draw it.
+pub(super) fn after_lists(
+    taken: Result<usize, super::scene_frame::Kept>,
+) -> Option<(Ret, passes::LightPasses)> {
+    taken
+        .ok()
+        .map(|_| (Ret::new(0, 0x10), passes::LightPasses::default()))
 }
 
 /// The constants' entry. Acts only on the whole guest body's own call
@@ -223,4 +236,50 @@ fn at_constants(c: &mut Call<'_>) -> Option<TransferAbi> {
     c.cpu.ebx = 0;
     c.cpu.esp = call.view_target_esp();
     Some(TransferAbi::resume(passes::site::VIEW_TARGET))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::after_lists;
+    use crate::native_lights::GroupRefusal;
+    use crate::native_lights::scene_frame::{self, GROUP_NAMES, Kept, keep_light};
+    use scene_extract::light_groups::Cause;
+
+    fn counter(name: &str) -> u64 {
+        scene_frame::counters().into_iter().find(|(k, _)| *k == name).map_or(0, |(_, v)| v)
+    }
+
+    /// A light the scene takes returns after its item lists, drawing
+    /// nothing; a light it keeps runs the guest's remaining passes. The
+    /// flashlight whose sorted entries include one the scene cannot hold
+    /// is drawn by the guest, not dropped.
+    #[test]
+    fn a_light_the_scene_cannot_take_runs_the_guests_passes() {
+        assert!(after_lists(Ok(3)).is_some(), "in the scene: return");
+        assert!(after_lists(Ok(0)).is_some(), "no drawn layer: return");
+        for kept in [
+            Kept::Unread,
+            Kept::Constants,
+            Kept::Projection,
+            Kept::Group(GroupRefusal::Entry(Cause::Material)),
+            Kept::Light,
+            Kept::AdditionalCasters,
+        ] {
+            assert!(after_lists(Err(kept)).is_none(), "{kept:?}: the guest's passes go on");
+        }
+    }
+
+    /// Each kept light is counted by cause, a group's also by its
+    /// refusal; no row says dropped.
+    #[test]
+    fn a_kept_light_is_counted_by_cause_and_group_refusal() {
+        let (group, state) = (counter("scene_kept_light_group"), counter("scene_kept_light_group_entry_state"));
+        keep_light(Kept::Group(GroupRefusal::Entry(Cause::State)));
+        assert!(counter("scene_kept_light_group") > group);
+        assert!(counter("scene_kept_light_group_entry_state") > state);
+        assert!(scene_frame::counters().iter().all(|(k, _)| !k.contains("dropped")));
+        for (name, refusal) in GROUP_NAMES.iter().zip(GroupRefusal::NAMES) {
+            assert_eq!(*name, format!("scene_kept_light_group_{refusal}"));
+        }
+    }
 }

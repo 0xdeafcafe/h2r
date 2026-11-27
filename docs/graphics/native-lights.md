@@ -163,9 +163,14 @@ records and part visibility.
 Each light's passes (`native_lights/passes.rs`, `scene_passes`) make
 only their first step, the item lists `0x00040e90` (the item body,
 `light_gather::items`), and stop. No constants, target, stencil or
-layer draw is made, and the call returns as `ret 0x10`. A frame or
-passes plan that refuses is answered as the cut, never by the guest's
-body.
+layer draw is made, and the call returns as `ret 0x10`. A frame plan
+that refuses is answered as the cut. A light the scene cannot take keeps
+the guest's draw:
+
+| Where it refuses | What draws the light |
+|---|---|
+| the passes' entry plan | the whole original `0x00031170` |
+| `scene_frame::light`, after the item lists | the guest's remaining passes: constants, shadow setup, layers 10 to 14 (`passes::after_lists` returns `None`) |
 
 `native_lights::scene_frame` puts what the remaining steps would draw
 into the scene. The light and its steps come from the hand-off at the
@@ -179,12 +184,19 @@ only.
 Each drawn layer of the steps is one group of the light,
 `typed_groups::plan` over the lists the item body just made: the entries
 the guest's layer build would keep, in its sorted order. A light whose
-groups cannot all be made puts none in. The drop is counted by cause in
-`render.scene` (`scene_dropped_light_<cause>`: `unread`, `constants`,
-`projection`, `group`, `light`, `additional_casters`). The additional
-casters (`0x00030ed0`) are not made: their layers are a drop, and the
-light's own layers still go in. `scene_cut_lights` and
-`scene_cut_light_groups` count what went in.
+groups cannot all be made puts none in, and the guest's passes draw it.
+A light with the additional casters (`0x00030ed0`), whose record walk
+the cut does not make, is the guest's whole.
+
+| Counter (`render.scene`) | Counts |
+|---|---|
+| `scene_cut_lights`, `scene_cut_light_groups` | lights and groups the scene took |
+| `scene_kept_light_<cause>` | lights the guest draws: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters` |
+| `scene_kept_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
+
+Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
+`a_kept_light_is_counted_by_cause_and_group_refusal`
+(`native_lights/passes.rs`).
 
 Once the view's light pass is over (at the decal mode that follows it),
 `native_lights::draw_scene` hands the open view's light layers to the
