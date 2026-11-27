@@ -25,14 +25,10 @@ Rust subsystem: static + derived + transient + extension state
 
 The plan replaces the verdict in [feature-engine.md](feature-engine.md)
 ("Subsystem map and ranking", rows 15-18) that objects, AI and physics "stay
-recompiled". The user asked on 2026-11-16 and 2026-11-17 for whole-subsystem
-rewrites, not per-function patches.
-
-The per-function ports in `crates/rewrites/engine/src/sim_native` and
-`crates/rewrites/engine/src/sim_physics` are bit-exact, register-level ports of
-single functions. They serve as **reference and test oracles**. They are not
-the architecture.
-
+recompiled": whole subsystems are rewritten, not single functions. The
+per-function ports in `crates/rewrites/engine/src/sim_native` and
+`crates/rewrites/engine/src/sim_physics` are bit-exact, register-level ports.
+They serve as reference and test oracles, not as the architecture.
 
 Numbers come from [sim-attribution.md](../perf/sim-attribution.md), which
 gives every sample of the [sim-budget.md](../perf/sim-budget.md) profile an
@@ -74,9 +70,9 @@ docs.
   the user signs it off.
 - **Order.** Animation and pose first, then collision and spatial queries,
   then the object update, then the sound sim, then Havok, then effects, then
-  the per-seat work. Revised 2026-11-20 from the full attribution: animation
-  is 15% of the thread, not 5%; sound is 8.4% plus 2.5% of HLE; and phases 1
-  to 3 plus Havok end near 8.9 ms/tick, short of the target. The phase 0
+  the per-seat work. The attribution puts animation at 15% of the
+  thread and sound at 8.4% plus 2.5% of HLE, and phases 1 to 3 plus Havok end
+  near 8.9 ms/tick, short of the target. The phase 0
   census (a phantom roster and a co-op campaign level) runs alongside
   phase 1 and can still reorder everything after phase 3.
 - **Switches.** Each subsystem gets one switch, `impl.sim.native.<subsystem>`.
@@ -93,8 +89,8 @@ of the areas below.
 
 | Area | "Done" means (measured) |
 |---|---|
-| Frame rate | Waterworks 4-bot sim **≤ 7.5 ms/tick** (from 14.12; the sim-budget target). The attribution's model reaches it after phase 6 if rewritten code runs 3.3× faster than lifted code, and after phase 7 otherwise (section 5). Campaign: guest CPU **≤ 12 ms** of the frame where it is ~23 ms today at 4x (needs the phase 0 census to set per-level numbers). Every phase lands with its own ms/tick delta from three unprofiled medians. |
-| Host cost | Matches per core **≥ 1.8×** today on the light profile (follows ms/tick). Incremental RSS per match process **≤ +32 MiB** for all Rust sim state. Static caches are shared read-only across processes on one machine (mmapped, content-addressed, in the user cache dir, never committed). No worker threads on hosts by default; parallel matches use the cores. |
+| Frame rate | Waterworks 4-bot sim **≤ 7.5 ms/tick** (from 14.12; the sim-budget target). The attribution's model reaches it after phase 6 if rewritten code runs 3.3× faster than lifted code, and after phase 7 otherwise (section 5). Campaign: guest CPU **≤ 12 ms** of the frame where it is ~23 ms at 4x (needs the phase 0 census to set per-level numbers). Every phase lands with its own ms/tick delta from three unprofiled medians. |
+| Host cost | Matches per core **≥ 1.8×** the current count on the light profile (follows ms/tick). Incremental RSS per match process **≤ +32 MiB** for all Rust sim state. Static caches are shared read-only across processes on one machine (mmapped, content-addressed, in the user cache dir, never committed). No worker threads on hosts by default; parallel matches use the cores. |
 | Theater and film | Films stay exact (same build). Rust state adds nothing to a film beyond the arena plus the extension arena. A keyframe is the arena plus the extension blob, ≤ 2 ms to take. Seek in a 10-minute film within 1 s, from keyframes every 10 s instead of restarting from boot. Poses come from animation state plus the shared clip store, so the web viewer and theater need no stored poses. |
 | Stats | New consumers read typed state and events from a `sim-state` API, with no raw offsets. Kill and damage events come from the subsystem that applies them, not from memory scraping. |
 | Engine expansion | New gameplay is written in Rust against the subsystem APIs, with its state in the extension arena and saved with checkpoints. First consumer: Halo 1 health ([halo1/health.md](../halo1/health.md), campaign.md §6). Converted Halo 1 content runs through the same Rust paths. |
@@ -103,7 +99,7 @@ of the areas below.
 
 - Matching the Xbox's code shape, call graph or register state inside a
   subsystem.
-- Retail-console interoperability. None exists today
+- Retail-console interoperability. None exists
   ([live.md](../live/live.md)), and co-op requires the same image stamp
   ([live-coop.md](../live/live-coop.md)).
 - Rewriting the network replication protocol (0.91% of guest time; it is
@@ -125,35 +121,18 @@ flowchart LR
   X[(SimExt blob)] <--> R
 ```
 
-Today every reader goes through guest memory: HaloScript, AI, replication,
+Every reader goes through guest memory: HaloScript, AI, replication,
 checkpoints (`0x123e20` snapshot, `0x123f60` revert, `0x124380` full restore,
 writer `0x2151f0`), the renderer, theater (`lockstep::hash_sim(SimRegion::HALO2)`
 every 30 ticks), telemetry, and the agent API.
 
 ### Options
 
-**(a) Rust structs are the truth; guest layout is a synchronised mirror.**
-
-- Pros: the cleanest Rust, and the most freedom of layout.
-- Cons: every remaining guest reader needs the mirror current at the moment
-  it reads. About 995 readers of published structures are known in loading
-  alone, and object fields are read inline all over the image. A checkpoint
-  revert is a guest `memcpy` of the whole arena, so Rust state goes stale
-  without warning. Saves are arena bytes. Two copies of the truth means a
-  whole class of desync bugs, plus a write-back on every tick that costs
-  about what we save.
-- Verdict: only reachable per structure once every reader of that structure
-  is Rust (stage 3 in feature-engine.md "State").
-
-**(b) Rust operates on guest memory through typed zero-copy views.**
-
-- Pros: no synchronisation. Checkpoints and hashes are untouched.
-- Cons: the work keeps the Xbox's array-of-structs, 32-bit-handle,
-  pointer-chasing shape. Batching and SIMD across objects get hard. Static
-  data stays in its compressed retail encodings.
-- Verdict: the right *access* mechanism, but not enough on its own.
-
-**(c) Hybrid.**
+| Option | For | Against | Verdict |
+|---|---|---|---|
+| (a) Rust structs are the truth, guest layout a synchronised mirror | cleanest Rust, freest layout | every guest reader needs the mirror current when it reads (about 995 readers of published structures in loading alone; object fields are read inline all over the image). A revert is a guest `memcpy` of the arena that Rust never sees. Two truths mean desync bugs and a per-tick write-back that costs about what it saves | reachable per structure once every reader of it is Rust (stage 3, feature-engine.md "State") |
+| (b) Rust works on guest memory through typed zero-copy views | no synchronisation; checkpoints and hashes untouched | keeps the Xbox's array-of-structs, 32-bit-handle, pointer-chasing shape; batching and SIMD across objects get hard; static data stays in retail encodings | the right access mechanism, not enough alone |
+| (c) Hybrid | both | one fixed rule instead of a choice per subsystem | chosen |
 
 ### Recommendation: (c), one rule
 
@@ -233,13 +212,11 @@ Why this holds up:
   quiescent at tick boundaries by construction
   ([snapshots.md](../runtime/snapshots.md), "The rule"). A snapshot saves the
   extension blob and drops derived state.
-- **Static data is where most of the win is.** Retail code decodes
-  compressed tag encodings (animation codecs, the MOPP bytecode) on every
-  query. A Rust subsystem decodes each one once into a hot layout.
-- **The path to (a) stays open.** When every reader of a structure is Rust
-  (for example, animation channel state after phase 3), that subsystem can
-  keep a Rust-native copy and write the arena form only at tick end. The
-  arena stays the checkpoint format.
+- **Static data is where most of the win is.** Retail decodes compressed tag
+  encodings (animation codecs, MOPP bytecode) on every query; a Rust
+  subsystem decodes each once into a hot layout. When every reader of a
+  structure is Rust, that subsystem can keep a Rust-native copy and write the
+  arena form at tick end, so the path to (a) stays open.
 
 The scheduler clock is counted in guest memory accesses
 ([2026-11-16-frame-time.md](../reviews/2026-11-16-frame-time.md), change 2). Rust
@@ -356,205 +333,9 @@ as runtime before).
 
 ### Sketches
 
-**Animation and pose (phase 1).**
-
-- *Data.* Clips are decoded once into SoA per channel. Static frames are
-  dense `[i16; 4]` or `[f32; 3]` runs. Keyframed channels become
-  `times: [u16]` plus `values` with a per-channel key range. Flag arrays are
-  replaced by precomputed node-to-slot maps. The output is the retail 32-byte
-  local record, so scatter is a plain copy.
-- *Passes.* Sample a mask of nodes in one call, with no codec table dispatch
-  per channel and none of the evaluation globals `0x504460..0x5044c0`. Then
-  build node matrices for a whole object in one SIMD pass over the parent
-  order. Later, batch across all objects in the post-physics walk.
-- *Parallelism.* Per object, once the walk is batched (phase 3).
-- *Manager and graph (slice 1d).* The channel manager (`1c6440..1c7450`,
-  `1cb000..1ce000`) and graph resolve (`1daea0`, `1dd9d0`, `1ddb40`,
-  `1dd560`) cost 3.4% of the thread, as much as sampling and codecs. They
-  come over once sampling and matrices are Rust: resolve becomes a table
-  built per graph tag, and the per-tick channel advance runs over the
-  object's channels in one call. The cache request `1236f0` and its RNG
-  draw at `1dd6e1` keep retail order.
-- *Benefits.* Theater and the web viewer sample the same store; Halo 1 models
-  convert into the same codecs.
-
-**Collision and spatial queries (phase 2).**
-
-- *Data.* A Rust collision world per loaded BSP and per collision model:
-  - surfaces, planes and leaves as flat arrays;
-  - MOPP programs pre-decoded (the `mopp` crate already holds the interpreter
-    as a query model and an offline compiler);
-  - a decoded portal graph and a per-query traversal of the live object
-    reference lists, preserving visit order and guest stamps.
-- *Entries:*
-  - collision query `1697c0`;
-  - BSP segment `1de630` and `1de6d0`;
-  - point to leaf `14a280`;
-  - geometry test `11e5e0` at the whole query's object-reference call site;
-  - float MOPP ray `3009e0` with its Havok path `244980` → `2df720` →
-    `301800` (1.80% of the thread, no caller inside the world step); the
-    native walk (`sim_collision::mopp::ray`) follows `301800` as a parity
-    arm that counts matches and the first mismatch, while the guest's
-    answer stands until it shows parity
-    ([collision-queries.md](collision-queries.md), "Entry I");
-  - the datum walk `b89b0`;
-  - spatial query `14a370` and the cluster walk `14a5b0`.
-- *Havok boxes.* The collision world answers the box wrapper `300150`.
-  Its inner integer interpreter `2ff8b0` and contact-agent callers also
-  belong to the Havok world-step census in phase 5.
-- *Callers.* The observer camera asks for 32% of the queries and 82% of the
-  ray casts (`16f280` → `170fd0` → `171830`), sound 19% (listener leaf
-  `11bed0`, obstruction `221e30`), the object spatial marks 24% and aim
-  assist 11%. So this phase also pays for most of the per-seat camera cost.
-- *Exactness.* Bar E: hit choice and `t` must match bit for bit. That is
-  feasible because the integer MOPP is exact by construction and the float
-  paths are short SSE sequences.
-- *Parallelism.* Little: queries arrive synchronously from guest callers. The
-  win is cost per query, and later batched queries once phase 3 owns the
-  callers.
-
-**Objects and units update (phase 3).**
-
-- *Orchestration.* With `impl.sim.native.objects.walk` (off), the walk arm
-  `engine::sim_objects::walk_arm` runs the pre-physics `b6f10`,
-  post-physics `b7060` and final `b7150` walks, `bc470` and `bc820` with
-  `bd090` per object, the type dispatchers, and the biped and weapon
-  descriptor callbacks. The other types' callbacks (unit `+0x40` `c6b30`,
-  vehicles, the small types) are guest calls through the runtime
-  ([feature-engine.md](feature-engine.md), "Calling code that is still
-  recompiled"); they join type by type. Each walk's entry gathers the
-  pool into an SoA working set (`sim_objects::phase::WalkSet`: handle,
-  flags, type, parent, transform, animation block) and counts its
-  predicted visits by ported type. Per segment the arm is shadow, then
-  answer:
-
-  ```
-  segment -> unproven, failed or slot % 64 == 0
-                -> Rust predicted in a Guest::trial, guest answers,
-                   compared at its transfer          (matched, mismatched)
-          -> else Rust answers, fusing only into answering bodies (answered)
-  ```
-
-  Proof is 4096 matches per entry, per map; one difference hands every
-  segment to the guest until the next map. `sim.arms` reports it as
-  `objects.walk.<entry>` ([object-update.md](object-update.md#the-walk-arm)).
-- *Also in this phase:* the object-function evaluator (`bab40`, `108d90`,
-  `bcc20`) and lights (`c1400`, `c0c80`, which subsume
-  `impl.sim.static-light`'s bypass); the markers `b8d30` belong to
-  phase 1c ([markers.md](markers.md)).
-- *The function evaluator.* `sim-objects/src/functions/evaluator.rs` is
-  `bab40`, `ba8c0`, `108d90`, `bcc20` and `13bb90`'s output range as plain
-  Rust over Rust-owned data, on the curve kernel `functions/curve.rs`:
-
-  | Data | Owner | Lifetime |
-  |---|---|---|
-  | Exports and function blobs per definition | `Library` | decoded at first use; again when the count or table moves; dropped at map load |
-  | Shape (8) and wave (12) tables, image constants and string IDs | `Library` | read at the map's first call |
-  | Body fields, parent, type levels, world globals, game time | guest | read per call |
-
-  It answers a call only when every step is Rust: the built-in names, the
-  base level's own values, every matching export with its scale and gate,
-  the parent. It declines, by reason, an override (body `+c0` bit 9), an
-  import a type level or a base callout answers, curve kinds 9 and 10, an
-  operand off the exact path, a fault and a recursion past 16.
-  `engine::sim_objects::functions::arm` runs it as a shadow arm at each
-  `bab40` entry the objects driver runs, behind
-  `impl.sim.native.objects.functions` (off):
-
-  ```
-  entry -> evaluate -> declined?  -> guest answers                  (declined[reason])
-                    -> unproven or slot % 64 == 0
-                                  -> guest answers, compare at return (checked, matched, mismatched)
-                    -> else       -> Rust answers: out, al, ecx, xmm0  (answered)
-  ```
-
-  Proof is 4096 matches with no mismatch, per map. A mismatch hands every
-  call back to the guest until the next map. A compared call whose return
-  the driver never sees is `dropped`. `sim.arms` reports it as
-  `objects.function`.
-- *Parallelism.* Pose and matrix passes run per object in hierarchy waves.
-
-**Sound sim (phase 4).**
-
-- *Why here.* 8.37% of the thread all-in plus 2.47% in the audio clock and
-  DirectSound HLE, on every silent host. No float exactness problem beyond
-  its x87 gain curves (0.13 ms), and its BSP queries arrive with phase 2.
-- *Scope.* The source and listener update (`125b40`, `127400`, `1293f0`,
-  `128ca0`, `129aa0`), game sound for objects and loops (`18a7b0`, `18c060`,
-  `18d730`), gain and filter conversion (`2195f0`, `21fa80`, `21a250`), and
-  environment and obstruction (`221a70`, `221da0`).
-- *Guest boundary.* Sound records and the listener stay in guest layout.
-  Voice start, pitch, completion order and the callback grid must match,
-  because completion feeds the guest ([sim-budget.md](../perf/sim-budget.md),
-  "Headless guest dependencies").
-- *Implementation.* `sim-sound` owns the working data for a sound update,
-  including listener axes, channel levels, track selection and obstruction
-  weights. The engine adapters gather each set of inputs from the current
-  guest state. They submit the results to the existing mixer and reload live
-  records across callbacks. The driver fuses calls between sound bodies and
-  uses the original stack at calls to other systems. Reverting an arena
-  restores the persistent sound records directly.
-- *Channel choice.* The census (`128500`), class ranking (`128b90`), pick
-  (`128700`), pressure scan (`128920`) and per-class ceiling (`128a60`) run
-  as bodies in `native_sound_sources/channels.rs`, deciding through
-  `sim_sound::{sources::VoicePriority, scheduling::CappedSelection}`. Their
-  synthetic differential cases are in `tests/sim_sound_differential/channel_choice.rs`.
-- *Voice update.* `sim_sound::voices::Voices` owns the running voices: a
-  one-shot plays out on `end_tick(start, ms)`, a loop (or flags `+4` without
-  bits 9 and 6) never does, and a stop or a finish for another reason than
-  2 interrupts it. Each tick it reports its starts in admission order and
-  its play-outs in pool slot order, the order of the walk `128020`. The arm
-  (`sim_sound/voice_arm.rs`) feeds it the admissions (`126000`, after), the
-  stops (`126360`) and the finishes (`127320`) and compares per tick:
-
-  | Tick | Turn | Counted |
-  |---|---|---|
-  | `tick % 64 == 0` | compare the whole report | `matched`, `mismatched`, `quiet` (no voices), `declined` (a voice it never saw start, or of unknown length) |
-  | other, not proven | the update steps only | `skipped` |
-  | other, proven (64 matched ticks with voices, no difference) | the update finishes its play-outs at the service `125b40`, then the guest's report must hold the rest | `answered`, `stale`, `mismatched` |
-
-  Interruptions are counted (`interrupted`) and are inputs, never
-  differences. One difference ends the answers for the process. The voices
-  are saved with snapshots; the tick going back forgets them.
-- *Verification.* Full sim reports with arena hashes include the ordered
-  `sound.voices` component. Compare complete reports from the lifted and
-  native arms with `h2 sim diff`. A quiet tick has an empty event list.
-  The clock-only arm still submits the room and filter parameters and
-  delivers any callbacks at the setters. [Sound reporting](../runtime/sim.md#finding-the-first-differing-state)
-- *Hosts.* Per-voice DirectSound submissions still drive the silent clock. Replacing
-  a submission requires preserving its completion and callback order.
-
-**Havok world (phase 5).**
-
-- *Data.* A Rust rigid-body world in SoA, with its own broadphase, contact
-  manifolds against the phase-2 collision world, and a solver: in place of
-  `1c3d30` → `311100` → `30fef0` → `316a20` → `31c100`, the welding and
-  BV-tree agents (`2fa2f0`, `2faa60`), the convex agents (`2ee610`,
-  `3048a0`), the integer MOPP box query (`2ff8b0`) and the game-side glue:
-  object bodies `1ce000..1d5000`, structure shape callbacks
-  `1edd00..1eff40` and character physics `1f19c0`, `1f2250`. By stage:
-  convex agents 1.91% of the thread, weld agent 1.24%, solver 0.96%,
-  character physics 0.80%, box query 0.79%, shape callbacks 0.76%, other
-  library 2.61%, other glue 2.52%.
-- *Guest boundary.* The guest-visible body and contact layout
-  ([havok-runtime.md](havok-runtime.md)) stays the arena truth, written at
-  step end. Islands are solved in parallel with fixed ordering.
-- *Exactness.* Bar E by decision 8.1. Must also pass the superbounce
-  regression and the vehicle, grenade and ragdoll behaviour cases. Havok
-  holds 0.16 ms of x87 work that stays unless proven equal in double.
-- *Risk.* The biggest win and the biggest risk. It opens up physics features
-  and, eventually, a host with no Havok code at all.
-
-**AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
-
-- *HaloScript.* Under `impl.sim.native.hs` the [Rust VM](hs_vm.md#live-comparison)
-  compares supported whole threads, scheduling order, expression results,
-  global cells and builtin argument dispatch against the guest. The guest
-  is authoritative. Promotion requires engine-call and suspension coverage
-  plus campaign arena-hash parity through the verification ladder.
-- *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
-- *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
-- *Order.* Set by the phase 0 campaign census, not guessed here.
+The data, entries, guest boundary and exactness bar of phases 1 to 5 and the
+campaign subsystems are in [sim-rewrite-sketches.md](sim-rewrite-sketches.md).
+Effects, seats and replication follow here.
 
 **Effects (phase 6).** 5.46% all-in. Particle and effect state can become
 fully Rust-owned (stage 3), because only the renderer reads it. The RNG
@@ -585,109 +366,9 @@ The entries install as the shadow's guest-authoritative arm: `shadow.enable`
 on, the original answers and each body is checked against it on a copy;
 checks off, the bodies answer. The switch retires `native_observer_camera`.
 
-*The aim-assist cone.* `1a50a0` is not a seat entry. The kernel
-`sim-objects/src/aim_assist.rs` is the cone and its three callees (the zoom
-magnification `101090`, the tracking test `1011d0`, the acquisition test
-`101160`) as plain Rust over Rust-owned data. Only the zoom's x87 sequence
-around the image's `pow` comes from the caller (`Magnify`), run on the x87
-model.
-
-| Data | Owner | Lifetime |
-|---|---|---|
-| The unit's two slots, each weapon's cone, class, flags and zoom range, the primary's trigger states and kinds | `Input` | copied from the guest per call |
-| The image's 1.0, the x87 state the zoom's `pow` runs on | `Input`, the arm's x87 model | per call |
-
-`engine::sim_seats::aim::arm` runs it as a shadow arm at each `1a50a0`
-entry, behind `impl.sim.aim-assist` (off; installed by
-`sim-bridge/src/present.rs`):
-
-```
-entry -> predict -> declined?  -> guest answers                  (declined[float, triggers, fault])
-                 -> unproven or slot % 64 == 0
-                               -> guest answers, compare at return (checked, matched, mismatched)
-                 -> else       -> Rust answers: record, al, eax, ecx, edx, xmm0-3, x87, ret 4 (answered)
-```
-
-An answer leaves what retail leaves except the arithmetic flags, the x87
-last-instruction pointers and the dead stack below the return: `ecx` is the
-first bend (retail's `push ecx` slot holds it), `eax` and `edx` the values
-the exit path last loaded. Proof is 4096 matches with no mismatch, per map;
-a mismatch hands every call back to the guest until the next map.
-`sim.arms` reports it as `seats.aim`. `aim_assist_matches_lifted`
-(`engine/tests/sim_seats_differential.rs`) runs the arm's applied answer
-against the lifted original with its real callees, `pow` included. The
-register-level port stays as the differential oracle
-`sim_seats::PARAMS_ORACLE`.
-
-*The bound controller's device read.* At `185be0`'s bound branch
-(`0x185c6c`, a seat whose port has a controller) the kernel
-`engine/src/sim_seats/device.rs` reads the port as plain Rust over a copy
-(`Device`) and stops where retail's next call is: the look curve
-unblocked, the visibility walk blocked.
-
-| Step | Retail | Kernel |
-|---|---|---|
-| Rates | port rates times `[0x45dc54]` | `rates` |
-| Vehicle seat | `t = clamp((\|v\| - lo) / (hi - lo), 0, 1)`, then `pow(t, e)` unless `e == 0`; a rate pair with a positive end becomes `(a + (b - a) * t) * scale` | `vehicle` |
-| Unblocked | the stick pair over its larger axis, `s = hypot`, each axis times `s` clamped to `[0x45dbcc]..1` | `steer` |
-| Blocked | wanted buttons not pressed leave both halves; the rest get the block's state and hold | `select` |
-
-| Data | Owner | Lifetime |
-|---|---|---|
-| The port's rates and 20-word block, the vehicle seat's fields and velocity, the blocked flags, the wanted buttons, five image constants | `Device` | copied from the guest per read |
-| The x87 state the length, `pow`, magnitudes and hypot run on | the arm's x87 model (`Fpu`) | per read |
-
-`engine::sim_seats::device::arm` runs it as a shadow arm inside the seat
-body (no hook of its own; the proof resets at map load):
-
-```
-0x185c6c -> predict -> declined?  -> guest answers                   (declined[float, fault, unseen, alias])
-                    -> unproven or slot % 64 == 0
-                                  -> guest answers, compare at the curve's entry
-                                     or the walk's return 0x1865c4   (checked, matched, mismatched)
-                    -> else       -> Rust answers: frame, record, input slot, buttons,
-                                     registers, x87, then the call    (answered)
-```
-
-At the curve's entry the audit compares every register, `xmm0`-`xmm7`, the
-x87 stack and the frame; at the walk's return, the callee-saved registers,
-the frame and the x87 control word. Both compare the record, the input slot
-and the buttons. A blocked read that skips the walk has no transfer to
-compare at, so its audit is declined as `unseen`; answered, it is laid down
-like the rest. `sim.arms` reports it as `seats.device`.
-`bound_control_matches_lifted` (`engine/tests/sim_seats_differential.rs`)
-puts the applied answer against the lifted original with its real `24590`
-and `pow`; `bound_control_audits_through_the_guest` runs the audit path.
-
-*The leaf callees.* Seven guest functions the seat bodies call, which read
-only what their registers name, are kernels in
-`engine/src/sim_seats/leaf.rs`, each behind its own arm:
-
-| Leaf | Guest | Returns to | Answer |
-|---|---|---|---|
-| `visible` | `e4050` | `0x1865c4` | the biped takes assisted aim: alive, look enabled, rank at or over the tick's threshold (`fistp` on the x87 model), standing or seated with no parent |
-| `player_index` | `b67a0` | `0x1863a6` | the player's slot when the record's count holds it, else `-1` |
-| `direction` | `11df30` | `0x1863f7`, `0x186403` | a vector's yaw and pitch (`fpatan`, `fsqrt` on the x87 model) |
-| `user_test` | `14ddc0` | the HUD update's `USER_TESTED` | the user slot has a player |
-| `user_player` | `14de70` | the HUD update's `PLAYER_FOUND` | the user slot's player |
-| `submit` | `187b30` | `0x186a94` | the input record's flags into the control globals' held word, the latches and the record's latch bits, the yaw's sign (x87) and the axis clamps |
-| `weapon_ready` | `100f70` | `0x1866b3` | the weapon can be readied; its callee `100880` stays a guest call |
-
-At the call the kernel predicts `eax`, `ecx`, `edx`, `xmm0`, the x87 stack
-and the leaf's stores. Unproven, the guest's leaf runs and the body compares
-at the return site; after 4096 matches the kernel answers in place and the
-body goes on at the site in the same segment, one call in 64 still the
-guest's. A mismatch returns that leaf to the guest until the next map.
-`weapon_ready` has two halves around its guest call of `100880`: the frame
-and saved registers at the call, compared at `0x100fab` (a site of the
-control update's body), and the return, compared at `0x1866b3`. Answered,
-the body lays the frame down, calls `100880` from it, and finishes `100f70`
-at `0x100fab`; another caller's `100f70` reaching `0x100fab` is left to the
-generated code. `sim.arms` reports `seats.leaf.<name>`;
-`seat_leaves_match_lifted` and `weapon_ready_matches_lifted` put each
-applied answer against the lifted function. The bodies' other callees (the
-look curve and the bodies that are seats themselves aside) call further
-guest code and stay guest calls.
+The aim-assist cone, the bound controller's device read and the seven leaf
+callees are kernels with their own arms, described in
+[sim-rewrite-sketches.md](sim-rewrite-sketches.md#seats-and-rules-phase-7-kernels).
 
 `observer-resources` (the trim that spares the headless host most of the
 prediction walk) stays on by default until the seats are promoted. With the
@@ -706,7 +387,7 @@ still uses them.
 
 | Phase | Scope | Switch | Exit criteria |
 |---|---|---|---|
-| **0** (now, alongside 1) | Census A and B in [sim-attribution.md](../perf/sim-attribution.md): Waterworks with local and phantom rosters, with dispatch counts; co-op campaign on `03a_oldmombasa` and `05a_deltaapproach`. `sim-core` crate. Switch-tree change. Profiler `host` category. The map status poll and damage hook fixes. | none | Attribution tables for both rosters and one co-op level committed. Phase order after 3 decided. |
+| **0** (alongside 1) | Census A and B in [sim-attribution.md](../perf/sim-attribution.md): Waterworks with local and phantom rosters, with dispatch counts; co-op campaign on `03a_oldmombasa` and `05a_deltaapproach`. `sim-core` crate. Switch-tree change. Profiler `host` category. The map status poll and damage hook fixes. | none | Attribution tables for both rosters and one co-op level committed. Phase order after 3 decided. |
 | **1a** | Animation sampling (detailed below). 3.5% of the thread. | `impl.sim.native.anim` | Ladder steps 1-6 clean. Waterworks ≥ 0.3 ms/tick faster. Evaluator family self samples down ≥ 80%. Retires `native_rotation_codec` and `native_animation_stream`. This delta calibrates the model's *k*. |
 | **1b** | Node-matrix build (`1421f0`, `142a60`, `141e10`, the loop that drives them in `bd090`'s pose step, and `1dd1c0`). 2.9%. | same switch; the `bd090` walk also has `impl.sim.native.anim.skeleton` (on) | Ladder clean. Cumulative ≥ 0.6 ms. Retires `native_transform_compose` and `native_pose_matrix`. |
 | **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
@@ -733,174 +414,9 @@ The exit criteria above are the *k* = 2 column rounded down. The bots' Rust
 brain (0.96 ms on this roster) is outside every phase and belongs to the
 bots lane.
 
-### Phase 1a, ready to hand to a lane
+### Phase 1: animation
 
-**Boundary.** Override the three evaluation wrappers: `0x00279d80` (plain
-frame), `0x00279e40` (positional blend) and `0x0027a060` (interpolated).
-Everything below them goes:
-
-- `2798a0`;
-- the ~60 per-node evaluators `27a6e0..28c090`;
-- every codec function (`28c470`, `28c530`, `28c9e0`, `28cdb0`, `28d560` and
-  the others listed in engine-map.md, "Evaluation and the codec table");
-- the codec table dispatch at `1c73a8`.
-
-The callers have already resolved the resource: each wrapper receives the
-12-byte view built by `1ddb40` (data pointer, sizes pointer `&element[+0x3c]`,
-node count, frame-info type, frame count). So the boundary makes **no
-resource-cache calls** and nothing inside it calls guest code. The bodies are
-plain `fn`s.
-
-Slice 1d owns `1c6f60` and the preload at `1dd9d0`. Cache request and get
-(`1236f0`, `1237e0`) and `1dd630` (with its RNG draw at `1dd6e1`) stay guest.
-
-**Step 0 (research, about half a day, static reading with `h2 disasm`):**
-
-- the argument ABI of the three wrappers;
-- every memory write under them;
-- a cross-reference census of `0x504460..0x5044c0`.
-
-If any address outside the family reads those globals, the Rust body writes
-their final values. Otherwise it leaves them. Record all of this in a new
-contract page, `docs/engine/anim-sampling.md` (the engine README format),
-including the exact retail operation order for normalisation and blending.
-
-**Crates and modules (new):**
-
-- `crates/rewrites/sim-core`: no `runtime` dependency.
-  - `math`: `Quat`, `Vec3` and `NodeMatrix`. `NodeMatrix` is `#[repr(C)]`
-    with the 0x34-byte `real_matrix4x3` layout from native-renderer.md:
-    scale `+0`, forward `+4`, left `+0x10`, up `+0x1c`, position `+0x28`.
-  - `lanes`: the exact SSE-order f32x4 operations, moved from
-    `crates/rewrites/engine/src/sim_native/lanes.rs` so both use one copy.
-  - `det`: the float rules and the environment check.
-  - `Epoch`: the derived-state invalidation counter.
-- `crates/rewrites/sim-anim`: depends on `sim-core`, and on `tags` for the codec enum
-  and flag-array layout only. The `tags` sampler deliberately differs from the
-  engine (it holds the first key and rejects some data), so it is not reused
-  for values.
-  - `ClipStore`: a dense table keyed by `(map epoch, sizes-pointer address)`.
-    The sizes pointer is tag data, fixed for the map's lifetime, and names
-    exactly one animation. Entries are `Arc<Clip>`. The table is cleared on
-    map load.
-  - `Clip::decode(view_bytes, sizes, nodes, frames)` builds from the
-    guest-resident blob the first time the clip is sampled. It decodes the
-    bytes the guest would read, with no separate map read, so it cannot
-    disagree with the guest.
-  - `Clip` fields:
-    - `nodes` and `frames`;
-    - up to two streams, each holding its codec, per-node slot maps for
-      rotation, translation and scale (`u16::MAX` = none), and channel
-      storage by codec: dense frame runs for 1, 2, 3 and 8; `times` plus
-      `values` plus `key_range` per channel for 4 to 7, with u8 times
-      widened to u16.
-  - `sample(&Clip, Frame { index, next, blend, kind }, mask: &[u32], out: &mut [LocalNode])`.
-    `LocalNode` is the retail 32-byte record: rotation `[f32; 4]` at `+0`,
-    translation `[f32; 3]` at `+0x10`, scale `f32` at `+0x1c`. The static
-    stream is applied first, then the animated stream. Arithmetic follows the
-    retail operation order through `sim-core::lanes`.
-- `crates/rewrites/engine/src/sim_anim.rs`: the adapter.
-  - Reads the wrapper arguments.
-  - Gets or builds the clip.
-  - Calls `sample`.
-  - Writes the output records, and the globals only if step 0 says so.
-  - Sets the return registers.
-  - Faults the way the guest would on an unmapped view: it reads the view
-    before writing any output.
-- `crates/rewrites/sim-bridge/src/sim_native.rs`: installs the three entries under
-  `impl.sim.native.anim` (hierarchical, default off until exit) and removes
-  the `native_rotation_codec` and `native_animation_stream` entries.
-- `crates/hooking/guest-layout/src/points.rs`: the three wrapper points, with ABIs from
-  step 0.
-- `crates/hooking/hooks/src/switches.rs`: no new mechanism, because hierarchical
-  lookup already exists.
-
-**Guest readers still fed (unchanged):** the output records, which `112070`,
-`16760c` and the object pose path then compose into node matrices at
-`[body+0x116]`. Havok's rigid-body fetch `1ef070`, the markers, the
-bounding-sphere update and the renderer all read those matrices.
-
-**Verification:**
-
-- **Unit tests in `sim-anim`.** Use synthetic streams for codecs 1-8:
-  - frames 0, last, fractional, and exactly on a key;
-  - masks of 0, 1 and all nodes, crossing an 8-node flag byte;
-  - both streams present;
-  - codec 8 alignment.
-- **Differential test per wrapper.** Use synthetic views written into guest
-  memory, with random frames and masks. The lifted wrappers run on the IR
-  interpreter. Memory and registers must be bit-identical, with
-  `impl.sim.native_simd` lanes on and off.
-- **Disc sweep (`#[ignore]`).** Every animation on every map, at four
-  frames, against the lifted path.
-- **Run parity and the cache-cold arm.** The sim-budget A/B with
-  `-impl.sim.native.anim` against `impl.sim.native.anim`, all three cases:
-  identical hash series, and `h2 sim diff` prints nothing. Then the same with
-  the `ClipStore` cleared every tick.
-- **Cross-arch and campaign.** The same Waterworks case on x86-64 (cross-arch
-  hashes), and one campaign level headless with arena hashes.
-- **Timing.** Three unprofiled medians per arm, plus one profiled pair to
-  confirm the evaluator family's self samples dropped.
-
-**Lane ownership:**
-
-- new: `crates/rewrites/sim-core`, `crates/rewrites/sim-anim`, `crates/rewrites/engine/src/sim_anim.rs`,
-  `docs/engine/anim-sampling.md`;
-- edited: `crates/rewrites/sim-bridge/src/sim_native.rs`, `crates/hooking/guest-layout/src/points.rs`,
-  the workspace `Cargo.toml`, `crates/rewrites/engine/Cargo.toml`.
-
-It touches nothing owned by Live, bots, theater or film.
-
-**Phase 1b, 1c and 1d follow-on:** the local-record-to-node-matrix loop
-is inline in `bd090`, whose register-level port runs it; at the loop's
-entry the port calls `sim_anim::build_matrices` through
-`engine::sim_anim::skeleton`, so one Rust call builds every matrix of an
-object ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs the same
-leaves for the animation graph's own callers (219 and 182 visible samples
-into `1421f0` and `142a60`) over a queue of child and sibling links.
-`sim_anim::graph_matrices` computes it in one call
-([skeleton-walk.md](skeleton-walk.md#the-graph-walk-1dd1c0)). Under
-`impl.sim.native.anim` it runs as an arm: `engine::sim_anim::graph_walk`
-plans each call at the entry. Until 4096 calls have matched with no
-mismatch, the guest answers and the plan is compared with its result,
-counted and the first mismatch named (`anim.graph_walk`). Then the body
-answers, one answerable call in 64 is still compared, and a mismatch
-returns every call to the guest for good.
-`native_transform_compose` and `native_pose_matrix` retire once the ladder
-is clean.
-
-Each 1c slice has the same shape: a gather, one Rust kernel call, a
-scatter. The table names the port that stays the vehicle and the Rust entry
-it calls.
-
-| Slice | Guest function | Port (vehicle) | Rust entry | Page |
-|---|---|---|---|---|
-| Markers | `b8d30`; scan `1d8f00`, transform fill `1d8f50`, basis leaf `141e10` | `sim_native::marker` | `sim_anim::model_markers` through `engine::sim_anim::markers` | [markers.md](markers.md) |
-| First-person palette | `16760c` | `sim_physics::first_person` | `sim_anim::palette` through `engine::sim_anim::palette` | [palette.md](palette.md) |
-| Unit pose | `112070` | `sim_native::unit::run` | plans the base and aim channels, angle projections and overlay tail one guest call at a time | [unit-pose.md](unit-pose.md) |
-| Unit aim | `c7840` (nine return sites) | checked segment plan | `sim_anim::unit_aim` | |
-| First-person filters | `166d75` (40 return sites; five calls to `11eed0` can run within the segment) | checked segment plan | `sim_anim::first_person_filters` | [first-person-filters.md](first-person-filters.md) |
-
-The [channel manager](animation-manager.md) receives the unit pose's calls
-through the dispatcher. Its contract describes the channel writes, callback
-frames and sampling view that the phase 1d arms compare.
-
-Unit aim projects the directions into joint space, enforces yaw and pitch
-limits and updates direction and angular velocity. First-person filters
-advance four seat axes and visit both weapon slots, including their motion
-tracks and idle timers.
-
-Each body resumes after a guest callee using the live guest frame. A declined
-segment starts the original at its entry or return selector. An image must
-export the entry and every return selector for that body.
-
-The differential in
-`engine/tests/sim_physics_differential.rs` checks the transfer, CPU and memory
-at the boundaries and requires every site. The phase 1c ladder and cumulative
-timing gate are in the table above.
-
-The unit animation state `111650` is a body of the object update (slice 6c,
-[object-update.md](object-update.md)).
+Slices 1a to 1d (sampling, node matrices, unit pose, markers, first-person bodies, manager and graph resolve) are in [sim-rewrite-phase-1.md](sim-rewrite-phase-1.md).
 
 ## The tick driver
 
@@ -916,84 +432,13 @@ flowchart TD
   G --> H[tick count at game time +8, only if flag still set]
 ```
 
-`GAME_TICK` (`0x00137fe0`) runs from Rust: `engine::sim_tick::run`, installed
-by `sim_bridge::tick::TickDriver` as the body of the point with
-`implement_async`. There is no switch. It does what the original does, in the
-original's order:
-
-1. the x87 control word through the CRT (`0x003212d6`, `_controlfp` with new
-   word `0x9001f` and mask `0xfffff`);
-2. the `0x4048`-byte update record on the guest stack below the entry `ESP`,
-   built by `0x000682e0` and applied by `0x000683a0`;
-3. the run flag, the byte at record `+4` (`RUN_FLAG`). When it is clear the
-   phases and the clock step are skipped;
-4. the 29 phases of [the sim review](../reviews/2026-11-20-sim.md) section 2.1
-   (`engine::sim_tick::PHASES`). Phase 1 (`0x0014d3a0`) takes the record as
-   its one stack argument (`ret 4`) with `ECX` = record; phases 2-29 take no
-   argument and see `EBX` = record (`Form`; `0x00138db0` reads it);
-5. the clock step (`0x001380b4`), inside the run branch: `[*TICK_CLOCK + 0x14]`
-   falls by one to zero and `[*TICK_CLOCK + 4]` gains the f32 tick length
-   `[*GAME_TIME + 4]`;
-6. the record's close `0x000684e0` (`ESI` = record), which runs whether or
-   not the flag was set;
-7. the tick count at game time `+8`, which advances only if the flag is still
-   set after the close.
-
-Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
-with the record's bytes reserved below the call's stack); a Rust phase is a
-body in the driver. Every phase is still a guest call today. The in-place
-call that avoids the unwind per phase is a later speed-up, not a
-prerequisite.
-
-**Presentation phases.** Phases 26 (first person `0x165dc1`), 28 (HUD
-`0x1917b2`) and 29 (the camera neighbourhood `0x16f200`) are the seats'
-views (`impl.sim.present`, on; `Present::LocalOnly`):
-
-| Local users mapped | The three phases | Their random draws |
-|---|---|---|
-| none (phantoms, hosts) | not called; 0 calls and 0 ns in the ledger | none |
-| one or more | called in retail order | from `PRESENT_SEEDS`, the presentation's own copy of both shared seeds `[0x4e7408]` `+0` and `+4`, swapped in before each phase and the sim's put back after |
-
-So the sim's draws, and the hash, are the same with 0 and 4 views
-(`hash_equal_with_0_and_4_views`, `sim-bridge/src/present.rs`). The stream
-starts as the sim's seeds, lives for the process and is not saved. A phase
-whose seed words do not read runs on the sim's seeds, counted by
-`sim_tick::unisolated`.
-
-The hooks on `GAME_TICK` run as before: the driver takes the original's place
-in the chain, so each `observe_before`, `before`, `after` and
-`observe_after` hook (lockstep's hash, telemetry, the agent's queued calls,
-actor-net, cheats, skulls, co-op, firefight) fires at the same point around
-it, and a `before` that returns skips the body. `existing_tick_hooks_still_fire`
-(`sim-bridge/src/tick.rs`) pins the order in the plan text.
-
-**The ledger.** `sim_bridge::tick::LEDGER` counts each guest call per phase
-(`engine::sim_tick::Ledger`) and times it: nanoseconds per phase as a
-running total and for the last tick, the tick body's, and the loop's (tick
-entry to the next entry, which holds the sound that runs outside the 29
-phases).
-
-The clock is `Instant`, read once after each phase and three times per tick;
-the phases' times are consecutive spans, so they sum to at most the tick's.
-`sim.ledger` ([the agent API](../runtime/agent-api.md)) reads
-it, `profile.counters` carries it as `sim_tick_phase_<n>_ns`, and the sim
-report's `tick_phases` block holds the per-match means. Wave benches read
-the phases there. The ratchet is
-`crates/rewrites/sim-bridge/tick-ledger.toml`: the number of guest phases per
-map kind, which only falls. `ledger_ratchet_does_not_grow` fails when the
-phase table owns more guest phases than the file allows, and a slice that
-moves a phase to Rust lowers the number in the same commit. The goal is 0:
-only our own simulation.
-
-**Proof.** `tests/sim_tick_differential.rs` (engine, `differential`) runs the
-lifted body on the IR interpreter: `phases_run_in_retail_order` compares its
-calls with `PHASES` (the odd entries `0x00165dc1` and `0x001917b2` are the
-targets the body reaches), and `tick_matches_lifted` compares the
-envelope's registers and stack arguments (the control word's mask included),
-the phases' `ECX`, `EBX` and stack argument, and the game-time page, which
-holds the clock step's writes. Both runs set the run flag at the before step.
-`sim-bridge/src/tick.rs` covers a clear flag (no phases, the close still
-runs, the tick holds) and a close that clears it.
+`GAME_TICK` (`0x00137fe0`) runs from Rust (`engine::sim_tick::run`, installed
+by `sim_bridge::tick::TickDriver`) and keeps the original's order: the x87
+control word, the `0x4048`-byte update record, the 29 phases, the clock step,
+the record's close and the tick count. Every `GAME_TICK` hook fires at the same
+point around it. The steps, the phase owners, the presentation phases
+(`impl.sim.present`), the ledger (`sim.ledger`, the ratchet that only falls)
+and the proof are in [sim-rewrite-tick.md](sim-rewrite-tick.md).
 
 ## 6. Threading inside a tick
 
@@ -1086,8 +531,7 @@ pub fn sim_hash(&self) -> u64;                // hash_sim(HALO2) ⊕ ext, when e
 | 5-7 | Review outcomes: both routes run, Havok stays bit-exact, recompiler contract changes |
 
 
-1. **Physics stays bit-exact with retail.** The Havok phase (phase 5 since
-   the 2026-11-20 reorder) replaces Havok with a structural port held to
+1. **Physics stays bit-exact with retail.** The Havok phase (phase 5) replaces Havok with a structural port held to
    bar E. Films and goldens stay valid across builds;
    the win is smaller than a free rewrite would give.
 2. **Films replay across architectures.** A film recorded on a Linux x86-64
