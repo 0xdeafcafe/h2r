@@ -580,6 +580,8 @@ impl<B: Backend> Worker<B> {
         let QueuedRun { head, textures: ids, rest, .. } = run;
         QUEUED_RUNS.fetch_add(1, Ordering::Relaxed);
         QUEUED_RUN_DRAWS.fetch_add(1 + rest.len() as u64, Ordering::Relaxed);
+        timeline::phase::count(timeline::phase::Counter::QueuedRuns, 1);
+        timeline::phase::count(timeline::phase::Counter::QueuedRunDraws, 1 + rest.len() as u64);
         let color = self.surface(head.surfaces.color)?;
         let depth = self.depth(head.fallback_depth)?;
         let mut textures = [None; 4];

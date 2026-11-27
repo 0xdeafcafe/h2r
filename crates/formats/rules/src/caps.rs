@@ -71,6 +71,7 @@ pub const CAPABILITIES: &[Capability] = &[
         "shows the superbounce guide: a priming HUD, marks over the map and bounce medals",
         false,
     ),
+    cap("game.rounds", "plays the game in rounds", false),
     cap("firefight.director", "runs Firefight rounds, waves, lives and scores", false),
     cap("forge.move", "lets players move objects during the match", true),
     cap("forge.delete", "lets players remove objects during the match", true),
@@ -375,6 +376,7 @@ pub mod id {
     pub const POD_CLASS: u16 = 145;
     pub const POD_FLOOD: u16 = 146;
     pub const SQUAD_SHIP: u16 = 147;
+    pub const NEXT_ROUND: u16 = 148;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -401,8 +403,8 @@ pub const ENTRIES: &[Entry] = &[
     read(id::SQUAD_ALIVE, "squad_alive", &[Squad], Int, Named),
     // Actions.
     act(id::SCORE, "score", &[Player, Int], None, Now, Named),
-    // GAME_END is named; advancing a round and naming the winner are not
-    // traced (rules-engine.md, "Round end and the winner").
+    // GAME_END is named; naming the winner is not traced (rules-engine.md,
+    // "Round end and the winner"). `next_round` is below.
     act(id::END_ROUND, "end_round", &[Team], None, Now, Named),
     act(id::SET_LIVES, "set_lives", &[Player, Int], None, Now, Named),
     act(id::RESPAWN, "respawn", &[Player], None, Now, Named),
@@ -749,6 +751,12 @@ pub const ENTRIES: &[Entry] = &[
     read(id::POD_CLASS, "pod_class", &[Class], Bool, Named),
     read(id::POD_FLOOD, "pod_flood", &[Class], Bool, Named),
     read(id::SQUAD_SHIP, "squad_ship", &[Class], Int, Named),
+    // The round ends and the game goes on: `ROUND_END` (`0x15b980`) asks the
+    // engine's round state machine for the round's end, and the machine
+    // starts the next round through its round reset, where `on round_start`
+    // runs again (docs/engine/notes/2026-11-27-next-round.md). The winner is
+    // the script's to score; the engine is not told it.
+    act(id::NEXT_ROUND, "next_round", &[Team], Some("game.rounds"), Now, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.
@@ -1219,6 +1227,24 @@ mod tests {
             assert!(!e.hostable_on(0), "{name}");
         }
         let c = capability("audio.play", API_VERSION).unwrap();
+        assert!(!c.grantable);
+        assert_eq!(
+            crate::policy::eligible(&[c.name.to_string()], API_VERSION),
+            ["custom", "hopper", "ranked"]
+        );
+    }
+
+    #[test]
+    fn next_round_is_gated_by_game_rounds_and_named() {
+        let e = entry_named("next_round").unwrap();
+        assert_eq!(e.id, id::NEXT_ROUND);
+        assert_eq!(e.kind, Kind::Action);
+        assert_eq!(e.cap, Some("game.rounds"));
+        assert_eq!(e.order, Order::Now);
+        assert_eq!(e.status, Status::Named);
+        assert_eq!(e.args, &[Team]);
+        assert!(e.hostable_on(0));
+        let c = capability("game.rounds", API_VERSION).unwrap();
         assert!(!c.grantable);
         assert_eq!(
             crate::policy::eligible(&[c.name.to_string()], API_VERSION),

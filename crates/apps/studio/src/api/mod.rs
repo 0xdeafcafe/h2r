@@ -769,7 +769,7 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::UI_PICK,
         "Show a screen in a state (default: its first), or a retail screen by tag (with a named sample variant)",
-        r#"{"screen?":"string","state?":"string","retail?":"string","sample?":"string"}"#,
+        r#"{"screen?":"string","state?":"string","retail?":"string","sample?":"string","title?":"string","rows?":"[string] (kit.picker, kit.picker.game: the dialog's values)"}"#,
         r#"{"pick":"any","summary":"string|null"}"#,
         r#"{"screen":"$SCREEN"}"#,
     ),

@@ -1096,9 +1096,9 @@ impl<'s> Model<'s> {
             | ExprKind::Fixed(_)
             | ExprKind::Time(..)
             | ExprKind::Bool(_)
-            | ExprKind::Str(_)
             | ExprKind::None
             | ExprKind::Budget(_) => {}
+            ExprKind::Str(text) => self.holes(text, e.pos, env),
             ExprKind::Name(n) => self.name(n, e, env),
             ExprKind::Field(base, f) => self.field(base, f, e, env),
             ExprKind::Index(base, index) => {
@@ -1166,6 +1166,26 @@ impl<'s> Model<'s> {
         }
         if let Some(d) = self.top(n).or_else(|| self.labels.get(n).copied()) {
             self.use_of(span, d, ty, env);
+        }
+    }
+
+    /// Each `{name}` hole of a text is a use of the name: a `let`, a
+    /// parameter, a global or an option. Its span is exact when the text
+    /// has no escapes, as the checker's hole positions are.
+    fn holes(&mut self, text: &str, pos: Pos, env: &mut Env) {
+        let Ok(pieces) = caps::pieces(text) else { return };
+        let open = self.byte(pos) + 1;
+        for piece in pieces {
+            let caps::Piece::Hole { inner, .. } = piece else { continue };
+            let name = inner.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let start = open + (name.as_ptr() as usize - text.as_ptr() as usize);
+            let span = (start, start + name.len());
+            if let Some(d) = self.local(name, env).or_else(|| self.top(name)) {
+                self.use_of(span, d, None, env);
+            }
         }
     }
 

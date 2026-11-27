@@ -327,7 +327,7 @@ not do yet (`runtime::host_refusal`): an event other than `init`,
 kills, deaths, `alive`, `team_of`, `lives`, `round_time_left`,
 `is_objective`, `carrier_of`, the label reads (`label_number`,
 `label_of`, `zone_id`, `object_team`), `inside`, `player_of`, `object_pos` and `object_vel`; an
-action other than `score`, `end_round`, `set_lives`, `respawn`,
+action other than `score`, `end_round`, `next_round`, `set_lives`, `respawn`,
 `role_traits`, `reset_objective`, the bot orders, the messages,
 `sound_to`, `sound_to_team`, `sound_to_all`, `set_loadout`, `spawn_areas`, `spawn_near`, `set_body`, `show_area`, `hide_area`, `teleport`, `move_to` and `stop`; a variant field other than `team_play`, `score_limit`,
 `time_limit` and `lives`, whose record offsets are not traced; a
@@ -1232,10 +1232,25 @@ final stand to win. The sites are the author's `siege_site` flags
 (`label site: zones = "siege_site"`) and, when none is placed, the map's
 territory flags ("Forge labels"); the final stand is a placed
 `siege_goal` (`label goal: zone? = "siege_goal"`), else the defenders'
-CTF flag stand (`label base: zones = "ctf_flag_spawn"`, `base[team 1]`). Each phase has its own
+CTF flag stand (`label base: zones = "ctf_flag_spawn"`, `base[defenders]`). Each phase has its own
 clock, and a clock that runs out wins it for the defenders. Each side
-spawns with its own loadout (`on spawn`, `set_loadout`), and the winners
-score a point each, so the post-game names them. No label states a
+spawns with its own loadout (`on spawn`, `set_loadout`), and a round's
+winners score a point each, so the post-game names them.
+A game is `round_count` rounds (1 to 8, two by default), and the sides
+swap at each: team 0 attacks in the first, third and so on, team 1 in
+the second, fourth and so on (`attackers` and `defenders`, set in `on
+round_start` from `round`, the rounds played, which like every global
+carries across rounds). A round ends on the objective or on the clock
+(`win`): the winners score, their team's `wins` goes up, and while
+rounds are left the script calls `next_round` (`game.rounds`), so the
+engine runs its round's end and the next round starts with every
+player back, the scores kept and the VM's round state gone. The last
+round calls `end_round` with the team that won the more rounds, or
+`none` for an even count; a game of one round ends with the round's
+winner. Each round of a game of more than one opens with its number
+on the banner (`ROUND 1`, ..., `FINAL ROUND` for the last) and a
+message to each side (`Round 2 of 2: you attack`, `... you defend`),
+and the bodies, loadout rows, lines and HUD colours follow the sides. No label states a
 requirement, but the lobby's start gate refuses a map with neither a
 site (a `siege_site` or a territory) nor a final stand (a `siege_goal` or
 the defenders' flag stand) by name
@@ -1246,13 +1261,15 @@ stand taking every site wins it. A run the gate does not guard (a
 scenario) with neither draws the round at its start with a message. The
 variant's `lives = 1` holds each death's respawn (the engine's own
 lives gate), and each side's dead come back together when its wave
-timer (`wave_time`) runs out (`respawn`). Each side spawns near its
+timer (`wave_time`) runs out (`respawn`); a death is told "Reinforcements
+in N seconds" (`hold`), the seconds left of its side's wave. Each side spawns near its
 line (`spawn_near`, the four starting locations nearest it), and the
 lines move with the phases: the attackers start at their own flag stand
-(`base[team 0]`) and spawn at each site they take, and the defenders
+(`base[attackers]`) and spawn at each site they take, and the defenders
 hold a site still to take, then fall back to their flag stand for the
 final assault. A `siege_line` flag the author placed for a side and a
-phase (its number is the phase, its team the side;
+phase (its number is the phase, its team the side: 0 the attackers and
+1 the defenders, whichever team that is in the round;
 `label placed_line: zones at most 16 = "siege_line"`) replaces the
 phase's line for that side. A line the map lacks (no flag stand) leaves
 that side the engine's own spawns. The attackers spawn as Spartans and the defenders
@@ -1284,9 +1301,12 @@ start and as each phase begins the script `offer`s every player the rows of
 their side's tier (`offer(p, picker, count)`; the two sides' labels are
 the pickers 0 and 1), and `on spawn` gives the row `choice(p)` reads. A
 local player picks in a select dialog that opens when their window grows
-(`rules/world/choice.rs`, over the `kit.picker.game` dialog): a row above
-the tier is refused by the VM (`Vm::choose_loadout`) and the last pick
-stands. The pick never blocks a spawn: a player who picks nothing keeps
+and at each spawn of theirs (`rules/world/choice.rs`, `spawned`, over the
+`kit.picker.game` dialog titled ATTACKER LOADOUT or DEFENDER LOADOUT):
+a row above the tier is refused by the VM (`Vm::choose_loadout`) and the
+last pick stands. A row picked while the player is alive is equipped by
+the next tick (`on tick` in `siege.rules` sets the kit of a player whose
+`kit` differs from `choice(p)`), so the pick need not wait for a death. The pick never blocks a spawn: a player who picks nothing keeps
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
@@ -1474,7 +1494,8 @@ Actions:
 | Action | Through | Status | Cap |
 |---|---|---|---|
 | `score(p, n)` | `SCORE_ADD` `0x15b7c0` | named | core |
-| `end_round(winner)` | `GAME_END` `0x1389c0` ends the game; advancing a round and naming a winner are not traced (winner storage is not recovered, live-gamestate.md) | named; untraced | core |
+| `end_round(winner)` | `GAME_END` `0x1389c0` ends the game; naming a winner is not traced (winner storage is not recovered, live-gamestate.md) | named; untraced | core |
+| `next_round(winner)`: the round ends and the game goes on | `ROUND_END` `0x15b980` with 0 asks the round state machine for the round's end (`E+0xc04` 2) and posts the round-over event; the machine runs the round's end (five seconds) and the gap (one second), then the round reset `ENGINE_ROUND_RESET`, where the runtime ends the VM's round (`Input::RoundEnd`: the `ticks_held` counts, spawn rules, bodies, shown areas, HUD and offers go; no `on round_end` runs on a host) and runs `on round_start` (`Runtime::round_start`). The engine is not told the winner: the script scores it. `rules::guest::next_round` refuses the call by name with no game engine, on a distributed client, after the game's end, and while the round is not in play or its end is already asked for (`E+0x6c` or `E+0xc04` not 1). The engine ends the game itself after 32 rounds (`E+0x6e` 31). The round resolution `0x15b3a0`, which weighs the variant's rounds setting, is not called ([notes/2026-11-27-next-round.md](../engine/notes/2026-11-27-next-round.md)). The fake game ends the round and starts the next at the next tick boundary, with every player alive, the variant's lives, the round's clock from its start and the scores kept (`FakeGame::next_round`, `scenario::step`); a second call in a round is refused there too | named | `game.rounds` |
 | lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named | core |
 | `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named | core |
 | `set_gravity(g)`: the match's gravity, `g` a `fixed` | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`); the host runtime does not make the call yet | named | `game.traits` |
@@ -1554,6 +1575,7 @@ plain words each:
 | `hud.widgets`, `hud.waypoints` | draws on the HUD; marks places and things | no |
 | `hud.objective` | shows objectives, marks and a clock | no |
 | `hud.superbounce` | shows the superbounce guide: a priming HUD, marks over the map and bounce medals | no |
+| `game.rounds` | plays the game in rounds | no |
 | `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
 
@@ -2495,7 +2517,10 @@ the ReachVariantTool importer follows phase 10.
 - **The session's `rules` field** is checked in `NewSession::validate`
   and `Session::apply`, which both homes run (`live-server` and the
   Cloudflare worker); the worker's own run of the test is not seen.
-- **Round end and the winner.** Only the game-end latch is known.
+- **The winner of a round or a game.** The game-end latch and the round
+  end are known; where the engine keeps the winner is not. Whether
+  `player_score` reads the round's or the game's score after a round
+  reset is **S** ([notes/2026-11-27-next-round.md](../engine/notes/2026-11-27-next-round.md)).
 - **`set_team`, per-player traits, movement speed.** No entry is known.
 - **`give`, `hide`, `attach`, `camera`, and `take` outside a drop.** No
   entry is proven. `0x10ca80` is known only as an observer of a pickup,

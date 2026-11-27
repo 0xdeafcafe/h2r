@@ -73,6 +73,12 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
             let current = if team < 0 { 0 } else { (team + 1) as usize };
             picker(p, help, Prop::Team, values, current.min(last))
         }
+        // The spawner's team is the document's property, not a field: None
+        // first, then the teams in order.
+        ("picker", "spawner team") => {
+            let current = extras.team.map_or(0, |team| usize::from(team) + 1);
+            picker(p, help, Prop::SpawnerTeam, values, current.min(last))
+        }
         ("picker", "role") => {
             let current = int_of(thing, "type").clamp(0, last as i64) as usize;
             picker(p, help, Prop::Role, values, current)
@@ -156,14 +162,26 @@ fn row(p: &PropDoc, thing: &Thing, heading: f32, extras: &Extras) -> Option<Shee
         ("act", "reset orientation") => forge::props::prop("rotation")
             .and_then(|d| d.field(thing.block))
             .map(|_| SheetRow::new(&p.text, Act::Choose(Choice::ResetOrientation)).describe(help)),
-        // A copy of an object, held at once: a kind the session can add,
-        // which is an object until slice P2, and a placed thing, not the
-        // ghost of one being placed.
-        ("act", "duplicate") if matches!(thing.kind, ThingKind::Object | ThingKind::Piece) => {
-            let placed = thing.fields.iter().any(|(name, _)| *name == "palette index");
+        // A copy of a thing, held at once: a placed object (not the ghost
+        // of one being placed), or one of the kit's kinds in a kit session.
+        ("act", "duplicate") => {
+            let placed = match thing.kind {
+                ThingKind::Object | ThingKind::Piece => {
+                    thing.fields.iter().any(|(name, _)| *name == "palette index")
+                }
+                _ => extras.kit,
+            };
             placed.then(|| {
                 SheetRow::new(&p.text, Act::Choose(Choice::Duplicate(thing.id))).describe(help)
             })
+        }
+        // Remove the thing; a thing with links asks first.
+        ("act", "delete") => {
+            Some(SheetRow::new(&p.text, Act::Choose(Choice::Delete(thing.id))).describe(help))
+        }
+        // An own thing the document changes, put back as the map has it.
+        ("act", "restore original") if thing.own && thing.changed => {
+            Some(SheetRow::new(&p.text, Act::Choose(Choice::Restore(thing.id))).describe(help))
         }
         ("keyboard", "prefab") if extras.savable > 0 => {
             let value = if extras.savable == 1 {

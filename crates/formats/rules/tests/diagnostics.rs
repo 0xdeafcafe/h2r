@@ -660,7 +660,7 @@ fn the_builtins_use_time_constants_and_match() {
     let labels: Vec<&str> = siege.options.iter().map(|o| siege.strings[o.label as usize].as_str()).collect();
     assert_eq!(
         labels,
-        ["Phase time (seconds)", "Capture time (seconds)", "Sites", "Respawn wave (seconds)", "Overtime (seconds)"]
+        ["Phase time (seconds)", "Capture time (seconds)", "Sites", "Respawn wave (seconds)", "Overtime (seconds)", "Rounds"]
     );
 }
 

@@ -1202,11 +1202,14 @@ fn flat_owner_coverage() {
 /// [`held_gate_functions`]: 40 trips of a loop that calls a leaf directly
 /// (all 40: the entry table needs no warming), a 100-trip loop with no
 /// call, a page-crossing loop, a REP and stores. A handler's first access
-/// is cold (it starts without the gate), and so is the first after a direct
-/// call returns (the caller drops the gate to charge its accesses and
-/// call); `miss` counts the cold ones taken with the gate held (a
-/// cross-page read), `no-gate` those that leave without it. `--nocapture`
-/// prints the table.
+/// from the runner is cold (it starts without the gate). A direct call lends
+/// the caller's hold to the leaf and the leaf hands it back, so neither the
+/// leaf's first access nor main's first after the call is cold; only a hold
+/// that ran out of trips at the call (each call and each loop header is
+/// one, `H2_GATE_TRIPS` in all) leaves the leaf to take the gate itself.
+/// `tick` counts those ends, `miss` the cold ones taken with the gate held
+/// (a cross-page read), `no-gate` those that leave without it.
+/// `--nocapture` prints the table.
 #[test]
 fn cold_accesses_by_cause() {
     // Isolate the paged path from the flat emitter's span preflight, which
@@ -1217,11 +1220,14 @@ fn cold_accesses_by_cause() {
         let c = cold_counts(accounting, &format!("cold-stats-{accounting}"), PAGED);
         let table: Vec<_> = COLD_CAUSES.iter().zip(c).map(|(k, n)| format!("{k} {n}")).collect();
         println!("accounting {accounting}: {}", table.join(", "));
-        // main, from the runner; all 40 calls are direct, each leaf from
-        // cold, then main's first access after it.
+        // main, from the runner. All 40 calls are direct: 80 trips (a
+        // call and a loop header each) end a 32-trip hold twice, once at a
+        // call (the one cold leaf) and once at a header, and the 100-trip
+        // loop ends it once more. No access after a call is cold.
         assert_eq!(c[0], 1, "{table:?}");
-        assert_eq!(c[1], 40, "{table:?}");
-        assert_eq!(c[2], 40, "{table:?}");
+        assert_eq!(c[1], 1, "{table:?}");
+        assert_eq!(c[2], 0, "{table:?}");
+        assert_eq!(c[5], 3, "{table:?}");
         assert!(c[6] >= 1, "the cross-page read: {table:?}");
         // The leaf opens with a read and write of [esp+4]. Flat code
         // keeps the gate for that span only when the backend is enabled.
@@ -1229,7 +1235,7 @@ fn cold_accesses_by_cause() {
         let flat = cold_counts(accounting, &format!("cold-stats-flat-{accounting}"), FLAT);
         let flat_runtime = cfg!(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))
             && std::env::var("H2_FLAT_RAM").as_deref() == Ok("1");
-        let expected = if flat_runtime { [1, 0, 40] } else { [1, 40, 40] };
+        let expected = if flat_runtime { [1, 0, 0] } else { [1, 1, 0] };
         assert_eq!(flat[..3], expected, "{flat:?}");
     }
 }

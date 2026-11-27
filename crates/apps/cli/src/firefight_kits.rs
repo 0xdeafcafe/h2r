@@ -57,6 +57,54 @@ pub fn start(disc: &Path, data: &Path) {
     }
 }
 
+/// Stages the kit package `map` (`firefight-<base>`) for a run that names
+/// it as its map (`h2 sim run`). A built-in kit (`builtin::MAPS`) that is
+/// missing or stale is built here, in the foreground. Any other kit that is
+/// not in `<data>/maps` is made by `h2 firefight kit <base>`, run as a child
+/// of this same binary into `data`; if that fails, the run stops with its
+/// exit status and the package named.
+pub fn ensure_map(disc: &Path, data: &Path, map: &str) -> Result<()> {
+    let exe = std::env::current_exe().context("finding h2's own path")?;
+    ensure_map_with(&exe, disc, data, map)
+}
+
+fn ensure_map_with(exe: &Path, disc: &Path, data: &Path, map: &str) -> Result<()> {
+    let Some(base) = map.strip_prefix("firefight-") else {
+        return Ok(());
+    };
+    let maps = content::store::maps_dir(data);
+    if builtin::MAPS.contains(&base) {
+        if builtin::pending(&maps).is_empty() {
+            return Ok(());
+        }
+        eprintln!("firefight: preparing the kits");
+        let reports = builtin::ensure(&Disc(disc.to_owned()), &maps);
+        return named_refusals(&reports);
+    }
+    let made = || maps.join(map).join("manifest.toml").is_file();
+    if made() {
+        return Ok(());
+    }
+    eprintln!("firefight: building the kit {map}");
+    let status = std::process::Command::new(exe)
+        .args(["firefight", "kit", base, "--disc"])
+        .arg(disc)
+        .arg("--data")
+        .arg(data)
+        .status()
+        .with_context(|| format!("starting `h2 firefight kit {base}`"))?;
+    anyhow::ensure!(status.success(), "the kit {map} did not build: `h2 firefight kit {base}` {status}");
+    anyhow::ensure!(made(), "the kit {map} did not build: `h2 firefight kit {base}` left no package in {}", maps.display());
+    Ok(())
+}
+
+/// The refusals among `reports`, each named, as one error.
+fn named_refusals(reports: &[builtin::Report]) -> Result<()> {
+    let lines: Vec<String> = reports.iter().filter_map(|r| r.line()).collect();
+    anyhow::ensure!(lines.is_empty(), "the Firefight kits did not stage: {}", lines.join("; "));
+    Ok(())
+}
+
 fn work(disc: &Path, maps: &Path) {
     let reports = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         builtin::ensure(&Disc(disc.to_owned()), maps)
@@ -84,4 +132,50 @@ fn work(disc: &Path, maps: &Path) {
     }
     boot::map_select::publish_packages(disc);
     boot::lobby_start::kit_build_finished(failures);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_kit_stops_the_run_with_its_name() {
+        let ok = builtin::Report { map: "coagulation".into(), outcome: Outcome::Current };
+        let bad = builtin::Report { map: "zanzibar".into(), outcome: Outcome::Refused("6 KB over".into()) };
+        assert!(named_refusals(std::slice::from_ref(&ok)).is_ok());
+        let e = named_refusals(&[ok, bad]).unwrap_err().to_string();
+        assert_eq!(e, "the Firefight kits did not stage: Zanzibar: 6 KB over");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_kit_map_is_built_by_a_child_and_a_failure_is_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("h2-kit-child-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        // Args: firefight kit BASE --disc DISC --data DATA
+        let good = script("good", "mkdir -p \"$7/maps/firefight-$3\" && : > \"$7/maps/firefight-$3/manifest.toml\"");
+        let bad = script("bad", "exit 3");
+        let lazy = script("lazy", "exit 0");
+        let disc = root.join("disc");
+        let data = root.join("data");
+        assert!(ensure_map_with(&good, &disc, &data, "firefight-beavercreek").is_ok());
+        assert!(data.join("maps/firefight-beavercreek/manifest.toml").is_file());
+        // Present already: the child is not run.
+        assert!(ensure_map_with(&bad, &disc, &data, "firefight-beavercreek").is_ok());
+        let other = root.join("other");
+        let e = ensure_map_with(&bad, &disc, &other, "firefight-headlong").unwrap_err().to_string();
+        assert!(e.contains("firefight-headlong") && e.contains("did not build") && e.contains("3"), "{e}");
+        let e = ensure_map_with(&lazy, &disc, &other, "firefight-headlong").unwrap_err().to_string();
+        assert!(e.contains("left no package"), "{e}");
+        assert!(ensure_map_with(&bad, &disc, &other, "headlong").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -132,7 +132,7 @@ own powers.
 The fixed list (`h2 rules caps`): `game.traits`, `player.traits`,
 `player.team`, `player.spawn`, `player.weapons`, `player.disguise`,
 `player.camera`, `player.pick`, `objects.create`, `objects.delete`, `objects.move`,
-`ai.squads`, `vehicles.drive`, `hud.message`, `firefight.director`, and the four
+`ai.squads`, `vehicles.drive`, `hud.message`, `game.rounds`, `firefight.director`, and the four
 **grantable** `forge.move`, `forge.delete`, `forge.place`, `forge.scale`.
 
 - Only a `forge.*` capability can be given to a player:
@@ -234,7 +234,10 @@ error (`scenario: unknown field ...`) and every field is optional.
   alive), team scores, then `result:` one of `the round was still running`,
   `the script ended the round at tick T`, or `script error <kind> at tick
   T, handler H, op P` (exit status 1). The run does not stop at
-  `end_round`.
+  `end_round`. A `next_round` ends the round at the next tick: `on
+  round_end`, then the next round's `on round_start`, with every player
+  alive, the variant's lives, `round_time_left` from its start and the
+  scores kept.
 
 The CLI and Live's run step the same fake game (`rules::scenario::step`);
 only their JSON differs (Live's is below). `h2 rules sim` plays on it too, and the scenario
@@ -420,7 +423,7 @@ Design: [rules-engine.md, "Reloading a running script"](../../../docs/game/rules
   `death`, `enter`, `leave`, `arrive` and `damage`;
   reads only scores, kills, deaths, `alive`, `team_of`, `lives`,
   `round_time_left`, `is_objective`, `carrier_of`, the label reads,
-  `inside`, `player_of`, `object_pos`, `object_vel` and the three biped reads; makes only `score`, `end_round`, `set_lives`,
+  `inside`, `player_of`, `object_pos`, `object_vel` and the three biped reads; makes only `score`, `end_round`, `next_round`, `set_lives`,
   `respawn`, `role_traits`, `reset_objective`, `sound_to`, `sound_to_team` and `sound_to_all` (a `sound` of the map, played at the audience's units), `set_loadout` (the
   multiplayer weapon list's tags only), `spawn_areas` and `spawn_near`
   (a team's spawn rule, read at each spawn), `set_body` (a team's body,

@@ -209,6 +209,21 @@ pub fn prepare_maps(data_root: &Path, disc: &Path, loaded: &[workspace::Loaded])
     out
 }
 
+/// `Ok` when every package item built or was in place; otherwise an error
+/// that names each one that did not (package, item and why), for a run that
+/// cannot go on without them (`h2 sim`).
+pub fn staged_or_named(out: &workspace::Prepared) -> anyhow::Result<()> {
+    if out.failed.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = out
+        .failed
+        .iter()
+        .map(|f| format!("package {} item {}: {}", f.package, f.item, f.why))
+        .collect();
+    anyhow::bail!("packages did not stage: {}", lines.join("; "))
+}
+
 /// Why a Live or System Link session cannot start with this boot's set:
 /// an unsigned package with a `sim` item is on, named. Local games are not
 /// refused.
@@ -272,6 +287,19 @@ mod tests {
         assert!(out.written.is_empty() && out.failed.is_empty());
         assert!(!data.join("maps").exists());
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn a_package_that_did_not_stage_is_named() {
+        let mut out = workspace::Prepared::default();
+        assert!(staged_or_named(&out).is_ok());
+        out.failed.push(workspace::Failed {
+            package: "stage".into(),
+            item: 0,
+            why: "Directory not empty (os error 66)".into(),
+        });
+        let e = staged_or_named(&out).unwrap_err().to_string();
+        assert_eq!(e, "packages did not stage: package stage item 0: Directory not empty (os error 66)");
     }
 
     #[test]

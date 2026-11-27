@@ -261,6 +261,7 @@ game answers it from its `enter` and `leave` events.
 |---|---|---|---|---|
 | `score` | player, int | core | now | named |
 | `end_round` | team (may be `none`) | core | now | named |
+| `next_round` | team (may be `none`) | `game.rounds` | now | named (the round ends and the game goes on: the engine's round end, then its round reset, where the VM's round state goes and `on round_start` runs again; globals and scores carry; once a round, a second call is refused; the winner is the script's to score) |
 | `set_lives` | player, int | core | now | named |
 | `respawn` | player | core | now | named |
 | `register_objective` | object, team | core | now | traced |

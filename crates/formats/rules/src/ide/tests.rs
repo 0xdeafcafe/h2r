@@ -92,6 +92,17 @@ fn diagnostics_report_every_syntax_error_unused_names_and_compile_errors() {
     assert_eq!(d[0].range.start, p(2, 16));
     assert_eq!(d[0].range.end, p(2, 22));
 
+    // A `let` a message hole names is used there, and the hole is its
+    // reference.
+    let src = "rules \"T\" 1\ntype slayer\nrequires hud.message\non spawn(p) {\n    let n = 2\n    message(p, \"Round {n}\")\n}\n";
+    let d = diagnostics(src);
+    assert!(d.iter().all(|x| x.code != "unused"), "{d:?}");
+    let refs: Vec<(u32, u32)> = references(src, p(4, 8))
+        .iter()
+        .map(|x| (x.range.start.line, x.range.start.character))
+        .collect();
+    assert_eq!(refs, vec![(4, 8), (5, 23)]);
+
     // A lexer error does not hide the parser's.
     let d = diagnostics("rules \"T\" 1\ntype slayer\non tick { @ }\non spawn(p) { score(p, +) }\n");
     let lines: Vec<u32> = d.iter().map(|x| x.range.start.line).collect();

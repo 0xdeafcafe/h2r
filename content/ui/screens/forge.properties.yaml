@@ -76,6 +76,13 @@ props:
     on: [spawner]
     prop: games
     open: forge.games
+  prop.17:
+    text: "Team"
+    help: "The team a rules script reads from this spawner."
+    on: [spawner]
+    prop: "spawner team"
+    open: picker
+    values: ["None", "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Brown", "Pink", "Neutral"]
   prop.9:
     text: "Label"
     help: "A name a game type script finds this by. Lowercase letters, digits, - _ and ."
@@ -104,7 +111,16 @@ props:
     open: act
   prop.14:
     text: "Duplicate"
-    help: "Make a copy of this object and hold it."
-    on: [object]
+    help: "Make a copy of this and hold it."
     prop: duplicate
+    open: act
+  prop.15:
+    text: "Delete"
+    help: "Remove this from the map."
+    prop: delete
+    open: act
+  prop.16:
+    text: "Restore original"
+    help: "Put this back as the map has it."
+    prop: "restore original"
     open: act

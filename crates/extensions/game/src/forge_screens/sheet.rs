@@ -227,6 +227,8 @@ impl Look {
 pub enum Ask {
     /// Delete an object that has links (its links go too).
     DeleteLinked,
+    /// Restore original: an own thing back to the map's.
+    Restore,
     /// Save as over a map variant of that name.
     Overwrite,
     /// Leave Game with unsaved edits.
@@ -256,6 +258,8 @@ pub enum Prop {
     Coordinates,
     /// A spawn or goal's team.
     Team,
+    /// An item spawner's team, a property of the document.
+    SpawnerTeam,
     /// A goal's netgame flag type.
     Role,
     /// A goal's identifier.
@@ -446,6 +450,11 @@ pub enum Choice {
     /// rotation snap (docs/game/forge-map-variants-ui.md, "The Properties
     /// page").
     ResetOrientation,
+    /// **Delete** the thing (asks first when it has links).
+    Delete(forge::Endpoint),
+    /// **Restore original**: ask, then put the own thing back as the map
+    /// has it.
+    Restore(forge::Endpoint),
     /// **Duplicate** the object and hold the copy.
     Duplicate(forge::Endpoint),
     /// Place prefab `i` (the object menu's Prefabs row) in front of the
@@ -1228,6 +1237,11 @@ pub struct Extras {
     /// selection it is in, or itself; none when one of them is not an
     /// object the session placed.
     pub savable: usize,
+    /// The session runs on a map with the kit, so a spawner, a starting
+    /// point, a goal and a teleporter can be duplicated.
+    pub kit: bool,
+    /// An item spawner's team, from the document's property.
+    pub team: Option<u8>,
 }
 
 /// Properties of `object` (its name, the header), heading `heading` in
@@ -1871,6 +1885,10 @@ pub fn question(ask: Ask, name: &str) -> Sheet {
         Ask::DeleteLinked => (
             "DELETE OBJECT",
             "This object has links. Delete it and its links?".to_string(),
+        ),
+        Ask::Restore => (
+            "RESTORE ORIGINAL",
+            "Put this back as the map has it? Your changes to it are lost.".to_string(),
         ),
         Ask::Overwrite => ("SAVE AS", super::variants::replace_question(name)),
         Ask::Leave => (

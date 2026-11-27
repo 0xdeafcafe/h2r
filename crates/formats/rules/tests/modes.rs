@@ -83,13 +83,29 @@ fn siege(options: &[(&str, i64)]) -> (rules::Ir, Option<u32>) {
     (ir, bits)
 }
 
+/// Runs a Siege scenario as a game of one round, its other options as the
+/// scenario has them: what a round does, with no next one.
+fn one_round(ir: rules::Ir, s: &Scenario) -> RunResult {
+    let bits = s.options.unwrap_or_else(|| ir.default_options());
+    let given: Vec<(String, OptionValue)> = (0..ir.options.len())
+        .map(|i| {
+            let name = ir.option_name(i).to_string();
+            let v = if name == "round_count" { 1 } else { ir.option_value(bits, &name).unwrap() };
+            (name, OptionValue::Int(i64::from(v)))
+        })
+        .collect();
+    let mut s = s.clone();
+    s.options = Some(ir.pack_options(&given).unwrap());
+    scenario::run(ir, &s).unwrap()
+}
+
 /// The attackers stand on each territory alone for the capture time, then
 /// on the defenders' flag stand: three phases, and they win at the last.
 #[test]
 fn siege_attackers_take_the_sites_then_the_flag_stand() {
     let (ir, _) = siege(&[]);
     let s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     // Each side's loadout at its spawn.
     assert_eq!(
@@ -258,7 +274,7 @@ fn siege_defenders_hold_a_contested_site_until_the_clock_runs_out() {
         ScenarioEvent::Enter { zone: 10, object: 100 },
         ScenarioEvent::Enter { zone: 10, object: 101 },
     ];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -283,7 +299,7 @@ fn siege_asks_for_no_more_sites_than_the_map_has() {
     s.options = options;
     s.map.as_mut().unwrap().retain(|t| t.object != 11);
     s.ticks.truncate(2);
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(lines(&r), ["Sites to take: 1. Then the defenders' flag"]);
 }
 
@@ -297,7 +313,7 @@ fn siege_holds_each_death_for_its_sides_wave() {
     let mut s: Scenario = serde_json::from_str(SIEGE_RESPAWN_WAVES).unwrap();
     s.ticks.resize(311, ScenarioTick::default());
     s.ticks[50].events = vec![ScenarioEvent::Spawn(0), ScenarioEvent::Spawn(2)];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     // The tick-0 spawns gave each side its loadout; the held ones at 50
     // ran no handler.
@@ -327,7 +343,17 @@ fn siege_holds_each_death_for_its_sides_wave() {
         assert!(p.alive);
         assert_eq!(p.lives, 1, "the wave gave the life back");
     }
-    assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
+    // Each death was told its side's wave: the first of a side the whole
+    // 10 s, the next the part of a second short.
+    assert_eq!(
+        lines(&r),
+        [
+            "Sites to take: 2. Then the defenders' flag",
+            "Reinforcements in 10 seconds",
+            "Reinforcements in 9 seconds",
+            "Reinforcements in 10 seconds",
+        ]
+    );
 }
 
 /// A map with no territory starts at the final assault: the attackers
@@ -343,7 +369,7 @@ fn siege_with_no_territories_goes_straight_at_the_flag_stand() {
         ScenarioEvent::Spawn(1),
         ScenarioEvent::Enter { zone: 21, object: 100 },
     ];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -376,7 +402,7 @@ fn siege_with_no_flag_stand_wins_at_the_last_site() {
         ScenarioEvent::Leave { zone: 10, object: 100 },
         ScenarioEvent::Enter { zone: 11, object: 100 },
     ];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -450,7 +476,7 @@ const OVERTIME: &str = "Overtime: the attackers are still on the objective";
 fn siege_runs_a_phase_on_while_an_attacker_is_capturing() {
     let (ir, options) = overtime_options();
     let s = overtime_scenario(options, 1700, 2100);
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -478,7 +504,7 @@ fn siege_ends_an_overtime_when_the_attackers_leave() {
     let (ir, options) = overtime_options();
     let mut s = overtime_scenario(options, 1700, 2100);
     s.ticks[1900].events = vec![ScenarioEvent::Leave { zone: 10, object: 100 }];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -500,7 +526,7 @@ fn siege_bounds_an_overtime_the_defenders_contest() {
     let (ir, options) = overtime_options();
     let mut s = overtime_scenario(options, 1700, 2800);
     s.ticks[1700].events.push(ScenarioEvent::Enter { zone: 10, object: 101 });
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -520,7 +546,7 @@ fn siege_bounds_an_overtime_the_defenders_contest() {
 fn siege_gives_no_overtime_to_an_empty_objective() {
     let (ir, options) = overtime_options();
     let s = overtime_scenario(options, 2000, 2100);
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag", "The defenders held"]);
     assert!((1795..=1801).contains(&r.ended_at.unwrap()));
 }
@@ -620,7 +646,7 @@ fn siege_takes_the_sites_the_author_placed() {
         ScenarioEvent::Spawn(1),
         ScenarioEvent::Enter { zone: 12, object: 100 },
     ];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -651,7 +677,7 @@ fn siege_goes_for_the_goal_the_author_placed() {
         ScenarioEvent::Spawn(1),
         ScenarioEvent::Enter { zone: 40, object: 100 },
     ];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -710,7 +736,7 @@ fn siege_draws_at_once_on_a_map_with_nothing_to_take() {
     let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
     s.map.as_mut().unwrap().clear();
     s.ticks = vec![ScenarioTick::default(); 3];
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -995,7 +1021,7 @@ fn siege_plays_a_layouts_phases_in_order() {
     let (ir, _) = siege(&[]);
     assert_eq!(rules::verify::unhostable(&ir), None);
     let s: Scenario = serde_json::from_str(SIEGE_PHASES_ORDERED).unwrap();
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     assert_eq!(
         lines(&r),
@@ -1077,13 +1103,72 @@ fn siege_lets_a_player_pick_a_loadout_row_of_their_tier() {
     );
 }
 
+/// A pick made while the player is alive, with no spawn after it, is the
+/// kit the next tick gives (the dialog opens at the spawn, the press comes
+/// after): each side's offer is its own picker, and its row sets its own
+/// table's kit.
+#[test]
+fn siege_equips_a_row_picked_after_the_spawn() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(6);
+    // The spawns at tick 0 only; the picks at tick 1 are the rows 1 of each side.
+    for t in [2, 4] {
+        ticks[t] = serde_json::json!({});
+    }
+    ticks[1] = serde_json::json!({"events": [
+        {"choose": {"slot": 0, "row": 1}},
+        {"choose": {"slot": 1, "row": 1}},
+        {"choose": {"slot": 0, "row": 2}},
+        {"choose": {"slot": 1, "row": 2}},
+    ]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Each side's offer is two rows in the first tier: the third is refused.
+    assert_eq!(r.refused_choices, [(1, 0, 2), (1, 1, 2)]);
+    let kits: Vec<(u32, Vec<Arg>)> =
+        calls(&r, "set_loadout").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let kit = |t: u32, p: u8, a: &str, b: &str| (t, vec![Arg::Player(Some(p)), tag(a), tag(b)]);
+    const BRUTE: &str = "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle";
+    const NEEDLER: &str = "objects/weapons/pistol/needler/needler";
+    assert_eq!(
+        kits,
+        [
+            kit(0, 0, BR, MAGNUM),
+            kit(0, 1, CARBINE, PLASMA_RIFLE),
+            kit(2, 0, SHOTGUN, MAGNUM),
+            kit(2, 1, BRUTE, NEEDLER),
+        ]
+    );
+}
+
+/// A death tells the player when their side's wave lands: the whole wave
+/// for the first of a side to die, the seconds left for the next.
+#[test]
+fn siege_tells_the_dead_when_their_wave_lands() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(120);
+    ticks[1] = serde_json::json!({"events": [{"death": 0}]});
+    ticks[60] = serde_json::json!({"events": [{"death": 1}]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    let told: Vec<&str> = lines(&r).into_iter().filter(|l| l.starts_with("Reinforcements")).collect();
+    // The attackers' wave began at tick 1 (10 s); the defenders' at tick 60.
+    assert_eq!(told, ["Reinforcements in 10 seconds", "Reinforcements in 10 seconds"], "{:?}", lines(&r));
+}
+
 /// A phase-1 site held through phase 0 does nothing: no site is taken, no
 /// phase opens and no spawn moves.
 #[test]
 fn siege_ignores_a_later_phases_site_held_early() {
     let (ir, _) = siege(&[]);
     let s: Scenario = serde_json::from_str(SIEGE_DEFENDERS_HOLD_PHASE1).unwrap();
-    let r = scenario::run(ir, &s).unwrap();
+    let r = one_round(ir, &s);
     assert_eq!(r.script_error, None);
     // Past the 450 ticks of a capture, still the round's one line.
     assert_eq!(lines(&r), ["Sites to take: 2. Then the defenders' flag"]);
@@ -1109,4 +1194,138 @@ fn siege_without_a_layout_keeps_its_lines_and_its_loadout() {
             (0, &[Arg::Player(Some(1)), tag(CARBINE), tag(PLASMA_RIFLE)][..]),
         ]
     );
+}
+
+/// Two rounds of [`SIEGE_ATTACKERS_WIN`]: team 0 attacks and takes the
+/// flag stand at tick 1351, then team 1 attacks from tick 1352 and does
+/// the same, 1352 ticks on.
+fn siege_two_rounds() -> Scenario {
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    let first = s.ticks.len();
+    s.ticks.extend(vec![ScenarioTick::default(); first]);
+    s.ticks[first].events = vec![ScenarioEvent::Enter { zone: 10, object: 101 }];
+    s.ticks[first + 451].events = vec![
+        ScenarioEvent::Leave { zone: 10, object: 101 },
+        ScenarioEvent::Enter { zone: 11, object: 101 },
+    ];
+    // Team 1's final stand is team 0's flag stand.
+    s.ticks[first + 901].events = vec![
+        ScenarioEvent::Leave { zone: 11, object: 101 },
+        ScenarioEvent::Enter { zone: 20, object: 101 },
+    ];
+    s
+}
+
+/// A round won ends with `next_round`, and the next starts with the sides
+/// swapped: team 1 attacks from its own flag stand as Spartans, team 0
+/// defends as Elites. The banner and a message name each round; scores
+/// carry; the last round ends the game, and one round each draws it.
+#[test]
+fn siege_plays_its_rounds_with_the_sides_swapped() {
+    let (ir, _) = siege(&[]);
+    let r = scenario::run(ir, &siege_two_rounds()).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(calls(&r, "next_round"), [(1351, &[Arg::Team(Some(0))][..])]);
+    assert_eq!(r.game.rounds_played, 1);
+    assert_eq!(r.ended_at, Some(2703));
+    assert_eq!(calls(&r, "end_round"), [(2703, &[Arg::Team(None)][..])], "one round each draws");
+    assert_eq!(r.game.players[&0].score, 1, "round 1's point carries");
+    assert_eq!(r.game.players[&1].score, 1);
+    assert_eq!(r.game.refused, []);
+    // The round's end and the next start at the boundary after the win.
+    let at: Vec<&str> = r.ticks[1352].fired.iter().map(|(n, _)| *n).collect();
+    assert_eq!(at[..2], ["round_end", "round_start"]);
+    let rounds: Vec<&str> = r
+        .game
+        .messages
+        .iter()
+        .filter(|m| m.line.starts_with("Round"))
+        .map(|m| m.line.as_str())
+        .collect();
+    assert_eq!(
+        rounds,
+        [
+            "Round 1 of 2: you attack",
+            "Round 1 of 2: you defend",
+            "Round 2 of 2: you attack",
+            "Round 2 of 2: you defend",
+        ]
+    );
+    let to: Vec<&Option<Arg>> = r
+        .game
+        .messages
+        .iter()
+        .filter(|m| m.line.starts_with("Round"))
+        .map(|m| &m.to)
+        .collect();
+    assert_eq!(
+        to,
+        [
+            &Some(Arg::Team(Some(0))),
+            &Some(Arg::Team(Some(1))),
+            &Some(Arg::Team(Some(1))),
+            &Some(Arg::Team(Some(0))),
+        ]
+    );
+    let banners: Vec<(u32, Arg)> = calls(&r, "hud_text")
+        .into_iter()
+        .filter(|(_, a)| matches!(&a[1], Arg::Text(t) if t.contains("ROUND")))
+        .map(|(t, a)| (t, a[1].clone()))
+        .collect();
+    assert_eq!(
+        banners,
+        [(0, Arg::Text("ROUND 1".into())), (1352, Arg::Text("FINAL ROUND".into()))]
+    );
+    // Round 2's sides: the bodies and the attackers' first line swap.
+    let bodies: Vec<(u32, &[Arg])> = calls(&r, "set_body").into_iter().filter(|(t, _)| *t == 1352).collect();
+    assert_eq!(
+        bodies,
+        [
+            (1352, &[Arg::Team(Some(1)), tag("objects/characters/masterchief/masterchief_mp")][..]),
+            (1352, &[Arg::Team(Some(0)), tag("objects/characters/elite/elite_mp")][..]),
+        ]
+    );
+    let near: Vec<&[Arg]> = calls(&r, "spawn_near")
+        .into_iter()
+        .filter(|(t, _)| *t == 1352)
+        .map(|(_, a)| a)
+        .collect();
+    assert_eq!(near[0], &[Arg::Team(Some(1)), Arg::Object(Some(21)), Arg::Int(4)][..]);
+    // Round 2's kit: team 1 is armed from the attackers' rows.
+    assert!(
+        calls(&r, "set_loadout")
+            .iter()
+            .any(|(t, a)| *t >= 1352 && a[0] == Arg::Player(Some(1)) && a[1] == tag(BR))
+    );
+}
+
+/// A game of one round ends at the round's win, and a side that won the
+/// more rounds wins the game.
+#[test]
+fn siege_names_the_side_that_won_the_more_rounds() {
+    let (ir, options) = siege(&[("round_count", 1)]);
+    let mut s: Scenario = serde_json::from_str(SIEGE_ATTACKERS_WIN).unwrap();
+    s.options = options;
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(calls(&r, "next_round"), []);
+    assert_eq!(calls(&r, "end_round"), [(1351, &[Arg::Team(Some(0))][..])]);
+    assert!(lines(&r).iter().all(|l| !l.starts_with("Round")), "one round is not numbered");
+
+    // Three rounds: team 0 takes the first, team 1 the second, and team 0
+    // (attacking again) the third.
+    let (ir, options) = siege(&[("round_count", 3)]);
+    let mut s = siege_two_rounds();
+    s.options = options;
+    let round = s.ticks.len() / 2;
+    let third: Vec<ScenarioTick> = s.ticks[..round].to_vec();
+    s.ticks.extend(third);
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    assert_eq!(
+        calls(&r, "next_round"),
+        [(1351, &[Arg::Team(Some(0))][..]), (2703, &[Arg::Team(Some(1))][..])]
+    );
+    assert_eq!(calls(&r, "end_round"), [(4055, &[Arg::Team(Some(0))][..])]);
+    assert_eq!(r.game.players[&0].score, 2);
+    assert_eq!(r.game.players[&1].score, 1);
 }

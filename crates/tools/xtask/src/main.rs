@@ -251,7 +251,7 @@ fn nextest_command(ws: &Workspace, packages: &BTreeSet<String>, tier: Tier, list
         c.args(["nextest", "list", "--locked", "--profile", "xtask", "--message-format", "json"]);
     } else {
         c.args(["nextest", "run", "--locked", "--profile", "xtask", "--no-fail-fast"]);
-        c.arg(if tier == Tier::Disc { "--no-tests=fail" } else { "--no-tests=warn" });
+        c.arg("--no-tests=warn");
     }
     if tier == Tier::Disc {
         c.args(["--run-ignored", "ignored-only", "-E", "not test(/bench|slow/)"]);
@@ -612,6 +612,12 @@ fn cmd_test(ws: &Workspace, o: &Opts) -> Result<bool> {
 
 type DiscStep = (&'static str, &'static str, &'static [&'static str], &'static [(&'static str, &'static str)]);
 
+/// Whether every package has a disc step of its own, so a nextest run of
+/// ignored tests that finds none leaves nothing unrun.
+fn disc_steps_cover(packages: &BTreeSet<String>, disc_steps: &[&DiscStep]) -> bool {
+    packages.iter().all(|p| disc_steps.iter().any(|s| s.1 == p))
+}
+
 fn disc_tier(
     ws: &Workspace,
     packages: &BTreeSet<String>,
@@ -637,6 +643,12 @@ fn disc_tier(
             let failed = cases.iter().filter(|c| c.failed).count();
             steps.add("disc tests", r.ok && failed == 0, format!("{} tests, {failed} failed", cases.len()));
         }
+        _ if !r.ok => steps.add("disc tests", false, "nextest failed before running a disc test"),
+        _ if disc_steps_cover(packages, disc_steps) => steps.note(
+            "disc tests",
+            "NOT NEEDED",
+            "no ignored test in the selected packages; their disc steps below run the disc tests",
+        ),
         _ => steps.add("disc tests", false, "no disc test ran; a disc tier that runs nothing proves nothing"),
     }
     for (label, package, args, env) in disc_steps {
@@ -704,6 +716,15 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn a_package_with_only_a_disc_step_has_no_ignored_tests_to_run() {
+        let steps: Vec<&DiscStep> = DISC_STEPS.iter().collect();
+        let set = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<BTreeSet<String>>();
+        assert!(disc_steps_cover(&set(&["engine"]), &steps));
+        assert!(!disc_steps_cover(&set(&["engine", "no-such-package"]), &steps));
+        assert!(!disc_steps_cover(&set(&["engine"]), &[]));
     }
 
     #[test]

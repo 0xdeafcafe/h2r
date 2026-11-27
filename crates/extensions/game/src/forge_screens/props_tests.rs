@@ -27,7 +27,7 @@ fn labels(thing: &Thing) -> Vec<String> {
 fn the_rows_of_a_kind_are_the_docs_in_its_order() {
     assert_eq!(
         labels(&thing(BlockKind::Scenery, ThingKind::Object, &[])),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -35,7 +35,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::StartingPoint,
             &[("team", 1)]
         )),
-        ["Coordinates...", "Heading", "Team", "Reset orientation"]
+        ["Coordinates...", "Heading", "Team", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -49,7 +49,8 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             "Team",
             "Role",
             "Order",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     assert_eq!(
@@ -62,7 +63,9 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             "Coordinates...",
             "Heading",
             "Respawn time",
-            "Reset orientation"
+            "Team",
+            "Reset orientation",
+            "Delete",
         ]
     );
     // A teleporter has no row of its own yet.
@@ -72,7 +75,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::Teleporter,
             &[("type", 7)]
         )),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
 }
 
@@ -85,7 +88,7 @@ fn a_property_the_thing_lacks_has_no_row() {
             ThingKind::StartingPoint,
             &[]
         )),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -98,7 +101,8 @@ fn a_property_the_thing_lacks_has_no_row() {
             "Heading",
             "Team",
             "Role",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
 }
@@ -165,7 +169,9 @@ fn a_spawner_with_an_abandon_limit_has_the_return_time_row_after_respawn_time() 
             "Heading",
             "Respawn time",
             "Return time",
-            "Reset orientation"
+            "Team",
+            "Reset orientation",
+            "Delete",
         ]
     );
     let rows = rows(&doc(), &spawner, 0.0);
@@ -250,6 +256,13 @@ fn every_row_of_the_shipped_doc_binds() {
             labellable: true,
             label: Some(("checkpoint".into(), Some(3))),
             savable: 2,
+            kit: true,
+            team: None,
+        };
+        let t = Thing {
+            own: true,
+            changed: true,
+            ..t
         };
         assert_eq!(rows_with(&d, &t, 0.0, &all).len(), wanted, "{kind:?}");
     }
@@ -280,7 +293,9 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Heading",
             "Respawn time",
             "Game types...",
-            "Reset orientation"
+            "Team",
+            "Reset orientation",
+            "Delete",
         ]
     );
     let rows = rows(&doc(), &spawner, 0.0);
@@ -305,7 +320,8 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Coordinates...",
             "Heading",
             "Respawn time",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     // Only a spawner has the row.
@@ -331,7 +347,7 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     };
     assert_eq!(
         labels_with(&object, &plain),
-        ["Coordinates...", "Heading", "Label", "Reset orientation"]
+        ["Coordinates...", "Heading", "Label", "Reset orientation", "Delete"]
     );
     let savable = Extras {
         savable: 3,
@@ -344,7 +360,8 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
             "Heading",
             "Label",
             "Save as prefab",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     let labelled = Extras {
@@ -360,7 +377,8 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
             "Label number",
             "Clear label",
             "Save as prefab",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     // Only an object is saved as a prefab; any thing is labelled.
@@ -374,7 +392,7 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     // The default has none of them.
     assert_eq!(
         labels(&object),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
 }
 
@@ -385,6 +403,8 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         labellable: true,
         label: Some(("checkpoint".into(), Some(3))),
         savable: 2,
+        kit: false,
+        team: None,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
@@ -472,8 +492,8 @@ fn duplicate_is_an_act_on_a_placed_object_only() {
         .find(|r| r.label == "Duplicate")
         .expect("an added object has the row");
     assert_eq!(row.act, Act::Choose(Choice::Duplicate(added.id)));
-    // The kinds that need the kit have none until slice P2, and neither has
-    // the ghost of an object being placed, which names no thing.
+    // The kinds the kit adds have none without a kit session, and neither
+    // has the ghost of an object being placed, which names no thing.
     for (block, kind) in [
         (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
         (BlockKind::StartingLocations, ThingKind::StartingPoint),
@@ -484,10 +504,80 @@ fn duplicate_is_an_act_on_a_placed_object_only() {
             !labels(&thing(block, kind, &[])).contains(&"Duplicate".to_string()),
             "{kind:?}"
         );
+        // In a kit session the same kinds have it, as an act on their id.
+        let t = thing(block, kind, &[]);
+        let kit = Extras {
+            kit: true,
+            ..Extras::default()
+        };
+        let row = rows_with(&d, &t, 0.0, &kit)
+            .into_iter()
+            .find(|r| r.label == "Duplicate")
+            .unwrap_or_else(|| panic!("{kind:?} has the row in a kit session"));
+        assert_eq!(row.act, Act::Choose(Choice::Duplicate(t.id)), "{kind:?}");
     }
     assert!(
         !labels(&thing(BlockKind::Scenery, ThingKind::Object, &[]))
             .contains(&"Duplicate".to_string()),
         "a thing with no palette tag is the ghost of one being placed"
     );
+}
+
+#[test]
+fn delete_is_on_every_kind_and_restore_original_only_on_a_changed_own_thing() {
+    let d = doc();
+    for (block, kind) in [
+        (BlockKind::Scenery, ThingKind::Object),
+        (BlockKind::NetgameEquipment, ThingKind::ItemSpawner),
+        (BlockKind::StartingLocations, ThingKind::StartingPoint),
+        (BlockKind::NetgameFlags, ThingKind::Goal),
+        (BlockKind::NetgameFlags, ThingKind::Teleporter),
+    ] {
+        let t = thing(block, kind, &[]);
+        let all = rows(&d, &t, 0.0);
+        let delete = all.iter().find(|r| r.label == "Delete").expect("Delete");
+        assert_eq!(delete.act, Act::Choose(Choice::Delete(t.id)), "{kind:?}");
+        let restore = |own, changed| {
+            let t = Thing {
+                own,
+                changed,
+                ..t.clone()
+            };
+            rows(&d, &t, 0.0)
+                .iter()
+                .find(|r| r.label == "Restore original")
+                .map(|r| (r.act.clone(), t.id))
+        };
+        assert_eq!(restore(false, true), None, "{kind:?}: not the map's own");
+        assert_eq!(restore(true, false), None, "{kind:?}: not changed");
+        let (act, id) = restore(true, true).expect("an own changed thing has it");
+        assert_eq!(act, Act::Choose(Choice::Restore(id)), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_spawner_has_a_team_picker_over_the_documents_property() {
+    let d = doc();
+    let spawner = thing(BlockKind::NetgameEquipment, ThingKind::ItemSpawner, &[]);
+    let team_row = |team| {
+        let extras = Extras {
+            team,
+            ..Extras::default()
+        };
+        rows_with(&d, &spawner, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Team")
+            .expect("a spawner has the Team row")
+    };
+    let Act::Pick(none) = team_row(None).act else {
+        panic!("a picker")
+    };
+    assert_eq!(none.values.len(), 10);
+    assert_eq!(none.values[none.current], "None");
+    assert_eq!(none.choices[none.current], Choice::Set(Prop::SpawnerTeam, 0));
+    // Team 1 is Blue, the third value.
+    let Act::Pick(blue) = team_row(Some(1)).act else {
+        panic!("a picker")
+    };
+    assert_eq!(blue.values[blue.current], "Blue");
 }

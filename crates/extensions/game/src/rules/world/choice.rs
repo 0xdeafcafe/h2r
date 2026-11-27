@@ -13,7 +13,8 @@
 //! player's controller with the open rows. A press is [`report`]ed and
 //! [`take`]n to the VM at the next boundary, where `Vm::choose_loadout`
 //! refuses a row above the window. The dialog never blocks a spawn: a
-//! player who picks nothing keeps the row they had, row 0 at first.
+//! player who picks nothing keeps the row they had, row 0 at first. A
+//! spawn asks the player's window again ([`spawned`]).
 //!
 //! The loadout pickers are not asked as plain pickers
 //! (`Vm::plain_picks`), and a film replays the VM's state, not the dialog.
@@ -92,6 +93,17 @@ pub fn plan(vm: &Vm, seats: &[(u8, u32)], tick: u32) -> Option<Ask> {
         }
         next_ask(&mut s.queue, &mut s.open, tick)
     })
+}
+
+/// `player` spawned: their window is asked again, so the dialog opens over
+/// each new body and not only when a window grows. A spawn the film replays
+/// asks nobody (`plan` is not called there).
+pub fn spawned(player: u8) {
+    with_state(|s| {
+        if let Some(a) = s.asked.get_mut(player as usize) {
+            *a = None;
+        }
+    });
 }
 
 /// A press on a row of `player`'s dialog: kept for the next boundary, and
@@ -184,6 +196,19 @@ mod tests {
         again.begin_tick(1);
         again.fire(&mut g, Input::Spawn(0));
         assert_eq!(again.player_var(0, "row"), Some(1));
+    }
+
+    #[test]
+    fn a_spawn_asks_the_same_window_again() {
+        let (vm, _) = spawned();
+        let seats = [(0u8, 0u32)];
+        assert!(plan(&vm, &seats, 5).is_some());
+        assert_eq!(plan(&vm, &seats, 6), None);
+        assert!(report(0, 0));
+        super::spawned(0);
+        let again = plan(&vm, &seats, 7).expect("the next spawn opens the dialog again");
+        assert_eq!((again.player, again.slot), (0, 0));
+        super::spawned(9);
     }
 
     #[test]

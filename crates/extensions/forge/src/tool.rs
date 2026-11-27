@@ -353,6 +353,16 @@ pub enum Command {
     Remove {
         id: Endpoint,
     },
+    /// Give an item spawner a team, or none (`Session::set_team`).
+    SetTeam {
+        id: Endpoint,
+        team: Option<u8>,
+    },
+    /// Restore original: an own thing as the map has it
+    /// (`Session::reset`).
+    Reset {
+        id: Endpoint,
+    },
     Link {
         from: Linkable,
         to: Linkable,
@@ -928,6 +938,7 @@ impl Tool {
                 | Command::Delete { .. }
                 | Command::MoveThing { .. }
                 | Command::Remove { .. }
+                | Command::Reset { .. }
                 | Command::Link { .. }
                 | Command::Unlink { .. }
                 | Command::Goal { .. }

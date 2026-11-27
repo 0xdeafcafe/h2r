@@ -198,6 +198,7 @@ impl<B: Backend> Device<B> {
             self.mark_depth_written();
         }
         self.stats.native_inline_fast += 1;
+        timeline::phase::count(timeline::phase::Counter::NativeInlineFast, 1);
         // Only this draw's own writes came after the key was checked.
         let mut run = run;
         run.key = Some(self.inline_key(data.len()));

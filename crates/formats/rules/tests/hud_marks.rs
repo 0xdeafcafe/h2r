@@ -225,15 +225,16 @@ fn the_siege_mark_and_row_follow_the_front_and_its_holder() {
     assert_eq!(front(&vm).map(|(shown, style, _)| (shown, style)), Some((true, 2)));
 }
 
-/// Holds site 600 alone until the banner shows, and returns its text, the
-/// mark's object that tick, and whether it is hidden two ticks on.
+/// Holds site 600 alone until a banner other than the round's number
+/// shows, and returns its text, the mark's object that tick, and whether
+/// it is hidden two ticks on.
 fn first_banner(options: &[(&str, i64)]) -> (String, Option<u32>, bool) {
     let mut g = siege_game();
     let mut vm = start(builtin::SIEGE, &mut g, options);
     g.inside.insert((0, 600));
     for t in 2..800 {
         ticks(&mut vm, &mut g, t, 1);
-        if let Some(text) = banner(&vm) {
+        if let Some(text) = banner(&vm).filter(|b| b != "ROUND 1") {
             let mark = marked(&vm, "koth.mark", 0);
             ticks(&mut vm, &mut g, t + 1, 2);
             return (text, mark, banner(&vm).is_none());
@@ -265,7 +266,8 @@ fn the_siege_clock_is_called_at_thirty_and_ten_seconds() {
             said.push(b);
         }
     }
-    assert_eq!(said, ["30 SECONDS", "10 SECONDS"]);
+    // The round's number opens it (two rounds by default).
+    assert_eq!(said, ["ROUND 1", "30 SECONDS", "10 SECONDS"]);
 }
 
 /// `mark(wp, at)` is every viewer, `mark(wp, at, all)` is the same, and

@@ -5488,6 +5488,39 @@ fn ui_pick_names_a_retail_screens_sample_variant() {
     );
 }
 
+#[test]
+fn ui_pick_shows_a_picker_with_a_scripts_rows() {
+    let t = Temp::new("ui-pick-rows");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let rows = ["BATTLE RIFLE + MAGNUM", "SHOTGUN + MAGNUM", "SNIPER RIFLE + SMG"];
+    let r = call(
+        &mut api,
+        &mut app,
+        m::UI_PICK,
+        json!({"screen": "kit.picker.game", "title": "ATTACKER LOADOUT", "rows": rows}),
+    );
+    assert_eq!(r["pick"]["screen"], "kit.picker.game", "{r}");
+    let w = call(&mut api, &mut app, m::UI_WIDGETS, json!({})).to_string();
+    for row in rows.iter().chain(&["ATTACKER LOADOUT"]) {
+        assert!(w.contains(row), "{row} is not on the screen: {w}");
+    }
+    // The offer is for that pick only: the next one is the kit's sample.
+    call(&mut api, &mut app, m::UI_PICK, json!({"screen": "kit.picker.game"}));
+    let w = call(&mut api, &mut app, m::UI_WIDGETS, json!({})).to_string();
+    assert!(!w.contains("SHOTGUN + MAGNUM"), "{w}");
+    // Refused: title alone, rows on another screen, no rows, too many rows.
+    for bad in [
+        json!({"screen": "kit.picker.game", "title": "T"}),
+        json!({"screen": "kit.example", "rows": ["a"]}),
+        json!({"screen": "kit.picker.game", "rows": []}),
+        json!({"screen": "kit.picker.game", "rows": vec!["x"; 17]}),
+        json!({"screen": "kit.picker.game", "rows": [1]}),
+    ] {
+        assert_eq!(code_of(api.call(&mut app, m::UI_PICK, bad.clone())), code::INVALID_PARAMS, "{bad}");
+    }
+}
+
 /// The invented map with a compiled box room, open inside `[0, 8] x
 /// [0, 8] x [0, 4]`, as structure e1000004's level collision: its eight
 /// blocks, a per-leaf block of one element a leaf and two collision

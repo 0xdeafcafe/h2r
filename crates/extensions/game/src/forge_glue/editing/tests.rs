@@ -74,6 +74,10 @@ pub(super) fn with_tests(e: &mut Editor) -> Arc<FakeTests> {
 /// The test room as the host opens it: a shelf in the palette, two crates
 /// of its own.
 fn opened() -> Opened {
+    opened_with(None)
+}
+
+fn opened_with(own: Option<forge::BaseRows>) -> Opened {
     let item = PaletteItem {
         block: BlockKind::Crates,
         tag: TagKey {
@@ -86,7 +90,10 @@ fn opened() -> Opened {
             min: [-10.; 3],
             max: [10.; 3],
         }),
-        base_counts: [(item.block, 2)].into_iter().collect(),
+        base_counts: [(item.block, 2)]
+            .into_iter()
+            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, 1))))
+            .collect(),
         ..Limits::default()
     };
     let base = ForgeDoc {
@@ -106,8 +113,12 @@ fn opened() -> Opened {
         description: String::new(),
         waves: None,
     };
+    let session = Session::new(base, limits, vec![item], 8).unwrap();
     Opened {
-        session: Session::new(base, limits, vec![item], 8).unwrap(),
+        session: match own {
+            Some(rows) => session.with_base(rows),
+            None => session,
+        },
         tags: vec![42],
         extents: vec![Extent {
             radius: 1.,
@@ -1537,6 +1548,200 @@ fn reset_orientation_and_duplicate_on_the_properties_page() {
     );
     assert_eq!(e.tool.held, Some(e.session.objects()[1].id));
     assert_eq!(e.tool.ghost, Some(copy));
+}
+
+/// **Delete** and **Restore original** on the Properties page of a placed
+/// shelf: Delete is one removal; Restore asks first, and No changes
+/// nothing.
+#[test]
+fn delete_and_restore_original_on_the_properties_page() {
+    let mut e = editor();
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    e.choose(1, Choice::Select(0)).unwrap();
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    e.tool.ghost = Some(frame);
+    e.command(2, Command::Place { item: 0, frame }).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[31]})));
+    e.poll(3);
+    let id = e.session.objects()[0].id;
+    let added = Endpoint::Added(id);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(added);
+    e.tool.aimed = Some(id);
+    e.command(4, Command::Properties).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let labels: Vec<String> = screens::screen(Kind::Properties)
+        .sheet()
+        .rows
+        .iter()
+        .map(|r| r.label.clone())
+        .collect();
+    assert!(labels.contains(&"Delete".to_string()), "{labels:?}");
+    // An added thing is not the map's own, so it has no original to
+    // restore.
+    assert!(!labels.contains(&"Restore original".to_string()), "{labels:?}");
+    // Restore asks, and No leaves the log as it was.
+    let log = e.session.log().len();
+    e.choose(5, Choice::Restore(added)).unwrap();
+    screens::take_request();
+    assert_eq!(e.restore_asked, Some(added));
+    e.choose(
+        6,
+        Choice::Answer {
+            ask: Ask::Restore,
+            yes: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(e.restore_asked, None);
+    assert_eq!(e.session.log().len(), log);
+    // Delete removes the shelf in one step.
+    e.choose(7, Choice::Delete(added)).unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), log + 1);
+    assert!(e.session.objects().is_empty());
+}
+
+/// The test room as `opened`, with one own starting point on team 0.
+fn opened_with_own_spawn() -> Opened {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let fields = vec![
+        Value::Vec3([0., -4., 0.].map(|c| F32::new(c).unwrap())),
+        Value::Float(F32::new(1.5).unwrap()),
+        Value::Int(0),
+        Value::Int(-1),
+    ];
+    let stride = map::scenario_layout::block(BlockKind::StartingLocations).stride as usize;
+    let row = BaseRow {
+        block: BlockKind::StartingLocations,
+        index: 0,
+        raw: vec![1; stride],
+        print: forge_doc::print(BlockKind::StartingLocations, &fields).unwrap(),
+        fields,
+    };
+    opened_with(Some(BaseRows {
+        rows: vec![row],
+        left_out: vec![],
+    }))
+}
+
+/// **Restore original**, end to end on an own starting point: it has no
+/// row until a team edit changes it; the row asks; Yes is one reset that
+/// the world is told, and the row is gone again.
+#[test]
+fn restore_original_puts_an_own_thing_back_through_its_question() {
+    let mut e = Editor::new(opened_with_own_spawn(), Path::new("."), 1, calls::shared());
+    calls::lock(&e.calls).arm();
+    e.tool.monitor = true;
+    let spawn = Endpoint::base(BlockKind::StartingLocations, 0);
+    e.tool.camera = Some(forge::camera::Camera {
+        position: [0.; 3],
+        yaw: 0.,
+        pitch: 0.,
+    });
+    e.tool.aimed_thing = Some(spawn);
+    let labels = |e: &Editor| -> Vec<String> {
+        let thing = e.session.thing(spawn).unwrap();
+        crate::forge_screens::sheet::properties_sheet("Starting point", &thing, 0.)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect()
+    };
+    assert!(!labels(&e).contains(&"Restore original".to_string()));
+    // A team change makes it a changed own thing.
+    e.command(
+        2,
+        Command::SetField {
+            id: spawn,
+            name: "team",
+            value: forge_doc::Value::Int(2),
+        },
+    )
+    .unwrap();
+    let (ticket, _) = calls::lock(&e.calls).drain().pop().unwrap();
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(3);
+    assert_eq!(e.session.log().len(), 1);
+    assert!(e.session.thing(spawn).unwrap().changed);
+    assert!(labels(&e).contains(&"Restore original".to_string()), "{:?}", labels(&e));
+    // The row asks first; No writes nothing.
+    e.choose(4, Choice::Restore(spawn)).unwrap();
+    screens::take_request();
+    e.choose(5, Choice::Answer { ask: Ask::Restore, yes: false }).unwrap();
+    assert!(calls::lock(&e.calls).drain().is_empty());
+    assert_eq!(e.session.log().len(), 1);
+    // Yes is one reset, and the world is told the team is the map's again.
+    e.choose(6, Choice::Restore(spawn)).unwrap();
+    screens::take_request();
+    e.choose(7, Choice::Answer { ask: Ask::Restore, yes: true }).unwrap();
+    let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
+    assert!(
+        format!("{call:?}").contains("Int(0)") || format!("{call:?}").contains("team"),
+        "{call:?}"
+    );
+    calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
+    e.poll(8);
+    assert_eq!(e.session.log().len(), 2);
+    assert!(!e.session.thing(spawn).unwrap().changed);
+    assert!(!labels(&e).contains(&"Restore original".to_string()));
+}
+
+/// A spawner's Team row writes the document's team property: one op, the
+/// world told nothing, and the page shows it.
+#[test]
+fn a_spawners_team_row_sets_the_property_and_tells_the_world_nothing() {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let mut spawner = vec![Value::Int(0)];
+    spawner.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+    spawner.extend([
+        Value::Int(0),
+        Value::Vec3([0., 6., 0.].map(|c| F32::new(c).unwrap())),
+        Value::Vec3([0.; 3].map(|c| F32::new(c).unwrap())),
+        Value::Tag(Some(TagKey {
+            group: "itmc".into(),
+            path: r"test\rifles".into(),
+        })),
+    ]);
+    let block = BlockKind::NetgameEquipment;
+    let stride = map::scenario_layout::block(block).stride as usize;
+    let row = BaseRow {
+        block,
+        index: 0,
+        raw: vec![1; stride],
+        print: forge_doc::print(block, &spawner).unwrap(),
+        fields: spawner,
+    };
+    let opened = opened_with(Some(BaseRows {
+        rows: vec![row],
+        left_out: vec![],
+    }));
+    let mut e = Editor::new(opened, Path::new("."), 1, calls::shared());
+    calls::lock(&e.calls).arm();
+    let id = Endpoint::base(block, 0);
+    e.tool.aimed_thing = Some(id);
+    e.choose(1, Choice::Set(Prop::SpawnerTeam, 3)).unwrap();
+    assert!(calls::lock(&e.calls).drain().is_empty());
+    e.poll(2);
+    assert_eq!(e.session.team(id), Some(2));
+    assert_eq!(e.session.log().len(), 1);
+    e.choose(3, Choice::Set(Prop::SpawnerTeam, 0)).unwrap();
+    e.poll(4);
+    assert_eq!(e.session.team(id), None);
 }
 
 #[test]

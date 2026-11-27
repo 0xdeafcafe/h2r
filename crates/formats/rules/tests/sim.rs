@@ -150,11 +150,12 @@ fn every_builtin_reaches_an_end() {
     let m = end(builtin::INFECTION, 8, 0);
     assert_eq!(m.end, End::Script);
     assert!(matches!(m.winner, Winner::Team(_)));
-    // Siege ends itself within its two phase clocks: the attackers take
-    // the flag stand, or a clock runs out and the defenders win.
+    // Siege ends itself after its two rounds, each within its phase
+    // clocks: the attackers take the flag stand, or a clock runs out and
+    // the defenders win. A round each draws the game.
     let m = sim::simulate(builtin::SIEGE, &Setup { length: Some(1200), ..setup(8, 0, 1) }).unwrap();
     assert_eq!(m.end, End::Script);
-    assert!(matches!(m.winner, Winner::Team(_)), "{:?}", m.winner);
+    assert!(matches!(m.winner, Winner::Team(_) | Winner::Draw), "{:?}", m.winner);
     // Somebody scores in the modes that score.
     for src in [builtin::ODDBALL, builtin::KING, builtin::TERRITORIES, builtin::CTF, builtin::RACE] {
         let ir = rules::compile(src).unwrap();

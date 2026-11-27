@@ -6,6 +6,8 @@ opener: main-menu
 states:
   delete-linked:
     focus: 1
+  restore:
+    focus: 1
   overwrite:
     focus: 1
   leave:
