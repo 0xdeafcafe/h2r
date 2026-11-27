@@ -334,8 +334,8 @@ The brain reads game state the way telemetry already does
   a turn toward the shooter when hit with nobody in view (the HUD's
   damage arrow), and the shooter's tracker dot; and kills (`0x15ce70`)
   for emote triggers (§3.5);
-- in Firefight, the AI's living actors from the actor pool, as enemies
-  (§3.10).
+- in Firefight, the AI's living actors from the actor pool, as enemies,
+  less the actors on a player team: an ally squad's (§3.10).
 
 **Line of sight** is a ray against the map's BSP collision, the same data
 the nav mesh comes from. A bot sees an enemy only when all three hold:
@@ -3116,7 +3116,13 @@ Code: `crates/live/bots/src/firefight.rs`, tests in
 Clankers play Firefight as players. They are always on a player team,
 never on the AI's. With one player team they fill seats on it alongside
 people; with two they fill seats on either, keeping the teams even, and
-fight the AI and the other player team.
+fight the AI and the other player team. An ally squad's actors are on a
+player team (docs/game/firefight.md, "Allies"): a bot drops the actors on
+its own team, or with one player team any on a player team, from its
+perception before sight (`firefight::drop_allies`), so it never targets
+them. With two teams the other team's ally stays an enemy; and with the
+AI's team a player team nothing is dropped, since no actor can be told
+from an ally.
 
 **Seats.** While the lobby is set up for Firefight the game sets the
 player team count (`bots::firefight::set_seat_teams`, 1 or 2). A new

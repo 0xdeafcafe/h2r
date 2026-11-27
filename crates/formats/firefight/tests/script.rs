@@ -696,3 +696,30 @@ fn an_ally_placement_is_followed_by_the_team_it_serves() {
     let allies = run.commands.iter().filter(|(_, c)| matches!(c, Command::Ally { .. })).count();
     assert_eq!(allies, 1);
 }
+
+#[test]
+fn state_reports_allies_apart_from_enemies() {
+    let def = ally_def(1);
+    let mut director = ScriptDirector::new(def, settings(3)).unwrap();
+    let mut world = World::new(3, two_zones());
+    let (mut apart, mut most_allies, mut most_enemies) = (false, 0, 0);
+    run(
+        &mut director,
+        &mut world,
+        200,
+        kill_enemies_at_age_three,
+        |_, director, world, _, _| {
+            let enemies_in_world: u16 = (0..world.squads.len())
+                .filter(|&slot| world.classes[slot] != "marine")
+                .map(|slot| world.squads[slot].0)
+                .sum();
+            // The enemy count never includes a marine.
+            assert!(director.live_actors() <= enemies_in_world.max(2 * 2), "enemies");
+            apart |= director.live_allies() > 0 && director.live_actors() > 0;
+            most_allies = most_allies.max(director.live_allies());
+            most_enemies = most_enemies.max(director.live_actors());
+        },
+    );
+    assert_eq!(most_allies, 2, "the two marines are counted as allies");
+    assert!(most_enemies > 0 && apart);
+}
