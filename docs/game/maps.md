@@ -845,10 +845,10 @@ level's `LevelId` nor its image.
 ### Mod downloads (in game)
 
 - **The row.** The Xbox Live menu's last row, where retail had Content
-  Download, reads **Mods**, or **Mods (3 new)** when releases were published
+  Download, reads **Mod Downloader**, or **Mod Downloader (3 new)** when releases were published
   since the player last opened the screen. Its pane's help text says what
   it is (`custom_games::MODS_HELP`). Without Live or the map gate the row
-  reads **Mods** and opens the Map Pack dialog, its help
+  reads **Mod Downloader** and opens the Map Pack dialog, its help
   `custom_games::MAPPACK_HELP` ([live-custom-games.md](../live/live-custom-games.md) §5).
 - **New.** An entry is new when its `position` (the event-log position it
   was published at) is above the last-seen position, kept in
@@ -1050,10 +1050,10 @@ two published maps, one on a disc map the player has and one that must
 fail, such as a base whose hash differs from the disc's):
 
 - The Xbox Live menu shows six rows with no scroll bar, the last reading
-  "Mods (N new)" with its help text, and the console logs
+  "Mod Downloader (N new)" with its help text, and the console logs
   `mods: N on the server, M new`.
 - A on Mods opens the screen, newest first, a star on each new map; B
-  returns to the Live menu, whose row now reads "Mods", and
+  returns to the Live menu, whose row now reads "Mod Downloader", and
   `<data>/live-mods.toml` holds the newest position.
 - The Mods list sits in the level select's bracket (up to 13 rows before
   it scrolls) with the focused map's picture at the box's size and four
