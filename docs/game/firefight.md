@@ -233,14 +233,21 @@ Stand for one team, Crossfire for two (a player kill scores 50), then
 Endless for one team: round skulls Ghost, Catch and Black Eye, set skulls
 Thunderstorm, Famine and Mythic (two of them stand in for ODST's two
 skulls Halo 2 lacks, so they are data to swap), 7 starting lives, one more
-each round, squads growing 10 percent a set.
+each round, squads growing 10 percent a set, and one to two Marine allies
+in every round. Outbreak, the sixth, is one team's three rounds of Flood
+waves (`flood_combat_human`, `flood_combat_elite`, `flood_carrier`), each
+closed by a boss wave of the authored Elite with a Flood Elite, with two to
+three Marine allies a round. A set names the classes it needs
+(`builtin::required_classes`) and a kit that lacks one cannot play it
+(`builtin::missing_classes`).
 They are files of the `modes` package, `content/modes/firefight/*.firefight.json`
 (`firefight::builtin::SETS` embeds them), and the package lists each as a
 `rules` item: `h2 package check` reads it as a `Def`, builds the director
 script from it (`script::compile`) and refuses a set the lobby would
 refuse (`workspace::wave_sets` lists a set's). The reference test in
 `builtin.rs` holds the files to the sets written as Rust.
-Each has three rounds and uses the stage-one kit's Elite class. Holdout's
+Each has three rounds. The first four use the stage-one kit's Elite class
+alone; Endless and Outbreak also need the Marine, and Outbreak the Flood classes. Holdout's
 round skulls are Ghost, Famine and Thunderstorm.
 `builtin::with_teams(def, n)` plays a set with `n` teams: with two, a
 player kill scores the set's own points or `builtin::PLAYER_KILL_POINTS`
@@ -1281,7 +1288,11 @@ Options' dialog with seven choice rows, each backed by a setting
 (`firefight.teams`: the wave set's own, one team or two), Wave set
 (`firefight.waveset`: Endless first, then the lobby map's own sets, then
 the other built-ins in their order (`options::wave_menu`) — [Map-specific
-sets](#map-specific-sets)), Difficulty, Starting
+sets](#map-specific-sets)). When the lobby knows the kit's classes
+(`lobby_start::kit_classes`), a set that needs one the kit lacks shows the
+reason in its row (`options::wave_entry`: "the map's kit lacks marine") and
+the pick is refused; where they are not known every set is offered and the
+host refuses the match by class name, Difficulty, Starting
 lives (the wave set's own, or 1 to 30), Skulls (whether each round
 switches its skull on) and Drop pods (`firefight.pods`, on by default:
 players fall to their spawns in pods where the kit has them; the page always

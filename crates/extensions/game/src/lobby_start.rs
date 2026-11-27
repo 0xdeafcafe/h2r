@@ -686,6 +686,7 @@ mod tests {
                 forge_map: None,
                 map_variant: None,
                 kit_map: None,
+                kit_classes: None,
             }
         );
     }

@@ -678,6 +678,7 @@ fn a_snapshot_keeps_the_lobbys_mode() {
             forge_map: Some("Castle".into()),
             map_variant: None,
             kit_map: None,
+            kit_classes: None,
         }
     );
     assert!(load_state(&[1]).is_err());
