@@ -1,7 +1,7 @@
 # Visibility in Rust
 
-Status: Built, not verified. The main view's records (camera, projection, start cluster, mode) are built in Rust, and its cluster set, window frusta and object set are walked from them. Shadow arms audit each set: 1 frame in 64 is compared, an arm answers after 16 clean samples and falls back to the guest for the map on a difference. A refusal is counted by name and the guest answers that frame. The light views are computed and compared only. Byte arms do the same for the guest's own writes: the view records at `0x002234e0` and the light frusta at `0x000c1d90` are built in Rust into a shadow buffer and written by Rust once proven. The native scene-list hooks publish portal walks, window merges, sphere regions and PVS regions after comparing the guest producer's output, and the projection builder `0x0002fb70` runs in Rust at every call it accepts.
-Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `answer`, `shadow`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `scene_step`'s `the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`, `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`.
+Status: Built, not verified. The main view's records (camera, projection, start cluster, mode) are built in Rust, and its cluster set, window frusta and object set are walked from them. Shadow arms audit each set: 1 frame in 64 is compared, an arm answers after 16 clean samples and falls back to the guest for the map on a difference. A refusal is counted by name and the guest answers that frame. The light views are computed and compared only. Byte arms do the same for the guest's own writes: the view records at `0x002234e0` and the light frusta at `0x000c1d90` are built in Rust into a shadow buffer and written by Rust once proven. The native scene-list hooks answer portal walks, window merges and window records once their arm is proven (1 call in 64 compared, a difference falls back for the session), publish sphere regions and PVS regions after comparing the guest producer's output, and the projection builder `0x0002fb70` runs in Rust at every call it accepts.
+Code: `crates/rewrites/scene-extract/src/visibility/` (`compute`, `answer`, `shadow`, `view`, `light`), `crates/rewrites/engine/src/view_projection.rs`, the arms in `crates/rewrites/render-bridge/src/scene_step.rs` (`view_record_arm`, `visibility_arm`, `light_visibility_arm`). Tests: `crates/rewrites/scene-extract/src/visibility/` (`tests.rs` and each module's own), `scene_step`'s `the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference`, `engine::view_projection`'s, `crates/rewrites/engine/tests/view_projection_differential.rs`, `native_scene_lists`' `a_portal_arm_answers_after_its_proof_samples_one_call_in_64_and_falls_back_on_a_difference`.
 Switch: `impl.render.native.visibility` (on, with `impl.render.native`). Off, the guest's `0x0002fb70` and its portal, window, sphere and PVS producers run, and the shadow arms compare their samples and never answer. Both are listed in [switches.md](../runtime/switches.md).
 
 Slice R4 of [retire-d3d.md](retire-d3d.md). For every game view the scene step builds, beside the guest's, the view's records (its render camera, projection, start cluster and mode), which BSP clusters the view sees and which objects it lists. At each dynamic light's passes it does the same for the light's view. At first-person replay it compares the ordered light slots and their records.
@@ -117,21 +117,31 @@ The light-view comparison uses the reconstructed lens in `visibility::flood`. Th
 
 | Hook (`native_scene_lists::`) | Guest site | Counters | Publishes the Rust result when |
 |---|---|---|---|
-| `portal_walk` | `0x00172840`, the main view's single-frustum walk | `native_scene_lists_portal_walk_*` | frustum, starting cluster, BSP generation and live input words match the checked call |
-| `portal_merge` | the merge after the walk | `native_scene_lists_portal_window_merge_*` | node rectangles, depths and merge targets equal by bits |
+| `portal_walk` | `0x00172840`, the main view's single-frustum walk | `native_scene_lists_portal_walk_*` | the arm is proven (see "The portal arms") |
+| `portal_merge` | the merge after the walk | `native_scene_lists_portal_window_merge_*` | the arm is proven |
 | `portal_regions` | `0x001730a0` | `native_scene_lists_portal_regions_*` | ordered paths, frustum inputs, depths, planes and BSP generation repeat |
-| `window` | `0x00163db0` at the merged node's call | `native_scene_lists_window_record_` | slot and BSP repeat |
+| `window` | `0x00163db0` at the merged node's call | `native_scene_lists_window_record_*` | the arm is proven |
 | `sphere_regions` | `0x00132d60` | `native_scene_lists_sphere_regions_*` | BSP generation, start, centre, radius, axis rows and cluster sequence repeat |
 | `regions` | `0x001733e0`, called by `0x00132152` | `native_scene_lists_pvs_regions_` | start, computed row and open-portal bits repeat |
 | `projection` | `0x0002fb70`, called by `0x0002fd90` | `native_scene_lists_view_projection_*` | every call the port accepts (see "The projection builder") |
 
 Each counter family counts comparisons, differences or mismatches, native calls and fallbacks.
 
+**The portal arms.** The walk, the merge and the window record each keep an arm (`native_scene_lists::Audit`):
+
+| Arm state | A call | Counted |
+|---|---|---|
+| unproven | the guest runs; its result is compared with Rust's | `fallback`, then `compared` |
+| proven (16 clean comparisons in a row) | Rust answers, but one call in 64 runs the guest and is compared | `native`; the sample as above |
+| fallen back (a difference) | the guest runs, uncompared, for the session | `fallback`; the difference once as `mismatch`, and one log line |
+
+A new BSP generation asks for a new proof and never lifts a fallback. A refusal (`memory`, `layout`, `unsupported`) runs the guest that call, uncompared. The arm proves the producer, not one input, so a moving camera or a door keeps the Rust answer.
+
 **The walk.** `native_scene_lists::portal_walk` reads the active frustum's tangent-space root polygon and transform, the BSP graph and the open-door bits. It emits the ordered node pool with each path's parent, portal, depth, polygon and crossed bits, the per-cluster chains and the drained queue. The caller retains its frustum indexing, window merge and region setup boundaries.
 
-At the merge entry the reference arm checks the guest's active records bit for bit, including repeated visits to a cluster, polygon order and signed zero. The next call can publish the Rust walk when its complete frustum, starting cluster, BSP generation and live input words match the checked call. Moving the camera or changing a door reopens the comparison. The hook validates the freshly seeded root, scratch layout and floating point environment before admission.
+At the merge entry a compared call checks the guest's active records bit for bit, including repeated visits to a cluster, polygon order and signed zero. The hook validates the freshly seeded root, scratch layout and floating point environment before every call, compared or answered.
 
-**The merge.** At the subsequent merge, `native_scene_lists::portal_merge` validates the membership bits, chain heads and links. It merges a window into the first older window satisfying the area test, carrying the nearer depth. Before region publication it compares the resulting rectangle, depth and merge target of every node by bits. Identical inputs for the multi-window chains can then bypass the guest merge. A cluster with one path requires no pairwise test.
+**The merge.** At the subsequent merge, `native_scene_lists::portal_merge` validates the membership bits, chain heads and links. It merges a window into the first older window satisfying the area test, carrying the nearer depth. At the region writer's call a compared merge checks the resulting rectangle, depth and merge target of every node by bits. A cluster with one path requires no pairwise test.
 
 **The object walk.** At base layer 3, `portal_walk::scene_visibility` uses the same traversal, merge arithmetic and window planes to gather the view's objects. Each region appears at its newest node's ordinal, with its surviving windows in chain order. The display walk widens the four root corners around their horizontal centre and clips anew. Accepted single-copy views use the horizontal bounds already present in the input frustum.
 
@@ -155,9 +165,9 @@ The comparison at `0x00173302`, the instruction after the writer call's return, 
 
 At the merged node's call to `0x00163db0`, the native record builder uses the live frustum's scaled matrix and tangent rectangle. It writes the view ordinal, rectangle, four corners, eye, bounds, six planes and four vectors from the eye to the corners.
 
-The reference arm at `0x00172f73`, after the call's return and its `test al, al`, checks all 0x108 slot bytes, the argument word used as scratch, and the returned general registers. Exact repeats in that slot and BSP use the Rust writer.
+A compared call is checked at `0x00172f73`, after the call's return and its `test al, al`: all 0x108 slot bytes, the argument word used as scratch, and the returned general registers.
 
-Camera or rectangle changes reopen the comparison. An armed plane diagnostic, unsupported FP state or unread input leaves the guest call in place. See `scene_extract::visibility::window_record` and `render_bridge::native_scene_lists::window`.
+An armed plane diagnostic, unsupported FP state or unread input leaves the guest call in place. See `scene_extract::visibility::window_record` and `render_bridge::native_scene_lists::window`.
 
 In mode 0 an object is listed when its sphere reaches a frustum of the cluster it is referenced from (`0x00165010` over `0x00181800`): it is out when wholly past a side of the box, or when `((nz·cz + ny·cy) + nx·cx) − d > r` for a plane. NaN does not reject. `guest::frustum_inputs` reads the image's values each frame.
 

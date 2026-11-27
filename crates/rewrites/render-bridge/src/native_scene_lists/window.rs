@@ -1,6 +1,8 @@
-//! The merged portal node's window at 0x00172f6c. Observe the whole slot
-//! and return registers on the original call, then let Rust materialize a
-//! window with the same input words. Verification belongs to this BSP.
+//! The merged portal node's window at 0x00172f6c. A guest call is checked
+//! on its whole slot, scratch argument and return registers. After the
+//! arm's proof Rust materializes every window but one in 64 (`Audit`),
+//! which the guest writes and is compared; a difference sends the window
+//! records to the guest for the session. A new BSP needs a new proof.
 use super::*;
 use scene_extract::visibility::{
     Decline, guest,
@@ -52,7 +54,6 @@ impl Registers {
 }
 
 struct Window {
-    inputs: WindowInputs,
     image: [u8; SIZE],
     dest: u32,
     registers: Registers,
@@ -120,7 +121,6 @@ impl Window {
             )
         };
         Ok(Self {
-            inputs,
             image,
             dest,
             registers,
@@ -144,7 +144,7 @@ impl Window {
 struct State {
     generation: Option<u64>,
     pending: HashMap<(u32, u32), Window>,
-    verified: HashMap<u32, WindowInputs>,
+    audit: Audit,
 }
 
 impl State {
@@ -152,9 +152,22 @@ impl State {
         let generation = crate::native_map_work::bsp_generation();
         if self.generation != Some(generation) {
             self.pending.clear();
-            self.verified.clear();
+            self.audit.rescope();
             self.generation = Some(generation);
         }
+    }
+
+    /// A guest call's slot, scratch word and registers against the plan
+    /// made at its call. `None`: no plan for this frame.
+    fn finish(&mut self, mem: &dyn GuestMemory, cpu: &CpuAbi, thread: u32) -> Option<bool> {
+        let plan = self.pending.remove(&(thread, cpu.esp))?;
+        let same = plan.matches(mem, cpu) == Ok(true);
+        if self.audit.compared(same) {
+            eprintln!(
+                "native-scene-lists: a Rust portal window differs from 0x00163db0's; the guest writes the windows from here"
+            );
+        }
+        Some(same)
     }
 }
 
@@ -181,6 +194,10 @@ pub(super) fn install(b: &mut Builder) {
             state.scope();
             let key = (c.ctx.thread_id, c.cpu.esp.wrapping_add(8));
             state.pending.remove(&key);
+            if !state.audit.compares() {
+                stage.count(SceneListResult::Fallback);
+                return Ok(Flow::Continue);
+            }
             let plan = match Window::read(&*mem, c.cpu) {
                 Ok(window) => window,
                 Err(why) => {
@@ -193,7 +210,7 @@ pub(super) fn install(b: &mut Builder) {
                     return Ok(Flow::Continue);
                 }
             };
-            if state.verified.get(&plan.dest) != Some(&plan.inputs) {
+            if !state.audit.answers() {
                 state.pending.insert(key, plan);
                 stage.count(SceneListResult::Fallback);
                 return Ok(Flow::Continue);
@@ -234,20 +251,13 @@ pub(super) fn install(b: &mut Builder) {
             let mem = o.guest();
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state.scope();
-            if let Some(plan) = state.pending.remove(&(o.thread_id, o.cpu.esp)) {
-                stage.count(SceneListResult::Compared);
-                if plan.matches(&*mem, o.cpu) == Ok(true) {
-                    // Two visibility buffers, each with at most LIMIT windows.
-                    if state.verified.len() >= 2 * usize::from(LIMIT)
-                        && !state.verified.contains_key(&plan.dest)
-                    {
-                        state.verified.clear();
-                    }
-                    state.verified.insert(plan.dest, plan.inputs);
-                } else {
-                    state.verified.remove(&plan.dest);
+            match state.finish(&*mem, o.cpu, o.thread_id) {
+                Some(true) => stage.count(SceneListResult::Compared),
+                Some(false) => {
+                    stage.count(SceneListResult::Compared);
                     stage.count(SceneListResult::Mismatch);
                 }
+                None => (),
             }
         })
         .optional()
@@ -312,13 +322,13 @@ mod tests {
     }
 
     #[test]
-    fn changed_float_bits_reopen_parity_and_aliasing_declines_before_publication() {
+    fn changed_float_bits_change_the_record_and_aliasing_declines_before_publication() {
         let (mut m, mut cpu) = scene();
         m.put_f32(cpu.ecx, 0.0);
         let positive = Window::read(&m, &cpu).unwrap();
         m.put_f32(cpu.ecx, -0.0);
         let negative = Window::read(&m, &cpu).unwrap();
-        assert_ne!(positive.inputs, negative.inputs);
+        assert_ne!(positive.image, negative.image);
         cpu.ecx = cpu.edi + 16;
         assert!(matches!(Window::read(&m, &cpu), Err(Refusal::Layout)));
     }
@@ -334,5 +344,34 @@ mod tests {
         assert_eq!(p.matches(&m, &cpu), Ok(true));
         m.put_u8(VALIDATE_PLANES, 1);
         assert!(matches!(Window::read(&m, &cpu), Err(Refusal::Unsupported)));
+    }
+
+    #[test]
+    fn guest_windows_prove_the_arm_and_a_different_slot_falls_it_back() {
+        let (mut mem, mut cpu) = scene();
+        let p = Window::read(&mem, &cpu).unwrap();
+        mem.put(p.dest, &p.image);
+        mem.put_u32(p.argument_addr, p.dest + 0x98);
+        cpu.eax = ((p.dest + 0xa8) & !0xff) | 1;
+        cpu.ecx = p.dest + 0x54;
+        cpu.edx = p.dest + 0x98;
+        let mut state = State::default();
+        let plan = || {
+            let (at_call, regs) = scene();
+            Window::read(&at_call, &regs).unwrap()
+        };
+        // Another thread's frame compares nothing.
+        state.pending.insert((2, cpu.esp), plan());
+        assert_eq!(state.finish(&mem, &cpu, 1), None);
+        for _ in 0..Audit::PROOF {
+            assert!(!state.audit.answers());
+            state.pending.insert((1, cpu.esp), plan());
+            assert_eq!(state.finish(&mem, &cpu, 1), Some(true));
+        }
+        assert!(state.audit.answers());
+        mem.put_u8(p.dest + 0x30, 0x55);
+        state.pending.insert((1, cpu.esp), plan());
+        assert_eq!(state.finish(&mem, &cpu, 1), Some(false));
+        assert!(state.audit.fallen_back() && !state.audit.answers());
     }
 }

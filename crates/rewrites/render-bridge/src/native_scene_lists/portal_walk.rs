@@ -1,8 +1,9 @@
-//! Per-frustum mode-0 portal traversal. Compare the active node pool, polygons,
-//! cluster chains and queue at the next call, before any window is merged.
-//! Only an identical input to a verified walk may bypass the guest traversal.
+//! Per-frustum mode-0 portal traversal. The guest's node pool, polygons,
+//! cluster chains and queue are compared with the Rust walk at the merge
+//! call, before any window is merged. After the arm's proof Rust walks
+//! every call but one in 64 (`Audit`); a difference sends the walk to the
+//! guest for the session.
 
-use std::cell::RefCell;
 use std::sync::Mutex;
 
 use portal_walk::Node;
@@ -178,44 +179,28 @@ fn matches_image(m: &dyn GuestMemory, image: &Output) -> Result<bool> {
     Ok(true)
 }
 
-struct Reads<'a> {
-    m: &'a dyn GuestMemory,
-    words: RefCell<Option<Vec<(u32, u32)>>>,
-}
+struct Reads<'a>(&'a dyn GuestMemory);
 
 impl GuestRead for Reads<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> {
-        let value = self.m.u32(addr).ok()?;
-        if let Some(words) = self.words.borrow_mut().as_mut() {
-            words.push((addr, value));
-        }
-        Some(value)
+        self.0.u32(addr).ok()
     }
-}
-
-#[derive(PartialEq, Eq)]
-struct Inputs {
-    bsp_epoch: u64,
-    structure: u32,
-    start: u16,
-    frustum: Vec<u8>,
-    /// Every live word read by the walk (including open portals and the
-    /// image's clip/projection tolerances). The tag graph is per BSP epoch.
-    words: Vec<(u32, u32)>,
 }
 
 struct Comparison {
     thread: u32,
     merge_esp: u32,
     scratch: Scratch,
-    inputs: Inputs,
+    bsp_epoch: u64,
     image: Output,
 }
 
 #[derive(Default)]
 struct State {
     graph: GraphCache,
-    checked: Option<Inputs>,
+    audit: Audit,
+    /// The BSP generation the audit's proof belongs to.
+    epoch: Option<u64>,
     pending: Option<Comparison>,
 }
 
@@ -243,12 +228,16 @@ impl State {
             || cpu.esi != p.scratch.chains
             || m.u32(cpu.esp)? != MERGE_RETURN
             || stack(m, cpu, 4)? != p.scratch.nodes
-            || p.inputs.bsp_epoch != epoch
+            || p.bsp_epoch != epoch
         {
             return Ok(None);
         }
         let matched = matches_image(m, &p.image)?;
-        self.checked = matched.then_some(p.inputs);
+        if self.audit.compared(matched) {
+            eprintln!(
+                "native-scene-lists: the Rust portal walk differs from 0x00172840's; the guest walks from here"
+            );
+        }
         Ok(Some(matched))
     }
 
@@ -260,39 +249,28 @@ impl State {
     ) -> Result<Option<Output>> {
         let (scratch, frustum, start) = Scratch::read(m, cpu)?;
         let epoch = crate::native_map_work::bsp_generation();
-        let structure = ptr(m, guest::ACTIVE_STRUCTURE)?;
-        let reads = Reads {
-            m,
-            words: RefCell::default(),
-        };
-        // Keep graph decoding out of the dynamic key on the first frame too.
-        self.graph
-            .graph(&reads, epoch, structure)
-            .map_err(translate)?;
-        *reads.words.borrow_mut() = Some(Vec::new());
-        let walk = portal_walk::for_view(&reads, &mut self.graph, epoch, frustum, start)
+        if self.epoch != Some(epoch) {
+            self.audit.rescope();
+            self.epoch = Some(epoch);
+        }
+        if !self.audit.compares() {
+            return Ok(None);
+        }
+        let walk = portal_walk::for_view(&Reads(m), &mut self.graph, epoch, frustum, start)
             .map_err(translate)?;
         let root = walk.nodes.first().ok_or(Refusal::Layout)?;
         if !matches_image(m, &scratch.image(std::slice::from_ref(root), false)?)? {
             return Err(Refusal::Layout);
         }
-        let inputs = Inputs {
-            bsp_epoch: epoch,
-            structure,
-            start,
-            frustum: m.bytes(frustum, FRUSTUM_SIZE)?,
-            words: reads.words.into_inner().unwrap_or_default(),
-        };
         let image = scratch.image(&walk.nodes, true)?;
-        if self.checked.as_ref() == Some(&inputs) {
+        if self.audit.answers() {
             return Ok(Some(image));
         }
-        self.checked = None;
         self.pending = Some(Comparison {
             thread,
             merge_esp: at(cpu.esp, 16)?,
             scratch,
-            inputs,
+            bsp_epoch: epoch,
             image,
         });
         Ok(None)
@@ -458,16 +436,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_paired_merge_can_certify_an_input() {
+    fn only_the_paired_merge_can_prove_the_walk_and_a_difference_falls_back() {
         let mut m = FlatMemory::new(0x1000, 0x20000);
         let nodes = windows();
-        let inputs = || Inputs {
-            bsp_epoch: 3,
-            structure: 0xc00,
-            start: 4,
-            frustum: vec![3; FRUSTUM_SIZE],
-            words: vec![(0x1060, 1)],
-        };
         let mut state = State::default();
         let cpu = CpuAbi {
             esp: 0x1000,
@@ -480,28 +451,27 @@ mod tests {
             thread: 5,
             merge_esp: cpu.esp,
             scratch: S,
-            inputs: inputs(),
+            bsp_epoch: 3,
             image: S.image(&nodes, true).unwrap(),
         };
         apply(&mut m, &attempt().image);
+        // Another thread's merge or another BSP's walk proves nothing.
         for (thread, epoch) in [(4, 3), (5, 2)] {
             state.pending = Some(attempt());
             assert_eq!(state.finish(&m, &cpu, thread, epoch).unwrap(), None);
-            assert!(state.checked.is_none());
         }
-        state.pending = Some(attempt());
-        assert_eq!(state.finish(&m, &cpu, 5, 3).unwrap(), Some(true));
-        assert!(state.checked.as_ref() == Some(&inputs()));
-        let mut changed = inputs();
-        changed.words[0].1 ^= 1;
-        assert!(state.checked.as_ref() != Some(&changed));
-        changed = inputs();
-        changed.frustum[32] ^= 1;
-        assert!(state.checked.as_ref() != Some(&changed));
+        for _ in 0..Audit::PROOF {
+            assert!(!state.audit.answers());
+            state.pending = Some(attempt());
+            assert_eq!(state.finish(&m, &cpu, 5, 3).unwrap(), Some(true));
+        }
+        // Proven: the walk answers whatever its frustum, but for the sample.
+        let answered = (0..Audit::CHECK_EVERY).filter(|_| state.audit.answers()).count();
+        assert_eq!(answered as u64, Audit::CHECK_EVERY - 1);
         m.set_u16(S.chains + CHAIN_LINKS + 4, 1).unwrap();
         state.pending = Some(attempt());
         assert_eq!(state.finish(&m, &cpu, 5, 3).unwrap(), Some(false));
-        assert!(state.checked.is_none());
+        assert!(state.audit.fallen_back() && !state.audit.answers());
     }
 
     #[test]

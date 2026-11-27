@@ -1,6 +1,9 @@
 //! Merge rectangular windows within a single cluster, at 0x00172c70.
 //! The region writer consumes the surviving rectangles, depths and the
 //! merge target of each absorbed node. The clip polygons stay in place.
+//! After the arm's proof Rust merges every call but one in 64 (`Audit`);
+//! that one runs the guest and is compared at the region writer's call,
+//! and a difference sends the merge to the guest for the session.
 
 use super::*;
 use scene_extract::visibility::{flood, graph, guest};
@@ -194,8 +197,38 @@ impl Plan {
 
 #[derive(Default)]
 struct State {
-    checked: Option<Inputs>,
+    audit: Audit,
+    /// The BSP generation the audit's proof belongs to.
+    epoch: Option<u64>,
     pending: Option<Plan>,
+}
+
+impl State {
+    /// The guest merge's result at the region writer's call.
+    fn finish(
+        &mut self,
+        m: &dyn GuestMemory,
+        pool: u32,
+        chains: u32,
+        ret: Option<u32>,
+        epoch: u64,
+    ) -> Option<bool> {
+        let plan = self.pending.take()?;
+        if plan.pool != pool
+            || plan.chains != chains
+            || ret != Some(REGION_RETURN)
+            || plan.inputs.bsp_epoch != epoch
+        {
+            return None;
+        }
+        let same = plan.matches(m) == Ok(true);
+        if self.audit.compared(same) {
+            eprintln!(
+                "native-scene-lists: the Rust window merge differs from 0x00172c70's; the guest merges from here"
+            );
+        }
+        Some(same)
+    }
 }
 
 pub(super) fn install(b: &mut Builder) {
@@ -208,19 +241,14 @@ pub(super) fn install(b: &mut Builder) {
             move |o| {
                 let m = o.guest();
                 let mut state = compare.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(plan) = state.pending.take()
-                    && plan.pool == o.cpu.ebx
-                    && plan.chains == o.cpu.edi
-                    && m.u32(o.cpu.esp).ok() == Some(REGION_RETURN)
-                    && crate::native_map_work::bsp_generation() == plan.inputs.bsp_epoch
-                {
-                    STAGE.count(SceneListResult::Compared);
-                    if plan.matches(&*m) == Ok(true) {
-                        state.checked = Some(plan.inputs);
-                    } else {
+                let epoch = crate::native_map_work::bsp_generation();
+                match state.finish(&*m, o.cpu.ebx, o.cpu.edi, m.u32(o.cpu.esp).ok(), epoch) {
+                    Some(true) => STAGE.count(SceneListResult::Compared),
+                    Some(false) => {
+                        STAGE.count(SceneListResult::Compared);
                         STAGE.count(SceneListResult::Mismatch);
-                        state.checked = None;
                     }
+                    None => (),
                 }
             },
         )
@@ -236,12 +264,28 @@ pub(super) fn install(b: &mut Builder) {
                 if m.u32(cpu.esp)? != MERGE_RETURN {
                     return Err(Refusal::Unsupported);
                 }
+                let epoch = crate::native_map_work::bsp_generation();
+                if state.epoch != Some(epoch) {
+                    state.audit.rescope();
+                    state.epoch = Some(epoch);
+                }
+                let guest = Output {
+                    guest: true,
+                    ..Output::default()
+                };
+                if !state.audit.compares() {
+                    STAGE.count(SceneListResult::Fallback);
+                    return Ok(guest);
+                }
                 let plan = Plan::build(m, cpu)?;
-                if state.checked.as_ref() == Some(&plan.inputs) {
+                if state.audit.answers() {
                     return Ok(plan.output);
                 }
+                // The guest merges this call; the region writer's call
+                // compares its result.
                 state.pending = Some(plan);
-                Err(Refusal::Unsupported)
+                STAGE.count(SceneListResult::Fallback);
+                Ok(guest)
             })();
             (STAGE, output)
         },
@@ -277,6 +321,49 @@ mod tests {
         inputs.merge(&mut windows);
         assert_eq!(windows.map(|w| w.into), [NONE, 0, 1, NONE]);
         assert_eq!(windows[0], window([1., 4., 0., 2.], 2.));
+    }
+
+    #[test]
+    fn the_guest_merge_proves_the_arm_and_a_different_window_falls_it_back() {
+        use engine::memory::FlatMemory;
+        const POOL: u32 = 0x2000;
+        let mut m = FlatMemory::new(0x1000, 0x2000);
+        let windows = vec![window([0., 1., 0., 1.], 1.)];
+        for (i, w) in windows.iter().enumerate() {
+            let n = node(POOL, i).unwrap();
+            for (j, v) in w.rect.iter().enumerate() {
+                m.set_u32(n + 0xc + 4 * j as u32, *v).unwrap();
+            }
+            m.set_u32(n + 0x24, w.depth).unwrap();
+            m.set_u32(n + 0x28, w.into).unwrap();
+        }
+        let plan = || Plan {
+            pool: POOL,
+            chains: 0x1100,
+            inputs: Inputs {
+                bsp_epoch: 2,
+                factor: 1f32.to_bits(),
+                groups: Vec::new(),
+            },
+            windows: windows.clone(),
+            output: Output::default(),
+        };
+        let mut state = State::default();
+        // Another pool, return or BSP compares nothing.
+        for (pool, ret, epoch) in [(POOL + 4, REGION_RETURN, 2), (POOL, 0, 2), (POOL, REGION_RETURN, 3)] {
+            state.pending = Some(plan());
+            assert_eq!(state.finish(&m, pool, 0x1100, Some(ret), epoch), None);
+        }
+        for _ in 0..Audit::PROOF {
+            assert!(!state.audit.answers());
+            state.pending = Some(plan());
+            assert_eq!(state.finish(&m, POOL, 0x1100, Some(REGION_RETURN), 2), Some(true));
+        }
+        assert!(state.audit.answers());
+        m.set_u32(node(POOL, 0).unwrap() + 0x24, 0.5f32.to_bits()).unwrap();
+        state.pending = Some(plan());
+        assert_eq!(state.finish(&m, POOL, 0x1100, Some(REGION_RETURN), 2), Some(false));
+        assert!(state.audit.fallen_back() && !state.audit.answers());
     }
 
     #[test]
