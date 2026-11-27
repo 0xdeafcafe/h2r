@@ -271,22 +271,28 @@ fn lifo_take(j: &mut Journal, bytes: u32) -> Result<u32, Fallback> {
 }
 
 /// Give the block back (`0x0031c45d`): inline, unless it is the chunk's
-/// payload or the descriptor has none, which `vt[+0x28]` pops.
-fn lifo_release(j: &mut Journal, spill: Spill) -> Result<(), Fallback> {
+/// payload or the descriptor has none, which `vt[+0x28]` pops. Returns the
+/// entry's `eax`: the inline path leaves the descriptor's remaining bytes
+/// there (`0x0031c489`); after `vt[+0x28]` it is whatever the dispatcher's
+/// free left, which the model does not track and gives as 0 (the caller
+/// `0x00316b16` passes it on unread).
+fn lifo_release(j: &mut Journal, spill: Spill) -> Result<u32, Fallback> {
     let d = j.get(l::MEMORY_SYSTEM).ok_or(Fallback::Memory)?;
     let bytes = align16(spill.end.wrapping_sub(spill.block));
     if bytes != 0 {
         let payload = j.get(d.wrapping_add(l::POOL_LIFO_PAYLOAD)).ok_or(Fallback::Memory)?;
         if spill.block == payload || payload == 0 {
             let (d, sys) = lifo_system(j).ok_or(Fallback::Overflow)?;
-            return mem::lifo_free(&sys, j, d, bytes).ok_or(Fallback::Overflow);
+            mem::lifo_free(&sys, j, d, bytes).ok_or(Fallback::Overflow)?;
+            return Ok(0);
         }
     }
     let cursor = d.wrapping_add(l::POOL_LIFO_CURSOR);
     let remaining = d.wrapping_add(l::POOL_LIFO_REMAINING);
     let (c, r) = (j.get(cursor).ok_or(Fallback::Memory)?, j.get(remaining).ok_or(Fallback::Memory)?);
     j.put(cursor, c.wrapping_sub(bytes)).ok_or(Fallback::Memory)?;
-    j.put(remaining, r.wrapping_add(bytes)).ok_or(Fallback::Memory)
+    j.put(remaining, r.wrapping_add(bytes)).ok_or(Fallback::Memory)?;
+    Ok(r.wrapping_add(bytes))
 }
 
 /// The fit test and the spill (`0x0031c142..0x0031c29d`). An island past
@@ -468,12 +474,14 @@ pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island, accumulat
     s.put(end, j.get(end)? & !0xff | u32::from(ACCUMULATOR_END))
 }
 
-/// The whole entry. `Ok` is the guest's `eax`: the LIFO block the island
-/// spilled into, or 0.
+/// The whole entry. `Ok` is the guest's `eax`: 0 when the island fits,
+/// else what giving the block back leaves ([`lifo_release`]).
 pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
     use Fallback::*;
-    let island = gather(j, a)?;
+    let mut island = gather(j, a)?;
     let placed = place(j, a.island, island.layout)?;
+    // The later stages lay the areas where the spill put them.
+    island.layout = placed.layout;
     if !fpu.masked() {
         return Err(Float);
     }
@@ -559,10 +567,7 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
     j.put(busy & !3, word & !(0xff << (8 * (busy & 3)))).ok_or(Memory)?;
     // 0x0031c45d: the block goes back.
     match placed.spill {
-        Some(spill) => {
-            lifo_release(j, spill)?;
-            Ok(spill.block)
-        }
+        Some(spill) => lifo_release(j, spill),
         None => Ok(0),
     }
 }
