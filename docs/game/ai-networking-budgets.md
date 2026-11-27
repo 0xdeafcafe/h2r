@@ -212,7 +212,7 @@ the probe disabled (`-creature-probe`) and both candidate peers with the default
 ([switches](../runtime/switches.md)).
 Start the same two-player System Link Slayer game for each pair, with a
 local player on the host. Use the
-[System Link socket setup](../live/live.md#client-hle-sockets-and-system-link).
+[System Link socket setup](../live/live-client-hle.md#client-hle-sockets-and-system-link).
 Use the same locally built map with a resolvable `crea` definition, zero
 creature placements and a clear drop point high enough to observe motion
 across several update periods.

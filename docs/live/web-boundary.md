@@ -255,7 +255,9 @@ The ordering is what makes it safe: the green and the amber are far
 apart in the order because under deuteranopia they collide (ΔE 3.5) if
 they touch. So these slots are for forms where only neighbours touch
 (stacks, lines, bars). Scatter plots and small multiples, where any two
-marks can sit together, take two series at most. A sixth series is a
+marks can sit together, take two series at most.
+
+A sixth series is a
 bug (`seriesColor` throws); fold the tail into "other".
 
 Single-series marks use the dashboard's lime (`#9be34e`); de-emphasis,
@@ -331,7 +333,9 @@ sort for the accounts table:
 
 Empty ranges and charts describe what has been recorded. A refetch for
 the same account and server keeps the last answer on screen, dimmed.
-The screen requires an administrator's account. The shaping is
+The screen requires an administrator's account.
+
+The shaping is
 `web/src/deck/usageView.ts`, and `web/src/admin/usage.ts` reads the
 signed endpoints. The development mock serves the style page's seeded
 sample (`web/mock/admin.ts`).
@@ -344,7 +348,7 @@ sample (`web/mock/admin.ts`).
   edge-served assets and cache hits are outside that count. WebSocket
   messages and co-op relay bytes are outside the request metric.
 - Event types count log records. Stored bytes describe the logical
-  event log, published map catalog and private save blobs.
+  event log, published map catalogue and private save blobs.
 - Daily usage covers up to 400 retained UTC days. The current day is
   still in progress.
 - `h2 live store copy` copies the log and blobs, which supply the derived

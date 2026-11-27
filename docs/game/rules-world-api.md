@@ -181,7 +181,7 @@ director. The one-byte payload selects a local clip (`rules::show::Cue`).
 
 **Authenticated** (not built; the records ride unauthenticated until it
 is). The tunnel and XNet's UDP mapping give no transport
-security of their own (**Code**, [dedicated-host.md](../live/dedicated-host.md#routing-assignment-and-arbitration)),
+security of their own (**Code**, [dedicated-host.md](../live/dedicated-host-ops.md#routing-assignment-and-arbitration)),
 so the channel carries its own:
 
 - The host makes an Ed25519 key pair for the session and puts the public

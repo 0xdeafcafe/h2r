@@ -335,7 +335,7 @@ from the package directory. The Select Map dialog lists the maps under
 **Map Pack** ([map-select.md](map-select.md)). They play in multiplayer:
 custom games over Live and System Link, and Live hoppers when all matched
 consoles and the host have the pack. The same hopper offers disc maps to
-other players. [Map Pack rotations](../live/live-matchmaking.md#map-pack-rotations)
+other players. [Map Pack rotations](../live/live-matchmaking-search.md#map-pack-rotations)
 Section 8 holds the reading of 1.0 and the open in-game check.
 
 ### The title update (design)

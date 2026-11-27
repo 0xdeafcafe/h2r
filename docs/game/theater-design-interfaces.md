@@ -48,7 +48,7 @@ Numbers, interfaces, slices, rules, evidence and risks. Part of [theater-design.
 
 ### Live API
 
-[live-api.md](../live/live-api.md#theater).
+[live-api.md](../live/live-api-theater-stats.md#theater).
 
 | Method and path | Token scope | Result |
 |---|---|---|
@@ -116,7 +116,7 @@ Slices 3 and 4 touch files no other slice does and can run beside 1b and
   `game_tick` builds; a synchronous client simulates from received
   updates alone, and the update carries the player-set change, the
   per-player entries, the event list and the save flag
-  ([live-coop.md](../live/live-coop.md#13-the-synchronous-machinery),
+  ([live-coop.md](../live/live-coop-lockstep.md#13-the-synchronous-machinery),
   sections 14.1 and 14.9).
 - **Run**: two machines hold a campaign level in step on that path
   (live-coop.md, the status at its head and section 10).
@@ -197,5 +197,5 @@ Slices 3 and 4 touch files no other slice does and can run beside 1b and
 - [live-coop.md](../live/live-coop.md): the simulation update and the synchronous path
 - [level-boot.md](../runtime/level-boot.md): the options block and how a game starts
 - [checkpoints.md](../runtime/checkpoints.md): the engine's game-state save and restore
-- [agent-api.md](../runtime/agent-api.md#theater-transport), [live-api.md](../live/live-api.md#theater)
+- [agent-api.md](../runtime/agent-api.md#theater-transport), [live-api.md](../live/live-api-theater-stats.md#theater)
 - [web-viewer.md](../live/web-viewer.md): the viewer that draws the stats stream

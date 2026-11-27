@@ -346,5 +346,5 @@ Where the slices meet the lanes in flight:
 - [rules-start-gate.md](rules-start-gate.md): the check a map must pass before a script game starts, and where it runs.
 - [rules-engine.md](rules-engine.md): the engine, IR, VM, API and workbench.
 - [forge-design.md](forge-design.md), [forge-features.md](forge-features.md): the Forge document and what a label sits on.
-- [live-api.md](../live/live-api.md#rules-scripts): the routes slices 4, 6 and 9 change.
-- [web-app.md](../live/web-app.md#game-type-scripts): the workbench's layout and copy.
+- [live-api.md](../live/live-api-content.md#rules-scripts): the routes slices 4, 6 and 9 change.
+- [web-app.md](../live/web-app-pages.md#game-type-scripts): the workbench's layout and copy.

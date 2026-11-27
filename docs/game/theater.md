@@ -255,7 +255,7 @@ each action field. The
 At match end the host uploads the sealed recording under the lease's
 canonical game ID. Live checks `telemetry.ingest` and lease ownership.
 Small uploads fit in one request. Larger films use numbered parts and
-continuations, up to 2 GiB per film. [Upload protocol](../live/live-api.md#theater)
+continuations, up to 2 GiB per film. [Upload protocol](../live/live-api-theater-stats.md#theater)
 The supervisor gives the child time to finish uploading before reporting
 the lease ended. The upload and both hash experiments still need a real
 dedicated match.

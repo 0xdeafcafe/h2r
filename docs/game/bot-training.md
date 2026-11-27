@@ -420,7 +420,7 @@ Tables and activations are events in the log (`ClankerTableStored`,
 the rollback path survive a restart and `h2 live store copy`. Generations
 and the human reference are blobs under `training/` in the private store:
 the native server's blob store, the Worker's `BLOBS` R2 binding, as sim
-reports are ([live-api.md, "Clanker Training"](../live/live-api.md#clanker-training)).
+reports are ([live-api.md, "Clanker Training"](../live/live-api-theater-stats.md#clanker-training)).
 The handlers live in `live-server` and both homes mount them, so there is
 no Worker-only code. The Worker never runs a match: the trainer runs on a
 Mac or on per-match hosts and only posts.

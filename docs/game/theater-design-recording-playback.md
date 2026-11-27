@@ -185,7 +185,7 @@ The ring holds game-state snapshots of the film being watched
   so it reads any tick the player has passed without the entry holding
   them. About 0.26 MB an entry (**Estimate**: the retail join compresses
   the arena 16 to 1,
-  [live-coop.md](../live/live-coop.md#141-what-the-retail-engine-already-has)).
+  [live-coop.md](../live/live-coop-join.md#141-what-the-retail-engine-already-has)).
 - **When.** One entry for each stretch of 150 film ticks the player
   passes, playing or running forward, at the first tick a game tick ends
   on in it (150, 300, ..., or 301 when a game tick applies its update
