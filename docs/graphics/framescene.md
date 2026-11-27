@@ -439,6 +439,15 @@ The large one. A census comes first: the coordinator runs the census corpus and 
 
 The graph declares the targets each replayed frame touches (`native_render::frame_graph::targets::declare`): per target its size, its load (`Clear` when its first op clears every aspect, `Seeded` from an earlier clear or upload, else `Keep`), its uses, ops and slots, and the presented one. `FrameReport::targets` counts them. The replay still binds what the guest bound; owning the targets drops those binds. Tests: `the_graph_declares_every_target_it_draws`, `a_partial_clear_keeps_and_a_seed_is_named`.
 
+The scene's target select `0x0001cd30` and clear `0x00014b60` make no guest D3D entry (`render_bridge::native_targets`, switch `native-targets`). Each is a thin wrapper; the cut makes its decision in Rust and calls the device through the host (`game::native_targets_glue`):
+
+| Call | Decision | Device |
+|---|---|---|
+| `0x0001cd30` | the cached pair `0x0051f3f4`/`f8` unchanged: none; same format and size: `0x003f7b30`; else `0x003f7870`; then the cache words, `al = 1` | `set_render_target_same_size`, `set_render_target` |
+| `0x00014b60` | the game's flags as D3D's (`clear_flags`); the prelude `0x00014ac0` gate set: the body | `clear` |
+
+One call in 64 runs the body and compares `Device::bound_target` (the pair, and the viewport where the bind keeps it) with the cut's; a difference sends the session back to the body, `scene_kept_<call>_mismatch`. Tests: `a_game_view_makes_no_target_bind`, `a_check_that_differs_falls_back`, `a_call_the_cut_cannot_make_runs_the_guest_body_untouched`.
+
 ### Slice 7: frames outside a game view
 
 Menus, loading screens and movies through `SceneSink` into `Outside` and `Overlay`. Design. [framescene-display-rate.md](framescene-display-rate.md).

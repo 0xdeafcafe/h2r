@@ -117,6 +117,7 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
         .chain(render_bridge::native_hud::kept::counters())
+        .chain(render_bridge::native_targets::counters())
         .chain(render_bridge::native_hud::walk::counters())
         .chain(render_bridge::native_sky::counters())
         .chain(render_bridge::native_first_person::counters())
