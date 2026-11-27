@@ -1728,7 +1728,7 @@ mod tests {
         };
         let fit = canvas.fit(None).unwrap();
         // The view's right edge is the canvas's, so it reaches the
-        // display's edge (docs/graphics/high-resolution.md, "Scissors").
+        // display's edge (docs/graphics/high-resolution.md, "Scissor, clears and viewport").
         assert_eq!(
             fit.map_rect(rect),
             PixelRect {

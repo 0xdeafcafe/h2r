@@ -1976,7 +1976,7 @@ mod tests {
         assert_eq!(layout.guest_size, [640, 480]);
         assert_eq!(layout.display_size, Some([1920, 1080]));
         assert_eq!(layout.clip, [[0, 0, 640, 480]]);
-        // A clip of the whole canvas spans the display (docs/graphics/high-resolution.md, "Scissors").
+        // A clip of the whole canvas spans the display (docs/graphics/high-resolution.md, "Scissor, clears and viewport").
         assert_eq!(layout.display_clip, [[0, 0, 1920, 1080]]);
         assert_eq!(layout.ui_fit, Some([0.75, 1.0, 80.0, 0.0]));
     }

@@ -1,5 +1,5 @@
 //! Rendering above the guest's resolution without the guest seeing it
-//! (docs/graphics/high-resolution.md, phases 1 and 2).
+//! (docs/graphics/high-resolution.md, "Exact mode: reference and view").
 //!
 //! At scales above 1, single-copy mode draws into the display backend.
 //! It also holds shared handles to guest-sized targets, so all GPU draws
