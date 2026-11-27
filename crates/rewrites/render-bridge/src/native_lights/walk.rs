@@ -952,6 +952,11 @@ mod tests {
         let collect = |m: &FlatMemory, site| typed_groups::plan(m, site, &steps, 0, 32, None);
         // The preceding light left a suffix and a different flag word.
         assert!(collect(&m, GroupSite::Light).is_none());
+        assert_eq!(
+            typed_groups::plan_or_refusal(&m, GroupSite::Light, &steps, 0, 32, None).err(),
+            Some(typed_groups::GroupRefusal::Suffix),
+            "named"
+        );
         m.set_u32(list + 12, 0).unwrap();
         m.set_u32(lp::global::DEFINITION, u32::MAX).unwrap();
         for site in [GroupSite::Light, GroupSite::FirstPerson] {
@@ -969,6 +974,12 @@ mod tests {
         // The last entry has a callback the typed group cannot express.
         m.set_u32(ITEMS + 3 * 24, 0x8400).unwrap();
         assert!(collect(&m, GroupSite::Light).is_none());
+        let refusal = typed_groups::plan_or_refusal(&m, GroupSite::Light, &steps, 0, 32, None).err();
+        assert_eq!(
+            refusal,
+            Some(typed_groups::GroupRefusal::Entry(scene_extract::light_groups::Cause::Callback))
+        );
+        assert_eq!(refusal.unwrap().name(), "entry_callback");
         assert_eq!(m.u32(lp::global::DEFINITION).unwrap(), u32::MAX);
         assert_eq!(m.bytes(BUFFER, 72).unwrap(), [0x55; 72]);
     }
@@ -1058,6 +1069,10 @@ mod tests {
         // A caller naming a draw which the live list did not select.
         m.set_u32(shadows::RECEIVERS + 8, 0).unwrap();
         assert!(typed_groups::plan(&m, GroupSite::Light, &steps, 4, 0, projection).is_none());
+        assert_eq!(
+            typed_groups::plan_or_refusal(&m, GroupSite::Light, &steps, 4, 0, projection).err(),
+            Some(typed_groups::GroupRefusal::Mask)
+        );
     }
 
     /// The cut frame's groups (`scene_frame::groups`, made before any

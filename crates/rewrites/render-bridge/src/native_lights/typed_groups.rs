@@ -102,10 +102,64 @@ fn pass(
     })
 }
 
-/// All the drawn groups of one site, in step order. A single unreadable
-/// or unsupported entry discards the entire collection. Only call with
-/// this invocation's item lists, including any pending shadow-target
-/// resize in `mem` (or after proving its size is unchanged).
+/// Why a site's groups were not made: the first step that could not be
+/// read whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupRefusal {
+    /// A layer the site does not gather (the first person's casters, a
+    /// layer outside 10 to 14).
+    Layer,
+    /// The list does not read.
+    Memory,
+    /// A base list whose receiver suffix is open (`+12` not zero).
+    Suffix,
+    /// The list's layer mask and the step's draw disagree.
+    Mask,
+    /// The layer's sort did not read.
+    Sort,
+    /// A sorted entry the scene cannot hold whole, by its cause.
+    Entry(light_groups::Cause),
+    /// The layer's target or raster state did not read.
+    Pass,
+    /// Layer 10 with no shadow projection.
+    Projection,
+}
+
+impl GroupRefusal {
+    /// Every name, for a counter per cause.
+    pub const NAMES: [&'static str; 16] = [
+        "layer", "memory", "suffix", "mask", "sort", "pass", "projection",
+        "entry_memory", "entry_callback", "entry_owner", "entry_section", "entry_range",
+        "entry_state", "entry_subparts", "entry_material", "entry_pose",
+    ];
+
+    pub fn name(self) -> &'static str {
+        use light_groups::Cause;
+        match self {
+            GroupRefusal::Layer => "layer",
+            GroupRefusal::Memory => "memory",
+            GroupRefusal::Suffix => "suffix",
+            GroupRefusal::Mask => "mask",
+            GroupRefusal::Sort => "sort",
+            GroupRefusal::Pass => "pass",
+            GroupRefusal::Projection => "projection",
+            GroupRefusal::Entry(c) => match c {
+                Cause::Memory => "entry_memory",
+                Cause::Callback => "entry_callback",
+                Cause::Owner => "entry_owner",
+                Cause::Section => "entry_section",
+                Cause::Range => "entry_range",
+                Cause::State => "entry_state",
+                Cause::Subparts => "entry_subparts",
+                Cause::Material => "entry_material",
+                Cause::Pose => "entry_pose",
+            },
+        }
+    }
+}
+
+/// All the drawn groups of one site, in step order, or `None` (see
+/// [`plan_or_refusal`] for why).
 pub(super) fn plan(
     mem: &dyn GuestMemory,
     site: GroupSite,
@@ -114,44 +168,61 @@ pub(super) fn plan(
     definition_flags: u32,
     projection: Option<[[u32; 4]; PROJECTION_ROWS]>,
 ) -> Option<Vec<SceneGroup>> {
+    plan_or_refusal(mem, site, steps, flags, definition_flags, projection).ok()
+}
+
+/// All the drawn groups of one site, in step order. A single unreadable
+/// or unsupported entry discards the entire collection, named by the
+/// first refusal. Only call with this invocation's item lists, including
+/// any pending shadow-target resize in `mem` (or after proving its size
+/// is unchanged).
+pub(super) fn plan_or_refusal(
+    mem: &dyn GuestMemory,
+    site: GroupSite,
+    steps: &[LightStep],
+    flags: u32,
+    definition_flags: u32,
+    projection: Option<[[u32; 4]; PROJECTION_ROWS]>,
+) -> Result<Vec<SceneGroup>, GroupRefusal> {
+    use GroupRefusal as R;
     let mut groups = Vec::new();
     let mut caster_ended = false;
     let mut receiver_ended = false;
     for step in steps {
         let layer = u32::from(step.layer);
         let list = match (site, layer) {
-            (GroupSite::FirstPerson, 10) => return None,
+            (GroupSite::FirstPerson, 10) => return Err(R::Layer),
             (_, 10) => shadows::CASTERS,
             (_, 11) => shadows::RECEIVERS,
             (GroupSite::Light | GroupSite::FirstPerson, 12..=14) => shadows::RECEIVERS,
-            _ => return None,
+            _ => return Err(R::Layer),
         };
         // The two base list producers clear first; only the additional
         // caster opens a receiver suffix within the light's lists.
-        if (site != GroupSite::AdditionalCasters || layer == 10) && mem.u32(list + 12).ok()? != 0 {
-            return None;
+        if (site != GroupSite::AdditionalCasters || layer == 10) && mem.u32(list + 12).map_err(|_| R::Memory)? != 0 {
+            return Err(R::Suffix);
         }
-        if (mem.u32(list + 8).ok()? & (1 << layer) != 0) != step.draws {
-            return None;
+        if (mem.u32(list + 8).map_err(|_| R::Memory)? & (1 << layer) != 0) != step.draws {
+            return Err(R::Mask);
         }
         if !step.draws {
             continue;
         }
-        let sorted = walk::sorted_for_pass(mem, list, layer, flags, definition_flags).ok()?;
-        let items = mem.u32(list + 20).ok()?;
+        let sorted = walk::sorted_for_pass(mem, list, layer, flags, definition_flags).map_err(|_| R::Sort)?;
+        let items = mem.u32(list + 20).map_err(|_| R::Memory)?;
         let mut entries = Vec::with_capacity(sorted.len());
         let mut rows = Vec::with_capacity(sorted.len());
         for slot in sorted {
-            let (entry, pose) = light_groups::entry(&Ro(mem), items, slot).ok()?;
+            let (entry, pose) = light_groups::entry(&Ro(mem), items, slot).map_err(R::Entry)?;
             entries.push(entry);
             rows.push(pose);
         }
         let pass = match layer {
-            10 | 11 | 14 => Some(pass(mem, step, flags, caster_ended, receiver_ended)?),
+            10 | 11 | 14 => Some(pass(mem, step, flags, caster_ended, receiver_ended).ok_or(R::Pass)?),
             _ => None,
         };
         let projection = match layer {
-            10 => Some(projection?),
+            10 => Some(projection.ok_or(R::Projection)?),
             11 => projection,
             _ => None,
         };
@@ -171,5 +242,5 @@ pub(super) fn plan(
         caster_ended |= layer == 10;
         receiver_ended |= layer == 11;
     }
-    Some(groups)
+    Ok(groups)
 }
