@@ -1853,7 +1853,10 @@ fn tell(vm: &mut Vm, g: &mut GuestGame<'_>, seen: &mut Seen) {
     for change in zones::events(seen, alive, listed, &now) {
         let input = match change {
             Change::Death(p) => Input::Death(p),
-            Change::Spawn(p) => Input::Spawn(p),
+            Change::Spawn(p) => {
+                super::world::choice::spawned(p);
+                Input::Spawn(p)
+            }
             Change::Leave { zone, unit } => Input::Leave { zone, object: unit },
             Change::Enter { zone, unit } => Input::Enter { zone, object: unit },
         };
