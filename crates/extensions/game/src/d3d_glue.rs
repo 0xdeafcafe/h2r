@@ -1849,6 +1849,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         crate::native_residual_glue::install(&device);
         crate::native_targets_glue::install(&device);
         crate::native_flare_query_glue::install(&device);
+        crate::native_flare_draw_glue::install(&device);
     }
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));

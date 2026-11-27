@@ -1043,6 +1043,12 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_flare_query::NativeFlareQuery)
             .map_err(|e| anyhow::anyhow!("native flare query: {e}"))?;
+        // The flare draw pass's late glows 0x00046ea0 (the post's last
+        // calls) drawn on the device, one in 64 checked against the body
+        // (native_flare_draw_glue, installed with the device).
+        features
+            .add(&render_bridge::native_flare_draw::NativeFlareDraw)
+            .map_err(|e| anyhow::anyhow!("native flare draw: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features

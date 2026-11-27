@@ -11,6 +11,8 @@
 //! | the reader's gates (`0x00020770`) | [`read_gate`] |
 //! | `0x0002e540` + `0x00048b00` | [`Lens::query`] |
 //! | the reader's byte and its smoothing | [`read_byte`] |
+//! | the draw pass's late list (`0x0002f260`) | [`late_glows`] |
+//! | the glow `0x00046ea0`: fade, rectangle, cull, rings | [`glow`], [`Glow::rings`] |
 //!
 //! Three query sets, two frames apart: the walker ends the test of entry
 //! `i` in slot `set + 3 i` with `set = frame % 3` and marks bit `i` of the
@@ -442,6 +444,183 @@ pub fn read_byte(old: u8, samples: u32, area: u16, class: u32, s: Smoothing, k: 
     b
 }
 
+/// The draw pass's late list (`0x0002f260` appends, `0x0002df00` resets):
+/// up to four 16-byte entries, a lens tag datum and a world position,
+/// each drawn by `0x00046ea0` after the pass's walker.
+pub const LATE: u32 = 0x004c_19c4;
+pub const LATE_COUNT: u32 = 0x004c_1a04;
+pub const LATE_MAX: u32 = 4;
+/// The camera's position and view forward `0x00046ea0` reads (the
+/// render camera's, not the query's `CAMERA_FORWARD`).
+pub const CAMERA_POSITION: u32 = 0x0048_5618;
+pub const CAMERA_VIEW_FORWARD: u32 = 0x0048_5624;
+/// What the composite's weight is dimmed by: `1 - [GLOW_DIM]`, held to
+/// `[0, 1]`.
+pub const GLOW_DIM: u32 = 0x0048_57b4;
+/// The composite's rings: sixteen fans.
+pub const RINGS: usize = 16;
+
+/// The `.rdata` constants `0x00046ea0` reads.
+pub mod glow_k {
+    /// The view-angle fade: `(cos - COS) * COS_SCALE`, held to `[0, 1]`.
+    pub const COS: u32 = 0x0045_e22c;
+    pub const COS_SCALE: u32 = 0x0045_e4b0;
+    /// The rectangle's half size, in pixels.
+    pub const HALF: u32 = 0x0045_e42c;
+    /// Ring `i` grows each side by `i * RING[0] * RING[1] - RING_START`.
+    pub const RING: [u32; 2] = [0x0045_df78, 0x0045_e310];
+    pub const RING_START: u32 = 0x0045_dc10;
+    /// `0x00030bf0`'s least length.
+    pub const EPSILON: u32 = 0x0045_dbdc;
+    /// The down-sample's square (`0x00046230`): corners at these two.
+    pub const SOURCE: [u32; 2] = [0x0040_3b74, 0x0045_e484];
+}
+
+/// One late-list entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LateGlow {
+    pub datum: u32,
+    pub position: [f32; 3],
+}
+
+/// The late list, in the order `0x0002df00`'s loop draws it; `None` past
+/// its four entries.
+pub fn late_glows(mem: &dyn GuestRead) -> Option<Vec<LateGlow>> {
+    let n = mem.read_u32(LATE_COUNT)? as i32;
+    if n > LATE_MAX as i32 {
+        return None;
+    }
+    (0..n.max(0) as u32)
+        .map(|i| {
+            let at = LATE + 16 * i;
+            Some(LateGlow {
+                datum: mem.read_u32(at)?,
+                position: [mem.read_f32(at + 4)?, mem.read_f32(at + 8)?, mem.read_f32(at + 12)?],
+            })
+        })
+        .collect()
+}
+
+/// What `0x00046ea0` reads besides the [`Lens`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlowConstants {
+    pub camera: [f32; 3],
+    pub forward: [f32; 3],
+    pub dim: f32,
+    pub cos: f32,
+    pub cos_scale: f32,
+    pub half: f32,
+    pub ring: [f32; 2],
+    pub ring_start: f32,
+    pub epsilon: f32,
+    pub source: [f32; 2],
+}
+
+impl GlowConstants {
+    pub fn read(mem: &dyn GuestRead) -> Option<Self> {
+        let f = |a| mem.read_f32(a);
+        let v = |a: u32| Some([f(a)?, f(a + 4)?, f(a + 8)?]);
+        Some(Self {
+            camera: v(CAMERA_POSITION)?,
+            forward: v(CAMERA_VIEW_FORWARD)?,
+            dim: f(GLOW_DIM)?,
+            cos: f(glow_k::COS)?,
+            cos_scale: f(glow_k::COS_SCALE)?,
+            half: f(glow_k::HALF)?,
+            ring: [f(glow_k::RING[0])?, f(glow_k::RING[1])?],
+            ring_start: f(glow_k::RING_START)?,
+            epsilon: f(glow_k::EPSILON)?,
+            source: [f(glow_k::SOURCE[0])?, f(glow_k::SOURCE[1])?],
+        })
+    }
+}
+
+/// One glow `0x00046ea0` draws: its rectangle in the target's pixels and
+/// its weights. The mask and the down-sample cover `rect`; ring `i` of
+/// the composite covers it grown by [`Glow::ring`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glow {
+    /// `(x0, y0, x1, y1)`: the projected point rounded, plus and minus the
+    /// half size.
+    pub rect: [f32; 4],
+    /// The view-angle fade (`[esp+8]` at `0x00046f50`).
+    pub fade: f32,
+    /// The composite's weight: the fade times the dim factor
+    /// (`0x0004772c`).
+    pub weight: f32,
+}
+
+/// One composite fan: its rectangle and the weight register 9 carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    pub rect: [f32; 4],
+    pub weight: f32,
+}
+
+impl Glow {
+    /// Ring `i` (`0x00047740`..`0x0004785d`): the rectangle grown each
+    /// side by `i * RING[0] * RING[1] - RING_START`, weight
+    /// `weight / (i + 1)`. The sums keep the guest's order.
+    pub fn ring(&self, k: &GlowConstants, i: u32) -> Ring {
+        let off = i as i32 as f32 * k.ring[0] * k.ring[1] - k.ring_start;
+        let [x0, y0, x1, y1] = self.rect;
+        Ring { rect: [x0 - off, y0 - off, off + x1, off + y1], weight: self.weight / (i + 1) as i32 as f32 }
+    }
+
+    pub fn rings(&self, k: &GlowConstants) -> [Ring; RINGS] {
+        std::array::from_fn(|i| self.ring(k, i as u32))
+    }
+}
+
+/// `0x00030bf0`: the vector over its length, unchanged when the length is
+/// below `epsilon`. The length is the x87's, rounded once.
+pub fn normalize(v: [f32; 3], epsilon: f32, one: f32) -> [f32; 3] {
+    let [x, y, z] = v.map(f64::from);
+    let length = (x * x + y * y + z * z).sqrt();
+    if f64::from(epsilon) > length.abs() {
+        return v;
+    }
+    let inv = one / length as f32;
+    v.map(|c| c * inv)
+}
+
+/// `0x00046ea0(eax datum, ecx &position)`: the glow, or `None` where it
+/// returns with nothing drawn (the projection fails or the rectangle is
+/// outside the viewport).
+pub fn glow(lens: &Lens, k: &GlowConstants, mem: &dyn GuestRead, late: &LateGlow) -> Result<Option<Glow>, Unmade> {
+    let r = |a| mem.read_u32(a).ok_or(Unmade::Unread);
+    let tag = r(r(TAGS)?.wrapping_add((late.datum & 0xffff) * 16).wrapping_add(8))?;
+    let radius = mem.read_f32(tag.wrapping_add(0x10)).ok_or(Unmade::Unread)?;
+    let p = late.position;
+    let d = normalize([p[0] - k.camera[0], p[1] - k.camera[1], p[2] - k.camera[2]], k.epsilon, lens.one);
+    let cos = k.forward[2] * d[2] + k.forward[0] * d[0] + d[1] * k.forward[1];
+    let v = (cos - k.cos) * k.cos_scale;
+    let fade = if 0.0 > v { 0.0 } else if v > lens.one { lens.one } else { v };
+    let t = lens.far / cos;
+    let point = [d[0] * t + k.camera[0], d[1] * t + k.camera[1], d[2] * t + k.camera[2]];
+    let Some((out, _)) = lens.project(point, radius) else { return Ok(None) };
+    // 0x00321099 (floor) on the x87 sum, as a double; the corners are the
+    // x87's, stored as floats.
+    let round = |a: f32| (f64::from(a) + f64::from(lens.half)).floor();
+    let (x, y) = (round(out[0]) as f32, round(out[1]));
+    let h = f64::from(k.half);
+    let rect = [
+        (f64::from(x) - h) as f32,
+        (y - h) as f32,
+        (f64::from(x) + h) as f32,
+        (y + h) as f32,
+    ];
+    let [vy0, vx0, vy1, vx1] = lens.viewport.map(f32::from);
+    // Each test culls unless it holds (an unordered one too).
+    let inside = vx1 > rect[0] && vy1 > rect[1] && rect[2] > vx0 && rect[3] > vy0;
+    if !inside {
+        return Ok(None);
+    }
+    let dim = lens.one - k.dim;
+    let dim = if 0.0 > dim { 0.0 } else if dim > lens.one { lens.one } else { dim };
+    Ok(Some(Glow { rect, fade, weight: dim * fade }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +718,70 @@ mod tests {
         assert_eq!(q.area, 16);
         m.w(tag + 0x28, 2);
         assert_eq!(lens().query(&m, &entry), Ok(None), "flag 2: no quad");
+    }
+
+    fn glow_constants() -> GlowConstants {
+        GlowConstants {
+            camera: [0.0; 3],
+            forward: [0.0, 0.0, 1.0],
+            dim: 0.0,
+            cos: 0.5,
+            cos_scale: 2.0,
+            half: 8.0,
+            ring: [1.0, 2.0],
+            ring_start: 1.0,
+            epsilon: 1e-4,
+            source: [0.0, 64.0],
+        }
+    }
+
+    /// A glow straight ahead is at full weight; 45 degrees off the view it
+    /// is at `(cos 45 - 0.5) * 2`; past the fade's edge it is 0 and off
+    /// the viewport it is not drawn. Its rectangle is the projected point
+    /// rounded, 8 pixels each side.
+    #[test]
+    fn a_flare_glow_fades_with_view_angle() {
+        let mut m = Mem::default();
+        let (tags, tag) = (0x0070_0000, 0x0071_0000);
+        m.w(TAGS, tags);
+        m.w(tags + 16 * 3 + 8, tag);
+        m.f(tag + 0x10, 0.01);
+        let k = glow_constants();
+        let at = |x: f32| LateGlow { datum: 3, position: [x, 0.0, 10.0] };
+        let ahead = glow(&lens(), &k, &m, &at(0.0)).unwrap().expect("drawn");
+        assert_eq!(ahead.fade, 1.0);
+        assert_eq!(ahead.rect, [312.0, 232.0, 328.0, 248.0]);
+        let side = glow(&lens(), &k, &m, &at(10.0)).unwrap().expect("drawn at the edge");
+        assert!((side.fade - 0.414_21).abs() < 1e-4, "{}", side.fade);
+        assert_eq!(side.rect[..2], [632.0, 232.0], "half past the right edge, still drawn");
+        let mut edge = k;
+        edge.cos = 0.75;
+        assert_eq!(glow(&lens(), &edge, &m, &at(10.0)).unwrap().map(|g| g.fade), Some(0.0), "past the fade's edge");
+        assert_eq!(glow(&lens(), &k, &m, &at(100.0)), Ok(None), "off the viewport");
+        let dimmed = GlowConstants { dim: 0.75, ..k };
+        assert_eq!(glow(&lens(), &dimmed, &m, &at(0.0)).unwrap().map(|g| g.weight), Some(0.25));
+    }
+
+    /// Ring `i` grows by `2 i - 1` a side at `1 / (i + 1)` of the weight.
+    #[test]
+    fn the_composite_rings_grow_and_dim() {
+        let g = Glow { rect: [10.0, 20.0, 30.0, 40.0], fade: 1.0, weight: 0.5 };
+        let rings = g.rings(&glow_constants());
+        assert_eq!(rings[0], Ring { rect: [11.0, 21.0, 29.0, 39.0], weight: 0.5 });
+        assert_eq!(rings[3], Ring { rect: [5.0, 15.0, 35.0, 45.0], weight: 0.125 });
+        assert_eq!(rings.len(), 16);
+    }
+
+    #[test]
+    fn the_late_list_holds_at_most_four() {
+        let mut m = Mem::default();
+        m.w(LATE_COUNT, 1);
+        m.w(LATE, 7);
+        m.f(LATE + 4, 0.0);
+        m.f(LATE + 8, 0.0);
+        m.f(LATE + 12, 3.0);
+        assert_eq!(late_glows(&m), Some(vec![LateGlow { datum: 7, position: [0.0, 0.0, 3.0] }]));
+        m.w(LATE_COUNT, 5);
+        assert_eq!(late_glows(&m), None);
     }
 }

@@ -102,3 +102,28 @@ Scripted lights depend on it: the Armory's look test creates `looker_light_top_r
 - Counters in `render.scene`: `flare_{query,read}_{calls,cut,checked}`, `scene_kept_flare_{query,read}_<cause>` (a call the guest body ran) and `scene_dropped_flare_query_<cause>` (a placed pass that did not count; its bytes keep their values).
 
 Tests: `scene-extract` `a_flare_fades_from_its_query_result` and `a_quad_is_the_projected_point_with_its_half_size_held_to_2_and_128`; `render-bridge` `the_visibility_byte_lags_two_frames`, `the_water_query_counts_its_quad`, `a_guest_body_never_sees_the_cuts_slots`; `native-render` `a_w_buffered_quad_tests_its_floored_w_over_the_full_scale`.
+
+### The glow in Rust
+
+`native-flare-draw` (on with the native renderer) makes the draw pass's late glows in Rust (`render_bridge::native_flare_draw`). The draw pass `0x2df00` is the post's last call (`0x13b7e`, after the colour glow `0x214f0` and the screen effects `0x2d140`), so the glows are the view's last draws, in slot 13, before the overlay. The pass's setup and its walker call (the reflections) stay the guest's; each late-list entry's call to `0x46ea0` (from `0x2e1c5`) is cut.
+
+```mermaid
+flowchart LR
+  L["late list 0x4c19c4 (0x2f260, at most 4)"] --> G["glow: fade by view angle, project, round, cull to the viewport"]
+  G --> S["down-sample: the rectangle's colour where the masked fan passes LESSEQUAL"]
+  S --> B["four blurs, two squares"]
+  B --> C["sixteen rings, additive over the view's colour"]
+```
+
+| Guest | Rust |
+|---|---|
+| `0x46ea0`'s numbers: the direction to the glow over its length (`0x30bf0`), the fade `(cos - [0x45e22c]) * [0x45e4b0]` held to `[0, 1]`, the point at the far distance projected (`0x48b00`), rounded, `[0x45e42c]` pixels each side, culled outside the viewport | `scene_extract::flares::glow` |
+| the composite's weight: the fade times `1 - [0x4857b4]` held to `[0, 1]`; ring `i` grown by `i * [0x45df78] * [0x45e310] - [0x45dc10]`, weight over `i + 1` | `Glow::rings` |
+| the mask fan, the masked sample, `0x46230` into targets `0x10` and `0x11`, `0x467c0(0x10, 0x11, 4)`, the sixteen composite fans (`SRCALPHA`, `ONE`, colour only) | `native_render::flare_draw_gpu`: one down-sample of the rectangle into a square of the guest's size times the render scale, masked by the stored depth against the masked fan's (`z = w = 16777215` under the W clip), four blurs, sixteen instances over the view's colour |
+
+- The arm: one call in 64 runs the guest body instead and reads its rectangle and weight from its frame after it returns (`0x54` below the entry ESP; the ring count at `+0x20` is 0 only when every ring was drawn). A difference from Rust's sends every later call to the guest for the session.
+- A call from anywhere but the late loop runs the guest body.
+- Limits: the masked sample's texture (`[[0x485a80] + 0x34]`), the combiner blocks written at `0x484f68` for each fan and the blur's texture-matrix offsets are not read. Rust's down-sample takes the colour as it is, its blur taps are a diagonal half texel plus the pass, and its composite adds the blurred colour times the ring's weight. The view's alpha keeps its value.
+- Counters in `render.scene`: `flare_glow_{calls,cut,checked}`, `scene_kept_flare_glow_<cause>` (a call the guest body ran) and `scene_dropped_flare_glow_<cause>` (a placed glow that did not draw; also `Stage::Flares`'s `scene_dropped`).
+
+Tests: `scene-extract` `a_flare_glow_fades_with_view_angle`, `the_composite_rings_grow_and_dim`; `render-bridge` `the_flare_draw_is_the_last_post_pass`, `an_undrawn_glow_counts_scene_dropped_flare_glow`, `a_checked_glow_reads_the_bodys_frame`; `native-render` `a_glow_half_off_the_target_copies_what_is_inside`.
