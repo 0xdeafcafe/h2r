@@ -133,7 +133,7 @@ Where the guest waits on the GPU, all on the runner:
 | 1. Reads | `read_surface`, `read_depth`, `read_pixel_count` | queues, waits for the answer |
 | 2. Handles | `create_surface`, `create_texture_target`, `upload_texture`, `snapshot_surface`, `surface_texture`, `report_pixel_count` | hands out a proxy id at once |
 | 3. Draw outcomes | `draw` | answers from `Backend::judge` |
-| 4. Other outcomes | `clear_rects`, `write_surface`, `copy_surface`, `depth_alias_texture` and the handle makers | answers at once with `GfxBackend`'s answer for a valid call |
+| 4. Other outcomes | `clear_rects`, `write_surface`, `copy_surface`, `snapshot_surface`, `surface_texture`, `report_pixel_count`, `depth_alias_texture` | answers at once with `GfxBackend`'s answer for a valid call |
 | 5. Checks | any speculated answer | latches a mismatch, fails the next call |
 | 6. Device-internal reads | depth-alias textures | made at a queue position, no guest wait |
 | 7. Native draws | `queue_external_draw`, `prepare_external` | queues, or waits for the recording |
