@@ -307,6 +307,21 @@ pub trait ExternalPass: Send {
     /// The pass as its concrete type, for [`Self::run_with`] to read `next`.
     fn as_any(&self) -> Option<&dyn std::any::Any> { None }
 
+    /// This queued native producer pass, then `next`'s, as one new pass
+    /// that later adjacent draws can join ([`Self::extend_run`]): a
+    /// backend that queues draws ([`Backend::queue_external_draw`]) admits
+    /// a run of particles as one queued pass this way, at admission time,
+    /// not only in a replay. `next` follows this pass's last packet
+    /// directly, on the same attachments, textures and request. The two
+    /// passes are left as they are. `None` (the default): each is queued
+    /// on its own.
+    fn queued_run(&self, _next: &dyn ExternalPass) -> Option<Box<dyn ExternalPass>> { None }
+
+    /// Appends `next`'s draws after this run's ([`Self::queued_run`]'s
+    /// pass). `false` (the default): `next` cannot join; this run is left
+    /// as it was.
+    fn extend_run(&mut self, _next: &dyn ExternalPass) -> bool { false }
+
     /// Selected world ranges that bind a private page whose two lamp states differ.
     fn relit_lightmap_ranges(&self) -> usize { 0 }
 
