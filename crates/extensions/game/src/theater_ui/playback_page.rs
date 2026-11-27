@@ -69,15 +69,25 @@ fn fill(s: &mut ScreenSpec, rect: [i16; 4], rgba: [u8; 4]) {
     }
 }
 
-fn transparent_page(name: &str, title: &str, rows: i16) -> ScreenSpec {
-    let mut spec = ScreenSpec::new(name, title);
-    spec.transparent = true;
-    spec.list = ListPlace::from(Some(ListLayout {
+/// The pause menu's list, for the host's page and the game's screen
+/// (`pause_screen`) alike.
+pub(super) fn menu_layout() -> ListLayout {
+    page_layout(Row::ALL.len() as i16)
+}
+
+fn page_layout(rows: i16) -> ListLayout {
+    ListLayout {
         skin: 0,
         anchor: [-262, 135],
         bitmaps_left_of: i16::MIN,
         visible: rows,
-    }));
+    }
+}
+
+fn transparent_page(name: &str, title: &str, rows: i16) -> ScreenSpec {
+    let mut spec = ScreenSpec::new(name, title);
+    spec.transparent = true;
+    spec.list = ListPlace::from(Some(page_layout(rows)));
     spec.style = ValueStyle::Inline;
     spec
 }

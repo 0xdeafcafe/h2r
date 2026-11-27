@@ -652,6 +652,9 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
+    // The Theater's playback HUD on the kit, fed from the host's transport
+    // (docs/game/theater.md, "The playback HUD"); hidden outside a film.
+    crate::theater_ui::hud::register();
     // The Firefight HUD on the kit, fed from the mode blob
     // (docs/game/firefight.md, "The HUD").
     if firefight_on {

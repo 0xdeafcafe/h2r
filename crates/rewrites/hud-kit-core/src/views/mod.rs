@@ -15,6 +15,7 @@ pub mod superbounce_all;
 pub mod superbounce_guide;
 pub mod superbounce_segments;
 pub mod superbounce_readout;
+pub mod theater;
 
 /// Every registered HUD.
 pub fn all() -> Vec<Box<dyn Describe>> {
@@ -31,6 +32,7 @@ pub fn all() -> Vec<Box<dyn Describe>> {
         Box::new(objective::Koth),
         Box::new(objective::Territories),
         Box::new(script_objective::ScriptObjective),
+        Box::new(theater::Theater),
     ]
 }
 

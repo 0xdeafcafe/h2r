@@ -439,6 +439,14 @@ impl Handle {
             RETAIL_OFF.fetch_or(1 << user, Ordering::Relaxed);
         }
     }
+    /// Whether the loaded map's player HUD has this HUD's widgets: it was
+    /// compiled and installed at the map's activation. `false` before a
+    /// map loads, on a map it is not for ([`Describe::multiplayer_only`]),
+    /// with a template missing, or in a build with no map reader; the
+    /// install logs which.
+    pub fn joined(&self) -> bool {
+        read(&TABLE).widgets.iter().any(|w| w.hud == self.0)
+    }
     /// Queues `text` as a notification for local user `user`, one line of
     /// the game's list, as a retail pickup or medal line is. Sent at the
     /// top of the next tick through the game's insert ([`NOTIFY`]); two

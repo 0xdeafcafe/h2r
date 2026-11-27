@@ -49,3 +49,9 @@ inputs = ["rules/ctf.rules"]
 [[item]]
 kind = "kit"
 source = "kits/glyphs.kit.yaml"
+
+# The Theater's playback HUD (game::theater_ui::hud).
+
+[[item]]
+kind = "hud"
+source = "huds/theater.hud.yaml"

@@ -369,7 +369,50 @@ The bar's legend follows the last device used: a key press shows the
 keys above as keycaps (`theater_ui::playback_icons`), a pad press the pad's
 buttons.
 
-The playback bar shows the current and total time, requested and achieved
+#### Who draws what
+
+The host owns the film's controls (`theater_ui::overlay::Session`); what
+shows them depends on whose picture the film is.
+
+| Screen | Film with the guest's picture (recorded with a player) | Dedicated host's film, `h2 theater play` |
+|---|---|---|
+| Film library, film page | Game list classes on the `theater.films` and `theater.film` tags (`theater_ui::pages`) | Same |
+| Playback bar | The game's HUD: HUD kit HUD `theater` (`content/core/huds/theater.hud.yaml`) | Host page (`playback_page::bar`) |
+| Pause menu | Game list class on the `theater.pause-menu` tag (`theater_ui::pause_screen`) | Host page (`playback_page::Menu::spec`) |
+| Pause menu pickers | The kit's picker dialog (`kit.picker.game`) over the menu | Host page |
+| Loading panel | Host page (`playback_page::loading`) | Host page |
+
+The host page is a `ScreenSpec` drawn over the picture by the window
+(`Theater::host_page`, `app::theater_overlay`). It stays where the game
+has nothing to draw with: a dedicated host's film is drawn by the host's
+view with no game HUD or screen, a film player process installs no
+Theater screens, and a map whose player HUD takes no kit widgets (a
+campaign map) has no `theater` HUD. `ui.screen` reports the host's model
+in every case (`Theater::playback_page`).
+
+#### The playback HUD
+
+The game's HUD code draws the bar with the disc's HUD font and its
+battery strip (`hud_kit_core::views::theater`, fed by
+`theater_ui::hud::publish` from the host's pump, so a paused film's HUD
+still follows the viewer).
+
+| Element | Kit kind | Shows |
+|---|---|---|
+| `theater.status` | text | `PLAYING 2:26 / 8:26`, the speed when it is not 1x |
+| `theater.rail.0`, `theater.rail.1` | meter | The film's two halves; the gap is its middle |
+| `theater.view` | text | Camera and subject; a jump's target, the marked range, a divergence or the reason a film cannot play |
+| `theater.hints` | prompt | The pad's buttons, or the keys after a key press |
+| `theater.notice` | message | A notice (a saved screenshot, a saved film) in the game's notification list |
+
+Limits of the kit's fixed elements: the rail has no kill or bookmark
+marks and no shaded clip range (the view line reads `Clip 2:26 - 2:34`),
+and the bar is hidden with the player's HUD (L3 + R3, a dead player). A
+click on the rail seeks through its two strips (`hud::rail_fraction`). A
+screenshot holds the bar and the menu off the picture for 400 ms first
+(`Session::take_screenshot`).
+
+The host's bar shows the current and total time, requested and achieved
 speed, camera and subject. Its timeline uses the adjacent stats file for
 kills.
 When the stats file is missing, playback still works and the pause menu
@@ -380,13 +423,23 @@ is saved to Clips as "Clip N" (N counts the film's clips) and loops when
 watched; the Clips row and the film page's Clip fact show that name
 (`adapter::Clip::title`).
 
+#### The pause menu
+
 The pause menu offers **Resume**, **Restart Film**, **Change Player**,
 **Camera**, **Take Screenshot**, **Mark Clip**, **Export Clip**, **Save
 Film**, **Share** and **End Film**. Press A or Enter on a choice row to open
 its picker. B or Escape dismisses a picker and returns to the same row.
 The playback window captures these inputs before the replayed guest sees
-them. Screenshots omit the host pages and are written under
-`<data>/films/screenshots`.
+them. Screenshots omit the bar, the menu and the host pages and are
+written under `<data>/films/screenshots`.
+
+The game's menu is a mirror of the host's (`playback_page::Menu`): the
+guest reads neutral pads, so no press reaches its screen. Each UI update
+the driver (`theater-pause-driver`) takes one step toward the host's
+model: open the screen, move its cursor (`LIST_SET_ROW`), open the kit's
+picker over it, move the picker's cursor, or close either
+(`pause_screen::Mirror::step`). The game's menu lists the rows; the
+scoreboard beside them is on the host's page only.
 
 Skip taps that arrive within 250 ms of one another accumulate into one
 jump. Cancelling a jump returns to its departure tick and holds there.

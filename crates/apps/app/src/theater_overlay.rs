@@ -35,14 +35,25 @@ pub enum Key {
 pub struct Page {
     pub rgba: Vec<u8>,
     pub size: (u32, u32),
-    /// Scrub hit target in page pixels, when the playback bar is active.
-    pub timeline: Option<[u32; 4]>,
+}
+
+/// The scrub hit target while the playback bar is active: its left, top,
+/// width and height on a canvas of `canvas` pixels, which is fitted to
+/// the picture as a page is. The bar may be the page's or the game's own
+/// HUD, so the target does not need a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeline {
+    pub rect: [u32; 4],
+    pub canvas: (u32, u32),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
+    /// The host's page over the picture; `None` when the game draws the
+    /// Theater's HUD and screens itself.
     pub page: Option<Arc<Page>>,
     pub playing: bool,
+    pub timeline: Option<Timeline>,
 }
 
 /// The shell owns pixels and host input. The caller owns playback and

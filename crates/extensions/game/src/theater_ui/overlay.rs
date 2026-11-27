@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::adapter::{Clip, Playback, Player, Source};
-use super::{Entry, Theater, playback_page::{self, Command, Divergence, Jump, Menu}};
+use super::{Entry, Theater, hud, playback_page::{self, Command, Divergence, Jump, Menu}};
 use crate::ui_kit::{input::Input, spec::ScreenSpec};
 use crate::theater::SeekTaps;
 
@@ -21,6 +21,9 @@ const REFRESH: Duration = Duration::from_millis(150);
 /// is given the film page back (`Session::stall`).
 const START_WAIT: Duration = Duration::from_secs(60);
 const LONG_PRESS: Duration = Duration::from_millis(500);
+/// How long the game's bar and menu are off the picture before a
+/// screenshot is taken: the HUD's next draw and the menu's closing.
+const SHOT_HOLD: Duration = Duration::from_millis(400);
 /// Ticks the bar keeps a monitor look sentence: six seconds of film.
 const MONITOR_NOTICE_TICKS: u64 = 180;
 pub(super) const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
@@ -482,6 +485,14 @@ pub(super) struct Session {
     /// What the viewer last drove the film with: the page's legend shows
     /// its buttons.
     pub last_device: Device,
+    /// The loaded map's HUD has the Theater's widgets (`hud::joined`):
+    /// the game draws the bar of a film whose picture is its own.
+    pub guest_hud: bool,
+    /// The game has the pause menu's screen (`pause_screen::installed`).
+    pub guest_menu: bool,
+    /// Since when the game's bar and menu are held off the picture for a
+    /// screenshot.
+    shot_hide: Option<Instant>,
 }
 
 /// The kind of input the playback page's legend shows.
@@ -825,10 +836,89 @@ impl Session {
         })
     }
 
-    pub(super) fn timeline(&self) -> Option<[u32; 4]> {
+    /// The film's picture is the guest's own render (a film recorded on a
+    /// machine with a player), so the game's HUD and screens draw over it.
+    /// A dedicated host's film is drawn by the host's view
+    /// (`theater::host_view`), with no game HUD or screen to carry ours.
+    fn guest_picture(&self) -> bool {
+        self.track.as_ref().is_some_and(|track| track.source == Source::Local)
+    }
+
+    fn guest_bar(&self) -> bool {
+        self.guest_hud && self.guest_picture()
+    }
+
+    fn guest_pause(&self) -> bool {
+        self.guest_menu && self.guest_picture()
+    }
+
+    /// The bar for the game's HUD (`hud::publish`), when the game draws
+    /// it: hidden under the pause menu and for a screenshot.
+    pub(super) fn hud_state(&self) -> Option<hud_kit_core::views::theater::State> {
+        let track = self.track.as_ref().filter(|_| self.guest_bar())?;
+        let mut state =
+            hud::state(track, self.ready, self.last_device == Device::Keyboard, self.menu.is_some());
+        state.shown &= self.shot_hide.is_none();
+        Some(state)
+    }
+
+    /// What the host draws over the picture: the loading panel, and the
+    /// bar or the pause menu the game does not draw itself.
+    pub fn host_view(&self) -> Option<ScreenSpec> {
+        let track = self.track.as_ref()?;
+        if let Some(loading) = self.loading.as_ref().filter(|_| !self.ready) {
+            return Some(playback_page::loading(loading, Instant::now()));
+        }
+        match &self.menu {
+            Some(_) if self.guest_pause() => None,
+            Some(menu) => Some(menu.spec(track, self.notice.as_deref())),
+            None if self.guest_bar() => None,
+            None => Some(playback_page::bar(track, self.ready, self.notice.as_deref())),
+        }
+    }
+
+    /// The pause menu for the game's screen, while the game draws it:
+    /// none during a screenshot's hold, so the screen closes for it.
+    pub(super) fn pause_view(&self) -> Option<ScreenSpec> {
+        let track = self.track.as_ref()?;
+        let menu = self.menu.as_ref().filter(|_| {
+            self.guest_pause() && self.shot_hide.is_none() && (self.ready || self.loading.is_none())
+        })?;
+        Some(menu.spec(track, self.notice.as_deref()))
+    }
+
+    /// Whether the screenshot asked for is due at `now`. With the game
+    /// drawing the bar or the menu, they come off the picture first and
+    /// the shot waits [`SHOT_HOLD`]; the host's page is never in a shot.
+    pub(super) fn take_screenshot(&mut self, now: Instant) -> bool {
+        if !self.screenshot {
+            return false;
+        }
+        if self.guest_bar() || self.guest_pause() {
+            let since = *self.shot_hide.get_or_insert(now);
+            if now.saturating_duration_since(since) < SHOT_HOLD {
+                return false;
+            }
+        }
+        self.screenshot = false;
+        true
+    }
+
+    /// The screenshot was taken or failed: the bar and the menu come back.
+    pub(super) fn screenshot_done(&mut self) {
+        self.shot_hide = None;
+    }
+
+    /// The rail's hit box and, when the game draws the bar, the canvas it
+    /// is on (the host page's is the page).
+    pub(super) fn timeline(&self) -> Option<([u32; 4], Option<(u32, u32)>)> {
         (self.ready && self.menu.is_none() && self.track.as_ref().is_some_and(|track|
             track.visible && track.compatibility == api::CompatibilityState::Playable))
-            .then_some(playback_page::TIMELINE)
+            .then(|| if self.guest_bar() {
+                (hud::TIMELINE, Some(super::HUD_CANVAS))
+            } else {
+                (playback_page::TIMELINE, None)
+            })
     }
 
     pub(super) fn press(&mut self, input: Input) {
@@ -1133,6 +1223,8 @@ impl Session {
             && track.compatibility == api::CompatibilityState::Playable
             && fraction.is_finite()
         {
+            // The game's rail is two strips with a gap at the film's middle.
+            let fraction = if self.guest_bar() { hud::rail_fraction(fraction) } else { fraction };
             let (start, end) = track.bounds();
             let offset = (f64::from(fraction.clamp(0.0, 1.0)) * (end - start) as f64).round();
             self.control(Control::Seek(start.saturating_add(offset as u64).min(end)));
@@ -1921,5 +2013,98 @@ mod tests {
         session.answer(Request::State, Ok(json!({"id": "test", "tick": 5, "length_ticks": 100})));
         assert!(session.loaded() && session.owns_pads());
         assert_eq!(session.track.as_ref().unwrap().tick, 5);
+    }
+
+    /// A playing film whose picture is the guest's, as a film recorded on
+    /// a machine with a player is.
+    fn local_session() -> Session {
+        let mut track = sample_track();
+        track.source = Source::Local;
+        track.visible = true;
+        Session { track: Some(track), ready: true, ..Session::default() }
+    }
+
+    #[test]
+    fn the_game_draws_the_bar_and_the_menu_of_a_film_with_its_own_picture() {
+        let mut session = local_session();
+        // No HUD of ours on the map and no screen: the host draws both.
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        assert!(session.hud_state().is_none() && session.pause_view().is_none());
+        assert_eq!(session.timeline(), Some((playback_page::TIMELINE, None)));
+
+        session.guest_hud = true;
+        session.guest_menu = true;
+        assert!(session.host_view().is_none(), "the bar is the game's HUD");
+        assert!(session.hud_state().unwrap().shown);
+        assert_eq!(session.timeline(), Some((hud::TIMELINE, Some(crate::theater_ui::HUD_CANVAS))));
+        assert!(session.view().is_some(), "the model still answers ui.screen");
+
+        session.menu = Some(Menu::default());
+        assert!(session.host_view().is_none(), "the menu is the game's screen");
+        assert_eq!(session.pause_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(!session.hud_state().unwrap().shown, "the bar gives way to the menu");
+        assert!(session.timeline().is_none());
+
+        // With the HUD alone (a map whose player HUD took no widgets of
+        // ours) the host keeps the bar and the game the menu, and the
+        // other way round.
+        session.guest_hud = false;
+        session.menu = None;
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        session.guest_hud = true;
+        session.guest_menu = false;
+        session.menu = Some(Menu::default());
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(session.pause_view().is_none());
+    }
+
+    #[test]
+    fn a_dedicated_host_s_film_keeps_the_host_s_page() {
+        let mut session = local_session();
+        session.track.as_mut().unwrap().source = Source::Host;
+        session.guest_hud = true;
+        session.guest_menu = true;
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::OVERLAY);
+        assert!(session.hud_state().is_none(), "no game HUD is drawn over the host's view");
+        assert_eq!(session.timeline(), Some((playback_page::TIMELINE, None)));
+        session.menu = Some(Menu::default());
+        assert_eq!(session.host_view().unwrap().name, crate::theater_ui::PAUSE_MENU);
+        assert!(session.pause_view().is_none());
+    }
+
+    #[test]
+    fn a_screenshot_waits_for_the_game_s_bar_and_menu_to_leave_the_picture() {
+        let now = Instant::now();
+        // The host's page is never in the shot: no wait.
+        let mut session = local_session();
+        assert!(!session.take_screenshot(now), "none asked for");
+        session.screenshot = true;
+        assert!(session.take_screenshot(now));
+        assert!(!session.take_screenshot(now), "taken once");
+
+        session.guest_hud = true;
+        session.guest_menu = true;
+        session.menu = Some(Menu::default());
+        session.screenshot = true;
+        assert!(!session.take_screenshot(now), "the hold starts");
+        assert!(!session.hud_state().unwrap().shown);
+        assert!(session.pause_view().is_none(), "the menu's screen closes for the shot");
+        assert!(!session.take_screenshot(now + SHOT_HOLD / 2));
+        assert!(session.take_screenshot(now + SHOT_HOLD));
+        assert!(session.pause_view().is_none(), "held until the shot is saved");
+        session.screenshot_done();
+        assert!(session.pause_view().is_some(), "the menu comes back");
+        session.menu = None;
+        assert!(session.hud_state().unwrap().shown, "and the bar");
+    }
+
+    #[test]
+    fn a_click_on_the_game_s_rail_seeks_through_its_two_strips() {
+        let mut session = local_session();
+        session.guest_hud = true;
+        assert!(session.scrub(0.5));
+        assert!(session.scrub(1.0));
+        session.track.as_mut().unwrap().visible = false;
+        assert!(!session.scrub(0.5), "Back hid the bar");
     }
 }

@@ -745,6 +745,8 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
         // `Theater::install`, before the core registrations.
         "theater-texts",
         "theater-link",
+        "theater-pause-menu",
+        "theater-pause-driver",
         // `join_link::install` with a Live HLE (in `register_core`).
         "live-join-link",
         // `AgentGlue::configure_takeover` with a window and player input.

@@ -36,6 +36,9 @@ const TAB_PANEL: u32 = DETAIL_ROWS + DETAIL_ACTIONS as u32;
 const TAB_TEXTS: usize = 2 * Tab::ALL.len();
 const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
 const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
+/// The first slot the library and the film page leave free: the pause
+/// menu's start no lower (`pause_screen`).
+pub(super) const SPARE: u32 = PANEL + crate::list_class::MAX_PANEL_TEXTS as u32;
 
 // The single-column skin leaves the right half for the selected film.
 const FILMS_LAYOUT: ListLayout = ListLayout {
@@ -658,7 +661,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s
 }
 
-struct GuestTexts {
+pub(super) struct GuestTexts {
     at: AtomicU32,
     values: Mutex<Vec<Vec<u8>>>,
 }
@@ -677,7 +680,7 @@ impl GuestTexts {
     /// wrapped paragraph's `\n` would join its lines without the space the
     /// break replaced ("its\nsimulation" reads "itssimulation"); ours break
     /// with `\r\n`, as the game's own strings do.
-    fn set(&self, i: u32, value: &str) -> u32 {
+    pub(super) fn set(&self, i: u32, value: &str) -> u32 {
         let value = value.replace("\r\n", "\n").replace('\n', "\r\n");
         let value = value.as_str();
         let mut slots = self.values.lock().unwrap_or_else(|e| e.into_inner());
@@ -692,7 +695,7 @@ impl GuestTexts {
         TEXTS.id(i)
     }
 
-    fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    pub(super) fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.at.load(Ordering::Relaxed);
         if base != 0 {
             let mut slots = self.values.lock().unwrap_or_else(|e| e.into_inner());
@@ -989,7 +992,7 @@ pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyho
     for class in classes(&theater, &texts) {
         registry.add(&class).map_err(anyhow::Error::msg)?;
     }
-    Ok(())
+    super::pause_screen::install(registry, &theater, &texts)
 }
 
 pub(super) fn preview_page(theater: &Theater, list: bool) -> crate::ui_kit::page::ListPage {
