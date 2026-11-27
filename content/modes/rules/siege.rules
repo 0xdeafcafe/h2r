@@ -19,6 +19,9 @@
 // defenders at a site still to take, then at their flag stand. The
 // attackers spawn as Spartans and the defenders as Elites (`set_body`).
 // The winners score a point each, so the post-game's scores name them.
+// Each side's bots go for the front the HUD marks: the attackers' take
+// it and the defenders' hold it (`bots.orders`: `bot_goal_attack`,
+// `bot_goal_defend`).
 // Each side's objective line, the phase clock, the capture gauge and the mark
 // over the front are the scripted objective HUD's (`hud.objective`:
 // `objective`, `countdown`, `meter`, `objective_mark`).
@@ -55,7 +58,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds
+requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds, bots.orders
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -185,6 +188,8 @@ global var banner_left: int = 0
 global var seen: int = -1
 // The zone the objective HUD marks for both sides.
 global var marked: zone? = none
+// The zone the bots were last sent at (`bot_goal_attack`, `bot_goal_defend`).
+global var aimed: zone? = none
 
 // Each side's line for the phase on, and the phase's clock.
 fn brief() {
@@ -279,6 +284,18 @@ fn show_front() {
         }
     } else {
         focus = last_stand
+    }
+    // The bots go for the front too (`bot_goal_*`, docs/game/bots.md, "A
+    // script's goals"): the attackers' bots take it and the defenders'
+    // bots hold it, set again only when the front moves.
+    if focus != aimed {
+        aimed = focus
+        bot_goal_clear(attackers)
+        bot_goal_clear(defenders)
+        if let z = focus {
+            bot_goal_attack(attackers, z)
+            bot_goal_defend(defenders, z)
+        }
     }
     if let o = marked {
         objective_mark(attackers, o, 0)
@@ -429,6 +446,7 @@ on round_start {
     front = none
     advanced = false
     marked = none
+    aimed = none
     wave0 = 0t
     wave1 = 0t
     // A side's rows are its own: each kit is set again from the side's table.
