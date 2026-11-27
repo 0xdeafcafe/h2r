@@ -42,9 +42,10 @@ const USAGE: &str =
   --cut drops classes from the end of the list until the build fits, instead
     of refusing it.";
 
-/// The campaign map the Phantom is copied from: the same donor the class
-/// table prefers (`firefight_kit::retail`).
-const SHIP_DONOR: &str = "03a_oldmombasa";
+/// The campaign maps the ships are copied from: the Phantom from Outskirts,
+/// the same donor the class table prefers (`firefight_kit::retail`), the
+/// Pelican from Delta Halo's approach.
+const SHIP_DONORS: [&str; 2] = ["03a_oldmombasa", "05a_deltaapproach"];
 
 struct Args {
     base: String,
@@ -296,17 +297,18 @@ pub fn run(words: Vec<String>) -> Result<()> {
     }
     wanted.extend(args.classes);
     let (mut donor_names, specs) = plan(&wanted)?;
-    // The Phantom comes from a campaign map: Outskirts, when the disc has
-    // it and no class already named it.
-    if !args.probe
-        && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom)
-        && !donor_names.iter().any(|d| d == SHIP_DONOR)
-        && vfs::open_disc(&disc)
-            .with_context(|| format!("opening the disc {}", disc.display()))?
-            .host_file(&format!("maps\\{SHIP_DONOR}.map"))
-            .is_some()
-    {
-        donor_names.push(SHIP_DONOR.to_owned());
+    // The ships come from campaign maps, when the disc has them and no
+    // class already named them.
+    if !args.probe && matches!(args.config.dropship, Dropship::Auto | Dropship::Phantom) {
+        let mut files = vfs::open_disc(&disc)
+            .with_context(|| format!("opening the disc {}", disc.display()))?;
+        for donor in SHIP_DONORS {
+            if !donor_names.iter().any(|d| d == donor)
+                && files.host_file(&format!("maps\\{donor}.map")).is_some()
+            {
+                donor_names.push(donor.to_owned());
+            }
+        }
     }
     let donor_bytes = donor_names
         .iter()
@@ -341,7 +343,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
             c.name, c.tags, c.sounds, c.bytes
         );
     }
-    if let Some(ship) = &saved.ship {
+    for ship in [&saved.ship, &saved.pelican].into_iter().flatten() {
         println!("{ship}");
     }
     for step in &saved.fitted {
