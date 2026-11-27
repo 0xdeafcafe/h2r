@@ -155,6 +155,19 @@ fn monster_speaks_its_clip_and_bounced_is_silent() {
     assert_eq!(s.started, ["monster-bounce"]);
 }
 
+/// A Firefight or Siege line that is not a medal (art/announcer/README.md,
+/// "Firefight and Siege lines").
+fn is_game_line(id: &str) -> bool {
+    id.ends_with("-on")
+        || matches!(
+            id,
+            "new-wave" | "wave-complete" | "round-complete" | "set-complete" | "bonus-round"
+                | "bonus-round-complete" | "lives-added" | "last-life" | "game-over"
+                | "skulls-off" | "all-skulls-on" | "attack" | "defend" | "final-round"
+                | "site-captured" | "reinforcements" | "round-over"
+        )
+}
+
 /// Every medal but Bounced has a clip, named by its id.
 #[test]
 fn every_medal_but_bounced_has_a_clip() {
@@ -164,7 +177,8 @@ fn every_medal_but_bounced_has_a_clip() {
         assert_eq!(clip_for_line(&m.line()), want, "{m:?}");
     }
     for (id, _) in CLIPS {
-        assert!(Medal::from_id(id).is_some() || matches!(id, "firefight" | "siege"), "{id}");
+        let line = matches!(id, "firefight" | "siege") || is_game_line(id);
+        assert!(Medal::from_id(id).is_some() || line, "{id}");
     }
 }
 
