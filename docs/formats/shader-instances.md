@@ -353,11 +353,13 @@ target's slot reaches in its implementation, each with the image count
 of the bitmap bound there. Native objects preload every image of such a
 stage (`object_program_gpu::frame_images`, at most `MAX_FRAME_IMAGES`)
 and pick one per draw with `layer_pass::frame_image`, the same rule as
-`0x0001b0a0`; the draw's bind group is cached per image choice. A frame
-that resolves to the default texture, a frame on a stage whose size a
-vertex constant reads (`LayerRefusal::FrameSize`, since `0x00018b31`
-refreshes the size from the picked image), a stage with no bitmap, or a
-pass that binds an engine target per encode is refused.
+`0x0001b0a0`; the draw's bind group is cached per image choice, and in
+a pass that binds an engine target per encode (the hologram's scan
+lines beside the scene copy) per image choice and target views
+(`LitProgram::accum_groups`). A frame that resolves to the default
+texture, a frame on a stage whose size a vertex constant reads
+(`LayerRefusal::FrameSize`, since `0x00018b31` refreshes the size from
+the picked image), or a stage with no bitmap is refused.
 
 ## Element budgets and aliasing
 
