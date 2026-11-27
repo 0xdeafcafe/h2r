@@ -69,6 +69,14 @@ pub struct ViewInputs {
     pub capacity: usize,
 }
 
+impl ViewInputs {
+    /// These inputs walked from `origin` (the Rust view record's start
+    /// cluster and mode) in place of the struct's.
+    pub fn from_origin(self, origin: super::Origin) -> Self {
+        Self { start: origin.start, mode: origin.mode, ..self }
+    }
+}
+
 pub fn view(mem: &dyn GuestRead) -> Result<ViewInputs, Decline> {
     if u32_at(mem, ACTIVE_VIS) != Some(MAIN_VIS) || u32_at(mem, MAIN_VIS + VIS_KIND) != Some(0) {
         return Err(Decline::NotMain);

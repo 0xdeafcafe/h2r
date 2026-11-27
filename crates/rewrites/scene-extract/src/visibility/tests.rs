@@ -120,10 +120,17 @@ pub(super) fn window_fields(m: &mut Mem) {
     }
 }
 
+/// The origin the fixture's struct holds: the Rust view record's when it
+/// equals the guest's.
+fn origin(m: &Mem) -> Origin {
+    guest::view(m).map_or(Origin { start: 0, mode: 0 }, |v| Origin { start: v.start, mode: v.mode })
+}
+
 fn run(m: &Mem) -> Result<VisibilitySets, Decline> {
     compute(
         m,
         &camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        origin(m),
         &mut GraphCache::default(),
         1,
     )
@@ -158,6 +165,25 @@ fn the_flood_reaches_through_the_portal_and_lists_the_objects_it_sees() {
     assert!(p.holds(), "{p:?}");
 }
 
+/// The sets are walked from the Rust view record's start cluster and mode,
+/// not from what the guest's struct holds: with the struct's start outside
+/// the structure and its mode 2, the record's room 0 and portal flood still
+/// make the guest's lists for the same view.
+#[test]
+fn the_rust_cluster_set_from_the_view_record_equals_the_guests() {
+    let mut m = scene();
+    m.w(MAIN_VIS + vis::START_CLUSTER, 0xffff);
+    m.w(MAIN_VIS + vis::MODE, 2);
+    let camera = camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+    let record = Origin { start: 0, mode: 0 };
+    let rust = compute(&m, &camera, record, &mut GraphCache::default(), 1).unwrap();
+    let p = compare(&rust, &guest_lists(vec![1, 0], vec![0x0001_0002, 0x0001_0001]));
+    assert!(p.holds(), "{p:?}");
+    // Room 1's record lists only room 1's objects in mode 2.
+    let rust = compute(&m, &camera, Origin { start: 1, mode: 2 }, &mut GraphCache::default(), 1).unwrap();
+    assert_eq!(rust.clusters, [1]);
+}
+
 #[test]
 fn a_deliberate_mismatch_names_the_object_the_guest_listed() {
     let rust = run(&scene()).unwrap();
@@ -187,7 +213,7 @@ fn a_side_portal_and_its_object_enter_the_wider_view_together() {
     let mut cache = GraphCache::default();
     let mut visible = |m: &Mem, aspect: f32| {
         camera.projection_xy = Some([1.0 / aspect, 1.0, 0.0, 0.0]);
-        compute(m, &camera, &mut cache, 1).unwrap()
+        compute(m, &camera, origin(m), &mut cache, 1).unwrap()
     };
     let narrow = visible(&m, 4.0 / 3.0);
     assert_eq!(narrow.clusters, [0]);
@@ -390,7 +416,7 @@ fn the_answer_takes_the_rust_sets_of_the_arms_that_answer() {
         objects: vec![0x0001_0002, 0x0001_0001],
         source: VisibilitySource::Guest,
     };
-    let both = answer(gather(), rust.clone(), true, true);
+    let both = answer(gather(), rust.clone(), 0, true, true);
     assert_eq!(both.source, VisibilitySource::Rust);
     assert_eq!(
         (both.visible, both.objects),
@@ -399,11 +425,11 @@ fn the_answer_takes_the_rust_sets_of_the_arms_that_answer() {
     assert_eq!(both.structure, [1], "the structure list stays the guest's");
     // The clusters answer, the objects fell back: the guest's objects in
     // its order, and the gather is not marked Rust.
-    let clusters = answer(gather(), rust.clone(), true, false);
+    let clusters = answer(gather(), rust.clone(), 0, true, false);
     assert_eq!(clusters.source, VisibilitySource::Guest);
     assert_eq!(clusters.visible, [0, 1]);
     assert_eq!(clusters.objects, [0x0001_0002, 0x0001_0001]);
-    assert_eq!(answer(gather(), rust, false, false), gather(), "the guest's, untouched");
+    assert_eq!(answer(gather(), rust, 0, false, false), gather(), "the guest's, untouched");
 }
 
 /// `v` at the half-word `addr`.
@@ -453,6 +479,7 @@ fn the_guest_window_frusta_read_back_equal_to_the_rust_ones() {
     let (_, windows) = compute_with_windows(
         &m,
         &camera_at([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        origin(&m),
         &mut GraphCache::default(),
         1,
     )
@@ -546,14 +573,14 @@ fn the_stored_gather_frustum_adds_only_the_side_room_to_the_display() {
     }
     object(&mut m, 2, [10., -9., 0.]);
     let mut cache = GraphCache::default();
-    let (retail,_) = portal_walk::scene_visibility(&m, &mut cache, 1, 1.).unwrap();
+    let (retail,_) = portal_walk::scene_visibility(&m, &mut cache, 1, 1., origin(&m)).unwrap();
     assert_eq!(retail.clusters, [0]);
-    let (wide,volumes) = portal_walk::scene_visibility(&m, &mut cache, 1, 0.75).unwrap();
+    let (wide,volumes) = portal_walk::scene_visibility(&m, &mut cache, 1, 0.75, origin(&m)).unwrap();
     assert_eq!(wide.clusters, [0,1]);
     assert!(volumes.admits(1, [10.,-9.,0.], 0.5));
     assert!(wide.objects.contains(&0x0001_0002));
     m.w(OPEN,0);
-    assert_eq!(portal_walk::scene_visibility(&m,&mut cache,1,0.75).unwrap().0.clusters,[0]);
+    assert_eq!(portal_walk::scene_visibility(&m,&mut cache,1,0.75,origin(&m)).unwrap().0.clusters,[0]);
 }
 
 /// The display supplement (`render_bridge::scene_step::display_additions`)
@@ -569,7 +596,7 @@ fn display_additions_survive_equal_guest_lens_sets() {
     let mut camera = camera_at([0.0, 7.0, 0.0], [1.0, 0.0, 0.0]);
     let mut cache = GraphCache::default();
     camera.projection_xy = Some([3.0 / 4.0, 1.0, 0.0, 0.0]);
-    let narrow = compute(&m, &camera, &mut cache, 1).unwrap();
+    let narrow = compute(&m, &camera, origin(&m), &mut cache, 1).unwrap();
     let gather = ClusterGather {
         mode: 0,
         visible: vec![0],
@@ -577,10 +604,10 @@ fn display_additions_survive_equal_guest_lens_sets() {
         objects: vec![0x0001_0001],
         source: VisibilitySource::Guest,
     };
-    let taken = answer(gather.clone(), narrow.clone(), true, true);
+    let taken = answer(gather.clone(), narrow.clone(), 0, true, true);
     assert_eq!(taken.source, VisibilitySource::Rust);
     camera.projection_xy = Some([9.0 / 16.0, 1.0, 0.0, 0.0]);
-    let mut wide = compute(&m, &camera, &mut cache, 1).unwrap();
+    let mut wide = compute(&m, &camera, origin(&m), &mut cache, 1).unwrap();
     wide.retain_display_additions(&narrow, &gather);
     assert_eq!(wide, VisibilitySets::new(vec![1], vec![0x0001_0002]));
 }

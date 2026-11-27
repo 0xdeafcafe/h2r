@@ -2,10 +2,9 @@
 //! "The view records"): the render camera from the observer camera
 //! (`0x00223080` and `0x0002f800`), the projection's scales and offsets
 //! (`0x0002fb70`), the start cluster from the camera's position
-//! (`0x0011bed0`, the walk `0x0014a280`), and the mode (`0x00132b80`). Each
-//! is compared with what the guest wrote, field by field and bit for bit;
-//! the scene step gives the visibility the Rust camera only when every
-//! field equals the guest's.
+//! (`0x0011bed0`, the walk `0x0014a280`), and the mode (`0x00132b80`). The
+//! scene step walks the visibility from the Rust record; each field is
+//! compared with what the guest wrote, bit for bit, as the audit.
 //!
 //! Every value the guest reads from its own data (the near and far planes,
 //! the field-of-view factors, the lens constants, the mode's radius) is
@@ -506,18 +505,6 @@ pub fn build(mem: &dyn GuestRead, guest: &RenderCamera) -> Result<(ViewRecord, V
     Ok((rust, guest))
 }
 
-/// The camera the visibility uses for the view: the Rust one when the
-/// whole record equals the guest's, else the guest's, and the comparison.
-pub fn arm(rust: &ViewRecord, guest: &ViewRecord) -> (RenderCamera, RecordParity) {
-    let parity = compare(rust, guest);
-    let camera = if parity.holds() {
-        rust.camera
-    } else {
-        guest.camera
-    };
-    (camera, parity)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,27 +681,26 @@ mod tests {
     }
 
     #[test]
-    fn the_record_built_from_the_observer_equals_the_guests_and_is_taken() {
+    fn the_record_built_from_the_observer_equals_the_guests() {
         let m = scene();
         let (rust, guest) = build(&m, &guest_camera()).unwrap();
         assert_eq!((rust.start, rust.mode), (7, 0));
-        let (camera, parity) = arm(&rust, &guest);
+        let parity = compare(&rust, &guest);
         assert!(parity.holds(), "{parity:?}");
-        assert_eq!(camera, rust.camera);
     }
 
     #[test]
-    fn a_deliberate_mismatch_names_the_first_field_and_keeps_the_guests_camera() {
+    fn a_deliberate_mismatch_names_the_first_field_and_the_record_stays_the_observers() {
         let m = scene();
         let guest_cam = RenderCamera {
             fov: 1.25,
             ..guest_camera()
         };
         let (rust, guest) = build(&m, &guest_cam).unwrap();
-        let (camera, parity) = arm(&rust, &guest);
+        let parity = compare(&rust, &guest);
         assert_eq!(parity.first, Some(Field::Fov));
         assert_eq!(parity.differ, 1);
-        assert_eq!(camera, guest_cam, "the guest's camera, untouched");
+        assert_eq!(rust.camera, guest_camera(), "built from the observer, not the guest's camera");
         let mut m = scene();
         m.w(MAIN_VIS + super::super::guest::vis::START_CLUSTER, 5);
         let (rust, guest) = build(&m, &guest_camera()).unwrap();
@@ -741,12 +727,12 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_guest_viewport_is_named_and_kept() {
+    fn a_wrong_guest_viewport_is_named() {
         let bad = RenderCamera { viewport: [2, 3, 411, 527], ..guest_camera() };
         let (rust, guest) = build(&scene(), &bad).unwrap();
-        let (camera, parity) = arm(&rust, &guest);
+        let parity = compare(&rust, &guest);
         assert_eq!((parity.first, parity.differ), (Some(Field::Viewport), 1));
-        assert_eq!(camera, bad);
+        assert_eq!(rust.camera.viewport, [0, 0, 480, 640]);
     }
 
     #[test]
