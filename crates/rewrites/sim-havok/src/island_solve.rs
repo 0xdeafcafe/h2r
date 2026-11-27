@@ -473,6 +473,7 @@ pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island, accumulat
 pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
     use Fallback::*;
     let island = gather(j, a)?;
+    let placed = place(j, a.island, island.layout)?;
     if !fpu.masked() {
         return Err(Float);
     }
@@ -481,7 +482,6 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
         // end schema as a header.
         return Err(Constraint);
     }
-    let placed = place(j, a.island, island.layout)?;
     let l = placed.layout;
     let accumulators_end = l.accumulators.wrapping_add(ACCUMULATOR_BYTES * (island.bodies.len() as u32 + 1));
     if accumulators_end >= l.rows || l.rows < l.accumulators {

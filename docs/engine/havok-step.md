@@ -429,11 +429,17 @@ accumulator offsets, the accumulators laid into a Rust-owned buffer
 (`jacobian::Scratch`), the pair words and rows per constraint
 (`jacobian::contact` for the contact class), the schema decode into
 `solver::Stream` (`solver::decode`), `Stream::solve`, the write-back
-pass, the exports and the busy byte. Persistent words only are
-journalled; the buffer's contents stay in Rust. The decline is decided
-before any write, so the guest runs from untouched memory. An island
-falls back to the lifted entry, counted by reason
-(`island_solve::fallbacks`), when it overflows the buffer or its row area,
+pass, the exports and the busy byte. An island past the buffer's end
+takes its LIFO block as retail does (`island_solve::place`): inline from
+the descriptor, or through `0x002d7020` and `0x002d7090` as `sim_havok::mem`
+models them, the scratch then covering the buffer and the block and the
+decode following the rows into the block. Persistent words only are
+journalled; the buffer's and the block's contents stay in Rust. The
+decline is decided before any write, so the guest runs from untouched
+memory. An island falls back to the lifted entry, counted by reason
+(`island_solve::fallbacks`), when its block would come from a route the
+allocator model does not cover or its rows run past the buffer or the
+block,
 holds a motion whose two solver slots are not one of the six classes
 (`motion_solve`, every type), holds a constraint whose
 `vt[+0x24]` is not one of the seven ported classes, finds the solver
