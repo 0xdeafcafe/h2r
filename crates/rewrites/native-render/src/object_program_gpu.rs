@@ -3770,6 +3770,8 @@ mod tests {
                 ResolvedLayer { lod: 0, layer: crate::look::LIGHTMAP_LAYER, passes: vec![pass(0, vec![opaque])] },
                 ResolvedLayer { lod: 0, layer: 7, passes: vec![pass(0, vec![additive(0), nothing]), pass(1, vec![additive(0)])] },
                 ResolvedLayer { lod: 0, layer: 8, passes: vec![pass(0, vec![lightmapped])] },
+                // Level 1's layer 7, which an item at level 1 draws.
+                ResolvedLayer { lod: 1, layer: 7, passes: vec![pass(0, vec![additive(0)])] },
             ],
         };
         let mut materials = HashMap::new();
@@ -3778,9 +3780,12 @@ mod tests {
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let build = lit_model(&[section], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert_eq!(build.taken, vec![0], "{:?}", build.refused);
-        assert_eq!(build.input.layers.len(), 1, "layer 7's part; layer 8's does not compile");
+        assert_eq!(build.input.layers.len(), 2, "layer 7's part at each level; layer 8's does not compile");
+        let far = &build.input.layers[1];
+        assert_eq!((far.layer, far.level, far.section, far.part, far.passes.len()), (7, 1, 4, 0, 1), "level 1's own part");
+        assert_eq!(far.passes[0].implementations[0], Some((3, 0)), "compiled after level 0's, over the same buffer");
         let p = &build.input.layers[0];
-        assert_eq!((p.layer, p.section, p.part, p.indices.clone(), p.shader_tag), (7, 4, 0, 0..3, 0xe000_0010));
+        assert_eq!((p.layer, p.level, p.section, p.part, p.indices.clone(), p.shader_tag), (7, 0, 4, 0, 0..3, 0xe000_0010));
         assert_eq!(p.passes.len(), 2, "each pass of the layer, in order");
         assert_eq!((p.passes[0].count, p.passes[0].empty), (2, 0b10));
         assert_eq!(p.passes[0].implementations[..2], [Some((1, 0)), None], "after layer 3's program, over its buffer");
@@ -4420,7 +4425,7 @@ mod tests {
         assert!(plan(Some(0), 7, &seven, &far, &e).unwrap_err().contains("level 1"), "level 0's part");
         let far_part = [LitLayerPart { level: 1, ..part(7) }];
         let d = plan_layer_part(&far_part, Some(0), &pass_of, InstanceKey(1), 7, &rows, &seven, &LayerItem { pass: 1, ..far.clone() }, &e).unwrap();
-        assert_eq!(drawn(&d), [(0, 1)], "level 1's part draws the item's pass at its level");
+        assert_eq!(drawn(&d), [(0, 0)], "level 1's part draws the item's pass at its level");
         assert!(plan(None, 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native in layer 7"));
         assert!(plan(Some(1), 7, &seven, &item(0), &e).unwrap_err().contains("draws nothing native"), "layer 8's part");
         let other = LayerItem { key: ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }, ..item(0) };

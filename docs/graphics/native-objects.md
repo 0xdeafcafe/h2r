@@ -385,10 +385,11 @@ their addresses.
   layer's first pass there plus the pass): the guest's list holds one
   item per pass, and each draws that pass alone. The scene item carries
   both (`frame_scene::LayerItem::level`, `pass`), and the native draw
-  plans the item's pass only (`object_program_gpu::plan_layer_part`). The
-  object programs are compiled for the first level, so an item at
-  another level keeps its D3D draw (the plan's error names the level). A
-  low byte other than the key's part keeps the item on D3D.
+  plans the item's pass only (`object_program_gpu::plan_layer_part`),
+  from the model's part of the item's level: the world layers' object
+  programs compile at every level the material has passes in
+  (`object_program::object_layer_levels`). A low byte other than the
+  key's part keeps the item on D3D.
 
 What still declines, by name: `object_fade` (the device's stipple is on:
 layers 1 and 3 outside view kinds 4 to 7), `object_stipple` (the cached fade or the
