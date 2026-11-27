@@ -75,7 +75,7 @@ flowchart LR
 
 A draw that comes into view is not in `early`, so the late phase draws it the same frame. Draw order changes only between the two runs: a draw revealed this frame draws after the early set.
 
-The pyramid test is conservative: it takes the box's nearest clip `w` and stored depth (`w_depth`, floored as the fixed stage writes it), the box's screen rectangle widened by a pixel and clamped to the viewport, and the largest pyramid depth over that rectangle at the level where it spans two texels. It culls only when the box's nearest depth is past that by more than `1e-5`, so every fragment would fail the `LessEqual` depth test anyway. A box across the eye's plane is never occluded.
+The pyramid test is conservative: it takes the box's least stored depth from the view's `DepthModel` (its nearest corner's W-buffer value, clamped and floored as the draws store it), the box's screen rectangle widened by a pixel and clamped to the viewport, and the largest pyramid depth over that rectangle at the level where it spans two texels. It culls only when the box's nearest depth is past that by more than `1e-5`, so every fragment would fail the `LessEqual` depth test anyway. A box across the eye's plane is never occluded.
 
 A view the pyramid cannot serve draws the frustum's whole set and is counted by why (`GpuWorld::occlusion_skips`):
 
@@ -95,7 +95,12 @@ A view the pyramid cannot serve draws the frustum's whole set and is counted by 
 | Cull | `early_frustum` over the guest cull's slots (`GuestDispatch::record`): a draw is drawn when the guest's list holds it (`start`) and `Frustum::sides` of the admission lens (the reference and display copies' union, `cull_camera`) may see it |
 | Draws | One pass that loads and keeps the attachments; one packet per run of consecutive slots under one binding, in the list's order, `multi_draw_indexed_indirect` over the whole index buffer (`RecordedDraw::with_indirect`). A part the list repeats is drawn again |
 
-A part the lens cannot see is still the native pass's, and the guest does not draw it; it was clipped on the D3D path too. The depth pyramid does not run for a game view yet: material programs write the guest's W-buffer depth (`xps_w_depth`: the interpolated `w` plus the polygon offset, clamped to the clip range, over the full scale), which the late test must model from the pass's constants first.
+A part the lens cannot see is still the native pass's, and the guest does not draw it; it was clipped on the D3D path too. The depth pyramid does not run for a game view yet. What it needs is in place:
+
+| Need | Where |
+|---|---|
+| The programs' depth, modelled | `DepthModel::program`: the W-buffer value is the device's `c[3]` row dotted with the world position, clamped to the pass's W clip range, floored, over `z_scale` (`xps_w_depth`; `program::frame_pixel` gives world passes no polygon offset). The fixed stage's is `DepthModel::fixed`. The late test takes a box's least value at its nearest corner. |
+| The guest's depth, sampleable | Guest depth surfaces are `TEXTURE_BINDING` (`gfx::surface`); a multisampled one is not served (`depth_servable`) |
 
 The admission's frustum test kept the selected-parts pass equal to the D3D path by these rules, which the GPU's `Frustum::sides` keeps:
 

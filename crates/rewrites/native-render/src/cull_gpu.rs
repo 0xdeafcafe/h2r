@@ -88,12 +88,82 @@ fn gpu_bounds(world: &World) -> Vec<GpuBounds> {
 pub struct CullView {
     pub planes: [[f32; 4]; 6],
     pub view_proj: Mat4,
-    /// The world pass's depth rule: full scale, `1 / far`, floor flag.
+    /// [`DepthModel`]: full scale, floor flag, clamp range.
     pub depth: [f32; 4],
+    /// [`DepthModel::w_row`].
+    pub w_row: [f32; 4],
     /// The pass's viewport in target pixels.
     pub viewport: [f32; 4],
     /// `x`: the draw count.
     pub counts: [u32; 4],
+}
+
+/// How a view's draws store depth, for the pyramid test: the W-buffer
+/// value of a world position `p` is `w_row · (p, 1)`, clamped to `range`,
+/// floored to the format's step where `floor`, over `full_scale`. The
+/// value is affine in `p`, so a box's least is at a corner, and the stored
+/// depth is monotonic in it, so that corner bounds every fragment's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthModel {
+    pub w_row: [f32; 4],
+    pub full_scale: f32,
+    pub floor: bool,
+    pub range: [f32; 2],
+}
+
+impl DepthModel {
+    /// The fixed stage (`world.wgsl`'s `w_depth`): the view depth `w` of
+    /// the view-projection's last row, times `full_scale / far`.
+    pub fn fixed(view_proj: &Mat4, rule: DepthRule, far: f32) -> Self {
+        let k = rule.full_scale / far;
+        Self {
+            w_row: [view_proj[0][3] * k, view_proj[1][3] * k, view_proj[2][3] * k, view_proj[3][3] * k],
+            full_scale: rule.full_scale,
+            floor: rule.floor,
+            range: [0.0, f32::MAX],
+        }
+    }
+
+    /// A game view's material programs (`shaders::psh::wgsl`'s
+    /// `xps_w_depth` with `program::frame_pixel`'s uniforms): the
+    /// interpolated `w` of the device's `c[3]` row (the view-projection's
+    /// w row, already in W-buffer units, `dph` with the world position),
+    /// with no polygon offset, clamped to the pass's W clip range
+    /// (`ViewInputs::w_clip`, the whole `[0, z_scale]` without one), the
+    /// integer format's floor, over `z_scale`. A clipped fragment is not
+    /// drawn and a clamped one stores the range's edge: both at least the
+    /// clamped value.
+    pub fn program(view: &crate::program::ViewInputs) -> Self {
+        Self {
+            w_row: view.constants[3],
+            full_scale: view.z_scale,
+            floor: true,
+            range: view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range),
+        }
+    }
+
+    /// The least depth a fragment of `b` stores (the reference for
+    /// `cull.wgsl`'s `w_depth` of the box's nearest corner).
+    pub fn nearest(&self, b: &crate::world::Aabb) -> f32 {
+        let r = self.w_row;
+        let c = |k: usize| if r[k] >= 0.0 { b.min[k] } else { b.max[k] };
+        let w = r[0] * c(0) + r[1] * c(1) + r[2] * c(2) + r[3];
+        let z = w.clamp(self.range[0], self.range[1]);
+        let q = if self.floor { z.floor() } else { z };
+        (q / self.full_scale).clamp(0.0, 1.0)
+    }
+
+    fn uniform(&self) -> ([f32; 4], [f32; 4]) {
+        ([self.full_scale, f32::from(u8::from(self.floor)), self.range[0], self.range[1]], self.w_row)
+    }
+}
+
+/// Whether a view's depth target can seed the pyramid, or the counter of
+/// why not ([`OcclusionSkips`]): a game view's guest depth surface is
+/// sampleable (`gfx::surface`'s depth usage), but a multisampled one is
+/// not.
+pub fn depth_servable(t: &wgpu::Texture) -> bool {
+    sampleable(t)
 }
 
 /// Views whose late cull ran without the pyramid, by why: the frustum's
@@ -362,10 +432,12 @@ impl GpuCull {
         &mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, view_proj: &Mat4, frustum: &Frustum, depth: DepthRule,
         far: f32, viewport: PassViewport, occlusion: bool,
     ) {
+        let (depth, w_row) = DepthModel::fixed(view_proj, depth, far).uniform();
         let view = CullView {
             planes: frustum.planes,
             view_proj: *view_proj,
-            depth: [depth.full_scale, 1.0 / far, f32::from(u8::from(depth.floor)), 0.0],
+            depth,
+            w_row,
             viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
             counts: [self.count, 0, 0, 0],
         };
@@ -514,6 +586,7 @@ impl GpuCull {
             planes: frustum.planes,
             view_proj: *view_proj,
             depth: [0.0; 4],
+            w_row: [0.0; 4],
             viewport: [0.0; 4],
             counts: [self.count, 0, 0, 0],
         };

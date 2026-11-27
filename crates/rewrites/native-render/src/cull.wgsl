@@ -9,9 +9,12 @@ struct View {
     // `n · p + d >= 0` inside (`Frustum`).
     planes: array<vec4<f32>, 6>,
     view_proj: mat4x4<f32>,
-    // x: the depth format's full scale, y: 1 / far, z: 1 to floor to the
-    // format's step, w: unused (the world pass's `Frame::depth`).
+    // How the view's draws store depth (`DepthModel`): x the full scale,
+    // y 1 to floor to the format's step, zw the range the W-buffer value
+    // is clamped to.
     depth: vec4<f32>,
+    // The W-buffer value of a world position: `dot(w_row.xyz, p) + w_row.w`.
+    w_row: vec4<f32>,
     // The pass's viewport in target pixels: x, y, width, height.
     viewport: vec4<f32>,
     // x: the draw count, yzw: unused.
@@ -54,11 +57,12 @@ fn may_see(i: u32) -> bool {
     return true;
 }
 
-// The stored depth a fragment at view depth `w` gets at the least
-// (`world.wgsl`'s `w_depth`: floor only lowers it).
+// The stored depth of a fragment whose W-buffer value is `w`
+// (`world.wgsl`'s `w_depth`, the programs' `xps_w_depth` with no polygon
+// offset): monotonic in `w`, so the box's least `w` gives its least depth.
 fn w_depth(w: f32) -> f32 {
-    let z = w * view.depth.x * view.depth.y;
-    let q = select(z, floor(z), view.depth.z != 0.0);
+    let z = clamp(w, view.depth.z, view.depth.w);
+    let q = select(z, floor(z), view.depth.y != 0.0);
     return clamp(q / view.depth.x, 0.0, 1.0);
 }
 
@@ -85,7 +89,7 @@ fn occluded(b: Bounds) -> bool {
         let ndc = clip.xy / clip.w;
         lo = min(lo, ndc);
         hi = max(hi, ndc);
-        near = min(near, clip.w);
+        near = min(near, dot(view.w_row.xyz, p) + view.w_row.w);
     }
     lo = clamp(lo, vec2<f32>(-1.0), vec2<f32>(1.0));
     hi = clamp(hi, vec2<f32>(-1.0), vec2<f32>(1.0));

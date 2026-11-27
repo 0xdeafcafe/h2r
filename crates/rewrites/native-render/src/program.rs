@@ -4312,6 +4312,17 @@ mod tests {
         assert_eq!(gpu.read_guest_drawn(&ctx.device, &ctx.queue), want);
         let stats = gpu.read_guest_cull_stats(&ctx.device, &ctx.queue);
         assert_eq!((stats.visible, stats.total), (1, 3));
+
+        // The pyramid's model of the programs' depth bounds what they wrote,
+        // to the step: the wall's least stored depth is its nearest corner's.
+        let model = crate::cull_gpu::DepthModel::program(&view);
+        let least = images[1].1.chunks_exact(4).map(|d| f32::from_le_bytes([d[0], d[1], d[2], d[3]]))
+            .fold(f32::INFINITY, f32::min);
+        let nearest = model.nearest(&gpu.world().draws[0].bounds);
+        assert!(nearest <= least && least - nearest <= 1.0 / view.z_scale, "model {nearest}, stored {least}");
+        // A clip range above the wall clamps it up: the model follows.
+        let clamped = crate::cull_gpu::DepthModel::program(&ViewInputs { w_clip: Some(([40.0, 1000.0], true)), ..view });
+        assert_eq!(clamped.nearest(&gpu.world().draws[0].bounds), 40.0 / view.z_scale);
     }
 
     #[test]
