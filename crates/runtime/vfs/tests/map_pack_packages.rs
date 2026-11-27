@@ -416,3 +416,72 @@ fn without_the_map_pack_installed_nothing_is_served() {
     assert!(vfs.open(&pack_path(), OpenOptions::default()).is_err());
     assert_eq!(vfs.map_id(&pack_path()), None);
 }
+
+/// What a reader outside the VFS reads from `name`'s file source.
+fn source_bytes(vfs: &mut Vfs, name: &str) -> Vec<u8> {
+    match vfs.file_source(name).unwrap_or_else(|| panic!("{name}: no file source")) {
+        FileSource::Host(f) => {
+            let all = fs::read(&f.path).unwrap();
+            all[f.offset as usize..(f.offset + f.len) as usize].to_vec()
+        }
+        FileSource::Memory(bytes) => bytes.to_vec(),
+        FileSource::Spliced(f) => f.read_all().unwrap(),
+    }
+}
+
+/// An overlaid map pack map has a file source outside the VFS: the
+/// installed map with the mod over it, the bytes the guest reads.
+#[test]
+fn a_ppf_mod_has_a_file_source_with_the_served_bytes() {
+    let t = TempDir::new();
+    install(&t);
+    let base = turf();
+    let mut edited = base.clone();
+    edited[0x900..0x910].copy_from_slice(b"ownage modz turf");
+    let edited = resigned(edited);
+    let patch = content::patch::diff(&base, &edited, "turf");
+    package(&t, "turf-ownage", "mod.ppf", &patch.bytes);
+    let mut vfs = mounted(&t, true);
+    assert!(matches!(vfs.file_source(&pack_path()), Some(FileSource::Spliced(_))));
+    assert_eq!(source_bytes(&mut vfs, &pack_path()), edited);
+    assert_eq!(read_file(&mut vfs, &pack_path()), edited);
+}
+
+/// A package map installed under its own offer (`boot::new_maps`, the
+/// path a Forge or mod map's slot records): `T:\$c\<offer>\<map>.map`
+/// has a file source with the bytes the guest reads, the overlay and the
+/// header name it is served under included.
+#[test]
+fn a_t_content_package_map_path_has_a_file_source() {
+    let t = TempDir::new();
+    install(&t);
+    let base = turf();
+    let mut edited = base.clone();
+    edited[0x900..0x910].copy_from_slice(b"forged turf bits");
+    let edited = resigned(edited);
+    let patch = content::patch::diff(&base, &edited, "turf");
+    package(&t, "turf-forged", "mod.ppf", &patch.bytes);
+    let package = content::Library::open(t.maps()).packages()[0].clone();
+
+    let cfg = Config::new(t.data(), TITLE);
+    let offer = "4d530064ff9e2cb1";
+    let map = "m-7f9e2cb1-b02c9cff29e0ece2ed41";
+    fs::create_dir_all(t.offer(offer)).unwrap();
+    let mut vfs = Vfs::with_storage(cfg.clone()).unwrap();
+    vfs.create_standard_links(&cfg).unwrap();
+    let base_file = vfs.host_file(&pack_path()).unwrap();
+    cfg.content_maps.replace([(
+        format!("TDATA\\4D530064\\{CONTENT_DIR}\\{offer}\\{map}.map"),
+        ContentMap { package, base: Some(base_file), alias: Some(map.into()) },
+    )]);
+
+    let mut served = edited.clone();
+    served[0x198..0x198 + 32].fill(0);
+    served[0x198..0x198 + map.len()].copy_from_slice(map.as_bytes());
+    let slot = format!("t:\\$c\\{offer}\\{map}.map");
+    assert_eq!(read_file(&mut vfs, &slot), served);
+    assert!(vfs.file_source(&slot).is_some(), "{slot}: no file source");
+    assert_eq!(source_bytes(&mut vfs, &slot), served);
+    let device = vfs.content_map_path(map).unwrap();
+    assert_eq!(source_bytes(&mut vfs, &device), served);
+}

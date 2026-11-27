@@ -288,6 +288,17 @@ though it has no contiguous host file. A damaged layer or mismatched
 base fails the mod read. [VFS content maps](../../crates/runtime/vfs/src/content_maps.rs) ·
 [Patch resolution](../game/maps.md#2-applying-layers-at-load)
 
+| Mod map | Outside the VFS (`Vfs::file_source`) |
+|---|---|
+| PPF or IPS | `FileSource::Spliced`: the base's host region with the overlay |
+| whole map or BPS | `FileSource::Host`: the file |
+| either, under another header name | the name is a 32-byte run at `0x198` in the overlay, so `Spliced` |
+
+The native readers open the running map by its slot path through it
+(`native_map::open`, [cache-slots.md](cache-slots.md)). A Map Pack map
+under `PackageBackend` gives the same. Tests:
+`crates/runtime/vfs/tests/map_pack_packages.rs`.
+
 Live installs and removals publish a new registry and trigger a content
 scan on the next main-menu tick. An open file keeps its resolved bytes
 until the last handle closes. The normal boot mounts the disc, campaign
