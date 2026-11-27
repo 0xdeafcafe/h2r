@@ -266,7 +266,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 
 /// The screens `h2 ui preview` knows, including the design specimens
 /// and layout gallery. Append new screens to preserve existing ids.
-pub const NAMES: [&str; 86] = [
+pub const NAMES: [&str; 87] = [
     "forge.objects",
     "forge.properties",
     "forge.tools",
