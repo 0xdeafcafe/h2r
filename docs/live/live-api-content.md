@@ -50,6 +50,7 @@ and never changed. It is always served through the server, never by a
 redirect (the game's client follows none, and a takedown must be
 immediate); a server-signed `ContentStored`
 event (`content-<sha256>` stream; `{sha256, size, uploader}`) records it.
+
 A body starting with a map's `daeh` header is a whole map; anything else
 is a layer (a patch, pack or image). Both are capped at 95 MiB by
 default (413 over either; `h2 live serve --content-layer-mib N
@@ -60,7 +61,9 @@ so the native server and the Worker take the same uploads. A layer can
 be large: Night Ops' delta over Containment is 68 MiB. Each account stores at most
 1 GiB (`--content-quota-mib N`), counting what it uploaded first and not
 deleted (413 over it). Uploads and publishes are rate limited per account
-(a burst of 20, then one every two seconds; 429). A hash on the operator's
+(a burst of 20, then one every two seconds; 429).
+
+A hash on the operator's
 retail list is refused (403), and so is a hash an admin blocked (410). A
 server with no data directory stores nothing (503).
 
@@ -76,7 +79,9 @@ only when Live approves it or an admin includes it in curated details
 or pack art. `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
-outside the `MapId` like the manifest's name (400 when malformed). So are
+outside the `MapId` like the manifest's name (400 when malformed).
+
+So are
 the in-game Mods page's (docs/game/maps.md §5, "A mod's page"):
 `features` (what the mod changes, each once, of `vehicles`, `weapons`,
 `objects`, `textures`, `shaders`, `scripts`, `geometry`, `ai`;
@@ -91,7 +96,9 @@ creators as the release credits them (at most 12, each 1 to 64 characters
 on one line), `release` the original release's name (at most 120),
 `released` its date (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`), `source_url` as
 above, `notes` at most 500 characters. Without it the manifest's
-`[package] author` (one name) and `source_url` stand in. Servers before
+`[package] author` (one name) and `source_url` stand in.
+
+Servers before
 credits refuse a document that has it (unknown field: 400).
 The server checks the manifest as the runtime does ([maps.md](../game/maps.md) §7,
 "Manifest checks"), computes `MapId::of` and requires the stream to be that
@@ -99,7 +106,9 @@ id's; refuses a manifest with no layers (only a retail base: 403) or naming a
 retail hash (403); refuses it while any layer or the image is not stored
 (409, naming the files); and checks the image is at most 512 KiB and starts
 with a PNG or JPEG signature. The first publisher of a `MapId` is its
-author (another account: 409). The usual signature, key, five-minute clock
+author (another account: 409).
+
+The usual signature, key, five-minute clock
 and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
@@ -120,7 +129,9 @@ has one. An admin's details (`PUT /v1/maps/{id}/details`) add `images`
 `/v1/maps/{id}/images/{n}`), `contents` (the report's lines) and `pack`
 and `pack_name`; they replace `description` and `features` when set.
 The first visible gallery image supplies `image` if the manifest has
-no cleared preview. A list page
+no cleared preview.
+
+A list page
 then has `packs: [{id, name, ...}]` for the packs its items name; a
 map's own answer has `report` (the whole contents report:
 `{lines, classes, swaps, stats, placements, scripts}`) and `pack_info`.
@@ -136,6 +147,7 @@ The web and game browse releases at `/v1/mod-packs`. A pack includes
 `members` (map summaries), `map_count` and `size` in bytes, counting each
 shared layer once. It may have a description, version, release year,
 source URL, gallery and an `advisory` of `cheating_pack` or `not_for_online`.
+
 The advisory is displayed with the release.
 
 To publish, upload the layers and sign each `MapPublished` document with
@@ -145,11 +157,15 @@ feed shows the staging manifests only to the uploader and administrators.
 The pack body contains `name`, `authors` (one or more), `members` (one
 to 64 distinct MapIds from the same uploader), and optional
 `description`, `version`, `source_url`, numeric `year` and `advisory`.
+
 Each explicit pack contains at most one member for a given base level. A map already bound to an explicit pack stays in that pack. A missing member returns 404, a different uploader gets 403, and a conflicting membership returns 409.
+
 The pack ID for an imported release comes from
 `live_proto::maps::mod_pack_id_for`. Replaying older map events also
 produces packs. Explicit curated membership supplies the release where
-available. Otherwise a title of the form `<release>: <map>` groups with
+available.
+
+Otherwise a title of the form `<release>: <map>` groups with
 the same release from the same uploader. A standalone map forms a pack
 of one. Member downloads and lobby joins keep their full MapIds.
 
@@ -159,37 +175,52 @@ Each map and pack has five capture slots, `capture/0` through
 `capture/4`. The game provides
 `{game_id, tick, map_id, map, camera: {position, forward, up}, digest}`
 in the `X-H2-Capture-Proof` JSON header. `digest` is the SHA-256 of the
-request body. The camera uses game coordinates with Z up. For a private
+request body. The camera uses game coordinates with Z up.
+
+For a private
 capture, add `permit` from the capture-session response. Live verifies
 that permit against the account, game ID and exact MapId for 15 minutes.
 The map name is the package's base name.
+
 For a recorded game, Live checks its roster, exact MapId, map name and
 recorded tick range. A film without a matching game record cannot establish
-its exact MapId. Pack uploads must show a member's map. The
+its exact MapId. Pack uploads must show a member's map.
+
+The
 arbitrary-file `upload` slots do not accept submissions.
 
 Live accepts PNG, JPEG and WebP with valid proof, within 5 MiB, 4096 pixels
 per side and 8 megapixels. It converts the image to opaque WebP, at most
 1280 pixels per side and 512 KiB. The normalised hash in the receipt is
 the ID for reports and review. The uploader's accepted receipt says
-`pending` or `approved`. The gallery uses dense indices in slot order
+`pending` or `approved`.
+
+The gallery uses dense indices in slot order
 followed by curated images. Reportable entries carry `reportable: true`.
 
 Live compares a 48×27 image against projected edges from an admin-supplied
 outline stored under the exact MapId. A mismatch or insufficient geometry
 requires review. The classifier scores the same normalised image that Live
-serves. Scores above 0.20 and unavailable or invalid scores require review.
+serves.
+
+Scores above 0.20 and unavailable or invalid scores require review.
 Scores of 0.80 or higher flag the image for an upload strike.
 Private and player-hosted captures require manual approval
-even when those checks clear. The permit authorises the capture session and
+even when those checks clear.
+
+The permit authorises the capture session and
 the digest binds the upload bytes. An uploader controls the pixels produced
 by a game running on their own device.
 
 The pending queue's items give `{sha256, revision, uploader, reason, nsfw,
 proof}`. The revision is a decimal string identifying the current review.
-Proof in the queue omits the permit. A report hides the image across its
+Proof in the queue omits the permit.
+
+A report hides the image across its
 map, pack, preview and direct content URLs. Each account can report the same
-image once. Approving restores the image. Removing it permanently blocks
+image once. Approving restores the image.
+
+Removing it permanently blocks
 that hash. [Screenshot review](live-admin-moderation.md#screenshot-review)
 
 Implementation: [shared screenshot routes](../../crates/live/live-server/src/content/screenshots.rs).

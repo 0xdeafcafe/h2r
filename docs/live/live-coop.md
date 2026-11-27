@@ -8,6 +8,7 @@ is built on tests ([section 8](live-coop-crate.md#8-the-coop-crate)), as is
 the probe of the retail path ([section 9](live-coop-crate.md#9-probe-phase-2)) and, on the
 assumption that the probe's path works, Co-op over Live itself
 ([section 10](live-coop-live.md#10-co-op-over-live-built)).
+
 The owner has Co-op over Live working in the game (2026-11-17).
 More than two players (up to 16, behind `coop.max_players`) is built on
 tests and traced in [section 13](live-coop-join.md#13-more-than-two-players).
@@ -15,6 +16,7 @@ Join in progress (a friend joins a running campaign, nobody reverts) is
 traced and its protocol built on tests in
 [section 14](live-coop-join.md#14-join-in-progress), and wired through the retail
 synchronous join (14.9); it needs its first game run.
+
 Latency on the synchronous path is budgeted, measured by a
 `coop-live: latency` line, and prediction assessed in
 [section 15](live-coop-live.md#15-latency-and-prediction).

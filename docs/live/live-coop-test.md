@@ -93,7 +93,9 @@ after a game), opens it unless it is the first boot's intro
 (`0x0014741b`) or the case at `0x001484c0` (`0x002310b7`). The delegate
 is an event, not a per-frame poll: in the 023123 run Bravo sat on the main
 menu from before the acceptance until it pressed Xbox Live, and it was
-never called. So `h2 coop test --auto` tells the guests to join from the
+never called.
+
+So `h2 coop test --auto` tells the guests to join from the
 friends list (Y, the host, Join Game), the path the 023244 run took to the
 host's QoS.
 
@@ -107,14 +109,19 @@ without checking them; it drops the result unless the title's own Live
 logon is done (`0x000901c1`, `0x0006cd50() == 1`). On the main menu,
 before Xbox Live, that fails and the friend view looks again the next
 frame: the 023244 run's sixty `find session` lines a second, all `0 of 0`.
+
 The title passes zero slot counts to `XOnlineMatchSessionCreate` for its
 co-op lobby. Its join uses the host's QoS reply for admission. For a web
 [join link](live-custom-games.md#join-in-halo-2), the host's lobby pinger
 in `crates/extensions/game/src/coop_live.rs` publishes the observed player
-count and available seats on the current Live advertisement. A new console
+count and available seats on the current Live advertisement.
+
+A new console
 needs both a free peer and a free player slot, within `coop.max_players`.
 Explicit title slot counts, including reserved seats, take precedence.
-A host with no observed capacity offers no link. Repeated identical find
+A host with no observed capacity offers no link.
+
+Repeated identical find
 lines are logged once per 30 seconds.
 
 The 023123 run's lobby was advertised twice (81113027... at +24.2,
@@ -180,7 +187,9 @@ server gave its advertisement (with the 172-byte lobby data). A joining
 guest probes the squad's id; with no data the title's join decode
 (`0x0006f5f5`, state 6) fails: `error_join_data_decode_failure`. The HLE's
 responder now answers an enabled listener without data with the newest
-lobby data the console listens with (`qos::answer`). The `0 of 0 public
+lobby data the console listens with (`qos::answer`).
+
+The `0 of 0 public
 slots` in that run's find line did not stop the join (the guest went on to
 probe); the line now shows the private slots too.
 

@@ -9,7 +9,9 @@ resident memory in the original three-match, 1 vCPU / 3 GiB sizing model
 ([Packed hosts](dedicated-host.md#packed-hosts)). The targets are to halve both
 figures per match, start a match in under 2 s from a template process, and
 let the fleet follow lease demand from one match to a thousand. One rule
-holds throughout: a host is ad hoc. Searchers and active leases create demand. An empty pack
+holds throughout: a host is ad hoc.
+
+Searchers and active leases create demand. An empty pack
 expires after 60 seconds without demand on both local Live and Cloudflare.
 
 Targets, per match in a full pack:
@@ -39,7 +41,9 @@ collision 5%, the bots' Rust brain up to 8%, runner and scheduler 10%
 **Memory.** One sim process on macOS has a 143 MiB dirty footprint: 64 MiB
 of guest RAM, 39 MiB of other large allocations and 35 MiB of small ones.
 Its 414 MiB of module text is shared
-([notes/sim.md](../runtime/notes/sim.md)). The pack reserves 340 MiB for a match on an unmeasured map. This
+([notes/sim.md](../runtime/notes/sim.md)). The pack reserves 340 MiB for a match on an unmeasured map.
+
+This
 resident-size estimate counts shared pages in each process.
 
 **Start.** A lease waits for the container (1–3 s on Cloudflare), the
@@ -92,7 +96,9 @@ on large maps.
 *k* = 2 (10.77 of 14.12 ms after phase 3), with the local-seat share
 removed from the denominator. Phase 7 (seats) is skipped for hosts.
 The light profile offers animation, collision and object rewrites together through
-`host-light-native` in `crates/apps/boot/src/registration.rs`. Explicit subsystem
+`host-light-native` in `crates/apps/boot/src/registration.rs`.
+
+Explicit subsystem
 and group selections take precedence. The profile switch defaults off pending
 a clean A/A, hash parity on both maps, and a Waterworks median saving of
 at least 1.5 ms per tick. The existing subsystem ladders still apply.
@@ -113,7 +119,9 @@ reasons in [Measure before pruning](dedicated-host-light.md#measure-before-pruni
 there is no lower "network rate" to drop to, and there are no in-between
 frames to remove. The experimental light-host pacer groups host waits on a
 30 Hz monotonic wall-clock grid. Inbound guest UDP, including datagrams from
-the tunnel bridge, interrupts the grouped wait. The guest processes its
+the tunnel bridge, interrupts the grouped wait.
+
+The guest processes its
 original logical deadlines in order. Slot *n* of capacity *m* uses a phase
 offset of 33.3 × *n* / *m* ms across processes. The switch defaults off
 pending paced hash parity, lower process CPU, unchanged packet latency and
@@ -121,7 +129,9 @@ a four-match wall p99 under 36 ms on one vCPU.
 
 **Bots.** `H2_BOT_THREADS=auto` sizes a pool per process, which
 oversubscribes a 1 vCPU pack. Bot thinking defaults to serial. Explicit worker settings
-apply per process. A pack-wide allowance still needs a measured brain
+apply per process.
+
+A pack-wide allowance still needs a measured brain
 cost and the pipeline's parity gate. Admission reads process CPU because
 moving work onto another thread still consumes container CPU. A brain service shared between
 processes (one pool, perception passed over shared memory) is not designed
@@ -134,7 +144,9 @@ On Linux the pack supervisor reports process-group Pss, private dirty and shared
 `memory.current` less inactive file pages. The sim report's
 `wall.peak_rss_mib`, `wall.footprint_mib` and
 `wall.guest_written_pages` over `wall.guest_pages` give the same split per
-run on macOS, and `rss_bytes` in `hostmetrics` tracks it live. A figure is
+run on macOS, and `rss_bytes` in `hostmetrics` tracks it live.
+
+A figure is
 taken in the lobby and at tick 1,800 of the match, for 1, 2 and 4 matches
 on one map and 4 matches on four maps.
 
@@ -158,17 +170,23 @@ pages from an immutable source (a sim store, a server map or the read-only
 disc mapping) into a guest address that is page-congruent with the file
 offset, the VFS maps that file range private over the guest pages instead
 of copying (`crates/runtime/vfs/src/sim_store.rs`,
-`crates/runtime/runtime/src/guest.rs`). The guest sees the same bytes. A
+`crates/runtime/runtime/src/guest.rs`). The guest sees the same bytes.
+
+A
 page it later writes becomes private; the rest stay one set in the page
 cache for every match on the host. A read that is not congruent, is
 shorter than 16 pages, or targets a writable source is copied as before,
 and the report counts mapped and copied bytes. The store builder pads large ranges for congruence on 4 KiB hosts; 16 KiB hosts (Apple
-silicon) qualify less often. The mapping is private and preserves guest writes. A live alias, a write watch that needs the original backing, or an unsupported RAM layout can require copying. Compare the mapped and copied byte counters and hashes in matched runs, and require at least 40 MiB less private dirty memory per match on one map.
+silicon) qualify less often.
+
+The mapping is private and preserves guest writes. A live alias, a write watch that needs the original backing, or an unsupported RAM layout can require copying. Compare the mapped and copied byte counters and hashes in matched runs, and require at least 40 MiB less private dirty memory per match on one map.
 
 **Private stores and slim image.** The bundle accepts verified stores for
 the two shared resource maps. The menu and playable maps remain contiguous
 for native catalogue and navigation readers. Both host child paths mount bundled
-stores. The Linux staging script accepts a matching slim coverage export.
+stores.
+
+The Linux staging script accepts a matching slim coverage export.
 Qualification requires zero store misses and zero coverage fallbacks on
 the light-host corpus and the lobby sequence.
 [Build and size checks](dedicated-host-build.md#package-recorded-shared-resources)
@@ -178,7 +196,9 @@ maps a saved RAM image private copy-on-write
 ([sim.md §6.2](../runtime/sim.md#62-sharing-guest-ram-with-machine-snapshots)).
 The proposed template uses it for the menu state. A *loaded-level*
 template (one per map and variant, forked after load) only fits a lease
-that boots straight into its map: a `sim-<run_id>` lease. It needs the
+that boots straight into its map: a `sim-<run_id>` lease.
+
+It needs the
 phantom peers' host state in the snapshot, which is missing today. A pack
 keeps at most two level templates, least recently used first out, and only
 while a batch is queued.
@@ -221,7 +241,9 @@ no session and no credential, and one snapshot serves every map. It comes
 from the bundle when `h2 host bundle` was given one, keyed by the module
 stamp, the bundle hash and the switch set. Otherwise the pack's first
 start boots the title once (the 20 s path), saves the snapshot into the
-host cache and becomes the template. A snapshot that does not match is a
+host cache and becomes the template.
+
+A snapshot that does not match is a
 named error in the pack's log and in `GET /v1/pack` (`template: "bundle"`,
 `"built"` or `"none: <reason>"`), and that pack boots each match the slow
 way. The light profile's clock-only audio has no snapshot section today;
@@ -251,7 +273,9 @@ reserve memory during boot, before their pages appear in the cgroup.
 Both Cloudflare classes reserve 12 GB of disk. The deployment uses the
 scheduling policy that enforces Wrangler’s `max_instances` and requires
 at least 3 GiB of memory per vCPU. The smaller limits are admission and
-qualification budgets. Billing uses the provisioned memory. The density
+qualification budgets. Billing uses the provisioned memory.
+
+The density
 gate runs four real-time matches on one vCPU with a physical 1,536 MiB
 limit for 30 minutes, checking every pack sample for a tick p99 under 36 ms.
 [Cloudflare instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/) · [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/)
@@ -260,25 +284,34 @@ limit for 30 minutes, checking every pack sample for a tick p99 under 36 ms.
 
 Each class and region has a pool. Matchmaking counts unexpired search
 tickets in dedicated-enabled hoppers by each player’s best region. Active
-leases in that class and region also count as demand. Placement fills the
+leases in that class and region also count as demand.
+
+Placement fills the
 most occupied pack with capacity first.
 
 The pool estimates spare slots as twice the observed five-minute lease
 arrival rate times its median cold start duration. Its minimum is one slot
 for the first searcher. It subtracts free slots in occupied packs, renews
 only the required empty packs, and starts at most one more per reconciliation.
+
 Each regional class allows three speculative starts or renewal rounds between
 newly admitted leases. A failed attempt consumes a round. A duplicate pulse,
-an empty plan or a retried lease leaves the counter unchanged. The counter
+an empty plan or a retried lease leaves the counter unchanged.
+
+The counter
 survives pack expiry and Worker room eviction. A native service restart
 resets the in-memory pool.
-A supervisor can start before a cohort forms. Its game child and data
+A supervisor can start before a cohort forms.
+
+Its game child and data
 provisioning start with the lease. The under-two-second join gate still
 depends on the proposed template.
 
 Without searchers or active leases, the wanted count falls to zero. The
 empty supervisor lingers for 60 seconds. Native Live reaps it and the Worker
-persists cleanup deadlines across room eviction. Before starting or renewing
+persists cleanup deadlines across room eviction.
+
+Before starting or renewing
 an empty Cloudflare pack, Live records its paid interval against the host
 budget. A lost response can leave a conservative reservation. A zero lease
 cap or exhausted budget prevents new capacity.
@@ -288,12 +321,17 @@ cap or exhausted budget prevents new capacity.
 The queue advertises running managed UDP endpoints, configured UDP probes
 and a ticket-authenticated WebSocket echo. Native Live answers the service
 echo itself. On Cloudflare a regional pool tries an active pack's tunnel
-and otherwise answers in the room. Neither fallback starts a host. The
+and otherwise answers in the room.
+
+Neither fallback starts a host. The
 matchmaker prefers the running UDP sample, then configured UDP, then the
 service echo. It selects the lowest worst-member RTT among regions sampled
-by every member. A warm slot within 10 ms wins. An unranked match uses its reserved
+by every member.
+
+A warm slot within 10 ms wins. An unranked match uses its reserved
 peer when a strict majority of the cohort measures over 120 ms to the region
 and a faster route to that peer. Ranked matches keep the dedicated placement.
+
 Incomplete regional coverage uses the configured default.
 
 The host agent exposes live per-peer RTT for the same-client comparison.
@@ -310,9 +348,13 @@ containers per class. They are different numbers once matches are packed:
 
 The deploy renderer uses the configured slots for each class, up to five
 small or ten large, and counts an unconfigured region table as one pool.
-Live defaults to four leases. Zero disables admission. Caps one through
+Live defaults to four leases. Zero disables admission.
+
+Caps one through
 four support smaller deployments. Larger steps require an explicit setting.
-The monthly Worker budget defaults to $25. A capacity increase still
+The monthly Worker budget defaults to $25.
+
+A capacity increase still
 requires an independent budget decision. Unfilled packs incur provisioned
 memory and disk charges, including paid idle intervals.
 
@@ -406,7 +448,9 @@ $0.00075 on Cloudflare after the included terabyte and $0.0006 on Fly, a
 quarter of the total at scale. A thousand matches cost about $19 an hour
 in compute and $6 in egress. Fly today, one Machine per lease, is $0.0058
 per player-hour at any size. "Today's design" is priced as if its caps
-allowed the count. Cloudflare is cheaper when packs are part full, Fly
+allowed the count.
+
+Cloudflare is cheaper when packs are part full, Fly
 when they are full, and Fly has no tunnel leg.
 
 ## Build order

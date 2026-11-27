@@ -9,17 +9,22 @@ Part of [Live telemetry](live-telemetry.md). Covers: Packed frames.
 The game reads discovery when it opens or reconnects its ingest socket.
 It selects v8 if the server advertises `ingest_frame_versions: [8]` and
 falls back to v7 otherwise. Native and Worker servers both advertise v8.
+
 The viewer requests `frames=packed&frame_version=8`. Subscribers that
 omit the version keep receiving v7. Readers dispatch on each record's
 version nibble, including when a replay contains records from different
-versions. The current H2CK writer and standalone frame pages still use v7.
+versions.
+
+The current H2CK writer and standalone frame pages still use v7.
 [Discovery and stream API](live-api-social.md#streams-websocket)
 
 V8 keeps the length-prefixed container and v7 field grids. Each key
 embeds a complete v7 key including the known machine travel. Between
 keys, a forward byte-range coder writes one packet per sample, using
 causal field predictions, grouped unchanged fields and adaptive symbol
-frequencies. The key resets the field history, dictionary and symbol
+frequencies.
+
+The key resets the field history, dictionary and symbol
 tables. A subscriber starts at a key and receives the following deltas
 in order. An existing stream has a key at least every 150 samples.
 
@@ -29,10 +34,14 @@ v8 and about 145 on v7, including keys and record lengths.
 
 After the usual ULEB record length, the first byte is
 `8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
-A ULEB sequence follows. A key carries one bare v7 key of stream 0,
+A ULEB sequence follows.
+
+A key carries one bare v7 key of stream 0,
 sequence 0. A delta carries ULEB tick increment and one terminated range
 payload. Each stream maintains independent prediction and probability
-state. A successful key supersedes earlier versions for that stream ID.
+state.
+
+A successful key supersedes earlier versions for that stream ID.
 
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
@@ -40,7 +49,9 @@ server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 `GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
 and `/frames` for older games). JSON readers can request `?format=json`
 on an individual chunk or the legacy frame page. Live JSON readers use
-`/v1/stream?frames=json`. See the [precision and transfer measurements](notes/2026-11-19-telemetry-precision.md).
+`/v1/stream?frames=json`.
+
+See the [precision and transfer measurements](notes/2026-11-19-telemetry-precision.md).
 `crates/live/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
@@ -138,10 +149,14 @@ values of the selected fields in schema order.
 
 Entity keys match an edit to its base even after a reorder. V7 remembers the
 previous matched edit mask in each list, initially zero. Runs and new entities
-leave that mask intact. For players and actors each five-bit group carries four
+leave that mask intact.
+
+For players and actors each five-bit group carries four
 bits of the XOR of the current and previous masks, least significant group
 first. The fifth bit requests another group. The last of five possible groups
-must end the mask. An unchanged mask costs a single zero group. The field
+must end the mask.
+
+An unchanged mask costs a single zero group. The field
 orders, using the zero-based indices from the entity table, are:
 
 | list | four fields per group, first group on the left |
@@ -160,25 +175,35 @@ players, actors, vehicles and projectiles with known velocity. With velocity
 For players and datum-ID actors, two equal successive spans allow an additional
 prediction when the same numeric key occupied the previous slot both times.
 Keep that slot's actual yaw, aim and velocity from one sample earlier. Predict
-each field as twice the previous value minus the older one. Wrap yaw modulo
+each field as twice the previous value minus the older one.
+
+Wrap yaw modulo
 16384 and clamp each oct coordinate to 0..16382. Aim and velocity each require
 two present values. When velocity can be predicted, use the mean of the last
 actual velocity and predicted velocity for displacement, or
-`round_half_away((a + b) * 4 * dt / 30)`. A keyframe clears all history.
+`round_half_away((a + b) * 4 * dt / 30)`.
+
+A keyframe clears all history.
 A gap greater than 30 ticks disables prediction for that span.
 
 Runs inherit the predicted state. Edits correct every difference from the
 quantised endpoint. A changed yaw or oct component with a base uses
 `0, seg(0)` for differences in −64..63 or `1, u(14)` for an absolute
-component. Without a base it uses `u(14)`. Yaw differences wrap at one turn.
+component.
+
+Without a base it uses `u(14)`. Yaw differences wrap at one turn.
 A matched unit's present animation phase with a present base and a span of
-1–30 ticks uses one bit after the presence bit. A one advances the base by
+1–30 ticks uses one bit after the presence bit.
+
+A one advances the base by
 16 quanta per tick. A zero precedes an absolute `eg(4)`.
 
 V7 hit positions can reuse the exact quantised position of a player in the
 same frame. When there are players, a one bit followed by a four-bit ordinal
 selects one from the current wire-order list. A zero bit precedes the three
-absolute coordinates for other hits. When the player list is empty the three
+absolute coordinates for other hits.
+
+When the player list is empty the three
 absolute coordinates follow directly.
 
 **Versions 1–6.** Position uses 1/512 unit, velocity 1/64 unit/s, yaw 12
@@ -197,7 +222,9 @@ integer quanta, per axis: `p + floor((4 (a + b) dt + 15) / 30)`, where `p`
 is the previous position, `a` the previous velocity and `b` the entity's
 velocity in this frame (written later in the entity, so a decoder reads the
 error first and adds the prediction once the entity is read; `a` again when
-the new one is absent or past 2^23). That is the mean velocity over `dt`
+the new one is absent or past 2^23).
+
+That is the mean velocity over `dt`
 ticks, rounded half up: exact for constant acceleration (a grenade's arc),
 and a unit walking steadily codes 0 or ±1 per axis (4 bits) where the
 plain difference of 4 units a second at 15 Hz is 10 bits, and a still axis
@@ -220,22 +247,28 @@ doubles (exact: every term stays under 2^31).
 Machine travel is an optional section after the items list at the current
 bit cursor. Its first field is `eg(2)` count minus one (1–255 entries).
 Each entry is `eg(3)` placement gap, then its absolute `u(8)` position.
+
 Placements are strictly ascending from 0 to 32767. The gap is
 `index - previous_index - 1` with previous index initially -1.
 
 The section is absent when empty and takes at least 15 bits when present.
 A decoder uses the current record's length. With at most seven bits left,
-only zero padding is allowed. With more it reads the section, then
+only zero padding is allowed.
+
+With more it reads the section, then
 requires at most seven zero padding bits. Old v7 records end with the
 same padding and still decode. The legacy 10-bit field in the
 `machines` list remains part of the body.
 
 A v7 keyframe replaces the known travel baseline. An absent section on a
 keyframe means unknown travel for all devices. Travel of zero is explicit.
+
 On a delta, an omitted index holds its latest value. A campaign cut
 starts a new baseline. The server carries changes from throttled frames
 and seeds the next keyframe after a reconnect and at each recorded chunk
-start, including keyframes used to seek. Playback samples adjacent
+start, including keyframes used to seek.
+
+Playback samples adjacent
 delivered frames and holds quiet devices. It draws no telemetry during
 cinematics, though a keyframe can still carry the known baseline for
 playback afterward.
@@ -243,7 +276,9 @@ playback afterward.
 An idle frame adds zero bytes. A single change at placement 0–7 uses
 15 bits, or 1–2 additional frame bytes depending on padding. The furthest
 placement in a 206-machine map takes 23 bits as a single change, or 2–3
-additional bytes. In a batch, a gap of 0–7 costs 12 bits per entry plus the
+additional bytes.
+
+In a batch, a gap of 0–7 costs 12 bits per entry plus the
 shared count.
 
 ### Streams, keyframes and gaps
@@ -254,7 +289,9 @@ sends one when the game ID changes, ticks go backwards, a checkpoint cuts
 the recording, or the string table would pass 4096 entries.
 A decoder keeps the last frame and string table per stream id; a delta
 whose sequence is not the next one it expects (a dropped frame, or joining
-mid-stream) is a gap: it drops deltas until the next keyframe. The reader
+mid-stream) is a gap: it drops deltas until the next keyframe.
+
+The reader
 stream sends a joining or lagging reader every frame since the last
 keyframe first, so it starts decoding at once. A frame that cannot be
 packed (non-finite numbers, unknown names, too many strings) leaves the
@@ -264,10 +301,13 @@ encoder as it was.
 
 The first four bits select the decoder. Version 7 writes all seven
 entity lists introduced through v6. A delta requires the preceding sequence
-number and a base of the same version. Live subscribers recover at a
+number and a base of the same version.
+
+Live subscribers recover at a
 keyframe, and each recorded chunk begins with one. Rust and web fixtures
 cover versions 1 through 8, including old v7 records without machine travel
 and v8 keys and deltas. Recorded chunks keep their original bytes.
+
 An old JSON `GameFrame` and a later base64-packed one are both readable
 through the legacy frame page.
 
@@ -280,10 +320,14 @@ consume JSON can keep using the JSON representations.
 The viewer requests the archive-capable chunk index when a match ends.
 Until publication it uses the original recording. Publication switches the
 reader to independently decodable H2AR segments and keeps the current
-playhead, speed and pause state. Each segment index entry may carry a
+playhead, speed and pause state.
+
+Each segment index entry may carry a
 `machine_entry` seed with the last known device travel from its run. A cut,
 rewind or complete travel baseline starts fresh. The seed restores quiet
-doors and lifts on a seek without inserting synthetic frame rows. The
+doors and lifts on a seek without inserting synthetic frame rows.
+
+The
 index maps source ticks across checkpoint rewinds, so a time link can fetch its target segment directly. The viewer
 loads a neighbour near a segment edge to interpolate through it and releases
 distant segments after a seek.

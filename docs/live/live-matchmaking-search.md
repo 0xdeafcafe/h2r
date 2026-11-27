@@ -1,6 +1,8 @@
 # Live matchmaking: OptiMatch search and ping-aware assignments
 
-Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 7. OptiMatch search: procedure 1, decoded; 9. Ping-aware OptiMatch assignments.
+Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 7. OptiMatch search: procedure 1, decoded; 9.
+
+Ping-aware OptiMatch assignments.
 
 ## 7. OptiMatch search: procedure 1, decoded
 
@@ -82,7 +84,9 @@ at the widest window. A search also repeats while it returned a full
 page (50). When the searches end, `0x00091400` picks a result and joins
 it (`0x00059e50`); with none, the party state moves on with
 `0x0005a220(6)`, which is where the console goes on to host its own
-session (likely; the hosting branch is the next thing to read). So
+session (likely; the hosting branch is the next thing to read).
+
+So
 "find or form" needs no server matcher for OptiMatch: the server
 filters and orders, and an empty answer makes the searching console the
 host that the next searcher finds.
@@ -114,16 +118,22 @@ test `optimatch_searches_find_sessions_in_the_partys_level_window`
 The HLE uses the queue for solo OptiMatch searches on hoppers with Map
 Pack entries. Set `H2_LIVE_PING_MATCHMAKING=1` to use it on hoppers with
 disc maps alone. Parties, Clankermatch and the custom-games browser use
-their existing search paths. The server uses the active hopper's **minimum** player count
+their existing search paths.
+
+The server uses the active hopper's **minimum** player count
 and the entrants' current server ranks for that hopper. Team hoppers fill
 equal-sized teams by distributing the highest-to-lowest ranks in alternating
-team order. The planned teams are in the assignment. The retail title still
+team order. The planned teams are in the assignment.
+
+The retail title still
 owns the final in-game team placement.
 
 Clients keep the existing XNet QoS responder available and measure each
 candidate's actual round trip at its XNet base port plus two. This uses the
 [co-op echo](live-coop-live.md#106-ping) with a 450 ms reply window. It leaves the
-title's separate lobby-data lookup intact. Set `H2_LIVE_NAT` to `open`,
+title's separate lobby-data lookup intact.
+
+Set `H2_LIVE_NAT` to `open`,
 `moderate` or `strict` and `H2_LIVE_UPLOAD_KBPS` to the known upload rate.
 Omit unknown values. The HLE does not infer NAT type or capacity from a
 successful small-packet echo.
@@ -131,9 +141,13 @@ successful small-packet echo.
 A cohort needs one eligible host that every member can reach. The oldest
 matchable ticket starts with a five-level skill spread and a 90 ms RTT
 limit. Every five seconds of wait add three levels and 20 ms, up to 49
-levels and 350 ms. A strict NAT or known upload below 1,000 kbit/s makes a
+levels and 350 ms.
+
+A strict NAT or known upload below 1,000 kbit/s makes a
 candidate ineligible to host. Missing measurements wait for a probe.
-Explicit timeouts exclude that route. When all routes fail or exceed the
+Explicit timeouts exclude that route.
+
+When all routes fail or exceed the
 maximum window, the clients continue searching until the search ends.
 
 Once Live has formed a cohort and planned its teams, it minimises worst
@@ -150,7 +164,9 @@ the legacy lobby list without discovering queued assignments.
 The OptiMatch search stays pending while Live reserves and boots a
 dedicated host. The matchmaking screen shows “Starting a dedicated host…”.
 The client allows time for Live’s 60-second boot window and fallback,
-including for a cohort formed near the end of the search. Even if an
+including for a cohort formed near the end of the search.
+
+Even if an
 assignment names the local account as a prospective host, `host_lease`
 keeps that console on the join path.
 
@@ -160,11 +176,15 @@ for clients whose first queue reply is `Queue::Join`. The assignment must
 match the queued hopper, include the client in its roster, and name the
 session’s host XUID. If the session detail has no assignment, a client
 that saw the lease while waiting can use that assignment when the queue
-sets `frames_from_host`. A waiting assignment can carry XUID zero until
+sets `frames_from_host`.
+
+A waiting assignment can carry XUID zero until
 the host publishes. The HLE reads
 `GET /v1/hosts/{lease}` with the roster member’s `read` bearer. The lease’s
 `assignment_id` must match `Assignment.id` and the endpoint’s `session_id`
-must match `Queue::Join.session_id`. The dedicated session can have its own
+must match `Queue::Join.session_id`.
+
+The dedicated session can have its own
 ID, leaving the assignment ID available for peer fallback. The matchmaking
 screen then shows `Joining dedicated host (<region>)`. Local hosts without
 a region show `local`.
@@ -179,7 +199,9 @@ Both routes hand the session to the existing XNKID, QoS and XNet join
 path. The HLE keeps `Queue::Join.frames_from_host` with that published
 session ID so the uploader can leave frame uploads to the dedicated
 host. When a host ends or fails before the join completes, the client
-refreshes the queue for the server’s fallback assignment. A fresh
+refreshes the queue for the server’s fallback assignment.
+
+A fresh
 assignment without a host lease uses the peer path. If that assignment
 elects this console with `Queue::Host`, the title receives its normal
 empty search and advertises the lobby.
@@ -227,21 +249,28 @@ The playlist catalogue reads map IDs from the owner's Map Pack. The default
 rotations include all nine in suitable human and clanker playlists:
 Containment (1000), Warlock (1010), Sanctuary (1020), Turf (1030), Backwash
 (1040), Elongation (1050), Relic (1060), Terminal (1070) and Gemini (1080).
-Every such playlist keeps base-disc entries too. The same hopper and
+Every such playlist keeps base-disc entries too.
+
+The same hopper and
 playlist ID serve every player. The server offers older
 clients a disc-only file. The HLE requests the full rotation, detects
 hoppers with add-on entries and supplies a disc-only download to a
-console without the pack. Solo searches on those hoppers enter the QoS
+console without the pack.
+
+Solo searches on those hoppers enter the QoS
 queue. At the peer host's weighted pick, the block contains Map Pack
 entries only for a current all-owner assignment. Unverified host
 lobbies, including legacy and party searches, use the disc rotation.
+
 A downgrade invalidates the pending assignment and withdraws any
 dedicated host still starting it (`matchmaking::Matchmaker::submit` and
 `Live::withdraw_pending_match_host`). A configured Map Pack map on an
 ad-hoc dedicated host requires the pack on every assigned console and in
 the host's data bundle. A registered dedicated candidate on a configured
 Map Pack map reports its own capability and can serve an all-owner
-cohort. Mixed cohorts can still match on eligible peers
+cohort.
+
+Mixed cohorts can still match on eligible peers
 (`matchmaking::selection`).
 
 `live_proto::hopper::retain_block_maps` compacts full entry records so
@@ -250,7 +279,9 @@ checks each map ID against the active menu’s multiplayer level list when avail
 filters the result of the hopper block read before the picker consumes
 the count and weights. Capability uses the installed content, as
 `h2 import-mappack` lays it out, and covers every local seat on that
-console. The search screen explains the disc rotation if the pack is
+console.
+
+The search screen explains the disc rotation if the pack is
 missing. The website shows the same limitation beside a hopper with Map
 Pack entries when the signed-in account's recent search reported it.
 [Live API](live-api-sessions.md#map-pack-matchmaking)
@@ -260,7 +291,9 @@ Pack entries when the signed-in account's recent search reported it.
 Set `LIVE_DEDICATED=1` in the native server environment or in the Live
 Worker's variables. Set `LIVE_DEDICATED_HOPPERS` to a JSON object keyed
 by hopper index. A hopper is opted in when its entry supplies the map
-scenario and optionally a variant. For example, enable hopper 1 with
+scenario and optionally a variant.
+
+For example, enable hopper 1 with
 `{"1":{"map":"lockout","variant":"Team Slayer"}}`. The global switch
 and each individual hopper default to off. Choose a map and variant
 supported by the playlist and the host's data bundle.
@@ -269,24 +302,32 @@ For regional placement, set `LIVE_HOST_REGIONS` to a JSON object
 mapping provider region codes to IPv4 QoS base endpoints. For example,
 `{"lhr":"192.0.2.10:31000","ams":"192.0.2.20:31000","iad":null}`.
 Each endpoint answers the same UDP echo as a peer at base port plus
-two. Use `null` for a region without a configured UDP target. Set
+two.
+
+Use `null` for a region without a configured UDP target. Set
 `LIVE_HOST_DEFAULT_REGION` to a key in that list. With both settings
 omitted, the provider chooses the location.
 
 The queue includes regional probes in its `probing` response within the
 32-target limit. It accepts only samples for the current generation.
 For a dedicated Map Pack map, only pack owners receive regional probes
-and contribute to host pool warming. On native Live, a running
+and contribute to host pool warming.
+
+On native Live, a running
 provider-managed match in the region advertises its UDP QoS endpoint.
 A searcher can also probe the configured UDP endpoint. With local and
 Cloudflare providers, the queue advertises up
-to nine `region_echoes` on the client's own Live origin. The client
+to nine `region_echoes` on the client's own Live origin.
+
+The client
 upgrades `/v1/hosts/regions/{region}/echo` using its account's
 `sessions.relay` credential and measures a single echo after the
 handshake. The account needs a current dedicated search ticket. On the
 Worker the region's small-class pool forwards to an active pack's
 echo-only tunnel endpoint when available and otherwise answers the echo
-in its own room, without starting a container. On local Live the server
+in its own room, without starting a container.
+
+On local Live the server
 answers the WebSocket. A successful live UDP sample takes precedence
 over configured UDP and WebSocket samples for that member.
 
@@ -294,21 +335,29 @@ Among regions measured by every cohort member, Live takes the lowest
 worst-member RTT. A region with a recent free small-class slot wins if
 its worst RTT is within 10 ms of the best. Equal scores prefer the
 configured default and then region code order. If no region has samples
-from every member, Live uses the configured default. In an unranked hopper, each member whose
+from every member, Live uses the configured default.
+
+In an unranked hopper, each member whose
 chosen-region RTT exceeds 120 ms and whose route to the reserved peer
 is faster counts towards a veto. A strict majority of the entire cohort
 starts the match on the peer. Missing samples abstain, and a tie keeps
-the dedicated host. Ranked hoppers keep the dedicated placement regardless
+the dedicated host.
+
+Ranked hoppers keep the dedicated placement regardless
 of these votes. Regional probes occupy no player seats.
 
 Live reserves a cohort with an eligible peer fallback and requests
 the dedicated host as soon as the cohort forms. The forming request
 waits for the allocation result while other members can keep polling.
 This lets the Worker schedule the first lease sweep even if polling
-stops. The playerless host occupies a machine slot, so an ad-hoc
+stops.
+
+The playerless host occupies a machine slot, so an ad-hoc
 assignment can take at most 15 solo entrants. Cohorts reachable only
 through a registered host use the existing registered-host path.
-All ad-hoc members receive `waiting` during boot. Live binds
+All ad-hoc members receive `waiting` during boot.
+
+Live binds
 `host_lease` before starting the process, so the host can publish its
 lobby under that lease. The dedicated lobby has a session ID distinct
 from the assignment ID.

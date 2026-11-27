@@ -10,7 +10,9 @@ muzzle flashes, melee, teleporters and deaths. Each effect is derived from data 
 recording already has wherever that is possible, and the page says which
 are not and what the game would have to send. The look evokes Halo 2's
 effects with original particles and shaders: no effect texture, sprite
-sheet or model from the game is used, and no picture file at all. The one
+sheet or model from the game is used, and no picture file at all.
+
+The one
 rule: an effect is drawn only for something the data says happened, at the
 place the data puts it.
 
@@ -27,7 +29,9 @@ amount plus its shield amount ([live-telemetry.md](live-telemetry.md),
 "hits"; the report's layout is in [live-gamestate.md](live-gamestate.md),
 "Damage-aware alternative"). It is sent in 1/256 steps with no upper
 bound (`AMOUNT_SCALE`, `crates/live/live-proto/src/pack.rs`). The report's
-two fields have no confirmed unit. Recordings carry values in the tens
+two fields have no confirmed unit.
+
+Recordings carry values in the tens
 (see [Evidence](#evidence)). The viewer sizes damage from the vitality
 change in the frame's `body` (0 to 1) and `shield` (0 to 4, above 1
 an overshield), read through the game's own health and shield getters
@@ -99,7 +103,9 @@ interface Vitals {
 the right of the victim's tag: `Vitals.lost`, rounded, at least 1. Its
 unit is percent of a fresh spawn, so a kill from full reads 100 and an
 overshield can pass it. It counts up while the burst runs and leaves with
-the chip. Nothing floats in the world.
+the chip.
+
+Nothing floats in the world.
 
 **The switch.** The View menu's **Damage** row: `OFF`, `BARS` (default),
 `BARS AND NUMBERS`. It is `?dmg=off|bars|numbers` in the address and
@@ -198,6 +204,7 @@ frames at most 0.25 s apart and no seek or `cut` between them, detonated.
 The point is its last position plus its velocity times the time to the
 later frame, stopped at the first piece of level on that line (the
 raycast `projectiles.ts` uses). A stuck one detonates at its parent.
+
 Three layers, sized by kind (a rocket 1.4 times a grenade):
 
 1. *Flash:* one camera-facing quad, a radial falloff in the shader,
@@ -220,7 +227,9 @@ disc facing the surface's normal (from the raycast; facing the camera
 when there is no surface), additive, in the shot's colour, 180 ms, with 4
 sparks. Several needles leaving one parent on the same tick are one burst
 instead, in the needle's colour, sized by their count. A bullet's tracer
-end gets 2 sparks and a 120 ms puff. With a host film the `terminal` and
+end gets 2 sparks and a 120 ms puff.
+
+With a host film the `terminal` and
 `impact` effects give the point and the direction, and the derived one is
 dropped as for a blast.
 

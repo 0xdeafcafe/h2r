@@ -1,6 +1,8 @@
 # Live co-op: over Live, latency and prediction
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 10. Co-op over Live (built); 15. Latency, and prediction.
+Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 10. Co-op over Live (built); 15.
+
+Latency, and prediction.
 
 ## 10. Co-op over Live (built)
 
@@ -16,7 +18,9 @@ screens, the session plumbing, the text and the web stay.
 Campaign**, Custom Games, Forge, Firefight, Custom Game Browser, Mods
 ([live-custom-games.md](live-custom-games.md) §5). Seven rows show and
 the list scrolls to the rest. Co-op Campaign has its own pane (the
-Custom Game picture, our help text). It opens the co-op screen:
+Custom Game picture, our help text).
+
+It opens the co-op screen:
 
 | row | value | press |
 |---|---|---|
@@ -33,6 +37,7 @@ and map ids. The friends screen lists the host's friends (online first, at
 most 20) with Online, Playing, their presence activity or Invited; a press
 on an online friend sends a Live game invitation to the host's advertised
 lobby. B on any of these screens closes it as on every screen of ours.
+
 Another Live menu row ends hosting: the lobby becomes a custom game again
 and the hooks disarm.
 
@@ -81,7 +86,9 @@ reads the session, picks the line and writes it, in that order.
 Split screen keeps the game's own text: no session, or a local one (class
 0), and not hosting or joined. So does a system link lobby with Live off.
 Every text of the co-op screens is ours: guest memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
-is drawn and every tick. Not `0x20ffe000`, the first choice: the community
+is drawn and every tick.
+
+Not `0x20ffe000`, the first choice: the community
 variants answer index `0xffe0xx` whatever the top byte, so the co-op screen
 showed their names (a test now checks every id against every private range).
 
@@ -292,7 +299,9 @@ The question (2026-11-18): can the network game state be made to lag
 less, and how does the game predict? Co-op over Live runs the retail
 synchronous path: one console builds every tick's update from everyone's
 actions, the others run only the updates they receive. A guest's own
-simulation action therefore takes a round trip. First-person look has a
+simulation action therefore takes a round trip.
+
+First-person look has a
 local camera path as well (15.4). This section is a static
 reading (`h2 disasm`) and our own code; no game run. The `coop-live:
 latency` line (15.4) is how a run will put numbers on it.
@@ -327,7 +336,9 @@ a ceiling, not the datagram size.
 up to 15 extra ticks. In world modes 1 and 2 the authority dispatches
 the extra native simulation updates after the normal batch while the
 cinematic is active. In mode 2 each tick takes the ordinary sequenced
-`0x27` path, including the joining-view queue. Mode 3 consumes those
+`0x27` path, including the joining-view queue.
+
+Mode 3 consumes those
 updates through the existing catch-up path. A local script on the follower
 has no authority to schedule an additional batch.
 
@@ -335,7 +346,9 @@ In the host-level protocol, wire version 2 carries a first frame and a
 contiguous window of one-byte cinematic tick counts, with a separate
 cumulative acknowledgement. Both peers use `Peer::begin_cinematic_frame`
 from frame zero, including a zero count on ordinary frames. The first host
-decision for a frame is final. The guest holds until it has that count and
+decision for a frame is final.
+
+The guest holds until it has that count and
 both pads. Unacknowledged counts travel again with the next datagram.
 The peer test exercises loss, reordering and conflicting guest requests.
 
@@ -448,10 +461,13 @@ authoritative aim.
    Each local user has a separate queue. A send carries its sequence and
    the last update the guest saw. When `0x683a0` applies a newer numbered
    update, the guest reads its own player slot's action from the record.
+
    The wire carries that action and omits the sender's sequence. The
    guest matches the earliest eligible send within one wire cell (13-bit
    yaw, 12-bit pitch). Identical looks are ambiguous but give the same
-   orientation. Earlier unmatched sends are superseded. After 30 newer
+   orientation.
+
+   Earlier unmatched sends are superseded. After 30 newer
    updates an unmatched send expires, with a hard limit of 64 sends.
    Replaying absolute aims leaves the newest pending aim as the target.
 
@@ -460,9 +476,13 @@ authoritative aim.
    does not establish an equal wait for the drawn look. `boot::coop_look`
    compares the drawn camera with the turn already sent and adds only the
    remaining rotation. A camera already showing the sent look needs zero
-   adjustment. Only `render_game_view` receives the private view record,
+   adjustment.
+
+   Only `render_game_view` receives the private view record,
    with its two camera bases rotated together. Small corrections settle
-   over two draws. Errors of 30 degrees or more snap. Death, loss of local
+   over two draws. Errors of 30 degrees or more snap.
+
+   Death, loss of local
    control, a changed unit or zoom, a teleport, a vehicle or a cinematic
    discard pending look. Tests cover the packet and update layouts on a
    fake guest, private camera copies, wrap, loss, blending and the gates.
@@ -479,11 +499,15 @@ authoritative aim.
 Measure before changing the input schedule. Take a prediction-off
 baseline with both consoles on the same map and repeat with controlled
 delay and jitter. Record RTT, guest input-to-update, host wait and
-update spacing. Compare prediction on and off on the same routes and
+update spacing.
+
+Compare prediction on and off on the same routes and
 look inputs. Measure the time to the first displayed turn and the size
 and frequency of corrections when the authoritative aim catches up.
 Check that a cut or reconnect clears stale prediction and that the
-simulation sees the same inputs. Ping-aware host selection is being
+simulation sees the same inputs.
+
+Ping-aware host selection is being
 added to SBMM for distributed matches. [Matchmaking](live-matchmaking-search.md#9-ping-aware-optimatch-assignments)
 
 `h2 coop test --players 2 --auto`. In a level, read the two `coop-live: latency`
@@ -526,7 +550,9 @@ For the recorded-stick regression, save one Bravo `render.coop_look` JSON
 reply covering the on-foot sweep and its echoes. The test consumes that
 file and the corresponding XAPI input log offline. Set
 `H2_COOP_LOOK_CAPTURE` to the JSON path and `H2_COOP_LOOK_INPUT` to the
-`inputs/coop-look.input` path reported by the recorder. Include
+`inputs/coop-look.input` path reported by the recorder.
+
+Include
 `cargo test -p boot --lib recorded_stick_turns -- --ignored` after the
 capture. The ordinary `cargo test -p boot --lib coop_look` tests use
 synthetic packets and require neither a disc nor a recording.

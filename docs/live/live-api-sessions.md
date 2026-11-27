@@ -43,11 +43,15 @@ A session whose flags are `ranked` and whose `rules` is set names a saved
 or built-in script that the ranked policy takes
 (docs/game/rules-engine.md "Roles, powers and capabilities"): an unknown
 hash is 400, and a script declaring a capability ranked refuses (any
-`forge.*`) is 403, naming it. A `SessionUpdated` that sets `rules` is
+`forge.*`) is 403, naming it.
+
+A `SessionUpdated` that sets `rules` is
 checked the same way.
 The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
-metadata string and 32 open advertisements per host. Unknown input fields are
+metadata string and 32 open advertisements per host.
+
+Unknown input fields are
 rejected. Addresses must be unicast IPv4 and ports 1..65529.
 
 An optional `browser` object holds discovery metadata. Each of its fields
@@ -59,7 +63,9 @@ is the host's full variant name. `map_category` names the map source as
 The server writes a server-signed `SessionCreated` with the full session. Its
 `host`, `host_xuid` and `host_gamertag` come from the authenticated account;
 `endpoint` contains `{addr, port, source}`. An explicit address has source
-`declared`. When `addr` is null, the observed address comes from
+`declared`.
+
+When `addr` is null, the observed address comes from
 `policy.public.client_ip`: `CF-Connecting-IP` is trusted only with a configured
 Cloudflare tunnel and a loopback peer, otherwise the TCP peer wins. Unknown
 or IPv6-only observations require an explicit IPv4 address. XNADDR bytes are
@@ -85,7 +91,9 @@ Only the authenticated host may append events, signed with its registered key:
 
 Batches are validated in order before any append. Stream, author, signature,
 key, five-minute timestamp window, nonce replay and payload checks apply.
-Closed sessions reject writes with 409. Unchanged updates are successful but
+Closed sessions reject writes with 409.
+
+Unchanged updates are successful but
 add no event. These streams are reserved: `POST /v1/events` cannot bypass their
 host checks or forge creation/expiry. `PlayerJoined/Left` are available to the
 host API; this HLE slice does not infer those events from UDP traffic.
@@ -96,7 +104,9 @@ since its last `SignedIn` (`Model::touch_host_sessions` in
 game gets no refresh. A `SignedIn` starts a new run: presence `since` resets
 to its time, while `PresenceChanged` keeps it. Five minutes
 without a ping or changed session event produces a server-signed
-`SessionExpired`. Pings are not persisted; after restart the deadline comes
+`SessionExpired`.
+
+Pings are not persisted; after restart the deadline comes
 from the last recorded event. Deleted/expired sessions remain readable by ID
 and replay from the log, but are absent from the default list.
 
@@ -105,7 +115,9 @@ everyone, `friends` to the host and the host's friends, `invite` to the host
 alone. The reader is the account of an optional `read` bearer (checked when
 present, even on a public server); without one, only public sessions. A
 listed session must also be listable: its endpoint was observed, or its
-declared address is a local-network one. When a listed session is created
+declared address is a local-network one.
+
+When a listed session is created
 from a non-loopback IPv4, the observed address replaces any declared one
 ([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
@@ -130,6 +142,7 @@ Each active criterion excludes known mismatches. For example, a host
 with unknown Clanker or variant metadata remains eligible for either
 value. Co-op sessions are excluded by multiplayer game type or variant
 criteria, and multiplayer sessions by campaign or difficulty criteria.
+
 The map filter can recover a category from package provenance or a
 recognised map name when the host omits it. The server applies the filters
 before the page limit and retains the visibility and endpoint rules above.
@@ -139,7 +152,9 @@ With `browser_variants=true`, the first page also has a `variants` array
 with up to 64 distinct multiplayer variant names. It comes from sessions
 visible to the reader and eligible for the list, before the browser
 criteria and limit. The game uses this with the retail custom browser's
-search query. The next cursor page omits `variants`. List items include advertised
+search query.
+
+The next cursor page omits `variants`. List items include advertised
 `browser` metadata when the request uses `filters` or
 `browser_variants=true`. Plain lists and session details use the legacy
 advertisement shape.
@@ -170,7 +185,9 @@ Every other reader of `GET /v1/events`, `/v1/stream` and the snapshot's
 event tail, anonymous, signed in or an admin account, gets each event with
 every network address removed at any depth (`addr` and the `port` beside
 it, `endpoint`, `host_address`, `xnaddr`, `ip`, `observed`). The stored log
-is unchanged. A changed event carries `redacted: true` in its data and an
+is unchanged.
+
+A changed event carries `redacted: true` in its data and an
 empty `jws` (no `jws_index`): its signature covers the data as stored, so
 it would not verify against the redacted view; only the operator's read
 can be checked against signatures. Today only `SessionCreated` carries
@@ -201,7 +218,9 @@ with a `next`). The game and the web read these through their own calls
 (`/v1/accounts/by-xuid/{xuid}/mailbox` for the owner,
 `/v1/accounts/{gamertag}/friends`, `/v1/admin/content` and
 `/v1/admin/reports` for admins), not
-the log. The friends read keeps friendships public and pending requests
+the log.
+
+The friends read keeps friendships public and pending requests
 for the player ([Friends](live-api-social.md#friends)).
 
 Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
@@ -213,7 +232,9 @@ is the previous `next` string. Ordering is by session ID. `optimatch`
 game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
 §7): it keeps sessions on that playlist whose level window and party room
 fit, orders them by closeness to `average`, and returns one page with a
-null `next`. CLI queries are
+null `next`.
+
+CLI queries are
 `h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
 [--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
 
@@ -259,7 +280,9 @@ longer knows. The campaign is the one on the session when it closed.
 **Who sees a finished co-op game.** `visibility` is the session's when it
 closed. A `public` one shows to everyone. A `friends` one shows only to
 the readers who were in it (the host or a guest) and the host's friends;
-an `invite` one only to those who were in it. Admins (the operator's
+an `invite` one only to those who were in it.
+
+Admins (the operator's
 token, or an admin account's) see every game. The reader is the account
 of an optional `read` bearer, checked when present even on a public
 server; without one, only public games show. The same rule holds for a
@@ -268,7 +291,9 @@ when it starts, the server links it to the open `coop` session its host
 (or, failing that, a player) is in and records that session's host and
 visibility, and `GET /v1/games`, `GET /v1/games/{id}`, its `/frames`, `/chunks` and
 an account's `recent_games` leave it out for readers who may not see it
-(those who were in it are its players). A campaign game with no such
+(those who were in it are its players).
+
+A campaign game with no such
 session stays public. While the game runs it follows its session: when the
 host changes the session's visibility, the game's changes with it. Once
 the game ends it keeps the visibility it had then.
@@ -320,6 +345,7 @@ ids too.
 `PUT /v1/matchmaking/queue` (a `sessions.write` token) accepts an optional
 boolean `has_map_pack`. It reports whether the requesting console has
 all nine maps installed. Omission counts as false for matchmaking.
+
 The assignment's `has_map_pack` is true when every assigned console and
 the host can use the Map Pack. Older assignments omit it. A Map Pack map
 on an assigned session requires this capability.
@@ -327,21 +353,27 @@ on an assigned session requires this capability.
 `GET /v1/sessions?optimatch=<json>` accepts the same optional member in
 the decoded search. Live includes legacy Map Pack advertisements only
 for an authenticated solo search (`party: 1`) with the capability. This
-includes published maps that require a Map Pack base. Custom-game
+includes published maps that require a Map Pack base.
+
+Custom-game
 browsing keeps its own map availability rules.
 
 `GET /v1/matchmaking/availability` (an account's `read` token) returns
 `{"has_map_pack": true}`, `{"has_map_pack": false}` or
 `{"has_map_pack": null}`. It describes the reader's last console search.
 Only an explicit report from an authenticated search or queue refresh
-counts. The report expires after 30 minutes and the response is private
+counts.
+
+The report expires after 30 minutes and the response is private
 and uncached.
 
 `GET /v1/titles/4D530064/files/multiplayer_hopper.dat` serves a disc-only
 rotation to legacy clients. A client with runtime rotation filtering
 requests `?map_pack=1` for the full file. Each response's ETag identifies
 the bytes served for that variant. `GET /v1/titles/4D530064/hopper`
-always describes the published file. A hopper with Map Pack entries
+always describes the published file.
+
+A hopper with Map Pack entries
 includes `has_map_pack_maps: true` in this JSON. A rotation with add-on
 entries needs at least one Halo 2 disc map when published or imported.
 [Map Pack rotations](live-matchmaking-search.md#map-pack-rotations)
@@ -351,6 +383,7 @@ entries needs at least one Halo 2 disc map when published or imported.
 An admin or the operator can enable **can invite** on an existing account.
 Both grant events are server-signed and include the acting author's id
 in `by`. The cap is a positive 32-bit integer, or `null` for no cap.
+
 Omitting `open_cap` also sets no cap. The account list, account detail and
 snapshot include `invite_grant: {open_cap}` only when the explicit grant
 is active. Admins have invite permission through their role.
@@ -364,16 +397,22 @@ for `POST /v1/invites`:
 
 For a non-admin with a grant, creating at the open invite cap returns 409. Exceeding the
 creation rate returns 429. Non-admin accounts with a grant have a burst
-of three, with one invite slot replenished per minute. Admins have a
+of three, with one invite slot replenished per minute.
+
+Admins have a
 burst of ten and the same refill rate. Redemption or revocation frees
-open-cap space. Lowering a cap leaves existing invites open. Revoking the
+open-cap space. Lowering a cap leaves existing invites open.
+
+Revoking the
 admin role permanently closes the account's open invites. A ban blocks
 redemption of a grantee's codes while it is in force.
 
 Both list endpoints return `{items, position}`. Each item has `jti`,
 `by`, `at`, `exp`, `state` (`open`, `used`, `revoked` or `expired`) and
 `custom`. It can also have `by_gamertag`, `used_by` and
-`used_by_gamertag`. Open generated invites carry the `invite` code.
+`used_by_gamertag`.
+
+Open generated invites carry the `invite` code.
 See [Invite codes people type](live-admin.md#invite-codes-people-type).
 
 ## Sign-ins
@@ -443,7 +482,9 @@ stolen sign-in. Writes share the per-author write rate limit.
 
 A `HostLease` reserves a process for one match. Its `id` is `hl-` plus
 16 random bytes in unpadded base64url. The `assignment_id` is the
-matchmaking assignment ID, `sim-<id>` or `custom-<id>`. The lease records
+matchmaking assignment ID, `sim-<id>` or `custom-<id>`.
+
+The lease records
 the `provider` (`local`, `cloudflare` or `fly`), `region`, `class` (`small`
 for 1 vCPU and 2 GiB, `large` for 2 vCPUs and 4 GiB), `map`, `map_id`,
 `variant`, `hopper`, `max_players` (1–16), `roster` (XUIDs), `bots`
@@ -477,7 +518,9 @@ End reasons are `match_over`, `empty`, `idle`, `max_duration`, `stopped`,
 The matchmaking assignment includes `host_lease` when an ad hoc dedicated
 host serves it. A queue reply with `state: "join"` includes `session_id`
 and `frames_from_host`. When true, the dedicated host supplies telemetry
-frames for the match. Older replies that omit the flag read as false.
+frames for the match.
+
+Older replies that omit the flag read as false.
 
 ## Dedicated hosts
 
@@ -512,11 +555,15 @@ the endpoint URL directly and sends one frame per binary message.
 The client starts each connection with an empty hello on port 0 and
 peer 0. The host replies with a hello on port 0, the client's assigned
 nonzero peer ID and the **host's** synthetic IPv4 address as four octets
-in network order (`10.77.x.y`). All client frames have peer 0. Host
+in network order (`10.77.x.y`). All client frames have peer 0.
+
+Host
 datagrams carry the recipient's assigned ID. The port names the game
 channel in both directions. A zero-length datagram is valid.
 
 The client sends a WebSocket Ping every five seconds. On transport loss
 it attempts one fresh upgrade and hello. A bye has port 0 and an empty
-payload. The sender follows it with a WebSocket close. The host uses
+payload.
+
+The sender follows it with a WebSocket close. The host uses
 the recipient's ID for its bye. A bye ends the session.

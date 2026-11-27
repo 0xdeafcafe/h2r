@@ -151,7 +151,9 @@ that reaches the server on loopback. The server then treats it like its
 own named tunnel: `CF-Connecting-IP` names the client on requests from
 loopback, the dashboard shows a named tunnel, and on a first start with no
 `--id` the server id becomes `HOST` (not for a `*.trycloudflare.com` URL,
-an `http://` URL or one with a port). It does not go with `--tunnel`. Only
+an `http://` URL or one with a port). It does not go with `--tunnel`.
+
+Only
 use it when cloudflared is the one thing that can reach the port: anything
 else on this machine could send its own `CF-Connecting-IP`.
 
@@ -278,7 +280,9 @@ tokens), nothing else. That covers every operation above (PutObject,
 GetObject, HeadObject, DeleteObject, ListObjectsV2 and multipart). The
 server never creates buckets or changes their settings, so *Admin* tokens
 are not needed, and an *Object Read only* token fails *write* with a
-"refused" hint. A token scoped to the private bucket cannot check the
+"refused" hint.
+
+A token scoped to the private bucket cannot check the
 public one: give the public bucket its own token and the
 `H2_LIVE_S3_PUBLIC_*` variables. Typical failures: *refused* is the token's
 permission or bucket scope; *no such bucket* is a wrong bucket name or
@@ -294,14 +298,18 @@ uploaded as that copy, its `.br` one with `Content-Encoding: br` (every glb
 and JSON file of a current extraction, [live-art.md](live-art-pipeline.md#packing)),
 else its `.gz` one with `Content-Encoding: gzip`. An interrupted upload resumes
 on the next start (files already there are skipped), and a published
-extraction costs one request to recognise. Once it is all there, a request
+extraction costs one request to recognise.
+
+Once it is all there, a request
 for `/art/game/<file>` is a `307` to `<public url>/art/<stamp>/<file>`,
 carrying the cache policy the file itself had: a year for a versioned
 `?v=` address, `no-cache` (asked each time) otherwise. Until then, for a
 client that does not take the published copy's encoding (Brotli, or gzip
 for older extractions), and on a `--private` server, the server serves the
 files itself, the same bytes: the `.br` copy to a browser that takes
-Brotli, the `.gz` one to one that takes gzip, else the file. Art that is not shared is never published. Old
+Brotli, the `.gz` one to one that takes gzip, else the file. Art that is not shared is never published.
+
+Old
 extractions' prefixes stay in the bucket; delete them in the dashboard if
 space matters.
 
@@ -320,7 +328,9 @@ MB and published once, a cloud save write is two Class A operations (the
 bytes and the index), a read one Class B, and Litestream writes at most one
 small object a second while the log is busy (its default sync interval),
 plus a daily snapshot. Past the free tier R2 bills $0.015/GB-month and
-$4.50 per million Class A operations. Published art behind a custom domain
+$4.50 per million Class A operations.
+
+Published art behind a custom domain
 is served from Cloudflare's cache, so repeat views are not R2 reads at all.
 
 ### Backups to R2 (Litestream)
@@ -365,14 +375,19 @@ hash (clients' cursors and checkpoints stay valid) and is checked on the
 way in; the copy is idempotent and resumable: run it again and it carries
 on after what the destination has, and it refuses a destination that holds
 a different log. Blobs already at the destination with the same size are
-skipped. The blob copy includes custom content, cloud saves, frame chunks,
+skipped.
+
+The blob copy includes custom content, cloud saves, frame chunks,
 sim reports and `films/`. It preserves each private host recording, including
 multipart manifests, their parts and pending stats-import pages. The copy
 also transfers private `film-staging/` objects, including validation cursors
-and reservation details. It refreshes staged objects even when their size
+and reservation details.
+
+It refreshes staged objects even when their size
 matches. Quiesce writes during the final copy so journals, parts and mutable
 cursors represent the same cutover. The destination sweeper resumes accepted
 films after the signed log and private objects have both been restored.
+
 An upload still awaiting its next part can resume when its host reconnects.
 
 For live.forbes.red (a launchd agent running `h2-live-server --data
@@ -405,9 +420,13 @@ The server marks what may be cached (live-api.md, "Caching"). By default Cloudfl
 - **When:** hostname is your Live host, the URI path starts with `/v1/`, and the method is `GET`.
 - **Then:** eligible for cache, edge TTL "use cache-control header if present", browser TTL "respect origin".
 
-The rule is safe for signed-in readers. Cloudflare bypasses its cache for any request that carries an `Authorization` header, so a signed-in read is never answered from the anonymous entry, and its `private, no-store` answer is never stored. Cloudflare ignores `Vary: Authorization` unless a Cache Rules Vary setting lists it; the header is for other shared caches. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
+The rule is safe for signed-in readers. Cloudflare bypasses its cache for any request that carries an `Authorization` header, so a signed-in read is never answered from the anonymous entry, and its `private, no-store` answer is never stored. Cloudflare ignores `Vary: Authorization` unless a Cache Rules Vary setting lists it; the header is for other shared caches.
 
-Tunnel: `cloudflared` picks QUIC on UDP 7844 and opens 4 connections to the nearest Cloudflare locations it can reach. If its log shows QUIC dials failing ("no route to host"), or the connections land far from your readers, try `--protocol http2` (TCP 443). Argo Smart Routing shortens the path from the reader's edge to the tunnel. The edge cache does more than either, because a cached read never reaches the tunnel.
+Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
+
+Tunnel: `cloudflared` picks QUIC on UDP 7844 and opens 4 connections to the nearest Cloudflare locations it can reach. If its log shows QUIC dials failing ("no route to host"), or the connections land far from your readers, try `--protocol http2` (TCP 443). Argo Smart Routing shortens the path from the reader's edge to the tunnel.
+
+The edge cache does more than either, because a cached read never reaches the tunnel.
 
 ## cloudflared not found, or failing
 

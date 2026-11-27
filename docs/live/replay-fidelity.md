@@ -3,7 +3,9 @@
 The web viewer replays recorded telemetry in 3D and on the 2D map.
 Current recordings use game ticks and independent chunks of up to 150
 samples. After archive publication, the viewer seeks into independently
-decodable H2AR segments. Older one-frame-per-second recordings are still
+decodable H2AR segments.
+
+Older one-frame-per-second recordings are still
 readable. The measurements below preserve the baseline that motivated
 the spectator track proposal. [Capture and packed formats](live-telemetry-packed.md#packed-frames)
 
@@ -18,12 +20,16 @@ The campaign flicker had one cause. A checkpoint revert or a mission
 restart continues the same game ([live-telemetry.md](live-telemetry.md),
 "Campaign"), but it winds the engine's tick back. Frames and events carried
 the engine's tick, so a game that reverted had two or more runs over the
-same ticks. The viewer sorted all frames by tick, so the runs interleaved
+same ticks.
+
+The viewer sorted all frames by tick, so the runs interleaved
 and a player jumped between them about once a second.
 
 The recordings show it. In `05a_deltaapproach` game `05f93f55…` the ticks go
 2, 48 … 230, then 22, 50, then 6, 24 … 958: three runs. Game `3f23bbf0…`
-rewinds from 3114 to 12 and from 1342 to 4. It wasn't a (0, 0, 0) read:
+rewinds from 3114 to 12 and from 1342 to 4.
+
+It wasn't a (0, 0, 0) read:
 none of the sampled campaign frames have a player at the origin.
 
 Fixed at both ends:
@@ -62,13 +68,16 @@ proposal on this page uses it.
 The game samples on even ticks (15 Hz at the retail 30 Hz tick rate).
 New captures keep the samples admitted by the game and server throttle
 in chunks. Shots, actions and hits carry timing offsets where available.
+
 Device travel is tracked separately from world poses. A delta omits quiet
 devices and a complete machine-aware key seeds their last known travel.
 
 The live wire uses v8 when negotiated. The recorder currently writes
 v7 in H2CK chunks, and the archive reader also accepts sources with a
 mix of v7 and v8 records. The live codec does not
-change the sampling rate or the captured field grids. The same decoded
+change the sampling rate or the captured field grids.
+
+The same decoded
 frames go into H2AR for finished games. A segment's index can seed device
 travel at its start even if the first frame is sparse. The viewer holds
 known travel between updates and starts fresh across cuts and rewinds.
@@ -142,7 +151,9 @@ the map's string table) and its inheritance list. The guest is read for
 the datum, reference and frame only, at no cost beyond four reads per
 unit. Frames carry the result as `anim: {name, frame}`, for example
 `{"name": "combat:rifle:any:move_front", "frame": 12.5}` (packed version
-4: the name as an interned string, the frame in 1/16). The viewer's clips
+4: the name as an interned string, the frame in 1/16).
+
+The viewer's clips
 come from the same names (docs/live/live-art.md), so it can play the
 game's own animation at the game's own frame instead of guessing from
 stance and speed.
@@ -208,13 +219,16 @@ strafing and backing-up states `run_left`/`run_right`/`run_back` and
 It plays that clip **at the game's frame**: the clip time is
 `frame / 30` (a frame a tick), wrapped for loops and held at the end
 otherwise, and the clip doesn't run on by itself, so it keeps the game's
-pace and stops with the replay (`BipedAnimator.setLoopAt`). Between
+pace and stops with the replay (`BipedAnimator.setLoopAt`).
+
+Between
 samples the frame is interpolated when one animation runs on at about the
 game's pace, else carried on from the nearer sample a frame a tick
 (`blendAnim`). A strafe or a backward run plays its own clip with the
 legs facing the aim; art before extractor 22 falls back to `run`/`walk`
 with the legs turned to the movement as before. Without `anim` (older
 senders, or a name with no clip state) the stance-and-speed guess stays.
+
 Speed and leg heading come from `vel` when the frames have it.
 
 **Shots on their tick.** A frame with a `fire` mask has its shots drawn
@@ -231,10 +245,14 @@ theater.md records a game's **inputs** (pad reads, network receives,
 randomness) and, at the engine layer, **state keyframes and per-tick
 actions**. It plays them back through the game itself: exact, with the
 game's own cameras, but only on a machine that runs the same build. The
-spectator track records **observed state**. It's lossy, and it plays
+spectator track records **observed state**.
+
+It's lossy, and it plays
 anywhere: the website, a phone, a stream overlay. Your hunch is right. The
 spectator track is the web and spectator form, and films are the exact
-form. They should share these:
+form.
+
+They should share these:
 
 | shared | how |
 |---|---|

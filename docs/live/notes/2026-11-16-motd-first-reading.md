@@ -3,7 +3,9 @@
 Evidence for [live-motd.md](../live-motd.md). Nothing here states what the
 code does today; the design page does. Static analysis of the retail image,
 no game run; written 2026-11-16 and replaced the same day by the title
-storage reading in section 2 of the design page. The addresses stay useful;
+storage reading in section 2 of the design page.
+
+The addresses stay useful;
 the reading of the XONLINE calls is superseded.
 
 ## 2026-11-16: the correction and the first reading
@@ -23,7 +25,9 @@ screen, whose property tags (`0x9c1` voice data, `0x3c2`, `0x4c3`,
 opens messages from the targeted player, and its 0x499a buffer feeds
 voice playback, not the MOTD descriptors. `0x003ab6ea`
 `XOnlineStorageDownloadToMemory` is the call these two files use
-(§2.1'). The body formats in §3 and §5 stand, from offset 0x10.
+(§2.1').
+
+The body formats in §3 and §5 stand, from offset 0x10.
 
 ### 2 (superseded). Fetch: game → XONLINE call chain, first reading
 

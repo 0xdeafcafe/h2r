@@ -1,6 +1,8 @@
 # Halo 2 retail Xbox live game-state map
 
-Static-analysis deliverable for a live scoreboard and top-down player map. All addresses are **guest virtual addresses** in the retail 1.0 XBE, not host pointers. All integer fields are little-endian. Function and field names are assigned descriptions.
+Static-analysis deliverable for a live scoreboard and top-down player map. All addresses are **guest virtual addresses** in the retail 1.0 XBE, not host pointers. All integer fields are little-endian.
+
+Function and field names are assigned descriptions.
 
 - XBE SHA-256: `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d` (recomputed for this survey).
 - **confirmed**: directly supported by inspected retail-XBE code, by the repository's recovered engine code, or by the documented whole-disc structural checks.
@@ -360,7 +362,9 @@ Read only live players and their units:
 | one unit per player | 12-byte header, parent datum, origin/forward/up, type, and optional damage flags; re-read body pointer each time |
 | one vehicle per occupied player | Another 12-byte header and transform, only when parent type is vehicle |
 
-Selective contiguous reads are roughly **2–4 KiB per full 16-player snapshot**, or about **12 KiB** if all 16 complete `0x21c` player records are read unnecessarily. This is a few hundred scalar reads, negligible beside a game tick. Avoid reading all 2,048 headers or the one-MiB object pool. Quantize positions/headings for transport and send names/options only when changed.
+Selective contiguous reads are roughly **2–4 KiB per full 16-player snapshot**, or about **12 KiB** if all 16 complete `0x21c` player records are read unnecessarily. This is a few hundred scalar reads, negligible beside a game tick. Avoid reading all 2,048 headers or the one-MiB object pool.
+
+Quantize positions/headings for transport and send names/options only when changed.
 
 Consistency rules:
 

@@ -26,7 +26,7 @@ flowchart LR
 | Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
 - [settings-menu-screens.md](game/settings-menu-screens.md): The pause menu, voice, profile and field-of-view screens, and settings as a schema.
 | Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
-| Xbox Live | `live/` | 69 | [live.md](live/live.md) |
+| Xbox Live | `live/` | 70 | [live.md](live/live.md) |
 | Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
 | Development | `dev/` | 5 | [crate-structure.md](dev/crate-structure.md) |
 
@@ -440,6 +440,7 @@ Reading and converting Halo 1 data:
 - [Telemetry cost](live/notes/2026-11-19-telemetry-cost.md): frame sizes and CPU per version, with the benchmark commands.
 - [Replay: the original 1 Hz recording](live/notes/2026-11-18-replay-original-1hz.md): stage rates, fields and sizes of the first recording.
 - [Live Worker rehearsal](live/notes/2026-11-18-worker-rehearsal.md): the migration rehearsal on a copy of the real log.
+- [Live Worker slice measurements](live/notes/2026-11-18-worker-slice-results.md): cold start, stream, ingest, upload and relay timings under local `wrangler dev`.
 - [MOTD first reading](live/notes/2026-11-16-motd-first-reading.md): the superseded XONLINE call-chain reading, kept for its addresses.
 - [Dedicated host measurements](live/notes/host-halving.md): the evidence for halving the dedicated host.
 - [Telemetry precision and replay measurements](live/notes/2026-11-19-telemetry-precision.md) for the Live v8 stream: the workload, byte counts per player and the finished-archive limits.

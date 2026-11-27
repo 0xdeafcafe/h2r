@@ -1,12 +1,16 @@
 # Live co-op: more players and join in progress
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 13. More than two players; 14. Join in progress.
+Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 13. More than two players; 14.
+
+Join in progress.
 
 ## 13. More than two players
 
 Co-op over Live (sections 10 and 11) takes two consoles. This section is
 what holds a campaign at two, what is lifted, and what is left. Built on
-tests only; **no game was built or run for it**. Evidence as at the top:
+tests only; **no game was built or run for it**.
+
+Evidence as at the top:
 **[local]** read in `h2 disasm`, counted on the disc, or in this repo;
 **[guess]** inferred.
 
@@ -188,7 +192,9 @@ campaign **without anyone reverting**. The host, at a tick boundary,
 holds, snapshots the game state and sends it (compressed) to the
 newcomer, who has loaded the same level, restores it, and picks up the
 synchronous stream on the next tick. A hold of a second or two on the
-host is acceptable. Behind `coop.join_in_progress` (default on,
+host is acceptable.
+
+Behind `coop.join_in_progress` (default on,
 `H2_COOP_JOIN_IN_PROGRESS`, docs/game/settings-menu.md).
 
 What is here: a static trace (14.1), the design (14.2 to 14.6), what is
@@ -403,7 +409,9 @@ entries) and `0x0046e348`; it succeeds only for exactly `0x3fe000`
 bytes. A failure in either client handler calls `0x00085a70(0, -1)` and
 sets the view's state `+0x28` to 5 ([guess] leave the game). So retail's
 client restores the host's state in place and then runs from the queued
-updates. This replaces our own snapshot and restore for the retail path.
+updates.
+
+This replaces our own snapshot and restore for the retail path.
 
 **14.9.2 The server side.** `0x0006a860` runs the four callbacks at
 `0x0046e320` (pointers to `0x001c3540`, `0x00068090`, `0x0016eff0`,
@@ -436,7 +444,9 @@ on the state. The view machine's gates at `0x0006a0b7`
 (`*0x004ced48` ready peers, `*0x004ced54` a timer, `*0x004ced50`
 attempts) are in BSS but not zero: the network setup at
 `0x000679ea..0x00067a08` sets them to 8, 3 and 2000 (and `0x004ced40`
-to 10000). Found while tracing phantom peers (docs/game/bots.md §5.1);
+to 10000).
+
+Found while tracing phantom peers (docs/game/bots.md §5.1);
 an earlier note here guessed they stayed zero.
 
 **14.9.4 What is wired** (`crates/extensions/game/src/coop_jip.rs`, feature

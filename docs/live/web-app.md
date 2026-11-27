@@ -9,7 +9,9 @@ It shows everyone who has signed up, who is online, the games they are
 playing as they happen (live top-down map, scoreboard, kill feed), replays of
 finished games, and the raw event log with signature checks. It is built
 against the contract in [live-api.md](live-api.md) and
-[live-security.md](live-security.md). How to run it and its scripts are in
+[live-security.md](live-security.md).
+
+How to run it and its scripts are in
 [web/README.md](../../web/README.md).
 
 Stack: TypeScript, SolidJS, @solidjs/router, Vite, plain CSS. Bun is the
@@ -64,22 +66,28 @@ waypoints, kills, scores, endings and new games.
 
 The dashboard (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
-lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
+lights its connector. Recessed panels hold lists and details.
+
+Signed out the menu leads with sign
 in, create and recover, then live now, games, players
 and settings (the ones that need an account show greyed with a hint).
 Signed in it is live now, games, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Server admins can open **Live admin** (`/dash/admin`) from the dashboard header
-or Settings for usage, dedicated hosts, the raw event log and the style sample. On these
+or Settings for usage, dedicated hosts, the raw event log and the style sample.
+
+On these
 pages, the Back link, B, Escape and Backspace go to the previous page
 when opened from the dashboard or another admin page. Direct visits fall
 back to Settings, Server or the Live Admin hub. The **Live admin** breadcrumb opens the hub.
+
 In Usage, select a gamertag in **Top Accounts** to open its dashboard
 profile (`/dash/players/:tag`).
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
+
 The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
 
@@ -87,7 +95,9 @@ at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
 
 Signed-in players can open **Settings → notifications** to turn on alerts
 for games with friends or games with other players. Both start off. The
-browser stores the switches per server and account. Select **allow browser
+browser stores the switches per server and account.
+
+Select **allow browser
 notifications** on that screen to let the browser show alerts in the
 background. A visible tab shows a dashboard toast regardless of browser
 permission. Both alerts open the session detail, and clicking a browser
@@ -97,10 +107,14 @@ notification also asks the browser to focus the tab.
 stream. For those changes it reads the open sessions as the current account,
 so endpoint and visibility checks match the server's listing. A host or
 reported roster member can trigger a join alert while the game has a public
-seat and its visibility allows the reader to join. Session advertisements
+seat and its visibility allows the reader to join.
+
+Session advertisements
 supply the lobby and its seats. Presence alone can also describe a solo
 game or a game without a current advertisement. Initial and reconnect reads
-establish a silent baseline. A tab alerts once per session and shows at most
+establish a silent baseline.
+
+A tab alerts once per session and shows at most
 one alert every eight seconds. The mock streams changes to its seeded sessions
 so the settings and alerts work against the mock.
 
@@ -116,7 +130,9 @@ display incoming alerts and open or focus the appropriate page. The
 `live-server` would add authenticated subscription registration and removal
 per account and browser, retain the endpoint and encryption keys privately,
 and check visibility and preferences when dispatching an event. Each server
-identity would have a dedicated P-256 VAPID key pair. Discovery would publish
+identity would have a dedicated P-256 VAPID key pair.
+
+Discovery would publish
 the public key, and the private key would live with the native server identity
 or in a Worker secret. An event-driven sender would deduplicate deliveries,
 retry transient failures and remove expired subscriptions. Native and
@@ -131,9 +147,12 @@ Clanker Training is available there with an admin account
 [`h2 sim --upload` recordings](../runtime/sim.md#watching-in-uplink)
 and batches. Filter by map, tuning or batch, select two matches to compare
 their summaries, or open a match for its report, bot stats and the shared
-game viewer. Running streams follow the live edge. The **Live** control
+game viewer.
+
+Running streams follow the live edge. The **Live** control
 returns to it after a seek. The training page shows the measured simulation
 speed and the same viewer switches to replay at the end.
+
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
@@ -228,7 +247,9 @@ block between `<!-- page-meta -->` and `<!-- /page-meta -->`
 (games, wins, kills, K/D from the public stats), a game's its variant, map,
 score, winner and players, a clan's its name, members and motto; other
 pages their section. Only what an anonymous reader may see is used: a
-hidden game or a private server gives the section's preview. The machine's
+hidden game or a private server gives the section's preview.
+
+The machine's
 server does it in its SPA fallback; the Worker for the paths
 `wrangler.toml` sends it first, reading `index.html` through the `ASSETS`
 binding and asking the hub (`GET /v1/page-meta?path=`) only for a page that
@@ -258,7 +279,9 @@ original art pack as a fallback.
 The embedded JSON model lets the client keep the hero markup when its own
 model matches. It replaces the markup when the game or score changes.
 The TypeScript and Rust renderers share the goldens in
-`test/fixtures/game-header.{json,html}`. Regenerate them with
+`test/fixtures/game-header.{json,html}`.
+
+Regenerate them with
 `bun test/fixtures/gen-game-header.ts`. The PNG
 pixel and palette fixtures are generated by
 `H2_UPDATE_EMBLEM_GOLDEN=1 bun test test/emblem.test.ts`.
@@ -277,12 +300,16 @@ the log position it was taken at; the stream starts after the oldest one,
 and `state/reducer.ts` is written so the overlap is harmless (a known game
 isn't restarted, kills are deduplicated by position, scores are absolute).
 If the server reports no positions, the client replays the whole log from 0
-instead. The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
+instead.
+
+The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
 inside Solid's `produce` and on plain objects in tests. On a dropped
 connection the client reconnects with exponential backoff and jitter and
 resumes after the last applied position (`from` is exclusive), so pages
 update without polling. The event reducer also flushes in hidden tabs for
-browser notifications. Games outside the snapshot (deep links, older
+browser notifications.
+
+Games outside the snapshot (deep links, older
 games on a profile) are fetched on demand.
 
 ### Frames are not reactive
@@ -295,7 +322,9 @@ yaw (short way round) between the two frames around the render tick and
 snapping on respawns. The mapping runs at the stream's measured pace
 (`streamPace`): 1 for a real-time game, and the sim's own rate (rounded to a
 half, up to 32×) for an unpaced sim streaming faster than real time, with
-the delay scaled by the same pace. All canvases share one `requestAnimationFrame` loop
+the delay scaled by the same pace.
+
+All canvases share one `requestAnimationFrame` loop
 (`map/scheduler.ts`), skip drawing when off screen, and the draw code
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
 auto-fitted grid from the bounds seen so far. A map without an outline

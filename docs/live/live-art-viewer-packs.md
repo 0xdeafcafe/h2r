@@ -13,13 +13,17 @@ the camera looks at, fixed in the world and wrapping as it moves: rain
 falls as streaks, snow and motes drift; each point is drawn only inside
 one of its system's boxes and outside its kept-out volumes (tested in the
 vertex shader against float textures). The toolbar's Weather switch
-shows when a level has some. Both keep the view redrawing while shown,
+shows when a level has some.
+
+Both keep the view redrawing while shown,
 and hold still when motion is reduced. A level's fog is its sky's
 atmospheric fog (else its secondary fog) as the tag gives it: linear from
 `start` to `end` past the camera, never thicker than its maximum density.
 A level with no fog of its own (Zanzibar, Colossus, Foundation, the
 converted Halo 1 maps) is drawn nearly clear, as the game draws it: only
-the viewer's faint blue-grey haze, so far scenery still reads as far. The
+the viewer's faint blue-grey haze, so far scenery still reads as far.
+
+The
 sky light's `glow` once gave such levels a haze in its colour, as thick
 as its "density"; that record is the light's colour and power (its
 radiosity parameters), and the haze drowned Halo 1's maps in cyan.
@@ -31,7 +35,9 @@ pictures sixteen at a time (`textures3d.ts` `deferTextures`,
 when it arrives: the images are decoded off the main thread
 (`createImageBitmap`, no flip, no colour conversion). Player, weapon and
 vehicle models wait for `map.glb` (`ModelLibrary.hold`), so they don't
-share its bandwidth. Placed objects of one model are instanced (below). Every
+share its bandwidth. Placed objects of one model are instanced (below).
+
+Every
 art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live/live-server/src/art.rs`) answers a
@@ -40,7 +46,9 @@ immutable` and anything else with `no-cache`, and sends a file's `.br`
 copy to a browser that takes Brotli, else its `.gz` copy to one that takes
 gzip ([Packing](live-art-pipeline.md#packing)). The glTF loader (`web/src/viewer/gltf.ts`)
 has meshoptimizer's decoder; the pictures get the GPU's most anisotropic
-filtering (up to 16) and mipmaps. A new extraction
+filtering (up to 16) and mipmaps.
+
+A new extraction
 has a new stamp, so nothing stale is kept. Measured on a 10-core Mac,
 Chrome, cache off, median of five (time to the first drawn frame /
 fully textured, ms):
@@ -148,7 +156,9 @@ with its map id. They are found in two places (`live_mappack`):
 Each map opens with the retail disc's shared maps, like a disc map. A map
 whose stem the disc (or an earlier source) already has is not added
 again. The maps found are part of the art's cache key, so installing the
-map pack later extracts again. Nothing of them is in the repository.
+map pack later extracts again.
+
+Nothing of them is in the repository.
 
 ### Halo 1 maps
 
@@ -212,10 +222,14 @@ The Mods catalogue serves each release's cover and gallery from Live. On the
 uploader's machine, `h2 live mods capture PACK_ID|MAP_ID` starts a private
 headless game for each member. The CLI gets a Live capture permit and uses
 the game agent to load the installed package, place the camera at player
-starts and capture three rendered views. The game binds the exact package,
+starts and capture three rendered views.
+
+The game binds the exact package,
 tick, camera and PNG digest to the returned frame. For a pack, the CLI also
 selects three member views for the release gallery. Private captures enter
-the review queue and appear in the gallery after approval. The site labels
+the review queue and appear in the gallery after approval.
+
+The site labels
 retail map art when it uses it as a fallback.
 [Capture options](../runtime/switches.md#tools) · [Gallery API](live-api-content.md#verified-screenshot-uploads)
 

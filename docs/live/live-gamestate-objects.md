@@ -1,6 +1,8 @@
 # Live game state: objects, hooks and the structure map
 
-Part of [Halo 2 retail Xbox live game-state map](live-gamestate.md). Covers: 6. Objects, positions, facing, and vehicles; 7. Kill/death and damage hooks; 8. Structure BSP and a web top-down map.
+Part of [Halo 2 retail Xbox live game-state map](live-gamestate.md). Covers: 6. Objects, positions, facing, and vehicles; 7.
+
+Kill/death and damage hooks; 8. Structure BSP and a web top-down map.
 
 ## 6. Objects, positions, facing, and vehicles
 
@@ -153,21 +155,28 @@ The direct call is at `0x001ea460` inside attribution routine `0x001e9fa0`. It f
 The packed code belongs to the credited damage source. If recent damage
 earns the kill, the caller takes its code from the victim's attribution
 entry (`0x001ea16c`). When the credited player dealt the final damage it
-uses that damage's code (`0x001ea1d4`). Both paths pass the code at
+uses that damage's code (`0x001ea1d4`).
+
+Both paths pass the code at
 `0x001ea45c`.
 
 Live reads the actual killing damage from the active damage report. On the
 base image the sole direct call to attribution is at `0x000d9aca`, after
 the report's body-depleted flag is checked at `0x000d9aa2`. This applies
-to falls and kill volumes that reach the player-kill hook as well. At
+to falls and kill volumes that reach the player-kill hook as well.
+
+At
 attribution entry `EDI` still holds the report. The prologue saves it at
 `0x001e9fb6`. When the kill hook sees the return to attribution
 (`[esp] = 0x001ea465`) and attribution's return to the damage reporter
 (`[esp+0x74] = 0x000d9acf`), the saved report pointer is at
-`[esp+0x1c]`. The guest-layout reader checks both sites and the depletion
+`[esp+0x1c]`.
+
+The guest-layout reader checks both sites and the depletion
 flag before using the report's code and owner. The attribution argument
 slot for the incoming code is reused as an assist counter at
 `0x001ea2c7`. An unrecognised return to the damage reporter emits one diagnostic.
+
 A read fault or unrecognised return on this path leaves the source unknown. A
 direct call outside attribution supplies its own damage code in argument
 four. A delayed grenade keeps its identity if its owner switches weapons

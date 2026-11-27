@@ -207,7 +207,9 @@ is a sorted list that keeps its room, iterated in the same order, so frames
 are unchanged). The frame tick also no longer wakes the worker (the worker
 polls in a game, see "Threads"): a futex wake is 1–5 µs on a loaded
 machine, more when it lands on a sleeping core. An unchanged tick now reads
-the clock and stops, where it read the whole roster first. The zero is
+the clock and stops, where it read the whole roster first.
+
+The zero is
 enforced by `bench::the_game_threads_tick_does_not_allocate`; the µs are
 expected, so read them from `guest.json` (`frame_tick.total.p50_us`,
 `other_tick.total.p50_us`, `*.allocs_per_tick`).
@@ -230,7 +232,9 @@ What changed: ingest takes a lock per game rather than one for all games,
 and the read model's write lock once a second, not every frame. A stream
 reader's token and batch timers are made once. The packed decoder reads a
 word at a time, moves unchanged entities out of the previous frame instead
-of cloning them, and sizes its lists up front. A batch's JWS is stored
+of cloning them, and sizes its lists up front.
+
+A batch's JWS is stored
 once (`batches`) rather than in each of its events' rows: a batch of 32
 writes about 15 KiB of JWS, not 490 KiB, and in memory its events share
 one copy.
@@ -251,7 +255,9 @@ bytes as they are; otherwise it copies the records that follow what it was
 sent. Readers never get a frame twice or an older one (the sequence rule
 in `Follow`), so a reader that joins mid-game or falls behind is sent each
 stream from its keyframe, and the ticks that repeat it are trimmed; the
-wire is unchanged. Fan-out CPU per frame above the no-reader run, 8 games
+wire is unchanged.
+
+Fan-out CPU per frame above the no-reader run, 8 games
 at 15 Hz, before and after back to back at a load average of 11 to 15:
 
 | packed readers | before µs/frame/reader | after | total before | after |

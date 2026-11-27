@@ -33,7 +33,9 @@ without the crate's `native` feature, so the routes are not forked.
 Anonymous web Theater reads of a complete public time chunk use the Worker
 Cache API. The key includes the origin, game, immutable upload revision and
 exact byte span. A miss goes to LiveHub. A successful 206 carrying the hub's
-immutable film policy can populate the cache at that edge location. The Worker
+immutable film policy can populate the cache at that edge location.
+
+The Worker
 restores the original Content-Range on a hit. Private homes, bearer and cookie
 requests, mutable visibility and metadata reads continue through LiveHub.
 
@@ -41,7 +43,9 @@ requests, mutable visibility and metadata reads continue through LiveHub.
 
 Decided in slice 2. The log lives in `LiveHub`'s own SQLite storage. That
 storage is in-process and synchronous, and the hub is its only writer, so an
-append is a few local statements. D1 would cost a network hop for every
+append is a few local statements.
+
+D1 would cost a network hop for every
 query: one read per stream an append touches, then one batch.
 
 The store is `sqlstore::SqlStore` over the `Sql` trait:
@@ -148,7 +152,9 @@ the game socket's logic, driven by axum's task on a machine and by the hub
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
 auth or decoding frames, and accepts up to 16 frame records per message
-in batched mode. The attachment keeps the author, token expiry and
+in batched mode.
+
+The attachment keeps the author, token expiry and
 ingest mode. After a wake, the sender's next keyframe restarts the packed
 decoder. [Ingest wire format](live-api-social.md#streams-websocket)
 
@@ -255,7 +261,9 @@ lease ID. Its private `start` request asks the class's pool room to place
 the match on a pack container with room. An eligible search can start a pack
 before a lease exists. When placement finds no room, a new pack room launches
 the image entrypoint with `H2_PACK=1`, which executes
-`/opt/h2/h2 host pack`. The pack starts the match's `h2 host run`.
+`/opt/h2/h2 host pack`.
+
+The pack starts the match's `h2 host run`.
 [Packed hosts](dedicated-host.md#packed-hosts) The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
 and SHA-256. `H2_HOST_LEASE_JSON` carries the complete lease so the
@@ -267,7 +275,9 @@ storage. Registration opens the match for joins.
 Wrangler configures two container applications in each environment. A
 capped application has a fixed size, so `HostRoom` handles Small leases
 and `LargeHostRoom` handles Large leases. Each uses the same Dockerfile
-and room implementation. Both use 12 GB of scratch disk. Small reserves
+and room implementation.
+
+Both use 12 GB of scratch disk. Small reserves
 1 vCPU and 3 GiB, Large reserves 2 vCPU and 6 GiB. Those memory values
 meet the default scheduling policy's 3 GiB per vCPU minimum.
 [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
@@ -303,19 +313,27 @@ start. [Cost calculation](dedicated-host.md#cost-and-budget)
 Before enabling hosts, create a **$20 budget alert** in the Cloudflare
 dashboard under **Manage Account > Billing > Billable Usage**. Enter the
 threshold in USD and add the operator's email address. The alert monitors
-account-wide usage-based spend over Cloudflare's billing period. Live
+account-wide usage-based spend over Cloudflare's billing period.
+
+Live
 enforces its own cap on estimated host spend over the UTC calendar month.
 [Cloudflare budget alerts](https://developers.cloudflare.com/billing/manage/budget-alerts/)
 
 `GET /v1/hosts/{lease}/tunnel` takes a fresh `sessions.relay` account
 bearer on each WebSocket upgrade. LiveHub checks the roster and match
 state, then sends a fresh upgrade to the lease's room. The account bearer
-stays in LiveHub. The room forwards the upgrade to TCP port 31100 and
+stays in LiveHub.
+
+The room forwards the upgrade to TCP port 31100 and
 returns the WebSocket response. The supervisor uses the same port through
 `H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
-Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
+Unix socket.
+
+The image's `H2_AGENT` fallback stays on container loopback.
 Each binary message carries one tunnel frame end to end. The host assigns
-peer IDs and handles the game ports. LiveHub forwards the optional
+peer IDs and handles the game ports.
+
+LiveHub forwards the optional
 `x-h2-actor-channel: 1` upgrade offer. The host's binary hello acknowledges
 the offer and the same socket carries actor frames.
 [Host tunnel](dedicated-host-ops.md#host-tunnel)
@@ -323,7 +341,9 @@ the offer and the same socket carries actor frames.
 
 Only provider start can launch a container. A liveness check reads
 `container.running`. On stop or match end, the provider calls the room to
-destroy the running instance. The room also arms an alarm at the lease's
+destroy the running instance.
+
+The room also arms an alarm at the lease's
 hard deadline before starting compute. It restores the container's
 inactivity timeout on wake so bot-only matches can run while the room is
 quiet. The game supervisor and Live reaper measure match idle time.
@@ -339,13 +359,16 @@ game module from the private host-data bundle.
 In staging, exercise both sizes with a private bundle. Check
 that the host registers, a rostered client can exchange binary datagrams,
 and a different account receives 403. End one lease through a normal match
-and stop another from the admin page. Confirm each instance stops in
+and stop another from the admin page.
+
+Confirm each instance stops in
 Cloudflare and that a subsequent tunnel request leaves it stopped.
 
 To check the first boot alarm, use a staging host that starts but withholds
 registration. After the cohort forms and the queue responds, stop all client
 polls. Once the 60-second boot deadline has passed, check the host log for
 `HostEnded` with reason `boot_timeout` and confirm the container stopped.
+
 The event timestamp should precede the first verification request.
 [Coordinator integration pass](dedicated-host-build.md#coordinators-integration-pass)
 

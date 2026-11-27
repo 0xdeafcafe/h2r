@@ -9,7 +9,9 @@ screen while the map's geometry loads, how the geometry appears, how the
 controls and name tags sit over it. How damage reads, and the combat
 effects (shields, explosions, impacts), share the look and are specified
 in [viewer-effects.md](viewer-effects.md). The one rule: the level is never
-shown as a small object in an empty sky. The first frame the viewer can see
+shown as a small object in an empty sky.
+
+The first frame the viewer can see
 is framed on a player or on the space the match was played in.
 
 Everything here is drawn with CSS, inline SVG and the viewer's own

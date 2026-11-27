@@ -148,7 +148,9 @@ in-memory store only if another server holds that directory, with a
 warning. When no MOTD was ever published, the embedded server publishes a
 default (`default_motd.rs`). It binds 127.0.0.1 on a free port (`--live-listen ADDR`
 for a fixed one) with the identity in `live/server`, so its accounts are
-`h2 live serve`'s. With `--live` or `--live-server URL` it uses a running
+`h2 live serve`'s.
+
+With `--live` or `--live-server URL` it uses a running
 service instead. The
 account is the first local one for that server whose key the server still
 lists. Otherwise the player's identity moves with them: the gamertag is
@@ -156,7 +158,9 @@ lists. Otherwise the player's identity moves with them: the gamertag is
 (`last_played` in accounts.json), else one made from the OS user name
 (letters and digits, a single space for anything else), and an account
 of that gamertag on another server lends its key, so the player keeps one
-key everywhere. If the gamertag is new to the server it is made there
+key everywhere.
+
+If the gamertag is new to the server it is made there
 (on an invite-only server with `--invite CODE`, or an invite asked for on
 the terminal; long and 25-character codes both work). If the server has
 it already (made from the web or another device), `h2 play` does not ask
@@ -168,7 +172,9 @@ the game asks for the current recovery code (Account on the server's
 asks on the terminal before the game starts instead, as before (and
 without a terminal stops with the `h2 live account recover <tag> --server
 URL` command); `h2 live account recover` still works on its own. On the embedded server (`--live-local`) a taken default name is
-numbered instead. It prints the gamertag and, for the embedded server, the web app's
+numbered instead.
+
+It prints the gamertag and, for the embedded server, the web app's
 URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
@@ -222,7 +228,9 @@ icons, Live icons, game-type icons, weapon silhouettes, medals, the player
 colour palette, every multiplayer map's preview and every campaign level's
 level-select picture (`map/<stem>/preview` too), and the game's title and
 save images from `default.xbe` (`title/image`, `title/save-image`: the
-`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/platform/assets/src/xpr.rs`). A cold run takes well
+`$$XTIMAGE` and `$$XSIMAGE` sections, `crates/platform/assets/src/xpr.rs`).
+
+A cold run takes well
 under a second. Keys and emblem colouring are in
 [live-api.md](live-api-details.md#optional-game-art).
 
@@ -289,7 +297,9 @@ under a second. Keys and emblem colouring are in
 Read-only queries. Output is JSON when stdout is not a terminal (or with
 `--json`), one JSON value per line with `--jsonl` (each item of a list), a
 compact table on a terminal. Lists follow every cursor, so they are whole.
-`--server` defaults as above. Failures exit non-zero with the server's
+`--server` defaults as above.
+
+Failures exit non-zero with the server's
 `{error, message}` in the text.
 
 | Command | Output |
@@ -377,7 +387,9 @@ the client sends packed frames and signed event batches. When discovery
 advertises batched ingest, the client combines packed frames in a
 single message. The server sends admitted frames to readers at about
 15 frames per second per game on average and records them in H2CK
-chunks. Finished recordings are queued for H2AR publication. The
+chunks.
+
+Finished recordings are queued for H2AR publication. The
 socket closes (4401) when its token expires unless the same author
 reauthenticates.
 [Stream and ingest API](live-api-social.md#streams-websocket) ·
@@ -395,17 +407,22 @@ as the server: presence with no event or ping for 90 s gets
 socket refresh the in-memory deadline. Deadlines start
 from the projection (the last event's `at`), so they survive a restart; a
 restart then renews every presence, open session and live game to a full
-deadline from the moment it finishes (`Model::renew_deadlines`). Pings and
+deadline from the moment it finishes (`Model::renew_deadlines`).
+
+Pings and
 frames are not in the log, so without that a player who sat in a lobby for
 longer than the TTL would be expired by the first sweep after a restart
 (every Worker deploy restarts the hub) while still connected. Whoever really
 is gone still expires a TTL after the restart.
 Until the deadline passes, a game that has gone quiet still reads as live.
+
 The 5 minutes is generous on purpose. Across the live.forbes.red log on
 2026-11-18 (46 games), a game being played never went more than 17 s
 between recorded frames (p99.9 10 s). Half the games (23) ended `lost`,
 each 301-306 s after its last frame, and 9 of those never sent a frame at
-all. How long a paused game goes without a frame is not measured, so the
+all.
+
+How long a paused game goes without a frame is not measured, so the
 wait stays well above it. The web shows a `lost` game as ended, labelled
 "Unfinished", with its length on the game clock (0 with no frames).
 
@@ -420,15 +437,21 @@ token's issuer, the event signature against the author's current key,
 events on `account-<own xuid>` and presence on `presence-<own xuid>`),
 the event's data (a `KeyAdded` key must be new, the last key cannot be
 revoked, presence states are `online`/`away`/`playing`), and a fresh
-nonce. Account creation is the one write without a token: the request is
+nonce.
+
+Account creation is the one write without a token: the request is
 signed by the key it registers, and `KeyAdded` keeps it as `proof`.
 Invites are JWS by the server key, single use. Writes are rate limited
 per author and method, account creation server-wide; bodies are capped at
-64 KiB (title files 2 MiB, WebSocket messages 16 KiB). Reads are public
+64 KiB (title files 2 MiB, WebSocket messages 16 KiB).
+
+Reads are public
 unless `--private`, which needs a `read` token on every read and as the
 first stream message; discovery and `/healthz` stay public. CORS allows any
 origin on GET and HEAD and nothing else. Binding to a non-loopback address
-needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. The database
+needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`.
+
+The database
 URL is never printed with its credentials.
 
 **The log.** SQLite by default, Postgres if asked (the description below is
@@ -438,7 +461,9 @@ positions). One append-only `events` table: `position bigserial`,
 `stream_id`, `version`, `type`, `data jsonb`, `at`, `author`, `kid`, `jws`,
 `jws_index` (batches), `hash`, `batch`, unique on `(stream_id, version)`.
 The `jws` is the author's, untouched, and the source of truth: events are
-decoded from it, and the other columns are copies for querying. A batch
+decoded from it, and the other columns are copies for querying.
+
+A batch
 JWS is stored once, in `batches (sha256, jws)`: its events' rows have an
 empty `jws` and name it in `batch`, and reads join it back. Rows written
 before that keep their own `jws` and a null `batch` (the column is added
@@ -448,7 +473,9 @@ way needs a server that knows `batches`. `hash` is
 Appends take a list of events and expected versions (0: the stream must
 not exist) and are atomic across streams: account creation writes the
 gamertag stream (expected 0, which is what makes a gamertag taken) and the
-account stream in one transaction. They hold `pg_advisory_xact_lock` on a
+account stream in one transaction.
+
+They hold `pg_advisory_xact_lock` on a
 fixed key for the whole transaction, so `bigserial` positions are handed
 out in commit order (without it a tailer could read 12, miss an 11 that
 commits later, and never go back for it), and send `pg_notify('events',
@@ -456,6 +483,7 @@ position)` before committing. Serialising appends caps write throughput,
 which is fine at this scale. Schema creation takes its own advisory lock.
 `subscriptions(name, position)` holds checkpoints for durable subscribers
 (the store has `load_checkpoint`/`save_checkpoint`; none use them yet).
+
 XUIDs are `0x0009 << 48 | random 48 bits`, the marker real Live account
 XUIDs carry, with no guessable sequence; a collision fails the account
 stream's version check and is retried.
@@ -470,7 +498,9 @@ server listens. After each event the dispatcher publishes the applied
 position and broadcasts the event: write handlers wait for their position
 (read-your-writes), and stream readers subscribe to the broadcast before
 replaying from the store, so nothing falls between the two; a reader that
-lags re-reads from the store. Every read reply carries that applied
+lags re-reads from the store.
+
+Every read reply carries that applied
 position.
 
 SQL rather than Mongo: an event store needs ordered append with a

@@ -140,7 +140,9 @@ For a retail-based mod, the game start reports the retail base in
 `map` and the installed package in `map_id`. Both come from the VFS
 entry named by the active cache slot (`crates/extensions/game/src/map_slots.rs`).
 A DVD override reports its own content ID even when an installed package
-shares its name. The join uses the content ID and the report can
+shares its name.
+
+The join uses the content ID and the report can
 group with games on the same base. [Map packages](../game/maps-new-maps.md#package-offers)
 
 Game starts say their `kind`: `campaign` for campaign mode, with
@@ -160,6 +162,7 @@ when the map activates, after our campaign start wrote the profiles'
 choice into it; a checkpoint revert continues the game and does not read it
 again. A multiplayer game cannot use the array: every reader of it tests
 for a campaign, and it still holds whatever the last campaign turned on.
+
 Its skulls are the set the boot applied at that game's start
 (`Telemetry::set_multiplayer_skulls`, from `boot::skulls_mp`): the host's
 choice, or on a guest the host's advertised one; only 4 (Famine) and 6
@@ -174,7 +177,9 @@ active options). A re-activation of the campaign map the current game is on
 continues that game instead of ending it and starting another (which also
 spent one `POST /v1/games` per revert against the server's write rate
 limit, and a refused creation stops the sink). A different mission, a
-multiplayer map or the main menu ends it as before. The revert winds the
+multiplayer map or the main menu ends it as before.
+
+The revert winds the
 engine's clock back; the game's does not: from then on every tick the game
 sends (frames, kills, scores, its end) is the engine's plus an even offset
 that puts the first one past the last tick sent. Before, the reverted run's
@@ -190,7 +195,9 @@ replay or the live view showed players jumping about, frozen in place or
 gone, and a scripted death counted. Now telemetry reads, every tick, the
 byte the game itself asks whether a cinematic is playing: `[0x00510c50]+5`,
 set by HaloScript's `cinematic_start` and cleared by `cinematic_stop`
-([live-gamestate.md](live-gamestate.md), "Cinematics (cutscenes)"). It is
+([live-gamestate.md](live-gamestate.md), "Cinematics (cutscenes)").
+
+It is
 in the game state, so it is right across checkpoint reverts too.
 
 While it is set:
@@ -228,7 +235,9 @@ slot's file through the VFS (`map_override::active_map_source`): its host
 region, or, for a map the VFS rewrites in memory (the pogo kit, the
 screens; such a map has no contiguous host file), those bytes
 (`MapFile::memory`). When the slot cannot identify an unbound
-map, the boot locator uses the cache name. Telemetry reads the tag names
+map, the boot locator uses the cache name.
+
+Telemetry reads the tag names
 with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
@@ -280,7 +289,9 @@ frame's lists are complete, so an odd frame without actors, vehicles and
 machines says they are gone. The viewer would drop them for a tick, and the
 packed delta of the next even frame would carry every actor again whole
 (no previous entity to match), a keyframe's worth of bytes 15 times a
-second. Sending everything every tick doubles the world scan's game-thread
+second.
+
+Sending everything every tick doubles the world scan's game-thread
 cost (it runs on frame ticks only, `pipeline.rs`) and the bytes, while the
 server forwards at most 15 frames a second (`FRAME_INTERVAL`, 66 ms,
 `crates/live/live-server/src/games.rs`) and records the first frame of each
@@ -333,6 +344,7 @@ reader range-checks every value (colours 0..17, foreground 0..63,
 background 0..31) and omits what fails; an unvalidated offset cannot put
 garbage in events. Only the four local slots hold profile copies, so remote
 players' appearance is absent until the in-record location is validated.
+
 The game's rank is an Xbox Live attribute, not guest memory, and is never
 sent.
 

@@ -63,7 +63,9 @@ when not found.
 **Emblems.** An emblem is a background layer with a foreground layer drawn
 over it. Each layer image holds two masks, not colours: mask *a* is the red
 channel (green equals it, so it looks yellow) and mask *b* the blue channel.
-The image's alpha copies mask *b* and is not coverage. Per pixel, with
+The image's alpha copies mask *b* and is not coverage.
+
+Per pixel, with
 channels in 0..1:
 
 ```
@@ -96,9 +98,13 @@ hex digits.
 The route redirects to the current revision's `?v=<revision>` URL, which
 returns a PNG at the background mask's pixel size. The foreground scales
 to fit it. Successful images with shared game art are served with
-`Cache-Control: public, max-age=31536000, immutable`. Loopback-only art
+`Cache-Control: public, max-age=31536000, immutable`.
+
+Loopback-only art
 keeps a private cache policy. Invalid specs return 400. Missing art,
-layers, or revisions return 404, and these replies are uncached. The same
+layers, or revisions return 404, and these replies are uncached.
+
+The same
 access rules apply as for `/art/game/*`.
 
 ## Clarifications
@@ -187,7 +193,9 @@ level 1..50 and experience for each player in each ranked playlist. The
 server writes them, as server-signed `RankChanged` events on
 `rank-<xuid>`, when a finished ranked matchmaking game ends; nobody else
 may write those streams. A standing is
-`{level, experience, highest, games, wins}`. Reads are public, or need
+`{level, experience, highest, games, wins}`.
+
+Reads are public, or need
 `read` on a private server.
 
 | endpoint | result |
@@ -202,7 +210,9 @@ A leaderboard is the playlist id the hopper file gives that descriptor,
 which is what the game's `XOnlineStatRead` names.
 A game is ranked only for the players who registered its arbitration
 round ([Arbitration](#arbitration)); each `RankChanged` names that round
-as `round`, `{session}-{round}`, and a round ranks one game. Only the
+as `round`, `{session}-{round}`, and a round ranks one game.
+
+Only the
 session host's own record is ranked (`GameStarted.host` is the session's
 `host_xuid`), by the latest round it registered before the game started.
 A bot
@@ -220,7 +230,9 @@ each account signed in on the console
 lowercase hex digits. The server writes `ArbitrationRegistered`,
 `ArbitrationExtended` or `ArbitrationReported`, server-signed, on
 `round-<session>-<round>`, with `{session_id, round_id, xuid}` and the
-call's fields; `xuid` is the token's account. The session must be one the
+call's fields; `xuid` is the token's account.
+
+The session must be one the
 server knows (404 otherwise). When a game is ranked by a round, the
 server also writes `ArbitrationUsed` `{session_id, round_id, game_id}`
 there, whether or not anyone's standing moved; the round ranks no other
@@ -244,16 +256,22 @@ index until a verified archive is published. Its published response includes
 segment’s first and last source ticks, frame count, compressed byte count,
 SHA-256, zero-based offsets of source keys with a complete machine travel
 baseline, and an optional `machine_entry` seed of known device travel at
-the segment start. A seek applies the seed before the segment's first
+the segment start.
+
+A seek applies the seed before the segment's first
 frame. Ticks beyond the JSON safe-integer range use decimal strings.
 Items keep recording order, including repeated or rewound source ticks.
 
 `GET /v1/games/{id}/archive/{archive_sha256}/{ordinal}` serves the stored
 segment with `Content-Type: application/x-h2-replay` and
 `Content-Encoding: br`. The browser receives an independently decodable
-H2AR body. Fetch the segment containing the playhead first. Both routes
+H2AR body. Fetch the segment containing the playhead first.
+
+Both routes
 apply the game’s normal visibility check. Anonymous segment reads of public
-games are immutable. Authenticated responses are private. The game
+games are immutable. Authenticated responses are private.
+
+The game
 stream’s `ReplayArchivePublished` event signals that playback
 can switch to the archive. Live viewing uses the packed stream described
 above.
@@ -274,11 +292,15 @@ the separate admin API. [Replay migration](replay-migration.md)
 A step body contains `mode` (`dry_run`, `apply` or `verify`), the inventory’s
 `source_position`, and the preceding receipt’s opaque `next` value as
 `cursor`. Omit the cursor on the first request. Dry runs write no objects
-or events. Apply can resume durable progress. Verify checks each published
+or events.
+
+Apply can resume durable progress. Verify checks each published
 segment, immutable index node and original backup against the retained
 source. The final receipt includes `done: true`, the archive and backup
 SHA-256 values, and cumulative totals for `frames`, `segments`,
-`source_bytes`, `archive_bytes` and `index_bytes`. Rollback takes both
+`source_bytes`, `archive_bytes` and `index_bytes`.
+
+Rollback takes both
 `archive_sha256` and `backup_sha256` from that receipt.
 
 An incorrect revision or pointer returns 409. A broken recording fails the

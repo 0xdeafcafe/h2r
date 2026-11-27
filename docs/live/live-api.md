@@ -103,7 +103,9 @@ Days are UTC, from an event's signed time (`at`) or the server's clock
 when metered, and are kept for 400 days; the write on a new day drops
 older ones. Stored totals have no day and are never dropped. An account
 is *active* on a day when it produces a counted event or upload, sends a
-message or report, plays a game, hosts a session or signs in. Reports made
+message or report, plays a game, hosts a session or signs in.
+
+Reports made
 about an account and bytes stored do not count as activity. The co-op
 relay's messages and bytes are outside the usage meters.
 

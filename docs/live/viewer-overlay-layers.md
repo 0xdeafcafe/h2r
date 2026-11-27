@@ -62,7 +62,9 @@ flashes it.
 `web/src/styles/theme.css`), 9px/12px, uppercase, `letter-spacing: .14em`
 by default. Titles are `var(--font-ui)` bold 20px/24px,
 uppercase, `letter-spacing: .02em`. Body copy is `var(--font-ui)`
-11px/15px. Numbers use `font-variant-numeric: tabular-nums`.
+11px/15px.
+
+Numbers use `font-variant-numeric: tabular-nums`.
 
 **Plates.** A panel is two nested boxes with cut top-left and
 bottom-right corners:
@@ -406,7 +408,9 @@ stills (`opts.bare`, `web/banner`) and under `?perf`
 materials (the see-through's `discard` is already in the same shaders, so
 this is not a new class of cost). After it: one uniform comparison per
 fragment. CPU per frame: two uniform objects written and one distance per
-player. Memory: none (true wireframe geometry would add an index buffer
+player.
+
+Memory: none (true wireframe geometry would add an index buffer
 the size of the level's; the grid is computed in the shader instead).
 
 **Reduced motion.** No lattice and no sweep: `uReveal.w` stays `-1`, the

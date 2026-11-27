@@ -1,6 +1,8 @@
 # Live admin: moderation
 
-Part of [Live service: admins, the MOTD editor and the playlist builder](live-admin.md). Covers: 7. Custom content: moderation; 8. Player reports; 9. Bans.
+Part of [Live service: admins, the MOTD editor and the playlist builder](live-admin.md). Covers: 7. Custom content: moderation; 8.
+
+Player reports; 9. Bans.
 
 ## 7. Custom content: moderation
 
@@ -30,10 +32,14 @@ The actions, and the `state` they leave:
 
 Taking down a pack prevents downloads of its member manifests, images and
 exclusive layers. Sessions cannot advertise any of those members. A layer
-shared with a visible mod stays available to that mod. The admin can still
+shared with a visible mod stays available to that mod.
+
+The admin can still
 inspect the pack and its reports. The public event log also omits the
 pack, member and exclusive blob streams. Unhiding the pack restores access to
-members that have no separate takedown. Unblocking leaves the pack deleted
+members that have no separate takedown.
+
+Unblocking leaves the pack deleted
 until its uploader republishes it.
 
 A package is refused in sessions (410) when it, or any of its layers, is
@@ -59,13 +65,17 @@ on replay if their upload predates proof checks.
 Three distinct images flagged by the classifier or removed in review
 switch off the uploader's content uploads. Player reports without an
 admin removal do not count. Approval clears a classifier strike on that
-hash. An admin can restore uploads through the account's upload switch.
+hash.
+
+An admin can restore uploads through the account's upload switch.
 
 The Worker and the native server share the review queue and rules.
 Native Live holds captures for review when a local classifier is absent.
 The optional local adapter sends the display WebP in an HTTP POST and
 expects a JSON response such as `{"nsfw":0.25}`, with a numeric score
-between zero and one. The operator supplies the model service on loopback.
+between zero and one.
+
+The operator supplies the model service on loopback.
 [Classifier setting](../runtime/switches.md#tools) · [Screenshot API](live-api-content.md#verified-screenshot-uploads)
 
 **Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
@@ -85,7 +95,9 @@ Blobs with a listed hash are refused, so the store never holds a retail
 map. A line that names its map (`<hex>  lockout.map`) also makes
 `MapId::retail(name, hash)` a retail id, which ranked sessions may use.
 The file is absent, so empty, by default: nothing from a disc ships with
-the server. It is read on each upload, so edits apply at once. Whatever
+the server.
+
+It is read on each upload, so edits apply at once. Whatever
 the list says, a manifest with no layers (only a retail base) is never
 published: it would be the retail map itself.
 
@@ -117,7 +129,9 @@ item is `{id, target, by, kind, negative, reason?, game_id?, at, review?}`:
 `game_id` the game the reporter was in when the game said, and `review`
 `{action, note?, by?, at}` once an admin acted (`by` absent when the operator
 did). A player's record is `{complaints, open, commendations, notes}`, over
-every report against them, with the admins' notes oldest first. A note
+every report against them, with the admins' notes oldest first.
+
+A note
 needs text; either is at most 500 characters. Reviewing a commendation is
 400, a report already reviewed 409.
 

@@ -28,7 +28,9 @@ language slots (as `motd set` does) and answers
 requires: 1..=32 messages, at most 255 UTF-16 units each, and a built file
 of at most 32,768 bytes (`0x8000`, the MOTD channel's download buffer,
 [live-motd.md §2.2](live-motd.md); a larger file would fail the game's
-download and show nothing). The server writes the 16-byte header the game
+download and show nothing).
+
+The server writes the 16-byte header the game
 validates (CRC, version 1, size; `live_proto::title_file`). A refused PUT
 leaves the published file as it was. The hopper PUT is the same with
 version 4 and a 131,072-byte (`0x20000`) cap.
@@ -41,7 +43,9 @@ manager downloads `9809/message_of_the_day.dat`, validates the header and
 only then sets the flag the two screens check. Nothing re-arms the channel
 mid-session, so **a MOTD published while the game is signed in shows
 after the next sign-in** (sign out and back in, or restart the game). The
-editor says so after a publish. The Live main menu shows the header once
+editor says so after a publish.
+
+The Live main menu shows the header once
 per screen visit; the matchmaking screen shows a random message,
 re-picked every 15 s.
 
@@ -175,7 +179,9 @@ where the entry came from, a copy names its source, a removal is simply a
 shorter list. `from_hopper` makes `from` name a slot of another hopper (as
 the file stood before this patch): that is how an entry, game variant and
 all, is copied between playlists. `title` and `description` are optional
-like every other field. Nothing the builder cannot edit is ever lost, and the
+like every other field.
+
+Nothing the builder cannot edit is ever lost, and the
 published file re-inflates to the same 0x162cc0 image with the edits
 applied. The reply is `{"published": …, "hoppers": …, "position": …}`, the
 fresh state.

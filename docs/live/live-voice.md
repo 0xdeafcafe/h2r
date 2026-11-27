@@ -29,7 +29,9 @@ copied from the disc; the doc names functions and fields, not data.
 
 The title links the XHV voice engine and the voice-mail library into `.text`.
 There is no separate XVOICE or VOICMAIL section. The XHV code sits roughly at
-0x3321c5 to 0x333130. Its exports are thin stdcall wrappers over a COM-style
+0x3321c5 to 0x333130.
+
+Its exports are thin stdcall wrappers over a COM-style
 engine:
 
 | Wrapper | Address | Notes |
@@ -78,7 +80,9 @@ The engine finds headsets itself. Its hot-plug poll at 0x332b97 calls
 XPeekDevices (0x409884) for two XPP device types, 0x4088b0 (microphone) and
 0x4088bc (headphone). Our `crates/platform/xapi/src/controllers.rs` answers
 peek_devices, get_devices and get_device_changes with 0 for any type that is
-not a gamepad. So today the engine never sees a communicator, never calls
+not a gamepad.
+
+So today the engine never sees a communicator, never calls
 CommunicatorStatusUpdate with status 0, and the headset byte stays clear.
 
 Everything downstream keys off that byte. The "can this player use voice"
@@ -182,7 +186,9 @@ Receiving: the message screen at 0x2c7410 shows text only if 0x1906da allows
 it, requires codec 1, and reads the voice either inline (0x3a9d65) or by
 download (0x3a9d74, 0x3a9d83, done when received equals total). It plays with
 0x538e0(controller, buffer, size). The game checks the RIFF header and that
-size is over 16 bytes; it never decodes the audio itself. With no headset,
+size is over 16 bytes; it never decodes the audio itself.
+
+With no headset,
 playback goes to the speakers.
 
 ### 1.7 Presence
@@ -259,7 +265,9 @@ Only one input and one output device are chosen per machine (3.2). It
 also adds a host device-enumeration trait (`voice::Devices` or similar,
 CoreAudio through cpal on macOS, plus a fake). This design builds `VoiceIo`
 (3.2) beside that trait: `Devices` lists and names devices, `VoiceIo` opens
-them, and both take the same `DeviceId`. If the two end up in the same
+them, and both take the same `DeviceId`.
+
+If the two end up in the same
 module, `VoiceIo` can be a supertrait of `Devices`.
 
 Integration points:

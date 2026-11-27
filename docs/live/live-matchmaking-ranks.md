@@ -7,7 +7,9 @@ Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 8
 The stats site's **Ranked** page at `/games/halo2/ranks` builds its
 playlist menu from the served hopper file and the Clankermatch marks.
 The menu groups Ranked, Unranked and Clankermatch. The selected playlist
-shows its game types and size rules. The board shows levels and XP
+shows its game types and size rules.
+
+The board shows levels and XP
 progress and marks bot accounts. Unranked playlists have no standings
 and can link to recent games. [Ranked page](../../web/src/stats/Ranks.tsx)
 
@@ -94,7 +96,9 @@ until the answer comes; `XOnlineStatReadGetResult` answers
 `RESULTS_UNAVAILABLE` until then.
 Rank stats come back as LONGs from `rank::live_stat`: 1 experience, 2
 the level and 3 the highest level, both stored from 0 as the game does,
-and 4..6 (counters not decoded) as 0. Everything else, and every stat
+and 4..6 (counters not decoded) as 0.
+
+Everything else, and every stat
 of a read the server failed, is NONE, which the game reads as zero:
 level 1, as before reads reached the server.
 
@@ -103,7 +107,9 @@ boot's playlist locator, which asks `Hle::playlist`: the hopper index
 (session attribute 1) of this console's own advertisement, else of the
 session it joined, as last read. Neither waits nor takes guest memory.
 A game with one is `kind: "matchmaking"` with that `playlist_id`; the
-server names the playlist from its hopper file. The rules in §8.2 then
+server names the playlist from its hopper file.
+
+The rules in §8.2 then
 rank it.
 
 **Arbitration.** Read from the retail call sites, not yet checked
@@ -187,7 +193,9 @@ The roster's `rank.level` is then the bot's real level (persistent) or
 the humans' (made up). A made-up bot has no standing, so its stat read
 needs the session. `GET /v1/rank-stats` takes an optional `session=`
 (16 lowercase hex digits, else a 400). The HLE fills it on the stats
-read with the session this console hosts, else the one it joined. It
+read with the session this console hosts, else the one it joined.
+
+It
 answers a made-up bot of that session's latest roster with its roster
 level, when the roster's playlist is the leaderboard's, so the lobby's
 stat read and the roster agree. A persistent bot answers with its

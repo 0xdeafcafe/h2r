@@ -199,9 +199,13 @@ of the world poses. `i` is the scenario machine index (0..32767) and `p`
 is its position byte (0 closed or at the start, 255 fully open or at the
 end). Entries are sorted by index, at most 255, one per index. A
 machine-aware packed keyframe is a complete baseline, including at a
-chunk start. V8 keys carry that baseline in their embedded v7 key.
+chunk start.
+
+V8 keys carry that baseline in their embedded v7 key.
 An omitted index on a keyframe has unknown travel. An omitted index on a
-delta holds the last value. A `cut` clears the preceding run's state.
+delta holds the last value.
+
+A `cut` clears the preceding run's state.
 
 The server refuses unknown stances, actions and grenades, negative or
 non-finite speeds and amounts, more than 8 actions, 64 hits or 128 machine
@@ -222,7 +226,9 @@ objects"):
 `crea`, `netgame`), `i` its index in that kind's scenario block (at most
 `0x7fff`). A moved object has `p` (finite) and non-zero `f` and `u`; a gone
 one (destroyed, or a weapon someone picked up) has `gone: true` and none of
-them. Everything not listed is at its placement. The server refuses more
+them. Everything not listed is at its placement.
+
+The server refuses more
 than 2048 entries, entries not in (kind, index) order or repeated, and
 entries that break those rules.
 
@@ -257,7 +263,9 @@ scenario placement or netgame spawn made (those are `objects`): dropped
 guns, the flag, the ball, the bomb, at most 128; `kind` is the `weap` stem,
 or with `equipment: true` the `eqip` stem. A held flag, ball or bomb is the
 carrier's `weapon` (`flag`, `ball`, `assault_bomb`). A vehicle's `vel` is
-its velocity like a unit's. The server refuses non-finite positions or
+its velocity like a unit's.
+
+The server refuses non-finite positions or
 velocities, velocities over 1000, zero `forward`/`up`, ids or kinds outside
 `[a-z0-9_]{1,32}`, a projectile that is its own parent, and more than 64
 projectiles or 128 items.
@@ -267,7 +275,9 @@ game sends such frames on its clock as ever, with the tick and `bsp` (and a
 `cut` when one is due) but no players, actors, vehicles, hits, machines or
 objects, and sends no kills meanwhile (docs/live/live-telemetry.md,
 "Cinematics"). A viewer shows a cutscene and draws nothing from the frames
-either side of it into it. Absent means false.
+either side of it into it.
+
+Absent means false.
 
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame (`fire`, `actions_ago` and
@@ -297,11 +307,15 @@ games) and the reported playlist and campaign fields. When a start names a
 session, the server records `GameSessionLinked {game_id, session_id}` on the
 operator-only `lobby-links` stream and appends `GameStarted` without the ID
 in the same transaction. Lobby visibility changes leave the signed game
-event intact. Readers obtain a joinable session from `GET /v1/games/{id}/join`.
+event intact.
+
+Readers obtain a joinable session from `GET /v1/games/{id}/join`.
 
 Live frames go out on the stream at about 15 Hz per game on average.
 Batched ingest can deliver a bounded burst. Every frame sent is
-recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`
+recorded in the game's [frame chunks](#frame-chunks).
+
+A frame's `shots`
 count since the previous frame sent (the sum over the frames the throttle
 dropped, capped at 64 per player or actor); the same goes for `actions` and
 `hits`. Games recorded before frame chunks have `GameFrame` events instead,
@@ -320,7 +334,9 @@ timer. A server that stops mid-window loses at most that window.
 The private blob store uses `frames/<game id>/<first tick>-<sha256>` for
 new chunks and reads older chunks under `frames/<game id>/<first tick>`.
 The digest keeps both originals when a checkpoint rewind repeats a chunk
-start. Readers can pass the signed index entry’s `sha256` as a query parameter to disambiguate a repeated first tick. The Worker uses R2 and the native server uses its data directory.
+start. Readers can pass the signed index entry’s `sha256` as a query parameter to disambiguate a repeated first tick.
+
+The Worker uses R2 and the native server uses its data directory.
 With neither configured, the event store holds the bytes. A server-signed
 `FrameChunk` event in the game's stream records its index entry.
 
@@ -351,6 +367,7 @@ changes nothing here. A chunk inflates to at most 16 MiB. `GET
 /v1/games/{id}/chunks` lists a game's chunks and `GET
 /v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
 check as the game. The binary response is the stored blob byte for byte.
+
 An explicit `?format=json` returns a JSON array of its decoded frames. The
 query gives each representation its own URL in the edge cache. A seek reads
 the index once and fetches the one chunk whose window holds the tick.

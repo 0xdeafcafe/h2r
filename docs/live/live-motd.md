@@ -17,7 +17,9 @@ and a **validated 16-byte header** (CRC, version, size). §2 is that reading
 (§2.0 to §2.4). `0x003ab6ea` `XOnlineStorageDownloadToMemory` is the call
 these two files use (§2.1). The body formats in §3 and §5 start at offset
 0x10. The class at `0x002c7410` / `0x002c74f9` / `0x002c788a` is the game's
-voice and text message playback screen, not part of the MOTD path. The
+voice and text message playback screen, not part of the MOTD path.
+
+The
 [first reading](notes/2026-11-16-motd-first-reading.md) of the XONLINE call
 chain, which this page replaces, is kept as a note.
 

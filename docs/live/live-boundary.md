@@ -1,6 +1,8 @@
 # Halo 2 retail Xbox Live API boundary
 
-Static investigation, 2026-11-15. Design: [live.md](live.md). Target: original Xbox retail `default.xbe`, XDK/XONLINES 5849. Addresses are guest virtual addresses. This report contains derived names, addresses, ABI facts and control-flow observations; no instruction-byte sequences, retail lookup tables, account data or executable extracts.
+Static investigation, 2026-11-15. Design: [live.md](live.md). Target: original Xbox retail `default.xbe`, XDK/XONLINES 5849.
+
+Addresses are guest virtual addresses. This report contains derived names, addresses, ABI facts and control-flow observations; no instruction-byte sequences, retail lookup tables, account data or executable extracts.
 
 ## Result and scope
 
@@ -11,7 +13,9 @@ Two additions make the inventory below **130 targets**:
 - `0x003ab055`, proposed `XOnlineMessageDelete`, is reached by a verified tail jump at `0x0008e93b`; the original call-only scan missed it.
 - `0x0036c47d`, confirmed `XNetGetEthernetLinkStatus`, is in `.text`, outside the two scanned library sections. Game callers are `0x0008d6b0`, `0x0008d7eb`, `0x0008d8bd`; XOnline also calls it internally at `0x003a5007`.
 
-There is another verified tail jump at `0x0008d9de` to the already-listed `XNetCleanup` entry `0x003cd67b`. Thus the expanded inventory has **185 direct calls plus two tail jumps**. Counts in the table are direct calls only; the evidence notes the tail jumps. Counts retain the original scan's source-section scope (`.text`, XPP, D3D, DSOUND, BINK). In particular, two callers of the 16-bit endian helper are in DSOUND; this is a section-based dependency inventory, not a claim that every source section contains only game code.
+There is another verified tail jump at `0x0008d9de` to the already-listed `XNetCleanup` entry `0x003cd67b`. Thus the expanded inventory has **185 direct calls plus two tail jumps**. Counts in the table are direct calls only; the evidence notes the tail jumps.
+
+Counts retain the original scan's source-section scope (`.text`, XPP, D3D, DSOUND, BINK). In particular, two callers of the 16-bit endian helper are in DSOUND; this is a section-based dependency inventory, not a claim that every source section contains only game code.
 
 **Confidence:** `confirmed` means the entry is statically identified from ABI and discriminating caller/callee behaviour; `likely` means a consistent proposed name with matching ABI and contextual/public-reference support, without the same depth of independent semantic checking. There are **62 confirmed and 68 likely names** in the expanded inventory. No remaining verified target lacks a proposed name, but the likely names are not implementation-ready contracts.
 
@@ -228,7 +232,9 @@ The sign-in screen callback is `0x0024b869`, registered by `0x0024b824`. It call
 
 `0x0007b6c0` polls the returned record: its pending count at `XNQOS + 4` must reach **zero** before completion. `0x002bb0e9` reads the result, may consult `XOnlineGetNatType` through `0x0006b550`, and releases QoS through `0x0007b650` -> `XNetQosRelease`. An HLE that signs in successfully but makes QoS startup fail can repeatedly retry this step; provide a valid record that completes, not only successful logon APIs.
 
-The screen then reads `0x0006cd50` and copies `XOnlineGetLogonUsers` through `0x0006ced0`. To take success, it requires **game result 1**, selected user's **nonzero ID**, **nonempty gamertag**, and **nonnegative per-user HRESULT**. It calls success method `0x0024b971`, which updates the profile/gamertag and signed-in state. The persistent connection task is retained beyond the screen.
+The screen then reads `0x0006cd50` and copies `XOnlineGetLogonUsers` through `0x0006ced0`. To take success, it requires **game result 1**, selected user's **nonzero ID**, **nonempty gamertag**, and **nonnegative per-user HRESULT**. It calls success method `0x0024b971`, which updates the profile/gamertag and signed-in state.
+
+The persistent connection task is retained beyond the screen.
 
 ### 7. Failure routing and dashboard actions
 
@@ -250,7 +256,9 @@ The connection-result classifier at `0x0006cd50` produces the following **derive
 
 For game result 2 or 6, the handler's `keep` argument controls whether a second/cancel callback is absent or returns to the main menu. Result 9 also shares dialog `0x38`, but this connection-result classifier does not emit 9. For dialog `0x38` during an active game, the handler can substitute dialog `0xb8` and an in-game quit action; it does not always expose a dashboard action in that context.
 
-Dashboard launches are **user dialog actions**, not unconditional jumps immediately on receiving an HRESULT. Network callback `0x00236917` and online-menu callback `0x00236937` call game dashboard-launch wrapper `0x002238f4`. It constructs launch data, calls the XAPI launch entry `0x002d07f2` with a null image name at `0x0022396f`, and does not return. The derived launch reasons are **6 for network configuration** and **9 for the online menu**. Cancel/acknowledge callback `0x00236953` signs out and returns to the game's main menu. Update callback `0x00236926` has its own `XOnlineTitleUpdate` boundary call; the library's update/launch machinery contains the `xonlinedash.xbe` references.
+Dashboard launches are **user dialog actions**, not unconditional jumps immediately on receiving an HRESULT. Network callback `0x00236917` and online-menu callback `0x00236937` call game dashboard-launch wrapper `0x002238f4`. It constructs launch data, calls the XAPI launch entry `0x002d07f2` with a null image name at `0x0022396f`, and does not return. The derived launch reasons are **6 for network configuration** and **9 for the online menu**.
+
+Cancel/acknowledge callback `0x00236953` signs out and returns to the game's main menu. Update callback `0x00236926` has its own `XOnlineTitleUpdate` boundary call; the library's update/launch machinery contains the `xonlinedash.xbe` references.
 
 A successful sign-in with the **per-user** message warning sets `0x0050944f` in `0x0006bff0`; success method `0x0024b971` then shows dialog `0x28` offering the dashboard online-menu callback. Return `hr == 0` for a simple offline account without that warning.
 
@@ -262,7 +270,9 @@ A successful sign-in with the **per-user** message warning sets `0x0050944f` in 
 | `0x003c9ae4` | XONLINE | `0x004036f7` | Inside the instruction at `0x004036f6`, which combines registers. The following real call begins at `0x004036f8` and targets D3D helper `0x00403360`. |
 | `0x003dbc19` | XNET | `0x002d5691` | Inside the instruction at `0x002d568f`, which restores the stack pointer from a frame local. No call starts at the raw site. |
 
-The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbours; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative. For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
+The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbours; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative.
+
+For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
 
 ## What this implies for the first HLE milestone
 
@@ -275,7 +285,9 @@ The other 182 supplied sites decode as direct calls to the listed targets when a
 
 ## Evidence sources and limits
 
-Primary evidence is read-only decoding of `/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe`, starting from function addresses emitted by the **already-built** analyser and checking calls, public thunks, stack cleanup and conditional branches. No build or game execution was performed. No Ghidra rename, retype, analysis or save command was issued. The resident project reported just one analysed function, so Ghidra's read-only decompiler could not resolve the requested entries; direct decoding was used instead.
+Primary evidence is read-only decoding of `/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe`, starting from function addresses emitted by the **already-built** analyser and checking calls, public thunks, stack cleanup and conditional branches. No build or game execution was performed. No Ghidra rename, retype, analysis or save command was issued.
+
+The resident project reported just one analysed function, so Ghidra's read-only decompiler could not resolve the requested entries; direct decoding was used instead.
 
 Public references used for names and declarations, with retail behaviour taking precedence over comments:
 
@@ -283,7 +295,9 @@ Public references used for names and declarations, with retail behaviour taking 
 - [RXDK public Winsock/XNet header, same revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/winsockx.h): socket/XNet prototypes and public record definitions.
 - [Public OnlineDash symbol names](https://github.com/Cxbx-Reloaded/sym2idc/blob/master/FFFE0000_4C0590E3_Xbox%20OnlineDash.sym): older related SDK name/decoration cross-checks only; its addresses are not Halo 2 addresses.
 
-The existing XbSymbolDatabase matcher was also run read-only for leads. Its small XOnline/XNet match set agreed with the checked logon/match/startup/socket bodies; no signature data was copied. The 68 likely rows still need individual semantic confirmation before binding production implementations. Exact `htonl` versus `ntohl`, and `htons` versus `ntohs`, names cannot be distinguished from their shared operation; the combined names are intentional. This inventory does not claim to discover every possible address-taken, indirect or cross-section library entry beyond the verified direct calls, the tail-jump audit, and the additional link-status entry.
+The existing XbSymbolDatabase matcher was also run read-only for leads. Its small XOnline/XNet match set agreed with the checked logon/match/startup/socket bodies; no signature data was copied. The 68 likely rows still need individual semantic confirmation before binding production implementations.
+
+Exact `htonl` versus `ntohl`, and `htons` versus `ntohs`, names cannot be distinguished from their shared operation; the combined names are intentional. This inventory does not claim to discover every possible address-taken, indirect or cross-section library entry beyond the verified direct calls, the tail-jump audit, and the additional link-status entry.
 
 
 ## Direct-site address ledger

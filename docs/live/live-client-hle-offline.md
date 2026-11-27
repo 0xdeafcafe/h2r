@@ -36,7 +36,9 @@ strings into those buffers; it is called from both dialog constructors
 buffers into the text widgets every frame. The hook wraps `0x0019b72a`
 (shadow entry `0xa0ff6000`): after the original fill, if `+0x610` is `0x23`,
 it writes our message into `+0x814`, at most 255 units and a zero, so the
-first button's buffer is never touched. Title and buttons keep the game's
+first button's buffer is never touched.
+
+Title and buttons keep the game's
 text. Finding the dialog this way needs no asset names, string IDs or
 string-table offsets.
 
@@ -63,7 +65,9 @@ The message box on the OK/cancel error dialog is about 244 by 91 pixels,
 five lines of the body font, so each line is kept under about 240 pixels.
 Lines break on `\r\n`, as the game's own strings do. The URL is shortened
 to 40 characters, and `|` (which starts a markup escape in the text scanner)
-is replaced. The message does not mention `H2_LIVE_SERVER`, which `h2 play --live` and
+is replaced.
+
+The message does not mention `H2_LIVE_SERVER`, which `h2 play --live` and
 the `h2 live` commands read.
 
 The first button still offers the troubleshooter. It launches the
@@ -129,10 +133,14 @@ with Create, Recover and Cancel. Create asks for a gamertag, then an invite
 if the server needs one, then works, then shows "Write this down" (the
 current code with its seconds left, the authenticator key in groups of
 four, and how to recover). Recover asks for a gamertag, then the code, then
-works. A picks, B goes back, and B never skips the secret. The glue opens
+works.
+
+A picks, B goes back, and B never skips the secret. The glue opens
 the keyboard for each `Effect::Keyboard` and answers with `typed`. It runs
 each `Effect::Start` as a `Job`, saves the entry, and answers with
-`finished`. On `Effect::Close { signed_up: true }` it calls
+`finished`.
+
+On `Effect::Close { signed_up: true }` it calls
 `reload_accounts`. Page text is at most five lines of 40 characters, broken
 with `\r\n` and never holding `|`, as for the notice.
 
@@ -198,7 +206,9 @@ tries are left (the server's count), a lockout how long to wait, an
 unreachable server says so, and the code is asked again. No such gamertag
 offers Create, which runs `account_setup::create`; an invite-only server
 says to make it on `/dash` or pass `h2 play --invite CODE` (there is no
-in-game invite entry). On success the entry is saved to the session's file
+in-game invite entry).
+
+On success the entry is saved to the session's file
 and the shared `accounts.json`, the accounts are read again, the user's
 record is replaced by the saved account's (the controller slot word kept),
 and the service logon starts as for any account, ending in `CONNECTED`.
@@ -213,7 +223,9 @@ it (not X: the class's action buttons are Start alone, so a stray X can't
 send a half-typed code), B or Back backs out and
 closes (Back used to close the screen without cancelling, which left the
 logon pending). An error shows until the code is edited and comes back
-with the next answer. The prompt becomes a modal dialog over the screen beneath, in the large
+with the next answer.
+
+The prompt becomes a modal dialog over the screen beneath, in the large
 dialog's panel with six code cells and a glyph legend
 (`signin_screen::dialog_for`, docs/game/ui-builder.md "The modal
 dialog"). That is in the preview, the sheet and the editor; in game it is
@@ -221,6 +233,7 @@ still the list until the dialog's tag recipe is built. The page's
 behaviour is proven offline as a table
 (`signin_screen::SigninPage`, following `live_hle::signin`'s own
 `typed`, `refused` and `settled`; docs/game/ui-builder.md "Behaviour").
+
 The text is served from guest buffers under our
 string ids; each change goes into the other buffer of a pair, and the row
 text (`Rows::live_text`) writes it and sets the description again. The
@@ -296,6 +309,7 @@ system keyboard types into it (`keyboard_glue`). It is opened with the
 retail opener `0x00238c21`: stdcall `(context, buffer, capacity)`, `ret
 0xc`, the player in CL. The opener creates the screen through its loader
 `0x0023784f` and edits our UTF-16 buffer (a page of ours) in place.
+
 Static reading of the keyboard (retail 5849):
 
 - `0x002381de` backs the text up at `+0x618` and points `+0x818` at the
@@ -392,7 +406,9 @@ live text); `crates/apps/cli/src/play_live.rs` (the hand-off).
 The host/search APIs in [live-matchmaking.md](live-matchmaking.md) sections
 1.1, 1.2 and 4 use the background HTTP worker when `LiveConfig.server_url` is
 configured. Without a server they retain the local host/empty-search behaviour.
-These APIs advertise and discover lobbies. They do not implement a matchmaker,
+These APIs advertise and discover lobbies.
+
+They do not implement a matchmaker,
 ranked arbitration or NAT traversal. Invitation delivery is described next.
 
 The game client retains the 1,024 most recently read session advertisements
@@ -404,7 +420,9 @@ task. Update consumes only dirty attributes and replaces the slot counts;
 NULL removes a value. The 16-byte XONLINE_ATTRIBUTE is ID, changed BOOL and an
 eight-byte union: integer, UTF-16 string pointer, blob pointer/length, or NULL.
 Limits remain 64 attributes, 400 UTF-16 units per string, 800 bytes per blob and
-32 advertisements. Server-backed lobbies have at most 16 slots. Invalid guest
+32 advertisements.
+
+Server-backed lobbies have at most 16 slots. Invalid guest
 ranges leave outputs and dirty flags untouched. A request that was accepted by
 the worker consumes the dirty flags even if the later network operation fails.
 
@@ -412,23 +430,31 @@ The worker creates a server session, signs subsequent update/delete batches,
 and caches the accepted advertisement when the game pumps its task. Continue
 returns running until HTTP completion, then XONLINETASK_S_SUCCESS or an error.
 GetInfo returns the same eight-byte XNKID/session ID and locally generated
-16-byte exchange key for create/update tasks. Closing the task keeps the lobby;
+16-byte exchange key for create/update tasks.
+
+Closing the task keeps the lobby;
 Delete removes it. Sign-out and controller removal attempt a signed delete;
 server expiry handles unreachable clients. Presence pings refresh the host's
-advertisements without writing events. No-op updates add no events.
+advertisements without writing events.
+
+No-op updates add no events.
 
 The exchange key stays in the host HLE. Public session responses and events
 contain the XNKID and host XNADDR, never the exchange key. Search records use a
 zero exchange key because the current HLE sockets have no encryption. The
 retail host wrapper at `0x0008fd90` gets the ID/key and then reads its XNADDR;
-`0x00072f39` registers the returned pair before QoS listening. The separate
+`0x00072f39` registers the returned pair before QoS listening.
+
+The separate
 XNetCreateKey/System Link path does not supply this pair.
 
 Search and FindFromID fetch open sessions and own their completed snapshots
 until TaskClose. SearchGetResults returns an array of guest pointers. Each
 84-byte header contains the ID at +4, XNADDR at +0x0c, zero key at +0x30, open
 public/private counts at +0x40/+0x44, filled counts at +0x48/+0x4c, and column
-count at +0x50. An offset directory follows. SearchParse decodes integer,
+count at +0x50.
+
+An offset directory follows. SearchParse decodes integer,
 UTF-8 wire string to UTF-16 guest string, blob, and NULL columns into the
 caller's specifications, checking all bounds before writing the output.
 Result storage is reusable when a search task closes; handles remain monotonic.
@@ -437,19 +463,25 @@ The title's procedure 1 returns seven integer columns for attribute IDs
 1, 2, 3, 5, 6, 7 and 8 (`0x000b4b80`, `0x000b4a40`). Missing values default to
 zero. Its twelve positional integer/NULL query parameters are not yet fully
 identified: this procedure currently searches all open sessions, without
-inventing filters for anonymous ID-zero parameters. Other procedures accept
+inventing filters for anonymous ID-zero parameters.
+
+Other procedures accept
 named attribute equality filters and return the stored columns in ID order.
 FindFromID uses the seven-column title projection. SearchResultsLen retains
 the retail capacity formula at `0x003b32f9`: 92 bytes plus the requested row
 count times an 84-byte header and each column's eight-byte overhead/value
-capacity. Limits are 1000 rows, 64 columns and 16 MiB; the mapped result pool
+capacity.
+
+Limits are 1000 rows, 64 columns and 16 MiB; the mapped result pool
 also has a finite allocation budget and reports OUT_OF_MEMORY when exhausted.
 
 The host address is the configured XNet LAN/public IPv4 and base port. Set
 `H2_XNET_ADDR` to an address peers can reach, with distinct ports for two local
 instances as described above. The server's HTTP tunnel does not forward game
 UDP. Internet peers need reachable UDP base through base+6; this slice adds no
-relay or hole punching. Server clients that omit their declared IPv4 use the
+relay or hole punching.
+
+Server clients that omit their declared IPv4 use the
 trusted public-URL source-IP policy ([live-api.md](live-api-sessions.md#sessions)).
 
 Synthetic tests cover the nine entries and their stack cleanup, local fallback,
@@ -457,7 +489,9 @@ typed values, dirty flags, stable IDs/keys, task lifetimes and capacity errors.
 The server tests exercise authorisation, signed batches, projection/replay,
 filters, expiry and tunnel source trust. Two synthetic guests publish/search
 through an embedded memory-backed server and read the rows and parsed values
-that the retail wrappers consume. No test runs the game.
+that the retail wrappers consume.
+
+No test runs the game.
 
 ## Client HLE: Teams
 
@@ -466,6 +500,7 @@ The clan-create stop at `0x003afb80` is called by `0x000abe60` from the UI actio
 `0xffffffff`. All thirteen linked XOnlineTeam entries use the same owned store and task seam:
 create/delete, enumerate-by-user/results/details, member enumeration/results/
 details, member property changes/removal, recruitment by XUID/name, and answers.
+
 The game refreshes enumeration after mutations; no CreateGetResults or
 TeamSetProperties thunk is called in the verified boundary. No guest address is
 invented for those unused APIs. The host seam supports team-property changes.
@@ -474,7 +509,9 @@ The shared owned model/rules are in `live-proto::team`; guest marshalling is in
 `live-hle::teams`. A team properties record is 1670 bytes (UTF-16 name 16 units,
 description/motto/URL 256 each, WORD custom length and 100 bytes custom data).
 A full team is 1698 bytes: 12-byte XUID, properties, DWORD flags, FILETIME and
-DWORD active member count. A member is 146 bytes: 12-byte XUID, 16-byte ANSI
+DWORD active member count.
+
+A member is 146 bytes: 12-byte XUID, 16-byte ANSI
 gamertag, 106-byte properties, DWORD flags and FILETIME. Outputs are checked and
 written exactly to these bounds. The count in enumeration results is OUT, not
 an input capacity; limits keep lists within eight teams and 100 members.
@@ -482,7 +519,9 @@ an input capacity; limits keep lists within eight teams and 100 members.
 Each mutation returns a task; Continue reports success or the specific Teams
 HRESULT. Enumerations own snapshots with their detail records. Missing items in
 a successful snapshot return E_FAIL, matching retail. The store retains owned
-strings/custom data after guest buffers are reused. It survives local sign-out;
+strings/custom data after guest buffers are reused.
+
+It survives local sign-out;
 cleanup invalidates tasks. With no server configured, recruitment resolves the host accounts file,
 records a pending member and retains the outgoing message capture.
 Pending teams appear for the recruit with the recruit flag; an accepted answer
@@ -493,12 +532,16 @@ remove-member=8 and recruit=16. The title uses all bits for the leader, `0x1c`
 for officers, and `0x10` or zero for lower ranks. The shared rules preserve one
 creator/leader, reject orphaning/demoting it, require the appropriate permission
 for mutations, prevent privilege escalation, and allow an ordinary member to
-leave. Duplicate names, full teams, eight-team limits, unknown users and missing
+leave.
+
+Duplicate names, full teams, eight-team limits, unknown users and missing
 teams produce their XDK errors. Local diagnostics use `H2_BOOT_VERBOSE=1`.
 
 `Hle::local_teams()` snapshots the cache; `local_team_action` is the trusted local
 host seam, including team-property edits where no guest thunk is linked. The trusted host action seam is available only without a configured server.
-Local-only records are not persistent across runtimes. Synthetic guest
+Local-only records are not persistent across runtimes.
+
+Synthetic guest
 tests cover create/list/details/member editing/recruit/accept/decline/leave/
 delete, packed layouts/canaries, snapshot ownership, validation/fault atomicity,
 permissions and cleanup. No test builds or runs the title.
@@ -510,12 +553,15 @@ the existing HTTP worker. No HTTP work runs on the guest thread. Tasks remain
 running until the response arrives; success snapshots populate the local cache,
 and server permission/limit errors finish the task with the XDK Team HRESULT.
 Transport failures report cannot-access-service without accepting a local write.
+
 Closing a task drops its result; it does not undo an event already sent.
 
 Creation, property changes, deletion, recruitment, answers and removal are
 signed account events on `team-<id>`. The server owns the persistent projection
 and validates the same rules as the offline store. Enumeration reads its account
-and team endpoints. Recruitment resolves registered accounts by name or XUID,
+and team endpoints.
+
+Recruitment resolves registered accounts by name or XUID,
 so another user's private key need not be in the host accounts file. Guest
 buffers and keys never enter diagnostics or the request queue as raw pointers.
 Remote records are bounded and validated before packing SDK records.
@@ -524,7 +570,9 @@ A recruit also gets `TeamRecruitReceived` on their account stream. Pending
 teams appear in their team enumeration with the recruit flag; accepting makes
 them active members. The HLE does not yet translate that account event into a
 Live inbox message or toast, and remote recruitment does not forward optional
-voice/text message attachments. The team invitation and answer themselves are
+voice/text message attachments.
+
+The team invitation and answer themselves are
 persistent. Team-property edits are available through the server/CLI; the
 verified title boundary has no linked TeamSetProperties entry to register.
 
@@ -533,6 +581,8 @@ permissions, removes/leaves and deletes teams; `h2 live q teams [gamertag]`
 reads the views. See live-api.md's Teams section for arguments and wire records.
 Two simulated guests and an embedded server test this lifecycle, including
 separate account files, pending flags, officer rights, denial and network
-failure. Server tests cover signed authors, mailbox append, replay, concurrent
+failure.
+
+Server tests cover signed authors, mailbox append, replay, concurrent
 name conflicts and private reads; a CLI test drives signed commands through the
 same endpoints. These tests do not build or run the title.

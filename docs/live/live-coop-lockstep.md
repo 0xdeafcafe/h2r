@@ -1,6 +1,8 @@
 # Live co-op: the retail engine, lockstep and settings
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 1. What the retail engine has; 2. Lockstep below the game; 5. How it plugs into the settings and hook layer.
+Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 1. What the retail engine has; 2.
+
+Lockstep below the game; 5. How it plugs into the settings and hook layer.
 
 ## 1. What the retail engine has
 
@@ -18,7 +20,9 @@ builds the simulation world (`0x00068c00`), which maps it through the jump
 table at `0x00068da8`: game 1, 2, 3, 4, 5 become world 1, 3, 2, 5, 4. So in
 the world's numbering 2 is the synchronous server, 3 the synchronous
 client, 4 the distributed server and 5 the distributed client (the name
-table does not index it). Only 0 and 1 mean the same in both. Everything
+table does not index it).
+
+Only 0 and 1 mean the same in both. Everything
 below says "world mode" or "game mode" where it matters.
 
 [local] The session's game-start routine `0x0006ec80` computes it. With
@@ -47,6 +51,7 @@ With the `rules` feature, `variants::record::protocol` answers the map
 natively: the same table, but Headhunter's index, the script index,
 plays distributed
 ([game-types-without-carriers.md](../game/game-types-without-carriers.md#no-retail-engine-object)).
+
 A new session also starts at protocol 1 (`0x00059d58`). The protocol and
 the difficulty are replicated session parameters: setters at `0x0005b8e0`
 and `0x0005bc10` (host only), applied from a parameters update near
@@ -63,7 +68,9 @@ is not `0xFFFF` it writes scenario type 1 (campaign) at options `+0`, the
 difficulty at `+0x12a`, "more than one player" at `+0x12c` from the
 session's player count, and skips the variant. The fields match the menu's
 own campaign start ([level-boot.md](../runtime/level-boot.md), "How the game starts
-its first map"). The lobby side exists too: `0x0019a76d` sets the
+its first map").
+
+The lobby side exists too: `0x0019a76d` sets the
 difficulty on the session (through `0x00064100`) and then clears the
 variant, which is what selects the synchronous protocol; `0x0019a728`
 sets a variant and resets the difficulty to "not campaign". The callers of
@@ -178,7 +185,9 @@ from a session.
 Both peers boot the same image with the same start state and run retail
 two-player split-screen co-op. The guest is offline: no Live HLE, no XNet,
 cable unplugged, as in a plain `h2 play`. Pad port 0 is the host player,
-port 1 is the guest player, on both machines. The two hosts agree, frame
+port 1 is the guest player, on both machines.
+
+The two hosts agree, frame
 by frame, on what every pad read returns, so both machines run the same
 instructions on the same schedule ([high-framerate.md](../game/high-framerate.md)
 section 1, "In our runtime"). Each host presents only its own player's
@@ -374,6 +383,7 @@ mix that serves both players. Each machine plays it. It is correct for
 the couch and slightly wrong apart, since each player also hears the
 other's surroundings. [guess] A per-listener mix would need the sound
 code's listener choice to become a host-side filter; not in this plan.
+
 The audio output must use logical pacing ([dsound.md](../audio/dsound.md),
 "Pacing"); device pacing is "not for deterministic runs". Voice chat is
 out of scope; players use something else.

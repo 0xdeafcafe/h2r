@@ -7,7 +7,9 @@ Part of [Running Halo 2 as a dedicated host](dedicated-host.md). Covers: Light h
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.
 Clanker Training uses the same profile, adds bot seats, and defaults to
 unpaced. An operator still uses the retail lobby to create and start a
-dedicated game. The
+dedicated game.
+
+The
 machine-only lobby and remote join lifecycle above still need a game run.
 
 | Area | What the profile does and why |
@@ -27,7 +29,9 @@ as the first sizing target (about **0.36 of one core** at 30 Hz) and
 **1 GiB RSS per process** as the provisional memory allowance. These are
 planning figures from the two-bot sim and the earlier process allowance.
 Replication, map loads and the map itself can move either number. RSS counts
-shared pages in each process. Measure the fleet’s incremental RAM separately
+shared pages in each process.
+
+Measure the fleet’s incremental RAM separately
 before sizing by game count.
 
 Measured 2026-11-20, one waterworks 2v2 sim process (macOS `vmmap`,
@@ -73,24 +77,33 @@ shared base a match keeps.
 `h2 server-map verify ORIGINAL.map OUTPUT.map` to compare SHA-256 over
 every retained byte, including all tag headers, tag blocks, BSP metadata,
 strings, and the cache header. The verifier checks the original cache
-checksum and bounds too. Set `H2_SERVER_MAP_DIR` to the directory of
+checksum and bounds too.
+
+Set `H2_SERVER_MAP_DIR` to the directory of
 verified copies. Name disc and official Map Pack copies by the original
 filename and packaged mod copies by the original map ID followed by
 `.map`. If a copy is missing or its header or length differs, the light
-host uses the original. Keep matched files immutable while mounted.
+host uses the original.
+
+Keep matched files immutable while mounted.
 
 The stripper clears known local bitmap LOD and low-detail payloads and
 classifiable PCM and Xbox ADPCM sample spans. It keeps WMA, IMA, unknown
 or externally referenced ranges, and other raw resources. Tag metadata,
 BSPs and the index stay whole, so a Firefight kit map keeps its squads,
-zones, orders, sectors and moved group table. The guest can
+zones, orders, sectors and moved group table.
+
+The guest can
 read codec bytes before DirectSound sees a packet (WMA decoder
 `0x0038a0c5`–`0x0038a1cc`). Render also feeds the animation cache used
 from the tick. Keep the original cache alongside its verified override.
+
 The result has the same logical length, with allocated size reduced by
 the page-aligned holes. The command prints both sizes. Container savings
 depend on the captured files and on the layer format preserving holes or
-compressing zeros. Use the provisional RSS allowance above until measured.
+compressing zeros.
+
+Use the provisional RSS allowance above until measured.
 [Stripper](../../crates/apps/cli/src/server_map.rs) · [Mount](../../crates/runtime/vfs/src/map_override.rs)
 
 ### Measure before pruning
@@ -104,10 +117,14 @@ Candidate removals cover effects and lights, first-person animation and
 camera shake, sound objects, cloth and antenna updates, and HUD and menu
 state. Require a read/write trace and tick-hash parity for each switch.
 Effect dispatch at `0x0017a8a0` can apply damage or spawn objects, and
-particles share RNG and counters. Audio status, positions and completion
+particles share RNG and counters.
+
+Audio status, positions and completion
 events are gameplay-visible. Keep those paths and the rest of the guest
 tick until their cosmetic work can be isolated. A missing tag read or
-entry in one corpus is evidence to investigate. Map sub-tag pruning stays
+entry in one corpus is evidence to investigate.
+
+Map sub-tag pruning stays
 off until indirect reads and uncovered equipment are accounted for. The
 optional clang host module faults with a guest address on an uncovered
 entry. Use the full light image for live games.
@@ -194,7 +211,9 @@ On Unix, the supervisor checks that the JSON lease ID matches `--lease`
 or `H2_LEASE` before provisioning. It provisions the verified bundle under
 `H2_HOST_CACHE` (default `host-data` in the user cache) and starts a child
 `h2 serve --system-link --host-light`. The bundle's disc directory must
-contain `default.xbe` and the maps. The child runs the bundle's module,
+contain `default.xbe` and the maps.
+
+The child runs the bundle's module,
 `<cache>/<sha256>/image`, unless `--out` or `H2_IMAGE` names another
 directory. Before either child starts, the supervisor checks the module's
 stamp against the XBE and this `h2`'s build settings, including
@@ -210,7 +229,9 @@ mesh in the bundle fails before its child starts.
 The child gets `H2_HOST_LOBBY=1`, its own private Unix agent socket,
 and the provider's `H2_HOST_TOKEN`, `H2_HOST_LIVE_URL` and `H2_HOST_LEASE_JSON`.
 The supervisor opens the lease's map and variant with `host.lobby.open`
-and `live: true`. Open returns the session ID acknowledged by Live. The
+and `live: true`. Open returns the session ID acknowledged by Live.
+
+The
 supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorisation belongs to Live.
@@ -220,7 +241,9 @@ host is registered, the supervisor adds each leased bot through the
 child's `sim.player.add` as a brain-driven phantom named as the lease
 names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
 seat n from 1. A refused add is a named error in the host log; the other
-bots and the lobby carry on. Phantoms are not players to the supervisor:
+bots and the lobby carry on.
+
+Phantoms are not players to the supervisor:
 it counts only lobby players whose name lacks the bot mark (U+2699), so
 phantoms alone never start a match, keep a lobby from going idle, or
 appear in the reported player counts.
@@ -229,7 +252,9 @@ appear in the reported player counts.
 When the supervisor receives a TCP `H2_AGENT` address, the child also
 binds that address to the same agent. Both listeners share the same
 commands, state and controller claim. The child reports a bind failure
-as a startup error. Cloudflare sets `tcp://127.0.0.1:14720` for
+as a startup error.
+
+Cloudflare sets `tcp://127.0.0.1:14720` for
 container-local diagnostics. A pack gives each slot its own agent port
 from 14720 and tunnel port from 31100. The Local provider drops any inherited `H2_AGENT` from Live so
 its leases use their own Unix sockets.
@@ -238,6 +263,7 @@ For UDP, the child uses the default route's IPv4 or the IP from
 `H2_XNET_ADDR`, with the configured base port. Live receives that address
 unless `H2_PUBLIC_ADDR` specifies a public IPv4 or IPv4:port. Keep base
 through base+6 available and assign each concurrent host its own range.
+
 For tunnel leases, Live receives the WebSocket URL derived from
 `--live` at `/v1/hosts/{lease}/tunnel`, and the child listens at
 `--tunnel-listen`.
@@ -246,7 +272,9 @@ The supervisor samples lobby state once a second. It reports `playing`
 on the first playing sample and reports `ended` on postgame
 (`MatchOver`), last departure (`Empty`), an unvisited lobby's timeout
 (`Idle`), or the lease's hard duration limit (`MaxDuration`). These
-ends close the lobby and return 0. A child exit before a terminal lobby
+ends close the lobby and return 0.
+
+A child exit before a terminal lobby
 state reports `Crashed` and returns 1. The child has up to 60 seconds
 after spawn to reach the lobby. The provider also enforces its boot
 deadline from the original lease request.
@@ -261,7 +289,9 @@ unpaced simulator in a dedicated child process. The supervisor registers
 the lease and starts the child with the verified disc and the same
 checked module. The child fetches its match from `GET /v1/hosts/{lease}/sim` and uses
 the lease bearer to upload the recording and report through Live's
-private sim routes. The supervisor observes gameplay through `match.status`.
+private sim routes.
+
+The supervisor observes gameplay through `match.status`.
 A successful child exit reports `MatchOver` to the host API. A failed child
 exit reports `Crashed`.
 
@@ -270,7 +300,9 @@ exit reports `Crashed`.
 Use the image, profile and port setup from the [Mac spike](dedicated-host.md#mac-system-link-spike).
 Use the same prebuilt image and map, matching warm cache state, roster and
 telemetry configuration for both trials. Stop both processes between trials
-and start the same client again. Run the control with `start_trial control`
+and start the same client again.
+
+Run the control with `start_trial control`
 and the light trial with `start_trial light --host-light`.
 
 ```sh
@@ -296,10 +328,16 @@ done | tee "$trial/$label-metrics.txt"
 Compare `game_cpu_ms_per_tick`, `process_cpu_ms_per_tick`, `cpu_percent`
 and `rss_bytes`. The game agent reports the gameplay tick p99 over 30 seconds
 and counts intervals over 36 ms. On Linux it also reports proportional,
-private dirty and shared clean bytes. The pack reports group memory for each slot. Check `wall_ms_per_tick` against 33.3 ms. The match
+private dirty and shared clean bytes.
+
+The pack reports group memory for each slot. Check `wall_ms_per_tick` against 33.3 ms. The match
 check is remote movement, hits, death and respawn, results, and a second
-round on the same host. The render consumes shared RNG at
+round on the same host.
+
+The render consumes shared RNG at
 `0x001032a0`, so the rendered control and the light host can diverge in
 lockstep. The hash also includes guest texture and sample buffers. Compare
 repeat runs from a clean seed and use the same hash to gate each candidate
-prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.md#8-determinism).
+prune.
+
+Cross-profile parity is still open. See the [sim checks](../runtime/sim.md#8-determinism).

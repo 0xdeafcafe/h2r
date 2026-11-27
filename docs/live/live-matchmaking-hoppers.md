@@ -10,7 +10,9 @@ nothing was run). The code is `crates/live/live-proto/src/hopper/`:
 `layout.rs` (every field, the validator port, the accessor ports),
 `variant.rs` (the game variant an entry carries) and `defaults.rs` (the
 lineup a server offers with no file). The envelope is unchanged
-([live-motd.md](live-motd.md) §5.1). Evidence: **confirmed** means a reader
+([live-motd.md](live-motd.md) §5.1).
+
+Evidence: **confirmed** means a reader
 was seen using the field that way; **likely** means a reader was seen but
 the meaning is inferred from how it is used; **unused** means only the
 game's defaults write it and no reader was found, so we write 0.
@@ -121,7 +123,9 @@ the three settings the defaults writer clears (`setting_twelve`,
 `setting_thirteen`, `join_in_progress`). `defaults::variants` builds the
 record of each with `variants::portable::record_for`, so every default
 entry is mode 2 and names its script by hash. Live and the game both find
-the script by that prefix among their compiled-in scripts. A hopper takes
+the script by that prefix among their compiled-in scripts.
+
+A hopper takes
 scripted variants only ([live-admin.md](live-admin.md), "`PUT /v1/titles/{title}/hopper`").
 
 With a profile signed in to local Live at the Xbox Live menu, run
@@ -148,7 +152,9 @@ The **descriptor index** (0..15). The matchmaking state keeps the
 selected hopper as an index (`[state + 0x49c8]`), passes it straight to
 `0x00192e60` (which indexes the 16 descriptors), and writes it into the
 session description at `+0x70` (`0x00073530`). The playlist id (`+0x08`)
-is separate and goes to stats; an entry's "record id" is a map id. So
+is separate and goes to stats; an entry's "record id" is a map id.
+
+So
 `hopper_id` in sessions and pins (`PUT /v1/hoppers/{hopper_id}/pins`,
 [maps.md](../game/maps.md)) is the index, which is what the web builder's pins use
 (`HopperPins` with `h().index`).
@@ -185,7 +191,9 @@ variants in one playlist rather than having a separate Big Team Objective.
 Hoppers 8..15 are **clanker hoppers** (Clankermatch, docs/game/bots.md
 §8): one human or a party, and bots the host runs in every other seat. Titles shared with human modes carry a Clanker prefix in the combined picker and
 fit the descriptor's 16-byte title slot (15 bytes and a NUL). Their
-descriptions say **Ranked Clanker** or **Unranked Clanker**. Every clanker
+descriptions say **Ranked Clanker** or **Unranked Clanker**.
+
+Every clanker
 descriptor is an unranked type because the ranked types' rules are for
 filling a game with people (ranked teams need two a team and bound parties;
 ranked free for all is solo); a lone human with bots needs a team of one
@@ -207,7 +215,9 @@ live-hle reads it for the Clankermatch row's filter, the search and the
 lobby fill. A game recorded with `kind: "clankermatch"` (and the hopper's
 `playlist_id`) is its own kind in the read model and the stats totals
 (`clankermatch`, apart from `matchmaking`) and counts in its playlist and
-every career number. When its mark is ranked it also ranks like a ranked
+every career number.
+
+When its mark is ranked it also ranks like a ranked
 matchmaking game (§8.4, the same arbitration round) in its clanker hopper's
 playlist, or `ranks_as`'s; the game's stats read (§8.3) answers a ranked
 clanker hopper's playlist id with that standing and an unranked one's with
@@ -265,6 +275,7 @@ entry is a map id and a variant; the format has no room for a `MapId`, and
 session setup (`0x00192e60`/`0x00192eb0`) picks an entry and loads
 `maps\<base>.map`. A pin permits a custom content ID in the session
 advertisement. Custom games pick the package's separate slot under Mods.
+
 For a
 playlist entry to choose a custom map, three pieces are missing:
 

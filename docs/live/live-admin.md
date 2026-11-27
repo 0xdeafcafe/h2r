@@ -28,6 +28,7 @@ key can. Admins come from two places:
   reserved name requires a server-key bearer bound to the signed signup
   request and any invite required by the server's policy.
   Use `h2 live account create TAG --operator-data DIR` for this registration.
+
   Configuration cannot be revoked at runtime.
 - **The log.** The operator runs
   `h2 live admin grant <gamertag>` / `h2 live admin revoke <gamertag>`
@@ -76,7 +77,9 @@ the game's own things: what it shows and plays. Running the service
 is the dashboard's server screens (§5), styled like the rest of the
 dashboard. Each side links to the other: the dashboard's "halo admin" pod
 opens `/games/halo2/admin`, and the Halo Admin title bar's "Server admin" goes back
-to `/dash/server`. The Halo Admin sections are:
+to `/dash/server`.
+
+The Halo Admin sections are:
 
 - **Message of the Day** - the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
@@ -102,6 +105,7 @@ to `/dash/server`. The Halo Admin sections are:
 The playlist editor (`web/src/admin/HopperBuilder.tsx`) groups maps by
 game variant. Choose maps from a dialog that shows previews from game art
 when available. Use the weight stepper to set how often each entry plays.
+
 Its bar shows the entry's percentage of the playlist's total clamped weight.
 Drag a map's handle within its variant, or focus it and press Up or Down.
 **Advanced: raw fields** opens the editor for descriptor fields and the
@@ -119,7 +123,9 @@ The native editor's hopper tool (`h2-editor`, [editor.md](../editor/editor.md))
 opens and saves the raw image or download envelope with the same fields,
 validation and presets. In the web editor, pick from the built-in variants or
 scripted variants already in the published file. The native tool also accepts
-saved variants and `.h2variant` files that run a rules script. Publish an
+saved variants and `.h2variant` files that run a rules script.
+
+Publish an
 offline edit with `h2 live hopper import`.
 
 Saves are the browser's first writes: each signs a self-issued 60-second
@@ -205,7 +211,9 @@ have, a game type no published entry plays, no catalogue at all) is listed
 as unavailable and left out; a preset with nothing resolved changes
 nothing. So a preset can set: the title and description, the range
 values it names, which maps, how often each comes up, and which existing
-variant each plays. It cannot set the hopper type, the matchmaking
+variant each plays.
+
+It cannot set the hopper type, the matchmaking
 timeouts, or a variant's rules (Hardcore's or Snipers' settings come from
 the source entry, not the preset).
 
@@ -280,7 +288,9 @@ file, since it is a private key. With the web app open, go to
 the dashboard's **import account** (`/dash/server/import`, also a row of the
 sign-in list), paste the JSON or choose the file: the page checks the key against the server again and keeps it in this
 browser's IndexedDB (the same warning as sign-up applies). The file is as
-sensitive as `accounts.json`. There is no remote link or QR for this: a
+sensitive as `accounts.json`.
+
+There is no remote link or QR for this: a
 link that works from another machine would have to carry the key itself
 (the server never holds it) through whatever channel moved the link.
 
@@ -327,7 +337,9 @@ manifest (null for older art). Nothing secret is in it: no keys, no file
 contents, no database URL; `data_dir` only when the caller is on this
 machine (a loopback peer with no proxy header, as for game art), so not
 through a tunnel. Native servers report `started_at` and `uptime_s` for the
-running service. Workers omit both fields because the Durable Object can
+running service.
+
+Workers omit both fields because the Durable Object can
 cold-start while the service remains available. The plate shows uptime when
 reported, along with how the server is reached, sign-up, reads, players,
 game art and the log's length. Its pods: **invites**,
@@ -349,10 +361,14 @@ rows moved through with up and down, A acts, X does a row's second action
 **Invite access.** Every non-admin starts with invitation permissions
 off. On the dashboard, an admin opens a player's page or selects them in
 the players list to change **can invite** and the **open invite cap**.
-A blank cap allows any number of open invites. Changing the cap leaves
+A blank cap allows any number of open invites.
+
+Changing the cap leaves
 existing invites in place. Switching the grant off permanently closes a
 non-admin's open invites. An admin can invite through their role regardless
-of the explicit grant or its cap. Revoking the admin role permanently closes
+of the explicit grant or its cap.
+
+Revoking the admin role permanently closes
 the account's open invites, even if it still holds a grant for future invites.
 
 The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
@@ -360,16 +376,21 @@ The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
 Both the dashboard and CLI use the grant endpoints in
 [Server invites](live-api-sessions.md#server-invites). The server signs
 `InviteGrantSet` or `InviteGrantRevoked` on the target account stream
-and records the acting admin or operator in `by`. The permission is
+and records the acting admin or operator in `by`.
+
+The permission is
 replayed from the log at startup.
 
 **Invites** (`crates/live/live-server/src/invites.rs`). Admins open
 `/dash/server/invites` to manage the server's invites. A player with the
 grant opens **invite someone** on their dashboard profile
 (`/dash/server/my-invites`). Their list shows only their own open invites.
+
 Pick 1, 7 or 30 days, make a code and copy it to share. Each code works
 once. Admins can revoke any open code and see used, revoked and expired
-ones. Players with the grant can revoke their own open codes.
+ones.
+
+Players with the grant can revoke their own open codes.
 
 Account-created invites use a signed `InviteCreated` event and the same
 `invites.write` token scope. A grant allows a burst of three invites for
@@ -393,7 +414,9 @@ An inviter can choose a custom code of 4 to 32 printable characters.
 `POST /v1/invites` takes `{"event": <InviteCreated JWS>, "code": "..."}`.
 The server logs only the custom code's MAC as a server-signed
 `InviteCodeSet {jti, mac}` in the same append. The list labels these as
-custom codes. Codes match ignoring case, spaces and dashes. A custom
+custom codes.
+
+Codes match ignoring case, spaces and dashes. A custom
 code held by an open invite is refused (409). Older long signed codes
 also redeem.
 

@@ -33,7 +33,9 @@ SBMM is adding a host-selection step that considers measured RTT as well
 as skill. A proposed group needs an eligible host that every member can
 reach. The server prototype widens the skill and latency windows with
 queue time, then prefers the lowest worst-player RTT. On equal worst
-RTT it prefers a peer host, then the lower median. A dedicated host
+RTT it prefers a peer host, then the lower median.
+
+A dedicated host
 must improve the worst route to displace a peer. The current OptiMatch
 search and join path is described below. [Dedicated host](dedicated-host.md)
 
@@ -166,7 +168,9 @@ joins the friend's session; and the menu polls
 The HLE consumes a real 156-byte accepted record once; with none it clears the
 output and returns `E_FAIL` ("no invite"); the poll's check at `0x0006d218` treats *every nonnegative*
 HRESULT as an invite, so a real invite must fill the record, not just
-return success ([live.md](live.md), menu audit). The session property is `0x0581`. The record layout is verified at
+return success ([live.md](live.md), menu audit). The session property is `0x0581`.
+
+The record layout is verified at
 `0x003b49ce`: friend86/padding2, accepted XUID12 at88, FILETIME at100,
 logged-on XUIDs48 at108. The full retail UI sequence remains unconfirmed.
 
@@ -182,7 +186,9 @@ procedures, report data). Stats go out with `XOnlineStatWrite`
 leaderboard reads use `XOnlineStatRead` and the query service above. The
 compiled-in matchmaking attribute names at `0x0046ddc0` (`games-played`,
 `games-quit`, ...) are the per-player stats schema the hopper file
-overrides ([live-motd.md](live-motd.md) §1.2). Stat writes are
+overrides ([live-motd.md](live-motd.md) §1.2).
+
+Stat writes are
 accepted and kept locally; stat reads of a playlist's leaderboard get
 the player's rank from the server (§8.3), other stats read as absent;
 arbitration is accepted and kept locally (§8.3); query searches answer
@@ -310,7 +316,9 @@ retail code uses into filters.
 Implemented on `mailbox-<xuid>` streams with signed `GameInviteSent` and
 `GameInviteAnswered` through `POST /v1/events`. The host must be signed in and
 own the open session; only the recipient answers. The sent position is the
-invite ID. Answers select accept, decline, remove or block. The recipient reads
+invite ID. Answers select accept, decline, remove or block.
+
+The recipient reads
 pending items with its own `read` token at
 `GET /v1/accounts/by-xuid/{xuid}/mailbox`. See
 [live-api.md](live-api-social.md#game-invite-mailboxes) for payloads and limits.
@@ -318,7 +326,9 @@ pending items with its own `read` token at
 The HLE refreshes friends, invitations and sessions on its HTTP worker.
 MessageEnumerate and GetNotificationEx expose only real player invitations;
 title files use storage. YES creates the consumed-on-read accepted record after
-the server acknowledges the answer. FriendsJoinGame resolves an existing friend
+the server acknowledges the answer.
+
+FriendsJoinGame resolves an existing friend
 and session before publishing the same join. Session resolution, key/address
 registration, QoS and guest sockets then use the existing transport.
 
@@ -333,7 +343,9 @@ hopper's size limits and timeouts from the published file, and writes a
 server-signed `MatchProposed` `{match_id, host, members, hopper_id}` on
 `match-<id>`. Each named console sees itself as host or joiner on the
 stream WebSocket and proceeds: the host runs the §1.1 flow (create session,
-key, QoS listen), joiners run §1.2. The log ends up recording who searched
+key, QoS listen), joiners run §1.2.
+
+The log ends up recording who searched
 and every match made.
 
 If the game's hopper file is stale (defaults cached) its hopper ids can
@@ -351,7 +363,9 @@ host through `XNetRegisterKey` + `XNetXnAddrToInAddr` and connect, with
 `XNetGetConnectStatus` for liveness. What Live adds over System Link is
 only *discovery*: the broadcast channel (guest port 1001, base+1) is not
 used - the joiner learns the host's endpoint and XNKID from the session
-record instead of from a LAN broadcast. QoS probing between HLE peers
+record instead of from a LAN broadcast.
+
+QoS probing between HLE peers
 (UDP base+2) already reports contacted/data-received flags, so search
 results can be ordered by probe outcome the retail way.
 
@@ -463,7 +477,9 @@ invite pair, `sessions.write`, `q sessions`; web: the session list. HLE
 `XOnlineGameInviteSend`, `XOnlineGameInviteAnswer`,
 `XOnlineFriendsGameInvite`/`AnswerGameInvite`/`JoinGame`, and a real
 `XOnlineFriendsGetAcceptedGameInvite` (E_FAIL stays the no-invite answer,
-which the poll already handles). Success: two local instances, one invites
+which the poll already handles).
+
+Success: two local instances, one invites
 the other over the server, they play - the System Link recipe with the
 server in place of the broadcast. Tests: router tests over the in-memory
 store and synthetic guest tests through `start_embedded`, in the style of

@@ -25,7 +25,9 @@ registry image `h2-live-host` at the content tag of the staged `h2`
 applications and sets the lease cap to zero. For a host
 deployment, edit the environment's variables in `wrangler.toml`.
 `python3 crates/live/live-worker/host_capacity.py` prints the effective
-config, including each application's container limit. The deploy script
+config, including each application's container limit.
+
+The deploy script
 passes this config to Wrangler and removes its temporary copy on exit.
 
 `deploy.sh` prints each step as it goes:
@@ -70,14 +72,18 @@ passes this config to Wrangler and removes its temporary copy on exit.
 workflows do not hold it back: the hosts run Linux. Before it, the
 job installs Rust from `rust-toolchain.toml`, Zig and cargo-zigbuild and
 runs `deploy/host/build.sh --h2`, so the deploy builds and pushes the
-host image for that commit's `h2` when the registry lacks its tag. The
+host image for that commit's `h2` when the registry lacks its tag.
+
+The
 image holds public code only. The game module stays in the private
 host-data bundle; when a commit changes the generator, the owner
 refreshes it there
 ([The game module](dedicated-host-build.md#the-game-module)). The job reads two repository secrets:
 `CLOUDFLARE_API_TOKEN` (a token with Workers Scripts, Workers Routes,
 Containers and R2 edit, and Account Settings read) and
-`CLOUDFLARE_ACCOUNT_ID`. Without the token it skips and deploys nothing.
+`CLOUDFLARE_ACCOUNT_ID`.
+
+Without the token it skips and deploys nothing.
 The server key and the host-data secrets stay on the Worker.
 
 ### Staging
@@ -110,7 +116,9 @@ A game page's header model travels with the hub's existing
 header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
 model from the matching game detail. The hub's generic metadata response
 skips the fallback, and the detail read enforces the same anonymous
-visibility rules. Both homes use the same renderer to put the header
+visibility rules.
+
+Both homes use the same renderer to put the header
 and its emblem URLs in an inert template in the initial HTML. Game Details
 mounts it below the breadcrumbs.
 [Worker page rendering](../../crates/live/live-worker/src/site.rs)
@@ -118,13 +126,17 @@ mounts it below the breadcrumbs.
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
 appearance URL redirects to a revision derived from the published art
 directory and the PNG renderer version. On a cache hit the Worker serves
-the PNG directly. On a miss it reads the manifest and two mask PNGs from
+the PNG directly.
+
+On a miss it reads the manifest and two mask PNGs from
 `H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
 renderer. The Worker caches successful PNGs under their full revisioned
 URL, per data centre, with `public, max-age=31536000, immutable`; a
 request that bears `Authorization` never reads from or fills that cache,
 so a cache key holds no auth. Changing the published directory changes the
-revision. The stable redirect revalidates and errors are uncached.
+revision.
+
+The stable redirect revalidates and errors are uncached.
 [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
 The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` and
@@ -198,7 +210,9 @@ The first import holds every write of the server's own, and of its clients,
 until `--release`. Without it, the hub's sweep sees a copied sign-in or game
 gone quiet and appends `PresenceExpired` or `GameEnded` at its head. The
 rehearsal showed this: two such events after the first page, so the next
-page no longer followed. The hold is a checkpoint row, so it survives the
+page no longer followed.
+
+The hold is a checkpoint row, so it survives the
 hub being evicted. It is not part of the log a copy takes. While held,
 writes answer 503 "writes are held while the log is copied in".
 

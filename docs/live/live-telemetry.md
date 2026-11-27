@@ -25,11 +25,14 @@ invokes the original immediately after its read.
 
 At `guest_layout::points::PLAYER_KILLED`, the killer is the player who
 receives credit. The weapon and headshot flag come from the damage report
-that depleted the victim's body. These can have different sources. For
+that depleted the victim's body. These can have different sources.
+
+For
 example, a player can earn credit for an opponent's fall after shooting
 them. The kill then carries the shooter's slot and the source `fall`,
 with no headshot flag. The observer reads the raw stack at this opaque hook
 point, preserving the hook signature recorded in player films.
+
 The same read identifies a delayed projectile after a weapon switch or a
 thrower's death, and preserves the grenade type on a self-kill. A missing
 or unrecognised source leaves the damage fields absent and preserves the kill.
@@ -38,10 +41,13 @@ or unrecognised source leaves the damage fields absent and preserves the kill.
 Per-tick work follows only live player records and their current unit/vehicle
 objects. It does not scan all 2,048 objects or the one-MiB object pool. A full
 16-player selective snapshot is approximately 2–4 KiB of guest reads, including
-592 bytes of player/team stat rows. Scores are compared every tick but emitted
+592 bytes of player/team stat rows.
+
+Scores are compared every tick but emitted
 only on change and at most once per 30 ticks. Names and match options are sent
 on match/roster changes rather than in every frame. Vehicle passengers use the
 parent vehicle's world transform rather than the biped's seat-local transform.
+
 A replacement activation or a main-menu transition emits `GameEnded` with
 reason `quit` before clearing the old session; post-end kills are ignored.
 
@@ -91,7 +97,9 @@ Ticks do not wake the worker: on the game thread a wake is a system call
 a game the worker polls the queue every 33 ms (one tick), so a tick waits
 at most that long before the worker takes it, and a batch is usually two
 ticks. After a second with no work (a menu, a paused game) it parks, and
-the next tick wakes it once. Starts, kills, ends and settings always wake
+the next tick wakes it once.
+
+Starts, kills, ends and settings always wake
 it; they are a few a minute.
 
 The worker hands each snapshot back cleared and the game thread fills it
@@ -127,7 +135,9 @@ four waiting (the worker behind, say a slow sink), a new tick is folded
 into the last queued one rather than queued. The later of the two is kept,
 except that a frame tick (even) outlasts a later other tick, so a worker
 behind still sends frames; the one kept takes the other's shots (added)
-and hits (in order, at most 256). The roster and scores of a tick that goes
+and hits (in order, at most 256).
+
+The roster and scores of a tick that goes
 are read again the next tick, so only its moment is lost.
 
 ## Failure behaviour
@@ -140,7 +150,9 @@ continues without telemetry.
 The worker's queue is bounded (256 entries). Ticks past four waiting are
 folded (see "Threads") and counted. A start, kill or end is never dropped
 to make room: if the queue is full, the observer reports an error and
-disables itself rather than blocking the guest thread. The worker finishes
+disables itself rather than blocking the guest thread.
+
+The worker finishes
 everything queued during shutdown. TCP connect, TLS/WebSocket handshake, HTTP,
 and socket operations are time-bounded, and the worker finishes its event drain
 before shutdown completes.
@@ -180,7 +192,9 @@ medal index up in the official table (`medals::official_at`), drops an
 index outside it, and queues the session's `medal`, which sends the event
 at the match clock for a player of the match. The id is the game's own
 (`double-kill`, `carjack`, `flag-save`); Live counts it per player
-([live-api.md](live-api-theater-stats.md#medals)). An image without the hook drops the
+([live-api.md](live-api-theater-stats.md#medals)).
+
+An image without the hook drops the
 observer with a plan note.
 
 `Superbounce` (`tick`, `player`, `chain`) and `Bounced` (`tick`, `player`)
@@ -216,6 +230,7 @@ With `ingest_frame_batch` advertised in discovery, the sink uses
 order. It flushes after 500 ms, at 16 records or the 16 KiB message
 limit, before signed events or a JSON fallback frame, and at shutdown.
 The worker wakes for the flush deadline even when the game is idle.
+
 Older servers receive one packed record per message. Each connection
 has its own stream with a keyframe every 150 frames and deltas between.
 [Ingest wire format](live-api-social.md#streams-websocket)
@@ -299,7 +314,9 @@ Clanker bots ([bots.md](../game/bots.md) §6) are players like any other,
 keyed by their game slot (`index`): roster, scores, kills, frames and the
 final standings carry them under their own names ("Clanker 1"). Their
 roster entries add `bot: true`. On multiplayer start, the boot's bot
-locator identifies phantoms by machine id. A phantom from the active
+locator identifies phantoms by machine id.
+
+A phantom from the active
 server roster carries its rostered `xuid`, and the game carries the
 roster's `session_id`. A host-made phantom has no Live account, stats
 page, career or rank.
@@ -309,7 +326,9 @@ brain diagnostics every five wall seconds and sends one `sim_combat`
 message per bot on the authenticated ingest socket. Discovery advertises
 this optional message through `sim_combat`. Each sample carries the
 bot's decision tick, current goal, weapon and target range, last action,
-combat counters and weapon accuracy. The server keeps the latest sample
+combat counters and weapon accuracy.
+
+The server keeps the latest sample
 per player for the private run detail. Deferred runs deliver these
 figures in the final report. [Clanker Training](live-api-theater-stats.md#clanker-training)
 
@@ -339,6 +358,7 @@ scenery. A placement record holds its position at `+0x8` and yaw, pitch,
 roll (radians) at `+0x14`; forward and up are `Rz(yaw)·Ry(-pitch)·Rx(roll)`
 applied to +x and +z, as map.glb's placements are built. A netgame
 equipment entry holds its position at `+0x40` and orientation at `+0x4c`.
+
 The scenario is `*(0x004e0350)`; the blocks are read once a game, when the
 map has loaded. A block that does not read is left empty and its objects
 are not tracked.

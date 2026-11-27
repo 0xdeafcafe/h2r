@@ -74,7 +74,9 @@ one atomic load per 20 ms frame, no locks, no store lookups.
 2). Split-screen players share them: the microphone XMO feeds the port whose
 controller has push-to-talk held, or, in open-mic mode, the first signed-in
 player with voice; the other ports' microphones get silence. Every port's
-headphone object plays into the one output. Separate devices per player is
+headphone object plays into the one output.
+
+Separate devices per player is
 not planned.
 
 ### 3.3 Codec and the 10-byte frames
@@ -269,7 +271,9 @@ Sending: MessageSend and the friend request, team recruit and game invite
 paths already hand the HLE the attachment. The HLE uploads the bytes as is
 with the message. The server stores the voice blob in the **private** blob
 store (crates/live/live-server/src/blobs.rs; the data dir natively, private R2 in
-the Worker) under `voice/{message_id}`, never in a public bucket. The message
+the Worker) under `voice/{message_id}`, never in a public bucket.
+
+The message
 event carries the blob key, size and duration, not the bytes. The server
 checks the size is under 0x499a bytes and the buffer starts with the traced
 RIFF/WAVE header (3.3); it does not decode the audio.
@@ -294,7 +298,9 @@ Built (slice 1). Server: a per-account mute list as private events,
 `PlayerMuted { by, target }` and `PlayerUnmuted { by, target }` on
 `mutes-<by>`, written by the server from authenticated requests, readable
 only by the owner, admins and the operator. Capped at 250 entries, the
-game's own Get size. Endpoints ([live-api.md](live-api.md) "Mute list"):
+game's own Get size.
+
+Endpoints ([live-api.md](live-api.md) "Mute list"):
 
 - `GET /v1/accounts/by-xuid/{xuid}/mutes` (a `read` token)
 - `PUT /v1/accounts/by-xuid/{xuid}/mutes/{target}` (scope `mutes.write`)

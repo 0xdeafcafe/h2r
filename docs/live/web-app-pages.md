@@ -16,6 +16,7 @@ reads as `STATS_NAME` throughout. The nav's tabs start with the home,
 "h2 Uplink"; the way back to the dashboard is the small "‹ Live Dashboard"
 chip in the header's corner (`DASH_NAME`, as are the other links back to
 it), not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
+
 Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
 players online and open games; the last 24 hours and all-time totals;
 leaderboards for today, this week, this month or all time (`?window=`):
@@ -39,11 +40,15 @@ time played, deaths, co-op partners), its own history tab
 (`/history?tab=campaign`) and spotlight tab (`/games/halo2?games=campaign`), and
 a mission report in place of the carnage report. A game's type is shown
 as Custom Game, Matchmaking: <playlist>, Campaign, Campaign Co-op or
-Campaign Online, with the difficulty (`src/state/gametype.ts`). The mock
+Campaign Online, with the difficulty (`src/state/gametype.ts`).
+
+The mock
 starts an occasional campaign game (`mock/coop.ts`). The old
 `/games/:id`, `/players/...` and `/events` paths redirect. The shell and
 shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
-thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
+thumbnails in `stats/Side.tsx`.
+
+Below 760px the column goes full width and
 the menu column drops under the content.
 
 ### Open Games
@@ -67,13 +72,17 @@ when the session admits the viewer. [Session links](live-custom-games.md#join-in
 Custom maps (docs/game/maps.md §5). A session's advertisement and a game
 may carry a `map_id`, the map package played; `map` is then its base map.
 The app looks each game's `map_id` up once per page load
-(`GET /v1/maps/{id}`, `src/state/maps.ts`). Games
+(`GET /v1/maps/{id}`, `src/state/maps.ts`).
+
+Games
 are titled by the package name, else the base map's; stats and filters
 group by `map_id ?? map`, so a modded level is its own row ("<Base>
 (modded)" until its name is known). The picture is the package's image
 (`/v1/maps/{id}/image`, only when the summary has `image`), then the base
 map's art. A package that says its geometry changed gets "geometry
-changed, no 3D view" instead of the base map's 3D view. Admins pin
+changed, no 3D view" instead of the base map's 3D view.
+
+Admins pin
 packages to playlists in the playlist builder (`GET /v1/hoppers/pins`,
 `PUT /v1/hoppers/{id}/pins`) and moderate them under Admin, "Custom
 content": packages and blobs with state and report counts, hide, delete,
@@ -90,20 +99,27 @@ The Mods tab (`/games/halo2/mods`, `web/src/stats/Mods.tsx`) reads the
 pack catalogue from `GET /v1/mod-packs`. One row shows the release, its
 makers, uploader, version, year, online-play advisory, source, map count
 and download size when available. Expand **View maps** to reach the
-individual map pages. Newest and Most Downloaded, base map, category,
+individual map pages.
+
+Newest and Most Downloaded, base map, category,
 text and uploader filters apply to whole packs. The filters stay in the
 URL, and each results page holds up to twenty packs.
 
 A pack page (`/games/halo2/mods/packs/:id`) shows its cover, credits,
 description, source and gallery. With no pack artwork it uses its members'
 screenshots. A stock map preview is labelled **Stock map picture**.
+
 Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
 contents and layer sizes. Signed-in players can report a pack or a
 member, and can report a screenshot directly from its gallery. Its uploader
 can edit the release metadata and submit in-game screenshots using
-`h2 live mods capture`. Pending screenshots stay out of the gallery. Server
+`h2 live mods capture`.
+
+Pending screenshots stay out of the gallery. Server
 admins open **Screenshot review** from Live Admin, show an image on demand
-and approve or remove it. Installation runs in the game. The mock serves
+and approve or remove it. Installation runs in the game.
+
+The mock serves
 invented pack metadata and member artwork.
 [Admin screenshot review](live-admin-moderation.md#screenshot-review)
 
@@ -201,7 +217,9 @@ A request that fails is put in words with whose fault it is
 (`explainFailure`): the server's ("The Live server had a problem (HTTP
 503). Your script isn't the cause; try again."), the connection's, the
 account's, or the script's (the server's own message). A rate-limited
-check asks again after three seconds. A server whose rules routes
+check asks again after three seconds.
+
+A server whose rules routes
 answer 404 gets one notice, "This Live server doesn't have the script
 tools yet", with **Ask the server again**; the draft is still kept in
 the browser, the editor completes plain words, and Save, Make a game
@@ -226,7 +244,9 @@ boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
 A server without it (404) gets a note, and the live parts still show. The
 mock (`mock/stats.ts`) counts its log the same way and folds in a made-up
 month of games before the simulated history so the home has weeks to show;
-`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The kill feed shows a headshot
+`H2_MOCK_STATS_ARCHIVE=0` leaves that out.
+
+The kill feed shows a headshot
 when the killing hit reports one.
 
 ### Derived stats
@@ -235,10 +255,14 @@ Sprees, places, the weapon breakdown ("Tool of Destruction"), EXP and rank
 are computed in the browser from the games' events (`src/state/derive.ts`);
 the API does not serve them. They are marked with a `*` and a tooltip. They
 only cover games this browser has loaded, and a game's snapshot carries at
-most its recent kills, so they are estimates for long histories. Tool of
+most its recent kills, so they are estimates for long histories.
+
+Tool of
 Destruction groups scoring kills by their recorded damage source. A game
 with no source data shows a message. With partial data, the "Not recorded"
-row gives the share of kills without a source. A player's report pairs each
+row gives the share of kills without a source.
+
+A player's report pairs each
 weapon's "kills with" (gold bar) with "killed by" (blue bar). EXP is games
 completed plus two per win.
 
@@ -252,7 +276,9 @@ the last read adds one, and a later read replaces the counts and adds back
 only the awards past its position. A career is the account's
 `GET /v1/accounts/{who}/medals` (`src/state/accountMedals.ts`), or the sum
 over its loaded games until that answers; with a tab, map or game-type
-filter the chest sums the matching loaded games. The home's Top Medals is
+filter the chest sums the matching loaded games.
+
+The home's Top Medals is
 the stats summary's `medals` for the window. Clans and the social model sum
 the server's medals for their slots.
 
@@ -261,7 +287,9 @@ medals in the game's order, then our modes' (the superbounce family and
 Incel). An id the site does not know shows by its id. The carnage report's
 and a player's medal chests list them only once a game or player has one,
 in rows: multi-kills, sprees, kill types, vehicle, objective, Incel, the
-bounce medals, then any others. A Halo 2 medal's picture is the server's
+bounce medals, then any others.
+
+A Halo 2 medal's picture is the server's
 game art (`medalKey`, [web-viewer.md](web-viewer.md)); our modes' are the
 pack's (`PACK_MEDALS`, `public/art/ART.md`, "Batch 07" and "Batch 08"). A
 medal with neither shows its name in a round badge (`MedalIcon`).
@@ -291,7 +319,9 @@ shows says clan. The dashboard's friends and clans screens
 clan pages (`/games/halo2/clans`, `/games/halo2/clans/:id`; the old `/games/halo2/teams`
 paths redirect) and the Clans and Friends boxes on service records all
 read them and follow the stream, so they change as events arrive
-(`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
+(`src/state/social.ts`).
+
+Writes are signed `h2live-event` JWS bodies sent to
 `POST /v1/events` with an `events.write` token, the same way `h2 live friend`
 and `h2 live team` send them (`src/state/sign.ts`). A clan's combined stats
 are derived from multiplayer games where two or more members played on the

@@ -6,7 +6,9 @@ the rest of the game art ([live.md](live-pieces.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
 model. Everything comes from the owner's disc at run time and is served
 under `/art/game/` like the other art, to this machine only unless the
-server runs with `--share-game-art`. Nothing derived from the
+server runs with `--share-game-art`.
+
+Nothing derived from the
 disc is in the repository: the tests build invented tag data.
 
 Code: `crates/apps/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
@@ -50,7 +52,9 @@ Every glb and JSON file has `.br` and `.gz` copies beside it
 how many structure BSPs `map.glb` holds. Both are absent in manifests from
 older builds. A converted Halo 1 map's entry also has `"game": "halo1"` and
 `"name"`, its display name ([Halo 1 maps](live-art-viewer-packs.md#halo-1-maps)); Halo 2's own maps
-have neither. Paths are relative to the manifest. A map whose geometry could
+have neither.
+
+Paths are relative to the manifest. A map whose geometry could
 not be read is listed under `skipped` as `map/<stem>/geometry` and has no
 entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
@@ -149,9 +153,12 @@ layers keep their pictures; 25 exports the animated plasma pass on lift geometry
   from 0 to 1. The node's `extras.device` carries the scenario machine
   `index` and a `loop` flag. Its geometry, inverse bind matrices and
   animation samples are shared across placements of the same model.
+
   The viewer scrubs the clip to the travel in telemetry and applies any
   world pose to the root. In the absence of travel samples, the rig
-  stays in its bind pose. Older map art can still use root poses. The
+  stays in its bind pose. Older map art can still use root poses.
+
+  The
   viewer interpolates cyclic travel across the wrap by the shortest
   distance, assuming the wheel advances less than half a cycle between
   samples [guess]. The retail clips checked on Zanzibar, Ascension and
@@ -267,7 +274,9 @@ layers keep their pictures; 25 exports the animated plasma pass on lift geometry
   floats). Type 7 is a teleporter's entry and 8 its exit; flags within
   0.5 units are one pad, `two_way` when it has both. A pad's `channel` is
   its entry's identifier, else its exit's; `facing` is its exit's (the way
-  an arriving player faces), else its entry's. A link goes from each pad
+  an arriving player faces), else its entry's.
+
+  A link goes from each pad
   with an entry to each other pad with an exit of the same identifier.
   Lifts (multiplayer maps only) are the placed scenery, machines, controls
   and crates (`scnr+0x50`, `+0xa8`, `+0xb8`, `+0x328`, each palette 8
@@ -391,7 +400,9 @@ nothing else is touched), and the manifest's `.br` and `.gz` copies are
 written again from the new bytes (Brotli quality 11 with a 16 MiB window,
 gzip level 9, as the extractor writes them), so the native server serves
 them and `h2 live assets publish` uploads them with the rest. An extraction starts
-the directory afresh: run it again after `h2 live assets extract`. It
+the directory afresh: run it again after `h2 live assets extract`.
+
+It
 takes about ten seconds. `--shots DIR` also writes each shot alone.
 
 **How.** `web/banner/run.ts` starts Vite on the page `web/banner/index.html`
@@ -403,6 +414,7 @@ without rings, aim rays or labels; teleporter markers off; ambient
 occlusion on), waits for its pictures and sky, puts the camera where the
 shot says (`aim`) and reads the frame back. Players in a shot are drawn
 with the server's models, each on the floor below them (`floorBelow`).
+
 The level's own vehicles are drawn as the viewer draws a game's (from
 `models/vehicle/*.glb`, so a Warthog has its turret) where it has a model
 for each; the level's turretless hulls are hidden then.
@@ -417,7 +429,9 @@ optional cast (species, weapon, team colour, where they stand relative to
 the camera and which way they face). A composition lists shots left to
 right: the width is split evenly, the seams lean (`slant`) and blend over
 `feather` of a panel's width, with weights that sum to one across a seam.
-Each shot is drawn at its panel's size, so it is framed for it. The whole
+Each shot is drawn at its panel's size, so it is framed for it.
+
+The whole
 is then graded so different maps read as one: a soft-light navy tint, a
 faint rule along each seam, dark sides (darker on the right, under the
 wordmark), a fade at the bottom into the page's navy (the home page's

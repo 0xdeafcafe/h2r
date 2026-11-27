@@ -165,28 +165,39 @@ invite ([live-admin.md](live-admin.md) §5).
 checks the caller's permission, matches the event author to the token
 issuer, verifies the event with a current key, checks its time (within
 five minutes) and rejects a replayed nonce. Each invite has a fresh
-`jti` and expires within 30 days. Creation uses a separate rate bucket
+`jti` and expires within 30 days.
+
+Creation uses a separate rate bucket
 per author. Non-admin accounts with the grant can make three at once
 and admins ten, with one slot replenished per minute. An optional cap
-limits a non-admin's simultaneous open invites. The server checks the cap
+limits a non-admin's simultaneous open invites.
+
+The server checks the cap
 and appends the event in the same write sequence. A compromised admin can
 grant invite access to other accounts, each with its own rate bucket.
 The admin's personal rate limit therefore does not bound total sign-ups.
+
 Only the operator can grant the admin role.
 
 The server returns a generated code after the append. Only the server
 has the key that derives the code from the invite id. A custom code goes
 beside the signed event and the log stores its MAC. Operator invites use
-server-signed creation events. Long codes signed by the server also
+server-signed creation events.
+
+Long codes signed by the server also
 redeem.
 
 An `invite-grants.write` token from an admin or the operator sets or
 revokes the permission. The server signs the resulting account event,
 including the caller's identity, and replays it at startup. Revoking a
 non-admin's invite grant or an admin's role permanently closes their open
-invites. Removing an admin's explicit invite grant leaves their codes open.
+invites.
+
+Removing an admin's explicit invite grant leaves their codes open.
 Redemption requires an open invite and a creator with invite access. A
-grantee's codes cannot be redeemed while the grantee is banned. An
+grantee's codes cannot be redeemed while the grantee is banned.
+
+An
 `InviteRevoked` event also closes a single invite. Admins can close any
 invite and granted players can close their own.
 
@@ -217,7 +228,9 @@ because every author id contains it.
 Live issues the host process one reusable Ed25519 JWT at boot. The issuer
 is the Live server, the audience is its server ID, and the subject is
 `host:<lease_id>`. The token expires `max_match_s + 300` seconds after
-issuance. Its `lxm` array grants `hosts.register`, `hosts.report`,
+issuance.
+
+Its `lxm` array grants `hosts.register`, `hosts.report`,
 `sessions.publish`, and `telemetry.ingest`. Registration and reporting
 compare the verified subject’s lease ID to the route. Player and operator
 routes keep their existing single-method token checks.
@@ -226,9 +239,13 @@ The private JWT also carries `event_key`, the base64url Ed25519 seed for
 this lease’s event batches. Live derives it with HKDF from the server key
 and the lease subject. The host uses the JWT as its HTTP or ingest bearer
 and signs ordinary session and game batch JWSes with the lease key, using
-the JWT subject as event author. Live checks the batch signature, scope
+the JWT subject as event author.
+
+Live checks the batch signature, scope
 and resource owner. Session creation and game start also check the active
-lease. The event log retains the signed batches. A hibernating ingest
+lease. The event log retains the signed batches.
+
+A hibernating ingest
 socket retains only the subject and expiry. Keep the JWT and its event key
 private for the lifetime of the lease.
 
@@ -236,7 +253,9 @@ A dedicated session carries the service subject in `host` and zero in the
 legacy `host_xuid` field. Host heartbeats refresh its advertisement, and
 only player XUIDs populate presence, session membership and Ranked results.
 Raw events on the `hosts` stream are visible only to admins and the
-operator. Roster members read their lease endpoint through
+operator.
+
+Roster members read their lease endpoint through
 `GET /v1/hosts/{lease}`.
 [Ranked admission](dedicated-host-ops.md#routing-assignment-and-arbitration)
 

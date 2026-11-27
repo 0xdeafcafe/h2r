@@ -82,7 +82,9 @@ The chunk is cut when a frame's game tick crosses the next 10 s boundary,
 on that frame's ingest. A game's end and the existing lost-game sweep
 flush what's left. **No timer and no background loop**, so it runs the
 same in both homes. If a Durable Object is evicted mid-chunk, at most 10 s
-is lost. The live stream doesn't depend on recording.
+is lost.
+
+The live stream doesn't depend on recording.
 
 Old games keep their `GameFrame` events. The replay reads whichever the
 game has, and the viewer's `GameClock` covers both.
@@ -105,7 +107,9 @@ them.
 
 So the same bytes as today's packed recording buy 30 times the time
 resolution. The viewer downloads about a seventh of what it does now. A
-one-hour campaign session is about 13–20 MB in R2. That's small, but games
+one-hour campaign session is about 13–20 MB in R2.
+
+That's small, but games
 pile up, so:
 
 - **Retention: everything, at full detail** (decided 2026-11-18). There's

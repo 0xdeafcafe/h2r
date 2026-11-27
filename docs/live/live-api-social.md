@@ -81,6 +81,7 @@ Teams use signed account events on `team-<id>` streams. IDs are sixteen hex
 digits; clients generate an ID before creation (our clients use a random
 48-bit value under `000a`). The server applies the shared `live-proto::team`
 rules before appending, then derives the roster from the event log on replay.
+
 Writes use `POST /v1/events`, `lxm: events.write`, the account's token and its
 signed event, as friends do. The event's author is the acting member; callers
 cannot choose another actor in the data. The stream ID, data ID, event type
@@ -100,26 +101,34 @@ and operation must agree.
 Team properties are `{name,description,motto,url,data}`; omitted strings and
 data default to empty. Names must be nonblank and fit 15 UTF-16 units; the
 other strings fit 255 units, and custom data is an array of at most 100 bytes.
-Member properties are `{privileges,data}` with the same byte limit. A team
+Member properties are `{privileges,data}` with the same byte limit.
+
+A team
 contains `id`, `creator`, `properties`, `max_members`, `created_at`, `members`,
 `recruits` and `deleted`; rosters map XUIDs to
 `{identity:{xuid,gamertag},properties,joined_at}`. Times are RFC 3339.
 
 The creator is the one leader (`0xffffffff`). Permission bits are delete=1,
 modify-team=2, modify-member=4, remove-member=8 and recruit=16. Halo 2 uses
-`0x1c` for officers and `0x10` or zero for lower ranks. Members cannot grant
+`0x1c` for officers and `0x10` or zero for lower ranks.
+
+Members cannot grant
 rights they do not have, create a second leader, demote/remove the creator,
 or delete a team they do not lead. Members can leave; the leader must delete
 the team. Names are unique ignoring case, a team reserves at most 100 active
 and recruited places, and an account may have eight teams including pending
-recruits. A deleted ID remains reserved, but its name becomes available.
+recruits.
+
+A deleted ID remains reserved, but its name becomes available.
 Team writes are serialised through validation and projection to enforce these
 limits across streams.
 
 Recruit targets must be registered accounts with matching XUID/gamertag.
 Recruitment atomically appends a server-signed `TeamRecruitReceived` event to
 `account-<recruit-xuid>` with `{team_id,to,from}` (`from` is the recruiting
-author). It appears on the ordinary event feed. The pending roster is the
+author). It appears on the ordinary event feed.
+
+The pending roster is the
 current invitation state: only its recipient can accept or decline; a member
 with remove permission can cancel it. Acceptance moves the recruit into the
 member roster, decline removes it, and deletion ends all memberships.
@@ -194,7 +203,9 @@ force, every token the account presents for a scope other than `read`,
 `{"error": "banned", "message": "this account is banned until <until>: <reason>"}`
 (or "banned: <reason>" for a ban until lifted). Clients treat `banned`
 as final for the session; the Live HLE reports it to the game as
-`0x80151200`. The player reads their own ban:
+`0x80151200`.
+
+The player reads their own ban:
 
 | endpoint | authentication | result |
 |---|---|---|
@@ -240,10 +251,14 @@ one compact JWS and an `events.write` bearer token, on `mailbox-<recipient xuid>
 
 `invite_id` is the sent event's global position. Answers are `accept`, `decline`,
 `remove`, or `block`. Accept requires the session still be open; the other
-answers may clear a stale invite. Block also refuses later invitations from
+answers may clear a stale invite.
+
+Block also refuses later invitations from
 that sender; no unblock endpoint is included here. Duplicate pending invitations
 to the same session are conflicts. At most 100 invitations to open sessions may
-be pending per recipient. Unknown fields, sender/recipient spoofing and foreign
+be pending per recipient.
+
+Unknown fields, sender/recipient spoofing and foreign
 or closed sessions are refused. Timestamp/key/signature/nonces and rate limits
 follow the ordinary event rules. Validation and append share the session-write
 lock, preventing duplicate concurrent answers or a race with session deletion.
@@ -253,9 +268,13 @@ by that recipient, including on a public server. It returns
 `{items, messages, next: null, position}` with at most 100 pending invitations to open
 sessions, newest first, and at most 100 text messages ([below](#text-messages)). Each item is
 `{id, from, to, gamertag, session_id, sent_at, answer: null}`; `sent_at` is Unix
-seconds. Sender names come from the account projection. Answered or
+seconds.
+
+Sender names come from the account projection. Answered or
 closed/expired-session invitations disappear from this list. The projection
-rebuilds from the log on restart. As with the rest of this service, raw events
+rebuilds from the log on restart.
+
+As with the rest of this service, raw events
 follow the server's general public/private log policy; mailbox authorisation is
 not a promise of encrypted or secret event contents.
 
@@ -275,7 +294,9 @@ time. `from` is the signing account and not the recipient, and the two are
 friends (`State::is_friends`): otherwise 403. Bad text or an unknown field is
 400, a recipient with 100 messages waiting is 409, a Clanker recipient 403.
 `message_id` is the sent event's log position; a message that is not in the
-owner's mailbox is 400. Voice messages are not supported.
+owner's mailbox is 400.
+
+Voice messages are not supported.
 
 The mailbox read lists each waiting message as
 `{id, from, to, gamertag, text, sent_at}` (`sent_at` is Unix seconds), newest
@@ -388,13 +409,17 @@ Without `auth`, a public stream is anonymous and leaves those events out.
 Legacy subscribers request `?frames=packed` for v7. The viewer requests
 `?frames=packed&frame_version=8` and recognises the version in each binary
 record, including v7 from older servers. Both homes batch each game's
-length-prefixed records for up to 100 ms. Readers of the same version
+length-prefixed records for up to 100 ms.
+
+Readers of the same version
 share its encoder and batches. Events and `caught_up` use JSON text.
 
 A new v8 stream starts with an independent key. A reader joining an
 existing stream receives the key and all subsequent records through the
 latest published frame. That suffix restores the adaptive model used by
-the next delta. A v8 key interval spans at most 150 samples. The server
+the next delta.
+
+A v8 key interval spans at most 150 samples. The server
 also uses this history to catch up a slow reader and suppresses records
 that it has already sent. A hibernated Worker socket retains its requested
 version across wake-up.
@@ -404,7 +429,9 @@ version across wake-up.
 token or a `telemetry.ingest` host lease. If discovery advertises
 `ingest_frame_batch: true`, the client can send `auth_batched` as the
 message kind, including on token refresh. A socket carries one stream of
-packed frame records, oldest first, in binary messages. In batched mode
+packed frame records, oldest first, in binary messages.
+
+In batched mode
 each message can hold up to 16 records, and each game can spend up to 16
 frames of accumulated credit, replenished at about 15 frames per second.
 The same budget applies across the game's publishers. Each text or
@@ -413,7 +440,9 @@ binary message is capped at 16 KiB.
 Clients can also send `{ "kind": "frame", "frame": {...} }` for a JSON
 frame. Frames are recorded in [frame chunks](live-api-events.md#frame-chunks) and sent to
 readers. Only refused frames get a reply, with kind `frame_error` in
-batched mode and `error` on legacy sockets. An event message carries
+batched mode and `error` on legacy sockets.
+
+An event message carries
 `{ "kind": "events", "game_id": "...", "jws": "<one batch JWS>" }` and
 gets `{kind: "appended", game_id, position}` or `{kind: "error", error,
 message}`. A `{kind: "ping"}` refreshes presence for an account or
@@ -437,7 +466,9 @@ an invalid body or token count and 413 for a body over 64 KiB. Each token
 is verified independently. The client issues fresh tokens on retries and
 uses individual pings if the batch endpoint returns HTTP 404. An
 individual result with status 404 tells the client to sign that account
-in again. Presence expires 90 seconds after the last event or ping under
+in again.
+
+Presence expires 90 seconds after the last event or ping under
 the default policy.
 
 ## Map outline

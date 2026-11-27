@@ -1,6 +1,8 @@
 # Live co-op: the coop crate, probe and lobby
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 8. The coop crate; 9. Probe (phase 2); 11. The retail lobby (co-op over Live, as the game's own co-op).
+Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 8. The coop crate; 9.
+
+Probe (phase 2); 11. The retail lobby (co-op over Live, as the game's own co-op).
 
 ## 8. The coop crate
 
@@ -65,7 +67,9 @@ a running game) instead of all of RAM.
 advertised with `flags: "coop"` or `flags: "forge"` (a shared Forge
 session's lobby). The upgrade uses a `sessions.relay`
 bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
-(`Policy::relay_rate`). It forwards bytes and never reads or stores them.
+(`Policy::relay_rate`).
+
+It forwards bytes and never reads or stores them.
 
 **What the tests prove** (`cargo test -p coop -p lockstep -p live-server`):
 
@@ -124,7 +128,9 @@ bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 Built on tests; **no game was built or run for it**. The probe tries the
 retail synchronous path of section 1 with two instances over System Link
 and writes enough on each machine to say how far it got and where the two
-parted. It is off unless `H2_COOP_PROBE=1`. Code:
+parted. It is off unless `H2_COOP_PROBE=1`.
+
+Code:
 `crates/extensions/game/src/coop_probe.rs`, `crates/extensions/lockstep/src/pools.rs`,
 `h2 coop-probe diff` (`crates/apps/cli/src/coop_probe_cmd.rs`).
 
@@ -178,10 +184,14 @@ role, modes, scenario and session, then one line per tick and pool:
 `<tick> <pool> <16 hex digits>`. The tick is the game's own tick count
 (`game_time +8`), so both machines number ticks alike. Pool `*` is the
 whole game-state block (the `0x3fe000` bytes behind `0x4e6080`, what
-checkpoints save). The other pools cut the block at every datum array
+checkpoints save).
+
+The other pools cut the block at every datum array
 header (`'d@t@'`), named by the array, with `(head)` before the first; a
 name seen twice gets `#2`. Events are `# tick T ...` lines. It is flushed
-every 300 ticks and at every event, so a crash loses little. About 100
+every 300 ticks and at every event, so a crash loses little.
+
+About 100
 bytes per pool per tick: expect a few MB a minute.
 
 `h2 coop-probe diff <host.hashes> <guest.hashes>` prints the ticks both
@@ -234,7 +244,9 @@ port on both: `H2_XNET_ADDR=<this Mac's IP>:3074`. Both point
 plain HTTP only to loopback), e.g. `h2 live serve --tunnel` on one Mac
 ([live-hosting.md](live-hosting.md)). Both Macs
 need UDP 3074 to 3080 open to each other (the macOS firewall asks the
-first time). Use the same `h2` build on both, and start with two Macs of
+first time).
+
+Use the same `h2` build on both, and start with two Macs of
 the same architecture (section 6, item 6).
 
 **In the menus.**
@@ -346,7 +358,9 @@ opens the game's own pregame lobby in co-op mode instead: its own level and
 difficulty screens, its player slots and gamertags, its ready state and its
 Start Game. Live adds two things only: the second player can be a Live
 friend (the lobby's Y opens the friends list and invites), and the guest
-lands in the same lobby, showing the host's level and difficulty. The list
+lands in the same lobby, showing the host's level and difficulty.
+
+The list
 screens stay behind `H2_COOP_LIST_UI=1`.
 
 ### 11.1 Static trace

@@ -409,7 +409,9 @@ biped's size and clips, each weapon's class, and the checks below) and
 picture shows the model from the front, the right side and three-quarter
 with its diffuse texture, then the change-colour weights (red primary, blue
 secondary over grey). Bipeds hold the battle rifle at their `weapon` node;
-vehicles have the spartan standing at `seat_driver`. It also checks the
+vehicles have the spartan standing at `seat_driver`.
+
+It also checks the
 spartan's file: the `gltf` crate reads its skin and clips, playing
 `rifle:idle` frame 0 moves no vertex (the default pose is that frame), and
 every `rifle:run` key at frames 0, 7, 13 and the last, back in game axes,

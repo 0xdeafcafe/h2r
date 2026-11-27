@@ -2,14 +2,18 @@
 
 This is the shared contract for the parallel dedicated-host build
 (2026-11-19). Twenty lanes write code at once, each on its own branch
-off `dh-base`. Lanes **write code only**. They don't run cargo, bun,
+off `dh-base`. Lanes **write code only**.
+
+They don't run cargo, bun,
 tsc, tests, builds, Docker or the game. The coordinator merges every
 branch onto one integration branch and runs one combined pass.
 
 Read [dedicated-host.md](dedicated-host.md) first for the why. This file
 fixes the seams so lanes don't block on each other. If a lane needs a
 seam this file doesn't define, it defines the smallest one it can inside
-the files it owns and says so in its report. It doesn't edit another
+the files it owns and says so in its report.
+
+It doesn't edit another
 lane's files.
 
 ## What we're building
@@ -17,6 +21,7 @@ lane's files.
 A Live match can run on a **dedicated host**: a light, headless game
 process with no local player. It's started **ad hoc** when matchmaking
 forms a lobby and stopped when the match ends. It's never always on.
+
 Cost scales with play.
 
 The same host profile runs **sim matches**: a sim match is a light host
@@ -50,7 +55,9 @@ as native code and uses the boot interpreter for omitted owners. It
 preserves the full clang plan's entry and resume routes, including HLE
 overrides and returns into an interpreted caller. A coverage miss logs
 `fallback: slim host h2fn_<owner> at <selector>, hits=N` on the first hit
-and on powers of two. Shutdown logs the exact counts per owner and
+and on powers of two.
+
+Shutdown logs the exact counts per owner and
 selector. `h2 agent fallbacks` reports the interpreter totals and the
 number of coverage misses while the process is up.
 
@@ -68,7 +75,9 @@ Install the owned map packs and each deployed mod map, and prepare their
 bot navigation files. The existing [light host corpus](../runtime/sim-examples/light-host-corpus.toml)
 runs the 23 stock and map-pack multiplayer maps, all seven game types
 and three seeds. Add deployed mod maps and targeted matches for
-objective, weapon, equipment, vehicle and player join/leave paths. Run
+objective, weapon, equipment, vehicle and player join/leave paths.
+
+Run
 against the original map caches to keep training and map pruning
 independent.
 
@@ -82,7 +91,9 @@ env -u H2_HOST_MODULE -u H2_SERVER_MAP_DIR H2_OPT=2 \
 Record real light host matches as well, since the sim boots straight
 into the game. Give each process a separate `H2_HOST_AUDIT` output path.
 Use `h2 agent hostaudit` against the host's socket for a live read and
-retain the final report after a clean stop. Include lobby creation,
+retain the final report after a clean stop.
+
+Include lobby creation,
 peer join, match start, postgame and lobby close. The existing
 [host audit agent method](../runtime/agent-api.md) supplies this data.
 
@@ -92,7 +103,9 @@ have completed ticks and have no reported missing runs, hooks or unmapped
 selectors. The audit counts guest code a second executor runs on a
 copy of guest RAM (the phantom bots' input, aim assist and vehicle entry
 searches) as well as the main runtime's. It writes two eight-digit guest
-addresses per line, the owner and the entry or continuation that ran. It sorts and deduplicates the
+addresses per line, the owner and the entry or continuation that ran.
+
+It sorts and deduplicates the
 pairs. Keep this small list with the matching XBE revision and corpus
 description. The audit JSON and all disc-derived build artifacts stay
 private.
@@ -133,7 +146,9 @@ render glue, headless draw recording and captures, local keyboard
 scripts and button icon substitution, and DirectSound's PCM mixing,
 resampling and output threads. The movie skip hook, guest sound clock
 and completion events, descriptor-only D3D, XAPI and bot pads, and lobby
-UI support remain in the host. The stage strips both ELF files, and the
+UI support remain in the host.
+
+The stage strips both ELF files, and the
 scratch image copies the ELF loader and runtime libraries, certificate
 bundle and small entrypoint shell from bookworm.
 
@@ -200,9 +215,12 @@ supervisor) keeps the stamp, and the bundled module keeps working.
 The private bundle accepts stores built by `h2 sim store build` from the
 owner’s recording. Supply either or both resource stores. The builder
 checks the logical length, cache header and every recorded byte against
-the disc before publishing the archive. For a selected resource it ships
+the disc before publishing the archive.
+
+For a selected resource it ships
 the store and the map’s cache header. The guest sees the original file
 length. Reading an uncovered range reports `NotInStore` with its offset.
+
 The menu and playable maps keep their ordinary files for native readers
 that resolve level IDs and build navigation before guest code runs.
 
@@ -224,7 +242,9 @@ wc -c "$bundle/host-data.tar.zst" deploy/host/stage/image/libh2game.so
 Both human and sim leases activate the stores listed in the provisioned
 bundle on native Live and in the container. Each shared cache without a
 store uses its regular map. Choose either a stripped map or a store for
-each resource. Use the same recorded corpus to check the provisioned DVD
+each resource.
+
+Use the same recorded corpus to check the provisioned DVD
 directory with the slim image, and repeat the lobby sequence for a human
 lease. Keep separate results directories for the full and slim runs.
 Check every child log for unrecorded reads and slim fallback messages.
@@ -437,7 +457,9 @@ The owner runs `h2 host bundle --disc <iso> --out <dir>`. It writes:
 
 The owner uploads both to a **private** bucket. A host fetches the
 bundle at start from `HostBoot.data_url` and checks the hash. It keeps
-a per-machine cache keyed by hash. The bundle is never baked into an
+a per-machine cache keyed by hash.
+
+The bundle is never baked into an
 image or committed.
 
 ### 8. Cost and budget (owned by `dh-cost`)
@@ -455,7 +477,9 @@ Before a provider start, `Live::request_host` checks accrued spend, the
 remaining commitments on open leases and the proposed lease against
 `LIVE_HOST_BUDGET_USD`. The Worker defaults to $25 per UTC month and
 native Live defaults to unlimited. A refusal lets matchmaking fall back
-to a peer host. A Worker-launched container keeps its reservation until
+to a peer host.
+
+A Worker-launched container keeps its reservation until
 the provider confirms shutdown. The admin hosts inventory exposes
 month-to-date spend and the configured cap.
 

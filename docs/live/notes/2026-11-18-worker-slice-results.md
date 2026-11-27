@@ -11,7 +11,9 @@ under each slice.
 
 The local workerd smoke used Worker build `3719470d` and harness `b4b49436`.
 It ingested frames at ticks 30 and 960 to force two independent segments.
-A WebSocket reader observed publication. The harness fetched each segment
+A WebSocket reader observed publication.
+
+The harness fetched each segment
 over HTTP with Brotli content encoding and checked every decoded field against
 the original H2CK response. Admin verification checked the retained originals
 and both index hashes. Repeating the final verification cursor returned the
@@ -26,7 +28,7 @@ same receipt.
 
 These are wall times from a single local run with Durable Object storage and
 emulated R2. The full-match size and browser CPU measurements use the seeded
-multiplayer and campaign recordings. [Telemetry measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
+multiplayer and campaign recordings. [Telemetry measurements](2026-11-19-telemetry-precision.md#finished-replay-archives)
 
 ## Slice 2 (commit 05805c760, 2026-11-18)
 

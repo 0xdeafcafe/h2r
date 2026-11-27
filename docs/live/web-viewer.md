@@ -64,25 +64,33 @@ lays players over the picture using the view's `world_to_pixel` matrix
 (`src/map/views.ts`, `src/map/ViewMap.tsx`), with a switcher for the views
 and pan and zoom; without them it is the fitted grid as before. The game
 page's viewer (`src/viewer/GameViewer.tsx`) sits under the match hero,
-with the scoreboard, field report and overview below. The Field Report
+with the scoreboard, field report and overview below.
+
+The Field Report
 keeps visible rows keyed by kill event as the replay advances. A new row
 can enter once, with motion disabled when the browser requests reduced
 motion. The viewer switches between the tactical map and the 3D view
-(`src/viewer/`). The 3D view loads three.js when selected and draws a sun,
+(`src/viewer/`).
+
+The 3D view loads three.js when selected and draws a sun,
 soft shadows and ambient occlusion that switches off if the device can't
 keep up. It offers orbit, top-down,
 follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
-map has no geometry. The [map uplink](viewer-overlay-layers.md#the-overlay)
+map has no geometry.
+
+The [map uplink](viewer-overlay-layers.md#the-overlay)
 shows geometry load progress, offers **Retry** after a failed load and
 puts level settings in the 3D view's **View** panel. [Name tags](viewer-overlay-layers.md#name-tags)
 give priority to the followed player and reduce crowded labels to pips.
 The level [appears in a sweep](viewer-overlay-layers.md#progressive-reveal) from
 the opening focus, with a cross-fade when the browser requests reduced motion. The [opening camera](viewer-overlay.md#opening-camera)
 follows the player selected by `?player=`, the signed-in player or the
-embedding page when present, or frames the playable area. The
+embedding page when present, or frames the playable area.
+
+The
 **Full screen** button puts the viewer's box full screen with the Fullscreen
 API (Escape leaves), or lays it over the window where there is none (an
 iPhone; Escape leaves that too); the canvas and the 2D map refit either way
@@ -90,21 +98,27 @@ iPhone; Escape leaves that too); the canvas and the 2D map refit either way
 `,` `.` `<` `>` `k`, and the 3D view's) are its own only while it has the
 focus or the pointer is over it, so the page keeps them otherwise. The 2D
 map, the 3D view and the scrubber share one session (`src/viewer/session.ts`).
+
 Finished games autoplay without audio from the first recorded frame.
 **Watch in Theater**, links from the film library, and legacy
 `/theater/:id` links open Game Details at `#game-viewer`. The same viewer
 offers playback, camera controls, the HUD and clip creation. A shared
 `/theater/:id/clip/:clip` link opens the requested range on a loop.
+
 Use `?t=12.5` to start playing 12.5 seconds into a full recording. Playback
 controls used in one replay tab also apply to other open tabs on that game.
-Live games open at the live edge. Scrub back through up to 450 recent
+Live games open at the live edge.
+
+Scrub back through up to 450 recent
 frames (about 30 seconds at 15 frames per second), or select **Live** to
 return to the edge. The history fills as the tab receives frames. When the
 match ends, the recording takes over at the current playhead with the same
 play or pause state. `?view=3d` opens the 3D view (with `cam`, `cut`, `see`
 and `ao` as below) and `?map=iso-ne` picks a view, so both can be linked
 to; the old pop-out address, `/games/halo2/games/:id/3d`, goes to the game
-page with the 3D view showing. The mock builds
+page with the 3D view showing.
+
+The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
@@ -117,7 +131,9 @@ bipeds, campaign), both optional. A vehicle is drawn as its glb from the
 manifest's `models.vehicles`, turned by its forward and up, or as a box of
 about its kind's size; a player's vehicle takes a light wash of their
 colour. Whoever is in one is not drawn themselves: the vehicle stands for
-them and carries their label (seat nodes are not used yet). A turret
+them and carries their label (seat nodes are not used yet).
+
+A turret
 (a vehicle with a `parent`: the Warthog's chaingun, the Scorpion's
 cannon) is not drawn on its own: its vehicle's model turns its
 `turret_<n>` part and raises its guns to the turret's `aim`, else its
@@ -129,7 +145,9 @@ in its own colours, else the spartan's untinted, else a small capsule, with
 a ring in their side's colour (covenant purple, human green, flood tan,
 sentinel grey). They have no name label unless "AI names" is on (the button
 shows when a game has actors) and no aim ray; their shots draw like
-players'. At most 128 are drawn from a frame. On the 2D maps actors are
+players'.
+
+At most 128 are drawn from a frame. On the 2D maps actors are
 small squares and vehicles an outline under their riders.
 
 ### Seeing into a level
@@ -140,7 +158,9 @@ glb says and it can be looked into from outside; meshes under a `machines`
 node are ordinary models and keep the side they came with. Every mesh is
 found by walking the glb, so one `structure` node or many `bsp_<n>` ones
 are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
-`c`, `[` and `]` or the slider) hides the level above a height. While following
+`c`, `[` and `]` or the slider) hides the level above a height.
+
+While following
 a player it keeps to just above their head. **See-through** (key `x` to
 cycle through off, *in focus* and *everyone*) opens a window around each
 target's displayed body. *In focus* uses the followed or highlighted
@@ -151,10 +171,14 @@ The same shader tests each pixel ray against the player's body volume.
 Fragments in front of the body that block the window are discarded.
 BSP sections and clusters, instanced scenery, and doors, lifts and
 platforms take the same cut, including machines drawn from frames and
-scenery drawn from the film. The cut leaves the player's supporting floor
+scenery drawn from the film.
+
+The cut leaves the player's supporting floor
 and geometry outside the window visible. Bipeds and vehicles draw whole.
 The cut applies to both colour and depth, so the remaining fragments
-keep their normal depth ordering. Ambient occlusion uses that same depth,
+keep their normal depth ordering.
+
+Ambient occlusion uses that same depth,
 and shadows stay in place. `?cut=<height>` and `?see=0` set the initial
 view from a link. (Culling front faces instead was
 tried: Halo's levels are thick-walled and faced inwards, so it shows the
@@ -172,12 +196,16 @@ under its `weapon` node, in the roster's colour: the glb's `COLOR_0` gives
 each vertex a primary weight (R, the player's colour) and a secondary one
 (G, a darker shade), and a model without it is tinted all over. Each glb is
 fetched once and cloned per player; team mates share the coloured mesh
-(`viewer/players3d.ts`). A small, life-size capsule stands in for the
+(`viewer/players3d.ts`).
+
+A small, life-size capsule stands in for the
 model while it loads or when there is no model. The follow camera uses the
 same distance in both cases. A faint ray from the head shows the aim
 (level along the yaw when the frame has none), the label names the weapon, and each frame's shots draw a muzzle
 flash and up to three tracers along the aim that fade in 150 ms
-(`map/shots.ts`), from the weapon's `muzzle` node or from chest height. The
+(`map/shots.ts`), from the weapon's `muzzle` node or from chest height.
+
+The
 2D maps draw a short aim line from each dot and a fading line for each
 shot. With reduced motion nothing flashes: the aim ray turns bright while a
 player is firing instead. Recorded frames are one a second, so a replay
@@ -294,7 +322,9 @@ the map glb's `machines` child it is (`node`), its place and facing.
 placement index, as a byte sent on change. Live and replay state retain
 quiet devices and sample between frames at the same render tick as the
 players. The 3D view uses the map glb's device clip to pose its moving
-parts and blends across the seam for looping devices. Older recordings
+parts and blends across the seam for looping devices.
+
+Older recordings
 and map art without device clips draw with world poses as before.
 
 The 3D view moves a named machine node (`viewer/machines3d.ts`): one with
@@ -307,7 +337,9 @@ glb, else as a box. A map glb's `asset.extras.features` lists teleporters
 view stands a ring at each teleporter in its role's colour, arcs each link
 through the air with an arrowhead where it arrives, and marks each lift
 with a faint ring and a short arrow along its up axis
-(`viewer/features3d.ts`). The lift's placement in the map art supplies
+(`viewer/features3d.ts`).
+
+The lift's placement in the map art supplies
 its pose until a matching machine or moved-object sample supplies its
 position and up axis. The 2D maps draw rings, dashed curves and a disc
 with chevrons, reading the extras from the head of the glb (a streamed read
@@ -318,11 +350,15 @@ The lift's rendered glow is part of the map art. Ascension and Midship
 carry it on their placed objects, Lockout in the level geometry, and
 Ivory Tower (`cyclotron`) on its air lifts. The extractor reads their
 `plasma_alpha` shader's layer-15 pass and exports two noise maps, the beam
-mask, tint constants and the time-driven UV offsets. The viewer streams
+mask, tint constants and the time-driven UV offsets.
+
+The viewer streams
 those pictures alongside the map textures and combines them in one
 unlit additive pass. It tests against the solid scene's depth and writes
 no depth.
-The emitter's solid parts still use their ordinary materials. The
+The emitter's solid parts still use their ordinary materials.
+
+The
 **Effects** switch controls these glows, and reduced motion holds the
 texture at the start of its cycle. **Lifts & teleporters** controls the
 guide separately. The plasma pass approximates the game's shading with
