@@ -61,6 +61,9 @@ pub(super) fn install(b: &mut Builder) {
                             super::handoff::handed(g)
                         })
                         .await?;
+                        // The view's held run draws before its light
+                        // frame returns.
+                        cx.write(|m| super::flush_light_run(m));
                         count(&light_frame);
                         Ok::<_, engine::entry::EntryError>(ret)
                     })

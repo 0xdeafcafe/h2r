@@ -692,18 +692,22 @@ fn tiled_shading_equals_the_per_light_passes() {
     let ([a0, a1], [c0, c1, c2]) = (a(), c12());
     let run = [
         TiledDraw {
+            set: None,
             layer: 13,
             lights: vec![(2, c13())],
         },
         TiledDraw {
+            set: None,
             layer: 12,
             lights: vec![(0, a0), (2, c0)],
         },
         TiledDraw {
+            set: None,
             layer: 12,
             lights: vec![(0, a1), (2, c1), (2, c2)],
         },
         TiledDraw {
+            set: None,
             layer: 12,
             lights: vec![(1, b())],
         },
@@ -801,4 +805,52 @@ fn tiled_shading_equals_the_per_light_passes() {
             i % 4
         );
     }
+}
+
+#[test]
+fn the_compare_finds_the_largest_channel_difference() {
+    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let (device, queue) = (&ctx.device, &ctx.queue);
+    let size = (12u32, 9u32);
+    let texture = |rgba: &[u8]| {
+        device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: F::Rgba8Unorm,
+                usage: U::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            rgba,
+        )
+    };
+    let base: Vec<u8> = (0..size.0 * size.1 * 4).map(|i| (i % 251) as u8).collect();
+    let mut changed = base.clone();
+    changed[4 * (7 * size.0 + 10) as usize + 2] += 10;
+    let compare = Compare::new(device);
+    let run = |a: &wgpu::Texture, b: &wgpu::Texture| {
+        let diff = compare.prepare(
+            device,
+            &a.create_view(&Default::default()),
+            &b.create_view(&Default::default()),
+            size,
+        );
+        let mut enc = device.create_command_encoder(&Default::default());
+        diff.encode(&mut enc);
+        queue.submit([enc.finish()]);
+        diff.readback().slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let d = difference(&diff.readback().slice(..).get_mapped_range().unwrap());
+        d
+    };
+    let (a, b, c) = (texture(&base), texture(&base), texture(&changed));
+    assert_eq!(run(&a, &b), 0.0);
+    let d = run(&a, &c);
+    assert!((d - 10.0 / 255.0).abs() < 1e-4, "{d}");
+    assert!(d > crate::light_tiles::tolerance(3), "ten steps exceed three lights' rounding");
 }

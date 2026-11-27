@@ -1,6 +1,6 @@
 # Native light tiles: a run of lights' layers 12 and 13 in one pass
 
-Status: Partly built. The admission, the run planner, the GPU binning pass and the instanced tiled draw are built and tested on the test adapter; the game host does not call them yet, so every light still draws on its per-light pass.
+Status: Partly built. The admission, the binning pass, the instanced draw and the host's held run are built; the host bins over whole-target volumes (no culling yet) and a compare arm checks tiled runs against their per-light passes.
 Code: `crates/rewrites/native-render/src/light_tiles.rs` (planner, volumes, counters), `light_tiles_gpu.rs` (admission, the binning pass, the tiled program and its draws). Tests: in both files.
 Switch: none.
 
@@ -51,7 +51,18 @@ Additions in another order round differently: the tolerance is the target's roun
 
 - **In:** per light, its view slot (4 or 10), its steps (`light_scene::PER_LIGHT_LAYERS`, `FIRST_PERSON_LAYERS`), its layer 12 and 13 `LightDraw`s, whether its gel is the shader-driven target 13, and its `TileVolume`. The first-person lights (slot 10) form runs of their own, binned over the depth the first-person view draws on.
 - **Out:** `LightTiles::bin` records a compute pass into the caller's encoder; `TiledPass::encode` records the run's draws into an open render pass on the view's target, with the scene depth loaded.
-- **Not wired:** the host (`native_lights_glue/scene.rs`) still draws each light at its passes. Taking a run needs the host to hold the run's admitted lights until the next refused light or the view's end, a compute dispatch between the device's render passes, and instanced packets in `d3d::ExternalDraws` (`gfx::RecordedDraw` has no instance count).
+- **Host:** `render_bridge::native_lights` asks `Host::hold_scene_light` at each slot 4 light; the game's `native_lights_glue/tiles.rs` holds an admitted light's prepared layers 12 and 13. `Host::flush_light_run` draws the run before any light drawn on its own, when the view target changes, at `MAX_RUN`, and at the light frame's end. The run is one external step (`TiledRun`): the binning dispatch, then a render pass of instanced draws (`gfx::RecordedDraw::instances`). Slot 10 lights are not held.
+- **Fallback:** a run that does not prepare draws each light on its per-light sequence (`scene_light_tiles_fallback`); a light that fails that too is `scene_light_tiles_lost`.
+
+### The compare arm
+
+`light_tiles::ARM` compares every run until 4 match, then one run in 64. A compared run draws the tiled pass into a copy of the target, the per-light sequences on the target, then a GPU diff of the two whose largest channel difference is read back 8 flushes later. A difference over `(lights + 1) / 255` turns the arm off until the map retires: every light then draws per light.
+
+| Counter | Counts |
+|---|---|
+| `scene_light_tiles_compared` | runs compared |
+| `scene_light_tiles_matched` / `_mismatched` | compares within / over tolerance |
+| `scene_light_tiles_arm_off` | 1 while the arm is off |
 
 ## Rules and limits
 
@@ -75,7 +86,8 @@ Tests: `a_tiles_list_holds_exactly_the_lights_whose_volume_touches_it` (the GPU 
 
 - Coverage on real maps: how many lights each refusal takes (layer 11 for specular lights, layer 14, target-13 gels).
 - The frame time of a tiled run against its per-light sequences on the laptop, with the binning pass included.
-- That the host's projection of resident bounds into `TileVolume` holds every pixel the world and model programs draw.
+- That the host's projection of resident bounds into `TileVolume` holds every pixel the world and model programs draw; the host uses whole-target volumes until it does.
+- The glue's held run, `TiledRun` and the compare readback on a running game: no live run yet.
 
 ## Related
 

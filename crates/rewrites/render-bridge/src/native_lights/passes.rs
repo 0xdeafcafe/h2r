@@ -146,13 +146,24 @@ fn scene_passes(
         Err(why) => {
             refused(SceneList::LightPasses, why);
             super::scene_frame::refused();
+            // The guest draws this light: the held run draws first.
+            {
+                let runtime = Arc::clone(ctx.runtime());
+                let mut mem = runtime.memory();
+                super::flush_light_run(&mut *mem);
+            }
             return original(cpu, ctx, addr);
         }
     };
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
-                Ok(after_lists(super::scene_frame::light(mem, p)))
+                let taken = super::scene_frame::light(mem, p);
+                if taken.is_err() {
+                    // The guest's remaining passes draw this light.
+                    super::flush_light_run(mem);
+                }
+                Ok(after_lists(taken))
             })
             .await?;
             SceneList::LightPasses.count(SceneListResult::Native);

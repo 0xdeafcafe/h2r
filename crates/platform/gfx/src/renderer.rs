@@ -429,6 +429,9 @@ pub struct RecordedDraw {
     /// offset and how many consecutive 20-byte slots
     /// ([`RecordedDraw::with_indirect`]).
     indirect: Option<(wgpu::Buffer, u64, u32)>,
+    /// The instances drawn ([`RecordedDraw::with_instances`]); `0..1` but
+    /// for an instanced draw.
+    instances: std::ops::Range<u32>,
     /// The pipeline's shader and fixed-function state, for
     /// [`describe`](Self::describe).
     state: Box<(
@@ -471,6 +474,7 @@ impl RecordedDraw {
             count: None,
             new_pass: false,
             indirect: None,
+            instances: 0..1,
             state: Box::new((
                 key.shader,
                 key.primitive,
@@ -484,6 +488,13 @@ impl RecordedDraw {
     /// own `BLENDCOLOR`), in place of the render state's.
     pub fn with_blend_constant(mut self, color: wgpu::Color) -> Self {
         self.blend_constant = color;
+        self
+    }
+
+    /// Draws `instances` of the indexed range: an instanced native pass
+    /// (`native_render::light_tiles_gpu`), each instance its own uniforms.
+    pub fn with_instances(mut self, instances: std::ops::Range<u32>) -> Self {
+        self.instances = instances;
         self
     }
 
@@ -542,13 +553,14 @@ impl RecordedDraw {
     pub fn describe(&self) -> String {
         let (shader, primitive, depth_stencil, color) = &*self.state;
         format!(
-            "vb={:?} idx={:?} n={} indirect={:?} builtin={} groups={:?} vp={:?} sc={:?} sref={} bc={:?}\n      shader={shader:?} primitive={primitive:?}\n      depth_stencil={depth_stencil:?}\n      color={color:?}",
+            "vb={:?} idx={:?} n={} inst={:?} indirect={:?} builtin={} groups={:?} vp={:?} sc={:?} sref={} bc={:?}\n      shader={shader:?} primitive={primitive:?}\n      depth_stencil={depth_stencil:?}\n      color={color:?}",
             self.vertex_buffers
                 .iter()
                 .map(|(b, o, l)| (b.size(), *o, *l))
                 .collect::<Vec<_>>(),
             self.indices.as_ref().map(|(b, o, l)| (b.size(), *o, *l)),
             self.vertices,
+            self.instances,
             self.indirect.as_ref().map(|(b, o, n)| (b.size(), *o, *n)),
             self.builtin.is_some(),
             self.bind_groups
@@ -1075,6 +1087,7 @@ impl Renderer {
             count,
             new_pass: false,
             indirect: None,
+            instances: 0..1,
             state: Box::new((d.shader, key.primitive, key.depth_stencil, key.color_target)),
         })
     }
@@ -1434,13 +1447,13 @@ impl<'a> PassState<'a> {
             pass.set_vertex_buffer(i as u32, buf.slice(*off..*off + *len));
         }
         match &p.indices {
-            None => pass.draw(0..p.vertices, 0..1),
+            None => pass.draw(0..p.vertices, p.instances.clone()),
             Some((buf, off, len)) => {
                 pass.set_index_buffer(buf.slice(*off..*off + *len), wgpu::IndexFormat::Uint32);
                 match &p.indirect {
                     Some((args, at, 1)) => pass.draw_indexed_indirect(args, *at),
                     Some((args, at, n)) => pass.multi_draw_indexed_indirect(args, *at, *n),
-                    None => pass.draw_indexed(0..p.vertices, 0, 0..1),
+                    None => pass.draw_indexed(0..p.vertices, 0, p.instances.clone()),
                 }
             }
         }
