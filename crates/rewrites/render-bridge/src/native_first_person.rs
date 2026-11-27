@@ -61,6 +61,12 @@ pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
+/// The cut is held: until the scene's first person equals the guest's
+/// (its items, [`engine::render::light_gather::first_person_items`], and
+/// their draws), `0x0003fdf0`'s body runs and draws them, and this
+/// feature installs nothing.
+pub const HELD: bool = true;
+
 /// Why a part is not drawn. Each is a named count, never a D3D draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dropped {
@@ -279,7 +285,7 @@ impl Feature for NativeFirstPerson {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
-        if !on(b.switches()) {
+        if HELD || !on(b.switches()) {
             return Ok(());
         }
         // A cut (`crate::cut::OWN_PRODUCER`): every call is answered here,
