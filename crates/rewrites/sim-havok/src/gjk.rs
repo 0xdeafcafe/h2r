@@ -15,8 +15,10 @@
 //! - [`edge`] `0x003037a0`: a segment against a triangle, which of the
 //!   two simplices loses a vertex.
 //! - [`query`] `0x003048a0`: the query itself, on the leaves above, with
-//!   the shapes' virtuals and the triangle case `0x00303dd0` through
-//!   [`Calls`].
+//!   the shapes' virtuals and the triangle case through [`Calls`].
+//! - [`triangle_case`] `0x00303dd0` with `0x00303b80`: the stalled
+//!   query's penetration step, its call `0x0030a6b0` through
+//!   [`Penetration`], then the query's cases on what it leaves.
 //!
 //! On a [`Fallback`] the journal is discarded and nothing has been
 //! written.
@@ -757,7 +759,8 @@ pub trait Calls {
     /// support point along the direction.
     fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, esp: u32) -> Result<(), Fallback>;
     /// `0x00303dd0`, thiscall on the state, `(shape A, shape B,
-    /// transform, cache)`, `ret 0x10`: its eax becomes the query's.
+    /// transform, cache)`, `ret 0x10` ([`triangle_case`]): its eax
+    /// becomes the query's.
     fn triangle_case(&mut self, j: &mut Journal, st: u32, args: Args, esp: u32) -> Result<u32, Fallback>;
 }
 
@@ -827,9 +830,12 @@ struct Run<'c, C> {
     sse: Sse,
     x: Fx,
     calls: &'c mut C,
+    /// The frame offsets of the `(2, 2)` case's two edges, A's then B's.
+    edges: (u32, u32),
 }
 
-impl<C: Calls> Run<'_, C> {
+/// The cases, which make no call out: [`query`]'s and [`triangle_case`]'s.
+impl<C> Run<'_, C> {
     fn at(&self, off: u32) -> u32 {
         self.st.wrapping_add(off)
     }
@@ -1003,7 +1009,7 @@ impl<C: Calls> Run<'_, C> {
     /// the edges' cross product, turned toward B. Otherwise each clamped
     /// segment drops to the end it clamped at.
     fn pair(&mut self, j: &mut Journal) -> Result<Flow, Fallback> {
-        let (da, db) = (self.frame(0x60), self.frame(0x50));
+        let (da, db) = (self.frame(self.edges.0), self.frame(self.edges.1));
         let (a0, b0) = (self.at(state::SUPPORT_A), self.at(state::SUPPORT_B));
         let (a1, b1) = (self.slot(state::SUPPORT_A, 1), self.slot(state::SUPPORT_B, 1));
         let ea = self.sse.sub(vec(j, a1)?, vec(j, a0)?);
@@ -1095,7 +1101,10 @@ impl<C: Calls> Run<'_, C> {
             _ => !first,
         }
     }
+}
 
+/// The steps that call out: the support points, the stall, the query.
+impl<C: Calls> Run<'_, C> {
     /// The new vertex at `base[n]` against `base[0]`, then for a simplex
     /// of two or three against `base[2]` and `base[1]`.
     fn fresh_vertex(&mut self, j: &Journal, base: u32, n: u32, dir: u128, thr: u32) -> Result<bool, Fallback> {
@@ -1325,7 +1334,241 @@ pub fn query(j: &mut Journal, st: u32, esp: u32, args: Args, fpu: Fpu, calls: &m
     let (sse, x) = units(fpu)?;
     // `push ebp; and esp,-16; sub esp,0x74`, then three pushes.
     let f = (esp.wrapping_sub(4) & !15).wrapping_sub(0x80);
-    Run { st, f, args, fpu, sse, x, calls }.run(j)
+    Run { st, f, args, fpu, sse, x, calls, edges: (0x60, 0x50) }.run(j)
+}
+
+/// `0x004801e0`: the vector [`triangle_case`] tests vertices against;
+/// two whose difference is within it in `x`, `y` and `z` are one.
+pub const SAME: u32 = 0x0048_01e0;
+
+/// [`triangle_case`]'s frame: the simplex it hands [`Penetration`] (A's
+/// four vertices, B's four in B's frame, the count), the differences
+/// `A - B`, the direction the call leaves, and the saved eax.
+pub mod tri_frame {
+    pub const SIMPLEX: u32 = 0x20;
+    pub const SIMPLEX_B: u32 = 0x60;
+    pub const COUNT: u32 = 0xa0;
+    pub const DIFFERENCES: u32 = 0xd0;
+    pub const DIRECTION: u32 = 0x110;
+    pub const EAX: u32 = 0x1c;
+}
+
+/// The call [`triangle_case`] makes out.
+pub trait Penetration {
+    /// `0x0030a6b0`, cdecl `(shape A, shape B, transform, simplex,
+    /// differences, direction)`: the simplex at entry is up to four
+    /// vertex pairs; it leaves up to three and their count in the
+    /// simplex, and the direction. `esp` is the stack pointer at the
+    /// call's entry. Its eax becomes the triangle case's.
+    fn penetration(&mut self, j: &mut Journal, args: [u32; 6], esp: u32) -> Result<u32, Fallback>;
+}
+
+/// `cmpltps`: each lane all ones where `a < b`, ordered.
+fn below(sse: &mut Sse, a: u128, b: u128) -> u128 {
+    simd::cmpps(&mut sse.e.mxcsr, a, b, 1).unwrap_or_else(|simd::Xm| {
+        sse.e.trapped = true;
+        0
+    })
+}
+
+impl Run<'_, ()> {
+    /// [`triangle_case`]'s pair `k` for [`Penetration`]: A's vertex `ai`,
+    /// the difference to B's placed vertex `bi`, and B's own.
+    fn pair_out(&mut self, j: &mut Journal, k: u32, ai: u32, bi: u32) -> Result<(), Fallback> {
+        let av = vec(j, self.slot(state::SUPPORT_A, ai))?;
+        let d = self.sse.sub(av, vec(j, self.slot(state::SUPPORT_B, bi))?);
+        put(j, self.frame(tri_frame::DIFFERENCES + 16 * k), d)?;
+        put(j, self.frame(tri_frame::SIMPLEX + 16 * k), av)?;
+        let local = vec(j, self.slot(state::LOCAL_B, bi))?;
+        put(j, self.frame(tri_frame::SIMPLEX_B + 16 * k), local)
+    }
+
+    /// Whether `u - v` is past [`SAME`] in any of `x`, `y`, `z`.
+    fn apart(&mut self, j: &Journal, u: u128, v: u128) -> Result<bool, Fallback> {
+        let d = self.sse.sub(u, v) & vec(j, ABS)?;
+        let same = vec(j, SAME)?;
+        Ok(signs(below(&mut self.sse, same, d)) & 7 != 0)
+    }
+
+    /// `0x00303b80`, thiscall on the state, plain `ret`, for simplices
+    /// over more than four vertices. A vertex of one side inside the
+    /// other's triangle ([`triangle`], not oriented) becomes that side's
+    /// only vertex, A's tested first. Otherwise each pair of edges, one
+    /// of each side (a triangle's three, a segment's one), is measured
+    /// with [`segments`], and a triangle keeps the vertices of its edge
+    /// in the nearest pair (the first on a tie): its third takes the
+    /// last vertex. B's arrays both follow, A's parallel array does not.
+    fn reduce(&mut self, j: &mut Journal) -> Result<(), Fallback> {
+        // `push ebp; and esp,-16; sub esp,0x74`, three pushes, from the
+        // return address below the caller's frame.
+        let g = (self.f.wrapping_sub(8) & !15).wrapping_sub(0x80);
+        let (a, b, lb) = (state::SUPPORT_A, state::SUPPORT_B, state::LOCAL_B);
+        let (count_a, count_b) = (self.at(state::COUNT_A), self.at(state::COUNT_B));
+        if word(j, count_b)? == 3 {
+            let mut i = 0u32;
+            while (i as i32) < word(j, count_a)? as i32 && i < MAX_COUNT {
+                if triangle(j, self.st, self.slot(a, i), self.at(b), 0, self.fpu)?.mask == 7 {
+                    moved(j, self.at(a), self.slot(a, i))?;
+                    return set(j, count_a, 1);
+                }
+                i += 1;
+            }
+        }
+        if word(j, count_a)? == 3 {
+            let mut i = 0u32;
+            while (i as i32) < word(j, count_b)? as i32 && i < MAX_COUNT {
+                if triangle(j, self.st, self.slot(b, i), self.at(a), 0, self.fpu)?.mask == 7 {
+                    moved(j, self.at(lb), self.slot(lb, i))?;
+                    moved(j, self.at(b), self.slot(b, i))?;
+                    return set(j, count_b, 1);
+                }
+                i += 1;
+            }
+        }
+        let edges = |n: u32| if n == 3 { 3 } else { 1 };
+        let (edges_a, edges_b) = (edges(word(j, count_a)?), edges(word(j, count_b)?));
+        let (mut best, mut best_a, mut best_b) = (MAX_BITS, 0usize, 0usize);
+        let (da, db, out) = (g.wrapping_add(0x40), g.wrapping_add(0x30), g.wrapping_add(0x50));
+        for i in 0..edges_a {
+            for k in 0..edges_b {
+                let ai = vec(j, self.slot(a, i as u32))?;
+                let ea = self.sse.sub(vec(j, self.slot(a, FIRST[i]))?, ai);
+                put(j, da, ea)?;
+                let bk = vec(j, self.slot(b, k as u32))?;
+                let eb = self.sse.sub(vec(j, self.slot(b, FIRST[k]))?, bk);
+                put(j, db, eb)?;
+                let d = segments(j, self.slot(a, i as u32), da, self.slot(b, k as u32), db, out, self.fpu)?.distance;
+                // `fcomp; test ah,5; jp`: only an ordered nearer pair.
+                if cmp(load(d), load(best)) == Cmp::Less {
+                    (best, best_a, best_b) = (d, i, k);
+                }
+            }
+        }
+        if edges_a == 3 {
+            let n = word(j, count_a)?.wrapping_sub(1);
+            set(j, count_a, n)?;
+            moved(j, self.slot(a, SECOND[best_a]), self.slot(a, n))?;
+        }
+        if edges_b == 3 {
+            let n = word(j, count_b)?.wrapping_sub(1);
+            set(j, count_b, n)?;
+            let c = SECOND[best_b];
+            moved(j, self.slot(lb, c), self.slot(lb, n))?;
+            moved(j, self.slot(b, c), self.slot(b, word(j, count_b)?))?;
+        }
+        done(&self.sse)
+    }
+}
+
+/// `0x00303dd0`, thiscall on the query state, `(shape A, shape B,
+/// transform, cache)`, `ret 0x10`; the cache is not read and `args.out`
+/// is unused. `esp` is the stack pointer at entry.
+///
+/// The simplices go to [`Penetration`] as up to four vertex pairs: B's
+/// vertices against A's first when B has three or more, else A's against
+/// B's first when A has three or more, else the first pair alone; a
+/// fourth pair from the other side's second vertex fills a three. What
+/// it leaves comes back as A's and B's first three vertices. One pair
+/// left: the normal is `(1, 0, 0, 0)`, both sizes 1. Otherwise both are
+/// three less the vertices within [`SAME`] of another (A's third against
+/// its second and first, then its first against its second, the last
+/// vertex taking the first's place; B's the same in B's frame, the last
+/// test only with two left), B's are placed into A's frame, more than
+/// four in all are cut down (`0x00303b80`), and [`query`]'s cases run
+/// until one leaves the loop. The normal is the direction negated.
+/// Returns the call's eax.
+pub fn triangle_case(j: &mut Journal, st: u32, esp: u32, args: Args, fpu: Fpu, calls: &mut impl Penetration) -> Result<u32, Fallback> {
+    let (sse, x) = units(fpu)?;
+    // `push ebp; and esp,-16; sub esp,0x134`, then three pushes.
+    let f = (esp.wrapping_sub(4) & !15).wrapping_sub(0x140);
+    let mut r = Run { st, f, args, fpu, sse, x, calls: &mut (), edges: (0xb0, 0xc0) };
+    let (a, b, lb) = (state::SUPPORT_A, state::SUPPORT_B, state::LOCAL_B);
+    let (count_a, count_b) = (r.at(state::COUNT_A), r.at(state::COUNT_B));
+    let na = word(j, count_a)? as i32;
+    let nb = word(j, count_b)? as i32;
+    let fr = |off: u32| f.wrapping_add(off);
+    r.pair_out(j, 0, 0, 0)?;
+    let count = if nb >= 3 {
+        r.pair_out(j, 1, 0, 1)?;
+        r.pair_out(j, 2, 0, 2)?;
+        if nb > 3 {
+            r.pair_out(j, 3, 0, 3)?;
+            4
+        } else if na > 1 {
+            r.pair_out(j, 3, 1, 0)?;
+            4
+        } else {
+            3
+        }
+    } else if na >= 3 {
+        r.pair_out(j, 1, 1, 0)?;
+        r.pair_out(j, 2, 2, 0)?;
+        if na > 3 {
+            r.pair_out(j, 3, 3, 0)?;
+            4
+        } else if nb > 1 {
+            r.pair_out(j, 3, 0, 1)?;
+            4
+        } else {
+            3
+        }
+    } else {
+        1
+    };
+    set(j, fr(tri_frame::COUNT), count)?;
+    done(&r.sse)?;
+    let out = [args.a, args.b, args.transform, fr(tri_frame::SIMPLEX), fr(tri_frame::DIFFERENCES), fr(tri_frame::DIRECTION)];
+    let eax = calls.penetration(j, out, f.wrapping_sub(0x1c))?;
+    set(j, fr(tri_frame::EAX), eax)?;
+    for i in 0..3 {
+        moved(j, r.slot(a, i), fr(tri_frame::SIMPLEX + 16 * i))?;
+        moved(j, r.slot(lb, i), fr(tri_frame::SIMPLEX_B + 16 * i))?;
+    }
+    if word(j, fr(tri_frame::COUNT))? == 1 {
+        for (i, v) in [ONE_BITS, 0, 0, 0].into_iter().enumerate() {
+            set(j, r.at(state::NORMAL + 4 * i as u32), v)?;
+        }
+        set(j, count_b, 1)?;
+        set(j, count_a, 1)?;
+        return Ok(eax);
+    }
+    set(j, count_b, 3)?;
+    set(j, count_a, 3)?;
+    // 0x00304013: A's duplicates.
+    let (a1, a2) = (vec(j, r.slot(a, 1))?, vec(j, r.slot(a, 2))?);
+    if !r.apart(j, a1, a2)? || !r.apart(j, vec(j, r.at(a))?, a2)? {
+        set(j, count_a, 2)?;
+    }
+    if !r.apart(j, vec(j, r.at(a))?, a1)? {
+        let n = word(j, count_a)?.wrapping_sub(1);
+        set(j, count_a, n)?;
+        moved(j, r.at(a), r.slot(a, n))?;
+    }
+    // 0x003040ac: B's, in B's frame.
+    let (l1, l2) = (vec(j, r.slot(lb, 1))?, vec(j, r.slot(lb, 2))?);
+    if !r.apart(j, l1, l2)? || !r.apart(j, vec(j, r.at(lb))?, l2)? {
+        dec(j, count_b)?;
+    }
+    if word(j, count_b)? as i32 >= 2 && !r.apart(j, vec(j, r.at(lb))?, l1)? {
+        let n = word(j, count_b)?.wrapping_sub(1);
+        set(j, count_b, n)?;
+        moved(j, r.at(lb), r.slot(lb, n))?;
+    }
+    let nb = word(j, count_b)?;
+    for i in 0..nb.min(MAX_COUNT) {
+        let v = vec(j, r.slot(lb, i))?;
+        let placed = r.place(j, v)?;
+        put(j, r.slot(b, i), placed)?;
+    }
+    if word(j, count_a)?.wrapping_add(word(j, count_b)?) as i32 > 4 {
+        r.reduce(j)?;
+    }
+    set(j, r.at(state::FEATURE), 0)?;
+    while let Flow::Dispatch = r.case(j)? {}
+    let normal = vec(j, fr(tri_frame::DIRECTION))? ^ vec(j, SIGNS)?;
+    put(j, r.at(state::NORMAL), normal)?;
+    done(&r.sse)?;
+    Ok(eax)
 }
 
 #[cfg(test)]
@@ -1548,6 +1791,105 @@ mod tests {
         h.0.insert(st + state::SETTLE, 0);
         let q = query(&mut Journal::new(&h), st, 0x8000, args, FPU, &mut Capsules { triangle: 7 }).unwrap();
         assert_eq!(q.eax, 7);
+    }
+
+    /// A penetration call that leaves a fixed simplex and direction, and
+    /// keeps what it was handed.
+    struct Leaves {
+        count: u32,
+        a: [[f32; 4]; 3],
+        b: [[f32; 4]; 3],
+        direction: [f32; 4],
+        seen: Option<([u32; 6], u32, u32)>,
+    }
+
+    impl Penetration for Leaves {
+        fn penetration(&mut self, j: &mut Journal, args: [u32; 6], esp: u32) -> Result<u32, Fallback> {
+            let simplex = args[3];
+            self.seen = Some((args, esp, j.get(simplex + 0x80).unwrap()));
+            let mut put4 = |at: u32, v: [f32; 4]| {
+                for (i, x) in v.into_iter().enumerate() {
+                    j.put(at + 4 * i as u32, x.to_bits()).unwrap();
+                }
+            };
+            for i in 0..3u32 {
+                put4(simplex + 16 * i, self.a[i as usize]);
+                put4(simplex + 0x40 + 16 * i, self.b[i as usize]);
+            }
+            put4(args[5], self.direction);
+            j.put(simplex + 0x80, self.count).unwrap();
+            Ok(0x55)
+        }
+    }
+
+    const TRI_ARGS: Args = Args { a: 0x2000, b: 0x2100, transform: 0x2200, cache: 0x2300, out: 0 };
+
+    /// The state for a triangle case: the sizes, the identity transform,
+    /// and the constants the duplicate tests read.
+    fn triangle_heap(na: u32, nb: u32) -> Heap {
+        let mut h = Heap::default();
+        constants(&mut h);
+        for i in 0..4 {
+            h.0.insert(ABS + 4 * i, 0x7fff_ffff);
+            h.0.insert(SAME + 4 * i, 1e-4f32.to_bits());
+        }
+        let t = TRI_ARGS.transform;
+        put4(&mut h, t, [1.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, t + 0x10, [0.0, 1.0, 0.0, 0.0]);
+        put4(&mut h, t + 0x20, [0.0, 0.0, 1.0, 0.0]);
+        put4(&mut h, t + 0x30, [0.0; 4]);
+        h.0.insert(0x1000 + state::COUNT_A, na);
+        h.0.insert(0x1000 + state::COUNT_B, nb);
+        h
+    }
+
+    #[test]
+    fn a_triangle_case_left_one_pair_faces_x() {
+        let h = triangle_heap(1, 1);
+        let (st, esp) = (0x1000, 0x8000);
+        let mut calls = Leaves { count: 1, a: [[2.0, 0.0, 0.0, 0.0]; 3], b: [[3.0, 0.0, 0.0, 0.0]; 3], direction: [0.0, 0.0, 1.0, 0.0], seen: None };
+        let mut j = Journal::new(&h);
+        assert_eq!(triangle_case(&mut j, st, esp, TRI_ARGS, FPU, &mut calls), Ok(0x55));
+        // `and esp,-16` from 0x7ffc, then 0x140 of frame.
+        let f = 0x7eb0;
+        let (args, call_esp, count) = calls.seen.unwrap();
+        assert_eq!(args, [0x2000, 0x2100, 0x2200, f + 0x20, f + 0xd0, f + 0x110]);
+        assert_eq!((call_esp, count), (f - 0x1c, 1));
+        assert_eq!(get4(&j, st + state::NORMAL), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!((j.get(st + state::COUNT_A), j.get(st + state::COUNT_B)), (Some(1), Some(1)));
+        assert_eq!(get4(&j, st + state::SUPPORT_A), [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(get4(&j, st + state::LOCAL_B), [3.0, 0.0, 0.0, 0.0]);
+        assert_eq!(triangle_case(&mut Journal::new(&h), st + 8, esp, TRI_ARGS, FPU, &mut calls), Err(Fallback::Memory));
+    }
+
+    #[test]
+    fn a_triangle_case_drops_repeated_vertices_and_turns_the_direction() {
+        // B's triangle at entry: three pairs.
+        let h = triangle_heap(1, 3);
+        let (st, esp) = (0x1000, 0x8000);
+        let tri = [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]];
+        let mut calls = Leaves { count: 3, a: [[0.25, 0.25, 1.0, 0.0]; 3], b: tri, direction: [0.0, 0.0, 1.0, 0.5], seen: None };
+        let mut j = Journal::new(&h);
+        assert_eq!(triangle_case(&mut j, st, esp, TRI_ARGS, FPU, &mut calls), Ok(0x55));
+        assert_eq!(calls.seen.unwrap().2, 3);
+        // A's three are one.
+        assert_eq!(j.get(st + state::COUNT_A), Some(1));
+        assert_eq!(get4(&j, st + state::NORMAL), [-0.0, -0.0, -1.0, -0.5]);
+        assert_eq!(j.get(st + state::FEATURE), Some(0));
+    }
+
+    #[test]
+    fn two_triangles_are_cut_to_four_vertices() {
+        let h = triangle_heap(3, 3);
+        let (st, esp) = (0x1000, 0x8000);
+        let a = [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]];
+        let b = [[5.0, 5.0, 1.0, 0.0], [6.0, 5.0, 2.0, 0.0], [5.0, 6.0, 3.0, 0.0]];
+        let mut calls = Leaves { count: 3, a, b, direction: [1.0, 0.0, 0.0, 0.0], seen: None };
+        let mut j = Journal::new(&h);
+        assert_eq!(triangle_case(&mut j, st, esp, TRI_ARGS, FPU, &mut calls), Ok(0x55));
+        let (na, nb) = (j.get(st + state::COUNT_A).unwrap(), j.get(st + state::COUNT_B).unwrap());
+        assert!(na + nb <= 4 && na >= 1 && nb >= 1, "({na}, {nb})");
+        assert_eq!(get4(&j, st + state::NORMAL), [-1.0, -0.0, -0.0, -0.0]);
     }
 
     #[test]
