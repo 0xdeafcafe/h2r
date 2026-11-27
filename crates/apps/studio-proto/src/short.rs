@@ -63,6 +63,10 @@ pub const FORMS: &[(&str, &str)] = &[
     ("hud [name]", "hud.read: a HUD's widgets and fields"),
     ("render-hud [out.png]", "hud.render"),
     ("workspace", "workspace.status: the tags tree, the plan and the sizes"),
+    (
+        "new-map <name> [multiplayer|campaign]",
+        "map.new: build a starter map and open it",
+    ),
 ];
 
 /// Splits a script line into words; a JSON value (`{…}` or `[…]`) is one
@@ -305,6 +309,14 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         ),
         "render-stats" => (m::VIEW_STATS, Value::Null),
         "workspace" => (m::WORKSPACE_STATUS, Value::Null),
+        "new-map" => {
+            let mut p = json!({ "name": a.ok_or("new-map needs a name")? });
+            if let Some(kind) = b {
+                p["kind"] = json!(kind);
+            }
+            max(3)?;
+            (m::MAP_NEW, p)
+        }
         "snapshot" => (
             m::VIEW_SNAPSHOT,
             match a {

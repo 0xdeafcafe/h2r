@@ -1,0 +1,38 @@
+[package]
+name = "starter-map"
+description = "File > New map: a playable starter map built from a template (content/new-map), block-out pieces and the content stage's fresh build"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["editor/editor.md"]
+status = "in progress"
+
+[dependencies]
+# The template (content/new-map/*.yaml).
+serde.workspace = true
+serde_yaml_ng.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The floor, its lightmap, the sky and the fresh build over a base.
+stage-kit = { path = "../stage-kit" }
+# The pieces: definitions, and their install as tags with crate rows.
+forge-shapes = { path = "../../formats/forge-shapes" }
+forge-build = { path = "../forge-build" }
+# The placements and the derived package.
+scenario-edit = { path = "../scenario-edit" }
+map.workspace = true
+tags.workspace = true
+content.workspace = true
+
+[dev-dependencies]
+# The pieces' collision compiled as the kit compiles it, and the invented
+# map the placement tests build on.
+blockout-kit = { path = "../blockout-kit", features = ["fixture"] }
+# The flag names the template uses are the built-in labels.
+forge-doc.workspace = true
+
+[lints]
+workspace = true

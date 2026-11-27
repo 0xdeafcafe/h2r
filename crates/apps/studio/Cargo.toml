@@ -33,6 +33,7 @@ content.workspace = true
 workspace = { path = "../../tools/workspace" }
 editor-core = { path = "../../tools/editor-core" }
 scenario-edit = { path = "../../tools/scenario-edit" }
+starter-map = { path = "../../tools/starter-map" }
 # The Modeling tool's targets, undo and in-place writes (docs/editor/modeling.md).
 geometry-edit = { path = "../../tools/geometry-edit" }
 # The Textures tool's canvas, brush, fill and PNG in and out (docs/editor/modeling.md).

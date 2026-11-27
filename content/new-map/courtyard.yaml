@@ -1,0 +1,140 @@
+# The starter map File > New map builds (docs/editor/editor.md, "New maps";
+# starter_map::template). Data only: sizes, places and tag paths. No byte of
+# a disc is here; the base's tags are read when the map is built.
+#
+# World units (1 = 3.048 m): +x forward, +y left, +z up; facings in degrees
+# counter-clockwise from +x. Piece sizes are block-out units, a hundredth of
+# a world unit (docs/game/forge-blockout.md, "Units and the grid").
+
+name: courtyard
+title: Courtyard
+description: A walled courtyard of block-out pieces on a lit floor, under the sky.
+
+# The floor, its light and the sky: a stage layout of one bay
+# (stage_kit::layout, docs/editor/content-stage.md). The floor is the
+# structure BSP: render mesh, lightmap and collision in one.
+ground:
+  floor: { size: 32, label_every: 4, texels: 1024 }
+  lights:
+    sun: { azimuth: 215, elevation: 50, color: [1.0, 0.95, 0.85], power: 1.0 }
+    fill: [0.26, 0.30, 0.38]
+    flat: 1.0
+    dark: 0.03
+  bays:
+    - { name: yard, origin: [0, 0, 0], light: day }
+  spawn: { at: [-8.5, 0], facing: 0 }
+  subject: { at: [0, 0], radius: 1 }
+  pads: { first: [0, 0], step: [1, 0], count: 0, radius: 0.5 }
+  references: []
+  cameras:
+    fov: 70
+    aim: 0.3
+    eyes: []
+    orbit: { count: 1, radius: 2, height: 0.6 }
+
+# Block-out pieces (forge_shapes::PieceDef, every face Dev), placed as crates
+# at `at`, their lowest corner. Each is installed by the block-out build
+# (forge_build::blockout::install): its bloc, render model, collision BSP
+# from the collision compiler and fixed physics body.
+pieces:
+  # The courtyard's walls: inside is x and y from -10 to 10.
+  - { name: wall-north, shape: wall, size: [2048, 64, 256], at: [-10.24, 10.0, 0] }
+  - { name: wall-south, shape: wall, size: [2048, 64, 256], at: [-10.24, -10.64, 0] }
+  - { name: wall-east, shape: wall, size: [64, 2000, 256], at: [10.0, -10.0, 0] }
+  - { name: wall-west, shape: wall, size: [64, 2000, 256], at: [-10.64, -10.0, 0] }
+  # A ramp rising along +x onto a platform.
+  - { name: ramp, shape: ramp, size: [512, 256, 128], at: [-2.56, 4.0, 0] }
+  - { name: platform, shape: block, size: [384, 256, 128], at: [2.56, 4.0, 0] }
+  # Cover: waist-high blocks and two pillars.
+  - { name: cover-west, shape: block, size: [192, 64, 64], at: [-6.0, -3.0, 0] }
+  - { name: cover-east, shape: block, size: [192, 64, 64], at: [4.08, -3.0, 0] }
+  - { name: cover-south, shape: block, size: [192, 64, 64], at: [-1.0, -6.5, 0] }
+  - { name: pillar-west, shape: block, size: [128, 128, 256], at: [-7.0, 6.0, 0] }
+  - { name: pillar-east, shape: block, size: [128, 128, 256], at: [6.0, -7.5, 0] }
+
+multiplayer:
+  # The disc map whose globals, shaders and objects the map is built over.
+  base: coagulation
+  biped: 'objects\characters\masterchief\masterchief_mp'
+  scenario: 'scenarios\multi\{name}\{name}'
+  modes: [slayer, ctf, assault, oddball, king, juggernaut, territories]
+  # 16 respawn points: red (team 0) at the west end, blue (team 1) at the east.
+  spawns:
+    - { at: [-8.5, -6, 0.05], facing: 0, team: 0 }
+    - { at: [-8.5, -2, 0.05], facing: 0, team: 0 }
+    - { at: [-8.5, 2, 0.05], facing: 0, team: 0 }
+    - { at: [-8.5, 6, 0.05], facing: 0, team: 0 }
+    - { at: [-7.0, -8, 0.05], facing: 0, team: 0 }
+    - { at: [-7.0, -4, 0.05], facing: 0, team: 0 }
+    - { at: [-7.0, 0, 0.05], facing: 0, team: 0 }
+    - { at: [-7.0, 4, 0.05], facing: 0, team: 0 }
+    - { at: [8.5, -6, 0.05], facing: 180, team: 1 }
+    - { at: [8.5, -2, 0.05], facing: 180, team: 1 }
+    - { at: [8.5, 2, 0.05], facing: 180, team: 1 }
+    - { at: [8.5, 6, 0.05], facing: 180, team: 1 }
+    - { at: [7.0, -4, 0.05], facing: 180, team: 1 }
+    - { at: [7.0, 0, 0.05], facing: 180, team: 1 }
+    - { at: [7.0, 2, 0.05], facing: 180, team: 1 }
+    - { at: [7.0, 8, 0.05], facing: 180, team: 1 }
+  # Netgame flags (forge_doc::labels::builtin_label's names).
+  flags:
+    - { kind: ctf_flag_spawn, at: [-9.0, 0, 0.05], team: 0 }
+    - { kind: ctf_flag_spawn, at: [9.0, 0, 0.05], team: 1 }
+    - { kind: ctf_flag_return, at: [-9.0, -1.5, 0.05], team: 0 }
+    - { kind: ctf_flag_return, at: [9.0, 1.5, 0.05], team: 1 }
+    - { kind: assault_bomb_spawn, at: [-9.0, 3, 0.05], team: 0 }
+    - { kind: assault_bomb_spawn, at: [9.0, -3, 0.05], team: 1 }
+    - { kind: assault_bomb_return, at: [-9.0, -3, 0.05], team: 0 }
+    - { kind: assault_bomb_return, at: [9.0, 3, 0.05], team: 1 }
+    - { kind: oddball_spawn, at: [0, 0, 0.05] }
+    - { kind: hill_corner, hill: 0, at: [-1.5, -2.5, 0.05] }
+    - { kind: hill_corner, hill: 0, at: [1.5, -2.5, 0.05] }
+    - { kind: hill_corner, hill: 0, at: [1.5, 0.5, 0.05] }
+    - { kind: hill_corner, hill: 0, at: [-1.5, 0.5, 0.05] }
+    - { kind: territory, at: [-5, -8, 0.05] }
+    - { kind: territory, at: [5, -8, 0.05] }
+    - { kind: territory, at: [-4, 8, 0.05] }
+    - { kind: territory, at: [4, 8, 0.05] }
+  # Netgame equipment: one weapon and one vehicle, by group and path.
+  items:
+    - { tag: 'weap:objects\weapons\rifle\battle_rifle\battle_rifle', at: [0, -8.5, 0.05], facing: 90 }
+    - { tag: 'vehi:objects\vehicles\warthog\warthog', at: [-4.0, 0, 0.05], facing: 90 }
+
+campaign:
+  base: 05a_deltaapproach
+  biped: 'objects\characters\masterchief\masterchief'
+  scenario: 'scenarios\solo\{name}\{name}'
+  # The base's root blocks that name its own AI, scripts, objects or level,
+  # emptied before the map's own are written (scnr offsets: h1campaign's
+  # ai::h2::layout and scenario.rs, hs::scenario).
+  clear:
+    - { at: '0x48', name: object_names }
+    - { at: '0x158', name: squad_groups }
+    - { at: '0x160', name: squads }
+    - { at: '0x168', name: zones }
+    - { at: '0x170', name: mission_scenes }
+    - { at: '0x178', name: character_palette }
+    - { at: '0x1a0', name: conversations }
+    - { at: '0x1b8', name: scripts }
+    - { at: '0x1c0', name: script_globals }
+    - { at: '0x1c8', name: script_references }
+    - { at: '0x1d8', name: scripting_data }
+    - { at: '0x230', name: kill_triggers }
+    - { at: '0x240', name: orders }
+    - { at: '0x248', name: ai_triggers }
+    - { at: '0x290', name: cluster_data }
+  start: { at: [-8.5, 0, 0.05], facing: 0 }
+  ai:
+    character: 'objects\characters\elite\ai\elite'
+    # Halo 2's AI team: 3 is the Covenant.
+    team: 3
+    squad: { name: courtyard_elites, count: 2, at: [7.5, 0, 0.05], facing: 180 }
+    zone:
+      name: courtyard
+      firing_positions:
+        - [6.5, -2.7, 0.05]
+        - [-3.5, -2.7, 0.05]
+        - [4.5, 5.3, 1.33]
+        - [7.5, -6.9, 0.05]
+        - [5.0, 0.0, 0.05]
+        - [8.0, 3.0, 0.05]

@@ -342,7 +342,8 @@ fn put(bytes: &mut [u8], at: usize, v: u32) {
     bytes[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-fn child(tree: &Tree, node: u32, offset: u32) -> Option<u32> {
+/// The child node of the block field at `offset` of `node`, if any.
+pub fn child(tree: &Tree, node: u32, offset: u32) -> Option<u32> {
     tree.nodes
         .get(node as usize)?
         .fields
@@ -354,7 +355,7 @@ fn child(tree: &Tree, node: u32, offset: u32) -> Option<u32> {
 }
 
 /// Empties the block field at `offset` of `node`; returns its old count.
-fn empty_block(tree: &mut Tree, node: u32, offset: u32) -> u32 {
+pub fn empty_block(tree: &mut Tree, node: u32, offset: u32) -> u32 {
     let n = &mut tree.nodes[node as usize];
     let at = offset as usize;
     let count = word(&n.bytes, at);
@@ -363,8 +364,9 @@ fn empty_block(tree: &mut Tree, node: u32, offset: u32) -> u32 {
     count
 }
 
-/// Points the block field at `offset` of `node` at a new child.
-fn set_block(tree: &mut Tree, node: u32, offset: u32, child: Node) {
+/// Points the block field at `offset` of `node` at a new child; returns
+/// the child's node.
+pub fn set_block(tree: &mut Tree, node: u32, offset: u32, child: Node) -> u32 {
     let id = tree.nodes.len() as u32;
     let count = child.count;
     tree.nodes.push(child);
@@ -375,6 +377,7 @@ fn set_block(tree: &mut Tree, node: u32, offset: u32, child: Node) {
     n.fields.retain(|(o, _)| *o != offset);
     n.fields.push((offset, Value::Block(id)));
     n.fields.sort_by_key(|(o, _)| *o);
+    id
 }
 
 /// The nodes reached from the root, each once.
@@ -407,7 +410,7 @@ fn span(v: &Value) -> u32 {
 }
 
 /// The offset a loss line names (`block +0x… (…) left empty: …`).
-fn lost_block(line: &str) -> Option<u32> {
+pub fn lost_block(line: &str) -> Option<u32> {
     let rest = line.strip_prefix("block +0x")?;
     let hex: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
     u32::from_str_radix(&hex, 16).ok()
@@ -790,17 +793,79 @@ pub fn build(src: &mut dyn TagSource, base: &Base, project: &Project) -> Result<
     let facts = Facts::read(src, &base.globals)?;
     let layout = Layout::builtin(facts.player)?;
     let keys = Keys::new(&project.scenario);
-    let held: HashSet<&TagKey> = base.keys.iter().collect();
-    if let Some(k) = keys.all().iter().find(|k| held.contains(k)) {
-        return Err(Error::Base(format!(
-            "{}: the base already holds {k}; give the stage another scenario path",
-            base.map
-        )));
-    }
+    keys_free(base, &keys)?;
     let scnr = src
         .read(&base.scenario)?
         .ok_or_else(|| Error::Base(format!("{}: no {}", base.map, base.scenario)))?;
     let (scnr, scenario_edit) = edit_scenario(scnr, base, &keys, &layout)?;
+    let key = build_key(base, project);
+    build_over(
+        src,
+        base,
+        project,
+        Over {
+            layout,
+            facts,
+            keys,
+            scenario: scnr,
+            scenario_edit,
+            roots: Vec::new(),
+            key,
+        },
+    )
+}
+
+/// Refuses a base that already holds one of the keys the build adds.
+pub fn keys_free(base: &Base, keys: &Keys) -> Result<()> {
+    let held: HashSet<&TagKey> = base.keys.iter().collect();
+    if let Some(k) = keys.all().iter().find(|k| held.contains(k)) {
+        return Err(Error::Base(format!(
+            "{}: the base already holds {k}; give the map another scenario path",
+            base.map
+        )));
+    }
+    Ok(())
+}
+
+/// What [`build_over`] lays out: the layout and the facts it was resolved
+/// with, the keys, the scenario already made the map's ([`edit_scenario`],
+/// and whatever a caller wrote into it after), more closure roots, and the
+/// build key the report carries. The stage's own [`build`] makes one; a new
+/// map (`starter-map`, docs/editor/editor.md, "New maps") makes another
+/// from its template.
+pub struct Over {
+    pub layout: Layout,
+    pub facts: Facts,
+    pub keys: Keys,
+    pub scenario: LooseTag,
+    pub scenario_edit: ScenarioEdit,
+    /// Tags the scenario names nowhere the closure walks (a weapon a later
+    /// placement edit names, an AI character), each kept with what it
+    /// reaches. A root the base does not hold is an error naming it.
+    pub roots: Vec<TagKey>,
+    pub key: String,
+}
+
+/// Steps 3 to 5 of the module docs over a prepared scenario ([`Over`]).
+pub fn build_over(
+    src: &mut dyn TagSource,
+    base: &Base,
+    project: &Project,
+    over: Over,
+) -> Result<Built> {
+    let Over {
+        layout,
+        facts,
+        keys,
+        scenario: scnr,
+        scenario_edit,
+        roots: extra_roots,
+        key,
+    } = over;
+    let held: HashSet<&TagKey> = base.keys.iter().collect();
+    if let Some(k) = extra_roots.iter().find(|k| !held.contains(k)) {
+        return Err(Error::Base(format!("{}: the base has no {k}", base.map)));
+    }
 
     let mut hidden: HashSet<TagKey> = HashSet::from([base.scenario.clone()]);
     for k in &base.keys {
@@ -839,6 +904,7 @@ pub fn build(src: &mut dyn TagSource, base: &Base, project: &Project) -> Result<
     }
     roots.push(facts.stem.clone());
     roots.extend(facts.fixed.iter().map(|(_, k, _)| k.clone()));
+    roots.extend(extra_roots);
     let mut seen = HashSet::new();
     roots.retain(|k| seen.insert(k.clone()));
 
@@ -926,7 +992,7 @@ pub fn build(src: &mut dyn TagSource, base: &Base, project: &Project) -> Result<
     let tags = set.slots.iter().filter(|s| s.tag.is_some()).count();
     let own = keys.all();
     let report = Report {
-        key: build_key(base, project),
+        key,
         version: crate::VERSION,
         name: project.name.clone(),
         base: base.map.clone(),

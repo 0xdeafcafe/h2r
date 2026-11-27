@@ -57,6 +57,7 @@ use layout::Keys;
 const UNSAVED: &str = "Unsaved changes###unsaved";
 const EDIT_TARGET: &str = "Edit target###edit-target";
 const OPEN_PACKAGE: &str = "Open package###open-package";
+const NEW_MAP: &str = "New map###new-map";
 
 /// A tab of the Map workspace's left dock node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +82,10 @@ pub struct Studio {
     fonts: Fonts,
     pub viewport: ViewportView,
     show_open_package: bool,
+    /// File > New map's dialog: the name typed and the kind picked.
+    new_map: Option<(String, starter_map::Kind)>,
+    /// Build was pressed in the dialog: it closes when that build is done.
+    new_map_built: bool,
     palette: palette::PaletteUi,
     reset_layout: bool,
     focus_game: bool,
@@ -136,6 +141,8 @@ impl Studio {
             fonts,
             viewport: ViewportView::new(),
             show_open_package: false,
+            new_map: None,
+            new_map_built: false,
             palette: Default::default(),
             reset_layout: false,
             focus_game: false,
@@ -170,6 +177,7 @@ impl Studio {
     /// Build one frame of UI and run the actions it produced.
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
         app.poll_convert();
+        app.poll_new_map();
         app.poll_cards();
         app.poll_voice_batch();
         app.poll_bot_nav();
@@ -432,6 +440,10 @@ impl Studio {
             return;
         };
         if let Some(_m) = ui.begin_menu("File") {
+            if ui.menu_item(format!("{} New map...", icon::PLUS)) {
+                self.new_map = Some((String::new(), starter_map::Kind::Multiplayer));
+                self.new_map_built = false;
+            }
             if ui.menu_item_with_shortcut(
                 format!("{} Open disc or map...", icon::FOLDER_OPEN),
                 "Cmd+O",
@@ -1335,6 +1347,8 @@ impl Studio {
             }
         }
 
+        self.new_map_modal(ui, app, actions);
+
         // Open package.
         if std::mem::take(&mut self.show_open_package) {
             ui.open_popup(OPEN_PACKAGE);
@@ -1366,6 +1380,78 @@ impl Studio {
             if ui.button("Close") || ui.is_key_pressed(Key::Escape) {
                 ui.close_current_popup();
             }
+        }
+    }
+    /// File > New map: a name, a kind, and Build. The build runs in the
+    /// background (`App::start_new_map`); the dialog shows its progress
+    /// and closes on the new map opening, or shows why it failed.
+    fn new_map_modal(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        use starter_map::Kind;
+        if self.new_map.is_some() && !ui.is_popup_open(NEW_MAP) {
+            ui.open_popup(NEW_MAP);
+        }
+        let Some(_m) = ui
+            .begin_modal_popup_config(NEW_MAP)
+            .flags(WindowFlags::ALWAYS_AUTO_RESIZE)
+            .begin()
+        else {
+            return;
+        };
+        let Some((mut title, mut kind)) = self.new_map.take() else {
+            ui.close_current_popup();
+            return;
+        };
+        let running = app.new_map_running().map(|r| r.started.elapsed().as_secs());
+        ui.text("A small lit courtyard of block-out pieces, ready to play.");
+        ui.spacing();
+        ui.set_next_item_width(240.0);
+        ui.input_text("##new-map-name", &mut title)
+            .hint("Map name")
+            .build();
+        for k in Kind::ALL {
+            let label = match k {
+                Kind::Multiplayer => "Multiplayer: 16 spawns, every mode, a weapon and a vehicle",
+                Kind::Campaign => "Campaign: a start, one squad and its firing positions",
+            };
+            if ui.radio_button_bool(label, kind == k) {
+                kind = k;
+            }
+        }
+        let name = starter_map::template::map_name(&title);
+        let refusal = app.new_map_refusal(kind);
+        ui.spacing();
+        match (&name, &refusal) {
+            (_, Some(why)) => ui.text_disabled(why),
+            (Err(e), None) if !title.trim().is_empty() => ui.text_disabled(e.to_string()),
+            (Ok(n), None) => ui.text_disabled(format!("maps/{n}/")),
+            _ => {}
+        }
+        if let Some(secs) = running {
+            ui.text(format!("Building... {secs} s"));
+        } else if let Some(e) = app.new_map_error() {
+            ui.text_colored(theme::ERROR, e);
+        }
+        ui.spacing();
+        let d = ui.begin_disabled_with_cond(running.is_some() || name.is_err() || refusal.is_some());
+        let build = ui.button(format!("{} Build", icon::PLUS));
+        d.end();
+        ui.same_line();
+        let cancel = running.is_none() && (ui.button("Cancel") || ui.is_key_pressed(Key::Escape));
+        if build {
+            actions.push(Action::NewMap {
+                title: title.clone(),
+                kind,
+            });
+        }
+        // Built: the build asked for has finished without an error (the
+        // new map is open behind the dialog).
+        let built = self.new_map_built && running.is_none() && app.new_map_error().is_none();
+        if cancel || built {
+            self.new_map_built = false;
+            ui.close_current_popup();
+        } else {
+            self.new_map_built |= build;
+            self.new_map = Some((title, kind));
         }
     }
 }

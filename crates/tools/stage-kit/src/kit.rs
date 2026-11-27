@@ -189,7 +189,14 @@ impl Facts {
     /// Reads the facts (module docs) from `src`, whose globals are
     /// `globals`. Anything missing is an error naming it.
     pub fn read(src: &mut dyn TagSource, globals: &TagKey) -> Result<Facts> {
-        let biped = TagKey::new(BIPD, BIPED);
+        Self::read_for(src, globals, BIPED)
+    }
+
+    /// [`Facts::read`] with the player's size taken from the biped at
+    /// `biped`: a campaign base has the campaign biped, not
+    /// [`BIPED`] (starter-map, docs/editor/editor.md, "New maps").
+    pub fn read_for(src: &mut dyn TagSource, globals: &TagKey, biped: &str) -> Result<Facts> {
+        let biped = TagKey::new(BIPD, biped);
         let tree = read_tree(src, &biped)?;
         let root = &tree.nodes[0].bytes;
         let (Some(height), Some(radius)) = (f32_at(root, HEIGHT_STANDING), f32_at(root, RADIUS))
