@@ -3,6 +3,7 @@
 //! Each callback sees its original frame, and can change the values the
 //! following segment gathers. The neutral path carries forward the unit's
 //! three distinct view directions.
+use super::leaf::{self, Leaf};
 use crate::points;
 use crate::sim_native::{Memory, plan::segment};
 use crate::sim_physics::{
@@ -24,7 +25,6 @@ pub const ACTION_SITES: &[u32] = &[0x150651, 0x15066a, 0x150673, 0x150760, 0x150
 pub const NEUTRAL_SITES: &[u32] = &[0x1507b4, 0x15080d];
 const PROJECT_VIEW: u32 = 0xcb810;
 const MOVEMENT_BASIS: u32 = 0x150400;
-const INIT_PACKET: u32 = 0xc6ef0;
 // Operand of the action's assignment of the control header. The build's
 // default comes from the mapped image, including when init was hooked.
 const ACTION_CONTROL_HEADER: u32 = 0x150720;
@@ -105,7 +105,8 @@ fn movement(c: &mut CpuAbi, m: &mut impl Memory) -> Result<TransferAbi> {
 }
 
 /// Transient packet fields supplied by the action and the movement helper.
-/// Remaining fields (including the fourth vector) belong to INIT_PACKET.
+/// Remaining fields (including the fourth vector) belong to `c6ef0`
+/// ([`Leaf::InitPacket`]).
 struct ActionControl {
     flags: u32,
     throttle: Vector,
@@ -194,98 +195,115 @@ pub fn action(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
     if c.eflags & DIRECTION_FLAG != 0 || c.x87.control & 0xc00 != 0 {
         return Ok(None);
     }
-    segment::<48, _>(
+    // An answered `c6ef0` lays its packet in the same segment as `submit`:
+    // 31 block pieces and about 30 stores.
+    segment::<64, _>(
         c,
         g,
         pc,
         points::PLAYER_ACTION_TO_UNIT_CONTROL.base..0x150783,
         ACTION_SITES,
-        |c, m, pc| match pc {
-            0x150651 => movement(c, m),
-            0x15066a => {
-                c.edx = at(c.esp, 0x34);
-                m.call(c, INIT_PACKET, ACTION_SITES[2])
-            }
-            0x150673 => submit(c, m),
-            0x150760 | 0x15077a => {
-                c.esp = arithmetic(c, c.esp, 0xa0, false);
-                m.ret(c, 8)
-            }
-            _ => {
-                c.esp = c.esp.wrapping_sub(0xa0);
-                push(c, m, c.ebx)?;
-                push(c, m, c.ebp)?;
-                c.ebp = m.u32(at(c.esp, 0xb0))?;
-                let saved = (c.esp.wrapping_sub(8), 8);
-                disjoint(m, (at(c.ebp, 8), 4), saved)?;
-                c.ecx = m.u32(points::PLAYERS.base)?;
-                c.edx = m.u32(at(c.ecx, 0x44))?;
-                push(c, m, c.esi)?;
-                c.esi = c.eax;
-                push(c, m, c.edi)?;
-                let player = at(c.edx, (c.eax & 0xffff) * Player::SIZE);
-                c.eax = m.u32(at(player, Player::UNIT.offset))?;
-                arithmetic(c, c.eax, u32::MAX, true);
-                direction(c, m)?;
-                if c.eax == u32::MAX {
-                    return movement(c, m);
-                }
-                c.edx = at(c.esp, 0x10);
-                push(c, m, c.edx)?;
-                m.call(c, PROJECT_VIEW, ACTION_SITES[0])
-            }
-        },
+        |c, m, pc| action_step(c, m, pc),
     )
 }
 
+fn action_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result<TransferAbi> {
+    leaf::at_site(c, m, pc);
+    match pc {
+        0x150651 => movement(c, m),
+        0x15066a => {
+            c.edx = at(c.esp, 0x34);
+            leaf::call(c, m, Leaf::InitPacket, ACTION_SITES[2], |c, m| {
+                action_step(c, m, ACTION_SITES[2])
+            })
+        }
+        0x150673 => submit(c, m),
+        0x150760 | 0x15077a => {
+            c.esp = arithmetic(c, c.esp, 0xa0, false);
+            m.ret(c, 8)
+        }
+        _ => {
+            c.esp = c.esp.wrapping_sub(0xa0);
+            push(c, m, c.ebx)?;
+            push(c, m, c.ebp)?;
+            c.ebp = m.u32(at(c.esp, 0xb0))?;
+            let saved = (c.esp.wrapping_sub(8), 8);
+            disjoint(m, (at(c.ebp, 8), 4), saved)?;
+            c.ecx = m.u32(points::PLAYERS.base)?;
+            c.edx = m.u32(at(c.ecx, 0x44))?;
+            push(c, m, c.esi)?;
+            c.esi = c.eax;
+            push(c, m, c.edi)?;
+            let player = at(c.edx, (c.eax & 0xffff) * Player::SIZE);
+            c.eax = m.u32(at(player, Player::UNIT.offset))?;
+            arithmetic(c, c.eax, u32::MAX, true);
+            direction(c, m)?;
+            if c.eax == u32::MAX {
+                return movement(c, m);
+            }
+            c.edx = at(c.esp, 0x10);
+            push(c, m, c.edx)?;
+            m.call(c, PROJECT_VIEW, ACTION_SITES[0])
+        }
+    }
+}
+
 pub fn neutral(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
-    segment::<16, _>(
+    // An answered `c6ef0` adds 31 block pieces to the entry's segment.
+    segment::<48, _>(
         c,
         g,
         pc,
         points::PLAYER_NEUTRAL_UNIT_CONTROL.base..0x150812,
         NEUTRAL_SITES,
-        |c, m, pc| match pc {
-            0x1507b4 => {
-                let packet = at(c.esp, 4);
-                let body = c.esi;
-                disjoint(
-                    m,
-                    (at(body, Unit::DESIRED_FACING.offset), 0x3c),
-                    (packet, 0x7c),
-                )?;
-                let facing = vector(m, at(body, Unit::DESIRED_FACING.offset))?;
-                let aim = vector(m, at(body, Unit::DESIRED_AIM.offset))?;
-                let look = vector(m, at(body, Unit::DESIRED_LOOK.offset))?;
-                store_vector(m, at(packet, 0x28), facing)?;
-                store_vector(m, at(packet, 0x34), aim)?;
-                store_vector(m, at(packet, 0x40), look)?;
-                c.esi = at(body, Unit::DESIRED_LOOK.offset);
-                arithmetic(c, body, Unit::DESIRED_LOOK.offset, false);
-                c.eax = c.edi;
-                c.ecx = packet;
-                c.edx = look[0];
-                m.call(c, points::UNIT_APPLY_CONTROL.base, NEUTRAL_SITES[1])
-            }
-            0x15080d => {
-                c.esi = pop(c, m)?;
-                c.esp = arithmetic(c, c.esp, 0x7c, false);
-                m.ret(c, 0)
-            }
-            _ => {
-                c.esp = c.esp.wrapping_sub(0x7c);
-                c.ecx = m.u32(points::OBJECTS.base)?;
-                let table = m.u32(at(c.ecx, 0x44))?;
-                let index = c.edi & 0xffff;
-                logic(c, index, 1 << 31);
-                c.eax = index * 3;
-                push(c, m, c.esi)?;
-                c.esi = object(m, table, c.edi)?;
-                c.edx = at(c.esp, 4);
-                m.call(c, INIT_PACKET, NEUTRAL_SITES[0])
-            }
-        },
+        |c, m, pc| neutral_step(c, m, pc),
     )
+}
+
+fn neutral_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result<TransferAbi> {
+    leaf::at_site(c, m, pc);
+    match pc {
+        0x1507b4 => {
+            let packet = at(c.esp, 4);
+            let body = c.esi;
+            disjoint(
+                m,
+                (at(body, Unit::DESIRED_FACING.offset), 0x3c),
+                (packet, 0x7c),
+            )?;
+            let facing = vector(m, at(body, Unit::DESIRED_FACING.offset))?;
+            let aim = vector(m, at(body, Unit::DESIRED_AIM.offset))?;
+            let look = vector(m, at(body, Unit::DESIRED_LOOK.offset))?;
+            store_vector(m, at(packet, 0x28), facing)?;
+            store_vector(m, at(packet, 0x34), aim)?;
+            store_vector(m, at(packet, 0x40), look)?;
+            c.esi = at(body, Unit::DESIRED_LOOK.offset);
+            arithmetic(c, body, Unit::DESIRED_LOOK.offset, false);
+            c.eax = c.edi;
+            c.ecx = packet;
+            c.edx = look[0];
+            m.call(c, points::UNIT_APPLY_CONTROL.base, NEUTRAL_SITES[1])
+        }
+        0x15080d => {
+            c.esi = pop(c, m)?;
+            c.esp = arithmetic(c, c.esp, 0x7c, false);
+            m.ret(c, 0)
+        }
+        _ => {
+            c.esp = c.esp.wrapping_sub(0x7c);
+            c.ecx = m.u32(points::OBJECTS.base)?;
+            let table = m.u32(at(c.ecx, 0x44))?;
+            let index = c.edi & 0xffff;
+            logic(c, index, 1 << 31);
+            c.eax = index * 3;
+            push(c, m, c.esi)?;
+            c.esi = object(m, table, c.edi)?;
+            c.edx = at(c.esp, 4);
+            leaf::call(c, m, Leaf::InitPacket, NEUTRAL_SITES[0], |c, m| {
+                neutral_step(c, m, NEUTRAL_SITES[0])
+            })
+        }
+    }
 }
 
 mod unit;

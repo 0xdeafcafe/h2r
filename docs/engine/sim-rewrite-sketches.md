@@ -292,7 +292,7 @@ like the rest. `sim.arms` reports it as `seats.device`.
 puts the applied answer against the lifted original with its real `24590`
 and `pow`; `bound_control_audits_through_the_guest` runs the audit path.
 
-*The leaf callees.* Seven guest functions the seat bodies call, which read
+*The leaf callees.* Eight guest functions the seat bodies call, which read
 only what their registers name, are kernels in
 `engine/src/sim_seats/leaf.rs`, each behind its own arm:
 
@@ -305,23 +305,34 @@ only what their registers name, are kernels in
 | `user_player` | `14de70` | the HUD update's `PLAYER_FOUND` | the user slot's player |
 | `submit` | `187b30` | `0x186a94` | the input record's flags into the control globals' held word, the latches and the record's latch bits, the yaw's sign (x87) and the axis clamps |
 | `weapon_ready` | `100f70` | `0x1866b3` | the weapon can be readied: no magazine holds 1 to 6 rounds (its callee `100880`, in the same kernel) and the definition has a zoom level |
+| `init_packet` | `c6ef0` | the action's `0x150673`, the neutral's `0x1507b4` (`sim_seats/control.rs`) | the whole `0x7c`-byte unit-control packet as a block: zeroed, the header word, the `-1` selections and words, the vector at `[4687a8]` in all three directions |
 
-At the call the kernel predicts `eax`, `ecx`, `edx`, `xmm0`, the x87 stack
-and the leaf's stores. Unproven, the guest's leaf runs and the body compares
-at the return site; after 4096 matches the kernel answers in place and the
-body goes on at the site in the same segment, one call in 64 still the
-guest's. A mismatch returns that leaf to the guest until the next map.
-Declines are counted by name: `float` (the float environment or an
-operand) and `fault` (a read that faults, a store that would, or a
-`weapon_ready` magazine count over `0x7fff`, which `100880`'s 16-bit index
-would wrap). An answer leaves what retail leaves except the arithmetic
+An effect carries up to six word stores and one block, a run of `0x7c`
+bytes at an address, held inline (`Effect::block`, no allocation). With no
+block the six-store path pays one tag test in `apply` and `at_site`. The
+block is laid down first, in four-byte pieces, since a segment's store log
+holds four bytes a store; the action segment's log is 64 entries and the
+neutral's 48, room for the block and the body's own stores.
+
+At the call the kernel predicts `eax`, `ecx`, `edx`, `xmm0`, the x87
+stack, and the leaf's stores and block. Unproven, the guest's leaf runs
+and the body compares at the return site; after 4096 matches the kernel
+answers in place and the body goes on at the site in the same segment, one
+call in 64 still the guest's. A mismatch returns that leaf to the guest
+until the next map.
+
+Declines are counted by name: `float` (the float environment, an
+operand, or the direction flag set under `init_packet`'s `rep stosd`) and
+`fault` (a read that faults, a store that would, a `weapon_ready` magazine
+count over `0x7fff`, which `100880`'s 16-bit index would wrap, or an
+`init_packet` packet over the vector or its pointer, which the guest reads
+after its first stores). An answer leaves what retail leaves except the arithmetic
 flags and the dead frame below the return. `sim.arms` reports
 `seats.leaf.<name>`; `seat_leaves_match_lifted` and
 `weapon_ready_matches_lifted` (magazine counts, rounds on both sides of 1
 to 6, zoom levels) put each applied answer against the lifted function,
-and `weapon_ready_declines_a_wrapping_count` the decline.
+and `weapon_ready_declines_a_wrapping_count` and
+`init_packet_declines_an_overlap` the declines.
 
-The packet builders' `c6ef0` calls nothing, but lays down a whole 0x7c-byte
-packet, more stores than a leaf effect carries. The bodies' other callees
-(the look curve and the bodies that are seats themselves aside) call
-further guest code. Both stay guest calls.
+The bodies' other callees (the look curve and the bodies that are seats
+themselves aside) call further guest code and stay guest calls.
