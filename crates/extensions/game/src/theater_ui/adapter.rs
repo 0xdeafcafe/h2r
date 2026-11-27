@@ -218,7 +218,7 @@ impl FilmMeta {
         let n = self.monitor_looks.len();
         (n > 0).then(|| {
             format!(
-                "{n} monitor look{} drawn as marker{}",
+                "{n} monitor look{} as marker{}",
                 if n == 1 { "" } else { "s" },
                 if n == 1 { "" } else { "s" },
             )

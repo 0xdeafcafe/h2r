@@ -1053,6 +1053,12 @@ impl Theater {
         self.session().view()
     }
 
+    /// The viewer last drove the film from the keyboard: the playback
+    /// page's legend shows [`playback_icons`]' keys, else the pad's buttons.
+    pub fn keyboard_in_use(&self) -> bool {
+        self.session().last_device == overlay::Device::Keyboard
+    }
+
     pub fn playback_timeline(&self) -> Option<[u32; 4]> {
         self.session().timeline()
     }
@@ -1223,4 +1229,32 @@ impl Theater {
             }
         }
     }
+}
+
+/// The keys the playback page's legend shows when the keyboard drives the
+/// film: each pad button's glyph drawn as the key the Theater reads for
+/// the same action (`theater_overlay::desktop::key`).
+pub fn playback_icons() -> crate::icons::Icons {
+    use font::icons::{Button, KeyIcon, KeyLabels, key_label};
+    let keys: KeyLabels = [
+        (Button::A, "space"),
+        (Button::B, "escape"),
+        (Button::X, "x"),
+        (Button::Y, "c"),
+        (Button::White, "arrowup"),
+        (Button::Black, "arrowdown"),
+        (Button::LeftTrigger, "bracketleft"),
+        (Button::RightTrigger, "bracketright"),
+        (Button::DpadUp, "f12"),
+        (Button::DpadDown, "period"),
+        (Button::DpadLeft, "arrowleft"),
+        (Button::DpadRight, "arrowright"),
+        (Button::Start, "escape"),
+        (Button::Back, "h"),
+        (Button::LeftStick, "wasd"),
+    ]
+    .into_iter()
+    .map(|(button, key)| (button, KeyIcon::Key(key_label(key))))
+    .collect();
+    crate::icons::Icons::keyboard(keys)
 }

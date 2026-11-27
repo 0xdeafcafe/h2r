@@ -268,14 +268,24 @@ the same library for the controller that selects it. Left and Right switch betwe
 the **Recent**, **Saved** and **Clips** tabs from any row. The active tab
 and its film count sit above the list and the details pane.
 
-**Sort**, **Map** and **Game type** show their current values at the top of
-the list. Press A to open a picker over the library. A on an entry applies
-the choice and returns to the option. B closes the picker and keeps the
-current value. Choose **All** in a filter to clear it.
+**Sort**, **Map** and **Game type** are the first rows of the list, each
+with its current value. A opens a picker dialog over the library; Left and
+Right never change a value. A on an entry applies the choice and returns
+to the option. B closes the picker and keeps the current value. Choose
+**All** in a filter to clear it.
 
-Film rows show the map and game type or the clip's title. Highlight a row
-to see its map picture, recording date, running time and match information
-in the details pane on the right. Empty libraries use that pane to explain
+The list is 13 rows tall. Up and Down move through every row, the window
+following the focus, and stop at Sort and at the last film: neither end
+wraps. The library opens before its films are read, so the list grows in
+place; `list_class::bind_rows` gives the rows it gains to the item widgets
+that had none, and `Rows::wraps` clears the list's wrap flag (`+0x7c`).
+
+Film rows show the level's name as the game shows it ("Regret" for
+`05b_deltatowers`, "Ivory Tower" for `cyclotron`) and the game type, or
+the clip's title. Highlight a row to see its map picture, recording date,
+running time and match information in the details pane on the right. The
+details start at the picture's left edge, and a mode and variant with the
+same name show once. Empty libraries use that pane to explain
 how to record a film, save one or mark a clip. An empty filtered list keeps
 its options in reach. The browser geometry lives in
 `crates/extensions/game/src/theater_ui/pages.rs`. Its preview includes an
@@ -331,26 +341,33 @@ cycle round the available players. The **Default** camera restores the
 full local frame or selects the first available player in a version 3 host film.
 The camera, its field of view and HUD visibility carry across a seek.
 
-| Action | Controller | Keyboard and mouse |
+Every pad drives the film, including the desktop's player one: the first
+physical pad merged with the keyboard, which reports its face buttons and
+bumpers as pressures (`theater_ui::overlay::Gate`). The layout is Halo 3's
+Theater. The guest sees neutral pads while a film plays.
+
+| Pad button | Action | Keyboard and mouse |
 |---|---|---|
-| Play or pause | A | Space |
-| Advance one tick while paused | D-pad Down | `.` |
-| Speed (0.25×, 0.5×, 1×, 2×, 4×) | LT / RT | `[` / `]` |
-| Seek backwards or forwards | D-pad Left / Right. Tap for 5 s, hold for 30 s | Left / Right, with the same timing, or click the timeline |
-| Cycle camera | Y | C |
-| Cycle player | LB / RB | Up / Down |
-| Fly horizontally | Left stick | W / A / S / D |
-| Fly down / up | L3 / R3 | Q / E |
-| Look in Fly or Orbit | Right stick | Hold right mouse button and drag |
-| Change orbit radius | Left stick forward / back | Mouse wheel |
-| Mark clip in, then out | X | X |
-| Toggle transport and scoreboard | Back | H |
-| Toggle game HUD | L3 + R3 | J |
-| Save a screenshot | D-pad Up | F12 |
-| Step one tick while paused | D-pad Down | `.` |
-| Open the pause menu | Start | Escape |
-| Cancel an active jump | B | Escape |
-| Choose a pause menu item | D-pad Up/Down, A | Up/Down, Enter |
+| A | Play or pause | Space |
+| B | Cancel an active jump | Escape |
+| X | Mark clip in, then out | X |
+| Y | Cycle camera | C |
+| LB / RB | Previous / next player | Up / Down |
+| LT / RT | Slower / faster (0.25×, 0.5×, 1×, 2×, 4×) | `[` / `]` |
+| D-pad Left / Right | Seek back / forward: tap 5 s, hold 30 s | Left / Right, or click the timeline |
+| D-pad Down | Step one tick while paused | `.` |
+| D-pad Up | Save a screenshot | F12 |
+| Back | Toggle transport and scoreboard | H |
+| Start | Open the pause menu | Escape |
+| Left stick | Fly; forward / back changes orbit radius | W / A / S / D, mouse wheel |
+| Right stick | Look in Fly or Orbit | Hold right mouse button and drag |
+| L3 / R3 | Fly down / up | Q / E |
+| L3 + R3 | Toggle game HUD | J |
+| D-pad Up / Down, A, B | Pause menu: move, choose, back | Up / Down, Enter, Escape |
+
+The bar's legend follows the last device used: a key press shows the
+keys above as keycaps (`theater_ui::playback_icons`), a pad press the pad's
+buttons.
 
 The playback bar shows the current and total time, requested and achieved
 speed, camera and subject. Its timeline uses the adjacent stats file for

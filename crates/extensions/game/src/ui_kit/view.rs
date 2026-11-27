@@ -286,6 +286,21 @@ pub struct View {
     pub list: Option<ListAt>,
 }
 
+impl View {
+    /// Every text widget's text through `f`, the underlay's too (a page
+    /// whose button glyphs are swapped for another device's after layout).
+    pub fn map_text(&mut self, f: impl Fn(&str) -> String + Copy) {
+        for w in &mut self.widgets {
+            if let Kind::Text { text, .. } = &mut w.kind {
+                *text = f(text);
+            }
+        }
+        if let Some(under) = &mut self.underlay {
+            under.map_text(f);
+        }
+    }
+}
+
 /// Where a list is and which skin draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct ListAt {
