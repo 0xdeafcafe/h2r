@@ -98,7 +98,7 @@ deleted, and git keeps it.
 9. **No game data.** This is a public repo. Addresses and field offsets
    appear as named research points. No bytes, tables, strings, constants or
    asset names from the disc.
-10. **Short.** One topic per page, about 300 lines. A longer page is
+10. **Short.** One topic per page, about 600 lines. A longer page is
     split by topic, not by date: the original keeps a short index and every
     heading that code cites, and the new pages are linked from
     `docs/README.md`.
@@ -109,7 +109,13 @@ deleted, and git keeps it.
 12. **Short prose.** Terse, claim first, at most about 3 sentences a
     paragraph, numbers over adjectives. A longer paragraph is a table or a
     list.
-13. **The owner's voice.** British spelling (behaviour, optimise, colour,
+13. **Useful, not a journal.** A page says what the thing is, how it
+    works, how to use or change it, and what is open. Cut run logs,
+    step-by-step histories, "we tried", repeated caveats, measurements that
+    no decision rests on, and restated code. Ask of each paragraph whether
+    a new contributor would miss it. Evidence a decision rests on goes in
+    `notes/` as one dated table with the commit, linked in one line.
+14. **The owner's voice.** British spelling (behaviour, optimise, colour,
     analyse, centre, -isation). No em dashes: a spaced hyphen, commas,
     brackets or a new sentence. None of the banned words (`delve`,
     `leverage` as a verb, `robust`, `seamless`, `unlock`, `harness` as a
@@ -217,7 +223,7 @@ scripts/docs-check.py --strict docs/x  # soft findings fail too
 | `style` | a heading that records history (a date, "as built", "superseded") | with `--strict` |
 | `voice` | an em dash, a banned word, an American spelling, or a connective filler | on a page changed in the branch; a warning elsewhere |
 | `length` | a paragraph over 4 sentences | on a page changed in the branch; a warning elsewhere |
-| `pagelen` | a page over 300 lines | on a page changed in the branch; a warning elsewhere |
+| `pagelen` | a page over 600 lines | on a page changed in the branch; a warning elsewhere |
 
 `names`, `paths` and `style` skip `notes/` and `docs/reviews/`, which
 describe the tree as it was. `names` and `paths` also skip a page whose

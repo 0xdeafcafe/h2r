@@ -456,7 +456,7 @@ def check_length(files):
     return bad
 
 
-MAX_LINES = 300
+MAX_LINES = 600
 
 
 def check_pagelen(files):
