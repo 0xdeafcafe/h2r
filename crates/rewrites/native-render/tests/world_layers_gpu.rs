@@ -814,6 +814,50 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
     }
 }
 
+/// A sky strip draws with its own cull mode, and each strip the stage
+/// refuses names its cause (`scene_kept_sky_<cause>`). No GPU: admission
+/// reads the resolved draw only.
+#[test]
+fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
+    use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
+    use native_render::program::MODEL_ROWS;
+    use scene_extract::layout::sky::SkyItem;
+
+    let cache = Arc::new(Cache::default());
+    let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
+    draw.primitive = PrimitiveType::TriangleStrip;
+    draw.state.render.stencil = structure_stencil(STENCIL_MARK_REFERENCE);
+    let rows = vec![[0.5; 4]; 3];
+    Arc::make_mut(&mut draw.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
+    let item = SkyItem { model: 3, section: 1, part: 0, shader: 5, pass: 0, rows, decompression: [[0.0; 4]; 3] };
+    let admit = |draw: &ResolvedDraw| IndexedPass::for_sky(draw, cache.clone(), 1, 9, item.clone()).err();
+    assert_eq!(admit(&draw), None, "an unculled strip");
+    for (cull, name) in [(CullMode::Cw, "cw"), (CullMode::Ccw, "ccw")] {
+        let mut culled = draw.clone();
+        culled.state.render.cull_mode = cull;
+        assert_eq!(admit(&culled), None, "{name}: the pipeline takes the draw's cull");
+    }
+    let mut cases: Vec<(&str, ResolvedDraw)> = Vec::new();
+    cases.push(("topology", { let mut d = draw.clone(); d.primitive = PrimitiveType::TriangleList; d }));
+    cases.push(("index_range", { let mut d = draw.clone(); d.indices = Some(vec![0, 1, 3].into()); d }));
+    cases.push(("stencil", { let mut d = draw.clone(); d.state.render.stencil.enable = false; d }));
+    cases.push(("stencil_target", { let mut d = draw.clone(); d.target.depth_format = None; d }));
+    cases.push(("program", { let mut d = draw.clone(); d.shader.vertex = VertexProcessing::FixedFunction { fvf: 0x002 }; d }));
+    cases.push(("transform", {
+        let mut d = draw.clone();
+        Arc::make_mut(&mut d.shader.constants)[MODEL_ROWS] = [9.0; 4];
+        d
+    }));
+    cases.push(("decompression", {
+        let mut d = draw.clone();
+        Arc::make_mut(&mut d.shader.constants)[native_render::program::POSITION_DECOMPRESSION] = [9.0; 4];
+        d
+    }));
+    for (cause, d) in cases {
+        assert_eq!(admit(&d), Some(cause), "{cause}");
+    }
+}
+
 /// A pool the native pass can draw: the lens (a frame sample) at stage 0,
 /// the target's size, the depth tested without a write.
 fn pool_triangle() -> ResolvedDraw {
