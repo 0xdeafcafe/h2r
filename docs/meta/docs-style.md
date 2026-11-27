@@ -98,8 +98,10 @@ deleted, and git keeps it.
 9. **No game data.** This is a public repo. Addresses and field offsets
    appear as named research points. No bytes, tables, strings, constants or
    asset names from the disc.
-10. **Short.** A design page over about 600 lines is two pages. Split by
-    topic, not by date.
+10. **Short.** One topic per page, about 300 lines. A longer page is
+    split by topic, not by date: the original keeps a short index and every
+    heading that code cites, and the new pages are linked from
+    `docs/README.md`.
 11. **Lead with a picture.** Each page, and each section that explains a
     flow or a set of states, opens with a table, an ASCII diagram, or a
     mermaid flowchart or sequence diagram, before any prose. States, slices
@@ -215,6 +217,7 @@ scripts/docs-check.py --strict docs/x  # soft findings fail too
 | `style` | a heading that records history (a date, "as built", "superseded") | with `--strict` |
 | `voice` | an em dash, a banned word, an American spelling, or a connective filler | on a page changed in the branch; a warning elsewhere |
 | `length` | a paragraph over 4 sentences | on a page changed in the branch; a warning elsewhere |
+| `pagelen` | a page over 300 lines | on a page changed in the branch; a warning elsewhere |
 
 `names`, `paths` and `style` skip `notes/` and `docs/reviews/`, which
 describe the tree as it was. `names` and `paths` also skip a page whose

@@ -456,6 +456,21 @@ def check_length(files):
     return bad
 
 
+MAX_LINES = 300
+
+
+def check_pagelen(files):
+    bad = []
+    for path in files:
+        if not path.startswith("docs/") or path.startswith("docs/meta/"):
+            continue
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            count = sum(1 for _ in f)
+        if count > MAX_LINES:
+            bad.append(f"{path}:1: page of {count} lines (over {MAX_LINES}: split by topic)")
+    return bad
+
+
 def changed_pages():
     """Pages changed in this branch against origin/master, or uncommitted."""
     base = git_lines("merge-base", "HEAD", "origin/master")
@@ -495,7 +510,7 @@ def main(argv):
         ("style", check_style(files), False),
     ]
     touched = changed_pages()
-    soft = [("voice", check_voice(files)), ("length", check_length(files))]
+    soft = [("voice", check_voice(files)), ("length", check_length(files)), ("pagelen", check_pagelen(files))]
     failed = False
     for name, found, hard in checks:
         for line in found:
