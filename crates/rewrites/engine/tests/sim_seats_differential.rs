@@ -72,6 +72,8 @@ fn answer(target: u32, boundary: u32, case: u32) -> Answer {
         eax: match target {
             // The user test answers a user, or none.
             0x0014_ddc0 => u32::from(case % 2 == 0) * (value & 0xffff),
+            // The user's player: index 2 in the fixture's players array.
+            0x0014_de70 => 2,
             _ => value,
         },
         zoom: (target == 0x0010_1090).then(|| match case {
@@ -403,15 +405,17 @@ fn hud_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
     word(m, STACK + 4, 1);
     word(m, points::OBJECTS.base, HEADER);
     word(m, HEADER + 0x44, DATA);
+    // The players array: player 2's unit handle, object index 3.
     word(m, points::PLAYERS.base, RECORDS + 0x900);
-    word(m, RECORDS + 0x900 + 0x44, DATA);
+    word(m, RECORDS + 0x900 + 0x44, RECORDS + 0x1000);
+    word(m, RECORDS + 0x1000 + 2 * 0x21c + 0x2c, 0x8200_0003);
     word(m, points::GAME_TIME.base, RECORDS + 0xa00);
     word(m, RECORDS + 0xa00 + 4, 0.5f32.to_bits());
     word(m, RECORDS + 0xa00 + 8, 100);
-    word(m, DATA + 2 * 12 + 8, RECORDS + 0xc00);
-    float(m, RECORDS + 0xc00 + 0xf0, 0.75);
-    word(m, DATA + 2 * 12 + 8, RECORDS + 0xd00);
-    word(m, RECORDS + 0xd00 + 0x2c, 0x8200_0003);
+    // The unit: object table entry 3 (12 bytes each, the record at +8),
+    // its shield falling, rising or level against the displayed 0.9.
+    word(m, DATA + 3 * 12 + 8, RECORDS + 0xc00);
+    float(m, RECORDS + 0xc00 + 0xf0, [0.75, 0.95, 0.9][case as usize % 3]);
     // The frame the entry builds: the widget state the stubs leave and
     // the weapon views. The frame base sits 0x274 below the saved base
     // pointer, which itself is one word below the entry stack.
