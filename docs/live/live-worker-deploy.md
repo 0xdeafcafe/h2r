@@ -237,29 +237,6 @@ The copy, resume, back-out and hold behaviour above was rehearsed on a
 read-only copy of the real log; the steps and timings are in
 [the Worker rehearsal note](notes/2026-11-18-worker-rehearsal.md).
 
-### Staging rehearsal (the user's step)
-
-Staging has its own id, so the copied accounts can't sign in there; their
-author ids name live.forbes.red. The copy, the checks and the reads are
-what this rehearses. `deploy.sh staging` keeps staging's key as
-`~/.config/h2-live-worker/staging/server.key`, for `--operator`.
-
-```
-crates/live/live-worker/deploy.sh staging
-~/.cargo/bin/h2 live store copy --from postgres://localhost/h2live \
-  --to https://h2-live-staging.<subdomain>.workers.dev \
-  --operator ~/.config/h2-live-worker/staging --release
-curl -s https://h2-live-staging.<subdomain>.workers.dev/healthz
-```
-
-`--operator ~/.config/h2-live-worker/staging` is refused with "is server
-\"live-staging.forbes.red\"…" if staging's key was made before deploy.sh
-kept it. Fix that with `bunx wrangler@4 secret delete H2_LIVE_SERVER_KEY
---env staging`, then `deploy.sh staging` again.
-
-To start staging over, delete it with `bunx wrangler@4 delete --env staging`,
-which removes its Durable Objects and so its log, and deploy again.
-
 ## Cutover runbook
 
 Run these in order on the Mac, from the main checkout on master. `<sub>`

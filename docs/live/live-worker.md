@@ -370,7 +370,6 @@ polls. Once the 60-second boot deadline has passed, check the host log for
 `HostEnded` with reason `boot_timeout` and confirm the container stopped.
 
 The event timestamp should precede the first verification request.
-[Coordinator integration pass](dedicated-host-build.md#coordinators-integration-pass)
 
 ## Cost of the relay
 
