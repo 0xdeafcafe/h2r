@@ -435,3 +435,66 @@ fn a_text_widget_is_placed_at_its_anchor_plus_its_offset() {
     put_u32(&mut w, 0x28, 0);
     assert_eq!(text_widget(&w, &[0.0; 4], &FULL, None, &no_effects), Ok(None));
 }
+
+#[test]
+fn a_number_is_held_and_padded_to_its_digits() {
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_TWO_DIGITS, 7), "07");
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_TWO_DIGITS, 123), "99");
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_TWO_DIGITS, -4), "00");
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_THREE_DIGITS, 7), "007");
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_THREE_DIGITS, 42), "042");
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_THREE_DIGITS, 4200), "999");
+    assert_eq!(number_text(TEXT_NUMBER, -12), "-12");
+    // Two digits win over three.
+    assert_eq!(number_text(TEXT_NUMBER | TEXT_TWO_DIGITS | TEXT_THREE_DIGITS, 5), "05");
+}
+
+#[test]
+fn the_measure_is_the_glyphs_bounds_one_past_their_far_edges() {
+    assert_eq!(text_bounds(&[]), None);
+    let glyphs = [[2.0, 5.0, 9.0, 14.0], [11.0, 3.0, 18.0, 14.0]];
+    assert_eq!(text_bounds(&glyphs), Some([3, 2, 15, 19]));
+}
+
+#[test]
+fn the_strings_rectangle_starts_centres_or_ends_at_the_origin() {
+    let window = [10, 20, 490, 660];
+    let bounds = [3, 2, 15, 19];
+    // 17 wide and 12 high, at 100, 200 of the window.
+    let origin = [120.5, 210.75];
+    assert_eq!(text_rect(0, origin, &window, &bounds), [200, 100, 212, 117]);
+    assert_eq!(text_rect(1, origin, &window, &bounds), [200, 92, 212, 109]);
+    assert_eq!(text_rect(2, origin, &window, &bounds), [200, 83, 212, 100]);
+    assert_eq!(text_rect(3, origin, &window, &bounds), [0, 0, 1000, 1000]);
+}
+
+#[test]
+fn the_shadow_takes_the_lesser_alpha_and_is_left_out_at_none() {
+    let main = [0.5, 1.0, 0.25, 0.0];
+    assert_eq!(text_colours(&main, None), Some((0x7fff_3f00, None)));
+    assert_eq!(text_colours(&main, Some(&[1.0, 0.0, 0.0, 0.0])), Some((0x7fff_3f00, Some(0x7f00_0000))));
+    assert_eq!(text_colours(&main, Some(&[0.0, 1.0, 1.0, 1.0])), Some((0x7fff_3f00, None)));
+    // A component outside 0..1 is not a colour the draw takes.
+    assert_eq!(text_colours(&[1.5, 0.0, 0.0, 0.0], None), None);
+    assert_eq!(text_colours(&[f32::NAN, 0.0, 0.0, 0.0], None), None);
+}
+
+#[test]
+fn each_glyphs_shadow_is_drawn_before_it_one_pixel_right_and_down() {
+    let glyphs = [(7, [10.0, 20.0, 15.0, 30.0]), (9, [16.0, 22.0, 20.0, 30.0])];
+    let quads = text_quads(&glyphs, 0xffff_ffff, Some(0x8000_0000));
+    assert_eq!(quads.len(), 4);
+    assert_eq!(quads[0], GlyphQuad { index: 7, rect: [11.0, 21.0, 16.0, 31.0], colour: 0x8000_0000 });
+    assert_eq!(quads[1], GlyphQuad { index: 7, rect: [10.0, 20.0, 15.0, 30.0], colour: 0xffff_ffff });
+    assert_eq!(quads[3].index, 9);
+    assert_eq!(text_quads(&glyphs, 0xffff_ffff, None).len(), 2);
+}
+
+#[test]
+fn a_text_widget_leaves_its_inputs_and_the_huds_colour() {
+    let writes = text_globals(&[1.0, 0.5, 0.0, 0.25], 0x00ff_0080);
+    assert_eq!(writes.len(), 7);
+    assert_eq!(writes[1], (global::INPUTS + 4, 0.5f32.to_bits()));
+    assert_eq!(writes[4], (TEXT_COLOUR, 1.0f32.to_bits()));
+    assert_eq!(writes[5], (TEXT_COLOUR + 4, 0.0f32.to_bits()));
+}

@@ -70,9 +70,17 @@ pub fn draw_text_quad<B: d3d::Backend + Send + 'static>(
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    capture(device, mem, Source::Glyph(at), |d, m, a| {
+    // With the Rust HUD on, the text shader's Rust material is checked
+    // against what the capture took (`hud_native::check_text`).
+    let check = render_bridge::native_hud::rust_hud() && crate::hud_native::wants_check(at.shader);
+    let predicted = check.then(|| crate::hud_native::predict_text(&*mem, at.shader));
+    let (taken, item) = capture_item(device, mem, Source::Glyph(at), |d, m, a| {
         d.try_native_pushed_draw(m, gfx::vertex::PrimitiveType::TriangleFan, vertices, a)
-    })
+    });
+    if let (true, Some(predicted), Some(item)) = (taken, predicted, item) {
+        crate::hud_native::check_text(at.shader, predicted, &item);
+    }
+    taken
 }
 
 /// A UI screen draw that names no tag: the fade, a bar, the loading
@@ -736,6 +744,34 @@ pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
     {
         let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
         if !decode_images(&mut a, &part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            return false;
+        }
+    }
+    let _ = render_bridge::scene_step::with_overlay(|o| o.append(&part));
+    place(device, mem, Arc::new(part), assets)
+}
+
+/// Places `part` (a HUD string's runs over the glyph pages) at this
+/// point in the frame, every glyph of it in the pages first: whether it
+/// was placed. A glyph the fonts do not give places nothing.
+pub(crate) fn place_text<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    part: Overlay,
+) -> bool {
+    let Some((_, assets)) = slot(mem) else { return false };
+    let Some(fonts) = fonts() else { return false };
+    {
+        // The pages at the display's density, as `place_menu` keeps them.
+        let (scale, side) = atlas_for(crate::render_aspect::layout_output());
+        let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+        if a.glyphs.side() != side || ATLAS_SCALE.load(Ordering::Relaxed) != scale {
+            a.glyphs = GlyphPages::new(side);
+            a.generation += 1;
+        }
+        ATLAS_SCALE.store(scale, Ordering::Relaxed);
+        ATLAS_SIDE.store(side, Ordering::Relaxed);
+        if fill_glyphs(&mut a.glyphs, &part, &fonts, scale).is_err() {
             return false;
         }
     }

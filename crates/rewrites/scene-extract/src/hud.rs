@@ -188,6 +188,40 @@ pub fn aim(mem: &dyn GuestMemory) -> Option<Option<f32>> {
     Some(inside.then_some(y))
 }
 
+/// Pointers to the two colour blocks a text widget's draw hands the font
+/// renderer: the string's (`0x0022abf4`, through `0x0013eb60`) and its
+/// shadow's (`0x0022abfe`, through `0x0013ed50`). Four floats each:
+/// alpha, red, green, blue.
+const TEXT_COLOUR: u32 = 0x0046_86cc;
+const TEXT_SHADOW: u32 = 0x0046_86d4;
+/// A pointer to the HUD globals, whose `+0xa4` is the packed colour the
+/// text widget gives its shader (`0x0022aaaf`).
+const HUD_GLOBALS: u32 = 0x0051_0c94;
+
+fn four(mem: &dyn GuestMemory, at: u32) -> Option<[f32; 4]> {
+    let mut out = [0.0; 4];
+    for (i, v) in out.iter_mut().enumerate() {
+        *v = mem.f32(at.checked_add(4 * i as u32)?).ok()?;
+    }
+    Some(out)
+}
+
+/// A text widget's colour block and its shadow's (none with no block).
+pub fn text_colours(mem: &dyn GuestMemory) -> Option<([f32; 4], Option<[f32; 4]>)> {
+    let main = mem.u32(TEXT_COLOUR).ok().filter(|&p| p != 0)?;
+    let shadow = match mem.u32(TEXT_SHADOW).ok()? {
+        0 => None,
+        at => Some(four(mem, at)?),
+    };
+    Some((four(mem, main)?, shadow))
+}
+
+/// The packed colour a text widget's shader is given.
+pub fn text_tint(mem: &dyn GuestMemory) -> Option<u32> {
+    let globals = mem.u32(HUD_GLOBALS).ok().filter(|&g| g != 0)?;
+    mem.u32(globals.checked_add(0xa4)?).ok()
+}
+
 /// A bitmap tag's data as the sprite pick reads it (`0x0022ae21`).
 pub struct GuestBitmap<'a> {
     pub mem: &'a dyn GuestMemory,
@@ -328,6 +362,20 @@ mod tests {
         // A count no definition has is not read.
         m.put_u32(root + 0x08, MAX_WIDGETS + 1);
         assert!(blocks(&m, 0xe123_0003).is_none());
+    }
+
+    #[test]
+    fn a_text_widgets_colours_read_through_their_pointers() {
+        let mut m = FakeGuest::new();
+        m.put_u32(TEXT_COLOUR, 0x6000).put_u32(TEXT_SHADOW, 0);
+        for (i, v) in [1.0f32, 0.5, 0.25, 0.0].into_iter().enumerate() {
+            m.put_f32(0x6000 + 4 * i as u32, v).put_f32(0x6100 + 4 * i as u32, v * 0.5);
+        }
+        assert_eq!(text_colours(&m), Some(([1.0, 0.5, 0.25, 0.0], None)));
+        m.put_u32(TEXT_SHADOW, 0x6100);
+        assert_eq!(text_colours(&m), Some(([1.0, 0.5, 0.25, 0.0], Some([0.5, 0.25, 0.125, 0.0]))));
+        m.put_u32(HUD_GLOBALS, 0x7000).put_u32(0x70a4, 0x00ff_8040);
+        assert_eq!(text_tint(&m), Some(0x00ff_8040));
     }
 
     #[test]

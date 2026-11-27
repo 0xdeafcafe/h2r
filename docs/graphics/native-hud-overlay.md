@@ -1,6 +1,6 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap widget whose Rust layout is proven the same way is drawn with no guest draw at all. Text layout and the screen-effect draw are the guest's. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `scene-extract`'s `hud.rs` and `native_hud/walk.rs`, and `hud-kit-core/src/walk_tests.rs`.
 Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust). All in [switches.md](../runtime/switches.md).
 
@@ -107,7 +107,7 @@ Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `
 
 ## The walk in Rust
 
-The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A proven bitmap widget is laid out and drawn by Rust and its guest draw (`0x0022aff1`) is left out.
+The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A proven bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A proven screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone.
 
 ```mermaid
 flowchart LR
@@ -133,8 +133,13 @@ flowchart LR
 | Effects | `0x0022bcaf` | `engine::hud_effects::apply`, on the SSE and x87 models |
 | Bitmap widget | `0x0022aff1`: mirrors, the meter, list and colour types, its globals at `0x004e6978`..`0x004e69b0` | `walk::bitmap_widget` |
 | Quad vertices | `0x0022a664` to its setup | `walk::vertices` |
-| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget` (the call's grid) |
-| Text widget | `0x0022aa16` to its string | `walk::text_widget` (the string's place) |
+| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget`; `native_hud::walk::call_frame` writes the body's frame and the call |
+| Text place | `0x0022aa16` to its string | `walk::text_widget` |
+| String | `0x0022a871`: the table's string, or the named input through `_ftol` as `%d`, `0%d`, `00%d` | `hud_overlay::localized`, `walk::number_text` |
+| Measure | `0x0013e9c0` in 0, 0, 1000, 1000; its callback `0x0013e8e0` | `UiText::shape`, `walk::text_bounds` |
+| Rectangle | `0x0022ac08`: starts, centres or ends at the origin, less the window's corner | `walk::text_rect` |
+| Glyph quads | `0x0001fb10`, `0x0001f490`: each glyph's shadow one pixel right and down, then the glyph | `UiText::shape` in the rectangle, `walk::text_quads` |
+| Colours | `0x0013f4ab`: `[0x004686cc]`'s block times 255 through `_ftol`; the shadow `[0x004686d4]`'s at the lesser alpha | `walk::text_colours` |
 
 | Rule | Why |
 |---|---|
@@ -147,11 +152,20 @@ flowchart LR
 | Rust writes the globals the guest's draw would leave | the next guest quad's shader reads them |
 | Left to the guest: a widget another feature changes at its hooks (`feature`: `walk::add_foreign`), emblem types 1 and 2 (`emblem`), an anchor past the centre (`anchor`), an effect input the callback computes by a call (`effect`), an image whose texture `0x0003bcb0` would fetch (`texture`), vertices outside the capture's check (`vertices`), a failed read (`read`) | each is something the guest's draw reads or does that the layout does not |
 
-Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK` before and after, `HUD_SCREEN_WIDGET` and `HUD_TEXT_WIDGET` before, `HUD_BITMAP_WIDGET` before and after. No other feature hooks these points, so they need no order. The quad check runs inside `native_hud_rust_quad` at `HUD_QUAD_SETUP`, before the material's draw.
+Text and screen-effect widgets take the bitmap widget's rules, with these differences:
 
-Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above, and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
+| Widget | Checked | Drawn |
+|---|---|---|
+| Text | each guest glyph quad at the screen quad (`native_ui_screen_fan`): corners and packed colour, bit for bit, in order; the globals at the return | `Host::rust_hud_text`: runs over the host's glyph pages (`OverlayTexture::Glyphs`) by the shader's words, the quad's colour as diffuse (`hud_native::build_text`, `hud_overlay::place_text`). The shader is proven on the guest's glyph captures (`hud_native::check_text`: words, state, stages) |
+| Screen effect | the guest's one call at `SCREEN_EFFECT`: effect, values, 3 by 3, the grid and the globals | `call_frame`: the saved registers, grid, globals and the call's words on the guest's stack, then `0x0002d140` entered with the return `0x0022bbc0`, whose code leaves the widget. The post draws the effect ([native-post-hud.md](native-post-hud.md)) |
 
-Not built: the text widget's layout and draw and the screen-effect widget's draw are the guest's; Rust has only their selection and their place.
+Text left to the guest: a name widget (`name`), a number whose input the callback computes by a call or that is past an `i32` (`number`), a string the draw would change (`string`: button glyphs, replacement patterns), one the fonts do not shape (`shape`: `menu_text::shape`'s characters), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
+
+Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK`, `HUD_SCREEN_WIDGET`, `HUD_BITMAP_WIDGET` and `HUD_TEXT_WIDGET`, each before and after. No other feature hooks these points, so they need no order. The quad check runs inside `native_hud_rust_quad` at `HUD_QUAD_SETUP`, the glyph check inside `native_ui_screen_fan` at the screen quad and the call check inside `native_post_screen_effect` at `SCREEN_EFFECT`, each before the draw is offered.
+
+Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above; the same with `text_` and `screen_` before them (`screen_called` for `drawn`; `text_refused` and `screen_refused` beside a layout refusal's cause); and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
+
+Not built: the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
 
 ## What is kept
 
@@ -178,7 +192,11 @@ A page keeps coverage alone, so a glyph with colours of its own (a medal, a butt
 - That any retail HUD shader proves: the corners are predicted from the quad's own vertices with no vertex program, the sampler from the tag's stage states as D3D values, the blend from the implementation's states over `gfx`'s defaults. `mismatch_*` names the first part that differs.
 - That an overlay pass (`OverlayPass`) places a quad on the same pixels as the widget pass: it does not snap positions to sixteenths (`raster_position`).
 
-- That any retail widget's Rust layout proves (`shadow_differed` counts one that does not), and that `selection_differed` stays at zero on retail definitions.
+- That any retail widget's Rust layout proves (`shadow_differed`, `text_shadow_differed` and `screen_shadow_differed` count one that does not), and that `selection_differed` stays at zero on retail definitions.
+- That a text shader resolves and proves (`predict_text` takes one whose only sampled stage is stage 0 with the widget's bitmap, **S**: the glyph cache is bound in its place), and that a run over the host's glyph pages lands on the pixels the guest's glyph cache gives: the pages are rasterised at the display's density and hold coverage alone.
+- That a string's quads, the window's pixels plus its corner (`WalkText::origin`), are the frame's pixels the overlay draws in (**S**).
+- That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
+- That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
 - That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
 - That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).
 - HUD pixel parity on the lab. From the same saved camera and tick, capture `render.frame` with `impl.render.native` off and on. Compare empty, partial and full ammo and shield meters, a flashing ammo count and a two-colour waypoint emblem, including a split-screen view and a scaled display copy. Compare RGBA in each widget rectangle and check `render.stats` for bitmap and text reservations, display recordings and zero fallback or failed recordings for the exercised widgets.
