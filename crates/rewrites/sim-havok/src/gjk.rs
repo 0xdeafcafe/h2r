@@ -10,10 +10,11 @@
 //!   planes, with the triangle's normal.
 //! - [`segments`] `0x00308590`: the closest points of two segments.
 //! - [`contact`] `0x003032c0`: the contact from the query's final state.
+//! - [`tetrahedron`] `0x00303540` with `0x00303110`: which face of a
+//!   tetrahedron the point lies beyond.
 //!
-//! The query itself (`0x003048a0` and its cases `0x003037a0`,
-//! `0x00303540`, `0x00303dd0`) and the shapes' support virtuals are not
-//! ported. On a [`Fallback`] the journal
+//! The query itself (`0x003048a0` and its cases `0x003037a0` and
+//! `0x00303dd0`) and the shapes' support virtuals are not ported. On a [`Fallback`] the journal
 //! is discarded and nothing has been written.
 use crate::convex::Fallback;
 use crate::fp::Exact;
@@ -28,6 +29,11 @@ pub const ZERO: u32 = 0x0045_dbd8;
 pub const ONE: u32 = 0x0045_dbc0;
 pub const PARALLEL: u32 = 0x0045_dd4c;
 pub const SIGNS: u32 = 0x0041_24a0;
+/// The `andps` mask that clears the sign bits, and [`tetrahedron`]'s two
+/// thresholds (`1e-6`, `1.1`).
+pub const ABS: u32 = 0x0045_5940;
+pub const TINY: u32 = 0x0045_df1c;
+pub const MARGIN: u32 = 0x0045_dc80;
 
 /// The query state's words [`triangle`] writes: the normal and the three
 /// edge tests; and the two support points it compares the normal with.
@@ -385,6 +391,122 @@ fn again(x: &Fx, b: u32, u: u32, d: u32, a: u32, zero: F80, one: F80, flags: &mu
     }
 }
 
+const MAX_BITS: u32 = 0x7f7f_ffff;
+const MINUS_ONE_BITS: u32 = 0xbf80_0000;
+
+/// [`tetrahedron`]'s answer: eax (a face index, or `-1` as `u32`) and ecx.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Face {
+    pub eax: u32,
+    pub ecx: u32,
+}
+
+/// `0x00303540`: eax the four vertices (`+0x00` to `+0x30`, the last the
+/// newest), ebx the point, one stack word `s`, plain `ret`. Each face
+/// opposite vertex 0, 1, 2 has the normal `(e) x (f)` over two of its
+/// edges; its test is `n . s (p - v3)`, signed-squared and divided by
+/// `|n|^2` (`FLT_MAX` for a zero normal). Below `1e-6` everywhere: `-1`.
+/// One face past `1.1` times the next: that face. Otherwise
+/// `0x00303110` picks among the three by their plain tests. Reads only;
+/// the frame and the test array it hands down are dead at the return.
+pub fn tetrahedron(j: &Journal, verts: u32, p: u32, s: u32, fpu: Fpu) -> Result<Face, Fallback> {
+    let (mut sse, x) = units(fpu)?;
+    let vert = |i: u32| verts.wrapping_add(16 * i);
+    let zero = load(word(j, ZERO)?);
+    let v1 = vec(j, vert(1))?;
+    let v0 = vec(j, vert(0))?;
+    let v3 = vec(j, vert(3))?;
+    let v2 = vec(j, vert(2))?;
+    let e10 = sse.sub(v1, v0);
+    let e02 = sse.sub(v0, v2);
+    let e30 = sse.sub(v3, v0);
+    let e31 = sse.sub(v3, v1);
+    let e32 = sse.sub(v3, v2);
+    let e21 = sse.sub(v2, v1);
+    let n = [cross(&mut sse, e21, e31), cross(&mut sse, e02, e32), cross(&mut sse, e10, e30)];
+    let to_p = sse.sub(vec(j, p)?, vec(j, vert(3))?);
+    let q = sse.mul(splat(s), to_p);
+    let (lo, n2lo) = (shuf2(n[0], n[1], 0x44), shuf1(n[2], 0x44));
+    let zrow = shuf2(shuf2(n[0], n[1], 0xee), shuf1(n[2], 0xee), 0x88);
+    let zs = sse.mul(zrow, splat(lane(q, 2)));
+    let ys = sse.mul(shuf2(lo, n2lo, 0xdd), splat(lane(q, 1)));
+    let xs = sse.mul(shuf2(lo, n2lo, 0x88), splat(lane(q, 0)));
+    let xy = sse.add(xs, ys);
+    let d = sse.add(xy, zs);
+    let magnitude = d & vec(j, ABS)?;
+    let signed = sse.mul(d, magnitude);
+    let mut r = [0u32; 3];
+    for (i, n) in n.into_iter().enumerate() {
+        let m = sse.mul(n, n);
+        let sq = sse.hsum(m);
+        // `fucompp; test ah,0x44; jnp`: only an equal zero gives FLT_MAX.
+        r[i] = if x87::compare(load(sq), zero, true).0 == Cmp::Equal {
+            MAX_BITS
+        } else {
+            x.st(x.div(load(lane(signed, i)), load(sq)))
+        };
+    }
+    done(&sse)?;
+    // 0x003036ec: the largest test into the third slot, the next in st0.
+    let (mut index, m, low) = if cmp(load(r[0]), load(r[1])) == Cmp::Greater { (0, load(r[0]), x.st(load(r[1]))) } else { (1, load(r[1]), r[0]) };
+    let (largest, second) = if cmp(m, load(r[2])) == Cmp::Greater {
+        let next = if cmp(load(low), load(r[2])) == Cmp::Greater { load(low) } else { load(r[2]) };
+        (x.st(m), next)
+    } else {
+        index = 2;
+        (r[2], m)
+    };
+    if cmp(load(largest), load(word(j, TINY)?)) == Cmp::Less {
+        return Ok(Face { eax: u32::MAX, ecx: index });
+    }
+    let reach = x.mul(load(word(j, MARGIN)?), second);
+    if cmp(load(largest), reach) == Cmp::Greater {
+        return Ok(Face { eax: index, ecx: index });
+    }
+    let mut w = [lane(d, 0), lane(d, 1), lane(d, 2)];
+    let eax = drop_edge(j, verts, p, &mut w, fpu)?;
+    Ok(Face { eax, ecx: vert(3) })
+}
+
+/// `0x00303110`, cdecl `(point, tests)` with edi the vertices: for each
+/// face with both neighbours' tests not below zero, the neighbour whose
+/// edge the point projects past less is struck (`-1.0`); then the first
+/// test above zero names the face, or `-1`.
+fn drop_edge(j: &Journal, verts: u32, p: u32, w: &mut [u32; 3], fpu: Fpu) -> Result<u32, Fallback> {
+    let (mut sse, x) = units(fpu)?;
+    let zero = load(word(j, ZERO)?);
+    let vert = |i: usize| verts.wrapping_add(16 * i as u32);
+    for i in 0..3 {
+        // The tables at 0x004136b2 and 0x004136b0.
+        let (c, e) = ((i + 1) % 3, (i + 2) % 3);
+        if matches!(cmp(load(w[c]), zero), Cmp::Less | Cmp::Unordered) || matches!(cmp(load(w[e]), zero), Cmp::Less | Cmp::Unordered) {
+            continue;
+        }
+        let v = vec(j, vert(i))?;
+        let to_c = sse.sub(vec(j, vert(c))?, v);
+        let to_q = sse.sub(vec(j, vert(3))?, v);
+        let to_e = sse.sub(vec(j, vert(e))?, v);
+        let to_p = sse.sub(vec(j, p)?, v);
+        let m = sse.mul(to_p, to_c);
+        let a = sse.hsum(m);
+        let m = sse.mul(to_p, to_e);
+        let b = sse.hsum(m);
+        let m = sse.mul(to_q, to_c);
+        let c_ = sse.hsum(m);
+        let m = sse.mul(to_q, to_e);
+        let d = sse.hsum(m);
+        let cb = x.mul(load(c_), load(b));
+        let da = x.mul(load(d), load(a));
+        if cmp(cb, da) == Cmp::Greater {
+            w[e] = MINUS_ONE_BITS;
+        } else {
+            w[c] = MINUS_ONE_BITS;
+        }
+    }
+    done(&sse)?;
+    Ok((0..3).find(|&k| cmp(load(w[k]), zero) == Cmp::Greater).map_or(u32::MAX, |k| k as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +593,32 @@ mod tests {
         let r = segments(&mut j, 0x100, 0x110, 0x120, 0x130, 0x200, FPU).unwrap();
         assert_eq!(r.flags & 1, 1, "s clamps to the first segment's end");
         assert_eq!(get4(&j, 0x200)[..3], [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_point_beyond_one_face_names_it() {
+        let mut h = Heap::default();
+        constants(&mut h);
+        h.0.insert(TINY, 1e-6f32.to_bits());
+        h.0.insert(MARGIN, 1.1f32.to_bits());
+        for i in 0..4 {
+            h.0.insert(ABS + 4 * i, 0x7fff_ffff);
+        }
+        let (verts, p) = (0x1000, 0x2000);
+        put4(&mut h, verts, [0.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, verts + 0x10, [1.0, 0.0, 0.0, 0.0]);
+        put4(&mut h, verts + 0x20, [0.0, 1.0, 0.0, 0.0]);
+        put4(&mut h, verts + 0x30, [0.0, 0.0, 1.0, 0.0]);
+        // At v3 every test is zero: no face.
+        put4(&mut h, p, [0.0, 0.0, 1.0, 0.0]);
+        let one = 1.0f32.to_bits();
+        assert_eq!(tetrahedron(&Journal::new(&h), verts, p, one, FPU).map(|f| f.eax), Ok(u32::MAX));
+        // Far along -x, one face's test dominates.
+        put4(&mut h, p, [-5.0, 0.1, 0.1, 0.0]);
+        let face = tetrahedron(&Journal::new(&h), verts, p, one, FPU).unwrap();
+        assert!(face.eax < 3, "{face:?}");
+        assert_eq!(face.eax, face.ecx);
+        assert_eq!(tetrahedron(&Journal::new(&h), verts + 8, p, one, FPU), Err(Fallback::Memory));
     }
 
     #[test]
