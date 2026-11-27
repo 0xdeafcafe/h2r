@@ -1,7 +1,5 @@
 # Live co-op: h2 coop test
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 12. One command on one Mac: `h2 coop test`.
-
 ## 12. One command on one Mac: `h2 coop test`
 
 Section 10.4 takes three terminals and a list of variables. `h2 coop test`
@@ -91,9 +89,7 @@ finds an invitation it opens the two-button dialog for error `0x7d`
 `0x001483c3`, which the shell calls to put up the root menu (at boot and
 after a game), opens it unless it is the first boot's intro
 (`0x0014741b`) or the case at `0x001484c0` (`0x002310b7`). The delegate
-is an event, not a per-frame poll: in the 023123 run Bravo sat on the main
-menu from before the acceptance until it pressed Xbox Live, and it was
-never called.
+is an event, not a per-frame poll.
 
 So `h2 coop test --auto` tells the guests to join from the
 friends list (Y, the host, Join Game), the path the 023244 run took to the
@@ -108,7 +104,7 @@ squad's id and decodes (states 3: no result, 4: no probe, 5: no QoS info,
 without checking them; it drops the result unless the title's own Live
 logon is done (`0x000901c1`, `0x0006cd50() == 1`). On the main menu,
 before Xbox Live, that fails and the friend view looks again the next
-frame: the 023244 run's sixty `find session` lines a second, all `0 of 0`.
+frame.
 
 The title passes zero slot counts to `XOnlineMatchSessionCreate` for its
 co-op lobby. Its join uses the host's QoS reply for admission. For a web
@@ -124,22 +120,12 @@ A host with no observed capacity offers no link.
 Repeated identical find
 lines are logged once per 30 seconds.
 
-The 023123 run's lobby was advertised twice (81113027... at +24.2,
-deleted at +24.25, then 8201114c... at +34.2): both the XNetUnregisterKey
-and the delete are the title's own calls (the HLE deletes a session only
-when asked), as the lobby re-advertises once it settles. The host invites
-again to the new one and the guest accepts the newer invitation.
+The lobby re-advertises once it settles (a new random id, the old one deleted by the title's own call), so the host invites again to the new one and the guest accepts the newer invitation.
 
-The reader drops a record whose FILETIME at +100 is not before the
-guest's own KeQuerySystemTime (`0x0022f3d7`) or is 15 minutes or more
-before it. The guest's clock starts at the NT epoch (the kernel's
-`epoch_100ns` is 0), so a record stamped with the Mac's date was in the
-title's future: it read the record, dropped it, and nothing happened (the
-2026-11-18 run: Bravo's `accepting` and then nothing). The HLE now stamps
-the record a second before the guest's clock as it is read.
+The reader drops a record whose FILETIME at +100 is not before the guest's own KeQuerySystemTime (`0x0022f3d7`) or is 15 minutes or more before it. The guest's clock starts at the NT epoch (the kernel's `epoch_100ns` is 0), so the HLE stamps the record a second before the guest's clock as it is read.
 
-Menus are still yours: there is no input over the agent API yet (see
-12.5). With `--auto`: on every window, Xbox Live (that signs the game in
+Menus are still yours: `--drive` (12.6) presses
+them for you. With `--auto`, press: on every window, Xbox Live (that signs the game in
 to Live; until then the host sees nobody online and a guest can't take an
 invitation); on the host, Co-op Campaign, a level and difficulty, then
 Start Game. Without `--auto`, invite from the lobby's Y (friends list) and
@@ -180,42 +166,13 @@ Each step is now in the games' logs and `coop.log`:
 | `live: join: qos lookup: <ip>:<port+2> session <id>: contacted, N bytes of data` (or `no answer in 3 tries ...`, `nothing on that port`) | the guest's QoS probe; a host behind the guest's own NAT shows its LAN address first, then the public one if the LAN address did not answer |
 | `live: join: <ip>:<port> for session <id>: address made` / `connecting to ...` | XNetXnAddrToInAddr and XNetConnect |
 
-The 2026-11-18 (011442) run with these lines showed the failing step: the
-host listens on two ids, its squad's XNKID (made by the title, listened on
-with no data: `XNetQosListen` flags 5, `0x00073243`) and the session id the
-server gave its advertisement (with the 172-byte lobby data). A joining
-guest probes the squad's id; with no data the title's join decode
-(`0x0006f5f5`, state 6) fails: `error_join_data_decode_failure`. The HLE's
-responder now answers an enabled listener without data with the newest
-lobby data the console listens with (`qos::answer`).
+The host listens on two ids: its squad's XNKID (made by the title, listened on with no data: `XNetQosListen` flags 5, `0x00073243`) and the session id the server gave its advertisement (with the 172-byte lobby data). A joining guest probes the squad's id; with no data the title's join decode (`0x0006f5f5`, state 6) fails with `error_join_data_decode_failure`. The HLE's responder answers an enabled listener without data with the newest lobby data the console listens with (`qos::answer`).
 
-The `0 of 0 public
-slots` in that run's find line did not stop the join (the guest went on to
-probe); the line now shows the private slots too.
+Peers are told apart by IP and base port ([live.md](live.md), XNetXnAddrToInAddr): a game on this Mac's IP is `169.254.(base >> 8).(base & 255)` to the others, so `address made` lines show those addresses.
 
-That run also had all three games on one IP, which the HLE told apart by IP
-alone: a host heard both guests as one peer and every game saw the others
-at its own address. Peers are now told apart by IP and base port
-([live.md](live.md), XNetXnAddrToInAddr): a game on this Mac's IP is
-`169.254.(base >> 8).(base & 255)` to the others, so `address made`
-lines show those addresses.
+A peer the host first hears on a game channel arrives with key id 0, so the host's XNetInAddrToXnAddr cannot place it in its session. The peer carries the session that address last probed (`qos::Asked`) instead. The first datagram each way between a game and a peer is logged: `live: xnet: first packet to <ina>:<port> (at <ip>:<port>)` and `live: xnet: first packet from <ip>:<base> (as <ina>) on port <port>, session <id>`, a failed send each time, and an XNetInAddrToXnAddr for an address that is no peer.
 
-A peer the host first hears on a game channel arrives with key id 0, so the
-host's XNetInAddrToXnAddr on the sender cannot place it in its session. The
-peer carries the session that address last probed (`qos::Asked`) instead;
-without it the join stops with no dialog and no XNetConnect after the squad's QoS. The
-first datagram each way between a game and a peer is logged:
-`live: xnet: first packet to <ina>:<port> (at <ip>:<port>)` and
-`live: xnet: first packet from <ip>:<base> (as <ina>) on port <port>,
-session <id>`, a failed send each time, and an XNetInAddrToXnAddr for an
-address that is no peer.
-
-A probe now tries three times, 100 ms each (once, 50 ms before): three
-games on one Mac run at a few frames a second, and a single short window
-could be missed. The 2026-11-18 run logged none of this (it predates the
-lines), so which step failed there is for the next run's log to say:
-look for the host's `asked about session` line or the guest's `no
-answer`.
+A probe tries three times, 100 ms each: three games on one Mac run at a few frames a second, and a single short window could be missed. If a join fails, look for the host's `asked about session` line or the guest's `no answer`.
 
 ### 12.2 Two games on one Mac
 
@@ -285,69 +242,7 @@ send back: `coop.log`, and the two whole logs if it stopped early.
 
 ### 12.4 What is tested
 
-Without the game (`cargo test -p cli --bin h2 coop`, `cargo test -p
-live-hle`): the arguments; each game's ports, data, Live directory, socket,
-pads and `--auto` variables; the shell lines; accounts and friendships made
-against an embedded server, reused on a second run, and a lost key saying
-`--fresh`; two stand-in games (shell scripts) through the log merger with
-the host's sign-in starting the next; the checklist from canned logs (a
-whole run, a run that stopped, a run without `--auto`); the reason given
-for each step a missing press explains (3: no Live menu, no co-op row,
-another row, hooks off; 5; 7: a guest not in Xbox Live; 8; 9 with and
-without `--auto`; 11; 1); the filter over the host's log of the
-2026-11-17 three-game run, cut to its main menu
-(`crates/apps/cli/src/coop_verdict/host-at-menu.log`, our own lines, paths
-shortened): only the co-op lines kept, no feature plan; the next-steps
-line; the wait for the main menu against a stand-in agent socket;
-`H2_LIVE_DIR`; the automatic invite and acceptance between two HLEs
-and a server, and to the lobby's newest session when its id isn't the
-smallest; a stopped game (its guest thread exited, or a failed exit)
-closing the others while it stays open, and a normal exit not counting;
-the accepted record stamped in the guest's clock so the reader's check
-takes it, said once and offered again; a guest accepting only the newest
-invitation; one log line per QoS target; and a QoS probe for a session
-the host doesn't listen for coming back uncontacted after its tries,
-while the current one is answered with its data.
-
-### 12.5 Driving the host's menus (the plan; built as 12.6)
-
-`--auto` stops at the menus. What exists to press through them:
-
-- `--input-timeline FILE` (`input::backend::scripted::Timeline`,
-  docs/input/input.md): pad frames at absolute guest times, played *instead
-  of* live input, from launch. It knows nothing of the screen, so a press
-  lands where the menu happens to be: the intro, the profile screen, the
-  Live sign-in and the session made by Co-op Campaign take different
-  times on every run (the host's first start here built for 20 minutes
-  before its window even opened). The window's keyboard and pads are off
-  while it plays.
-- `H2_BOOT_INPUT`: presses counted in scheduler slices, for headless
-  runs; the same blindness, and slices are not even time.
-- The agent API (docs/runtime/agent-api.md) designs `input.pad` (timed
-  packets through the normal input path) and the `ui` domain (which screen
-  is open, which row has focus) and events like `screen`, but phase 1 has
-  neither: only `session.*`, `world.*`, `profile.counters` and
-  `features.list`. `session.wait` can wait for `phase: menu`, not for
-  "the Xbox Live menu with Co-op Campaign focused".
-
-What it would take, in order: (1) `input.pad` on the agent socket, a queue
-the xapi input glue drains ahead of live input (the boot already merges a
-keyboard pad for `H2_BOOT_INPUT`, so the path exists); (2) enough of `ui`
-to know the screen and focused row: the open screen's tag id (the Live
-menu is screen id `custom_games::SCREEN_ID`) and the list's cursor, read
-on the tick like the other answers; (3) a short script in the harness:
-wait for the main menu, press down to Xbox Live and A, wait for the Live
-menu, move to the Co-op Campaign row and A, wait for `coop-live: hosting`,
-then the level and difficulty screens, then Start once every guest is in.
-Each step waits on what the screen says, not on time.
-
-Risk: (1) is small and testable without the game; (2) needs the screen
-stack's layout, which is partly traced (`layout_glue`, the screen loaders)
-and would need a game run to confirm; (3) depends on row order, which our
-own Live menu rows change (Co-op Campaign moved the rows down), and on
-the profile screen, which a fresh data dir shows and a reused one may not.
-A press in the wrong place is harmless in the menus but confusing in a
-report. Until (1) and (2) exist, the line in step 4 above is the guide.
+`cargo test -p cli --bin h2 coop` and `-p live-hle` cover the arguments, each game's ports, data, Live directory, socket, pads and `--auto` variables, accounts made against an embedded server, the checklist from canned logs (including each reason a missing press explains), the log filter, the auto invite and acceptance between two HLEs and a server, a stopped game closing the others, and QoS probes for unlistened sessions.
 
 ### 12.6 `--drive`: nobody presses
 
@@ -388,20 +283,9 @@ without a press. The three parts of 12.5:
 | guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 7 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
 | late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
 
-**What the first runs showed** (2026-11-18, 083611 and 092343, with
-`H2_UI_WATCH=1`):
+**What runs showed** (with `H2_UI_WATCH=1`):
 
-- No boot presses are needed. Each game shows `0xb6` (window 1) for a
-  moment, then no screen, then says `coop-live: lobby mode 4294967295`:
-  that is the main menu.
-- The main menu reads as no screen. It is pushed as id 9 on window 5,
-  slot 4 by `0x1483c3`. Why it reads as none is open, so a none line now
-  says what each slot held (`ui: screen none (slot 4: window 1 active ...
-  list [mask/id ...]; slot 0: ...)`). The driver takes "no screen after
-  `lobby mode`" as the main menu.
-- The read now follows the dispatcher more closely: a window whose list
-  has no screen for player one passes the input on to player one's own
-  slot, not to the next window.
+- No boot presses are needed. The main menu reads as no screen after `coop-live: lobby mode 4294967295`; it is pushed as id 9 on window 5, slot 4 by `0x1483c3`. The driver takes "no screen after `lobby mode`" as the main menu. A window whose list has no screen for player one passes the input on to player one's own slot.
 - Campaign has focus when the main menu opens. The retail rows (`0x230827`,
   chosen row at `0x510a14`) are 0 Campaign, 1 Xbox Live, 2 Split Screen,
   3 System Link and 4 Settings. With Theater installed, it occupies row 4
@@ -422,27 +306,6 @@ without a press. The three parts of 12.5:
   screen in mode 4, at most 4 times. It presses B on the players' screen
   in any other mode.
 
-[guess] Still not seen in a run:
-- whether `0x1e`'s A opens the Live menu at once (static: mode 3 →
-  `0x2310b7`);
-- the lobby's id;
-- whether the Live menu reads as a screen (`0xba`) or as none, like the
-  main menu.
+[guess] Not seen in a run: whether `0x1e`'s A opens the Live menu at once (static: mode 3 → `0x2310b7`), the lobby's id, and whether the Live menu reads as a screen (`0xba`) or as none.
 
-Tests (`cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`):
-- A model of the menus runs three games without the invitation reader
-  (the 023244 run's case: both guests join through the browser, the host
-  starts after both).
-- The same model runs with a working reader (no browser) and with a late
-  guest (it joins after the start).
-- A main menu whose cursor comes back on Campaign is corrected.
-- The players' screen in mode 2 is read as the System Link row.
-- No boot press comes in the first minute, then START, A, B, then
-  `stuck`.
-- A wrong Live menu row is backed out of.
-- The 092343 run (`coop_drive/run-092343.log`) is replayed: Bravo makes
-  no press before the main menu, then DOWN, A, and A on the players'
-  screen.
-- The 023244 run's own lines (`coop_drive/run-023244.log`) are replayed:
-  the host waits in its lobby, and Bravo is nudged at its acceptance and
-  goes for the browser 20 s after it.
+Tests: `cargo test -p cli --bin h2 coop_drive`, `-p boot --lib ui_watch`. A model of the menus runs three games (with and without the invitation reader, with a late guest), and two recorded runs (`coop_drive/run-092343.log`, `coop_drive/run-023244.log`) are replayed.

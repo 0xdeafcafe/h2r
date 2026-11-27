@@ -1,7 +1,5 @@
 # Live telemetry: frame species, cinematics and appearance
 
-Part of [Live telemetry](live-telemetry.md). Covers: Frame species, aim, weapon and shots; Cinematics; Velocity, seat, vitality and fire; Player appearance.
-
 ## Frame species, aim, weapon and shots
 
 Each frame player carries what the web needs to draw a model

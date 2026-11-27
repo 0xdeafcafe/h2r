@@ -1,7 +1,5 @@
 # Live API: events and read endpoints
 
-Part of [Live service API](live-api.md). Covers: Events; Read endpoints.
-
 ## Events
 
 Every change is an event in the log ([live.md §4.3](live.md)). The wire

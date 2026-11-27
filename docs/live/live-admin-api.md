@@ -1,7 +1,5 @@
 # Live admin: the admin API
 
-Part of [Live service: admins, the MOTD editor and the playlist builder](live-admin.md). Covers: 2. The admin API.
-
 ## 2. The admin API
 
 The editors speak structured JSON; the server builds the binary with

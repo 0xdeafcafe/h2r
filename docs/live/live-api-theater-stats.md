@@ -1,7 +1,5 @@
 # Live API: theater, stats, medals and clanker training
 
-Part of [Live service API](live-api.md). Covers: Theater; Stats summary; Medals; Clanker Training.
-
 ## Theater
 
 Web Theater reads presentation and event records from the host film. Older

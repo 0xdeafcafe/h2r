@@ -1,7 +1,5 @@
 # Live API: sessions, invites, sign-ins and hosts
 
-Part of [Live service API](live-api.md). Covers: Sessions; Server invites; Sign-ins; Dedicated hosts; Dedicated hosts; Dedicated host tunnel.
-
 ## Sessions
 
 Session advertisements are separate from recorded games. The stream is

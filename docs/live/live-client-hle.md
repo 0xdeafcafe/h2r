@@ -1,7 +1,5 @@
 # Live: client HLE, sign-in, sockets and logon
 
-Part of [Xbox Live replacement](live.md). Covers: Client HLE: sign-in; Client HLE: sockets and System Link; Client HLE: service logon and title resources; Client HLE: menu polling and remaining stops.
-
 ## Client HLE: sign-in
 
 `crates/live/live-hle` replaces the public entries in

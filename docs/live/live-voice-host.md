@@ -1,7 +1,5 @@
 # Live voice: host design
 
-Part of [Live voice: chat, voice messages and the mute list](live-voice.md). Covers: 3. Host design.
-
 ## 3. Host design
 
 ### 3.1 Keep the engine, emulate the communicator

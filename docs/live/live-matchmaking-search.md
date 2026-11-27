@@ -1,7 +1,5 @@
 # Live matchmaking: OptiMatch search and ping-aware assignments
 
-Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 7. OptiMatch search: procedure 1, decoded; 9.
-
 Ping-aware OptiMatch assignments.
 
 ## 7. OptiMatch search: procedure 1, decoded

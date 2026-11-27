@@ -1,7 +1,5 @@
 # Live Worker: build slices and results
 
-Part of [The Live server on Cloudflare Workers](live-worker.md). Covers: What changed to make it build (slice 1); Slices (serial, about 2 hours each).
-
 ## What changed to make it build (slice 1)
 
 ### live-server

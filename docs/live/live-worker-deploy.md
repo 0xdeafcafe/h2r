@@ -1,7 +1,5 @@
 # Live Worker: deploy, cutover and rollback
 
-Part of [The Live server on Cloudflare Workers](live-worker.md). Covers: Deploy; Migrating the current data; Cutover runbook; Rollback; Observability; What the Mac does afterwards.
-
 ## Deploy
 
 `crates/live/live-worker/deploy.sh` builds and deploys; never run a bare

@@ -1,7 +1,5 @@
 # Live: client HLE, player services
 
-Part of [Xbox Live replacement](live.md). Covers: Client HLE: player feedback; Client HLE: mute list; Client HLE: bans; Client HLE: title storage and profile fallback; Client HLE: local stats; Client HLE: outgoing messages; Client HLE: game invitations and joining.
-
 ## Client HLE: player feedback
 
 `XOnlineFeedbackSend` (`0x003a0890`, `crates/live/live-hle/src/feedback.rs`)

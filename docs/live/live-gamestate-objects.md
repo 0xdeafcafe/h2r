@@ -1,7 +1,5 @@
 # Live game state: objects, hooks and the structure map
 
-Part of [Halo 2 retail Xbox live game-state map](live-gamestate.md). Covers: 6. Objects, positions, facing, and vehicles; 7.
-
 Kill/death and damage hooks; 8. Structure BSP and a web top-down map.
 
 ## 6. Objects, positions, facing, and vehicles

@@ -1,7 +1,5 @@
 # Dedicated host: the light host
 
-Part of [Running Halo 2 as a dedicated host](dedicated-host.md). Covers: Light host.
-
 ## Light host
 
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.

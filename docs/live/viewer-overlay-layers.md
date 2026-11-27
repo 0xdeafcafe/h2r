@@ -1,7 +1,5 @@
 # Viewer overlay: the overlay, name tags and reveal
 
-Part of [The 3D view's opening camera, overlay and reveal](viewer-overlay.md). Covers: The overlay; Name tags; Progressive reveal; Damage and combat effects.
-
 ### The overlay
 
 `Overlay` (`web/src/viewer/Overlay.tsx`, no three.js) is a sibling of

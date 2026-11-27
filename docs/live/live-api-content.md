@@ -1,7 +1,5 @@
 # Live API: custom maps, rules scripts and variants
 
-Part of [Live service API](live-api.md). Covers: Custom maps; Rules scripts; Game variants.
-
 ## Custom maps
 
 Custom and modded maps are shared as content: the layers (file patches,

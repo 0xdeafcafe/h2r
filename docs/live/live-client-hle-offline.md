@@ -1,7 +1,5 @@
 # Live: client HLE, offline, sessions and teams
 
-Part of [Xbox Live replacement](live.md). Covers: Client HLE: Live not set up; Client HLE: sessions and server discovery; Client HLE: Teams.
-
 ## Client HLE: Live not set up
 
 `crates/extensions/game/src/live_notice.rs` puts our text on the game's own "cannot

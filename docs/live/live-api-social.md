@@ -1,7 +1,5 @@
 # Live API: friends, teams, moderation, saves and relay
 
-Part of [Live service API](live-api.md). Covers: Friends; Teams; Player reports; Bans; Mute list; Game-invite mailboxes; Cloud saves; Co-op relay; Streams (WebSocket); Presence heartbeats; Map outline.
-
 ## Friends
 
 Friendship is event sourced like everything else, on the account streams.

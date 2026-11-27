@@ -1,7 +1,5 @@
 # Live matchmaking: ranks
 
-Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 8. Ranks: what the game does, and what the server does.
-
 ## 8. Ranks: what the game does, and what the server does
 
 The stats site's **Ranked** page at `/games/halo2/ranks` builds its

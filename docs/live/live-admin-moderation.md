@@ -1,7 +1,5 @@
 # Live admin: moderation
 
-Part of [Live service: admins, the MOTD editor and the playlist builder](live-admin.md). Covers: 7. Custom content: moderation; 8.
-
 Player reports; 9. Bans.
 
 ## 7. Custom content: moderation

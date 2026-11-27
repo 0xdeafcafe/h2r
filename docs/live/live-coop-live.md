@@ -1,7 +1,5 @@
 # Live co-op: over Live, latency and prediction
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 10. Co-op over Live (built); 15.
-
 Latency, and prediction.
 
 ## 10. Co-op over Live (built)

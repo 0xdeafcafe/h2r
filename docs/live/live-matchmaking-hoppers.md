@@ -1,7 +1,5 @@
 # Live matchmaking: the hopper file
 
-Part of [Matchmaking and custom games over Live](live-matchmaking.md). Covers: 6. The hopper file, field by field.
-
 ## 6. The hopper file, field by field
 
 `multiplayer_hopper.dat` is now decoded whole, from the retail game's own

@@ -1,7 +1,5 @@
 # Live co-op: the retail engine, lockstep and settings
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 1. What the retail engine has; 2.
-
 Lockstep below the game; 5. How it plugs into the settings and hook layer.
 
 ## 1. What the retail engine has

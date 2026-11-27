@@ -1,7 +1,5 @@
 # Live co-op: more players and join in progress
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 13. More than two players; 14.
-
 Join in progress.
 
 ## 13. More than two players

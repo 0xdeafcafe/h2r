@@ -1,7 +1,5 @@
 # Live art: packing, pipeline and limits
 
-Part of [Map geometry and pre-drawn views](live-art.md). Covers: Packing; Pipeline; Checking against your disc; Limits.
-
 ## Packing
 
 The last step of an extraction (`crates/live/live-server/src/art_pack.rs`,

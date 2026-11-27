@@ -1,7 +1,5 @@
 # Replay fidelity: the spectator track
 
-Part of [Replay fidelity: what the viewer gets, and a better track (design)](replay-fidelity.md). Covers: Proposal: the spectator track.
-
 ## Proposal: the spectator track
 
 ### Principles

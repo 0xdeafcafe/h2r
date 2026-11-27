@@ -1,7 +1,5 @@
 # Live: the pieces
 
-Part of [Xbox Live replacement](live.md). Covers: 4. Pieces.
-
 ## 4. Pieces
 
 ### 4.1 Client (recomp side)

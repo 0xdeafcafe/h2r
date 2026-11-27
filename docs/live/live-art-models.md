@@ -1,7 +1,5 @@
 # Player and weapon models
 
-Part of [Map geometry and pre-drawn views](live-art.md). Covers: Player and weapon models.
-
 The same extraction writes a posed model per player species and campaign
 character, a model per multiplayer weapon and a model per vehicle, for the
 3D viewer's players and AI (the players contract, sections 2 and 5). Like the maps, everything comes from the owner's disc at run

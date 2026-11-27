@@ -1,7 +1,5 @@
 # Web app: the pages
 
-Part of [The Live web app](web-app.md). Covers: The stats site; Open Games; Custom maps; Mods; Game variants; Game type scripts; Server stats; Derived stats; Medals; Sign up in the browser; Friends and clans; Fonts; Artwork.
-
 ### The stats site
 
 The stats site (`/games/halo2/...`, `src/stats/`; every link builds on

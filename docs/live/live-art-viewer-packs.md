@@ -1,7 +1,5 @@
 # Live art: the 3D viewer, map packs and mods
 
-Part of [Map geometry and pre-drawn views](live-art.md). Covers: In the 3D viewer; Map pack; Halo 1 maps; Mods.
-
 ### In the 3D viewer
 
 **Water, weather and haze.** The `water` class material ripples

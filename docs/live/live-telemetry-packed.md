@@ -1,7 +1,5 @@
 # Live telemetry: packed frames
 
-Part of [Live telemetry](live-telemetry.md). Covers: Packed frames.
-
 ## Packed frames
 
 ### Version 8 live wire

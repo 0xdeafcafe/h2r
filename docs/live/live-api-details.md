@@ -1,7 +1,5 @@
 # Live API: game art, clarifications, accounts, ranks and arbitration
 
-Part of [Live service API](live-api.md). Covers: Optional game art; Clarifications; Game and account details; Ranks; Arbitration.
-
 ## Optional game art
 
 A server may serve art extracted from its owner's own disc (`h2 live assets

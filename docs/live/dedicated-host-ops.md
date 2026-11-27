@@ -1,7 +1,5 @@
 # Dedicated host: data, routing, tunnel and providers
 
-Part of [Running Halo 2 as a dedicated host](dedicated-host.md). Covers: Game data bundle; Routing, assignment and arbitration; Host tunnel; Playerless lobby; Fly Machines provider.
-
 ## Game data bundle
 
 Build the bundle from your own Halo 2 disc image or an extracted DVD

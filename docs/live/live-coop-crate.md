@@ -1,7 +1,5 @@
 # Live co-op: the coop crate, probe and lobby
 
-Part of [Campaign co-op over Live (design; phase 0 slice, the phase 2 probe and Co-op over Live built)](live-coop.md). Covers: 8. The coop crate; 9.
-
 Probe (phase 2); 11. The retail lobby (co-op over Live, as the game's own co-op).
 
 ## 8. The coop crate
