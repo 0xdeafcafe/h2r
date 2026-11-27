@@ -22,6 +22,12 @@ h2 shader <map> '<shad tag name>' [--disc disc.iso]   # print one material
 h2 shader --all <map|all> [--disc disc.iso]           # validate; exit 1 on failure
 ```
 
+The one-material print lists each animated target with its binding bytes
+(`target`, `b1`, `b2`), its pixel destination, and per property reference
+the component, the property's input, period and curve (type, wave
+selectors, range, flags, the header's colour words and the sets), the
+inputs the native sampler reads (below, "Animated constants").
+
 Neither command writes anything. No tag bytes, names or dumps from the disc
 are stored in the repo, and the tests build invented tags in memory.
 
