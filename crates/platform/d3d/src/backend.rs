@@ -2342,6 +2342,13 @@ pub struct RecordingBackend {
     pub external: Vec<(u32, u32)>,
     /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
     pub external_sampled: Vec<Vec<Option<u32>>>,
+    /// Whether it queues independently resolved draws
+    /// ([`Backend::queue_external_draw`]) as a threaded backend does; off by
+    /// default. Queued, a draw commits at once and is recorded in
+    /// [`queued`](Self::queued).
+    pub queue_external_draws: bool,
+    /// The draws queued: each one's stage and range count, in order.
+    pub queued: Vec<(timeline::native::Stage, usize)>,
 }
 
 impl RecordingBackend {
@@ -2412,6 +2419,17 @@ impl RecordingBackend {
 }
 
 impl Backend for RecordingBackend {
+    fn queue_external_draw(
+        &mut self, candidate: QueuedExternalDraw<u32>, _textures: [Option<&u32>; 4],
+    ) -> bool {
+        if !self.queue_external_draws {
+            return false;
+        }
+        self.queued.push((candidate.plan.stage, candidate.plan.ranges));
+        (candidate.finished)(None);
+        true
+    }
+
     type Surface = u32;
     type Texture = u32;
 
