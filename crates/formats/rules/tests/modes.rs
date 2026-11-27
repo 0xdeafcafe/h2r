@@ -1077,6 +1077,47 @@ fn siege_lets_a_player_pick_a_loadout_row_of_their_tier() {
     );
 }
 
+/// A pick made while the player is alive, with no spawn after it, is the
+/// kit the next tick gives (the dialog opens at the spawn, the press comes
+/// after): each side's offer is its own picker, and its row sets its own
+/// table's kit.
+#[test]
+fn siege_equips_a_row_picked_after_the_spawn() {
+    let (ir, _) = siege(&[]);
+    let mut v: serde_json::Value = serde_json::from_str(SIEGE_LOADOUT_CHOICE).unwrap();
+    let ticks = v["ticks"].as_array_mut().unwrap();
+    ticks.truncate(6);
+    // The spawns at tick 0 only; the picks at tick 1 are the rows 1 of each side.
+    for t in [2, 4] {
+        ticks[t] = serde_json::json!({});
+    }
+    ticks[1] = serde_json::json!({"events": [
+        {"choose": {"slot": 0, "row": 1}},
+        {"choose": {"slot": 1, "row": 1}},
+        {"choose": {"slot": 0, "row": 2}},
+        {"choose": {"slot": 1, "row": 2}},
+    ]});
+    let s: Scenario = serde_json::from_value(v).unwrap();
+    let r = scenario::run(ir, &s).unwrap();
+    assert_eq!(r.script_error, None);
+    // Each side's offer is two rows in the first tier: the third is refused.
+    assert_eq!(r.refused_choices, [(1, 0, 2), (1, 1, 2)]);
+    let kits: Vec<(u32, Vec<Arg>)> =
+        calls(&r, "set_loadout").into_iter().map(|(t, a)| (t, a.to_vec())).collect();
+    let kit = |t: u32, p: u8, a: &str, b: &str| (t, vec![Arg::Player(Some(p)), tag(a), tag(b)]);
+    const BRUTE: &str = "objects/weapons/rifle/brute_plasma_rifle/brute_plasma_rifle";
+    const NEEDLER: &str = "objects/weapons/pistol/needler/needler";
+    assert_eq!(
+        kits,
+        [
+            kit(0, 0, BR, MAGNUM),
+            kit(0, 1, CARBINE, PLASMA_RIFLE),
+            kit(2, 0, SHOTGUN, MAGNUM),
+            kit(2, 1, BRUTE, NEEDLER),
+        ]
+    );
+}
+
 /// A phase-1 site held through phase 0 does nothing: no site is taken, no
 /// phase opens and no spawn moves.
 #[test]
