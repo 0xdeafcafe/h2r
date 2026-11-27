@@ -225,9 +225,17 @@ fn what_the_model_does_not_take_is_refused_by_name() {
     m.set_u16(SYSTEMS + 0x38 + 0xc, 1).unwrap();
     assert_eq!(refused(&m, call()), "local_space");
 
-    let mut m = world();
-    m.set_u32(TAG_TABLE + 0x20, PRT3).unwrap();
-    assert_eq!(refused(&m, call()), "nested");
+    let mut m = nested(PRT3);
+    m.set_u32(TAG_TABLE + 0x40, EFFE).unwrap();
+    assert_eq!(refused(&m, child()), "no_model", "the parent's particle tag is an effect");
+
+    let mut m = nested(PRT3);
+    m.set_u32(SINGLETONS[0].1, 0).unwrap();
+    assert_eq!(refused(&m, child()), "singleton_vtable");
+
+    let mut m = nested(PRT3);
+    m.set_u32(CHILD + 0x48, CHILD).unwrap();
+    assert_eq!(refused(&m, child()), "depth", "its own parent");
 
     let m = world();
     assert_eq!(refused(&m, Call { callback: 0x0022_43c0, ..call() }), "callback");
@@ -258,4 +266,74 @@ fn the_call_reads_its_four_arguments() {
         m.set_u32(esp + 4 + 4 * i as u32, v).unwrap();
     }
     assert_eq!(Call::at(&m, esp, STATE).unwrap(), call());
+}
+
+const CHILD: u32 = 0x004c_4500;
+const PARTICLE_DATA: u32 = 0x004c_4600;
+const CHILD_SYSTEMS: u32 = 0x004c_4700;
+
+/// [`world`]'s emitters and particles under a child system of `group`
+/// (`prt3` or `PRTM`, tag entry 3): its parent is [`world`]'s system,
+/// whose definition names the particle tag entry 4 (of `group`), whose
+/// systems block holds the child's definition at index 1.
+fn nested(group: u32) -> FlatMemory {
+    let mut m = world();
+    m.set_u32(TAG_TABLE + 0x30, group).unwrap();
+    m.set_u32(TAG_TABLE + 0x40, group).unwrap();
+    m.set_u32(TAG_TABLE + 0x48, PARTICLE_DATA).unwrap();
+    m.set_u32(CHILD + 0x10, 0x5678_0003).unwrap();
+    m.set_u16(CHILD + 0xe, 1).unwrap();
+    m.set_u32(CHILD + 0x48, SYSTEM).unwrap();
+    m.set_u32(CHILD + 4, f(0.75)).unwrap();
+    m.set_u32(SYSTEMS + 0x38 + 4, 0x9abc_0004).unwrap();
+    let block = if group == PRT3 { 0x88 } else { 0x7c };
+    m.set_u32(PARTICLE_DATA + block, CHILD_SYSTEMS).unwrap();
+    m.set_u32(CHILD_SYSTEMS + 0x38 + 0x34, EMITTER_DEFS).unwrap();
+    // The parent's own systems no longer hold the emitters.
+    m.set_u32(SYSTEMS + 0x38 + 0x34, 0x0100_0000).unwrap();
+    for (_, object, vtable, _) in SINGLETONS {
+        m.set_u32(object, vtable).unwrap();
+    }
+    m
+}
+
+fn child() -> Call {
+    Call { system: CHILD, ..call() }
+}
+
+#[test]
+fn a_child_system_walks_its_parents_particles_systems() {
+    let plain = walk(&world(), call(), MXCSR, CW).unwrap();
+    for (group, singleton) in [(PRT3, SINGLETONS[0].1), (PRTM, SINGLETONS[1].1)] {
+        let w = walk(&nested(group), child(), MXCSR, CW).unwrap();
+        let order: Vec<u32> = w.emitted.iter().map(|e| e.particle).collect();
+        assert_eq!(order, [particle_at(3), particle_at(1), particle_at(2)], "{group:#x}");
+        let sizes = |w: &Walk| w.emitted.iter().map(|e| e.size).collect::<Vec<_>>();
+        assert_eq!(sizes(&w), sizes(&plain), "{group:#x}: the same emitters");
+        assert_eq!(written(&w, STATE + 0x48), Some(CHILD));
+        assert_eq!(written(&w, singleton + 4), Some(0x9abc_0004), "{group:#x}: the singleton takes the tag");
+        assert_eq!(written(&w, singleton + 8), Some(PARTICLE_DATA), "and its data");
+    }
+}
+
+#[test]
+fn a_childs_child_goes_through_both_parents() {
+    let mut m = nested(PRT3);
+    // A grandchild of PRTM tag entry 5, its parent the child: the child's
+    // definition names entry 5, whose model's systems hold it at 0.
+    const GRANDCHILD: u32 = 0x004c_4800;
+    const MODEL_DATA: u32 = 0x004c_4900;
+    const MODEL_SYSTEMS: u32 = 0x004c_4a00;
+    m.set_u32(TAG_TABLE + 0x50, PRTM).unwrap();
+    m.set_u32(TAG_TABLE + 0x58, MODEL_DATA).unwrap();
+    m.set_u32(GRANDCHILD + 0x10, 0x0001_0005).unwrap();
+    m.set_u32(GRANDCHILD + 0x48, CHILD).unwrap();
+    m.set_u32(CHILD_SYSTEMS + 0x38 + 4, 0x0002_0005).unwrap();
+    m.set_u32(MODEL_DATA + 0x7c, MODEL_SYSTEMS).unwrap();
+    m.set_u32(MODEL_SYSTEMS + 0x34, EMITTER_DEFS).unwrap();
+    let w = walk(&m, Call { system: GRANDCHILD, ..call() }, MXCSR, CW).unwrap();
+    assert_eq!(w.emitted.len(), 3);
+    assert_eq!(written(&w, SINGLETONS[0].1 + 4), Some(0x9abc_0004), "the child's lookup");
+    assert_eq!(written(&w, SINGLETONS[1].1 + 4), Some(0x0002_0005), "then the grandchild's");
+    assert_eq!(written(&w, SINGLETONS[1].1 + 8), Some(MODEL_DATA));
 }

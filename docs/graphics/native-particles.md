@@ -518,7 +518,8 @@ clamp flags) give each fragment the depth the guest's programs store
 `engine::particle_walk::walk` models the walk `0x00175610(system,
 location, callback, draw)`, EDI the input block, to its return. It makes
 each callback's arguments in the guest's order without calling the
-callback, and the input block's writes; nothing is written to the guest.
+callback, and the walk's writes (the input block's and, for a child
+system, the particle-model singleton's); nothing is written to the guest.
 `render_bridge::particle_births` turns them into births through
 `particle_mirror::spawn` and batches a run of one `Key` (one tint and
 size); the host builds each batch's system with `particle_mirror::owned`.
@@ -541,7 +542,7 @@ flowchart LR
 
 | Step | What it does |
 |---|---|
-| births | `particle_births::births`: the batches and the block's writes, nothing written yet |
+| births | `particle_births::births`: the batches and the walk's writes, nothing written yet |
 | accept | the host (`native_particle_systems` in the game) builds each `Key`'s system once a map, or names why not |
 | answer | the writes go to the guest and the walk returns `ret 0x10` without running: the callback never runs, so nothing reaches the D3D emitter, the admission or the effects mirror |
 | refuse | any `Err` runs the guest's walk; nothing is written |
@@ -574,6 +575,7 @@ flowchart LR
 | Step | Guest | Model |
 |---|---|---|
 | definition | `0x001751d0`: the tag of `system + 0x10`; an `effe`'s event `system + 0x14`, a `bsdt`'s `+0x18` block; system `+0xe`, stride 0x38 | `definition` |
+| child system | a `prt3` or `PRTM` tag: the parent `system + 0x48`'s definition (the same lookup, up to 64 deep), its particle tag `+4`; `0x00137bd0` sets that group's singleton's `+4` tag and `+8` data, `[vtable+0x1c]` the system `+0xe` of `prt3 + 0x88` or `PRTM + 0x7c` | `definition`, the singleton writes among the walk's |
 | block records | a new system, location or particle takes `+0x48`, `+0x4c`, `+0x50` and clears inputs `0x670`, `0x13080`, `0xf80f` | the same writes |
 | emitters | `[0x51ec88] + 0x44`, stride 0x4c: `+4` the first particle, `+8` the next; their definitions the system's `+0x34`, stride 0xb8. One with no particle is passed by unevaluated | the same order |
 | emitter inputs | `+0xb4 & 0x107f0` (`0x00173ba0`, `0x00248df0` cases 4 to 10 and 16: system `+4`, `+0x28`, `+0x2c`, location `+0x1c`, the clock `[0x510c54]`, `[0x4ea93c]` records `+0x6c`, `+0x70`, location byte 3) | `Model::cache` |
@@ -588,14 +590,18 @@ evaluated:
 |---|---|
 | `scale` | `system + 0xc` bit 10: the size scale is `0x0003eb70`'s, not 1 |
 | `local_space` | definition `+0xc`: positions go through `0x00248450` |
-| `nested` | a `prt3` or `PRTM` group: `0x001751d0` finds the definition through a vtable |
+| `no_model` | a child system whose parent's particle tag is neither `prt3` nor `PRTM`: `0x00137bd0` answers 0 and the guest calls through it |
+| `singleton_vtable` | a particle-model singleton (`0x00479868` `prt3`, `0x00479874` `PRTM`) whose vtable is not the retail one (`0x004535f0`, `0x00453598`) |
+| `depth` | more than 64 parents: a cycle |
 | `callback` | not `0x00224550`, whose input caching the next particle reads |
 | `unbounded` | more than 65,536 emitters and particles: a cycle in a list |
 
 `tests/particle_walk_differential.rs` runs the lifted walk with the
-lifted callback from seeded states and checks every callback's
-arguments, its inputs at the emitter call and the block at the return
-against the model, and that each named refusal reaches the call it names.
+lifted callback from seeded states (`effe` and `bsdt` systems, and child
+systems one and two parents deep) and checks every callback's
+arguments, its inputs at the emitter call, the block and the singletons
+at the return against the model, and that `scale` and `local_space`
+reach the call they name.
 
 Particles are visual only. A system's state is in its own buffers; nothing
 reads or writes the sim arena or enters its hash. The CPU evaluator is a

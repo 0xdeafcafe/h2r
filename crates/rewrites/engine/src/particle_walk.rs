@@ -11,8 +11,13 @@
 //! 1. A new `system` takes the block's `+0x48` and clears inputs `0x670`;
 //!    a new `location` takes `+0x4c` and clears `0x13080`. `0x001751d0`
 //!    finds the system's definition (stride 0x38) through the tag of
-//!    `system + 0x10`: an `effe`'s event `+0x14` and system `+0xe`, or a
-//!    breakable surface's (`bsdt`) system `+0xe` of its `+0x18` block.
+//!    `system + 0x10`: an `effe`'s event `+0x14` and system `+0xe`, a
+//!    breakable surface's (`bsdt`) system `+0xe` of its `+0x18` block, or,
+//!    for a particle's (`prt3`) or particle model's (`PRTM`) child system,
+//!    its parent's (`system + 0x48`) definition's particle tag (`+4`),
+//!    whose singleton (`0x00137bd0`) the guest points at that tag and
+//!    asks (`[vtable+0x1c]`) for its system `+0xe`: `prt3` `+0x88`,
+//!    `PRTM` `+0x7c`.
 //! 2. The emitters: from `location + 4` through `[0x51ec88]` (stride
 //!    0x4c, `+4` the first particle, `+8` the next emitter), beside the
 //!    definition's emitters (`+0x34`, stride 0xb8). An emitter with no
@@ -30,9 +35,10 @@
 //!
 //! Refused by name, before any emitter is evaluated: a system that scales
 //! its size by `0x0003eb70` (`system + 0xc` bit 10), a local-space system
-//! (definition `+0xc`, transformed by `0x00248450`), a definition the
-//! resolver finds through another particle system (`prt3`, `PRTM`), and a
-//! callback other than `0x00224550`, whose input caching ([`walk`]
+//! (definition `+0xc`, transformed by `0x00248450`), a child system
+//! whose parent's particle tag has no singleton or a singleton with
+//! another vtable, and a callback other than `0x00224550`, whose input
+//! caching ([`walk`]
 //! models it, `particle_emission`'s step 1) the next particle reads.
 
 use std::collections::BTreeMap;
@@ -94,8 +100,9 @@ pub struct Emitted {
     pub packed: u32,
 }
 
-/// The walk's answer: the callbacks in order and every byte of the input
-/// block it and the callbacks' input caching write. The callback's
+/// The walk's answer: the callbacks in order and every byte the walk
+/// writes: the input block's, the callbacks' input caching and a child
+/// system's singleton tag and data ([`SINGLETONS`]). The callback's
 /// sequence store (`draw + 8`) is not among them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Walk {
@@ -110,9 +117,14 @@ pub enum Refused {
     Scale,
     /// The definition's `+0xc`: positions go through `0x00248450`.
     LocalSpace,
-    /// The resolver's group is a particle system's (`prt3`, `PRTM`): its
-    /// definition comes through a vtable.
-    Nested(u32),
+    /// A child system's parent definition names a tag that is not a
+    /// particle (`prt3`) or particle model (`PRTM`): `0x00137bd0` answers
+    /// 0 and the guest calls through it.
+    NoModel(u32),
+    /// A particle-model singleton whose vtable is not the retail one.
+    SingletonVtable(u32),
+    /// More than [`DEPTH`] parents: a cycle.
+    Depth,
     /// The callback is not `0x00224550`.
     Callback(u32),
     /// More than [`LIMIT`] emitters and particles.
@@ -139,7 +151,9 @@ impl Refused {
         match self {
             Refused::Scale => "scale",
             Refused::LocalSpace => "local_space",
-            Refused::Nested(_) => "nested",
+            Refused::NoModel(_) => "no_model",
+            Refused::SingletonVtable(_) => "singleton_vtable",
+            Refused::Depth => "depth",
             Refused::Callback(_) => "callback",
             Refused::Unbounded => "unbounded",
             Refused::Eval(e) => pe::refusal(e),
@@ -153,22 +167,59 @@ const PRT3: u32 = 0x7072_7433;
 /// Breakable surfaces: their `+0x18` block holds the systems directly.
 const BSDT: u32 = 0x6273_6474;
 
-/// `0x001751d0`: the system's definition, 0 for a group it does not read.
-fn definition(x: &Model<'_>, system: u32) -> Result<u32, Refused> {
+/// The particle-model singletons (`0x00137bd0`): group, object, retail
+/// vtable. The object's `+4` and `+8` take the tag and its data
+/// (`[vtable+0x50]`); `[vtable+0x1c]` is its systems block element.
+pub const SINGLETONS: [(u32, u32, u32, u32); 2] = [
+    // `0x002243a0`, `0x00224260`: the particle's `+0x88`.
+    (PRT3, 0x0047_9868, 0x0045_35f0, 0x88),
+    // `0x00224d40`: the particle model's `+0x7c`.
+    (PRTM, 0x0047_9874, 0x0045_3598, 0x7c),
+];
+/// Parents a child system's definition is followed through at most.
+pub const DEPTH: u32 = 64;
+
+fn tag_group(x: &Model<'_>, tag: u32) -> Result<u32, Refused> {
     let tags = x.u32(TAGS)?;
+    Ok(x.u32(tags.wrapping_add((tag as u16 as i16 as i32 as u32).wrapping_mul(16)))?)
+}
+
+fn tag_data(x: &Model<'_>, tag: u32) -> Result<u32, Refused> {
+    let tags = x.u32(TAGS)?;
+    Ok(x.u32(tags.wrapping_add((tag & 0xffff).wrapping_mul(16)).wrapping_add(8))?)
+}
+
+/// `0x001751d0` (ECX `system`): the system's definition, as the guest
+/// finds it, its singleton writes made in `x`; 0 for a group it does not
+/// read.
+fn definition(x: &mut Model<'_>, system: u32, depth: u32) -> Result<u32, Refused> {
+    if depth > DEPTH {
+        return Err(Refused::Depth);
+    }
     let tag = x.u32(system.wrapping_add(0x10))?;
-    let entry = |i: u32| tags.wrapping_add(i.wrapping_mul(16));
-    let group = x.u32(entry(tag as u16 as i16 as i32 as u32))?;
-    let data = || x.u32(entry(tag & 0xffff).wrapping_add(8));
-    let index = || -> Result<u32, Refused> { Ok(u32::from(x.u16(system.wrapping_add(0xe))?).wrapping_mul(0x38)) };
-    Ok(match group {
+    let index = u32::from(x.u16(system.wrapping_add(0xe))?).wrapping_mul(0x38);
+    Ok(match tag_group(x, tag)? {
         EFFE => {
             let event = x.u32(system.wrapping_add(0x14))?.wrapping_mul(0x38);
-            let events = x.u32(data()?.wrapping_add(0x18))?;
-            x.u32(events.wrapping_add(event).wrapping_add(0x34))?.wrapping_add(index()?)
+            let events = x.u32(tag_data(x, tag)?.wrapping_add(0x18))?;
+            x.u32(events.wrapping_add(event).wrapping_add(0x34))?.wrapping_add(index)
         }
-        BSDT => x.u32(data()?.wrapping_add(0x18))?.wrapping_add(index()?),
-        PRTM | PRT3 => return Err(Refused::Nested(group)),
+        BSDT => x.u32(tag_data(x, tag)?.wrapping_add(0x18))?.wrapping_add(index),
+        PRTM | PRT3 => {
+            let parent = x.u32(system.wrapping_add(0x48))?;
+            let parent = definition(x, parent, depth + 1)?;
+            let particle = x.u32(parent.wrapping_add(4))?;
+            let group = tag_group(x, particle)?;
+            let &(_, object, vtable, block) =
+                SINGLETONS.iter().find(|s| s.0 == group).ok_or(Refused::NoModel(group))?;
+            if x.u32(object)? != vtable {
+                return Err(Refused::SingletonVtable(object));
+            }
+            let data = tag_data(x, particle)?;
+            x.m.set_u32(object + 4, particle)?;
+            x.m.set_u32(object + 8, data)?;
+            x.u32(data.wrapping_add(block))?.wrapping_add(index)
+        }
         _ => 0,
     })
 }
@@ -205,7 +256,7 @@ impl Properties {
 pub fn walk(m: &dyn GuestMemory, call: Call, mxcsr: u32, fcw: u16) -> Result<Walk, Refused> {
     let mut x = Model::new(m, mxcsr, fcw)?;
     let Call { system, location, callback, draw, state } = call;
-    let def = definition(&x, system)?;
+    let def = definition(&mut x, system, 0)?;
     if system != x.u32(state + 0x48)? {
         let c = x.u32(state + 0x44)?;
         x.m.set_u32(state + 0x48, system)?;

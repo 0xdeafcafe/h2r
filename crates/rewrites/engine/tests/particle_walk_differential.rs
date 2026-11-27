@@ -5,12 +5,14 @@
 //! callback entry the seven arguments (the vectors read through) must be
 //! the model's [`Emitted`], at each emitter call the block's sixteen inputs
 //! its `inputs`, and at the return the input block and every seeded record
-//! the model's (its writes applied). A walk the model refuses by name must
-//! reach what it names (`0x0003eb70`, `0x00248450`, `0x001751d0`'s
-//! nested branch `0x00175249`) before any callback.
+//! the model's (its writes applied), the particle-model singletons among
+//! them. A walk the model refuses by name must reach what it names
+//! (`0x0003eb70`, `0x00248450`) before any callback.
 //!
-//! Each case seeds an `effe` or `bsdt` system (now and then a `prt3`, a
-//! scaled or a local-space one), up to three emitters of up to four
+//! Each case seeds an `effe` or `bsdt` system, often under one or two
+//! `prt3` or `PRTM` parents (a child system: `0x001751d0` asks the
+//! parent's particle tag's singleton for its systems block), now and then
+//! a scaled or a local-space one, up to three emitters of up to four
 //! particles each, emitter properties per emitter or per particle reading
 //! any input, the input block's cache and records, the clock, the record
 //! table and the view, and a definition the callback reads its inputs for,
@@ -41,8 +43,6 @@ const STEP_LIMIT: u64 = 4_000_000;
 /// The calls a named refusal stands for.
 const SCALE: u32 = 0x0003_eb70;
 const TRANSFORM: u32 = 0x0024_8450;
-/// `0x001751d0`'s branch for a `prt3` or `PRTM` group.
-const NESTED: u32 = 0x0017_5249;
 
 const DEF: u32 = 0x0300_0000;
 const STATE: u32 = 0x0301_0000;
@@ -50,9 +50,14 @@ const DRAW: u32 = 0x0302_0000;
 const BLOBS: u32 = 0x0303_0000;
 const SYSTEM: u32 = 0x0304_0000;
 const LOCATION: u32 = 0x0304_0100;
+/// A child system's parent and its parent.
+const PARENT: u32 = 0x0304_0200;
+const GRANDPARENT: u32 = 0x0304_0300;
 const TAG_TABLE: u32 = 0x0305_0000;
 const TAG_DATA: u32 = 0x0305_0100;
 const EVENTS: u32 = 0x0305_0200;
+/// The particle tags' data: `prt3` `+0x88` and `PRTM` `+0x7c` the systems.
+const PARTICLE_DATA: u32 = 0x0305_0300;
 const SYSTEMS: u32 = 0x0305_0400;
 const EMITTER_DEFS: u32 = 0x0306_0000;
 const HEADERS: u32 = 0x0307_0000;
@@ -61,12 +66,16 @@ const PARTICLE_ARRAY: u32 = 0x0307_2000;
 const CLOCK: u32 = 0x0308_0000;
 const RECORD_TABLE: u32 = 0x0308_1000;
 /// The seeded records: each compared whole after the run.
-const REGIONS: [(u32, u32); 14] = [
+const REGIONS: [(u32, u32); 18] = [
     (DEF, 0x100),
     (STATE, 0x60),
     (DRAW, 0x10),
-    (SYSTEM, 0x40),
+    (SYSTEM, 0x50),
     (LOCATION, 0x40),
+    (PARENT, 0x50),
+    (GRANDPARENT, 0x50),
+    (PARTICLE_DATA, 0x90),
+    (pw::SINGLETONS[0].1, 0x18),
     (TAG_TABLE, 0x40),
     (TAG_DATA, 0x20),
     (EVENTS, 0x80),
@@ -274,7 +283,8 @@ fn chain(a: &mut FlatMemory, r: &mut Rng, indices: &[u32], record: impl Fn(u32) 
     indices.first().map_or(u32::MAX, |&i| i | (r.below(4) << 16))
 }
 
-fn case(image: &FlatMemory, r: &mut Rng) -> FlatMemory {
+/// A case's state and the parents its system's definition goes through.
+fn case(image: &FlatMemory, r: &mut Rng) -> (FlatMemory, u32) {
     let mut a = image.clone();
     let mut blob = BLOBS;
     let mut next_blob = || {
@@ -296,31 +306,63 @@ fn case(image: &FlatMemory, r: &mut Rng) -> FlatMemory {
     put(&mut a, DRAW, DEF);
     put(&mut a, DRAW + 0xc, r.float());
 
-    // The tag and the system's definition.
+    // The tags and the system's definition. Entry 0 the root's (`effe`
+    // or `bsdt`), entry 1 a child system's (`prt3` or `PRTM`), entries 2
+    // and 3 the particle tags the systems name at `+4`, one of each group.
+    const PRT3: u32 = 0x7072_7433;
+    const PRTM: u32 = 0x5052_544d;
     put(&mut a, TAGS, TAG_TABLE);
-    let tag = r.below(3);
-    let group = match r.below(16) {
-        0 => 0x7072_7433,
-        1..=5 => 0x6273_6474,
-        _ => 0x6566_6665,
-    };
-    put(&mut a, TAG_TABLE + 16 * tag, group);
-    put(&mut a, TAG_TABLE + 16 * tag + 8, TAG_DATA);
-    put(&mut a, TAG_DATA + 0x18, if group == 0x6566_6665 { EVENTS } else { SYSTEMS });
+    let root = if r.chance(3) { 0x6273_6474 } else { 0x6566_6665 };
+    put(&mut a, TAG_TABLE, root);
+    put(&mut a, TAG_TABLE + 8, TAG_DATA);
+    put(&mut a, TAG_TABLE + 16, if r.chance(2) { PRT3 } else { PRTM });
+    let models = if r.chance(2) { [PRT3, PRTM] } else { [PRTM, PRT3] };
+    for (i, g) in models.into_iter().enumerate() {
+        let entry = TAG_TABLE + 16 * (2 + i as u32);
+        put(&mut a, entry, g);
+        put(&mut a, entry + 8, PARTICLE_DATA);
+    }
+    put(&mut a, PARTICLE_DATA + 0x7c, SYSTEMS);
+    put(&mut a, PARTICLE_DATA + 0x88, SYSTEMS);
+    for (_, object, vtable, _) in pw::SINGLETONS {
+        put(&mut a, object, vtable);
+        put(&mut a, object + 4, r.u32());
+        put(&mut a, object + 8, r.u32());
+    }
+    put(&mut a, TAG_DATA + 0x18, if root == 0x6566_6665 { EVENTS } else { SYSTEMS });
     for e in 0..2 {
         put(&mut a, EVENTS + 0x38 * e + 0x34, SYSTEMS);
     }
-    for o in (0..0x40).step_by(4) {
+    let depth = match r.below(10) {
+        0..=3 => 1,
+        4 | 5 => 2,
+        _ => 0,
+    };
+    let chain = [SYSTEM, PARENT, GRANDPARENT];
+    for &at in &chain[1..] {
+        for o in (0..0x50).step_by(4) {
+            let v = if r.chance(2) { r.u32() } else { r.float() };
+            put(&mut a, at + o, v);
+        }
+    }
+    for o in (0..0x50).step_by(4) {
         let v = if r.chance(2) { r.u32() } else { r.float() };
         put(&mut a, SYSTEM + o, v);
     }
     put16(&mut a, SYSTEM + 0xc, if r.chance(8) { 0x400 } else { r.u32() as u16 & !0x400 });
-    put16(&mut a, SYSTEM + 0xe, r.below(2) as u16);
-    put(&mut a, SYSTEM + 0x10, tag | (r.below(0x1000) << 16));
-    put(&mut a, SYSTEM + 0x14, r.below(2));
     put(&mut a, SYSTEM + 0x18, if r.chance(4) { u32::MAX } else { r.below(4) | (r.below(4) << 16) });
+    for (level, &at) in chain.iter().enumerate().take(depth as usize + 1) {
+        let entry = if level == depth as usize { 0 } else { 1 };
+        put16(&mut a, at + 0xe, r.below(2) as u16);
+        put(&mut a, at + 0x10, entry | (r.below(0x1000) << 16));
+        put(&mut a, at + 0x14, r.below(2));
+        if level < depth as usize {
+            put(&mut a, at + 0x48, chain[level + 1]);
+        }
+    }
     for s in 0..2 {
         let d = SYSTEMS + 0x38 * s;
+        put(&mut a, d + 4, (2 + r.below(2)) | (r.below(0x1000) << 16));
         put16(&mut a, d + 0xc, if r.chance(8) { 1 } else { 0 });
         put(&mut a, d + 0x34, EMITTER_DEFS);
     }
@@ -385,7 +427,7 @@ fn case(image: &FlatMemory, r: &mut Rng) -> FlatMemory {
     let first = word(&a, EMITTER_ARRAY + 0x4c * eids.first().copied().unwrap_or(0) + 4);
     let first = PARTICLE_ARRAY + 0x40 * (first & 0xffff);
     put(&mut a, STATE + 0x50, if r.chance(3) { first } else { r.u32() });
-    a
+    (a, depth)
 }
 
 #[test]
@@ -406,13 +448,13 @@ struct Seen {
 
 fn run(lifted: &mut Lifted<'_>, c: &mut Cpu, a: &mut FlatMemory) -> Result<Seen, String> {
     let mut seen = Seen { calls: Vec::new(), inputs: Vec::new(), named: None };
-    let exits = [pe::ENTRY, EMIT, SCALE, TRANSFORM, NESTED, HARNESS_EXIT];
+    let exits = [pe::ENTRY, EMIT, SCALE, TRANSFORM, HARNESS_EXIT];
     loop {
         let pc = lifted.run(c, a, &exits)?;
         let esp = c.gpr[4];
         match pc {
             HARNESS_EXIT => return Ok(seen),
-            SCALE | TRANSFORM | NESTED if seen.calls.is_empty() => {
+            SCALE | TRANSFORM if seen.calls.is_empty() => {
                 seen.named = Some(pc);
                 return Ok(seen);
             }
@@ -444,7 +486,7 @@ fn cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
     for seed in seeds() {
         for n in 0..512u32 {
             let mut r = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ n as u64);
-            let mut a = case(image, &mut r);
+            let (mut a, depth) = case(image, &mut r);
             let (mx, cw) = (mxcsr(&mut r), x87_control(&mut r));
             let esp = STACK_TOP - 0x400;
             put(&mut a, esp, HARNESS_EXIT);
@@ -465,12 +507,8 @@ fn cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let ran = run(&mut lifted, &mut c, &mut a);
             let want = match (want, ran) {
                 (Ok(w), Ok(s)) if s.named.is_none() => (w, s),
-                (Err(e @ (Refused::Scale | Refused::LocalSpace | Refused::Nested(_))), ran) => {
-                    let call = match e {
-                        Refused::Scale => SCALE,
-                        Refused::LocalSpace => TRANSFORM,
-                        _ => NESTED,
-                    };
+                (Err(e @ (Refused::Scale | Refused::LocalSpace)), ran) => {
+                    let call = if e == Refused::Scale { SCALE } else { TRANSFORM };
                     let named = ran.map(|s| s.named);
                     assert_eq!(named, Ok(Some(call)), "seed {seed} case {n}: {e:?} is the original's call");
                     *seen.entry(e.name()).or_default() += 1;
@@ -513,10 +551,13 @@ fn cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 _ => "particles",
             };
             *seen.entry(shape).or_default() += 1;
+            if depth > 0 && !w.emitted.is_empty() {
+                *seen.entry(["nested", "nested twice"][depth as usize - 1]).or_default() += 1;
+            }
         }
     }
     eprintln!("walk: all equal; {seen:#?}");
-    for k in ["no particle", "particles", "scale", "local_space", "nested"] {
+    for k in ["no particle", "particles", "scale", "local_space", "nested", "nested twice"] {
         assert!(seen.contains_key(k), "{k} never seen: widen the states");
     }
 }
