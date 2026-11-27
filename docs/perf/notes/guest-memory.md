@@ -14,6 +14,35 @@ Notes that cite entries: [menu-budget.md](menu-budget.md),
 [gameplay-budget.md](gameplay-budget.md). Experiments that lost are in
 [not-adopted.md](not-adopted.md).
 
+## Cold accesses at the main menu (2026-11-27)
+
+Why guest accesses take `h2_access_cold` at the main menu, before and after
+the RAM gate is lent across direct calls (`H2Direct.gate`; before: base
+`ccf9fe7c8`, after: the commit that lends it, on branch `access-cold`).
+Clang image, `H2_OPT=2`, `H2_COLD_STATS=1` for both `h2 build` and
+`h2 serve`; a headless `h2 serve` with fresh data, about 90 s of the menu.
+The counts are the last `h2gen cold accesses` line the serve printed
+(every 2^22 cold calls), with the game ticks at the end of the run.
+
+| Cause | Before | After |
+|---|---:|---:|
+| entry | 16,491,824 | 19,109,333 |
+| lent-entry | 122,351,947 | 2,638,970 |
+| after-dcall | 106,622,185 | 12,047,350 |
+| drop | 2,531,617 | 2,995,650 |
+| tick | 3,612,710 | 5,098,256 |
+| miss | 47,957 | 53,481 |
+| all (no-gate on top) | 251,658,240 (23,995) | 41,943,040 (26,757) |
+| ticks at the end | 1,395 | 1,549 |
+
+About 180,000 cold accesses a tick before and 27,000 after. Before, a
+direct callee's first access (lent-entry, 49%) and its caller's first
+after the call (after-dcall, 42%) were nine in ten. After, the largest
+causes are a handler entered by the runner (46%) and a call whose callee
+handed back no hold (29%: it dropped the gate for a runtime call, or the
+hold ran out of trips). Frame time was not compared: the machine was
+loaded.
+
 ## Handler entry and exit: gate at entry, inline charge, dirty bits (2026-11-18)
 
 Three generated-code switches and one x87 experiment, all off when this

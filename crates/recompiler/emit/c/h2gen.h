@@ -505,7 +505,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     h2_exit:                                                                    \
     H2_EPILOGUE_BODY()
 #define H2_EPILOGUE_BODY()                                                      \
-    H2_GATE_DROP();                                                             \
+    H2_GATE_OUT_();                                                             \
     H2_EXIT_EARLY_();                                                           \
     H2_SPILL_HOMED_();                                                          \
     /* Canonical EFLAGS has bit 1 set even where the handler left it alone. */ \
@@ -590,6 +590,26 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_EXIT_EARLY_() H2_ACC_FLUSH()
 #define H2_EXIT_LATE_() H2_FAST_RELEASE()
 #endif
+/* The hold on the RAM gate on a way out. A handler that runs on a lent
+ * view hands its hold back to the direct caller (H2Direct.gate, 0: none),
+ * which takes it back as its own, so neither the callee's first access
+ * nor the caller's first after the call takes the gate again. Every other
+ * handler drops it, so the runner never sees it held. H2_EXIT_ runs before
+ * the epilogue: with a lent view it leaves the hold to the epilogue's
+ * hand-back. */
+#if H2_LEND_VIEW_
+#define H2_GATE_OUT_()                                                          \
+    do {                                                                        \
+        if (H2_LENT_()) h2_direct(ctx)->gate = h2g_.held;                       \
+        else H2_GATE_DROP();                                                    \
+    } while (0)
+#define H2_EXIT_GATE_() ((void)0)
+#define H2_HANDUP_GATE_() H2_GATE_OUT_()
+#else
+#define H2_GATE_OUT_() H2_GATE_DROP()
+#define H2_EXIT_GATE_() H2_GATE_DROP()
+#define H2_HANDUP_GATE_() ((void)0)
+#endif
 /* A hand-up (H2_DIRECT_HANDUP) releases the view unless it was lent. */
 #if H2_LEND_VIEW_
 #define H2_HANDUP_RELEASE_()                                                    \
@@ -602,7 +622,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 
 #define H2_EXIT_(kind, route, target, resume, event, eip)                       \
     do {                                                                        \
-        H2_GATE_DROP();                                                         \
+        H2_EXIT_GATE_();                                                        \
         x_kind = (kind); x_route = (route); x_target = (target);                \
         x_resume = (resume); x_event = (event); x_eip = (eip);                  \
         goto h2_exit;                                                           \
@@ -1015,6 +1035,10 @@ typedef struct H2Direct {
      * one, an inline return takes it back, a hand-up leaves it for the
      * runner to replay. cap: its limit. */
     uint32_t depth, cap;
+    /* gate: a hold on the RAM gate (H2Gate.held, its trips so far) lent
+     * with `view`, or handed back by the callee on its way out; 0: none.
+     * The host-call thunk releases a hold lent to it and hands none back. */
+    uint32_t gate, pad;
     H2DirectFrame frames[H2_DIRECT_MAX_DEPTH];
     /* The view a direct caller lends the handler it is about to invoke
      * (module feature H2GEN_FEATURE_DIRECT_VIEW): taken, and cleared, on
@@ -1023,7 +1047,7 @@ typedef struct H2Direct {
 } H2Direct;
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(H2DirectFrame) == 16, "direct layout");
-_Static_assert(sizeof(H2Direct) == 48 + 16 * 64 + 8, "direct layout");
+_Static_assert(sizeof(H2Direct) == 56 + 16 * 64 + 8, "direct layout");
 #endif
 static inline H2Direct *h2_direct(ExecCtxOpaque *ctx) {
     H2Direct *d;
@@ -1038,18 +1062,52 @@ static inline H2FastAccess *h2_view_borrow(ExecCtxOpaque *ctx) {
     if (f) d->view = NULL;
     return f;
 }
+/* And the hold lent with it (0: none), adopted as this handler's own. */
+static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
+    if (!lent) return 0u;
+    H2Direct *d = h2_direct(ctx);
+    uint32_t held = d->gate;
+    d->gate = 0u;
+    return held;
+}
 #define H2_VIEW_LOCALS_()                                                       \
     H2FastAccess *const h2_lent_ = h2_view_borrow(ctx);                         \
     H2FastAccess *h2_mem_ = h2_lent_ ? h2_lent_ : h2abi_v1_fast_acquire(ctx);   \
-    H2Gate h2g_ = {.dirtied = UINT32_MAX};                                       \
+    H2Gate h2g_ = {.held = h2_gate_borrow(ctx, h2_lent_), .dirtied = UINT32_MAX}; \
+    if (h2g_.held) h2g_.data = &h2_lent_->memory->data;                         \
     H2_COLD_WHY(h2g_, h2_lent_ ? H2C_LENT_ENTRY : H2C_ENTRY);                   \
     (void)h2_mem_
-#define H2_LEND_(d) ((d)->view = h2_mem_)
+/* Lend the view and the hold (the callee owns it now); take back what the
+ * callee handed back. */
+#define H2_LEND_(d) ((d)->view = h2_mem_, (d)->gate = h2g_.held, h2g_.held = 0u)
+#define H2_TAKE_BACK_(d)                                                        \
+    do {                                                                        \
+        uint32_t h_ = (d)->gate;                                                \
+        (d)->gate = 0u;                                                         \
+        if (h_) {                                                               \
+            h2_gate_adopt(&h2g_, &h2_mem_->memory->data);                        \
+            h2g_.held = h_;                                                     \
+        }                                                                       \
+    } while (0)
+/* Before a direct call: the call is one more trip of the hold (a waiting
+ * Rust guard ends it here, as at a loop header), and the count is settled
+ * under it (with a view the charge is an inline spend, no call). */
+#define H2_DCALL_GATE_()                                                        \
+    do {                                                                        \
+        H2_GATE_TICK_();                                                        \
+        H2_ACC_FLUSH();                                                         \
+    } while (0)
 #define H2_LENT_() (h2_lent_ != 0)
 #else
 #define H2_VIEW_LOCALS_() H2_FAST_LOCALS()
 #define H2_LENT_() 0
 #define H2_LEND_(d) ((void)0)
+#define H2_TAKE_BACK_(d) ((void)0)
+#define H2_DCALL_GATE_()                                                        \
+    do {                                                                        \
+        H2_GATE_DROP();                                                         \
+        H2_ACC_FLUSH();                                                         \
+    } while (0)
 #endif
 
 /* ---- Handler parts (emit::c::Split). A handler whose C is
@@ -1079,11 +1137,6 @@ static inline H2FastAccess *h2_view_borrow(ExecCtxOpaque *ctx) {
 #define H2_PART_LENT() (void)ctx
 #define H2_PART_RELEND() ((void)0)
 #endif
-#define H2_DCALL_GATE_()                                                        \
-    do {                                                                        \
-        H2_GATE_DROP();                                                         \
-        H2_ACC_FLUSH();                                                         \
-    } while (0)
 /* The runner's safe point would do nothing, and it has a transfer left:
  * the whole preempt word, IRQ_QUEUED included, is zero. */
 static inline int h2_direct_quiet(const H2Direct *d, ExecCtxOpaque *ctx) {
@@ -1150,6 +1203,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
  * and the epilogue must not run. Its own counters still flush. */
 #define H2_DIRECT_HANDUP(r)                                                     \
     do {                                                                        \
+        H2_HANDUP_GATE_();                                                      \
         H2_PERF_FLUSH();                                                        \
         H2_HANDUP_RELEASE_();                                                   \
         return (r);                                                             \
@@ -1179,6 +1233,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
             cpu->eip = (target);                                                            \
             H2_LEND_(d_);                                                                   \
             TransferAbi r_ = H2_INVOKE_(f_, invoke, (target));                              \
+            H2_TAKE_BACK_(d_);                                                              \
             if (h2_direct_back(d_, ctx, cpu, &r_, (cont), esp, my_)) {                              \
                 H2_SYNC_IN();                                                               \
                 reload;                                                                     \
@@ -1204,6 +1259,7 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, const CpuAbi *
             cpu->eip = (target);                                                            \
             H2_LEND_(d_);                                                                   \
             TransferAbi r_ = H2_INVOKE_(f_, invoke, (target));                              \
+            H2_TAKE_BACK_(d_);                                                              \
             (void)my_;                                                                      \
             H2_DIRECT_HANDUP(r_);                                                           \
         }                                                                                   \
