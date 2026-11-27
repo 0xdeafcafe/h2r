@@ -260,13 +260,12 @@ pub mod layer {
         Ok(if mem.u32(record.wrapping_add(4))? == u32::MAX { Keep::Structure } else { Keep::Object })
     }
 
-    /// Whether `layer`'s draw over the current list must run the guest
-    /// body, and why; `Ok` when it can return. Reads only.
-    pub fn keep(mem: &dyn GuestMemory, layer: u32) -> Result<(), Keep> {
-        mem.u32(SETUP_FLOAT).map_err(unread)?;
-        if mem.u32(SETUP + SETUP_OPEN).map_err(unread)? != 0 {
-            return Err(Keep::OpenShader);
-        }
+    /// The items of the current list still holding `layer`'s bit, in list
+    /// order, each with its kind ([`Keep::Structure`], [`Keep::Object`] or
+    /// [`Keep::Other`]; [`Keep::Unread`] for one whose record does not
+    /// read): what the guest body draws. `Err` when the list does not
+    /// read. Reads only.
+    pub fn held(mem: &dyn GuestMemory, layer: u32) -> Result<Vec<(u32, Keep)>, Keep> {
         let list = mem.u32(CURRENT_LIST).map_err(unread)?;
         if list == 0 {
             return Err(Keep::Unread);
@@ -279,15 +278,30 @@ pub mod layer {
             return Err(Keep::Unread);
         }
         let bit = 1u32 << layer;
+        let mut out = Vec::new();
         let mut at = first;
         while (at as i32) < (count as i32) {
             let item = items.wrapping_add(at.wrapping_mul(0x18));
             if mem.u32(item + 0x10).map_err(unread)? & bit != 0 {
-                return Err(kind(mem, item).unwrap_or(Keep::Unread));
+                out.push((at, kind(mem, item).unwrap_or(Keep::Unread)));
             }
             at = at.wrapping_add(1);
         }
-        Ok(())
+        Ok(out)
+    }
+
+    /// Whether `layer`'s draw over the current list must run the guest
+    /// body, and why: the cache's open shader, or the first item still
+    /// holding the bit ([`held`]); `Ok` when it can return. Reads only.
+    pub fn keep(mem: &dyn GuestMemory, layer: u32) -> Result<(), Keep> {
+        mem.u32(SETUP_FLOAT).map_err(unread)?;
+        if mem.u32(SETUP + SETUP_OPEN).map_err(unread)? != 0 {
+            return Err(Keep::OpenShader);
+        }
+        match held(mem, layer)?.first() {
+            Some(&(_, kind)) => Err(kind),
+            None => Ok(()),
+        }
     }
 
     /// The guest body's lasting writes for a layer draw that builds no

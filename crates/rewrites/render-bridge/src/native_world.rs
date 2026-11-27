@@ -358,9 +358,11 @@ pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8)
 /// 3's bits back, then this layer's skip. A structure item the native pass
 /// does not draw keeps its guest draw and is counted
 /// `scene_kept_3_world_<cause>` ([`crate::native_layers::count_kept`]):
-/// the host's cause, `part` for a part outside the drawn set. Only the
-/// resolved-scene arm, whose guest entries are consumed one by one by the
-/// opaque handler hooks, is counted by those hooks instead.
+/// the host's cause, `part` for a part outside the drawn set, under the
+/// site's prefix (`alt` for the alternate view). Only the resolved-scene
+/// arm, whose guest entries are consumed one by one by the opaque handler
+/// hooks, is counted by those hooks instead
+/// ([`crate::native_layers::in_body`]).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let m = Mem(mem);
@@ -368,8 +370,12 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
+    let site = match native_render::world_layers::layer_site(LIGHTMAP_LAYER, ret) {
+        native_render::world_layers::Site::AlternateView => "alt",
+        _ => "",
+    };
     if let Some(left) = claim_layer(mem, ret) {
-        crate::native_layers::count_kept(&Mem(mem), LIGHTMAP_LAYER, "", false, &left, None);
+        crate::native_layers::count_kept(&Mem(mem), LIGHTMAP_LAYER, site, false, &left, None);
     }
 }
 
@@ -378,11 +384,18 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
 /// ones the host did not clear keep their guest draw.
 fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> Option<crate::native_layers::Left> {
     let m = Mem(mem);
-    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        crate::native_layers::leave(&m, LIGHTMAP_LAYER, crate::native_layers::Keep::Structure, "host");
+        return None;
+    };
     use native_render::world_layers::{Site, layer_site};
     let site = layer_site(LIGHTMAP_LAYER, ret);
     let bsp = m.read_u32(ACTIVE_BSP)?;
     let resolved = site == Site::Scene && host.use_resolved_scene(m.0, bsp);
+    if resolved {
+        // The opaque handler hooks draw or count each structure entry.
+        crate::native_layers::in_body(&m, LIGHTMAP_LAYER, crate::native_layers::Keep::Structure);
+    }
     let has_world = !resolved && skip::has_structure_items(&m, LIGHTMAP_LAYER) == Some(true);
     if !has_world && site != Site::Scene {
         WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
