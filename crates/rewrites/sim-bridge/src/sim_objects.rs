@@ -351,7 +351,8 @@ mod tests {
             let chain = plan.chains.get(&body.point.base);
             assert!(chain.is_none_or(|c| c.implement.is_none()), "off: {}", body.point.name);
         }
-        assert!(plan.save_sections().is_empty());
+        // The manager keeps the "sim-native" section; it holds no bytes.
+        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
 
         let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
         registry.add(&SimNative::for_tests()).unwrap();
@@ -362,7 +363,8 @@ mod tests {
             assert_eq!(implement.continuation_sites().0, body.sites);
         }
         // The bodies hold no state: no snapshot section.
-        assert!(plan.save_sections().is_empty());
+        // The manager keeps the "sim-native" section; it holds no bytes.
+        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
     }
 
     #[test]

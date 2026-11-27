@@ -92,7 +92,8 @@ mod tests {
             assert_eq!(implement.label, EFFECTS, "{}", port.point.name);
             assert_eq!(implement.continuation_sites().0, port.sites);
         }
-        assert!(plan.save_sections().is_empty());
+        // The manager keeps the "sim-native" section; it holds no bytes.
+        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
     }
 
     #[test]
