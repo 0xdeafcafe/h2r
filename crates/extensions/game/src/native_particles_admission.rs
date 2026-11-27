@@ -775,17 +775,13 @@ impl Pass {
     }
 
     /// Whether `next` can follow this draw in one [`Run`]: the same
-    /// renderer, guest targets, frame and writes, and both drawable as
-    /// packets of the open pass (`record_draws` refuses a stencil
-    /// reference over 8 bits). State, constants, textures and blend stay
-    /// per draw: each is its own packet in the run, in order.
+    /// renderer, guest targets, frame and writes. State, constants,
+    /// textures and blend stay per draw: each is its own packet in the
+    /// run, in order.
     fn joins(&self, next: &Pass) -> bool {
-        let packet = |p: &Pass| u32::from(p.draw.state.render.stencil.reference) <= u32::from(u8::MAX);
         Arc::ptr_eq(&self.renderer, &next.renderer)
             && (self.color, self.depth, self.frame) == (next.color, next.depth, next.frame)
             && self.writes() == next.writes()
-            && packet(self)
-            && packet(next)
     }
 }
 
@@ -802,6 +798,10 @@ struct Run {
 impl ExternalPass for Run {
     fn replays_scene(&self) -> bool {
         true
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn extend_run(&mut self, next: &dyn ExternalPass) -> bool {
@@ -837,8 +837,9 @@ impl ExternalPass for Run {
         self.members.iter_mut().try_for_each(|m| m.prepare_copy(target))
     }
 
-    /// Every member's packet, in order. Members always draw as packets
-    /// ([`Pass::joins`]), so the isolated recording is never asked for.
+    /// Every member's packet, in order. A member's stencil reference is 8
+    /// bits, so each draws as a packet and the isolated recording is never
+    /// asked for.
     fn record_draws(
         &mut self,
         t: &ExternalAttachments,
@@ -1242,6 +1243,75 @@ pub(super) mod tests {
         fan.state.render.depth_mode = gfx::state::DepthBufferMode::W;
         fan.state.render.depth_write = true;
         assert!(admission.admit_counted(&snapshot(&fan)).is_none());
+    }
+
+    fn admission() -> Admission {
+        Admission {
+            scope: Mutex::new(Scope::default()),
+            renderer: Default::default(),
+            flare_gpu: Default::default(),
+            captured_gpu: Default::default(),
+            serial: AtomicU64::new(1),
+        }
+    }
+
+    /// Particle `id`'s admission of `draw`, as `try_emit` makes it.
+    fn single(admission: &Admission, draw: &d3d::ResolvedDraw, source: &Source, id: u64) -> Box<dyn ExternalPass> {
+        let pending = Pending { source: source.clone(), id };
+        let (plan, pass) = admission.plan(&snapshot(draw), &pending, Stage::Particles, false).expect("a particle");
+        assert_eq!(plan.ranges, 1);
+        pass
+    }
+
+    /// N adjacent particles queue as one run: its packets are the N single
+    /// admissions' draws, in their order, each keeping its own state (here
+    /// a stencil reference) and identity.
+    #[test]
+    fn adjacent_particles_join_one_queued_run_with_their_packets_in_order() {
+        let admission = admission();
+        let (draw, source) = particle();
+        let draws: Vec<_> = (0..5u8)
+            .map(|i| {
+                let mut d = draw.clone();
+                d.state.render.stencil.reference = i;
+                d
+            })
+            .collect();
+        let singles: Vec<_> = draws.iter().zip(10..).map(|(d, id)| single(&admission, d, &source, id)).collect();
+        let mut run = singles[0].queued_run(&*singles[1]).expect("adjacent particles join");
+        for next in &singles[2..] {
+            assert!(run.extend_run(&**next));
+        }
+        let fallbacks: Vec<_> = singles.iter().map(|p| p.resolved_fallback().expect("a single's draw")).collect();
+        assert_eq!(run.resolved_packets(), fallbacks);
+        assert!(run.resolved_packets().iter().zip(&draws).all(|(p, d)| **p == *d));
+        assert!(run.resolved_fallback().is_none());
+        assert!(run.replays_scene());
+        assert_eq!(run.writes(), singles[0].writes());
+        let run = run.as_any().and_then(|r| r.downcast_ref::<Run>()).expect("a particle run");
+        assert_eq!(run.members.iter().map(|m| m.id).collect::<Vec<_>>(), [10, 11, 12, 13, 14]);
+        // The device's single passes are not altered.
+        assert!(singles.iter().all(|p| p.resolved_fallback().is_some()));
+    }
+
+    /// A particle that writes otherwise, draws through another renderer or
+    /// is not a particle starts its own queued admission.
+    #[test]
+    fn a_particle_writing_otherwise_starts_its_own_run() {
+        let admission = admission();
+        let (draw, source) = particle();
+        let first = single(&admission, &draw, &source, 1);
+        let mut masked = draw.clone();
+        masked.state.render.color_write = gfx::state::ColorWriteMask::from_xbox(0);
+        let masked = single(&admission, &masked, &source, 2);
+        assert_ne!(masked.writes(), first.writes());
+        assert!(first.queued_run(&*masked).is_none());
+        let elsewhere = single(&self::admission(), &draw, &source, 3);
+        assert!(first.queued_run(&*elsewhere).is_none());
+        let mut run = first.queued_run(&*single(&admission, &draw, &source, 4)).expect("same particle state");
+        assert!(!run.extend_run(&*masked));
+        assert!(!run.extend_run(&*elsewhere));
+        assert_eq!(run.resolved_packets().len(), 2);
     }
 
     #[test]
