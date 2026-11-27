@@ -584,7 +584,12 @@ fn run_configured(
     // as map packages under <data>/maps before the content library reads
     // that folder: a map built for the same inputs is left alone
     // (docs/editor/studio-redesign.md, "How the game consumes packages").
-    packages::prepare_maps(&opts.data_root, &opts.disc, &content_set.loaded);
+    let staged = packages::prepare_maps(&opts.data_root, &opts.disc, &content_set.loaded);
+    // A headless match names its map up front: a package that did not
+    // stage stops it here, rather than as a missing level later.
+    if sim_mode.is_some() {
+        packages::staged_or_named(&staged)?;
+    }
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.

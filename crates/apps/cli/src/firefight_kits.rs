@@ -57,6 +57,26 @@ pub fn start(disc: &Path, data: &Path) {
     }
 }
 
+/// Builds the built-in kits that are missing or stale, in the foreground,
+/// for a run that names a kit package as its map (`h2 sim run`). A kit that
+/// cannot be built is an error naming it, not a map that is missing later.
+pub fn ensure_now(disc: &Path, data: &Path) -> Result<()> {
+    let maps = content::store::maps_dir(data);
+    if builtin::pending(&maps).is_empty() {
+        return Ok(());
+    }
+    eprintln!("firefight: preparing the kits");
+    let reports = builtin::ensure(&Disc(disc.to_owned()), &maps);
+    named_refusals(&reports)
+}
+
+/// The refusals among `reports`, each named, as one error.
+fn named_refusals(reports: &[builtin::Report]) -> Result<()> {
+    let lines: Vec<String> = reports.iter().filter_map(|r| r.line()).collect();
+    anyhow::ensure!(lines.is_empty(), "the Firefight kits did not stage: {}", lines.join("; "));
+    Ok(())
+}
+
 fn work(disc: &Path, maps: &Path) {
     let reports = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         builtin::ensure(&Disc(disc.to_owned()), maps)
@@ -84,4 +104,18 @@ fn work(disc: &Path, maps: &Path) {
     }
     boot::map_select::publish_packages(disc);
     boot::lobby_start::kit_build_finished(failures);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_kit_stops_the_run_with_its_name() {
+        let ok = builtin::Report { map: "coagulation".into(), outcome: Outcome::Current };
+        let bad = builtin::Report { map: "zanzibar".into(), outcome: Outcome::Refused("6 KB over".into()) };
+        assert!(named_refusals(std::slice::from_ref(&ok)).is_ok());
+        let e = named_refusals(&[ok, bad]).unwrap_err().to_string();
+        assert_eq!(e, "the Firefight kits did not stage: Zanzibar: 6 KB over");
+    }
 }

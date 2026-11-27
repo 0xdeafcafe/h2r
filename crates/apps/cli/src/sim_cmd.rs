@@ -479,6 +479,12 @@ fn run_one(args: Vec<String>) -> Result<()> {
         m.game_type_name(),
         report.display()
     );
+    // A Firefight kit package named as the map is staged here, on the
+    // data directory the run uses; a kit that cannot be built stops the run.
+    #[cfg(feature = "desktop")]
+    if m.config.map.starts_with("firefight-") {
+        crate::firefight_kits::ensure_now(&disc, &data)?;
+    }
     let matched = boot::sim_glue::Sim::new(file, m, Some(report.clone()));
     let r = boot::run_sim(&xbe, &lib, &sim_options(disc, data), matched, upload);
     drop(slot);
