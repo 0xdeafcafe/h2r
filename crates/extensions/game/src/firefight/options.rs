@@ -128,6 +128,22 @@ pub fn wave_menu(map: Option<&str>) -> Vec<(i64, Def)> {
     menu
 }
 
+/// A Wave set row entry on a kit with `classes` (`None`: not known): the
+/// text it shows, and why it cannot be played when the kit lacks a class
+/// its waves or allies name ([`builtin::missing_classes`]).
+pub fn wave_entry(def: &Def, classes: Option<&[String]>) -> (String, Option<String>) {
+    let have: std::collections::BTreeSet<String> = classes.unwrap_or_default().iter().cloned().collect();
+    let missing = match classes {
+        Some(_) => builtin::missing_classes(def, &have),
+        None => Vec::new(),
+    };
+    if missing.is_empty() {
+        return (def.name.clone(), None);
+    }
+    let why = format!("the map's kit lacks {}", missing.join(", "));
+    (format!("{} ({why})", def.name), Some(why))
+}
+
 /// [`TEAMS`]'s first choice: the wave set's own team count.
 pub const DEFAULT_TEAMS: i64 = 0;
 pub static TEAMS: Setting = setting(
@@ -203,9 +219,10 @@ pub fn page(store: Arc<Store>) -> KitScreen {
     let binds = Bindings::new().menu(
         "waveset",
         || {
+            let classes = lobby_start::kit_classes();
             wave_menu(lobby_start::kit_map().as_deref())
                 .into_iter()
-                .map(|(_, def)| def.name)
+                .map(|(_, def)| wave_entry(&def, classes.as_deref()).0)
                 .collect()
         },
         {
@@ -228,6 +245,9 @@ pub fn page(store: Arc<Store>) -> KitScreen {
                 let Some((value, def)) = menu.get(i) else {
                     return format!("{}: no choice {i}", WAVE_SET.key);
                 };
+                if let (_, Some(why)) = wave_entry(def, lobby_start::kit_classes().as_deref()) {
+                    return format!("{} -> {}: not offered: {why}", WAVE_SET.key, def.name);
+                }
                 match store.set(WAVE_SET.key, Value::Int(*value)) {
                     Ok(o) => match o.not_saved {
                         None => format!("{} -> {}", WAVE_SET.key, def.name),

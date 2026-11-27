@@ -736,3 +736,34 @@ fn skulls_off_leaves_endless_without_round_or_set_skulls() {
     assert!(def.rounds.iter().all(|r| r.skulls_on.is_empty()));
     assert!(def.set.skulls.is_empty());
 }
+
+#[test]
+fn a_set_naming_a_class_the_kit_lacks_is_greyed_out_with_the_reason() {
+    use crate::lobby_start;
+    let defs = builtin::definitions();
+    let outbreak = defs.iter().find(|d| d.name == "Outbreak").unwrap();
+    let holdout = &defs[0];
+    let have = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    // A kit that carries its classes offers it plainly; one that does not
+    // names what is missing; an unknown kit offers every set.
+    let full = have(&["marine", "flood_combat_human", "flood_combat_elite", "flood_carrier"]);
+    assert_eq!(wave_entry(outbreak, Some(&full)), ("Outbreak".to_string(), None));
+    let (text, why) = wave_entry(outbreak, Some(&have(&["marine"])));
+    assert_eq!(why.as_deref(), Some("the map's kit lacks flood_carrier, flood_combat_elite, flood_combat_human"));
+    assert!(text.starts_with("Outbreak (the map's kit lacks"), "{text}");
+    assert_eq!(wave_entry(outbreak, None).1, None);
+    assert_eq!(wave_entry(holdout, Some(&[])).1, None);
+    // The picker lists the reason and refuses the pick without storing it.
+    lobby_start::set_kit_map(Some("beavercreek".into()));
+    lobby_start::set_kit_classes(Some(have(&["marine"])));
+    let kept = store();
+    let s = screen(&kept);
+    assert_eq!(s.press(1), Chosen::Open(picker::NAME), "Wave set");
+    let pick = picker::current().expect("a pick");
+    let at = pick.values.iter().position(|v| v.starts_with("Outbreak")).unwrap();
+    assert!(pick.values[at].contains("lacks"), "{:?}", pick.values);
+    assert!((pick.set)(at).contains("not offered"));
+    assert_eq!(kept.get(WAVE_SET.key), Some(Value::Int(0)));
+    lobby_start::set_kit_classes(None);
+    lobby_start::set_kit_map(None);
+}

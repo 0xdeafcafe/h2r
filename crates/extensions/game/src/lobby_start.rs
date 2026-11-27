@@ -259,6 +259,11 @@ pub struct State {
     /// page's Wave set row reads it between redraws ([`kit_map`]); the
     /// lobby panel keeps it ([`crate::lobby_mode`]).
     pub kit_map: Option<String>,
+    /// The classes the lobby's kit map carries besides the authored Elite,
+    /// when known ([`kit_classes`]): the Wave set row greys out a set that
+    /// needs one the kit lacks. `None`: not known, every set is offered and
+    /// the host refuses one the kit cannot play when the match starts.
+    pub kit_classes: Option<Vec<String>>,
 }
 
 impl State {
@@ -276,6 +281,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     forge_map: None,
     map_variant: None,
     kit_map: None,
+    kit_classes: None,
 });
 
 #[cfg(not(test))]
@@ -293,6 +299,7 @@ thread_local! {
             forge_map: None,
             map_variant: None,
             kit_map: None,
+            kit_classes: None,
         })
     };
 }
@@ -435,6 +442,16 @@ pub fn set_map_variant(id: Option<content::MapId>) {
 /// ([`crate::lobby_mode`]): the Wave set row reads it between redraws.
 pub fn kit_map() -> Option<String> {
     with_state(|s| s.kit_map.clone())
+}
+
+/// The classes the lobby's kit map carries, when known.
+pub fn kit_classes() -> Option<Vec<String>> {
+    with_state(|s| s.kit_classes.clone())
+}
+
+/// Keeps the lobby's kit map's classes ([`kit_classes`]).
+pub fn set_kit_classes(classes: Option<Vec<String>>) {
+    with_state(|s| s.kit_classes = classes);
 }
 
 /// Keeps the lobby's kit map's base name ([`kit_map`]).
