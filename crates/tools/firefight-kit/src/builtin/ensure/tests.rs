@@ -18,8 +18,14 @@ impl Disc {
             reads: RefCell::default(),
         }
     }
+    /// How many times the base map was read.
     fn reads(&self) -> usize {
-        self.reads.borrow().len()
+        self.reads_of(testkit::NAME)
+    }
+    /// How many times `name` was read: the campaign map the Elite's rows
+    /// come from is asked for once per [`ensure_with`] that builds.
+    fn reads_of(&self, name: &str) -> usize {
+        self.reads.borrow().iter().filter(|n| *n == name).count()
     }
 }
 
@@ -54,6 +60,7 @@ fn ensure_builds_missing_and_stale_kits_only() {
     let first = ensure_with(&court(1), &disc, &dir);
     assert!(matches!(first[0].outcome, Outcome::Built { .. }), "{first:?}");
     assert_eq!(disc.reads(), 1);
+    assert_eq!(disc.reads_of(crate::ELITE_DONOR_MAP), 1);
     assert!(pending_with(&court(1), &dir).is_empty());
     let lib = Library::open(&dir);
     assert_eq!(lib.packages().len(), 1);
@@ -62,6 +69,7 @@ fn ensure_builds_missing_and_stale_kits_only() {
     let again = ensure_with(&court(1), &disc, &dir);
     assert_eq!(again[0].outcome, Outcome::Current);
     assert_eq!(disc.reads(), 1);
+    assert_eq!(disc.reads_of(crate::ELITE_DONOR_MAP), 1);
     // A changed layout is stale: built again, over the same package.
     assert_eq!(pending_with(&court(2), &dir), [testkit::NAME]);
     let stale = ensure_with(&court(2), &disc, &dir);

@@ -466,6 +466,51 @@ pub fn seat_label(m: &dyn GuestMemory, pod: u32) -> Option<u32> {
     m.u32(seats.checked_add(SEAT_LABEL)?).ok()
 }
 
+/// A unit's animation state sits at the signed word at `+0x12a` from the
+/// unit; the state's graph (`jmad`) datum is at `+0x68`; a graph's modes
+/// block is at `+0x34`, 20 bytes a mode, its label (a string ID) first.
+/// A unit whose byte at `+0xaa` is 1 takes any seat.
+const ANIMATION_STATE: u32 = 0x12a;
+const STATE_GRAPH: u32 = 0x68;
+const GRAPH_MODES: u32 = 0x34;
+const MODE_STRIDE: u32 = 20;
+const ANY_SEAT: u32 = 0xaa;
+
+/// Whether the unit object at `unit` passes the engine's seat test for a
+/// seat labelled `label` (`0xc8200`, which `UNIT_ENTER_VEHICLE` asks
+/// before it requests the entry, and quietly seats no one when it fails):
+/// its animation graph has a mode of that label (`0x1cb920`). None when
+/// the unit or its graph does not read.
+pub fn takes_seat(m: &dyn GuestMemory, unit: u32, label: u32) -> Option<bool> {
+    if m.u8(unit.checked_add(ANY_SEAT)?).ok()? == 1 {
+        return Some(true);
+    }
+    let state = unit.wrapping_add(m.u16(unit.checked_add(ANIMATION_STATE)?).ok()? as i16 as i32 as u32);
+    let graph = m.u32(state.checked_add(STATE_GRAPH)?).ok()?;
+    if graph == u32::MAX {
+        return Some(false);
+    }
+    let table = m.u32(TAG_TABLE).ok()?;
+    let tag = m.u32(table.checked_add((graph & 0xffff) * 16 + 8)?).ok()?;
+    if tag == 0 {
+        return None;
+    }
+    let count = m.u32(tag + GRAPH_MODES).ok()?;
+    let modes = m.u32(tag + GRAPH_MODES + 4).ok()?;
+    for i in 0..count.min(0x400) {
+        if m.u32(modes.checked_add(i * MODE_STRIDE)?).ok()? == label {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// The object address of the live object `handle`.
+fn object_address(m: &dyn GuestMemory, handle: u32) -> Option<u32> {
+    let header = objects::array(m).ok()??.get(m, DatumHandle::from_raw(handle)?).ok()??;
+    header.body(m).ok().filter(|b| *b != 0)
+}
+
 fn parent_of(m: &dyn GuestMemory, unit: u32) -> Option<u32> {
     let (_, body) = objects::get(m, DatumHandle::from_raw(unit)?).ok()??;
     body.parent(m).ok()?.map(|p| p.raw())
@@ -493,6 +538,13 @@ pub async fn drop(
         let label = cx
             .read(|m| seat_label(m, object))
             .ok_or_else(|| anyhow::anyhow!("the pod {object:#010x} has no seat"))?;
+        // The engine seats no one, and says nothing, when the rider's
+        // animation graph has no mode for the seat: name that refusal.
+        let takes = cx.read(|m| takes_seat(m, object_address(m, unit)?, label));
+        anyhow::ensure!(
+            takes != Some(false),
+            "unit {unit:#010x}'s animation graph has no mode for the pod's seat label {label:#010x}, so the engine's seat test (0xc8200) takes it in no seat"
+        );
         call(
             cx,
             GuestCall::new(points::UNIT_ENTER_VEHICLE.base)
@@ -502,7 +554,7 @@ pub async fn drop(
         .await?;
         anyhow::ensure!(
             cx.read(|m| parent_of(m, unit)) == Some(object),
-            "the engine seated unit {unit:#010x} in no seat of the pod"
+            "the engine seated unit {unit:#010x} in no seat of the pod: its graph has the seat's mode, so the entry it requested (action 0x1c) did not finish at once"
         );
         anyhow::Ok(())
     };

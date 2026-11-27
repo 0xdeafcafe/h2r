@@ -331,6 +331,21 @@ pub fn build_with(
     recipe: &Recipe,
     classes: Option<&Classes<'_>>,
 ) -> Result<Ground> {
+    build_with_elite(base, base_name, labels, recipe, classes, None)
+}
+
+/// [`build_with`] with `elite`, the disc map the Elite's behaviour rows
+/// come from (a campaign map, such as [`crate::ELITE_DONOR_MAP`]), tried
+/// after the base and before the class donors. A build where none of them
+/// carries the campaign Elite is refused by name (`crate::elite_rows`).
+pub fn build_with_elite(
+    base: &[u8],
+    base_name: &str,
+    labels: &Labels,
+    recipe: &Recipe,
+    classes: Option<&Classes<'_>>,
+    elite: Option<&crate::Donor<'_>>,
+) -> Result<Ground> {
     ensure!(
         recipe.kit_version == KIT_VERSION,
         "the recipe is for Firefight kit v{}, this is v{KIT_VERSION}",
@@ -342,8 +357,15 @@ pub fn build_with(
         home: recipe.home,
         ..Config::default()
     };
-    let built =
-        crate::build_with_classes(base, base_name, recipe.mode, &config, &canonical, classes)?;
+    let built = crate::build_with_elite(
+        base,
+        base_name,
+        recipe.mode,
+        &config,
+        &canonical,
+        classes,
+        elite,
+    )?;
     Ok(Ground {
         bytes: built.bytes,
         costs: built.costs,
