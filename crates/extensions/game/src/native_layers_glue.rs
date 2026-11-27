@@ -1246,6 +1246,9 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at: None,
+            camera: None,
+            cull_camera: None,
+            token: 0,
         });
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
@@ -1386,6 +1389,9 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             stencil,
             run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at,
+            camera: None,
+            cull_camera: None,
+            token: 0,
         });
         // A pass writing the refraction target binds it as a slot, which no
         // held packet carries.
