@@ -133,6 +133,8 @@ pub mod mod_slots;
 pub mod monitor_model;
 pub mod mods_screen;
 pub mod movies_glue;
+#[cfg(all(feature = "gpu", feature = "movie-playback"))]
+pub mod movie_display_glue;
 #[cfg(feature = "gpu")]
 pub mod native_decals_glue;
 #[cfg(feature = "gpu")]

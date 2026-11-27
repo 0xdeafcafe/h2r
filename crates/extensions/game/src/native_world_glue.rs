@@ -1041,6 +1041,8 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_post_glue::install(device);
     let shadows = crate::native_shadows_glue::install(device);
     crate::native_hud_glue::install(device);
+    #[cfg(feature = "movie-playback")]
+    crate::movie_display_glue::install(device);
     shadows
 }
 
