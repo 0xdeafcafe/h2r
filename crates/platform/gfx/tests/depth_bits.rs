@@ -238,3 +238,21 @@ fn depth_bits_match_the_readback_for_other_depths() {
         check(&ctx, &depths, stencil, "sweep");
     }
 }
+
+/// A conversion into an output made before it is recorded (a later pass
+/// binds the output first) writes what `convert` returns.
+#[test]
+fn depth_bits_into_an_earlier_output_match_convert() {
+    let Some(ctx) = ctx() else { return };
+    let rows = 4;
+    let depths: Vec<f32> = (0..W * rows).map(|z| z as f32 / (W * rows) as f32).collect();
+    let t = depth_texture(&ctx, &depths, 0x5a);
+    let want = gpu_bits(&ctx, &t, rows);
+    let bits = DepthBits::new(&ctx);
+    let out = DepthBits::output(&ctx.device, (W, rows));
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    bits.convert_into(&ctx, &mut enc, &t, &out);
+    ctx.queue.submit([enc.finish()]);
+    let got = gfx::readback::read_texture(&ctx, &out, wgpu::TextureAspect::All, 4, (W, rows));
+    assert_eq!(got, want);
+}
