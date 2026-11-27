@@ -27,7 +27,7 @@ fn labels(thing: &Thing) -> Vec<String> {
 fn the_rows_of_a_kind_are_the_docs_in_its_order() {
     assert_eq!(
         labels(&thing(BlockKind::Scenery, ThingKind::Object, &[])),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -35,7 +35,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::StartingPoint,
             &[("team", 1)]
         )),
-        ["Coordinates...", "Heading", "Team", "Reset orientation"]
+        ["Coordinates...", "Heading", "Team", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -49,7 +49,8 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             "Team",
             "Role",
             "Order",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     assert_eq!(
@@ -62,7 +63,8 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             "Coordinates...",
             "Heading",
             "Respawn time",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     // A teleporter has no row of its own yet.
@@ -72,7 +74,7 @@ fn the_rows_of_a_kind_are_the_docs_in_its_order() {
             ThingKind::Teleporter,
             &[("type", 7)]
         )),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
 }
 
@@ -85,7 +87,7 @@ fn a_property_the_thing_lacks_has_no_row() {
             ThingKind::StartingPoint,
             &[]
         )),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
     assert_eq!(
         labels(&thing(
@@ -98,7 +100,8 @@ fn a_property_the_thing_lacks_has_no_row() {
             "Heading",
             "Team",
             "Role",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
 }
@@ -165,7 +168,8 @@ fn a_spawner_with_an_abandon_limit_has_the_return_time_row_after_respawn_time() 
             "Heading",
             "Respawn time",
             "Return time",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     let rows = rows(&doc(), &spawner, 0.0);
@@ -252,6 +256,11 @@ fn every_row_of_the_shipped_doc_binds() {
             savable: 2,
             kit: true,
         };
+        let t = Thing {
+            own: true,
+            changed: true,
+            ..t
+        };
         assert_eq!(rows_with(&d, &t, 0.0, &all).len(), wanted, "{kind:?}");
     }
 }
@@ -281,7 +290,8 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Heading",
             "Respawn time",
             "Game types...",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     let rows = rows(&doc(), &spawner, 0.0);
@@ -306,7 +316,8 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Coordinates...",
             "Heading",
             "Respawn time",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     // Only a spawner has the row.
@@ -332,7 +343,7 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     };
     assert_eq!(
         labels_with(&object, &plain),
-        ["Coordinates...", "Heading", "Label", "Reset orientation"]
+        ["Coordinates...", "Heading", "Label", "Reset orientation", "Delete"]
     );
     let savable = Extras {
         savable: 3,
@@ -345,7 +356,8 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
             "Heading",
             "Label",
             "Save as prefab",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     let labelled = Extras {
@@ -361,7 +373,8 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
             "Label number",
             "Clear label",
             "Save as prefab",
-            "Reset orientation"
+            "Reset orientation",
+            "Delete",
         ]
     );
     // Only an object is saved as a prefab; any thing is labelled.
@@ -375,7 +388,7 @@ fn label_and_prefab_rows_come_with_what_the_session_says_of_the_thing() {
     // The default has none of them.
     assert_eq!(
         labels(&object),
-        ["Coordinates...", "Heading", "Reset orientation"]
+        ["Coordinates...", "Heading", "Reset orientation", "Delete"]
     );
 }
 
