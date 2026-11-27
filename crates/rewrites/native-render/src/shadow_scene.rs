@@ -139,4 +139,22 @@ mod tests {
         opaque.pass.as_mut().unwrap().target = 1;
         assert_eq!(plan(&scene, &opaque, &Empty).unwrap().draws.len(), 0);
     }
+
+    #[test]
+    fn a_scaled_view_draws_its_shadow_layers() {
+        // The receiver layers draw into the view's target, at any render
+        // scale: the plan checks the pass's own state, never the scale.
+        let scene = FrameScene::default();
+        for size in [[1280, 720], [2560, 1440], [3840, 2160]] {
+            let mut receiver = group();
+            receiver.layer = 11;
+            receiver.pass.as_mut().unwrap().size = size;
+            assert_eq!(plan(&scene, &receiver, &Empty).unwrap().draws.len(), 0);
+            let mut opaque = receiver;
+            opaque.layer = 14;
+            opaque.projection = None;
+            opaque.pass.as_mut().unwrap().target = 1;
+            assert_eq!(plan(&scene, &opaque, &Empty).unwrap().draws.len(), 0);
+        }
+    }
 }

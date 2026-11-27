@@ -443,21 +443,44 @@ the viewer does (S: some may be hidden in game).
 The first-person weapon and arms are drawn by `0x0003fdf0`, called twice
 from `render_scene_passes` (`0x0002c2b3` with argument 0, `0x0002c2c2`
 with argument 1, the first-person lights `0x000404b0` between them), after
-the transparents and with their own projection (camera `0x0023c110`, FOV
-`0x00187130`), not by the base layers' layer-3 call, which the caller
-check pins. The local player's third-person body draws natively like any
+the transparents, not by the base layers' layer-3 call, which the caller
+check pins. They have no camera of their own: `0x0003fdf0` and its call
+site (`0x0002c1d0`..`0x0002c2c2`) set none, so they draw with the render
+camera record (`0x004b9da0`) and the projection the game view drew with.
+In first person that record is the player's: the first-person camera
+update `0x0023c110` takes its field of view from `0x00187130` (its only
+caller), so the weapon and the world share one field of view. The arms and
+weapon sit in front of it in world space, posed by their node matrices. The local player's third-person body draws natively like any
 biped when the game queues it.
 
 #### First person
 
 `0x0003fdf0` is a cut producer (`render_bridge::cut::CUTS`, row
-`first_person`, entry `0x0003fdf0`, `ret 4`, AL = 1; the view is in `eax`
-and the call, 0 or 1, is the stack argument). Its guest body never runs for
-either argument, so it issues no D3D draw, writes no mask and builds no
-list. Its producer is `feature::native_first_person`
-(`cut::OWN_PRODUCER`): it makes the frame step's writes for the row, answers
-the call, and draws from the scene.
+`first_person`, entry `0x0003fdf0`, `ret 4`, AL = 1; the mode is in `eax`
+and the call, 0 or 1, is the stack argument). The cut is held
+(`native_first_person::HELD`): until the scene's first person equals the
+guest's, the feature installs nothing, the body runs and draws the arms and
+weapon, and the census row is `d3d`. Released, its producer is
+`feature::native_first_person` (`cut::OWN_PRODUCER`): it makes the frame
+step's writes for the row, answers the call, and draws from the scene; the
+body never runs for either argument.
 
+- **Items.** Each call builds its items before it draws, and the answer
+  builds them in Rust (`engine::render::light_gather::first_person_items`):
+  the prologue (list 0 at `0x004c1a48` saves its layers at `+0x10`, clears
+  them and starts at its count; the sorted list's mark `0x004b6284` takes
+  its count), then each record index of `0x004c8740` (`[0x0050943c]` of
+  them) that passes the mode's filter (mode 0 all, 2 `0x10`, else `0x20`),
+  part by part as `0x000449e0`, `0x00045ce0`, `0x000460d0` and
+  `0x00041040` in kind 0 make it: one list-0 item per part with layers, and
+  a sorted entry (`0x0001e2d0`, depth along the view's forward vector less
+  the record's bias) for a part with layer 15. `native_first_person::build`
+  applies those writes, sets the current layer and list for each layer the
+  call draws and puts its items in the first person's view, then makes the
+  epilogue (list 0's layers back, its first item 0). A record or shader the
+  build does not read (a structure record, a virtual shader, a level table
+  with no levels, a record with no node matrices) is the drop `items`. The
+  first-person effects `0x00174220` the body calls first are not made.
 - **Source.** The first-person `View` of the frame step's scene
   (`ViewKind::FirstPerson`). Its parts, in the view's order, are the arms and
   weapon. A part is readable when its instance and rows are in the scene.
@@ -471,8 +494,8 @@ the call, and draws from the scene.
   only (`0x0003ffbf` sets it, `0x00040010` jumps to the same draw at
   `0x00040284`). `native_first_person::LATE_LAYER` is 16.
 - **No fallback.** There is no D3D draw and no mask edit. A part that does
-  not draw is a named drop (`native_first_person::Dropped`): `no_view`,
-  `no_host`, `unreadable` (its instance, rows or order range are not in the
+  not draw is a named drop (`native_first_person::Dropped`): `items`,
+  `no_view`, `no_host`, `unreadable` (its instance, rows or order range are not in the
   scene), `unresident` (its model is asked for), `unsupported` (the model
   is resident, not this part or implementation) and `reservation` (the
   host's). Each is counted as `first_person_dropped_<cause>`
@@ -483,8 +506,14 @@ the call, and draws from the scene.
   storage) and implements `Host::draw` for the offered parts. Record `+4`,
   not the owner definition's third-person model, names the `mode` to load;
   every section of that mode is built because the record key selects the
-  permutation and LOD. The device pass for a scene's first-person parts is
-  not built: `Host::draw` drops every part it is offered as `reservation`.
+  permutation and LOD. `Host::draw` draws the offered parts as one external
+  pass, the way the scene's objects draw theirs: it reads the device's entry
+  state at the call, plans each part from its instance and rows as
+  extraction copied them (`plan_parts`, `LitObjects::plan_part_of`), warms
+  the pipelines, reserves the pass on the bound attachments and commits it
+  while the load it planned against is current. A part the plan refuses is
+  `unsupported` (its reason logged once); a pass that cannot be reserved
+  drops its parts as `reservation`.
 - **Per-part rules** the pass keeps, as for scene objects: the topology and
   subparts the record picks (`part_ranges`), the fade byte and the flagged
   shader ("Fade, the shader flag and the item's argument"), the auxiliary
@@ -492,8 +521,14 @@ the call, and draws from the scene.
   (`sampled_texaccum`).
 
 Tests: `first_person_draws_after_the_world_transparents`,
-`each_call_draws_its_layers`, `an_unreadable_part_is_a_named_drop` and the
-cut row's (`render-bridge/tests/native_first_person.rs`). The first-person
+`each_call_draws_its_layers`, `an_unreadable_part_is_a_named_drop`,
+`the_first_persons_view_takes_the_render_camera_the_game_view_drew_with`
+and the cut row's (`render-bridge/tests/native_first_person.rs`);
+`a_committed_pass_draws_every_planned_part_and_names_each_drop`
+(`native_first_person_glue`);
+`first_person_items_match_the_lifted_original`
+(`engine/tests/light_gather_differential.rs`) runs `0x0003fdf0` lifted to
+the end of its record loop against the item build, byte for byte. The first-person
 lights are the lights stage's ([native-lights.md](native-lights.md)).
 
 ### Shading

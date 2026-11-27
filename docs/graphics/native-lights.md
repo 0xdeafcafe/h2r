@@ -1,6 +1,6 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Rust gathers visible lights and their lists. Under the cut light frame each light's groups go into the scene with no guest pass; the host draws their layers 12 and 13 and refuses 10, 11 and 14, so the cut stays off. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
+Status: Partly built. Rust gathers visible lights and their lists. Under the cut light frame each light's groups go into the scene with no guest pass, and the host draws all five layers from them on the single 1x backend; pixel parity is not verified. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
 Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `native_lights/scene_frame.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_look.rs`, `light_gpu.rs`, `light_list.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -155,16 +155,38 @@ light's own layers still go in. `scene_cut_lights` and
 Once the view's light pass is over (at the decal mode that follows it),
 `native_lights::draw_scene` hands the open view's light layers to the host
 in the passes' order: per light 10, 11, 14, 12, 13 in slot 4, then slot
-10's. The game host (`native_lights_glue`, `draw_scene`) draws layers 12
-and 13 from the group alone (`Glue::alone` with `from_scene`, which does
-not compare the guest's light globals, since none were written) and
-refuses layers 10, 11 and 14 by name: they need the shadow map's target,
-clear and end, which the guest's layer begin and end make. The
-first-person lights (`0x000404b0`) are not cut; they replay the slots the
-frame body filled and draw as before. The host's `draws_scene` is false
-while layers 10, 11 and 14 have no native target path, so the cut does not
-run in a game.
+10's. The game host (`native_lights_glue/scene.rs`) makes each light one
+external sequence (`d3d::Device::prepare_external_sequence`), each step on
+its own attachments with nothing rebound, and commits it whole with no
+light tail (`d3d::PreparedSequence::commit`), or drops the light. The
+guest's layer begin and end do not run; their device work is the steps:
 
+- layer 10: target 9's depth cleared to 1 and stencil 0, the casters
+  drawn into it at the size the shadow setup gives, then the region they
+  drew frozen into a map on each target copy at that copy's texels
+  (`native_lights_glue/scene.rs`, `Frozen` and `frozen_size`;
+  `gfx::depth_bits::DepthBits::convert_region`). A scaled backend records
+  the reference and display copies on their own attachments, each its
+  freeze before its receivers, and a receiver binds the map of the copy
+  it records on;
+- layer 11: the receivers on the view's target, sampling that map;
+- layer 14: target 1;
+- layers 12 and 13: the view's target.
+
+A colour-mask caster draws the same way on target 10: cleared to white
+with zero alpha, its casters colour only, its colour copied into each
+copy's map. A shader gel and a first-person light (slot 10) refuse the
+light, and so does a caster region that does not start at its target's
+corner or runs past it. The host's `draws_scene`
+is true at any render scale and on every backend while the native
+shadows are on (`native_shadows_glue::enabled`); with them off the
+guest's light frame runs. The first-person lights
+(`0x000404b0`) are not cut; they replay the slots the frame body filled
+and draw as before.
+
+`a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`,
+`each_copy_freezes_the_casters_region_at_its_own_scale`,
+`a_receiver_samples_the_map_frozen_on_its_own_copy` and the other tests in `native_lights_glue/scene.rs` check the steps.
 `the_cut_lights_groups_equal_the_guests_layer_builds`
 (`native_lights/walk.rs`) builds layers 10, 12 and 13 both ways from the
 same lists: as the guest's layer draw builds them, and as the cut frame

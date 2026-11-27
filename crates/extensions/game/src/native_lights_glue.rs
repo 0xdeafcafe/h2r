@@ -5,6 +5,7 @@ mod indexed;
 mod materials;
 pub mod models;
 mod residency;
+mod scene;
 pub(crate) mod typed;
 pub mod walk;
 
@@ -337,6 +338,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             constants,
             projection: None,
             shadow_map: None,
+            frozen: None,
             draws,
             cull,
             scissor,
@@ -428,12 +430,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// entries before the models load), a shader gel (its target-13 slot
     /// is pinned through a draw's plan) or a state the device cannot give
     /// refuses, issuing nothing.
-    ///
-    /// `from_scene`: the light's layers are drawn once its pass is over,
-    /// from the scene alone ([`Host::draw_scene`], the cut light frame).
-    /// No guest passes ran for it, so its flags, frame and lists are the
-    /// scene's and guest memory is not compared with them.
-    fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>, from_scene: bool) -> Result<(), Keep> {
+    fn alone(&self, mem: &mut dyn GuestMemory, a: Alone<'_>) -> Result<(), Keep> {
         if a.shader_gel.is_some() {
             return Err(Keep::Unsupported("a shader gel draws through its handler"));
         }
@@ -460,27 +457,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let prepared =
             self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, None, false, None)?;
         use native_render::light_passes;
-        if prepared.draws.iter().any(|p| p.layer != layer) {
+        let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
+            .map_or(0, |i| light_passes::steps(&i).drawn());
+        if drawn & 1 << a.layer == 0 || prepared.draws.iter().any(|p| p.layer != layer) {
             return Err(Keep::Unsupported(
                 "active light layers changed during setup",
             ));
         }
-        let drawn = || {
-            light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
-                .map_or(0, |i| light_passes::steps(&i).drawn())
-        };
-        if !from_scene && drawn() & 1 << a.layer == 0 {
-            return Err(Keep::Unsupported(
-                "active light layers changed during setup",
-            ));
-        }
-        if !from_scene
-            && (mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags)
-                || c.frame.iter().enumerate().any(|(i, word)| {
-                    mem.u32(engine::light_constants::global::FRAME + 4 * i as u32)
-                        .ok()
-                        != Some(*word)
-                }))
+        if mem.u32(engine::light_passes::global::PASS_FLAGS).ok() != Some(c.flags)
+            || c.frame.iter().enumerate().any(|(i, word)| {
+                mem.u32(engine::light_constants::global::FRAME + 4 * i as u32)
+                    .ok()
+                    != Some(*word)
+            })
         {
             return Err(Keep::Unsupported(
                 "light globals differ from the prepared frame or flags",
@@ -514,12 +503,22 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         Ok(())
     }
 
-    /// A shadow group drawn from the scene with no geometry handler. Its
-    /// own target, projection and frozen map are checked after the drain,
-    /// all material and geometry resources are sealed, and only then may
-    /// the guest loop be emptied. The guest's begin, clear and end still run.
-    fn shadow_alone(&self, mem: &mut dyn GuestMemory, a: ShadowAlone<'_>) -> Result<(), Keep> {
-        let group = a.group;
+    /// A shadow group's resolved draws with the state they take: its
+    /// constants (the dynamic light's, or the shadow's flags alone), its
+    /// projection and, for a receiver that samples one, the frozen map
+    /// `map` names. `typed_rect` is the target rectangle of a pass drawn
+    /// on explicit attachments; `None` takes the device's scissor.
+    #[allow(clippy::too_many_arguments)]
+    fn shadow_prepared(
+        &self,
+        d: &d3d::Device<B>,
+        mem: &dyn GuestMemory,
+        view: u32,
+        group: &render_bridge::native_lights::SceneGroup,
+        light: Option<LightConstants>,
+        map: ShadowMap,
+        typed_rect: Option<[u32; 4]>,
+    ) -> Result<PreparedLight, Keep> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
             return Err(Keep::Shadow("state"));
@@ -530,29 +529,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
         let projection = group.group.projection;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
-        let expected = if layer == RECEIVER_LAYER {
-            None
-        } else {
-            Some(
-                crate::native_shadows_glue::expected_targets(mem, shadow.target)
-                    .ok_or(Keep::Shadow("target"))?,
-            )
-        };
-        let mut d = self.device.lock().map_err(|_| Keep::Shadow("device"))?;
-        if !d
-            .begin_external_boundary(&mut DeviceMemory(mem))
-            .map_err(|_| Keep::Shadow("callback"))?
-        {
-            return Err(Keep::Shadow("callback"));
-        }
-        if !d.can_external_pass()
-            || expected.is_some_and(|expected| d.bound_target()[..2] != expected)
-        {
-            return Err(Keep::Shadow("target"));
-        }
-        if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), layer as u8) != Some(shadow) {
-            return Err(Keep::Shadow("state"));
-        }
         let ready = self.ready(mem)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let objects = group.entries.iter().any(|e| structure_key(e).is_none());
@@ -599,7 +575,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 draws.extend(world.resolve_receiver_parts(layer, run)?);
             }
         }
-        let constants = match a.light {
+        let constants = match light {
             Some(constants) if constants.animated_gel => {
                 return Err(Keep::Unsupported(
                     "an animated gel keeps the receiver on D3D",
@@ -632,7 +608,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             && dim.is_some()
                     })
             });
-        let shadow_map = if needs_map {
+        let (shadow_map, frozen) = if needs_map {
             let projection = projection.ok_or(Keep::Shadow("state"))?;
             let projection = std::array::from_fn(|n| projection[n / 4][n % 4]);
             let kind = if shadow.colour_mask() {
@@ -640,12 +616,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             } else {
                 native_render::shadow_gpu::MapKind::Depth
             };
-            Some(
-                crate::native_shadows_glue::latest_receiver(a.view, projection, kind)
-                    .ok_or(Keep::Shadow("target"))?,
-            )
+            match map {
+                ShadowMap::Latest => (
+                    Some(
+                        crate::native_shadows_glue::latest_receiver(view, projection, kind)
+                            .ok_or(Keep::Shadow("target"))?,
+                    ),
+                    None,
+                ),
+                ShadowMap::Frozen(frozen) => (None, Some(frozen.ok_or(Keep::Shadow("target"))?)),
+            }
         } else {
-            None
+            (None, None)
         };
         let mut prepared = self.prepare_planned(
             &d,
@@ -655,11 +637,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             draws,
             None,
             colour_mask,
-            None,
+            typed_rect,
         )?;
         prepared.projection =
             projection.map(|projection| std::array::from_fn(|n| projection[n / 4][n % 4]));
         prepared.shadow_map = shadow_map;
+        prepared.frozen = frozen;
         if prepared.draws.iter().any(|p| p.layer != layer) {
             return Err(Keep::Unsupported(
                 "another layer's pass is in the shadow run",
@@ -671,6 +654,56 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return Err(Keep::Unsupported("world changed during shadow preparation"));
             }
         }
+        Ok(prepared)
+    }
+
+    /// A shadow group drawn from the scene with no geometry handler. Its
+    /// own target, projection and frozen map are checked after the drain,
+    /// all material and geometry resources are sealed, and only then may
+    /// the guest loop be emptied. The guest's begin, clear and end still run.
+    fn shadow_alone(&self, mem: &mut dyn GuestMemory, a: ShadowAlone<'_>) -> Result<(), Keep> {
+        let group = a.group;
+        let layer = usize::from(group.group.layer);
+        if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
+            return Err(Keep::Shadow("state"));
+        }
+        if group.entries.iter().any(|e| e.binding.variant != 0 || e.binding.selector != 0) {
+            return Err(Keep::Unsupported("shadow entry selects a nonzero material LOD or pass"));
+        }
+        let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
+        let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
+        let expected = if layer == RECEIVER_LAYER {
+            None
+        } else {
+            Some(
+                crate::native_shadows_glue::expected_targets(mem, shadow.target)
+                    .ok_or(Keep::Shadow("target"))?,
+            )
+        };
+        let mut d = self.device.lock().map_err(|_| Keep::Shadow("device"))?;
+        if !d
+            .begin_external_boundary(&mut DeviceMemory(mem))
+            .map_err(|_| Keep::Shadow("callback"))?
+        {
+            return Err(Keep::Shadow("callback"));
+        }
+        if !d.can_external_pass()
+            || expected.is_some_and(|expected| d.bound_target()[..2] != expected)
+        {
+            return Err(Keep::Shadow("target"));
+        }
+        if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), layer as u8) != Some(shadow) {
+            return Err(Keep::Shadow("state"));
+        }
+        let prepared = self.shadow_prepared(
+            &d,
+            &*mem,
+            a.view,
+            group,
+            a.light,
+            ShadowMap::Latest,
+            None,
+        )?;
         let plan = d3d::ExternalPlan {
             stage: timeline::native::Stage::Shadows,
             view: a.view,
@@ -705,6 +738,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .commit();
         Ok(())
     }
+}
+
+/// Where a receiver's frozen shadow map comes from.
+enum ShadowMap {
+    /// The receiver boundary that just ran (`native_shadows_glue`).
+    Latest,
+    /// The caster of this light drawn from the scene, frozen on each copy
+    /// in the same sequence ([`scene::Frozen`]); `None` when the light has
+    /// no caster.
+    Frozen(Option<scene::Frozen>),
 }
 
 /// The parts the light passes hold, for [`native_render::light_scene`]:
@@ -937,7 +980,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn draw_alone(&self, mem: &mut dyn GuestMemory, alone: Alone<'_>) -> bool {
-        let result = self.alone(mem, alone, false);
+        let result = self.alone(mem, alone);
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         for msg in t.count(result) {
@@ -946,32 +989,53 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         ok
     }
 
+    /// The scene draws every layer of the cut light frame ([`scene`]),
+    /// at any render scale and on every target copy, while the native
+    /// shadows are on: each copy freezes its own caster maps. With them
+    /// off the guest's frame runs.
+    fn draws_scene(&self) -> bool {
+        crate::native_shadows_glue::enabled()
+    }
+
     fn draw_scene(
         &self,
         mem: &mut dyn GuestMemory,
         draw: render_bridge::native_lights::SceneDraw<'_>,
     ) -> usize {
+        // One sequence per light: its layers are consecutive in draw order.
         let mut drawn = 0;
-        for (n, pass) in draw.passes.iter().enumerate() {
-            let result = match scene_light(&pass.light) {
-                None => Err(Keep::NoConstants),
-                Some((light, gel)) if matches!(pass.group.group.layer, 12 | 13) => self.alone(
-                    mem,
-                    Alone {
-                        light,
-                        serial: draw.serial + n as u64,
-                        layer: u32::from(pass.group.group.layer),
-                        shader_gel: gel,
-                        view_target: draw.view_target,
-                        group: &pass.group,
-                    },
-                    true,
-                ),
-                Some(_) => Err(Keep::Unsupported("a shadow or stencil layer of a scene light")),
-            };
+        let mut rest = draw.passes;
+        while let Some(first) = rest.first() {
+            let n = rest
+                .iter()
+                .take_while(|p| p.slot == first.slot && p.light.handle == first.light.handle)
+                .count();
+            let (light, after) = rest.split_at(n);
+            rest = after;
+            let result = self.scene_light_passes(mem, light, draw.view_target);
+            drawn += result.as_ref().map_or(0, |&n| n);
+            let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+            for msg in t.count(result.map(drop)) {
+                eprintln!("{msg}");
+            }
+        }
+        drawn
+    }
+
+    /// Each object shadow of the open view is one sequence
+    /// ([`scene::object_ops`]): the mask cleared and drawn on target 10,
+    /// the filter, the mask frozen, its receivers on the view's target.
+    fn draw_object_shadows(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::object_shadow_scene::ObjectShadowDraw<'_>,
+    ) -> usize {
+        let mut drawn = 0;
+        for pass in draw.passes {
+            let result = self.scene_object_shadow(mem, pass, draw.view_target);
             drawn += usize::from(result.is_ok());
             let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-            for msg in t.count(result) {
+            for msg in t.count(result.map(drop)) {
                 eprintln!("{msg}");
             }
         }
@@ -2297,6 +2361,9 @@ struct PreparedLight {
     projection: Option<[u32; native_render::shadow_look::PROJECTION_DWORDS]>,
     /// A receiver group's frozen map; lit and caster draws leave it out.
     shadow_map: Option<native_render::shadow_gpu::SampledMap>,
+    /// A scene light's receiver: the map its caster froze on the copy
+    /// being recorded, in place of [`Self::shadow_map`].
+    frozen: Option<scene::Frozen>,
     draws: Vec<Planned>,
     cull: InheritedCull,
     scissor: [u32; 4],
@@ -2599,6 +2666,11 @@ impl RunPass {
             ),
             None => None,
         };
+        // A scene light's receivers sample the map frozen on this copy.
+        let frozen = match &self.light.frozen {
+            Some(frozen) => Some(frozen.on(t.copy).ok_or("no caster map frozen on this copy")?),
+            None => None,
+        };
         let draws: Vec<_> = self
             .light
             .draws
@@ -2606,6 +2678,9 @@ impl RunPass {
             .enumerate()
             .map(|(i, p)| {
                 let mut draw = self.light.draw(p);
+                if let Some(map) = &frozen {
+                    draw.shadow_map = Some(map);
+                }
                 if let Some(held) = &self.retained {
                     draw.gpu = &held.materials[i];
                 }

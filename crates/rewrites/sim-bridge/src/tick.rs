@@ -40,8 +40,9 @@ impl Feature for TickDriver {
         // The body's state is its future, parked while a phase runs; the
         // ledger is a counter of this process, not of the game.
         b.snapshot(SnapshotPolicy::Stateless);
-        b.raw().implement_async(&points::GAME_TICK, "tick driver", |cx| -> EntryFuture {
-            Box::pin(sim_tick::run(cx, &LEDGER))
+        let present = crate::present::mode(b.switches());
+        b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
+            Box::pin(sim_tick::run_with(cx, &LEDGER, present))
         });
         Ok(())
     }
