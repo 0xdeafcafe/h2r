@@ -457,7 +457,9 @@ flowchart LR
   then `position += velocity * dt`. Births are evaluated, not aged, on the
   frame they arrive, at their `Spawn::age` (0 for a new particle).
 - **Mirror.** `GpuParticles::mirror` keeps no survivor: the system is the
-  staged births alone, a mirror of particles the guest owns.
+  staged births alone, a mirror of particles the guest owns. Its births
+  come from the guest's walk, modelled in Rust ("Walking a system's
+  particles" below).
 - **Evaluation** is `0x00224550`'s, as `engine::particle_emission` models
   it, with the tag function baked:
 
@@ -510,6 +512,50 @@ windows; `Blend::Alpha` or `Blend::Additive`, depth tested, never written.
 z: the `View`'s `w_row` and `depth` (full scale, clip range, floor and
 clamp flags) give each fragment the depth the guest's programs store
 (`fs_w`, [R2's particle mirror](retire-d3d-r2.md#r2s-particle-mirror)).
+
+#### Walking a system's particles
+
+`engine::particle_walk::walk` models the walk `0x00175610(system,
+location, callback, draw)`, EDI the input block, to its return. It makes
+each callback's arguments in the guest's order without calling the
+callback, and the input block's writes; nothing is written to the guest.
+`render_bridge::particle_births` turns them into births through
+`particle_mirror::spawn` and batches a run of one `Key` (one tint and
+size); the host builds each batch's system with `particle_mirror::owned`.
+
+```mermaid
+flowchart LR
+  S[system: definition via 0x001751d0] --> E[emitters: location +4, then +8]
+  E --> P[particles: emitter +4, then +4]
+  P --> C[callback arguments: Emitted]
+  C --> B[Key and Spawn: particle_births]
+```
+
+| Step | Guest | Model |
+|---|---|---|
+| definition | `0x001751d0`: the tag of `system + 0x10`; an `effe`'s event `system + 0x14`, a `bsdt`'s `+0x18` block; system `+0xe`, stride 0x38 | `definition` |
+| block records | a new system, location or particle takes `+0x48`, `+0x4c`, `+0x50` and clears inputs `0x670`, `0x13080`, `0xf80f` | the same writes |
+| emitters | `[0x51ec88] + 0x44`, stride 0x4c: `+4` the first particle, `+8` the next; their definitions the system's `+0x34`, stride 0xb8. One with no particle is passed by unevaluated | the same order |
+| emitter inputs | `+0xb4 & 0x107f0` (`0x00173ba0`, `0x00248df0` cases 4 to 10 and 16: system `+4`, `+0x28`, `+0x2c`, location `+0x1c`, the clock `[0x510c54]`, `[0x4ea93c]` records `+0x6c`, `+0x70`, location byte 3) | `Model::cache` |
+| particles | `[0x51ec84] + 0x44`, 0x40 bytes: `+4` the next, `+0x1c` position, `+0x28` axis; inputs `+0xb4 & 0xf80f` (life `+8`, age `+0x10`, lanes `+0x14` to `+0x1a`) | the same |
+| size, tint | emitter `+0x48` size, `+0x58` colour, `+0x68` alpha (`0x00246cd0`, `0x00246d80`); `+0xb0` bits 2, 1, 0 evaluate once per emitter, clear per particle | `particle_emission`'s evaluators |
+| callback | `(particle, block, &position, &axis, size, &tint, draw)`; `0x00224550` caches the definition's inputs (`+0x98 & 0xf80f`) first | `Emitted`, its `inputs` after that caching |
+
+Refused by name (`particle_walk::Refused::name`), before an emitter is
+evaluated:
+
+| Name | Why |
+|---|---|
+| `scale` | `system + 0xc` bit 10: the size scale is `0x0003eb70`'s, not 1 |
+| `local_space` | definition `+0xc`: positions go through `0x00248450` |
+| `nested` | a `prt3` or `PRTM` group: `0x001751d0` finds the definition through a vtable |
+| `callback` | not `0x00224550`, whose input caching the next particle reads |
+| `unbounded` | more than 65,536 emitters and particles: a cycle in a list |
+
+`tests/particle_walk_differential.rs` runs the lifted walk with the
+lifted callback from seeded states and checks every callback's
+arguments, its inputs at the emitter call and the block at the return
+against the model, and that each named refusal reaches the call it names.
 
 Particles are visual only. A system's state is in its own buffers; nothing
 reads or writes the sim arena or enters its hash. The CPU evaluator is a

@@ -52,6 +52,7 @@ pub mod light_passes;
 pub mod map_status;
 pub mod objectives;
 pub mod particle_emission;
+pub mod particle_walk;
 pub mod render;
 pub mod render_loop;
 pub mod scene_list_math;

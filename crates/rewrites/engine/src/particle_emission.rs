@@ -46,6 +46,8 @@ use crate::render_loop::opaque_animation;
 
 /// The callback.
 pub const ENTRY: u32 = 0x0022_4550;
+/// The particle's inputs: what the callback caches (`+0x98` masked).
+pub const CALLBACK_INPUTS: u32 = 0xf80f;
 /// The emitter it calls once, last.
 pub const EMIT: u32 = 0x0023_ed30;
 /// The emitter's return into the callback.
@@ -71,6 +73,10 @@ pub mod constant {
     pub const WORD: u32 = 0x0045_dc50;
     /// The colour packer's scale.
     pub const PACK: u32 = 0x0045_dc38;
+    /// `0x00248df0` case 8's clock (a pointer).
+    pub const CLOCK: u32 = 0x0051_0c54;
+    /// `0x00248df0` cases 9 and 10's table (a pointer).
+    pub const RECORDS: u32 = 0x004e_a93c;
     /// The view: position, forward and up (`0x00248df0` cases 12, 13).
     pub const CAMERA: u32 = 0x0048_5618;
     pub const FORWARD: u32 = 0x0048_5624;
@@ -139,9 +145,11 @@ impl GuestMemory for Overlay<'_> {
     }
 }
 
-struct Model<'a> {
-    m: Overlay<'a>,
-    s: Sse,
+/// The callback's evaluators over an [`Overlay`]: the walk
+/// (`crate::particle_walk`) shares them.
+pub(crate) struct Model<'a> {
+    pub(crate) m: Overlay<'a>,
+    pub(crate) s: Sse,
     fcw: u16,
     one: u32,
 }
@@ -151,11 +159,17 @@ fn slot(block: u32, i: i16) -> u32 {
     block.wrapping_add((i as i32 as u32).wrapping_mul(4))
 }
 
-impl Model<'_> {
-    fn u32(&self, a: u32) -> Result<u32, Error> {
+impl<'a> Model<'a> {
+    /// Over `m`, writing nothing to it, under `mxcsr` and `fcw`.
+    pub(crate) fn new(m: &'a dyn GuestMemory, mxcsr: u32, fcw: u16) -> Result<Self, Error> {
+        let one = m.u32(ONE)?;
+        Ok(Model { m: Overlay { base: m, writes: BTreeMap::new() }, s: Sse { mxcsr }, fcw, one })
+    }
+
+    pub(crate) fn u32(&self, a: u32) -> Result<u32, Error> {
         Ok(self.m.u32(a)?)
     }
-    fn u16(&self, a: u32) -> Result<u16, Error> {
+    pub(crate) fn u16(&self, a: u32) -> Result<u16, Error> {
         Ok(self.m.u16(a)?)
     }
     fn u8(&self, a: u32) -> Result<u8, Error> {
@@ -167,7 +181,7 @@ impl Model<'_> {
     fn sub(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         self.s.sub(a, b)
     }
-    fn mul(&mut self, a: u32, b: u32) -> Result<u32, Error> {
+    pub(crate) fn mul(&mut self, a: u32, b: u32) -> Result<u32, Error> {
         self.s.mul(a, b)
     }
     fn mul_at(&mut self, a: u32, at: u32) -> Result<u32, Error> {
@@ -246,12 +260,41 @@ impl Model<'_> {
         self.normalize(d)
     }
 
-    /// `0x00248df0`: input `i` of a particle whose records are `p`
-    /// (`state + 0x50`) and `l` (`state + 0x4c`). Only the cases the
-    /// callback's mask `0xf80f` reaches are modelled.
-    fn input(&mut self, i: u32, p: u32, l: u32) -> Result<u32, Error> {
+    /// `0x00248df0`: input `i` of a particle whose records are `s`
+    /// (`state + 0x48`), `l` (`state + 0x4c`) and `p` (`state + 0x50`).
+    /// Every case is modelled: the callback's mask `0xf80f` reaches the
+    /// particle's, the walk's `0x107f0` the system's and location's.
+    pub(crate) fn input(&mut self, i: u32, s: u32, l: u32, p: u32) -> Result<u32, Error> {
         let v = match i {
             0 | 1 | 2 | 3 | 11 | 14 | 15 if p == 0 => 0,
+            4 | 5 | 6 if s == 0 => 0,
+            7 | 16 if l == 0 => 0,
+            4 => self.u32(s.wrapping_add(4))?,
+            5 | 6 => self.u32(s.wrapping_add(0x14 + 4 * i))?,
+            7 => self.u32(l.wrapping_add(0x1c))?,
+            // A clock: its `+8` ticks times its `+4` seconds a tick.
+            8 => {
+                let clock = self.u32(constant::CLOCK)?;
+                let ticks = self.s.int(self.u32(clock.wrapping_add(8))? as i32)?;
+                self.mul_at(ticks, clock.wrapping_add(4))?
+            }
+            // The system's `+0x18` names a record of `[0x004ea93c]`
+            // (stride 0x190): its `+0x6c` and `+0x70`. No null check.
+            9 | 10 => {
+                let k = self.u32(s.wrapping_add(0x18))?;
+                if k == u32::MAX {
+                    0
+                } else {
+                    let table = self.u32(constant::RECORDS)?;
+                    let base = self.u32(table + 0x44)?;
+                    let at = base.wrapping_add((k & 0xffff).wrapping_mul(0x190));
+                    self.u32(at.wrapping_add(if i == 9 { 0x6c } else { 0x70 }))?
+                }
+            }
+            16 => {
+                let b = self.s.int(i32::from(self.u8(l.wrapping_add(3))?))?;
+                self.mul_at(b, BYTE)?
+            }
             0 => self.u32(p + 8)?,
             1 => self.u32(p + 0x10)?,
             2 | 3 | 14 | 15 => {
@@ -298,7 +341,6 @@ impl Model<'_> {
                 let v = self.mul_at(v, p + 0x38)?;
                 self.wrap(v)?
             }
-            // Cases 4 to 10 and 16 are outside the callback's mask.
             _ => return Err(Error::Data),
         };
         Ok(v)
@@ -324,8 +366,25 @@ impl Model<'_> {
         }
     }
 
+    /// The inputs of `wanted` the block at `state` has not cached, made by
+    /// `0x00173ba0` in bit order from the block's records, then the mask
+    /// takes them all.
+    pub(crate) fn cache(&mut self, state: u32, wanted: u32) -> Result<(), Error> {
+        let cached = self.u32(state + 0x44)?;
+        let (s, l, p) = (self.u32(state + 0x48)?, self.u32(state + 0x4c)?, self.u32(state + 0x50)?);
+        let mut bits = wanted & !cached;
+        while bits != 0 {
+            let i = bits.trailing_zeros();
+            bits &= !(1 << i);
+            let v = self.input(i, s, l, p)?;
+            self.m.set_u32(state + 4 * i, v)?;
+        }
+        self.m.set_u32(state + 0x44, cached | wanted)?;
+        Ok(())
+    }
+
     /// `0x00246cd0`: a scalar property of the inputs at `state`.
-    fn property(&mut self, state: u32, property: u32) -> Result<u32, Error> {
+    pub(crate) fn property(&mut self, state: u32, property: u32) -> Result<u32, Error> {
         let range = self.u32(slot(state, self.u16(property + 2)? as i16))?;
         let range = self.through_x87(range)?;
         let input = self.u32(slot(state, self.u16(property)? as i16))?;
@@ -345,7 +404,7 @@ impl Model<'_> {
     }
 
     /// `0x00246d80`: a colour property, as three floats.
-    fn colour(&mut self, state: u32, property: u32) -> Result<[u32; 3], Error> {
+    pub(crate) fn colour(&mut self, state: u32, property: u32) -> Result<[u32; 3], Error> {
         let blob = self.u32(property + 0xc)?;
         let range = if self.u8(blob.wrapping_add(1))? & 1 != 0 {
             self.u32(slot(state, self.u16(property + 2)? as i16))?
@@ -412,28 +471,13 @@ fn args(m: &dyn GuestMemory, esp: u32) -> Result<[u32; 7], Error> {
 /// `mxcsr` and the x87 control word `fcw`, up to its call of the emitter.
 pub fn predict(m: &dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) -> Result<Prediction, Error> {
     let [particle, state, position, axis, size, tint, draw] = args(m, esp)?;
-    let one = m.u32(ONE)?;
-    let mut x = Model {
-        m: Overlay { base: m, writes: BTreeMap::new() },
-        s: Sse { mxcsr },
-        fcw,
-        one,
-    };
+    let mut x = Model::new(m, mxcsr, fcw)?;
+    let one = x.one;
     let definition = x.u32(draw)?;
 
     // 1. The inputs.
-    let wanted = x.u32(definition + 0x98)? & 0xf80f;
-    let cached = x.u32(state + 0x44)?;
-    let (p, l) = (x.u32(state + 0x50)?, x.u32(state + 0x4c)?);
-    let mut bits = wanted & !cached;
-    while bits != 0 {
-        let i = bits.trailing_zeros();
-        bits &= !(1 << i);
-        let v = x.input(i, p, l)?;
-        x.m.set_u32(state + 4 * i, v)?;
-    }
-    let cached = x.u32(state + 0x44)?;
-    x.m.set_u32(state + 0x44, cached | wanted)?;
+    let wanted = x.u32(definition + 0x98)? & CALLBACK_INPUTS;
+    x.cache(state, wanted)?;
 
     // 2. Rotation, colour, alpha.
     let r = x.property(state, definition + 0x4c)?;
