@@ -80,6 +80,7 @@ pub const BUILD_ENV: &[&str] = &[
     "H2_ACCESS_COUNT",
     "H2_PGO",
     "H2_FLAT_RAM",
+    "H2_COLD_STATS",
 ];
 
 /// Cargo features a build may turn on.
