@@ -114,38 +114,56 @@ impl Fpu {
 
 /// The solver buffer while one island solves (accumulators, rows,
 /// impulses, schemas), addressed as the guest's but owned by Rust: the
-/// guest's copy is scratch and is never written.
+/// guest's copy is scratch and is never written. An island that spills
+/// into a LIFO block covers two ranges, the buffer's and the block's.
 #[derive(Clone, Debug)]
 pub struct Scratch {
-    base: u32,
-    words: Vec<u32>,
+    segments: Vec<(u32, Vec<u32>)>,
 }
 
 impl Scratch {
     /// Zeroed words covering `base..end`.
     pub fn new(base: u32, end: u32) -> Option<Self> {
-        let bytes = end.checked_sub(base)?;
-        if base & 15 != 0 || bytes > MAX_SCRATCH {
-            return None;
-        }
-        Some(Self { base, words: vec![0; bytes.div_ceil(4) as usize] })
+        Self::of(&[(base, end)])
     }
 
-    fn index(&self, addr: u32) -> Option<usize> {
+    /// Zeroed words covering each `base..end`, 16-byte aligned bases,
+    /// ranges apart.
+    pub fn of(ranges: &[(u32, u32)]) -> Option<Self> {
+        let mut total = 0u32;
+        let mut segments = Vec::with_capacity(ranges.len());
+        for (i, &(base, end)) in ranges.iter().enumerate() {
+            let bytes = end.checked_sub(base)?;
+            total = total.checked_add(bytes)?;
+            if base & 15 != 0 || total > MAX_SCRATCH {
+                return None;
+            }
+            if ranges[..i].iter().any(|&(b, e)| base < e && b < end) {
+                return None;
+            }
+            segments.push((base, vec![0; bytes.div_ceil(4) as usize]));
+        }
+        Some(Self { segments })
+    }
+
+    fn index(&self, addr: u32) -> Option<(usize, usize)> {
         if addr & 3 != 0 {
             return None;
         }
-        let i = (addr.checked_sub(self.base)? / 4) as usize;
-        (i < self.words.len()).then_some(i)
+        self.segments.iter().enumerate().find_map(|(k, (base, words))| {
+            let i = (addr.checked_sub(*base)? / 4) as usize;
+            (i < words.len()).then_some((k, i))
+        })
     }
 
     pub fn get(&self, addr: u32) -> Option<u32> {
-        Some(self.words[self.index(addr)?])
+        let (k, i) = self.index(addr)?;
+        Some(self.segments[k].1[i])
     }
 
     pub fn put(&mut self, addr: u32, value: u32) -> Option<()> {
-        let i = self.index(addr)?;
-        self.words[i] = value;
+        let (k, i) = self.index(addr)?;
+        self.segments[k].1[i] = value;
         Some(())
     }
 
@@ -411,7 +429,7 @@ pub(crate) fn below(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Less
 }
 
-fn above(a: F80, b: F80) -> bool {
+pub(crate) fn above(a: F80, b: F80) -> bool {
     x87::compare(a, b, false).0 == Cmp::Greater
 }
 

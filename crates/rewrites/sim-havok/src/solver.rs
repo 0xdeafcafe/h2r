@@ -562,14 +562,19 @@ pub struct Areas {
     /// ends at or before `rows_end`.
     pub rows: u32,
     pub rows_end: u32,
+    /// The rows' continuation in a LIFO block, start and end: one header
+    /// may point at its start, and the rows from there on end at or
+    /// before its end.
+    pub overflow: Option<(u32, u32)>,
     /// How many impulse words the frame zeroes (`I+0x18`).
     pub impulse_words: u32,
 }
 
 /// Decode the schemas from `start`. `None` for a stream the kernel does
-/// not cover: an id other than the contact builder's, rows that are not
-/// one run from the row area's start, an accumulator outside the island,
-/// or more rows than zeroed impulse words.
+/// not cover: an id other than the builders', rows that are not one run
+/// from the row area's start (or two, the second from the overflow
+/// block's start), an accumulator outside the island, or more rows than
+/// zeroed impulse words.
 pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<Decoded> {
     let mut d = Decoded { stream: Stream::default(), accumulators: Vec::new(), outputs: Vec::new() };
     let body = |d: &mut Decoded, addr: u32| -> Option<usize> {
@@ -592,6 +597,8 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
     };
     let mut p = start;
     let mut row_at = areas.rows;
+    let mut rows_end = areas.rows_end;
+    let mut overflow = areas.overflow;
     let mut bodies = [0; 2];
     let mut out = Output { dest: 0, stride: 0 };
     // The first schema is read as a header whatever its id (`0x0031c9a0`
@@ -604,8 +611,11 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
         let (constraint, linear, angular, size) = match tag {
             SCHEMA_END => break,
             SCHEMA_CONTACT_HEADER => {
-                if s.get(p.checked_add(4)?)? != row_at {
-                    return None;
+                let first = s.get(p.checked_add(4)?)?;
+                if first != row_at {
+                    // The cursor moved to the overflow block (`0x0031c37d`).
+                    let (start, end) = overflow.take().filter(|&(start, _)| start == first)?;
+                    (row_at, rows_end) = (start, end);
                 }
                 bodies = [body(&mut d, s.get(p + 0x0c)?)?, body(&mut d, s.get(p + 0x10)?)?];
                 out = Output { dest: s.get(p + 8)?, stride: s.get(p + 0x14)? };
@@ -679,7 +689,7 @@ pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<D
                 row_at += 0x20;
                 r
             };
-            if row_at > areas.rows_end {
+            if row_at > rows_end {
                 return None;
             }
             d.stream.rows.push(row);

@@ -127,9 +127,21 @@ the two world pivots, `0x0031f160`), 1 (hinge: two angular rows from
 right-hand side the rest length `+0x40` less the length, `0x0031e740`).
 Each writes the header `0x0031e770` (output `c+0x40`, `+0x70`, `+0x44`,
 stride 8), free linear rows `0x0003040d` and free angular rows
-`0x0004040c`. Kinds 2, 6 and 7 (limits through `0x0031f000`, motors and
-friction through `0x0031e900`, the angle `0x003725e0`) are not ported, and
-an island holding one falls back.
+`0x0004040c`. Kind 2 (limited hinge, `0x00313810`, output `c+0x90`) adds to the hinge's
+rows an angular range row (`0x0031f000`, schema `0x0004100a`) about the
+axis, its value the angle of B's base about it (`0x003725e0`, a cubic
+approximation folded by quadrant) kept within a turn of the last angle,
+which it stores back at `c+0xd4`; then, when `c+0xd0` is nonzero, a
+capped angular friction row (`0x0031e900`, `0x00040809`). Kind 6
+(prismatic, `0x00314fc0`, output `c+0xac`) writes three angular rows
+locking the orientation, two linear rows across the slide axis, a linear
+range along it (`0x0031ee10`, `0x00030c0b`) and, when `c+0xa8` is
+positive, a capped linear friction row (`0x0031ea90`, `0x00030806`).
+Kind 7 (ragdoll, `0x00312fe0`, output `c+0x98`) writes up to two cone
+ranges (`0x00312e00`, each skipped when its cross product is shorter than
+`0x004146e4`), a twist range about the mean twist axis, the
+ball-and-socket rows and, when `c+0x94` is positive, three capped
+friction rows about A's basis.
 
 ### Collision agents
 
@@ -417,14 +429,20 @@ accumulator offsets, the accumulators laid into a Rust-owned buffer
 (`jacobian::Scratch`), the pair words and rows per constraint
 (`jacobian::contact` for the contact class), the schema decode into
 `solver::Stream` (`solver::decode`), `Stream::solve`, the write-back
-pass, the exports and the busy byte. Persistent words only are
-journalled; the buffer's contents stay in Rust. The decline is decided
-before any write, so the guest runs from untouched memory. An island
-falls back to the lifted entry, counted by reason
-(`island_solve::fallbacks`), when it overflows the buffer or its row area,
+pass, the exports and the busy byte. An island past the buffer's end
+takes its LIFO block as retail does (`island_solve::place`): inline from
+the descriptor, or through `0x002d7020` and `0x002d7090` as `sim_havok::mem`
+models them, the scratch then covering the buffer and the block and the
+decode following the rows into the block. Persistent words only are
+journalled; the buffer's and the block's contents stay in Rust. The
+decline is decided before any write, so the guest runs from untouched
+memory. An island falls back to the lifted entry, counted by reason
+(`island_solve::fallbacks`), when its block would come from a route the
+allocator model does not cover or its rows run past the buffer or the
+block,
 holds a motion whose two solver slots are not one of the six classes
 (`motion_solve`, every type), holds a constraint whose
-`vt[+0x24]` is not ported (joint kinds 2, 6 and 7), finds the solver
+`vt[+0x24]` is not one of the seven ported classes, finds the solver
 tables unbuilt, runs under an unmasked float exception or would load a
 non-finite float into the x87 unit from memory (`float`), names an
 accumulator outside the island, or is a contact retail would corrupt or

@@ -281,8 +281,9 @@ fn guest(m: &FlatMemory) -> Guest {
     g
 }
 
-/// An unported builder and an island too large for the buffer: the port
-/// declines, writes nothing and counts why.
+/// An unported builder and an island past the buffer whose LIFO block
+/// would come through an uncovered `vt[+0x24]`: the port declines, writes
+/// nothing and counts why.
 #[test]
 fn islands_the_model_does_not_cover_are_declined_and_counted() {
     let Some((_, base)) = ram() else { return };
@@ -293,6 +294,7 @@ fn islands_the_model_does_not_cover_are_declined_and_counted() {
         let mut r = Rng(0xfa11_0000 + u64::from(buffer));
         let mut mem = base.clone();
         let args = island(&mut r, &mut mem, 3, 2, build, buffer);
+        seed_lifo(&mut mem, 0);
         push_args(&mut mem, &args);
         let g = guest(&mem);
         let cpu = runtime::CpuAbi { esp: STACK, ..runtime::CpuAbi::default() };
@@ -718,6 +720,46 @@ fn the_motion_exports_match_the_lifted_exports() {
     }
 }
 
+/// Bodies of every motion class joined by contacts, the island's sizes
+/// their bounds, random solver parameters.
+fn contact_island(r: &mut Rng, mem: &mut FlatMemory, entities: u32, constraints: u32) -> Args {
+    random_bytes(r, mem, BUFFER, 0x400);
+    let args = island(r, mem, entities, constraints, jacobian::CONTACT_BUILD, BUFFER_BYTES);
+    seed_world(r, mem);
+    for (k, class) in SolverClass::ALL.into_iter().enumerate() {
+        let vt = VTABLES + 0x200 + 0x40 * k as u32;
+        let (accumulate, export) = class.slots();
+        word(mem, vt + island::MOTION_ACCUMULATE_SLOT, accumulate);
+        word(mem, vt + island::MOTION_EXPORT_SLOT, export);
+    }
+    for i in 0..entities {
+        let at = MOTION + 0x200 * i;
+        let offset = mem.read_u32(at + island::MOTION_ACCUMULATOR).unwrap();
+        seed_motion(r, mem, at);
+        word(mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
+        word(mem, at + island::MOTION_ACCUMULATOR, offset);
+    }
+    let (mut rows, mut schemas, mut impulses, mut widest) = (0, 0, 0, 0);
+    for i in 0..constraints {
+        let n = r.below(5);
+        contact(r, mem, CONSTRAINT + 0x100 * i, POINTS + 0x100 * i, PROPS + 0x100 * i, n);
+        rows += 0x30 * n + 0x80;
+        schemas += 0x30 + 4 * n;
+        impulses += n + 3;
+        widest = widest.max(0x30 * n + 0x80);
+    }
+    for (off, v) in [(0x08u32, widest), (0x0c, rows), (0x10, schemas), (0x18, impulses)] {
+        word(mem, ISLAND + off, v);
+    }
+    pair_scales(r, mem, args.pairs);
+    let info = args.info;
+    for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
+        word(mem, info + off, bits(r, lo, hi));
+    }
+    word(mem, info + 0x1c, r.below(4));
+    args
+}
+
 /// Islands of bodies of every motion class joined by contacts, run whole:
 /// the force integration, the builder, the solve, the write-back and the
 /// exports. Memory outside the solver buffer and the dead stack equals the
@@ -731,40 +773,7 @@ fn dynamic_contact_islands_match_the_lifted_entry() {
         let mut r = Rng(0xd1a0_0000 + seed);
         let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
         let mut mem = base.clone();
-        random_bytes(&mut r, &mut mem, BUFFER, 0x400);
-        let args = island(&mut r, &mut mem, entities, constraints, jacobian::CONTACT_BUILD, BUFFER_BYTES);
-        seed_world(&mut r, &mut mem);
-        for (k, class) in SolverClass::ALL.into_iter().enumerate() {
-            let vt = VTABLES + 0x200 + 0x40 * k as u32;
-            let (accumulate, export) = class.slots();
-            word(&mut mem, vt + island::MOTION_ACCUMULATE_SLOT, accumulate);
-            word(&mut mem, vt + island::MOTION_EXPORT_SLOT, export);
-        }
-        for i in 0..entities {
-            let at = MOTION + 0x200 * i;
-            let offset = mem.read_u32(at + island::MOTION_ACCUMULATOR).unwrap();
-            seed_motion(&mut r, &mut mem, at);
-            word(&mut mem, at, VTABLES + 0x200 + 0x40 * r.below(6));
-            word(&mut mem, at + island::MOTION_ACCUMULATOR, offset);
-        }
-        let (mut rows, mut schemas, mut impulses, mut widest) = (0, 0, 0, 0);
-        for i in 0..constraints {
-            let n = r.below(5);
-            contact(&mut r, &mut mem, CONSTRAINT + 0x100 * i, POINTS + 0x100 * i, PROPS + 0x100 * i, n);
-            rows += 0x30 * n + 0x80;
-            schemas += 0x30 + 4 * n;
-            impulses += n + 3;
-            widest = widest.max(0x30 * n + 0x80);
-        }
-        for (off, v) in [(0x08u32, widest), (0x0c, rows), (0x10, schemas), (0x18, impulses)] {
-            word(&mut mem, ISLAND + off, v);
-        }
-        pair_scales(&mut r, &mut mem, args.pairs);
-        let info = args.info;
-        for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
-            word(&mut mem, info + off, bits(&mut r, lo, hi));
-        }
-        word(&mut mem, info + 0x1c, r.below(4));
+        let args = contact_island(&mut r, &mut mem, entities, constraints);
         push_args(&mut mem, &args);
         let fpu = fpu(seed);
 
@@ -796,20 +805,117 @@ fn dynamic_contact_islands_match_the_lifted_entry() {
     assert!(declined <= solved, "{declined} of {} islands declined", solved + declined);
 }
 
+/// The memory system's LIFO descriptor and the block it hands out.
+const LIFO_DESCRIPTOR: u32 = 0x0060_1000;
+const LIFO_BLOCK: u32 = 0x0064_0000;
+const LIFO_BYTES: u32 = 0x1_0000;
+
+/// `[0x00480118]` with `remaining` inline bytes at [`LIFO_BLOCK`] in a
+/// chunk whose payload lies before it, and no vtable.
+fn seed_lifo(m: &mut FlatMemory, remaining: u32) {
+    use sim_havok::layout as l;
+    word(m, l::MEMORY_SYSTEM, LIFO_DESCRIPTOR);
+    word(m, LIFO_DESCRIPTOR, 0);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_CURSOR, LIFO_BLOCK);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_REMAINING, remaining);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_BLOCK, LIFO_BLOCK - 0x110);
+    word(m, LIFO_DESCRIPTOR + l::POOL_LIFO_PAYLOAD, LIFO_BLOCK - 0x100);
+}
+
+/// Contact islands past the solver buffer's end, run whole: the rows
+/// starting past it (every area in the block), only the impulses and
+/// schemas past it, and the rows' tail past it (the cursor moving to the
+/// block). The block is taken and given back inline; memory outside the
+/// buffer, the block and the dead stack equals the lifted entry's, and
+/// `eax` is the block.
+#[test]
+fn islands_past_the_buffer_spill_into_a_lifo_block_as_the_lifted_entry_does() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = original(image);
+    let (mut solved, mut declined) = ([0; 3], 0);
+    for seed in 0..192u64 {
+        let mut r = Rng(0x5b11_0000 + seed);
+        let (entities, constraints) = (1 + r.below(3), 1 + r.below(3));
+        let mut mem = base.clone();
+        let args = contact_island(&mut r, &mut mem, entities, constraints);
+        random_bytes(&mut r, &mut mem, LIFO_BLOCK, 0x400);
+        seed_lifo(&mut mem, LIFO_BYTES);
+        let at = |off: u32| mem.read_u32(ISLAND + off).unwrap();
+        let rows = 0x80 * entities + 0x90;
+        let impulses = rows + at(island::ISLAND_ROWS);
+        let end = impulses + 4 * at(island::ISLAND_IMPULSES) + 8 + at(island::ISLAND_SCHEMAS) + 4;
+        let case = (seed % 3) as usize;
+        let size = match case {
+            0 => r.below(rows + 1),
+            1 => impulses + 1 + r.below(end - impulses - 1),
+            _ => rows + 1 + r.below(impulses - rows),
+        };
+        word(&mut mem, BUFFER_OBJECT + island::BUFFER_SIZE, size);
+        push_args(&mut mem, &args);
+        let fpu = fpu(seed);
+
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let eax = match island::solve(&mut j, &args, fpu) {
+            Ok(eax) => eax,
+            Err(reason) => {
+                assert!(
+                    !matches!(reason, Fallback::Motion | Fallback::Tables | Fallback::Overflow | Fallback::Memory),
+                    "seed {seed} case {case}: {reason:?}"
+                );
+                declined += 1;
+                continue;
+            }
+        };
+        solved[case] += 1;
+        assert_eq!(eax, LIFO_BLOCK, "seed {seed} case {case}: the block");
+        let mut expected = before.clone();
+        for (a, v) in j.finish() {
+            word(&mut expected, a, v);
+        }
+        let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
+        assert_eq!(after.eax, eax, "seed {seed} case {case}: eax");
+        assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
+            m.bytes[LIFO_BLOCK as usize..(LIFO_BLOCK + LIFO_BYTES) as usize].fill(0);
+            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "seed {seed} case {case}: first different byte");
+    }
+    assert!(solved.iter().all(|&n| n > 0), "solved by case {solved:?}");
+    assert!(declined <= solved.iter().sum(), "{declined} declined, solved {solved:?}");
+}
+
 // ---- the joint builders `vt[+0x24]` ---------------------------------------
 
 use sim_havok::joint::Joint;
 
 /// A joint at `c` between entities A and B: random pivots and axes in the
-/// bodies' frames, a rest length at `+0x40`, and each body's transform
+/// bodies' frames, limits, friction (zero or not, to reach each branch), a
+/// last angle within a turn or two, and each body's transform
 /// (`motion+0x80`).
 fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
     word(m, c + island::CONSTRAINT_ENTITY_A, ENTITY);
     word(m, c + island::CONSTRAINT_ENTITY_B, ENTITY + 0x100);
-    for off in (0x20..0x90).step_by(4) {
+    for off in (0x20..0xf0).step_by(4) {
         word(m, c + off, bits(r, -1.0, 1.0));
     }
     word(m, c + 0x40, bits(r, 0.0, 2.0));
+    // Friction: limited hinge `+0xd0`, ragdoll `+0x94`, prismatic `+0xa8`.
+    for off in [0xd0, 0x94, 0xa8] {
+        let f = if r.below(3) == 0 { 0.0 } else { float(r, -0.2, 1.0) };
+        word(m, c + off, f.to_bits());
+    }
+    word(m, c + 0xd4, bits(r, -9.0, 9.0));
+    // Sometimes the ragdoll's twist axes coincide, so a cone is skipped.
+    if r.below(4) == 0 {
+        for i in 0..4 {
+            let v = m.read_u32(c + 0x40 + 4 * i).unwrap();
+            word(m, c + 0x70 + 4 * i, v);
+        }
+    }
     for i in 0..2 {
         let (entity, motion) = (ENTITY + 0x100 * i, MOTION + 0x200 * i);
         word(m, entity + island::ENTITY_MOTION, motion);
@@ -827,7 +933,7 @@ fn seed_joint(r: &mut Rng, m: &mut FlatMemory, c: u32) {
 fn the_joint_builders_match_the_lifted_builders() {
     let Some((image, base)) = ram() else { return };
     let mut code = original(image);
-    for seed in 0..384u64 {
+    for seed in 0..768u64 {
         let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
         let mut r = Rng(0x101e_0000 + seed);
         let mut mem = base.clone();
@@ -849,10 +955,11 @@ fn the_joint_builders_match_the_lifted_builders() {
         word(&mut mem, pairs, acc_a);
         word(&mut mem, pairs + 4, acc_b);
         pair_scales(&mut r, &mut mem, pairs);
+        word(&mut mem, pairs + 8, bits(&mut r, 0.0, 1.0));
         let (rows, schemas) = (BUFFER + 0x1000, BUFFER + 0x4000);
         word(&mut mem, CURSOR, rows);
         word(&mut mem, CURSOR + 4, schemas);
-        let fpu = fpu(seed / 3);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
 
         let before = mem.clone();
         let view = Flat(&before);
@@ -903,7 +1010,7 @@ fn joint_islands_match_the_lifted_entry() {
     let Some((image, base)) = ram() else { return };
     let mut code = original(image);
     let (mut solved, mut declined) = (0, 0);
-    for seed in 0..192u64 {
+    for seed in 0..384u64 {
         let mut r = Rng(0x101f_0000 + seed);
         let joint = Joint::ALL[seed as usize % Joint::ALL.len()];
         let mut mem = base.clone();
@@ -926,19 +1033,20 @@ fn joint_islands_match_the_lifted_entry() {
         let builder = mem.read_u32(CONSTRAINT).unwrap();
         seed_joint(&mut r, &mut mem, CONSTRAINT);
         word(&mut mem, CONSTRAINT, builder);
-        let rows = match joint { Joint::BallSocket => 0x90, Joint::Hinge => 0xd0, Joint::StiffSpring => 0x30 };
-        let count = match joint { Joint::BallSocket => 3, Joint::Hinge => 5, Joint::StiffSpring => 1 };
-        for (off, v) in [(0x08u32, rows), (0x0c, rows), (0x10, 0x18 + 4 * count), (0x18, count)] {
+        // Room for the largest joint (prismatic and ragdoll: 0x150 bytes,
+        // nine rows, 0x5c bytes of schemas).
+        for (off, v) in [(0x08u32, 0x180), (0x0c, 0x180), (0x10, 0x80), (0x18, 12)] {
             word(&mut mem, ISLAND + off, v);
         }
         pair_scales(&mut r, &mut mem, args.pairs);
+        word(&mut mem, args.pairs + 8, bits(&mut r, 0.0, 1.0));
         let info = args.info;
         for (off, (lo, hi)) in [(4, (0.5, 1.5)), (8, (0.05, 1.0)), (0x0c, (0.1, 1.0)), (0x10, (0.5, 1.5)), (0x20, (0.5, 1.5))] {
             word(&mut mem, info + off, bits(&mut r, lo, hi));
         }
         word(&mut mem, info + 0x1c, 1 + r.below(3));
         push_args(&mut mem, &args);
-        let fpu = fpu(seed / 3);
+        let fpu = fpu(seed / Joint::ALL.len() as u64);
 
         let before = mem.clone();
         let view = Flat(&before);
