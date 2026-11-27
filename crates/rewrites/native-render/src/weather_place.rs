@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn a_colour_packs_to_rgb_bytes() {
-        assert_eq!(pack_colour([1.0, 0.0, 0.5]), 0x00ff_0002 | 0x0000_7e00 | 0x0000_0000);
+        assert_eq!(pack_colour([1.0, 0.0, 0.5]), 0x00ff_0080);
     }
 
     #[test]
