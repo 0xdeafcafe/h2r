@@ -1,7 +1,7 @@
 # Native particles and effect geometry
 
 Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen; the run host does not draw them yet. Pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `particle_system.rs`, `particle_compute.rs` (`particle_common.wgsl`, `particle_compute.wgsl`, `particle_draw.wgsl`), `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `particles_compute_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
+Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `particle_system.rs`, `particle_definition.rs`, `particle_compute.rs` (`particle_common.wgsl`, `particle_compute.wgsl`, `particle_draw.wgsl`), `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `particles_compute_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 On the admitted path the guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction; the stage reads the completed geometry and replaces only the draw packet. A GPU particle system ("GPU particle systems" below) holds its particles in GPU buffers and updates and draws them there. Part of [native-renderer.md](native-renderer.md).
@@ -470,6 +470,34 @@ flowchart LR
 | flips | flags 2 and 4 with the particle's word bits 0 and 16 |
 | size | property times `size_scale` |
 
+`particle_definition::definition(tag, sheet, image)` builds the
+`Definition` from the `prt3` tag, the bitmap's sprite sequences (`Sheet::of`,
+a type 3 bitmap) and the values the guest reads from its image:
+
+| Tag (`prt3`) | `Definition` |
+|---|---|
+| `+0` flags, `+2` (one u32) | `flags` |
+| `+8`, `+0xa` | `sequence_first`, `sequence_pick` (at least 1) |
+| `+0x1c` colour | `colour`: curves, and the function's colour stops sampled at the 8 gradient stops |
+| `+0x2c`, `+0x3c`, `+0x4c`, `+0x5c` | `alpha`, `size`, `rotation`, `frame`: the function at range 0 and 1 over 16 samples, `lo`/`hi` its output range, `map` unless its output is raw |
+| property `+0`, `+2`, `+6` | `input`, `range`, `modifier_input`: guest input 0, 1, 2, 3, 14, 15 to life, age, random 0 to 3 |
+| property `+4` | `modifier` (add, multiply; else none) |
+| `+0x98` | checked: every input a property reads is in the mask |
+| `+0x9c`, `+0xac` | `fixed_corners`, `fixed_window` |
+| bitmap sequences | `frames`, `sequences`; `Sheet::sprites` the table |
+| image `0x0043f17c`, `0x004123ec` | `angle_scale`, `spin` |
+
+An input the function's value does not depend on reads `Zero`. The
+emitter's and movement's `tint`, `size_scale`, `gravity` and `drag` are
+one and zero for the system's owner to set. `Refused` names the tags with
+no exact GPU form: an input the GPU lacks (4 to 13, 16 up, negative) or
+the mask leaves uncomputed, a function of the age that does not hold its
+value past 1 (only identity and transition do), a wave or shape not in the
+tables, a missing or unparsable function the callback reads, and sequences
+of different sprite counts. Two bakes are approximate: a ranged function
+whose sets leave 0..1 is clamped after the blend, not per curve, and three
+or four colour stops fall between gradient stops.
+
 The draw (`ParticleDraw::draw`) is the entry a render pass calls: it binds
 the system's current buffer, the `View` uniform (clip from world, the
 billboard's right and up) and the sprite texture, and records one
@@ -496,7 +524,7 @@ test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
-- GPU particle systems: building a `Definition` from a particle tag (the curves baked from the tag function) and drawing them from the run host; update and draw cost at 1k, 10k and 65k particles.
+- GPU particle systems: a `Definition` from a disc particle tag, and drawing them from the run host; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 
