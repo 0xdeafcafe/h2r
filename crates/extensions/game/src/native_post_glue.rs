@@ -477,21 +477,28 @@ static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Screen-effect preflight refusals for the frame scene's counter map.
 pub(crate) fn refusal_counters() -> impl Iterator<Item = (String, u64)> {
     Missing::ALL.into_iter().zip(&EFFECT_REFUSED).map(|(cause, count)| {
-        let name = match cause {
-            Missing::TemplatePass => "template_pass",
-            Missing::PassTarget => "pass_target",
-            Missing::ViewTarget => "view_target",
-            Missing::Blur => "blur",
-            Missing::Wide => "wide",
-            Missing::StandIns => "stand_ins",
-            Missing::TemplateSkipped => "template_skipped",
-        };
-        (format!("post_effect_refused_{name}"), count.load(Ordering::Relaxed))
+        (format!("post_effect_refused_{}", missing_name(cause)), count.load(Ordering::Relaxed))
     })
 }
 
-/// A call refused for `m`: counted, and logged once per reason.
+/// A refusal's counter name.
+fn missing_name(m: Missing) -> &'static str {
+    match m {
+        Missing::TemplatePass => "template_pass",
+        Missing::PassTarget => "pass_target",
+        Missing::ViewTarget => "view_target",
+        Missing::Blur => "blur",
+        Missing::Wide => "wide",
+        Missing::StandIns => "stand_ins",
+        Missing::TemplateSkipped => "template_skipped",
+    }
+}
+
+/// A call refused for `m`: counted, and logged once per reason. A HUD
+/// screen-effect widget's call keeps it as its cause
+/// (`scene_kept_overlay_screen_effect_<cause>`).
 fn refused(m: Missing) {
+    render_bridge::native_hud::kept::refuse(missing_name(m));
     let i = Missing::ALL.iter().position(|a| *a == m).unwrap_or(0);
     EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
     if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
@@ -1673,10 +1680,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         call: ScreenEffect,
         fp: Fp,
     ) -> bool {
+        use render_bridge::native_hud::kept::refuse;
         let (mut effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
-            Ok(None) => return false,
+            Ok(None) => {
+                refuse("unplanned");
+                return false;
+            }
             Err(e) => {
+                refuse("plan");
                 if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
                     eprintln!(
                         "native-post: a screen effect keeps its D3D draws: {e} (logged once)"
@@ -1692,6 +1704,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if effects.is_none() {
             // The first call on a map starts their load: nothing is
             // missing yet, they are not in.
+            refuse("loading");
             return false;
         }
         let frame = quad_frame(&*mem, fp);
@@ -1716,6 +1729,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let Some(effects) = effects else { return false };
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else {
+            refuse("effect_depth");
             return false;
         };
         let grid = |p: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
@@ -1730,6 +1744,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return false;
         };
         let Some(plan) = screen_swallow(&call) else {
+            refuse("swallow");
             return false;
         };
         let (targets, shapes) = plan;
@@ -1745,7 +1760,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             call,
             raster: OnceLock::new(),
         });
-        self.arm(
+        let armed = self.arm(
             mem,
             d3d::Swallow {
                 call: Some(swallow_call(site)),
@@ -1758,7 +1773,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 drop: true,
                 pass,
             },
-        )
+        );
+        if !armed {
+            refuse("arm");
+        }
+        armed
     }
 }
 

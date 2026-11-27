@@ -6,6 +6,7 @@
 mod backdrop;
 pub mod hud_inputs;
 pub mod hud_overlay;
+pub mod kept;
 pub mod modal_blur;
 mod model;
 mod outline;
@@ -87,28 +88,53 @@ fn vertices(mem: &dyn GuestMemory, frame: u32, colour: u32) -> Option<HudVertice
 
 fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
     Stage::Ui.count(Metric::WalkExamined, 1);
+    // A HUD item is counted by its kind when nothing draws it
+    // (`kept`, `scene_kept_overlay_<kind>_<cause>`).
+    let kind = kept::in_hud().then(|| {
+        let caller = frame.checked_add(4).and_then(|at| mem.u32(at).ok()).unwrap_or(0);
+        kept::quad_kind(caller)
+    });
     let Some(vertices) = vertices(mem, frame, colour) else {
         Stage::Ui.count(Metric::WalkRefusedInputs, 1);
+        if let Some(kind) = kind {
+            kept::count(kind, "inputs");
+        }
         return false;
     };
-    let drawn = host().is_some_and(|host| {
-        if let Some(at) = hud_overlay::tag_quad(mem, frame) {
-            if host.draw_tag_quad(mem, &at, &vertices) {
-                timeline::native::Ui::OverlayHudTagQuads.count();
-                return true;
-            }
-            timeline::native::Ui::OverlayHudTagFallback.count();
-        } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
-            // A menu shader bitmap: the game's draw at the sorted list
-            // (`ui_overlay::plan`), its quad from the overlay here.
-            if host.draw_tag_quad(mem, &at, &vertices) {
-                timeline::native::Ui::OverlayMenuShaderQuads.count();
-                return true;
-            }
-            timeline::native::Ui::OverlayMenuShaderFallback.count();
+    let Some(host) = host() else {
+        if let Some(kind) = kind {
+            kept::count(kind, "host");
         }
-        host.draw_quad(mem, &vertices)
-    });
+        ui::record(false);
+        return false;
+    };
+    if let Some(at) = hud_overlay::tag_quad(mem, frame) {
+        if let Some(kind) = kind {
+            kept::begin(kind);
+        }
+        if host.draw_tag_quad(mem, &at, &vertices) {
+            timeline::native::Ui::OverlayHudTagQuads.count();
+            kept::end(true);
+            ui::record(true);
+            return true;
+        }
+        timeline::native::Ui::OverlayHudTagFallback.count();
+    } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
+        // A menu shader bitmap: the game's draw at the sorted list
+        // (`ui_overlay::plan`), its quad from the overlay here.
+        if host.draw_tag_quad(mem, &at, &vertices) {
+            timeline::native::Ui::OverlayMenuShaderQuads.count();
+            ui::record(true);
+            return true;
+        }
+        timeline::native::Ui::OverlayMenuShaderFallback.count();
+    }
+    // The screen capture's cause is the one that counts.
+    if let Some(kind) = kind {
+        kept::begin(kind);
+    }
+    let drawn = host.draw_quad(mem, &vertices);
+    kept::end(drawn);
     ui::record(drawn);
     drawn
 }

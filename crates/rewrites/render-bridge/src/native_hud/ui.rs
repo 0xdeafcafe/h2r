@@ -105,6 +105,9 @@ fn enter(
     } else {
         (c.cpu.esp, true)
     };
+    if scope == UiScope::Hud {
+        super::kept::set_in_hud(true);
+    }
     if let Some(host) = host() {
         host.enter_ui(&mut *mem, scope, stack, eligible);
     }
@@ -132,6 +135,7 @@ fn leave(c: &mut Call<'_>, mut scope: UiScope) {
     }
     if scope == UiScope::Hud {
         TEXT_FRAME.set(None);
+        super::kept::set_in_hud(false);
     }
     if let Some(host) = host() {
         let rt = Arc::clone(c.ctx.runtime());
@@ -201,9 +205,17 @@ fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
     let ret = mem.u32(stack).ok()?;
     let next_stack = stack.checked_add(8)?;
     let corners = mem.u32(stack.checked_add(4)?).ok()?;
+    // A screen quad in the HUD is a glyph of one of its strings.
+    let hud = super::kept::in_hud();
     let Some(vertices) = screen_vertices(&*mem, corners) else {
+        if hud {
+            super::kept::count(super::kept::OverlayKind::Text, "inputs");
+        }
         return geometry_refused();
     };
+    if hud {
+        super::kept::begin(super::kept::OverlayKind::Text);
+    }
     let drawn = host().is_some_and(|host| {
         let shader = TEXT_FRAME.get().and_then(|frame| glyph_shader(&*mem, frame, stack, ret));
         if let Some(shader) = shader {
@@ -215,6 +227,9 @@ fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
         }
         host.screen_fan(&mut *mem, &vertices)
     });
+    if hud {
+        super::kept::end(drawn);
+    }
     record(drawn);
     if drawn {
         c.cpu.esi = saved_esi;
@@ -388,9 +403,19 @@ pub(super) fn place(b: &mut Builder<'_>) {
     }).context_only().optional();
     use engine::points::render_aspect::{ANCHOR, GROUPS};
     b.raw().before(&ANCHOR, "native_hud_text_frame", |c| {
-        if GuestMemory::u32(&*c.ctx.memory(), c.cpu.esp).ok() == Some(TEXT_ANCHOR_RETURN) {
-            TEXT_FRAME.set(Some(c.cpu.ebp));
+        match GuestMemory::u32(&*c.ctx.memory(), c.cpu.esp).ok() {
+            Some(TEXT_ANCHOR_RETURN) => TEXT_FRAME.set(Some(c.cpu.ebp)),
+            // A bitmap widget's anchor id (EAX): the centre's is the
+            // reticle (`kept::quad_kind`).
+            Some(super::kept::BITMAP_ANCHOR_RETURN) => super::kept::set_widget_anchor(Some(c.cpu.eax)),
+            _ => {}
         }
+        Ok(Flow::Continue)
+    }).context_only().after_feature("render-aspect").optional();
+    let bitmap_end = GROUPS.iter().find(|(ret, _)| *ret == super::kept::BITMAP_ANCHOR_RETURN)
+        .expect("bitmap anchor group");
+    b.raw().before(&bitmap_end.1, "native_hud_bitmap_end", |_| {
+        super::kept::set_widget_anchor(None);
         Ok(Flow::Continue)
     }).context_only().after_feature("render-aspect").optional();
     let text_end = GROUPS.iter().find(|(ret, _)| *ret == TEXT_ANCHOR_RETURN)

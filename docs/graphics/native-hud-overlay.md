@@ -1,7 +1,7 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A bitmap widget whose shader's Rust material is proven against the guest's draws with no guest shader setup. Pixel parity needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs` and `hud_native.rs`.
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs` and `hud_native.rs`.
 Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust). Both in [switches.md](../runtime/switches.md).
 
 The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
@@ -20,6 +20,20 @@ flowchart LR
 A bitmap enters the overlay at `0x0022a7f6`, after the shader setup and before Begin. The bitmap helper's ordinary draw calls `0x0022a664` at `0x0022b690`. Special type 5 calls it in a loop at `0x0022b55c`, setting the inputs for each shield layer.
 
 Capturing one quad per invocation preserves layer order, animation and the engine's choice of sprite. Each item carries the shader datum and the four `hud_input` values at `0x004e6980`.
+
+Every HUD caller of the shader quad is captured this way, and proven and drawn from its Rust material as a widget is (`native_hud::hud_overlay::tag_quad`, by the call's return, `native_hud::kept::quad_kind`):
+
+| Kind | Draw | Quad returns (Code) |
+|---|---|---|
+| `widget`, `crosshair` | bitmap widgets `0x0022aff1`, `0x0022bbca`; the crosshair is a widget held at anchor 4, the centre (its anchor call at `0x0022b055` gives the id in EAX) | `0x0022b39c` .. `0x0022b7d3`, `0x0022bca9` |
+| `training` | the training box's frame `0x001e9140` | `0x001e936f` .. `0x001e95bb` |
+| `navpoint` | the arrow `0x0024e9c7`, the outline `0x0024f0fc` | `0x0024eca5`, `0x0024f35c` .. `0x0024f55b` |
+| `waypoint` | the marker `0x0024ef29` (from `0x0024ecae`) | `0x0024f0bb` |
+| `indicator` | the indicator group `0x00200462` | `0x00200784` |
+
+Another caller keeps the generic fan path. The `hud_input` slot of a non-widget quad holds what `0x004e6980` holds at its draw, which is also what its shader reads.
+
+Each placement takes the UI fit the guest's draw carries at that point in the frame (`d3d::backend::UiFit`), set per HUD group by the anchor rule (`canvas_fit::anchor_fit`, [high-resolution.md](high-resolution.md)); a pass placed from Rust takes the device's fit at its placement (`hud_overlay::place`). No item is placed on its own.
 
 A menu shader bitmap (type 9) is drawn the same way. Its draw `0x002b11c9` copies the widget's four shader inputs (`+0x74`) through `0x001392f8` to `+0x1c0` of the UI globals `[0x00510c4c]`, then calls `0x0022a664` at `0x002b12ae` with the definition's bitmap (`+0x10`), image (`+0x0a`) and shader (`+0x18`). At the shader quad, `native_hud::hud_overlay::menu_shader_quad` reads those arguments and the UI's inputs into the item's `hud_input` slot. The quad is captured as a HUD widget's is, with its template's combiner and evaluated constants (`menu_shader_quads`, `menu_shader_fallback`).
 
@@ -91,6 +105,10 @@ Skipping the setup leaves the shader cache at `0x00485b48` as the last guest set
 
 Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `proven`, `mismatch_words`, `mismatch_state`, `mismatch_stages`, `mismatch_corners`, `refused`, `recheck_failed`.
 
+## What is kept
+
+A HUD item the overlay does not draw keeps its guest draw and is counted `scene_kept_overlay_<kind>_<cause>` (`native_hud::kept`; kinds and causes in [retire-d3d.md](retire-d3d.md#r6s-remainder)). The producer names the kind before it asks the host (`kept::begin`), the capture names the first refusal (`kept::refuse`, from `hud_overlay::Widget::plan`), and a draw taken by the resolved packet in place of the overlay is `packet` (`kept::carried`). Text, the motion sensor's fans and the HUD's screen-effect calls (`0x0022bbc0`) are counted the same way. A guest draw in the HUD scope that no producer offered is `untraced`.
+
 ## Glyphs
 
 The overlay's text runs sample glyph pages (`native_render::overlay::GlyphPages`, one per engine font), which the host fills from the disc's fonts as the game serves them.
@@ -112,6 +130,8 @@ A page keeps coverage alone, so a glyph with colours of its own (a medal, a butt
 - That any retail HUD shader proves: the corners are predicted from the quad's own vertices with no vertex program, the sampler from the tag's stage states as D3D values, the blend from the implementation's states over `gfx`'s defaults. `mismatch_*` names the first part that differs.
 - That an overlay pass (`OverlayPass`) places a quad on the same pixels as the widget pass: it does not snap positions to sixteenths (`raster_position`).
 
+- That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
+- That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).
 - HUD pixel parity on the lab. From the same saved camera and tick, capture `render.frame` with `impl.render.native` off and on. Compare empty, partial and full ammo and shield meters, a flashing ammo count and a two-colour waypoint emblem, including a split-screen view and a scaled display copy. Compare RGBA in each widget rectangle and check `render.stats` for bitmap and text reservations, display recordings and zero fallback or failed recordings for the exercised widgets.
 
 ## Related

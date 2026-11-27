@@ -128,10 +128,13 @@ impl DrawAdmission for Admission {
             return None;
         }
         Ui::GuestBuilderDraw.count();
-        if !scope.eligible {
-            return None;
+        let planned = if scope.eligible { self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into()) } else { None };
+        // A HUD draw no producer offered first is `untraced`
+        // (`kept::untraced`); a kept item's own draw is not counted again.
+        if scope.kind == UiScope::Hud {
+            render_bridge::native_hud::kept::untraced(if planned.is_some() { "packet" } else { "scope" });
         }
-        self.plan(snapshot, scope.frame, Stage::Ui, Vec::new().into())
+        planned
     }
 }
 
@@ -286,8 +289,13 @@ impl<B: d3d::Backend> Glue<B> {
             device.try_native_immediate_draw(&mut memory, PrimitiveType::TriangleFan, vertices, &candidate)
         };
         let drawn = matches!(result, Ok(true));
-        if !drawn {
+        if drawn {
+            // The guest's resolved packet, not the overlay: a HUD item
+            // drawn so is counted `packet` (`kept::carried`).
+            render_bridge::native_hud::kept::carried();
+        } else {
             Ui::Reservation.count();
+            render_bridge::native_hud::kept::refuse("reservation");
         }
         drawn
     }

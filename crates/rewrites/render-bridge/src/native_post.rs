@@ -210,12 +210,29 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
         corners: w[3],
     };
     crate::scene_step::post_effect(&*mem, call.datum, call.values, call.columns, call.rows);
+    let Ok(ret) = mem.u32(esp) else { return false };
+    // A HUD screen-effect widget's call (`0x0022bbbb`) is an overlay item:
+    // counted `scene_kept_overlay_screen_effect_<cause>` when it keeps
+    // its D3D draws (`native_hud::kept`).
+    let hud = ret == crate::native_hud::kept::SCREEN_EFFECT_RETURN;
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        if hud {
+            crate::native_hud::kept::count(crate::native_hud::kept::OverlayKind::ScreenEffect, "host");
+        }
         return false;
     };
-    let Ok(ret) = mem.u32(esp) else { return false };
     let site = CallSite { kind: PostCall::Screen, esp, ret };
+    if hud {
+        crate::native_hud::kept::begin(crate::native_hud::kept::OverlayKind::ScreenEffect);
+    }
     let armed = host.screen_effect(mem, site, call, fp);
+    if hud {
+        crate::native_hud::kept::end(armed);
+        if !armed {
+            // Its strips reach the device as guest draws until it returns.
+            crate::native_hud::kept::hold();
+        }
+    }
     if armed {
         EFFECTS_ARMED.fetch_add(1, Ordering::Relaxed);
     }
@@ -224,6 +241,9 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
 
 /// The return continuation runs before the guest caller resumes.
 pub fn finish(mem: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
+    if kind == PostCall::Screen {
+        crate::native_hud::kept::release();
+    }
     if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         host.finish(mem, kind, esp.wrapping_sub(4 + kind.cleanup()));
     }
@@ -287,6 +307,10 @@ impl Feature for NativePost {
                 let mut mem = rt.memory();
                 if crate::scope_zoom_hud::hud_profile(&*mem, c.cpu.eax, c.cpu.esp).is_none() {
                     on_screen_effect(&mut *mem, c.cpu.eax, c.cpu.esp, fp);
+                } else {
+                    // A converted scope-zoom profile keeps the original.
+                    crate::native_hud::kept::count(crate::native_hud::kept::OverlayKind::ScreenEffect, "scope_zoom");
+                    crate::native_hud::kept::hold();
                 }
                 Ok(Flow::Continue)
             })

@@ -146,12 +146,16 @@ where
         captured: Mutex::new(None),
     };
     let Ok(mut device) = device.lock() else {
+        render_bridge::native_hud::kept::refuse("device");
         return (false, None);
     };
     let mut mem = DeviceMemory(mem);
     let taken = issue(&mut *device, &mut mem, &admission);
     drop(device);
     if taken.ok() != Some(true) {
+        // The admission's own cause holds; else the device did not take
+        // the draw (its packet, push room, a pending fence).
+        render_bridge::native_hud::kept::refuse("device");
         return (false, None);
     }
     let captured = admission
@@ -281,23 +285,32 @@ fn faces_visible(corners: &[OverlayVertex; 4], cull: CullMode) -> bool {
 
 impl DrawAdmission for Widget<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+        // A refusal names its cause for the HUD's kept counts
+        // (`render_bridge::native_hud::kept`).
+        self.plan(snapshot).map_err(render_bridge::native_hud::kept::refuse).ok()
+    }
+}
+
+impl Widget<'_> {
+    /// The draw as one overlay quad, or the first thing that keeps it off
+    /// the overlay.
+    fn plan(&self, snapshot: &DrawSnapshot<'_>) -> Result<(ExternalPlan, Box<dyn ExternalPass>), &'static str> {
         let draw = snapshot.draw;
         let rs = &draw.state.render;
-        if snapshot.color_header == 0
-            || !draw.clip_rects.is_empty()
-            || draw.writes_depth_stencil()
-            || (rs.depth_mode != DepthBufferMode::Disabled && rs.depth_func != CompareFunc::Always)
-            || rs.stencil.enable
-            || rs.fill_mode != FillMode::Solid
-            || draw.hw.zpass_count_enable
-            || rs.color_write.xbox_value() == 0
-        {
-            return None;
-        }
-        let words = d3d::nv2a::overlay_shader_words(draw)?;
-        if !native_render::ui_gpu::hud_shader_supported(&words) {
-            return None;
-        }
+        let refused = |bad: bool, cause: &'static str| if bad { Err(cause) } else { Ok(()) };
+        refused(snapshot.color_header == 0, "target")?;
+        refused(!draw.clip_rects.is_empty(), "clip_rects")?;
+        refused(
+            draw.writes_depth_stencil()
+                || (rs.depth_mode != DepthBufferMode::Disabled && rs.depth_func != CompareFunc::Always)
+                || rs.stencil.enable,
+            "depth",
+        )?;
+        refused(rs.fill_mode != FillMode::Solid, "fill")?;
+        refused(draw.hw.zpass_count_enable, "query")?;
+        refused(rs.color_write.xbox_value() == 0, "colour_write")?;
+        let words = d3d::nv2a::overlay_shader_words(draw).ok_or("shader")?;
+        refused(!native_render::ui_gpu::hud_shader_supported(&words), "combiner")?;
         let sampled = snapshot.sampled_stages;
         let first = sampled.iter().position(|&v| v);
         let mut shader_stages = [None; 4];
@@ -307,28 +320,24 @@ impl DrawAdmission for Widget<'_> {
             if !active {
                 continue;
             }
-            samplers[stage] = sampler(draw, stage)?;
+            samplers[stage] = sampler(draw, stage).ok_or("sampler")?;
             let header = snapshot.bound_textures[stage];
-            if header == 0 {
-                return None;
-            }
+            refused(header == 0, "texture")?;
             shader_stages[stage] = Some(OverlayTexture::Bound { header });
             if draw.extras[stage].alpha_kill & 4 != 0 {
                 alpha_kill |= 1u8 << stage;
             }
         }
-        let texture = self.source.texture(&shader_stages, first)?;
+        let texture = self.source.texture(&shader_stages, first).ok_or("glyph_cache")?;
         let (tag, hud_input) = self.source.shader();
         let (blend, blend_constant) = blend(rs);
-        let evaluated = d3d::nv2a::overlay_vertices(draw, sampled)?;
+        let evaluated = d3d::nv2a::overlay_vertices(draw, sampled).ok_or("vertices")?;
         let corners = evaluated.map(|(position, coords, color)| OverlayVertex {
             position,
             uv: coords[first.unwrap_or(0)],
             color,
         });
-        if !faces_visible(&corners, rs.cull_mode) {
-            return None;
-        }
+        refused(!faces_visible(&corners, rs.cull_mode), "culled")?;
         let material = OverlayMaterial {
             program: Program::Shader { tag },
             texture,
@@ -337,8 +346,8 @@ impl DrawAdmission for Widget<'_> {
         };
         let mut overlay = Overlay::new([draw.target.width, draw.target.height]);
         overlay
-            .push_quad(material, clip(draw.clip?), corners)
-            .ok()?;
+            .push_quad(material, clip(draw.clip.ok_or("clip")?), corners)
+            .map_err(|_| "overlay")?;
         let item = &mut overlay.items[0];
         item.alpha_test = rs
             .alpha_test_enable
@@ -357,7 +366,7 @@ impl DrawAdmission for Widget<'_> {
             members: vec![Member { draw: Arc::new(draw.clone()), overlay }],
             sampled,
         };
-        Some((
+        Ok((
             ExternalPlan {
                 stage: Stage::Ui,
                 view: 4,
