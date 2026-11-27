@@ -30,22 +30,60 @@ pub fn ship_name(kind: ShipKind) -> String {
     format!("{SHIP_PREFIX}{}", kind.name())
 }
 
-/// How far the ship's body reaches round its path: a path is clear for a
-/// kind when rays this far to each side of it are clear too. The Pelican
-/// is the widest, so a path clear for it is clear for every kind.
-pub const fn radius(kind: ShipKind) -> f32 {
-    match kind {
-        ShipKind::Phantom => 5.0,
-        ShipKind::Pelican => 8.0,
+/// A kind of ship's size, read from its `vehi` tag: how far its body
+/// reaches round its path (the object's bounding radius), how many seats it
+/// has (the vehicle's seat block) and how high its lift points hold it (the
+/// tallest `antigrav_height`). A path is clear for a kind when rays that
+/// far to each side of it are clear too.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Dims {
+    pub radius: f32,
+    pub seats: usize,
+    pub hover: f32,
+    /// Read from the tag; false for the defaults of a tag too short or too
+    /// plain to say (an invented one in a test).
+    pub from_tag: bool,
+}
+
+impl Dims {
+    /// What a kind is taken to be when its tag gives none. The report says
+    /// so ([`ShipReport::dims`]).
+    pub const fn default_for(kind: ShipKind) -> Self {
+        match kind {
+            ShipKind::Phantom => Self { radius: 5.0, seats: 8, hover: DROP_HEIGHT, from_tag: false },
+            ShipKind::Pelican => Self { radius: 8.0, seats: 6, hover: 4.0, from_tag: false },
+        }
     }
 }
 
-/// How far over the zone's mean a kind hovers while it unloads.
-pub const fn hover_height(kind: ShipKind) -> f32 {
-    match kind {
-        ShipKind::Phantom => DROP_HEIGHT,
-        ShipKind::Pelican => 4.0,
-    }
+const VEHI_SIZE: usize = 0x300;
+const OBJE_BOUNDING_RADIUS: usize = 0x4;
+const VEHI_SEATS: usize = 0x1c8;
+const SEAT_STRIDE: usize = 0xb0;
+const VEHI_LIFT_POINTS: usize = 0x2e8;
+const LIFT_STRIDE: usize = 0x4c;
+const LIFT_HEIGHT: usize = 0x10;
+
+/// The size the `vehi` tag `path` of `map` gives, none when the map has no
+/// such tag or it is too short to hold the fields.
+pub(crate) fn dims_in<R: Read + Seek>(map: &mut Map<R>, path: &str) -> Option<Dims> {
+    use map::TagQuery;
+    use tags::geometry::TagView;
+    let id = map.tag(TagQuery::NameInGroup(path, VEHI)).ok()?.id;
+    let address = map.tag(id).ok()?.location?.address;
+    let bytes = map.read_tag_bytes(id).ok()?;
+    let v = TagView::new(&bytes, address);
+    let root = v.at(0, VEHI_SIZE).ok()?;
+    let f = |at: usize| f32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+    let seats = v.block(root, VEHI_SEATS, SEAT_STRIDE).ok()?.len();
+    let hover = v
+        .block(root, VEHI_LIFT_POINTS, LIFT_STRIDE)
+        .ok()?
+        .iter()
+        .map(|p| f32::from_le_bytes(p[LIFT_HEIGHT..LIFT_HEIGHT + 4].try_into().unwrap()))
+        .fold(0.0, f32::max);
+    let radius = f(OBJE_BOUNDING_RADIUS);
+    (radius > 0.0 && seats > 0 && hover > 0.0).then_some(Dims { radius, seats, hover, from_tag: true })
 }
 
 /// The point of a path a kind hovers at: `hover_<kind>`.
@@ -133,6 +171,8 @@ pub struct ShipReport {
     pub paths: usize,
     /// Why it was cut.
     pub why: Option<String>,
+    /// The size the kit planned its paths for, when kept.
+    pub dims: Option<Dims>,
 }
 
 impl ShipReport {
@@ -149,6 +189,7 @@ impl ShipReport {
             bytes: 0,
             paths: 0,
             why: Some(why.into()),
+            dims: None,
         }
     }
 }
@@ -162,8 +203,22 @@ impl std::fmt::Display for ShipReport {
         if self.kept {
             write!(
                 f,
-                "{label}: kept ({}, {} tags, {} bytes, {} zone paths)",
-                self.tag, self.tags, self.bytes, self.paths
+                "{label}: kept ({}, {} tags, {} bytes, {} zone paths{})",
+                self.tag,
+                self.tags,
+                self.bytes,
+                self.paths,
+                match self.dims {
+                    Some(d) if d.from_tag => format!(
+                        "; from the tag: reach {}, {} seats, hover {}",
+                        d.radius, d.seats, d.hover
+                    ),
+                    Some(d) => format!(
+                        "; the tag gives no size, so reach {}, {} seats, hover {} are assumed",
+                        d.radius, d.seats, d.hover
+                    ),
+                    None => String::new(),
+                }
             )
         } else {
             write!(f, "{label}: cut ({})", self.why.as_deref().unwrap_or("not built"))
@@ -295,7 +350,7 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32) -> Vec<Option<Run
 
 /// A point set `ff_path_NN` for each zone with a run: `run_in`, a
 /// `hover_<kind>` for each of `kinds`, `run_out`.
-pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[ShipKind]) -> Vec<PointSet> {
+pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims)]) -> Vec<PointSet> {
     let mut sets = Vec::new();
     for (zone, run) in runs.iter().enumerate() {
         let Some(run) = run else { continue };
@@ -311,9 +366,9 @@ pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[ShipKind]) -> V
                     facing: [run.yaw, 0.0],
                 };
                 let mut points = vec![at(RUN_IN.to_owned(), run.points[0])];
-                for kind in kinds {
+                for (kind, dims) in kinds {
                     let mut hover = run.points[1];
-                    hover[2] += hover_height(*kind) - DROP_HEIGHT;
+                    hover[2] += dims.hover - DROP_HEIGHT;
                     points.push(at(hover_name(*kind), hover));
                 }
                 points.push(at(RUN_OUT.to_owned(), run.points[2]));
@@ -349,7 +404,7 @@ fn name32(name: &str, size: usize) -> Block {
 /// kept.
 pub(crate) fn author<R: Read + Seek>(
     map: &mut Map<R>,
-    ships: &[(ShipKind, TagId)],
+    ships: &[(ShipKind, TagId, Dims)],
     runs: &[Option<Run>],
     bsp: i16,
 ) -> Result<Option<Authored>> {
@@ -377,7 +432,7 @@ pub(crate) fn author<R: Read + Seek>(
     let mut place_bytes = placements.concat();
     let (mut name_count, mut place_count) = (names.len(), placements.len());
     let mut added_rows: Vec<(usize, TagId)> = Vec::new();
-    for (n, (kind, ship)) in ships.iter().enumerate() {
+    for (n, (kind, ship, _)) in ships.iter().enumerate() {
         let row = match palette.iter().position(|r| r[4..8] == ship.0.to_le_bytes()) {
             Some(row) => row,
             None => {
@@ -431,7 +486,7 @@ pub(crate) fn author<R: Read + Seek>(
         !sets.iter().any(|s| s.name.starts_with(PATH_PREFIX)),
         "the base already has {PATH_PREFIX}NN point sets"
     );
-    let kinds: Vec<ShipKind> = ships.iter().map(|(k, _)| *k).collect();
+    let kinds: Vec<(ShipKind, Dims)> = ships.iter().map(|(k, _, d)| (*k, *d)).collect();
     let made = path_sets(runs, bsp, &kinds);
     let paths = made.len();
     sets.extend(made);

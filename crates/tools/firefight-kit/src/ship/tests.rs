@@ -354,8 +354,8 @@ fn a_path_too_narrow_for_the_pelican_keeps_the_phantom_only() {
     tris.push([[7.0, -1.0, 20.0], [9.0, 1.0, 20.0], [7.0, 1.0, 20.0]]);
     let walls = Walls::new(tris);
     let at = [0.0, 0.0, 0.0];
-    let phantom = plan(&walls, &[zone(at)], radius(ShipKind::Phantom));
-    let pelican = plan(&walls, &[zone(at)], radius(ShipKind::Pelican));
+    let phantom = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Phantom).radius);
+    let pelican = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Pelican).radius);
     assert!(phantom[0].is_some(), "the Phantom gets in");
     assert_eq!(pelican, [None], "the Pelican does not");
     // The kit reads it the same way: no run, the Pelican cut by name.

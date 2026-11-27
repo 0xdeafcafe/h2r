@@ -45,10 +45,10 @@ pub(crate) struct Navigation {
     pub refused: Vec<String>,
     /// Where each of the layout's drops snapped.
     pub snapped: Vec<Snap>,
-    /// Each kind of ship's run into each drop zone, by `ShipKind::index`,
-    /// none where the zone has no column clear for a ship that wide
-    /// (`ship::plan`), and the BSP they were planned on.
-    pub ship_runs: [Vec<Option<crate::ship::Run>>; firefight::ShipKind::ALL.len()],
+    /// The arena's collision without its sky shell, which each kind of
+    /// ship's runs are planned on once its size is known (`ship::plan`),
+    /// and the BSP it is of.
+    pub ship_walls: Option<bots::los::Walls>,
     pub ship_bsp: i16,
     /// The drop pods' falls over each drop zone and each starting
     /// location (`sky::plan`), planned on the same BSP as the ship's runs.
@@ -238,10 +238,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         arena.zones.truncate(FEWEST_DROPS);
     }
     // The ship's way into each zone, from the arena's own collision.
-    let ship_runs = firefight::ShipKind::ALL.map(|kind| match &open_walls {
-        Some(walls) => crate::ship::plan(walls, &arena.zones, crate::ship::radius(kind)),
-        None => vec![None; arena.zones.len()],
-    });
+    let ship_walls = open_walls;
     let ship_bsp = arena.bsp;
     // The pods' falls: over each drop zone's first area's mean and each
     // start, where the column to the top of the collision is open.
@@ -324,7 +321,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         problems,
         refused,
         snapped,
-        ship_runs,
+        ship_walls,
         ship_bsp,
         falls,
     })

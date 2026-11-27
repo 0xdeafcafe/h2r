@@ -523,13 +523,12 @@ fn assemble(
     // The version travels in the map, so it participates in the package id
     // even when two revisions happen to write identical AI tuning.
     set.intern(&format!("firefight_kit_v{KIT_VERSION}"))?;
-    // The dropship, when a zone has a clear column for it.
-    let ship_runs = nav.ship_runs;
+    // The ships: the kinds asked for, in `ShipKind::ALL` order, each sized
+    // from its own tag and kept only when a zone has a column clear for a
+    // ship that big.
     let ship_bsp = nav.ship_bsp;
     let mut ship_report = None;
     let mut pelican_report = None;
-    // The kinds asked for, in `ShipKind::ALL` order, each kept only when a
-    // zone has a column clear for a ship that wide.
     let asked_kinds: Vec<ShipKind> = if config.dropship == Dropship::None || ships == 0 {
         Vec::new()
     } else if config.dropship == Dropship::Spirit {
@@ -537,34 +536,48 @@ fn assemble(
     } else {
         ShipKind::ALL[..ships.min(ShipKind::ALL.len())].to_vec()
     };
-    let mut kept_kinds = Vec::new();
+    let mut asked = Vec::new();
     for kind in &asked_kinds {
-        if ship_runs[kind.index()].iter().any(Option::is_some) {
-            kept_kinds.push(*kind);
+        let pick = match kind {
+            ShipKind::Phantom => ship::pick(&set, config.dropship)?,
+            ShipKind::Pelican => ship::pick_pelican(&set),
+        };
+        let name = match &pick {
+            ship::Pick::Have(_, name) => name.as_str(),
+            ship::Pick::Copy(path) => path,
+        };
+        // The tag in the base map, else in a donor's.
+        let dims = ship::dims_in(&mut map, name)
+            .or_else(|| {
+                classes?.donors.iter().find_map(|d| {
+                    ship::dims_in(&mut Map::from_reader(Cursor::new(d.bytes)).ok()?, name)
+                })
+            })
+            .unwrap_or(ship::Dims::default_for(*kind));
+        asked.push((*kind, pick, dims));
+    }
+    let mut picks: Vec<(ShipKind, ship::Pick)> = Vec::new();
+    let mut ship_runs: Vec<(ShipKind, ship::Dims, Vec<Option<ship::Run>>)> = Vec::new();
+    for (kind, pick, dims) in asked {
+        let runs = match &nav.ship_walls {
+            Some(walls) => ship::plan(walls, &nav.zones, dims.radius),
+            None => vec![None; nav.zones.len()],
+        };
+        if runs.iter().any(Option::is_some) {
+            picks.push((kind, pick));
+            ship_runs.push((kind, dims, runs));
         } else {
             let why = match kind {
                 ShipKind::Phantom => "no drop zone has a clear column for it",
                 ShipKind::Pelican => "no drop zone has a clear column wide enough for it",
             };
-            let report = ShipReport::cut_kind(*kind, why);
+            let report = ShipReport::cut_kind(kind, why);
             match kind {
                 ShipKind::Phantom => ship_report = Some(report),
                 ShipKind::Pelican => pelican_report = Some(report),
             }
         }
     }
-    let picks: Vec<(ShipKind, ship::Pick)> = kept_kinds
-        .iter()
-        .map(|kind| {
-            Ok((
-                *kind,
-                match kind {
-                    ShipKind::Phantom => ship::pick(&set, config.dropship)?,
-                    ShipKind::Pelican => ship::pick_pelican(&set),
-                },
-            ))
-        })
-        .collect::<Result<_>>()?;
     let copies: Vec<&str> = picks
         .iter()
         .filter_map(|(_, pick)| match pick {
@@ -637,10 +650,19 @@ fn assemble(
     )
     .map_err(anyhow::Error::msg)?;
     // One path a zone, cleared for the widest ship kept.
-    let widest = ship_tags.iter().map(|(kind, _, _)| *kind).max_by_key(|k| k.index());
-    let shared_runs = widest.map_or_else(Vec::new, |kind| ship_runs[kind.index()].clone());
+    let sized = |kind: ShipKind| ship_runs.iter().find(|(k, _, _)| *k == kind);
+    let widest = ship_runs
+        .iter()
+        .max_by(|a, b| a.1.radius.total_cmp(&b.1.radius))
+        .map(|(_, _, runs)| runs.clone());
+    let shared_runs = widest.unwrap_or_default();
+    let kept_sizes: Vec<(ShipKind, ship::Dims)> =
+        ship_tags.iter().filter_map(|(k, _, _)| Some((*k, sized(*k)?.1))).collect();
     let authored = {
-        let tags: Vec<(ShipKind, TagId)> = ship_tags.iter().map(|(k, t, _)| (*k, *t)).collect();
+        let tags: Vec<(ShipKind, TagId, ship::Dims)> = ship_tags
+            .iter()
+            .filter_map(|(k, t, _)| Some((*k, *t, sized(*k)?.1)))
+            .collect();
         ship::author(&mut map, &tags, &shared_runs, ship_bsp)?
     };
     let ship_kept = authored.as_ref().map(|a| a.paths);
@@ -653,11 +675,7 @@ fn assemble(
             ship_bsp,
             &mut ship_fields,
             if ship_kept.is_some() {
-                ship::path_sets(
-                    &shared_runs,
-                    ship_bsp,
-                    &ship_tags.iter().map(|(k, _, _)| *k).collect::<Vec<_>>(),
-                )
+                ship::path_sets(&shared_runs, ship_bsp, &kept_sizes)
             } else {
                 Vec::new()
             },
@@ -791,6 +809,7 @@ fn assemble(
                 bytes: own_bytes + if n == 0 { costs.ship.saturating_sub(copied) } else { 0 },
                 paths,
                 why: None,
+                dims: sized(*kind).map(|(_, d, _)| *d),
             };
             match kind {
                 ShipKind::Phantom => ship_report = Some(report),
