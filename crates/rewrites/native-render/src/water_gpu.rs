@@ -38,14 +38,8 @@ pub const WATER_LAYER: usize = 6;
 const WATER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 5);
 
 /// The scratch copy of the bound colour for the stages that sample the
-/// view ([`WaterSet::scene_copy`]): copy `from` into `to` (`extent`) before
-/// the pass; `view` is `to`'s.
-pub(crate) struct SceneCopy {
-    pub from: wgpu::Texture,
-    pub to: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub extent: wgpu::Extent3d,
-}
+/// view ([`WaterSet::scene_copy`]).
+pub(crate) use crate::snapshot_gpu::ColourCopy as SceneCopy;
 
 /// One pass of one selected part, ready to issue ([`WaterSet::items`]).
 pub(crate) struct WaterItem {
@@ -143,7 +137,7 @@ pub struct WaterSet {
     /// The lightmap pages the parts use, as views.
     pages: HashMap<LightmapKey, Option<wgpu::TextureView>>,
     /// Scratch views for the Reference and Display scene copies.
-    scene_copies: [Option<wgpu::TextureView>; 2],
+    scene_copies: crate::snapshot_gpu::ColourCopies,
 }
 
 struct WaterMaterial {
@@ -232,7 +226,7 @@ impl WaterSet {
                 pages.insert(k, lightmap_image(k).map(|i| texture(device, queue, &i, "native water lightmap")));
             }
         }
-        Self { ready_formats: HashSet::new(), materials, parts: parts.into_iter().collect(), targets, samples_view, pages, scene_copies: [None, None] }
+        Self { ready_formats: HashSet::new(), materials, parts: parts.into_iter().collect(), targets, samples_view, pages, scene_copies: Default::default() }
     }
 
     /// How many materials draw natively.
@@ -315,21 +309,17 @@ impl WaterSet {
         ready
     }
 
-    /// The scene copy needs the full, single-sampled colour attachment.
+    /// The scene copy needs the full, single-sampled colour attachment
+    /// ([`crate::snapshot_gpu::can_copy`]).
     pub fn can_copy(color: &wgpu::TextureView, size: (u32, u32)) -> bool {
-        let texture = color.texture();
-        texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
-            && texture.dimension() == wgpu::TextureDimension::D2
-            && texture.sample_count() == 1
-            && texture.depth_or_array_layers() == 1
-            && (texture.width(), texture.height()) == size
+        crate::snapshot_gpu::can_copy(color, size)
     }
 
     /// Copies the bound colour for the stages that sample the view's own
-    /// target into this target copy's scratch texture, remade when its
-    /// extent or format changes. The copy is recorded before
-    /// the pass draws into the target, so the stages read the scene as
-    /// the wrapper's own draws found it.
+    /// target into this target copy's scratch texture
+    /// ([`crate::snapshot_gpu::ColourCopies`]), before the pass draws into
+    /// the target, so the stages read the scene as the wrapper's own draws
+    /// found it.
     pub fn make_copy(
         &mut self,
         device: &wgpu::Device,
@@ -338,46 +328,14 @@ impl WaterSet {
         copy: d3d::TargetCopy,
     ) -> wgpu::TextureView {
         let scene = self.scene_copy(device, color, copy);
-        encoder.copy_texture_to_texture(scene.from.as_image_copy(), scene.to.as_image_copy(), scene.extent);
+        scene.record(encoder);
         scene.view
     }
 
-    /// [`WaterSet::make_copy`] without the command: the scratch texture
-    /// made (or kept) for this target copy and the copy to record before
-    /// the pass, for a recording that issues it later.
-    pub(crate) fn scene_copy(
-        &mut self,
-        device: &wgpu::Device,
-        color: &wgpu::TextureView,
-        copy: d3d::TargetCopy,
-    ) -> SceneCopy {
-        let texture = color.texture();
-        let extent = texture.size();
-        let format = texture.format();
-        let scratch = match copy {
-            d3d::TargetCopy::Reference => &mut self.scene_copies[0],
-            d3d::TargetCopy::Display => &mut self.scene_copies[1],
-        };
-        if scratch.as_ref().is_some_and(|view| {
-            let texture = view.texture();
-            texture.size() != extent || texture.format() != format
-        }) {
-            *scratch = None;
-        }
-        let view = scratch.get_or_insert_with(|| {
-            let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("native water view copy"),
-                size: extent,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            }).create_view(&Default::default())
-        });
-        SceneCopy { from: texture.clone(), to: view.texture().clone(), view: view.clone(), extent }
+    /// [`WaterSet::make_copy`] without the command, for a recording that
+    /// issues it later.
+    pub(crate) fn scene_copy(&mut self, device: &wgpu::Device, color: &wgpu::TextureView, copy: d3d::TargetCopy) -> SceneCopy {
+        self.scene_copies.take(device, color, copy)
     }
 
     /// The texture group of `material`'s passes for one lightmap page,

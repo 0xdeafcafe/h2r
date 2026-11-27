@@ -1186,12 +1186,7 @@ impl LitObjects {
     /// Whether `color` (`size` texels) can be copied for the view stages:
     /// a single-sampled 2D texture of that size that allows copies from it.
     pub fn can_copy_view(color: &wgpu::TextureView, size: (u32, u32)) -> bool {
-        let texture = color.texture();
-        texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
-            && texture.dimension() == wgpu::TextureDimension::D2
-            && texture.sample_count() == 1
-            && texture.depth_or_array_layers() == 1
-            && (texture.width(), texture.height()) == size
+        crate::snapshot_gpu::can_copy(color, size)
     }
 
     /// The copy of the bound colour `color` the view stages of this target
