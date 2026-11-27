@@ -921,6 +921,33 @@ mod retained_admission {
         (queued, held, carried)
     }
 
+    /// A colour-only UI pass binds its colour as its depth (a scratch
+    /// depth): its carry names no depth, whatever the guest's draw had
+    /// bound, or the sink cannot match its attachments and keeps nothing,
+    /// and the quad goes back to a render-thread round trip.
+    #[test]
+    fn a_colour_only_carry_names_no_depth() {
+        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+        set_states(&mut device, &mut memory);
+        quad(&mut device, &mut memory, 0xFF40_8020);
+        let draw = Arc::new(device.backend.draws().pop().unwrap().clone());
+        let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(|_| {});
+        let fmt = D3DFormat::LinA8R8G8B8;
+        let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
+        let depth = sink.create_surface(D3DFormat::LinD24S8, 32, 32, true).unwrap();
+        let admission = RetainedAdmission {
+            packets: Arc::from([draw]),
+            surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+            request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+            plan: ExternalPlan { stage: Stage::Ui, view: 4, ranges: 1, slots: vec![] },
+            pass: Arc::new(Mutex::new(Box::new(Flare(true)) as Box<dyn ExternalPass>)),
+        };
+        assert!(!sink.begin_native_carry(colour, Some(depth), &admission), "the bound depth is not the pass's");
+        sink.end_native_carry();
+        assert!(sink.begin_native_carry(colour, None, &admission));
+        sink.end_native_carry();
+    }
+
     /// The game thread hands a menu quad to the render thread and moves
     /// on: with its carry begun, a replaying sink queues it and keeps the
     /// carried quad in its slot, so the device need not prepare it in a
