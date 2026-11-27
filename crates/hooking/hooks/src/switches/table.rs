@@ -116,6 +116,8 @@ pub const TABLE: &[Switch] = &[
         "the aim-assist cone 1a50a0 as the sim-objects kernel's shadow arm (sim-bridge/src/present.rs): promote after h2 sim diff parity and seats.aim clean"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
+    sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",
+        "the sound table's entry bodies and tick phase (docs/engine/sound-instances.md): on after h2 sim diff parity with sound.table in the series"),
     sw("impl.sim.effects-parts", On, "sim", "2026-11-27",
         "the effects phase in Rust (docs/engine/effects-parts.md): the effect walk, the damage part arm, visual parts as scene events; off runs the guest phase, the A arm of h2 sim diff"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),

@@ -4654,7 +4654,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
 | `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
-| `sim.ledger` | read | `{}`: the guest phases of the game tick the Rust driver still calls, `{tick, ticks, phases: [{entry, name, owner, calls, ns, last_ns}], guest_total, tick_ns, tick_last_ns, loop_ns, loop_last_ns, loops}`, with nanoseconds per phase (total and last tick) and for the whole loop; answered on the connection's thread |
+| `sim.ledger` | read | `{}`: the guest phases of the game tick the Rust driver still calls, `{tick, ticks, phases: [{entry, name, owner, calls, ns, last_ns}], guest_total, tick_ns, tick_last_ns, loop_ns, loop_last_ns, loops, sound}`, with nanoseconds per phase (total and last tick) and for the whole loop; answered on the connection's thread |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -4700,7 +4700,10 @@ The wire types are `agent_proto::sim::objects`.
 
 **`sim.ledger`** reads the tick driver's ledger
 (`sim_bridge::tick::LEDGER`, `engine::sim_tick`,
-[sim-rewrite.md](../engine/sim-rewrite.md) "The tick driver"). `phases`
+[sim-rewrite.md](../engine/sim-rewrite.md) "The tick driver"). `sound` is
+the 30th phase's counters by name, the sound table's `sound.*`
+([sound-instances.md](../engine/sound-instances.md), "Counters"); it is
+left out while `impl.sim.sound-events.table` is off and nothing ran. `phases`
 lists the 29 phases of `game_tick` in retail order with each phase's guest
 `entry` (`0x` and eight hex digits), `name`, `owner` (`guest` while the
 driver calls the lifted original, `rust` once a Rust body runs it) and

@@ -840,6 +840,13 @@ pub(crate) fn register_late_for_profile(
         features.add(&sim_bridge::sim_sound::SimSoundEvents::headless())
             .map_err(|e| anyhow::anyhow!("sound events: {e}"))?;
     }
+    // The sound table (docs/engine/sound-instances.md): with
+    // impl.sim.sound-events.table its bodies answer every sound entry and
+    // the events arm above stands down; the tick driver runs its phase.
+    if sim_bridge::sim_sound::entries::on(features.switches()) {
+        features.add(&sim_bridge::sim_sound::entries::SoundTable::process())
+            .map_err(|e| anyhow::anyhow!("sound table: {e}"))?;
+    }
     if !sound_events && features.switches().implementation(sim_bridge::sim_sound::SOUND, false) {
         features.add(&sim_bridge::sim_sound::SimSound)
             .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;

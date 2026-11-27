@@ -10,8 +10,8 @@ use engine::sim_tick::{self, Ledger, Owner, PHASES};
 
 use crate::{Access, Agent};
 
-/// The answer for `ledger`.
-pub fn reply(ledger: &Ledger) -> LedgerReply {
+/// The answer for `ledger`, with the sound table's counters.
+pub fn reply(ledger: &Ledger, sound: std::collections::BTreeMap<String, u64>) -> LedgerReply {
     LedgerReply {
         tick: ledger.tick(),
         ticks: ledger.ticks(),
@@ -37,13 +37,14 @@ pub fn reply(ledger: &Ledger) -> LedgerReply {
         loop_last_ns: ledger.loop_last_ns(),
         loops: ledger.loops(),
         guest_total: sim_tick::guest_phases() as u32,
+        sound,
     }
 }
 
 /// Adds `sim.ledger` over the tick driver's ledger.
 pub fn install(agent: &Agent) {
     agent.add_method(method::LEDGER, Access::Read, |_| {
-        serde_json::to_value(reply(&sim_bridge::tick::ledger()))
+        serde_json::to_value(reply(&sim_bridge::tick::ledger(), sim_bridge::sim_sound::entries::counters()))
             .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
     });
 }
@@ -61,7 +62,7 @@ mod tests {
         ns[0] = 500;
         ns[1] = 250;
         l.finish_tick(7, &ns, 1_000);
-        let r = reply(&l);
+        let r = reply(&l, Default::default());
         assert_eq!((r.tick, r.ticks, r.phases.len()), (7, 1, 29));
         assert_eq!(r.phases[0].entry, "0x0014d3a0");
         assert_eq!((r.phases[0].owner.as_str(), r.phases[0].calls), ("guest", 2));
@@ -69,5 +70,6 @@ mod tests {
         assert_eq!((r.tick_ns, r.tick_last_ns, r.loops), (1_000, 1_000, 0));
         assert!(r.phases.iter().map(|p| p.ns).sum::<u64>() <= r.tick_ns);
         assert_eq!(r.guest_total, sim_tick::guest_phases() as u32);
+        assert!(r.sound.is_empty());
     }
 }

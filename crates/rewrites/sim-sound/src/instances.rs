@@ -208,6 +208,12 @@ impl SourceParams {
 /// inside the phase; it draws nothing.
 pub trait Levels {
     fn level(&self, tag: TagIndex, source: &SourceParams) -> f32;
+    /// The guest function a source that cannot give levels yet names: the
+    /// bridge refuses a start by that name rather than admit it at a level
+    /// it made up.
+    fn refused(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// The same level for every sound: tests, and hosts with no class state.
@@ -445,7 +451,7 @@ pub struct Counters {
     /// Admitted with no permutation length: ended on the start tick.
     pub refused_no_length: u64,
     /// Finishes by [`Reason`], in [`Reason::ALL`] order.
-    pub ended: [u64; 4],
+    pub ended: [u64; 5],
 }
 
 impl Counters {
@@ -694,6 +700,16 @@ impl Sounds {
             if i.owner.has_host() {
                 owners.mouth(&i.owner, i.tag, i.selection, tick.saturating_sub(i.start));
             }
+        }
+        out
+    }
+
+    /// Finish every sound in slot order with `reason` (the stop-all walk
+    /// `0x126400` finishes each with reason `0xA`). Returns the ends.
+    pub fn finish_all(&mut self, reason: Reason, tick: u32, owners: &mut dyn OwnerHost) -> Vec<TableEvent> {
+        let mut out = Vec::new();
+        for handle in self.instances.handles() {
+            out.extend(self.finish(handle, reason, tick, owners));
         }
         out
     }
