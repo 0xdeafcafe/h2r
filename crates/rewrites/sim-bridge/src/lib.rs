@@ -7,6 +7,7 @@ pub mod sim_frame;
 pub mod sim_native;
 pub mod sim_effects;
 pub mod sim_effects_parts;
+pub mod effect_update;
 pub mod sim_objects;
 pub mod sim_sound;
 pub mod sim_ext;

@@ -894,6 +894,8 @@ impl Feature for SimEffectsParts {
             return Ok(());
         }
         b.raw().implement(&points::EFFECT_PART_CREATE, "effect part arm", enter).context_only();
+        // The effect walk's four callees, through their own arm.
+        crate::effect_update::install(b);
         b.raw()
             .observe_before(&points::DAMAGE_AREA_APPLY, "effect damage arm: compare", |o| {
                 compare_damage(&o.guest(), o.cpu.esp)

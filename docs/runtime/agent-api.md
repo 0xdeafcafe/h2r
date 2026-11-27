@@ -5899,7 +5899,8 @@ field: physics and collision have no `checked` (it is `matched` plus
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`
 arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts
 the parts returned from Rust as `answered` and the parts the guest's arm
-ran unchecked as `declined`
+ran unchecked as `declined`, then `effects.body.<entry>`, one arm per
+per-effect body (`effect_update::arm::stats`, counted as the walk arm's)
 ([effects-parts.md](../engine/effects-parts.md)). A subsystem with its
 switch off reads zeros, so `clean` is false.
 

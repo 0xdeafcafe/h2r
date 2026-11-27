@@ -29,7 +29,9 @@ Not ported here: the contrail point update `17c540`, the particle view
 update (`docs/graphics/native-particles.md`) and the render side of decals.
 They stay guest code and see the same datums. The phase's effect walk
 `176e40` and the part creation `17a8a0` are
-[effects-parts.md](effects-parts.md)'s.
+[effects-parts.md](effects-parts.md)'s. So is a second body of `1792b0`
+there; with this switch on, `events.rs` keeps the point and that body is
+left out.
 
 RNG draws keep retail order: birth draws from the local effects stream in
 program order, and the shared stream `[0x4e7408]` is only touched by the
