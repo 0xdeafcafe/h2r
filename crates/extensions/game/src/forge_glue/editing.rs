@@ -1134,7 +1134,22 @@ impl Editor {
             savable: self.prefab_members(id).len(),
             kit: self.session.has_kit(),
             team: self.session.team(id),
+            spare_clips: self.spare_clips_row(id),
         }
+    }
+
+    /// The spare clips row's value for `id`: an item spawner of an item
+    /// collection (`itmc`) has the row; a vehicle's or any other thing's
+    /// has none. A collection of equipment takes the row too, and the game
+    /// leaves what is not a weapon as it is (`agent::forge::spare_clips`).
+    fn spare_clips_row(&self, id: Endpoint) -> Option<Option<u8>> {
+        let thing = self.session.thing(id)?;
+        let collection = thing.kind == forge::ThingKind::ItemSpawner
+            && thing.fields.iter().any(|(name, value)| {
+                *name == "item"
+                    && matches!(value, forge_doc::Value::Tag(Some(key)) if key.group == "itmc")
+            });
+        collection.then(|| self.session.spare_clips(id))
     }
 
     /// The things Save as prefab takes for `id`: its group, else the
@@ -2494,6 +2509,11 @@ impl Editor {
                 let team = i.checked_sub(1).and_then(|t| u8::try_from(t).ok());
                 return self.command(tick, Command::SetTeam { id, team });
             }
+            Choice::Set(Prop::SpareClips, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at an item spawner.")?;
+                let clips = i.checked_sub(1).and_then(|c| u8::try_from(c).ok());
+                return self.command(tick, Command::SetSpareClips { id, clips });
+            }
             Choice::Set(Prop::Role, i) => {
                 let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
                 return self.command(
@@ -2895,6 +2915,7 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Remove { id } => s.remove(w, tick, id),
         Reset { id } => s.reset(w, tick, id),
         SetTeam { id, team } => s.set_team(w, tick, id, team),
+        SetSpareClips { id, clips } => s.set_spare_clips(w, tick, id, clips),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),
