@@ -12,7 +12,8 @@ pub struct NativePhysics;
 /// sites, the world phases and most leaves between them stay guest code,
 /// and the kernels they absorb run as capture arms
 /// (`engine::sim_physics::parity`): the broadphase batch update and the
-/// island integrate, the integrate phase and the deactivation test answer
+/// island integrate, the integrate phase, the deactivation test and the
+/// structure polygon builder answer
 /// calls themselves once proven, with one call in `AUDIT_EVERY` still
 /// compared with the guest (the integrate's guest answer is its frame
 /// replay); the two unconstrained-motion methods and
@@ -180,6 +181,34 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
+    // The structure polygon builder, as the phase: the guest's answer is
+    // the lifted original. Ordered as the other world entries.
+    let polygon = &points::HAVOK_STRUCTURE_POLYGON;
+    b.raw()
+        .implement(polygon, PHYSICS, move |cpu, ctx, pc| {
+            if pc == polygon.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::polygon_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::structure_polygon::ARGS, move |c, ctx| {
+                            parity::polygon_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::polygon_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
     let test = &points::HAVOK_DEACTIVATION_TEST;
     b.raw()
         .implement(test, PHYSICS, move |cpu, ctx, pc| {
@@ -336,7 +365,7 @@ mod tests {
         }
         // The integrate phase and the deactivation test are implementations
         // with no resume sites.
-        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST] {
+        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON] {
             let hook = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(hook.label, PHYSICS);
             assert!(hook.continuation_sites().0.is_empty(), "{:?}", point.name);
@@ -362,7 +391,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 8,
+            PHYSICS_PORTS.len() + 9,
             "unexpected extra chains"
         );
     }
