@@ -195,7 +195,10 @@ Each `Backend` method falls in one of these classes
    (`Backend::queue_external_draw`) when its pass retains the resolved D3D
    packet (`ExternalPass::resolved_fallback`), the packet writes the same
    colour and depth as the pass (`ExternalBinding::same_draw_writes`) and
-   the judge answers `Drawn` for it. The device marks the targets written
+   the judge answers `Drawn` for it. A colour-only pass (a menu widget
+   quad's overlay, whose binding names its colour as a scratch depth)
+   writes the same as a packet that writes no depth, whatever depth the
+   packet has bound. The device marks the targets written
    at once, and for a native producer (`Device::try_native_*_draw`)
    reports the draw committed, so the guest skips its own emission. The
    render thread records the pass or, if it refuses, draws the packet,
