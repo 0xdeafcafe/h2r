@@ -156,12 +156,13 @@ pub fn merge(history: &mut History, candidates: &[VisibleLight], frame: u32) {
     }
 }
 
-/// `0x0004b160`: adjacent pairs left to right. Its first two passes start
-/// at the same pair, then the start advances one slot per pass. The swaps
-/// are kept even for inputs it only partly orders.
+/// `0x0004b160`: one pass per row, each over every adjacent pair left to
+/// right. The pass counter (`esp+0x10` after its four pushes) and the
+/// first pair (`esp+0x14`, `lo + 1`) are separate slots, so every pass
+/// starts at the first pair.
 pub fn rank_adjacent(rows: &mut [HistoryRow], after: impl Fn(&HistoryRow, &HistoryRow) -> bool) {
-    for pass in 0..rows.len() {
-        for right in pass.max(1)..rows.len() {
+    for _ in 0..rows.len() {
+        for right in 1..rows.len() {
             let left = right - 1;
             if after(&rows[left], &rows[right]) {
                 rows.swap(left, right);
@@ -276,13 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn light_rank_repeats_the_first_pass_then_advances_the_start() {
+    fn light_rank_starts_every_pass_at_the_first_pair() {
         let mut rows = [HistoryRow::default(); 4];
         for (i, row) in rows.iter_mut().enumerate() {
             row.visible.priority = (i as f32).to_bits();
         }
         rank_adjacent(&mut rows, |a, b| f32::from_bits(b.visible.priority) > f32::from_bits(a.visible.priority));
-        assert_eq!(rows.map(|row| f32::from_bits(row.visible.priority)), [2.0, 3.0, 1.0, 0.0]);
+        assert_eq!(rows.map(|row| f32::from_bits(row.visible.priority)), [3.0, 2.0, 1.0, 0.0]);
     }
 
     #[test]
