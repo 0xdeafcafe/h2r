@@ -10,6 +10,7 @@ mod lights;
 mod objects;
 mod object_lod;
 mod portal_walk;
+mod projection;
 mod records;
 mod setup;
 pub use setup::{DisplayGeometry, DisplaySection, display_model};
@@ -161,10 +162,22 @@ impl Feature for ScaledSceneLists {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
+        // The guest's view projection and visibility producers, replaced
+        // unless `impl.render.native.visibility=off` (retire-d3d.md R4);
+        // the scene step's shadow arms answer only while it is on.
+        let visibility = hooks::switches::native_visibility_on(b.switches());
+        crate::scene_step::set_native_visibility(visibility);
         if !enabled(b.switches()) {
             return Ok(());
         }
-        portal_walk::install(b);
+        if visibility {
+            portal_walk::install(b);
+            install(
+                b,
+                Seam::Function(&points::VIEW_PROJECTION_BUILD, 0),
+                projection::build,
+            );
+        }
         install(
             b,
             Seam::Function(&points::SCENE_CLUSTER_GATHER, 4),
@@ -180,7 +193,9 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
-        window::install(b);
+        if visibility {
+            window::install(b);
+        }
         let scale = self.0;
         // A call the setup cannot build runs the guest's body ([`setup_call`]).
         install(
@@ -212,10 +227,12 @@ impl Feature for ScaledSceneLists {
             Seam::Function(&points::LIGHT_EXTRA_CASTER, 4),
             lights::extra_caster,
         );
-        regions::install(b);
-        sphere_regions::install(b);
-        portal_merge::install(b);
-        portal_regions::install(b);
+        if visibility {
+            regions::install(b);
+            sphere_regions::install(b);
+            portal_merge::install(b);
+            portal_regions::install(b);
+        }
         transparents::install_display(b);
         install(
             b,

@@ -2194,11 +2194,13 @@ h2 agent render.parity '{"arm": true}'
   did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
   `projection`, `start cluster`, `mode`).
   The top-level `counters` include
-  the visibility differential's `scene_visibility_checked` (game views
-  whose Rust sets were made and compared), `scene_visibility_equal`,
-  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
-  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
-  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
+  the visibility differential's `scene_visibility_checked` (sampled game
+  views whose Rust sets were made and compared), `scene_visibility_equal`,
+  `scene_visibility_differ`, the shadow arms'
+  `scene_visibility_<arm>_matched`, `_differ`, `_answered`, `_guest`,
+  `_declined`, `_proven` and `_fallen` for `clusters`, `frusta` and
+  `objects` ([native-visibility.md](../graphics/native-visibility.md#the-shadow-arms)),
+  `scene_visibility_rust_taken` (views that carry the Rust sets), `scene_visibility_ns` (time in the Rust
   computation), `scene_visibility_lens_retail`, `_guest` and `_display`
   (game views by the lens their visibility used: retail, the single-copy
   camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;

@@ -193,13 +193,12 @@ static POST_EFFECTS: AtomicU64 = AtomicU64::new(0);
 /// the scene.
 static POST_UNPLACED: AtomicU64 = AtomicU64::new(0);
 /// The Rust visibility beside the guest's (docs/graphics/native-visibility.md):
-/// game views compared, equal, differing (and by what), declined by
-/// reason, taken, and the time spent.
+/// sampled game views compared, equal, differing, declined by reason,
+/// views that carry the Rust sets, and the time spent computing. The
+/// shadow arms count their own outcomes ([`visibility_arm_counters`]).
 static VISIBILITY_CHECKED: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_EQUAL: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_DIFFER: AtomicU64 = AtomicU64::new(0);
-static VISIBILITY_CLUSTERS_DIFFER: AtomicU64 = AtomicU64::new(0);
-static VISIBILITY_OBJECTS_DIFFER: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_TAKEN: AtomicU64 = AtomicU64::new(0);
 static VISIBILITY_NS: AtomicU64 = AtomicU64::new(0);
 /// Game views by the lens their visibility used ([`VisibilityLens`]:
@@ -504,7 +503,9 @@ fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -
                         // The guest's lists, when they read: the
                         // comparison's other side and the arm's fallback.
                         let guest = extract::cluster_gather(&m);
-                        let (gather, mut extra, windows) = visibility_arm(&m, &guest_lens, key, &mut step.visibility, guest, display_factor);
+                        let (gather, mut extra, windows) = with_arms(|arms| {
+                            visibility_arm(&m, &guest_lens, key, &mut step.visibility, guest, display_factor, arms)
+                        });
                         step.light_view = gather
                             .as_ref()
                             .and_then(|g| light_clip(&m, g.mode, windows.as_ref()).map(|clip| (g.visible.clone(), clip)));
@@ -1433,6 +1434,7 @@ fn reset_timeline(why: Cut) {
 /// Map activation invalidates renderer pins even before its first frame.
 pub(crate) fn map_changed() {
     reset_timeline(Cut::MAP);
+    visibility_arms_new_map();
 }
 
 /// Snapshot restoration also abandons any guest entry/slot scopes.
@@ -1444,6 +1446,7 @@ pub fn forget() {
         step.visibility.forget();
     });
     *VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    visibility_arms_new_map();
     *LIGHT_VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     crate::entry_census::forget();
@@ -1561,14 +1564,23 @@ fn keep_complete_clusters(clusters: &mut Vec<u16>, complete: impl Fn(u16) -> Opt
     (before - clusters.len()) as u64
 }
 
-/// The Rust visibility beside the guest's for one game view
-/// (docs/graphics/native-visibility.md): computed for every game view,
-/// compared as sets with the guest's `guest` lists when they read, counted,
-/// and returned in their place whenever the computation holds: the default.
-/// A decline keeps the guest's lists — the guest path stays the fallback —
-/// and a difference keeps the Rust sets and stays counted and named. A view
-/// whose lists did not read carries nothing: the gather's mode and
-/// structure list are the guest's, and the comparison has no other side.
+/// The main view's visibility through its shadow arms
+/// (docs/graphics/native-visibility.md, "The shadow arms"): clusters,
+/// window frusta and objects. A sampled frame (one in
+/// [`shadow::SAMPLE_EVERY`]) computes the Rust sets and compares each part
+/// with the guest's: the cluster and object sets with `guest`'s lists, the
+/// frusta with the guest's region windows (mode 0). An arm answers its
+/// part after [`shadow::PROVEN_AFTER`] clean samples while
+/// `impl.render.native.visibility` is on, and falls back to the guest for
+/// the map on any difference. A frame no arm needs computes nothing,
+/// unless the display supplement wants the retail sets. A decline keeps
+/// the guest's lists; a view whose lists did not read carries nothing.
+/// The frusta returned are the Rust ones when that arm answers, else the
+/// guest's, read from its region windows. `arms` are the main view's
+/// ([`VISIBILITY_ARMS`]).
+///
+/// [`shadow::SAMPLE_EVERY`]: scene_extract::visibility::shadow::SAMPLE_EVERY
+/// [`shadow::PROVEN_AFTER`]: scene_extract::visibility::shadow::PROVEN_AFTER
 fn visibility_arm(
     m: &Ro<'_>,
     camera: &Camera,
@@ -1576,15 +1588,33 @@ fn visibility_arm(
     cache: &mut scene_extract::visibility::GraphCache,
     guest: Option<frame_scene::scene::ClusterGather>,
     display_factor: Option<f32>,
+    arms: &mut VisibilityArms,
 ) -> (
     Option<frame_scene::scene::ClusterGather>,
     Option<frame_scene::DisplayVisibility>,
     Option<scene_extract::visibility::frusta::WindowFrusta>,
 ) {
-    use scene_extract::visibility::{self, Decline};
+    use scene_extract::visibility::shadow::{self, Kind, Plan};
+    use scene_extract::visibility::{self, Decline, frusta};
+    let on = arms.on;
+    let arms = &mut arms.shadow;
+    let frame = m.read_u32(FRAME).unwrap_or(0);
+    let sampled = shadow::sampled(frame);
+    let plans = arms.map(|a| a.plan(frame, on));
+    let mode0 = guest.as_ref().is_some_and(|g| g.mode == 0);
+    // The frusta arm counts only the views that have window frusta.
+    let applies = |kind: Kind| kind != Kind::Frusta || mode0;
+    let guest_frusta = || if mode0 { visibility::guest::window_frusta(m).ok() } else { None };
+    if plans.iter().all(|&p| p == Plan::Guest) && display_factor.is_none() {
+        for kind in Kind::ALL.into_iter().filter(|&k| applies(k)) {
+            arms[kind as usize].unsampled(Plan::Guest);
+        }
+        let windows = guest_frusta();
+        return (guest, None, windows);
+    }
     let start = Instant::now();
     let epoch = crate::native_map_work::bsp_generation();
-    let rust = if guest.as_ref().is_some_and(|g| g.mode == 0) {
+    let rust = if mode0 {
         // The guest's single-copy Hor+ hook has already widened this
         // frustum. Exact-mode display additions widen their own copy.
         visibility::portal_walk::scene_visibility(m, cache, epoch, 1.)
@@ -1598,44 +1628,174 @@ fn visibility_arm(
         Err(why) => {
             let i = Decline::ALL.iter().position(|&d| d == why).unwrap_or(0);
             VISIBILITY_DECLINED[i].fetch_add(1, Ordering::Relaxed);
-            return (guest, None, None);
+            for kind in Kind::ALL.into_iter().filter(|&k| applies(k)) {
+                arms[kind as usize].declined();
+            }
+            let windows = guest_frusta();
+            return (guest, None, windows);
         }
     };
     let Some(guest) = guest else {
+        for kind in [Kind::Clusters, Kind::Objects] {
+            arms[kind as usize].declined();
+        }
         return (None, None, None);
     };
-    VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
     let extra = display_factor.and_then(|factor| {
         display_additions(m, &guest, factor, cache, windows.as_ref()?, &rust)
     });
-    let (gather, parity) = visibility::arm(guest, rust);
+    let mut answers = [false; 3];
+    if sampled {
+        VISIBILITY_CHECKED.fetch_add(1, Ordering::Relaxed);
+        let parity = visibility::compare(&rust, &visibility::guest::guest_sets(&guest));
+        let clusters_equal = parity.clusters_guest_only + parity.clusters_rust_only == 0;
+        let objects_equal = parity.objects_guest_only + parity.objects_rust_only == 0;
+        // The frusta compare in mode 0, against the guest's region
+        // windows; a side that did not read is the arm's decline.
+        let frusta_parity = match (mode0, windows.as_ref()) {
+            (false, _) => None,
+            (true, Some(rust)) => Some(visibility::guest::window_frusta(m).map(|g| frusta::compare(rust, &g))),
+            (true, None) => Some(Err(Decline::Unread)),
+        };
+        answers[Kind::Clusters as usize] = arms[Kind::Clusters as usize].compared(clusters_equal, on).1;
+        answers[Kind::Objects as usize] = arms[Kind::Objects as usize].compared(objects_equal, on).1;
+        if let Some(p) = &frusta_parity {
+            let arm = &mut arms[Kind::Frusta as usize];
+            answers[Kind::Frusta as usize] = match p {
+                Ok(p) => arm.compared(p.holds(), on).1,
+                Err(_) => arm.declined().1,
+            };
+        }
+        let frusta_differ = frusta_parity.as_ref().and_then(|p| p.as_ref().ok()).filter(|p| !p.holds());
+        if parity.first.is_none() && frusta_differ.is_none() {
+            VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
+        } else {
+            VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
+            let mut slot = VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner());
+            slot.get_or_insert_with(|| {
+                let at = format!("{key} frame {frame} tick {}", tick(m));
+                match (parity.first, frusta_differ) {
+                    (Some(first), _) => format!(
+                        "{at}: {first} ({} clusters and {} objects guest only, {} and {} rust only)",
+                        parity.clusters_guest_only,
+                        parity.objects_guest_only,
+                        parity.clusters_rust_only,
+                        parity.objects_rust_only,
+                    ),
+                    (None, Some(p)) => format!(
+                        "{at}: {p} ({} frusta guest only, {} rust only)",
+                        p.guest_only, p.rust_only,
+                    ),
+                    (None, None) => at,
+                }
+            });
+        }
+    } else {
+        for kind in Kind::ALL.into_iter().filter(|&k| applies(k)) {
+            answers[kind as usize] = arms[kind as usize].unsampled(plans[kind as usize]).1;
+        }
+    }
+    let gather = visibility::answer(
+        guest,
+        rust,
+        answers[Kind::Clusters as usize],
+        answers[Kind::Objects as usize],
+    );
     if gather.source == frame_scene::VisibilitySource::Rust {
         VISIBILITY_TAKEN.fetch_add(1, Ordering::Relaxed);
     }
-    if let Some(first) = parity.first {
-        VISIBILITY_DIFFER.fetch_add(1, Ordering::Relaxed);
-        if parity.clusters_guest_only + parity.clusters_rust_only != 0 {
-            VISIBILITY_CLUSTERS_DIFFER.fetch_add(1, Ordering::Relaxed);
-        }
-        if parity.objects_guest_only + parity.objects_rust_only != 0 {
-            VISIBILITY_OBJECTS_DIFFER.fetch_add(1, Ordering::Relaxed);
-        }
-        let mut slot = VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner());
-        slot.get_or_insert_with(|| {
-            format!(
-                "{key} frame {} tick {}: {first} ({} clusters and {} objects guest only, {} and {} rust only)",
-                m.read_u32(FRAME).unwrap_or(0),
-                tick(m),
-                parity.clusters_guest_only,
-                parity.objects_guest_only,
-                parity.clusters_rust_only,
-                parity.objects_rust_only,
-            )
-        });
-        return (Some(gather), extra, None);
-    }
-    VISIBILITY_EQUAL.fetch_add(1, Ordering::Relaxed);
+    let windows = if !mode0 {
+        None
+    } else if answers[Kind::Frusta as usize] {
+        windows
+    } else {
+        guest_frusta()
+    };
     (Some(gather), extra, windows)
+}
+
+/// The main view's shadow arms, in [`Kind::ALL`]'s order
+/// (`scene_extract::visibility::shadow`), and
+/// `impl.render.native.visibility` (docs/runtime/switches.md): off, the
+/// arms compare their samples and never answer.
+///
+/// [`Kind::ALL`]: scene_extract::visibility::shadow::Kind::ALL
+struct VisibilityArms {
+    shadow: [scene_extract::visibility::shadow::Shadow; 3],
+    on: bool,
+}
+
+static VISIBILITY_ARMS: Mutex<VisibilityArms> = Mutex::new(VisibilityArms {
+    shadow: [scene_extract::visibility::shadow::Shadow::NEW; 3],
+    on: true,
+});
+
+fn with_arms<R>(f: impl FnOnce(&mut VisibilityArms) -> R) -> R {
+    f(&mut VISIBILITY_ARMS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Set from the switch when the scene-list feature installs.
+pub(crate) fn set_native_visibility(on: bool) {
+    with_arms(|arms| arms.on = on);
+}
+
+/// A new map, or a snapshot restore: every arm learns again.
+fn visibility_arms_new_map() {
+    with_arms(|arms| arms.shadow.iter_mut().for_each(|a| a.new_map()));
+}
+
+/// `render.scene`'s counters of each arm, in [`Kind::ALL`]'s order: its
+/// views by outcome, and whether it answers (`proven`) or fell back
+/// (`fallen`) on this map.
+///
+/// [`Kind::ALL`]: scene_extract::visibility::shadow::Kind::ALL
+const VISIBILITY_ARM_NAMES: [[&str; 7]; 3] = [
+    [
+        "scene_visibility_clusters_matched",
+        "scene_visibility_clusters_differ",
+        "scene_visibility_clusters_answered",
+        "scene_visibility_clusters_guest",
+        "scene_visibility_clusters_declined",
+        "scene_visibility_clusters_proven",
+        "scene_visibility_clusters_fallen",
+    ],
+    [
+        "scene_visibility_frusta_matched",
+        "scene_visibility_frusta_differ",
+        "scene_visibility_frusta_answered",
+        "scene_visibility_frusta_guest",
+        "scene_visibility_frusta_declined",
+        "scene_visibility_frusta_proven",
+        "scene_visibility_frusta_fallen",
+    ],
+    [
+        "scene_visibility_objects_matched",
+        "scene_visibility_objects_differ",
+        "scene_visibility_objects_answered",
+        "scene_visibility_objects_guest",
+        "scene_visibility_objects_declined",
+        "scene_visibility_objects_proven",
+        "scene_visibility_objects_fallen",
+    ],
+];
+
+fn visibility_arm_counters() -> Vec<(&'static str, u64)> {
+    let arms = with_arms(|arms| arms.shadow);
+    arms.iter()
+        .zip(VISIBILITY_ARM_NAMES)
+        .flat_map(|(a, names)| {
+            let c = a.counts;
+            names.into_iter().zip([
+                c.matched,
+                c.differed,
+                c.answered,
+                c.guest,
+                c.declined,
+                u64::from(a.proven()),
+                u64::from(a.fallen()),
+            ])
+        })
+        .collect()
 }
 
 /// What the guest's horizontal projection scale holds in a view the
@@ -1992,14 +2152,6 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_visibility_checked", VISIBILITY_CHECKED.load(Ordering::Relaxed)),
         ("scene_visibility_equal", VISIBILITY_EQUAL.load(Ordering::Relaxed)),
         ("scene_visibility_differ", VISIBILITY_DIFFER.load(Ordering::Relaxed)),
-        (
-            "scene_visibility_clusters_differ",
-            VISIBILITY_CLUSTERS_DIFFER.load(Ordering::Relaxed),
-        ),
-        (
-            "scene_visibility_objects_differ",
-            VISIBILITY_OBJECTS_DIFFER.load(Ordering::Relaxed),
-        ),
         ("scene_visibility_rust_taken", VISIBILITY_TAKEN.load(Ordering::Relaxed)),
         ("scene_visibility_ns", VISIBILITY_NS.load(Ordering::Relaxed)),
         ("scene_visibility_lens_retail", VISIBILITY_LENS[0].load(Ordering::Relaxed)),
@@ -2025,6 +2177,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
             .into_iter()
             .zip(VISIBILITY_DECLINED.iter().map(|c| c.load(Ordering::Relaxed))),
     )
+    .chain(visibility_arm_counters())
     .chain(scene_extract::decorators::PlacementSource::ALL.map(|source| {
         (source.counter(), DECORATOR_PLACEMENTS[source as usize].load(Ordering::Relaxed))
     }))
@@ -2455,7 +2608,10 @@ mod tests {
         w(ACTIVE_VIS, MAIN_VIS);
         w(MAIN_VIS + VIS_KIND, 0);
         w(MAIN_VIS, regions);
+        // One view frustum, no regions and no windows.
+        w(regions, 1);
         w(regions + 0xa6c, 0);
+        w(regions + 0x1970, 0);
         w(MAIN_VIS + 0xc, structure_list);
         w(structure_list, 64);
         w(structure_list + 4, 0);
@@ -2498,52 +2654,98 @@ mod tests {
         }
     }
 
-    /// The arm runs beside the guest's lists: the Rust sets stand when the
-    /// computation holds, on equal lists and through a counted difference;
-    /// a view whose lists did not read carries nothing, computed or not;
-    /// and a decline keeps the guest's lists, the fallback.
+    /// The shadow arms beside the guest's lists: the guest answers while
+    /// they learn, a sampled frame compares, the arms answer after their
+    /// clean samples, a difference falls one back to the guest, the switch
+    /// off never answers, a view whose lists did not read carries nothing,
+    /// and a decline keeps the guest's lists.
     #[test]
-    fn the_arm_stands_the_rust_sets_on_every_game_view() {
+    fn the_shadow_arms_answer_after_clean_samples_and_fall_back_on_a_difference() {
+        use scene_extract::visibility::shadow::{Kind, PROVEN_AFTER, SAMPLE_EVERY, Shadow};
+        use frame_scene::VisibilitySource::{Guest, Rust};
         let key = ViewKey { kind: ViewKind::Game, player: 0, view: 0 };
         let camera = visibility_camera();
         let mut cache = scene_extract::visibility::GraphCache::default();
+        let mut arms = VisibilityArms { shadow: [Shadow::NEW; 3], on: true };
+        let mut guest = visibility_memory();
+        let at = |guest: &mut engine::FlatMemory, frame: u32| {
+            guest.set_u32(engine::render_loop::occlusion::guest::FRAME, frame).unwrap();
+        };
+        let listed = || guest_lists(vec![2], vec![7]);
 
-        // The computation held and the lists read empty: the Rust sets are
-        // the gather.
-        let guest = visibility_memory();
-        let m = Ro(&guest);
-        let (gather, extra, _) =
-            visibility_arm(&m, &camera, key, &mut cache, Some(guest_lists(Vec::new(), Vec::new())), None);
+        // Learning, unsampled: the guest's lists, nothing computed.
+        at(&mut guest, 1);
+        let (gather, extra, windows) =
+            visibility_arm(&Ro(&guest), &camera, key, &mut cache, Some(listed()), None, &mut arms);
+        assert_eq!(gather, Some(listed()));
+        assert!(extra.is_none());
+        assert_eq!(windows, Some(Default::default()), "the guest's frusta, read from its regions");
+        assert_eq!(arms.shadow[Kind::Clusters as usize].counts.guest, 1);
+
+        // Clean samples prove every arm.
+        for k in 0..PROVEN_AFTER as u32 {
+            at(&mut guest, k * SAMPLE_EVERY);
+            let (gather, ..) = visibility_arm(
+                &Ro(&guest), &camera, key, &mut cache,
+                Some(guest_lists(Vec::new(), Vec::new())), None, &mut arms,
+            );
+            let source = gather.unwrap().source;
+            assert_eq!(source, if k + 1 == PROVEN_AFTER as u32 { Rust } else { Guest });
+        }
+        assert!(arms.shadow.iter().all(|a| a.proven()), "{:?}", arms.shadow);
+
+        // Proven, unsampled: Rust answers uncompared.
+        at(&mut guest, SAMPLE_EVERY + 1);
+        let (gather, _, windows) =
+            visibility_arm(&Ro(&guest), &camera, key, &mut cache, Some(listed()), None, &mut arms);
         let gather = gather.unwrap();
-        assert_eq!(gather.source, frame_scene::VisibilitySource::Rust);
-        assert!(gather.visible.is_empty() && gather.objects.is_empty());
+        assert_eq!((gather.source, gather.visible.len(), gather.objects.len()), (Rust, 0, 0));
         assert_eq!(gather.structure, [5], "the structure list stays the guest's");
-        assert!(extra.is_none());
+        assert_eq!(windows, Some(Default::default()));
+        assert_eq!(arms.shadow[Kind::Objects as usize].counts.answered, 1);
 
-        // A difference keeps the Rust sets — the default — and stays
-        // counted: the guest listed an object Rust did not.
-        let (gather, extra, _) = visibility_arm(
-            &m, &camera, key, &mut cache,
-            Some(guest_lists(Vec::new(), vec![0x0001_0002])), None,
+        // The switch off: the guest's lists.
+        arms.on = false;
+        let (gather, ..) =
+            visibility_arm(&Ro(&guest), &camera, key, &mut cache, Some(listed()), None, &mut arms);
+        assert_eq!(gather, Some(listed()));
+        arms.on = true;
+
+        // A sampled difference in the objects: that arm falls back, the
+        // clusters arm keeps answering.
+        at(&mut guest, 2 * SAMPLE_EVERY);
+        let (gather, ..) = visibility_arm(
+            &Ro(&guest), &camera, key, &mut cache,
+            Some(guest_lists(Vec::new(), vec![7])), None, &mut arms,
         );
+        assert_eq!(gather.unwrap().objects, [7], "the guest answers the sample that differed");
+        assert!(arms.shadow[Kind::Objects as usize].fallen());
+        assert!(arms.shadow[Kind::Clusters as usize].proven());
+        at(&mut guest, 2 * SAMPLE_EVERY + 1);
+        let (gather, ..) =
+            visibility_arm(&Ro(&guest), &camera, key, &mut cache, Some(listed()), None, &mut arms);
         let gather = gather.unwrap();
-        assert_eq!(gather.source, frame_scene::VisibilitySource::Rust);
-        assert!(gather.objects.is_empty(), "the Rust sets stand");
-        assert!(extra.is_none());
+        assert_eq!((gather.source, gather.visible, gather.objects), (Guest, vec![], vec![7]));
 
-        // The computation held and the lists did not read: nothing carries.
-        let (gather, extra, _) = visibility_arm(&m, &camera, key, &mut cache, None, None);
-        assert!(gather.is_none() && extra.is_none());
+        // The lists did not read: nothing carries, and it is counted.
+        at(&mut guest, 3 * SAMPLE_EVERY);
+        let declined = arms.shadow[Kind::Clusters as usize].counts.declined;
+        let (gather, extra, windows) =
+            visibility_arm(&Ro(&guest), &camera, key, &mut cache, None, None, &mut arms);
+        assert!(gather.is_none() && extra.is_none() && windows.is_none());
+        assert_eq!(arms.shadow[Kind::Clusters as usize].counts.declined, declined + 1);
 
         // The struct is not the main view's on empty memory: the decline
-        // keeps the guest's lists, the fallback.
+        // keeps the guest's lists.
         let empty = engine::FlatMemory::new(0x004b_0000, 0x100);
-        let m = Ro(&empty);
         let lists = guest_lists(vec![2], vec![7]);
-        let (gather, extra, _) = visibility_arm(&m, &camera, key, &mut cache, Some(lists.clone()), None);
+        let (gather, extra, _) =
+            visibility_arm(&Ro(&empty), &camera, key, &mut cache, Some(lists.clone()), None, &mut arms);
         assert_eq!(gather, Some(lists), "the guest's lists, untouched");
         assert!(extra.is_none());
-        let (gather, extra, _) = visibility_arm(&m, &camera, key, &mut cache, None, None);
-        assert!(gather.is_none() && extra.is_none());
+
+        // A new map learns again.
+        arms.shadow.iter_mut().for_each(|a| a.new_map());
+        assert!(arms.shadow.iter().all(|a| !a.proven() && !a.fallen()));
     }
 }

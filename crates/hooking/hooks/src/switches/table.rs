@@ -71,6 +71,8 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
+    sw("impl.render.native.visibility", On, "render", "2026-11-27",
+        "the guest's view projection and visibility producers replaced (retire-d3d.md R4): delete when R4's differentials hold on the gate corpus"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),

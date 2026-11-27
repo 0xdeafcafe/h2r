@@ -1185,6 +1185,10 @@ points! { ALL;
     PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [fn(lookup: stack 0, camera: stack 1, unused: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
     /// Publish sphere-mode region records and update visited-cluster stamps.
     VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
+    /// Build a view's projection terms from its render camera: ECX the
+    /// camera, EDX the tangent extents or null, EAX the 0x40-byte output.
+    /// Its one caller is `0x0002fd90`.
+    VIEW_PROJECTION_BUILD @ 0x0002_fb70: [fn(camera: ecx, extents: edx, output: eax) ret 0]; "docs/graphics/native-visibility.md";
     /// Populate visibility lists from the current view's cluster references.
     SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Publish clusters and their instanced geometry in visibility order.

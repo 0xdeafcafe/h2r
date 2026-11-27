@@ -1,8 +1,8 @@
 # Retiring the guest D3D path
 
-Status: Design. R0 is built. R1, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
+Status: Design. R0 is built. R1, R4, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
-Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. R4's producers have `impl.render.native.visibility` (on), which only turns them off.
 
 | Slice | Built | Where it is specified |
 |---|---|---|
@@ -15,6 +15,7 @@ Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.m
 | R1, layer 3 object parts | draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included | framescene.md slice 3, "Bit 9" |
 | R1, layer 3 decorators | draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included | native-decorators.md, "The glue" |
 | R1, layers 10, 11 and 14 | whole groups draw from the scene with no geometry handler; the object filter draws natively | native-shadow-layers.md |
+| R4 | the view projection builder `0x0002fb70` at every call it accepts; the portal, window, sphere and PVS producers after their comparisons; the main view's cluster set, window frusta and object set as shadow arms (1 frame in 64 compared, answer after 16 clean samples, guest on any difference) | [native-visibility.md](native-visibility.md#the-shadow-arms) |
 | R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls); both are cut world layers (`cut::LAYER_CUTS`, layer 17 in slot 12) | [native-renderer.md](native-renderer.md) |
 | R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
@@ -400,7 +401,7 @@ classified readers, 73 read run state and 30 start from it.
 
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
-| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field; the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). Cinematic and override cameras remain guest-owned. The comparison writes nothing |
+| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the projection builder `0x0002fb70` runs in Rust at the guest's call ([native-visibility.md](native-visibility.md#the-projection-builder)); the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field, and the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). The render camera write, cinematic and override cameras remain guest-owned |
 | Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view, the default and the guest's lists the fallback a decline takes; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); verified portal, sphere and PVS calls publish from Rust; the guest owns source-window overlap records |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; an object the walk cannot take keeps its guest handler's draw (`scene_kept_3_object_*`) | built, with a remainder |
@@ -500,7 +501,7 @@ D3D entry calls.
 | R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
 | R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
-| R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes; hash gate |
+| R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
 | R7 | Menus, text, loading, fade, bars, model widgets, the backdrop | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; UI order test |
