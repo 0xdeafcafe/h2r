@@ -1241,7 +1241,7 @@ mod tests {
         let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
         assert_eq!(
             columns[animation - 1].1,
-            "native_ui_overlay_modal_blur_refused_targets"
+            "native_ui_model_view_rust_fallback"
         );
         assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
         assert_eq!(
