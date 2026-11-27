@@ -320,6 +320,8 @@ impl Feature for NativePost {
                     x87_control: c.cpu.x87.control,
                 };
                 let mut mem = rt.memory();
+                // A shadowed HUD widget's call is checked against Rust's.
+                crate::native_hud::walk::observe_screen(&*mem, c.cpu.eax, c.cpu.esp);
                 if crate::scope_zoom_hud::hud_profile(&*mem, c.cpu.eax, c.cpu.esp).is_none() {
                     on_screen_effect(&mut *mem, c.cpu.eax, c.cpu.esp, fp);
                 } else {

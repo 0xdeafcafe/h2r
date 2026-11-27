@@ -703,6 +703,10 @@ pub fn screen_widget(
 /// Where a text widget's string goes (`0x0022aa16`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextPlace {
+    /// The anchor and its point, before the widget's offset: what the
+    /// group's fit is taken at.
+    pub anchor: u16,
+    pub point: [f32; 2],
     pub shader: u32,
     /// The string ID, or the input's name for a number (`flags` bit 1).
     pub string: u32,
@@ -743,7 +747,145 @@ pub fn text_widget(
     let origin = [f32::from(i16_at(w, offset)) + point[0], f32::from(i16_at(w, offset + 2)) + point[1]];
     let mut basis = Basis { origin, x: [1.0, 0.0], y: [0.0, 1.0] };
     effects((u32_at(w, 0x4c), u32_at(w, 0x50)), inputs, &mut basis)?;
-    Ok(Some(TextPlace { shader, string, flags: u16_at(w, 0x1e), justification: u16_at(w, 0x2c), font, basis }))
+    Ok(Some(TextPlace { anchor, point, shader, string, flags: u16_at(w, 0x1e), justification: u16_at(w, 0x2c), font, basis }))
+}
+
+/// Text flags (`+0x1e`): the string is a number, the input named at
+/// `+0x28` truncated; two or three digits wide; a player's name.
+pub const TEXT_NUMBER: u16 = 1;
+pub const TEXT_TWO_DIGITS: u16 = 2;
+pub const TEXT_THREE_DIGITS: u16 = 4;
+pub const TEXT_NAME: u16 = 8;
+
+/// `0x0022a8b0`..`0x0022a929`: a number widget's string. Two digits hold
+/// the value to 0..99 and pad it with a zero (`0%d`); three hold it to
+/// 0..999 and pad it with zeros (`00%d`, `0%d`); neither prints it as it
+/// is (`%d`).
+pub fn number_text(flags: u16, value: i32) -> String {
+    if flags & TEXT_TWO_DIGITS != 0 {
+        format!("{:02}", value.clamp(0, 99))
+    } else if flags & TEXT_THREE_DIGITS != 0 {
+        format!("{:03}", value.clamp(0, 999))
+    } else {
+        value.to_string()
+    }
+}
+
+/// `cvttss2si` to a short: the low word of the truncated value, or of
+/// the integer indefinite when it is outside an `i32`.
+fn short(v: f32) -> i16 {
+    let wide = if v.is_nan() || v >= 2_147_483_648.0 || v < -2_147_483_648.0 { i32::MIN } else { v as i32 };
+    wide as i16
+}
+
+/// `0x0013e8e0`, the measure's callback over each glyph's rectangle
+/// (`[x0, y0, x1, y1]`, laid out in the rectangle 0, 0, 1000, 1000): the
+/// bounds top, left, bottom, right, the far edges one past the glyph.
+/// `None` with no glyph.
+pub fn text_bounds(glyphs: &[[f32; 4]]) -> Option<[i16; 4]> {
+    if glyphs.is_empty() {
+        return None;
+    }
+    let (mut top, mut left, mut bottom, mut right) = (i16::MAX, i16::MAX, i16::MIN, i16::MIN);
+    for &[x0, y0, x1, y1] in glyphs {
+        let (far_x, far_y) = (x1 + 1.0, y1 + 1.0);
+        if f32::from(left) > x0 {
+            left = short(x0);
+        }
+        if f32::from(top) > y0 {
+            top = short(y0);
+        }
+        if far_x > f32::from(right) {
+            right = short(far_x);
+        }
+        if far_y > f32::from(bottom) {
+            bottom = short(far_y);
+        }
+    }
+    Some([top, left, bottom, right])
+}
+
+/// `0x0022ab7d`..`0x0022ac94`: the rectangle the string is drawn in,
+/// top, left, bottom, right in the window's pixels, from the basis's
+/// `origin` (the frame's pixels), the window and the measured `bounds`.
+/// Justification 0 starts at the origin, 1 centres on it, 2 ends at it;
+/// any other keeps the measure's rectangle.
+pub fn text_rect(justification: u16, origin: [f32; 2], window: &[i16; 4], bounds: &[i16; 4]) -> [i16; 4] {
+    let (px, py) = (origin[0] - f32::from(window[1]), origin[1] - f32::from(window[0]));
+    let width = i32::from(bounds[3].wrapping_sub(bounds[1]));
+    let height = i32::from(bounds[2].wrapping_sub(bounds[0]));
+    let bottom = || short(height as f32 + py);
+    match justification {
+        0 => [short(py), short(px), bottom(), short(width as f32 + px)],
+        1 => {
+            let half = width >> 1;
+            [short(py), short(px - half as f32), bottom(), short((width - half) as f32 + px)]
+        }
+        2 => [short(py), short(px - width as f32), bottom(), short(px)],
+        _ => [0, 0, 1000, 1000],
+    }
+}
+
+/// `0x0013f4ab`..`0x0013f567`: the string's colour and its shadow's, as
+/// the glyph quads carry them (alpha, red, green, blue from the top
+/// byte), from the two colour blocks the text widget sets (`0x0013eb60`
+/// with `[0x004686cc]`, `0x0013ed50` with `[0x004686d4]`). The shadow's
+/// alpha is the lesser of its own and the string's, and it is drawn
+/// while that is not 0. `None`: a component outside 0..1, which
+/// `0x0013eb60` does not take.
+pub fn text_colours(main: &[f32; 4], shadow: Option<&[f32; 4]>) -> Option<(u32, Option<u32>)> {
+    let unit = |c: &[f32; 4]| c.iter().all(|&v| (0.0..=1.0).contains(&v));
+    // `fmul` by 255.0 at double precision, then `_ftol`.
+    let pack = |c: [f32; 4]| c.iter().fold(0u32, |word, &v| word << 8 | (f64::from(v) * 255.0) as u32);
+    if !unit(main) {
+        return None;
+    }
+    let shadow = match shadow {
+        None => None,
+        Some(s) if !unit(s) => return None,
+        Some(s) => {
+            let alpha = if s[0] > main[0] { main[0] } else { s[0] };
+            Some(pack([alpha, s[1], s[2], s[3]])).filter(|word| word & 0xff00_0000 != 0)
+        }
+    };
+    Some((pack(*main), shadow))
+}
+
+/// One glyph quad of a string, as `0x0001f490` draws it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphQuad {
+    /// The glyph's index in its font.
+    pub index: u32,
+    /// `[x0, y0, x1, y1]` in the window's pixels.
+    pub rect: [f32; 4],
+    /// Alpha, red, green, blue from the top byte.
+    pub colour: u32,
+}
+
+/// `0x0001f490` over the laid-out glyphs: each glyph's shadow, one pixel
+/// right and down, then the glyph.
+pub fn text_quads(glyphs: &[(u32, [f32; 4])], main: u32, shadow: Option<u32>) -> Vec<GlyphQuad> {
+    let mut out = Vec::with_capacity(glyphs.len() * 2);
+    for &(index, rect) in glyphs {
+        if let Some(colour) = shadow {
+            out.push(GlyphQuad { index, rect: rect.map(|v| v + 1.0), colour });
+        }
+        out.push(GlyphQuad { index, rect, colour: main });
+    }
+    out
+}
+
+/// The shader colour the text widget sets before its shader
+/// (`0x0022aabb`: `0x00131bb0` to `0x004e6950`).
+pub const TEXT_COLOUR: u32 = 0x004e_6950;
+
+/// The globals a text widget's draw leaves that a HUD shader reads: its
+/// inputs (`0x0022a898`) and the HUD's colour `tint` (`[0x00510c94] +
+/// 0xa4`, packed) as floats.
+pub fn text_globals(inputs: &[f32; 4], tint: u32) -> Vec<(u32, u32)> {
+    let mut writes: Vec<(u32, u32)> = inputs.iter().enumerate().map(|(i, v)| (global::INPUTS + 4 * i as u32, v.to_bits())).collect();
+    write3(&mut writes, TEXT_COLOUR, rgb(tint));
+    writes
 }
 
 /// A definition's three widget blocks, each a whole number of widgets.

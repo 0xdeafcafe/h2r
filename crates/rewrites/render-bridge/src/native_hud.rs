@@ -29,7 +29,7 @@ pub use hud_overlay::HudTagQuad;
 pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
 pub use ui_overlay::MenuRefusal;
-pub use walk::{WalkQuad, WalkWidget};
+pub use walk::{WalkQuad, WalkText, WalkWidget};
 
 /// Whether the native UI and HUD are on.
 pub fn on(switches: &hooks::Switches) -> bool {
@@ -47,8 +47,8 @@ pub fn rust_hud_on(switches: &hooks::Switches) -> bool {
     on(switches) && switches.feature("impl.render.native-hud", true)
 }
 
-/// The HUD's bitmap widgets laid out in Rust and drawn with no guest
-/// draw once proven (docs/graphics/native-hud-overlay.md, "The walk in
+/// The HUD's bitmap, text and screen-effect widgets laid out in Rust and
+/// drawn with no guest draw once proven (docs/graphics/native-hud-overlay.md, "The walk in
 /// Rust"): on with the Rust HUD material, `impl.render.native-hud-walk=off`
 /// turns it off.
 pub const HUD_WALK: &str = "impl.render.native-hud-walk";
@@ -193,6 +193,15 @@ pub trait Host: Send + Sync {
     /// each quad's globals before it reads the quad's material. False:
     /// nothing was drawn, and the guest draws the widget.
     fn rust_hud_widget(&self, _mem: &mut dyn GuestMemory, _widget: &WalkWidget) -> bool {
+        false
+    }
+
+    /// A proven text widget laid out in Rust ([`walk`]): true when the
+    /// host drew every glyph quad of it through the shader's Rust
+    /// material over its own glyph pages at the widget's anchor, so the
+    /// guest's draw is left out. The host writes the widget's globals
+    /// before it reads the material. False: nothing was drawn.
+    fn rust_hud_text(&self, _mem: &mut dyn GuestMemory, _text: &WalkText) -> bool {
         false
     }
 
@@ -435,20 +444,65 @@ fn place_walk(b: &mut Builder) {
     }).optional();
     b.raw().before(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen", |c| {
         let rt = Arc::clone(c.ctx.runtime());
-        let mem = rt.memory();
-        if let Some(inputs) = argument(&*mem, c.cpu.esp, 1) {
-            walk::called(&*mem, Kind::Screen, c.cpu.eax, inputs);
-        }
-        Ok(Flow::Continue)
+        let mut mem = rt.memory();
+        let (Some(player), Some(inputs)) = (argument(&*mem, c.cpu.esp, 0), argument(&*mem, c.cpu.esp, 1)) else {
+            return Ok(Flow::Continue);
+        };
+        walk::called(&*mem, Kind::Screen, c.cpu.eax, inputs);
+        let walk::ScreenPlan::Own(draw) = walk::plan_screen(&*mem, player, c.cpu.eax, inputs) else {
+            return Ok(Flow::Continue);
+        };
+        // The body is left out: the guest runs the call alone, on the
+        // frame the body would have built, and returns through its tail.
+        let saved = walk::Saved { ebp: c.cpu.ebp, ebx: c.cpu.ebx, edi: c.cpu.edi, esi: c.cpu.esi };
+        let Some((esp, ebp)) = walk::call_frame(&mut *mem, c.cpu.esp, saved, &draw) else {
+            return Ok(Flow::Continue);
+        };
+        c.cpu.esp = esp;
+        c.cpu.ebp = ebp;
+        c.cpu.eax = draw.effect;
+        c.cpu.eip = points::SCREEN_EFFECT.base;
+        Ok(Flow::Return(TransferAbi::call(points::SCREEN_EFFECT.base, walk::SCREEN_CALL_RETURN)))
     }).context_only().optional();
+    b.raw().after(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen_done", |_| {
+        walk::finish_screen();
+        Ok(())
+    }).optional();
     b.raw().before(&points::HUD_TEXT_WIDGET, "native_hud_walk_text", |c| {
         let rt = Arc::clone(c.ctx.runtime());
-        let mem = rt.memory();
-        if let (Some(widget), Some(inputs)) = (argument(&*mem, c.cpu.esp, 2), argument(&*mem, c.cpu.esp, 3)) {
+        let owned = {
+            let mut mem = rt.memory();
+            let (Some(widget), Some(inputs)) = (argument(&*mem, c.cpu.esp, 2), argument(&*mem, c.cpu.esp, 3)) else {
+                return Ok(Flow::Continue);
+            };
             walk::called(&*mem, Kind::Text, widget, inputs);
+            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+            let host = host();
+            let fonts = host.as_ref().and_then(|host| host.ui_text(&*mem));
+            match walk::plan_text(&*mem, fp, fonts.as_deref(), widget, inputs) {
+                walk::TextPlan::Guest => false,
+                walk::TextPlan::Own(text) => {
+                    let drawn = host.is_some_and(|host| host.rust_hud_text(&mut *mem, &text));
+                    walk::owned_text(drawn);
+                    if drawn {
+                        Ui::OverlayHudTextQuads.count_n(text.quads.len() as u64);
+                        Stage::Ui.count(Metric::BuildsSkipped, text.quads.len() as u64);
+                        ui::record(true);
+                    }
+                    drawn
+                }
+            }
+        };
+        if !owned {
+            return Ok(Flow::Continue);
         }
-        Ok(Flow::Continue)
+        c.ret(16).map(Flow::Return)
     }).context_only().optional();
+    b.raw().after(&points::HUD_TEXT_WIDGET, "native_hud_walk_text_done", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        walk::finish_text(&*rt.memory());
+        Ok(())
+    }).optional();
     b.raw().before(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap", |c| {
         let rt = Arc::clone(c.ctx.runtime());
         let owned = {

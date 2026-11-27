@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
-use frame_scene::{ClipRect, Overlay, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
+use frame_scene::{ClipRect, Overlay, OverlayGlyph, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
 use map::TagId;
-use native_render::hud_material::{HudRefusal, HudShader, HudState};
-use render_bridge::native_hud::{HudTagQuad, HudVertices, WalkWidget, hud_inputs};
+use native_render::hud_material::{HudRefusal, HudShader, HudState, StageTexture};
+use render_bridge::native_hud::{HudTagQuad, HudVertices, WalkText, WalkWidget, hud_inputs};
 use tags::material::ShaderLibrary;
 use timeline::native::Ui;
 
@@ -242,9 +242,13 @@ pub fn check(at: &HudTagQuad, predicted: Result<Predicted, Unpredicted>, capture
             return;
         }
     };
-    let result = compare(&predicted, captured);
+    advance(at.shader, compare(&predicted, captured), captured);
+}
+
+/// A captured quad's answer for `shader`: its proof advanced or failed.
+fn advance(shader: u32, result: Result<(), Mismatch>, captured: &Overlay) {
     let mut s = state();
-    let proof = s.proofs.entry(at.shader).or_default();
+    let proof = s.proofs.entry(shader).or_default();
     let proven = proof.matched >= PROOF_DRAWS;
     match result {
         Ok(()) if !proof.failed => {
@@ -325,6 +329,158 @@ pub fn draw<B: d3d::Backend + Send + 'static>(
     crate::hud_overlay::place_hud(device, mem, overlay)
 }
 
+/// A text shader's material for a glyph draw: what [`Predicted`] holds
+/// but for the corners and the stages' textures, which are the glyph
+/// pages'.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextMaterial {
+    pub words: [u32; 60],
+    pub state: HudState,
+    pub alpha_kill: u8,
+    pub sampled: [bool; 4],
+    pub sampler: Sampler,
+}
+
+/// The material of text shader `datum` from the map. The glyphs take
+/// the widget bitmap's place, in stage 0 alone: a text run carries one
+/// set of coordinates.
+pub fn predict_text(mem: &dyn GuestMemory, datum: u32) -> Result<TextMaterial, Unpredicted> {
+    let hud = shader(mem, datum)?;
+    if !hud_inputs::provider_installed(mem) {
+        return Err(Unpredicted::Inputs);
+    }
+    let inputs = |name: u32| hud_inputs::function_input(mem, name);
+    let words = hud.words(render_time(mem), &inputs).map_err(Unpredicted::Refused)?;
+    let sampled = sampled_stages(&words);
+    if let Some(stage) = (0..4).find(|&n| sampled[n] && (n != 0 || hud.stages[n] != StageTexture::Widget)) {
+        return Err(Unpredicted::Refused(HudRefusal::Texture { stage }));
+    }
+    if !sampled[0] {
+        return Err(Unpredicted::Refused(HudRefusal::Texture { stage: 0 }));
+    }
+    Ok(TextMaterial { words, state: hud.state, alpha_kill: hud.alpha_kill, sampled, sampler: hud.samplers[0] })
+}
+
+/// Whether `captured` (the capture's one-glyph overlay, over the guest's
+/// glyph cache) draws with `m`: its words, its state and its stages.
+pub fn compare_text(m: &TextMaterial, captured: &Overlay) -> Result<(), Mismatch> {
+    let item = captured.items.first().ok_or(Mismatch::Corners)?;
+    if item.shader_words.as_deref() != Some(&m.words[..]) {
+        return Err(Mismatch::Words);
+    }
+    if item.material.blend != m.state.blend
+        || item.blend_constant != m.state.blend_constant
+        || item.alpha_test != m.state.alpha_test
+        || item.color_write != m.state.color_write
+        || item.alpha_kill != m.alpha_kill
+    {
+        return Err(Mismatch::State);
+    }
+    if (0..4).any(|n| item.shader_stages[n].is_some() != m.sampled[n]) || item.material.sampler != m.sampler {
+        return Err(Mismatch::Stages);
+    }
+    Ok(())
+}
+
+/// A captured glyph quad of text shader `shader` and its material:
+/// counted, and the shader's proof advanced or failed, as [`check`].
+pub fn check_text(shader: u32, predicted: Result<TextMaterial, Unpredicted>, captured: &Overlay) {
+    match predicted {
+        Ok(m) => advance(shader, compare_text(&m, captured), captured),
+        Err(Unpredicted::Loading) => {}
+        Err(_) => Ui::OverlayHudRustRefused.count(),
+    }
+}
+
+/// The text's runs: its glyph quads in order, each run the quads next
+/// to each other in one colour (red, green, blue, alpha).
+fn runs(text: &WalkText) -> Vec<([f32; 4], Vec<OverlayGlyph>)> {
+    let mut out: Vec<(u32, Vec<OverlayGlyph>)> = Vec::new();
+    for quad in &text.quads {
+        // The quads are the window's; the overlay is the frame's.
+        let [x0, y0, x1, y1] = quad.rect;
+        let [x, y] = text.origin;
+        let glyph = OverlayGlyph { index: quad.index, rect: [x0 + x, y0 + y, x1 + x, y1 + y] };
+        match out.last_mut() {
+            Some((colour, glyphs)) if *colour == quad.colour => glyphs.push(glyph),
+            _ => out.push((quad.colour, vec![glyph])),
+        }
+    }
+    out.into_iter()
+        .map(|(colour, glyphs)| {
+            let [b, g, r, a] = colour.to_le_bytes();
+            ([r, g, b, a].map(|v| f32::from(v) / 255.0), glyphs)
+        })
+        .collect()
+}
+
+/// The text as overlay runs over the glyph pages of its font, drawn by
+/// its shader's words with each run's colour as the diffuse.
+pub fn build_text(m: &TextMaterial, text: &WalkText, size: [u32; 2], clip: ClipRect) -> Option<Overlay> {
+    let pages = OverlayTexture::Glyphs { font: text.font };
+    let material = OverlayMaterial { program: Program::Shader { tag: text.shader }, texture: pages, sampler: m.sampler, blend: m.state.blend };
+    let mut overlay = Overlay::new(size);
+    for (colour, glyphs) in runs(text) {
+        let index = overlay.push_text_run(material, clip, colour, &glyphs).ok()?;
+        let item = &mut overlay.items[index as usize];
+        item.alpha_test = m.state.alpha_test;
+        item.alpha_kill = m.alpha_kill;
+        item.shader_stages = [Some(pages), None, None, None];
+        item.blend_constant = m.state.blend_constant;
+        item.shader_words = Some(Box::new(m.words));
+        item.color_write = m.state.color_write;
+    }
+    Some(overlay)
+}
+
+/// Sets the device's UI fit to `fit`: whether it holds.
+fn set_fit<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, mem: &mut dyn GuestMemory, fit: Option<d3d::backend::UiFit>) -> bool {
+    device.lock().ok().is_some_and(|mut d| {
+        d.set_ui_fit(&mut crate::native_lights_glue::DeviceMemory(mem), fit).is_ok() && d.ui_fit() == fit
+    })
+}
+
+/// A text widget laid out in Rust (`render_bridge::native_hud::walk`),
+/// all of it or none: its globals written, its shader's material read,
+/// and its glyph quads placed as one pass over the host's glyph pages
+/// under the fit of the widget's anchor group. Its shader must be proven
+/// on its glyph quads ([`check_text`]).
+pub fn draw_text<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    text: &WalkText,
+) -> bool {
+    let placed = {
+        let s = state();
+        let Some(proof) = s.proofs.get(&text.shader) else { return false };
+        if proof.failed || proof.matched < PROOF_DRAWS {
+            return false;
+        }
+        proof.placed
+    };
+    let Some((size, clip)) = placed else { return false };
+    for &(at, word) in &text.writes {
+        if mem.write(at, &word.to_le_bytes()).is_err() {
+            return false;
+        }
+    }
+    let Ok(m) = predict_text(mem, text.shader) else { return false };
+    let Some(overlay) = build_text(&m, text, size, clip) else { return false };
+    let group = crate::render_aspect::hud_group_fit(text.anchor, text.point);
+    let Some(enclosing) = device.lock().ok().map(|d| d.ui_fit()) else { return false };
+    if let Some(fit) = group
+        && !set_fit(device, mem, fit)
+    {
+        set_fit(device, mem, enclosing);
+        return false;
+    }
+    let drawn = crate::hud_overlay::place_text(device, mem, overlay);
+    if group.is_some() && !set_fit(device, mem, enclosing) {
+        eprintln!("hud walk: the enclosing HUD fit was not restored after a text widget");
+    }
+    drawn
+}
+
 /// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),
 /// all of it or none: each quad's globals written, its material read as
 /// [`draw`] reads it, and the quads placed as one pass under the fit of
@@ -383,6 +539,82 @@ pub fn draw_widget<B: d3d::Backend + Send + 'static>(
         eprintln!("hud walk: the enclosing HUD fit was not restored after a widget");
     }
     drawn
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    use frame_scene::OverlayKind;
+    use render_bridge::native_hud::walk::GlyphQuad;
+
+    fn text() -> WalkText {
+        let quad = |index: u32, x: f32, colour: u32| GlyphQuad { index, rect: [x, 20.0, x + 8.0, 30.0], colour };
+        WalkText {
+            anchor: 3,
+            point: [592.0, 444.0],
+            shader: 0xe200_0009,
+            font: 8,
+            quads: vec![quad(1, 11.0, 0x8000_0000), quad(1, 10.0, 0xffff_8040), quad(2, 20.0, 0xffff_8040), quad(3, 30.0, 0xffff_8040)],
+            origin: [100.0, 0.0],
+            writes: Vec::new(),
+        }
+    }
+
+    fn material() -> TextMaterial {
+        let mut words = [0u32; 60];
+        words[7] = 0x1234_5678;
+        let state = HudState {
+            blend: frame_scene::OverlayBlend::On { source: 0x302, dest: 0x303, equation: 0x8006 },
+            blend_constant: [0.0; 4],
+            alpha_test: None,
+            color_write: 0x0101_0101,
+        };
+        TextMaterial { words, state, alpha_kill: 1, sampled: [true, false, false, false], sampler: Sampler::default() }
+    }
+
+    #[test]
+    fn a_strings_quads_are_runs_in_the_guests_order_one_per_change_of_colour() {
+        let runs = runs(&text());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].0, [0.0, 0.0, 0.0, 128.0 / 255.0]);
+        assert_eq!(runs[0].1, vec![OverlayGlyph { index: 1, rect: [111.0, 20.0, 119.0, 30.0] }]);
+        assert_eq!(runs[1].0, [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0]);
+        assert_eq!(runs[1].1.iter().map(|g| g.index).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_text_run_draws_by_its_shaders_words_over_its_fonts_glyph_pages() {
+        let (t, m) = (text(), material());
+        let clip = ClipRect { x: 0, y: 0, width: 640, height: 480 };
+        let overlay = build_text(&m, &t, [640, 480], clip).unwrap();
+        assert_eq!(overlay.items.len(), 2);
+        for item in &overlay.items {
+            assert_eq!(item.kind, OverlayKind::TextRun);
+            assert_eq!(item.material.program, Program::Shader { tag: t.shader });
+            assert_eq!(item.material.texture, OverlayTexture::Glyphs { font: 8 });
+            assert_eq!(item.shader_stages, [Some(OverlayTexture::Glyphs { font: 8 }), None, None, None]);
+            assert_eq!(item.shader_words.as_deref(), Some(&m.words[..]));
+            assert_eq!((item.alpha_kill, item.glyph_cache), (1, 0));
+        }
+        assert_eq!(overlay.glyphs_of(&overlay.items[1]).len(), 3);
+    }
+
+    #[test]
+    fn a_glyph_capture_with_other_words_or_stages_is_not_the_materials() {
+        let (t, m) = (text(), material());
+        let clip = ClipRect { x: 0, y: 0, width: 640, height: 480 };
+        let captured = build_text(&m, &t, [640, 480], clip).unwrap();
+        assert_eq!(compare_text(&m, &captured), Ok(()));
+        let mut other = m.clone();
+        other.words[7] = 0;
+        assert_eq!(compare_text(&other, &captured), Err(Mismatch::Words));
+        let mut other = m.clone();
+        other.alpha_kill = 0;
+        assert_eq!(compare_text(&other, &captured), Err(Mismatch::State));
+        let mut other = m.clone();
+        other.sampled[1] = true;
+        assert_eq!(compare_text(&other, &captured), Err(Mismatch::Stages));
+    }
 }
 
 #[cfg(test)]

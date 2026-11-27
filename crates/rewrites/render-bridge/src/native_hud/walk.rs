@@ -6,6 +6,16 @@
 //! in Rust at its draw (`HUD_BITMAP_WIDGET`): its sprite, its anchor, its
 //! effects (`engine::hud_effects`), its quads and the globals it writes.
 //!
+//! A text widget is laid out the same way at `HUD_TEXT_WIDGET`: its
+//! string (the table's, or its number), its rectangle from the measure,
+//! its glyphs through the host's fonts ([`UiText`]) and each glyph quad's
+//! colour, checked against the guest's glyph quads at the screen quad.
+//!
+//! A screen-effect widget's call of `0x0002d140` (its effect, its bitmap
+//! and its grid) is worked out at `HUD_SCREEN_WIDGET` and checked against
+//! the guest's call; a proven widget's body is left out and the guest
+//! runs the call alone, on a frame Rust fills ([`call_frame`]).
+//!
 //! A widget is the guest's until [`PROOF_DRAWS`] of its draws matched
 //! Rust's quad for quad (the vertices, the bitmap, image and shader and
 //! the globals, bit for bit, at `HUD_QUAD_SETUP`). After that Rust draws
@@ -21,6 +31,8 @@ use std::sync::{LazyLock, Mutex};
 use engine::hud_effects;
 use engine::memory::GuestMemory;
 use scene_extract::hud::{self, Blocks, GuestBitmap, walk};
+use scene_extract::ui::{Justify, UiText};
+pub use walk::{GlyphQuad, ScreenDraw};
 use walk::{Bitmap as _, Kind, Refusal, Shown};
 
 use super::{HudVertices, hud_inputs};
@@ -49,6 +61,24 @@ pub struct WalkWidget {
     pub bitmap: u32,
     pub shader: u32,
     pub quads: Vec<WalkQuad>,
+}
+
+/// A text widget laid out in Rust.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WalkText {
+    /// The anchor and its point: what the group's fit is taken at.
+    pub anchor: u32,
+    pub point: [f32; 2],
+    pub shader: u32,
+    /// The engine font.
+    pub font: u16,
+    /// The glyph quads in the guest's order, in the window's pixels.
+    pub quads: Vec<GlyphQuad>,
+    /// The window's left and top in the frame: the quads' origin.
+    pub origin: [f32; 2],
+    /// The globals the guest's draw leaves for its shader: the host
+    /// writes them before it reads the shader's material.
+    pub writes: Vec<(u32, u32)>,
 }
 
 /// Whose a widget's draw is.
@@ -176,6 +206,29 @@ struct Active {
     /// not Rust's to check.
     foreign: bool,
     expect: Option<Expect>,
+    text: Option<ExpectText>,
+    screen: Option<ExpectScreen>,
+}
+
+/// A shadowed screen-effect widget: the call Rust worked out, and the
+/// guest's calls against it.
+#[derive(Clone, Debug, PartialEq)]
+struct ExpectScreen {
+    widget: u32,
+    draw: ScreenDraw,
+    calls: u32,
+    matched: bool,
+}
+
+/// A shadowed text draw: the glyph quads Rust laid out, and how far the
+/// guest's matched.
+#[derive(Clone, Debug, PartialEq)]
+struct ExpectText {
+    widget: u32,
+    quads: Vec<GlyphQuad>,
+    globals: Vec<(u32, u32)>,
+    next: usize,
+    matched: bool,
 }
 
 thread_local! {
@@ -210,7 +263,7 @@ pub fn enter(mem: &dyn GuestMemory, definition: u32, player: u32, record: u32, s
             };
             (0..block.len() / kind.size()).any(|i| foreign(mem, blocks.address(kind, i)))
         });
-        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None })
+        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None, text: None, screen: None })
     };
     let active = read();
     if active.is_none() {
@@ -253,6 +306,37 @@ pub struct Fp {
     pub control: u16,
 }
 
+/// The HUD's function input `name` while a widget with `inputs` draws:
+/// the widget's inputs are the shader inputs by then; the rest are the
+/// callback's (`hud_inputs`).
+fn input(mem: &dyn GuestMemory, inputs: &[f32; 4], name: u32) -> Option<f32> {
+    match name {
+        0x0a00_05cf..=0x0a00_05d2 => Some(inputs[(name - 0x0a00_05cf) as usize]),
+        _ => hud_inputs::function_input(mem, name),
+    }
+}
+
+/// A widget's effects (`engine::hud_effects`) on `basis`.
+fn effects(mem: &dyn GuestMemory, fp: Fp, block: (u32, u32), inputs: &[f32; 4], basis: &mut walk::Basis) -> Result<(), Refusal> {
+    let mut b = hud_effects::Basis {
+        origin: basis.origin.map(f32::to_bits),
+        x: basis.x.map(f32::to_bits),
+        y: basis.y.map(f32::to_bits),
+    };
+    match hud_effects::apply(mem, fp.mxcsr, fp.control, block, &|name| input(mem, inputs, name), &mut b) {
+        Ok(true) => {
+            *basis = walk::Basis {
+                origin: b.origin.map(f32::from_bits),
+                x: b.x.map(f32::from_bits),
+                y: b.y.map(f32::from_bits),
+            };
+            Ok(())
+        }
+        Ok(false) => Err(Refusal::Effect),
+        Err(_) => Err(Refusal::Read),
+    }
+}
+
 /// A value the quad's vertex check passes (`super::vertices`).
 fn plain(v: f32) -> bool {
     v == 0.0 || v.is_normal()
@@ -279,31 +363,7 @@ fn lay_out(
     let aim = hud::aim(mem).ok_or("read")?;
     let art = hud::art(mem, player).ok_or("read")?;
     let bitmap = GuestBitmap { mem, data: hud::tag_data(mem, tag).ok_or("read")? };
-    let effects = |block: (u32, u32), inputs: &[f32; 4], basis: &mut walk::Basis| {
-        // The widget's inputs are the shader inputs by now; the rest are
-        // the callback's (`hud_inputs`).
-        let input = |name: u32| match name {
-            0x0a00_05cf..=0x0a00_05d2 => Some(inputs[(name - 0x0a00_05cf) as usize]),
-            _ => hud_inputs::function_input(mem, name),
-        };
-        let mut b = hud_effects::Basis {
-            origin: basis.origin.map(f32::to_bits),
-            x: basis.x.map(f32::to_bits),
-            y: basis.y.map(f32::to_bits),
-        };
-        match hud_effects::apply(mem, fp.mxcsr, fp.control, block, &input, &mut b) {
-            Ok(true) => {
-                *basis = walk::Basis {
-                    origin: b.origin.map(f32::from_bits),
-                    x: b.x.map(f32::from_bits),
-                    y: b.y.map(f32::from_bits),
-                };
-                Ok(())
-            }
-            Ok(false) => Err(Refusal::Effect),
-            Err(_) => Err(Refusal::Read),
-        }
-    };
+    let effects = |block: (u32, u32), inputs: &[f32; 4], basis: &mut walk::Basis| effects(mem, fp, block, inputs, basis);
     let draw = walk::bitmap_widget(&w, inputs, &record, &screen, aim, &bitmap, &art, &effects).map_err(Refusal::cause)?;
     let Some(draw) = draw else { return Ok(None) };
     // The guest draws a quad only with its texture there (`0x0003bcb0`).
@@ -393,6 +453,16 @@ pub fn observe(mem: &dyn GuestMemory, frame: u32) {
     });
 }
 
+/// Whether Rust's own walk shows `widget` with the inputs the guest
+/// gives it: Rust draws only then. `None` outside a walk.
+fn selected(kind: Kind, widget: u32, given: &[f32; 4]) -> Option<bool> {
+    ACTIVE.with(|a| {
+        a.borrow().as_ref().map(|a| {
+            a.shown.iter().any(|s| s.kind == kind && a.blocks.address(kind, s.index) == widget && bits(&s.inputs) == bits(given))
+        })
+    })
+}
+
 /// What the bitmap widget's entry does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Plan {
@@ -410,15 +480,7 @@ pub fn plan(mem: &dyn GuestMemory, fp: Fp, player: u32, record: u32, widget: u32
         Plan::Guest
     };
     let Some(given) = four(mem, inputs) else { return refused("read") };
-    // Rust draws only what its own walk shows, with the inputs it gave.
-    let selected = ACTIVE.with(|a| {
-        a.borrow().as_ref().map(|a| {
-            a.shown.iter().any(|s| {
-                s.kind == Kind::Bitmap && a.blocks.address(Kind::Bitmap, s.index) == widget && bits(&s.inputs) == bits(&given)
-            })
-        })
-    });
-    match selected {
+    match selected(Kind::Bitmap, widget, &given) {
         None => return Plan::Guest,
         Some(false) => return refused("unselected"),
         Some(true) => {}
@@ -454,6 +516,312 @@ pub fn finish(mem: &dyn GuestMemory) {
     if proof(e.widget, |p| p.checked(matched)) {
         count("proven");
     }
+}
+
+/// The measure's rectangle (`0x0022abc9`): 0, 0 to 1000, 1000.
+const MEASURE: [f32; 4] = [0.0, 0.0, 1000.0, 1000.0];
+
+/// The text widget at `widget` laid out in Rust with `inputs`.
+/// `Ok(None)`: it draws nothing. `Err`: why Rust does not lay it out.
+fn lay_out_text(mem: &dyn GuestMemory, fp: Fp, fonts: &dyn UiText, widget: u32, inputs: &[f32; 4]) -> Result<Option<WalkText>, &'static str> {
+    let w = mem.bytes(widget, walk::TEXT_SIZE).map_err(|_| "read")?;
+    let screen = hud::screen(mem).ok_or("read")?;
+    let aim = hud::aim(mem).ok_or("read")?;
+    let run = |block: (u32, u32), inputs: &[f32; 4], basis: &mut walk::Basis| effects(mem, fp, block, inputs, basis);
+    let Some(place) = walk::text_widget(&w, inputs, &screen, aim, &run).map_err(Refusal::cause)? else { return Ok(None) };
+    let font = place.font.and_then(|f| u16::try_from(f).ok()).ok_or("font")?;
+    let string = if place.flags & walk::TEXT_NUMBER != 0 {
+        // `0x0022a8b5`: the callback's value, through `_ftol`.
+        let value = input(mem, inputs, place.string).ok_or("number")?;
+        if !(value.abs() < 2_147_483_648.0) {
+            return Err("number");
+        }
+        walk::number_text(place.flags, value as i32)
+    } else if place.flags & walk::TEXT_NAME != 0 {
+        return Err("name");
+    } else {
+        super::hud_overlay::localized(mem, place.string).ok_or("string")?
+    };
+    let units: Vec<u16> = string.encode_utf16().collect();
+    let shape = |rect: [f32; 4]| fonts.shape(font, &units, rect, Justify::Left).ok_or("shape");
+    let measured: Vec<[f32; 4]> = shape(MEASURE)?.iter().map(|g| g.rect).collect();
+    let Some(bounds) = walk::text_bounds(&measured) else { return Ok(None) };
+    let [top, left, bottom, right] = walk::text_rect(place.justification, place.basis.origin, &screen.window, &bounds).map(f32::from);
+    let glyphs: Vec<(u32, [f32; 4])> = shape([left, top, right, bottom])?.iter().map(|g| (g.index, g.rect)).collect();
+    let (main, shadow) = hud::text_colours(mem).ok_or("read")?;
+    let (main, shadow) = walk::text_colours(&main, shadow.as_ref()).ok_or("colour")?;
+    let writes = walk::text_globals(inputs, hud::text_tint(mem).ok_or("read")?);
+    Ok(Some(WalkText {
+        anchor: u32::from(place.anchor),
+        point: place.point,
+        shader: place.shader,
+        font,
+        quads: walk::text_quads(&glyphs, main, shadow),
+        origin: [f32::from(screen.window[1]), f32::from(screen.window[0])],
+        writes,
+    }))
+}
+
+/// What the text widget's entry does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextPlan {
+    /// The guest draws it.
+    Guest,
+    /// Rust draws it.
+    Own(WalkText),
+}
+
+/// `HUD_TEXT_WIDGET`'s entry: whose the draw is, as [`plan`] for a
+/// bitmap widget. `fonts` lays the string out; with none the guest does.
+pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, widget: u32, inputs: u32) -> TextPlan {
+    let refused = |why: &'static str| {
+        count(why);
+        TextPlan::Guest
+    };
+    let Some(given) = four(mem, inputs) else { return refused("text_read") };
+    match selected(Kind::Text, widget, &given) {
+        None => return TextPlan::Guest,
+        Some(false) => return refused("text_unselected"),
+        Some(true) => {}
+    }
+    if foreign(mem, widget) {
+        return refused("text_feature");
+    }
+    let Some(fonts) = fonts else { return refused("text_fonts") };
+    let laid = match lay_out_text(mem, fp, fonts, widget, &given) {
+        Ok(Some(laid)) => laid,
+        Ok(None) => return refused("text_empty"),
+        Err(why) => {
+            count("text_refused");
+            return refused(why);
+        }
+    };
+    match proof(widget, Proof::arm) {
+        Arm::Guest => refused("text_differed"),
+        Arm::Shadow => {
+            let e = ExpectText { widget, quads: laid.quads, globals: laid.writes, next: 0, matched: true };
+            ACTIVE.with(|a| {
+                if let Some(a) = a.borrow_mut().as_mut() {
+                    a.text = Some(e);
+                }
+            });
+            TextPlan::Guest
+        }
+        Arm::Own => TextPlan::Own(laid),
+    }
+}
+
+/// Whether the guest's glyph quad at `corners` (four vertices of x, y,
+/// u, v and a packed colour, `0x0001f3a0`) is `quad`.
+fn glyph_matches(mem: &dyn GuestMemory, corners: u32, quad: &GlyphQuad) -> bool {
+    let [x0, y0, x1, y1] = quad.rect.map(f32::to_bits);
+    let read = || {
+        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].into_iter().enumerate() {
+            let at = corners.checked_add(i as u32 * 0x14)?;
+            if [mem.u32(at).ok()?, mem.u32(at.checked_add(4)?).ok()?, mem.u32(at.checked_add(16)?).ok()?] != [x, y, quad.colour] {
+                return Some(false);
+            }
+        }
+        Some(true)
+    };
+    read().unwrap_or(false)
+}
+
+/// The guest's screen quad, in a shadowed text widget's draw: a glyph
+/// of its string, checked against the next quad Rust laid out.
+pub fn observe_glyph(mem: &dyn GuestMemory, corners: u32) {
+    ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let Some(e) = a.as_mut().and_then(|a| a.text.as_mut()) else { return };
+        let matched = e.quads.get(e.next).is_some_and(|quad| glyph_matches(mem, corners, quad));
+        e.matched &= matched;
+        e.next += 1;
+    });
+}
+
+/// `HUD_TEXT_WIDGET`'s return: a shadowed draw's answer.
+pub fn finish_text(mem: &dyn GuestMemory) {
+    let Some(e) = ACTIVE.with(|a| a.borrow_mut().as_mut().and_then(|a| a.text.take())) else { return };
+    let matched = e.matched && e.next == e.quads.len() && globals_hold(mem, &e.globals);
+    count(if matched { "text_shadow_matched" } else { "text_shadow_differed" });
+    if proof(e.widget, |p| p.checked(matched)) {
+        count("text_proven");
+    }
+}
+
+/// The screen-effect widget at `widget` worked out in Rust with `inputs`.
+/// `Ok(None)`: its mode has no effect, and nothing is called.
+fn lay_out_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: &[f32; 4]) -> Result<Option<ScreenDraw>, &'static str> {
+    let w = mem.bytes(widget, walk::SCREEN_SIZE).map_err(|_| "read")?;
+    let screen = hud::screen(mem).ok_or("read")?;
+    let aim = hud::aim(mem).ok_or("read")?;
+    let tag = u32::from_le_bytes([w[0x24], w[0x25], w[0x26], w[0x27]]);
+    let bitmap = match tag {
+        u32::MAX => None,
+        tag => Some(GuestBitmap { mem, data: hud::tag_data(mem, tag).ok_or("read")? }),
+    };
+    let user_state = hud::user_state(mem, player).ok_or("read")?;
+    walk::screen_widget(&w, inputs, &screen, aim, bitmap.as_ref().map(|b| b as &dyn walk::Bitmap), user_state).map_err(Refusal::cause)
+}
+
+/// What the screen-effect widget's entry does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScreenPlan {
+    /// The guest runs the widget.
+    Guest,
+    /// The guest runs this call alone ([`call_frame`]).
+    Own(ScreenDraw),
+}
+
+/// `HUD_SCREEN_WIDGET`'s entry: whose the widget's layout is, as [`plan`]
+/// for a bitmap widget.
+pub fn plan_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: u32) -> ScreenPlan {
+    let refused = |why: &'static str| {
+        count(why);
+        ScreenPlan::Guest
+    };
+    let Some(given) = four(mem, inputs) else { return refused("screen_read") };
+    match selected(Kind::Screen, widget, &given) {
+        None => return ScreenPlan::Guest,
+        Some(false) => return refused("screen_unselected"),
+        Some(true) => {}
+    }
+    if foreign(mem, widget) {
+        return refused("screen_feature");
+    }
+    let draw = match lay_out_screen(mem, player, widget, &given) {
+        Ok(Some(draw)) => draw,
+        Ok(None) => return refused("screen_empty"),
+        Err(why) => {
+            count("screen_refused");
+            return refused(why);
+        }
+    };
+    match proof(widget, Proof::arm) {
+        Arm::Guest => refused("screen_differed"),
+        Arm::Shadow => {
+            let e = ExpectScreen { widget, draw, calls: 0, matched: true };
+            ACTIVE.with(|a| {
+                if let Some(a) = a.borrow_mut().as_mut() {
+                    a.screen = Some(e);
+                }
+            });
+            ScreenPlan::Guest
+        }
+        Arm::Own => ScreenPlan::Own(draw),
+    }
+}
+
+/// The screen-effect widget's call returns here (`0x0022bbbb`'s).
+pub const SCREEN_CALL_RETURN: u32 = 0x0022_bbc0;
+/// The widget's frame under its entry stack pointer `E` (`0x0022b8e2`:
+/// `push ebp; lea ebp, [esp - 0x70]; sub esp, 0xa4; push ebx; push edi`,
+/// then `push esi`): the grid at `ebp - 0x34`.
+const SCREEN_GRID: u32 = 0xa8;
+const SCREEN_SAVED: [u32; 3] = [0xac, 0xb0, 0xb4];
+const SCREEN_CALL_STACK: u32 = 0xc8;
+
+/// The globals the widget writes before its call (`0x0022bb20`,
+/// `0x0022bb9f`, `0x0022bba4`).
+fn screen_globals(draw: &ScreenDraw) -> Vec<(u32, u32)> {
+    let mut writes = vec![(walk::global::BITMAP, draw.bitmap), (walk::global::IMAGE, draw.image as u32)];
+    writes.extend(draw.values.iter().enumerate().map(|(i, v)| (walk::global::INPUTS + 4 * i as u32, v.to_bits())));
+    writes
+}
+
+/// Whether the call of `0x0002d140` at `esp` with `eax` is `draw`'s:
+/// the effect, the four values, a 3 by 3 grid of the same corners, and
+/// the globals written.
+fn screen_matches(mem: &dyn GuestMemory, eax: u32, esp: u32, draw: &ScreenDraw) -> bool {
+    let read = || {
+        let word = |n: u32| mem.u32(esp.checked_add(4 + 4 * n)?).ok();
+        let (values, corners) = (word(0)?, word(3)?);
+        if eax != draw.effect || [word(1)?, word(2)?] != [3, 3] {
+            return Some(false);
+        }
+        for (i, v) in draw.values.iter().enumerate() {
+            if mem.u32(values.checked_add(4 * i as u32)?).ok()? != v.to_bits() {
+                return Some(false);
+            }
+        }
+        for (i, v) in draw.grid.iter().flatten().enumerate() {
+            if mem.u32(corners.checked_add(4 * i as u32)?).ok()? != v.to_bits() {
+                return Some(false);
+            }
+        }
+        Some(globals_hold(mem, &screen_globals(draw)))
+    };
+    read().unwrap_or(false)
+}
+
+/// The guest's call of `0x0002d140` (`eax`, `esp` at its entry), in a
+/// shadowed screen-effect widget: checked against the call Rust worked out.
+pub fn observe_screen(mem: &dyn GuestMemory, eax: u32, esp: u32) {
+    ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let Some(e) = a.as_mut().and_then(|a| a.screen.as_mut()) else { return };
+        if mem.u32(esp).ok() != Some(SCREEN_CALL_RETURN) {
+            return;
+        }
+        e.matched &= screen_matches(mem, eax, esp, &e.draw);
+        e.calls += 1;
+    });
+}
+
+/// `HUD_SCREEN_WIDGET`'s return: a shadowed widget's answer.
+pub fn finish_screen() {
+    let Some(e) = ACTIVE.with(|a| a.borrow_mut().as_mut().and_then(|a| a.screen.take())) else { return };
+    let matched = e.matched && e.calls == 1;
+    count(if matched { "screen_shadow_matched" } else { "screen_shadow_differed" });
+    if proof(e.widget, |p| p.checked(matched)) {
+        count("screen_proven");
+    }
+}
+
+/// The registers the widget's body saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Saved {
+    pub ebp: u32,
+    pub ebx: u32,
+    pub edi: u32,
+    pub esi: u32,
+}
+
+/// A proven screen-effect widget's frame, as its body leaves it at the
+/// call of `0x0002d140`, written under the widget's entry stack pointer
+/// `esp`: the saved registers, the grid, the globals, the call's four
+/// words and its return (`SCREEN_CALL_RETURN`, whose code restores the
+/// registers and returns from the widget). The stack and frame pointers
+/// to enter `0x0002d140` with; EAX is `draw.effect`.
+pub fn call_frame(mem: &mut dyn GuestMemory, esp: u32, saved: Saved, draw: &ScreenDraw) -> Option<(u32, u32)> {
+    let mut put = |at: u32, word: u32| mem.write(at, &word.to_le_bytes()).ok();
+    let inputs = esp.checked_add(8)?;
+    let under = |n: u32| esp.checked_sub(n);
+    put(under(4)?, saved.ebp)?;
+    for (at, word) in SCREEN_SAVED.into_iter().zip([saved.ebx, saved.edi, saved.esi]) {
+        put(under(at)?, word)?;
+    }
+    let grid = under(SCREEN_GRID)?;
+    for (i, v) in draw.grid.iter().flatten().enumerate() {
+        put(grid + 4 * i as u32, v.to_bits())?;
+    }
+    for (at, word) in screen_globals(draw) {
+        put(at, word)?;
+    }
+    let top = under(SCREEN_CALL_STACK)?;
+    // The values are the widget's own inputs argument (`[ebp + 0x7c]`).
+    let values = mem.u32(inputs).ok()?;
+    let mut put = |at: u32, word: u32| mem.write(at, &word.to_le_bytes()).ok();
+    for (i, word) in [SCREEN_CALL_RETURN, values, 3, 3, grid].into_iter().enumerate() {
+        put(top + 4 * i as u32, word)?;
+    }
+    count("screen_called");
+    Some((top, under(0x74)?))
+}
+
+/// Rust drew the text widget (`drawn`), or the host did not take it.
+pub fn owned_text(drawn: bool) {
+    count(if drawn { "text_drawn" } else { "text_host" });
 }
 
 /// Rust drew the widget (`drawn`), or the host did not take it.
@@ -534,7 +902,7 @@ mod tests {
 
     fn shadow(e: Expect) {
         let blocks = Blocks::default();
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e) }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e), text: None, screen: None }));
     }
 
     fn answer(m: &FakeGuest) -> Expect {
@@ -618,7 +986,7 @@ mod tests {
         let mut blocks = Blocks::default();
         blocks.bitmaps = (0x3000, vec![0; 2 * walk::BITMAP_SIZE]);
         let shown = vec![Shown { kind: Kind::Bitmap, index: 1, inputs: [1.0, 0.0, 0.0, 0.5] }];
-        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None };
+        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
         assert_eq!(expected_calls(&active), vec![(Kind::Bitmap, 0x3000 + walk::BITMAP_SIZE as u32, bits(&[1.0, 0.0, 0.0, 0.5]))]);
     }
 
@@ -632,13 +1000,232 @@ mod tests {
         blocks.bitmaps = (0x3000, vec![0; walk::BITMAP_SIZE]);
         // Selected with other inputs than the guest gives.
         let shown = vec![Shown { kind: Kind::Bitmap, index: 0, inputs: [0.5; 4] }];
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, text: None, screen: None }));
         let fp = Fp { mxcsr: 0x1f80, control: 0x027f };
         assert_eq!(plan(&m, fp, 0, 0x6000, 0x3000, 0x7000), Plan::Guest);
         assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().expect.is_none()));
         ACTIVE.with(|a| *a.borrow_mut() = None);
         // Outside a walk nothing is planned.
         assert_eq!(plan(&m, fp, 0, 0x6000, 0x3000, 0x7000), Plan::Guest);
+    }
+
+    /// Every glyph 8 by 10, 2 under the rectangle's top, 10 apart; its
+    /// index is its character.
+    struct Cells;
+
+    impl UiText for Cells {
+        fn shape(&self, _: u16, text: &[u16], rect: [f32; 4], _: Justify) -> Option<Vec<frame_scene::OverlayGlyph>> {
+            let glyph = |(i, &unit): (usize, &u16)| {
+                let x = rect[0] + 10.0 * i as f32;
+                frame_scene::OverlayGlyph { index: u32::from(unit), rect: [x, rect[1] + 2.0, x + 8.0, rect[1] + 12.0] }
+            };
+            Some(text.iter().enumerate().map(glyph).collect())
+        }
+    }
+
+    const TEXT: u32 = 0x3000;
+
+    /// A two-digit number widget of `hud_input1`, ending 12 left of and 6
+    /// under the frame's bottom right corner, in a full-screen view.
+    fn number_widget() -> FakeGuest {
+        let mut m = FakeGuest::new();
+        let mut w = [0u8; walk::TEXT_SIZE];
+        w[0x1c] = 3;
+        w[0x1e] = (walk::TEXT_NUMBER | walk::TEXT_TWO_DIGITS) as u8;
+        w[0x24..0x28].copy_from_slice(&0xe200_0009u32.to_le_bytes());
+        w[0x28..0x2c].copy_from_slice(&0x0a00_05cfu32.to_le_bytes());
+        w[0x2c] = 2;
+        w[0x30] = 1;
+        w[0x40..0x42].copy_from_slice(&(-12i16).to_le_bytes());
+        w[0x42..0x44].copy_from_slice(&6i16.to_le_bytes());
+        m.put(TEXT, &w);
+        for (i, v) in [0u16, 0, 480, 640, 36, 48, 444, 592].into_iter().enumerate() {
+            m.put_u16(hud::WINDOW + 2 * i as u32, v);
+        }
+        // No game engine, no quarter rule, no view user.
+        m.put_u32(0x004e_6948, 0).put_u8(0x0048_5ac2, 0).put_u32(0x004b_9ed8, u32::MAX);
+        // The string's colour, its shadow's and the HUD's tint.
+        m.put_u32(0x0046_86cc, 0x6000).put_u32(0x0046_86d4, 0x6100).put_u32(0x0051_0c94, 0x7000).put_u32(0x70a4, 0x00ff_ffff);
+        for i in 0..4 {
+            m.put_f32(0x6000 + 4 * i, 1.0).put_f32(0x6100 + 4 * i, if i == 0 { 1.0 } else { 0.0 });
+        }
+        m
+    }
+
+    const FP: Fp = Fp { mxcsr: 0x1f80, control: 0x027f };
+
+    #[test]
+    fn a_number_widget_is_laid_out_ending_at_its_point_with_each_glyphs_shadow_first() {
+        let m = number_widget();
+        let t = lay_out_text(&m, FP, &Cells, TEXT, &[7.9, 0.0, 0.0, 0.0]).unwrap().unwrap();
+        assert_eq!((t.anchor, t.point, t.shader, t.font), (3, [592.0, 444.0], 0xe200_0009, 8));
+        // "07": 19 wide by the measure, so it starts at 580 - 19.
+        let quad = |index: char, x: f32, y: f32, colour: u32| GlyphQuad { index: index as u32, rect: [x, y, x + 8.0, y + 10.0], colour };
+        assert_eq!(
+            t.quads,
+            vec![
+                quad('0', 562.0, 453.0, 0xff00_0000),
+                quad('0', 561.0, 452.0, 0xffff_ffff),
+                quad('7', 572.0, 453.0, 0xff00_0000),
+                quad('7', 571.0, 452.0, 0xffff_ffff),
+            ]
+        );
+        assert_eq!((t.origin, t.writes.len()), ([0.0, 0.0], 7));
+        assert_eq!(t.writes[0], (walk::global::INPUTS, 7.9f32.to_bits()));
+        assert_eq!(t.writes[4], (walk::TEXT_COLOUR, 1.0f32.to_bits()));
+    }
+
+    #[test]
+    fn a_name_widget_and_a_number_past_an_int_are_the_guests() {
+        let mut m = number_widget();
+        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[f32::INFINITY, 0.0, 0.0, 0.0]), Err("number"));
+        m.put_u8(TEXT + 0x1e, walk::TEXT_NAME as u8);
+        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[1.0; 4]), Err("name"));
+        // A colour the font renderer does not take.
+        let mut m = number_widget();
+        m.put_f32(0x6000, 1.5);
+        assert_eq!(lay_out_text(&m, FP, &Cells, TEXT, &[1.0; 4]), Err("colour"));
+    }
+
+    /// The guest's glyph quad for `quad` at `at` (`0x0001f3a0`).
+    fn guest_glyph(m: &mut FakeGuest, at: u32, quad: &GlyphQuad) {
+        let [x0, y0, x1, y1] = quad.rect;
+        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].into_iter().enumerate() {
+            let v = at + 0x14 * i as u32;
+            m.put_f32(v, x).put_f32(v + 4, y).put_u32(v + 16, quad.colour);
+        }
+    }
+
+    fn shadow_text(quads: Vec<GlyphQuad>) {
+        let e = ExpectText { widget: 0x5100, quads, globals: Vec::new(), next: 0, matched: true };
+        ACTIVE.with(|a| {
+            *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, text: Some(e), screen: None });
+        });
+    }
+
+    fn text_answer() -> ExpectText {
+        ACTIVE.with(|a| a.borrow().as_ref().and_then(|a| a.text.clone())).unwrap()
+    }
+
+    #[test]
+    fn the_guests_glyph_quads_match_rusts_in_order_place_and_colour() {
+        let quads = vec![
+            GlyphQuad { index: 1, rect: [11.0, 21.0, 19.0, 31.0], colour: 0x8000_0000 },
+            GlyphQuad { index: 1, rect: [10.0, 20.0, 18.0, 30.0], colour: 0xffff_ffff },
+        ];
+        let mut m = FakeGuest::new();
+        shadow_text(quads.clone());
+        for quad in &quads {
+            guest_glyph(&mut m, 0x9000, quad);
+            observe_glyph(&m, 0x9000);
+        }
+        let e = text_answer();
+        assert!(e.matched && e.next == 2);
+        // The same quads with the shadow after its glyph differ.
+        shadow_text(quads.clone());
+        for quad in quads.iter().rev() {
+            guest_glyph(&mut m, 0x9000, quad);
+            observe_glyph(&m, 0x9000);
+        }
+        assert!(!text_answer().matched);
+        // Another colour differs.
+        shadow_text(quads.clone());
+        guest_glyph(&mut m, 0x9000, &GlyphQuad { colour: 0x7f00_0000, ..quads[0] });
+        observe_glyph(&m, 0x9000);
+        assert!(!text_answer().matched);
+        ACTIVE.with(|a| *a.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_text_widget_rust_did_not_select_or_with_no_fonts_is_the_guests() {
+        let mut m = number_widget();
+        for i in 0..4 {
+            m.put_f32(0x7800 + 4 * i, 1.0);
+        }
+        let mut blocks = Blocks::default();
+        blocks.texts = (TEXT, vec![0; walk::TEXT_SIZE]);
+        let shown = vec![Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
+        let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
+        ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
+        assert_eq!(plan_text(&m, FP, None, TEXT, 0x7800), TextPlan::Guest);
+        // Selected, with fonts: an unproven widget is shadowed.
+        assert_eq!(plan_text(&m, FP, Some(&Cells), TEXT, 0x7800), TextPlan::Guest);
+        assert_eq!(text_answer().quads.len(), 4);
+        // Other inputs than Rust's walk gave: not laid out.
+        ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
+        m.put_f32(0x7800, 0.5);
+        assert_eq!(plan_text(&m, FP, Some(&Cells), TEXT, 0x7800), TextPlan::Guest);
+        assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().text.is_none()));
+        ACTIVE.with(|a| *a.borrow_mut() = None);
+    }
+
+    fn screen_draw() -> ScreenDraw {
+        let grid = std::array::from_fn(|i| [100.0 * (i % 3) as f32, 50.0 * (i / 3) as f32, 0.25 * (i % 3) as f32, 1.0]);
+        ScreenDraw { effect: 0xe300_0004, bitmap: 0xe100_0001, image: 2, values: [1.0, 0.5, 0.0, 0.0], grid }
+    }
+
+    #[test]
+    fn a_proven_screen_widgets_frame_is_the_call_the_guests_body_makes() {
+        let mut m = FakeGuest::new();
+        let e = 0x000d_0000;
+        m.put(e - 0x100, &[0u8; 0x110]);
+        m.put_u32(walk::global::BITMAP, 0).put_u32(walk::global::INPUTS + 12, 0);
+        // The widget's arguments: the player, then its inputs.
+        m.put_u32(e, 0x0013_a5f0).put_u32(e + 4, 0).put_u32(e + 8, 0x7800);
+        let draw = screen_draw();
+        for (i, v) in draw.values.iter().enumerate() {
+            m.put_f32(0x7800 + 4 * i as u32, *v);
+        }
+        let saved = Saved { ebp: 0x000d_0040, ebx: 11, edi: 22, esi: 33 };
+        let (esp, ebp) = call_frame(&mut m, e, saved, &draw).unwrap();
+        assert_eq!((esp, ebp), (e - 0xc8, e - 0x74));
+        // The call as the guest's body pushes it, returning into its tail.
+        assert_eq!(m.u32(esp).unwrap(), SCREEN_CALL_RETURN);
+        assert_eq!([m.u32(esp + 4).unwrap(), m.u32(esp + 8).unwrap(), m.u32(esp + 12).unwrap()], [0x7800, 3, 3]);
+        assert_eq!(m.u32(esp + 16).unwrap(), ebp - 0x34);
+        assert!(screen_matches(&m, draw.effect, esp, &draw));
+        // The tail pops ESI, EDI and EBX above the call's words, then
+        // `add ebp, 0x70; leave` finds the caller's EBP.
+        assert_eq!([m.u32(esp + 0x14).unwrap(), m.u32(esp + 0x18).unwrap(), m.u32(esp + 0x1c).unwrap()], [33, 22, 11]);
+        assert_eq!(m.u32(ebp + 0x70).unwrap(), 0x000d_0040);
+        assert_eq!(m.u32(walk::global::IMAGE).unwrap(), 2);
+    }
+
+    #[test]
+    fn a_guest_call_with_another_effect_corner_or_bitmap_differs() {
+        let draw = screen_draw();
+        for change in 0..4 {
+            let mut m = FakeGuest::new();
+            let e = 0x000d_0000;
+            m.put(e - 0x100, &[0u8; 0x110]);
+        m.put_u32(walk::global::BITMAP, 0).put_u32(walk::global::INPUTS + 12, 0);
+            m.put_u32(e + 8, 0x7800);
+            for (i, v) in draw.values.iter().enumerate() {
+                m.put_f32(0x7800 + 4 * i as u32, *v);
+            }
+            let (esp, ebp) = call_frame(&mut m, e, Saved { ebp: 0, ebx: 0, edi: 0, esi: 0 }, &draw).unwrap();
+            let mut eax = draw.effect;
+            match change {
+                0 => eax = 0xe300_0005,
+                1 => {
+                    m.put_f32(ebp - 0x34 + 16, 101.0);
+                }
+                2 => {
+                    m.put_u32(walk::global::BITMAP, 0xe100_0002);
+                }
+                _ => {
+                    m.put_u32(esp + 8, 4);
+                }
+            }
+            ACTIVE.with(|a| {
+                let e = ExpectScreen { widget: 0x5200, draw: draw.clone(), calls: 0, matched: true };
+                *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: Some(e) });
+            });
+            observe_screen(&m, eax, esp);
+            let e = ACTIVE.with(|a| a.borrow().as_ref().and_then(|a| a.screen.clone())).unwrap();
+            assert!(e.calls == 1 && !e.matched, "change {change}");
+            ACTIVE.with(|a| *a.borrow_mut() = None);
+        }
     }
 
     #[test]

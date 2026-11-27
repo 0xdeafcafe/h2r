@@ -19,6 +19,8 @@
 //! | Entry replaced | Writes reproduced | Test |
 //! |---|---|---|
 //! | `0x0022aff1`, a proven HUD bitmap widget's draw (`hud`, `render_bridge::native_hud::walk`) | the widget globals `0x004e6978`..`0x004e69b0` (bitmap, image, inputs, colours) | `the_guests_quads_match_rusts_bit_for_bit` (`native_hud::walk`), and the shadow arm on each widget |
+//! | `0x0022aa16`, a proven HUD text widget's draw | the inputs `0x004e6980`.. and the shader colour `0x004e6950`..; not the font renderer's state `0x004e73a0`.. | `a_number_widget_is_laid_out_ending_at_its_point_with_each_glyphs_shadow_first` |
+//! | `0x0022b8e2`, a proven screen-effect widget's body | its frame, the bitmap, image and inputs globals | `a_proven_screen_widgets_frame_is_the_call_the_guests_body_makes` |
 
 pub mod decals;
 pub mod decorators;
