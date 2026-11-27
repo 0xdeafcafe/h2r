@@ -432,9 +432,11 @@ impl Regions {
             return l;
         }
         const RAM: u32 = runtime::guest::RAM_SIZE as u32;
+        const CONTIGUOUS_END: u32 = 0x8000_0000 + RAM;
+        const WRITE_COMBINED_END: u32 = 0xf000_0000 + RAM;
         match va {
-            0x8000_0000..0x8000_0000 + RAM => "contiguous",
-            0xf000_0000..0xf000_0000 + RAM => "write_combined",
+            0x8000_0000..CONTIGUOUS_END => "contiguous",
+            0xf000_0000..WRITE_COMBINED_END => "write_combined",
             _ => "other",
         }
     }
