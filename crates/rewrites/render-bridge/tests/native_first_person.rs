@@ -218,3 +218,43 @@ fn a_part_the_host_cannot_draw_is_dropped_by_cause_and_never_left_to_the_guest()
     assert_eq!(run(&stub, &s, 0).dropped, vec![(Dropped::Unresident, 1)]);
     assert!(stub.drew.lock().unwrap().is_empty(), "no draw was made for any");
 }
+
+/// The first person has no camera of its own: `0x0003fdf0` and its call
+/// site (`0x0002c1d0`..`0x0002c2c2`) set none, so its arms and weapon
+/// draw with the render camera record (`0x004b9da0`) and its projection,
+/// the game view's. Answering the call opens the first person's view with
+/// that camera, and the call's epilogue gives list 0 its layers back.
+#[test]
+fn the_first_persons_view_takes_the_render_camera_the_game_view_drew_with() {
+    use engine::render::light_gather::first_person_items::{LIST, RECORD_COUNT, SAVED_LAYERS};
+    use native_render::camera::RENDER_CAMERA;
+
+    let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
+    let c = RENDER_CAMERA;
+    for (i, v) in [0.0f32, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
+        m.set_u32(c + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    m.set_u32(c + 0x28, 1.2f32.to_bits()).unwrap();
+    m.set_u32(c + 0x34, 480 | (640 << 16)).unwrap();
+    m.set_u32(c + 0x40, 0.0625f32.to_bits()).unwrap();
+    m.set_u32(c + 0x44, 1024f32.to_bits()).unwrap();
+    // List 0 with the world's items; no first-person record.
+    m.set_u32(LIST, 16).unwrap();
+    m.set_u32(LIST + 4, 3).unwrap();
+    m.set_u32(LIST + 8, 0b1010).unwrap();
+    m.set_u32(LIST + 0x14, 0x0050_0000).unwrap();
+    m.set_u32(RECORD_COUNT, 0).unwrap();
+
+    let game = render_bridge::scene_step::open_view(&m).expect("the game view").camera;
+    native_first_person::answer(&mut m, 0, 0);
+    render_bridge::scene_step::with_open(|open| {
+        let (_, view) = open.expect("the first person's view");
+        assert_eq!(view.key.kind, ViewKind::FirstPerson);
+        assert_eq!(view.camera, game, "the game view's camera and projection");
+        assert_eq!(view.camera.fov, 1.2);
+        assert_eq!(view.camera.position, [0.0, 0.0, 1.0]);
+    });
+    assert_eq!(m.u32(SAVED_LAYERS).unwrap(), 0b1010, "the prologue saved list 0's layers");
+    assert_eq!(m.u32(LIST + 8).unwrap(), 0b1010, "the epilogue set them back");
+    assert_eq!(m.u32(LIST + 0xc).unwrap(), 0);
+}
