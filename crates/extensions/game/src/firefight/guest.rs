@@ -221,6 +221,16 @@ impl KitLayout {
             bases: self.bases.iter().map(|z| z.point).collect(),
             classes: self.classes.iter().cloned().collect(),
             team: self.team,
+            pod_classes: self
+                .classes
+                .iter()
+                .filter(|(_, character)| {
+                    self.factions
+                        .get(character)
+                        .is_some_and(|f| *f != Faction::Covenant)
+                })
+                .map(|(name, _)| name.clone())
+                .collect(),
         }
     }
 }

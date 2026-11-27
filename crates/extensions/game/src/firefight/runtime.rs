@@ -519,6 +519,25 @@ impl Game for GuestGame<'_> {
     fn unload(&mut self, ship: u32) -> anyhow::Result<()> {
         self.defer(Call::Unload { ship })
     }
+    fn squad_pods(&self) -> Vec<Option<u32>> {
+        self.kit.map_or_else(Vec::new, |kit| {
+            kit.pods
+                .iter()
+                .map(|&placement| super::ship::placed_ship(&*self.m, placement))
+                .collect()
+        })
+    }
+    fn falls(&self) -> Vec<Option<guest::PodFall>> {
+        self.kit.map_or_else(Vec::new, |kit| kit.falls.clone())
+    }
+    /// Pods park where the kit's first fall begins, as the players' do.
+    fn park_pod(&mut self, pod: u32) -> anyhow::Result<()> {
+        let at = self
+            .kit
+            .and_then(|kit| kit.falls.iter().flatten().next())
+            .map_or([0.0; 3], |f| f.top);
+        self.defer(Call::PodPark { object: pod, at })
+    }
 }
 
 /// The settings a wave test plays at: seed 0 and Normal, no skulls past
