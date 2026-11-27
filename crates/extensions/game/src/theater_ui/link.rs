@@ -195,6 +195,7 @@ fn resolve(
             film: film.id.clone(),
             from_tick: clip.from_tick,
             to_tick: clip.to_tick,
+            ..Default::default()
         });
     }
     let mut local_clip = entry.clip.clone();

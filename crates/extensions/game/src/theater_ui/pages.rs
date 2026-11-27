@@ -423,6 +423,7 @@ fn facts(entry: &Entry, player: Option<&str>) -> Vec<(&'static str, String)> {
         .archive_clip
         .as_ref()
         .map(|(_, title)| title.trim().to_owned())
+        .or_else(|| entry.clip.as_ref().map(|c| c.title.trim().to_owned()))
         .unwrap_or_default();
     let variant = film.variant_name().trim();
     let game = if variant.is_empty() {

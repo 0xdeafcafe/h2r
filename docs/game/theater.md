@@ -374,8 +374,11 @@ speed, camera and subject. Its timeline uses the adjacent stats file for
 kills.
 When the stats file is missing, playback still works and the pause menu
 shows that no match stats are available. During a jump the rail highlights
-progress toward the target. Completed clip ranges appear in Clips and loop
-when watched.
+progress toward the target. The marked range is shaded on the rail, from the in mark to
+the out mark, or to the playhead until the out is set. A completed range
+is saved to Clips as "Clip N" (N counts the film's clips) and loops when
+watched; the Clips row and the film page's Clip fact show that name
+(`adapter::Clip::title`).
 
 The pause menu offers **Resume**, **Restart Film**, **Change Player**,
 **Camera**, **Take Screenshot**, **Mark Clip**, **Export Clip**, **Save

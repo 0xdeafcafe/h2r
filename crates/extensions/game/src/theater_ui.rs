@@ -389,6 +389,7 @@ impl Theater {
             film: film.id.clone(),
             from_tick,
             to_tick,
+            ..Default::default()
         });
         let rpc = adapter::Playback::socket(socket)?;
         Ok(Self(Arc::new(Shared {
@@ -622,6 +623,7 @@ impl Theater {
                     film: film.id.clone(),
                     from_tick: row.clip.from_tick,
                     to_tick: row.clip.to_tick,
+                    ..Default::default()
                 }),
                 archive_clip: Some((row.clip.id, row.clip.title)),
             });
@@ -1221,8 +1223,12 @@ impl Theater {
         }
         if let Some(clip) = clip {
             if let Err(error) = self.edit_clips(|clips| {
-                if !clips.contains(&clip) {
-                    clips.push(clip);
+                if !clips.iter().any(|c| c.same_range(&clip)) {
+                    let n = clips.iter().filter(|c| c.film == clip.film).count() + 1;
+                    clips.push(Clip {
+                        title: format!("Clip {n}"),
+                        ..clip
+                    });
                 }
             }) {
                 self.session().notice = Some(error);

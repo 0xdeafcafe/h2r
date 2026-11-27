@@ -19,6 +19,7 @@ use crate::ui_kit::{
 
 const BAR: [i16; 4] = [-105, -272, -208, 272];
 const RAIL: [i16; 4] = [-144, -252, -154, 252];
+const CLIP_BAND: [u8; 4] = [124, 104, 52, 255];
 const PANEL: [u8; 4] = [12, 23, 39, 238];
 // The design system's white and hint blue (content/ui/design.yaml).
 const BODY: [f32; 3] = [1.0, 1.0, 1.0];
@@ -315,6 +316,18 @@ fn timeline(spec: &mut ScreenSpec, t: &Track) {
             .collect::<BTreeSet<_>>();
         for at in positions {
             fill(spec, [y1, at, y2, at + 1], colour);
+        }
+    }
+    // The range being marked: in to out, or in to the playhead until the
+    // out is set, shaded under the mark lines.
+    if let Some(from) = t.marks.0 {
+        let to = t.marks.1.unwrap_or(t.tick);
+        if from < to && to >= start && from <= end {
+            fill(
+                spec,
+                [top - 1, x(from), bottom + 1, x(to) + 1],
+                CLIP_BAND,
+            );
         }
     }
     for mark in [t.marks.0, t.marks.1]

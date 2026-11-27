@@ -29,7 +29,7 @@ fn a_saved_film_moves_from_recent_to_saved_and_keeps_its_clips() {
     let mut pinned = film("saved", "zanzibar", Some("Slayer"), 1).film;
     pinned.saved = true;
     state.load = Load::Ready(vec![pinned, film("recent", "lockout", Some("CTF"), 2).film]);
-    state.clips.push(Clip { film: "saved".into(), from_tick: 1, to_tick: 5 });
+    state.clips.push(Clip { film: "saved".into(), from_tick: 1, to_tick: 5, ..Default::default() });
 
     assert_eq!(ids(&state.entries()), ["recent"]);
     state.tab = Tab::Saved;
@@ -152,6 +152,7 @@ fn a_clip_row_uses_match_metadata_and_its_own_duration() {
         film: "host".into(),
         from_tick: 300,
         to_tick: 1650,
+        ..Default::default()
     });
     assert_eq!(row.row_title(), "Relic / CTF");
     assert_eq!(row.recorded_time(), "0:45");
@@ -203,6 +204,7 @@ fn titled_clip_keeps_its_map_and_mode_when_the_date_is_missing() {
         film: "a".into(),
         from_tick: 60,
         to_tick: 360,
+        ..Default::default()
     });
     assert_eq!(clip.row_title(), "Flag return");
     assert_eq!(clip.recorded_time(), "0:10");
@@ -224,4 +226,25 @@ fn a_campaign_film_shows_its_level_name_and_its_game_type_once() {
     assert_eq!(film("i", "maps/cyclotron.map", None, 0).row_title(), "Ivory Tower");
     assert_eq!(film("b", "beavercreek", None, 0).row_title(), "Beaver Creek");
     assert_eq!(film("l", "lockout", None, 0).row_title(), "Lockout");
+}
+
+#[test]
+fn a_saved_clip_row_shows_its_title_and_an_untitled_range_shows_the_film() {
+    let mut clip = film("a", "cyclotron", None, 0);
+    clip.clip = Some(Clip {
+        film: "a".into(),
+        from_tick: 60,
+        to_tick: 360,
+        title: "Clip 2".into(),
+    });
+    assert_eq!(clip.row_title(), "Clip 2");
+    clip.clip.as_mut().unwrap().title.clear();
+    assert_ne!(clip.row_title(), "Clip 2");
+}
+
+#[test]
+fn a_clip_without_a_title_in_the_file_loads_untitled() {
+    let clip: Clip = serde_json::from_str(r#"{"film":"a","from_tick":1,"to_tick":9}"#).unwrap();
+    assert!(clip.title.is_empty());
+    assert!(clip.same_range(&Clip { title: "Clip 1".into(), ..clip.clone() }));
 }

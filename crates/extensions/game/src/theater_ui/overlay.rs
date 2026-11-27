@@ -271,7 +271,7 @@ impl Track {
     fn mark_out(&mut self) -> Option<Clip> {
         let from = self.marks.0.filter(|&from| from < self.tick)?;
         self.marks.1 = Some(self.tick);
-        Some(Clip { film: self.film.clone(), from_tick: from, to_tick: self.tick })
+        Some(Clip { film: self.film.clone(), from_tick: from, to_tick: self.tick, ..Default::default() })
     }
 
     fn mark(&mut self) -> Option<Clip> {
@@ -1550,7 +1550,8 @@ mod tests {
             Some(Clip {
                 film: "test".into(),
                 from_tick: 450,
-                to_tick: 930
+                to_tick: 930,
+                title: String::new(),
             })
         );
         assert_eq!(track.clip_range(), Some([450, 930]));

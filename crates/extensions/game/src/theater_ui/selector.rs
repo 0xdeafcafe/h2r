@@ -233,6 +233,11 @@ impl Entry {
         {
             return text_fit::line(title, text_fit::ROW);
         }
+        if let Some(clip) = &self.clip
+            && !clip.title.trim().is_empty()
+        {
+            return text_fit::line(clip.title.trim(), text_fit::ROW);
+        }
         let map = map_title(&self.film.map);
         let title = match self.film.game_type().filter(|s| !s.trim().is_empty()) {
             Some(kind) => format!("{map} / {kind}"),

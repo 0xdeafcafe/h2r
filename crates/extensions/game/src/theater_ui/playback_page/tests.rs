@@ -241,3 +241,26 @@ fn playback_states_render_distinct_transport_copy() {
     assert!(page.go("hidden"));
     assert!(page.spec().texts.is_empty());
 }
+
+#[test]
+fn the_timeline_shades_the_clip_being_marked() {
+    let band = |spec: &crate::ui_kit::spec::ScreenSpec| {
+        spec.panel
+            .iter()
+            .filter(|a| a.art == Art::Solid { rgba: CLIP_BAND })
+            .map(|a| a.size[0])
+            .collect::<Vec<_>>()
+    };
+    let mut track = track();
+    track.tick = 450;
+    assert!(band(&bar(&track, true, None)).is_empty());
+    // An in mark alone runs to the playhead.
+    track.marks = (Some(150), None);
+    let open = band(&bar(&track, true, None));
+    assert_eq!(open.len(), 1);
+    // With the out set, the band is the marked range.
+    track.marks = (Some(150), Some(300));
+    let closed = band(&bar(&track, true, None));
+    assert_eq!(closed.len(), 1);
+    assert!(closed[0] < open[0]);
+}
