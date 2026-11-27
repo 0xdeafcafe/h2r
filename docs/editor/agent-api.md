@@ -653,7 +653,13 @@ Notes on some:
   evaluator) at each input, `range_input` blending the two sets of a
   ranged function (default 0, set 0); types the engine does not
   evaluate give 0. A path that is not a function curve field is
-  `REFUSED`.
+  `REFUSED`. `function.colours {tag, path, samples?}` reads the blob as a
+  shader colour property (the engine's reader at `0x0013bc00`,
+  `Function::output_colour` and `colour_stops`): `mode` (`grey`,
+  `single`, `two`, `three`, `four`, `white`, from the flags' high
+  nibble), `stops` as `#aarrggbb`, and `gradient`, `samples` (2 to 256,
+  default 16) rows of `{at, colour}` over the input 0 to 1. The blob
+  does not say it is a colour, so the caller picks the field.
 - **The field panel.** `tag.view {tag?, path?, field?, search?,
   changed?, unnamed?, show_as?}` drives the Tags tool's panel and
   returns what it shows. `tag` selects a tag in the Tags tool. `path`,
@@ -2422,7 +2428,8 @@ the window and the API stay one path.
   `script.follow` and `script.doc` are `Action::Script` through
   `App::perform`.
 - **Curves (rich editors F1).** `api/curves.rs` registers `Curves` for
-  `function.read`, `function.set` and `function.sample`, over
+  `function.read`, `function.set`, `function.sample` and
+  `function.colours`, over
   `tags::effects::function` (`Set`, `Function::set_values`,
   `Function::write_set`) and the curve editor's own helpers
   (`fields/curve.rs`); `function.set` is a `TagAction::Write` of the

@@ -3035,7 +3035,7 @@ reports `"players":[]` and `"ready":false`. Readiness needs a remote
 player, party leadership, the requested map and limit, loaded maps on every
 peer, and retail's ready-to-start result. Any connection may read state;
 mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
-[Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby).
+[Playerless lobby and the two-console check](../live/dedicated-host-ops.md#playerless-lobby).
 
 ## `ui`: what the menus show
 
@@ -3140,7 +3140,7 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.browser.filters`** (`h2 agent ui.browser.filters`, no parameters):
   reads the active Custom Game Browser preferences, even when the browser
   is closed. The result is `{"filters":{...}}` with the same field names
-  and values as the [Live session query](../live/live-api.md#browser-filters).
+  and values as the [Live session query](../live/live-api-sessions.md#browser-filters).
   Unset fields are omitted. With the default choices, it returns
   `{"filters":{}}`. After opening Game Filters with Y and choosing a row
   value with A, read this method to verify the selection.
@@ -5907,6 +5907,16 @@ a scenario and subtract the counters to isolate that run.
 first differing byte offset in the result record, with expected and guest values.
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
+
+`vector` and `context` also carry the crossing-exit gate
+([collision-queries.md, "Crossing exits"](../engine/collision-queries.md#crossing-exits)):
+
+| Field | Meaning |
+|---|---|
+| `exits_matched` | matches that also covered every register and frame byte of a crossing exit |
+| `answered` | crossing exits answered natively once the gate opened |
+| `sampled` | crossing calls left to the guest for a comparison while answering |
+| `fell_back` | a difference was seen; the lifted body answers from then on |
 
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
 An admitted native exit counts under `entries[].native`. A comparison

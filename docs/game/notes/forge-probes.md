@@ -12,7 +12,7 @@ aggregate counts, byte gaps, timings and verdicts.
 
 Use the [agent methods](../../runtime/agent-api.md#forge-probes) on the
 coordinator's own disc runs. For the two-peer experiments, use a
-[playerless System Link host](../../live/dedicated-host.md#playerless-lobby)
+[playerless System Link host](../../live/dedicated-host-ops.md#playerless-lobby)
 and a client, with separate data roots and agent endpoints. The commands
 below assume `HOST_SOCKET` and `CLIENT_SOCKET` name those endpoints.
 Set `MAP` to a multiplayer map the two peers share.

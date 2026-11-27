@@ -143,7 +143,7 @@ JWT themselves, the way AT Protocol service auth works.
   read token before expiry on both public and private homes. For co-op relay, both homes
   check the bearer token and session membership before upgrading. The
   relay rechecks membership and accepts refreshes from the same account.
-  [Relay protocol](live-api.md#co-op-relay)
+  [Relay protocol](live-api-social.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
@@ -165,28 +165,39 @@ invite ([live-admin.md](live-admin.md) §5).
 checks the caller's permission, matches the event author to the token
 issuer, verifies the event with a current key, checks its time (within
 five minutes) and rejects a replayed nonce. Each invite has a fresh
-`jti` and expires within 30 days. Creation uses a separate rate bucket
+`jti` and expires within 30 days.
+
+Creation uses a separate rate bucket
 per author. Non-admin accounts with the grant can make three at once
 and admins ten, with one slot replenished per minute. An optional cap
-limits a non-admin's simultaneous open invites. The server checks the cap
+limits a non-admin's simultaneous open invites.
+
+The server checks the cap
 and appends the event in the same write sequence. A compromised admin can
 grant invite access to other accounts, each with its own rate bucket.
 The admin's personal rate limit therefore does not bound total sign-ups.
+
 Only the operator can grant the admin role.
 
 The server returns a generated code after the append. Only the server
 has the key that derives the code from the invite id. A custom code goes
 beside the signed event and the log stores its MAC. Operator invites use
-server-signed creation events. Long codes signed by the server also
+server-signed creation events.
+
+Long codes signed by the server also
 redeem.
 
 An `invite-grants.write` token from an admin or the operator sets or
 revokes the permission. The server signs the resulting account event,
 including the caller's identity, and replays it at startup. Revoking a
 non-admin's invite grant or an admin's role permanently closes their open
-invites. Removing an admin's explicit invite grant leaves their codes open.
+invites.
+
+Removing an admin's explicit invite grant leaves their codes open.
 Redemption requires an open invite and a creator with invite access. A
-grantee's codes cannot be redeemed while the grantee is banned. An
+grantee's codes cannot be redeemed while the grantee is banned.
+
+An
 `InviteRevoked` event also closes a single invite. Admins can close any
 invite and granted players can close their own.
 
@@ -217,7 +228,9 @@ because every author id contains it.
 Live issues the host process one reusable Ed25519 JWT at boot. The issuer
 is the Live server, the audience is its server ID, and the subject is
 `host:<lease_id>`. The token expires `max_match_s + 300` seconds after
-issuance. Its `lxm` array grants `hosts.register`, `hosts.report`,
+issuance.
+
+Its `lxm` array grants `hosts.register`, `hosts.report`,
 `sessions.publish`, and `telemetry.ingest`. Registration and reporting
 compare the verified subject’s lease ID to the route. Player and operator
 routes keep their existing single-method token checks.
@@ -226,9 +239,13 @@ The private JWT also carries `event_key`, the base64url Ed25519 seed for
 this lease’s event batches. Live derives it with HKDF from the server key
 and the lease subject. The host uses the JWT as its HTTP or ingest bearer
 and signs ordinary session and game batch JWSes with the lease key, using
-the JWT subject as event author. Live checks the batch signature, scope
+the JWT subject as event author.
+
+Live checks the batch signature, scope
 and resource owner. Session creation and game start also check the active
-lease. The event log retains the signed batches. A hibernating ingest
+lease. The event log retains the signed batches.
+
+A hibernating ingest
 socket retains only the subject and expiry. Keep the JWT and its event key
 private for the lifetime of the lease.
 
@@ -236,9 +253,11 @@ A dedicated session carries the service subject in `host` and zero in the
 legacy `host_xuid` field. Host heartbeats refresh its advertisement, and
 only player XUIDs populate presence, session membership and Ranked results.
 Raw events on the `hosts` stream are visible only to admins and the
-operator. Roster members read their lease endpoint through
+operator.
+
+Roster members read their lease endpoint through
 `GET /v1/hosts/{lease}`.
-[Ranked admission](dedicated-host.md#routing-assignment-and-arbitration)
+[Ranked admission](dedicated-host-ops.md#routing-assignment-and-arbitration)
 
 ## 4. Base URL and discovery
 
@@ -285,7 +304,7 @@ Not built yet; the formats above are chosen so it can be.
   playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
   cap before authentication and throughout the session on both deployments.
   Batched ingest allows at most 16 packed frame records per message.
-  A [presence heartbeat batch](live-api.md#presence-heartbeats) accepts
+  A [presence heartbeat batch](live-api-social.md#presence-heartbeats) accepts
   at most four single-use tokens, each authenticated independently.
   Writes have an in-memory budget per author and method. API GET and HEAD
   requests share a budget of 30 requests per second per client IP with a
@@ -296,10 +315,10 @@ Not built yet; the formats above are chosen so it can be.
   Requests with no trusted IP share a fallback bucket.
 - **Map outline writes** require an admin or the operator with a
   `games.write` token. That role is required for both the first outline
-  and any replacement. [Outline API](live-api.md#map-outline)
-- **Content downloads** check read authorization and the blob's moderation
+  and any replacement. [Outline API](live-api-social.md#map-outline)
+- **Content downloads** check read authorisation and the blob's moderation
   status before streaming it from storage. The server can stream large
-  packages without buffering the full download. [Content API](live-api.md#custom-maps)
+  packages without buffering the full download. [Content API](live-api-content.md#custom-maps)
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.
 - Postgres credentials come only from the environment or the `--db` URL;

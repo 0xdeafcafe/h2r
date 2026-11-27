@@ -1,6 +1,6 @@
 # Telemetry precision and replay measurements
 
-Evidence for [Live telemetry](../live-telemetry.md#packed-frames) and the
+Evidence for [Live telemetry](../live-telemetry-packed.md#packed-frames) and the
 [Worker](../live-worker.md). Nothing here states what the code does today;
 the design pages do.
 
@@ -9,8 +9,10 @@ the design pages do.
 The negotiated v8 stream uses about 81 bytes/player/s on the seeded
 ten-minute, 16-player match. The v7 baseline below uses about 145.
 These totals include each record's length prefix and a complete key
-every 150 samples. The comparison covers transfer size with the same
-sampling rate and field precision. [Live codec](../live-telemetry.md#version-8-live-wire) ·
+every 150 samples.
+
+The comparison covers transfer size with the same
+sampling rate and field precision. [Live codec](../live-telemetry-packed.md#version-8-live-wire) ·
 [Benchmark](../../../crates/live/live-proto/tests/packed_v8.rs)
 
 ## Match and measurement
@@ -18,7 +20,9 @@ sampling rate and field precision. [Live codec](../live-telemetry.md#version-8-l
 The seeded multiplayer benchmark runs a ten-minute match with 16 players,
 vehicles, projectiles, dropped items and hits. It emits 9,000 samples at 15 Hz
 over 18,000 simulation ticks, with a keyframe every 150 samples. Live byte
-counts include record length prefixes. Each of the 60 ten-second replay chunks
+counts include record length prefixes.
+
+Each of the 60 ten-second replay chunks
 starts with its own keyframe. Transfer sizes are response-body bytes.
 
 | Ten-minute match | v4 | v6 baseline | v7 |
@@ -27,8 +31,8 @@ starts with its own keyframe. Transfer sizes are response-body bytes.
 | Live bytes/frame | 290.23 | 271.69 | **154.93** |
 | Encode µs/frame, original run | 15.72 | 17.09 | 17.20 |
 | Encode µs/simulation tick, original run | 7.86 | 8.54 | 8.60 |
-| Encode µs/frame, mean of five paired runs | — | 28.4 | 28.2 |
-| Encode µs/simulation tick, paired mean | — | 14.2 | 14.1 |
+| Encode µs/frame, mean of five paired runs | - | 28.4 | 28.2 |
+| Encode µs/simulation tick, paired mean | - | 14.2 | 14.1 |
 | Replay JSON bytes | 68,037,538 | 88,675,937 | 90,082,165 |
 | Replay JSON gzip bytes | 11,773,243 | 13,052,003 | 13,517,251 |
 | Replay binary chunk bytes | 2,405,346 | 2,110,374 | **1,322,664** |
@@ -42,11 +46,14 @@ record lengths and keyframes, and requires **under 147 B/player/s**.
 
 V4 is included for historical context. Its input predates projectiles,
 dropped items and vehicle velocities. The v7 measurement uses wire revision `afe9fa2c`.
+
 The v6 baseline is the merged
 `84ebbd6f` with the same input scene and list schema as v7. Its guest-scene
 output differs from v4 only in projectile and dropped-item lists, vehicle
 velocity and the units’ synthetic circular-motion velocity. All events in
-the 12-tick regression scenes match. Encode time
+the 12-tick regression scenes match.
+
+Encode time
 covers packing each sampled frame. The per-tick figure spreads this cost
 over all 30 ticks per second. Neither figure includes game-state sampling,
 storage compression, HTTP or rendering.
@@ -55,6 +62,7 @@ Five further paired release runs used separately built v6 and v7 binaries,
 checked against their distinct wire byte counts in every run. The per-pair
 v7/v6 CPU ratios ranged from 0.754 to 1.300, with a median of 0.893.
 The nearly equal means support comparable encoding cost on this scene.
+
 Shared-machine load varied enough to rule out a reliable speed-up estimate.
 
 Run the ignored release test `bench_match_wire` in `live-telemetry` with
@@ -62,10 +70,13 @@ Run the ignored release test `bench_match_wire` in `live-telemetry` with
 `bun bench/replay-transfer.ts <directory>` with the corresponding reader.
 The benchmark compares every decoded field with the exported Rust JSON,
 allowing only floating-point rounding in the final vector normalisation.
+
 It preloads both representations and warms each reader, then takes the median
 of five full-match decodes, alternating the order. Binary includes chunk
 inflation and reconstruction of viewer frames. JSON includes UTF-8 decoding
-and parsing. The separate gzip size uses level 6 per JSON response. Timings
+and parsing.
+
+The separate gzip size uses level 6 per JSON response. Timings
 are Bun 1.4.2 on the development machine and vary with concurrent work.
 
 ## Which changes saved bytes
@@ -74,7 +85,9 @@ At the v7 grid resolution, continuing the previous angular and velocity
 trend on equal tick spans brought the match to 179.94 B/player/s. Coding
 changes to player and actor edit masks in field-frequency order reduced
 that to 157.62. Reusing a player's exact position for a matching hit and
-giving in-order edits a one-bit opcode brought it to 145.25. Off-player
+giving in-order edits a one-bit opcode brought it to 145.25.
+
+Off-player
 impacts still carry their own coordinates. These savings depend on the
 workload. For example, the synthetic scene places all 13,388 hit positions
 on players.
@@ -82,7 +95,9 @@ on players.
 Fresh raw DEFLATE streams at level 1 made one- and two-frame packets larger
 in aggregate. Over the final match's replay records, choosing compression
 only when smaller saved 0.19% in either case, even before a codec flag.
-The one-frame trial cost about 15 µs per packet on this machine. Live packets
+The one-frame trial cost about 15 µs per packet on this machine.
+
+Live packets
 therefore carry the packed bits directly. Replay chunks amortise compression
 over up to 150 frames and use DEFLATE only when it reduces the stored length.
 
@@ -102,25 +117,35 @@ over up to 150 frames and use DEFLATE only when it reduces the stored length.
 
 Bounds apply to inputs in the field's supported range. Fixed signed world
 coordinates avoid map-specific bounds in each keyframe. One world unit is
-3.048 m. The v7 position step is 1/1024 unit and velocity step is 1/128 unit/s.
+3.048 m.
+
+The v7 position step is 1/1024 unit and velocity step is 1/128 unit/s.
 The table gives half steps. Aim and orientation use two octahedral
-coordinates with maximum M of 4094 or 16382. Rounding perturbs each projected
+coordinates with maximum M of 4094 or 16382.
+
+Rounding perturbs each projected
 coordinate by at most 1/M. The unfolded vector error is at most √6/M and the
 unfolded vector length is at least 1/√3, giving an angular bound of
 asin(√18/M). Pitch inherits that bound. Aim azimuth near a pole has no
-uniform error bound. The heading row measures the separately transmitted yaw.
+uniform error bound.
+
+The heading row measures the separately transmitted yaw.
 
 A sweep of 200,000 Fibonacci-sphere directions found maximum angular errors of
 0.05846° and 0.01453° respectively. Maximum pitch errors were 0.05847° and
 0.01448° (rounded up). Finer quantisation reduces spatial steps at captured
-ticks. The encoder sends a correction whenever a prediction differs by a
+ticks.
+
+The encoder sends a correction whenever a prediction differs by a
 quantum, so errors cannot accumulate across unchanged runs.
 
 ## Between samples
 
 The simulation runs at 30 Hz. At 15 Hz a pose sample normally spans two
 simulation ticks. A motion that begins and ends between those samples can
-still be absent. Fire masks and tick-stamped hits carry events across that
+still be absent.
+
+Fire masks and tick-stamped hits carry events across that
 gap. The viewer places shots at their firing tick, blends by elapsed ticks
 between endpoints, and holds the previous pose up to a checkpoint cut.
 
@@ -130,27 +155,33 @@ ten-bit representation. A future schema extension needs corresponding Rust
 and web field definitions, keyframe coverage and a versioned fixture.
 
 The wire grammar, storage routes and compatibility rules are in the
-[telemetry reference](../live-telemetry.md#packed-frames) and
-[frame chunk API](../live-api.md#frame-chunks).
+[telemetry reference](../live-telemetry-packed.md#packed-frames) and
+[frame chunk API](../live-api-events.md#frame-chunks).
 
 ## Finished replay archives
 
 The server flushes a newly ended game's live recording before queuing it for
 archival. The native timer and the Worker Durable Object alarm each process
 one independent segment per turn. A segment spans up to 900 game ticks,
-900 frames, 8 MiB of source-frame JSON, or 32 original H2CK blobs. A cut
+900 frames, 8 MiB of source-frame JSON, or 32 original H2CK blobs.
+
+A cut
 or rewind starts a new segment. The blob count bounds R2 reads and backup
 writes even when every tick was recorded as a separate object.
 
 Each segment stores the original decoded fields losslessly in transposed
 columns. Integer predictors retain exact residuals. Off-grid historical
-floats can use their binary64 bits. Each segment gets its own Brotli stream,
+floats can use their binary64 bits.
+
+Each segment gets its own Brotli stream,
 so an HTTP reader can start at any segment. The server reads each immutable
 blob back, checks its SHA-256, verifies the decoded frames, and backs up
 original objects and signed index rows before publishing the final pointer.
 For seek playback, the index can seed each segment with the preceding
-known machine travel. The seed is index metadata and the decoded source
-frames stay exact. [Archive API](../live-api.md#finished-replay-archives)
+known machine travel.
+
+The seed is index metadata and the decoded source
+frames stay exact. [Archive API](../live-api-details.md#finished-replay-archives)
 
 The migration receipt reports compressed payload and immutable index-node
 bytes separately. Both count toward the archive's storage cost.
@@ -158,7 +189,9 @@ bytes separately. Both count toward the archive's storage cost.
 The table uses the deployment partition. Campaign hits the 8 MiB source
 limit after 284 frames, with 166 frames in the second segment. The index
 column counts the actual immutable node representation for source log
-position 64. A different number of digits in that position changes each
+position 64.
+
+A different number of digits in that position changes each
 node’s length by the same number of bytes. Backup copies, HTTP headers and
 signed event-log storage are excluded from the playback totals.
 
@@ -169,10 +202,14 @@ signed event-log storage are excluded from the playback totals.
 
 One multiplayer segment contains 450 frames. The viewer can play it before
 the game event log or any of the other 19 segments arrives. Browser-side
-decode used Bun 1.4.2 and preloaded response bytes. Five timed runs
+decode used Bun 1.4.2 and preloaded response bytes.
+
+Five timed runs
 alternated the H2AR and JSON readers after warmup. H2AR timings include
 Brotli inflation and reconstruction. JSON timings include UTF-8 decoding
-and parsing of the same frames grouped into the same segments. The byte
+and parsing of the same frames grouped into the same segments.
+
+The byte
 totals for that JSON differ slightly from the ten-second chunks above
 because there are fewer array boundaries.
 
@@ -185,7 +222,9 @@ Full archive reconstruction took longer than JSON parsing on these scenes.
 An indexed seek pays the first-segment cost for its chosen segment, and
 immutable reads transfer the stored Brotli bytes directly. Native
 compression in the earlier quality-10 multiplayer run took 124–223 ms
-per segment. Source buffering, compression and exact verification happen
+per segment.
+
+Source buffering, compression and exact verification happen
 after the match. Run `bun bench/archive-transfer.ts <H2_ARCHIVE_DUMP>` in
 `web/` to reproduce the browser measurements. The benchmark checks every
 decoded field against the Rust dump and enforces the quarter-size budget
@@ -194,7 +233,7 @@ including immutable index nodes.
 The local Worker smoke exercised game close, automatic publication, R2
 reads and admin verification with a two-frame recording. Closing the game
 and observing publication took 622.7 ms. Fetching and decoding each of its
-two segments took 13.8 ms. [Worker smoke measurements](../live-worker.md#finished-replay-archive-smoke)
+two segments took 13.8 ms. [Worker smoke measurements](2026-11-18-worker-slice-results.md#replay-archive-smoke-f99b31357-2026-11-19)
 
 The following compressor comparison used identical inflated H2AR bodies from
 revision `65b71186`. Each segment was independently compressed. These are

@@ -59,7 +59,9 @@ finds it by name.
 
 Filters apply together. Game type and variant apply to multiplayer.
 Campaign and difficulty apply to co-op. **Has space** looks for an open
-public seat, including the host's latest roster report. Older
+public seat, including the host's latest roster report.
+
+Older
 advertisements with unknown fields remain eligible for those criteria.
 The service applies the same filtering for the game and the web before
 it limits the results. Visibility still applies to results and to
@@ -67,6 +69,7 @@ variant suggestions.
 
 Press **X** in the filter page or browser to clear every filter. An
 empty filtered search shows **No games match. Press X to clear filters**.
+
 Choices are saved in `<data>/live-browser-filters.toml`. The agent can
 read them with
 [`ui.browser.filters`](../runtime/agent-api.md#ui-what-the-menus-show).
@@ -77,14 +80,18 @@ The filter page is the shared settings dialog, `browser.filters`
 the doc's, each row's values a binding in
 `crates/extensions/game/src/custom_games/browser_filters.rs`. The
 browser's own text lives in its `guest` module. The Live HLE sends the choices with its custom browser
-search. The [session API](live-api.md#sessions) serves them through the
+search.
+
+The [session API](live-api-sessions.md#sessions) serves them through the
 shared router in native Live and the Cloudflare Worker.
 
 ## Join in Halo 2
 
 On the Live website, **Join in Halo 2** opens a joinable game in the
 installed player. A friend in a joinable lobby has the same action.
-The browser may ask permission to open Halo 2. If the player doesn't
+The browser may ask permission to open Halo 2.
+
+If the player doesn't
 open, the page offers installation instructions.
 
 On macOS, install the desktop CLI from the checkout, then run
@@ -102,19 +109,27 @@ h2 play /path/to/halo2.iso --join 'h2recomp://join?server=https%3A%2F%2Flive.for
 The action host is `join`. The two query parameters are the URL-encoded
 HTTP(S) base of the Live service and its 16-character lowercase hex session
 ID. A link contains no account, token, invitation or host network address.
-Halo 2 uses the player's selected service. To join a different service,
+Halo 2 uses the player's selected service.
+
+To join a different service,
 choose that service explicitly with `h2 play --live-server URL --join LINK`.
 
 Halo 2 asks for confirmation when macOS or the agent delivers a joinable link.
 An explicit CLI join skips the question only at an empty main menu. In a
-lobby, match or campaign the player confirms before leaving. When the player
+lobby, match or campaign the player confirms before leaving.
+
+When the player
 is signed in the question names the host. After confirmation Halo 2 checks
 admission again as the signed-in player and uses the accepted-invite path
 to enter the host's session. Friends-only sessions require a friendship
-with the host. An invite-only, full or closed session produces a failure
+with the host.
+
+An invite-only, full or closed session produces a failure
 reason. During play an unconfirmed failure goes to the log and agent status.
 Session links are available in Live player runs outside film playback and
-films named with `--film`. A link joined during a session's
+films named with `--film`.
+
+A link joined during a session's
 [default recording](../game/film-format.md#recording-every-game) discards
 the recording of the game in play; films of games already ended stay. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
 
@@ -263,7 +278,7 @@ checks it. Friends-only is enforced by the server's lists, not by the host.
 ## 4. Address restriction
 
 A listed session points every browsing console's QoS probes and joins at its
-endpoint. The server previously took any declared IPv4. Now:
+endpoint. The server picks the endpoint as follows:
 
 - **Listed sessions (`public`, `friends`) take the observed address.** When
   the server sees the host from a non-loopback IPv4
@@ -289,7 +304,9 @@ Static reading of the retail XBE (`h2 disasm`) and the menu's screen tag
 `0x2310f9`) keeps its list handler at `screen + 0x818` (vtable `0x458b48`,
 constructor `0x230ea2`). The handler builds the four-row array "xbox live
 menu list" and embeds four item widgets at `+0x88`. The rows are
-Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
+Quickmatch, OptiMatch, Custom Game and Content Download.
+
+Content Download
 asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
 `0x230e98`).
 
@@ -314,7 +331,9 @@ past 1 never reach the retail row text. Custom Games and Forge pass the
 menu list’s handle for retail row 2 to retail’s
 Custom Game press (a Live squad session, then the custom lobby), then
 ask for their mode (`lobby_tabs::request`), which the lobby switches to
-at its first panel update. The retail press remembers rows 0 to 2 for
+at its first panel update.
+
+The retail press remembers rows 0 to 2 for
 the next visit (`[0x510a18]`, read by `0x231170` when it is under 4).
 Our presses store their own rows there, so the cursor comes back to them
 (below, "Back from the browser"). Mods stores nothing, as Content
@@ -345,7 +364,9 @@ each one item height below the last (it places each item's widgets with
 `0x2bacbc`, which writes a widget's rectangle at `+0x20`/`+0x24`). The
 height is the item's bounding box (`0x2bafa4`). With the default list skin
 that is its text (top 28) down to its background bitmap (bottom −15): 43
-units. The end-cap bitmap is flagged out of the box. In the retail tag
+units.
+
+The end-cap bitmap is flagged out of the box. In the retail tag
 (list anchored at 95, `hint_top` at −70) the hint block starts 21 units
 below the fourth row, so a fifth row 43 units lower would cover it.
 
@@ -382,7 +403,9 @@ written, and the copies are reused when a map load brings the tag back.
 `0x230427` (pane = base + row, no bounds check) is how the list shows a
 row's pane when its focus moves (`0x24c50a`). The pane hook hands it each
 row of ours its pane (4 to 9) and Mods 3, through a word of ours rather
-than the caller's. On a tag that was not extended a row of ours keeps the
+than the caller's.
+
+On a tag that was not extended a row of ours keeps the
 shown pane (Custom Games shows retail's Custom Game pane).
 
 **Back from the browser.** The game keeps no history of screens. A
@@ -392,7 +415,9 @@ the window's screen. The browser's handler (slot 10, `0x2536a6`) does that
 on B or Back (event 5, button 1 or 13) unless `0x148044` says otherwise,
 and it always names the System Link screen's loader `0x252433` (that
 screen in its LAN mode, `[screen+0x610] = 2`), whatever the byte at
-`+0x93c`. On the LAN path that is where the player came from. From our row
+`+0x93c`. On the LAN path that is where the player came from.
+
+From our row
 it is not, and in game back landed on the controller screen.
 
 The Live menu's own children are opened the way our row opens the
@@ -423,11 +448,15 @@ entry). The entry's string ids (title `+0xc`, message `+0x10`) are
 resolved by the text fill (`0x19b72a`) through the localized-string
 lookup (`0x1a0180`), which serves our ids. Mods calls the
 one-button class (`0x19b527(1, error, 4, mask, 0, 0)`, `ret 0x18`), the
-way `0x2308ab` shows its own errors. Its button closes the dialog when
+way `0x2308ab` shows its own errors.
+
+Its button closes the dialog when
 there is no press callback (`0x19b97a`). The error id is
 `custom_games::MAPPACK_ERROR`, one the table does not have, and the lookup
 hook writes our title and message ids into its entry. The rest of the
-entry stays error 1's. The one-button dialog takes its button label from
+entry stays error 1's.
+
+The one-button dialog takes its button label from
 its own screen tag. This does not touch the Live notice
 ([live.md](live.md), "Live not set up"), which wraps the fill and changes
 only error `0x23`.

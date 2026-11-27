@@ -17,13 +17,15 @@ and a **validated 16-byte header** (CRC, version, size). §2 is that reading
 (§2.0 to §2.4). `0x003ab6ea` `XOnlineStorageDownloadToMemory` is the call
 these two files use (§2.1). The body formats in §3 and §5 start at offset
 0x10. The class at `0x002c7410` / `0x002c74f9` / `0x002c788a` is the game's
-voice and text message playback screen, not part of the MOTD path. The
+voice and text message playback screen, not part of the MOTD path.
+
+The
 [first reading](notes/2026-11-16-motd-first-reading.md) of the XONLINE call
 chain, which this page replaces, is kept as a note.
 
 ## 1. The .data descriptors
 
-### 1.1 `0x004672b8` — message_of_the_day.dat
+### 1.1 `0x004672b8` - message_of_the_day.dat
 
 Only the first dword is ever read by code (at `0x0008ca39`,
 `mov edi, [0x4672b8]`), so treat this as a global `char*` plus adjacent
@@ -53,7 +55,7 @@ The only code that reads the name global is the filo builder
 `n:\message_of_the_day.dat` (n: is the save-device mount, also used for
 `n:\savegame%d.bin`). Path length cap 0x100 (`0x001374c0`).
 
-### 1.2 `0x0046dd5c` — multiplayer_hopper.dat
+### 1.2 `0x0046dd5c` - multiplayer_hopper.dat
 
 | offset | value | meaning |
 |--------|-------|---------|
@@ -69,7 +71,7 @@ The only code that reads the name global is the filo builder
 
 Immediately after, at `0x0046dd80`, a NUL-terminated table of 15 field-type
 names indexed by numeric type id (used by the generic online-file manager,
-not by the hopper parser itself — see §5.4):
+not by the hopper parser itself - see §5.4):
 
 ```
 none identifier integer signed-integer point3d boolean raw-data string
@@ -78,7 +80,7 @@ unit-vector vector axes
 ```
 
 and after that (`0x0046ddc0`) a table of named records with dword fields,
-starting `"games-played" {0, 0x10000, 1}`, `"games-quit"`, ... — the
+starting `"games-played" {0, 0x10000, 1}`, `"games-quit"`, ... - the
 compiled-in default matchmaking statistics/attribute names that the
 downloaded file overrides.
 
@@ -113,7 +115,7 @@ Static analysis of the retail image; no game run.
 - Each network update `0x0008df50` → resource manager `0x0008e240`, at most
   one transfer per queue (limits at `0x004402a4`); for these channels it
   allocates the buffer (`0x00080e10`: channel +0x24 pointer, +0x28 cap from
-  +0x2c — **MOTD 0x8000, hopper 0x20000 bytes**) and starts the download
+  +0x2c - **MOTD 0x8000, hopper 0x20000 bytes**) and starts the download
   `0x0008e3f5` → `0x000b4450`.
 - XOnlineStorageCreateServerPath (`0x003ab6b1`): facility 4 (PER_TITLE,
   from selector 0 via `0x000b4450`/`0x000b4120`), user and team 0, a
@@ -147,7 +149,7 @@ Static analysis of the retail image; no game run.
 
 | offset | field | check, failure status |
 |---|---|---|
-| — | file size | at least 0x10 (10); at most the cap (9) |
+| - | file size | at least 0x10 (10); at most the cap (9) |
 | +0x00 | u32 LE | CRC register over bytes [4, size): reflected polynomial 0xedb88320, init 0xffffffff, **no final xor** (the bitwise NOT of standard CRC-32; routine `0x00163ba0` via `0x000812a0`) (8) |
 | +0x04 | u32 LE | equals the class version exactly: MOTD 1, hopper 4 (11 if lower, 12 if higher) |
 | +0x08 | u32 LE | equals the received size (10) |
@@ -175,9 +177,9 @@ Download-complete handler `0x0008c790(task_result)`:
   `n:\message_of_the_day.dat` for write, writes one 0x200-byte record from
   `buf + slot*0x200` and one 0x4004-byte block from
   `buf + 0x1200 + slot*0x4004`, where `slot = [0x0047ff38]` (0..8, computed
-  by `0x0011ca80` — the console language/locale index).
+  by `0x0011ca80` - the console language/locale index).
 
-### 3.1 message_of_the_day.dat — wire format
+### 3.1 message_of_the_day.dat - wire format
 
 ```
 +0x00  16 bytes   header: u32 LE CRC register over [4, size), u32 LE
@@ -199,7 +201,7 @@ Inflated payload (152100 bytes):
 
 ### 3.2 Local cache `n:\message_of_the_day.dat`
 
-Written by `0x0008c900`, read by `0x0008ca70`. Layout (single language — the
+Written by `0x0008c900`, read by `0x0008ca70`. Layout (single language - the
 console's current one):
 
 ```
@@ -213,7 +215,7 @@ mode 0 → the header/first record; mode 1 → reads count + records, picks one
 at random (LCG `0x19660d`/`0x3c6ef35f`), copies ≤ 0xff wchars into the
 caller's 0x200-byte buffer.
 
-### 3.3 Failure behavior
+### 3.3 Failure behaviour
 
 - Download fails / file absent / size mismatch / inflate fails: handler
   returns 0, cache write skipped, `0x00479784` bit 1 stays clear →
@@ -249,7 +251,7 @@ Same envelope as the MOTD, validated by the download-complete callback
   `[+0x0e]` u16 == 1 (version 1); payload at `[+0x24]`, size `[+0x28]`.
 - Skip the 16-byte header (validated before, §2.4: version 4).
 - `u32` BE at offset 0x10 = inflated size, must equal exactly
-  **`0x162cc0`** (1,457,344) (`cmp`/`jne` at `0x001942cf`) — the only content
+  **`0x162cc0`** (1,457,344) (`cmp`/`jne` at `0x001942cf`) - the only content
   validation on the downloaded bytes.
 - zlib stream from offset 0x14 (inflate wrapper `0x00199740` → `0x002cb5b0`,
   zalloc `0x0024f850` / zfree `0x0024f880`, "zlib pool" string `0x004544f0`),
@@ -273,13 +275,13 @@ of exactly 0x162cc0 bytes with **no magic, no version, no checksum**:
   +0x5a0 dword array, +0x5e4 dword, +0x5ec/+0x5f0/+0x5f4 range fields.
 - Data block (0x15cb8 bytes): +0x00..+0x43 header, +0x44 dword record count,
   +0x48 records, stride 0x37c. Record: +0x04 id (must resolve to a record in
-  the `matchmaking_hopper_descriptions` tag block — lookup `0x0019c5f0`,
+  the `matchmaking_hopper_descriptions` tag block - lookup `0x0019c5f0`,
   else the slot is marked status=2 error), +0x08 0x40-byte template blob,
   +0x48 0x200-byte copy, +0x248 dword, +0x24c string, +0x294 flags,
   +0x2a4 dword.
 - Defaults (`0x001940d0` and helpers) use packed `(value << 16) | field_id`
   dwords, field ids 0x7a4..0x7ab, with millisecond constants 0x7530 / 0xafc8 /
-  0x1d4c0 / 0x249f0 / 0x493e0 (30 s / 45 s / 120 s / 150 s / 300 s) —
+  0x1d4c0 / 0x249f0 / 0x493e0 (30 s / 45 s / 120 s / 150 s / 300 s) -
   matchmaking timeouts. Per-game-type record templates at
   `0x00444fc0`/`0x00445068`/`0x00445188`/`0x00445218`/`0x00445258`.
 
@@ -312,24 +314,24 @@ dwords after it are the start-wait table; `+0x5e4` is a minimum rank; the
   variant, copied out whole with the map id for the record chosen
   (`0x00192f00`..`0x00192fd5`).
 
-### 5.3 Load paths and failure behavior
+### 5.3 Load paths and failure behaviour
 
-- `0x00194160` (descriptor callback +0x18): reset-to-defaults — allocates the
+- `0x00194160` (descriptor callback +0x18): reset-to-defaults - allocates the
   0x162cc0 table, fills defaults (`0x001940d0`), saves via `0x00193ff0`.
-- `0x00194260` (callback +0x20): download-complete — validate envelope,
+- `0x00194260` (callback +0x20): download-complete - validate envelope,
   inflate, save via `0x00193ff0`. Any failure → return 0, file not written.
 - `0x001943d0(index, &dst)`: read one 0x15cb8 block (open `0x00136970`
   mode 1 = GENERIC_READ/OPEN_EXISTING, seek `0x6140 + index*0x15cb8`, read,
   close).
 - Ready gate `0x00193f50`: `[0x0047d8fc] != 0 && [0x0047d8f8] & 2`
-  (+version word `0x0047d8fe` == 1) — same descriptor-flags pattern as MOTD,
+  (+version word `0x0047d8fe` == 1) - same descriptor-flags pattern as MOTD,
   on the descriptor at `0x0047d8f4`.
 - Consumers: matchmaking start flow (`0x00231066` area, reads the selected
   hopper into a 0x15cb8 frame), session setup (`0x00192eb0` from the session
   state machine, states 6/7/8), playlist UI (`0x00065530`, iterates all 16
   descriptors filtering types {2,4,5}).
 - If the download fails or the cache file is missing, the game runs on the
-  compiled-in defaults — playlists still work, just not updated.
+  compiled-in defaults - playlists still work, just not updated.
 
 ### 5.4 The type-name table
 
@@ -337,11 +339,11 @@ Descriptor +0x24..+0x5c: 15 type names indexed by numeric type id
 (`none`, `identifier`, `integer`, `signed-integer`, `point3d`, `boolean`,
 `raw-data`, `string`, `wchar-string`, `secure-address`, `quantized-real`,
 `logarithmic-quantized-real`, `unit-vector`, `vector`, `axes`), NUL
-terminator at +0x60. Referenced only from the table (no strcmp) — used by
+terminator at +0x60. Referenced only from the table (no strcmp) - used by
 the generic online-file manager (diagnostics/schema), not by the hopper
 parser itself. The `"games-played"` / `"games-quit"` records that follow at
 `0x0046ddc0` belong to the player-statistics schema (cf.
-`/upload_server/stats.ashx`), a different following struct — not the hopper
+`/upload_server/stats.ashx`), a different following struct - not the hopper
 format.
 
 Descriptor field +0x10 = 4 (MOTD has 1): a file-class/channel id; exact
@@ -375,10 +377,10 @@ meaning unconfirmed.
   read/written raw by matchmaking code (`0x0017e67b`, `0x0017e810`,
   `0x0017e8ff`).
 - The runtime dispatcher that invokes the descriptor callbacks (+0x18/+0x20)
-  — the descriptors are reached through a runtime (ptr, tag) table at
+  - the descriptors are reached through a runtime (ptr, tag) table at
   `0x00472410` whose base has no code refs; the download manager in the
   `0x0008cc40`/`0x0008cce0`/`0x0008cd60` cluster is the likely invoker.
 - Whether `/xsig` content signing is enforced for these files on retail.
 - The 0x499a-byte download at `this+0x3514` in the per-frame orchestrator
-  (`0x002c74f9`) — probably the compressed MOTD buffer; not pinned to a
+  (`0x002c74f9`) - probably the compressed MOTD buffer; not pinned to a
   filename.

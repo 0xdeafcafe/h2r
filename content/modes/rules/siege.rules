@@ -434,7 +434,7 @@ fn hold(p: player) {
 fn release(side: team) {
     if not over {
         if count(players p where p.team == side and not p.alive) > 0 {
-            sound_to_team(side, "announcer/reinforcements")
+            sound_to_team("announcer/reinforcements", side)
         }
         for each players p where p.team == side and not p.alive { respawn(p) }
     }
@@ -483,8 +483,8 @@ on round_start {
         message(attackers, "Round {n} of {total}: you attack")
         message(defenders, "Round {n} of {total}: you defend")
     }
-    sound_to_team(attackers, "announcer/attack")
-    sound_to_team(defenders, "announcer/defend")
+    sound_to_team("announcer/attack", attackers)
+    sound_to_team("announcer/defend", defenders)
     // Spartans attack, Elites defend.
     set_body(attackers, "objects/characters/masterchief/masterchief_mp")
     set_body(defenders, "objects/characters/elite/elite_mp")

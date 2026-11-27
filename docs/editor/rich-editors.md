@@ -169,13 +169,15 @@ only with evidence of its form: the engine's reader (**E**), a disc check
 
 **Gradients.** Where a tag holds a colour that changes over an input, the
 row is a gradient strip: the colour function sampled left to right,
-opening the curve editor below with the strip under the plot. The gap:
-`effects::function::Function` evaluates to one scalar and keeps header
-bytes `+0xc` to `+0x14` as `unknown_0c`; no code reads which colours a
-colour-valued property blends between. Slice C3 starts with that read
-from the engine (**E**), and until it lands colour functions show as
-scalar curves with the sentence `The colours this curve blends are not
-read yet.`
+opening the curve editor below with the strip under the plot. The reader (**E**, the engine's colour
+property at `0x0013bc00`, `docs/engine/object-update.md`) is
+`Function::output_colour`: the flags' high nibble picks grey, one to four
+packed ARGB stops (the two range words and the two words of header
+`+0xc`) or white, blended in 14-bit fractions. `function.colours` returns
+the mode, stops and a sampled strip ([agent-api.md](agent-api.md)). The
+header does not say a function is a colour, so a field's `view=` will
+name it; until a definition does, colour functions show as scalar curves
+with the sentence `The colours this curve blends are not read yet.`
 
 **Preview.** None of its own. A colour change redraws whatever shows the
 tag: the Shader preview, the viewport, and a connected game when the
@@ -980,7 +982,7 @@ the first one whose needs are met.
 | X2 (built) | **Data that changes length**: `TagDoc::resize_data`, the grown-data entry in the save, the session's form for the scenario | M | nothing | a shorter and a longer invented payload save and read back; growth off refuses; the old bytes are unreferenced; undo restores the pair |
 | F2 (built) | **Curve type changes** | S | F1, X2 | changing type saves at the new `blob_len` and reads back equal |
 | S3 | **Template parameter names**: read `stem`'s properties and categories blocks (`+0x10`, `+0x18`), names on slots. Waits on a disc check that the blocks are kept and on the source-index to parameter mapping | S | S1 | an invented template names its slots; a template without the blocks shows the not-read sentence |
-| C3 | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
+| C3 (read built; strips wait on a `view=` word) | **Colour functions**: the read of which colours a function blends (**E**), gradient strips | M | F1, C1 | an invented colour property draws its strip; the note records the reader |
 | H2 (built) | **Script compiler**: `hs::compile` (parser, names, types and casts, literals, allocator), messages with positions | L | H1 | `compile(decompile(s))` equals the nodes for every construct of the synthetic fixtures; each error class has a test; the `#[ignore]`d disc run reports the share of scripts that round-trip |
 | H3 (built) | **Scripts, write**: Edit and Compile in the tool, the session ops, free-slot reuse, growth, strings, the three validations, `script.compile` | M | H2, X2 | one changed script changes only its nodes and new strings in the saved map; a compile past the node limit is refused with both counts; undo restores the table |
 | A4 (built) | **Mouth curves, write**: drawing, **From the sound**, the in-place raw write | M | A2; modeling 3 | a redrawn invented curve changes only its bytes and the checksum; a shared-cache sound and a split chain are refused |
@@ -989,7 +991,7 @@ the first one whose needs are met.
 | H4 (built) | **`hs.eval`** in the game, and an expression box in the Scripts tool | M | H1 | the agent crate's test evaluates an invented expression through the evaluator; a parse error returns the compiler's text with its place |
 | K3 (built) | **Recordings, write**: the encoder, event edits, `recording.write`, the converted-map overlay | M | K1, X2 | `encode(decode(s)) == s`; an edited stream saves and walks clean; removing a played recording is refused |
 | S5 (built) | **WGSL overrides from the editor** | S | S4, P12 | on the fake game, an edited file reaches `render.reload` and a compile error shows under the text |
-| N1 | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
+| N1 (built) | **Strings, read**: every string by name and language, searched | S | nothing | an invented table lists and searches in each language |
 | K4 | **Re-record from input**: the game's `recording.capture`, the capture flow | L | K2, K3 | a capture on the fake game encodes to a stream that walks clean; the determinism check is in "Not verified" |
 | S6 | **Xbox shader programs, write**: the vertex assembler, the combiner encoder and parser, the writes | L | S4, X2 | `assemble(disassemble(p)) == p` and `encode(decode(d)) == d` on invented programs; over-limit and untranslatable programs are refused |
 | A5 (built) | **Facial sequences**: the engine read of the second extra-info payload, written up as a note | S | A2 | the note states the layout with addresses, or that the disc has none |

@@ -3,7 +3,9 @@
 The collision switch selects the native collision world. Point and location
 queries, MOPP boxes and J’s object-reference sphere pretest answer admitted
 calls in Rust. The vector walk, instance trace, cluster flood and object
-visit also have native exits. Their admission rules appear below.
+visit also have native exits. The vector walk's crossing exits answer only
+after a clean shadow run ([Crossing exits](#crossing-exits)). Their
+admission rules appear below.
 The Havok collector ray and the whole query keep the lifted return while
 Rust predicts the walk or result. The adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in
@@ -508,9 +510,10 @@ D's model trace can forward EDX and XMM registers through `0x1f0228`.
 A whitelist of these direct return addresses would still admit those
 paths. C and D answer an unsplit walk when the leaf transition needs no
 surface lookup. The adapter replays all registers and stack writes for
-that exit. A direct D leaf preserves the incoming XMM values. The
-crossing and matcher paths retain the lifted return and compare AL and
-the result record, plus the outer context for D. A/B have no
+that exit. A direct D leaf preserves the incoming XMM values. A walk that
+crosses planes without a surface lookup has a crossing exit
+([below](#crossing-exits)). The matcher paths retain the lifted return
+and compare AL and the result record, plus the outer context for D. A/B have no
 caller-liveness prerequisite. G and H likewise require exact scratch
 replay beyond the exits described above.
 
@@ -522,6 +525,50 @@ directly at `0x1eea6d` and next reads only EDI, which F preserves. Callers
 through the vtable follow the thiscall convention of a method with no
 result, under which EAX, ECX, EDX, EFLAGS and the x87 condition codes do
 not survive the call. F is installed on that basis.
+
+### Crossing exits
+
+A crossing exit is a C or D walk that splits at one or more planes and
+reaches every leaf without the reference matcher. Every such walk misses.
+The kernel records the guest's steps in order
+(`sim_collision::bsp::segment::Step`). The adapter
+(`crates/rewrites/engine/src/sim_collision/crossing.rs`) replays them over
+the instruction sequence of `0x1de630` and `0x1de6d0` and rebuilds:
+
+| State | Source in the replay |
+|---|---|
+| EAX, ECX, EDX | the last plane test, crossing, far step or leaf tail |
+| XMM0–3 | the last plane test's four values, or the split a frame stopped on |
+| EBX, EBP, ESI, EDI, XMM4–7, MXCSR | entry values (saved and restored, or untouched) |
+| EFLAGS | the outer `add esp, 8` (D) or `add esp, 0x28` (C) |
+| x87 | PE on an inexact split; TOP and tags unchanged |
+| Stack | every frame's saved registers, locals, argument slots and return addresses, the wrapper's context, in guest order |
+
+The exit is shadow, then answer, per entry:
+
+```mermaid
+flowchart LR
+  call[crossing call] --> gate{gate open?}
+  gate -- no --> lifted[lifted body] --> cmp[compare at return]
+  gate -- "yes, 63 of 64" --> native[write the exit]
+  gate -- "yes, 1 of 64" --> lifted
+  cmp -- clean --> count[exits_matched + 1]
+  cmp -- difference --> shut[fell_back: lifted from then on]
+```
+
+The comparison covers AL, R, D's context, all general registers and ESP,
+EFLAGS on the defined bits, MXCSR, XMM0–7, the x87 control word, status
+outside C0–C3, tags and occupied registers, and the stack from 0x40 below
+the deepest frame write to the argument slots. The gate opens after
+`CROSSING_CLEAN_RUN` (1,024) clean whole-exit comparisons with no
+difference on that entry. While open, one call in `CROSSING_SAMPLE_EVERY`
+(64) still runs lifted and is compared. Any difference, on a crossing exit
+or any other C or D comparison, closes the gate for the process.
+
+Contents of empty x87 registers and the condition codes are not replayed,
+as for the other C and D exits. D under the wrapper (return
+`0x1de6bd`) stays lifted, so C's comparison owns it. `collision.stats`
+reports the gate under `vector` and `context`.
 
 ### Status-instruction census
 
@@ -626,6 +673,11 @@ on the IR interpreter, with a cold and a warm world and the earlier
 per-function port where one exists. It verifies that a declined call
 preserves the entire CPU and memory. Cases exercise plane ties, unusual
 float inputs, all precision controls and a partially occupied x87 stack.
+Every C and D case with a crossing exit also compares that exit with the
+guest's return. `crossing::crossing_exits_match_every_register_and_stack_byte`
+writes the exit ungated on plane chains up to six deep, both ways through
+(far-child loops and nested near calls), with stopped frames, full leaf
+lists and solid ends, and compares every register and stack byte.
 
 F's cases are random programs over every opcode class
 (`sim_collision::synth::random_mopp`) and `mopp::build` programs, boxes
@@ -647,7 +699,7 @@ a warm world, and the arm must report the mismatch.
 The ignored BSP sweeps compare points and segments on structure and object
 BSPs, and locations on structure BSPs. The segment sweep compares the C
 record, samples D’s full context, and checks all registers and frame bytes
-on a straight native exit. It reports per-map decoded storage and
+on a straight native exit and on each crossing exit. It reports per-map decoded storage and
 bails and compares the largest active structure plus all local object BSPs against the map budget. Give the test the owner's disc and XBE. No disc payload is emitted.
 
 ```sh
@@ -673,7 +725,7 @@ cargo test --release -p engine --features differential --test it sim_collision_d
 
 ## Gaps
 
-Full authority for crossing BSP segments, populated instance clusters,
+Full authority for BSP segments that reach the matcher, populated instance clusters,
 portal tests and nonempty object visits needs the surviving volatile
 registers and frame bytes reproduced or proved dead. The general ray
 also needs callback continuation on a mid-walk decline. J needs its

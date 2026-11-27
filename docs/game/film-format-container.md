@@ -418,7 +418,7 @@ and firing effects. A slow projectile (under 100 world units per second)
 or attached projectile gets a pose immediately. A faster projectile gets
 a pose once its salted handle survives to the next presentation sample.
 Particles, decals, muzzle flash and hitscan traces have no pose objects.
-[Live packed frames](../live/live-telemetry.md#packed-frames)
+[Live packed frames](../live/live-telemetry-packed.md#packed-frames)
 
 ## Size targets
 

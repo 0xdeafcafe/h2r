@@ -51,7 +51,7 @@ The 3D viewer draws an installed mod from its own art when the server
 has it: `h2 live assets extract` (and `h2 play --live-local`) resolves
 every package under `<data>/maps/` to the patched map the game loads and
 extracts it like a disc map, keyed by its `MapId`, never by its base
-map's name ([live-art.md](../live/live-art.md#mods)). That covers
+map's name ([live-art.md](../live/live-art-viewer-packs.md#mods)). That covers
 everything the mod's scenario holds: moved or extra vehicles, weapons,
 scenery, machines and spawns, new tag references, objects its scripts
 create, effects its scripts play on a loop, and its own or changed
@@ -128,7 +128,7 @@ base map's geometry, unless `[result] geometry` differs from the base's.
 - **Pictures and viewer** (web): a cleared gallery or package preview
   (served at `/v1/maps/{id}/image`), then the base map's art. A signed
   manifest alone does not clear its preview for public display.
-  [Live screenshot rules](../live/live-api.md#verified-screenshot-uploads)
+  [Live screenshot rules](../live/live-api-content.md#verified-screenshot-uploads)
   The 3D viewer first
   looks for the mod's own art by `map_id` (the server's art has it when
   the mod is installed where the art was extracted: an entry
