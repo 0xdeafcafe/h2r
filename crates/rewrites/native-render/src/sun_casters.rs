@@ -692,6 +692,7 @@ mod tests {
                 variant: 0,
                 implementation: 3,
             },
+            state: Default::default(),
         };
         (entry, Vec::new())
     }

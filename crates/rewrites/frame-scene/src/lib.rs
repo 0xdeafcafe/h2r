@@ -53,7 +53,7 @@ pub use light::{
     LightVolume, NO_DATUM, SceneLight,
 };
 pub use light_group::{
-    GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
+    EntryState, GroupSite, LightBinding, LightEntry, LightGroup, LightPose, LightStream, ObjectShadow,
     PROJECTION_ROWS, SHADOW_COMBINER_WORDS, ShadowFilter, ShadowFilterDraw, ShadowPass, Topology,
 };
 pub use node::{NODE_MATRIX_SIZE, NodeMatrix};

@@ -90,6 +90,30 @@ pub struct LightBinding {
     pub implementation: u8,
 }
 
+/// What an entry's draw prologue `0x0004d640` sets beyond its bindings,
+/// which the native draw makes itself (docs/graphics/native-lights.md,
+/// "Entry state"). The handler's epilogue `0x0004d720` puts both back,
+/// so the host takes such an entry only while the device holds what the
+/// epilogue leaves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct EntryState {
+    /// Record bit 11 on an object's record: the auxiliary state toggle
+    /// `0x00012d50`. The part draws with its view's
+    /// [`crate::AuxDepth`].
+    pub aux_depth: bool,
+    /// The record's fade byte (`+0x1a`) is below `0xff`: the polygon
+    /// stipple pattern it selects, which masks nothing while the
+    /// device's stipple is off.
+    pub fade: bool,
+}
+
+impl EntryState {
+    /// The handler sets nothing beyond the bindings.
+    pub fn plain(self) -> bool {
+        self == Self::default()
+    }
+}
+
 /// One sorted entry of a group, in the order the handlers would run.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct LightEntry {
@@ -103,6 +127,8 @@ pub struct LightEntry {
     pub stream: LightStream,
     pub pose: LightPose,
     pub binding: LightBinding,
+    /// What its prologue sets beyond the bindings.
+    pub state: EntryState,
 }
 
 /// Registers of the shadow projection, `c[40..48]`.
@@ -402,6 +428,7 @@ mod tests {
                 variant: 0,
                 implementation: 2,
             },
+            state: Default::default(),
         }
     }
 

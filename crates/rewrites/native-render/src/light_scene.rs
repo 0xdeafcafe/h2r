@@ -150,6 +150,7 @@ pub fn plan_entries<'r>(
                 && d.vertex_class == e.stream.vertex_class
                 && d.binding == e.binding
                 && d.indices.end == part.indices.start
+                && l.state == e.state
                 && same_pose(rows, l, e)
         });
         if joins {
@@ -328,6 +329,7 @@ mod tests {
                 variant: 0,
                 implementation: 3,
             },
+            state: Default::default(),
         }
     }
 

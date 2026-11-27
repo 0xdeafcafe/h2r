@@ -630,6 +630,7 @@ fn sun_scene_on(epoch: u64, definition: u32, on: frame_scene::LayerOwner) -> Arc
             variant: 0,
             implementation: 3,
         },
+        state: Default::default(),
     };
     let group = LightGroup {
         light: 0,

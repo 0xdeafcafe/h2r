@@ -9,7 +9,7 @@ Switch: `frame-scene.layers` (on with the native renderer, `=off` turns it off) 
 | Layers 1, 5, 7, 8, 20 (scene and first person), 2 and 17 | structure items with resolved constants, object items (layer 5's with the model's PRT stream) | items named by a refusal cause below |
 | Layer 3 | decorators, instanced ([native-decorators.md](native-decorators.md)) | draws whose material is not ready or whose skip would change a state; the world's untranslated materials ([native-world.md](native-world.md)); the walk's refused parts |
 | Layers 10, 11, 14 | whole groups, with no geometry handler | the guest's begin, clear and end still run |
-| Layers 12, 13 | a light's whole group | partial or split spans, aux toggles, shader flags, material animation, template callbacks |
+| Layers 12, 13 | a light's whole group, including an object's aux toggle and a fade byte while the device holds their rest state | partial or split spans, a structure record's aux toggle, shader flags, material animation, template callbacks |
 
 ## Layers 1, 5, 7, 8 and 20
 
@@ -155,7 +155,7 @@ The gathered walk draws from a complete scene group or uses the first guest geom
 - **Sites.** The additional casters' layers 10 and 11 are groups of their own site (`GroupSite::AdditionalCasters`). Each object shadow's layers 10 and 11 are groups of its `ObjectShadow` in the view (`GroupSite::ObjectShadow`). A first-person light's layers 12 and 13 are groups of `GroupSite::FirstPerson`.
 - **Object shadows.** An `ObjectShadow` marks a creature caster, which takes the ground-shadow branch `0x00032ce0`, and keeps the light weight read at its layer 11, for E3's sun tiles ([e3-lighting.md](e3-lighting.md), "Sun shadows from objects").
 - **Hash.** `frame_scene::summary_hash` covers the groups, their entries and the object shadows.
-- **Visibility-masked parts.** The emitter's selected index spans must form a single draw of the entire part. Contiguous list spans can join; separate strips need separate draws. A partial or split span, an auxiliary state toggle, state around one part, a shader flag, material animation or a template callback leaves the entry to the guest by named cause.
+- **Visibility-masked parts.** The emitter's selected index spans must form a single draw of the entire part. Contiguous list spans can join; separate strips need separate draws. A partial or split span, a shader flag, material animation or a template callback leaves the entry to the guest by named cause. An object's auxiliary state toggle and a fade byte are the entry's state, drawn in layers 12 and 13 only ([native-lights.md](native-lights.md), "Entry state").
 - **Drawing.** `native_render::light_scene::plan` turns a whole group into native draws from the scene alone, sorted order and duplicates kept, adjacent list ranges joined. A light's layer 12 or 13 whose group is whole draws from the scene with no handler run, its object entries from model parts the light passes build per map with their node rows ([native-lights.md](native-lights.md), "Gathered groups in the scene").
 - **Shadow layers.** Whole groups of layers 10, 11 and 14 draw from the scene at all three sites through `native_render::shadow_scene` and `native_lights_glue::shadow_alone`. The guest's begin, clear and end still run, and `ShadowPass` carries their target and raster words. Receivers bind the boundary's frozen depth or colour-mask map. The object shadow's `filter` carries its native quads and final copy into `native_render::shadow_filter_gpu`, inside the guest call's swallow.
 

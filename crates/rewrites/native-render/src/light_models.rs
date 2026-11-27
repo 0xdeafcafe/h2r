@@ -415,6 +415,7 @@ mod tests {
                 variant: 0,
                 implementation: 0,
             },
+            state: Default::default(),
         }
     }
 

@@ -76,6 +76,7 @@ pub(super) fn entry(
             variant: 0,
             implementation,
         },
+        state: Default::default(),
     }
 }
 

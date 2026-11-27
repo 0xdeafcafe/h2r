@@ -29,19 +29,24 @@
 //!   `+4` parts (`0x48` each: `+2` flags, bit 3 a triangle list; `+6` the
 //!   first index; `+8` the index count), `+8` subparts, `+0x20` the
 //!   index count and `+0x24` the pointer to their u16 stream.
+//! - What the prologue sets beyond the bindings, which the entry carries
+//!   ([`EntryState`]) for layers 12 and 13 ([`state_taken`]): an object
+//!   record's auxiliary state toggle (bit 11, while the toggle's values
+//!   read) and the fade byte (`+0x1a`).
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
-//!   remainder ([`Cause`]): the auxiliary state toggle, state around one
-//!   part (`+0x1a`), subparts selecting less than one full draw, the shader's `+0x16` bit 0, a
-//!   material animation (the shader's `+0x24` block `+0x3c`), and a
-//!   template callback (the shader's `stem` `+0x44`, `+0x50`).
+//!   remainder ([`Cause`]): a structure record's toggle, the toggle or
+//!   the fade byte on a shadow layer, subparts selecting less than one
+//!   full draw, the shader's `+0x16` bit 0, a material animation (the
+//!   shader's `+0x24` block `+0x3c`), and a template callback (the
+//!   shader's `stem` `+0x44`, `+0x50`).
 //! - The shadow projection block [`SHADOW_PROJECTION`] (`0x00048ee0`'s
 //!   36 words for `c[40..48]`) is written before layer 10 begins; layers
 //!   10 and 11 read it. **S**: the additional casters' pair `0x00030ed0`
 //!   is not traced; its layers read the block as it is at their build.
 
 use frame_scene::{
-    BuildError, GroupSite, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup,
+    BuildError, EntryState, GroupSite, InstanceKey, LayerOwner, LightBinding, LightEntry, LightGroup,
     LightPose, LightStream, PROJECTION_ROWS, Row, SceneBuilder, ShadowFilter, ShadowFilterDraw,
     ShadowPass, Topology,
 };
@@ -98,7 +103,9 @@ pub enum Cause {
     Section,
     /// The part's index range is empty or past its section's indices.
     Range,
-    /// The auxiliary state toggle, or state around the one part.
+    /// The auxiliary state toggle where it does not read or on a
+    /// structure record, or the fade byte or the toggle where the site
+    /// does not take them ([`state_taken`]).
     State,
     /// The record draws chosen subparts.
     Subparts,
@@ -228,6 +235,11 @@ pub fn entry(mem: &dyn GuestRead, items: u32, sorted: Sorted) -> R<(LightEntry, 
 /// index address for this full-part emission, before D3D rebases indices.
 pub fn dispatched_entry(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Vec<Row>, u32)> {
     let (entry, rows, data) = entry_at(mem, item, sorted)?;
+    // The per-handler path issues the handler's own packets: it carries
+    // no entry state.
+    if !entry.state.plain() {
+        return Err(Cause::State);
+    }
     let indices = ptr(mem, data, 0x24)?;
     let address = index(indices, entry.stream.first_index, 2)?;
     index(address, entry.stream.index_count - 1, 2)?.checked_add(1).ok_or(Cause::Range)?;
@@ -251,9 +263,15 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
     let flags = word(mem, rec)?;
     let model = word(mem, at(rec, 4)?)?;
     let key = word(mem, at(rec, 0xc)?)?;
-    if flags & 1 << 11 != 0 || byte(mem, at(rec, 0x1a)?)? != 0xff {
+    // The prologue `0x0004d640`: the fade byte's stipple pattern, and
+    // with bit 11 on an object's record the auxiliary state toggle
+    // `0x00012d50`, which the entry carries for the host to draw with
+    // (`EntryState`) while its view's toggle values read.
+    let aux_depth = flags & 1 << 11 != 0;
+    if aux_depth && (model == u32::MAX || crate::layout::aux_depth::read(mem).is_none()) {
         return Err(Cause::State);
     }
+    let state = EntryState { aux_depth, fade: byte(mem, at(rec, 0x1a)?)? != 0xff };
     let section = (key >> 9) & 0x1ff;
     let (owner, stream_section, data, pose) = if model == u32::MAX {
         let bsp = ptr(mem, ACTIVE_BSP, 0)?;
@@ -343,8 +361,17 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
             variant,
             implementation: sorted.implementation,
         },
+        state,
     };
     Ok((entry, rows, data))
+}
+
+/// Whether a group of `layer` can hold an entry with `state`: only the
+/// diffuse and specular layers draw an entry's state (the auxiliary
+/// depth rows, the fade's unmasked draw); the shadow layers and their
+/// casters keep such an entry's handler.
+pub fn state_taken(layer: u8, state: EntryState) -> bool {
+    state.plain() || matches!(layer, 12 | 13)
 }
 
 /// The shadow projection block as nine registers; `None` when a word
@@ -461,6 +488,7 @@ pub fn push(
         match items
             .ok_or(Cause::Memory)
             .and_then(|items| entry(mem, items, s))
+            .and_then(|e| if state_taken(layer, e.0.state) { Ok(e) } else { Err(Cause::State) })
         {
             Ok(e) => entries.push(e),
             Err(cause) => {
@@ -694,6 +722,51 @@ mod tests {
         assert_eq!(rows[0], [0.0, 3.0, 6.0, 9.0]);
     }
 
+    /// The toggle's globals and a view for `aux_depth::read`.
+    fn aux_view(m: &mut Mem) {
+        use crate::layout::aux_depth::{AUX_SCALE, CLIP_FAR, CLIP_NEAR, ONE, SCALE_DENOMINATOR, SCALE_NUMERATOR, VIEW};
+        for (at, x) in [(AUX_SCALE, 0.5), (ONE, 1.0), (CLIP_NEAR, 2.0), (CLIP_FAR, 900.0), (SCALE_NUMERATOR, 1.0), (SCALE_DENOMINATOR, 1.0)] {
+            m.f(at, x);
+        }
+        for k in 0..12 {
+            m.f(VIEW + 4 + 4 * k, 1.0);
+        }
+        for k in 0..16 {
+            m.f(VIEW + 0x78 + 4 * k, 1.0);
+        }
+    }
+
+    #[test]
+    fn an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it() {
+        let mut m = fixture();
+        placement_and_object(&mut m);
+        let toggled = RENDER_RECORDS + 3 * RENDER_RECORD_SIZE;
+        m.w(toggled, 1 << 11);
+        assert_eq!(entry(&m, ITEMS, sorted(2)).unwrap_err(), Cause::State, "the toggle's values do not read");
+        aux_view(&mut m);
+        let (e, _) = entry(&m, ITEMS, sorted(2)).unwrap();
+        assert_eq!(e.state, EntryState { aux_depth: true, fade: false });
+        // A structure record's toggle stays the guest's.
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 1 << 11);
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap_err(), Cause::State);
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 0);
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE + 0x18, 0x0080_0000);
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert_eq!(e.state, EntryState { aux_depth: false, fade: true });
+        // The per-handler path carries no state.
+        let slot = 0x0067_0000;
+        m.w(slot, 0);
+        m.w(slot + 4, 2);
+        m.w(slot + 8, 1);
+        m.w(DATA + 0x24, 0x0068_0000);
+        assert_eq!(dispatched_entry(&m, ITEMS, Sorted::read(&m, slot).unwrap()).unwrap_err(), Cause::State);
+        for layer in [10, 11, 14] {
+            assert!(!state_taken(layer, e.state), "layer {layer}");
+            assert!(state_taken(layer, EntryState::default()));
+        }
+        assert!(state_taken(12, e.state) && state_taken(13, EntryState { aux_depth: true, fade: true }));
+    }
+
     #[test]
     fn dispatched_model_uses_the_sorted_class_and_the_same_pose_as_the_gather() {
         let mut m = fixture();
@@ -773,10 +846,9 @@ mod tests {
     #[test]
     fn what_the_handler_does_beyond_binding_and_drawing_is_a_named_remainder() {
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
-        let cases: [(&dyn Fn(&mut Mem), Cause); 9] = [
+        let cases: [(&dyn Fn(&mut Mem), Cause); 8] = [
             (&|m| m.w(ITEMS, 0x8484), Cause::Callback),
             (&|m| m.w(rec, 1 << 11), Cause::State),
-            (&|m| m.w(rec + 0x18, 0x0001_0000), Cause::State),
             (
                 &|m| {
                     m.w(rec, 1 << 6);
