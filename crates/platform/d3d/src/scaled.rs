@@ -605,9 +605,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     pub(super) fn anamorphic_guest_frame(&self) -> bool {
-        let (w, h) = self.stats.presentation;
-        self.presentation.is_some() && self.scale == RenderScale::ONE
-            && w != 0 && h != 0 && u64::from(w) * 3 != u64::from(h) * 4
+        self.presentation.is_some()
+            && canvas_fit::anamorphic_guest_frame(self.stats.presentation, self.scale == RenderScale::ONE)
     }
 
     /// The lighting in effect.

@@ -886,6 +886,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas-fit"
+version = "0.1.0"
+
+[[package]]
 name = "cc"
 version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1709,6 +1713,7 @@ dependencies = [
  "anyhow",
  "app",
  "bytemuck",
+ "canvas-fit",
  "frame-scene",
  "frame-types",
  "gfx",
@@ -2514,6 +2519,7 @@ dependencies = [
  "background",
  "bink-hle",
  "bots",
+ "canvas-fit",
  "chrono",
  "content",
  "coop",
@@ -5838,6 +5844,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render-bridge"
 version = "0.1.0"
 dependencies = [
+ "canvas-fit",
  "engine",
  "frame-scene",
  "hooks",
