@@ -12,7 +12,7 @@ use sim_havok::island::{self, Args};
 use sim_havok::mem::Journal;
 use std::collections::BTreeMap;
 
-fn model(c: &CpuAbi, g: &Guest) -> Result<(BTreeMap<u32, u32>, u32), island::Fallback> {
+fn model(c: &CpuAbi, g: &Guest) -> std::result::Result<(BTreeMap<u32, u32>, u32), island::Fallback> {
     let view = View(g);
     let mut j = Journal::new(&view);
     let args = Args::read(&j, c.esp).ok_or(island::Fallback::Memory)?;
