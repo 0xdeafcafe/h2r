@@ -68,7 +68,7 @@ The gate, per frame of `0x004ba034`:
 | frames compared | 1 in 64 (`SAMPLE`) |
 | answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
 | stops answering | at the first difference or refusal |
-| while answering | each run of consecutive particle or decal entries (handlers `0x00173c90`; `0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
+| while answering | on frames not sampled, "R2's answer"; each run of consecutive decal entries (`0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
 
 The model refuses, by name: `fault`, `layout`, `no_definition`,
 `no_model`, `singleton_vtable`, `object_path` (a shader flag besides
@@ -84,7 +84,6 @@ or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
 | `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
 | `emission_matched`, `emission_mismatched_{words,window,corners,inputs,sequence,writes}`, `emission_refused_<reason>`, `emission_unbalanced` | particle callbacks on sampled frames |
 | `ribbon_matched`, `ribbon_mismatched_{vertices,return,writes,context}`, `ribbon_refused_<reason>`, `ribbon_unbalanced` | contrail builds on sampled frames |
-++ b/docs/graphics/retire-d3d.md
 | `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
 | `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
 
@@ -97,11 +96,9 @@ Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
 `effects_shadow.rs` (the gate, a matching and a differing call and
 dispatch, the runs).
 
-Still the guest's: every handler body (the particle draw `0x00174f80` and
-its property evaluation, `0x00035b00`, the decal-list replays), the calls
-of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
-so every run counts `entry_runs_no_host_<kind>`: the display copy's own
-particles and decals need a host that draws them.
+Still the guest's: the handlers' material setup (`0x00174f80`,
+`0x002243c0`, `0x00035b00`), the decal-list replays, the calls of
+`0x00174420` and `0x00040e30`.
 
 
 ## R2's decals and weather
@@ -146,6 +143,31 @@ slot 3) and the 192 constants are not ported or compared; a plate needs the plac
 test `0x0003a5c0` and a snapshot of the view's colour. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
+
+## R2's answer
+
+Built (**Code**): `render-bridge/src/effects_shadow/answer.rs`. While the
+gate answers, on the frames it does not sample, the modelled bodies do not
+run. A sampled frame runs the guest, so the arms go on comparing.
+
+| Body | The answer | Kept, `scene_kept_15_<kind>_<cause>` |
+|---|---|---|
+| particle callback `0x00224550` | the emission from `particle_emission`, drawn through the native particle path's direct draw (`native_particles::draw_emission`); its writes made in the guest; `ret 0x1c`. The emitter `0x0023ed30` never runs | `particle_<refusal>`, `particle_{refused,no_host,declaration,register,unreadable,...}`, `particle_stack` |
+| contrail builder `0x00042cf0` | the ribbon from `contrail_ribbon` written at its first argument, its writes, AL; `ret 0xc`. The polygon handler draws it by the native effect path | `contrail_<refusal>` |
+| decal runs | `RunHost` (the seam for the decal replays from the scene) | `decal_replay`, each entry while no host is installed |
+
+A kept body runs as the guest's, with nothing made before it. `render.stats`
+also counts `layer_plan_15_effects_shadow_answer_{particles,contrails,fault}`.
+
+The handlers stay: the native particle draw takes its pipeline from the
+D3D state the guest's material setup leaves (`native_render::particle_gpu`).
+Cutting them needs the particle and contrail materials from the shader tag
+in Rust.
+
+Tests: `answer.rs`
+(`an_answered_particle_draws_from_the_rust_emission_and_a_refused_one_keeps_its_guest_body`,
+`a_sampled_frame_or_a_closed_gate_runs_the_guest_and_the_arm_compares`),
+`effects_shadow.rs` (`an_answering_gate_draws_each_decal_run_after_its_last_entry`).
 
 ## Related
 
