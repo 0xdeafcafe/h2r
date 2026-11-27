@@ -2671,6 +2671,23 @@ lists its sectors, the stale rule, a failed build in Problems, the ground
 file and `ground.save`) and
 `scenario-edit/src/ground_tests.rs`.
 
+## Siege layouts
+
+`siege.layout {attack?, per_side?, barriers?, out?}` (`api/siege.rs`)
+plans a Siege layout over the open map as edited, with the recipe
+`h2 siege layout` runs (`forge_doc::siege_layout`;
+[rules-engine.md](../game/rules-engine.md), "Siege layouts"): the attack
+line from the attackers' CTF flag stand (`attack` `red`, the default, or
+`blue`) to the defenders', the territories between them as the sites, two
+a phase, the defenders' stand as the `siege_goal`, and each phase's
+starting locations labelled `siege_attack` and `siege_defend` (`per_side`
+a side, default 6). `barriers` are strings `<block>:<index>=<phase>`
+(`crates:22=2`). It answers `{sites, goal, attack, defend, barriers,
+phases, document, written}`, `document` the labels-only layout, and with
+`out` writes it there. The open map is not changed. A bad `attack` or
+barrier is `INVALID_PARAMS`, a map without both stands or a start for a
+side is `REFUSED`, no map `NO_DOCUMENT`. Tests: `api/tests/siege_tests.rs`.
+
 ## Game type markers
 
 `markers.*` (`api/markers.rs`, a provider) is the agent's view of the

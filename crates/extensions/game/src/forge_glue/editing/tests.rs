@@ -141,11 +141,12 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     let objects = screens::screen(Kind::Objects).sheet();
     assert_eq!(
         objects.rows.len(),
-        4,
-        "Crates, the block-out Structure and Natural groups, then the AI page"
+        5,
+        "Crates, the block-out Structure and Natural groups, then the AI and Siege pages"
     );
     assert_eq!(objects.rows[0].label, "Crates");
     assert_eq!(objects.rows[3].label, "AI and objectives");
+    assert_eq!(objects.rows[4].label, "Siege");
     // The picker's choice: the shelf.
     e.choose(2, Choice::Select(0)).unwrap();
     assert_eq!(e.tool.placing, Some(0));

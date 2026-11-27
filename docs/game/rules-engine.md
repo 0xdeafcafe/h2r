@@ -1317,6 +1317,49 @@ the next tick (`on tick` in `siege.rules` sets the kit of a player whose
 their last row, row 0 at first, and so does a player on another machine.
 Siege has no core to carry.
 
+#### Siege layouts
+
+A map plays ordered phases when its layout numbers its sites, names its
+final stand and labels its starts by side and phase ("Map layouts"
+above). These maps have a built-in layout
+(`crates/formats/rules/src/builtin/layouts/siege/<map>.json`):
+
+| Map | Layout source | Sites (phase 0, phase 1) | Final stand | Barriers |
+|---|---|---|---|---|
+| Zanzibar | read off the map by hand | territory flags 17, 15; 19, 13 | the defenders' CTF stand (`base[defenders]`) | none |
+| Coagulation | `h2 siege layout coagulation`, red attacks | territory flags 20, 19; 21, 53 | blue's stand, flag 6 (`siege_goal`) | none: the map has no loose solid object across a way |
+| Headlong | `h2 siege layout headlong --barrier crates:17=2 --barrier crates:70=2`, red attacks | territory flags 51; 62 | blue's stand, flag 0 (`siege_goal`) | two giant tech crates by blue's base, open in the final assault |
+| Waterworks | `h2 siege layout waterworks --barrier crates:41=2 --barrier crates:42=2`, red attacks | territory flags 26, 23; 17 | blue's stand, flag 4 (`siege_goal`) | two giant packing crates by blue's base, open in the final assault |
+
+A recipe layout labels the defenders' stand `siege_goal`, so the final
+stand stays at one end of the map when the sides swap; Zanzibar's reads
+`base[defenders]` and so moves to the other stand in the second round.
+Each recipe layout has a scenario (`crates/formats/rules/tests/scenarios/siege_<map>.json`,
+written by `--scenario`) that `rules/tests/modes.rs`
+(`siege_plays_each_recipe_layouts_phases`) runs: the scenario's labels are
+the layout's, an attacker standing on one site of each phase in turn takes
+it, each phase's spawns and loadout tier open in order, the bots are sent
+at each site and then at the stand (`bot_goal_attack`), the barriers open
+in their phase, and the attackers win at the stand.
+
+The recipe (`forge_doc::siege_layout`) runs the attack line from the
+attackers' CTF flag stand to the defenders'. The territories between
+them (from 0.12 to 0.88 of the way along, a flag within 4 units of a kept
+one dropped), in order along the line, are the sites: the nearer half
+numbered 0, the farther half 1, at most two a phase. Each phase's starts
+are the ones nearest the attackers' stand, then nearest the sites they
+took, on their side of the phase's front, and for the defenders the ones
+past the phase's sites, then nearest their stand; `per_side` a side, no
+start both sides' in one phase. A barrier is named by its placement and
+phase: the recipe does not judge which object blocks a way.
+
+| Tool, command or screen | Output |
+|---|---|
+| `h2 siege layout <map> [--attack red\|blue] [--per-side N] [--barrier <block>:<index>=<phase>]... [-o layout.json] [--scenario s.json]` (`crates/apps/h2-tools/src/siege_cmd.rs`) | the plan, a line a label; with `-o` the labels-only document in the built-in layouts' form; with `--scenario` the fake-game walk through its phases |
+| Studio `siege.layout {attack?, per_side?, barriers?, out?}` (`crates/apps/studio/src/api/siege.rs`) | the same plan over the open map as edited, and the document; with `out` the file. The open map is not changed |
+| Studio `scenario.add {block: "label", label: "siege_site" \| "siege_goal" \| "siege_line", ...}` | a Forge-map label: one netgame flag with the label ("Maps for scripted games" in [game-types-without-carriers.md](game-types-without-carriers.md)) |
+| Forge's **Siege** page on the object menu (`forge_screens::sheet::SIEGE_PAGE`): **Site**, **Flag stand**, **Spawn line**, **Barrier** | `siege_site` (a site with its area), `siege_goal` and `siege_line` (a marker placed in front of the monitor), `siege_barrier` (the object aimed at, numbered 1; Properties changes it), in the map variant's document |
+
 ### A Forge graph is the same IR
 
 The Forge front end turns the document's nodes and links into the same

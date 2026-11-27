@@ -56,6 +56,7 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 | `map testbuild` | `map_testbuild.rs` |
 | `testmap` | `testmap_cmd.rs` |
 | `collision`, `superbounce scan`, `hud preview\|sheet` | `collision.rs`, `superbounce_cmd.rs`, `hud_cmd.rs` |
+| `siege layout` | `siege_cmd.rs` (docs/game/rules-engine.md, "Siege layouts") |
 | `object`, `strings`, `effect`, `lights`, `shader`, `hs` | `object.rs`, `strings.rs`, `effects.rs`, `lights.rs`, `shader.rs`, `scripts.rs` |
 | `hs lsp` | `hs_lsp.rs` (over `hs::ide`), `studio_link.rs` (the editor commands' calls to Studio) |
 | `extract-shaders` | `extract_shaders.rs` |

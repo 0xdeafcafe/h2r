@@ -321,7 +321,7 @@ entry plays (design, [forge-firefight.md](forge-firefight.md)).
 | `ff_cover` | a firing position | a marker with a facing | sampled from the sectors |
 | `siege_site` | a site the attackers take | a territory flag, as `siege.rules` reads now | the map's own territories |
 | `siege_goal`, `siege_line` | the final stand; where each side spawns per phase | a flag stand; markers with a phase and a team | the map's CTF stands |
-| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the AI and objectives page, numbered by its phase | none: the map plays as before |
+| `siege_barrier` | an object that stands open from a phase on (`set_open`) | scenery, a crate, a machine or a vehicle labelled from the Siege page, numbered by its phase | none: the map plays as before |
 
 A script declares the labels it reads, so the tools offer exactly those
 for the game type the author is building for, and a map with none of a
@@ -346,12 +346,15 @@ each placed `ff_drop` (GM1), so a wave lands at a placed drop.
 ### In Forge
 
 The monitor's Objects tool has an **AI and objectives** palette page
-with the labels above (`forge_screens::sheet::objects_with_ai`); a
+with the Firefight labels above and a **Siege** page with the Siege
+labels as **Site**, **Flag stand**, **Spawn line** and **Barrier**
+(`forge_screens::sheet::objects_with_ai`, `SIEGE_PAGE`; "Siege layouts" in
+[rules-engine.md](rules-engine.md)); a
 marker is a netgame flag the document adds with a label op
 (`crates/formats/forge-doc/src/ground.rs`), placed in front of the
 monitor, and moved and removed through the session
-([forge-map-variants.md](forge-map-variants.md), "AI ground"). The page
-offers every label; a script's own list narrows it when the Game Type
+([forge-map-variants.md](forge-map-variants.md), "AI ground"). The
+pages offer every label; a script's own list narrows it when the Game Type
 row picks one.
 
 Ground is built when it is asked for, never while placing:
