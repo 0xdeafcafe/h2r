@@ -203,6 +203,14 @@ pub fn strip(size: (u32, u32), depth: (f32, f32)) -> Vec<StripVertex> {
 }
 
 impl Gels {
+    /// Why `shader`'s gel cannot draw at `time`: an animated pass and no
+    /// render clock ([`gels::needs_clock`]).
+    pub fn clock_refusal(&self, shader: u32, time: Option<f64>) -> Option<&'static str> {
+        let gel = self.shaders.get(&shader)?;
+        gels::needs_clock(gel.passes.iter().map(|p| p.animation.is_some()), time)
+            .then_some("the animated gel has no render clock")
+    }
+
     /// `shader`'s passes into target 13's level 0 on one copy, prepared
     /// (recording them makes and writes nothing). `guest` is the level's
     /// guest size, `depth` the quad's z and w.
@@ -222,14 +230,16 @@ impl Gels {
         let sampled: Vec<std::borrow::Cow<'_, ScreenProgram>> = gel
             .passes
             .iter()
-            .map(|p| match &p.animation {
-                None => Ok(std::borrow::Cow::Borrowed(&p.program)),
-                Some(a) => {
-                    let at = a.sample(time).map_err(|r| format!("animation: {r:?}"))?;
-                    let mut program = p.program.clone();
-                    program.vertex = at.vertex(&program.vertex);
-                    program.pixel = at.pixel(&program.pixel);
-                    Ok(std::borrow::Cow::Owned(program))
+            .map(|p| {
+                match gels::pass_uniforms(p.animation.as_ref(), &p.program.vertex, &p.program.pixel, time)
+                    .map_err(|r| format!("animation: {r:?}"))?
+                {
+                    None => Ok(std::borrow::Cow::Borrowed(&p.program)),
+                    Some((vertex, pixel)) => {
+                        let mut program = p.program.clone();
+                        (program.vertex, program.pixel) = (vertex, pixel);
+                        Ok(std::borrow::Cow::Owned(program))
+                    }
                 }
             })
             .collect::<Result<_, String>>()?;

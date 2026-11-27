@@ -542,6 +542,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     let at = native_render::gels::CALL_VALUES;
                     let values = [0, 4, 8, 12].map(|o| mem.u32(at + o).unwrap_or(0));
                     let time = native_render::layer_pass::render_time(&ReadMemory(mem));
+                    if let Some(why) = ready_gels.scene_gels.clock_refusal(shader, time) {
+                        return Err(Keep::Unsupported(why));
+                    }
                     d3d::ExternalStep {
                         targets: targets(native_render::gels::TARGET)?,
                         plan: plan(1, Vec::new()),

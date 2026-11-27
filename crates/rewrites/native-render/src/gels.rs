@@ -131,6 +131,34 @@ pub fn quad(size: (u32, u32), depth: (f32, f32)) -> [([f32; 4], [f32; 4]); 4] {
         .map(|(u, v)| ([u * w, v * h, z, q], [u, v, 0.0, 1.0]))
 }
 
+/// One gel pass's uniforms at a draw's clock: an animated pass
+/// compiles from its baseline (`PassAnimation::baseline`) and its
+/// registers are sampled at the render clock (`0x004858a0`) over the
+/// compiled `vertex` and `pixel`, as `0x00016610` uploads them for each
+/// call. `None` for a pass that animates nothing: it draws its compiled
+/// uniforms. An animated pass with no clock is
+/// [`crate::layer_pass::LayerRefusal::NoTime`]; the light's sequence
+/// refuses it by name before it reserves the step ([`needs_clock`]).
+#[cfg(feature = "gpu")]
+pub fn pass_uniforms(
+    animation: Option<&crate::layer_pass::PassAnimation>,
+    vertex: &shaders::vsh::VertexUniforms,
+    pixel: &shaders::psh::PixelUniforms,
+    time: Option<f64>,
+) -> Result<Option<(shaders::vsh::VertexUniforms, shaders::psh::PixelUniforms)>, crate::layer_pass::LayerRefusal> {
+    let Some(animation) = animation else {
+        return Ok(None);
+    };
+    let at = animation.sample(time)?;
+    Ok(Some((at.vertex(vertex), at.pixel(pixel))))
+}
+
+/// Whether a gel whose passes animate as `animated` says cannot draw at
+/// `time`: one animated pass and no render clock.
+pub fn needs_clock(animated: impl IntoIterator<Item = bool>, time: Option<f64>) -> bool {
+    time.is_none() && animated.into_iter().any(|a| a)
+}
+
 /// Identity is per invocation, never just the reused target's address or
 /// the shader datum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -237,6 +265,34 @@ mod tests {
         assert_eq!(q.map(|(p, _)| [p[0], p[1]]), [[0.0, 0.0], [64.0, 0.0], [0.0, 32.0], [64.0, 32.0]]);
         assert_eq!(q.map(|(_, t)| t), [[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0]]);
         assert!(q.iter().all(|(p, _)| p[2] == z && p[3] == w));
+    }
+
+    /// An animated gel pass draws its registers at each call's clock over
+    /// the baseline it compiled from; a still pass draws its compiled
+    /// uniforms; an animated gel with no clock is refused, a still one is
+    /// not.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn an_animated_gel_draws() {
+        use crate::layer_pass::{LayerRefusal, PassAnimation, tests as lp};
+        use tags::material::InputReads;
+        let (target, props) = lp::animated_z();
+        let imp = lp::implementation(0, InputReads::default(), vec![target]);
+        let (base, animation) = PassAnimation::baseline(&imp, &props, false, 0).unwrap();
+        assert_eq!(base.vertex_constants[0].value, [0.0; 4], "compiled at clock 0");
+        let animation = animation.expect("the pass animates");
+        let vertex = shaders::vsh::VertexUniforms::default();
+        let pixel = shaders::psh::PixelUniforms::default();
+        // c[18].z over 0..2 on a 4 s period, at two calls' clocks.
+        for (time, z) in [(10.0, 1.0), (11.0, 1.5)] {
+            let (v, _) = pass_uniforms(Some(&animation), &vertex, &pixel, Some(time)).unwrap().unwrap();
+            assert_eq!(v.constants[18][2], z, "at {time} s");
+        }
+        assert_eq!(pass_uniforms(None, &vertex, &pixel, Some(11.0)).unwrap(), None, "a still pass");
+        assert_eq!(pass_uniforms(Some(&animation), &vertex, &pixel, None).unwrap_err(), LayerRefusal::NoTime);
+        assert!(needs_clock([false, true], None));
+        assert!(!needs_clock([false, true], Some(0.0)));
+        assert!(!needs_clock([false, false], None));
     }
 
     #[test]
