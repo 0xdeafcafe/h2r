@@ -22,8 +22,8 @@ pub mod mixer_feed;
 pub mod owners;
 
 pub const SOUND: &str = "sim.native.sound";
-/// The sound simulation's switch (`impl.sim.sound-events`, default off until
-/// `h2 sim diff` has the answer for it).
+/// The sound simulation's switch (`impl.sim.sound-events`, default on; `h2 sim diff` parity in
+/// docs/engine/notes/2026-11-27-sound-events-parity.md).
 pub const EVENTS: &str = "sim.sound-events";
 const ID: &str = "impl.sim.native.sound";
 const EVENTS_ID: &str = "impl.sim.sound-events";
@@ -415,7 +415,7 @@ impl Feature for SimSoundEvents {
             move || lock(&save).save(),
             move |bytes, _| lock(&load).load(bytes),
         ));
-        if !b.switches().implementation(EVENTS, false) {
+        if !b.switches().implementation(EVENTS, true) {
             return Ok(());
         }
         let sim = Arc::clone(&self.sim);
@@ -610,11 +610,11 @@ mod tests {
         // The hooks: with the switch on, the service is implemented here and
         // the admission and the tick's start are `before` hooks; the marker
         // start and the stop are the engine's own.
-        for (spec, on) in [("", false), ("impl.sim.sound-events", true)] {
+        for (spec, on) in [("impl.sim.sound-events=off", false), ("impl.sim.sound-events", true)] {
             let mut registry = Registry::new(Switches::parse(spec).unwrap());
             registry.add(&SimSoundEvents::headless()).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert!(!plan.save_sections().is_empty(), "the schedule is saved");
+            assert_eq!(!plan.save_sections().is_empty(), on, "the schedule is saved with the switch on");
             let chain = |p: &engine::points::Point| plan.chains.get(&p.base);
             assert_eq!(chain(&points::SOUND_UPDATE).is_some_and(|c| c.implement.is_some()), on);
             let labels = |p: &engine::points::Point| {
@@ -626,6 +626,18 @@ mod tests {
             assert!(chain(&points::SOUND_START_AT_MARKER).is_none(), "the marker start is the engine's");
             assert!(chain(&points::SOUND_STOP_INSTANCE).is_none(), "the stop is the engine's");
         }
+    }
+
+    #[test]
+    fn the_switch_is_on_by_default() {
+        let on = |switches: Switches| {
+            let mut registry = Registry::new(switches);
+            registry.add(&SimSoundEvents::headless()).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            plan.chains.get(&points::SOUND_UPDATE.base).is_some_and(|c| c.implement.is_some())
+        };
+        assert!(on(Switches::defaults()));
+        assert!(!on(Switches::defaults().with("impl.sim.sound-events", false)));
     }
 
     fn instance(n: u32) -> u32 {
