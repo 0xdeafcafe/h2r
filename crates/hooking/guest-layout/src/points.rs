@@ -1013,6 +1013,10 @@ points! { ALL;
     /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
     /// layer 7).
     RENDER_DYNAMIC_LIGHTS @ 0x0003_1c80: [opaque]; "docs/graphics/native-renderer.md";
+    /// The first-person draw of a game view: `eax` the view, the call (0 or
+    /// 1) on the stack, `ret 4`. The native first person cuts it
+    /// (`render_bridge::cut::FIRST_PERSON`) and render-timing times it.
+    FIRST_PERSON_DRAW @ 0x0003_fdf0: [opaque]; "docs/graphics/native-objects.md";
     /// `render_light_passes`: draws one dynamic light's passes (layers 10,
     /// 11, 14, 12, 13 on the light's list). EAX the `ligh` datum, ECX a
     /// context, stack `(light datum, &position, shadow byte, weight)`,
