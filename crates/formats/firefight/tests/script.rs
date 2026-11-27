@@ -680,3 +680,19 @@ fn ally_rules_give_the_same_commands() {
         assert_eq!(sides, BTreeSet::from([0, 1]), "seed {seed}");
     }
 }
+
+#[test]
+fn an_ally_placement_is_followed_by_the_team_it_serves() {
+    let run = check(&ally_def(1), &settings(3), 1, two_zones(), 200, kill_enemies_at_age_three);
+    let places = places(&run, "marine");
+    assert_eq!(places.len(), 1);
+    let (slot, team) = match run.commands[places[0] + 1].1 {
+        Command::Ally { slot, team } => (slot, team),
+        ref other => panic!("{other:?} follows the ally's placement"),
+    };
+    assert_eq!(team, 0);
+    assert!(matches!(&run.commands[places[0]].1, Command::PlaceSquad { slot: placed, .. } if *placed == slot));
+    // Enemy squads are never given an ally command.
+    let allies = run.commands.iter().filter(|(_, c)| matches!(c, Command::Ally { .. })).count();
+    assert_eq!(allies, 1);
+}

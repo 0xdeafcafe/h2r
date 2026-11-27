@@ -130,12 +130,26 @@ fn scenario() -> FakeGuest {
     }
 
     pair(&mut m, SCNR + 0x178, 3, 0x2_6000);
-    pair(&mut m, SCNR + 0x240, 3, ORDERS);
-    m.map(ORDERS, 3 * 0x7c);
+    pair(&mut m, SCNR + 0x240, 5, ORDERS);
+    m.map(ORDERS, 5 * 0x7c);
     named(&mut m, ORDERS, "ff_other");
     named(&mut m, ORDERS + 0x7c, "ff_hunt_01");
     named(&mut m, ORDERS + 2 * 0x7c, "ff_hunt_00");
+    named(&mut m, ORDERS + 3 * 0x7c, "ff_hold_01");
+    named(&mut m, ORDERS + 4 * 0x7c, "ff_hold_00");
     m
+}
+
+#[test]
+fn read_kit_finds_the_hold_orders() {
+    let kit = layout();
+    assert_eq!(kit.hold_orders, [Some(4), Some(3)]);
+    assert_eq!(kit.hunt_orders, [Some(2), Some(1)]);
+    assert_eq!(hold_order_name(1), "ff_hold_01");
+    // Another name is no hold order.
+    let mut m = scenario();
+    named(&mut m, ORDERS + 4 * 0x7c, "ff_hold");
+    assert_eq!(read_kit(&m).unwrap().unwrap().hold_orders, [None, Some(3)]);
 }
 
 fn layout() -> KitLayout {
@@ -529,6 +543,40 @@ fn hunt_gives_the_bases_order_and_erase_takes_the_squad() {
         assert!(error.contains(&format!("ff_hunt_{base:02}")), "{error}");
         assert!(calls.is_empty());
     }
+}
+
+#[test]
+fn ally_sets_the_players_team_then_the_bases_hold_order() {
+    let kit = layout();
+    let (result, calls, _) = drive(
+        scenario(),
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { ally(&cx, &kit, 1, 1, 0).await })
+        },
+        returns(0),
+    );
+    result.unwrap();
+    assert_eq!(
+        calls,
+        [
+            GuestCall::new(points::AI_SET_TEAM.base).eax(2).ebx(1),
+            GuestCall::new(points::AI_SET_ORDERS.base).eax(2).ecx(4),
+        ]
+    );
+    // A base without its hold order: an error naming it, and no call.
+    let mut kit = layout();
+    kit.hold_orders[1] = None;
+    let (result, calls, _) = drive(
+        scenario(),
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { ally(&cx, &kit, 1, 1, 1).await })
+        },
+        returns(0),
+    );
+    assert!(result.unwrap_err().to_string().contains("ff_hold_01"));
+    assert!(calls.is_empty());
 }
 
 fn players() -> FakeGuest {

@@ -369,6 +369,7 @@ pub mod id {
     pub const FF_SHIP_HOVER: u16 = 139;
     pub const FF_SHIP_UNLOAD: u16 = 140;
     pub const FF_SHIP_LEAVE: u16 = 141;
+    pub const FF_ALLY: u16 = 142;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -726,6 +727,10 @@ pub const ENTRIES: &[Entry] = &[
     act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
     act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
     act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
+    // Right after the `place_squad_at` of an allied squad
+    // (`Command::Ally`): the player team it serves, whose team the actors
+    // join and whose `ff_hold_NN` order they are given (`game::firefight`).
+    act(id::FF_ALLY, "ff_ally", &[Squad, Team], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

@@ -721,7 +721,7 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
 // One ally squad of the round, if it is not alive and there is room: at a
 // zone the same way an enemy's is picked, on foot, on the team it serves
 // (with two teams, the first on team 0 and the second on team 1). It is
-// no wave squad: no `ff_target` follows, and the wave's clear ignores it.
+// no wave squad: an `ff_ally` follows, not `ff_target`, and the wave's clear ignores it.
 fn place_ally(tick: int, players_in_match: int, cap: int) {
     let rows = ally_rounds[round]
     if ally_next >= rows.count { allies_due = false }
@@ -750,6 +750,7 @@ fn place_ally(tick: int, players_in_match: int, cap: int) {
                 s.squad_side = home
                 s.squad_ally = ally_next + 1
                 place_squad_at(squad(s.slot_index), entry.kind, size, chosen_zone, entry.tier)
+                ff_ally(squad(s.slot_index), target_team)
                 ally_count = ally_count + size
                 ally_next = ally_next + 1
                 chosen_slot = first(ff_slots slot where slot.squad_state == free)

@@ -33,9 +33,16 @@ const COVENANT_TEAM: u16 = Faction::Covenant.team() as u16;
 /// The orders the guest's `hunt` entry finds by name (`AI_SET_ORDERS`,
 /// 0x275cb0): `ff_hunt_NN` sends a squad at base NN.
 pub(crate) const HUNT_PREFIX: &str = "ff_hunt_";
+/// The orders an allied squad is given: `ff_hold_NN` keeps a squad at
+/// base NN (docs/game/firefight.md, "Allies").
+pub(crate) const HOLD_PREFIX: &str = "ff_hold_";
 
 pub(crate) fn hunt_name(base: usize) -> String {
     format!("{HUNT_PREFIX}{base:02}")
+}
+
+pub(crate) fn hold_name(base: usize) -> String {
+    format!("{HOLD_PREFIX}{base:02}")
 }
 
 pub(crate) struct AiBlocks {
@@ -99,7 +106,8 @@ pub(crate) fn prepare<R: Read + Seek>(
     let base_zones: Vec<usize> = (drops.len()..drops.len() + bases.len()).collect();
     let mut zones = drops;
     zones.extend(bases);
-    let orders = hunt_orders(&zones, &base_zones)?;
+    let mut orders = hunt_orders(&zones, &base_zones)?;
+    orders.extend(hold_orders(&zones, &base_zones)?);
     let ai = ScenarioAi {
         orders,
         zones,
@@ -111,7 +119,8 @@ pub(crate) fn prepare<R: Read + Seek>(
     };
     // Preserve the map's scripting data (including point sets) and squad
     // groups. This kit owns four scenario AI fields; the orders block is
-    // empty in the base (checked above), so `ff_hunt_NN` is order NN.
+    // empty in the base (checked above), so `ff_hunt_NN` is order NN and
+    // `ff_hold_NN` follows the hunt orders.
     fields
         .fields
         .extend(ai.blocks().fields.into_iter().filter(|(field, _, _)| {
@@ -166,18 +175,36 @@ fn weapon_slot<R: Read + Seek>(
 /// pushes into that base. No style, script or follow target; the guest
 /// finds each by its name.
 fn hunt_orders(zones: &[Zone], bases: &[usize]) -> Result<Vec<Order>, String> {
+    base_orders(zones, bases, "Hunt", hunt_name, usize::MAX)
+}
+
+/// The Hold orders, one per base: `ff_hold_NN` keeps a squad on base NN's
+/// first area only, the base's own ground, where a hunt order spans every
+/// area of the zone. An allied squad is given it and holds there.
+fn hold_orders(zones: &[Zone], bases: &[usize]) -> Result<Vec<Order>, String> {
+    base_orders(zones, bases, "Hold", hold_name, 1)
+}
+
+/// One order per base over the first `most` areas of its zone.
+fn base_orders(
+    zones: &[Zone],
+    bases: &[usize],
+    kind: &str,
+    name_of: fn(usize) -> String,
+    most: usize,
+) -> Result<Vec<Order>, String> {
     if bases.is_empty() {
-        return Err("no base zones for the Hunt orders".into());
+        return Err(format!("no base zones for the {kind} orders"));
     }
     bases
         .iter()
         .enumerate()
         .map(|(base, &zone)| {
-            let name = hunt_name(base);
-            let areas = zones.get(zone).map_or(0, |z| z.areas.len());
+            let name = name_of(base);
+            let areas = zones.get(zone).map_or(0, |z| z.areas.len()).min(most);
             if areas == 0 {
                 return Err(format!(
-                    "base {base} has no zone areas for the Hunt order {name}"
+                    "base {base} has no zone areas for the {kind} order {name}"
                 ));
             }
             Ok(Order {
