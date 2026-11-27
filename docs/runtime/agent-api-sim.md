@@ -204,6 +204,53 @@ h2 agent player.goto '{"to":{"spot":0,"kind":"crouch"},"then":"crouch_recipe"}'
 h2 agent player.goto_cancel
 ```
 
+## `player.bot`: a Clanker plays the player's seat
+
+`player.bot {on: true}` hands `player.0`, the local human seat, to a
+Clanker brain for benchmarks and spectating: it moves, fights and picks
+up weapons on the first controller's pad, through the pad tap
+`player.goto` drives. `on: false`, or any real press on that pad (a
+button, a trigger, a stick past half), hands it back at once. The
+glue is `crates/extensions/game/src/player_bot.rs`.
+
+| | |
+|---|---|
+| The brain | the phantoms' (`bots::Brain`), sampled once a game tick at the pad read, finding its player by the seat's machine id |
+| Personality | hashed from the seat's own name, as a phantom's is from its gamertag ([bots.md](../game/bots.md#personality-and-temperament)) |
+| The seat | stays the player's: no sign-in, no bot account, and the game record does not mark it a bot |
+| Where it plays | multiplayer games only; elsewhere (menus, loads, campaign) the real pad goes through and the brain waits |
+| Nav mesh | asked for as `player.goto` asks, so no phantom need be in the game |
+
+Params: `on`; with `on: true`, `difficulty` (`easy`, `normal` (default),
+`heroic`, `legendary`) and `style`, the Clankers page's Aggression
+(`calm`, `normal` (default), `wild`). No params reads the state; a new
+ask starts a new brain.
+
+The reply, every time, is `{on, driving, difficulty, style, name,
+ticks, off}`:
+
+- `driving`: the brain's pad reached the game at the last read.
+- `name`: the name its personality comes from.
+- `ticks`: game ticks it has played.
+- `off`: why it last stopped: `agent`, `pad`, `setting`, or a seat it
+  can't play (one sharing its machine with another local player, split
+  screen).
+
+It is refused while a `player.goto` drive or a `superbounce.verify`
+batch holds `player.0`, and `player.goto` is refused while it plays.
+Without the pad tap it is `UNAVAILABLE`.
+
+The `player.bot` setting does the same from the start of a run, so a
+lab run can begin with it on: `h2 play --set player.bot=true`
+(default difficulty and style). Turning the setting off hands the seat
+back; a press does too, and the setting stays as it was.
+
+```sh
+h2 agent player.bot '{"on":true,"difficulty":"heroic","style":"wild"}'
+h2 agent player.bot
+h2 agent player.bot '{"on":false}'
+```
+
 ### Saved places: `player.mark` and `player.recall`
 
 `player.mark {slot?, player?}` keeps a player's position and aim under a

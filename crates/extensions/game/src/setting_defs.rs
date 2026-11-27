@@ -918,6 +918,30 @@ pub fn superbounce_tutorial_shows(seen: bool, env: Option<&str>) -> bool {
     !seen || env.is_some_and(|v| v.trim() == "1")
 }
 
+/// A Clanker brain plays `player.0`, the local human seat, through the pad
+/// tap, as `player.bot {"on": true}` turns it on
+/// (docs/runtime/agent-api-sim.md, "`player.bot`: a Clanker plays the
+/// player's seat"): for a lab run that starts with it on (`h2 play --set
+/// player.bot=true`). `player_bot` follows it live; a real press hands
+/// the seat back. Host scope: what it changes is the pad, which a film
+/// records, so a film never lends it to its playback.
+pub static PLAYER_BOT: Def = Def {
+    key: "player.bot",
+    label: "Clanker Plays For You",
+    help: "A Clanker brain plays your seat in multiplayer games, for benchmarks and \
+           spectating. Any press on your pad takes it back.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::Diagnostic,
+    menu: None,
+};
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -948,6 +972,7 @@ pub static ALL: &[&Def] = &[
     &HALO1_HUD,
     &SUPERBOUNCE_TUTORIAL_SEEN,
     &SUPERBOUNCE_FALL_ASSIST,
+    &PLAYER_BOT,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],

@@ -26,6 +26,7 @@ An `impl.` name is an implementation switch
 | `H2_ICONS` | Prompt glyphs. `auto` follows the active device. `--icons` takes precedence ([button icons](../input/button-icons.md)). |
 | `H2_AUDIO_LATENCY_MS` | Starting audio playout target, 10 to 500 ms (`crates/extensions/game/src/dsound_glue.rs`). |
 | `H2_AIM_ASSIST` | aim-assist strength. Its Controls row appears on iOS and is editable from the main menu ([aim-assist.md](../game/aim-assist.md)) |
+| `player.bot`, `h2 play --set player.bot=true` | A Clanker brain plays the local human seat through the pad tap, for benchmarks and spectating; a real press hands it back ([agent-api-sim.md](agent-api-sim.md#playerbot-a-clanker-plays-the-players-seat)). Off by default; needs the `superbounce-assist` tap |
 | `superbounce`, `superbounce-assist` (`H2_FEATURES`) | `-superbounce` switches the whole [superbounce game type](../game/superbounce.md#the-superbounce-game-type) off (it is on only in a game whose script requires `hud.superbounce`); `-superbounce-assist` the hold-X fall assist ([superbounce.md](../game/superbounce.md#hold-x-the-fall-assist)), which also needs the player's `superbounce.fall_assist` setting on |
 | `H2_SUPERBOUNCE_TUTORIAL=1` | shows the [superbounce HUD's tutorial steps](../game/superbounce.md#the-superbounce-game-type) in the training box the next time a game starts; without it they are not shown |
 | `H2_PAD_MUTE` | DualSense mute button and LED. Locks the Mute Button row in Voice ([playstation-audio.md](../audio/playstation-audio.md)) |

@@ -675,6 +675,12 @@ pub(crate) fn register_core_film(
     // goes in with the XAPI input taps (register_late).
     crate::superbounce_assist::install(features, i.settings.clone())
         .context("installing the superbounce assist")?;
+    // A Clanker brain on player.0's pad through that tap, by the
+    // player.bot setting (player_bot.rs, docs/runtime/agent-api-sim.md,
+    // "player.bot").
+    if let Some(s) = &i.settings {
+        crate::player_bot::follow_setting(s);
+    }
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let mut bots_on = false;

@@ -111,6 +111,7 @@ connection to hold `session.claim`.
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](agent-api-sim.md#bounce-routes) |
 | `player.goto`, `player.goto_cancel` | act | [`player.goto`](agent-api-sim.md#playergoto-drive-the-player-somewhere) |
 | `player.goto_status` | read | [`player.goto`](agent-api-sim.md#playergoto-drive-the-player-somewhere) |
+| `player.bot` | act | [`player.bot`](agent-api-sim.md#playerbot-a-clanker-plays-the-players-seat) |
 | `player.mark`, `player.recall` | act | [Saved places](agent-api-sim.md#saved-places-playermark-and-playerrecall) |
 | `sim.*` | read or act | [`sim`](agent-api-sim.md#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.things`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors`, `forge.ground`, `forge.ground.build`, `forge.nav`, `forge.waves`, `forge.waves.test`, `forge.pieces` | read or act | [Local Forge session](agent-api-modes.md#local-forge-session) |

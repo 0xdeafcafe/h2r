@@ -242,6 +242,7 @@ pub mod clankermatch;
 pub mod clankers;
 pub mod pause_change_map;
 pub mod pause_menu;
+pub mod player_bot;
 pub mod player_goto;
 pub mod setting_defs;
 pub mod sha;

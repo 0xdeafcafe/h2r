@@ -468,6 +468,11 @@ fn goto(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
             "a superbounce.verify batch is driving player.0; superbounce.verify_cancel stops it",
         ));
     }
+    if crate::player_bot::active() {
+        return Err(invalid(
+            "a Clanker brain plays player.0; player.bot {\"on\": false} hands it back",
+        ));
+    }
     if !crate::superbounce_assist::tapped() {
         return Err(unavailable(
             "the pad tap is not in place (the superbounce-assist feature is off), so player.0 \

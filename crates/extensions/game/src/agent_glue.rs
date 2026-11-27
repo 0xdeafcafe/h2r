@@ -408,6 +408,9 @@ impl AgentGlue {
         // Drive player.0 somewhere with the bots' route brain
         // (player_goto.rs, docs/runtime/agent-api.md, "player.goto").
         crate::player_goto::install(&agent);
+        // Hand player.0 to a Clanker brain and back (player_bot.rs,
+        // docs/runtime/agent-api-sim.md, "player.bot").
+        crate::player_bot::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

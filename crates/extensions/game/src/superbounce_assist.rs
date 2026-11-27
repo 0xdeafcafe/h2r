@@ -1201,6 +1201,25 @@ impl AssistTap {
             }
             return;
         }
+        // A Clanker playing the player's seat (player_bot.rs) gives the
+        // pad, until a real press in it hands the seat back.
+        if status == 0
+            && self.ports.get(&handle) == Some(&PORT)
+            && crate::player_bot::active()
+            && let Some(m) = memory
+        {
+            let raw: &[u8; Gamepad::SIZE] = (&packet[4..])
+                .try_into()
+                .expect("a packet is a number and a gamepad");
+            if let Some(pad) = crate::player_bot::pad_read(&Gamepad::from_bytes(raw), &Mem(m)) {
+                packet[4..].copy_from_slice(&pad.to_bytes());
+                publish_crouch(None);
+                if self.live || self.latch.0 {
+                    self.release();
+                }
+                return;
+            }
+        }
         // The cost of a game that is not a superbounce one.
         if !superbounce_mode::active() {
             if self.live || self.latch.0 {
