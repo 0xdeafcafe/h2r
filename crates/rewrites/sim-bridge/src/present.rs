@@ -17,7 +17,7 @@ use engine::sim_tick::Present;
 pub const PRESENT: &str = "sim.present";
 
 pub fn mode(switches: &hooks::Switches) -> Present {
-    if switches.implementation(PRESENT, false) { Present::LocalOnly } else { Present::Always }
+    if switches.implementation(PRESENT, true) { Present::LocalOnly } else { Present::Always }
 }
 
 #[cfg(test)]
