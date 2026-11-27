@@ -87,7 +87,7 @@ fn sample_curve(c: &mut CpuAbi, m: &mut impl Memory, _: u32) -> Result {
 }
 
 pub const UPDATE: u32 = 0x0018_5be0;
-pub const SITES: &[u32] = &[leaf::READY_RESUME, 0x185ff9, 0x186012, 0x186105, 0x1861a6, 0x1863a6,
+pub const SITES: &[u32] = &[0x185ff9, 0x186012, 0x186105, 0x1861a6, 0x1863a6,
     0x1863c0, 0x1863f7, 0x186403, 0x1865c4, 0x1866b3, 0x186a94];
 const OBJECTS: u32 = crate::points::OBJECTS.base;
 const SETTINGS: u32 = 0x004e_034c;
@@ -152,7 +152,6 @@ fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
             after_visibility(c, m, c.eax as u8 != 0)
         }
         0x1866b3 => after_weapon(c, m),
-        leaf::READY_RESUME => leaf::ready_resume(c, m),
         0x186a94 => {
             c.edi = pop(c, m)?;
             c.esi = pop(c, m)?;
@@ -743,7 +742,7 @@ fn after_visibility(c: &mut CpuAbi, m: &mut impl Memory, visible: bool) -> Resul
         c.eax = weapon;
         c.edx = weapon;
         c.esi = device;
-        return leaf::ready(c, m, 0x1866b3);
+        return leaf::call(c, m, Leaf::WeaponReady, 0x1866b3, |c, m| control_step(c, m, 0x1866b3));
     }
     zoom_bits(c, m, true)
 }
