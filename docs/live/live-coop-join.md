@@ -73,35 +73,77 @@ So the engine runs 16 players already. What holds at two is the data
 - a guest takes the limit as 16: the host's lobby already held the start.
 
 **Stage 1b** (feature `coop-players`, `crates/extensions/game/src/coop_players.rs`,
-on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`):
+on the co-op arm, so off outside a co-op session; `H2_FEATURES=-coop-players`).
+It acts only while a player of index 2 or more is in a campaign; with two
+players every hook falls through to retail.
 
-- *Spawn.* A first spawn of a player of index 2 or more runs the spawn,
-  and when its location pick found every spot taken, the pick answers
-  spot `index % count`; the spawn is then followed by `0x14e970` next to
-  player 0's unit (player 1's when player 0 is in a vehicle), all inside
-  the one spawn call, as the co-op respawn does after its own spawn.
-- *Stragglers.* A teleport (`0x29ffb0`) of the scripts' `player0` or
-  `player1` (the first two players with a unit), a BSP switch or a
-  cinematic's end marks the squad; at the next player update, outside a
-  cinematic, every player of index 2 or more on foot and more than 8
-  world units from the anchor is placed next to it with `0x14e970`.
-- The hooks never read a per-console setting, only the game: they act on
-  players of index 2 or more, who exist only when the host let a third
-  console in. Every console runs them alike, which lockstep needs.
+The anchors:
+
+| anchor | who | used by |
+|---|---|---|
+| scripts' | the scripts' `player0` on foot, else `player1` (the first two players with a unit) | gathers, volume gates, checkpoint distance (a rider by its vehicle) |
+| group | of the living players on foot, the one nearest the middle of every living player's position; lower index on a tie | the co-op respawn |
+
+Spots (`coop_players/spots.rs`): a square grid, `SPACING` 0.6 units,
+rings 1 to 3 (8, 16 and 24 spots), nearest first in a ring. No spot is
+taken nearer than `MIN_GAP` 0.45 to any player's unit (a rider by its
+vehicle).
+
+| when | what happens | refused |
+|---|---|---|
+| level start, a first spawn of player 2+ | retail's pick; when it finds every starting location taken, the grid around starting locations 0 and 1, ring by ring, the two starts taking turns. Each spot is asked of retail's free-spot test (`SPAWN_LOCATION_FREE` `0x23bb70`, the starting location's position moved to the spot), first with ground under it (the test blocked `GROUND_PROBE` 0.5 below), then without. The starting location stays at the spot for the spawn and goes back as it returns | no spot on any ring: `0xffff`, the spawn waits and is retried next tick, as retail |
+| gather (below) | each player 2+ due goes to its own grid spot around the scripts' anchor with `PLAYER_PLACE_NEAR` (`0x14e970`); the spots are read again after each placement | the next spot; none left: the player stays where it is |
+| co-op respawn (`0x14cdd0`'s call at `0x14cffd`) | a grid spot around the group anchor with `PLAYER_PLACE_NEAR` | the next spot; none left: retail's own call |
+
+A gather is due at the next player update outside a cinematic:
+
+| trigger | who comes |
+|---|---|
+| a teleport (`0x29ffb0`) of the scripts' `player0` or `player1` | players 2+ on foot past the leash (8 units) |
+| a BSP switch | same |
+| a cinematic's end | same |
+| a scripts' player enters a gate volume it was not in at the last update | same |
+| any update: a player 2+ on foot past the leash stands in a gate volume neither scripts' player is in | that player, brought back |
+
+Gate volumes (`coop_players/volumes.rs`) are the scenario's trigger
+volumes (`scnr+0x108`, `0x44` each) that are not parented, not kill
+triggers (`scnr+0x230`) and not BSP switches (`scnr+0x130`). A console's
+first update records the volumes without a gather, so a console that
+joins does not gather alone.
+
+Checkpoints (`coop_players/save.rs`):
+
+| player | counts |
+|---|---|
+| 0 and 1 | always, as retail: dead or unsafe holds the save |
+| 2+ dead, or past the leash from the scripts' anchor | left out |
+| 2+ alive within the leash, on foot or riding | near: one vote |
+
+The save goes when retail's check passes over players 0 and 1 with every
+player 2+ left out, and more than half the squad near the anchor (players
+0 and 1 plus the near players) is safe. A near player's vote is retail's
+check over players 0 and 1 and that player alone, so a check asks
+`SAVE_SAFE` at most 15 times. A check leaves players out by clearing their
+in-use bits (the walks `0x14df40`, `0x14deb0` and the datum iterator
+`0x16bc00` read them) and lowering the dead flag (`players_globals+5`)
+over the rest; both go back when it returns.
+
+Every decision reads only the game, in table order, with sums, products
+and square roots of guest floats, so every console makes the same one.
 
 New points: `PLAYER_UPDATE` `0x14d3a0`, `PLAYER_SPAWN` `0x14f2e0`,
 `PLAYER_SPAWN_LOCATION` `0x14ef00`, `PLAYER_PLACE_NEAR` `0x14e970`,
-`SCRIPT_TELEPORT` `0x29ffb0`; global `SCENARIO` `0x4e0350`.
+`SCRIPT_TELEPORT` `0x29ffb0`, `SAVE_SAFE` `0x226190`; called:
+`SPAWN_LOCATION_FREE` `0x23bb70`; global `SCENARIO` `0x4e0350`.
 
-Tests (`cargo test -p boot --lib coop`): the fallback spot for players
-3+ only; the tables read (players, objects, campaign, start count); the
-anchor (player 0 on foot, else player 1); who straggles (index 2+, on
-foot, past the leash; not player 1, not a driver, not the dead); the
-scripts' `player0`/`player1` as the first two with units; the spawn
-entry (original with the fallback armed, then the placement at player
-0's position, nothing when the spawn failed); the gathering entry (the
-stragglers placed, then the update); nothing moves with two players; the
-feature on the plan with the co-op hooks.
+Tests (`cargo xtask test -p game`, `coop_players::tests`): the grid and
+its order; the level-start pick (a free retail start kept, a spot on a
+player skipped, a walled spot passed over, the starts put back, the
+refusal); the spawn putting its start back; gathers to separate spots and
+past a refused one; gate volumes, entry and runners ahead; the group
+anchor and the respawn's spot and fallback; the squad, the majority and
+each near player's vote; nothing moves with two players; the feature on
+the plan with the co-op hooks.
 
 ### 13.3 What needs a game run
 
@@ -115,53 +157,44 @@ section 10.4's setup with a third account. Expect, besides 10.4's lines:
   `... peer count back to 3 before OPTIONS_NEW`, `... player count back to 3 before OPTIONS_NEW`,
   `session start returned 1 (the game starts)`;
 - host: `coop-probe: game limits: campaign peer limit 1 -> 3`, `... campaign player limit 2 -> 3`;
-- at the start of the level, every console:
-  `coop-players: player 2: every starting location is taken; spawning on 0 and moving it`,
-  `coop-players: player 2 spawned; placing it next to the anchor`,
-  `coop-players: player 2 placed next to the anchor` (`REFUSED` means
-  `0x14e970` found no room: it stays on the spot);
-- after a cutscene or a script teleport, when the third player was far:
-  `coop-players: 1 player(s) of index 2 or more left behind; bringing them over`.
+- at the start of the level, every console, one line per player of
+  index 2 or more (N - 2 lines for N players):
+  `coop-players: player 2 placed at starting location S, ring R (x y z)`,
+  or `coop-players: player 2 placed on starting location S (free)` when
+  retail found one free. `coop-players: player 2: REFUSED: no free spot
+  on rings 1 to 3 ...` means it waits (logged once);
+- after a cutscene, a script teleport or a gate volume, when the third
+  player was far:
+  `coop-players: 1 player(s) of index 2 or more left behind; bringing them over`,
+  then `coop-players: player 2 placed next to the anchor (ring R)`
+  (`REFUSED` when no spot took it);
+- a third player running ahead past the leash into a gate:
+  `coop-players: 1 player(s) of index 2 or more past the leash in a trigger volume player0 and player1 are not in; bringing them back`;
+- a respawn with three players:
+  `coop-players: player P respawned next to player A (the nearest the squad's middle), ring R`;
 - with the third player dead, or far away, at a checkpoint:
   `coop-players: checkpoint checks leave out player(s) 2 (dead, or past 8 units from the anchor)`,
   and the checkpoint is taken (`coop-probe: checkpoint save at tick T`
-  on every console, at the same tick).
+  on every console, at the same tick). With it near:
+  `coop-players: checkpoint: 1 of 1 near player(s) of index 2 or more safe; the save goes on (majority)`.
 
-Then: does the third player appear next to player 0, does a dead third
-player respawn (retail's co-op respawn, no line of ours), do all three
+Then: does the third player appear beside a starting location, does a
+dead third player respawn, do all three
 stay in sync (`OUT OF SYNC`, `h2 coop-probe diff` on three hash files,
 pairwise), and do 03a's and 05a's opening cutscenes leave anyone behind.
 Players 3+ are the same character as player 1.
 
 ### 13.5 Risks and open items
 
-- **Checkpoints with more players (built, option (a)).** `0x226190`
-  (`game_safe_to_save`, point `SAVE_SAFE`) refuses a save while any
-  player is dead (`players_globals+5`) or any unit is unsafe (`0x14df40`,
-  `0x14deb0`, which walk the players' in-use bits). `coop-players` now
-  counts players 0 and 1 always, and a player of index 2 or more only
-  while alive and within the leash (8 units) of the anchor. For the
-  length of the check, the players that do not count are taken out of
-  the in-use bits (the datum iterator `0x16bc00` reads them too) and the
-  dead flag is recomputed over the rest (only ever lowered); both go
-  back when it returns. An unsafe player 3 near the anchor still blocks;
-  a player 3+ in a vehicle, or with no anchor on foot, counts as retail.
-  With two players nothing is left out: retail. Stderr, once per change
-  of who is left out:
-  `coop-players: checkpoint checks leave out player(s) 2 (dead, or past 8 units from the anchor)`.
-  Tests: `coop_players::tests` (two players unchanged; a dead player 3 no
-  longer blocks; a dead player 1 still does; a far player 3 does not
-  block, a near or driving one counts; the bits and flag are put back).
-- **The scripts know two players.** The leash covers being left behind;
-  it does not put players 3+ into cutscene positions, and a script that
-  checks `(volume_test_objects ... (players))` counts every player, so a
-  straggler inside a volume can trigger it (as retail with two).
-- **Two start spots.** Players 3+ start inside player 0's spot for no
-  tick at all (placed within the spawn call), but if `0x14e970` refuses
-  they stay overlapped until they move.
-- **Respawn anchor** is the last player in table order who is not busy,
-  so a respawn can land next to player 15 rather than player 0. Retail
-  behaviour, now with more choices.
+| open item | state |
+|---|---|
+| level-start spots | the free-spot test's capsule decides; [guess] that it sees the structure and the ground probe finds floor. Spots with no ground found are taken only when none has it, so a spot over a drop is possible |
+| gate volumes | every unparented trigger volume gates, so a player 2+ past the leash inside any volume the scripts' players are not in comes back; [guess] the player update runs before the scripts in `game_tick`, so the scripts do not see it there first |
+| cutscene positions | players 2+ come to grid spots around the scripts' `player0` after the cutscene's teleport, not to the cutscene's own flags |
+| respawn anchor | the group anchor may be a unit retail would call busy (respawn reasons 3 to 5); [guess] `0x14cffd` is a 5-byte `call` (return `0x14d002`) |
+| checkpoint cost | up to 15 `SAVE_SAFE` runs per check with 14 near players; [guess] the check has no side effects |
+| a joining console | the gather, cinematic and volume state starts fresh (13.2); a gate entered on the tick it joins gathers on the others only |
+
 - **Bandwidth at 16** (13.1) and the lockstep pace.
 - **Unread:** AI targeting with many players, the engine's handling of
   stragglers outside a new BSP, cinematic player handling beyond the
